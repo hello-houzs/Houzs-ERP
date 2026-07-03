@@ -1362,6 +1362,7 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
   "purchase-consignment-orders": {
     title: "Purchase Consignment Orders",
     eyebrow: "Consignment",
+    placeholder: "Search doc · supplier",
     endpoint: "/purchase-consignment-orders",
     listKey: "purchaseOrders",
     primary: (r) => r.supplier?.name || r.pc_number,
@@ -1369,6 +1370,12 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     right: (r) => r.total_centi,
     rightMoney: true,
     search: (r) => join(r.pc_number, r.supplier?.name),
+    pill: (r) => statusLabel(pick(r, "status")),
+    variant: "doc",
+    subline: (r) => join(pick(r, "pcNumber", "pc_number"), dm(pick(r, "poDate", "po_date"))),
+    footR: (r) => pick(r, "totalCenti", "total_centi"),
+    footMoney: true,
+    sorts: [{ key: "date", label: "Date", cmp: (a, b) => byDate(pick(a, "poDate", "po_date"), pick(b, "poDate", "po_date")) }],
   },
 
   // purchase-consignment-receives.get('/') → { grns: [...] }; cols
@@ -1376,6 +1383,7 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
   "purchase-consignment-receives": {
     title: "Purchase Consignment Receives",
     eyebrow: "Consignment",
+    placeholder: "Search receive · supplier",
     endpoint: "/purchase-consignment-receives",
     listKey: "grns",
     primary: (r) => r.supplier?.name || r.receive_number,
@@ -1383,6 +1391,15 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     right: (r) => r.total_centi,
     rightMoney: true,
     search: (r) => join(r.receive_number, r.supplier?.name, r.pc_order_no),
+    pill: (r) => statusLabel(pick(r, "status")),
+    variant: "doc",
+    subline: (r) => {
+      const po = pick(r, "pcOrderNo", "pc_order_no");
+      return join(pick(r, "receiveNumber", "receive_number"), dm(pick(r, "receivedAt", "received_at")), po ? `PC ${po}` : "");
+    },
+    footR: (r) => pick(r, "totalCenti", "total_centi"),
+    footMoney: true,
+    sorts: [{ key: "date", label: "Date", cmp: (a, b) => byDate(pick(a, "receivedAt", "received_at"), pick(b, "receivedAt", "received_at")) }],
   },
 
   // purchase-consignment-returns.get('/') → { purchaseReturns: [...] }; cols
@@ -1390,13 +1407,21 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
   "purchase-consignment-returns": {
     title: "Purchase Consignment Returns",
     eyebrow: "Consignment",
+    placeholder: "Search return · doc",
     endpoint: "/purchase-consignment-returns",
     listKey: "purchaseReturns",
-    primary: (r) => r.return_number,
-    secondary: (r) => join(r.status, dm(r.return_date)),
+    primary: (r) => r.supplier?.name || r.return_number,
+    secondary: (r) => join(r.return_number, r.status, dm(r.return_date)),
     right: (r) => r.refund_centi,
     rightMoney: true,
-    search: (r) => join(r.return_number),
+    search: (r) => join(r.return_number, r.supplier?.name),
+    pill: (r) => statusLabel(pick(r, "status")),
+    variant: "doc",
+    subline: (r) => join(pick(r, "returnNumber", "return_number"), dm(pick(r, "returnDate", "return_date"))),
+    note: (r) => pick(r, "reason") ?? "",
+    footR: (r) => pick(r, "refundCenti", "refund_centi"),
+    footMoney: true,
+    sorts: [{ key: "date", label: "Date", cmp: (a, b) => byDate(pick(a, "returnDate", "return_date"), pick(b, "returnDate", "return_date")) }],
   },
 
   // consignment-orders.get('/') → { salesOrders: [...] }; cols doc_no,
@@ -1404,6 +1429,7 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
   "consignment-orders": {
     title: "Consignment Orders",
     eyebrow: "Consignment",
+    placeholder: "Search consignment · customer",
     endpoint: "/consignment-orders?limit=500",
     listKey: "salesOrders",
     primary: (r) => r.debtor_name || r.doc_no,
@@ -1411,6 +1437,36 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     right: (r) => r.local_total_centi,
     rightMoney: true,
     search: (r) => join(r.debtor_name, r.doc_no, r.ref, r.po_doc_no),
+    pill: (r) => statusLabel(pick(r, "status")),
+    variant: "doc",
+    subline: (r) => join(pick(r, "docNo", "doc_no"), dm(pick(r, "soDate", "so_date"))),
+    footR: (r) => pick(r, "localTotalCenti", "local_total_centi"),
+    footMoney: true,
+    chips: [
+      { key: "all", label: "All", match: () => true },
+      { key: "open", label: "Open", match: (r) => eq(pick(r, "status"), "open") },
+      { key: "partial", label: "Part. ret", match: (r) => /partial/i.test(String(pick(r, "status") ?? "")) },
+      { key: "closed", label: "Closed", match: (r) => eq(pick(r, "status"), "closed") },
+      { key: "cancelled", label: "Cancelled", match: (r) => eq(pick(r, "status"), "cancelled") },
+    ],
+    sorts: [{ key: "date", label: "Date", cmp: (a, b) => byDate(pick(a, "soDate", "so_date"), pick(b, "soDate", "so_date")) }],
+  },
+
+  // consignment-notes.get('/') → { deliveryOrders: [...] } (consignment note
+  // headers). §38 Consignment Notes (doc card): partner + status, doc_no · date.
+  "consignment-notes": {
+    title: "Consignment Notes",
+    eyebrow: "Consignment",
+    placeholder: "Search note · partner",
+    endpoint: "/consignment-notes?limit=500",
+    listKey: "deliveryOrders",
+    primary: (r) => pick(r, "debtorName", "debtor_name") ?? pick(r, "docNo", "doc_no", "doNumber", "do_number") ?? "—",
+    secondary: (r) => join(pick(r, "docNo", "doc_no", "doNumber", "do_number"), pick(r, "status"), dm(pick(r, "noteDate", "note_date", "doDate", "do_date"))),
+    search: (r) => join(pick(r, "debtorName", "debtor_name"), pick(r, "docNo", "doc_no", "doNumber", "do_number")),
+    pill: (r) => statusLabel(pick(r, "status")),
+    variant: "doc",
+    subline: (r) => join(pick(r, "docNo", "doc_no", "doNumber", "do_number"), dm(pick(r, "noteDate", "note_date", "doDate", "do_date"))),
+    sorts: [{ key: "date", label: "Date", cmp: (a, b) => byDate(pick(a, "noteDate", "note_date", "doDate", "do_date"), pick(b, "noteDate", "note_date", "doDate", "do_date")) }],
   },
 
   // consignment-returns.get('/') → { deliveryReturns: [...] }; cols
@@ -1418,6 +1474,7 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
   "consignment-returns": {
     title: "Consignment Returns",
     eyebrow: "Consignment",
+    placeholder: "Search return · partner",
     endpoint: "/consignment-returns?limit=500",
     listKey: "deliveryReturns",
     primary: (r) => r.debtor_name || r.return_number,
@@ -1425,6 +1482,13 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     right: (r) => r.refund_centi,
     rightMoney: true,
     search: (r) => join(r.debtor_name, r.return_number, r.do_doc_no),
+    pill: (r) => statusLabel(pick(r, "status")),
+    variant: "doc",
+    subline: (r) => join(pick(r, "returnNumber", "return_number"), dm(pick(r, "returnDate", "return_date"))),
+    note: (r) => pick(r, "reason") ?? "",
+    footR: (r) => pick(r, "refundCenti", "refund_centi"),
+    footMoney: true,
+    sorts: [{ key: "date", label: "Date", cmp: (a, b) => byDate(pick(a, "returnDate", "return_date"), pick(b, "returnDate", "return_date")) }],
   },
 
   // mfg-products.get('/') → { products: [...] }; the SKU MASTER (mfg_products),
@@ -1549,6 +1613,110 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     ],
     sorts: [{ key: "plate", label: "Lorry", cmp: (a, b) => byStr(a.plate, b.plate) }],
     form: FORM_FLEET,
+  },
+
+  // ── §38 generic read-only SCM modules (2990-verbatim rules) ────────────────
+  // stock-transfers.get('/') → { transfers: [...] }; HEADER: id, transfer_no,
+  // status, from_warehouse_id, to_warehouse_id, transfer_date, notes,
+  // posted_at, cancelled_at + nested from_warehouse/to_warehouse:{code,name} +
+  // computed line_count. Design "Stock Transfers": route (From → To) + status,
+  // "{{doc_no}} · {{date}}" sub-line, "{{line_count}} lines" footer. No money.
+  // NOTE: header has no per-row sku/qty (those are lines) → not shown on card.
+  "stock-transfers": {
+    title: "Stock Transfers",
+    eyebrow: "Warehouse",
+    placeholder: "Search transfer · warehouse",
+    endpoint: "/stock-transfers",
+    listKey: "transfers",
+    primary: (r) => {
+      const from = pick(r, "fromWarehouse", "from_warehouse")?.name ?? pick(r, "fromWarehouse", "from_warehouse")?.code;
+      const to = pick(r, "toWarehouse", "to_warehouse")?.name ?? pick(r, "toWarehouse", "to_warehouse")?.code;
+      return from && to ? `${from} → ${to}` : pick(r, "transferNo", "transfer_no") ?? "—";
+    },
+    secondary: (r) => join(pick(r, "transferNo", "transfer_no"), pick(r, "status"), dm(pick(r, "transferDate", "transfer_date"))),
+    search: (r) => join(pick(r, "transferNo", "transfer_no"), pick(r, "fromWarehouse", "from_warehouse")?.name, pick(r, "toWarehouse", "to_warehouse")?.name),
+    pill: (r) => statusLabel(pick(r, "status")),
+    variant: "doc",
+    subline: (r) => join(pick(r, "transferNo", "transfer_no"), dm(pick(r, "transferDate", "transfer_date"))),
+    footL: (r) => { const n = pick(r, "lineCount", "line_count"); return ["", n == null ? "" : `${n} lines`]; },
+    chips: [
+      { key: "all", label: "All", match: () => true },
+      { key: "posted", label: "Posted", match: (r) => eq(pick(r, "status"), "posted") },
+      { key: "cancelled", label: "Cancelled", match: (r) => eq(pick(r, "status"), "cancelled") },
+    ],
+    sorts: [{ key: "date", label: "Date", cmp: (a, b) => byDate(pick(a, "transferDate", "transfer_date"), pick(b, "transferDate", "transfer_date")) }],
+  },
+
+  // stock-takes.get('/') → { takes: [...] }; HEADER: id, take_no, status,
+  // warehouse_id, scope_type, scope_value, take_date, notes, posted_at,
+  // cancelled_at + nested warehouse:{code,name} + computed line_count,
+  // variance_total. Design "Stock Take": warehouse + status, "{{doc_no}} ·
+  // {{date}}" sub-line, "{{line_count}} counted / {{variance_total}}" footer.
+  "stock-takes": {
+    title: "Stock Take",
+    eyebrow: "Warehouse",
+    placeholder: "Search stock take · warehouse",
+    endpoint: "/stock-takes",
+    listKey: "takes",
+    primary: (r) => pick(r, "warehouse")?.name ?? pick(r, "warehouse")?.code ?? pick(r, "takeNo", "take_no") ?? "—",
+    secondary: (r) => join(pick(r, "takeNo", "take_no"), pick(r, "status"), dm(pick(r, "takeDate", "take_date"))),
+    search: (r) => join(pick(r, "takeNo", "take_no"), pick(r, "warehouse")?.name, pick(r, "scopeValue", "scope_value")),
+    pill: (r) => statusLabel(pick(r, "status")),
+    variant: "inventory",
+    subline: (r) => join(pick(r, "takeNo", "take_no"), dm(pick(r, "takeDate", "take_date"))),
+    kpis: (r) => {
+      const counted = pick(r, "lineCount", "line_count");
+      const variance = pick(r, "varianceTotal", "variance_total");
+      return [["Counted", counted == null ? "—" : String(counted)], ["Variance", variance == null ? "—" : String(variance)]];
+    },
+    chips: [
+      { key: "all", label: "All", match: () => true },
+      { key: "posted", label: "Posted", match: (r) => eq(pick(r, "status"), "posted") },
+      { key: "cancelled", label: "Cancelled", match: (r) => eq(pick(r, "status"), "cancelled") },
+    ],
+    sorts: [{ key: "date", label: "Date", cmp: (a, b) => byDate(pick(a, "takeDate", "take_date"), pick(b, "takeDate", "take_date")) }],
+  },
+
+  // delivery-planning-regions.get('/') → { regions: [...] }; shaped rows:
+  // id, code, name, sortOrder, active, createdAt. Design "Regions": region name
+  // + code (grey badge), Zone/Postcodes/Drivers footer — none of Zone /
+  // postcode_range / driver_count exist on the region master → OMITTED; only
+  // name + code bound. Pill = the region code.
+  "delivery-planning-regions": {
+    title: "Regions",
+    eyebrow: "Transportation",
+    placeholder: "Search region · code",
+    endpoint: "/delivery-planning-regions",
+    listKey: "regions",
+    primary: (r) => pick(r, "name") ?? pick(r, "code") ?? "—",
+    secondary: (r) => join(pick(r, "code")),
+    search: (r) => join(pick(r, "name"), pick(r, "code")),
+    pill: (r) => pick(r, "code") ?? "",
+    variant: "warehouse",
+    subline: () => "",
+    note: (r) => (pick(r, "active") === false ? "Inactive" : ""),
+    kpis: () => [],
+    sorts: [{ key: "name", label: "Name", cmp: (a, b) => byStr(pick(a, "name"), pick(b, "name")) }],
+  },
+
+  // accounting.get('/accounts') → { accounts: [...] }; cols account_code,
+  // account_name, account_type, parent_code, is_active. Design "Accounting":
+  // Chart of Accounts list — account name + type badge, "{{account_code}} ·
+  // {{parent_code}}" sub-line. Journal entries are a separate endpoint
+  // (/accounting/journal-entries) not surfaced in this flat list.
+  accounting: {
+    title: "Accounting",
+    eyebrow: "Finance",
+    placeholder: "Search account · code",
+    endpoint: "/accounting/accounts",
+    listKey: "accounts",
+    primary: (r) => pick(r, "accountName", "account_name") ?? pick(r, "accountCode", "account_code") ?? "—",
+    secondary: (r) => join(pick(r, "accountCode", "account_code"), pick(r, "accountType", "account_type")),
+    search: (r) => join(pick(r, "accountName", "account_name"), pick(r, "accountCode", "account_code"), pick(r, "accountType", "account_type")),
+    badgeText: (r) => statusLabel(pick(r, "accountType", "account_type")),
+    variant: "doc",
+    subline: (r) => { const parent = pick(r, "parentCode", "parent_code"); return join(pick(r, "accountCode", "account_code"), parent ? `under ${parent}` : ""); },
+    sorts: [{ key: "code", label: "Code", cmp: (a, b) => byStr(pick(a, "accountCode", "account_code"), pick(b, "accountCode", "account_code")) }],
   },
 };
 

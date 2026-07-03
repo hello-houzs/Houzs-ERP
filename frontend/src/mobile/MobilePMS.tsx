@@ -353,9 +353,25 @@ export function MobilePMS({ onBack, initialProjectId }: { onBack?: () => void; i
 }
 
 // ── List ──
+// Build Spec §"Projects — list (PMS)" filter chips are All · Planning · Live ·
+// Settled, keyed off the project's workflow `stage`. The real backend stage
+// enum (mig 053) is draft/setup/live/dismantle/completed (+ closed/cancelled),
+// so we fold that vocabulary onto the three spec buckets. States → badge:
+// Planning→amber · Live→green · Settled→grey.
+const STAGE_BUCKET: Record<string, "planning" | "live" | "settled"> = {
+  draft: "planning",
+  setup: "planning",
+  live: "live",
+  dismantle: "live",
+  completed: "settled",
+  closed: "settled",
+};
+const stageBucket = (stage: string | null | undefined): "planning" | "live" | "settled" | "other" =>
+  STAGE_BUCKET[(stage ?? "").toLowerCase()] ?? "other";
+
 function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onBack?: () => void }) {
   const [q, setQ] = useState("");
-  const [status, setStatus] = useState<string>("all");
+  const [bucket, setBucket] = useState<string>("all");
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["mobile-pms-list"],
@@ -367,20 +383,20 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
   const rows = useMemo(() => {
     const needle = q.trim().toLowerCase();
     return all.filter((r) => {
-      if (status !== "all" && (r.status ?? "").toLowerCase() !== status.toLowerCase()) return false;
+      if (bucket !== "all" && stageBucket(r.stage) !== bucket) return false;
       if (needle) {
         const hay = `${r.code} ${r.name} ${r.brand ?? ""} ${r.venue ?? ""} ${r.pic_name ?? ""}`.toLowerCase();
         if (!hay.includes(needle)) return false;
       }
       return true;
     });
-  }, [all, q, status]);
+  }, [all, q, bucket]);
 
-  const STATUS_FILTERS: [string, string][] = [
+  const STAGE_FILTERS: [string, string][] = [
     ["all", "All"],
-    ["confirmed", "Confirmed"],
-    ["pending", "Pending"],
-    ["cancelled", "Cancelled"],
+    ["planning", "Planning"],
+    ["live", "Live"],
+    ["settled", "Settled"],
   ];
 
   return (
@@ -404,8 +420,8 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
           </div>
         </div>
         <div className="chips" style={{ marginTop: 11 }}>
-          {STATUS_FILTERS.map(([k, label]) => (
-            <button key={k} onClick={() => setStatus(k)} className={status === k ? "chip on" : "chip"}>{label}</button>
+          {STAGE_FILTERS.map(([k, label]) => (
+            <button key={k} onClick={() => setBucket(k)} className={bucket === k ? "chip on" : "chip"}>{label}</button>
           ))}
         </div>
       </header>
@@ -417,26 +433,27 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
         {!isLoading && !error && (
           <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
             {rows.map((r) => {
-              const cancelled = (r.status ?? "").toLowerCase() === "cancelled";
-              const stage = r.active_section_name || r.stage || null;
+              const s = (r.stage ?? "").toLowerCase();
+              const dimmed = s === "cancelled" || s === "closed";
               const where = r.venue || r.state || null;
               const dates = [dm(r.start_date), dm(r.end_date)].join(" – ");
               return (
-                <div key={r.id} onClick={() => onOpen(r.id)} className={cancelled ? "card cancelled" : "card"} style={{ cursor: "pointer", ...(cancelled ? { opacity: 0.55, filter: "grayscale(.5)" } : null) }}>
+                <div key={r.id} onClick={() => onOpen(r.id)} className="card" style={{ cursor: "pointer", ...(dimmed ? { opacity: 0.55, filter: "grayscale(.5)" } : null) }}>
                   <div className="card-b" style={{ padding: "12px 13px" }}>
+                    {/* Build Spec §27: project_title wraps 2 lines (no ellipsis) +
+                        stage badge right; branding/venue chips; dates · PIC meta. */}
                     <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
                       <span style={{ fontSize: 13, fontWeight: 800, color: "var(--ink)", lineHeight: 1.3 }}>{r.name || "—"}</span>
-                      <StatusPill status={r.status} />
+                      <StageBadge stage={r.stage} />
                     </div>
-                    {(r.brand || where || stage) && (
+                    {(r.brand || where) && (
                       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
                         {r.brand && <ListChip>{r.brand}</ListChip>}
                         {where && <ListChip>{where}</ListChip>}
-                        {stage && <ListChip>{stage}</ListChip>}
                       </div>
                     )}
                     <div className="tnum" style={{ fontSize: 11, color: "var(--mut)", marginTop: 8, paddingTop: 8, borderTop: "1px solid #f0f1ed" }}>
-                      {dates} · {r.code || "—"}{r.pic_name ? ` · PIC ${r.pic_name}` : ""}
+                      {dates}{r.pic_name ? ` · PIC ${r.pic_name}` : ""}
                     </div>
                   </div>
                 </div>
@@ -628,12 +645,14 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                 <option value="cancelled">Cancelled</option>
               </select>
             )}
-            {p?.status && (!canWrite || archived) && <StatusPill status={p.status} dark />}
+            {p && (!canWrite || archived) && <StageBadge stage={p.stage} dark />}
           </div>
         </div>
-        {/* Title block — design VERBATIM: project name as the sole heading
-            (16px/800), no eyebrow. Meta line carries our real code/brand data. */}
-        <div style={{ fontSize: 16, fontWeight: 800, color: "#fff", lineHeight: 1.3, marginTop: 6 }}>{p?.name || "—"}</div>
+        {/* Title block — prototype #project header VERBATIM: gold eyebrow
+            "Project", then the project name (16px/800 per Build Spec detail),
+            then a meta line carrying our real code/brand/event/venue data. */}
+        <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: ".13em", textTransform: "uppercase", color: "#8c968a", marginTop: 6 }}>Project</div>
+        <div style={{ fontSize: 16, fontWeight: 800, color: "#fff", lineHeight: 1.3, marginTop: 3 }}>{p?.name || "—"}</div>
         <div style={{ fontSize: 11.5, color: "#8c968a", marginTop: 5 }}>
           {[p?.code, p?.brand, p?.event_type_name, p?.venue].filter(Boolean).join(" · ") || "—"}
         </div>
@@ -954,45 +973,61 @@ function RentalPayment({
   );
 }
 
-// ── Pipeline (design VERBATIM — flat rounded-pill row in a card) ──
-// Designer render (`MobilePMS` "Pipeline" card): a horizontal-scroll strip of
-// rounded pills; the reached steps read green, the rest grey. We drive the
-// reached count off the project's real checklist SECTIONS when present (the
-// desktop tracker's source of truth), falling back to the coarse backend
-// `stage`. The 9 pill labels + colours are the designer's.
+// ── Pipeline (prototype #project VERBATIM — numbered-dot stage tracker) ──
+// The owner's richest design (prototype `#project`): a Done/Pending/Overdue
+// legend row, then a horizontal-scroll strip of numbered `.pstage`/`.pdot`
+// steps with a per-step done/total sub-label. Driven off the project's real
+// checklist SECTIONS (the desktop tracker's source of truth): each complete
+// section reads green, the first still-open section is the current step
+// (amber), and the rest are grey outlines. With no sections yet we fall back
+// to the 9-step reference pipeline keyed off the coarse backend `stage`.
 function StagePipeline({ stage, sections }: { stage: string | null; sections?: SectionProgress[] }) {
-  let labels: string[];
-  let reached: number; // number of steps considered "done" (green)
+  type Step = { label: string; sub: string | null; state: "done" | "current" | "todo" };
+  let steps: Step[];
+
   if (sections && sections.length) {
     const ordered = [...sections].sort((a, b) => a.sort_order - b.sort_order);
-    labels = ordered.map((s) => s.name);
-    // First not-complete section is the current step; everything before it done.
     const firstOpen = ordered.findIndex((s) => !s.complete);
-    reached = firstOpen === -1 ? ordered.length : firstOpen;
+    steps = ordered.map((s, i) => ({
+      label: s.name,
+      sub: s.total > 0 ? `${s.done}/${s.total}` : null,
+      state: s.complete ? "done" : i === firstOpen ? "current" : "todo",
+    }));
   } else {
-    labels = FALLBACK_PIPELINE;
-    reached = STAGE_TO_INDEX[(stage ?? "").toLowerCase()] ?? 0;
+    const reached = STAGE_TO_INDEX[(stage ?? "").toLowerCase()] ?? 0;
+    steps = FALLBACK_PIPELINE.map((label, i) => ({
+      label,
+      sub: null,
+      state: i < reached ? "done" : i === reached ? "current" : "todo",
+    }));
   }
+
+  const dotStyle = (state: Step["state"]): React.CSSProperties =>
+    state === "done"
+      ? { background: "#2f8a5b", color: "#fff" }
+      : state === "current"
+        ? { background: "#cf9a2e", color: "#fff" }
+        : { background: "#fff", border: "2px solid #d6d9d2", color: "#9aa093" };
 
   return (
     <div className="card"><div className="card-b">
       <div className="fld-l" style={{ marginBottom: 8 }}>Pipeline</div>
-      <div style={{ display: "flex", gap: 4, overflowX: "auto", paddingBottom: 4 }}>
-        {labels.map((label, i) => (
-          <span
-            key={`${label}-${i}`}
-            style={{
-              flex: "none",
-              fontSize: 10,
-              fontWeight: 700,
-              padding: "5px 9px",
-              borderRadius: 20,
-              background: i < reached ? "#e2f0e9" : "#f4f6f3",
-              color: i < reached ? "#2f8a5b" : "#9aa093",
-            }}
-          >
-            {label}
-          </span>
+      {/* legend — the colour vocabulary the dots use */}
+      <div style={{ display: "flex", alignItems: "center", gap: 14, margin: "0 2px 8px" }}>
+        {([["#2f8a5b", "Done"], ["#cf9a2e", "Pending"], ["#b23a3a", "Overdue"]] as const).map(([c, t]) => (
+          <div key={t} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+            <span style={{ width: 9, height: 9, borderRadius: "50%", background: c }} />
+            <span style={{ fontSize: 10, color: "#414539" }}>{t}</span>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 2, overflowX: "auto", padding: "4px 2px 6px" }}>
+        {steps.map((st, i) => (
+          <div key={`${st.label}-${i}`} className="pstage">
+            <span className="pdot" style={dotStyle(st.state)}>{i + 1}</span>
+            <span style={{ fontSize: 9, fontWeight: st.state === "todo" ? 400 : 700, color: st.state === "todo" ? "#767b6e" : "#11140f", lineHeight: 1.1 }}>{st.label}</span>
+            {st.sub && <span style={{ fontSize: 8, color: "#9aa093" }}>{st.sub}</span>}
+          </div>
         ))}
       </div>
     </div></div>
@@ -1868,26 +1903,27 @@ function ListChip({ children }: { children: ReactNode }) {
   );
 }
 
-function CostRow({ label, value }: { label: string; value: number }) {
-  return (
-    <div style={{ display: "flex", justifyContent: "space-between", padding: "9px 12px", borderTop: "1px solid #eceee9", fontSize: 12, color: "#414539" }}>
-      <span>{label}</span>
-      <span className="money">RM {rm(value)}</span>
-    </div>
-  );
-}
-
-function StatusPill({ status, dark }: { status: string | null; dark?: boolean }) {
-  const s = (status ?? "").toLowerCase();
-  const map: Record<string, [string, string]> = {
-    confirmed: ["#e1f0e7", "#1c6b45"],
-    pending: ["#f6efd9", "#6e4d12"],
-    cancelled: ["#f7e7e5", "#a13a34"],
-  };
-  const [bg, fg] = map[s] ?? ["#eef0ec", "#767b6e"];
-  const label = status ? status.charAt(0).toUpperCase() + status.slice(1).toLowerCase() : "—";
+// Build Spec §27/§28 stage badge — Planning→amber · Live→green · Settled→grey.
+// Folds the real backend stage enum (draft/setup/live/dismantle/completed +
+// closed/cancelled) onto the three spec buckets; cancelled reads red.
+function StageBadge({ stage, dark }: { stage: string | null | undefined; dark?: boolean }) {
+  const s = (stage ?? "").toLowerCase();
+  const bucket = stageBucket(stage);
+  let bg: string, fg: string, label: string;
+  if (s === "cancelled") {
+    [bg, fg, label] = ["#f7e7e5", "#a13a34", "Cancelled"];
+  } else if (bucket === "planning") {
+    [bg, fg, label] = ["#f6efd9", "#6e4d12", "Planning"];
+  } else if (bucket === "live") {
+    [bg, fg, label] = ["#e2f0e9", "#2f8a5b", "Live"];
+  } else if (bucket === "settled") {
+    [bg, fg, label] = ["#eef0ec", "#767b6e", "Settled"];
+  } else {
+    [bg, fg, label] = ["#eef0ec", "#767b6e", s ? humanize(s) : "—"];
+  }
   return (
     <span className="spill" style={{
+      flex: "none",
       background: dark ? "rgba(216,168,90,.16)" : bg,
       color: dark ? "#d8a85a" : fg,
       border: dark ? "1px solid rgba(216,168,90,.4)" : "none",

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
+import { formatDate } from "../lib/utils";
 import "./mobile.css";
 
 // ---------------------------------------------------------------------------
@@ -92,12 +93,8 @@ const CAT_COLOR: Record<string, string> = {
 const catLabel = (a: Announcement) => CATEGORY_LABEL[a.category] ?? a.category ?? "General";
 const catColor = (a: Announcement) => CAT_COLOR[catLabel(a)] ?? "#475569";
 
-const dm = (d: string | null | undefined) => {
-  if (!d) return "—";
-  const dt = new Date(d);
-  if (isNaN(+dt)) return "—";
-  return dt.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
-};
+// Numeric DD/MM/YYYY (owner standard) via the shared app formatter.
+const dm = (d: string | null | undefined) => formatDate(d);
 
 const byLine = (a: Announcement) => a.createdByName?.trim() || "Management";
 

@@ -87,6 +87,10 @@ type BoardRow = {
   building_type: string | null;
   house_type: string | null;
   replacement_disposal: string | null;
+  // HC SO-context: the customer's referral / reference tag and the possession
+  // ("move") date — both surfaced on the stop detail when present.
+  referral: string | null;
+  possession_date: string | null;
   region: string | null;
   regions?: string[];
   warehouse_code: string | null;
@@ -565,18 +569,15 @@ export function MobileDeliveryPlanning({
           paddingBottom: 120,
         }}
       >
-        <span className="list-note">
-          Stops are in delivery sequence
-        </span>
         <div
           style={{
             fontSize: 10.5,
             color: "var(--mut2)",
-            margin: "8px 2px 10px",
+            margin: "0 2px 12px",
             lineHeight: 1.4,
           }}
         >
-          Tap{" "}
+          Stops are in delivery order. Tap{" "}
           <b style={{ color: "var(--brand)" }}>Take POD photo</b> when a stop is
           delivered — the photo time becomes the completion time.
         </div>
@@ -684,6 +685,7 @@ function StopCard({
   onOpen: () => void;
 }) {
   const st = trackState(o, isToday);
+  const [chipBg, chipFg] = STATE_COLORS[st];
   const seqBg = seqBgFor(st);
   const bal = o.balance_centi_live ?? o.balance_centi ?? 0;
   const fullyPaid = bal <= 0;
@@ -692,10 +694,13 @@ function StopCard({
   const htype = houseTypeOf(o);
   const hasDisposal = !!(o.replacement_disposal && o.replacement_disposal.trim());
   const timeWindow = (o.time_range && o.time_range.trim()) || "";
+  const addr = (o.address && o.address.trim()) || "";
+  const pc = (o.postcode && o.postcode.trim()) || "";
 
-  // Designer stop-card layout (MobileDeliveryPlanning): seq circle + title +
-  // doc sub + amber time-window badge; then the status Badge + a house-type tag
-  // chip; then the balance-only block. Real data + our track-state Late pill.
+  // Designer stop-card layout (planStopCard): seq circle + title + doc sub +
+  // a state-tinted clock time-pill; then the status Badge + house-type / disposal
+  // tag chips; then a pin address line + postcode; then the balance-only block;
+  // then the "View & deliver ›" CTA. Real data + our track-state Late pill.
   return (
     <div
       className="card"
@@ -739,9 +744,34 @@ function StopCard({
         </div>
         {timeWindow ? (
           <span
-            className="badge"
-            style={{ background: "#f6efd9", color: "#8a6a2e" }}
+            className="tnum"
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 5,
+              fontSize: 11.5,
+              fontWeight: 800,
+              padding: "5px 10px",
+              borderRadius: 9,
+              background: chipBg,
+              color: chipFg,
+              whiteSpace: "nowrap",
+              flex: "none",
+            }}
           >
+            <svg
+              width="12"
+              height="12"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke={chipFg}
+              strokeWidth="2.2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <circle cx="12" cy="12" r="9"></circle>
+              <path d="M12 7v5l3 2"></path>
+            </svg>
             {timeWindow}
           </span>
         ) : (
@@ -760,6 +790,48 @@ function StopCard({
         {htype && <MetaChip>{htype}</MetaChip>}
         {hasDisposal && <MetaChip>Disposal</MetaChip>}
       </div>
+      {(addr || pc) && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 6,
+            marginTop: 9,
+            fontSize: 12,
+            color: "var(--ink2)",
+            lineHeight: 1.4,
+          }}
+        >
+          <svg
+            width="14"
+            height="14"
+            style={{ flex: "none", marginTop: 1 }}
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="var(--gold)"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"></path>
+            <circle cx="12" cy="10" r="3"></circle>
+          </svg>
+          <span>
+            {addr || EM}
+            {pc ? (
+              <>
+                {" "}
+                <span
+                  className="tnum"
+                  style={{ fontWeight: 700, color: "var(--ink)" }}
+                >
+                  {pc}
+                </span>
+              </>
+            ) : null}
+          </span>
+        </div>
+      )}
       {!fullyPaid && (
         <div
           style={{
@@ -792,6 +864,20 @@ function StopCard({
           </span>
         </div>
       )}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "flex-end",
+          gap: 3,
+          marginTop: 10,
+          fontSize: 11.5,
+          fontWeight: 700,
+          color: "var(--brand)",
+        }}
+      >
+        View &amp; deliver <span style={{ fontSize: 15, lineHeight: 1 }}>›</span>
+      </div>
     </div>
   );
 }
@@ -1038,6 +1124,8 @@ function StopDetail({
   const arriveAt = hhmm(order.arrival_at);
   const doneAt = hhmm(order.customer_delivered_date);
   const htype = houseTypeOf(order);
+  const moveInDate = order.possession_date ? dm(order.possession_date) : "";
+  const referral = (order.referral && order.referral.trim()) || "";
   const disposal =
     (order.replacement_disposal && order.replacement_disposal.trim()) || "";
   const isSetup = !!disposal; // v2 "job" isn't in the feed; treat disposal as the setup/dismantle signal.
@@ -1375,6 +1463,11 @@ function StopDetail({
             true,
           )}
           {pdRow("House type", htype || EM, true)}
+          {/* Move-in / possession date — HC SO-context field. Real-data
+              discipline: the row is dropped entirely when the feed carries no
+              possession date (the prototype's free-text "Move" has no backing
+              column). */}
+          {moveInDate ? pdRow("Move-in date", moveInDate, false) : null}
           {pdRow("Address", order.address || EM, false)}
           {pdRow(
             "Postcode",
@@ -1574,6 +1667,10 @@ function StopDetail({
             <span className="tnum">{doRef?.do_number || EM}</span>,
             true,
           )}
+          {/* Reference — HC referral tag; dropped when the feed carries none. */}
+          {referral
+            ? pdRow("Reference", <span className="tnum">{referral}</span>, false)
+            : null}
           {pdRow(
             "Branding",
             (order.branding && order.branding.trim()) || EM,

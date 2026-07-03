@@ -772,7 +772,12 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
               open
               busy={busy}
               fields={[
-                { key: "product_category", label: "Product category", value: get(c, "productCategory", "product_category"), type: "text" },
+                // Prototype's "Product category" field → the REAL, whitelisted
+                // assr_cases.service_category column (desktop ServiceCases.tsx
+                // edits this same key). There is NO product_category column
+                // server-side, so writing that key would silently no-op and
+                // never read back — we bind to service_category instead.
+                { key: "service_category", label: "Product category", value: get(c, "serviceCategory", "service_category"), type: "text" },
               ]}
               onSave={(body) => patchCase(body, "Couldn't save product info")}
               headSlot={

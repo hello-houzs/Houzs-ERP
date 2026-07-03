@@ -99,6 +99,9 @@ const statusColor = (s: string | null) => STATUS_COLOR[(s ?? "").toLowerCase()] 
 const pad = (n: number) => String(n).padStart(2, "0");
 const iso = (y: number, m: number, d: number) => `${y}-${pad(m + 1)}-${pad(d)}`;
 const dayOf = (d: string) => Number(d.slice(8, 10));
+// Owner-locked numeric DD/MM/YYYY (mobile date format — never month names),
+// matching MobileSalesOrders and the Build Spec's DDMMYYYY rule.
+const ddmmyyyy = (y: number, m: number, d: number) => `${pad(d)}/${pad(m + 1)}/${y}`;
 
 // Monday-first week matrix for a month, matching the prototype's calWeeks().
 function monthWeeks(y: number, m: number): (number | null)[][] {
@@ -347,12 +350,12 @@ export function MobileCalendar({ onOpenProject }: { onOpenProject?: (projectId: 
         {isLoading && <div style={emptyBox}>Loading…</div>}
         {error && <div style={{ ...emptyBox, color: "var(--red)" }}>Couldn't load the calendar. Pull to retry.</div>}
 
-        {!isLoading && !error && mode === "month" && (
-          <MonthGrid weeks={weeks} byDay={byDay} expand={expand} onExpandAll={() => setExpand(true)} onOpenDay={setDaySheet} empty={events.length === 0} onOpen={onOpenProject} />
-        )}
-
-        {!isLoading && !error && mode === "week" && (
-          <WeekAgenda weeks={weeks} year={year} month={month} byDay={byDay} onOpen={onOpenProject} />
+        {/* Month AND Week share the prototype's single .wk grid — week mode just
+            renders the one week containing today (computed above) with every bar
+            uncapped, exactly as the prototype's calRender() does. No separate
+            agenda list (the prototype has none). */}
+        {!isLoading && !error && (
+          <MonthGrid weeks={weeks} byDay={byDay} expand={expand || mode === "week"} onExpandAll={() => setExpand(true)} onOpenDay={setDaySheet} empty={events.length === 0} onOpen={onOpenProject} />
         )}
       </div>
 
@@ -458,9 +461,9 @@ function DaySheet({ year, month, day, events, onClose, onOpen }: {
   onClose: () => void;
   onOpen: (projectId: number) => void;
 }) {
-  const heading = new Date(year, month, day).toLocaleDateString("en-GB", {
-    weekday: "long", day: "numeric", month: "long", year: "numeric",
-  });
+  // Weekday name + owner-locked numeric DD/MM/YYYY (never a month name).
+  const weekday = new Date(year, month, day).toLocaleDateString("en-GB", { weekday: "long" });
+  const heading = `${weekday} · ${ddmmyyyy(year, month, day)}`;
   const holidays = events.filter((e) => e.kind === "holiday");
   const items = events.filter((e) => e.kind !== "holiday");
   return (
@@ -511,43 +514,6 @@ function DaySheet({ year, month, day, events, onClose, onOpen }: {
           )}
         </div>
       </div>
-    </div>
-  );
-}
-
-function WeekAgenda({ weeks, year, month, byDay, onOpen }: {
-  weeks: (number | null)[][];
-  year: number;
-  month: number;
-  byDay: Record<number, CalEvent[]>;
-  onOpen?: (projectId: number) => void;
-}) {
-  const days = (weeks[0] ?? []).filter((d): d is number => d != null);
-  const items = days.flatMap((d) => (byDay[d] ?? []).map((e) => ({ d, e })));
-  if (!items.length) {
-    return <div style={emptyBox}>No events this week.</div>;
-  }
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-      {items.map(({ d, e }, i) => {
-        const label = new Date(year, month, d).toLocaleDateString("en-GB", { weekday: "short", day: "2-digit", month: "short" });
-        return (
-          <div key={`${e.key}-${i}`} className="card" onClick={() => onOpen?.(e.projectId)} style={{ padding: "11px 13px", borderLeft: `4px solid ${e.color}`, cursor: "pointer" }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-              <span style={{ fontSize: 13.5, fontWeight: 800, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.label}</span>
-              {e.status && (
-                <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", padding: "3px 9px", borderRadius: 20, background: `color-mix(in srgb, ${e.color} 16%, white)`, color: "var(--brand-d)", flex: "none" }}>{e.status}</span>
-              )}
-            </div>
-            {/* Date is a fixed-width, no-wrap column so a long venue never overlaps or clips it (owner-reported). */}
-            <div style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 5, fontSize: 11.5, color: "var(--mut)", minWidth: 0 }}>
-              <span style={{ fontWeight: 700, color: "var(--ink2)", whiteSpace: "nowrap", flex: "none" }}>{label}</span>
-              {e.sub && (<><span style={{ opacity: .4, flex: "none" }}>·</span><span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>{e.sub}</span></>)}
-              {e.organizer && (<><span style={{ opacity: .4, flex: "none" }}>·</span><span style={{ whiteSpace: "nowrap", flex: "none" }}>{e.organizer}</span></>)}
-            </div>
-          </div>
-        );
-      })}
     </div>
   );
 }
