@@ -1633,10 +1633,10 @@ function CaseDayModal({
   onClose: () => void;
   onOpen: (id: number) => void;
 }) {
-  const label = new Date(iso + "T00:00:00").toLocaleDateString("en-MY", {
+  const label = new Date(iso + "T00:00:00").toLocaleDateString("en-GB", {
     weekday: "long",
-    day: "numeric",
-    month: "long",
+    day: "2-digit",
+    month: "2-digit",
     year: "numeric",
   });
   return createPortal(

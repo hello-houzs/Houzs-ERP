@@ -58,7 +58,7 @@ export function Overview() {
 
   const now = new Date();
   const dateLabel = now
-    .toLocaleDateString("en-GB", { weekday: "long", day: "2-digit", month: "short", year: "numeric" })
+    .toLocaleDateString("en-GB", { weekday: "long", day: "2-digit", month: "2-digit", year: "numeric" })
     .toUpperCase();
   const name = user?.name || user?.email?.split("@")[0] || "";
 

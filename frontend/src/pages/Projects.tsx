@@ -2755,8 +2755,8 @@ function RankedCard({
 function formatMonth(yyyy_mm: string): string {
   const [y, m] = yyyy_mm.split("-");
   if (!y || !m) return yyyy_mm;
-  const d = new Date(Number(y), Number(m) - 1, 1);
-  return d.toLocaleDateString("en-MY", { month: "short", year: "numeric" });
+  // Numeric MM/YYYY month-group label (no "Jun"/"Jul" month names).
+  return `${m}/${y}`;
 }
 
 function daysBetween(fromIso: string, toIso: string): number {
@@ -3077,7 +3077,7 @@ function ProjectsCalendarView() {
           const end = new Date(startDay);
           end.setUTCDate(start.getUTCDate() + 6);
           const fmt = (d: Date) =>
-            d.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
+            d.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit" });
           const yearSuffix = end.getUTCFullYear();
           return `${fmt(start)} – ${fmt(end)} ${yearSuffix}`;
         })()
@@ -3782,7 +3782,7 @@ function CalendarBarPopover({
     const [y, m, d] = iso.slice(0, 10).split("-");
     return new Date(Number(y), Number(m) - 1, Number(d)).toLocaleDateString(
       "en-GB",
-      { day: "2-digit", month: "short", year: "numeric" }
+      { day: "2-digit", month: "2-digit", year: "numeric" }
     );
   };
   const span =
@@ -3863,7 +3863,7 @@ function CalendarTaskPopover({
     const [y, m, d] = t.due_date.slice(0, 10).split("-");
     return new Date(Number(y), Number(m) - 1, Number(d)).toLocaleDateString(
       "en-GB",
-      { day: "2-digit", month: "short", year: "numeric" }
+      { day: "2-digit", month: "2-digit", year: "numeric" }
     );
   })();
 
@@ -3962,8 +3962,8 @@ function CalendarDayModal({
     const date = new Date(Number(y), Number(m) - 1, Number(d));
     return date.toLocaleDateString("en-GB", {
       weekday: "long",
-      day: "numeric",
-      month: "long",
+      day: "2-digit",
+      month: "2-digit",
       year: "numeric",
     });
   })();

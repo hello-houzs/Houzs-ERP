@@ -203,7 +203,7 @@ function fmtTime(iso: string): string {
   const sameDay = d.toDateString() === now.toDateString();
   return sameDay
     ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-    : d.toLocaleDateString();
+    : d.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit", year: "numeric" });
 }
 
 function senderLabel(t: MailThreadRow): string {
