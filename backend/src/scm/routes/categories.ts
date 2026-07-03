@@ -34,10 +34,6 @@ categoriesApi.post('/:id/hero-image', async (c) => {
   const ext = contentType.endsWith('jpeg') ? 'jpg' : 'png';
   const key = `category-heroes/${id}.${ext}`;
 
-  // TODO(Task 18): PUBLIC_ASSETS R2 binding requires the 2990s-public bucket
-  // to be provisioned in Cloudflare dashboard + bound in wrangler.toml +
-  // VITE_R2_PUBLIC_URL set in .env. Until then this endpoint will error at
-  // runtime with "env.PUBLIC_ASSETS is undefined" — that's expected.
   await c.env.PUBLIC_ASSETS.put(key, blob, { httpMetadata: { contentType } });
   await supabase.from('categories').update({ hero_image_key: key }).eq('id', id);
 
@@ -103,16 +99,25 @@ categoriesApi.delete('/:id/hero-image', async (c) => {
 //   GET  /                  → { categories: [...] }
 //   GET  /:id/hero-meta     → { url, focal_x, focal_y, alt }
 //   PATCH /:id/hero-meta    → updates focal + alt (admin gated)
-//   GET  /:id/hero-blob     → PUBLIC proxy that streams the R2 hero image
-//                             (no auth — needed for <img src> tags). Key is
-//                             validated against the stored hero_image_key so
-//                             a guessed url can't leak unrelated R2 objects.
+//   GET  /:id/hero-blob     → streams the R2 hero image. The key is validated
+//                             against the stored hero_image_key so a guessed
+//                             URL can't leak unrelated R2 objects.
+//
+// Naming caveat: "public" in this router's name is partly aspirational. The
+// whole /api/scm/* tree is gated by requireScmAccess (src/index.ts), so a
+// raw unauthenticated request still gets 401 at the entry. hero-blob works
+// as an <img src> because the browser attaches the existing session cookie
+// automatically. If a guest-viewable hero proxy is ever needed (e.g. a
+// public storefront), mount a new router OUTSIDE /api/scm.
 // ============================================================================
 
 export const publicCategoriesApi = new Hono<{ Bindings: Env; Variables: Variables }>();
 
-// PUBLIC proxy registered BEFORE the auth middleware (same pattern as the
-// product-models photo proxy). Browser <img> tags don't send Bearer headers.
+// Registered BEFORE publicCategoriesApi.use('*', supabaseAuth) so the handler
+// runs without that middleware attaching c.get('supabase') (browser <img>
+// tags can't add the Bearer header it expects). The handler instead builds
+// its own service-role client below. Parent requireScmAccess still applies —
+// see the naming caveat above.
 publicCategoriesApi.get('/:id/hero-blob', async (c) => {
   if (!c.env.PUBLIC_ASSETS) {
     return c.json({ error: 'public_assets_not_configured' }, 500);
