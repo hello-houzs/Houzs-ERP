@@ -232,6 +232,102 @@ function buildVariants(l: LineItem): Record<string, unknown> {
   return variants;
 }
 
+/* Line-item body for POST /:docNo/items and the create body's items[]. Pure +
+   module-level so BOTH the interactive save() and the headless
+   createDraftFromPrefill() below shape a line identically (no copy-paste). */
+function buildItemBody(l: LineItem): Record<string, unknown> {
+  const variants = buildVariants(l);
+  return {
+    itemCode: l.itemCode,
+    itemGroup: l.itemGroup || "others",
+    description: l.name.trim(),
+    qty: num(l.qty) || 1,
+    unitPriceCenti: toCenti(l.price),
+    lineDeliveryDate: l.ddate || null,
+    ...(Object.keys(variants).length ? { variants } : {}),
+  };
+}
+
+/* ── Headless draft-create from a scan prefill ───────────────────────────────
+   The owner wants "OCR 了直接進 SO draft 做": after scanning, a DRAFT SO should
+   be created in the background WITHOUT the operator reviewing the form, and it
+   must survive the operator navigating away / pressing Cancel.
+
+   This is the SAME create call the interactive form fires on "Save draft":
+   POST /mfg-sales-orders with the dates left null (which the backend treats as a
+   DRAFT). We deliberately REUSE the pure body-shaping (newLine seeding + the
+   module-level buildItemBody, identical to the interactive path) instead of
+   duplicating it, and we DO NOT touch the backend's honest-pricing recompute —
+   the server mints the doc_no and prices exactly as it does for a hand-saved
+   draft.
+
+   What a headless draft intentionally omits vs. the interactive save: venue /
+   salesLocation resolution (those come from live hooks — active-venue, staff,
+   state→warehouse — that only exist inside the mounted form) AND slip-backed
+   payments (those are recorded only after the SO exists, from uploaded slip
+   sessions the mounted form owns). A DRAFT is a skeleton the operator opens and
+   reviews later, where the venue auto-fill, variant panels and payment capture
+   run normally; omitting them here is safe because venueId is optional on the
+   create body and the draft carries no delivery dates or payments yet.
+
+   Returns the minted docNo. Throws on failure so the caller can show a plain-
+   language notify (it never leaves a phantom — a failed POST creates nothing). */
+export async function createDraftFromPrefill(prefill: MobileScanPrefill): Promise<string> {
+  // Map each scanned line into a minimal LineItem, exactly as the interactive
+  // form seeds `lines` from scanPrefill (name / qty / price / remark), then
+  // shape it through the shared buildItemBody.
+  const lines: LineItem[] = (prefill.lines ?? []).map((l) => ({
+    ...newLine(),
+    name: l.name,
+    qty: l.qty || "1",
+    price: l.price || "0.00",
+    itemCode: l.itemCode || "",
+    remark: l.remark,
+  }));
+  // Same "named line" filter the interactive create uses — a line counts once it
+  // has a name or a matched itemCode (drops blank rows).
+  const namedLines = lines.filter((l) => l.name.trim() || l.itemCode.trim());
+  const items = namedLines.map((l) => buildItemBody(l));
+
+  // Phone shaping mirrors save(): the prefill carries national digits, the +60
+  // prefix is re-attached here (the form's prefix box owns it interactively).
+  const phoneOut = prefill.phone.trim() ? "+60" + prefill.phone.replace(/\s+/g, "") : null;
+  const ecPhoneOut = prefill.emergencyPhone.trim() ? "+60" + prefill.emergencyPhone.replace(/\s+/g, "") : null;
+
+  const body: Record<string, unknown> = {
+    customerName: prefill.name.trim(),
+    debtorName: prefill.name.trim(),
+    customerSoNo: prefill.custRef.trim() || null,
+    phone: phoneOut,
+    customerType: inListOpt(prefill.customerType, CUSTOMER_TYPES) || null,
+    buildingType: inListOpt(prefill.buildingType, BUILDING_TYPES) || null,
+    note: prefill.note.trim() || null,
+    address1: prefill.address1.trim() || null,
+    customerState: inListOpt(prefill.state, STATES) || null,
+    city: prefill.city.trim() || null,
+    postcode: prefill.postcode.trim() || null,
+    // DRAFT: no dates (the interactive "Save draft" nulls these too).
+    internalExpectedDd: null,
+    customerDeliveryDate: null,
+    emergencyContactPhone: ecPhoneOut,
+    items,
+  };
+
+  const res = await authedFetch<{ docNo: string }>(`/mfg-sales-orders`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  return res?.docNo ?? "";
+}
+
+/* Keep a value only when it's one of the known option strings (empty otherwise) —
+   the headless equivalent of the component's `inList` seed guard, so a stray OCR
+   value never reaches the backend as an invalid enum. */
+function inListOpt(v: string | null | undefined, list: string[]): string {
+  const s = (v ?? "").trim();
+  return list.includes(s) ? s : "";
+}
+
 /* Map a persisted SoItem (edit prefill) back into an editable LineItem. */
 function lineFromItem(it: SoItem): LineItem {
   const base = newLine();
@@ -801,16 +897,10 @@ export function MobileNewSO({
     }
   }
 
-  /* Line-item body for POST /:docNo/items and the create body's items[]. */
-  const itemBody = (l: LineItem): Record<string, unknown> => ({
-    itemCode: l.itemCode,
-    itemGroup: l.itemGroup || "others",
-    description: l.name.trim(),
-    qty: num(l.qty) || 1,
-    unitPriceCenti: toCenti(l.price),
-    lineDeliveryDate: l.ddate || null,
-    ...(Object.keys(buildVariants(l)).length ? { variants: buildVariants(l) } : {}),
-  });
+  /* Line-item body for POST /:docNo/items and the create body's items[].
+     Delegates to the module-level buildItemBody (shared with the headless
+     createDraftFromPrefill). */
+  const itemBody = buildItemBody;
 
   const itemPatchBody = (l: LineItem): Record<string, unknown> => ({
     itemCode: l.itemCode,

@@ -3,15 +3,28 @@ import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { useAuth } from "../auth/AuthContext";
 import { normalizePhone, splitE164 } from "../vendor/shared/phone";
 import type { ExtractedSlip } from "../vendor/scm/components/ScanOrderModal";
+import { createDraftFromPrefill } from "./MobileNewSO";
+import { serviceNotify } from "../vendor/scm/lib/dialog-service";
 import "./mobile.css";
 
 // Mobile OCR "Scan" screen — capture phone photos of a handwritten sales
-// slip, POST them to POST /api/scm/scan-so/extract, then map the EXTRACTED slip
-// into a prefill and hand it to the mobile New SO form for the operator to
-// review and save. This mirrors the DESKTOP flow (ScanOrderModal ->
-// SalesOrderNew): the backend /scan-so/extract only RETURNS extracted data — it
-// never creates a draft — so the operator always reviews and saves in the real
-// form, where the learning feedback fires on save.
+// slip, POST them to POST /api/scm/scan-so/extract, map the EXTRACTED slip into
+// a prefill, then IMMEDIATELY create a DRAFT sales order from it in the
+// background (owner: "OCR 了直接進 SO draft 做"). The operator does NOT review the
+// form first — the scan reads the slip and lands a DRAFT in Orders, which the
+// operator opens and reviews there later.
+//
+// The draft-create reuses the New SO form's exact create call via the exported
+// createDraftFromPrefill(prefill) helper (same POST /mfg-sales-orders, dates
+// null → DRAFT, same body/line shaping, same server-side honest pricing). The
+// backend /scan-so/extract still only RETURNS extracted data; the draft is
+// minted by the reused create endpoint, not by /extract.
+//
+// SURVIVES NAVIGATION — the create fetch is FIRED (not awaited before we leave):
+// once it's in flight it completes even if the operator has navigated away or
+// pressed Cancel in-app, so a draft still lands in Orders. (One limitation: a
+// full app/tab CLOSE mid-flight can still drop an in-flight create — only a
+// server-side job would fully survive that. See the report note.)
 //
 // MULTIPLE ORDERS PER SESSION — the operator often has a stack of slips. This
 // screen models the session as an ARRAY of orders, each its own front slip +
@@ -36,14 +49,9 @@ import "./mobile.css";
 // DELETE — every uploaded thumbnail (front + payment, in every order) carries a
 // small "×" remove control so a wrong capture can be dropped before submitting.
 //
-// HANDOFF LIMIT + BACKGROUND-DRAFT FLAG — the New SO form (onExtracted) consumes
-// exactly ONE prefill. So when the session holds ONE order we OCR it and hand its
-// prefill to the New SO form as before. When the session holds 2+ orders, only
-// the FIRST can open the review form; orders 2..N have NO client-only home
-// (there is no background job that OCRs-then-inserts a DRAFT SO). We therefore
-// (a) always OCR + hand off order #1, and (b) surface a clear note that queuing
-// extra orders needs the backend background-draft job described in the report.
-// We do NOT fake a background draft.
+// MULTI-ORDER — because we now create the draft ourselves (no single-prefill
+// handoff limit), EVERY queued order becomes its own DRAFT: we OCR each order
+// and fire one createDraftFromPrefill per order. N orders → N drafts in Orders.
 //
 // Camera capture uses a hidden <input type="file" accept="image/*"
 // capture="environment"> per slot — the standard PWA pattern that opens the
@@ -274,10 +282,14 @@ function buildPrefill(
 
 export function MobileScan({
   onBack,
-  onExtracted,
+  onDrafted,
 }: {
   onBack: () => void;
-  onExtracted: (prefill: MobileScanPrefill) => void;
+  /* Called after the scan has FIRED the background draft-create(s) and we're
+     returning to the Orders list. `count` = how many drafts are being created.
+     The parent shows the "Draft saved to Orders" toast + nudges the SO-list
+     refetch so the new draft surfaces without a manual reload. */
+  onDrafted: (count: number) => void;
 }) {
   const { user } = useAuth();
   // The session is an ARRAY of orders. Each order = one front slip + N payment
@@ -450,17 +462,41 @@ export function MobileScan({
     setError(null);
     setUnavailable(false);
     try {
-      // Handoff limit: the New SO form (onExtracted) consumes exactly ONE
-      // prefill. We OCR the FIRST order and hand it off. Orders 2..N cannot be
-      // opened in the review form and there is NO backend background-draft job to
-      // land them, so we do NOT OCR/fake them — we just keep them queued and the
-      // note below tells the operator they need the backend job (see report).
-      const firstPrefill = await extractOrder(orders[0]);
-      if (firstPrefill) {
-        onExtracted(firstPrefill);
-      } else {
-        setError("The scan couldn't be processed. Please try again.");
+      // OCR every queued order into a prefill (each order = one draft). We await
+      // only the OCR — the slow, network-bound part we must keep the operator on
+      // this screen for — so a failed read surfaces here, not silently.
+      const prefills: MobileScanPrefill[] = [];
+      for (const order of orders) {
+        const prefill = await extractOrder(order);
+        if (prefill) prefills.push(prefill);
       }
+      if (prefills.length === 0) {
+        setError("Couldn't read the slip — try again.");
+        return;
+      }
+
+      // FIRE the draft-create for each prefill WITHOUT awaiting: the in-flight
+      // POST /mfg-sales-orders survives us leaving this screen (owner: a draft
+      // must appear even if he presses Cancel). A create that fails after we've
+      // left raises the shared in-app notify via authedFetch's error path — it
+      // never leaves a phantom (a failed POST creates nothing).
+      for (const prefill of prefills) {
+        void createDraftFromPrefill(prefill).catch(() => {
+          // The create is now detached from this screen. authedFetch already
+          // turned any failure into a plain-language Error; surface it through
+          // the globally-registered in-app notify (serviceNotify) so even a
+          // post-navigation failure tells the operator — and never leaves a
+          // phantom (a failed POST creates nothing).
+          void serviceNotify({
+            title: "Couldn't save one scanned draft",
+            body: "One of your scanned orders couldn't be saved. Scan it again.",
+            tone: "error",
+          });
+        });
+      }
+
+      // Return to Orders straight away with the toast + list-refetch nudge.
+      onDrafted(prefills.length);
     } catch (e) {
       // Staging has no ANTHROPIC_API_KEY → /extract returns 503
       // anthropic_key_missing. Surface a clear "not available here" note instead
@@ -472,7 +508,7 @@ export function MobileScan({
       if (keyMissing) {
         setUnavailable(true);
       } else {
-        setError(err instanceof Error ? err.message : "The scan couldn't be processed. Please try again.");
+        setError("Couldn't read the slip — try again.");
       }
     } finally {
       setSubmitting(false);
@@ -651,16 +687,14 @@ export function MobileScan({
             </button>
 
             {/* Design #scan: amber helper note box (design's #f3ece0 / #e8dcc5 /
-                #6a4a1e amber trio). Copy reflects our real flow — the scan opens
-                the New SO form prefilled for review, it does not silently create a
-                background draft. When more than one order is queued, the note also
-                spells out the current handoff limit (only order 1 opens now). */}
+                #6a4a1e amber trio). Copy reflects the real flow — the scan reads
+                the slip and creates a DRAFT order in the background; the operator
+                opens it from Orders to review and finalise. */}
             <div style={{ display: "flex", alignItems: "flex-start", gap: 9, background: "#f3ece0", border: "1px solid #e8dcc5", borderRadius: 11, padding: 11, marginTop: 12, fontSize: 11, color: "#6a4a1e", lineHeight: 1.5 }}>
               {/* Spec #scan amber info glyph on the left of the note. */}
               <svg width="15" height="15" style={{ flex: "none", marginTop: 1 }} viewBox="0 0 24 24" fill="none" stroke="#a16a2e" strokeWidth="2"><circle cx="12" cy="12" r="9" /><path d="M12 8v4M12 16h.01" /></svg>
               <span>
-                We read the slip and open the New Sales Order form prefilled. Review every field, correct anything the reader missed, then save to create the order.
-                {multiOrder && " You've queued more than one order — for now only Order 1 opens for review; the rest stay queued until background auto-draft is switched on."}
+                We read {multiOrder ? "each slip" : "the slip"} and save {multiOrder ? "a draft order per slip" : "a draft order"} to Orders in the background. Open {multiOrder ? "each draft" : "the draft"} from Orders to review every field, correct anything the reader missed, then finalise.
               </span>
             </div>
 
@@ -703,7 +737,7 @@ export function MobileScan({
             )}
             {submitting
               ? totalPayShots > 1 ? "Scanning slips…" : "Scanning slip…"
-              : multiOrder ? "Scan & open Order 1" : "Scan & open New SO"}
+              : multiOrder ? `Scan & save ${orders.length} drafts` : "Scan & save draft"}
           </button>
         </footer>
       )}

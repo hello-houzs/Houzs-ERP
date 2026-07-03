@@ -1,8 +1,11 @@
-// MobileScan — OCR scan order slip -> New SO prefill. Maps to prototype: #scan.
+// MobileScan — OCR scan order slip -> background DRAFT SO. Maps to prototype: #scan.
 // Capture ONE front slip + ONE OR MORE payment slips (each payment slip = one
 // payment; an order can take 2-3 payments). The front slip stays single; the
 // payment slip is a multi-photo section with an add-more tile + a thumbnail /
 // count list. Front + N payment slips = N+1 photos.
+// Flow (2026-07-03): after OCR the slip becomes a DRAFT order created in the
+// background (no review step); the operator returns to Orders and opens the
+// draft there to review/finalise. Each queued order/slip => its own draft.
 export function MobileScan({ onCancel, onSubmit }: { onCancel: () => void; onSubmit: () => void }) {
   // Sample data — two captured payment slips (deposit + balance) alongside the
   // single front slip. Static mock; no real capture / OCR wired here.
@@ -17,7 +20,7 @@ export function MobileScan({ onCancel, onSubmit }: { onCancel: () => void; onSub
       <header className="hdr">
         <button onClick={onCancel} style={{ background: 'none', border: 'none', color: '#767b6e', fontWeight: 600, fontSize: 13, cursor: 'pointer' }}>Cancel</button>
         <div className="scr-title">Scan order slip</div>
-        <div style={{ fontSize: 11, color: '#767b6e', marginTop: 2 }}>Snap the slip — we OCR it into a New Sales Order prefill.</div>
+        <div style={{ fontSize: 11, color: '#767b6e', marginTop: 2 }}>Snap the slip — we OCR it and save a draft order to review in Orders.</div>
       </header>
       <div className="scroll">
         {/* FRONT SLIP — single. Seeds the order header (customer / items). */}
@@ -52,10 +55,10 @@ export function MobileScan({ onCancel, onSubmit }: { onCancel: () => void; onSub
         </div>
 
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 9, background: '#f3ece0', border: '1px solid #e8dcc5', borderRadius: 11, padding: 11, marginTop: 12, fontSize: 11, color: '#6a4a1e', lineHeight: 1.5 }}>
-          We read the slips and open the New Sales Order form prefilled — one payment row per payment slip. Review every field, correct anything the reader missed, then save to create the order.
+          We read the slips and save a draft order in the background — one payment row per payment slip. Open the draft from Orders to review every field, correct anything the reader missed, then finalise.
         </div>
       </div>
-      <div className="actbar"><button className="btn" onClick={onSubmit}>Scan &amp; open New SO</button></div>
+      <div className="actbar"><button className="btn" onClick={onSubmit}>Scan &amp; save draft</button></div>
     </div>
   );
 }
