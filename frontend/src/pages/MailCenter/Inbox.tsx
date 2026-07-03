@@ -757,7 +757,11 @@ export function MailInbox() {
     loading,
     error,
     reload,
-  } = useQuery<MailThreadRow[]>(() => api.get(listUrl), [listUrl]);
+  } = useQuery<MailThreadRow[]>(() => api.get(listUrl), [listUrl], {
+    // Folder / filter switch keeps the current threads on screen while the next
+    // folder loads instead of flashing an empty list.
+    keepPreviousData: true,
+  });
   const { data: addresses } = useQuery<MailAddress[]>(
     () => api.get("/api/mail-center/addresses"),
     [],

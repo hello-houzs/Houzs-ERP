@@ -1,4 +1,4 @@
-import { useQuery as useTanstackQuery } from "@tanstack/react-query";
+import { useQuery as useTanstackQuery, keepPreviousData } from "@tanstack/react-query";
 
 export interface QueryState<T> {
   data: T | null;
@@ -8,12 +8,17 @@ export interface QueryState<T> {
 }
 
 // Optional per-callsite freshness controls. Defaults mirror the global
-// queryClient (staleTime 0, refetch-on-mount when stale). Set
+// queryClient (refetch-on-mount when stale). Set
 // `refetchOnMount: "always"` + `staleTime: 0` on a list query that must
 // reflect a sibling tab's create the instant the consumer mounts.
 export interface UseQueryOptions {
   refetchOnMount?: boolean | "always";
   staleTime?: number;
+  // Set true on a PAGINATED / tab-switched list so changing page/tab keeps the
+  // previous rows on screen while the next slice loads, instead of flashing an
+  // empty table + spinner (TanStack v5's keepPreviousData behaviour). Purely
+  // presentational — does not touch the query key or caching.
+  keepPreviousData?: boolean;
 }
 
 // Backed by TanStack Query (see lib/queryClient.ts). The public API is
@@ -35,6 +40,9 @@ export function useQuery<T>(
       refetchOnMount: options.refetchOnMount,
     }),
     ...(options.staleTime !== undefined && { staleTime: options.staleTime }),
+    // keepPreviousData: hold the last successful data while the next key's
+    // fetch is in flight, so a page/tab switch never blanks the list.
+    ...(options.keepPreviousData && { placeholderData: keepPreviousData }),
   });
   return {
     data: q.data ?? null,

@@ -497,9 +497,14 @@ inventory.get('/cogs', async (c) => {
 inventory.get('/value', async (c) => {
   const sb = c.get('supabase');
   const warehouseId = c.req.query('warehouseId');
-  let q = sb.from('v_inventory_value').select('*');
-  if (warehouseId) q = q.eq('warehouse_id', warehouseId);
-  const { data, error } = await q.order('product_code');
+  // PostgREST's 1000-row cap silently truncated the valuation — page through so
+  // every SKU's qty × cost is summed, not just the first 1000. The optional
+  // warehouse filter stays inside the page query.
+  const { data, error } = await paginateAll((from, to) => {
+    let q = sb.from('v_inventory_value').select('*');
+    if (warehouseId) q = q.eq('warehouse_id', warehouseId);
+    return q.order('product_code').range(from, to);
+  });
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
   return c.json({ value: data ?? [] });
 });

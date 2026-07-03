@@ -21,7 +21,7 @@ import { writeMovements, defaultWarehouseId } from '../lib/inventory-movements';
 import { computeVariantKey, isServiceLine, type VariantAttrs } from '../shared';
 import { syncSoDeliveredFromDo } from '../lib/so-delivery-sync';
 import { todayMyt } from '../lib/my-time';
-import { paginateAll } from '../lib/paginate-all';
+import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { resolveSalesScopeIds } from '../lib/salesScope';
 import { hasHouzsPerm } from '../lib/houzs-perms';
 import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item-codes';
@@ -1043,29 +1043,41 @@ export async function doLineDownstream(
   const ids = [...new Set(doItemIds.filter((x): x is string => Boolean(x)))];
   if (ids.length === 0) return out;
 
+  // chunkIn splits the do_item_id IN-list into ≤200 batches and pages each — a DO
+  // line with >1000 downstream SI/DR lines would otherwise truncate at PostgREST's
+  // 1000-row cap and corrupt the delivered/invoiced/returned reconcile.
   const [siLinesRes, drLinesRes] = await Promise.all([
-    sb.from('sales_invoice_items').select('do_item_id, qty, sales_invoice_id').in('do_item_id', ids),
-    sb.from('delivery_return_items').select('do_item_id, qty_returned, delivery_return_id').in('do_item_id', ids),
+    chunkIn<{ do_item_id: string | null; qty: number; sales_invoice_id: string }>(ids, (batch, from, to) =>
+      sb.from('sales_invoice_items').select('do_item_id, qty, sales_invoice_id').in('do_item_id', batch).range(from, to)),
+    chunkIn<{ do_item_id: string | null; qty_returned: number; delivery_return_id: string }>(ids, (batch, from, to) =>
+      sb.from('delivery_return_items').select('do_item_id, qty_returned, delivery_return_id').in('do_item_id', batch).range(from, to)),
   ]);
-  const siLines = (siLinesRes.data ?? []) as Array<{ do_item_id: string | null; qty: number; sales_invoice_id: string }>;
+  const siLines = siLinesRes.data;
   // delivery_return_items has NO `qty` column — it's `qty_returned` (the same
   // file reads it correctly elsewhere). Selecting `qty` returned 0 qty for every
   // DR in a DO line's downstream breakdown (bug-hunt 2026-06-20).
-  const drLines = (drLinesRes.data ?? []) as Array<{ do_item_id: string | null; qty_returned: number; delivery_return_id: string }>;
+  const drLines = drLinesRes.data;
 
   const siIds = [...new Set(siLines.map((r) => r.sales_invoice_id).filter(Boolean))];
   const drIds = [...new Set(drLines.map((r) => r.delivery_return_id).filter(Boolean))];
+  // Header lookups are also chunked+paged so a >1000 parent-doc set can't truncate.
   const [siHeadRes, drHeadRes] = await Promise.all([
-    siIds.length > 0 ? sb.from('sales_invoices').select('id, invoice_number, status').in('id', siIds) : Promise.resolve({ data: [] }),
-    drIds.length > 0 ? sb.from('delivery_returns').select('id, return_number, status').in('id', drIds) : Promise.resolve({ data: [] }),
+    siIds.length > 0
+      ? chunkIn<{ id: string; invoice_number: string | null; status: string | null }>(siIds, (batch, from, to) =>
+          sb.from('sales_invoices').select('id, invoice_number, status').in('id', batch).range(from, to))
+      : Promise.resolve({ data: [] as Array<{ id: string; invoice_number: string | null; status: string | null }> }),
+    drIds.length > 0
+      ? chunkIn<{ id: string; return_number: string | null; status: string | null }>(drIds, (batch, from, to) =>
+          sb.from('delivery_returns').select('id, return_number, status').in('id', batch).range(from, to))
+      : Promise.resolve({ data: [] as Array<{ id: string; return_number: string | null; status: string | null }> }),
   ]);
   const siMeta = new Map<string, { docNumber: string; status: string }>();
-  for (const s of (siHeadRes.data ?? []) as Array<{ id: string; invoice_number: string | null; status: string | null }>) {
+  for (const s of siHeadRes.data as Array<{ id: string; invoice_number: string | null; status: string | null }>) {
     if ((s.status ?? '').toUpperCase() === 'CANCELLED') continue;
     siMeta.set(s.id, { docNumber: s.invoice_number ?? '—', status: (s.status ?? '').toUpperCase() });
   }
   const drMeta = new Map<string, { docNumber: string; status: string }>();
-  for (const d of (drHeadRes.data ?? []) as Array<{ id: string; return_number: string | null; status: string | null }>) {
+  for (const d of drHeadRes.data as Array<{ id: string; return_number: string | null; status: string | null }>) {
     if ((d.status ?? '').toUpperCase() === 'CANCELLED') continue;
     drMeta.set(d.id, { docNumber: d.return_number ?? '—', status: (d.status ?? '').toUpperCase() });
   }

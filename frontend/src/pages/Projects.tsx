@@ -963,7 +963,10 @@ function ProjectsListView() {
           ...sortParams,
         })}`
       ),
-    [brand, year, month, section, status, excludeDoneParam, myPending, search, page, perPage, showArchived, sort?.key, sort?.dir]
+    [brand, year, month, section, status, excludeDoneParam, myPending, search, page, perPage, showArchived, sort?.key, sort?.dir],
+    // Paginated + filter-switched list: keep the current rows on screen while
+    // the next page/filter loads instead of flashing an empty table.
+    { keepPreviousData: true }
   );
 
   // Client-side status filter (Confirmed / Pending / Cancelled), applied over
@@ -1930,7 +1933,10 @@ function FinanceListView() {
           ...sortParams,
         })}`
       ),
-    [dateFrom, dateTo, brand, stage, search, includeArchived, page, perPage, sort?.key, sort?.dir]
+    [dateFrom, dateTo, brand, stage, search, includeArchived, page, perPage, sort?.key, sort?.dir],
+    // Paginated + filter-switched list: keep the current rows on screen while
+    // the next page/filter loads instead of flashing an empty table.
+    { keepPreviousData: true }
   );
 
   const columns: Column<FinanceProjectRow>[] = [

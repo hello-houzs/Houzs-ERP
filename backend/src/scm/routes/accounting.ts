@@ -541,9 +541,12 @@ accounting.get('/gl', async (c) => {
 
 accounting.get('/balances', async (c) => {
   const sb = c.get('supabase');
-  const { data, error } = await sb
+  // PostgREST's 1000-row cap silently truncated the balance list — page through
+  // so every account balance is returned, not just the first 1000.
+  const { data, error } = await paginateAll((from, to) => sb
     .from('v_account_balances')
-    .select('*');
+    .select('*')
+    .range(from, to));
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
   return c.json({ balances: data ?? [] });
 });
@@ -555,11 +558,15 @@ accounting.get('/ar-aging', async (c) => {
      DRAFT SI has posted no AR yet, so it must never appear in the aging buckets; the
      view exposes s.status, so filter DRAFT out here at the route (migrations are
      frozen). */
-  const { data, error } = await sb
+  // PostgREST's 1000-row cap silently truncated the aging buckets — page through
+  // so the full AR ledger is bucketed, not just the first 1000 rows. Ordering
+  // stays inside the page factory so every page is consistent.
+  const { data, error } = await paginateAll((from, to) => sb
     .from('v_ar_aging')
     .select('*')
     .neq('status', 'DRAFT')
-    .order('days_overdue', { ascending: false });
+    .order('days_overdue', { ascending: false })
+    .range(from, to));
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
   return c.json({ arAging: data ?? [] });
 });
@@ -571,11 +578,15 @@ accounting.get('/ap-aging', async (c) => {
      DRAFT PI has posted no AP yet, so it must never appear in the aging buckets; the
      view exposes p.status, so filter DRAFT out here at the route (migrations are
      frozen). Mirrors the /ar-aging DRAFT fix. */
-  const { data, error } = await sb
+  // PostgREST's 1000-row cap silently truncated the aging buckets — page through
+  // so the full AP ledger is bucketed, not just the first 1000 rows. Ordering
+  // stays inside the page factory so every page is consistent.
+  const { data, error } = await paginateAll((from, to) => sb
     .from('v_ap_aging')
     .select('*')
     .neq('status', 'DRAFT')
-    .order('days_overdue', { ascending: false });
+    .order('days_overdue', { ascending: false })
+    .range(from, to));
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
   return c.json({ apAging: data ?? [] });
 });

@@ -18,6 +18,16 @@ export interface CreateAssrInput {
   /** Optional priority slug — drives both `sla_hours` and the per-stage
    *  target snapshot (mig 082). Defaults to 'normal' when omitted. */
   priority?: string | null;
+  /** Customer reference (the SO's own customer docket, e.g. "HC14032").
+   *  When omitted the AutoCount SO context's Ref is used as fallback. */
+  ref_no?: string | null;
+  /** Customer contact email captured at intake. */
+  customer_email?: string | null;
+  /** Product category free-text (e.g. "Mattress / Bed frame"). */
+  service_category?: string | null;
+  /** Operations PIC — assr_cases.assigned_to. When provided, overrides
+   *  the admin-configured default assignee. */
+  assigned_to?: number | null;
   created_by?: number;
 }
 
@@ -245,17 +255,23 @@ export async function createAssrCase(
   // Optional default assignee — admin sets this in Settings → Service.
   // Read it on every create so a setting change takes effect without a
   // deploy. Falls back to NULL (unassigned) if missing or malformed.
+  // An explicit PIC picked at intake (input.assigned_to) takes
+  // precedence over the admin default.
   let defaultAssigneeId: number | null = null;
-  try {
-    const r = await env.DB.prepare(
-      `SELECT value FROM system_settings WHERE key = 'assr_default_assignee_id'`
-    ).first<{ value: string | null }>();
-    if (r?.value != null) {
-      const n = parseInt(r.value, 10);
-      if (!isNaN(n)) defaultAssigneeId = n;
+  if (input.assigned_to != null) {
+    defaultAssigneeId = input.assigned_to;
+  } else {
+    try {
+      const r = await env.DB.prepare(
+        `SELECT value FROM system_settings WHERE key = 'assr_default_assignee_id'`
+      ).first<{ value: string | null }>();
+      if (r?.value != null) {
+        const n = parseInt(r.value, 10);
+        if (!isNaN(n)) defaultAssigneeId = n;
+      }
+    } catch (e) {
+      console.warn("[assr.create] could not read default assignee:", e);
     }
-  } catch (e) {
-    console.warn("[assr.create] could not read default assignee:", e);
   }
 
   // v3.1 — new cases enter Stage 1 (pending_review). Stage target is
@@ -274,10 +290,10 @@ export async function createAssrCase(
     `INSERT INTO assr_cases (
        assr_no, status, stage, doc_no, complained_date, customer_name, phone, location,
        sales_agent, item_code, complaint_issue, issue_category, priority, po_no, addr1, addr2, addr3, addr4, created_by,
-       ref_no, delivery_order, do_date,
+       ref_no, customer_email, service_category, delivery_order, do_date,
        assigned_to, sla_hours, deadline_at,
        stage_entered_at, stage_target_days, stage_changed_at, lead_time_profile_id
-     ) VALUES (?, 'Open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     ) VALUES (?, 'Open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       assrNo,
@@ -300,8 +316,13 @@ export async function createAssrCase(
       input.created_by ?? null,
       // ref_no <- the SO's own customer reference (the pre-printed
       // customer docket, e.g. "HC14032"), distinct from the internal
-      // service PO which maps to po_no above via SOUDF_ToPONo.
-      context?.Ref ?? null,
+      // service PO which maps to po_no above via SOUDF_ToPONo. An
+      // explicit intake value wins; else fall back to the SO context.
+      input.ref_no ?? context?.Ref ?? null,
+      // customer_email / service_category <- captured on the intake
+      // form so a case is created complete rather than backfilled.
+      input.customer_email ?? null,
+      input.service_category ?? null,
       // delivery_order / do_date <- the SO's linked DO. The AutoCount
       // /SalesOrder/getSingle context does not expose a DO doc no or
       // date, so these stay NULL at create time (case manager fills
