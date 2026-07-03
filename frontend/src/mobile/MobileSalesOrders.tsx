@@ -41,6 +41,25 @@ const RANGES: [Range, string][] = [
   ["all", "All"], ["this-month", "This month"], ["last-month", "Last month"],
   ["next-month", "Next month"], ["this-year", "This year"],
 ];
+
+/* Status filter → picks by raw SO status. Real SO statuses are DRAFT / CONFIRMED
+   / CANCELLED (see lib/status-pill.ts SO map + lib/so-status.ts); older data /
+   sibling ERPs may spell the active state SUBMITTED, so the active buckets match
+   either spelling and nothing taps into a dead filter (the old blind cycle's
+   bug: it filtered on "Submitted", which no SO row carried). `match: null` = All. */
+type StatusFilter = "all" | "draft" | "submitted" | "confirmed" | "cancelled";
+const STATUS_FILTERS: { key: StatusFilter; label: string; match: string[] | null }[] = [
+  { key: "all",       label: "All",       match: null },
+  { key: "draft",     label: "Draft",     match: ["draft"] },
+  { key: "submitted", label: "Submitted", match: ["submitted", "confirmed"] },
+  { key: "confirmed", label: "Confirmed", match: ["confirmed", "submitted"] },
+  { key: "cancelled", label: "Cancelled", match: ["cancelled"] },
+];
+function statusMatches(r: SoRow, filter: StatusFilter): boolean {
+  const entry = STATUS_FILTERS.find((f) => f.key === filter);
+  if (!entry || !entry.match) return true;
+  return entry.match.includes((r.status ?? "").toLowerCase());
+}
 function inRange(r: SoRow, range: Range): boolean {
   if (range === "all") return true;
   const raw = soDate(r); if (!raw) return false;
@@ -59,8 +78,9 @@ function inRange(r: SoRow, range: Range): boolean {
  *  permission-gated by the backend). Summary bar + period chips + card + FAB. */
 export function MobileSalesOrders({ onScan, onOpen, onNew }: { onScan: () => void; onOpen: (docNo: string) => void; onNew: () => void }) {
   const [q, setQ] = useState("");
-  const [status, setStatus] = useState("all");
+  const [status, setStatus] = useState<StatusFilter>("all");
   const [range, setRange] = useState<Range>("all");
+  const [filterOpen, setFilterOpen] = useState(false);
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["mobile-so-list"],
@@ -72,7 +92,7 @@ export function MobileSalesOrders({ onScan, onOpen, onNew }: { onScan: () => voi
   const rows = useMemo(() => {
     const needle = q.trim().toLowerCase();
     return all.filter((r) => {
-      if (status !== "all" && (r.status ?? "").toLowerCase() !== status.toLowerCase()) return false;
+      if (!statusMatches(r, status)) return false;
       if (!inRange(r, range)) return false;
       if (needle && !`${r.debtor_name ?? ""} ${r.doc_no} ${r.customer_so_no ?? ""} ${r.ref ?? ""} ${r.po_doc_no ?? ""}`.toLowerCase().includes(needle)) return false;
       return true;
@@ -110,7 +130,7 @@ export function MobileSalesOrders({ onScan, onOpen, onNew }: { onScan: () => voi
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9aa093" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4-4" /></svg>
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search customer · SO · reference" />
           </div>
-          <button onClick={() => setStatus((s) => (s === "all" ? "Submitted" : s === "Submitted" ? "Draft" : s === "Draft" ? "Cancelled" : "all"))} className="iconbtn" style={{ position: "relative" }} aria-label="Filter by status">
+          <button onClick={() => setFilterOpen(true)} className="iconbtn" style={{ position: "relative" }} aria-label="Filter by status">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#414539" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 5h18M6 12h12M10 19h4" /></svg>
             {filterActive && <span style={{ position: "absolute", top: -3, right: -3, width: 9, height: 9, borderRadius: "50%", background: "var(--gold)", border: "1.5px solid #fff" }} />}
           </button>
@@ -210,6 +230,44 @@ export function MobileSalesOrders({ onScan, onOpen, onNew }: { onScan: () => voi
           </div>
         )}
       </div>
+
+      {/* Status filter bottom-sheet — replaces the old blind status-cycle. Lists
+          the real SO status options; the selected one shows a check + highlight,
+          and a non-"All" pick keeps the funnel's gold dot lit. */}
+      {filterOpen && (
+        <div className="sheet-bd" onClick={() => setFilterOpen(false)}>
+          <div className="sheet" onClick={(e) => e.stopPropagation()} style={{ maxHeight: "70%" }}>
+            <div className="grab" />
+            <div className="sheet-head">
+              <div>
+                <div className="eyebrow">Filter</div>
+                <div className="scr-title" style={{ fontSize: 17 }}>Order status</div>
+              </div>
+              <button className="sheet-x" onClick={() => setFilterOpen(false)} aria-label="Close">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
+              </button>
+            </div>
+            <div className="sheet-scroll" style={{ gap: 8 }}>
+              {STATUS_FILTERS.map(({ key, label }) => {
+                const on = status === key;
+                return (
+                  <button
+                    key={key}
+                    onClick={() => { setStatus(key); setFilterOpen(false); }}
+                    className="mcard"
+                    style={{ justifyContent: "space-between", ...(on ? { borderColor: "var(--brand)", background: "var(--brand-bg)" } : null) }}
+                  >
+                    <span className="ml" style={on ? { color: "var(--brand-d)" } : undefined}>{label}</span>
+                    {on && (
+                      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="var(--brand-d)" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Floating green "+" FAB — create a new sales order. */}
       <button onClick={onNew} aria-label="New sales order" className="fab">
