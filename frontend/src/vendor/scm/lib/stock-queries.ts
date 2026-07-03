@@ -81,6 +81,9 @@ export function useInventoryBalances(opts?: {
         `/inventory${params.toString() ? `?${params.toString()}` : ''}`,
       );
     },
+    // Keep the current balances on screen while a search / category / warehouse
+    // filter change loads, instead of flashing an empty table (keepPreviousData).
+    placeholderData: (prev) => prev,
     staleTime: 30_000,
     retry: 1,
   });

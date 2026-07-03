@@ -895,6 +895,10 @@ app.post(
     complaint_issue: string;
     issue_category?: string | null;
     priority?: string | null;
+    ref_no?: string | null;
+    customer_email?: string | null;
+    service_category?: string | null;
+    assigned_to?: number | null;
   }>();
 
   if (!body.doc_no || !body.complaint_issue) {
@@ -912,12 +916,33 @@ app.post(
     return c.json({ error: "At least one item is required" }, 400);
   }
 
+  // Normalise the intake extras: trim strings to null, coerce the
+  // assignee to a valid positive integer or null. Null-safe so the
+  // existing minimal create flow (no extras) is unaffected.
+  const trimOrNull = (v: unknown): string | null => {
+    if (typeof v !== "string") return null;
+    const t = v.trim();
+    return t.length ? t : null;
+  };
+  let assignedTo: number | null = null;
+  if (body.assigned_to != null) {
+    const n =
+      typeof body.assigned_to === "number"
+        ? body.assigned_to
+        : parseInt(String(body.assigned_to), 10);
+    if (Number.isFinite(n) && n > 0) assignedTo = n;
+  }
+
   const result = await createAssrCase(c.env, {
     doc_no: body.doc_no,
     items,
     complaint_issue: body.complaint_issue,
     issue_category: body.issue_category ?? null,
     priority: body.priority ?? null,
+    ref_no: trimOrNull(body.ref_no),
+    customer_email: trimOrNull(body.customer_email),
+    service_category: trimOrNull(body.service_category),
+    assigned_to: assignedTo,
     created_by: userId,
   });
   return c.json(result, 201);

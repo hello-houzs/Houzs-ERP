@@ -148,6 +148,9 @@ export function useDeliveryPlanning(opts: { region?: string; state?: string }) {
       const qs = params.toString();
       return authedFetch<PlanningResponse>(`/delivery-planning${qs ? `?${qs}` : ''}`);
     },
+    // Switching region / state tabs keeps the previous board on screen while the
+    // next slice loads, instead of flashing an empty table (keepPreviousData).
+    placeholderData: (prev) => prev,
     staleTime: 30_000,
   });
 }

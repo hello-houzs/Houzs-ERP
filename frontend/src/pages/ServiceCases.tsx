@@ -403,7 +403,10 @@ function CasesView({
           ...sortParams,
         })}`
       ),
-    [stage, search, page, perPage, showArchived, excludeStageParam, myCases, user?.id, creditorFilter, sort?.key, sort?.dir]
+    [stage, search, page, perPage, showArchived, excludeStageParam, myCases, user?.id, creditorFilter, sort?.key, sort?.dir],
+    // Paginated + stage/filter-switched list: keep the current rows visible
+    // while the next page/filter loads instead of flashing an empty table.
+    { keepPreviousData: true }
   );
 
   // Drop selections that are no longer on screen — keeps the bulk
@@ -1797,6 +1800,13 @@ function CreatePanel({
   const [lookingUp, setLookingUp] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [customerInfo, setCustomerInfo] = useState<{ name?: string; phone?: string; location?: string } | null>(null);
+  // Intake extras — captured up front so a case is created complete
+  // rather than backfilled in the detail view. ref_no seeds from the
+  // picked SO's own customer reference (below) but stays editable.
+  const [refNo, setRefNo] = useState("");
+  const [customerEmail, setCustomerEmail] = useState("");
+  const [serviceCategory, setServiceCategory] = useState("");
+  const [assignedTo, setAssignedTo] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [dragActive, setDragActive] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
@@ -1810,6 +1820,19 @@ function CreatePanel({
   );
   const issueCatOptions =
     issueCategoriesQ.data?.data.map((r) => r.name) ?? [];
+
+  // PIC picker — same source + Operations filter as the detail view's
+  // "Assigned to" select. Optional at intake; left blank falls back to
+  // the admin-configured default assignee on the backend.
+  const usersQ = useQuery<{ id: number; name: string; department_name?: string }[]>(
+    () => api.get<any>("/api/users").then((r: any) => r.users ?? r.data ?? r ?? []),
+    [],
+  );
+  const opsUserOptions = Array.isArray(usersQ.data)
+    ? usersQ.data
+        .filter((u: any) => /operation/i.test(u.department_name || ""))
+        .map((u) => ({ id: u.id, name: u.name }))
+    : [];
 
   const MAX_FILES = 5;
   const MAX_SIZE = 5 * 1024 * 1024; // 5 MB
@@ -1939,11 +1962,13 @@ function CreatePanel({
     };
   }, [soSuggestions, pickedDocNo, docNo]);
 
-  function pickSuggestion(s: { doc_no: string; debtor_name: string | null; phone: string | null }) {
+  function pickSuggestion(s: { doc_no: string; ref?: string | null; debtor_name: string | null; phone: string | null }) {
     setDocNo(s.doc_no);
     setPickedDocNo(s.doc_no);
     setSoSuggestions([]);
     setCustomerInfo({ name: s.debtor_name ?? undefined, phone: s.phone ?? undefined });
+    // Seed Ref No from the SO's own customer reference; stays editable.
+    if (s.ref && !refNo.trim()) setRefNo(s.ref);
     setLookupItems(null);
     setSelectedItems(new Set());
     // Auto-run the items lookup so the form proceeds in one click.
@@ -1996,6 +2021,12 @@ function CreatePanel({
         complaint_issue: issue.trim(),
         issue_category: resolvedCategory,
         priority,
+        // Intake extras — sent trimmed-or-null so the case is created
+        // complete. The backend also trims/whitelists these defensively.
+        ref_no: refNo.trim() || null,
+        customer_email: customerEmail.trim() || null,
+        service_category: serviceCategory.trim() || null,
+        assigned_to: assignedTo ? parseInt(assignedTo, 10) : null,
       });
 
       // Upload any staged defect photos/videos as "complaint" attachments.
@@ -2230,6 +2261,67 @@ function CreatePanel({
               </option>
             ))}
           </select>
+        </div>
+      </PanelSection>
+
+      {/* Customer & Assignment — intake extras that the redesigned
+          detail view collects (Ref No / Email / Product Category /
+          Operations PIC). Capturing them here means a case is created
+          complete instead of being backfilled after the fact. Ref No
+          seeds from the picked SO's own customer reference. */}
+      <PanelSection title="Customer & Assignment">
+        <div className="space-y-3">
+          <div>
+            <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+              Ref No
+            </div>
+            <input
+              value={refNo}
+              onChange={(e) => setRefNo(e.target.value)}
+              placeholder="Customer reference (e.g. HC14032)"
+              className="w-full rounded-md border border-border bg-bg px-3 py-2 text-[13px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+            />
+          </div>
+          <div>
+            <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+              Customer Email
+            </div>
+            <input
+              type="email"
+              value={customerEmail}
+              onChange={(e) => setCustomerEmail(e.target.value)}
+              placeholder="customer@example.com"
+              className="w-full rounded-md border border-border bg-bg px-3 py-2 text-[13px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+            />
+          </div>
+          <div>
+            <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+              Product Category
+            </div>
+            <input
+              value={serviceCategory}
+              onChange={(e) => setServiceCategory(e.target.value)}
+              placeholder="e.g. Mattress / Bed frame"
+              className="w-full rounded-md border border-border bg-bg px-3 py-2 text-[13px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+            />
+          </div>
+          <div>
+            <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+              Assign To (Operations PIC)
+            </div>
+            <select
+              value={assignedTo}
+              onChange={(e) => setAssignedTo(e.target.value)}
+              className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+            >
+              <option value="">Use default assignee</option>
+              {opsUserOptions.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.name}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
       </PanelSection>
 

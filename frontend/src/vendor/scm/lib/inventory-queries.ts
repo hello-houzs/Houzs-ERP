@@ -171,6 +171,9 @@ export function useInventoryProductTotals(opts?: { search?: string; category?: s
         `/inventory/products${params.toString() ? `?${params.toString()}` : ''}`,
       ).then((r) => r.products);
     },
+    // Keep the current rows on screen while a search / category filter change
+    // loads, instead of flashing an empty table (keepPreviousData).
+    placeholderData: (prev) => prev,
     staleTime: 30_000,
   });
 }

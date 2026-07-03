@@ -32,6 +32,9 @@ export const useMfgSalesOrders = (status?: string) =>
   useQuery({
     queryKey: ['mfg-sales-orders', status ?? 'all'],
     queryFn: () => authedFetch<{ salesOrders: any[] }>(`/mfg-sales-orders${status ? `?status=${status}` : ''}`),
+    // Switching the status tab keeps the current list visible while the next
+    // status loads, instead of flashing an empty table (keepPreviousData).
+    placeholderData: (prev) => prev,
     staleTime: 30_000,
     retry: 1,
     retryDelay: 800,

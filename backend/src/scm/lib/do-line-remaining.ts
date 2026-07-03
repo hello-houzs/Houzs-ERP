@@ -26,7 +26,7 @@
 // rows; there is no stored counter to drift.
 // ----------------------------------------------------------------------------
 
-import { paginateAll } from './paginate-all';
+import { paginateAll, chunkIn } from './paginate-all';
 
 export type DoRemainingLine = {
   doItemId: string;
@@ -83,10 +83,13 @@ export async function doLineRemaining(
 
   // 1. Load the DO headers — we need debtor + do_number for the descriptors,
   //    and the status so we can drop cancelled DOs (they delivered nothing).
-  const { data: doHeaders } = await sb
+  //    chunkIn splits the id IN-list into ≤200 batches and pages each so a large
+  //    DO set can't truncate at PostgREST's 1000-row cap.
+  const { data: doHeaders } = await chunkIn(ids, (batch, from, to) => sb
     .from('delivery_orders')
     .select('id, do_number, status, debtor_code, debtor_name')
-    .in('id', ids);
+    .in('id', batch)
+    .range(from, to));
   const headerById = new Map<
     string,
     { do_number: string; debtor_code: string | null; debtor_name: string | null }
@@ -109,7 +112,10 @@ export async function doLineRemaining(
   // 2. Load the DO lines of the active DOs — `delivered` = each line's qty —
   //    in each DO's own listing order (line_no per 0165, NULLS LAST so
   //    pre-0165 DOs fall back to created_at).
-  const { data: doLines } = await sb
+  // chunkIn batches the DO ids and pages each — every batch returns all lines for
+  // its DOs, so a DO's items stay contiguous and in line_no order (lineSeq below
+  // stays correct); guards the 1000-row cap for a DO set with many lines.
+  const { data: doLines } = await chunkIn(activeDoIds, (batch, from, to) => sb
     .from('delivery_order_items')
     .select(
       'id, delivery_order_id, item_code, item_group, description, description2, uom, qty, ' +
@@ -117,9 +123,10 @@ export async function doLineRemaining(
       'gap_inches, divan_height_inches, divan_price_sen, leg_height_inches, leg_price_sen, ' +
       'custom_specials, line_suffix, special_order_price_sen',
     )
-    .in('delivery_order_id', activeDoIds)
+    .in('delivery_order_id', batch)
     .order('line_no', { ascending: true, nullsFirst: false })
-    .order('created_at');
+    .order('created_at')
+    .range(from, to));
   const lines = (doLines ?? []) as Array<Record<string, unknown> & {
     id: string; delivery_order_id: string; qty: number;
   }>;
@@ -131,16 +138,21 @@ export async function doLineRemaining(
   //    those whose parent invoice is cancelled.
   const invoicedByDoItem = new Map<string, number>();
   {
-    const { data: siLines } = await sb
-      .from('sales_invoice_items')
-      .select('do_item_id, qty, sales_invoice_id')
-      .in('do_item_id', doItemIds);
-    const siRows = (siLines ?? []) as Array<{ do_item_id: string | null; qty: number; sales_invoice_id: string }>;
+    // chunkIn batches + pages the do_item_id IN-list so a DO line with >1000
+    // downstream SI lines can't truncate and under-count `invoiced`.
+    const { data: siLines } = await chunkIn<{ do_item_id: string | null; qty: number; sales_invoice_id: string }>(
+      doItemIds, (batch, from, to) => sb
+        .from('sales_invoice_items')
+        .select('do_item_id, qty, sales_invoice_id')
+        .in('do_item_id', batch)
+        .range(from, to));
+    const siRows = siLines;
     const siIds = [...new Set(siRows.map((l) => l.sales_invoice_id).filter(Boolean))];
     const activeSiIds = new Set<string>();
     if (siIds.length > 0) {
-      const { data: sis } = await sb.from('sales_invoices').select('id, status').in('id', siIds);
-      for (const s of (sis ?? []) as Array<{ id: string; status: string | null }>) {
+      const { data: sis } = await chunkIn<{ id: string; status: string | null }>(siIds, (batch, from, to) =>
+        sb.from('sales_invoices').select('id, status').in('id', batch).range(from, to));
+      for (const s of sis as Array<{ id: string; status: string | null }>) {
         if ((s.status ?? '').toUpperCase() !== 'CANCELLED') activeSiIds.add(s.id);
       }
     }
@@ -154,16 +166,21 @@ export async function doLineRemaining(
   //    return is NOT cancelled. Same two-step.
   const returnedByDoItem = new Map<string, number>();
   {
-    const { data: drLines } = await sb
-      .from('delivery_return_items')
-      .select('do_item_id, qty_returned, delivery_return_id')
-      .in('do_item_id', doItemIds);
-    const drRows = (drLines ?? []) as Array<{ do_item_id: string | null; qty_returned: number; delivery_return_id: string }>;
+    // chunkIn batches + pages the do_item_id IN-list so a DO line with >1000
+    // downstream DR lines can't truncate and under-count `returned`.
+    const { data: drLines } = await chunkIn<{ do_item_id: string | null; qty_returned: number; delivery_return_id: string }>(
+      doItemIds, (batch, from, to) => sb
+        .from('delivery_return_items')
+        .select('do_item_id, qty_returned, delivery_return_id')
+        .in('do_item_id', batch)
+        .range(from, to));
+    const drRows = drLines;
     const drIds = [...new Set(drRows.map((l) => l.delivery_return_id).filter(Boolean))];
     const activeDrIds = new Set<string>();
     if (drIds.length > 0) {
-      const { data: drs } = await sb.from('delivery_returns').select('id, status').in('id', drIds);
-      for (const d of (drs ?? []) as Array<{ id: string; status: string | null }>) {
+      const { data: drs } = await chunkIn<{ id: string; status: string | null }>(drIds, (batch, from, to) =>
+        sb.from('delivery_returns').select('id, status').in('id', batch).range(from, to));
+      for (const d of drs as Array<{ id: string; status: string | null }>) {
         if ((d.status ?? '').toUpperCase() !== 'CANCELLED') activeDrIds.add(d.id);
       }
     }
@@ -233,8 +250,11 @@ export async function doRemainingByItemId(
   const ids = [...new Set(doItemIds.filter((x): x is string => !!x))];
   const out = new Map<string, number>();
   if (ids.length === 0) return out;
-  const { data } = await sb.from('delivery_order_items').select('delivery_order_id').in('id', ids);
-  const doIds = [...new Set(((data ?? []) as Array<{ delivery_order_id: string | null }>).map((r) => r.delivery_order_id).filter((d): d is string => !!d))];
+  // chunkIn batches + pages the id IN-list so a >1000 DO-item set can't drop DOs
+  // from the resolved set (which would silently under-report the write-path cap).
+  const { data } = await chunkIn<{ delivery_order_id: string | null }>(ids, (batch, from, to) =>
+    sb.from('delivery_order_items').select('delivery_order_id').in('id', batch).range(from, to));
+  const doIds = [...new Set((data as Array<{ delivery_order_id: string | null }>).map((r) => r.delivery_order_id).filter((d): d is string => !!d))];
   const remainingMap = await doLineRemaining(sb, doIds);
   for (const id of ids) out.set(id, remainingMap.get(id)?.remaining ?? 0);
   return out;
