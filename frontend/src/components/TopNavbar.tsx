@@ -58,7 +58,9 @@ export function TopNavbar() {
                 <span
                   className={cn(
                     "min-w-0 truncate px-1 py-0.5",
-                    isLast ? "font-semibold text-ink" : "text-ink-secondary"
+                    // Current page reads petrol — matches the design's
+                    // breadcrumb (last crumb #16695f/600).
+                    isLast ? "font-semibold text-primary" : "text-ink-secondary"
                   )}
                   aria-current={isLast ? "page" : undefined}
                 >

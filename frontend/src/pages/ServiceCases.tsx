@@ -109,6 +109,7 @@ const RESOLUTION_OPTIONS = [
 
 const PRIORITY_OPTIONS = ["low", "normal", "high", "urgent"] as const;
 
+
 const NCR_OPTIONS = [
   "material_defect",
   "workmanship",
@@ -455,6 +456,25 @@ function CasesView({
       label: "",
       alwaysVisible: true,
       width: "32px",
+      // Header select-all — checks/unchecks every row on the current
+      // page; indeterminate while only some are ticked.
+      renderHeader: () => (
+        <span
+          onClick={(e) => e.stopPropagation()}
+          className="flex items-center justify-center"
+        >
+          <input
+            type="checkbox"
+            aria-label={allSelected ? "Deselect all rows" : "Select all rows"}
+            checked={allSelected}
+            ref={(el) => {
+              if (el) el.indeterminate = someSelected;
+            }}
+            onChange={toggleAll}
+            className="cursor-pointer accent-accent"
+          />
+        </span>
+      ),
       render: (r) => (
         <div
           onClick={(e) => {
@@ -474,12 +494,14 @@ function CasesView({
     },
     {
       key: "assr_no",
+      filterable: true,
       label: "ASSR No",
       render: (r) => <span className="font-mono text-xs font-medium">{r.assr_no}</span>,
       getValue: (r) => r.assr_no,
     },
     {
       key: "stage",
+      filterable: true,
       label: "Stage",
       render: (r) => (
         // Single-line — `flex-wrap` removed (was the only thing
@@ -513,12 +535,16 @@ function CasesView({
              stage name + the SLA flag. */}
         </div>
       ),
-      getValue: (r) => stageLabel(r.stage),
+      // caseStageLabel (not the legacy StatusDot stageLabel) — the old
+      // helper only maps the 5 legacy slugs, so 9-stage rows fell through
+      // to raw slugs in the funnel filter + CSV export.
+      getValue: (r) => caseStageLabel(r.stage),
     },
     {
       key: "priority_dwell",
       label: "Priority · Dwell",
       align: "left",
+      filterable: true,
       // Merged signal, single colour axis = DWELL so dot and text always
       // agree (no clashing two-colour cells). DWELL in the current stage:
       // On track <7d (green) / Slow 7–29d (amber) / Stuck ≥30d (red). The
@@ -553,7 +579,7 @@ function CasesView({
             {tier ? (
               <span
                 className={cn("text-[11.5px] font-medium", tier.text)}
-                title={`In ${stageLabel(r.stage)} for ${d} day(s)`}
+                title={`In ${caseStageLabel(r.stage)} for ${d} day(s)`}
               >
                 {tier.label} <span className="font-mono tabular-nums">{d}d</span>
               </span>
@@ -569,18 +595,21 @@ function CasesView({
     },
     {
       key: "doc_no",
+      filterable: true,
       label: "SO No",
       render: (r) => <span className="font-mono text-xs">{r.doc_no}</span>,
       getValue: (r) => r.doc_no,
     },
     {
       key: "complained_date",
+      filterable: true,
       label: "Date",
       render: (r) => formatDate(r.complained_date),
       getValue: (r) => formatDate(r.complained_date),
     },
     {
       key: "customer_name",
+      filterable: true,
       label: "Customer",
       render: (r) => (
         <span
@@ -594,6 +623,7 @@ function CasesView({
     },
     {
       key: "item_code",
+      filterable: true,
       label: "Item",
       // Product code — visible on the detail page; hidden here to cut
       // clutter, still available from the Columns menu.
@@ -603,6 +633,7 @@ function CasesView({
     },
     {
       key: "resolution_method",
+      filterable: true,
       label: "Resolution",
       // Empty until a case reaches the solution stage, so it's mostly
       // "—" on the working list — hidden by default to cut clutter,
@@ -617,12 +648,14 @@ function CasesView({
     },
     {
       key: "assigned_to_name",
+      filterable: true,
       label: "Assigned To",
       render: (r) => r.assigned_to_name || "—",
       getValue: (r) => r.assigned_to_name,
     },
     {
       key: "supplier_pickup_at",
+      filterable: true,
       label: "Supplier Pickup",
       defaultHidden: true,
       render: (r) => formatDate(r.supplier_pickup_at),
@@ -630,6 +663,7 @@ function CasesView({
     },
     {
       key: "items_ready_at",
+      filterable: true,
       label: "Items Ready",
       defaultHidden: true,
       render: (r) => formatDate(r.items_ready_at),
@@ -981,7 +1015,10 @@ function StageStatStrip({
       {/* Stage pipeline — compact horizontal funnel; click a stage to filter
           the list/board/calendar, click again (or All) to clear. */}
       <div className="rounded-xl border border-border bg-surface p-4 shadow-stone">
-        <div className="mb-3 text-[13px] font-bold text-ink">Stage Pipeline</div>
+        <div className="mb-3 flex items-center justify-between">
+          <div className="text-[13px] font-bold text-ink">Stage funnel</div>
+          <span className="font-mono text-[10px] text-ink-muted">click to filter</span>
+        </div>
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
           {[
             { value: "ALL" as StageFilter, label: "All", total: allTotal, breached: 0 },
@@ -993,30 +1030,45 @@ function StageStatStrip({
             })),
           ].map((s) => {
             const isActive = stage === s.value;
+            const empty = ready && s.total === 0;
+            // Dot severity: red = stage holds SLA-breached cases, grey =
+            // empty, green = All/Completed, amber = open work otherwise.
+            const dot =
+              s.breached > 0
+                ? "bg-err"
+                : empty
+                  ? "bg-ink-muted/40"
+                  : s.value === "ALL" || s.value === "completed"
+                    ? "bg-synced"
+                    : "bg-warning-text";
             return (
               <button
                 key={s.value}
                 onClick={() => onPick(isActive ? "ALL" : s.value)}
                 className={cn(
-                  "flex items-center gap-2 rounded-lg border px-3 py-2 text-left transition-colors",
+                  "rounded-lg border px-3.5 py-2.5 text-left transition-colors",
                   isActive
                     ? "border-primary bg-primary-soft"
                     : "border-border bg-surface-2 hover:border-primary/40",
                 )}
               >
+                <span className="flex items-center gap-1.5">
+                  <span
+                    className={cn(
+                      "font-mono text-[13px] font-bold leading-none",
+                      isActive ? "text-primary" : empty ? "text-ink-muted/60" : "text-ink",
+                    )}
+                  >
+                    {ready ? s.total : "—"}
+                  </span>
+                  <span className={cn("h-1.5 w-1.5 rounded-full", dot)} />
+                </span>
                 <span
                   className={cn(
-                    "grid h-6 min-w-[24px] shrink-0 place-items-center rounded-full px-1.5 font-mono text-[11px] font-bold",
-                    isActive
-                      ? "bg-primary text-white"
-                      : s.breached > 0
-                        ? "bg-err/15 text-err"
-                        : "bg-surface text-ink-secondary",
+                    "mt-1 block text-[12px] font-semibold leading-tight",
+                    empty && !isActive ? "text-ink-muted" : "text-ink",
                   )}
                 >
-                  {ready ? s.total : "—"}
-                </span>
-                <span className="text-[12px] font-semibold leading-tight text-ink">
                   {s.label}
                 </span>
               </button>

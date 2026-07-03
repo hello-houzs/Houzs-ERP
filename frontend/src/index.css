@@ -1,7 +1,7 @@
 /* Brand web fonts. Latin = IBM Plex (Sans/Serif/Mono), CN = Noto Sans/Serif SC.
  * Loaded from Google Fonts CDN — offline/air-gapped installs must self-host
  * and switch to local @font-face declarations. */
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700;900&family=Noto+Serif+SC:wght@400;500;600;700;900&display=swap');
 
 @tailwind base;
 @tailwind components;

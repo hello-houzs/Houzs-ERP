@@ -64,23 +64,22 @@ export default {
         warning: { bg: "#f6efd9", text: "#6e4d12" },
       },
       fontFamily: {
-        // 2026-06-29 — unified to IBM Plex Sans (latin) + Noto Sans SC (CN
-        // glyphs auto-fall-through). One family across body, display, mono
-        // alias, and eyebrow labels keeps the whole ERP reading as one
-        // typeface; hierarchy comes from weight + size, not family. Web fonts
-        // loaded via @import url() in src/index.css.
+        // Theme C type spec (Nick 2026-07-03, "IBM PLEX + 思源黑/宋"):
+        //   body    = IBM Plex Sans + Noto Sans SC   (正文·思源黑体)
+        //   display = IBM Plex Serif + Noto Serif SC (标题·思源宋体)
+        //   mono    = IBM Plex Mono                  (金额/编号)
+        // Web fonts loaded via @import url() in src/index.css.
         body: ['"IBM Plex Sans"', '"Noto Sans SC"', "system-ui", "-apple-system", "BlinkMacSystemFont", '"Segoe UI"', "Roboto", '"Helvetica Neue"', "Arial", "sans-serif"],
-        display: ['"IBM Plex Sans"', '"Noto Sans SC"', "system-ui", "-apple-system", "BlinkMacSystemFont", '"Segoe UI"', "Roboto", '"Helvetica Neue"', "Arial", "sans-serif"],
-        // `font-mono` is the "data / labels / numbers" alias (not real mono).
-        // Tabular alignment of figures comes from `font-variant-numeric:
-        // tabular-nums` in index.css. Family matches body so eyebrows blend in.
-        mono: ['"IBM Plex Sans"', '"Noto Sans SC"', "system-ui", "-apple-system", "BlinkMacSystemFont", '"Segoe UI"', "Roboto", '"Helvetica Neue"', "Arial", "sans-serif"],
-        // Money / financial figures only — IBM Plex Mono gives ledger-grade
-        // tabular digits so amounts line up by decimal across rows and in the
-        // detail drawers. Applied via `font-money` on amount cells ONLY.
+        // Display headings — serif per Theme C. `font-display` and
+        // `font-serif` are the same stack; keep both so existing call
+        // sites don't need a sweep.
+        display: ['"IBM Plex Serif"', '"Noto Serif SC"', "Georgia", "serif"],
+        // Real mono for codes / IDs / eyebrow labels (金额/编号 role).
+        // Reverts the 2026-05-29 sans alias — Theme C wants Plex Mono.
+        mono: ['"IBM Plex Mono"', "ui-monospace", "SFMono-Regular", "Menlo", "Consolas", "monospace"],
+        // Money / financial figures — same Plex Mono, kept as its own
+        // alias so amount cells can diverge from codes again if needed.
         money: ['"IBM Plex Mono"', "ui-monospace", "SFMono-Regular", "Menlo", "Consolas", "monospace"],
-        // Display serif for large redesigned titles (Service Case detail,
-        // print docs). Web font loaded via @import in src/index.css.
         serif: ['"IBM Plex Serif"', '"Noto Serif SC"', "Georgia", "serif"],
       },
       letterSpacing: {
