@@ -14,7 +14,10 @@ interface Props {
   /** Tiny brass label above the title, e.g. "Project · AKEMI-001". */
   eyebrow?: string;
   title: string;
-  description?: string;
+  /** Override the default title classes when a page needs a different
+   *  size/family (e.g. Service Case detail uses IBM Plex Serif 32px). */
+  titleClassName?: string;
+  description?: ReactNode;
   /** Page-level action buttons rendered top-right of the sticky chrome. */
   actions?: ReactNode;
   /** Optional fallback path for the back button when there's no history. */
@@ -48,6 +51,7 @@ export function DetailLayout({
   breadcrumbs,
   eyebrow,
   title,
+  titleClassName,
   description,
   actions,
   backTo,
@@ -132,7 +136,10 @@ export function DetailLayout({
             </span>
           </div>
         )}
-        <h1 className="font-display text-[20px] font-extrabold leading-tight tracking-tight text-ink sm:text-[22px] lg:text-[24px]">
+        <h1 className={cn(
+          titleClassName ||
+            "font-serif text-[22px] font-semibold leading-tight tracking-tight text-ink sm:text-[24px] lg:text-[28px]"
+        )}>
           {title}
         </h1>
         {description && (

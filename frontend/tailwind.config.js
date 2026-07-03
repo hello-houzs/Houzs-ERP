@@ -79,6 +79,9 @@ export default {
         // tabular digits so amounts line up by decimal across rows and in the
         // detail drawers. Applied via `font-money` on amount cells ONLY.
         money: ['"IBM Plex Mono"', "ui-monospace", "SFMono-Regular", "Menlo", "Consolas", "monospace"],
+        // Display serif for large redesigned titles (Service Case detail,
+        // print docs). Web font loaded via @import in src/index.css.
+        serif: ['"IBM Plex Serif"', '"Noto Serif SC"', "Georgia", "serif"],
       },
       letterSpacing: {
         brand: "0.18em",
