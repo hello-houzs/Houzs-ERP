@@ -23,6 +23,9 @@
 //
 // Endpoints:
 //   POST /scan-so/extract                     — multipart image(s)/pdf (+ salesperson field) → JSON + sampleId
+//   POST /scan-so/enqueue                     — same inputs; queue a BACKGROUND job that OCRs + creates a DRAFT SO
+//   GET  /scan-so/jobs/:id                    — poll a background job (status / soDocNo / error)
+//   GET  /scan-so/jobs?salesperson=           — latest 20 background jobs (optionally one rep's)
 //   POST /scan-so/samples/:id/confirm         — store operator-corrected JSON (+ salesperson); auto-distills rep rules
 //   GET  /scan-so/salespeople                 — distinct reps seen across samples + rules (modal datalist)
 //   GET  /scan-so/rules/:salesperson          — view a rep's distilled rules
@@ -65,6 +68,9 @@ import type { Env, Variables } from '../env';
 import { getSupabaseService } from '../../db/supabase';
 import { paginateAll } from '../lib/paginate-all';
 import { getBranding } from '../../services/branding';
+// Background scan job — the DRAFT SO is created through mfg-sales-orders'
+// factored create core (PRICING-CRITICAL; never reimplemented here).
+import { createDraftSalesOrder } from './mfg-sales-orders';
 
 // The scm-scoped service client (getSupabaseService, db:{schema:'scm'}) and the
 // middleware-attached c.get('supabase') are both schema-parameterised clients.
@@ -712,6 +718,8 @@ LINE ITEMS
 ==========
 For EVERY handwritten row in the item table output one lines[] entry:
 - rawText — the row's text VERBATIM, exactly as written, including misspellings and abbreviations. This is the source of truth for the operator; never clean it up.
+- rawSpec — when the row (or its margin / continuation text) carries a SPECIFICATION string for the item — the variant text such as "Col: PC151-01 + front / Side Divan 8\"+0\"", "divan10+4/gap12", "8\" + no leg" — copy the row's specification text verbatim into rawSpec; do not rephrase, reorder or normalise it (keep punctuation, slashes and inch marks exactly). null when the row has no spec text. rawSpec may overlap rawText — that is fine: rawText is the whole row, rawSpec is just the specification portion.
+- divanHeightInches / legHeightInches / gapInches / noLeg — BEDFRAME variant NUMBERS read from the spec text: the divan/drawer height in inches, the leg height in inches, the mattress gap in inches, and noLeg = true when the spec says no legs ("no leg", "noleg"). Read the FULL numeric token (12" is 12, NEVER 1). Use null (and noLeg = false) when absent or when the row is not a bedframe.
 - qtyGuess — quantity (default 1 when blank or unreadable).
 - priceRmGuess — the row's unit price in RM as a number; null when blank. If only a line total is written and qty > 1, still report the written figure and say so in notes.
 - skuMatch — your best FUZZY match against the catalog SKUS:
@@ -796,6 +804,11 @@ Return STRICT JSON, no markdown fences, no prose:
   "locationMatch": { "value": string, "confidence": number, "reason": string } | null,
   "lines": [{
     "rawText": string,
+    "rawSpec": string | null,
+    "divanHeightInches": number | null,
+    "legHeightInches": number | null,
+    "gapInches": number | null,
+    "noLeg": boolean,
     "qtyGuess": number,
     "priceRmGuess": number | null,
     "skuMatch": { "code": string, "confidence": number, "reason": string } | null,
@@ -819,6 +832,17 @@ type ImageKind = 'order_slip' | 'payment_receipt';
 type ImageClass = { index: number; kind: ImageKind };
 type ExtractedLine = {
   rawText: string;
+  // Verbatim SPECIFICATION text for the row (bedframe/sofa variant string such
+  // as "divan10+4/gap12") — mirrors HOOKKA scan-po.ts's rawSpec. Feeds the
+  // server-side reparseSpec regex pass that overrules the model's numbers
+  // (LLMs occasionally truncate 12" to 1 even at temperature 0).
+  rawSpec: string | null;
+  // BEDFRAME variant numbers. Model-reported first, then OVERRULED by
+  // reparseSpec(rawSpec) in validateSlip for non-SOFA/ACCESSORY lines.
+  divanHeightInches: number | null;
+  legHeightInches: number | null;
+  gapInches: number | null;
+  noLeg: boolean;
   qtyGuess: number;
   priceRmGuess: number | null;
   skuMatch: SkuMatch | null;
@@ -917,6 +941,11 @@ function normalizeSlip(raw: unknown): ExtractedSlip {
         const li = (l && typeof l === 'object' ? l : {}) as Record<string, unknown>;
         return {
           rawText: typeof li.rawText === 'string' ? li.rawText : '',
+          rawSpec: str(li.rawSpec),
+          divanHeightInches: num(li.divanHeightInches),
+          legHeightInches: num(li.legHeightInches),
+          gapInches: num(li.gapInches),
+          noLeg: li.noLeg === true,
           qtyGuess:
             typeof li.qtyGuess === 'number' && Number.isFinite(li.qtyGuess) && li.qtyGuess > 0
               ? li.qtyGuess
@@ -982,19 +1011,124 @@ function normalizeSlip(raw: unknown): ExtractedSlip {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Server-side spec re-parser — overrules Claude on BEDFRAME number extraction.
+// Ported from HOOKKA scan-po.ts reparseSpec (their BUG class: LLMs
+// occasionally truncate "10" to 1 or 12" to 1 even at temperature 0; regex on
+// the verbatim rawSpec line is bulletproof for these patterns).
+// ---------------------------------------------------------------------------
+function reparseSpec(line: ExtractedLine): void {
+  if (!line.rawSpec) return;
+  const spec = line.rawSpec;
+
+  // No-leg first — many specs read "8inch + No Legs" or "no leg" or "NOLEG".
+  // If matched, leg is null regardless of any number.
+  const noLegRe = /\b(no\s*leg(?:s)?|noleg(?:s)?)\b/i;
+  const noLegMatch = noLegRe.test(spec);
+
+  // Divan height: number that follows "divan" / "drawer" keyword.
+  // Examples: "Divan10+4" -> 10. "Divan:8inch" -> 8. "DRAWER:12"" -> 12.
+  const divanRe = /(?:divan|drawer)[\s:.-]*(\d+(?:\.\d+)?)/i;
+  const divanMatch = spec.match(divanRe);
+
+  // Leg height: number that follows the "+" or "leg" keyword. Skip when
+  // noLeg is true. Patterns: "Divan10+4" -> 4. "8"DIVAN+2"LEG" -> 2.
+  let legMatch: RegExpMatchArray | null = null;
+  if (!noLegMatch) {
+    legMatch =
+      spec.match(/\+\s*(\d+(?:\.\d+)?)\s*(?:"|inch|in|leg)/i) ??
+      spec.match(/(\d+(?:\.\d+)?)\s*"?\s*leg/i);
+  }
+
+  // Gap: number after gap-family keywords.
+  const gapRe =
+    /(?:m['.\s]*gap|m\s*gap|mattress\s*gap|mattressgap|gap)[\s:.-]*(\d+(?:\.\d+)?)/i;
+  const gapMatch = spec.match(gapRe);
+
+  if (divanMatch) {
+    const v = Number(divanMatch[1]);
+    if (Number.isFinite(v)) line.divanHeightInches = v;
+  }
+  if (noLegMatch) {
+    line.noLeg = true;
+    line.legHeightInches = null;
+  } else if (legMatch) {
+    const v = Number(legMatch[1]);
+    if (Number.isFinite(v)) {
+      line.legHeightInches = v;
+      line.noLeg = false;
+    }
+  }
+  if (gapMatch) {
+    const v = Number(gapMatch[1]);
+    if (Number.isFinite(v)) line.gapInches = v;
+  }
+}
+
+// Normalize a code for tolerant matching: uppercase, drop every
+// non-alphanumeric separator, then strip leading zeros from each numeric run.
+// Examples (all collapse to the same key):
+//   "KN-390-01" -> "KN3901"
+//   "KN.390-001" -> "KN3901"
+//   "KN 390-1" -> "KN3901"
+// Used as a fallback when the exact-uppercase lookup misses (ported from
+// HOOKKA scan-po.ts normalizeForMatch).
+function normalizeForMatch(s: string): string {
+  return s
+    .toUpperCase()
+    .split(/[^A-Z0-9]+/)
+    .filter(Boolean)
+    .map((seg) => seg.replace(/(?:^|(?<=\D))0+(?=\d)/g, ''))
+    .join('');
+}
+
 // Catalog-bound validation: a skuMatch/fabricMatch whose code is NOT in the
 // live catalog is cleared to null (never-invent rule, enforced server-side —
 // same belt-and-braces as HOOKKA's validateAndEnrichPO). Case-insensitive
-// snap to the canonical catalog casing on hit.
+// snap to the canonical catalog casing on hit; TOLERANT fallbacks (ported
+// from HOOKKA scan-po.ts) before clearing:
+//   SKU:    exact-upper → drop a "1" before a trailing letter group
+//           ("8030-1L(LHF)" → "8030-L(LHF)") → add one ("8030-L(LHF)" →
+//           "8030-1L(LHF)") → separator/leading-zero-stripped lookup.
+//   Fabric: exact-upper → separator/leading-zero-stripped lookup
+//           ("KN.390-001" / "KN 390-1" → the canonical "KN-390-01").
+// Every hit snaps the code to the catalog's canonical casing.
 function validateSlip(slip: ExtractedSlip, catalog: Catalog): Warning[] {
   const warnings: Warning[] = [];
   const skuCanon = new Map(catalog.skus.map((s) => [s.code.toUpperCase(), s.code]));
   const fabricCanon = new Map(catalog.fabrics.map((f) => [f.code.toUpperCase(), f.code]));
   const specialCanon = new Map(catalog.specials.map((s) => [s.code.toUpperCase(), s.code]));
+  // Tolerant lookup tables — separator-stripped + leading-zero-stripped key →
+  // canonical catalog code. Built AFTER the exact maps so an exact hit always
+  // wins (the norm key can collide across near-identical codes; first in wins).
+  const skuCanonByNorm = new Map<string, string>();
+  for (const s of catalog.skus) {
+    const k = normalizeForMatch(s.code);
+    if (!skuCanonByNorm.has(k)) skuCanonByNorm.set(k, s.code);
+  }
+  const fabricCanonByNorm = new Map<string, string>();
+  for (const f of catalog.fabrics) {
+    const k = normalizeForMatch(f.code);
+    if (!fabricCanonByNorm.has(k)) fabricCanonByNorm.set(k, f.code);
+  }
+  // Category by canonical code — gates the bedframe reparseSpec pass below.
+  const categoryByCode = new Map(catalog.skus.map((s) => [s.code.toUpperCase(), s.category]));
 
   slip.lines.forEach((line, i) => {
     if (line.skuMatch) {
-      const canon = skuCanon.get(line.skuMatch.code.toUpperCase());
+      const upper = line.skuMatch.code.toUpperCase();
+      let canon = skuCanon.get(upper);
+      if (!canon) {
+        // "8030-1L(LHF)" → "8030-L(LHF)"
+        const dropOne = upper.replace(/-1([A-Z])/, '-$1');
+        if (dropOne !== upper) canon = skuCanon.get(dropOne);
+      }
+      if (!canon) {
+        // "8030-L(LHF)" → "8030-1L(LHF)"
+        const addOne = upper.replace(/-([A-Z])(\(|$)/, '-1$1$2');
+        if (addOne !== upper) canon = skuCanon.get(addOne);
+      }
+      if (!canon) canon = skuCanonByNorm.get(normalizeForMatch(line.skuMatch.code));
       if (canon) {
         line.skuMatch.code = canon;
       } else {
@@ -1007,9 +1141,22 @@ function validateSlip(slip: ExtractedSlip, catalog: Catalog): Warning[] {
         line.skuMatch = null;
       }
     }
+    // Regex re-parse the verbatim spec to overrule any Claude truncation
+    // mistakes (12" read as 1). Bedframe-family only — skipped for SOFA /
+    // ACCESSORY where the spec format is different (same gate as HOOKKA).
+    // Runs AFTER the SKU snap so the category gate reads the canonical code;
+    // lines with no resolved SKU still reparse (the divan/leg/gap regexes
+    // only fire on bedframe spec keywords, so non-bedframe text is inert).
+    {
+      const cat = line.skuMatch ? categoryByCode.get(line.skuMatch.code.toUpperCase()) ?? '' : '';
+      if (cat !== 'SOFA' && cat !== 'ACCESSORY') reparseSpec(line);
+    }
     if (line.fabricMatch) {
-      const canon = fabricCanon.get(line.fabricMatch.code.toUpperCase());
+      const upper = line.fabricMatch.code.toUpperCase();
+      let canon = fabricCanon.get(upper);
+      if (!canon) canon = fabricCanonByNorm.get(normalizeForMatch(line.fabricMatch.code));
       if (canon) {
+        // Snap to the catalog's canonical casing (HOOKKA fabric-casing rule).
         line.fabricMatch.code = canon;
       } else {
         warnings.push({
@@ -1127,7 +1274,13 @@ function serviceClient(env: Env): SupabaseClient {
 }
 
 function isMissingTable(err: { code?: string; message?: string } | null): boolean {
-  return err?.code === '42P01' || /so_scan_samples.*does not exist|relation .* does not exist/i.test(err?.message ?? '');
+  return (
+    err?.code === '42P01' ||
+    // PostgREST reports an unknown relation as PGRST205 ("Could not find the
+    // table '…' in the schema cache"), not the raw Postgres 42P01.
+    err?.code === 'PGRST205' ||
+    /so_scan_samples.*does not exist|relation .* does not exist|could not find the table/i.test(err?.message ?? '')
+  );
 }
 
 const TABLE_MISSING_MSG =
@@ -1145,6 +1298,19 @@ const TABLE_MISSING_MSG =
 // named "A_B" can't match "AXB".
 function ilikeExact(v: string): string {
   return v.replace(/([\\%_])/g, '\\$1');
+}
+
+// Salesperson KEY normalization — applied on EVERY write and read of the
+// so_scan_samples / so_scan_rules / scan_jobs salesperson column so that
+// case / whitespace variants of one rep's name share ONE learning pool
+// (" aaron " / "Aaron" / "aaron  tan" vs "Aaron Tan"). HOOKKA
+// BUG-2026-06-07-012 class: their exact-name mismatch wasted 92% of gold
+// samples. Trim + collapse internal whitespace; CASE is handled on the read
+// side (every lookup goes through ilikeExact, which is case-insensitive) and
+// on the rules-write side (the distill upserts onto the existing row's
+// canonical casing), so the display casing the rep typed is preserved.
+function normalizeRepKey(v: unknown): string {
+  return typeof v === 'string' ? v.trim().replace(/\s+/g, ' ') : '';
 }
 
 // Reserved so_scan_rules key for the GLOBAL shared product-alias dictionary
@@ -1288,7 +1454,7 @@ async function distillSalespersonRules(
   salesperson: string,
   companyName: string,
 ): Promise<DistillResult> {
-  const rep = salesperson.trim();
+  const rep = normalizeRepKey(salesperson);
   if (!rep) return { status: 'error', reason: 'Missing salesperson.' };
   // Reserved keys route to their own cross-rep distillers, never a per-rep
   // rules pass: '__GLOBAL__' → shared alias dictionary,
@@ -1650,7 +1816,7 @@ export async function distillAllSalespersonRules(
 
   const counts = new Map<string, { display: string; n: number }>();
   for (const row of (data as Array<{ salesperson: string | null }> | null) ?? []) {
-    const t = (row.salesperson ?? '').trim();
+    const t = normalizeRepKey(row.salesperson);
     if (!t) continue;
     // Belt-and-braces: the reserved global key is never a salesperson.
     if (isGlobalKey(t)) continue;
@@ -1721,7 +1887,7 @@ scanSo.get('/salespeople', async (c) => {
 // GET /scan-so/rules/:salesperson — view a rep's distilled rules.
 // ===========================================================================
 scanSo.get('/rules/:salesperson', async (c) => {
-  const rep = (c.req.param('salesperson') ?? '').trim();
+  const rep = normalizeRepKey(c.req.param('salesperson'));
   if (!rep) return c.json({ error: 'bad_request', reason: 'Missing salesperson.' }, 400);
   const svc = serviceClient(c.env);
   const { data, error } = await svc
@@ -1744,7 +1910,7 @@ scanSo.get('/rules/:salesperson', async (c) => {
 // POST /scan-so/rules/:salesperson/distill — manual regeneration.
 // ===========================================================================
 scanSo.post('/rules/:salesperson/distill', async (c) => {
-  const rep = (c.req.param('salesperson') ?? '').trim();
+  const rep = normalizeRepKey(c.req.param('salesperson'));
   if (!rep) return c.json({ error: 'bad_request', reason: 'Missing salesperson.' }, 400);
   const branding = await getBranding(c.env);
   const res = await distillSalespersonRules(serviceClient(c.env), c.env.ANTHROPIC_API_KEY, rep, branding.companyName);
@@ -1802,54 +1968,54 @@ scanSo.post('/warm', async (c) => {
 });
 
 // ===========================================================================
-// POST /scan-so/extract
+// Shared OCR pipeline pieces — used by BOTH POST /scan-so/extract (the
+// client-driven flow, kept as the mobile fallback) and the background scan
+// job (POST /scan-so/enqueue → waitUntil pipeline). Factored MECHANICALLY out
+// of the /extract handler — same code, same order — so the two paths can
+// never drift. /extract's endpoint contract is unchanged.
 // ===========================================================================
-scanSo.post('/extract', async (c) => {
-  const apiKey = c.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    return c.json(
-      { error: 'anthropic_key_missing', reason: 'Run: npx wrangler secret put ANTHROPIC_API_KEY' },
-      503,
-    );
-  }
+type ContentBlock = Record<string, unknown>;
+// Per-IMAGE provenance, indexed by the SAME `index` Claude classifies in the
+// OUTPUT "images" array — fileBlocks is built in file order, so image #N in
+// the model's view is uploadedImages[N]. PDFs are NOT displayable inline on
+// the SO detail page so they are never stored under image_key (they still
+// ride into the prompt as document blocks).
+type UploadedImage = { index: number; buffer: ArrayBuffer; mime: string };
+type ScanFileParse = {
+  // Claude content blocks (image or document per file), in upload order.
+  fileBlocks: ContentBlock[];
+  // Image files only (buffer + mime), for R2 provenance storage.
+  uploadedImages: UploadedImage[];
+  // EVERY accepted file's raw bytes (images AND pdfs) — the enqueue path
+  // persists these to R2 for durability before the job runs.
+  allFiles: Array<{ buffer: ArrayBuffer; mime: string }>;
+  firstBuffer: ArrayBuffer | null;
+  fileCount: number;
+};
 
-  let formData: FormData;
-  try {
-    formData = await c.req.formData();
-  } catch (e) {
-    return c.json({ error: 'bad_request', reason: `Invalid multipart body: ${(e as Error).message}` }, 400);
-  }
-
-  // Accept files under any field name ("file", "files", repeated) — the
-  // modal sends `file` repeatedly but be liberal in what we accept.
+// Accept files under any field name ("file", "files", repeated) — the modal
+// sends `file` repeatedly but be liberal in what we accept. Returns a plain
+// bad-request reason string on any rejected input (the caller maps it to its
+// own 400), or the parsed blocks/buffers.
+async function parseScanFiles(
+  formData: FormData,
+): Promise<{ ok: true; parsed: ScanFileParse } | { ok: false; reason: string }> {
   // (entries cast to unknown: @cloudflare/workers-types narrows
   // FormDataEntryValue to string, which breaks the instanceof check.)
   const files: File[] = [];
   for (const [, v] of formData.entries() as Iterable<[string, unknown]>) {
     if (v instanceof File && v.size > 0) files.push(v);
   }
-  if (files.length === 0) {
-    return c.json({ error: 'bad_request', reason: 'No file uploaded.' }, 400);
-  }
+  if (files.length === 0) return { ok: false, reason: 'No file uploaded.' };
 
-  // Build Claude content blocks (image or document per file).
-  type ContentBlock = Record<string, unknown>;
   const fileBlocks: ContentBlock[] = [];
-  // Per-IMAGE provenance, indexed by the SAME `index` Claude classifies in the
-  // OUTPUT "images" array — fileBlocks is built in file order, so image #N in
-  // the model's view is uploadedImages[N]. PDFs are NOT displayable inline on
-  // the SO detail page so they are never stored (and never classified for
-  // storage); they still ride into the prompt as document blocks.
-  type UploadedImage = { index: number; buffer: ArrayBuffer; mime: string };
   const uploadedImages: UploadedImage[] = [];
+  const allFiles: Array<{ buffer: ArrayBuffer; mime: string }> = [];
   let firstBuffer: ArrayBuffer | null = null;
   let blockIndex = 0;
   for (const file of files) {
     if (file.size > MAX_FILE_BYTES) {
-      return c.json(
-        { error: 'bad_request', reason: `File too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Max 20MB.` },
-        400,
-      );
+      return { ok: false, reason: `File too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Max 20MB.` };
     }
     const mime = file.type || '';
     const name = (file.name || '').toLowerCase();
@@ -1859,15 +2025,13 @@ scanSo.post('/extract', async (c) => {
       name.endsWith('.jpg') || name.endsWith('.jpeg') ||
       name.endsWith('.png') || name.endsWith('.webp');
     if (!isPdf && !isImage) {
-      return c.json(
-        { error: 'bad_request', reason: `Unsupported file type "${mime || name}". Use JPEG / PNG / WEBP / PDF.` },
-        400,
-      );
+      return { ok: false, reason: `Unsupported file type "${mime || name}". Use JPEG / PNG / WEBP / PDF.` };
     }
     const buf = await file.arrayBuffer();
     if (!firstBuffer) firstBuffer = buf;
     const data = toBase64(buf);
     if (isPdf) {
+      allFiles.push({ buffer: buf, mime: 'application/pdf' });
       fileBlocks.push({
         type: 'document',
         source: { type: 'base64', media_type: 'application/pdf', data },
@@ -1878,6 +2042,7 @@ scanSo.post('/extract', async (c) => {
         : name.endsWith('.png') ? 'image/png'
         : name.endsWith('.webp') ? 'image/webp'
         : 'image/jpeg';
+      allFiles.push({ buffer: buf, mime: mediaType });
       uploadedImages.push({ index: blockIndex, buffer: buf, mime: mediaType });
       fileBlocks.push({
         type: 'image',
@@ -1886,38 +2051,28 @@ scanSo.post('/extract', async (c) => {
     }
     blockIndex += 1;
   }
+  return {
+    ok: true,
+    parsed: { fileBlocks, uploadedImages, allFiles, firstBuffer, fileCount: files.length },
+  };
+}
 
-  const imageSha256 = firstBuffer ? await sha256Hex(firstBuffer) : null;
-
-  // Salesperson — operator-set in the modal BEFORE extract (free-text).
-  // When given, that rep's distilled rules + their own confirmed samples are
-  // injected; when blank, the AI's salesRep extraction backfills the sample
-  // row so the pool still grows per rep.
-  const repRaw = formData.get('salesperson');
-  const repGiven = typeof repRaw === 'string' ? repRaw.trim() : '';
-
-  // Catalog via the user-scoped client (RLS applies, same visibility the
-  // operator already has on the SKU master screens).
-  const sb = c.get('supabase');
-  const catalog = await loadCatalog(sb);
-
-  // Company name for the prompt anchor comes from the central Branding config
-  // (stable → the cached prefix below stays byte-identical to /warm + cron).
-  const branding = await getBranding(c.env);
-
-  // Cached prefix = SYSTEM_PROMPT + catalog (shared builder — BYTE-IDENTICAL to
-  // what /scan-so/warm and the keep-warm cron send, so they warm the SAME cache
-  // /extract reads). Identical across calls until the catalog changes →
-  // Anthropic prompt-cache hit (~90% discount). Few-shot examples stay OUTSIDE
-  // the cache boundary so a new confirmed sample doesn't invalidate the cache.
-  const cachedPrefix = buildCachedPrefix(catalog, branding.companyName);
-
-  const svc = serviceClient(c.env);
-
+// Dynamic (post-cache-boundary) prompt blocks: shared alias dictionary,
+// cross-rep shared rules, the rep's own distilled rules, and the few-shot
+// pool. All best-effort — a missing row/table just skips that block.
+type PromptInjections = {
+  globalAliasText: string;
+  globalAliasApplied: boolean;
+  globalRulesText: string;
+  globalRulesApplied: boolean;
+  repRulesText: string;
+  repRulesMeta: { salesperson: string; sampleCount: number } | null;
+  fewShotText: string;
+};
+async function loadPromptInjections(svc: SupabaseClient, repGiven: string): Promise<PromptInjections> {
   // GLOBAL shared product-alias dictionary ('__GLOBAL__' so_scan_rules row)
   // — injected for EVERY scan regardless of salesperson, AFTER the cache
-  // boundary and BEFORE the per-rep rules block. Best-effort: row/table
-  // missing just skips it.
+  // boundary and BEFORE the per-rep rules block.
   let globalAliasText = '';
   let globalAliasApplied = false;
   try {
@@ -1944,9 +2099,8 @@ scanSo.post('/extract', async (c) => {
   // CROSS-REP SHARED RULES ('__GLOBAL_RULES__' so_scan_rules row) — common,
   // rep-independent extraction patterns distilled from CONFIRMED corrections
   // across ALL reps. Injected for EVERY scan (including a brand-new rep's
-  // first one), AFTER the cache boundary, alongside the shared aliases and
-  // BEFORE the per-rep rules so a rep's own rules can still refine on top.
-  // Best-effort: row/table missing just skips it.
+  // first one), alongside the shared aliases and BEFORE the per-rep rules so
+  // a rep's own rules can still refine on top.
   let globalRulesText = '';
   let globalRulesApplied = false;
   try {
@@ -1973,7 +2127,7 @@ scanSo.post('/extract', async (c) => {
 
   // Per-rep distilled rules block (so_scan_rules). Injected AFTER the
   // cache_control boundary so the catalog prefix stays cache-stable across
-  // reps. Best-effort — table missing just skips it.
+  // reps.
   let repRulesText = '';
   let repRulesMeta: { salesperson: string; sampleCount: number } | null = null;
   if (repGiven) {
@@ -2000,8 +2154,7 @@ scanSo.post('/extract', async (c) => {
   }
 
   // Few-shot pool: 5 most recent operator-confirmed samples — THIS REP's
-  // first, topped up with global recents (deduped by id). Best-effort —
-  // table missing (migration not applied) just skips it.
+  // first, topped up with global recents (deduped by id).
   let fewShotText = '';
   try {
     type FewShotRow = { id: string; corrected: unknown };
@@ -2049,6 +2202,30 @@ scanSo.post('/extract', async (c) => {
     /* best-effort */
   }
 
+  return {
+    globalAliasText, globalAliasApplied,
+    globalRulesText, globalRulesApplied,
+    repRulesText, repRulesMeta,
+    fewShotText,
+  };
+}
+
+// The ONE Claude vision call + JSON coercion. Timeout / retry / cache /
+// parse behaviour identical for /extract and the background job.
+type SlipExtractCall = {
+  parsed: ExtractedSlip | null;
+  errorMsg: string | null;
+  timedOut: boolean;
+  claudeText: string;
+  cacheHit: boolean;
+  cacheCreated: boolean;
+};
+async function callClaudeSlipExtract(
+  apiKey: string,
+  cachedPrefix: string,
+  inj: PromptInjections,
+  fileBlocks: ContentBlock[],
+): Promise<SlipExtractCall> {
   let errorMsg: string | null = null;
   let timedOut = false;
   let parsed: ExtractedSlip | null = null;
@@ -2071,8 +2248,8 @@ scanSo.post('/extract', async (c) => {
         // Houzs 2026-06-23 — Houzs is a RETAILER (1141 SKUs + 705 fabrics in the
         // injected catalog vs HOOKKA's small maker catalog), so the cached prefix
         // is large and the default 5-min ephemeral cache expires between scans
-        // spaced apart ("隔久再扫又全价"). Extend the cache to 1h so back-to-back
-        // and within-the-hour scans reuse the catalog prefix and stay fast.
+        // spaced apart. Extend the cache to 1h so back-to-back and
+        // within-the-hour scans reuse the catalog prefix and stay fast.
         'anthropic-beta': 'extended-cache-ttl-2025-04-11',
       },
       body: JSON.stringify({
@@ -2092,10 +2269,10 @@ scanSo.post('/extract', async (c) => {
               // must not bust the prefix. Order: shared aliases → shared rules →
               // rep rules → few-shot examples (rep-specific refines on the shared
               // baseline; concrete examples come last).
-              ...(globalAliasText ? [{ type: 'text', text: globalAliasText }] : []),
-              ...(globalRulesText ? [{ type: 'text', text: globalRulesText }] : []),
-              ...(repRulesText ? [{ type: 'text', text: repRulesText }] : []),
-              ...(fewShotText ? [{ type: 'text', text: fewShotText }] : []),
+              ...(inj.globalAliasText ? [{ type: 'text', text: inj.globalAliasText }] : []),
+              ...(inj.globalRulesText ? [{ type: 'text', text: inj.globalRulesText }] : []),
+              ...(inj.repRulesText ? [{ type: 'text', text: inj.repRulesText }] : []),
+              ...(inj.fewShotText ? [{ type: 'text', text: inj.fewShotText }] : []),
               ...fileBlocks,
               {
                 type: 'text',
@@ -2144,20 +2321,31 @@ scanSo.post('/extract', async (c) => {
     }
   }
 
-  // Persist the sample row (status EXTRACTED, or FAILED with the error blob).
-  // salesperson = operator's pick, else the AI's salesRep detection — keeps
-  // the per-rep pool growing even when the operator forgets the field.
-  const sampleSalesperson = repGiven || (parsed?.salesRep ?? '').trim() || null;
+  return { parsed, errorMsg, timedOut, claudeText, cacheHit, cacheCreated };
+}
+
+// Persist the sample row (status EXTRACTED, or FAILED with the error blob) —
+// the learning pool grows on every scan, background or interactive.
+async function insertScanSample(
+  svc: SupabaseClient,
+  args: {
+    imageSha256: string | null;
+    salesperson: string | null;
+    parsed: ExtractedSlip | null;
+    errorMsg: string | null;
+    claudeText: string;
+  },
+): Promise<{ sampleId: string | null; sampleInsertError: string | null }> {
   let sampleId: string | null = null;
   let sampleInsertError: string | null = null;
   try {
     const { data: inserted, error: insErr } = await svc
       .from('so_scan_samples')
       .insert({
-        image_sha256: imageSha256,
-        salesperson: sampleSalesperson,
-        extracted: parsed ?? { error: errorMsg, claudeText },
-        status: parsed ? 'EXTRACTED' : 'FAILED',
+        image_sha256: args.imageSha256,
+        salesperson: args.salesperson,
+        extracted: args.parsed ?? { error: args.errorMsg, claudeText: args.claudeText },
+        status: args.parsed ? 'EXTRACTED' : 'FAILED',
       })
       .select('id')
       .single();
@@ -2171,22 +2359,34 @@ scanSo.post('/extract', async (c) => {
     sampleInsertError = (e as Error).message;
     console.error('so_scan_samples insert failed:', sampleInsertError);
   }
+  return { sampleId, sampleInsertError };
+}
 
-  // Original-image persistence (best-effort). The scan can carry TWO photos —
-  // a HANDWRITTEN order slip and a PRINTED card-terminal payment receipt. Pick
-  // which uploaded IMAGE is which from Claude's `images` classification, then
-  // store up to two raw buffers in the SO_ITEM_PHOTOS R2 bucket:
-  //   • order slip   → `scan-slips/${sampleId}`          (image_key, mig 0033)
-  //   • payment recpt → `scan-slips/${sampleId}-receipt`  (receipt_image_key, mig 0034)
-  // Both keys ride onto the created SO so the SO Detail page can serve them back
-  // as "Order Slip" / "Payment Receipt" proof. CLASSIFICATION FALLBACK: when the
-  // model's tags are missing/ambiguous, the first image = order slip and a
-  // second image (if any) = receipt. PDFs are never stored (not inline-viewable)
-  // and are excluded from uploadedImages above. An R2/classify/DB failure must
-  // NEVER fail the extraction — it's pure provenance.
+// Original-image persistence (best-effort). The scan can carry TWO photos —
+// a HANDWRITTEN order slip and a PRINTED card-terminal payment receipt. Pick
+// which uploaded IMAGE is which from Claude's `images` classification, then
+// store up to two raw buffers in the SO_ITEM_PHOTOS R2 bucket:
+//   order slip    -> `scan-slips/${sampleId}`          (image_key, mig 0033)
+//   payment recpt -> `scan-slips/${sampleId}-receipt`  (receipt_image_key, mig 0034)
+// Both keys ride onto the created SO so the SO Detail page can serve them back
+// as "Order Slip" / "Payment Receipt" proof. CLASSIFICATION FALLBACK: when the
+// model's tags are missing/ambiguous, the first image = order slip and a
+// second image (if any) = receipt. PDFs are never stored (not inline-viewable)
+// and are excluded from uploadedImages. An R2/classify/DB failure must NEVER
+// fail the extraction — it's pure provenance.
+async function storeScanImages(
+  bucket: R2Bucket | undefined,
+  svc: SupabaseClient,
+  sampleId: string | null,
+  uploadedImages: UploadedImage[],
+  parsed: ExtractedSlip | null,
+): Promise<{ imageKey: string | null; receiptImageKey: string | null }> {
   let imageKey: string | null = null;
   let receiptImageKey: string | null = null;
-  if (sampleId && uploadedImages.length > 0 && c.env.SO_ITEM_PHOTOS) {
+  // const alias — narrowing on a `const` survives into the putImage closure
+  // below (a plain parameter's narrowing would not).
+  const store = bucket;
+  if (sampleId && uploadedImages.length > 0 && store) {
     // Resolve order-slip + receipt images from the classification, falling back
     // to positional order (1st = slip, 2nd = receipt) when tags don't cover it.
     const tagByIndex = new Map<number, ImageKind>();
@@ -2215,7 +2415,7 @@ scanSo.post('/extract', async (c) => {
     ): Promise<string | null> => {
       if (!img) return null;
       try {
-        await c.env.SO_ITEM_PHOTOS!.put(key, img.buffer, {
+        await store.put(key, img.buffer, {
           httpMetadata: { contentType: img.mime },
         });
         const { error: keyErr } = await svc
@@ -2241,24 +2441,22 @@ scanSo.post('/extract', async (c) => {
       'receipt-image',
     );
   }
+  return { imageKey, receiptImageKey };
+}
 
-  if (!parsed) {
-    // A hung Anthropic call (caught by the 110s AbortSignal.timeout) maps to the
-    // graceful 503 {error, reason} so the modal shows "try again", not a 502.
-    if (timedOut) {
-      return c.json(
-        { error: 'ocr_timeout', reason: errorMsg ?? 'OCR timed out. Please try again.', sampleId, imageKey, receiptImageKey },
-        503,
-      );
-    }
-    return c.json(
-      { error: 'extract_failed', reason: errorMsg ?? 'Extraction failed.', sampleId, imageKey, receiptImageKey },
-      502,
-    );
-  }
-
+// Post-extraction enrichment + catalog-bound validation, IN PLACE on `parsed`:
+// phone normalisation, Google-geocode address correction (postcode-driven
+// city/state snap via my_localities), then validateSlip (never-invent
+// enforcement + tolerant SKU/fabric snapping + the bedframe reparseSpec
+// override). Returns the operator-facing warnings.
+async function postProcessSlip(
+  parsed: ExtractedSlip,
+  sb: SupabaseClient,
+  googleMapsApiKey: string | undefined,
+  catalog: Catalog,
+): Promise<Warning[]> {
   // Phone normalisation — store the bare national-significant form under +60
-  // (drop the trunk 0): "0197770309" → "197770309". Applies to every extracted
+  // (drop the trunk 0): "0197770309" -> "197770309". Applies to every extracted
   // phone (main + spouse/emergency) so the form's PhoneInput seeds the correct
   // digits. phones[0] is the primary; the rest ride along for the edit-gate.
   parsed.phones = parsed.phones
@@ -2268,12 +2466,12 @@ scanSo.post('/extract', async (c) => {
   // Address via Google Geocoding (GOOGLE_MAPS_API_KEY). The LLM mis-parses
   // Malaysian areas (it put Melawati at Ampang/Selangor 68000 — it's KL/Setapak
   // ~53100), so when geocoding succeeds we PREFER its state/city/postcode over
-  // the LLM guess. Fail-soft: no key / network error / no result → keep the LLM
+  // the LLM guess. Fail-soft: no key / network error / no result -> keep the LLM
   // parse untouched. The geocoded STATE is seeded into addressStateMatch so the
   // validateSlip pass below still snaps it to the catalog states list (and
   // clears it if the geocoder ever returns a non-catalog state).
   try {
-    const geo = await geocodeAddress(parsed.address, c.env.GOOGLE_MAPS_API_KEY);
+    const geo = await geocodeAddress(parsed.address, googleMapsApiKey);
     if (geo) {
       // Postcode is the driver: seed it first, then resolve city/state from the
       // SAME my_localities row that postcode maps to (the cascade the form uses),
@@ -2299,7 +2497,105 @@ scanSo.post('/extract', async (c) => {
     /* fail-soft — keep the LLM address parse */
   }
 
-  const warnings = validateSlip(parsed, catalog);
+  return validateSlip(parsed, catalog);
+}
+
+// ===========================================================================
+// POST /scan-so/extract
+// ===========================================================================
+scanSo.post('/extract', async (c) => {
+  const apiKey = c.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    return c.json(
+      { error: 'anthropic_key_missing', reason: 'Run: npx wrangler secret put ANTHROPIC_API_KEY' },
+      503,
+    );
+  }
+
+  let formData: FormData;
+  try {
+    formData = await c.req.formData();
+  } catch (e) {
+    return c.json({ error: 'bad_request', reason: `Invalid multipart body: ${(e as Error).message}` }, 400);
+  }
+
+  // Build Claude content blocks (image or document per file) — shared with
+  // the background /enqueue path (parseScanFiles).
+  const filesRes = await parseScanFiles(formData);
+  if (!filesRes.ok) {
+    return c.json({ error: 'bad_request', reason: filesRes.reason }, 400);
+  }
+  const { fileBlocks, uploadedImages, firstBuffer, fileCount } = filesRes.parsed;
+
+  const imageSha256 = firstBuffer ? await sha256Hex(firstBuffer) : null;
+
+  // Salesperson — operator-set in the modal BEFORE extract (free-text).
+  // When given, that rep's distilled rules + their own confirmed samples are
+  // injected; when blank, the AI's salesRep extraction backfills the sample
+  // row so the pool still grows per rep. Normalized (trim + single-space) so
+  // case/whitespace variants share one learning pool.
+  const repGiven = normalizeRepKey(formData.get('salesperson'));
+
+  // Catalog via the user-scoped client (RLS applies, same visibility the
+  // operator already has on the SKU master screens).
+  const sb = c.get('supabase');
+  const catalog = await loadCatalog(sb);
+
+  // Company name for the prompt anchor comes from the central Branding config
+  // (stable → the cached prefix below stays byte-identical to /warm + cron).
+  const branding = await getBranding(c.env);
+
+  // Cached prefix = SYSTEM_PROMPT + catalog (shared builder — BYTE-IDENTICAL to
+  // what /scan-so/warm and the keep-warm cron send, so they warm the SAME cache
+  // /extract reads). Identical across calls until the catalog changes →
+  // Anthropic prompt-cache hit (~90% discount). Few-shot examples stay OUTSIDE
+  // the cache boundary so a new confirmed sample doesn't invalidate the cache.
+  const cachedPrefix = buildCachedPrefix(catalog, branding.companyName);
+
+  const svc = serviceClient(c.env);
+
+  // Dynamic prompt blocks (shared aliases / cross-rep shared rules / per-rep
+  // rules / few-shot) — loadPromptInjections, shared with the background job.
+  const inj = await loadPromptInjections(svc, repGiven);
+
+  // ONE Claude vision call + JSON coercion — callClaudeSlipExtract, shared
+  // with the background job (timeout / retry / cache semantics inside).
+  const { parsed, errorMsg, timedOut, claudeText, cacheHit, cacheCreated } =
+    await callClaudeSlipExtract(apiKey, cachedPrefix, inj, fileBlocks);
+
+  // Persist the sample row (learning pool) — insertScanSample, shared with
+  // the background job. salesperson = operator's pick, else the AI's salesRep
+  // detection — keeps the per-rep pool growing even when the operator forgets
+  // the field.
+  const sampleSalesperson = repGiven || normalizeRepKey(parsed?.salesRep) || null;
+  const { sampleId, sampleInsertError } = await insertScanSample(svc, {
+    imageSha256, salesperson: sampleSalesperson, parsed, errorMsg, claudeText,
+  });
+
+  // Original slip / receipt R2 persistence — storeScanImages, shared with the
+  // background job (Claude image-classification fallback semantics inside).
+  const { imageKey, receiptImageKey } = await storeScanImages(
+    c.env.SO_ITEM_PHOTOS, svc, sampleId, uploadedImages, parsed,
+  );
+
+  if (!parsed) {
+    // A hung Anthropic call (caught by the 110s AbortSignal.timeout) maps to the
+    // graceful 503 {error, reason} so the modal shows "try again", not a 502.
+    if (timedOut) {
+      return c.json(
+        { error: 'ocr_timeout', reason: errorMsg ?? 'OCR timed out. Please try again.', sampleId, imageKey, receiptImageKey },
+        503,
+      );
+    }
+    return c.json(
+      { error: 'extract_failed', reason: errorMsg ?? 'Extraction failed.', sampleId, imageKey, receiptImageKey },
+      502,
+    );
+  }
+
+  // Phone normalisation + geocode enrichment + catalog-bound validation —
+  // postProcessSlip, shared with the background job.
+  const warnings = await postProcessSlip(parsed, sb, c.env.GOOGLE_MAPS_API_KEY, catalog);
 
   return c.json({
     success: true,
@@ -2327,14 +2623,430 @@ scanSo.post('/extract', async (c) => {
       meta: {
         cacheHit,
         cacheCreated,
-        files: files.length,
+        files: fileCount,
         sampleInsertError,
-        repRules: repRulesMeta,
-        sharedAliases: globalAliasApplied,
-        sharedRules: globalRulesApplied,
+        repRules: inj.repRulesMeta,
+        sharedAliases: inj.globalAliasApplied,
+        sharedRules: inj.globalRulesApplied,
       },
     },
   });
+});
+
+// ===========================================================================
+// TRUE BACKGROUND SCAN JOB (owner 2026-07-04): the rep photographs the slip,
+// POSTs /scan-so/enqueue, and can CLOSE THE APP — the OCR + DRAFT-SO create
+// finish server-side inside ctx.waitUntil and the result lands in
+// scm.scan_jobs (migration 0067) for the mobile Scan screen to poll.
+//
+//   POST /scan-so/enqueue        — same multipart inputs as /extract (image
+//                                  file(s) + salesperson). Persists the photos
+//                                  (R2, scan-jobs/{jobId}/{n}) + the job row,
+//                                  responds { job_id, status: "queued" }
+//                                  IMMEDIATELY, then runs the pipeline in
+//                                  waitUntil (single Claude vision call — fits
+//                                  Workers' waitUntil budget; no extra retries
+//                                  beyond anthropicFetchWithRetry).
+//   GET  /scan-so/jobs/:id       — poll one job (status / soDocNo / error).
+//   GET  /scan-so/jobs?salesperson= — latest 20 jobs (optionally one rep's).
+//
+// The pipeline calls the EXACT machinery /extract uses (loadCatalog,
+// buildCachedPrefix, loadPromptInjections, callClaudeSlipExtract,
+// insertScanSample, storeScanImages, postProcessSlip) — shared functions, not
+// copies — then creates the DRAFT SO through mfg-sales-orders'
+// createDraftSalesOrder (the factored PRICING-CRITICAL create core; never
+// reimplemented here). /extract stays untouched as the client-driven fallback.
+// ===========================================================================
+const SCAN_JOBS_MISSING_MSG =
+  'scan-jobs table missing — apply src/db/migrations-pg/0067_scm_scan_jobs.sql to this database.';
+
+// Plain-language job failures (standing rule: user-facing error = one plain
+// sentence, never a raw exception / status code — those go to console.error).
+const JOB_MSG = {
+  fallback: 'Something went wrong while processing the scan. Please enter this order manually.',
+  noKey: 'Scanning is not set up on the server yet. Please enter this order manually.',
+  timeout: 'Reading the slip took too long. Please try scanning again.',
+  unreadable: 'The slip photo could not be read. Please retake the photo and try again.',
+  createFallback: 'The draft order could not be created. Please enter this order manually.',
+} as const;
+
+// Snake/camel-tolerant job row -> API shape (dual-read both casings — the #1
+// recurring result-column bug class).
+function jobToJson(r: Record<string, unknown>): Record<string, unknown> {
+  return {
+    id: r.id ?? null,
+    status: r.status ?? null,
+    salesperson: r.salesperson ?? null,
+    soDocNo: r.soDocNo ?? r.so_doc_no ?? null,
+    error: r.error ?? null,
+    sampleId: r.sampleId ?? r.sample_id ?? null,
+    imageKeys: r.imageKeys ?? r.image_keys ?? [],
+    createdAt: r.createdAt ?? r.created_at ?? null,
+    updatedAt: r.updatedAt ?? r.updated_at ?? null,
+  };
+}
+
+// Extracted slip -> DRAFT SO create body. Mirrors the SHIPPED headless client
+// mapping (MobileScan buildPrefill + MobileNewSO createDraftFromPrefill):
+// same header fields, same "+60" phone re-attachment, same named-line filter,
+// same itemGroup 'others' + null dates (the operator finishes category /
+// variants / payments when reviewing the draft). Additions the client flow
+// showed on screen instead: the verbatim slip row / fabric code / OCR notes
+// ride in the line remark, and the reparseSpec-hardened bedframe numbers seed
+// the divanHeight/legHeight/gap variant keys so nothing OCR'd is lost.
+// Validated option values (customerType / buildingType / state / venue /
+// payment fields) come straight from validateSlip's catalog-bound matches, so
+// the create handler's own dropdown re-validation accepts them.
+function buildDraftSoBodyFromSlip(
+  parsed: ExtractedSlip,
+  catalog: Catalog,
+  keys: { imageKey: string | null; receiptImageKey: string | null },
+): { body: Record<string, unknown> | null; missing: string[] } {
+  const missing: string[] = [];
+  const customerName = (parsed.customerName ?? '').trim();
+  if (!customerName) missing.push('customer name');
+  // parsed.phones are already national-significant digits (postProcessSlip).
+  const mainPhone = (parsed.phones[0] ?? '').trim();
+  if (!mainPhone) missing.push('phone number');
+  if (missing.length > 0) return { body: null, missing };
+
+  const skuByCode = new Map(catalog.skus.map((s) => [s.code.toUpperCase(), s]));
+  const items: Array<Record<string, unknown>> = [];
+  for (const l of parsed.lines ?? []) {
+    const code = l.skuMatch?.code ?? '';
+    const sku = code ? skuByCode.get(code.toUpperCase()) : undefined;
+    // Matched SKU name, else the raw slip text (same seed the client used) —
+    // a line counts once it has a name or a matched code (drops blank rows).
+    const name = (sku?.name ?? l.rawText ?? '').trim();
+    if (!name && !sku) continue;
+    const remarkParts: string[] = [];
+    if (sku && (l.rawText ?? '').trim() && (l.rawText ?? '').trim() !== name) {
+      remarkParts.push(`Slip: ${(l.rawText ?? '').trim()}`);
+    }
+    if (l.fabricMatch?.code) remarkParts.push(`Fabric: ${l.fabricMatch.code}`);
+    if (l.specialsMatch.length > 0) remarkParts.push(`Specials: ${l.specialsMatch.map((s) => s.code).join(', ')}`);
+    if (l.notes) remarkParts.push(l.notes);
+    const variants: Record<string, unknown> = {};
+    if (remarkParts.length > 0) variants.remark = remarkParts.join(' | ');
+    // Bedframe numbers (reparseSpec-overruled) -> the same inch-string variant
+    // keys the New SO form writes, so the draft's line editor seeds correctly.
+    if (l.divanHeightInches != null) variants.divanHeight = `${l.divanHeightInches}"`;
+    if (l.noLeg) variants.legHeight = '0"';
+    else if (l.legHeightInches != null) variants.legHeight = `${l.legHeightInches}"`;
+    if (l.gapInches != null) variants.gap = `${l.gapInches}"`;
+    items.push({
+      itemCode: sku?.code ?? '',
+      // 'others' mirrors the shipped headless client (category-specific
+      // machinery — sofa split, variant gates — is the operator's review
+      // step, not the background draft's).
+      itemGroup: 'others',
+      description: name,
+      qty: l.qtyGuess > 0 ? l.qtyGuess : 1,
+      unitPriceCenti: Math.round(Math.max(0, l.priceRmGuess ?? 0) * 100),
+      lineDeliveryDate: null,
+      ...(Object.keys(variants).length > 0 ? { variants } : {}),
+    });
+  }
+
+  // 'One Shot' -> null (no installment term); 'N months' -> N (the client's
+  // planToMonths rule).
+  const planLabel = parsed.installmentPlanMatch?.value ?? '';
+  const planMonthsMatch = /^(\d+)\s*month/i.exec(planLabel.trim());
+  const planMonths = planMonthsMatch ? Number(planMonthsMatch[1]) : null;
+  const paymentMethod = parsed.paymentMethodMatch?.value ?? null;
+
+  const body: Record<string, unknown> = {
+    customerName,
+    debtorName: customerName,
+    customerSoNo: (parsed.customerSoRef ?? '').trim() || null,
+    phone: `+60${mainPhone.replace(/\s+/g, '')}`,
+    customerType: parsed.customerTypeMatch?.value ?? null,
+    buildingType: parsed.buildingTypeMatch?.value ?? null,
+    note: (parsed.remarks ?? '').trim() || null,
+    address1: (parsed.addressLine1 ?? parsed.address ?? '').trim() || null,
+    customerState: parsed.addressStateMatch?.value ?? null,
+    city: (parsed.city ?? '').trim() || null,
+    postcode: (parsed.postcode ?? '').trim() || null,
+    // DRAFT: no dates (the interactive "Save draft" nulls these too).
+    internalExpectedDd: null,
+    customerDeliveryDate: null,
+    emergencyContactPhone: (parsed.phones[1] ?? '').trim()
+      ? `+60${(parsed.phones[1] ?? '').replace(/\s+/g, '')}`
+      : null,
+    // Validated venue only — free-text slip location would bypass the venue
+    // master; when null the create core's venue-by-active-project autofill
+    // resolves it from the salesperson's current exhibition project.
+    venue: parsed.locationMatch?.value ?? null,
+    // Payment header fields (validated matches; the operator reviews the
+    // draft before it becomes a real order). No payments[] ledger rows — a
+    // slip-backed payment row is an interactive step, exactly like the
+    // shipped headless client flow.
+    paymentMethod,
+    merchantProvider: paymentMethod === 'Merchant' ? (parsed.bankMatch?.value ?? null) : null,
+    installmentMonths: planMonths,
+    approvalCode: (parsed.approvalCode ?? '').trim() || null,
+    depositCenti: parsed.depositRm && parsed.depositRm > 0 ? Math.round(parsed.depositRm * 100) : 0,
+    // Provenance — the SO detail page serves these back as Order Slip /
+    // Payment Receipt proof (same keys the interactive flow carries).
+    slipImageKey: keys.imageKey,
+    receiptImageKey: keys.receiptImageKey,
+    // The whole point: land as DRAFT for the operator to review.
+    asDraft: true,
+    items,
+  };
+  return { body, missing: [] };
+}
+
+// The waitUntil pipeline — runs AFTER /enqueue has responded. Every failure
+// path marks the job 'error' with a SHORT plain-language message (raw details
+// go to console.error only). Single Claude vision call; no retries beyond the
+// shared anthropicFetchWithRetry, keeping the whole run inside Workers'
+// waitUntil budget.
+async function runScanJob(
+  env: Env,
+  job: {
+    id: string;
+    salesperson: string;
+    salespersonId: string;
+    salespersonName: string | null;
+    houzsUserId: number | null;
+    fileBlocks: ContentBlock[];
+    uploadedImages: UploadedImage[];
+    firstBuffer: ArrayBuffer | null;
+  },
+): Promise<void> {
+  const svc = serviceClient(env);
+  const touch = async (patch: Record<string, unknown>): Promise<void> => {
+    try {
+      const { error } = await svc
+        .from('scan_jobs')
+        .update({ ...patch, updated_at: new Date().toISOString() })
+        .eq('id', job.id);
+      if (error) console.error('[scan-job] job update failed:', job.id, error.message);
+    } catch (e) {
+      console.error('[scan-job] job update threw:', job.id, (e as Error).message);
+    }
+  };
+  const fail = async (plainMsg: string): Promise<void> => {
+    await touch({ status: 'error', error: plainMsg });
+  };
+
+  try {
+    await touch({ status: 'running' });
+    const apiKey = env.ANTHROPIC_API_KEY;
+    if (!apiKey) {
+      console.error('[scan-job] ANTHROPIC_API_KEY missing');
+      return await fail(JOB_MSG.noKey);
+    }
+
+    // EXACT /extract machinery, service-client flavoured (no request scope in
+    // waitUntil; catalog reads are the same data RLS shows any signed-in
+    // operator — same precedent as warmCatalogCacheForCron).
+    const catalog = await loadCatalog(svc);
+    const branding = await getBranding(env);
+    const cachedPrefix = buildCachedPrefix(catalog, branding.companyName);
+    const inj = await loadPromptInjections(svc, job.salesperson);
+    const call = await callClaudeSlipExtract(apiKey, cachedPrefix, inj, job.fileBlocks);
+    const parsed = call.parsed;
+
+    // Learning pool + slip/receipt provenance — identical to /extract.
+    const imageSha256 = job.firstBuffer ? await sha256Hex(job.firstBuffer) : null;
+    const sampleSalesperson = job.salesperson || normalizeRepKey(parsed?.salesRep) || null;
+    const { sampleId } = await insertScanSample(svc, {
+      imageSha256,
+      salesperson: sampleSalesperson,
+      parsed,
+      errorMsg: call.errorMsg,
+      claudeText: call.claudeText,
+    });
+    if (sampleId) await touch({ sample_id: sampleId });
+    const { imageKey, receiptImageKey } = await storeScanImages(
+      env.SO_ITEM_PHOTOS, svc, sampleId, job.uploadedImages, parsed,
+    );
+
+    if (!parsed) {
+      console.error('[scan-job] extraction failed:', job.id, call.errorMsg);
+      return await fail(call.timedOut ? JOB_MSG.timeout : JOB_MSG.unreadable);
+    }
+
+    await postProcessSlip(parsed, svc, env.GOOGLE_MAPS_API_KEY, catalog);
+
+    const draft = buildDraftSoBodyFromSlip(parsed, catalog, { imageKey, receiptImageKey });
+    if (!draft.body) {
+      return await fail(
+        `The scan could not read the ${draft.missing.join(' and ')} on the slip. Please enter this order manually.`,
+      );
+    }
+
+    // PRICING-CRITICAL create — the factored mfg-sales-orders core, replayed
+    // with the identities captured at enqueue time. Never reimplemented here.
+    const outcome = await createDraftSalesOrder(env, {
+      salespersonId: job.salespersonId,
+      salespersonName: job.salespersonName,
+      houzsUserId: job.houzsUserId,
+      body: draft.body,
+    });
+    const docNo = (outcome.body as { docNo?: unknown }).docNo;
+    if (outcome.status === 201 && typeof docNo === 'string' && docNo !== '') {
+      await touch({ status: 'done', so_doc_no: docNo });
+      return;
+    }
+    console.error(
+      '[scan-job] draft create rejected:', job.id, outcome.status,
+      JSON.stringify(outcome.body).slice(0, 600),
+    );
+    // The create core's rejection reasons are already plain sentences (the
+    // plain-language-errors standard); fall back to a generic one otherwise.
+    const reason =
+      typeof outcome.body.reason === 'string' ? outcome.body.reason
+      : typeof outcome.body.message === 'string' ? outcome.body.message
+      : JOB_MSG.createFallback;
+    await fail(reason);
+  } catch (e) {
+    console.error('[scan-job] pipeline threw:', job.id, e);
+    await fail(JOB_MSG.fallback);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// POST /scan-so/enqueue — persist photos + job row, respond FAST, run the
+// pipeline in waitUntil. Same multipart contract as /extract.
+// ---------------------------------------------------------------------------
+scanSo.post('/enqueue', async (c) => {
+  let formData: FormData;
+  try {
+    formData = await c.req.formData();
+  } catch (e) {
+    return c.json({ error: 'bad_request', reason: `Invalid multipart body: ${(e as Error).message}` }, 400);
+  }
+  const filesRes = await parseScanFiles(formData);
+  if (!filesRes.ok) {
+    return c.json({ error: 'bad_request', reason: filesRes.reason }, 400);
+  }
+  const { fileBlocks, uploadedImages, allFiles, firstBuffer } = filesRes.parsed;
+  const repGiven = normalizeRepKey(formData.get('salesperson'));
+
+  // Identities captured while the request is still authed — replayed into the
+  // headless SO create. user.id = scm.staff UUID (the SCM bridge identity);
+  // houzsUser.id = public users bigint (venue-by-project autofill). Never mix
+  // the two (staff-UUID vs bigint trap).
+  const user = c.get('user');
+  const houzsUser = c.get('houzsUser');
+  const houzsUserId =
+    houzsUser?.id != null && Number.isFinite(Number(houzsUser.id)) ? Number(houzsUser.id) : null;
+  const salespersonName =
+    ((user.user_metadata as { name?: string } | undefined)?.name ?? '').trim() || repGiven || null;
+
+  const svc = serviceClient(c.env);
+
+  // 1) Job row FIRST — the durable record the phone can poll even if it
+  //    disconnects the instant this response is sent.
+  const { data: jobRow, error: jobErr } = await svc
+    .from('scan_jobs')
+    .insert({
+      status: 'queued',
+      salesperson: repGiven || null,
+      salesperson_id: user.id,
+      houzs_user_id: houzsUserId,
+      image_keys: [],
+    })
+    .select('id')
+    .single();
+  const jobId = (jobRow as { id?: string } | null)?.id ?? null;
+  if (jobErr || !jobId) {
+    if (jobErr && isMissingTable(jobErr)) {
+      return c.json({ error: 'table_missing', reason: SCAN_JOBS_MISSING_MSG }, 503);
+    }
+    console.error('[scan-so enqueue] job insert failed:', jobErr?.message);
+    return c.json({ error: 'enqueue_failed', reason: 'Could not queue the scan. Please try again.' }, 500);
+  }
+
+  // 2) Persist the uploaded photos to R2 (durability/audit) BEFORE responding
+  //    — small puts, still fast. Best-effort: the pipeline runs off the
+  //    in-memory buffers, so a failed put never blocks the job.
+  const imageKeys: string[] = [];
+  if (c.env.SO_ITEM_PHOTOS) {
+    for (let i = 0; i < allFiles.length; i += 1) {
+      const key = `scan-jobs/${jobId}/${i}`;
+      try {
+        await c.env.SO_ITEM_PHOTOS.put(key, allFiles[i].buffer, {
+          httpMetadata: { contentType: allFiles[i].mime },
+        });
+        imageKeys.push(key);
+      } catch (e) {
+        console.warn('[scan-so enqueue] R2 put failed:', key, (e as Error).message);
+      }
+    }
+    if (imageKeys.length > 0) {
+      await svc
+        .from('scan_jobs')
+        .update({ image_keys: imageKeys, updated_at: new Date().toISOString() })
+        .eq('id', jobId);
+    }
+  }
+
+  // 3) Run the pipeline AFTER responding — same waitUntil pattern as the
+  //    confirm endpoint's fire-and-forget distill.
+  const pipeline = runScanJob(c.env, {
+    id: jobId,
+    salesperson: repGiven,
+    salespersonId: user.id,
+    salespersonName,
+    houzsUserId,
+    fileBlocks,
+    uploadedImages,
+    firstBuffer,
+  });
+  try {
+    c.executionCtx.waitUntil(pipeline);
+  } catch {
+    /* non-Workers runtime (tests) — let the floating promise run */
+  }
+
+  return c.json({ job_id: jobId, status: 'queued' }, 202);
+});
+
+// ---------------------------------------------------------------------------
+// GET /scan-so/jobs?salesperson= — latest 20 jobs, optionally one rep's
+// (normalized + case-insensitive match, same pool rule as the samples).
+// ---------------------------------------------------------------------------
+scanSo.get('/jobs', async (c) => {
+  const rep = normalizeRepKey(c.req.query('salesperson'));
+  const svc = serviceClient(c.env);
+  let q = svc
+    .from('scan_jobs')
+    .select('id, status, salesperson, so_doc_no, error, sample_id, image_keys, created_at, updated_at')
+    .order('created_at', { ascending: false })
+    .limit(20);
+  if (rep) q = q.ilike('salesperson', ilikeExact(rep));
+  const { data, error } = await q;
+  if (error) {
+    if (isMissingTable(error)) return c.json({ error: 'table_missing', reason: SCAN_JOBS_MISSING_MSG }, 503);
+    return c.json({ error: 'query_failed', reason: 'Could not load scan jobs. Please try again.' }, 500);
+  }
+  const jobs = ((data as Array<Record<string, unknown>> | null) ?? []).map(jobToJson);
+  return c.json({ success: true, data: { jobs } });
+});
+
+// ---------------------------------------------------------------------------
+// GET /scan-so/jobs/:id — poll one job (status / soDocNo / error).
+// ---------------------------------------------------------------------------
+scanSo.get('/jobs/:id', async (c) => {
+  const id = (c.req.param('id') ?? '').trim();
+  if (!id) return c.json({ error: 'bad_request', reason: 'Missing job id.' }, 400);
+  const svc = serviceClient(c.env);
+  const { data, error } = await svc
+    .from('scan_jobs')
+    .select('id, status, salesperson, so_doc_no, error, sample_id, image_keys, created_at, updated_at')
+    .eq('id', id)
+    .limit(1)
+    .maybeSingle();
+  if (error) {
+    if (isMissingTable(error)) return c.json({ error: 'table_missing', reason: SCAN_JOBS_MISSING_MSG }, 503);
+    return c.json({ error: 'query_failed', reason: 'Could not load the scan job. Please try again.' }, 500);
+  }
+  if (!data) return c.json({ error: 'not_found', reason: 'Scan job not found.' }, 404);
+  return c.json({ success: true, data: { job: jobToJson(data as Record<string, unknown>) } });
 });
 
 // ===========================================================================
@@ -2355,7 +3067,9 @@ scanSo.post('/samples/:id/confirm', async (c) => {
   if (body.corrected === undefined || body.corrected === null) {
     return c.json({ error: 'bad_request', reason: 'Missing `corrected`.' }, 400);
   }
-  const repGiven = typeof body.salesperson === 'string' ? body.salesperson.trim() : '';
+  // Normalized rep key (trim + single-space) — case/whitespace variants must
+  // share one learning pool on write, same as /extract's stamp.
+  const repGiven = normalizeRepKey(body.salesperson);
 
   const svc = serviceClient(c.env);
   const { data: updated, error } = await svc
@@ -2386,7 +3100,7 @@ scanSo.post('/samples/:id/confirm', async (c) => {
   // cheap-skip (<2 samples) without an API call, so firing on every confirm
   // is safe. Sequential to keep it to one Anthropic call at a time. Never
   // blocks/fails the confirm.
-  const rep = repGiven || ((updated[0] as { salesperson?: string | null }).salesperson ?? '').trim();
+  const rep = repGiven || normalizeRepKey((updated[0] as { salesperson?: string | null }).salesperson);
   const distillCompanyName = (await getBranding(c.env)).companyName;
   const distillPromise = (async () => {
     if (rep && !isGlobalKey(rep)) {
