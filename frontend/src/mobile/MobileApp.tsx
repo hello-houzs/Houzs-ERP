@@ -202,7 +202,7 @@ function MobileAppInner() {
   };
 
   // Overlay screens (pushed above the tab bar).
-  if (screen.t === "so-detail") return <MobileSODetail docNo={screen.docNo} onBack={back} onEdit={(d) => setScreen({ t: "new-so", mode: "edit", docNo: d })} onIssueDo={(d) => setScreen({ t: "convert", key: "delivery-orders-mfg", title: "Delivery Orders", target: "do", initialSourceId: d })} />;
+  if (screen.t === "so-detail") return <MobileSODetail docNo={screen.docNo} onBack={back} onEdit={(d) => setScreen({ t: "new-so", mode: "edit", docNo: d })} />;
   if (screen.t === "new-so") return <MobileNewSO mode={screen.mode} docNo={screen.docNo} scanPrefill={screen.scanPrefill} onBack={back} onSaved={(d) => setScreen({ t: "so-detail", docNo: d })} />;
   if (screen.t === "scan") return <MobileScan onBack={back} onExtracted={(prefill) => setScreen({ t: "new-so", mode: "new", scanPrefill: prefill })} />;
   if (screen.t === "module") {
@@ -218,9 +218,9 @@ function MobileAppInner() {
       onNew={onNew} />;
   }
   if (screen.t === "convert") {
-    // Launched from an SO detail (Issue Delivery Order) → return to that SO
-    // afterwards so the operator sees the updated delivery state. Launched from
-    // a module list ("+ New") → return to that list.
+    // Convert is entered from a module list ("+ New") → return to that list
+    // afterwards. If ever re-seeded with an initialSourceId (source doc), return
+    // to that SO detail instead so the operator sees the updated state.
     const fromSo = screen.target === "do" && !!screen.initialSourceId;
     const backToConvertHome = fromSo
       ? () => setScreen({ t: "so-detail", docNo: screen.initialSourceId! })

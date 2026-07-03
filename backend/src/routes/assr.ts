@@ -939,6 +939,7 @@ app.post(
     complaint_issue: body.complaint_issue,
     issue_category: body.issue_category ?? null,
     priority: body.priority ?? null,
+    complained_date: trimOrNull(body.complained_date),
     ref_no: trimOrNull(body.ref_no),
     customer_email: trimOrNull(body.customer_email),
     service_category: trimOrNull(body.service_category),

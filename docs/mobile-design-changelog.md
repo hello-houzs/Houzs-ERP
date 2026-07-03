@@ -128,6 +128,10 @@ the current-state reference.
 ### Profile (MobileProfile)
 57. The two stat tiles now match the v7 design's **Orders MTD / Sales MTD** (previously placeholder "Open cases / Points"). Wired to a new self-scoped SCM endpoint `GET /api/scm/mfg-sales-orders/my-mtd` — the caller's OWN sales orders created this Malaysia-calendar month (count + summed value, excluding CANCELLED/DRAFT). A non-sales user sees 0 / RM 0.00.
 
+### Service Case (MobileServiceCase)
+58. **New case now appears in the list immediately** — after a successful create the cases-list query is force-refetched (`invalidateQueries … refetchType: "all"`) so the just-created case is present whether the user lands on the detail page and taps back, or returns to the list.
+59. **Complaint date field added to the New Service Case form** — a native date input in the Issue card (numeric DD/MM/YYYY, value `YYYY-MM-DD`), defaulting to today (MYT) and capped at today. Sent as `complained_date` and written to `assr_cases.complained_date` (the backend honours an explicit valid value, else falls back to today).
+
 ---
 
 ## Full rebuild to Build Spec + prototype (2026-07-03, sw v107–v109)

@@ -4,6 +4,7 @@ import { api } from "../api/client";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { useChoice } from "../vendor/scm/components/ChoiceDialog";
+import { todayMyt } from "../vendor/scm/lib/dates";
 import "./mobile.css";
 
 // The core /api/assr route (NOT scm). The list returns
@@ -1071,6 +1072,10 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
   const [complaint, setComplaint] = useState("");
   const [category, setCategory] = useState("");
   const [priority, setPriority] = useState("normal");
+  // Complaint date (assr_cases.complained_date) — defaults to today (MYT).
+  // Stored/sent as YYYY-MM-DD (the native date input's value format, which
+  // is also what the backend's todayMyt() default produces).
+  const [complainedDate, setComplainedDate] = useState<string>(() => todayMyt());
   // SO line-item lookup — once an SO is chosen, offer its items so the
   // Product field is a picker (GET /api/assr/lookup-items/:docNo), not free
   // text. Staff can still type a custom code if the item isn't listed.
@@ -1117,6 +1122,10 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
         complaint_issue: complaint.trim(),
         issue_category: category.trim() || null,
         priority,
+        // Complaint date — the backend defaults this to today (MYT) when
+        // omitted; we always send the (defaulted-to-today, user-editable)
+        // value so the intake date is honoured. Sent as YYYY-MM-DD.
+        complained_date: complainedDate || null,
       });
       const id = Number(get(res ?? {}, "id"));
       // Upload staged defect photos/videos as "complaint" attachments.
@@ -1144,14 +1153,18 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
       return res;
     },
     onSuccess: (res) => {
-      qc.invalidateQueries({ queryKey: ["mobile-assr-list"] });
+      // Refresh the cases list so the just-created case shows immediately.
+      // `refetchType: "all"` forces even the (about-to-unmount) list query
+      // to refetch, so a fresh row is present whether the user lands on the
+      // detail page and taps back, or returns to the list directly.
+      qc.invalidateQueries({ queryKey: ["mobile-assr-list"], refetchType: "all" });
       const id = Number(get(res ?? {}, "id"));
       onClose();
       if (id) onOpen(id);
     },
   });
 
-  const valid = docNo.trim() && itemCode.trim() && complaint.trim();
+  const valid = docNo.trim() && itemCode.trim() && complaint.trim() && complainedDate.trim();
 
   return (
     <div className="hz-m" style={{ position: "absolute", inset: 0, zIndex: 20, background: "rgba(17,20,15,.4)", display: "flex", flexDirection: "column", justifyContent: "flex-end" }} onClick={onClose}>
@@ -1250,6 +1263,18 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
                     <option key={o} value={o}>{cap(o)}</option>
                   ))}
                 </select>
+              </label>
+              {/* Complaint date — assr_cases.complained_date. Native date input
+                  (value = YYYY-MM-DD), defaulted to today (MYT). */}
+              <label className="fld">
+                <span className="fld-l">Complaint date *</span>
+                <input
+                  type="date"
+                  value={complainedDate}
+                  max={todayMyt()}
+                  onChange={(e) => setComplainedDate(e.target.value)}
+                  className="fld-i money"
+                />
               </label>
             </div>
           </div>

@@ -164,6 +164,20 @@
 .hz-m .fld-i:focus { border-color: #16695f; box-shadow: 0 0 0 2px rgba(22,105,95,.15); }
 .hz-m .fld-i:disabled { background: #f4f6f3; color: #767b6e; }
 .hz-m select.fld-i { appearance: none; -webkit-appearance: none; background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239aa093' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>"); background-repeat: no-repeat; background-position: right 10px center; padding-right: 30px; }
+/* Native date/time inputs render oversized on iOS/Android — normalise them to
+   match the app's text-input sizing (same height/font/padding) app-wide. */
+.hz-m input[type="date"],
+.hz-m input[type="datetime-local"],
+.hz-m input[type="time"] {
+  appearance: none; -webkit-appearance: none;
+  min-height: 0; height: auto; min-width: 0; max-width: 100%;
+  font-family: inherit; font-size: 12.5px; line-height: 1.3;
+}
+/* The WebKit date picker padding + indicator pushes the control taller than a
+   text field; strip the inner padding and keep the indicator right-aligned. */
+.hz-m input[type="date"]::-webkit-date-and-time-value { text-align: left; margin: 0; padding: 0; }
+.hz-m input[type="date"]::-webkit-datetime-edit { padding: 0; }
+.hz-m input[type="date"]::-webkit-calendar-picker-indicator { margin: 0; padding: 0; opacity: .55; }
 .hz-m .addline { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; padding: 11px; background: transparent; border: 1px dashed #16695f; border-radius: 12px; color: #16695f; font-family: inherit; font-size: 13px; font-weight: 700; cursor: pointer; }
 .hz-m .so-sub-row { display: flex; justify-content: flex-end; align-items: baseline; gap: 8px; margin-top: 2px; padding-top: 10px; border-top: 1px solid rgba(34,31,32,.12); }
 
