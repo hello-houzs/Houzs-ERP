@@ -22,6 +22,7 @@ import {
   PinOff,
   EyeOff,
   MoveHorizontal,
+  Filter,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { ResetFiltersButton } from "./ResetFiltersButton";
@@ -59,6 +60,14 @@ export interface Column<T> {
    * — show a sane default subset, let power users opt-in to the rest.
    */
   defaultHidden?: boolean;
+  /**
+   * Opt-in per-column value filter (funnel icon in the header). Click
+   * lists the distinct `getValue` results across the loaded rows as
+   * checkboxes; ticking narrows the visible rows client-side. Requires
+   * `getValue`. NB: on server-paginated tables this filters the current
+   * page only — same trade-off as the SCM DataGrid funnels.
+   */
+  filterable?: boolean;
 }
 
 interface Props<T> {
@@ -254,6 +263,31 @@ export function DataTable<T>({
     y: number;
     colKey: string;
   } | null>(null);
+
+  // Per-column value filters (opt-in `filterable` on the column).
+  // Transient — filters are a working gesture, not a saved view, so a
+  // reload starts clean. `colFilters[key]` = the set of allowed values;
+  // absent/empty = no filter on that column.
+  const [colFilters, setColFilters] = useState<Record<string, string[]>>({});
+  const [filterMenu, setFilterMenu] = useState<{
+    x: number;
+    y: number;
+    colKey: string;
+  } | null>(null);
+  const [filterQuery, setFilterQuery] = useState("");
+
+  function toggleFilterValue(colKey: string, value: string) {
+    setColFilters((prev) => {
+      const cur = prev[colKey] ?? [];
+      const next = cur.includes(value)
+        ? cur.filter((v) => v !== value)
+        : [...cur, value];
+      const out = { ...prev };
+      if (next.length === 0) delete out[colKey];
+      else out[colKey] = next;
+      return out;
+    });
+  }
 
   // Expanded drill-down rows (opt-in `expandable`). Transient — a Set of
   // expansion ids so the chevron toggle is O(1) and reloads start collapsed.
@@ -612,6 +646,25 @@ export function DataTable<T>({
     };
   }, [headerMenu]);
 
+  // Close the filter popover on outside click, Escape, or scroll — same
+  // pattern as the header menu. Clicks inside stop propagation so ticking
+  // checkboxes doesn't dismiss it.
+  useEffect(() => {
+    if (!filterMenu) return;
+    const close = () => setFilterMenu(null);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close();
+    };
+    window.addEventListener("click", close);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [filterMenu]);
+
   // Close the row context menu on outside click, Escape, or scroll — same
   // detach-from-anchor reasoning as the header menu (it's fixed-positioned).
   useEffect(() => {
@@ -630,23 +683,42 @@ export function DataTable<T>({
     };
   }, [rowMenu]);
 
-  const sortedRows = useMemo(() => {
+  // Per-column filters apply first (client-side, loaded rows only), then
+  // sort. Value identity = the stringified getValue, matching what the
+  // funnel popover lists.
+  const filteredRows = useMemo(() => {
     if (!rows) return rows;
-    if (serverSort) return rows; // backend already ordered
-    if (!sort) return rows;
+    const active = Object.entries(colFilters).filter(([, vals]) => vals.length > 0);
+    if (active.length === 0) return rows;
+    const getters = active
+      .map(([key, vals]) => {
+        const col = allColumns.find((c) => c.key === key);
+        return col?.getValue ? { getValue: col.getValue, allowed: new Set(vals) } : null;
+      })
+      .filter((g): g is { getValue: (row: T) => unknown; allowed: Set<string> } => !!g);
+    if (getters.length === 0) return rows;
+    return rows.filter((r) =>
+      getters.every((g) => g.allowed.has(filterKeyOf(g.getValue(r))))
+    );
+  }, [rows, colFilters, allColumns]);
+
+  const sortedRows = useMemo(() => {
+    if (!filteredRows) return filteredRows;
+    if (serverSort) return filteredRows; // backend already ordered
+    if (!sort) return filteredRows;
     const col = allColumns.find((c) => c.key === sort.key);
-    if (!col || !col.getValue) return rows;
+    if (!col || !col.getValue) return filteredRows;
     const getter = col.getValue;
     const mul = sort.dir === "asc" ? 1 : -1;
     // Stable-ish copy — Array.prototype.sort is stable in modern engines.
-    const copy = rows.slice();
+    const copy = filteredRows.slice();
     copy.sort((a, b) => {
       const av = getter(a);
       const bv = getter(b);
       return compareValues(av, bv) * mul;
     });
     return copy;
-  }, [rows, sort, allColumns, serverSort]);
+  }, [filteredRows, sort, allColumns, serverSort]);
 
   // Total column span for full-width body cells (skeleton / error / empty /
   // expansion). The chevron column (when `expandable`) adds one leading
@@ -963,6 +1035,34 @@ export function DataTable<T>({
                                   <ChevronsUpDown size={10} />
                                 )}
                               </span>
+                            )}
+                            {c.filterable && c.getValue && (
+                              <button
+                                type="button"
+                                title={`Filter ${c.label}`}
+                                aria-label={`Filter ${c.label}`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                                  setFilterQuery("");
+                                  setFilterMenu((cur) =>
+                                    cur?.colKey === c.key
+                                      ? null
+                                      : { x: rect.left, y: rect.bottom + 4, colKey: c.key }
+                                  );
+                                }}
+                                className={cn(
+                                  "inline-flex shrink-0 rounded p-0.5 transition-all",
+                                  (colFilters[c.key]?.length ?? 0) > 0
+                                    ? "text-accent opacity-100"
+                                    : "opacity-0 hover:text-primary group-hover/th:opacity-40"
+                                )}
+                              >
+                                <Filter
+                                  size={10}
+                                  fill={(colFilters[c.key]?.length ?? 0) > 0 ? "currentColor" : "none"}
+                                />
+                              </button>
                             )}
                           </>
                         )}
@@ -1364,6 +1464,90 @@ export function DataTable<T>({
           Portalled to <body> so it escapes the table's overflow clip
           and sticky-header stacking context. Acts on the clicked
           column. Closes on outside click / Esc / scroll (effect above). */}
+      {/* ── Column filter popover (opt-in `filterable`) ──────────────
+          Portalled to <body> like the header menu. Lists the distinct
+          getValue results across the LOADED rows (pre-filter, so unticking
+          works) with live counts; ticking narrows rows client-side. */}
+      {filterMenu &&
+        (() => {
+          const col = allColumns.find((c) => c.key === filterMenu.colKey);
+          if (!col?.getValue) return null;
+          const getter = col.getValue;
+          const counts = new Map<string, number>();
+          for (const r of rows ?? []) {
+            const k = filterKeyOf(getter(r));
+            counts.set(k, (counts.get(k) ?? 0) + 1);
+          }
+          const values = [...counts.entries()].sort((a, b) =>
+            a[0].localeCompare(b[0], undefined, { numeric: true })
+          );
+          const q = filterQuery.trim().toLowerCase();
+          const shown = q
+            ? values.filter(([v]) => v.toLowerCase().includes(q))
+            : values;
+          const selected = new Set(colFilters[col.key] ?? []);
+          return createPortal(
+            <div
+              className="fixed z-[120] w-[230px] overflow-hidden rounded-md border border-border bg-surface shadow-slab"
+              style={{ top: filterMenu.y, left: Math.max(8, Math.min(filterMenu.x, window.innerWidth - 238)) }}
+              onClick={(e) => e.stopPropagation()}
+              onContextMenu={(e) => e.preventDefault()}
+            >
+              <div className="flex items-center justify-between border-b border-border-subtle px-3 py-2">
+                <span className="text-[10px] font-bold uppercase tracking-brand text-ink-secondary">
+                  Filter · {col.label || col.key}
+                </span>
+                <button
+                  type="button"
+                  disabled={selected.size === 0}
+                  onClick={() =>
+                    setColFilters((prev) => {
+                      const out = { ...prev };
+                      delete out[col.key];
+                      return out;
+                    })
+                  }
+                  className="text-[11px] font-semibold text-accent disabled:text-ink-muted/50"
+                >
+                  Clear
+                </button>
+              </div>
+              {values.length > 8 && (
+                <div className="border-b border-border-subtle px-3 py-1.5">
+                  <input
+                    autoFocus
+                    value={filterQuery}
+                    onChange={(e) => setFilterQuery(e.target.value)}
+                    placeholder="Search values…"
+                    className="w-full rounded border border-border bg-bg px-2 py-1 text-[12px] outline-none focus:border-primary"
+                  />
+                </div>
+              )}
+              <div className="max-h-[260px] overflow-y-auto py-1">
+                {shown.length === 0 && (
+                  <div className="px-3 py-2 text-[12px] text-ink-muted">No values</div>
+                )}
+                {shown.map(([v, n]) => (
+                  <label
+                    key={v}
+                    className="flex cursor-pointer items-center gap-2 px-3 py-1.5 text-[12.5px] text-ink hover:bg-surface-dim"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selected.has(v)}
+                      onChange={() => toggleFilterValue(col.key, v)}
+                      className="accent-accent"
+                    />
+                    <span className="min-w-0 flex-1 truncate" title={v}>{v}</span>
+                    <span className="shrink-0 font-mono text-[10px] text-ink-muted">{n}</span>
+                  </label>
+                ))}
+              </div>
+            </div>,
+            document.body
+          );
+        })()}
+
       {headerMenu &&
         (() => {
           const col = allColumns.find((c) => c.key === headerMenu.colKey);
@@ -1515,6 +1699,15 @@ function parsePxWidth(width: string | undefined): number | null {
   if (!m) return null;
   const n = Number(m[1]);
   return Number.isFinite(n) ? n : null;
+}
+
+// Canonical string identity for a cell value in the funnel filter —
+// what the popover lists and what row matching compares against.
+// null/undefined/"" all collapse to the em-dash bucket so blank cells
+// are filterable as one group.
+function filterKeyOf(v: unknown): string {
+  if (v == null || v === "") return "—";
+  return String(v);
 }
 
 function compareValues(

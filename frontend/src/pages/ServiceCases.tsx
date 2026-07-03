@@ -109,6 +109,37 @@ const RESOLUTION_OPTIONS = [
 
 const PRIORITY_OPTIONS = ["low", "normal", "high", "urgent"] as const;
 
+// Priority pill (list view) — compact Chinese label + tone. English
+// slug stays in the tooltip and in getValue (filter/CSV).
+const PRIORITY_PILL: Record<string, { zh: string; cls: string }> = {
+  low: { zh: "低", cls: "bg-ink-muted/10 text-ink-secondary" },
+  normal: { zh: "中", cls: "bg-accent-soft/60 text-accent" },
+  high: { zh: "高", cls: "bg-warning-bg text-warning-text" },
+  urgent: { zh: "急", cls: "bg-err/10 text-err" },
+};
+
+// "24 Jun 2026" — medium date for the list's Date column (the design
+// uses month names there; the shared formatDate stays dd/mm/yyyy).
+function formatDateMedium(s: string | null): string {
+  if (!s) return "—";
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return s.slice(0, 10);
+  return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+// Whole-case age in days: complained_date → closed_at (or today while
+// still open). Rendered as the "Xd total" subline in the Date column.
+function totalCaseDays(
+  complained: string | null,
+  closed: string | null,
+): number | null {
+  if (!complained) return null;
+  const start = new Date(complained).getTime();
+  const end = closed ? new Date(closed).getTime() : Date.now();
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return null;
+  return Math.floor((end - start) / 86_400_000);
+}
+
 const NCR_OPTIONS = [
   "material_defect",
   "workmanship",
@@ -241,7 +272,7 @@ const VIEW_HEADER: Record<
   },
   cases: {
     title: "Service Cases",
-    description: "After-sales service request workflow.",
+    description: "After-sales service request workflow · 售后服务工单",
   },
   metrics: {
     title: "Quality Metrics",
@@ -455,6 +486,25 @@ function CasesView({
       label: "",
       alwaysVisible: true,
       width: "32px",
+      // Header select-all — checks/unchecks every row on the current
+      // page; indeterminate while only some are ticked.
+      renderHeader: () => (
+        <span
+          onClick={(e) => e.stopPropagation()}
+          className="flex items-center justify-center"
+        >
+          <input
+            type="checkbox"
+            aria-label={allSelected ? "Deselect all rows" : "Select all rows"}
+            checked={allSelected}
+            ref={(el) => {
+              if (el) el.indeterminate = someSelected;
+            }}
+            onChange={toggleAll}
+            className="cursor-pointer accent-accent"
+          />
+        </span>
+      ),
       render: (r) => (
         <div
           onClick={(e) => {
@@ -480,6 +530,7 @@ function CasesView({
     },
     {
       key: "stage",
+      filterable: true,
       label: "Stage",
       render: (r) => (
         // Single-line — `flex-wrap` removed (was the only thing
@@ -508,64 +559,55 @@ function CasesView({
               SLA
             </Badge>
           )}
-          {/* Dwell-days badge removed — the dedicated "Dwell" column now
-             carries the in-stage day count, so the Stage cell only shows the
-             stage name + the SLA flag. */}
+          {/* Dwell chip rides inside the Stage cell (design refresh):
+              正常 <7d green · 缓慢 7–29d amber · 滞留 ≥30d red. Priority
+              moved to its own pill column. */}
+          {r.stage !== "completed" && r.days_in_stage != null && (
+            <span
+              className={cn(
+                "shrink-0 text-[11px] font-semibold",
+                r.days_in_stage < 7
+                  ? "text-synced"
+                  : r.days_in_stage < 30
+                    ? "text-warning-text"
+                    : "text-err",
+              )}
+              title={`In ${caseStageLabel(r.stage)} for ${r.days_in_stage} day(s)`}
+            >
+              {r.days_in_stage < 7 ? "正常" : r.days_in_stage < 30 ? "缓慢" : "滞留"}{" "}
+              <span className="font-mono tabular-nums">{r.days_in_stage}d</span>
+            </span>
+          )}
         </div>
       ),
-      getValue: (r) => stageLabel(r.stage),
+      // caseStageLabel (not the legacy StatusDot stageLabel) — the old
+      // helper only maps the 5 legacy slugs, so 9-stage rows fell through
+      // to raw slugs in the funnel filter + CSV export.
+      getValue: (r) => caseStageLabel(r.stage),
     },
     {
+      // Key kept as "priority_dwell" so saved column layouts (dt:* in
+      // localStorage) survive the rename. Dwell moved into the Stage
+      // cell; this column is now a plain priority pill (低/中/高/急).
       key: "priority_dwell",
-      label: "Priority · Dwell",
+      label: "Priority",
       align: "left",
-      // Merged signal, single colour axis = DWELL so dot and text always
-      // agree (no clashing two-colour cells). DWELL in the current stage:
-      // On track <7d (green) / Slow 7–29d (amber) / Stuck ≥30d (red). The
-      // dot carries the same tier colour as the text. PRIORITY rides along
-      // as a red ring around the dot, shown only for Urgent/High.
+      filterable: true,
       render: (r) => {
-        const d = r.days_in_stage;
-        const tier =
-          d == null || r.stage === "completed"
-            ? null
-            : d < 7
-              ? { label: "On track", text: "text-synced", dot: "bg-synced" }
-              : d < 30
-                ? { label: "Slow", text: "text-warning-text", dot: "bg-warning-text" }
-                : { label: "Stuck", text: "text-err font-semibold", dot: "bg-err" };
-        const dotColor = tier ? tier.dot : "bg-ink-muted/40";
-        const isHiPri = r.priority === "urgent" || r.priority === "high";
+        const p = PRIORITY_PILL[r.priority ?? "normal"] ?? PRIORITY_PILL.normal;
         return (
-          <div className="flex items-center gap-2">
-            <span
-              title={isHiPri ? `${r.priority} priority${tier ? ` · ${tier.label}` : ""}` : tier?.label || undefined}
-              className="inline-flex shrink-0 items-center justify-center"
-            >
-              <span
-                className={cn(
-                  "h-2.5 w-2.5 rounded-full",
-                  dotColor,
-                  isHiPri && "ring-2 ring-offset-1 ring-offset-surface ring-err",
-                )}
-              />
-            </span>
-            {tier ? (
-              <span
-                className={cn("text-[11.5px] font-medium", tier.text)}
-                title={`In ${stageLabel(r.stage)} for ${d} day(s)`}
-              >
-                {tier.label} <span className="font-mono tabular-nums">{d}d</span>
-              </span>
-            ) : (
-              <span className="text-ink-muted">—</span>
+          <span
+            title={`${r.priority ?? "normal"} priority`}
+            className={cn(
+              "inline-flex items-center rounded-full px-2 py-0.5 text-[10.5px] font-bold",
+              p.cls,
             )}
-          </div>
+          >
+            {p.zh}
+          </span>
         );
       },
-      // Sort by dwell days — the actionable axis. Priority stays scannable
-      // via the dot colour even when sorted by dwell.
-      getValue: (r) => r.days_in_stage ?? -1,
+      getValue: (r) => r.priority ?? "normal",
     },
     {
       key: "doc_no",
@@ -576,11 +618,27 @@ function CasesView({
     {
       key: "complained_date",
       label: "Date",
-      render: (r) => formatDate(r.complained_date),
+      // Two-line cell per design: reported date ("24 Jun 2026") + total
+      // case age ("Xd total" — complained_date → closed_at, or today
+      // while open).
+      render: (r) => {
+        const total = totalCaseDays(r.complained_date, r.closed_at);
+        return (
+          <div className="leading-tight">
+            <div>{formatDateMedium(r.complained_date)}</div>
+            {total != null && (
+              <div className="mt-0.5 font-mono text-[10px] text-ink-muted">
+                {total}d total
+              </div>
+            )}
+          </div>
+        );
+      },
       getValue: (r) => formatDate(r.complained_date),
     },
     {
       key: "customer_name",
+      filterable: true,
       label: "Customer",
       render: (r) => (
         <span
@@ -594,6 +652,7 @@ function CasesView({
     },
     {
       key: "item_code",
+      filterable: true,
       label: "Item",
       // Product code — visible on the detail page; hidden here to cut
       // clutter, still available from the Columns menu.
@@ -603,6 +662,7 @@ function CasesView({
     },
     {
       key: "resolution_method",
+      filterable: true,
       label: "Resolution",
       // Empty until a case reaches the solution stage, so it's mostly
       // "—" on the working list — hidden by default to cut clutter,
@@ -617,6 +677,7 @@ function CasesView({
     },
     {
       key: "assigned_to_name",
+      filterable: true,
       label: "Assigned To",
       render: (r) => r.assigned_to_name || "—",
       getValue: (r) => r.assigned_to_name,
@@ -981,7 +1042,10 @@ function StageStatStrip({
       {/* Stage pipeline — compact horizontal funnel; click a stage to filter
           the list/board/calendar, click again (or All) to clear. */}
       <div className="rounded-xl border border-border bg-surface p-4 shadow-stone">
-        <div className="mb-3 text-[13px] font-bold text-ink">Stage Pipeline</div>
+        <div className="mb-3 flex items-center justify-between">
+          <div className="text-[13px] font-bold text-ink">阶段流程 · Stage funnel</div>
+          <span className="font-mono text-[10px] text-ink-muted">点击筛选 · click to filter</span>
+        </div>
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
           {[
             { value: "ALL" as StageFilter, label: "All", total: allTotal, breached: 0 },
