@@ -1030,30 +1030,45 @@ function StageStatStrip({
             })),
           ].map((s) => {
             const isActive = stage === s.value;
+            const empty = ready && s.total === 0;
+            // Dot severity: red = stage holds SLA-breached cases, grey =
+            // empty, green = All/Completed, amber = open work otherwise.
+            const dot =
+              s.breached > 0
+                ? "bg-err"
+                : empty
+                  ? "bg-ink-muted/40"
+                  : s.value === "ALL" || s.value === "completed"
+                    ? "bg-synced"
+                    : "bg-warning-text";
             return (
               <button
                 key={s.value}
                 onClick={() => onPick(isActive ? "ALL" : s.value)}
                 className={cn(
-                  "flex items-center gap-2 rounded-lg border px-3 py-2 text-left transition-colors",
+                  "rounded-lg border px-3.5 py-2.5 text-left transition-colors",
                   isActive
                     ? "border-primary bg-primary-soft"
                     : "border-border bg-surface-2 hover:border-primary/40",
                 )}
               >
+                <span className="flex items-center gap-1.5">
+                  <span
+                    className={cn(
+                      "font-mono text-[13px] font-bold leading-none",
+                      isActive ? "text-primary" : empty ? "text-ink-muted/60" : "text-ink",
+                    )}
+                  >
+                    {ready ? s.total : "—"}
+                  </span>
+                  <span className={cn("h-1.5 w-1.5 rounded-full", dot)} />
+                </span>
                 <span
                   className={cn(
-                    "grid h-6 min-w-[24px] shrink-0 place-items-center rounded-full px-1.5 font-mono text-[11px] font-bold",
-                    isActive
-                      ? "bg-primary text-white"
-                      : s.breached > 0
-                        ? "bg-err/15 text-err"
-                        : "bg-surface text-ink-secondary",
+                    "mt-1 block text-[12px] font-semibold leading-tight",
+                    empty && !isActive ? "text-ink-muted" : "text-ink",
                   )}
                 >
-                  {ready ? s.total : "—"}
-                </span>
-                <span className="text-[12px] font-semibold leading-tight text-ink">
                   {s.label}
                 </span>
               </button>
