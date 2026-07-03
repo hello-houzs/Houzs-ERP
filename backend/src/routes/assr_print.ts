@@ -2,8 +2,6 @@ import { Hono } from "hono";
 import type { Env } from "../types";
 import { requirePermission } from "../middleware/auth";
 import { getAssrDetail } from "../services/assr";
-import { renderStageTrackerHtml, STAGE_TRACKER_CSS } from "../services/printTracker";
-import { qrSvg, getOrIssueCustomerPortalToken, customerPortalUrlFor } from "../services/printQr";
 
 // Formal service-case document modeled on a standard Malaysian business
 // invoice/service report:
@@ -141,7 +139,6 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
   if (!detail) return c.text("Not found", 404);
 
   const { case: cs, items, attachments, activity, logistics } = detail;
-  const stageHistory = (detail as any).stage_history ?? [];
 
   const logoUri = await fetchAsDataUri(c.env, "static/logo-wordmark.png");
 
@@ -171,14 +168,10 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
     });
   }
 
-  // Customer variant — generate (or reuse) a portal token + render QR.
-  let customerPortalUrl = "";
-  let qrInlineSvg = "";
-  if (isCustomer) {
-    const token = await getOrIssueCustomerPortalToken(c.env, id);
-    customerPortalUrl = customerPortalUrlFor(c.env, token);
-    qrInlineSvg = qrSvg(customerPortalUrl, 4);
-  }
+  // Nick 2026-07-03: customer print follows the boxed ASSR Form too —
+  // all three sheets share the strict-B&W boxed design, so the colour
+  // tracker, QR panel, and notice layout are gone from print. Customers
+  // reach the portal via the track-link message instead.
 
   // Supplier variant — derive the target-completion date for the
   // current stage from the snapshotted `stage_target_days`.
@@ -186,19 +179,8 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
     ? supplierTargetDateIso((cs as any).stage_entered_at, (cs as any).stage_target_days)
     : null;
 
-  // Customer notice only — the boxed-grid office/supplier sheets are
-  // strict B&W per the print design, and the tracker renders in colour.
-  const trackerHtml = isCustomer
-    ? renderStageTrackerHtml({
-        history: stageHistory,
-        currentStage: cs.stage,
-      })
-    : "";
-
   const docTitle =
-    isCustomer ? "Customer Service Notice"
-    : isSupplier ? "Supplier Service Order"
-    : "After-Sales Service Request";
+    isSupplier ? "Supplier Service Order" : "After-Sales Service Request";
 
   const docSubtitle =
     isCustomer ? "Customer Copy"
@@ -554,7 +536,6 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
     .muted { color: #555; }
     .small { font-size: 8.5pt; }
 
-    ${STAGE_TRACKER_CSS}
   </style>
 </head>
 <body>
@@ -594,46 +575,17 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
         ${docSubtitle ? `<div class="subtitle">${esc(docSubtitle)}</div>` : ""}
         <div class="ref">Report No. <b>${esc(cs.assr_no)}</b> · Generated ${generatedTs}</div>
       </div>
-      ${isOffice ? `
+      ${!isSupplier ? `
       <div class="status-pills">
         <div class="status-pill"><span class="cap">Service</span><span class="val">${esc(servicePillLabel)}</span></div>
         <div class="status-pill"><span class="cap">Status</span><span class="val">${esc(statusPillLabel)}</span></div>
-      </div>` : isSupplier ? `
+      </div>` : `
       <div class="status-pills">
         <div class="status-pill"><span class="cap">Status</span><span class="val">${esc(statusPillLabel)}</span></div>
-      </div>` : ""}
+      </div>`}
     </div>
 
-    ${trackerHtml}
-
-    ${isCustomer ? `
-    <!-- Customer metadata + QR panel (customer variant keeps the
-         friendlier notice layout; boxed-grid applies to office +
-         supplier sheets only). -->
-    <div class="info with-qr">
-      <div class="col">
-        <div class="label">Customer</div>
-        <div class="name-line">${esc(cs.customer_name || "—")}</div>
-        <div class="line"><span class="k">Phone</span><span class="v">${esc(cs.phone || "—")}</span></div>
-        <div class="line"><span class="k">Location</span><span class="v">${esc(cs.location || "—")}</span></div>
-        ${cs.addr1 ? `<div class="line"><span class="k">Address</span><span class="v">${esc([cs.addr1, cs.addr2, cs.addr3, cs.addr4].filter(Boolean).join(", "))}</span></div>` : ""}
-      </div>
-      <div class="col">
-        <div class="label">Report Details</div>
-        <div class="line"><span class="k">Date</span><span class="v">${fmtDate(cs.complained_date)}</span></div>
-        <div class="line"><span class="k">SO No.</span><span class="v">${esc(cs.doc_no)}</span></div>
-        ${cs.po_no ? `<div class="line"><span class="k">PO No.</span><span class="v">${esc(cs.po_no)}</span></div>` : ""}
-        <div class="line"><span class="k">Status</span><span class="v">${esc(STAGE_LABEL[cs.stage] || cs.stage)}</span></div>
-        <div class="line"><span class="k">Priority</span><span class="v" style="text-transform: capitalize;">${esc(cs.priority || "normal")}</span></div>
-      </div>
-      <div class="qr-panel">
-        <div class="qr-cap">Track this case</div>
-        <div class="qr-svg">${qrInlineSvg}</div>
-        <div class="qr-url">${esc(customerPortalUrl)}</div>
-      </div>
-    </div>` : ""}
-
-    ${isOffice ? (() => {
+    ${!isSupplier ? (() => {
       // ── ASSR Form (design handoff) — boxed meta grid, black section
       // bars, fixed items table, 3-up photo grid, dual sign-off. ──
       const officeItems = (items as any[]).map((it, i) => `
@@ -815,162 +767,6 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
     </div>`;
     })() : ""}
 
-    ${isCustomer ? `
-    <!-- 1. Items -->
-    <section>
-      <h2 class="sec">1. Items Under Service</h2>
-      <table class="items">
-        <thead>
-          <tr>
-            <th style="width: 8%">No.</th>
-            <th style="width: 24%">Item Code</th>
-            <th>Description</th>
-            <th style="width: 10%" class="num">Qty</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${items.length === 0 ? `<tr><td colspan="4" class="muted">No items recorded.</td></tr>` : items.map((it: any, i: number) => `
-          <tr>
-            <td class="num">${i + 1}</td>
-            <td class="code">${esc(it.item_code)}</td>
-            <td>${esc(it.item_description || "—")}</td>
-            <td class="num">${esc(it.qty ?? 1)}</td>
-          </tr>`).join("")}
-        </tbody>
-      </table>
-    </section>
-
-    <!-- 2. Reported Issue -->
-    <section>
-      <h2 class="sec">2. Reported Issue</h2>
-      <div class="rows rows-2col">
-        <div class="row"><span class="k">Issue Category</span><span class="v">${esc(cs.issue_category || "—")}</span></div>
-        <div class="row"><span class="k">Priority Level</span><span class="v" style="text-transform: capitalize;">${esc(cs.priority || "normal")}</span></div>
-      </div>
-      <div class="para">
-        <div class="cap">Complaint Description</div>
-        <div class="body">${esc(cs.complaint_issue || "—")}</div>
-      </div>
-    </section>
-
-    <!-- 3. Resolution Plan -->
-    <section>
-      <h2 class="sec">3. Resolution Plan</h2>
-      <div class="rows rows-2col">
-        <div class="row"><span class="k">Resolution Method</span><span class="v">${esc(cs.resolution_method ? (RESOLUTION_LABEL[cs.resolution_method] || cs.resolution_method) : "—")}</span></div>
-        <div class="row"><span class="k">Target Completion</span><span class="v">${fmtDate(cs.completion_date)}</span></div>
-      </div>
-    </section>
-
-    ${logistics.length > 0 ? `
-    <section>
-      <h2 class="sec">4. Logistics Schedule</h2>
-      <table class="items">
-        <thead>
-          <tr>
-            <th>Type</th>
-            <th>Scheduled Date</th>
-            <th>Time Window</th>
-            <th>Assigned</th>
-            <th>Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${logistics.map((l: any) => `
-          <tr>
-            <td style="text-transform: capitalize;">${esc(l.type)}</td>
-            <td>${fmtDate(l.scheduled_date)}</td>
-            <td>${esc(l.scheduled_time_range || "—")}</td>
-            <td>${esc(l.assigned_to_name || "—")}</td>
-            <td style="text-transform: capitalize;">${esc(l.status)}</td>
-          </tr>`).join("")}
-        </tbody>
-      </table>
-    </section>
-    ` : ""}
-
-    ${inlinedImages.length > 0 ? `
-    <section>
-      <h2 class="sec">Supporting Evidence</h2>
-      <div class="photos">
-        ${inlinedImages.map((a) => `
-        <div class="photo">
-          <img src="${a.data_url}" alt="${esc(a.file_name || "")}" />
-          <div class="cap">${esc(a.category)}</div>
-        </div>`).join("")}
-      </div>
-    </section>
-    ` : ""}
-
-    ${cs.stage === "completed" ? `
-    <section>
-      <h2 class="sec">Case Closure</h2>
-      <div class="rows rows-2col">
-        <div class="row"><span class="k">Closed At</span><span class="v">${fmtDateTime(cs.closed_at)}</span></div>
-        <div class="row"><span class="k">Satisfaction Rating</span><span class="v">${cs.satisfaction_rating ? `${esc(cs.satisfaction_rating)} / 5` : "—"}</span></div>
-        ${(cs as any).approved_at && isOffice ? `<div class="row"><span class="k">Quality Review</span><span class="v">${esc((cs as any).approved_by_name || `User #${(cs as any).approved_by}`)} · ${fmtDateTime((cs as any).approved_at)}${(cs as any).quality_review_passed === 1 ? " · Passed" : ""}</span></div>` : ""}
-      </div>
-    </section>
-    ` : ""}
-    ` : ""}
-
-    ${isCustomer ? `
-    <!-- Customer variant sign-off (design refresh) — Customer + Warehouse
-         side-by-side, each with tick-box confirmations and signature
-         line. Prints in black & white on the same sheet as the case
-         report, so the customer + warehouse ack lands together with
-         the details they're signing off on. -->
-    <section>
-      <h2 class="sec">Acknowledgement &amp; Sign-off</h2>
-      <div class="signoff">
-        <div class="panel">
-          <h3>Customer</h3>
-          <div class="check">
-            <span class="box"></span>
-            <span>I confirm the reported issue and details above are correct.</span>
-          </div>
-          <div class="check">
-            <span class="box"></span>
-            <span>I have received the serviced / replaced item in good condition.</span>
-          </div>
-          <div class="sig-rule">
-            <span class="cap">Signature</span>
-          </div>
-          <div class="name-date">
-            <div class="cell"><span class="cap">Name</span></div>
-            <div class="cell" style="max-width: 44mm"><span class="cap">Date</span></div>
-          </div>
-        </div>
-        <div class="panel">
-          <h3>Warehouse</h3>
-          <div class="check">
-            <span class="box"></span>
-            <span>Goods inspected and received in good condition.</span>
-          </div>
-          <div class="check">
-            <span class="box"></span>
-            <span>Service / repair completed per the plan above.</span>
-          </div>
-          <div class="sig-rule">
-            <span class="cap">Received &amp; signed</span>
-          </div>
-          <div class="name-date">
-            <div class="cell"><span class="cap">Name</span></div>
-            <div class="cell" style="max-width: 44mm"><span class="cap">Date</span></div>
-          </div>
-        </div>
-      </div>
-    </section>
-    ` : ""}
-
-    ${isCustomer ? `
-    <section>
-      <div class="para muted small" style="text-align: center; margin-top: 6mm;">
-        Track your case anytime — scan the code above or visit the URL.<br/>
-        For questions, contact us at the address on the letterhead.
-      </div>
-    </section>
-    ` : ""}
 
     </td></tr>
     <tr class="filler"><td>&nbsp;</td></tr>
