@@ -248,14 +248,16 @@ export function MobileSODetail({ docNo, onBack, onEdit, onIssueDo }: { docNo: st
                 form; there's no in-place edit here, so wording drops the mode. */}
             <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#eef1ec", border: "1px solid #e3e6e0", borderRadius: 10, padding: "9px 11px", marginBottom: 12, fontSize: 11, color: "#5c6156" }}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#767b6e" strokeWidth="2" strokeLinecap="round"><rect x="4" y="10" width="16" height="10" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /></svg>
-              Locked view — tap Edit to change.
+              Locked view — tap Edit to change. Same form as New SO.
             </div>
 
-            {/* KPI — Total / Paid / Balance (nowrap tabular money, cards min-width:0) */}
+            {/* KPI — Total / Paid / Balance (nowrap tabular money, cards min-width:0).
+                Colours VERBATIM from the design: Total + Paid both brand-dark
+                (#0c3f39), Balance always red (#b23a3a). */}
             <div style={{ display: "flex", gap: 9, marginBottom: 12 }}>
-              <div className="card" style={{ flex: 1, minWidth: 0, marginBottom: 0 }}><div className="card-b" style={{ padding: "10px 11px" }}><div className="fld-l">Total</div><div className="money" style={{ fontSize: 14, fontWeight: 800, color: "var(--ink)", marginTop: 3, whiteSpace: "nowrap" }}>RM {rm(total(h))}</div></div></div>
-              <div className="card" style={{ flex: 1, minWidth: 0, marginBottom: 0 }}><div className="card-b" style={{ padding: "10px 11px" }}><div className="fld-l">Paid</div><div className="money" style={{ fontSize: 14, fontWeight: 800, color: "var(--green)", marginTop: 3, whiteSpace: "nowrap" }}>RM {rm(h.paid_centi_total)}</div></div></div>
-              <div className="card" style={{ flex: 1, minWidth: 0, marginBottom: 0 }}><div className="card-b" style={{ padding: "10px 11px" }}><div className="fld-l">Balance</div><div className="money" style={{ fontSize: 14, fontWeight: 800, color: bal > 0 ? "var(--red)" : "var(--ink)", marginTop: 3, whiteSpace: "nowrap" }}>RM {rm(bal)}</div></div></div>
+              <div className="card" style={{ flex: 1, minWidth: 0, marginBottom: 0 }}><div className="card-b" style={{ padding: "10px 11px" }}><div className="fld-l">Total</div><div className="money" style={{ fontSize: 14, fontWeight: 800, color: "#0c3f39", marginTop: 3, whiteSpace: "nowrap" }}>RM {rm(total(h))}</div></div></div>
+              <div className="card" style={{ flex: 1, minWidth: 0, marginBottom: 0 }}><div className="card-b" style={{ padding: "10px 11px" }}><div className="fld-l">Paid</div><div className="money" style={{ fontSize: 14, fontWeight: 800, color: "#0c3f39", marginTop: 3, whiteSpace: "nowrap" }}>RM {rm(h.paid_centi_total)}</div></div></div>
+              <div className="card" style={{ flex: 1, minWidth: 0, marginBottom: 0 }}><div className="card-b" style={{ padding: "10px 11px" }}><div className="fld-l">Balance</div><div className="money" style={{ fontSize: 14, fontWeight: 800, color: "#b23a3a", marginTop: 3, whiteSpace: "nowrap" }}>RM {rm(bal)}</div></div></div>
             </div>
 
             {/* Customer — locked .fld-ro fields (design layout VERBATIM) */}
