@@ -279,10 +279,11 @@ function MobileAppInner() {
           </button>
           <div className="tab-center">
             {/* center Menu disc — icon ported VERBATIM from the owner's design
-                MobileShell.tsx (ICONS.menu hamburger, 21x21 stroke #fff). Toggles
-                the permission-gated module sheet, matching the design's toggle. */}
+                prototype (houzs-mobile.html `var DISC`): a 4-square grid / apps
+                icon (four rounded rects), NOT the hamburger. Toggles the
+                permission-gated module sheet, matching the design's toggle. */}
             <button className="disc" onClick={() => setMenuOpen((s) => !s)} aria-label="Menu">
-              <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round"><path d="M3 6h18M3 12h18M3 18h18" /></svg>
+              <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7.5" height="7.5" rx="2" /><rect x="13.5" y="3" width="7.5" height="7.5" rx="2" /><rect x="3" y="13.5" width="7.5" height="7.5" rx="2" /><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="2" /></svg>
             </button>
           </div>
           <button className={`tab${tab === "calendar" ? " on" : ""}`} onClick={() => setTab("calendar")}>
