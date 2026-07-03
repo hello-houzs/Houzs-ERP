@@ -8,17 +8,15 @@ import { serviceNotify } from "../vendor/scm/lib/dialog-service";
 import "./mobile.css";
 
 // Mobile OCR "Scan" screen — capture phone photos of a handwritten sales
-// slip, POST them to POST /api/scm/scan-so/extract, map the EXTRACTED slip into
-// a prefill, then IMMEDIATELY create a DRAFT sales order from it in the
-// background (owner: "OCR 了直接進 SO draft 做"). The operator does NOT review the
-// form first — the scan reads the slip and lands a DRAFT in Orders, which the
-// operator opens and reviews there later.
+// slip and POST them to /scan-so/enqueue: the upload returns in seconds with a
+// job id and the OCR + DRAFT SO create finish SERVER-SIDE inside the Worker's
+// waitUntil (owner 2026-07-04: "upload 了直接关掉 App,后台自己慢慢跑"). The
+// operator does NOT review the form first — each order lands in Orders as a
+// DRAFT when its job finishes, and closing the app no longer kills anything.
 //
-// The draft-create reuses the New SO form's exact create call via the exported
-// createDraftFromPrefill(prefill) helper (same POST /mfg-sales-orders, dates
-// null → DRAFT, same body/line shaping, same server-side honest pricing). The
-// backend /scan-so/extract still only RETURNS extracted data; the draft is
-// minted by the reused create endpoint, not by /extract.
+// The legacy on-screen flow (await /scan-so/extract per payment slip, then
+// createDraftFromPrefill client-side) is kept verbatim as submitLegacy — the
+// automatic fallback when /enqueue 404s (a worker without the route yet).
 //
 // SURVIVES NAVIGATION — the create fetch is FIRED (not awaited before we leave):
 // once it's in flight it completes even if the operator has navigated away or
@@ -456,47 +454,75 @@ export function MobileScan({
     return buildPrefill(first.data, repName, paymentSlips);
   };
 
+  // TRUE background path (owner 2026-07-04): POST /scan-so/enqueue uploads the
+  // order's photos + queues a server-side job and returns 202 {job_id} BEFORE
+  // any OCR — the phone can leave this screen (or close the app entirely); the
+  // Worker's waitUntil finishes the OCR and mints the DRAFT SO on its own.
+  const enqueueOne = (order: OrderDraft): Promise<{ job_id: string; status: string }> => {
+    const form = new FormData();
+    form.append("file", order.front!.file);
+    for (const s of order.payShots) form.append("file", s.file);
+    if (salesperson) form.append("salesperson", salesperson);
+    return authedFetch<{ job_id: string; status: string }>("/scan-so/enqueue", { method: "POST", body: form });
+  };
+
+  /* Legacy on-screen flow — kept VERBATIM as the fallback when /enqueue is not
+     served yet (a 404 from a stale worker): OCR every order while the operator
+     waits, then fire the client-side draft creates. */
+  const submitLegacy = async () => {
+    const prefills: MobileScanPrefill[] = [];
+    for (const order of orders) {
+      const prefill = await extractOrder(order);
+      if (prefill) prefills.push(prefill);
+    }
+    if (prefills.length === 0) {
+      setError("Couldn't read the slip — try again.");
+      return;
+    }
+    for (const prefill of prefills) {
+      void createDraftFromPrefill(prefill).catch(() => {
+        void serviceNotify({
+          title: "Couldn't save one scanned draft",
+          body: "One of your scanned orders couldn't be saved. Scan it again.",
+          tone: "error",
+        });
+      });
+    }
+    onDrafted(prefills.length);
+  };
+
   const submit = async () => {
     if (!ready || submitting) return;
     setSubmitting(true);
     setError(null);
     setUnavailable(false);
     try {
-      // OCR every queued order into a prefill (each order = one draft). We await
-      // only the OCR — the slow, network-bound part we must keep the operator on
-      // this screen for — so a failed read surfaces here, not silently.
-      const prefills: MobileScanPrefill[] = [];
+      // Enqueue every queued order (upload-only — fast). Each order = one
+      // background job = one DRAFT SO. The await here is just the photo upload,
+      // not the OCR, so the operator leaves this screen in seconds.
+      let queued = 0;
       for (const order of orders) {
-        const prefill = await extractOrder(order);
-        if (prefill) prefills.push(prefill);
+        if (!order.front || order.payShots.length === 0) continue;
+        try {
+          await enqueueOne(order);
+          queued++;
+        } catch (e) {
+          const err = e as Error & { status?: number };
+          // 404 = worker without /enqueue yet — do the WHOLE batch the legacy
+          // way (mixing paths would double-create the already-queued orders).
+          if (err.status === 404 && queued === 0) {
+            await submitLegacy();
+            return;
+          }
+          throw e;
+        }
       }
-      if (prefills.length === 0) {
+      if (queued === 0) {
         setError("Couldn't read the slip — try again.");
         return;
       }
-
-      // FIRE the draft-create for each prefill WITHOUT awaiting: the in-flight
-      // POST /mfg-sales-orders survives us leaving this screen (owner: a draft
-      // must appear even if he presses Cancel). A create that fails after we've
-      // left raises the shared in-app notify via authedFetch's error path — it
-      // never leaves a phantom (a failed POST creates nothing).
-      for (const prefill of prefills) {
-        void createDraftFromPrefill(prefill).catch(() => {
-          // The create is now detached from this screen. authedFetch already
-          // turned any failure into a plain-language Error; surface it through
-          // the globally-registered in-app notify (serviceNotify) so even a
-          // post-navigation failure tells the operator — and never leaves a
-          // phantom (a failed POST creates nothing).
-          void serviceNotify({
-            title: "Couldn't save one scanned draft",
-            body: "One of your scanned orders couldn't be saved. Scan it again.",
-            tone: "error",
-          });
-        });
-      }
-
-      // Return to Orders straight away with the toast + list-refetch nudge.
-      onDrafted(prefills.length);
+      // Straight back to Orders — the drafts land on their own.
+      onDrafted(queued);
     } catch (e) {
       // Staging has no ANTHROPIC_API_KEY → /extract returns 503
       // anthropic_key_missing. Surface a clear "not available here" note instead
@@ -515,8 +541,6 @@ export function MobileScan({
     }
   };
 
-  // Total captured payment slips across the whole session (for the footer count).
-  const totalPayShots = orders.reduce((n, o) => n + o.payShots.length, 0);
 
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
@@ -708,9 +732,7 @@ export function MobileScan({
             {submitting && (
               <div style={{ marginTop: 16, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, fontSize: 12, color: "#767b6e" }}>
                 <span style={{ width: 14, height: 14, borderRadius: "50%", border: "2px solid rgba(22,105,95,.3)", borderTopColor: "#16695f", animation: "hzSpin .8s linear infinite" }} />
-                {orders[0] && orders[0].payShots.length > 1
-                  ? `Reading the slip and ${orders[0].payShots.length} payments — this can take a moment.`
-                  : "Reading the slip — this can take a moment."}
+                Uploading — the reading finishes in the background.
               </div>
             )}
 
@@ -736,7 +758,7 @@ export function MobileScan({
               <span style={{ width: 16, height: 16, borderRadius: "50%", border: "2px solid rgba(255,255,255,.45)", borderTopColor: "#fff", animation: "hzSpin .8s linear infinite" }} />
             )}
             {submitting
-              ? totalPayShots > 1 ? "Scanning slips…" : "Scanning slip…"
+              ? "Uploading…"
               : multiOrder ? `Scan & save ${orders.length} drafts` : "Scan & save draft"}
           </button>
         </footer>

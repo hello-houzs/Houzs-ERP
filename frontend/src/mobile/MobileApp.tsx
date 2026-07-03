@@ -164,14 +164,17 @@ function MobileAppInner() {
     setTab("orders");
     setScreen({ t: "tab" });
     void qc.invalidateQueries({ queryKey: ["mobile-so-list"] });
-    // The create is in flight; give it a beat, then refetch again so a slow POST
-    // still surfaces its draft without the operator reloading.
+    // The scan runs as a BACKGROUND job now (upload returns before the OCR),
+    // so refetch again on the OCR's typical timescale — a slow job still
+    // surfaces its draft without the operator reloading.
     window.setTimeout(() => { void qc.invalidateQueries({ queryKey: ["mobile-so-list"] }); }, 2500);
+    window.setTimeout(() => { void qc.invalidateQueries({ queryKey: ["mobile-so-list"] }); }, 45_000);
+    window.setTimeout(() => { void qc.invalidateQueries({ queryKey: ["mobile-so-list"] }); }, 120_000);
     void notify({
-      title: count > 1 ? `${count} drafts saved to Orders` : "Draft saved to Orders",
+      title: count > 1 ? `${count} orders uploaded` : "Order uploaded",
       body: count > 1
-        ? "We're saving your scanned orders as drafts. Open each one from Orders to review it."
-        : "We're saving your scanned order as a draft. Open it from Orders to review it.",
+        ? "They're being read in the background — you can close the app. Each one appears in Orders as a draft when it finishes."
+        : "It's being read in the background — you can close the app. It appears in Orders as a draft when it finishes.",
     });
   };
 
