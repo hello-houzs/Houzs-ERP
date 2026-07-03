@@ -21,6 +21,9 @@ type SoHeader = {
   salesperson_id: string | number | null;
   sales_location: string | null;
   customer_state: string | null;
+  /* Task #121 — country snapshot auto-derived from customer_state (mig 0082).
+     Desktop SO Detail surfaces it as the address block's Country line. */
+  customer_country: string | null;
   ref: string | null;
   customer_so_no: string | null;
   po_doc_no: string | null;
@@ -32,15 +35,28 @@ type SoHeader = {
   emergency_contact_phone: string | null;
   emergency_contact_relationship: string | null;
   building_type: string | null;
+  /* venue = free-text venue name (customer-facing, on PDFs); venue_id = the
+     master FK (mig 0086). Desktop reads the name for display, id as fallback. */
   venue: string | null;
+  venue_id: string | null;
   note: string | null;
+  /* Delivery address columns — the desktop SO form maps these to labelled
+     lines (address1/2 = free-text; address3 = city fallback; address4 =
+     postcode fallback; customer_state = State; customer_country = Country).
+     The header also carries `city`/`postcode` proper columns, so read those
+     first and fall back to address3/address4 exactly like desktop. */
   address1: string | null;
   address2: string | null;
+  address3: string | null;
+  address4: string | null;
   city: string | null;
   postcode: string | null;
   processing_date: string | null;
   customer_delivery_date: string | null;
   internal_expected_dd: string | null;
+  /* proceeded_at — when the salesperson proceeded the order (server-stamped).
+     Used with internal_expected_dd to reflect the processing-date LOCK. */
+  proceeded_at: string | null;
   so_date: string | null;
   created_at: string | null;
   local_total_centi: number | null;
@@ -191,7 +207,20 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
   const CANCELLABLE = ["CONFIRMED", "IN_PRODUCTION", "READY_TO_SHIP"];
   const LOCKED = ["SHIPPED", "DELIVERED", "INVOICED", "CLOSED", "CANCELLED"];
   const canCancel = CANCELLABLE.includes(rawStatus);
-  const editLocked = LOCKED.includes(rawStatus) || hasChildren;
+
+  /* Processing-date LOCK — mirrors the desktop SO Detail form's
+     `processingLocked` (SalesOrderDetail.tsx): the Processing Date is the day
+     production started, so once MYT today is AFTER internal_expected_dd AND the
+     order has been proceeded, that date (and the production spec built off it)
+     is a historical record. Desktop keeps the field read-only; here we surface
+     a banner and treat the SO as edit-locked so the detail never offers
+     line-item edits on a proceeded, past-processing order. `today` is the local
+     (MYT on the operator's device) YYYY-MM-DD, string-compared like desktop. */
+  const today = new Date().toLocaleDateString("en-CA");
+  const originalProcessing = (h?.internal_expected_dd ?? "").slice(0, 10);
+  const processingLocked = originalProcessing !== "" && originalProcessing < today && Boolean(h?.proceeded_at);
+
+  const editLocked = LOCKED.includes(rawStatus) || hasChildren || processingLocked;
 
   /* Delete a persisted payment — parity with the desktop PaymentsTable trash
      action. In-app confirm, then DELETE /:docNo/payments/:id; on success the
@@ -247,11 +276,26 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
         {!detail.isLoading && !detail.error && h && (
           <div>
             {/* Locked-view hint (design VERBATIM) — Edit unlocks the same New SO
-                form; there's no in-place edit here, so wording drops the mode. */}
-            <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#eef1ec", border: "1px solid #e3e6e0", borderRadius: 10, padding: "9px 11px", marginBottom: 12, fontSize: 11, color: "#5c6156" }}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#767b6e" strokeWidth="2" strokeLinecap="round"><rect x="4" y="10" width="16" height="10" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /></svg>
-              Locked view — tap Edit to change. Same form as New SO.
-            </div>
+                form; there's no in-place edit here, so wording drops the mode.
+                When the SO is genuinely edit-locked (SHIPPED+ / downstream DO-SI /
+                past-processing proceeded order) the banner turns orange and names
+                the reason, mirroring the desktop SO Detail lock banner — and the
+                footer Edit button is disabled below. */}
+            {editLocked ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 8, background: "rgba(232,107,58,0.08)", border: "1px solid var(--c-orange, #e86b3a)", borderRadius: 10, padding: "9px 11px", marginBottom: 12, fontSize: 11, color: "#8a4a24" }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#c66a34" strokeWidth="2" strokeLinecap="round"><rect x="4" y="10" width="16" height="10" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /></svg>
+                {processingLocked
+                  ? "Locked — the processing date has passed and this order was proceeded. Line items can't be edited."
+                  : hasChildren
+                  ? "Locked — a delivery order or invoice references this SO. Line items can't be edited."
+                  : "Locked — this order has moved past editing. Line items can't be edited."}
+              </div>
+            ) : (
+              <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#eef1ec", border: "1px solid #e3e6e0", borderRadius: 10, padding: "9px 11px", marginBottom: 12, fontSize: 11, color: "#5c6156" }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#767b6e" strokeWidth="2" strokeLinecap="round"><rect x="4" y="10" width="16" height="10" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /></svg>
+                Locked view — tap Edit to change. Same form as New SO.
+              </div>
+            )}
 
             {/* KPI — Total / Paid / Balance (nowrap tabular money, cards min-width:0).
                 Colours VERBATIM from the design: Total + Paid both brand-dark
@@ -278,15 +322,28 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
 
             {/* Order info */}
             <div className="card"><div className="card-h"><span className="card-t">Order info</span></div><div className="card-b">
-              <div style={{ display: "flex", gap: 9 }}><div style={{ flex: 1, minWidth: 0 }}><RoField label="Building type" value={val(h.building_type)} /></div><div style={{ flex: 1, minWidth: 0 }}><RoField label="Venue" value={val(h.venue)} /></div></div>
-              <div style={{ display: "flex", gap: 9 }}><div style={{ flex: 1, minWidth: 0 }}><RoField label="Processing date" value={dl(h.processing_date ?? h.internal_expected_dd)} mono /></div><div style={{ flex: 1, minWidth: 0 }}><RoField label="Delivery date" value={dl(h.customer_delivery_date ?? h.internal_expected_dd)} mono /></div></div>
+              <div style={{ display: "flex", gap: 9 }}><div style={{ flex: 1, minWidth: 0 }}><RoField label="Building type" value={val(h.building_type)} /></div><div style={{ flex: 1, minWidth: 0 }}><RoField label="Venue" value={val(h.venue ?? h.venue_id)} /></div></div>
+              <div style={{ display: "flex", gap: 9 }}><div style={{ flex: 1, minWidth: 0 }}><RoField label="Processing date" value={dl(h.internal_expected_dd ?? h.processing_date)} mono /></div><div style={{ flex: 1, minWidth: 0 }}><RoField label="Delivery date" value={dl(h.customer_delivery_date)} mono /></div></div>
               <RoField label="Sales location" value={val(h.sales_location ?? h.customer_state)} />
               <RoField label="Note" value={val(h.note)} />
             </div></div>
 
-            {/* Delivery address — composed from the address columns; em-dash when blank */}
+            {/* Delivery address — the STRUCTURED parts the desktop SO form shows,
+                each labelled (not one concatenated blob). Desktop mapping:
+                address1/2 = free-text lines; City = city ?? address3; Postcode =
+                postcode ?? address4; State = customer_state; Country =
+                customer_country. Individually em-dashed when blank. */}
             <div className="card"><div className="card-h"><span className="card-t">Delivery address</span></div><div className="card-b">
-              <RoField label="Address" value={composeAddress(h)} />
+              <RoField label="Address line 1" value={val(h.address1)} />
+              <RoField label="Address line 2" value={val(h.address2)} />
+              <div style={{ display: "flex", gap: 9 }}>
+                <div style={{ flex: 1, minWidth: 0 }}><RoField label="City" value={val(h.city ?? h.address3)} /></div>
+                <div style={{ flex: 1, minWidth: 0 }}><RoField label="Postcode" value={val(h.postcode ?? h.address4)} mono /></div>
+              </div>
+              <div style={{ display: "flex", gap: 9 }}>
+                <div style={{ flex: 1, minWidth: 0 }}><RoField label="State" value={val(h.customer_state)} /></div>
+                <div style={{ flex: 1, minWidth: 0 }}><RoField label="Country" value={val(h.customer_country)} /></div>
+              </div>
             </div></div>
 
             {/* Line items — description / variants / SKU / ×qty / line total */}
@@ -427,15 +484,6 @@ function RoField({ label, value, mono }: { label: string; value: string; mono?: 
       <div className={`fld-ro${mono ? " money" : ""}`}>{value}</div>
     </div>
   );
-}
-
-/* Delivery address — composed from the address columns the detail header
-   carries (address1/2, city, customer_state, postcode). All blank → em-dash. */
-function composeAddress(h: SoHeader): string {
-  const parts = [h.address1, h.address2, h.city, [h.customer_state, h.postcode].filter((x) => x && String(x).trim()).join(" ")]
-    .map((x) => (x ?? "").toString().trim())
-    .filter((x) => x.length);
-  return parts.length ? parts.join(", ") : "—";
 }
 
 /* Emergency contact — "name · phone (relationship)" from the header's

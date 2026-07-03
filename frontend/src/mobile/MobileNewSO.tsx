@@ -4,8 +4,20 @@ import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { uploadSlipFull } from "../vendor/scm/lib/slip";
 import { useStaff } from "../vendor/scm/lib/admin-queries";
 import { useAuth } from "../vendor/scm/lib/auth";
+import { useAuth as useHouzsAuth } from "../auth/AuthContext";
 import { useVenues } from "../vendor/scm/lib/venues-queries";
 import { useStateWarehouseMappings } from "../vendor/scm/lib/state-warehouse-queries";
+import {
+  useSoDropdownOptions,
+  optionsOrFallback,
+} from "../vendor/scm/lib/so-dropdown-options-queries";
+import {
+  useLocalities,
+  distinctStates,
+  citiesInState,
+  postcodesInCity,
+  countryForState,
+} from "../vendor/scm/lib/localities-queries";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import type { ExtractedSlip } from "../vendor/scm/components/ScanOrderModal";
@@ -174,11 +186,19 @@ type SoPayment = {
 };
 type PaymentsResp = { payments: SoPayment[] };
 
-const CUSTOMER_TYPES = ["", "Walk-in", "Repeat", "Dealer", "Designer"];
-const BUILDING_TYPES = ["", "Landed", "Condominium", "Apartment", "Office", "Commercial"];
-const RELATIONSHIPS = ["", "Spouse", "Parent", "Sibling", "Friend", "Colleague"];
-const STATES = ["", "Selangor", "Kuala Lumpur", "Penang", "Johor", "Melaka", "Perak", "Negeri Sembilan", "Kedah", "Pahang", "Sabah", "Sarawak"];
+/* FIX A — the interactive form now sources Customer Type / Building Type /
+   Relationship / State / City / Postcode from the SAME real hooks the desktop
+   SalesOrderNew reads (useSoDropdownOptions + useLocalities); see the component
+   body. These module-level arrays are kept ONLY as the enum-guard allowlist for
+   the headless createDraftFromPrefill() below (it has no hooks, so it validates
+   a stray OCR value against a static list before it reaches the backend). */
+const CUSTOMER_TYPES = ["", "Walk-in", "Repeat", "Dealer", "Designer", "NEW", "EXISTING"];
+const BUILDING_TYPES = ["", "Landed", "Condominium", "Apartment", "Office", "Commercial", "Condo", "Shop", "Other"];
+const STATES = ["", "Selangor", "Kuala Lumpur", "Penang", "Johor", "Melaka", "Perak", "Negeri Sembilan", "Kedah", "Pahang", "Sabah", "Sarawak", "Terengganu", "Kelantan", "Perlis", "Putrajaya", "Labuan"];
 const PAY_METHODS = ["Cash", "Merchant", "Online", "Installment"];
+/* Sentinel for "the signed-in creator has no scm.staff row" — shows their name
+   in the Salesperson select but sends null so the backend stamps the caller. */
+const SELF_SALESPERSON = "__self__";
 const LINE_CATS: Array<{ value: LineCat; label: string }> = [
   { value: "", label: "General item" },
   { value: "sofa", label: "Sofa" },
@@ -394,7 +414,29 @@ export function MobileNewSO({
   const confirm = useConfirm();
   const staffQ = useStaff();
   const { staff: authStaff } = useAuth();
+  /* FIX A — the app-level Houzs auth exposes the permission gate + the signed-in
+     user (name/email/id), which the vendor auth bridge doesn't. Drives the
+     Salesperson default + the scm.so.attribute_other gate, mirroring desktop
+     SalesOrderNew (which reads `can` + `user` from the same context). */
+  const { user: currentUser, can } = useHouzsAuth();
+  const canChangeSalesperson = can("scm.so.attribute_other");
   const isEdit = mode === "edit" || mode === "edit-draft";
+
+  /* FIX A — real DB-backed SO dropdowns (was hardcoded arrays). Same hooks +
+     optionsOrFallback the desktop SalesOrderNew uses; the fallback seed keeps the
+     selects populated before the API resolves / when the table is empty. */
+  const customerTypeOptsQ = useSoDropdownOptions("customer_type");
+  const buildingTypeOptsQ = useSoDropdownOptions("building_type");
+  const relationshipOptsQ = useSoDropdownOptions("relationship");
+  const customerTypeOpts = optionsOrFallback("customer_type", customerTypeOptsQ.data);
+  const buildingTypeOpts = optionsOrFallback("building_type", buildingTypeOptsQ.data);
+  const relationshipOpts = optionsOrFallback("relationship", relationshipOptsQ.data);
+
+  /* FIX A — cascading State → City → Postcode off my_localities (desktop parity).
+     With the empty-localities fallback the cascade collapses to empty selects and
+     the State field renders a free-text input instead (the verbatim no-data
+     behaviour the vendor slice ships). */
+  const locQ = useLocalities();
 
   /* ── Real variant sources — the SAME hooks the desktop SoLineCard reads. */
   const maintQ = useMaintenanceConfig("master");
@@ -476,10 +518,19 @@ export function MobileNewSO({
     scanLines.length > 0 ? scanLines.map((s) => s.line) : [newLine()],
   );
   const [pays, setPays] = useState<Payment[]>(() => seededPays);
+  /* FIX D1(b) — line keys whose Item Delivery Date was MANUALLY changed. The
+     header Delivery Date cascades onto every line's ddate, re-syncing when the
+     header changes, EXCEPT lines in this set (manual-override-wins — same
+     pattern as the sofa variant overriddenKeys inherit already in this file). */
+  const [ddateOverrides, setDdateOverrides] = useState<Set<string>>(() => new Set());
   const scanSlipFilesRef = useRef<Record<string, File>>(scanSlipFilesInit);
   const [origItems, setOrigItems] = useState<SoItem[]>([]);
   const [existingPays, setExistingPays] = useState<SoPayment[]>([]);
   const [lineLocked, setLineLocked] = useState(false);
+  /* FIX D2/D3 — the PERSISTED processing date (internal_expected_dd) drives the
+     processing-date lock. Kept separate from the editable procDate form value so
+     the lock reflects what the backend has, not an in-flight edit. */
+  const [origProcDate, setOrigProcDate] = useState<string>("");
   // Prefill venue (edit) — used to seed the manual venue pick.
   const [prefillVenueId, setPrefillVenueId] = useState<string | null>(null);
   const [prefillVenueName, setPrefillVenueName] = useState<string>("");
@@ -540,6 +591,7 @@ export function MobileNewSO({
         setPrefillVenueId(h.venueId ?? h.venue_id ?? null);
         setPrefillVenueName(h.venue ?? "");
         setProcDate((h.internal_expected_dd ?? "").slice(0, 10));
+        setOrigProcDate((h.internal_expected_dd ?? "").slice(0, 10));
         setDelivDate((h.customer_delivery_date ?? "").slice(0, 10));
         setNote(h.note ?? "");
         setEcName(h.emergency_contact_name ?? "");
@@ -554,6 +606,10 @@ export function MobileNewSO({
         setOrigItems(liveItems);
         const editable = liveItems.map(lineFromItem);
         setLines(editable.length ? editable : [newLine()]);
+        /* FIX D1(b) — a prefilled line already carries its persisted Item Delivery
+           Date; treat it as a manual override so the header→line cascade never
+           stomps a saved per-line date on load. */
+        setDdateOverrides(new Set(editable.filter((l) => l.ddate).map((l) => l.key)));
         setExistingPays(payResp.payments ?? []);
         const st = (detail.salesOrder.status ?? "").toUpperCase();
         const LOCKED = ["SHIPPED", "DELIVERED", "INVOICED", "CLOSED", "CANCELLED"];
@@ -648,6 +704,88 @@ export function MobileNewSO({
      persisted / salesperson / active-project fallbacks). */
   const outgoingVenueId = resolvedVenueId;
   const outgoingVenueName = resolvedVenueName;
+
+  /* Salesperson to SEND — the "self" sentinel maps to null so the backend
+     stamps the logged-in caller (a real staff id is sent as-is). */
+  const outgoingSalespersonId =
+    salespersonId && salespersonId !== SELF_SALESPERSON ? salespersonId : null;
+
+  /* ── FIX A — locality cascade (desktop SalesOrderNew parity) ──────────────
+     State → City → Postcode all derive from the my_localities dataset. City
+     options depend on the picked State; Postcode on the picked City. Country
+     derives from the State (display-only; the backend re-derives on save). When
+     the dataset is empty every list collapses to [] and the State field falls
+     back to a free-text input. */
+  const locRows = useMemo(() => locQ.data ?? [], [locQ.data]);
+  const stateOpts = useMemo(() => distinctStates(locRows), [locRows]);
+  const cityOpts = useMemo(() => (state ? citiesInState(locRows, state) : []), [locRows, state]);
+  const postcodeOpts = useMemo(
+    () => (state && city ? postcodesInCity(locRows, state, city) : []),
+    [locRows, state, city],
+  );
+  const localitiesReady = stateOpts.length > 0; // real dataset present → use dropdowns
+  const country = useMemo(
+    () => (state ? countryForState(locRows, state) : null) ?? "Malaysia",
+    [locRows, state],
+  );
+
+  /* ── FIX D2/D3 — processing-date LOCK (mirror the backend + SalesOrderDetail).
+     The backend locks an SO once "today (MYT)" is strictly AFTER its processing
+     date (internal_expected_dd): line add/edit/delete + the identity columns
+     State / City / Postcode are rejected 409 so_locked_processing. "Today in
+     Malaysia" = shift the UTC clock +8h and read the calendar date, exactly as
+     soProcessingLocked() computes it server-side (procYmd < todayMY). In EDIT
+     mode we DISABLE line editing + State/City/Postcode, but keep the rest of the
+     customer info + address lines + note editable. */
+  const todayMY = useMemo(
+    () => new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10),
+    [],
+  );
+  const procLocked = useMemo(
+    () => isEdit && !!origProcDate && /^\d{4}-\d{2}-\d{2}$/.test(origProcDate) && origProcDate < todayMY,
+    [isEdit, origProcDate, todayMY],
+  );
+  /* Line editing is blocked when the SO is shipped / has downstream docs
+     (lineLocked) OR when the processing date has passed (procLocked). */
+  const lineEditingBlocked = lineLocked || procLocked;
+  /* Identity address columns (State/City/Postcode) freeze on the processing
+     lock (State drives each line's warehouse → the supplier PO). */
+  const addressIdentityLocked = procLocked;
+
+  /* ── FIX A — Salesperson default (desktop parity) ─────────────────────────
+     The creator IS the salesperson: default to the signed-in user. If they have
+     a matching scm.staff row (by id / email / name) seed its canonical id;
+     otherwise seed a UI-only "self" sentinel so their NAME shows (never blank).
+     Only seeds when nothing is picked yet (never stomps an admin's manual pick,
+     or a scan-provided salesperson). Non-admins can't re-pick (gated select). */
+  const selfStaffMatch = useMemo(() => {
+    const email = (currentUser?.email ?? "").trim().toLowerCase();
+    const byEmail = email
+      ? staffList.find((s) => (s.email ?? "").trim().toLowerCase() === email)
+      : undefined;
+    if (byEmail) return byEmail;
+    const nm = (currentUser?.name ?? "").trim().toLowerCase();
+    return nm ? staffList.find((s) => (s.name ?? "").trim().toLowerCase() === nm) : undefined;
+  }, [staffList, currentUser?.email, currentUser?.name]);
+  const selfDisplayName =
+    (currentUser?.name ?? "").trim() || (currentUser?.email ?? "").trim() || "Me";
+  useEffect(() => {
+    if (isEdit) return; // edit keeps the persisted salesperson
+    if (selfStaffMatch) setSalespersonId((prev) => prev || selfStaffMatch.id);
+    else if (selfDisplayName) setSalespersonId((prev) => prev || SELF_SALESPERSON);
+  }, [isEdit, selfStaffMatch, selfDisplayName]);
+
+  /* When State changes, clear a now-invalid City / Postcode (the cascade only
+     offers cities/postcodes for the new state). Skipped while locked. */
+  const onStateChange = (next: string) => {
+    setState(next);
+    setCity("");
+    setPostcode("");
+  };
+  const onCityChange = (next: string) => {
+    setCity(next);
+    setPostcode("");
+  };
 
   // ---- Totals ---------------------------------------------------------------
   const subtotal = useMemo(
@@ -1007,14 +1145,17 @@ export function MobileNewSO({
           emergencyContactName: ecName.trim() || null,
           emergencyContactPhone: ecPhoneOut,
           emergencyContactRelationship: ecRel || null,
-          salespersonId: salespersonId || null,
+          salespersonId: outgoingSalespersonId,
         };
         await authedFetch(`/mfg-sales-orders/${encodeURIComponent(docNo)}`, {
           method: "PATCH",
           body: JSON.stringify(patch),
         });
 
-        if (!lineLocked) {
+        /* FIX D2/D3 — skip line mutations + photo staging when line editing is
+           blocked (shipped/has-children OR processing-date-locked); the backend
+           rejects them 409 so_locked_processing anyway. */
+        if (!lineEditingBlocked) {
           const failed = await applyLineDiff(docNo);
           if (failed > 0) {
             void notify({ title: "Some line changes didn't save", body: `${failed} line change(s) failed. Re-open the order and check the items.`, tone: "error" });
@@ -1055,7 +1196,7 @@ export function MobileNewSO({
         emergencyContactName: ecName.trim() || null,
         emergencyContactPhone: ecPhoneOut,
         emergencyContactRelationship: ecRel || null,
-        salespersonId: salespersonId || null,
+        salespersonId: outgoingSalespersonId,
         items,
       };
 
@@ -1080,6 +1221,38 @@ export function MobileNewSO({
 
   const patchLine = (key: string, patch: Partial<LineItem>) =>
     setLines((prev) => prev.map((x) => (x.key === key ? { ...x, ...patch } : x)));
+
+  /* FIX D1(b) — a manual Item Delivery Date edit records the line key as an
+     override (so the header cascade leaves it alone) and applies the value. */
+  const setLineDdateManual = (key: string, value: string) => {
+    setDdateOverrides((prev) => {
+      const next = new Set(prev);
+      next.add(key);
+      return next;
+    });
+    patchLine(key, { ddate: value });
+  };
+
+  /* FIX D1(b) — header Delivery Date → each line's Item Delivery Date. Fills
+     every line that hasn't been manually overridden, and re-syncs whenever the
+     header date changes. A line the operator hand-edited (in ddateOverrides)
+     keeps its own value. No-op while line editing is locked. */
+  useEffect(() => {
+    if (lineEditingBlocked) return;
+    if (!delivDate) return; // nothing to cascade until the header date is set
+    setLines((prev) => {
+      let changed = false;
+      const next = prev.map((l) => {
+        if (ddateOverrides.has(l.key)) return l; // manual override wins
+        if (l.ddate === delivDate) return l;
+        changed = true;
+        return { ...l, ddate: delivDate };
+      });
+      return changed ? next : prev;
+    });
+    // Re-run when the header date changes or a new (non-overridden) line appears.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [delivDate, lineEditingBlocked, lines.length]);
 
   // ---- Render ---------------------------------------------------------------
   return (
@@ -1108,6 +1281,18 @@ export function MobileNewSO({
               </div>
             )}
 
+            {/* FIX D2/D3 — processing-date lock notice. The SO is on order to the
+                supplier, so line items + State/City/Postcode are frozen; the rest
+                of the customer info + address lines + note stay editable. */}
+            {procLocked && (
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 9, marginBottom: 11, padding: "10px 12px", background: "#fbf3e6", border: "1px solid #ecd9b6", borderRadius: 12 }}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#a16a2e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flex: "none", marginTop: 1 }}><rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg>
+                <div style={{ fontSize: 11.5, color: "#8a5a22", lineHeight: 1.5 }}>
+                  This order&apos;s processing date has passed, so it is now on order to the supplier. Line items and the delivery <b>State / City / Postcode</b> are locked. You can still update the rest of the customer details, address lines and note.
+                </div>
+              </div>
+            )}
+
             {/* ── Customer ────────────────────────────────────────────── */}
             <div className="card" style={{ marginBottom: 11 }}>
               <div className="card-h"><span className="card-t">Customer</span></div>
@@ -1127,15 +1312,31 @@ export function MobileNewSO({
                   </Field>
                 </div>
                 <div style={{ display: "flex", gap: 9 }}>
+                  {/* FIX A — Customer Type from so_dropdown_options (was hardcoded). */}
                   <Field label="Customer Type" style={{ flex: 1 }} scanned={scanned("custType", custType)}>
                     <select className="fld-i" value={custType} onChange={(e) => setCustType(e.target.value)}>
-                      {CUSTOMER_TYPES.map((t) => <option key={t} value={t}>{t || "—"}</option>)}
+                      <option value="">—</option>
+                      {custType && !customerTypeOpts.some((o) => o.value === custType) && (
+                        <option value={custType}>{custType}</option>
+                      )}
+                      {customerTypeOpts.map((t) => <option key={t.id} value={t.value}>{t.label}</option>)}
                     </select>
                   </Field>
+                  {/* FIX A — Salesperson defaults to the signed-in user; only a
+                      user with scm.so.attribute_other can re-pick (desktop parity).
+                      Non-admins see a disabled select pinned to themselves. */}
                   <Field label="Salesperson" style={{ flex: 1 }}>
-                    <select className="fld-i" value={salespersonId} onChange={(e) => setSalespersonId(e.target.value)}>
-                      <option value="">{staffQ.isLoading ? "Loading…" : "Me (default)"}</option>
-                      {(staffQ.data ?? []).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    <select
+                      className="fld-i"
+                      value={salespersonId}
+                      onChange={(e) => setSalespersonId(e.target.value)}
+                      disabled={!canChangeSalesperson}
+                    >
+                      {!selfStaffMatch && <option value={SELF_SALESPERSON}>{selfDisplayName} (me)</option>}
+                      {!canChangeSalesperson && selfStaffMatch && (
+                        <option value={selfStaffMatch.id}>{selfStaffMatch.name}</option>
+                      )}
+                      {canChangeSalesperson && staffList.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
                     </select>
                   </Field>
                 </div>
@@ -1152,9 +1353,14 @@ export function MobileNewSO({
                 <Field label="Contact Name">
                   <input className="fld-i" value={ecName} onChange={(e) => setEcName(e.target.value)} placeholder="e.g. Lim Mei Hua" />
                 </Field>
+                {/* FIX A — Relationship from so_dropdown_options (was hardcoded). */}
                 <Field label="Relationship">
                   <select className="fld-i" value={ecRel} onChange={(e) => setEcRel(e.target.value)}>
-                    {RELATIONSHIPS.map((t) => <option key={t} value={t}>{t || "—"}</option>)}
+                    <option value="">—</option>
+                    {ecRel && !relationshipOpts.some((o) => o.value === ecRel) && (
+                      <option value={ecRel}>{ecRel}</option>
+                    )}
+                    {relationshipOpts.map((t) => <option key={t.id} value={t.value}>{t.label}</option>)}
                   </select>
                 </Field>
                 <Field label="Phone">
@@ -1171,9 +1377,14 @@ export function MobileNewSO({
               <div className="card-h"><span className="card-t">Order info</span></div>
               <div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 9 }}>
                 <div style={{ display: "flex", gap: 9 }}>
+                  {/* FIX A — Building Type from so_dropdown_options (was hardcoded). */}
                   <Field label="Building Type" style={{ flex: 1 }} scanned={scanned("buildingType", buildingType)}>
                     <select className="fld-i" value={buildingType} onChange={(e) => setBuildingType(e.target.value)}>
-                      {BUILDING_TYPES.map((t) => <option key={t} value={t}>{t || "—"}</option>)}
+                      <option value="">—</option>
+                      {buildingType && !buildingTypeOpts.some((o) => o.value === buildingType) && (
+                        <option value={buildingType}>{buildingType}</option>
+                      )}
+                      {buildingTypeOpts.map((t) => <option key={t.id} value={t.value}>{t.label}</option>)}
                     </select>
                   </Field>
                   {/* Venue is derived (salesperson's active project / home venue);
@@ -1186,11 +1397,13 @@ export function MobileNewSO({
                   <div style={{ fontSize: 10, color: "#16695f", marginTop: -4 }}>Auto-filled from {autoVenue.projectName}</div>
                 )}
                 <div style={{ display: "flex", gap: 9 }}>
+                  {/* FIX D3 — once the processing date has passed the SO is locked
+                      (it's what we PO to the supplier); the date inputs freeze. */}
                   <Field label="Processing Date" style={{ flex: 1 }} error={touched && dateXorErr} scanned={scanned("procDate", procDate)}>
-                    <input className="fld-i" type="date" value={procDate} onChange={(e) => setProcDate(e.target.value)} />
+                    <input className="fld-i" type="date" value={procDate} disabled={procLocked} onChange={(e) => setProcDate(e.target.value)} />
                   </Field>
                   <Field label="Delivery Date" style={{ flex: 1 }} error={touched && dateXorErr} scanned={scanned("delivDate", delivDate)}>
-                    <input className="fld-i" type="date" value={delivDate} onChange={(e) => setDelivDate(e.target.value)} />
+                    <input className="fld-i" type="date" value={delivDate} disabled={procLocked} onChange={(e) => setDelivDate(e.target.value)} />
                   </Field>
                 </div>
                 <div style={{ fontSize: 10, color: "#9aa093", marginTop: -3 }}>Set both dates together, or leave both empty to keep this a draft.</div>
@@ -1198,8 +1411,9 @@ export function MobileNewSO({
                   <input className="fld-i" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Internal notes — SO detail only" />
                 </Field>
                 <div style={{ display: "flex", gap: 9 }}>
+                  {/* FIX A — Country derives from the picked State (my_localities). */}
                   <Field label="Country" style={{ flex: 1 }}>
-                    <div className="fld-ro">Malaysia</div>
+                    <div className="fld-ro">{country}</div>
                   </Field>
                   {/* Sales Location derives from state → warehouse mapping. */}
                   <Field label="Sales Location" style={{ flex: 1 }}>
@@ -1228,19 +1442,86 @@ export function MobileNewSO({
                     <Field label="Address Line 2">
                       <input className="fld-i" value={addr2} onChange={(e) => setAddr2(e.target.value)} placeholder="Apt, floor, building (optional)" />
                     </Field>
+                    {/* FIX A — cascading State → City → Postcode from my_localities
+                        (desktop parity). When the dataset is present these are
+                        dependent dropdowns; when it's empty they fall back to
+                        free-text inputs (the vendor no-data behaviour).
+                        FIX D2 — State/City/Postcode freeze once the processing
+                        date has passed (identity columns feed the supplier PO). */}
                     <Field label="State" scanned={scanned("state", state)}>
-                      <select className="fld-i" value={state} onChange={(e) => setState(e.target.value)}>
-                        {STATES.map((s) => <option key={s} value={s}>{s || "Pick state"}</option>)}
-                      </select>
+                      {localitiesReady ? (
+                        <select
+                          className="fld-i"
+                          value={state}
+                          disabled={addressIdentityLocked || locQ.isLoading}
+                          onChange={(e) => onStateChange(e.target.value)}
+                        >
+                          <option value="">{locQ.isLoading ? "Loading…" : "Pick state"}</option>
+                          {state && !stateOpts.includes(state) && <option value={state}>{state}</option>}
+                          {stateOpts.map((s) => <option key={s} value={s}>{s}</option>)}
+                        </select>
+                      ) : (
+                        <input
+                          className="fld-i"
+                          value={state}
+                          disabled={addressIdentityLocked}
+                          onChange={(e) => onStateChange(e.target.value)}
+                          placeholder="State"
+                        />
+                      )}
                     </Field>
                     <div style={{ display: "flex", gap: 11 }}>
                       <Field label="City" style={{ flex: 1 }} scanned={scanned("city", city)}>
-                        <input className="fld-i" value={city} onChange={(e) => setCity(e.target.value)} placeholder="City" />
+                        {localitiesReady && cityOpts.length > 0 ? (
+                          <select
+                            className="fld-i"
+                            value={city}
+                            disabled={addressIdentityLocked || !state}
+                            onChange={(e) => onCityChange(e.target.value)}
+                          >
+                            <option value="">{state ? "Pick city" : "— pick state first"}</option>
+                            {city && !cityOpts.includes(city) && <option value={city}>{city}</option>}
+                            {cityOpts.map((c) => <option key={c} value={c}>{c}</option>)}
+                          </select>
+                        ) : (
+                          <input
+                            className="fld-i"
+                            value={city}
+                            disabled={addressIdentityLocked}
+                            onChange={(e) => onCityChange(e.target.value)}
+                            placeholder="City"
+                          />
+                        )}
                       </Field>
                       <Field label="Postcode" style={{ flex: 1 }} scanned={scanned("postcode", postcode)}>
-                        <input className="fld-i" inputMode="numeric" value={postcode} onChange={(e) => setPostcode(e.target.value)} placeholder="00000" />
+                        {localitiesReady && postcodeOpts.length > 0 ? (
+                          <select
+                            className="fld-i"
+                            value={postcode}
+                            disabled={addressIdentityLocked || !state || !city}
+                            onChange={(e) => setPostcode(e.target.value)}
+                          >
+                            <option value="">{state && city ? "Pick postcode" : "— pick city first"}</option>
+                            {postcode && !postcodeOpts.includes(postcode) && <option value={postcode}>{postcode}</option>}
+                            {postcodeOpts.map((p) => <option key={p} value={p}>{p}</option>)}
+                          </select>
+                        ) : (
+                          <input
+                            className="fld-i"
+                            inputMode="numeric"
+                            value={postcode}
+                            disabled={addressIdentityLocked}
+                            onChange={(e) => setPostcode(e.target.value)}
+                            placeholder="00000"
+                          />
+                        )}
                       </Field>
                     </div>
+                    {addressIdentityLocked && (
+                      <div style={{ fontSize: 10, color: "#a16a2e", marginTop: -3 }}>
+                        State, City and Postcode are locked — this order&apos;s processing date has passed and it is now on order to the supplier. Address lines can still be updated.
+                      </div>
+                    )}
                   </>
                 )}
               </div>
@@ -1250,7 +1531,7 @@ export function MobileNewSO({
             <div className="card" style={{ marginBottom: 11 }}>
               <div className="card-h"><span className="card-t">Line items</span><span className="card-sub">{`${lines.length} ${lines.length === 1 ? "line" : "lines"}`}</span></div>
               <div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-                {lineLocked ? (
+                {lineEditingBlocked ? (
                   <>
                     {lines.length ? lines.map((l) => (
                       <div key={l.key} style={roItemBox}>
@@ -1260,7 +1541,12 @@ export function MobileNewSO({
                         </div>
                       </div>
                     )) : <div style={{ fontSize: 11.5, color: "#9aa093", padding: "8px 0" }}>No items.</div>}
-                    <div style={{ fontSize: 10, color: "#9aa093", marginTop: 4 }}>This order is shipped or has downstream documents — line items can no longer be changed.</div>
+                    {/* FIX D2/D3 — distinguish the two lock reasons in the notice. */}
+                    <div style={{ fontSize: 10, color: "#9aa093", marginTop: 4 }}>
+                      {procLocked
+                        ? "This order's processing date has passed — it is on order to the supplier, so line items can no longer be changed."
+                        : "This order is shipped or has downstream documents — line items can no longer be changed."}
+                    </div>
                   </>
                 ) : (
                   <>
@@ -1276,8 +1562,15 @@ export function MobileNewSO({
                           onOpenPicker={() => setPickerFor(l.key)}
                           onOpenFabricPicker={() => setFabricPickerFor(l.key)}
                           onChange={(patch) => patchLine(l.key, patch)}
+                          onDdateChange={(v) => setLineDdateManual(l.key, v)}
                           onRemove={async () => {
                             if (!(await confirm({ title: "Remove this line?", body: l.name ? `"${l.name}" will be removed from the order.` : undefined, confirmLabel: "Remove", danger: true }))) return;
+                            setDdateOverrides((prev) => {
+                              if (!prev.has(l.key)) return prev;
+                              const next = new Set(prev);
+                              next.delete(l.key);
+                              return next;
+                            });
                             setLines((prev) => prev.filter((x) => x.key !== l.key));
                           }}
                         />
@@ -1356,16 +1649,28 @@ export function MobileNewSO({
       )}
 
       {pickerFor && (() => {
-        /* Seed an existing base line with a picked SKU's real catalog identity.
-           `cat` derives from the picked group so the right variant panel shows.
-           Changing the SKU resets the variant blob (a bedframe's divan pool
-           differs from a sofa's) BUT seeds same-category followers from the FIRST
-           line's variants (mirrors SoLineCard.pickProduct inherit). overriddenKeys
-           resets on a fresh pick. Shared by single-pick and multi-pick so every
-           new line is a proper pickable line with identical seeding. */
+        /* FIX C — seed a base line with a picked SKU's REAL catalog identity so
+           the line resolves to the actual product (was: after "Add product" the
+           line stayed a blank "General item / RM 0.00" because the picked SKU
+           wasn't applied). `itemCode` is the catalog code the whole form keys on
+           (picked = Boolean(itemCode), the save() unpicked-line guard, the line
+           variant panels, and the create/edit item body all read it). `cat`
+           derives from the picked group so the right variant panel shows; the
+           unit price defaults from the catalog (server recompute is authoritative
+           on save). Changing the SKU resets the variant blob (a bedframe's divan
+           pool differs from a sofa's) but seeds same-category followers from the
+           FIRST line's variants (mirrors SoLineCard.pickProduct inherit);
+           overriddenKeys resets on a fresh pick. Shared by single-pick and
+           multi-pick so every seeded line is identical.
+           GUARD: a SKU with no code can't identify a product — never overwrite
+           the base line with a phantom "picked-but-blank" row (that is the exact
+           state the owner reported); leave the base line untouched instead. */
         const seedLine = (base: LineItem, sku: PickedSku): LineItem => {
-          const nextCat = catForGroup(sku.itemGroup);
-          const inherited = inheritVariantsByCategory[sku.itemGroup];
+          const code = (sku.itemCode ?? "").trim();
+          if (!code) return base; // never silently seed an unidentifiable line
+          const group = (sku.itemGroup ?? "").trim().toLowerCase();
+          const nextCat = catForGroup(group);
+          const inherited = inheritVariantsByCategory[group];
           const seeded = inherited && Object.keys(inherited).length > 0
             ? { ...inherited }
             : (nextCat === base.cat ? base.variants : {});
@@ -1374,9 +1679,9 @@ export function MobileNewSO({
           delete (seededVariants as Record<string, unknown>).remark;
           return {
             ...base,
-            itemCode: sku.itemCode,
-            itemGroup: sku.itemGroup,
-            name: sku.name,
+            itemCode: code,
+            itemGroup: group,
+            name: (sku.name ?? "").trim() || code,
             cat: nextCat,
             price: fromCenti(sku.unitPriceCenti),
             variants: seededVariants,
@@ -1392,7 +1697,13 @@ export function MobileNewSO({
               setPickerFor(null);
             }}
             onPickMany={(skus: PickedSku[]) => {
-              if (skus.length === 0) { setPickerFor(null); return; }
+              // FIX E — `skus` already arrives in the order the operator TAPPED
+              // the rows (MobileSkuPicker keeps an order-preserving pick list), so
+              // the lines below land in selection order 1,2,3,4 (not catalog
+              // order). Drop any code-less entries so a stray pick can't insert a
+              // blank line.
+              const valid = skus.filter((s) => (s.itemCode ?? "").trim());
+              if (valid.length === 0) { setPickerFor(null); return; }
               setLines((prev) => {
                 const idx = prev.findIndex((x) => x.key === pickerFor);
                 if (idx < 0) return prev;
@@ -1402,8 +1713,8 @@ export function MobileNewSO({
                 // cascades the first sofa line's fabric/seat/leg to these new
                 // sofa followers, with any manual override winning.
                 const next = [...prev];
-                next[idx] = seedLine(next[idx]!, skus[0]!);
-                const extras = skus.slice(1).map((sku) => seedLine(newLine(), sku));
+                next[idx] = seedLine(next[idx]!, valid[0]!);
+                const extras = valid.slice(1).map((sku) => seedLine(newLine(), sku));
                 next.splice(idx + 1, 0, ...extras);
                 return next;
               });
@@ -1520,6 +1831,7 @@ function LineCard({
   onOpenPicker,
   onOpenFabricPicker,
   onChange,
+  onDdateChange,
   onRemove,
 }: {
   line: LineItem;
@@ -1530,6 +1842,9 @@ function LineCard({
   onOpenPicker: () => void;
   onOpenFabricPicker: () => void;
   onChange: (patch: Partial<LineItem>) => void;
+  /* FIX D1(b) — a manual Item Delivery Date edit routes through here so the
+     parent can flag the line as an override the header cascade won't touch. */
+  onDdateChange: (value: string) => void;
   onRemove: () => void;
 }) {
   const amt = fmt(num(line.qty) * num(line.price));
@@ -1618,7 +1933,7 @@ function LineCard({
             <input className="fld-i money" value={line.price} onChange={(e) => onChange({ price: e.target.value })} />
           </Field>
           <Field label="Delivery date" style={{ flex: 1.1 }}>
-            <input className="fld-i" type="date" value={line.ddate} onChange={(e) => onChange({ ddate: e.target.value })} />
+            <input className="fld-i" type="date" value={line.ddate} onChange={(e) => onDdateChange(e.target.value)} />
           </Field>
         </div>
         <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between" }}>
