@@ -72,10 +72,6 @@ type SoItem = {
   unit_price_centi: number | null;
   total_centi: number | null;
   line_delivery_date: string | null;
-  /* Live delivery balance per line (qty − delivered + returned) — stamped by
-     the detail GET. Drives the "anything left to deliver?" gate for Issue DO,
-     mirroring the desktop list's has_undelivered. */
-  remaining_qty: number | null;
 };
 type SoPayment = {
   id: string;
@@ -130,7 +126,7 @@ const total = (h: SoHeader) => h.local_total_centi ?? h.total_revenue_centi ?? 0
  *  (`#so-detail` + `renderSoDetail`/`openSO`), wired to the real
  *  /mfg-sales-orders/:docNo (header + line items) and /:docNo/payments.
  *  Draft/Submitted actions PATCH /:docNo/status. Design classes only. */
-export function MobileSODetail({ docNo, onBack, onEdit, onIssueDo }: { docNo: string; onBack: () => void; onEdit?: (docNo: string) => void; onIssueDo?: (docNo: string) => void }) {
+export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBack: () => void; onEdit?: (docNo: string) => void }) {
   const qc = useQueryClient();
   const confirm = useConfirm();
   const [busy, setBusy] = useState(false);
@@ -196,12 +192,6 @@ export function MobileSODetail({ docNo, onBack, onEdit, onIssueDo }: { docNo: st
   const LOCKED = ["SHIPPED", "DELIVERED", "INVOICED", "CLOSED", "CANCELLED"];
   const canCancel = CANCELLABLE.includes(rawStatus);
   const editLocked = LOCKED.includes(rawStatus) || hasChildren;
-  /* Issue Delivery Order — offered when the SO is live and at least one line
-     still has an undelivered balance. Mirrors the desktop list's convertToDo
-     gate (has_undelivered && status not CANCELLED/CLOSED/ON_HOLD). */
-  const hasUndelivered = items.some((it) => Number(it.remaining_qty ?? it.qty ?? 0) > 0);
-  const canIssueDo = !!onIssueDo && ph !== "draft" && ph !== "cancelled"
-    && !["CANCELLED", "CLOSED", "ON_HOLD"].includes(rawStatus) && hasUndelivered;
 
   /* Delete a persisted payment — parity with the desktop PaymentsTable trash
      action. In-app confirm, then DELETE /:docNo/payments/:id; on success the
@@ -383,12 +373,6 @@ export function MobileSODetail({ docNo, onBack, onEdit, onIssueDo }: { docNo: st
           )}
           {ph === "submitted" && (
             <>
-              {/* Issue Delivery Order — opens the convert wizard pre-seeded with
-                  this SO (parity with the desktop list's convertToDo). Shown only
-                  when the SO is live and has an undelivered balance. */}
-              {canIssueDo && (
-                <button className="btn" style={{ marginBottom: 9, opacity: busy ? 0.55 : 1 }} disabled={busy} onClick={() => onIssueDo?.(docNo)}>Issue Delivery Order</button>
-              )}
               <div style={{ display: "flex", gap: 9 }}>
                 {/* Edit — locked once SHIPPED+ or a non-cancelled DO/SI references
                     this SO (has_children), matching the desktop's lockedStatuses. */}

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { useAuth } from "../auth/AuthContext";
 import { normalizePhone, splitE164 } from "../vendor/shared/phone";
@@ -6,26 +6,44 @@ import type { ExtractedSlip } from "../vendor/scm/components/ScanOrderModal";
 import "./mobile.css";
 
 // Mobile OCR "Scan" screen — capture phone photos of a handwritten sales
-// slip (ONE front slip + ONE OR MORE payment slips), POST them to
-// POST /api/scm/scan-so/extract, then map the EXTRACTED slip into a prefill and
-// hand it to the mobile New SO form for the operator to review and save. This
-// mirrors the DESKTOP flow (ScanOrderModal -> SalesOrderNew): the backend
-// /scan-so/extract only RETURNS extracted data — it never creates a draft — so
-// the operator always reviews and saves in the real form, where the learning
-// feedback fires on save.
+// slip, POST them to POST /api/scm/scan-so/extract, then map the EXTRACTED slip
+// into a prefill and hand it to the mobile New SO form for the operator to
+// review and save. This mirrors the DESKTOP flow (ScanOrderModal ->
+// SalesOrderNew): the backend /scan-so/extract only RETURNS extracted data — it
+// never creates a draft — so the operator always reviews and saves in the real
+// form, where the learning feedback fires on save.
 //
-// MULTIPLE PAYMENT SLIPS — an order can take 2-3 payments (deposit + balances),
-// and each physical slip / card-terminal receipt is ONE payment. The front slip
-// stays single; the payment slip becomes an ARRAY (add-more + per-slip remove).
-// Because the current /scan-so/extract contract reads exactly ONE order slip +
-// ONE payment receipt into a SINGLE payment, we OCR each payment slip in its
-// OWN /extract call (front slip attached to every call so the order fields are
-// read once and each call's single payment is the k-th slip's payment). We then
-// merge: the FIRST call supplies the order + payment #1, calls 2..N each supply
-// one more payment. This yields N payments per N slips end-to-end WITHOUT any
-// backend change — each call uses the existing 1-slip + 1-receipt contract
-// verbatim. (See the report note for the alternative single-call array contract
-// if the backend later grows a paymentFiles[]/payments[] mode.)
+// MULTIPLE ORDERS PER SESSION — the operator often has a stack of slips. This
+// screen models the session as an ARRAY of orders, each its own front slip +
+// payment-slip array: OrderDraft = { front, payShots[] }. "+ Add order" queues
+// another order; each order is captured and grouped under its own "Order N"
+// header. The "each payment slip = one payment" rule stays PER ORDER.
+//
+// MULTIPLE PAYMENT SLIPS (per order) — an order can take 2-3 payments (deposit +
+// balances), and each physical slip / card-terminal receipt is ONE payment. The
+// front slip stays single per order; the payment slip is an ARRAY (add-more +
+// per-slip remove). Because the current /scan-so/extract contract reads exactly
+// ONE order slip + ONE payment receipt into a SINGLE payment, we OCR each
+// payment slip in its OWN /extract call (that order's front slip attached to
+// every call so the order fields are read once and each call's single payment is
+// the k-th slip's payment). We then merge: the FIRST call supplies the order +
+// payment #1, calls 2..N each supply one more payment. This yields N payments
+// per N slips end-to-end WITHOUT any backend change — each call uses the existing
+// 1-slip + 1-receipt contract verbatim. (See the report note for the alternative
+// single-call array contract if the backend later grows a paymentFiles[]/
+// payments[] mode.)
+//
+// DELETE — every uploaded thumbnail (front + payment, in every order) carries a
+// small "×" remove control so a wrong capture can be dropped before submitting.
+//
+// HANDOFF LIMIT + BACKGROUND-DRAFT FLAG — the New SO form (onExtracted) consumes
+// exactly ONE prefill. So when the session holds ONE order we OCR it and hand its
+// prefill to the New SO form as before. When the session holds 2+ orders, only
+// the FIRST can open the review form; orders 2..N have NO client-only home
+// (there is no background job that OCRs-then-inserts a DRAFT SO). We therefore
+// (a) always OCR + hand off order #1, and (b) surface a clear note that queuing
+// extra orders needs the backend background-draft job described in the report.
+// We do NOT fake a background draft.
 //
 // Camera capture uses a hidden <input type="file" accept="image/*"
 // capture="environment"> per slot — the standard PWA pattern that opens the
@@ -37,7 +55,16 @@ import "./mobile.css";
 // /scan- path. A missing ANTHROPIC_API_KEY (staging) returns 503
 // anthropic_key_missing, which we surface as a clear "not available here" note.
 
-type Slot = { file: File; url: string } | null;
+type Shot = { file: File; url: string };
+type Slot = Shot | null;
+
+/* One queued order in the session: a single front slip + its payment slips.
+   `id` is a stable client key for React lists + remove (independent of array
+   index so removing an order doesn't reshuffle keys). */
+type OrderDraft = { id: string; front: Slot; payShots: Shot[] };
+
+let ORDER_SEQ = 0;
+const newOrder = (): OrderDraft => ({ id: `ord-${++ORDER_SEQ}-${Date.now()}`, front: null, payShots: [] });
 
 /* ── /scan-so/extract response shape (subset the mobile flow consumes) ─────
    The SO scan endpoint returns sampleId + imageKey + receiptImageKey (NOT
@@ -133,6 +160,20 @@ const CAMERA = (
     <circle cx="12" cy="13" r="3" />
   </svg>
 );
+
+/* A small red "×" delete control reused for every uploaded thumbnail (front +
+   payment). Position is supplied by the caller. */
+function RemoveButton({ label, onClick, style }: { label: string; onClick: () => void; style: CSSProperties }) {
+  return (
+    <button
+      onClick={onClick}
+      aria-label={label}
+      style={{ width: 20, height: 20, borderRadius: "50%", border: "none", background: "rgba(178,58,58,.92)", color: "#fff", fontFamily: "inherit", fontSize: 13, lineHeight: 1, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", ...style }}
+    >
+      {"×"}
+    </button>
+  );
+}
 
 const SLOT_LABELS = ["Front slip", "Payment slip"];
 
@@ -239,30 +280,30 @@ export function MobileScan({
   onExtracted: (prefill: MobileScanPrefill) => void;
 }) {
   const { user } = useAuth();
-  // Front slip = single; payment slips = an ARRAY (one per payment). A NonNull
-  // Slot is { file, url }; front is null until captured.
-  const [front, setFront] = useState<Slot>(null);
-  const [payShots, setPayShots] = useState<{ file: File; url: string }[]>([]);
+  // The session is an ARRAY of orders. Each order = one front slip + N payment
+  // slips. Start with a single empty order. `activeOrderId` is which order the
+  // hidden camera inputs currently target (set right before .click()).
+  const [orders, setOrders] = useState<OrderDraft[]>(() => [newOrder()]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [unavailable, setUnavailable] = useState(false);
-  const frontInputRef = useRef<HTMLInputElement>(null);
-  // ONE hidden payment input, re-targeted per capture (add-more taps the same
-  // input; each pick appends a new slip). capture="environment" opens the rear
+  // ONE hidden front input + ONE hidden payment input, both re-targeted to the
+  // active order right before each capture. capture="environment" opens the rear
   // camera each time.
+  const frontInputRef = useRef<HTMLInputElement>(null);
   const payInputRef = useRef<HTMLInputElement>(null);
+  const activeOrderIdRef = useRef<string | null>(null);
 
   // Revoke every object URL still held when the component unmounts so captured
-  // previews don't leak. Latest front + payShots are read via the setters so we
-  // never close over a stale list.
+  // previews don't leak. Latest orders are read via the setter so we never close
+  // over a stale list.
   useEffect(() => {
     return () => {
-      setFront((cur) => {
-        if (cur) URL.revokeObjectURL(cur.url);
-        return cur;
-      });
-      setPayShots((cur) => {
-        for (const s of cur) URL.revokeObjectURL(s.url);
+      setOrders((cur) => {
+        for (const o of cur) {
+          if (o.front) URL.revokeObjectURL(o.front.url);
+          for (const s of o.payShots) URL.revokeObjectURL(s.url);
+        }
         return cur;
       });
     };
@@ -275,65 +316,132 @@ export function MobileScan({
   }, []);
 
   const salesperson = (user?.name || user?.email || "").trim();
-  // Ready to scan once the front slip AND at least one payment slip are captured.
-  const ready = front !== null && payShots.length > 0;
+  // The session is submittable once EVERY queued order has its front slip AND at
+  // least one payment slip. (An order that's still blank blocks submit — the
+  // operator should finish it or remove it.)
+  const ready = orders.length > 0 && orders.every((o) => o.front !== null && o.payShots.length > 0);
+  const multiOrder = orders.length > 1;
 
-  const pickFront = () => {
+  const pickFront = (orderId: string) => {
     if (submitting) return;
+    activeOrderIdRef.current = orderId;
     frontInputRef.current?.click();
   };
-  const pickPayment = () => {
+  const pickPayment = (orderId: string) => {
     if (submitting) return;
+    activeOrderIdRef.current = orderId;
     payInputRef.current?.click();
   };
 
   const onFrontFile = (file: File | undefined) => {
     if (!file) return;
+    const orderId = activeOrderIdRef.current;
+    if (!orderId) return;
     const url = URL.createObjectURL(file);
-    setFront((prev) => {
-      if (prev) URL.revokeObjectURL(prev.url);
-      return { file, url };
-    });
+    setOrders((cur) =>
+      cur.map((o) => {
+        if (o.id !== orderId) return o;
+        if (o.front) URL.revokeObjectURL(o.front.url);
+        return { ...o, front: { file, url } };
+      }),
+    );
     setError(null);
   };
-  const clearFront = () => {
+  const clearFront = (orderId: string) => {
     if (submitting) return;
-    setFront((prev) => {
-      if (prev) URL.revokeObjectURL(prev.url);
-      return null;
-    });
+    setOrders((cur) =>
+      cur.map((o) => {
+        if (o.id !== orderId) return o;
+        if (o.front) URL.revokeObjectURL(o.front.url);
+        return { ...o, front: null };
+      }),
+    );
   };
 
-  // Append a captured payment slip (each = one payment). No cap — an order can
-  // take as many payments as slips.
+  // Append a captured payment slip to the active order (each = one payment). No
+  // cap — an order can take as many payments as slips.
   const addPayFile = (file: File | undefined) => {
     if (!file) return;
+    const orderId = activeOrderIdRef.current;
+    if (!orderId) return;
     const url = URL.createObjectURL(file);
-    setPayShots((cur) => [...cur, { file, url }]);
+    setOrders((cur) => cur.map((o) => (o.id === orderId ? { ...o, payShots: [...o.payShots, { file, url }] } : o)));
     setError(null);
   };
-  const removePayShot = (i: number) => {
+  const removePayShot = (orderId: string, i: number) => {
     if (submitting) return;
-    setPayShots((cur) => {
-      const gone = cur[i];
-      if (gone) URL.revokeObjectURL(gone.url);
-      return cur.filter((_, k) => k !== i);
+    setOrders((cur) =>
+      cur.map((o) => {
+        if (o.id !== orderId) return o;
+        const gone = o.payShots[i];
+        if (gone) URL.revokeObjectURL(gone.url);
+        return { ...o, payShots: o.payShots.filter((_, k) => k !== i) };
+      }),
+    );
+  };
+
+  const addOrder = () => {
+    if (submitting) return;
+    setOrders((cur) => [...cur, newOrder()]);
+    setError(null);
+  };
+  // Remove a whole order (and revoke its previews). Never let the list go empty —
+  // removing the last order resets it to a fresh blank one.
+  const removeOrder = (orderId: string) => {
+    if (submitting) return;
+    setOrders((cur) => {
+      const gone = cur.find((o) => o.id === orderId);
+      if (gone) {
+        if (gone.front) URL.revokeObjectURL(gone.front.url);
+        for (const s of gone.payShots) URL.revokeObjectURL(s.url);
+      }
+      const next = cur.filter((o) => o.id !== orderId);
+      return next.length ? next : [newOrder()];
     });
   };
 
-  // POST the front slip + ONE payment slip to /scan-so/extract. The existing
-  // contract reads exactly one order slip + one payment receipt into a single
-  // payment, so one call per payment slip yields one payment per slip. The front
-  // slip rides EVERY call (order fields are read identically each time; we keep
-  // the FIRST response's order + this call's single payment).
-  const extractOne = (payFile: File): Promise<ExtractResp> => {
+  // POST one order's front slip + ONE payment slip to /scan-so/extract. The
+  // existing contract reads exactly one order slip + one payment receipt into a
+  // single payment, so one call per payment slip yields one payment per slip. The
+  // order's front slip rides EVERY call (order fields are read identically each
+  // time; we keep the FIRST response's order + this call's single payment).
+  const extractOne = (front: Shot, payFile: File): Promise<ExtractResp> => {
     const form = new FormData();
-    if (front) form.append("file", front.file);
+    form.append("file", front.file);
     form.append("file", payFile);
     if (salesperson) form.append("salesperson", salesperson);
     // authedFetch handles the FormData content-type + bearer + long scan
     // timeout. A non-ok reason throws a plain-language message we catch below.
     return authedFetch<ExtractResp>("/scan-so/extract", { method: "POST", body: form });
+  };
+
+  // OCR one order into a prefill (front slip + all its payment slips → one
+  // header + one payment per slip). Returns null when the first call fails.
+  const extractOrder = async (order: OrderDraft): Promise<MobileScanPrefill | null> => {
+    if (!order.front || order.payShots.length === 0) return null;
+    const responses: ExtractResp[] = [];
+    for (const shot of order.payShots) {
+      responses.push(await extractOne(order.front, shot.file));
+    }
+    const first = responses[0];
+    if (!first || !first.success || !first.data) return null;
+    const repName = salesperson || (first.data.extracted.salesRep ?? "").trim();
+    // One MobileScanPaymentSlip per captured slip: the per-call OCR'd payment
+    // (falling back to a blank-method / zeroed row when a call couldn't read a
+    // payment, so the slip is never silently dropped — the operator picks the
+    // method and fixes the amount) + the captured File for the New SO row's slip
+    // upload.
+    const paymentSlips: MobileScanPaymentSlip[] = order.payShots.map((shot, i) => {
+      const res = responses[i];
+      const pm = res && res.success && res.data ? extractPayment(res.data.extracted) : null;
+      return {
+        method: pm?.method ?? "",
+        amount: pm?.amount ?? "0.00",
+        approval: pm?.approval ?? "",
+        file: shot.file,
+      };
+    });
+    return buildPrefill(first.data, repName, paymentSlips);
   };
 
   const submit = async () => {
@@ -342,34 +450,14 @@ export function MobileScan({
     setError(null);
     setUnavailable(false);
     try {
-      // OCR each payment slip in its own call (front slip attached to every
-      // call). Sequential — the shared catalog prompt-cache stays warm across
-      // calls and we avoid hammering Anthropic with parallel spikes. Call k's
-      // single payment becomes payment #k; the FIRST call also supplies the
-      // whole order header + line items.
-      const responses: ExtractResp[] = [];
-      for (const shot of payShots) {
-        responses.push(await extractOne(shot.file));
-      }
-      const first = responses[0];
-      if (first && first.success && first.data) {
-        const repName = salesperson || (first.data.extracted.salesRep ?? "").trim();
-        // One MobileScanPaymentSlip per captured slip: the per-call OCR'd payment
-        // (falling back to a blank-method / zeroed row when a call couldn't read a
-        // payment, so the slip is never silently dropped — the operator picks the
-        // method and fixes the amount) + the captured File for the New SO row's
-        // slip upload.
-        const paymentSlips: MobileScanPaymentSlip[] = payShots.map((shot, i) => {
-          const res = responses[i];
-          const pm = res && res.success && res.data ? extractPayment(res.data.extracted) : null;
-          return {
-            method: pm?.method ?? "",
-            amount: pm?.amount ?? "0.00",
-            approval: pm?.approval ?? "",
-            file: shot.file,
-          };
-        });
-        onExtracted(buildPrefill(first.data, repName, paymentSlips));
+      // Handoff limit: the New SO form (onExtracted) consumes exactly ONE
+      // prefill. We OCR the FIRST order and hand it off. Orders 2..N cannot be
+      // opened in the review form and there is NO backend background-draft job to
+      // land them, so we do NOT OCR/fake them — we just keep them queued and the
+      // note below tells the operator they need the backend job (see report).
+      const firstPrefill = await extractOrder(orders[0]);
+      if (firstPrefill) {
+        onExtracted(firstPrefill);
       } else {
         setError("The scan couldn't be processed. Please try again.");
       }
@@ -391,6 +479,9 @@ export function MobileScan({
     }
   };
 
+  // Total captured payment slips across the whole session (for the footer count).
+  const totalPayShots = orders.reduce((n, o) => n + o.payShots.length, 0);
+
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
       {/* Spec #scan: back "Cancel" chevron, screen-title, helper sub-line. */}
@@ -401,7 +492,7 @@ export function MobileScan({
           </button>
         </div>
         <div className="scr-title" style={{ marginTop: 2 }}>Scan order slip</div>
-        <div style={{ fontSize: 11, color: "#767b6e", marginTop: 2 }}>Snap the slip — we OCR it in the background into a draft SO.</div>
+        <div style={{ fontSize: 11, color: "#767b6e", marginTop: 2 }}>Snap each slip — one front slip and its payment slips per order. Queue as many orders as you like.</div>
       </header>
 
       <div className="scroll" style={{ padding: 14, paddingBottom: 120 }}>
@@ -420,8 +511,9 @@ export function MobileScan({
           </div>
         ) : (
           <>
-            {/* Hidden inputs: one for the front slip, one re-targeted for every
-                payment-slip capture. capture="environment" opens the rear camera. */}
+            {/* Hidden inputs: one for the front slip, one for payment slips. Both
+                re-targeted to activeOrderIdRef before each capture.
+                capture="environment" opens the rear camera. */}
             <input
               ref={frontInputRef}
               type="file"
@@ -445,86 +537,131 @@ export function MobileScan({
               }}
             />
 
-            {/* FRONT SLIP — single. */}
-            <div className="ey" style={{ letterSpacing: ".14em", color: "#9aa093", fontSize: 10.5, marginBottom: 6 }}>{SLOT_LABELS[0]}</div>
-            {front ? (
-              <div className="ph" style={{ position: "relative", height: 130, borderRadius: 12, overflow: "hidden", marginBottom: 4 }}>
-                <img src={front.url} alt={SLOT_LABELS[0]} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
-                <span style={{ position: "absolute", top: 6, right: 6, width: 20, height: 20, borderRadius: "50%", background: "#2f8a5b", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  {CHECK}
-                </span>
-                {!submitting && (
-                  <button
-                    onClick={clearFront}
-                    aria-label={`Retake ${SLOT_LABELS[0]}`}
-                    style={{ position: "absolute", bottom: 6, right: 6, height: 24, padding: "0 9px", borderRadius: 999, border: "none", background: "rgba(17,20,15,.62)", color: "#fff", fontFamily: "inherit", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}
-                  >
-                    Retake
-                  </button>
-                )}
-              </div>
-            ) : (
-              <button
-                onClick={pickFront}
-                disabled={submitting}
-                style={{ height: 130, width: "100%", border: "1px dashed #c2c6bd", borderRadius: 12, background: "#f4f6f3", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6, cursor: submitting ? "default" : "pointer", fontFamily: "inherit", opacity: submitting ? 0.5 : 1, marginBottom: 4 }}
+            {/* One grouped card per queued order — the front slip and its payment
+                slips live under one "Order N" header so it's clear they belong to
+                the same order. */}
+            {orders.map((order, oi) => (
+              <div
+                key={order.id}
+                style={{ border: "1px solid #e3e6e0", borderRadius: 14, padding: 12, marginBottom: 12, background: "#fff" }}
               >
-                {CAMERA}
-                <span style={{ fontSize: 11, fontWeight: 700, color: "#16695f" }}>{SLOT_LABELS[0]}</span>
-              </button>
-            )}
-
-            {/* PAYMENT SLIPS — one photo per payment. Add-more tile + thumbnail
-                list with a per-slip remove. Each slip becomes its own payment on
-                the draft SO. */}
-            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginTop: 16, marginBottom: 6 }}>
-              <span className="ey" style={{ letterSpacing: ".14em", color: "#9aa093", fontSize: 10.5 }}>Payment slips</span>
-              <span style={{ fontSize: 10.5, color: "#9aa093" }}>
-                {payShots.length === 0 ? "One photo per payment" : `${payShots.length} payment${payShots.length === 1 ? "" : "s"}`}
-              </span>
-            </div>
-            <div id="scan-pay-shots" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
-              {payShots.map((shot, i) => (
-                <div key={shot.url} className="ph" style={{ position: "relative", height: 96, borderRadius: 12, overflow: "hidden" }}>
-                  <img src={shot.url} alt={`Payment ${i + 1}`} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
-                  <span style={{ position: "absolute", top: 5, left: 5, height: 18, minWidth: 18, padding: "0 5px", borderRadius: 999, background: "rgba(17,20,15,.62)", color: "#fff", fontSize: 10, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    {i + 1}
-                  </span>
-                  {!submitting && (
+                {/* Order header — "Order N" + a remove-order control (only when
+                    more than one order is queued; the sole order can't be removed,
+                    only its slips). */}
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                  <span style={{ fontSize: 12.5, fontWeight: 800, color: "#11140f" }}>Order {oi + 1}</span>
+                  {multiOrder && !submitting && (
                     <button
-                      onClick={() => removePayShot(i)}
-                      aria-label={`Remove payment ${i + 1}`}
-                      style={{ position: "absolute", top: 5, right: 5, width: 20, height: 20, borderRadius: "50%", border: "none", background: "rgba(178,58,58,.9)", color: "#fff", fontFamily: "inherit", fontSize: 13, lineHeight: 1, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+                      onClick={() => removeOrder(order.id)}
+                      style={{ display: "flex", alignItems: "center", gap: 4, height: 26, padding: "0 10px", borderRadius: 999, border: "1px solid #f0d4d4", background: "#fff", color: "#b23a3a", fontFamily: "inherit", fontSize: 11, fontWeight: 700, cursor: "pointer" }}
                     >
-                      {"×"}
+                      {"×"} Remove order
                     </button>
                   )}
                 </div>
-              ))}
-              <button
-                onClick={pickPayment}
-                disabled={submitting}
-                aria-label={payShots.length === 0 ? SLOT_LABELS[1] : "Add another payment slip"}
-                style={{ height: 96, width: "100%", border: "1px dashed #c2c6bd", borderRadius: 12, background: "#f4f6f3", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 5, cursor: submitting ? "default" : "pointer", fontFamily: "inherit", opacity: submitting ? 0.5 : 1 }}
-              >
-                {CAMERA}
-                <span style={{ fontSize: 10.5, fontWeight: 700, color: "#16695f", textAlign: "center", lineHeight: 1.25 }}>
-                  {payShots.length === 0 ? SLOT_LABELS[1] : "Add payment"}
-                </span>
-              </button>
-            </div>
-            <div style={{ fontSize: 10.5, color: "#9aa093", textAlign: "center", marginTop: 10 }}>
-              1 front slip + {payShots.length || 1} payment slip{(payShots.length || 1) === 1 ? "" : "s"} · each payment slip = one payment
-            </div>
+
+                {/* FRONT SLIP — single per order. */}
+                <div className="ey" style={{ letterSpacing: ".14em", color: "#9aa093", fontSize: 10.5, marginBottom: 6 }}>{SLOT_LABELS[0]}</div>
+                {order.front ? (
+                  <div className="ph" style={{ position: "relative", height: 130, borderRadius: 12, overflow: "hidden", marginBottom: 4 }}>
+                    <img src={order.front.url} alt={SLOT_LABELS[0]} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                    <span style={{ position: "absolute", top: 6, left: 6, width: 20, height: 20, borderRadius: "50%", background: "#2f8a5b", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      {CHECK}
+                    </span>
+                    {!submitting && (
+                      <>
+                        {/* Delete the front slip. */}
+                        <RemoveButton
+                          label={`Remove ${SLOT_LABELS[0]} for order ${oi + 1}`}
+                          onClick={() => clearFront(order.id)}
+                          style={{ position: "absolute", top: 6, right: 6 }}
+                        />
+                        {/* Retake = delete then re-open camera in one tap. */}
+                        <button
+                          onClick={() => { clearFront(order.id); pickFront(order.id); }}
+                          aria-label={`Retake ${SLOT_LABELS[0]} for order ${oi + 1}`}
+                          style={{ position: "absolute", bottom: 6, right: 6, height: 24, padding: "0 9px", borderRadius: 999, border: "none", background: "rgba(17,20,15,.62)", color: "#fff", fontFamily: "inherit", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}
+                        >
+                          Retake
+                        </button>
+                      </>
+                    )}
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => pickFront(order.id)}
+                    disabled={submitting}
+                    style={{ height: 130, width: "100%", border: "1px dashed #c2c6bd", borderRadius: 12, background: "#f4f6f3", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6, cursor: submitting ? "default" : "pointer", fontFamily: "inherit", opacity: submitting ? 0.5 : 1, marginBottom: 4 }}
+                  >
+                    {CAMERA}
+                    <span style={{ fontSize: 11, fontWeight: 700, color: "#16695f" }}>{SLOT_LABELS[0]}</span>
+                  </button>
+                )}
+
+                {/* PAYMENT SLIPS — one photo per payment, within this order. Add-
+                    more tile + thumbnail list with a per-slip delete. Each slip
+                    becomes its own payment on the draft SO. */}
+                <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginTop: 14, marginBottom: 6 }}>
+                  <span className="ey" style={{ letterSpacing: ".14em", color: "#9aa093", fontSize: 10.5 }}>Payment slips</span>
+                  <span style={{ fontSize: 10.5, color: "#9aa093" }}>
+                    {order.payShots.length === 0 ? "One photo per payment" : `${order.payShots.length} payment${order.payShots.length === 1 ? "" : "s"}`}
+                  </span>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                  {order.payShots.map((shot, i) => (
+                    <div key={shot.url} className="ph" style={{ position: "relative", height: 96, borderRadius: 12, overflow: "hidden" }}>
+                      <img src={shot.url} alt={`Order ${oi + 1} payment ${i + 1}`} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+                      <span style={{ position: "absolute", top: 5, left: 5, height: 18, minWidth: 18, padding: "0 5px", borderRadius: 999, background: "rgba(17,20,15,.62)", color: "#fff", fontSize: 10, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        {i + 1}
+                      </span>
+                      {!submitting && (
+                        <RemoveButton
+                          label={`Remove order ${oi + 1} payment ${i + 1}`}
+                          onClick={() => removePayShot(order.id, i)}
+                          style={{ position: "absolute", top: 5, right: 5 }}
+                        />
+                      )}
+                    </div>
+                  ))}
+                  <button
+                    onClick={() => pickPayment(order.id)}
+                    disabled={submitting}
+                    aria-label={order.payShots.length === 0 ? `${SLOT_LABELS[1]} for order ${oi + 1}` : `Add another payment slip to order ${oi + 1}`}
+                    style={{ height: 96, width: "100%", border: "1px dashed #c2c6bd", borderRadius: 12, background: "#f4f6f3", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 5, cursor: submitting ? "default" : "pointer", fontFamily: "inherit", opacity: submitting ? 0.5 : 1 }}
+                  >
+                    {CAMERA}
+                    <span style={{ fontSize: 10.5, fontWeight: 700, color: "#16695f", textAlign: "center", lineHeight: 1.25 }}>
+                      {order.payShots.length === 0 ? SLOT_LABELS[1] : "Add payment"}
+                    </span>
+                  </button>
+                </div>
+                <div style={{ fontSize: 10.5, color: "#9aa093", textAlign: "center", marginTop: 10 }}>
+                  1 front slip + {order.payShots.length || 1} payment slip{(order.payShots.length || 1) === 1 ? "" : "s"} · each payment slip = one payment
+                </div>
+              </div>
+            ))}
+
+            {/* + Add order — queue another order (its own front + payment slips). */}
+            <button
+              onClick={addOrder}
+              disabled={submitting}
+              style={{ height: 46, width: "100%", border: "1px dashed #16695f", borderRadius: 12, background: "#fff", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, cursor: submitting ? "default" : "pointer", fontFamily: "inherit", opacity: submitting ? 0.5 : 1, color: "#16695f", fontSize: 13, fontWeight: 700 }}
+            >
+              <span style={{ fontSize: 18, lineHeight: 1 }}>{"+"}</span> Add order
+            </button>
 
             {/* Design #scan: amber helper note box (design's #f3ece0 / #e8dcc5 /
                 #6a4a1e amber trio). Copy reflects our real flow — the scan opens
                 the New SO form prefilled for review, it does not silently create a
-                background draft. */}
+                background draft. When more than one order is queued, the note also
+                spells out the current handoff limit (only order 1 opens now). */}
             <div style={{ display: "flex", alignItems: "flex-start", gap: 9, background: "#f3ece0", border: "1px solid #e8dcc5", borderRadius: 11, padding: 11, marginTop: 12, fontSize: 11, color: "#6a4a1e", lineHeight: 1.5 }}>
               {/* Spec #scan amber info glyph on the left of the note. */}
               <svg width="15" height="15" style={{ flex: "none", marginTop: 1 }} viewBox="0 0 24 24" fill="none" stroke="#a16a2e" strokeWidth="2"><circle cx="12" cy="12" r="9" /><path d="M12 8v4M12 16h.01" /></svg>
-              <span>We read the slip and open the New Sales Order form prefilled. Review every field, correct anything the reader missed, then save to create the order.</span>
+              <span>
+                We read the slip and open the New Sales Order form prefilled. Review every field, correct anything the reader missed, then save to create the order.
+                {multiOrder && " You've queued more than one order — for now only Order 1 opens for review; the rest stay queued until background auto-draft is switched on."}
+              </span>
             </div>
 
             {salesperson && (
@@ -537,8 +674,8 @@ export function MobileScan({
             {submitting && (
               <div style={{ marginTop: 16, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, fontSize: 12, color: "#767b6e" }}>
                 <span style={{ width: 14, height: 14, borderRadius: "50%", border: "2px solid rgba(22,105,95,.3)", borderTopColor: "#16695f", animation: "hzSpin .8s linear infinite" }} />
-                {payShots.length > 1
-                  ? `Reading the slip and ${payShots.length} payments — this can take a moment.`
+                {orders[0] && orders[0].payShots.length > 1
+                  ? `Reading the slip and ${orders[0].payShots.length} payments — this can take a moment.`
                   : "Reading the slip — this can take a moment."}
               </div>
             )}
@@ -565,8 +702,8 @@ export function MobileScan({
               <span style={{ width: 16, height: 16, borderRadius: "50%", border: "2px solid rgba(255,255,255,.45)", borderTopColor: "#fff", animation: "hzSpin .8s linear infinite" }} />
             )}
             {submitting
-              ? payShots.length > 1 ? "Scanning slips…" : "Scanning slip…"
-              : "Scan & open New SO"}
+              ? totalPayShots > 1 ? "Scanning slips…" : "Scanning slip…"
+              : multiOrder ? "Scan & open Order 1" : "Scan & open New SO"}
           </button>
         </footer>
       )}

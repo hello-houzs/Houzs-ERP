@@ -18,6 +18,9 @@ export interface CreateAssrInput {
   /** Optional priority slug — drives both `sla_hours` and the per-stage
    *  target snapshot (mig 082). Defaults to 'normal' when omitted. */
   priority?: string | null;
+  /** Optional complaint date (assr_cases.complained_date) captured at
+   *  intake as `YYYY-MM-DD`. Defaults to today (MYT) when omitted. */
+  complained_date?: string | null;
   /** Customer reference (the SO's own customer docket, e.g. "HC14032").
    *  When omitted the AutoCount SO context's Ref is used as fallback. */
   ref_no?: string | null;
@@ -242,6 +245,12 @@ export async function createAssrCase(
 
   const assrNo = await nextAssrNumber(env);
   const today = todayMyt();
+  // complained_date — honour an explicit intake value (validated to a
+  // strict YYYY-MM-DD), else default to today (MYT). Anything malformed
+  // falls back to today so the column never takes a junk string.
+  const complainedDate = /^\d{4}-\d{2}-\d{2}$/.test(String(input.complained_date ?? ""))
+    ? String(input.complained_date)
+    : today;
   // Use first item_code for the legacy column
   const firstItem = input.items[0]?.item_code ?? null;
 
@@ -299,7 +308,7 @@ export async function createAssrCase(
       assrNo,
       initialStage,
       input.doc_no,
-      today,
+      complainedDate,
       context?.DebtorName ?? null,
       cleanPhone(context?.Phone1),
       context?.SalesLocation ?? null,
