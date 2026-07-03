@@ -4730,6 +4730,8 @@ function ProjectDetailContent({
             eventTypes={eventTypes}
             fullAccess={fullAccess}
             patch={patch}
+            financeLines={detail.data?.finance_lines ?? []}
+            onFinanceChange={() => detail.reload()}
             toast={toast}
           />
           {/* Payment status now lives in the checklist as the "Rental
@@ -5082,12 +5084,91 @@ function ProjectTeamSection({
 const SPEC_INPUT_CLASS =
   "w-full appearance-none rounded border border-border bg-surface px-2 py-1 text-[12.5px] font-medium text-ink outline-none transition-colors focus:border-primary focus:ring-1 focus:ring-primary/20 disabled:cursor-not-allowed disabled:opacity-60";
 
+// Quick Rental (RM) — writes a single `rental` cost line to the finance
+// ledger (the same category the Financial Snapshot's Rental row edits),
+// so keying rental here syncs the Rental row, Total Cost, Net Profit, the
+// Rental KPI card, and the Project List "Rental (RM)" column. Saves on
+// blur / Enter.
+function QuickRentalField({
+  projectId,
+  financeLines,
+  onSaved,
+  toast,
+}: {
+  projectId: number;
+  financeLines: FinanceLine[];
+  onSaved: () => void;
+  toast: ReturnType<typeof useToast>;
+}) {
+  const existing = financeLines.filter(
+    (l) => l.kind === "cost" && (l.category ?? "").trim() === "rental" && !l.auto_source,
+  );
+  const current = existing.reduce((s, l) => s + (l.amount || 0), 0);
+  const [val, setVal] = useState(current ? String(current) : "");
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    setVal(current ? String(current) : "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [current]);
+
+  const save = async () => {
+    const trimmed = val.trim();
+    const n = trimmed === "" ? 0 : parseFloat(trimmed);
+    if (isNaN(n) || n < 0) {
+      toast.error("Enter a valid rental amount");
+      return;
+    }
+    if (Math.abs(n - current) < 0.005) return; // unchanged
+    setSaving(true);
+    try {
+      if (n <= 0) {
+        for (const l of existing) await api.del(`/api/projects/finance/lines/${l.id}`);
+      } else if (existing.length === 1) {
+        await api.patch(`/api/projects/finance/lines/${existing[0].id}`, { amount: n });
+      } else {
+        // 0 existing → create; >1 → consolidate the duplicates into one.
+        for (const l of existing) await api.del(`/api/projects/finance/lines/${l.id}`);
+        await api.post(`/api/projects/${projectId}/finance/lines`, {
+          kind: "cost",
+          category: "rental",
+          amount: n,
+          description: "Rental",
+        });
+      }
+      toast.success("Rental updated");
+      onSaved();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to save rental");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <input
+      className={SPEC_INPUT_CLASS}
+      type="number"
+      inputMode="decimal"
+      value={val}
+      placeholder="—"
+      disabled={saving}
+      onChange={(e) => setVal(e.target.value)}
+      onBlur={save}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") e.currentTarget.blur();
+      }}
+    />
+  );
+}
+
 function ProjectSpecStrip({
   project: p,
   brands,
   eventTypes,
   fullAccess,
   patch,
+  financeLines,
+  onFinanceChange,
   toast,
 }: {
   project: ProjectDetail["project"];
@@ -5095,6 +5176,11 @@ function ProjectSpecStrip({
   eventTypes: EventType[];
   fullAccess: boolean;
   patch: (body: Record<string, any>) => Promise<void>;
+  /** Finance ledger lines — the quick Rental box reads/writes the
+   *  `rental` cost line here so it stays in sync with the Financial
+   *  Snapshot, Total Cost, Net Profit, and the Rental KPI/column. */
+  financeLines: FinanceLine[];
+  onFinanceChange: () => void;
   toast: ReturnType<typeof useToast>;
 }) {
   const [editing, setEditing] = useState(false);
@@ -5314,6 +5400,15 @@ function ProjectSpecStrip({
             value={p.size_sqm}
             placeholder="—"
             onChange={(v) => patch({ size_sqm: v ? parseFloat(v) : null })}
+          />
+        </SpecCell>
+
+        <SpecCell label="Rental · RM">
+          <QuickRentalField
+            projectId={p.id}
+            financeLines={financeLines}
+            onSaved={onFinanceChange}
+            toast={toast}
           />
         </SpecCell>
 
