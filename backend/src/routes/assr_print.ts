@@ -196,12 +196,25 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
   const docTitle =
     isCustomer ? "Customer Service Notice"
     : isSupplier ? "Supplier Service Order"
-    : "After-Sales Service Report";
+    : "After-Sales Service Request";
 
   const docSubtitle =
     isCustomer ? "Customer Copy"
     : isSupplier ? "Supplier Copy — for acknowledgement"
     : "";
+
+  // Status pills (design: two outlined pills top-right). SERVICE maps
+  // the resolution method to a service-location bucket; STATUS is the
+  // workflow stage. Both render static — change in-app and reprint.
+  const servicePillLabel = (() => {
+    const m = cs.resolution_method;
+    if (m === "field_service_own" || m === "field_service_supplier") return "At Customer";
+    if (m === "replace_unit" || m === "supplier_repair") return "Return to Supplier";
+    if (m === "return_visit") return "Internal (own team)";
+    return "—";
+  })();
+  const statusPillLabel = STAGE_LABEL[cs.stage] || cs.stage;
+  const generatedTs = fmtDateTime(new Date().toISOString());
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -433,6 +446,90 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
       letter-spacing: 0.8pt; text-transform: uppercase; color: #6a6a6a; font-weight: 700;
     }
 
+    /* ── Boxed-grid document language (design handoff: Service Print
+       Copies). Black section bars, grey label cells + white value
+       cells with hairline rules, outlined chips. B&W only. ── */
+    .bar {
+      background: #141414; color: #fff;
+      font-family: "IBM Plex Serif", "Georgia", serif;
+      font-size: 10.5pt; font-weight: 600; letter-spacing: 0.5pt;
+      padding: 1.8mm 3.6mm; margin-top: 5mm;
+    }
+    .bar .note { font-family: "IBM Plex Sans", sans-serif; font-size: 7.5pt; font-weight: 400; color: #b8bdb5; letter-spacing: 0; }
+    .mgrid { display: grid; border-left: 0.4pt solid #d5d5d5; }
+    .mgrid.cols-6 { grid-template-columns: 27mm 1fr 27mm 1fr 27mm 1fr; }
+    .mgrid.cols-4 { grid-template-columns: 27mm 1fr 27mm 1fr; }
+    .mgrid.rule-top { border-top: 1pt solid #141414; }
+    .mgrid .lc {
+      padding: 2.4mm 2.8mm; background: #f3f3f1;
+      border-right: 0.4pt solid #d5d5d5; border-bottom: 0.4pt solid #d5d5d5;
+      font-size: 8pt; color: #5a5a5a; font-weight: 600; line-height: 1.35;
+    }
+    .mgrid .vc {
+      padding: 2.4mm 2.8mm;
+      border-right: 0.4pt solid #d5d5d5; border-bottom: 0.4pt solid #d5d5d5;
+      font-size: 8.8pt; font-weight: 600; line-height: 1.45;
+      display: flex; align-items: center; flex-wrap: wrap;
+    }
+    .mgrid .vc.mono { font-family: "IBM Plex Mono", "Roboto Mono", monospace; }
+    .mgrid .vc.dim { color: #b0b0b0; font-weight: 400; }
+    .mgrid .span3 { grid-column: span 3; }
+    .mgrid .span5 { grid-column: span 5; }
+    .chip {
+      font-family: "IBM Plex Mono", "Roboto Mono", monospace; font-size: 8.5pt; font-weight: 700;
+      border: 1.1pt solid #141414; padding: 0.4mm 2.4mm; border-radius: 0.8mm;
+    }
+    .pill-cat { font-size: 8.5pt; font-weight: 700; border: 0.7pt solid #141414; padding: 0.6mm 2.8mm; border-radius: 3.2mm; }
+    .status-pills { display: flex; gap: 2.4mm; flex-shrink: 0; }
+    .status-pill {
+      min-width: 40mm; padding: 1.6mm 3.2mm; border-radius: 1.8mm;
+      border: 1.1pt solid #141414; background: #fff;
+      display: flex; flex-direction: column; justify-content: center;
+    }
+    .status-pill .cap { font-family: "IBM Plex Mono", "Roboto Mono", monospace; font-size: 6.5pt; font-weight: 700; letter-spacing: 1pt; color: #8a8a8a; text-transform: uppercase; }
+    .status-pill .val { font-size: 9pt; font-weight: 700; margin-top: 0.6mm; }
+    .ititle { display: grid; background: #f3f3f1; border-left: 0.4pt solid #d5d5d5; }
+    .itable { display: grid; border-left: 0.4pt solid #d5d5d5; }
+    .itable .th {
+      padding: 2mm 2.8mm; background: #f3f3f1;
+      border-right: 0.4pt solid #d5d5d5; border-bottom: 0.4pt solid #d5d5d5;
+      font-family: "IBM Plex Mono", "Roboto Mono", monospace; font-size: 7pt; font-weight: 700;
+      letter-spacing: 0.8pt; color: #5a5a5a;
+    }
+    .itable .td {
+      padding: 2.8mm; border-right: 0.4pt solid #d5d5d5; border-bottom: 0.4pt solid #d5d5d5;
+      font-size: 9pt; font-weight: 600; line-height: 1.5;
+    }
+    .itable .td.code { font-family: "IBM Plex Mono", "Roboto Mono", monospace; }
+    .itable .td.remark { font-size: 8.3pt; font-weight: 400; color: #3a3a3a; }
+    .itable .td.blank { min-height: 9mm; }
+    .pgrid {
+      display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 2.8mm;
+      border: 0.4pt solid #d5d5d5; border-top: none; padding: 3.2mm;
+    }
+    .pgrid .ph { aspect-ratio: 4 / 3; border-radius: 1mm; overflow: hidden; position: relative; background: #f0f0ee; }
+    .pgrid .ph img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .pgrid .ph .tag { position: absolute; left: 2mm; bottom: 1.6mm; font-family: "IBM Plex Mono", monospace; font-size: 6pt; color: rgba(255,255,255,0.75); }
+    .pgrid .add {
+      aspect-ratio: 4 / 3; border-radius: 1mm; border: 1.1pt dashed #cccccc;
+      display: flex; align-items: center; justify-content: center; gap: 1.6mm;
+      color: #b0b0b0; font-size: 8pt;
+    }
+    .credit-box { display: grid; grid-template-columns: 1.5fr 1fr 1fr; border: 1.1pt solid #141414; margin-top: 4mm; }
+    .credit-box .cell { padding: 3.2mm 3.6mm; }
+    .credit-box .cell + .cell { border-left: 0.4pt solid #d5d5d5; }
+    .credit-box .k { font-family: "IBM Plex Mono", monospace; font-size: 6.8pt; font-weight: 700; letter-spacing: 1pt; color: #8a8a8a; text-transform: uppercase; margin-bottom: 1.6mm; }
+    .credit-box .v { font-family: "IBM Plex Mono", monospace; font-size: 10.5pt; font-weight: 700; line-height: 1.35; }
+    .boxed { border: 0.4pt solid #d5d5d5; border-top: none; padding: 3.6mm 4mm; }
+    .signoff.boxed-grid { border: 0.4pt solid #d5d5d5; border-top: none; }
+    .doc-footer {
+      display: flex; align-items: center; justify-content: space-between; gap: 4mm;
+      padding-top: 3.6mm; margin-top: 4mm; border-top: 0.4pt solid #e0e0e0;
+      font-size: 7.5pt; color: #9a9a9a;
+    }
+    .doc-footer .contact { font-size: 8pt; color: #3a3a3a; }
+    .doc-footer .contact b.mono { font-family: "IBM Plex Mono", monospace; }
+
     .foot { padding-top: 2mm; border-top: 0.5pt solid #000; text-align: center; font-size: 8pt; color: #555; letter-spacing: 0.5pt; }
 
     .print-bar {
@@ -489,62 +586,234 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
 
     <tbody><tr><td>
 
-    <div class="doc-title">
-      <h1>${esc(docTitle)}</h1>
-      ${docSubtitle ? `<div class="subtitle">${esc(docSubtitle)}</div>` : ""}
-      <div class="ref">Report No. ${esc(cs.assr_no)}</div>
+    <div class="doc-title" style="display: flex; align-items: flex-start; justify-content: space-between; gap: 6mm;">
+      <div>
+        <h1>${esc(docTitle)}</h1>
+        ${docSubtitle ? `<div class="subtitle">${esc(docSubtitle)}</div>` : ""}
+        <div class="ref">Report No. <b>${esc(cs.assr_no)}</b> · Generated ${generatedTs}</div>
+      </div>
+      ${isOffice ? `
+      <div class="status-pills">
+        <div class="status-pill"><span class="cap">Service</span><span class="val">${esc(servicePillLabel)}</span></div>
+        <div class="status-pill"><span class="cap">Status</span><span class="val">${esc(statusPillLabel)}</span></div>
+      </div>` : isSupplier ? `
+      <div class="status-pills">
+        <div class="status-pill"><span class="cap">Status</span><span class="val">${esc(statusPillLabel)}</span></div>
+      </div>` : ""}
     </div>
 
     ${trackerHtml}
 
-    <!-- Customer / Report metadata. Customer variant adds a QR panel
-         in a third column; Supplier variant keeps the 2-col layout but
-         drops customer phone + address from the customer block. -->
-    <div class="info${isCustomer ? " with-qr" : ""}">
+    ${isCustomer ? `
+    <!-- Customer metadata + QR panel (customer variant keeps the
+         friendlier notice layout; boxed-grid applies to office +
+         supplier sheets only). -->
+    <div class="info with-qr">
       <div class="col">
-        <div class="label">${isSupplier ? "Bill To" : "Customer"}</div>
+        <div class="label">Customer</div>
         <div class="name-line">${esc(cs.customer_name || "—")}</div>
-        ${isSupplier ? "" : `<div class="line"><span class="k">Phone</span><span class="v">${esc(cs.phone || "—")}</span></div>`}
+        <div class="line"><span class="k">Phone</span><span class="v">${esc(cs.phone || "—")}</span></div>
         <div class="line"><span class="k">Location</span><span class="v">${esc(cs.location || "—")}</span></div>
-        ${cs.addr1 && !isSupplier ? `<div class="line"><span class="k">Address</span><span class="v">${esc([cs.addr1, cs.addr2, cs.addr3, cs.addr4].filter(Boolean).join(", "))}</span></div>` : ""}
-        ${isOffice ? `<div class="line"><span class="k">Sales Agent</span><span class="v">${esc(cs.sales_agent || "—")}</span></div>` : ""}
+        ${cs.addr1 ? `<div class="line"><span class="k">Address</span><span class="v">${esc([cs.addr1, cs.addr2, cs.addr3, cs.addr4].filter(Boolean).join(", "))}</span></div>` : ""}
       </div>
       <div class="col">
-        <div class="label">${isSupplier ? "Service Order" : "Report Details"}</div>
+        <div class="label">Report Details</div>
         <div class="line"><span class="k">Date</span><span class="v">${fmtDate(cs.complained_date)}</span></div>
         <div class="line"><span class="k">SO No.</span><span class="v">${esc(cs.doc_no)}</span></div>
         ${cs.po_no ? `<div class="line"><span class="k">PO No.</span><span class="v">${esc(cs.po_no)}</span></div>` : ""}
         <div class="line"><span class="k">Status</span><span class="v">${esc(STAGE_LABEL[cs.stage] || cs.stage)}</span></div>
         <div class="line"><span class="k">Priority</span><span class="v" style="text-transform: capitalize;">${esc(cs.priority || "normal")}</span></div>
-        ${cs.deadline_at && !isCustomer ? `<div class="line"><span class="k">Deadline</span><span class="v">${fmtDateTime(cs.deadline_at)}</span></div>` : ""}
-        ${isOffice ? `<div class="line"><span class="k">Prepared By</span><span class="v">${esc((cs as any).created_by_name || "—")}</span></div>` : ""}
       </div>
-      ${isCustomer ? `
       <div class="qr-panel">
         <div class="qr-cap">Track this case</div>
         <div class="qr-svg">${qrInlineSvg}</div>
         <div class="qr-url">${esc(customerPortalUrl)}</div>
-      </div>` : ""}
+      </div>
+    </div>` : ""}
+
+    ${isOffice ? (() => {
+      // ── ASSR Form (design handoff) — boxed meta grid, black section
+      // bars, fixed items table, 3-up photo grid, dual sign-off. ──
+      const officeItems = (items as any[]).map((it, i) => `
+        <div class="itable" style="grid-template-columns: 10mm 1fr 14mm 1.4fr;">
+          <span class="td">${i + 1}</span>
+          <span class="td code">${esc([it.item_code, it.item_description].filter(Boolean).join(" — "))}</span>
+          <span class="td">${esc(it.qty ?? 1)}</span>
+          <span class="td remark">${i === 0 && cs.action_remark ? esc(cs.action_remark) : ""}</span>
+        </div>`);
+      const blanks = Math.max(0, 3 - officeItems.length);
+      for (let i = 0; i < blanks; i++) {
+        officeItems.push(`
+        <div class="itable" style="grid-template-columns: 10mm 1fr 14mm 1.4fr;">
+          <span class="td blank"></span><span class="td blank"></span><span class="td blank"></span><span class="td blank"></span>
+        </div>`);
+      }
+      const photos = inlinedImages.slice(0, 5).map((a, i) => `
+        <div class="ph"><img src="${a.data_url}" alt="${esc(a.file_name || "")}" /><span class="tag">IMG_${String(i + 1).padStart(2, "0")}</span></div>`);
+      photos.push(`<div class="add">＋ Add</div>`);
+      return `
+    <!-- meta grid -->
+    <div class="mgrid cols-6 rule-top">
+      <div class="lc">Sales Agent</div><div class="vc">${esc(cs.sales_agent || "—")}</div>
+      <div class="lc">Request Date</div><div class="vc mono">${fmtDate(cs.complained_date)}</div>
+      <div class="lc">ASSR No</div><div class="vc"><span class="chip">${esc(cs.assr_no)}</span></div>
+      <div class="lc">Category</div><div class="vc">${cs.service_category || cs.issue_category ? `<span class="pill-cat">${esc(cs.service_category || cs.issue_category)}</span>` : `<span class="dim">—</span>`}</div>
+      <div class="lc">Delivery Return</div><div class="vc dim">No · NA</div>
+      <div class="lc">Purchase Return</div><div class="vc dim">No · NA</div>
     </div>
 
-    ${isSupplier ? `
-    <!-- Supplier PO banner — highlighted PO + creditor + deadline -->
-    <div class="po-banner">
-      <div class="col">
-        <div class="k">Supplier (Creditor)</div>
-        <div class="v" style="font-size: 11pt;">${esc((cs as any).creditor_name || (cs as any).creditor_code || "—")}</div>
+    <!-- customer info -->
+    <div class="bar">Customer Info</div>
+    <div class="mgrid cols-6">
+      <div class="lc">Customer Name</div><div class="vc">${esc(cs.customer_name || "—")}</div>
+      <div class="lc">HP</div><div class="vc mono">${esc(cs.phone || "—")}</div>
+      <div class="lc">Ref No</div><div class="vc mono">${esc(cs.ref_no || "—")}</div>
+      <div class="lc">Delivered Date</div><div class="vc mono">${fmtDate((cs as any).do_date)}</div>
+      <div class="lc">PO No</div><div class="vc mono">${esc(cs.po_no || "—")}</div>
+      <div class="lc">SO No</div><div class="vc mono">${esc(cs.doc_no || "—")}</div>
+      <div class="lc">Address</div><div class="vc span5">${esc([cs.addr1, cs.addr2, cs.addr3, cs.addr4].filter(Boolean).join(", ") || "—")}</div>
+      <div class="lc">Description of the problem</div><div class="vc span5" style="font-size: 9.4pt;">${esc(cs.complaint_issue || "—")}</div>
+    </div>
+
+    <!-- items -->
+    <div class="bar">Items</div>
+    <div class="itable" style="grid-template-columns: 10mm 1fr 14mm 1.4fr;">
+      <span class="th">NO</span><span class="th">ITEM</span><span class="th">QTY</span><span class="th">REMARK (IF ANY)</span>
+    </div>
+    ${officeItems.join("")}
+
+    <!-- service issue pictures -->
+    <div class="bar">Service Issue &nbsp;<span class="note">(reference pictures)</span></div>
+    <div class="pgrid">${photos.join("")}</div>
+
+    <!-- sign-off -->
+    <div class="bar">Acknowledgement &amp; Sign-off</div>
+    <div class="signoff boxed-grid">
+      <div class="panel">
+        <h3>Customer</h3>
+        <div class="check"><span class="box"></span><span>I confirm the reported issue and details above are correct.</span></div>
+        <div class="check"><span class="box"></span><span>I have received the serviced / replaced item in good condition.</span></div>
+        <div class="sig-rule"><span class="cap">Signature</span><span class="small muted" style="float: right;">${esc(cs.customer_name || "")}</span></div>
+        <div class="name-date">
+          <div class="cell"><span class="cap">Name</span></div>
+          <div class="cell" style="max-width: 44mm"><span class="cap">Date</span></div>
+        </div>
       </div>
-      <div class="col">
-        <div class="k">PO Number</div>
-        <div class="v">${esc(cs.po_no || "—")}</div>
-      </div>
-      <div class="col deadline">
-        <div class="k">Target Completion</div>
-        <div class="v">${supplierTargetIso ? fmtDate(supplierTargetIso) : "—"}</div>
+      <div class="panel">
+        <h3>Warehouse</h3>
+        <div class="check"><span class="box"></span><span>Goods inspected and received in good condition.</span></div>
+        <div class="check"><span class="box"></span><span>Service / repair completed per the plan above.</span></div>
+        <div class="sig-rule"><span class="cap">Received &amp; signed</span></div>
+        <div class="name-date">
+          <div class="cell"><span class="cap">Name</span></div>
+          <div class="cell" style="max-width: 44mm"><span class="cap">Date</span></div>
+        </div>
       </div>
     </div>
-    ` : ""}
 
+    <div class="doc-footer">
+      <span>Computer-generated document · valid without signature until countersigned above.</span>
+      <span class="contact"><b>Warehouse Contact</b> · Houzs CS Team &nbsp;<b class="mono">011-6155 6133</b></span>
+    </div>`;
+    })() : ""}
+
+    ${isSupplier ? (() => {
+      // ── Supplier Service Order (design handoff). ──
+      const supItems = (items as any[]).map((it, i) => `
+        <div class="itable" style="grid-template-columns: 10mm 1fr 14mm 1.4fr;">
+          <span class="td">${i + 1}</span>
+          <span class="td code">${esc([it.item_code, it.item_description].filter(Boolean).join(" — "))}</span>
+          <span class="td">${esc(it.qty ?? 1)}</span>
+          <span class="td remark">${i === 0 && cs.action_remark ? esc(cs.action_remark) : ""}</span>
+        </div>`);
+      const photos = inlinedImages.slice(0, 5).map((a, i) => `
+        <div class="ph"><img src="${a.data_url}" alt="${esc(a.file_name || "")}" /><span class="tag">IMG_${String(i + 1).padStart(2, "0")}</span></div>`);
+      photos.push(`<div class="add">＋ Add</div>`);
+      const firstItem = (items as any[])[0];
+      return `
+    <!-- meta grid -->
+    <div class="mgrid cols-6 rule-top">
+      <div class="lc">Request Date</div><div class="vc mono">${fmtDate(cs.complained_date)}</div>
+      <div class="lc">ASSR No</div><div class="vc"><span class="chip">${esc(cs.assr_no)}</span></div>
+      <div class="lc">Category</div><div class="vc">${cs.service_category || cs.issue_category ? `<span class="pill-cat">${esc(cs.service_category || cs.issue_category)}</span>` : `<span class="dim">—</span>`}</div>
+    </div>
+
+    <!-- creditor box -->
+    <div class="credit-box">
+      <div class="cell"><div class="k">Supplier (Creditor)</div><div class="v">${esc((cs as any).creditor_name || (cs as any).creditor_code || "—")}</div></div>
+      <div class="cell"><div class="k">PO Number</div><div class="v">${esc(cs.po_no || "—")}</div></div>
+      <div class="cell"><div class="k">Target Completion</div><div class="v">${supplierTargetIso ? fmtDate(supplierTargetIso) : "—"}</div></div>
+    </div>
+
+    <!-- deliver / collect — area + coordinator only, direct contact
+         withheld until dispatch (portal contract). -->
+    <div class="bar">Deliver / Collect</div>
+    <div class="mgrid cols-4">
+      <div class="lc">Customer</div><div class="vc">${esc(cs.customer_name || "—")}</div>
+      <div class="lc">Delivery Area</div><div class="vc">${esc(cs.location || (cs as any).addr4 || "—")}</div>
+      <div class="lc">Coordinator</div><div class="vc">${esc((cs as any).assigned_to_name ? `Houzs Ops · ${(cs as any).assigned_to_name}` : "Houzs CS Team")}</div>
+      <div class="lc">Warehouse</div><div class="vc">${esc((cs as any).delivery_order || "—")}</div>
+      <div class="lc">Note</div><div class="vc span3" style="font-weight: 400; color: #6a6a6a; font-size: 8.2pt;">Customer's direct phone &amp; full address are shared after dispatch is confirmed.</div>
+    </div>
+
+    <!-- items -->
+    <div class="bar">Items</div>
+    <div class="itable" style="grid-template-columns: 10mm 1fr 14mm 1.4fr;">
+      <span class="th">NO</span><span class="th">ITEM</span><span class="th">QTY</span><span class="th">REMARK (IF ANY)</span>
+    </div>
+    ${supItems.join("") || `<div class="itable" style="grid-template-columns: 10mm 1fr 14mm 1.4fr;"><span class="td blank"></span><span class="td blank"></span><span class="td blank"></span><span class="td blank"></span></div>`}
+
+    <!-- reported issue -->
+    <div class="bar">Reported Issue</div>
+    <div class="boxed">
+      ${firstItem ? `<div style="font-family: 'IBM Plex Mono', monospace; font-size: 9.8pt; font-weight: 700;">${esc(firstItem.item_code)}</div>` : ""}
+      <div style="font-size: 8.8pt; color: #3a3a3a; margin-top: 1.6mm; line-height: 1.55;">${esc(cs.complaint_issue || "—")}${cs.issue_category ? ` &nbsp;·&nbsp; Category: ${esc(cs.issue_category)}` : ""}</div>
+    </div>
+
+    <!-- resolution plan -->
+    <div class="bar">Resolution Plan</div>
+    <div class="mgrid cols-4">
+      <div class="lc">Method</div><div class="vc">${esc(cs.resolution_method ? (RESOLUTION_LABEL[cs.resolution_method] || cs.resolution_method) : "—")}</div>
+      <div class="lc">Assigned To</div><div class="vc${(cs as any).assigned_to_name ? "" : " dim"}">${esc((cs as any).assigned_to_name || "—")}</div>
+      <div class="lc">PO No</div><div class="vc mono">${esc(cs.po_no || "—")}</div>
+      <div class="lc">Target</div><div class="vc mono">${supplierTargetIso ? fmtDate(supplierTargetIso) : "—"}</div>
+    </div>
+
+    <!-- supporting evidence -->
+    <div class="bar">Supporting Evidence</div>
+    <div class="pgrid">${photos.join("")}</div>
+
+    <!-- sign-off -->
+    <div class="bar">Acknowledgement &amp; Sign-off</div>
+    <div class="signoff boxed-grid">
+      <div class="panel">
+        <h3>Supplier</h3>
+        <div class="check"><span class="box"></span><span>Goods received from Houzs in good condition.</span></div>
+        <div class="check"><span class="box"></span><span>Service / repair completed per the plan above.</span></div>
+        <div class="sig-rule"><span class="cap">Signature</span></div>
+        <div class="name-date">
+          <div class="cell"><span class="cap">Name</span></div>
+          <div class="cell" style="max-width: 44mm"><span class="cap">Date</span></div>
+        </div>
+      </div>
+      <div class="panel">
+        <h3>Houzs Century Representative</h3>
+        <div style="font-size: 8.6pt; color: #6a6a6a; line-height: 1.5; margin-bottom: 9mm;">Verified the returned item and confirmed the service against the resolution plan.</div>
+        <div class="sig-rule"><span class="cap">Signature</span></div>
+        <div class="name-date">
+          <div class="cell"><span class="cap">Name</span></div>
+          <div class="cell" style="max-width: 44mm"><span class="cap">Date</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="doc-footer">
+      <span>Computer-generated document · valid without signature until countersigned above.</span>
+      <span class="contact"><b>Houzs Contact</b> · CS Team &nbsp;<b class="mono">011-6155 6133</b></span>
+    </div>`;
+    })() : ""}
+
+    ${isCustomer ? `
     <!-- 1. Items -->
     <section>
       <h2 class="sec">1. Items Under Service</h2>
@@ -574,8 +843,6 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
       <h2 class="sec">2. Reported Issue</h2>
       <div class="rows rows-2col">
         <div class="row"><span class="k">Issue Category</span><span class="v">${esc(cs.issue_category || "—")}</span></div>
-        ${isOffice ? `<div class="row"><span class="k">NCR Category</span><span class="v">${esc(cs.ncr_category || "—")}</span></div>` : ""}
-        ${isOffice ? `<div class="row"><span class="k">Service Category</span><span class="v">${esc(cs.service_category || "—")}</span></div>` : ""}
         <div class="row"><span class="k">Priority Level</span><span class="v" style="text-transform: capitalize;">${esc(cs.priority || "normal")}</span></div>
       </div>
       <div class="para">
@@ -589,17 +856,8 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
       <h2 class="sec">3. Resolution Plan</h2>
       <div class="rows rows-2col">
         <div class="row"><span class="k">Resolution Method</span><span class="v">${esc(cs.resolution_method ? (RESOLUTION_LABEL[cs.resolution_method] || cs.resolution_method) : "—")}</span></div>
-        ${isCustomer ? "" : `<div class="row"><span class="k">Assigned To</span><span class="v">${esc((cs as any).assigned_to_name || "—")}</span></div>`}
-        ${isCustomer ? "" : `<div class="row"><span class="k">Supplier</span><span class="v">${esc((cs as any).supplier_name || (cs as any).supplier || "—")}</span></div>`}
-        ${isOffice ? `<div class="row"><span class="k">Supplier Contact</span><span class="v">${esc((cs as any).supplier_phone || "—")}</span></div>` : ""}
-        ${isCustomer ? "" : `<div class="row"><span class="k">PO Number</span><span class="v mono">${esc(cs.po_no || "—")}</span></div>`}
         <div class="row"><span class="k">Target Completion</span><span class="v">${fmtDate(cs.completion_date)}</span></div>
       </div>
-      ${cs.action_remark && !isCustomer ? `
-      <div class="para">
-        <div class="cap">Action Remarks</div>
-        <div class="body">${esc(cs.action_remark)}</div>
-      </div>` : ""}
     </section>
 
     ${logistics.length > 0 ? `
@@ -629,25 +887,6 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
     </section>
     ` : ""}
 
-    ${isOffice && (cs.po_amount != null || cs.supplier_invoice_ref || cs.cost_notes) ? `
-    <section>
-      <h2 class="sec">${logistics.length > 0 ? "5." : "4."} Cost &amp; Reconciliation</h2>
-      <div class="rows rows-2col">
-        <div class="row"><span class="k">Supplier Invoice Ref</span><span class="v mono">${esc(cs.supplier_invoice_ref || "—")}</span></div>
-        <div class="row"><span class="k">PO Amount</span><span class="v mono">${cs.po_amount != null ? "MYR " + esc(Number(cs.po_amount).toFixed(2)) : "—"}</span></div>
-      </div>
-      ${cs.cost_notes ? `
-      <div class="para">
-        <div class="cap">Notes</div>
-        <div class="body">${esc(cs.cost_notes)}</div>
-      </div>` : ""}
-      ${cs.po_amount != null ? `
-      <div class="total-line">
-        <div class="row"><span class="k">Total</span><span class="v">MYR ${esc(Number(cs.po_amount).toFixed(2))}</span></div>
-      </div>` : ""}
-    </section>
-    ` : ""}
-
     ${inlinedImages.length > 0 ? `
     <section>
       <h2 class="sec">Supporting Evidence</h2>
@@ -661,39 +900,7 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
     </section>
     ` : ""}
 
-    ${isOffice && otherAttachments.length > 0 ? `
-    <section>
-      <h2 class="sec">Additional Attachments</h2>
-      <ul style="padding-left: 16pt; font-size: 9.5pt; margin: 2mm 0;">
-        ${otherAttachments.map((a: any) => `<li>${esc(a.file_name || a.r2_key)} <span class="muted small">(${esc(a.category)})</span></li>`).join("")}
-      </ul>
-    </section>
-    ` : ""}
-
-    ${isOffice ? `
-    <section>
-      <h2 class="sec">Case Timeline</h2>
-      <div class="timeline">
-        ${activity.length === 0 ? `<div class="entry"><span class="when">—</span><div class="muted">No activity recorded.</div></div>` : activity.slice().reverse().map((a: any) => {
-          let body = "";
-          if (a.action === "stage_change") body = `Stage advanced from <em>${esc(STAGE_LABEL[a.from_value] || a.from_value || "—")}</em> to <em>${esc(STAGE_LABEL[a.to_value] || a.to_value || "—")}</em>`;
-          else if (a.action === "note") body = esc(a.note || "");
-          else if (a.action === "created") body = "Case registered.";
-          else if (a.action === "approval") body = `Quality review: ${esc(a.to_value === "passed" ? "Passed" : "Reviewed")}${a.note ? ` — ${esc(a.note)}` : ""}`;
-          else if (a.action === "po_generated") body = `Purchase order generated: <em>${esc(a.to_value || "")}</em>`;
-          else if (a.action === "assignment") body = `Case assigned to user #${esc(a.to_value || "")}`;
-          else body = `${esc(a.action)} ${esc(a.to_value || "")}`;
-          return `
-          <div class="entry">
-            <span class="when">${fmtDateTime(a.created_at)}</span>
-            <div><span class="who">${esc(a.user_name || "System")}.</span>${body}${a.note && a.action === "stage_change" ? ` <span class="muted">(${esc(a.note)})</span>` : ""}</div>
-          </div>`;
-        }).join("")}
-      </div>
-    </section>
-    ` : ""}
-
-    ${cs.stage === "completed" && !isSupplier ? `
+    ${cs.stage === "completed" ? `
     <section>
       <h2 class="sec">Case Closure</h2>
       <div class="rows rows-2col">
@@ -701,12 +908,8 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
         <div class="row"><span class="k">Satisfaction Rating</span><span class="v">${cs.satisfaction_rating ? `${esc(cs.satisfaction_rating)} / 5` : "—"}</span></div>
         ${(cs as any).approved_at && isOffice ? `<div class="row"><span class="k">Quality Review</span><span class="v">${esc((cs as any).approved_by_name || `User #${(cs as any).approved_by}`)} · ${fmtDateTime((cs as any).approved_at)}${(cs as any).quality_review_passed === 1 ? " · Passed" : ""}</span></div>` : ""}
       </div>
-      ${cs.satisfaction_notes && isOffice ? `
-      <div class="para">
-        <div class="cap">Customer Feedback</div>
-        <div class="body">${esc(cs.satisfaction_notes)}</div>
-      </div>` : ""}
     </section>
+    ` : ""}
     ` : ""}
 
     ${isCustomer ? `
@@ -748,53 +951,6 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
           </div>
           <div class="sig-rule">
             <span class="cap">Received &amp; signed</span>
-          </div>
-          <div class="name-date">
-            <div class="cell"><span class="cap">Name</span></div>
-            <div class="cell" style="max-width: 44mm"><span class="cap">Date</span></div>
-          </div>
-        </div>
-      </div>
-    </section>
-    ` : ""}
-
-    ${isSupplier ? `
-    <!-- Supplier variant sign-off (design refresh) — Supplier + Houzs
-         Century representative, matching the design's Supplier Service
-         Order acknowledgement layout. -->
-    <section>
-      <h2 class="sec">Acknowledgement &amp; Sign-off</h2>
-      <div class="signoff">
-        <div class="panel">
-          <h3>Supplier</h3>
-          <div class="check">
-            <span class="box"></span>
-            <span>Goods inspected and received in good condition.</span>
-          </div>
-          <div class="check">
-            <span class="box"></span>
-            <span>Service / repair completed per the resolution plan above.</span>
-          </div>
-          <div class="sig-rule">
-            <span class="cap">Signature</span>
-          </div>
-          <div class="name-date">
-            <div class="cell"><span class="cap">Name</span></div>
-            <div class="cell" style="max-width: 44mm"><span class="cap">Date</span></div>
-          </div>
-        </div>
-        <div class="panel">
-          <h3>Houzs Century Representative</h3>
-          <div class="check">
-            <span class="box"></span>
-            <span>Verified supplier work meets the resolution plan.</span>
-          </div>
-          <div class="check">
-            <span class="box"></span>
-            <span>Handover accepted for return to the warehouse.</span>
-          </div>
-          <div class="sig-rule">
-            <span class="cap">Verified &amp; signed</span>
           </div>
           <div class="name-date">
             <div class="cell"><span class="cap">Name</span></div>
