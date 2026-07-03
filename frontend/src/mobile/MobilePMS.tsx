@@ -353,25 +353,68 @@ export function MobilePMS({ onBack, initialProjectId }: { onBack?: () => void; i
 }
 
 // ── List ──
-// Build Spec §"Projects — list (PMS)" filter chips are All · Planning · Live ·
-// Settled, keyed off the project's workflow `stage`. The real backend stage
-// enum (mig 053) is draft/setup/live/dismantle/completed (+ closed/cancelled),
-// so we fold that vocabulary onto the three spec buckets. States → badge:
-// Planning→amber · Live→green · Settled→grey.
-const STAGE_BUCKET: Record<string, "planning" | "live" | "settled"> = {
-  draft: "planning",
-  setup: "planning",
-  live: "live",
-  dismantle: "live",
-  completed: "settled",
-  closed: "settled",
+// FOLLOW THE BACKEND: the mobile PMS mirrors the desktop Projects page
+// (frontend/src/pages/Projects.tsx) verbatim — the real workflow `stage`
+// enum (mig 053) is draft → setup → live → dismantle → completed, with
+// `closed`/`cancelled` possible on rows. No invented Planning/Live/Settled
+// buckets: the filter chips, list-card badge and detail badge all key off
+// the real `stage` value directly.
+type StageVariant = "neutral" | "open" | "in-progress" | "closed" | "error";
+
+// Mirrors desktop STAGE_LABEL (+ graceful closed/cancelled).
+const STAGE_LABEL: Record<string, string> = {
+  draft: "Draft",
+  setup: "Setup",
+  live: "Live",
+  dismantle: "Dismantle",
+  completed: "Completed",
+  closed: "Closed",
+  cancelled: "Cancelled",
 };
-const stageBucket = (stage: string | null | undefined): "planning" | "live" | "settled" | "other" =>
-  STAGE_BUCKET[(stage ?? "").toLowerCase()] ?? "other";
+const stageLabel = (stage: string | null | undefined): string => {
+  const s = (stage ?? "").toLowerCase();
+  return STAGE_LABEL[s] ?? (s ? humanize(s) : "—");
+};
+
+// Mirrors desktop stageVariant(): draft=neutral · setup=open ·
+// live/dismantle=in-progress · completed/closed=closed · cancelled=error.
+const stageVariant = (stage: string | null | undefined): StageVariant => {
+  switch ((stage ?? "").toLowerCase()) {
+    case "draft": return "neutral";
+    case "setup": return "open";
+    case "live":
+    case "dismantle": return "in-progress";
+    case "completed":
+    case "closed": return "closed";
+    case "cancelled": return "error";
+    default: return "neutral";
+  }
+};
+
+// Map the desktop variant onto the mobile badge palette already used across
+// the screen (amber = open, green/teal = in-progress, grey = neutral/closed,
+// clay-red = error). bg/fg pairs match ListChip / PaymentBadge tints.
+const STAGE_TINT: Record<StageVariant, { bg: string; fg: string }> = {
+  neutral: { bg: "#eef0ec", fg: "#767b6e" },
+  open: { bg: "#f6efd9", fg: "#6e4d12" },
+  "in-progress": { bg: "#e2f0e9", fg: "#2f8a5b" },
+  closed: { bg: "#eef0ec", fg: "#767b6e" },
+  error: { bg: "#f7e7e5", fg: "#a13a34" },
+};
+
+// Filter chips — the REAL stages, mirroring desktop STAGE_OPTIONS.
+const STAGE_FILTERS: [string, string][] = [
+  ["all", "All"],
+  ["draft", "Draft"],
+  ["setup", "Setup"],
+  ["live", "Live"],
+  ["dismantle", "Dismantle"],
+  ["completed", "Completed"],
+];
 
 function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onBack?: () => void }) {
   const [q, setQ] = useState("");
-  const [bucket, setBucket] = useState<string>("all");
+  const [stageFilter, setStageFilter] = useState<string>("all");
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["mobile-pms-list"],
@@ -383,21 +426,14 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
   const rows = useMemo(() => {
     const needle = q.trim().toLowerCase();
     return all.filter((r) => {
-      if (bucket !== "all" && stageBucket(r.stage) !== bucket) return false;
+      if (stageFilter !== "all" && (r.stage ?? "").toLowerCase() !== stageFilter) return false;
       if (needle) {
         const hay = `${r.code} ${r.name} ${r.brand ?? ""} ${r.venue ?? ""} ${r.pic_name ?? ""}`.toLowerCase();
         if (!hay.includes(needle)) return false;
       }
       return true;
     });
-  }, [all, q, bucket]);
-
-  const STAGE_FILTERS: [string, string][] = [
-    ["all", "All"],
-    ["planning", "Planning"],
-    ["live", "Live"],
-    ["settled", "Settled"],
-  ];
+  }, [all, q, stageFilter]);
 
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
@@ -421,7 +457,7 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
         </div>
         <div className="chips" style={{ marginTop: 11 }}>
           {STAGE_FILTERS.map(([k, label]) => (
-            <button key={k} onClick={() => setBucket(k)} className={bucket === k ? "chip on" : "chip"}>{label}</button>
+            <button key={k} onClick={() => setStageFilter(k)} className={stageFilter === k ? "chip on" : "chip"}>{label}</button>
           ))}
         </div>
       </header>
@@ -1903,29 +1939,19 @@ function ListChip({ children }: { children: ReactNode }) {
   );
 }
 
-// Build Spec §27/§28 stage badge — Planning→amber · Live→green · Settled→grey.
-// Folds the real backend stage enum (draft/setup/live/dismantle/completed +
-// closed/cancelled) onto the three spec buckets; cancelled reads red.
+// Stage badge — shows the REAL backend stage (STAGE_LABEL[stage]) with a
+// colour matching the desktop stageVariant, mapped onto the mobile badge
+// palette (STAGE_TINT). draft=neutral/grey · setup=open/amber ·
+// live+dismantle=in-progress/green · completed+closed=closed/grey ·
+// cancelled=error/clay-red.
 function StageBadge({ stage, dark }: { stage: string | null | undefined; dark?: boolean }) {
-  const s = (stage ?? "").toLowerCase();
-  const bucket = stageBucket(stage);
-  let bg: string, fg: string, label: string;
-  if (s === "cancelled") {
-    [bg, fg, label] = ["#f7e7e5", "#a13a34", "Cancelled"];
-  } else if (bucket === "planning") {
-    [bg, fg, label] = ["#f6efd9", "#6e4d12", "Planning"];
-  } else if (bucket === "live") {
-    [bg, fg, label] = ["#e2f0e9", "#2f8a5b", "Live"];
-  } else if (bucket === "settled") {
-    [bg, fg, label] = ["#eef0ec", "#767b6e", "Settled"];
-  } else {
-    [bg, fg, label] = ["#eef0ec", "#767b6e", s ? humanize(s) : "—"];
-  }
+  const tint = STAGE_TINT[stageVariant(stage)];
+  const label = stageLabel(stage);
   return (
     <span className="spill" style={{
       flex: "none",
-      background: dark ? "rgba(216,168,90,.16)" : bg,
-      color: dark ? "#d8a85a" : fg,
+      background: dark ? "rgba(216,168,90,.16)" : tint.bg,
+      color: dark ? "#d8a85a" : tint.fg,
       border: dark ? "1px solid rgba(216,168,90,.4)" : "none",
     }}>{label}</span>
   );
