@@ -549,11 +549,6 @@ export function MobileNewSO({
     () => lines.reduce((a, l) => a + toCenti(l.price) * num(l.qty), 0),
     [lines],
   );
-  const paidTotal = useMemo(() => {
-    if (isEdit) return existingPays.reduce((a, p) => a + (p.amount_centi ?? 0), 0);
-    return pays.reduce((a, p) => a + toCenti(p.amount), 0);
-  }, [isEdit, existingPays, pays]);
-  const balance = Math.max(0, subtotal - paidTotal);
 
   const title = mode === "edit-draft" ? "Edit Draft" : mode === "edit" ? "Edit" : "New Sales Order";
 
@@ -932,10 +927,12 @@ export function MobileNewSO({
   // ---- Render ---------------------------------------------------------------
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
+      {/* Header — design VERBATIM: a plain grey "Cancel" text button (no chevron)
+          top-left, a grey status pill top-right, the screen title below. */}
       <header className="hdr">
         <div className="hdr-row">
-          <button className="back" onClick={onBack}><span className="chev">{"‹"}</span> Cancel</button>
-          {mode === "edit" ? null : <span className="badge b-grey">Draft</span>}
+          <button type="button" onClick={onBack} style={{ background: "none", border: "none", color: "var(--mut)", fontWeight: 600, fontSize: 13, cursor: "pointer", fontFamily: "inherit", padding: 0 }}>Cancel</button>
+          <span className="badge b-grey">{mode === "edit" ? "Editing" : "Draft"}</span>
         </div>
         <div id="nso-title" className="scr-title" style={{ marginTop: 6 }}>{title}</div>
       </header>
@@ -1188,30 +1185,28 @@ export function MobileNewSO({
         )}
       </div>
 
+      {/* Action bar — design VERBATIM: just the button row. edit → [Save changes];
+          new / edit-draft → [Save draft][Create Sales Order]. (The running
+          subtotal lives inside the Line items card, per the design — no separate
+          summary strip here.) The design's edit footer also shows a "Cancel Order"
+          void button, but voiding an order is owned by the SO detail screen (real
+          status PATCH); this form never voids, so we don't mislabel Back as it. */}
       {!loading && (
-        <footer className="actbar">
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 9 }}>
-            <span style={{ fontSize: 11.5, color: "var(--mut)" }}>
-              Balance <span className="money" style={{ color: "var(--gold)", fontWeight: 700 }}>RM {fmt(balance / 100)}</span>
-            </span>
-            <span className="money" style={{ fontSize: 17, fontWeight: 800, color: "var(--brand-d)" }}>RM {fmt(subtotal / 100)}</span>
-          </div>
-          <div id="nso-footer" style={{ display: "flex", gap: 9 }}>
-            {isEdit ? (
-              <button className="btn" disabled={submitting} onClick={() => save(false)} style={{ opacity: submitting ? 0.6 : 1 }}>
-                {submitting ? "Saving…" : "Save Changes"}
+        <footer id="nso-footer" className="actbar">
+          {mode === "edit" ? (
+            <button className="btn" disabled={submitting} onClick={() => save(false)} style={{ flex: 1, opacity: submitting ? 0.6 : 1 }}>
+              {submitting ? "Saving…" : "Save Changes"}
+            </button>
+          ) : (
+            <>
+              <button className="btn-ghost" disabled={submitting} onClick={() => save(true)} style={{ flex: 1, opacity: submitting ? 0.6 : 1 }}>
+                {submitting ? "Saving…" : "Save draft"}
               </button>
-            ) : (
-              <>
-                <button className="btn-ghost" disabled={submitting} onClick={() => save(true)} style={{ flex: 1, opacity: submitting ? 0.6 : 1 }}>
-                  {submitting ? "Saving…" : "Save as Draft"}
-                </button>
-                <button className="btn" disabled={submitting} onClick={() => save(false)} style={{ flex: 1.4, opacity: submitting ? 0.6 : 1 }}>
-                  {submitting ? "Saving…" : "Create Sales Order"}
-                </button>
-              </>
-            )}
-          </div>
+              <button className="btn" disabled={submitting} onClick={() => save(false)} style={{ flex: 1.3, opacity: submitting ? 0.6 : 1 }}>
+                {submitting ? "Saving…" : "Create Sales Order"}
+              </button>
+            </>
+          )}
         </footer>
       )}
 
