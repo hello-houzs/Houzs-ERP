@@ -524,6 +524,7 @@ function CasesView({
     },
     {
       key: "assr_no",
+      filterable: true,
       label: "ASSR No",
       render: (r) => <span className="font-mono text-xs font-medium">{r.assr_no}</span>,
       getValue: (r) => r.assr_no,
@@ -611,12 +612,14 @@ function CasesView({
     },
     {
       key: "doc_no",
+      filterable: true,
       label: "SO No",
       render: (r) => <span className="font-mono text-xs">{r.doc_no}</span>,
       getValue: (r) => r.doc_no,
     },
     {
       key: "complained_date",
+      filterable: true,
       label: "Date",
       // Two-line cell per design: reported date ("24 Jun 2026") + total
       // case age ("Xd total" — complained_date → closed_at, or today
@@ -684,6 +687,7 @@ function CasesView({
     },
     {
       key: "supplier_pickup_at",
+      filterable: true,
       label: "Supplier Pickup",
       defaultHidden: true,
       render: (r) => formatDate(r.supplier_pickup_at),
@@ -691,6 +695,7 @@ function CasesView({
     },
     {
       key: "items_ready_at",
+      filterable: true,
       label: "Items Ready",
       defaultHidden: true,
       render: (r) => formatDate(r.items_ready_at),
