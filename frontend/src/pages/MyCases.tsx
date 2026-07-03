@@ -105,7 +105,7 @@ export function MyCases() {
         </div>
       ) : listQ.error ? (
         <div className="mt-6 rounded-md border border-err/40 bg-err/5 px-3 py-2 text-sm text-err">
-          {listQ.error || "Could not load cases"}
+          {listQ.error || "Couldn't load cases"}
         </div>
       ) : cases.length === 0 ? (
         <div className="mt-6 rounded-lg border border-dashed border-border bg-bg/40 p-8 text-center text-[13px] text-ink-muted">

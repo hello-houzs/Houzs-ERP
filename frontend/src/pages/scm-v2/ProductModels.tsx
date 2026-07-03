@@ -930,7 +930,7 @@ export function NewModelDialog({
           const codesFailed = failed.map((r) => r.model.model_code).join(', ');
           const why = failed.map((r) => r.reason || r.error).filter(Boolean).join(' ');
           throw new Error(
-            `Could not create the SKUs for ${codesFailed}. ${why ? `${why} ` : ''}` +
+            `Couldn't create the SKUs for ${codesFailed}. ${why ? `${why} ` : ''}` +
             `The empty model${failed.length === 1 ? ' was' : 's were'} removed so nothing was left behind.`,
           );
         }

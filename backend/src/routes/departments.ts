@@ -93,7 +93,7 @@ app.post("/", requirePermission("users.manage"), async (c) => {
  */
 app.patch("/:id", requirePermission("users.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
-  if (!id) return c.json({ error: "Bad id" }, 400);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
 
   const body = await c.req.json<{
     name?: string;
@@ -142,7 +142,7 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
  */
 app.delete("/:id", requirePermission("users.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
-  if (!id) return c.json({ error: "Bad id" }, 400);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
 
   const db = getDb(c.env);
   const existing = await db

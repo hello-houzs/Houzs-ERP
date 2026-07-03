@@ -194,7 +194,7 @@ const AnalyticsTab = ({ warehouseId }: { warehouseId: string | null }) => {
   const { data, isLoading, error } = useInventoryAnalytics({ days, warehouseId });
 
   if (isLoading) return <div className={styles.emptyRow} style={{ padding: 'var(--space-6)' }}>Loading analytics…</div>;
-  if (error || !data) return <div className={styles.emptyRow} style={{ padding: 'var(--space-6)' }}>Could not load analytics.</div>;
+  if (error || !data) return <div className={styles.emptyRow} style={{ padding: 'var(--space-6)' }}>Couldn't load analytics.</div>;
 
   const agingMax = Math.max(1, ...data.aging.map((b) => b.valueSen));
   const turns = data.turnover.annualizedTurns;

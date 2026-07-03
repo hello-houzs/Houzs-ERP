@@ -421,7 +421,7 @@ app.get("/entries/change-requests", requirePageAccess("sales"), async (c) => {
 
 app.post("/entries/change-requests/:reqId/approve", requirePageAccess("sales", "full"), async (c) => {
   const reqId = parseInt(c.req.param("reqId"), 10);
-  if (!reqId) return c.json({ error: "Bad id" }, 400);
+  if (!reqId) return c.json({ error: "Invalid ID." }, 400);
   const user = c.get("user");
   const note = await c.req.json<{ note?: string }>().then((b) => b?.note ?? null).catch(() => null);
 
@@ -467,7 +467,7 @@ app.post("/entries/change-requests/:reqId/approve", requirePageAccess("sales", "
 
 app.post("/entries/change-requests/:reqId/reject", requirePageAccess("sales", "full"), async (c) => {
   const reqId = parseInt(c.req.param("reqId"), 10);
-  if (!reqId) return c.json({ error: "Bad id" }, 400);
+  if (!reqId) return c.json({ error: "Invalid ID." }, 400);
   const user = c.get("user");
   const note = await c.req.json<{ note?: string }>().then((b) => b?.note ?? null).catch(() => null);
 
@@ -494,7 +494,7 @@ app.post("/entries/change-requests/:reqId/reject", requirePageAccess("sales", "f
 // ── Detail ───────────────────────────────────────────────────
 app.get("/entries/:id", requirePageAccess("sales"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
-  if (!id) return c.json({ error: "Bad id" }, 400);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
   const user = c.get("user");
   const canManage = c.get("access_level") === "full";
 
@@ -729,7 +729,7 @@ app.post("/entries", requirePageAccess("sales"), async (c) => {
 // ── Patch ────────────────────────────────────────────────────
 app.patch("/entries/:id", requirePageAccess("sales"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
-  if (!id) return c.json({ error: "Bad id" }, 400);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
   const user = c.get("user");
   const canManage = c.get("access_level") === "full";
 
@@ -927,7 +927,7 @@ export async function queueEntryChange(
 // ── Submit (lock as ready for push) ─────────────────────────
 app.post("/entries/:id/submit", requirePageAccess("sales"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
-  if (!id) return c.json({ error: "Bad id" }, 400);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
   const user = c.get("user");
   const canManage = c.get("access_level") === "full";
 
@@ -965,7 +965,7 @@ app.post("/entries/:id/submit", requirePageAccess("sales"), async (c) => {
 // ── Unsubmit (back to draft; managers only) ──────────────────
 app.post("/entries/:id/unsubmit", requirePageAccess("sales", "full"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
-  if (!id) return c.json({ error: "Bad id" }, 400);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
   const user = c.get("user");
   await c.env.DB.prepare(
     `UPDATE sales_entries SET status = 'draft', updated_at = datetime('now')
@@ -980,7 +980,7 @@ app.post("/entries/:id/unsubmit", requirePageAccess("sales", "full"), async (c) 
 // ── Void ─────────────────────────────────────────────────────
 app.post("/entries/:id/void", requirePageAccess("sales", "full"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
-  if (!id) return c.json({ error: "Bad id" }, 400);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
   const user = c.get("user");
   const before = await c.env.DB.prepare(
     `SELECT project_id FROM sales_entries WHERE id = ?`
@@ -1000,7 +1000,7 @@ app.post("/entries/:id/void", requirePageAccess("sales", "full"), async (c) => {
 // ── Delete (soft) ────────────────────────────────────────────
 app.delete("/entries/:id", requirePageAccess("sales"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
-  if (!id) return c.json({ error: "Bad id" }, 400);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
   const user = c.get("user");
   const canManage = c.get("access_level") === "full";
 
@@ -1033,7 +1033,7 @@ app.delete("/entries/:id", requirePageAccess("sales"), async (c) => {
 // "Push" button without a 404.
 app.post("/entries/:id/push", requirePageAccess("sales", "full"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
-  if (!id) return c.json({ error: "Bad id" }, 400);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
   return c.json(
     {
       error:

@@ -74,7 +74,7 @@ export function PortalCaseDetailPage() {
       setData(d);
     } catch (e: any) {
       if (e?.status === 401) setExpired(true);
-      else setErr(e?.message || "Could not load case");
+      else setErr(e?.message || "Couldn't load case");
     } finally {
       setLoading(false);
     }

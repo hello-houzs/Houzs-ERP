@@ -45,7 +45,7 @@ export function SurveyPublic() {
           setNotes(json.existing_notes ?? "");
         }
       } catch (e: any) {
-        setError(e?.message || "Could not load survey");
+        setError(e?.message || "Couldn't load survey");
       } finally {
         setLoading(false);
       }

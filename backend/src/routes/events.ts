@@ -268,7 +268,7 @@ app.post("/", requirePermission("trips.manage"), async (c) => {
 
 app.patch("/:id", requirePermission("trips.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
-  if (Number.isNaN(id)) return c.json({ error: "Bad id" }, 400);
+  if (Number.isNaN(id)) return c.json({ error: "Invalid ID." }, 400);
   const body = await c.req.json<any>();
 
   if ("type" in body && body.type !== "setup" && body.type !== "dismantle") {
@@ -289,7 +289,7 @@ app.patch("/:id", requirePermission("trips.manage"), async (c) => {
 
 app.delete("/:id", requirePermission("trips.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
-  if (Number.isNaN(id)) return c.json({ error: "Bad id" }, 400);
+  if (Number.isNaN(id)) return c.json({ error: "Invalid ID." }, 400);
   const db = getDb(c.env);
   await db.delete(events).where(eq(events.id, id));
   return c.json({ ok: true });

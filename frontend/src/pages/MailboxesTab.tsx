@@ -305,7 +305,7 @@ function NewMailboxModal({
       onCreated();
     } catch (e: any) {
       const msg = String(e?.message || "").replace(/^\d+:\s*/, "");
-      toast.error(msg || "Could not create mailbox");
+      toast.error(msg || "Couldn't create mailbox");
     } finally {
       setBusy(false);
     }

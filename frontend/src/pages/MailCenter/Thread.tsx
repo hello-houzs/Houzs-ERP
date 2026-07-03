@@ -413,7 +413,7 @@ export function MailThread({ id: idProp, embedded = false }: MailThreadProps = {
         }),
       );
     } catch {
-      setAttachError("Could not read one of the files. Please try again.");
+      setAttachError("Couldn't read one of the files. Please try again.");
       return;
     }
 

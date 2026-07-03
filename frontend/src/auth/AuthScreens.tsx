@@ -541,7 +541,7 @@ export function AcceptInviteScreen() {
     try {
       await acceptInvite(token, name, password);
     } catch (e: any) {
-      setErr(e?.message || "Could not accept invitation");
+      setErr(e?.message || "Couldn't accept invitation");
     } finally {
       setBusy(false);
     }

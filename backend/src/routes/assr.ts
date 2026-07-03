@@ -509,8 +509,9 @@ app.post("/:id/resolve-creditor", requirePermission("service_cases.manage"), asy
         ? `Resolved ${row.item_code} → ${creditorCode}`
         : `${row.item_code} has no MainSupplier in AutoCount`,
     });
-  } catch (e: any) {
-    return c.json({ error: e?.message || String(e) }, 502);
+  } catch {
+    // Plain-language rule: never surface raw exception text to the user.
+    return c.json({ error: "Couldn't reach AutoCount to resolve the supplier. Try again shortly." }, 502);
   }
 });
 

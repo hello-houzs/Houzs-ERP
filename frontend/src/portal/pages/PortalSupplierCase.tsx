@@ -182,7 +182,7 @@ export function PortalSupplierCasePage() {
       const d = await portalApi.get<SupplierCase>("/api/supplier-portal/case", token);
       setData(d);
     } catch (e: any) {
-      setErr(e?.message || "Could not load case");
+      setErr(e?.message || "Couldn't load case");
     } finally {
       setLoading(false);
     }

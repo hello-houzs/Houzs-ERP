@@ -230,7 +230,7 @@ app.get("/", requirePermission("users.read"), async (c) => {
  */
 app.get("/:id/brands", requirePermission("users.read"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
-  if (!id) return c.json({ error: "Bad id" }, 400);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
   const db = getDb(c.env);
   const rows = await db
     .select({ brand: user_brands.brand })
@@ -246,7 +246,7 @@ app.get("/:id/brands", requirePermission("users.read"), async (c) => {
  */
 app.put("/:id/brands", requirePermission("users.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
-  if (!id) return c.json({ error: "Bad id" }, 400);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
 
   const body = await c.req.json<{ brands?: unknown }>();
   const incoming = Array.isArray(body.brands) ? body.brands : [];
@@ -298,7 +298,7 @@ app.put("/:id/brands", requirePermission("users.manage"), async (c) => {
  */
 app.get("/:id/activity", requirePermission("users.read"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
-  if (!id) return c.json({ error: "Bad id" }, 400);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
   const limit = Math.min(parseInt(c.req.query("limit") || "50", 10), 200);
 
   try {
@@ -381,7 +381,7 @@ app.delete("/me/profile-pic", async (c) => {
  */
 app.get("/:id/profile-pic", async (c) => {
   const id = parseInt(c.req.param("id"), 10);
-  if (!Number.isFinite(id)) return c.json({ error: "Bad id" }, 400);
+  if (!Number.isFinite(id)) return c.json({ error: "Invalid ID." }, 400);
   const row = await c.env.DB.prepare(
     `SELECT profile_pic_r2_key FROM users WHERE id = ?`,
   )
@@ -405,7 +405,7 @@ app.get("/:id/profile-pic", async (c) => {
  */
 app.put("/:id/profile-pic", requirePermission("users.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
-  if (!Number.isFinite(id)) return c.json({ error: "Bad id" }, 400);
+  if (!Number.isFinite(id)) return c.json({ error: "Invalid ID." }, 400);
   const filename = c.req.query("name") || `profile-${Date.now()}.bin`;
   const contentType = c.req.header("content-type") || "application/octet-stream";
   const buf = await c.req.arrayBuffer();
@@ -646,7 +646,7 @@ app.post(
   requirePermission("users.manage"),
   async (c) => {
     const id = parseInt(c.req.param("id"), 10);
-    if (!id) return c.json({ error: "Bad id" }, 400);
+    if (!id) return c.json({ error: "Invalid ID." }, 400);
     const me = c.get("user");
 
     const db = getDb(c.env);
@@ -708,7 +708,7 @@ app.post(
 app.patch("/:id", requirePermission("users.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   const me = c.get("user");
-  if (!id) return c.json({ error: "Bad id" }, 400);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
 
   // Block self-modification of own role/status to avoid lockout.
   if (id === me.id) {
@@ -1022,7 +1022,7 @@ app.delete("/:id", requirePermission("users.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   const me = c.get("user");
   const hard = c.req.query("hard") === "1";
-  if (!id) return c.json({ error: "Bad id" }, 400);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
   if (id === me.id) return c.json({ error: "You cannot delete yourself" }, 400);
 
   const db = getDb(c.env);
@@ -1178,7 +1178,7 @@ app.get("/invitations", requirePermission("users.read"), async (c) => {
  */
 app.delete("/invitations/:id", requirePermission("users.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
-  if (!id) return c.json({ error: "Bad id" }, 400);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
 
   const db = getDb(c.env);
   const inv = await db
@@ -1205,7 +1205,7 @@ app.delete("/invitations/:id", requirePermission("users.manage"), async (c) => {
  */
 app.post("/:id/reset-password", requirePermission("users.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
-  if (!id) return c.json({ error: "Bad id" }, 400);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
   const me = c.get("user");
 
   const db = getDb(c.env);
@@ -1301,7 +1301,7 @@ app.post("/:id/reset-password", requirePermission("users.manage"), async (c) => 
  */
 app.post("/:id/totp/disable", requirePermission("users.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
-  if (!id) return c.json({ error: "Bad id" }, 400);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
 
   const db = getDb(c.env);
   const row = await db
