@@ -131,6 +131,7 @@ the current-state reference.
 ### Service Case (MobileServiceCase)
 58. **New case now appears in the list immediately** — after a successful create the cases-list query is force-refetched (`invalidateQueries … refetchType: "all"`) so the just-created case is present whether the user lands on the detail page and taps back, or returns to the list.
 59. **Complaint date field added to the New Service Case form** — a native date input in the Issue card (numeric DD/MM/YYYY, value `YYYY-MM-DD`), defaulting to today (MYT) and capped at today. Sent as `complained_date` and written to `assr_cases.complained_date` (the backend honours an explicit valid value, else falls back to today).
+60. **Issue row removed from the cases-list card** (owner: the full complaint made each card too tall). The `.so-grid` card now shows only Case · Item · SLA; the complaint text is still searchable and still shown in full on the case detail. Keeps the list scannable.
 
 ---
 

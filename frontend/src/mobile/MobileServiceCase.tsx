@@ -380,7 +380,6 @@ function CaseList({
                   <div className="so-grid">
                     <span className="so-k">Case</span><span className="so-v money">{String(caseNo(r))}</span>
                     <span className="so-k">Item</span><span className="so-v">{item ? String(item) : "—"}</span>
-                    <span className="so-k">Issue</span><span className="so-v">{issueOf(r) ? String(issueOf(r)) : "—"}</span>
                     <span className="so-k">SLA</span><span className="so-v" style={sla?.overdue ? { color: "var(--red)", fontWeight: 700 } : undefined}>{sla ? sla.label : "—"}</span>
                   </div>
                 </div>
