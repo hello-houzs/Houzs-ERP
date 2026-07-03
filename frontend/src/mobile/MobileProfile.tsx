@@ -237,7 +237,7 @@ export function MobileProfile({ onLogout }: { onLogout: () => void }) {
   // "STAFF · {code}" line; a THREE-tile stat row; Account rows WITH leading
   // icons + right value; App section; danger Log out (in-app confirm); footer.
   return (
-    <div className="hz-m screen" style={{ background: "var(--app-bg)" }}>
+    <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
       <header className="hdr">
         <div className="hdr-row">
           <div>

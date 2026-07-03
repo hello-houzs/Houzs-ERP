@@ -80,7 +80,11 @@ export function MobileLogin() {
       if (res.kind === "totp") { setChallenge(res.challenge); setBusy(false); }
       // res.kind === "ok": AuthContext sets the user; AuthGate swaps to the app.
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "Sign in failed. Check your details.");
+      // Wrong password (401) → the owner's preferred specific wording, not
+      // the generic backend "Invalid credentials". Other errors keep their
+      // already-humanized message.
+      const status = (e as { status?: number } | null)?.status;
+      setErr(status === 401 ? "Password incorrect." : (e instanceof Error ? e.message : "Sign in failed. Check your details."));
       setBusy(false);
     }
   }
