@@ -1265,42 +1265,63 @@ export function MobileNewSO({
         </footer>
       )}
 
-      {pickerFor && (
-        <MobileSkuPicker
-          initialCat={mapPickerCat(lines.find((l) => l.key === pickerFor)?.cat)}
-          onClose={() => setPickerFor(null)}
-          onPick={(sku: PickedSku) => {
-            /* Seed the line with the real catalog identity. `cat` derives from
-               the picked group so the right variant panel shows. Changing the
-               SKU resets the variant blob (a bedframe's divan pool differs from
-               a sofa's) BUT seeds same-category followers from the FIRST line's
-               variants (mirrors SoLineCard.pickProduct inherit). overriddenKeys
-               resets on a fresh pick. */
-            setLines((prev) => prev.map((x) => {
-              if (x.key !== pickerFor) return x;
-              const nextCat = catForGroup(sku.itemGroup);
-              const inherited = inheritVariantsByCategory[sku.itemGroup];
-              const seeded = inherited && Object.keys(inherited).length > 0
-                ? { ...inherited }
-                : (nextCat === x.cat ? x.variants : {});
-              // Don't inherit remark across lines.
-              const seededVariants = { ...seeded };
-              delete (seededVariants as Record<string, unknown>).remark;
-              return {
-                ...x,
-                itemCode: sku.itemCode,
-                itemGroup: sku.itemGroup,
-                name: sku.name,
-                cat: nextCat,
-                price: fromCenti(sku.unitPriceCenti),
-                variants: seededVariants,
-                overriddenKeys: [],
-              };
-            }));
-            setPickerFor(null);
-          }}
-        />
-      )}
+      {pickerFor && (() => {
+        /* Seed an existing base line with a picked SKU's real catalog identity.
+           `cat` derives from the picked group so the right variant panel shows.
+           Changing the SKU resets the variant blob (a bedframe's divan pool
+           differs from a sofa's) BUT seeds same-category followers from the FIRST
+           line's variants (mirrors SoLineCard.pickProduct inherit). overriddenKeys
+           resets on a fresh pick. Shared by single-pick and multi-pick so every
+           new line is a proper pickable line with identical seeding. */
+        const seedLine = (base: LineItem, sku: PickedSku): LineItem => {
+          const nextCat = catForGroup(sku.itemGroup);
+          const inherited = inheritVariantsByCategory[sku.itemGroup];
+          const seeded = inherited && Object.keys(inherited).length > 0
+            ? { ...inherited }
+            : (nextCat === base.cat ? base.variants : {});
+          // Don't inherit remark across lines.
+          const seededVariants = { ...seeded };
+          delete (seededVariants as Record<string, unknown>).remark;
+          return {
+            ...base,
+            itemCode: sku.itemCode,
+            itemGroup: sku.itemGroup,
+            name: sku.name,
+            cat: nextCat,
+            price: fromCenti(sku.unitPriceCenti),
+            variants: seededVariants,
+            overriddenKeys: [],
+          };
+        };
+        return (
+          <MobileSkuPicker
+            initialCat={mapPickerCat(lines.find((l) => l.key === pickerFor)?.cat)}
+            onClose={() => setPickerFor(null)}
+            onPick={(sku: PickedSku) => {
+              setLines((prev) => prev.map((x) => (x.key === pickerFor ? seedLine(x, sku) : x)));
+              setPickerFor(null);
+            }}
+            onPickMany={(skus: PickedSku[]) => {
+              if (skus.length === 0) { setPickerFor(null); return; }
+              setLines((prev) => {
+                const idx = prev.findIndex((x) => x.key === pickerFor);
+                if (idx < 0) return prev;
+                // First selection fills the line the picker was opened for; the
+                // rest append as fresh lines (each seeded off a blank newLine so
+                // it's a proper pickable line). The follower-inherit effect then
+                // cascades the first sofa line's fabric/seat/leg to these new
+                // sofa followers, with any manual override winning.
+                const next = [...prev];
+                next[idx] = seedLine(next[idx]!, skus[0]!);
+                const extras = skus.slice(1).map((sku) => seedLine(newLine(), sku));
+                next.splice(idx + 1, 0, ...extras);
+                return next;
+              });
+              setPickerFor(null);
+            }}
+          />
+        );
+      })()}
 
       {fabricPickerFor && (() => {
         const line = lines.find((l) => l.key === fabricPickerFor);
