@@ -58,6 +58,11 @@ type SupplierCase = {
     // is read-only for them (surfaced so they know what came in).
     supplier_service_note: string | null;
     goods_returned_note: string | null;
+    // Mig 108 — Accept job + Submit quote (design handoff).
+    supplier_accepted_at: string | null;
+    supplier_quote_labour: number | null;
+    supplier_quote_materials: number | null;
+    supplier_quote_at: string | null;
   };
   supplier_name: string | null;
   items: Array<{
@@ -112,11 +117,30 @@ const STAGE_COLOR: Record<string, PortalStatusColor> = {
   completed: "green",
 };
 
-const ALLOWED_STAGE_ACTIONS: { value: string; label: string }[] = [
-  { value: "pending_supplier_pickup", label: "Picked up from warehouse" },
-  { value: "pending_item_ready", label: "Repair complete (ready)" },
-  { value: "pending_delivery_service", label: "Returned to Houzs warehouse" },
-];
+// Read-only 5-step job progress (set by Houzs, never by the supplier).
+// Internal 9 stages collapse into the supplier-facing buckets.
+const SUPPLIER_STEPS = [
+  "Inspection",
+  "Pickup",
+  "Service in progress",
+  "Ready to send to warehouse",
+  "Done",
+] as const;
+
+function supplierStepFor(cs: { stage: string; items_ready_at: string | null }): number {
+  switch (cs.stage) {
+    case "completed":
+    case "pending_delivery_service":
+      return 5;
+    case "pending_item_ready":
+      return cs.items_ready_at ? 4 : 3;
+    case "pending_supplier_pickup":
+    case "pending_item_pickup":
+      return 2;
+    default:
+      return 1;
+  }
+}
 
 function fmtDate(s: string | null | undefined): string {
   if (!s) return "—";
@@ -137,7 +161,10 @@ export function PortalSupplierCasePage() {
   const [data, setData] = useState<SupplierCase | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [submittingStage, setSubmittingStage] = useState<string | null>(null);
+  const [accepting, setAccepting] = useState(false);
+  const [quoteLabour, setQuoteLabour] = useState("");
+  const [quoteMaterials, setQuoteMaterials] = useState("");
+  const [submittingQuote, setSubmittingQuote] = useState(false);
   const [remark, setRemark] = useState("");
   const [savingRemark, setSavingRemark] = useState(false);
   const [uploadingSlot, setUploadingSlot] = useState<string | null>(null);
@@ -173,15 +200,36 @@ export function PortalSupplierCasePage() {
     setServiceNoteDraft((prev) => (prev === "" ? incoming : prev));
   }, [data?.case?.supplier_service_note]);
 
-  async function moveStage(stage: string) {
-    setSubmittingStage(stage);
+  async function acceptJob() {
+    setAccepting(true);
     try {
-      await portalApi.post("/api/supplier-portal/stage", token, { stage });
+      await portalApi.post("/api/supplier-portal/accept", token);
       await load();
     } catch (e: any) {
-      setErr(e?.message || "Failed to update stage");
+      setErr(e?.message || "Failed to accept job");
     } finally {
-      setSubmittingStage(null);
+      setAccepting(false);
+    }
+  }
+
+  async function submitQuote() {
+    const labour = parseFloat(quoteLabour || "0");
+    const materials = parseFloat(quoteMaterials || "0");
+    if (!Number.isFinite(labour) || labour < 0 || !Number.isFinite(materials) || materials < 0) {
+      setErr("Quote amounts must be numbers ≥ 0");
+      return;
+    }
+    setSubmittingQuote(true);
+    setErr(null);
+    try {
+      await portalApi.post("/api/supplier-portal/quote", token, { labour, materials });
+      setQuoteLabour("");
+      setQuoteMaterials("");
+      await load();
+    } catch (e: any) {
+      setErr(e?.message || "Failed to submit quote");
+    } finally {
+      setSubmittingQuote(false);
     }
   }
 
@@ -282,34 +330,121 @@ export function PortalSupplierCasePage() {
   const stageLabel = STAGE_LABEL[cs.stage] || cs.stage;
 
   const stageColor = STAGE_COLOR[cs.stage] ?? "grey";
+  const currentStep = supplierStepFor(cs);
+  // "Your due date" = current stage's entry + its SLA target. Soft
+  // guidance only — the supplier can't see any other SLA machinery.
+  const dueDate = (() => {
+    if (!cs.stage_entered_at || cs.stage_target_days == null) return null;
+    const d = new Date(cs.stage_entered_at.endsWith("Z") ? cs.stage_entered_at : cs.stage_entered_at + "Z");
+    if (isNaN(d.getTime())) return null;
+    d.setDate(d.getDate() + cs.stage_target_days);
+    return d.toISOString();
+  })();
+  const quoteTotal = (cs.supplier_quote_labour ?? 0) + (cs.supplier_quote_materials ?? 0);
 
   return (
     <PortalFrame>
-      {/* Header — assr_no + stage pill + supplier name + dates. Mirrors
-          PortalCaseDetail so the two portals feel like the same shell. */}
+      {/* Header — assr_no + stage pill + supplier name on the left;
+          due date + Accept job on the right (per design). */}
       <div className="rounded-lg border border-border bg-surface p-5">
-        <div className="flex flex-wrap items-center gap-3">
-          <span className="font-mono text-lg font-bold">{cs.assr_no}</span>
-          <StatusPill color={stageColor} label={stageLabel} />
-        </div>
-        {(data.supplier_name || cs.creditor_code) && (
-          <div className="mt-1 text-[13px] text-ink-secondary">
-            {data.supplier_name || cs.creditor_code}
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="font-mono text-lg font-bold">{cs.assr_no}</span>
+              <StatusPill color={stageColor} label={stageLabel} />
+            </div>
+            {(data.supplier_name || cs.creditor_code) && (
+              <div className="mt-1 text-[13px] font-semibold text-ink">
+                {data.supplier_name || cs.creditor_code}
+              </div>
+            )}
+            <div className="mt-1 text-[12px] text-ink-muted">
+              Reported {fmtDate(cs.complained_date)}
+              {cs.po_no && <> · PO <span className="font-mono text-ink">{cs.po_no}</span></>}
+              {cs.supplier_pickup_at && cs.supplier_pickup_at !== "—" && <> · Picked up {fmtDate(cs.supplier_pickup_at)}</>}
+              {cs.items_ready_at && cs.items_ready_at !== "—" && <> · Ready {fmtDate(cs.items_ready_at)}</>}
+            </div>
           </div>
-        )}
-        <div className="mt-1 text-[12px] text-ink-muted">
-          Reported {fmtDate(cs.complained_date)}
-          {cs.supplier_pickup_at && cs.supplier_pickup_at !== "—" && <> · Picked up {fmtDate(cs.supplier_pickup_at)}</>}
-          {cs.items_ready_at && cs.items_ready_at !== "—" && <> · Ready {fmtDate(cs.items_ready_at)}</>}
+          <div className="shrink-0 text-right">
+            <div className="font-mono text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
+              Your due date
+            </div>
+            <div className="mt-1 font-serif text-[20px] font-semibold leading-none text-ink">
+              {dueDate ? fmtDate(dueDate) : "—"}
+            </div>
+            {cs.supplier_accepted_at ? (
+              <span className="mt-2.5 inline-flex h-9 items-center gap-1.5 rounded-lg bg-synced/15 px-3.5 text-[12px] font-bold text-synced">
+                ✓ Job accepted
+              </span>
+            ) : cs.stage !== "completed" ? (
+              <Button
+                variant="primary"
+                onClick={acceptJob}
+                disabled={accepting}
+                className="mt-2.5 h-9 px-4 text-[12.5px]"
+              >
+                {accepting ? "Accepting…" : "✓ Accept job"}
+              </Button>
+            ) : null}
+          </div>
         </div>
-        {(cs.po_no || cs.ref_no || cs.service_category) && (
+        {(cs.ref_no || cs.service_category) && (
           <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 border-t border-border pt-2.5 text-[11px] text-ink-muted">
-            {cs.po_no && <span>PO: <span className="font-mono text-ink">{cs.po_no}</span></span>}
             {cs.ref_no && <span>Ref: <span className="font-mono text-ink">{cs.ref_no}</span></span>}
             {cs.service_category && <span>Category: <span className="text-ink">{cs.service_category}</span></span>}
           </div>
         )}
       </div>
+
+      {/* Job progress — READ-ONLY, set by Houzs. Replaces the old
+          "Update job status" buttons (design: supplier can't advance
+          the workflow; their levers are quote / note / photos). */}
+      <section className="mt-5 rounded-lg border border-border bg-surface p-5">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-[13px] font-bold text-ink">Job progress</h2>
+          <span className="font-mono text-[10px] text-ink-muted">read-only · set by Houzs</span>
+        </div>
+        <div className="flex items-start">
+          {SUPPLIER_STEPS.map((label, i) => {
+            const n = i + 1;
+            const done = n < currentStep;
+            const active = n === currentStep;
+            const isLast = i === SUPPLIER_STEPS.length - 1;
+            return (
+              <div key={label} className={`flex items-start ${isLast ? "" : "flex-1"}`}>
+                <div className="flex w-[72px] shrink-0 flex-col items-center sm:w-[88px]">
+                  <span
+                    className={
+                      "inline-flex h-7 w-7 items-center justify-center rounded-full text-[11px] font-bold " +
+                      (done
+                        ? "bg-primary text-white"
+                        : active
+                        ? "bg-[#c79a5a] text-white ring-4 ring-[#c79a5a]/20"
+                        : "border border-border-subtle bg-surface text-ink-muted")
+                    }
+                  >
+                    {done ? "✓" : n}
+                  </span>
+                  <span
+                    className={
+                      "mt-2 text-center font-mono text-[8.5px] font-semibold uppercase leading-tight tracking-wide " +
+                      (active ? "text-ink" : done ? "text-ink-secondary" : "text-ink-muted")
+                    }
+                  >
+                    {label}
+                  </span>
+                </div>
+                {!isLast && (
+                  <span
+                    className={"mt-3.5 h-0.5 flex-1 rounded " + (done ? "bg-primary/60" : "bg-border-subtle")}
+                    aria-hidden
+                  />
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </section>
 
       {/* Items under service */}
       <section className="mt-5 rounded-lg border border-border bg-surface p-5">
@@ -344,6 +479,67 @@ export function PortalSupplierCasePage() {
           </div>
         )}
       </section>
+
+      {/* Submit your quote — labour + materials (RM). Houzs reviews
+          before the customer sees any price. Warranty cases may be 0. */}
+      {cs.stage !== "completed" && (
+        <section className="mt-5 rounded-lg border border-border bg-surface p-5">
+          <h2 className="text-[13.5px] font-bold text-ink">Submit your quote</h2>
+          <p className="mb-4 mt-0.5 text-[12px] text-ink-muted">
+            Labour + materials. Houzs reviews before the customer sees a final price.
+          </p>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <label className="block">
+              <span className="mb-1.5 block font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
+                Labour (RM)
+              </span>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                inputMode="decimal"
+                value={quoteLabour}
+                onChange={(e) => setQuoteLabour(e.target.value)}
+                placeholder={cs.supplier_quote_labour != null ? cs.supplier_quote_labour.toFixed(2) : "0.00"}
+                className="w-full rounded-md border border-border bg-bg px-3 py-2.5 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1.5 block font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
+                Materials (RM)
+              </span>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                inputMode="decimal"
+                value={quoteMaterials}
+                onChange={(e) => setQuoteMaterials(e.target.value)}
+                placeholder={cs.supplier_quote_materials != null ? cs.supplier_quote_materials.toFixed(2) : "0.00"}
+                className="w-full rounded-md border border-border bg-bg px-3 py-2.5 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+              />
+            </label>
+          </div>
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <Button
+              variant="primary"
+              onClick={submitQuote}
+              disabled={submittingQuote || (quoteLabour === "" && quoteMaterials === "")}
+              className="h-10 px-4 text-[13px]"
+            >
+              {submittingQuote ? "Submitting…" : "Submit quote"}
+            </Button>
+            <span className="text-[12px] text-ink-muted">Warranty case — quote may be RM 0</span>
+          </div>
+          {cs.supplier_quote_at && (
+            <div className="mt-3 rounded-md bg-synced/10 px-3 py-2 text-[12px] font-semibold text-synced">
+              Quote on file: labour RM {(cs.supplier_quote_labour ?? 0).toFixed(2)} + materials RM{" "}
+              {(cs.supplier_quote_materials ?? 0).toFixed(2)} = RM {quoteTotal.toFixed(2)} · sent{" "}
+              {fmtDate(cs.supplier_quote_at)} — resubmit to replace.
+            </div>
+          )}
+        </section>
+      )}
 
       {/* Goods Returned Note — read-only, from Houzs */}
       <section className="mt-5 rounded-lg border border-border bg-surface p-5">
@@ -448,31 +644,16 @@ export function PortalSupplierCasePage() {
         </div>
       </section>
 
-      {/* Update job status — hidden once completed */}
-      {cs.stage !== "completed" && (
-        <section className="mt-5 rounded-lg border border-accent/40 bg-accent-soft/20 p-5 print:hidden">
-          <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-accent">
-            Update job status
-          </h2>
-          <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-            {ALLOWED_STAGE_ACTIONS.map((s) => (
-              <Button
-                key={s.value}
-                variant="primary"
-                onClick={() => moveStage(s.value)}
-                disabled={submittingStage !== null || cs.stage === s.value}
-                className="min-h-[44px]"
-                aria-label={s.label}
-              >
-                {submittingStage === s.value ? "Updating…" : s.label}
-              </Button>
-            ))}
-          </div>
-          <p className="mt-2 text-[10px] text-ink-muted">
-            Houzs Operations is notified on every status change.
-          </p>
-        </section>
-      )}
+      {/* Progress note — the stage is advanced by Houzs, not the
+          supplier (replaces the old "Update job status" buttons). */}
+      <section className="mt-5 flex items-center gap-3 rounded-lg border border-border bg-bg/60 p-4 print:hidden">
+        <span className="shrink-0 text-[15px] text-ink-muted" aria-hidden>ⓘ</span>
+        <p className="text-[12.5px] leading-relaxed text-ink-secondary">
+          The <b>stage is advanced by Houzs</b>, not the supplier. Your job here is to{" "}
+          <b>upload photos</b> and <b>update the service note</b> — Houzs moves the case
+          forward and verifies completion.
+        </p>
+      </section>
 
       {/* Footer actions */}
       <div className="mt-5 flex flex-col items-stretch justify-center gap-2 sm:flex-row sm:items-center sm:gap-3 print:hidden">

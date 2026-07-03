@@ -13,7 +13,7 @@
  */
 import { Hono } from "hono";
 import type { Env } from "../types";
-import { transitionStage, assrAttachmentKey, saveAttachment } from "../services/assr";
+import { assrAttachmentKey, saveAttachment } from "../services/assr";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -60,7 +60,9 @@ app.get("/case", async (c) => {
             do_date, delivery_order,
             creditor_code,
             stage_entered_at, stage_target_days,
-            supplier_service_note, goods_returned_note
+            supplier_service_note, goods_returned_note,
+            supplier_accepted_at, supplier_quote_labour,
+            supplier_quote_materials, supplier_quote_at
        FROM assr_cases WHERE id = ?`
   )
     .bind(assr_id)
@@ -113,36 +115,93 @@ app.get("/case", async (c) => {
   });
 });
 
-// ── POST /stage ─────────────────────────────────────────────────────
+// ── POST /stage — REMOVED (design handoff 2026-07-02) ───────────────
 //
-// Supplier-visible stage transitions: Picked Up → In Repair → Ready
-// → Delivered. Mapped to the canonical 9-stage workflow:
-//   "supplier_picked_up"  → pending_item_ready  (they have the item)
-//   "supplier_ready"      → pending_item_ready  (still — repair done, awaiting return)
-//   "supplier_returned"   → pending_delivery_service
-// We narrow the allowed set so a supplier can't jump arbitrary stages.
+// The supplier job progress is READ-ONLY and set by Houzs; suppliers
+// can no longer advance the workflow from the portal. Their levers are
+// Accept job, Submit quote, photos, service note, and remarks. The
+// endpoint returns 410 so any stale portal tab gets a clear error
+// instead of a silent 404.
 
-const ALLOWED_SUPPLIER_TRANSITIONS = new Set([
-  "pending_supplier_pickup",   // mark "I've collected" — moves backward if needed
-  "pending_item_ready",        // mark "repair complete"
-  "pending_delivery_service",  // mark "returned to Houzs warehouse"
-]);
+app.post("/stage", (c) =>
+  c.json(
+    { error: "Stage updates were removed from the supplier portal — Houzs Operations advances the case." },
+    410
+  )
+);
 
-app.post("/stage", async (c) => {
+// ── POST /accept ────────────────────────────────────────────────────
+//
+// Supplier presses "Accept job". Idempotent — a second call returns
+// the original acceptance timestamp instead of overwriting it.
+
+app.post("/accept", async (c) => {
   const { assr_id } = c.get("supplierScope");
-  const body = await c.req.json<{ stage?: string; note?: string }>();
-  if (!body.stage) return c.json({ error: "stage is required" }, 400);
-  if (!ALLOWED_SUPPLIER_TRANSITIONS.has(body.stage)) {
-    return c.json({ error: "stage not permitted from supplier portal" }, 403);
+  const existing = await c.env.DB.prepare(
+    `SELECT supplier_accepted_at FROM assr_cases WHERE id = ?`
+  )
+    .bind(assr_id)
+    .first<{ supplier_accepted_at: string | null }>();
+  if (existing?.supplier_accepted_at) {
+    return c.json({ ok: true, accepted_at: existing.supplier_accepted_at });
   }
-  await transitionStage(
-    c.env,
-    assr_id,
-    body.stage as any,
-    0,
-    body.note,
-    "supplier_portal"
-  );
+  await c.env.DB.prepare(
+    `UPDATE assr_cases SET supplier_accepted_at = datetime('now') WHERE id = ?`
+  )
+    .bind(assr_id)
+    .run();
+  await c.env.DB.prepare(
+    `INSERT INTO assr_activity (assr_id, action, note, category, source_channel)
+     VALUES (?, 'note', 'Supplier accepted the job', 'purchasing', 'supplier_portal')`
+  )
+    .bind(assr_id)
+    .run();
+  const row = await c.env.DB.prepare(
+    `SELECT supplier_accepted_at FROM assr_cases WHERE id = ?`
+  )
+    .bind(assr_id)
+    .first<{ supplier_accepted_at: string | null }>();
+  return c.json({ ok: true, accepted_at: row?.supplier_accepted_at ?? null });
+});
+
+// ── POST /quote ─────────────────────────────────────────────────────
+//
+// Labour + materials quote (RM). Houzs reviews before any price
+// reaches the customer. Re-submitting overwrites the stored pair and
+// refreshes supplier_quote_at; each submission is also logged to the
+// activity stream so ops keeps the full history.
+
+app.post("/quote", async (c) => {
+  const { assr_id } = c.get("supplierScope");
+  const body = await c.req
+    .json<{ labour?: number; materials?: number }>()
+    .catch(() => ({} as { labour?: number; materials?: number }));
+  const labour = Number(body.labour);
+  const materials = Number(body.materials);
+  if (!Number.isFinite(labour) || labour < 0 || !Number.isFinite(materials) || materials < 0) {
+    return c.json({ error: "labour and materials must be numbers ≥ 0" }, 400);
+  }
+  if (labour > 1_000_000 || materials > 1_000_000) {
+    return c.json({ error: "quote amount out of range" }, 400);
+  }
+  await c.env.DB.prepare(
+    `UPDATE assr_cases
+        SET supplier_quote_labour = ?,
+            supplier_quote_materials = ?,
+            supplier_quote_at = datetime('now')
+      WHERE id = ?`
+  )
+    .bind(labour, materials, assr_id)
+    .run();
+  await c.env.DB.prepare(
+    `INSERT INTO assr_activity (assr_id, action, note, category, source_channel)
+     VALUES (?, 'note', ?, 'purchasing', 'supplier_portal')`
+  )
+    .bind(
+      assr_id,
+      `Supplier quote: labour RM ${labour.toFixed(2)} + materials RM ${materials.toFixed(2)} = RM ${(labour + materials).toFixed(2)}`
+    )
+    .run();
   return c.json({ ok: true });
 });
 
