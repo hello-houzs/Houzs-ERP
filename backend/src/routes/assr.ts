@@ -895,6 +895,7 @@ app.post(
     complaint_issue: string;
     issue_category?: string | null;
     priority?: string | null;
+    complained_date?: string | null;
     ref_no?: string | null;
     customer_email?: string | null;
     service_category?: string | null;
