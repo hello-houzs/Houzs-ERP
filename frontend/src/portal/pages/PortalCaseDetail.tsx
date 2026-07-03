@@ -1,16 +1,47 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { Upload, Send, Package, Star, X, ChevronLeft, ChevronRight, Trash2 } from "lucide-react";
+import { Upload, Send, Package, Star, X, ChevronLeft, ChevronRight, Trash2, Clock, Phone, MessageSquare, ShieldCheck, Check } from "lucide-react";
 import { createPortal } from "react-dom";
 import { portalApi } from "../portalApi";
 import { PortalFrame } from "../components/PortalFrame";
-import { StatusPill } from "../components/StatusPill";
 import { useDialog } from "../../hooks/useDialog";
 import { formatDate, formatDateTime } from "../../lib/utils";
 import type { PortalCaseDetail } from "../types";
 
 const ALLOWED_EXT = ["jpg", "jpeg", "png", "webp"];
 const MAX_SIZE = 10 * 1024 * 1024;
+
+// Friendly customer-facing copy per stage. Each maps to one of the 5
+// simplified tracker steps + a hero card headline / body / eyebrow.
+// Keep this warm and human — customers see it, not internal staff.
+const STAGE_COPY: Record<string, { step: 1 | 2 | 3 | 4 | 5; eyebrow: string; title: string; body: string }> = {
+  pending_review:           { step: 1, eyebrow: "Request received", title: "Thanks — we've got your request", body: "A member of our team will pick this up shortly and confirm the next step." },
+  under_verification:       { step: 2, eyebrow: "In progress",      title: "We're reviewing your request",     body: "Our team is assessing the reported issue. We'll message you once the next step is scheduled." },
+  pending_solution:         { step: 2, eyebrow: "In progress",      title: "Choosing the best resolution",     body: "We're figuring out the best path forward — replace, repair, or on-site service. Update coming soon." },
+  pending_inspection:       { step: 3, eyebrow: "In progress",      title: "Item in for inspection",           body: "Your item has been received and our QC team is inspecting the reported issue." },
+  pending_item_pickup:      { step: 3, eyebrow: "In progress",      title: "Arranging collection",             body: "We're scheduling pickup of your item. Someone will reach out to confirm date and time." },
+  pending_supplier_pickup:  { step: 3, eyebrow: "In progress",      title: "With our service specialist",      body: "Your item is with our specialist for repair. We'll ping you as soon as it's back with us." },
+  pending_item_ready:       { step: 4, eyebrow: "Nearly done",      title: "Final quality check",              body: "Your item is back with us and going through a final quality check before delivery." },
+  pending_delivery_service: { step: 5, eyebrow: "On its way",       title: "Being delivered",                  body: "Your item is on its way back to you. We'll confirm a delivery window shortly." },
+  completed:                { step: 5, eyebrow: "Completed",        title: "All done — thank you",             body: "Your service case has been closed. We'd love to hear how we did." },
+};
+
+// Human-readable resolution card content by resolution_method.
+const RESOLUTION_COPY: Record<string, { title: string; charge: string; body: string }> = {
+  replace_unit:            { title: "Replacement unit",             charge: "No charge — covered by warranty", body: "We'll replace your item with a new unit of the same model at no cost." },
+  supplier_repair:         { title: "Specialist repair",             charge: "No charge — covered by warranty", body: "Our specialist will repair your item and return it to you once it clears QC." },
+  field_service_own:       { title: "On-site service by our team",   charge: "No charge — covered by warranty", body: "Our team will come to you to fix the issue on site. We'll confirm the visit window." },
+  field_service_supplier:  { title: "On-site service by specialist", charge: "No charge — covered by warranty", body: "Our specialist will visit you to fix the issue on site. We'll confirm the visit window." },
+  return_visit:            { title: "Return to store",               charge: "No charge — covered by warranty", body: "Please bring the item back to our store. We'll get it sorted while you wait or arrange a return." },
+};
+
+const FRIENDLY_STEPS: Array<{ n: 1 | 2 | 3 | 4 | 5; label: string; note: string }> = [
+  { n: 1, label: "Request received",  note: "Case logged with our team" },
+  { n: 2, label: "Reviewing",         note: "Confirming the issue" },
+  { n: 3, label: "Collect & repair",  note: "Pickup + service" },
+  { n: 4, label: "Quality check",     note: "Final inspection" },
+  { n: 5, label: "Ready & delivered", note: "Back with you" },
+];
 
 export function PortalCaseDetailPage() {
   const dialog = useDialog();
@@ -24,6 +55,15 @@ export function PortalCaseDetailPage() {
   const [uploading, setUploading] = useState(false);
   const [expired, setExpired] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const [approving, setApproving] = useState(false);
+  const commentBoxRef = useRef<HTMLTextAreaElement | null>(null);
+
+  const focusCommentBox = useCallback(() => {
+    const el = commentBoxRef.current;
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    setTimeout(() => el.focus({ preventScroll: true }), 350);
+  }, []);
 
   async function load() {
     if (!token) return;
@@ -63,6 +103,22 @@ export function PortalCaseDetailPage() {
       await load();
     } catch (e: any) {
       setErr(e?.message || "Failed to remove");
+    }
+  }
+
+  async function approveResolution(resolutionTitle: string) {
+    if (approving) return;
+    if (!await dialog.confirm(`Approve the proposed resolution: "${resolutionTitle}"?`)) return;
+    setApproving(true);
+    try {
+      await portalApi.post("/api/portal/case/comments", token, {
+        text: `✅ Customer approved: ${resolutionTitle}`,
+      });
+      await load();
+    } catch (e: any) {
+      setErr(e?.message || "Failed to send approval");
+    } finally {
+      setApproving(false);
     }
   }
 
@@ -138,184 +194,330 @@ export function PortalCaseDetailPage() {
   if (!data) return <PortalFrame><div /></PortalFrame>;
 
   const { case: cs, items, attachments, timeline } = data;
+  const stageCopy = STAGE_COPY[cs.stage] ?? STAGE_COPY.pending_review;
+  const currentStep = stageCopy.step;
+  const resolution = cs.resolution_method ? RESOLUTION_COPY[cs.resolution_method] : null;
+  const alreadyApproved = timeline.some(
+    (t) => t.source === "customer" && (t.note || "").startsWith("✅ Customer approved"),
+  );
+  const productHeadline = items[0]?.item_description || items[0]?.item_code || cs.category || "Service case";
+  const supportPhoneNumber = "+60312345678";
 
   return (
     <PortalFrame>
-      {/* Header */}
-      <div className="rounded-lg border border-border bg-surface p-5">
-        <div className="flex flex-wrap items-center gap-3">
-          <span className="font-mono text-lg font-bold">{cs.assr_no}</span>
-          <StatusPill color={cs.status_color} label={cs.status_label} />
+      <div className="mx-auto flex max-w-md flex-col gap-4 px-1 py-1 sm:px-0">
+
+        {/* Product row — small squircle icon + product name + ASSR-no.
+            The customer opened this link knowing their item; the row is
+            confirmation, not navigation. */}
+        <div className="flex items-center gap-3">
+          <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-accent-soft to-accent/25 text-accent shadow-stone">
+            <Package size={22} />
+          </div>
+          <div className="min-w-0">
+            <div className="truncate text-[15px] font-bold leading-tight text-ink">{productHeadline}</div>
+            <div className="mt-0.5 font-mono text-[11px] text-ink-muted">{cs.assr_no}</div>
+          </div>
         </div>
-        {cs.customer_name && (
-          <div className="mt-1 text-[13px] text-ink-secondary">
-            {cs.customer_name}
+
+        {/* Status hero — black card. Friendly copy per stage; NO SLA
+            countdown, only a soft "expected update by" date chip. */}
+        <div className="relative overflow-hidden rounded-2xl bg-[#13201c] p-6 text-white shadow-stone">
+          <div className="mb-2 font-mono text-[10px] font-semibold uppercase tracking-[.14em] text-[#c79a5a]">
+            {stageCopy.eyebrow}
+          </div>
+          <div className="font-serif text-[22px] font-semibold leading-tight sm:text-[24px]">
+            {stageCopy.title}
+          </div>
+          <div className="mt-3 text-[13px] leading-relaxed text-white/70">
+            {stageCopy.body}
+          </div>
+          {cs.expected_resolution_at && cs.stage !== "completed" && (
+            <div className="mt-4 inline-flex items-center gap-2 rounded-lg bg-white/10 px-3 py-2 text-[12px] text-white/90">
+              <Clock size={13} />
+              <span>Expected update by <b className="text-white">{formatDate(cs.expected_resolution_at)}</b></span>
+            </div>
+          )}
+        </div>
+
+        {/* Simplified 5-step tracker. Every case flows through the same
+            5 customer-friendly steps; internal stages collapse into these
+            buckets per STAGE_COPY.step. */}
+        <div className="rounded-2xl border border-border bg-surface p-5">
+          <div className="mb-4 text-[13px] font-bold text-ink">Your request</div>
+          <div className="space-y-0">
+            {FRIENDLY_STEPS.map((s, i) => {
+              const done = s.n < currentStep;
+              const active = s.n === currentStep;
+              const isLast = i === FRIENDLY_STEPS.length - 1;
+              return (
+                <div key={s.n} className="flex gap-3.5 pb-4">
+                  <div className="flex flex-col items-center">
+                    <span
+                      className={
+                        "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold " +
+                        (done
+                          ? "bg-primary text-white"
+                          : active
+                          ? "bg-[#c79a5a] text-white ring-4 ring-[#c79a5a]/20"
+                          : "border border-border-subtle bg-surface text-ink-muted")
+                      }
+                    >
+                      {done ? <Check size={12} strokeWidth={3} /> : s.n}
+                    </span>
+                    {!isLast && (
+                      <span
+                        className={"mt-1 h-full w-px flex-1 " + (done ? "bg-primary/50" : "bg-border-subtle")}
+                        aria-hidden
+                      />
+                    )}
+                  </div>
+                  <div className="pt-0.5">
+                    <div
+                      className={
+                        "text-[14px] leading-tight " +
+                        (done ? "font-semibold text-ink-secondary" : active ? "font-bold text-ink" : "font-medium text-ink-muted")
+                      }
+                    >
+                      {s.label}
+                    </div>
+                    <div className="mt-0.5 text-[11.5px] text-ink-muted">{s.note}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Proposed resolution — appears only after our team picks a
+            resolution method. Customer can Approve (posts a marker
+            comment) or Ask a question (focuses the message box below). */}
+        {resolution && (
+          <div className="rounded-2xl border border-border bg-surface p-5 shadow-stone">
+            <div className="mb-2 flex items-center justify-between">
+              <div className="text-[13px] font-bold text-ink">Proposed resolution</div>
+              <span
+                className={
+                  "rounded-md px-2 py-0.5 text-[9.5px] font-semibold uppercase tracking-brand " +
+                  (alreadyApproved
+                    ? "bg-synced/15 text-synced"
+                    : "bg-accent-soft text-accent")
+                }
+              >
+                {alreadyApproved ? "Approved" : "Awaiting your reply"}
+              </span>
+            </div>
+            <div className="text-[15px] font-bold text-ink">{resolution.title}</div>
+            <div className="mt-1 text-[13px] font-semibold text-synced">{resolution.charge}</div>
+            <div className="mt-2 text-[12.5px] leading-relaxed text-ink-secondary">{resolution.body}</div>
+            {!alreadyApproved && cs.stage !== "completed" && (
+              <div className="mt-4 flex gap-2">
+                <button
+                  onClick={() => approveResolution(resolution.title)}
+                  disabled={approving}
+                  className="flex h-11 flex-1 items-center justify-center rounded-xl bg-primary text-[13.5px] font-bold text-white shadow-stone disabled:opacity-60"
+                >
+                  {approving ? "Sending…" : "Approve"}
+                </button>
+                <button
+                  onClick={focusCommentBox}
+                  className="flex h-11 flex-1 items-center justify-center rounded-xl border border-border bg-surface text-[13.5px] font-bold text-ink"
+                >
+                  Ask a question
+                </button>
+              </div>
+            )}
           </div>
         )}
-        <div className="mt-1 text-[12px] text-ink-muted">
-          Reported {formatDate(cs.complained_date)}
-          {cs.expected_resolution_at && <> · Expected by {formatDate(cs.expected_resolution_at)}</>}
-          {cs.closed_at && <> · Closed {formatDate(cs.closed_at)}</>}
-        </div>
-      </div>
 
-      {/* Items */}
-      <section className="mt-5 rounded-lg border border-border bg-surface p-5">
-        <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
-          Items under service
-        </h2>
-        {items.length === 0 ? (
-          <div className="text-[12px] text-ink-muted">No items recorded.</div>
-        ) : (
-          <ul className="space-y-2">
-            {items.map((it) => (
-              <li key={it.id} className="flex items-center gap-3 text-[13px]">
-                <Package size={14} className="text-ink-muted" />
-                <span className="font-mono text-[11px]">{it.item_code}</span>
-                <span className="flex-1 truncate text-ink-secondary">{it.item_description || ""}</span>
-                {it.qty && <span className="text-[11px] text-ink-muted">× {it.qty}</span>}
+        {/* Contact row — Call (tel:) + Message (scroll & focus the
+            comment textarea further down). */}
+        <div className="flex gap-2">
+          <a
+            href={`tel:${supportPhoneNumber}`}
+            className="flex h-11 flex-1 items-center justify-center gap-2 rounded-xl border border-border bg-surface text-[13px] font-semibold text-ink"
+          >
+            <Phone size={14} /> Call support
+          </a>
+          <button
+            onClick={focusCommentBox}
+            className="flex h-11 flex-1 items-center justify-center gap-2 rounded-xl border border-border bg-surface text-[13px] font-semibold text-ink"
+          >
+            <MessageSquare size={14} /> Message
+          </button>
+        </div>
+
+        {/* Divider before the detail sections — items / issue / photos
+            / updates / message box. Kept below the primary hero so the
+            page reads clean above the fold. */}
+        <div className="mt-1 h-px w-full bg-border-subtle" />
+
+        {/* Items */}
+        <section className="rounded-2xl border border-border bg-surface p-5">
+          <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+            Items under service
+          </h2>
+          {items.length === 0 ? (
+            <div className="text-[12px] text-ink-muted">No items recorded.</div>
+          ) : (
+            <ul className="space-y-2">
+              {items.map((it) => (
+                <li key={it.id} className="flex items-center gap-3 text-[13px]">
+                  <Package size={14} className="text-ink-muted" />
+                  <span className="font-mono text-[11px]">{it.item_code}</span>
+                  <span className="flex-1 truncate text-ink-secondary">{it.item_description || ""}</span>
+                  {it.qty && <span className="text-[11px] text-ink-muted">× {it.qty}</span>}
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        {/* Reported issue */}
+        <section className="rounded-2xl border border-border bg-surface p-5">
+          <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+            Reported issue
+          </h2>
+          <div className="whitespace-pre-line text-sm text-ink">{cs.complaint_issue || "—"}</div>
+          {cs.category && (
+            <div className="mt-2 text-[11px] text-ink-muted">Category: {cs.category}</div>
+          )}
+        </section>
+
+        {/* Photos */}
+        <section className="rounded-2xl border border-border bg-surface p-5">
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+              Photos &amp; evidence
+            </h2>
+            <label className={`inline-flex cursor-pointer items-center gap-1 rounded-md border border-border px-2.5 py-1 text-[11px] font-semibold text-ink hover:border-accent/40 ${uploading ? "opacity-50 pointer-events-none" : ""}`}>
+              <Upload size={11} /> {uploading ? "Uploading…" : "Upload photo"}
+              <input type="file" accept="image/jpeg,image/png,image/webp" capture="environment" className="hidden" onChange={onFile} disabled={uploading} />
+            </label>
+          </div>
+          {attachments.length === 0 ? (
+            <div className="text-[12px] text-ink-muted">No photos yet.</div>
+          ) : (
+            <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+              {attachments.map((a, i) => (
+                <PortalPhoto
+                  key={a.id}
+                  token={token}
+                  attId={a.id}
+                  label={a.category}
+                  source={a.source ?? "staff"}
+                  onClick={() => setLightboxIndex(i)}
+                  onRemove={
+                    a.source === "customer" && cs.stage !== "completed"
+                      ? () => archivePhoto(a.id)
+                      : undefined
+                  }
+                />
+              ))}
+            </div>
+          )}
+          <div className="mt-2 text-[10px] text-ink-muted">
+            JPG / PNG / WEBP · up to 10 MB each.
+          </div>
+        </section>
+
+        {/* Updates (timeline) */}
+        <section className="rounded-2xl border border-border bg-surface p-5">
+          <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+            Updates
+          </h2>
+          <ul className="space-y-3">
+            {timeline.map((t) => (
+              <li key={t.id} className="group border-l-2 border-border pl-3 text-[13px]">
+                <div className="flex items-center gap-2 text-[11px] text-ink-muted">
+                  <span>{formatDateTime(t.at)}</span>
+                  {t.source === "customer" && t.action === "customer_comment" && cs.stage !== "completed" && (
+                    <button
+                      onClick={() => archiveComment(t.id)}
+                      className="ml-auto rounded p-0.5 opacity-0 transition-opacity hover:text-err group-hover:opacity-100"
+                      title="Remove this comment"
+                      aria-label="Remove this comment"
+                    >
+                      <Trash2 size={11} />
+                    </button>
+                  )}
+                </div>
+                <div>
+                  {t.source === "customer" && (
+                    <span className="mr-1 rounded-full bg-accent/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-accent">
+                      You
+                    </span>
+                  )}
+                  {t.label}
+                </div>
+                {t.note && <div className="mt-1 whitespace-pre-line text-ink-secondary">{t.note}</div>}
               </li>
             ))}
+            {timeline.length === 0 && (
+              <li className="text-[12px] text-ink-muted">No updates yet.</li>
+            )}
           </ul>
-        )}
-      </section>
-
-      {/* Issue */}
-      <section className="mt-5 rounded-lg border border-border bg-surface p-5">
-        <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
-          Reported issue
-        </h2>
-        <div className="text-sm whitespace-pre-line">{cs.complaint_issue || "—"}</div>
-        {cs.category && (
-          <div className="mt-2 text-[11px] text-ink-muted">Category: {cs.category}</div>
-        )}
-      </section>
-
-      {/* Photos */}
-      <section className="mt-5 rounded-lg border border-border bg-surface p-5">
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
-            Photos &amp; evidence
-          </h2>
-          <label className={`inline-flex cursor-pointer items-center gap-1 rounded-md border border-border px-2.5 py-1 text-[11px] font-semibold text-ink hover:border-accent/40 ${uploading ? "opacity-50 pointer-events-none" : ""}`}>
-            <Upload size={11} /> {uploading ? "Uploading…" : "Upload photo"}
-            <input type="file" accept="image/jpeg,image/png,image/webp" capture="environment" className="hidden" onChange={onFile} disabled={uploading} />
-          </label>
-        </div>
-        {attachments.length === 0 ? (
-          <div className="text-[12px] text-ink-muted">No photos yet.</div>
-        ) : (
-          <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
-            {attachments.map((a, i) => (
-              <PortalPhoto
-                key={a.id}
-                token={token}
-                attId={a.id}
-                label={a.category}
-                source={a.source ?? "staff"}
-                onClick={() => setLightboxIndex(i)}
-                onRemove={
-                  a.source === "customer" && cs.stage !== "completed"
-                    ? () => archivePhoto(a.id)
-                    : undefined
-                }
-              />
-            ))}
-          </div>
-        )}
-        <div className="mt-2 text-[10px] text-ink-muted">
-          JPG / PNG / WEBP · up to 10 MB each.
-        </div>
-      </section>
-
-      {/* Timeline */}
-      <section className="mt-5 rounded-lg border border-border bg-surface p-5">
-        <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
-          Updates
-        </h2>
-        <ul className="space-y-3">
-          {timeline.map((t) => (
-            <li key={t.id} className="group border-l-2 border-border pl-3 text-[13px]">
-              <div className="flex items-center gap-2 text-[11px] text-ink-muted">
-                <span>{formatDateTime(t.at)}</span>
-                {/* Customer can retract their own comments */}
-                {t.source === "customer" && t.action === "customer_comment" && cs.stage !== "completed" && (
-                  <button
-                    onClick={() => archiveComment(t.id)}
-                    className="ml-auto rounded p-0.5 opacity-0 transition-opacity hover:text-err group-hover:opacity-100"
-                    title="Remove this comment"
-                    aria-label="Remove this comment"
-                  >
-                    <Trash2 size={11} />
-                  </button>
-                )}
-              </div>
-              <div>
-                {t.source === "customer" && (
-                  <span className="mr-1 rounded-full bg-accent/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-accent">
-                    You
-                  </span>
-                )}
-                {t.label}
-              </div>
-              {t.note && <div className="mt-1 whitespace-pre-line text-ink-secondary">{t.note}</div>}
-            </li>
-          ))}
-          {timeline.length === 0 && (
-            <li className="text-[12px] text-ink-muted">No updates yet.</li>
-          )}
-        </ul>
-      </section>
-
-      {/* Comment box */}
-      {cs.stage !== "completed" && (
-        <section className="mt-5 rounded-lg border border-border bg-surface p-5">
-          <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
-            Add an update or question
-          </h2>
-          <textarea
-            value={comment}
-            onChange={(e) => setComment(e.target.value)}
-            rows={3}
-            placeholder="Our team will see this on the case…"
-            className="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
-            maxLength={2000}
-          />
-          <div className="mt-2 flex items-center justify-end">
-            <button
-              onClick={postComment}
-              disabled={!comment.trim() || posting}
-              className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-white disabled:opacity-50"
-            >
-              <Send size={11} /> {posting ? "Posting…" : "Post update"}
-            </button>
-          </div>
         </section>
-      )}
 
-      {/* Completed-case satisfaction summary */}
-      {cs.stage === "completed" && cs.satisfaction_rating && (
-        <section className="mt-5 rounded-lg border border-border bg-surface p-5 text-center">
-          <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
-            Thanks for your feedback
-          </div>
-          <div className="inline-flex items-center gap-1">
-            {[1, 2, 3, 4, 5].map((n) => (
-              <Star
-                key={n}
-                size={20}
-                className={n <= (cs.satisfaction_rating ?? 0) ? "fill-amber-400 text-amber-400" : "text-ink-muted/40"}
-              />
-            ))}
-          </div>
-        </section>
-      )}
+        {/* Message / question box (the "Message" and "Ask a question"
+            buttons above scroll & focus this textarea). */}
+        {cs.stage !== "completed" && (
+          <section className="rounded-2xl border border-border bg-surface p-5">
+            <h2 className="mb-3 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+              Message the team
+            </h2>
+            <textarea
+              ref={commentBoxRef}
+              value={comment}
+              onChange={(e) => setComment(e.target.value)}
+              rows={3}
+              placeholder="Ask a question or share an update…"
+              className="w-full rounded-md border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+              maxLength={2000}
+            />
+            <div className="mt-2 flex items-center justify-end">
+              <button
+                onClick={postComment}
+                disabled={!comment.trim() || posting}
+                className="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-white disabled:opacity-50"
+              >
+                <Send size={11} /> {posting ? "Sending…" : "Send"}
+              </button>
+            </div>
+          </section>
+        )}
 
-      {err && (
-        <div className="mt-4 rounded-md border border-err/40 bg-err/5 px-3 py-2 text-sm text-err">
-          {err}
+        {/* Completed-case satisfaction summary */}
+        {cs.stage === "completed" && cs.satisfaction_rating && (
+          <section className="rounded-2xl border border-border bg-surface p-5 text-center">
+            <div className="mb-2 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+              Thanks for your feedback
+            </div>
+            <div className="inline-flex items-center gap-1">
+              {[1, 2, 3, 4, 5].map((n) => (
+                <Star
+                  key={n}
+                  size={20}
+                  className={n <= (cs.satisfaction_rating ?? 0) ? "fill-amber-400 text-amber-400" : "text-ink-muted/40"}
+                />
+              ))}
+            </div>
+          </section>
+        )}
+
+        {err && (
+          <div className="rounded-md border border-err/40 bg-err/5 px-3 py-2 text-sm text-err">
+            {err}
+          </div>
+        )}
+
+        {/* Secure link footer */}
+        <div className="mt-2 flex items-center justify-center gap-1.5 text-center text-[10.5px] leading-relaxed text-ink-muted">
+          <ShieldCheck size={12} className="text-ink-muted" />
+          <span>Secure link · no login needed · only you can see this page.</span>
         </div>
-      )}
+
+      </div>
 
       {lightboxIndex !== null && attachments[lightboxIndex] && (
         <Lightbox

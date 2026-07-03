@@ -24,7 +24,7 @@ app.get("/case", async (c) => {
   const cs = await c.env.DB.prepare(
     `SELECT id, assr_no, stage, complained_date, complaint_issue,
             service_category, deadline_at, completion_date, closed_at,
-            satisfaction_rating, customer_name
+            satisfaction_rating, customer_name, resolution_method
        FROM assr_cases WHERE id = ?`
   )
     .bind(assr_id)
@@ -116,6 +116,7 @@ app.get("/case", async (c) => {
       completion_date: cs.completion_date,
       closed_at: cs.closed_at,
       satisfaction_rating: cs.satisfaction_rating,
+      resolution_method: cs.resolution_method,
     },
     items: items.results ?? [],
     attachments: atts.results ?? [],

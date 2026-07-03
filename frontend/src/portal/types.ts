@@ -15,6 +15,7 @@ export interface PortalCaseDetail {
     completion_date: string | null;
     closed_at: string | null;
     satisfaction_rating: number | null;
+    resolution_method: string | null;
   };
   items: Array<{
     id: number;
