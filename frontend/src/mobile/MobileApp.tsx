@@ -71,11 +71,14 @@ const ROUTE_TO_CONFIG: Record<string, string> = {
   "/scm/inventory": "inventory",
 };
 
-/** The mobile Menu is a 1:1 mirror of the owner's design prototype `var MENU`
- *  (Houzs Mobile.html) — SAME groups, order, and labels. Each item opens a real
- *  mobile screen and is still permission-gated by the matching desktop nav entry
- *  (an item whose nav tab isn't visible for the user's position is hidden). The
- *  bottom tabs cover Sales Orders / Calendar / Inbox / Profile. */
+/** The mobile Menu mirrors the owner's design prototype `var MENU`
+ *  (Houzs Mobile.html) — same groups, order, and labels, EXCEPT the
+ *  Organisation group, which the owner moved into the Profile screen
+ *  (2026-07 "这全部在 profile 里面" — see PROFILE_ORG_ITEMS below). Each item
+ *  opens a real mobile screen and is still permission-gated by the matching
+ *  desktop nav entry (an item whose nav tab isn't visible for the user's
+ *  position is hidden). The bottom tabs cover Sales Orders / Calendar /
+ *  Inbox / Profile. */
 const MOBILE_MENU_GROUPS: { group: string; items: { to: string; label: string; alwaysShow?: boolean }[] }[] = [
   { group: "Sales & Finance", items: [
     { to: "/scm/sales-orders", label: "Sales Orders" },
@@ -107,19 +110,25 @@ const MOBILE_MENU_GROUPS: { group: string; items: { to: string; label: string; a
     { to: "/scm/warehouses", label: "Warehouse" },
     { to: "/scm/inventory", label: "Inventory" },
   ]},
-  { group: "Organisation", items: [
-    { to: "/activity-inbox", label: "Inbox" },
-    { to: "/team?tab=members", label: "Members" },
-    { to: "/team?tab=positions", label: "Positions" },
-    { to: "/team?tab=departments", label: "Departments" },
-    { to: "/mail-center", label: "Mail Center" },
-    /* Owner rule 2026-07: Announcements is readable by EVERY active user —
-       the mobile screen reads /api/announcements/banner, which needs no
-       permission and is audience-filtered server-side (only notices addressed
-       to this user). So the menu item bypasses the desktop nav gate
-       (announcements.read = the desktop ADMIN list/composer permission). */
-    { to: "/announcements", label: "Announcements", alwaysShow: true },
-  ]},
+];
+
+/** Organisation destinations — owner 2026-07: these do NOT live in the module
+ *  menu ("这全部在 profile 里面") — they are rows inside the Profile screen.
+ *  Same routes and the SAME per-item permission gate (`allowed`) the menu
+ *  applied when they lived there; an item hidden from the old menu stays
+ *  hidden in Profile. */
+const PROFILE_ORG_ITEMS: { to: string; label: string; alwaysShow?: boolean }[] = [
+  { to: "/activity-inbox", label: "Inbox" },
+  { to: "/mail-center", label: "Mail Center" },
+  /* Owner rule 2026-07: Announcements is readable by EVERY active user —
+     the mobile screen reads /api/announcements/banner, which needs no
+     permission and is audience-filtered server-side (only notices addressed
+     to this user). So this row bypasses the desktop nav gate
+     (announcements.read = the desktop ADMIN list/composer permission). */
+  { to: "/announcements", label: "Announcements", alwaysShow: true },
+  { to: "/team?tab=members", label: "Members" },
+  { to: "/team?tab=positions", label: "Positions" },
+  { to: "/team?tab=departments", label: "Departments" },
 ];
 
 /** Mobile app shell — bottom tab bar + slide-up module menu, permission-gated
@@ -209,6 +218,11 @@ function MobileAppInner() {
     .map((g) => ({ group: g.group, items: g.items.filter((it) => it.alwaysShow || allowed(it.to)) }))
     .filter((g) => g.items.length > 0);
 
+  // Organisation rows shown inside the Profile screen — gated by the SAME
+  // `allowed` check (+ Announcements' alwaysShow bypass) the menu used when
+  // these items lived in its Organisation group.
+  const profileOrgItems = PROFILE_ORG_ITEMS.filter((it) => it.alwaysShow || allowed(it.to));
+
   const openRoute = (to: string, label: string) => {
     setMenuOpen(false);
     const path = (to || "").split("?")[0];
@@ -293,7 +307,7 @@ function MobileAppInner() {
         )}
         {tab === "service" && <MobileServiceCase onBack={() => setTab("orders")} />}
         {tab === "calendar" && <MobileCalendar onOpenProject={(id) => setScreen({ t: "pms", projectId: id })} />}
-        {tab === "profile" && <MobileProfile onLogout={logout} />}
+        {tab === "profile" && <MobileProfile onLogout={logout} orgItems={profileOrgItems} onOpenOrg={openRoute} />}
       </div>
 
       <div className="navwrap">

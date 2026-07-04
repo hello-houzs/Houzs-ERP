@@ -19,6 +19,10 @@ import "./mobile.css";
  *  - a THREE-tile stat row;
  *  - Account rows WITH leading icons + right-side value (Personal details,
  *    Notifications "On", Language "English", My Team — role-gated);
+ *  - an Organisation section (Inbox, Mail Center, Announcements, Members,
+ *    Positions, Departments — moved here from the module menu, owner 2026-07
+ *    "这全部在 profile 里面"; rows arrive pre-gated from MobileApp and navigate
+ *    via its openRoute);
  *  - an App section (Help & Support);
  *  - a danger Log out (in-app confirm) + version footer.
  *
@@ -126,8 +130,22 @@ const avatarColor = (seed: string): string => {
 const isSalesish = (roleName: string | null | undefined): boolean =>
   /sales|manager|lead|head|director|admin|owner|super/i.test(roleName || "");
 
+// Organisation rows — owner 2026-07: Inbox / Mail Center / Announcements /
+// Members / Positions / Departments live HERE, not in the module menu
+// ("这全部在 profile 里面"). MobileApp passes the item list already filtered by
+// the SAME per-item permission gate the menu used (`orgItems`) plus its
+// `openRoute` navigator (`onOpenOrg`), so routing + gating stay identical to
+// the old menu entries.
+type OrgItem = { to: string; label: string };
+
 // ── Component ──
-export function MobileProfile({ onLogout }: { onLogout: () => void }) {
+export function MobileProfile({ onLogout, orgItems, onOpenOrg }: {
+  onLogout: () => void;
+  /** Organisation destinations, pre-filtered by MobileApp's `allowed` gate. */
+  orgItems?: OrgItem[];
+  /** MobileApp's openRoute(to, label) — same navigation the menu items used. */
+  onOpenOrg?: (to: string, label: string) => void;
+}) {
   const [screen, setScreen] = useState<Screen>("home");
   const { user } = useAuth();
   const confirm = useConfirm();
@@ -280,6 +298,20 @@ export function MobileProfile({ onLogout }: { onLogout: () => void }) {
           {showTeam && <Item icon="users" label="My Team" onClick={() => setScreen("team")} />}
         </div>
 
+        {/* Organisation — moved here from the module menu (owner 2026-07).
+            Same routes + permission gating as the old menu entries; rows use
+            the SAME Item pattern (icon + label + chevron) as Account above. */}
+        {onOpenOrg && (orgItems?.length ?? 0) > 0 && (
+          <>
+            <div className="ey" style={{ color: "#767b6e", margin: "18px 2px 9px" }}>Organisation</div>
+            <div className="card" style={{ overflow: "hidden" }}>
+              {(orgItems ?? []).map((it, i) => (
+                <Item key={it.to} icon={orgIconOf(it.to)} label={it.label} onClick={() => onOpenOrg(it.to, it.label)} first={i === 0} />
+              ))}
+            </div>
+          </>
+        )}
+
         <div className="ey" style={{ color: "#767b6e", margin: "18px 2px 9px" }}>App</div>
         <div className="card" style={{ overflow: "hidden" }}>
           <Item icon="shield" label="Help & Support" onClick={() => setScreen("help")} first />
@@ -303,13 +335,31 @@ function StatTile({ value, label, color }: { value: string; label: string; color
   );
 }
 
-// Leading SVG icons for the Account / App rows (prototype `micon` glyphs).
+// Leading SVG icons for the Account / Organisation / App rows (prototype
+// `micon` glyphs + same-style glyphs for the Organisation rows).
 const ROW_ICONS: Record<string, React.ReactNode> = {
   users: (<><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.9" /></>),
   mega: (<><path d="M3 11v2a1 1 0 0 0 1 1h2l5 4V6L6 10H4a1 1 0 0 0-1 1Z" /><path d="M16 8a4 4 0 0 1 0 8" /></>),
   list: (<path d="M5 4h14M5 9h14M5 14h14M5 19h9" />),
   shield: (<><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6Z" /><path d="m9 12 2 2 4-4" /></>),
+  inbox: (<><path d="M22 12h-5.5l-2 3h-5l-2-3H2" /><path d="M5.4 5.6 2 12v5a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-5l-3.4-6.4A2 2 0 0 0 16.8 4.5H7.2a2 2 0 0 0-1.8 1.1Z" /></>),
+  mail: (<><rect x="3" y="5" width="18" height="14" rx="2" /><path d="m3 7 9 6 9-6" /></>),
+  cast: (<><path d="M4.9 19.1a10 10 0 0 1 0-14.2M7.8 16.2a6 6 0 0 1 0-8.4M16.2 7.8a6 6 0 0 1 0 8.4M19.1 4.9a10 10 0 0 1 0 14.2" /><circle cx="12" cy="12" r="1.6" /></>),
+  badge: (<><rect x="3" y="4" width="18" height="16" rx="2" /><circle cx="9" cy="10" r="2" /><path d="M15 8.5h4M15 12h4M5.8 16.5a3.2 3.2 0 0 1 6.4 0" /></>),
+  building: (<><rect x="4" y="3" width="16" height="18" rx="1.5" /><path d="M9 7h2M13 7h2M9 11h2M13 11h2M9 15h2M13 15h2M10 21v-3h4v3" /></>),
 };
+
+// Route → row icon for the Organisation section (falls back to a plain list
+// glyph for any future route without a bespoke icon).
+const ORG_ROW_ICONS: Record<string, keyof typeof ROW_ICONS> = {
+  "/activity-inbox": "inbox",
+  "/mail-center": "mail",
+  "/announcements": "cast",
+  "/team?tab=members": "users",
+  "/team?tab=positions": "badge",
+  "/team?tab=departments": "building",
+};
+const orgIconOf = (to: string): keyof typeof ROW_ICONS => ORG_ROW_ICONS[to] ?? "list";
 
 // Prototype `profRow`: leading icon chip + label + optional right value +
 // chevron. Wired to our sub-screen navigation.
