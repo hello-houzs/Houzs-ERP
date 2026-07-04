@@ -725,6 +725,7 @@ For EVERY handwritten row in the item table output one lines[] entry:
 - rawText — the row's text VERBATIM, exactly as written, including misspellings and abbreviations. This is the source of truth for the operator; never clean it up.
 - rawSpec — when the row (or its margin / continuation text) carries a SPECIFICATION string for the item — the variant text such as "Col: PC151-01 + front / Side Divan 8\"+0\"", "divan10+4/gap12", "8\" + no leg" — copy the row's specification text verbatim into rawSpec; do not rephrase, reorder or normalise it (keep punctuation, slashes and inch marks exactly). null when the row has no spec text. rawSpec may overlap rawText — that is fine: rawText is the whole row, rawSpec is just the specification portion.
 - divanHeightInches / legHeightInches / gapInches / noLeg — BEDFRAME variant NUMBERS read from the spec text: the divan/drawer height in inches, the leg height in inches, the mattress gap in inches, and noLeg = true when the spec says no legs ("no leg", "noleg"). Read the FULL numeric token (12" is 12, NEVER 1). Use null (and noLeg = false) when absent or when the row is not a bedframe.
+- seatHeightInches — SOFA seat-height in inches. A sofa row's seat size is usually written as a parenthesised inch figure right after the model / sections, e.g. "8030 (2R+1R)(28\")" → 28, or "seat 30\"" / "H30" → 30. Read the FULL numeric token as a plain NUMBER (28" is 28, NEVER 2). The seat size applies to EVERY compartment of that sofa, so repeat the SAME seatHeightInches on each compartment line you emit for the sofa. Use null when the row is not a sofa or no seat size is written (do NOT guess a seat height).
 - qtyGuess — quantity (default 1 when blank or unreadable).
 - priceRmGuess — the row's unit price in RM as a number; null when blank. If only a line total is written and qty > 1, still report the written figure and say so in notes. SET / PACKAGE TOTALS: when ONE written amount covers SEVERAL lines (a multi-compartment sofa set, a bundle where only the first row carries a figure), attach that amount as priceRmGuess on the FIRST emitted line of the set ONLY — every other line of the set gets priceRmGuess = null — and write "set/package total" in the first line's notes. Never attach the same set total to more than one line, and never attach it to a later compartment.
 - skuMatch — your best FUZZY match against the catalog SKUS:
@@ -748,8 +749,8 @@ For EVERY handwritten row in the item table output one lines[] entry:
   MULTI-COMPARTMENT SOFA — ONE LINE PER COMPARTMENT. A sofa is often written as a base model PLUS several seat sections in one row, e.g. "8030 (2R+1R)(28\")" or "2A+1A", or drawn as a multi-box layout (the hand-drawn box+TV sketch shows the seating arrangement). When a sofa line names MORE THAN ONE seat section, EMIT ONE lines[] ENTRY PER COMPARTMENT (do NOT collapse them into a single line). For each compartment:
     • skuMatch = the catalog SKU {base_model}-{compartment} where compartment carries the arm direction, e.g. "8030-2A(LHF)" for the 2-seater and "8030-1A(RHF)" for the 1-seater. These per-compartment SKUs EXIST verbatim in the SOFA SKUS — copy the matching row character-for-character; never assemble one that is not in the catalog (if no per-compartment row exists, fall back to the base-model SKU + a notes flag).
     • The seat size (e.g. 28") and the fabric colour (e.g. "Col BO315-22") apply to EVERY compartment line — repeat them on each (qtyGuess per compartment is usually 1).
-    • DIRECTION (LHF = left-hand-facing / RHF = right-hand-facing) — read it from the drawing and from "左/右" or "X left Y right" notes (the box+TV sketch encodes which arm sits where). BE CONSERVATIVE: if the side is genuinely ambiguous, emit the compartment WITHOUT forcing a wrong direction — pick the {base_model}-{compartment} SKU without the (LHF/RHF) suffix (or set skuMatch=null with the compartment in notes) and lower confidence so the operator picks the side. Never guess a side confidently.
-    Example: "8030 (2R+1R)(28\") Col BO315-22" → TWO lines: line 1 skuMatch="8030-2A(LHF)", line 2 skuMatch="8030-1A(RHF)"; BOTH carry size 28" in notes and fabricMatch.code="BO315-22"; rawText on each line is the verbatim row.
+    • DIRECTION (LHF = left-hand-facing / RHF = right-hand-facing) — decide it per compartment PRIMARILY from the drawn "TV" marker: the hand sketch draws the sofa boxes facing a box labelled "TV" (the television / feature wall), and the compartment that sits to the VIEWER'S LEFT of the layout as it faces the TV is LHF, the one to the VIEWER'S RIGHT is RHF. Use the TV marker's position to orient the whole layout, then read each compartment's side off that orientation; also cross-check "左/右" or "X left Y right" notes. BE CONSERVATIVE: if there is NO TV marker and the side is genuinely ambiguous, emit the compartment WITHOUT forcing a wrong direction — pick the {base_model}-{compartment} SKU without the (LHF/RHF) suffix (or set skuMatch=null with the compartment in notes) and lower confidence so the operator picks the side. Never guess a side confidently without the TV marker or an explicit left/right note.
+    Example: "8030 (2R+1R)(28\") Col BO315-22" → TWO lines: line 1 skuMatch="8030-2A(LHF)", line 2 skuMatch="8030-1A(RHF)"; BOTH carry seatHeightInches=28 and fabricMatch.code="BO315-22"; rawText on each line is the verbatim row.
 - fabricMatch — match against the FABRICS catalog whenever the row (or a margin note, or a "Col:" / "Color" / "Fabric" prefix) names a fabric/colour code (e.g. "PC151-01", "Col: PC151-01"). The fabric code is frequently the FIRST token on a bedframe/sofa variant line; always look for it there. null when the row names no fabric. Same never-invent rule — the code must be copied character-for-character from the FABRICS list.
 - specialsMatch — an array of CONFIGURED SOFA SPECIAL ADD-ONS the row's free-text descriptor asks for. The catalog has a "SOFA SPECIAL ADD-ONS (code | label)" section; when a phrase on the row (or a margin note attached to the row) DESCRIBES one of those add-ons, emit it here as { "code": <exact catalog special code>, "confidence": 0-1, "reason": <short why> } INSTEAD of dumping that phrase into notes/remarks. Map by MEANING against each special's label:
     • "change nylon cover" / "nylon bottom" / "nylon fabric" / "尼龙布底" → the NYLON-fabric special.
@@ -814,6 +815,7 @@ Return STRICT JSON, no markdown fences, no prose:
     "legHeightInches": number | null,
     "gapInches": number | null,
     "noLeg": boolean,
+    "seatHeightInches": number | null,
     "qtyGuess": number,
     "priceRmGuess": number | null,
     "skuMatch": { "code": string, "confidence": number, "reason": string } | null,
@@ -848,6 +850,14 @@ type ExtractedLine = {
   legHeightInches: number | null;
   gapInches: number | null;
   noLeg: boolean;
+  // SOFA seat-height in inches read from the slip (e.g. "(28")"). Applies to
+  // EVERY compartment of the sofa. buildDraftSoBodyFromSlip maps it to
+  // variants.seatHeight = `${n}"` so a scanned sofa seeds the seat axis the
+  // same way a hand-keyed one does. null when absent or not a sofa row.
+  // PRICING NOTE: itemGroup='sofa' reprices from seat height in the create
+  // core — an OCR'd seat height therefore MOVES the sofa price. Verify against
+  // real slips before trusting the read.
+  seatHeightInches: number | null;
   qtyGuess: number;
   priceRmGuess: number | null;
   skuMatch: SkuMatch | null;
@@ -951,6 +961,7 @@ function normalizeSlip(raw: unknown): ExtractedSlip {
           legHeightInches: num(li.legHeightInches),
           gapInches: num(li.gapInches),
           noLeg: li.noLeg === true,
+          seatHeightInches: num(li.seatHeightInches),
           qtyGuess:
             typeof li.qtyGuess === 'number' && Number.isFinite(li.qtyGuess) && li.qtyGuess > 0
               ? li.qtyGuess
@@ -3242,6 +3253,15 @@ function buildDraftSoBodyFromSlip(
       if (l.fabricMatch?.code) variants.fabricCode = l.fabricMatch.code;
       const specialCodes = (l.specialsMatch ?? []).map((s) => s.code).filter(Boolean);
       if (specialCodes.length > 0) variants.specials = specialCodes;
+    }
+    // SOFA seat height — the same inch-string key the New SO form's sofa panel
+    // writes (draft.variants.seatHeight). PRICING NOTE: the create core reprices
+    // itemGroup='sofa' from the seat height, so this OCR figure MOVES the sofa
+    // price — verify against real slips. If the stricter category validation
+    // later rejects the sofa line, runScanJob degrades it to a loose 'others'
+    // line (seat height dropped there), so an imperfect read never loses the row.
+    if (cat === 'sofa' && l.seatHeightInches != null) {
+      variants.seatHeight = `${l.seatHeightInches}"`;
     }
     items.push({
       itemCode: sku?.code ?? '',
