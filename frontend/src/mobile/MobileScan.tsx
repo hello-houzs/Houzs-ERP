@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { useAuth } from "../auth/AuthContext";
 import { normalizePhone, splitE164 } from "../vendor/shared/phone";
@@ -76,6 +77,85 @@ type OrderDraft = { id: string; front: Slot; payShots: Shot[] };
 
 let ORDER_SEQ = 0;
 const newOrder = (): OrderDraft => ({ id: `ord-${++ORDER_SEQ}-${Date.now()}`, front: null, payShots: [] });
+
+/* ── "Recent scans" background-job status list ─────────────────────────────
+   After /scan-so/enqueue the OCR runs server-side; without feedback the phone
+   is blind while it does (owner 2026-07-04). The screen now polls
+   GET /scan-so/jobs?salesperson= (latest 20) and shows TODAY's jobs at the top:
+
+     queued / running  — always listed (grey pill / teal "Reading…" spinner).
+     done              — the job IS a draft in Orders now, so it must not
+                         linger here: shown ONCE briefly ("Done → SO-xxxx,
+                         saved to Orders", tappable → that order), dropped
+                         ~10s after first seen on this visit, and never shown
+                         at all once ~2 minutes past its finish (covers the
+                         next screen open).
+     error / duplicate — the operator MUST see failures, so these stay put for
+                         the whole visit (no 10s/2min expiry) and are only
+                         dismissed once a FULL later visit has come and gone
+                         (see SCAN_VISIT below). A done job that carries a
+                         warning (duplicateOf, or a payment note in `error`)
+                         is treated the same sticky way.
+
+   Poll cadence: refetchInterval 4000 ONLY while a listed job is queued or
+   running; otherwise no interval. Section hides entirely when nothing is
+   visible. Fields are dual-read camelCase ?? snake_case (pg camelCase rule)
+   even though jobToJson camelizes today. */
+type ScanJob = {
+  id: string;
+  status: string; // queued | running | done | error
+  soDocNo: string | null;
+  error: string | null;
+  duplicateOf: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+};
+type ScanJobsResp = { success?: boolean; data?: { jobs?: Array<Record<string, unknown>> } };
+
+function normalizeJobs(resp: ScanJobsResp | undefined): ScanJob[] {
+  const raw = resp?.data?.jobs ?? [];
+  return raw
+    .map((j) => ({
+      id: String(j.id ?? ""),
+      status: String(j.status ?? ""),
+      soDocNo: (j.soDocNo ?? j.so_doc_no ?? null) as string | null,
+      error: (j.error ?? null) as string | null,
+      duplicateOf: (j.duplicateOf ?? j.duplicate_of ?? null) as string | null,
+      createdAt: (j.createdAt ?? j.created_at ?? null) as string | null,
+      updatedAt: (j.updatedAt ?? j.updated_at ?? null) as string | null,
+    }))
+    .filter((j) => j.id !== "");
+}
+
+const jobTs = (s: string | null): number => {
+  const t = s ? Date.parse(s) : NaN;
+  return Number.isNaN(t) ? 0 : t;
+};
+const isTodayTs = (t: number): boolean => {
+  if (t === 0) return false;
+  const d = new Date(t);
+  const n = new Date();
+  return d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate();
+};
+const hhmm = (t: number): string => {
+  const d = new Date(t);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+};
+/* A job is "active" while the server is still working it — the only states
+   that keep the 4s poll running. */
+const isActiveJob = (j: ScanJob): boolean => j.status === "queued" || j.status === "running";
+/* Sticky rows the operator must not miss: failures, duplicate warnings, and a
+   done job carrying a warning note in `error` (e.g. "payment could not be
+   recorded"). These skip the transient-done expiry. */
+const isStickyJob = (j: ScanJob): boolean =>
+  j.status === "error" || j.duplicateOf != null || (j.status === "done" && j.error != null);
+
+/* Visit tracking for the sticky-row dismissal — module scope so it survives
+   screen unmounts. A sticky row stays visible for the ENTIRE visit in which it
+   appears and is dropped only when its terminal update predates the PREVIOUS
+   visit's start (i.e. a full visit has already shown it). The 5s clamp keeps
+   dev StrictMode's double-mount from counting as a re-entry. */
+let SCAN_VISIT = { openedAt: 0, prevOpenedAt: 0 };
 
 /* ── /scan-so/extract response shape (subset the mobile flow consumes) ─────
    The SO scan endpoint returns sampleId + imageKey + receiptImageKey (NOT
@@ -188,6 +268,27 @@ function RemoveButton({ label, onClick, style }: { label: string; onClick: () =>
 
 const SLOT_LABELS = ["Front slip", "Payment slip"];
 
+/* Status pill for a Recent-scans row: Queued grey / Reading… teal-tint with a
+   spinner / Done solid teal / Failed red-tint. Anything unexpected renders as
+   Queued-grey with the raw word so a new backend state never blanks the row. */
+function JobPill({ status }: { status: string }) {
+  const base: CSSProperties = {
+    display: "inline-flex", alignItems: "center", gap: 5, flex: "none",
+    height: 22, padding: "0 9px", borderRadius: 999, fontSize: 10.5, fontWeight: 800,
+  };
+  if (status === "running") {
+    return (
+      <span style={{ ...base, background: "#e3efed", color: "#16695f" }}>
+        <span style={{ width: 10, height: 10, borderRadius: "50%", border: "2px solid rgba(22,105,95,.3)", borderTopColor: "#16695f", animation: "hzSpin .8s linear infinite" }} />
+        Reading…
+      </span>
+    );
+  }
+  if (status === "done") return <span style={{ ...base, background: "#16695f", color: "#fff" }}>Done</span>;
+  if (status === "error") return <span style={{ ...base, background: "#f8eaea", color: "#b23a3a" }}>Failed</span>;
+  return <span style={{ ...base, background: "#eef0ec", color: "#767b6e" }}>{status === "queued" ? "Queued" : status}</span>;
+}
+
 /* Map ONE extracted slip's payment fields into the mobile payment shape, or
    null when the slip carries no payment. Shared by the front-slip extraction
    (payment #1) and every additional payment-slip extraction (payments #2..N) so
@@ -286,13 +387,19 @@ function buildPrefill(
 export function MobileScan({
   onBack,
   onDrafted,
+  onOpenSo,
 }: {
   onBack: () => void;
-  /* Called after the scan has FIRED the background draft-create(s) and we're
-     returning to the Orders list. `count` = how many drafts are being created.
-     The parent shows the "Draft saved to Orders" toast + nudges the SO-list
-     refetch so the new draft surfaces without a manual reload. */
+  /* Called after the scan has FIRED the background draft-create(s). `count` =
+     how many drafts are being created. The parent shows the toast + nudges the
+     SO-list refetch — it must NOT navigate away any more (owner 2026-07-04):
+     the operator STAYS here and watches the Recent-scans pills progress,
+     leaving via Cancel/back whenever. */
   onDrafted: (count: number) => void;
+  /* Navigate to one SO's detail — a finished job's "Done → SO-xxxx" row is
+     tappable and opens the draft it created. Optional so the screen still
+     renders if a host doesn't wire it (the row is then not tappable). */
+  onOpenSo?: (docNo: string) => void;
 }) {
   const { user } = useAuth();
   // The session is an ARRAY of orders. Each order = one front slip + N payment
@@ -336,6 +443,77 @@ export function MobileScan({
   }, []);
 
   const salesperson = (user?.name || user?.email || "").trim();
+
+  /* ── Recent scans — background-job status list ──────────────────────────
+     Visit bookkeeping first: record this open, remembering the previous one
+     (sticky rows are dismissed only once a full visit has passed since their
+     terminal update). Ref-guarded so it runs once per mount; the 5s clamp
+     absorbs StrictMode's dev double-mount. */
+  const dismissBeforeRef = useRef<number | null>(null);
+  if (dismissBeforeRef.current === null) {
+    const nowOpen = Date.now();
+    if (nowOpen - SCAN_VISIT.openedAt > 5000) {
+      SCAN_VISIT = { openedAt: nowOpen, prevOpenedAt: SCAN_VISIT.openedAt };
+    }
+    dismissBeforeRef.current = SCAN_VISIT.prevOpenedAt;
+  }
+  const dismissBefore = dismissBeforeRef.current ?? 0;
+
+  const { data: jobsData, refetch: refetchJobs } = useQuery({
+    queryKey: ["mobile-scan-jobs", salesperson],
+    queryFn: () =>
+      authedFetch<ScanJobsResp>(
+        salesperson ? `/scan-so/jobs?salesperson=${encodeURIComponent(salesperson)}` : "/scan-so/jobs",
+      ),
+    staleTime: 0,
+    retry: false, // fail-soft — a jobs hiccup just hides the section, no dialog
+    // Poll every 4s ONLY while a listed job is still queued/running; a settled
+    // list stops the interval entirely (done-row expiry is a local timer).
+    refetchInterval: (query) =>
+      normalizeJobs(query.state.data).some(isActiveJob) ? 4000 : false,
+  });
+  const jobs = useMemo(() => normalizeJobs(jobsData), [jobsData]);
+
+  // First-seen-as-done stamps (this visit) — a transient done row shows for
+  // ~10s from the moment THIS screen first sees it done, then drops.
+  const doneSeenRef = useRef<Map<string, number>>(new Map());
+  useEffect(() => {
+    const t = Date.now();
+    for (const j of jobs) {
+      if (j.status === "done" && !doneSeenRef.current.has(j.id)) doneSeenRef.current.set(j.id, t);
+    }
+  }, [jobs]);
+
+  // Local clock — ticks only while a transient done row is on screen, so its
+  // 10s / 2min expiry actually re-renders (the 4s poll has stopped by then).
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  const visibleJobs = useMemo(
+    () =>
+      jobs.filter((j) => {
+        if (!isTodayTs(jobTs(j.createdAt))) return false; // today's jobs only
+        if (isActiveJob(j)) return true;
+        const settledAt = jobTs(j.updatedAt ?? j.createdAt);
+        // Sticky failures/warnings: whole-visit visibility; dismissed only once
+        // a full later visit has already shown them.
+        if (isStickyJob(j)) return settledAt > dismissBefore;
+        if (j.status === "done") {
+          // A done job lives in Orders now — show once, briefly, then drop.
+          if (nowMs - settledAt > 120_000) return false;
+          const seen = doneSeenRef.current.get(j.id);
+          return seen === undefined || nowMs - seen < 10_000;
+        }
+        return false;
+      }),
+    [jobs, nowMs, dismissBefore],
+  );
+  const hasTransientDone = visibleJobs.some((j) => j.status === "done" && !isStickyJob(j));
+  useEffect(() => {
+    if (!hasTransientDone) return;
+    const t = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, [hasTransientDone]);
+
   // The session is submittable once EVERY queued order has its front slip AND at
   // least one payment slip. (An order that's still blank blocks submit — the
   // operator should finish it or remove it.)
@@ -436,6 +614,21 @@ export function MobileScan({
     clearOrderError(orderId);
   };
 
+  // Clear the whole capture session back to one blank order (revoking every
+  // preview URL). Used after a successful submit — the operator now STAYS on
+  // this screen watching Recent scans, so the submitted photos must not linger
+  // looking still-pending.
+  const resetOrders = () => {
+    setOrders((cur) => {
+      for (const o of cur) {
+        if (o.front) URL.revokeObjectURL(o.front.url);
+        for (const s of o.payShots) URL.revokeObjectURL(s.url);
+      }
+      return [newOrder()];
+    });
+    setOrderErrors({});
+  };
+
   // POST one order's front slip + ONE payment slip to /scan-so/extract. The
   // existing contract reads exactly one order slip + one payment receipt into a
   // single payment, so one call per payment slip yields one payment per slip. The
@@ -514,6 +707,10 @@ export function MobileScan({
         });
       });
     }
+    // The legacy path has no job rows to watch, but the post-submit contract is
+    // the same: stay on this screen (the parent no longer navigates), clear the
+    // submitted photos, toast + Orders-list nudge via onDrafted.
+    resetOrders();
     onDrafted(prefills.length);
   };
 
@@ -577,6 +774,8 @@ export function MobileScan({
         });
         setOrderErrors(dupErrors);
         if (queued > 0) {
+          // Surface the just-queued jobs in Recent scans right away.
+          void refetchJobs();
           void serviceNotify({
             title: `${queued} draft${queued === 1 ? "" : "s"} queued`,
             body: "The other orders were queued. Only the duplicate slip below was not.",
@@ -589,7 +788,12 @@ export function MobileScan({
         setError("Couldn't read the slip — try again.");
         return;
       }
-      // Straight back to Orders — the drafts land on their own.
+      // STAY on this screen (owner 2026-07-04): clear the submitted photos,
+      // pull the new job rows into Recent scans immediately so the operator
+      // sees their pills before doing anything else, and let the parent toast
+      // + nudge the Orders list. He leaves via Cancel/back whenever.
+      resetOrders();
+      void refetchJobs();
       onDrafted(queued);
     } catch (e) {
       // Staging has no ANTHROPIC_API_KEY → /extract returns 503
@@ -639,6 +843,67 @@ export function MobileScan({
           </div>
         ) : (
           <>
+            {/* ── Recent scans — today's background jobs, top of the screen ──
+                Queued/running always; done shows briefly (tappable → the SO it
+                created) then drops (it lives in Orders now); failures and
+                duplicate warnings stay for the whole visit. Hidden entirely
+                when nothing is visible. */}
+            {visibleJobs.length > 0 && (
+              <div style={{ marginBottom: 14 }}>
+                <div className="ey" style={{ letterSpacing: ".14em", color: "#9aa093", fontSize: 10.5, marginBottom: 6 }}>Recent scans</div>
+                <div style={{ border: "1px solid #e3e6e0", borderRadius: 14, background: "#fff", overflow: "hidden" }}>
+                  {visibleJobs.map((j, i) => {
+                    const createdAt = jobTs(j.createdAt);
+                    const tappable = j.status === "done" && !!j.soDocNo && !!onOpenSo;
+                    const rowStyle: CSSProperties = {
+                      display: "flex", alignItems: "flex-start", gap: 9, width: "100%",
+                      padding: "10px 12px", background: "none", border: "none",
+                      borderTop: i === 0 ? "none" : "1px solid #eef0ec",
+                      textAlign: "left", fontFamily: "inherit", cursor: tappable ? "pointer" : "default",
+                    };
+                    const body = (
+                      <>
+                        <JobPill status={j.status} />
+                        <div style={{ flex: 1, minWidth: 0, paddingTop: 2 }}>
+                          {j.status === "done" && (
+                            <div style={{ fontSize: 12.5, fontWeight: 700, color: "#11140f", lineHeight: 1.35 }}>
+                              {j.soDocNo ? `${j.soDocNo} — saved to Orders` : "Saved to Orders"}
+                            </div>
+                          )}
+                          {j.status === "error" && (
+                            <div style={{ fontSize: 12, color: "#b23a3a", lineHeight: 1.45 }}>
+                              {j.error || "Couldn't read the slip."}
+                            </div>
+                          )}
+                          {j.status === "done" && j.error && (
+                            <div style={{ fontSize: 11, color: "#a16a2e", lineHeight: 1.45, marginTop: 2 }}>{j.error}</div>
+                          )}
+                          {j.duplicateOf && (
+                            <div style={{ fontSize: 11, color: "#a16a2e", fontWeight: 700, lineHeight: 1.45, marginTop: 2 }}>
+                              Duplicate of {j.duplicateOf}
+                            </div>
+                          )}
+                        </div>
+                        <span style={{ flex: "none", fontSize: 10.5, color: "#9aa093", paddingTop: 4 }}>
+                          {createdAt ? hhmm(createdAt) : ""}
+                        </span>
+                        {tappable && (
+                          <span style={{ flex: "none", color: "#c2c6bd", fontSize: 16, lineHeight: 1, paddingTop: 3 }}>{"›"}</span>
+                        )}
+                      </>
+                    );
+                    return tappable ? (
+                      <button key={j.id} onClick={() => onOpenSo!(j.soDocNo!)} aria-label={`Open ${j.soDocNo}`} style={rowStyle}>
+                        {body}
+                      </button>
+                    ) : (
+                      <div key={j.id} style={rowStyle}>{body}</div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {/* Hidden inputs: one for the front slip, one for payment slips. Both
                 re-targeted to activeOrderIdRef before each capture. The front
                 input keeps capture="environment" (single slip, rear camera); the

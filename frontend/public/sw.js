@@ -284,7 +284,7 @@
 //   re-added; Warehouse master page + form drawer; PO supplier-revised delivery
 //   dates wired end-to-end. (Promo refinement UI deferred — Houzs has no PWP
 //   editor yet; backend reward_size/compartment columns are live.)
-const VERSION = "houzs-erp-v123";
+const VERSION = "houzs-erp-v124";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 
