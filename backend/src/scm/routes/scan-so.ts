@@ -3260,6 +3260,19 @@ function buildDraftSoBodyFromSlip(
   const remarkNote = (parsed.remarks ?? '').trim();
   if (remarkNote) noteParts.push(remarkNote);
 
+  // Owner 2026-07-04: when the slip names a real DELIVERY date, carry it and pin
+  // the PROCESSING date to TODAY (a scan is keyed the day the order comes in;
+  // the processing date can never be a past date). The create core pairs the two
+  // (both set or both null) and rejects a past date, so we only set them when the
+  // slip's delivery date is a real YYYY-MM-DD that is today-or-later; a past /
+  // blank / "TBC" delivery leaves both null for the operator. runScanJob retries
+  // dateless if the create ever rejects the pair (belt-and-suspenders).
+  const scanToday = todayMyt();
+  const delivRaw = (parsed.deliveryDate ?? '').trim();
+  const scanDelivDate =
+    /^\d{4}-\d{2}-\d{2}$/.test(delivRaw) && delivRaw >= scanToday ? delivRaw : null;
+  const scanProcDate = scanDelivDate ? scanToday : null;
+
   const body: Record<string, unknown> = {
     customerName,
     debtorName: customerName,
@@ -3272,9 +3285,9 @@ function buildDraftSoBodyFromSlip(
     customerState: parsed.addressStateMatch?.value ?? null,
     city: (parsed.city ?? '').trim() || null,
     postcode: (parsed.postcode ?? '').trim() || null,
-    // DRAFT: no dates (the interactive "Save draft" nulls these too).
-    internalExpectedDd: null,
-    customerDeliveryDate: null,
+    // Delivery from the slip (today-or-later only); processing pinned to today.
+    internalExpectedDd: scanProcDate,
+    customerDeliveryDate: scanDelivDate,
     emergencyContactPhone: (parsed.phones[1] ?? '').trim()
       ? `+60${(parsed.phones[1] ?? '').replace(/\s+/g, '')}`
       : null,
@@ -3433,12 +3446,30 @@ async function runScanJob(
 
     // PRICING-CRITICAL create — the factored mfg-sales-orders core, replayed
     // with the identities captured at enqueue time. Never reimplemented here.
-    const outcome = await createDraftSalesOrder(env, {
+    let outcome = await createDraftSalesOrder(env, {
       salespersonId: job.salespersonId,
       salespersonName: job.salespersonName,
       houzsUserId: job.houzsUserId,
       body,
     });
+    // Belt-and-suspenders: if the create rejects AND we set slip dates, the
+    // date/variant pairing rules are the likely cause — retry once WITHOUT dates
+    // so the draft still lands (the operator sets dates on review). Never let a
+    // date rule cost the whole scanned order.
+    if (
+      outcome.status !== 201 &&
+      (body.internalExpectedDd != null || body.customerDeliveryDate != null)
+    ) {
+      console.warn('[scan-job] create rejected with dates, retrying dateless:', job.id, outcome.status);
+      body.internalExpectedDd = null;
+      body.customerDeliveryDate = null;
+      outcome = await createDraftSalesOrder(env, {
+        salespersonId: job.salespersonId,
+        salespersonName: job.salespersonName,
+        houzsUserId: job.houzsUserId,
+        body,
+      });
+    }
     const docNo = (outcome.body as { docNo?: unknown }).docNo;
     if (outcome.status === 201 && typeof docNo === 'string' && docNo !== '') {
       // Shell/blank draft — there is no reliable OCR payment to book. Record the

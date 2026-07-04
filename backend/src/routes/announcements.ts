@@ -75,6 +75,7 @@ type AnnouncementRow = {
   target_user_ids?: string | number[] | null;
   targetUserIds?: string | number[] | null;
   category?: string | null;
+  source?: string | null;
 };
 
 function readCategory(v: unknown): AnnouncementCategory {
@@ -224,6 +225,9 @@ function toPublic(r: AnnouncementRow) {
     ),
     targetUserIds: readIntArray(r.targetUserIds ?? r.target_user_ids ?? null),
     category: readCategory(r.category),
+    // System-notice tag ('scan' for background slip-scan results). Lets the
+    // client suppress the read-receipt roster on private per-user notices.
+    source: (r.source ?? null) as string | null,
   };
 }
 
@@ -350,24 +354,38 @@ app.get("/banner", async (c) => {
 });
 
 // ============================================================
-// GET /:id/acks — read-receipt for one notice. Splits the ACTIVE user roster
-// (status='active') into who has acked it and who hasn't.
+// GET /:id/acks — read-receipt for one notice. Roster = the notice's ACTUAL
+// audience (not the whole company), split into who has acked and who hasn't, so
+// a private USER_IDS notice reads "Read 1 / 1", not "1 / 48".
+// Gated on announcements.WRITE — only publishers/admins see who read a notice
+// (owner: a normal user must not see the read-receipts). The frontend already
+// only renders this for write-holders; this is the server-side backstop.
 // ============================================================
-app.get("/:id/acks", requirePermission("announcements.read"), async (c) => {
+app.get("/:id/acks", requirePermission("announcements.write"), async (c) => {
   const id = c.req.param("id");
   const ann = await c.env.DB.prepare(
-    "SELECT id FROM announcements WHERE id = ?",
+    "SELECT * FROM announcements WHERE id = ?",
   )
     .bind(id)
-    .first<{ id: string }>();
+    .first<AnnouncementRow>();
   if (!ann) {
     return c.json({ success: false, error: "Announcement not found" }, 404);
   }
 
+  // Only the active users this notice actually targets (userCanSee respects
+  // ALL_USERS / DEPARTMENT_IDS / POSITION_IDS / USER_IDS / MIXED).
   const rosterRes = await c.env.DB.prepare(
-    "SELECT id, email, name FROM users WHERE status = 'active' ORDER BY name ASC",
-  ).all<{ id: number; email?: string | null; name?: string | null }>();
-  const roster = rosterRes.results ?? [];
+    "SELECT id, email, name, department_id, position_id FROM users WHERE status = 'active' ORDER BY name ASC",
+  ).all<{
+    id: number;
+    email?: string | null;
+    name?: string | null;
+    department_id?: number | null;
+    position_id?: number | null;
+  }>();
+  const roster = (rosterRes.results ?? []).filter((u) =>
+    userCanSee(ann, u.id, u.department_id ?? null, u.position_id ?? null),
+  );
 
   const ackRes = await c.env.DB.prepare(
     "SELECT user_id, acked_at FROM announcement_acks WHERE announcement_id = ?",
