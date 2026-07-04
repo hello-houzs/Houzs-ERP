@@ -333,6 +333,30 @@ export const api = {
   },
 
   /**
+   * Raw binary POST — same contract as putBinary but for endpoints that
+   * create-or-replace via POST (e.g. the Branding logo upload).
+   */
+  async postBinary<T>(path: string, body: Blob | ArrayBuffer, contentType: string): Promise<T> {
+    const token = tokenStore.get();
+    const res = await binaryFetch(`${baseUrl}${path}`, {
+      method: "POST",
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        "Content-Type": contentType,
+      },
+      body,
+    }, UPLOAD_TIMEOUT_MS);
+    if (!res.ok) {
+      let txt = "";
+      try {
+        txt = await res.text();
+      } catch {}
+      throw new HttpError(res.status, txt || res.statusText);
+    }
+    return (await res.json()) as T;
+  },
+
+  /**
    * Multipart upload — POSTs a FormData with one or more files under
    * `fieldName`. Crucially we do NOT set Content-Type: the browser must set
    * `multipart/form-data; boundary=…` itself, so we only attach the bearer.

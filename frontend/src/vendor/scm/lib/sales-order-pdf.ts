@@ -19,6 +19,7 @@ import {
 } from './pdf-common';
 import { loadFabricDescriptionMap, loadFabricSupplierMap } from './supplier-doc-data';
 import { composeSoLineDescription } from './so-line-description';
+import { ensureBrandingLogoLoaded } from '../../../lib/branding';
 
 // ----------------------------------------------------------------------------
 // Sales Order PDF generator — dynamic jspdf import so it doesn't bloat the
@@ -96,6 +97,11 @@ type SoHeader = {
   emergency_contact_name?: string | null;
   emergency_contact_phone?: string | null;
   emergency_contact_relationship?: string | null;
+  /* Owner batch 2026-07 — ORDER DETAILS additions. Stamped by GET /:docNo
+     (scm.staff lookup on salesperson_id); optional so the Consignment Order
+     reuse path (no such columns) simply omits them and the rows don't print. */
+  salesperson_name?: string | null;
+  salesperson_phone?: string | null;
   /* Authoritative received-to-date rollup stamped by GET /:docNo (ledger +
      legacy header deposit). Falls back to summing `payments` when absent. */
   paid_centi_total?: number | null;
@@ -312,6 +318,12 @@ export async function renderSalesOrderInto(
   const pageW = doc.internal.pageSize.getWidth();
   const margin = 14;
 
+  /* Branding logo — make sure the module-level memo is warm BEFORE drawing
+     (drawHeader reads it synchronously). Memoized + fail-soft inside: a
+     multi-SO combined export awaits a resolved promise after the first doc,
+     and a broken logo just renders the historic text-only header. */
+  await ensureBrandingLogoLoaded();
+
   // ── Header (shared pdf-common letterhead) ─────────────────────────
   let y = drawHeader(doc, {
     docTitle: opts?.docTitle ?? 'SALES ORDER',
@@ -376,6 +388,24 @@ export async function renderSalesOrderInto(
       ].filter(Boolean).join(' · ')
     : null;
   const statusText = header.status.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
+  /* Owner batch 2026-07 — ORDER DETAILS additions. Dual-read camelCase ??
+     snake_case (repo #1 recurring bug) since these fields are stamped onto the
+     GET /:docNo payload. Blank values are skipped by drawInfoColumns, so a CO
+     header (which has none of these) or a phone-less salesperson prints no
+     empty ": -" row. */
+  const hx = header as unknown as Record<string, unknown>;
+  const s = (camel: string, snake: string): string => {
+    const v = hx[camel] ?? hx[snake];
+    return v == null ? '' : String(v).trim();
+  };
+  const salespersonName = s('salespersonName', 'salesperson_name');
+  const salespersonPhone = s('salespersonPhone', 'salesperson_phone');
+  const salespersonText = salespersonName
+    ? [salespersonName, salespersonPhone ? formatPhone(salespersonPhone) : '']
+        .filter(Boolean).join(' · ')
+    : null;
+  const emergencyPhone = s('emergencyContactPhone', 'emergency_contact_phone');
+  const emergencyText = emergencyPhone ? formatPhone(emergencyPhone) : null;
   y = drawInfoColumns(doc, y,
     {
       title: 'BILL TO',
@@ -398,6 +428,11 @@ export async function renderSalesOrderInto(
         ['Agent', header.agent],
         ['Sales Location', header.sales_location],
         ['Venue', header.venue],
+        /* Owner batch 2026-07 — salesperson name (· phone when scm.staff has
+           one) + the customer's emergency contact phone. Value-gated: rows
+           with no data don't print (drawInfoColumns skips blanks). */
+        ['Salesperson', salespersonText],
+        ['Emergency Contact', emergencyText],
         ['Branding', header.branding],
         ['Date', fmtDocDate(header.so_date)],
         ['Delivery Date', deliveryDate ? fmtDocDate(deliveryDate) : 'To be confirmed'],

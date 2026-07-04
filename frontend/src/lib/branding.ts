@@ -22,7 +22,8 @@ export interface Branding {
   phone: string;
   email: string;
   website: string;
-  /** R2 object key for an uploaded logo. Reserved — logo upload is deferred. */
+  /** R2 object key for an uploaded logo ("" = none). Uploaded in Settings →
+   *  Branding; served via GET /api/branding/logo (auth-gated). */
   logoR2Key: string;
 }
 
@@ -77,4 +78,96 @@ export function setBrandingCache(b: Branding): void {
 
 export function getBrandingCache(): Branding {
   return brandingCache;
+}
+
+// ── Logo memo for the pure (non-React) jspdf libs ─────────────────────────────
+// jspdf needs the image as a dataURL + its natural dimensions, and drawHeader()
+// is synchronous — so the logo is fetched ONCE (authed, via the api client) and
+// memoized at module level, keyed by logoR2Key. Upload keys carry a Date.now()
+// stamp (new upload = new key), so key equality is a correct cache check.
+// Multi-page / multi-print runs reuse the memo instead of refetching.
+
+export interface BrandingLogo {
+  key: string;
+  dataUrl: string;
+  /** jspdf addImage format tag. */
+  format: "PNG" | "JPEG";
+  /** Natural pixel size — used to preserve the aspect ratio in the header. */
+  width: number;
+  height: number;
+}
+
+let logoCache: BrandingLogo | null = null;
+let logoInflight: Promise<void> | null = null;
+let logoFailedKey: string | null = null; // don't hammer a 404/broken key
+
+/** Sync accessor for drawHeader(). null = no logo (text-only header). */
+export function getBrandingLogoCache(): BrandingLogo | null {
+  const key = brandingCache.logoR2Key;
+  if (!key) return null;
+  return logoCache && logoCache.key === key ? logoCache : null;
+}
+
+/** Drop the memo — called after a logo upload/remove in Settings so the next
+ *  PDF re-reads the new state instead of a stale image. */
+export function clearBrandingLogoCache(): void {
+  logoCache = null;
+  logoInflight = null;
+  logoFailedKey = null;
+}
+
+const blobToDataUrl = (blob: Blob): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result));
+    r.onerror = () => reject(r.error ?? new Error("read failed"));
+    r.readAsDataURL(blob);
+  });
+
+const dataUrlDimensions = (dataUrl: string): Promise<{ width: number; height: number }> =>
+  new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });
+    img.onerror = () => reject(new Error("image decode failed"));
+    img.src = dataUrl;
+  });
+
+/**
+ * Ensure the branding logo (if any) is memoized for the PDF libs. Fail-soft:
+ * any fetch/decode failure leaves the memo empty, and the letterhead simply
+ * renders text-only — a PDF must never fail because of a logo. Concurrent
+ * callers share one in-flight fetch.
+ */
+export async function ensureBrandingLogoLoaded(): Promise<void> {
+  const key = brandingCache.logoR2Key;
+  if (!key) return;                                   // no logo configured
+  if (logoCache && logoCache.key === key) return;     // memo is current
+  if (logoFailedKey === key) return;                  // known-bad — don't retry per print
+  if (logoInflight) return logoInflight;
+
+  logoInflight = (async () => {
+    try {
+      // Lazy import avoids a static api/client dependency for the many
+      // consumers that only need the text branding.
+      const { api, tokenStore } = await import("../api/client");
+      const token = tokenStore.get();
+      const res = await fetch(`${api.baseUrl}/api/branding/logo`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) throw new Error(`logo fetch ${res.status}`);
+      const blob = await res.blob();
+      const dataUrl = await blobToDataUrl(blob);
+      const { width, height } = await dataUrlDimensions(dataUrl);
+      if (!width || !height) throw new Error("logo has no dimensions");
+      const format: BrandingLogo["format"] =
+        blob.type === "image/png" || dataUrl.startsWith("data:image/png") ? "PNG" : "JPEG";
+      logoCache = { key, dataUrl, format, width, height };
+      logoFailedKey = null;
+    } catch {
+      logoFailedKey = key; // fail-soft: text-only header this session
+    } finally {
+      logoInflight = null;
+    }
+  })();
+  return logoInflight;
 }
