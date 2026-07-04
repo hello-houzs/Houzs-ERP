@@ -24,9 +24,14 @@ function readForcedOverride(): boolean | null {
   if (typeof window === "undefined") return null;
   try {
     const q = new URLSearchParams(window.location.search).get("mobile");
-    if (q === "1") localStorage.setItem("hz_force_mobile", "1");
-    else if (q === "0") localStorage.removeItem("hz_force_mobile");
-    if (localStorage.getItem("hz_force_mobile") === "1") return true;
+    // sessionStorage, NOT localStorage -- the preview override must die with
+    // the tab. The old localStorage flag stuck FOREVER: a one-time ?mobile=1
+    // preview left the owner's desktop permanently on the phone UI. Also
+    // clear any legacy sticky flag.
+    localStorage.removeItem("hz_force_mobile");
+    if (q === "1") sessionStorage.setItem("hz_force_mobile", "1");
+    else if (q === "0") sessionStorage.removeItem("hz_force_mobile");
+    if (sessionStorage.getItem("hz_force_mobile") === "1") return true;
     if (q === "0") return false;
     return null;
   } catch {
