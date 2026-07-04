@@ -262,7 +262,7 @@ type SoHeader = {
      here; rendered as an image so the coordinator can see the signed proof. */
   signature_b64: string | null;
   /* P1 (migration 0143) — POS handover payment slip. slip_key = R2 object key
-     (display via the /slip-url presign route); slip_state = review state. */
+     (display via the Worker-proxied /slip-url route); slip_state = review state. */
   slip_key: string | null;
   slip_state: 'none' | 'pending' | 'verified' | 'flagged' | null;
   /* Migration 0033 — original handwritten slip image (R2 key under

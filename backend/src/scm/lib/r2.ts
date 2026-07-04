@@ -34,9 +34,14 @@ export interface PresignArgs {
 }
 
 // Cloudflare R2 supports presigned URLs only via the S3-compatible API,
-// not the native Workers binding. We use the binding for HEAD/PUT/DELETE
-// from the Worker, and presigned URLs (S3 SigV4) for browser direct upload.
-// Sign manually with Web Crypto to avoid bundling the AWS SDK.
+// not the native Workers binding. Sign manually with Web Crypto to avoid
+// bundling the AWS SDK.
+//
+// 2026-07-04 — the payment-slip flow NO LONGER uses presign: it was converted
+// to a Worker-proxy upload + binding-served reads (routes/slips.ts,
+// mfg-sales-orders.ts slip-url routes) because the R2 S3 creds were never
+// provisioned. presign() remains ONLY for the SO-item-photo signed GET URLs
+// below (soItemPhotoBindings), which still need those creds.
 export async function presign(args: PresignArgs): Promise<string> {
   const { bucket, accessKeyId, secretAccessKey, endpoint, key, method, expiresInSeconds } = args;
   const url = new URL(`${endpoint}/${bucket}/${encodeURI(key)}`);
@@ -190,34 +195,7 @@ export async function r2Delete(bucket: R2Bucket, key: string): Promise<void> {
   await bucket.delete(key);
 }
 
-// S3-API HEAD via presigned URL. Used in routes that need to verify a file
-// uploaded by the browser via presigned PUT — because in `wrangler dev`
-// (without --remote) the R2 binding is a local Miniflare simulation while
-// the browser PUT lands in the real R2 bucket. Going through S3 in both
-// init/PUT and confirm/HEAD guarantees they hit the same backend in dev
-// and prod alike.
-export async function r2HeadViaS3(args: {
-  bucket: string;
-  accessKeyId: string;
-  secretAccessKey: string;
-  endpoint: string;
-  key: string;
-}): Promise<{ size: number; etag: string } | null> {
-  const url = await presign({
-    bucket: args.bucket,
-    region: 'auto',
-    accessKeyId: args.accessKeyId,
-    secretAccessKey: args.secretAccessKey,
-    endpoint: args.endpoint,
-    key: args.key,
-    method: 'HEAD',
-    expiresInSeconds: 60,
-  });
-  const res = await fetch(url, { method: 'HEAD' });
-  if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`r2 head failed: ${res.status}`);
-  return {
-    size: Number(res.headers.get('content-length') ?? '0'),
-    etag: (res.headers.get('etag') ?? '').replace(/"/g, ''),
-  };
-}
+// (r2HeadViaS3 — the S3-API HEAD used to verify browser presigned PUTs —
+// was deleted 2026-07-04 with the proxy-upload conversion. Both /upload and
+// /confirm now go through the SLIPS binding, so dev Miniflare and prod hit
+// the same backend by construction.)

@@ -79,14 +79,23 @@ bucket_name = "houzs-erp"
 #   • SO_ITEM_PHOTOS — private SO/consignment item photos (served via proxy).
 #   • PUBLIC_ASSETS  — category hero images. NOTE: storage works here, but true
 #     public-URL serving needs a public bucket policy / custom domain (separate).
-# SLIPS (payment-slip presign) is intentionally unbound — peripheral, and also
-# needs the R2 S3 API creds; the slip endpoints throw a clear error until set.
+#   • SLIPS          — payment-slip uploads (keys under slips/YYYY/MM/…).
+#     2026-07-04: was intentionally unbound while the flow used browser
+#     presigned PUTs (needed R2 S3 creds that were never created — every
+#     /slips/init 500'd "R2 binding SLIPS not configured"). The flow is now a
+#     Worker-proxy upload (init → POST /slips/:id/upload → confirm), same as
+#     branding-logo / scan uploads, so ONLY this binding is needed — no
+#     R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY secrets.
 [[r2_buckets]]
 binding = "SO_ITEM_PHOTOS"
 bucket_name = "houzs-erp"
 
 [[r2_buckets]]
 binding = "PUBLIC_ASSETS"
+bucket_name = "houzs-erp"
+
+[[r2_buckets]]
+binding = "SLIPS"
 bucket_name = "houzs-erp"
 
 # KV cache for the hydrated session user (services/sessionCache.ts). 60s TTL,
@@ -173,6 +182,10 @@ bucket_name = "houzs-erp"
 
 [[env.staging.r2_buckets]]
 binding = "PUBLIC_ASSETS"
+bucket_name = "houzs-erp"
+
+[[env.staging.r2_buckets]]
+binding = "SLIPS"
 bucket_name = "houzs-erp"
 
 [[env.staging.kv_namespaces]]

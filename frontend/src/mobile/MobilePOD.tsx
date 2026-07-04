@@ -21,7 +21,7 @@ import "./mobile.css";
      • Deliver         PATCH /delivery-orders-mfg/:id/status  body { status:
        "DELIVERED" }  flips the DO delivered (deducts stock + syncs the SO).
 
-   The delivery PHOTO is uploaded to R2 (the shared slip presigned-PUT
+   The delivery PHOTO is uploaded to R2 (the shared slip Worker-proxy
    pipeline: uploadSlipFull → { r2Key }) and its key is persisted as
    PATCH /:id/status { podKey } → delivery_orders.pod_r2_key. The customer
    SIGNATURE (base64 PNG) is persisted as { signatureData } →
@@ -168,7 +168,7 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
       // (base64 PNG) onto delivery_orders.signature_data and the delivery
       // photo's R2 key onto delivery_orders.pod_r2_key. GPS stays client-side
       // (no server column).
-      // Upload the photo to R2 FIRST (shared slip presigned-PUT pipeline) so
+      // Upload the photo to R2 FIRST (shared slip Worker-proxy pipeline) so
       // its key rides the same PATCH. A failed upload aborts the whole action —
       // we never mark delivered while claiming a photo we didn't store.
       let podKey: string | null = null;

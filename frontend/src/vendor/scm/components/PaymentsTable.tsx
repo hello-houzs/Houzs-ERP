@@ -286,8 +286,9 @@ export type PaymentsTableProps = SavedModeProps | DraftModeProps;
    Per-payment slip thumbnail (Spec D4, migration 0159).
 
    Per-payment slip (0159) first; legacy rows fall back to the order slip
-   (Wei Siang's 2026-06-06 column semantics). The per-row presigned URL is
-   fetched lazily and only when the row actually carries a slip_key.
+   (Wei Siang's 2026-06-06 column semantics). The per-row slip (blob object
+   URL via the Worker proxy) is fetched lazily and only when the row actually
+   carries a slip_key.
    ════════════════════════════════════════════════════════════════════════ */
 const PaymentSlipThumb = ({ docNo, payment, orderSlipUrl, orderSlipType }: {
   docNo: string;
@@ -298,7 +299,9 @@ const PaymentSlipThumb = ({ docNo, payment, orderSlipUrl, orderSlipType }: {
   const perRowQ = useQuery({
     queryKey: ['payment-slip', payment.id],
     enabled: Boolean(payment.slip_key),
-    staleTime: 4 * 60 * 1000,   // presigned URLs live 5 min
+    // Houzs proxy deviation: fetchPaymentSlipUrl now returns a blob object URL
+    // (no 5-min presign expiry); the staleTime just bounds re-fetch churn.
+    staleTime: 4 * 60 * 1000,
     queryFn: () => fetchPaymentSlipUrl(docNo, payment.id),
   });
   const url = payment.slip_key ? (perRowQ.data?.url ?? null) : orderSlipUrl;
