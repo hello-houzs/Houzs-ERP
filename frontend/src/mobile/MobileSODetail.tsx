@@ -263,9 +263,9 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
             {h && <StatusPill status={h.status} />}
           </div>
         </div>
-        <div className="eyebrow" style={{ marginTop: 7, display: "flex", alignItems: "center", gap: 6 }}>
-          <span className="money">{h?.doc_no ?? docNo}</span>
-          {(h?.customer_so_no || h?.ref || h?.po_doc_no) && (<><span style={{ opacity: .5 }}>·</span><span className="money">{h?.customer_so_no || h?.ref || h?.po_doc_no}</span></>)}
+        <div className="eyebrow" style={{ marginTop: 7, display: "flex", alignItems: "center", gap: 6, minWidth: 0, flexWrap: "wrap" }}>
+          <span className="money" style={{ flex: "none" }}>{h?.doc_no ?? docNo}</span>
+          {(h?.customer_so_no || h?.ref || h?.po_doc_no) && (<><span style={{ opacity: .5, flex: "none" }}>·</span><span className="money" style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{h?.customer_so_no || h?.ref || h?.po_doc_no}</span></>)}
         </div>
         <div className="scr-title">{h?.debtor_name || "—"}</div>
       </header>
