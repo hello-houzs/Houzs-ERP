@@ -104,18 +104,26 @@ scm.use("/pwp-rules/*", scmAreaGuard("scm.procurement.products"));
 scm.route("/pwp-rules", pwpRules);
 scm.use("/pwp-codes/*", scmAreaGuard("scm.procurement.products"));
 scm.route("/pwp-codes", pwpCodes);
-scm.use("/special-addons/*", scmAreaGuard("scm.procurement.products"));
+// SO-FLOW REFERENCE READS (openRead, 2026-07-04) — special-addons,
+// fabric-library, mfg-products, product-models, maintenance-config,
+// so-dropdown-options below: the New SO form + SoLineCard + mobile scan flow
+// READ these picklists/config for every salesperson (e.g. Sales Executive =
+// scm.sales.* view only), but their L2 home is the Products ADMIN area, which
+// used to 403 those reps on every GET. openRead lets GET/HEAD through for
+// anyone past the coarse umbrella; POST/PATCH/PUT/DELETE still require `edit`
+// on scm.procurement.products. See ScmAreaGuardOpts in middleware/area-guard.ts.
+scm.use("/special-addons/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
 scm.route("/special-addons", specialAddons);
-scm.use("/fabric-library/*", scmAreaGuard("scm.procurement.products"));
+scm.use("/fabric-library/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
 scm.route("/fabric-library", fabricLibrary);
-scm.use("/mfg-products/*", scmAreaGuard("scm.procurement.products"));
+scm.use("/mfg-products/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
 scm.route("/mfg-products", mfgProducts);
-scm.use("/product-models/*", scmAreaGuard("scm.procurement.products"));
+scm.use("/product-models/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
 scm.route("/product-models", productModels);
 // Static prefix must precede the parent /maintenance-config.
-scm.use("/maintenance-config/sofa-compartments/*", scmAreaGuard("scm.procurement.products"));
+scm.use("/maintenance-config/sofa-compartments/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
 scm.route("/maintenance-config/sofa-compartments", sofaCompartmentPhotos);
-scm.use("/maintenance-config/*", scmAreaGuard("scm.procurement.products"));
+scm.use("/maintenance-config/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
 scm.route("/maintenance-config", maintenanceConfig);
 scm.use("/sofa-combos/*", scmAreaGuard("scm.procurement.products"));
 scm.route("/sofa-combos", sofaCombos);
@@ -231,7 +239,10 @@ scm.route("/lorries", lorries);
 // relationship / payment_method cascade / venue). Seeded by
 // scripts/scm-schema/seed-scm-reference-data.sql. Mapped to products (the SO
 // Maintenance config lives under Products & Maintenance).
-scm.use("/so-dropdown-options/*", scmAreaGuard("scm.procurement.products"));
+// openRead: SO Maintenance picklists are READ by every salesperson building an
+// SO (see the SO-FLOW REFERENCE READS note above); config writes stay
+// edit-gated on scm.procurement.products.
+scm.use("/so-dropdown-options/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
 scm.route("/so-dropdown-options", soDropdownOptions);
 // Ported 2026-06-21 — AutoCount-style Detail Listing reports. The vendored
 // report pages (reports-queries.ts) call GET /reports/{sales-order,delivery-order,
@@ -254,7 +265,13 @@ scm.route("/reports", reports);
 // (distillAllSalespersonRules) not yet wired to a scheduled trigger; the
 // per-confirm fire-and-forget distill is the live learning path.
 // scan-so / scan-payment / slips feed SO creation → gated as scm.sales.orders.
-scm.use("/scan-so/*", scmAreaGuard("scm.sales.orders"));
+// writeLevel 'view' (2026-07-04): their POSTs (warm / enqueue / extract /
+// slip-upload init+confirm) only stage uploads + background OCR producing the
+// CALLER's own draft (salesperson uuid stamped from the caller — PR #245);
+// they never mutate an existing SO. Requiring 'edit' 403'd every view-level
+// rep (Sales Executive) on the mobile Scan flow. Actual SO create/edit
+// (mfg-sales-orders) keeps the default 'edit' gate.
+scm.use("/scan-so/*", scmAreaGuard("scm.sales.orders", { writeLevel: "view" }));
 scm.route("/scan-so", scanSo);
 // Re-added 2026-06-23 — card-terminal / EPP receipt OCR for the Payments panel.
 // The receipt IS the payment row's slip (one upload, both uses): the frontend
@@ -264,7 +281,7 @@ scm.route("/scan-so", scanSo);
 // payment_merchant / online_type / installment_plan); never invents a value.
 // Extraction-only (no samples/learning). ANTHROPIC_API_KEY optional —
 // /scan-payment/extract returns 503 anthropic_key_missing when absent.
-scm.use("/scan-payment/*", scmAreaGuard("scm.sales.orders"));
+scm.use("/scan-payment/*", scmAreaGuard("scm.sales.orders", { writeLevel: "view" }));
 scm.route("/scan-payment", scanPayment);
 // Ported 2026-06-24 — payment-slip upload session (init → upload → confirm).
 // PRODUCES the pending_slip_uploads row that the SO-create + add-payment
@@ -274,7 +291,9 @@ scm.route("/scan-payment", scanPayment);
 // were never created, so /slips/init 500'd r2_not_configured) to a
 // Worker-proxy upload (POST /slips/:session/upload, raw binary). Needs ONLY
 // the SLIPS R2 binding, now bound in wrangler.toml (prod + staging).
-scm.use("/slips/*", scmAreaGuard("scm.sales.orders"));
+// writeLevel view: staging an upload only produces the caller's own pending
+// slip row — a view-level sales rep can attach slips to their own draft.
+scm.use("/slips/*", scmAreaGuard("scm.sales.orders", { writeLevel: "view" }));
 scm.route("/slips", slips);
 
 export default scm;

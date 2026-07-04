@@ -35,7 +35,34 @@ import { meetsLevel, type AccessLevel } from "../../services/pageAccess";
 const isWrite = (method: string): boolean =>
   method === "POST" || method === "PATCH" || method === "PUT" || method === "DELETE";
 
-export function scmAreaGuard(area: string): MiddlewareHandler<{
+/**
+ * Options — least-privilege escape hatches for routes whose L2 "home" area is
+ * an ADMIN area but whose consumers are ordinary staff (added 2026-07-04 to
+ * unblock the mobile SO + scan flow for Members, e.g. Sales Executive with
+ * scm.sales.* = view and everything else = none):
+ *
+ * - `openRead` — GET/HEAD skip the per-area check entirely (writes still
+ *   enforce `edit` on the area). For SO-flow REFERENCE reads that happen to
+ *   live under scm.procurement.products (so-dropdown-options, fabric-library,
+ *   mfg-products, maintenance-config, product-models, special-addons): a
+ *   salesperson filling an SO must read these picklists, but must NOT need
+ *   view access to the whole Products admin area. Same spirit as the
+ *   SHARED READ HELPERS left on the coarse umbrella in scm/index.ts, except
+ *   these routers also have admin writes, so the guard stays for writes.
+ *
+ * - `writeLevel` — override the level required for POST/PATCH/PUT/DELETE
+ *   (default 'edit'). Used as `'view'` for scan-so / scan-payment / slips:
+ *   their POSTs (warm, enqueue, extract, slip-upload init/confirm) only stage
+ *   uploads and background OCR that produce the CALLER's own draft (the
+ *   pipeline stamps the caller's staff uuid — PR #245); they never mutate an
+ *   existing SO. Actual SO create/edit (mfg-sales-orders) keeps 'edit'.
+ */
+export interface ScmAreaGuardOpts {
+  openRead?: boolean;
+  writeLevel?: AccessLevel;
+}
+
+export function scmAreaGuard(area: string, opts?: ScmAreaGuardOpts): MiddlewareHandler<{
   Bindings: Env;
   Variables: Variables;
 }> {
@@ -58,8 +85,17 @@ export function scmAreaGuard(area: string): MiddlewareHandler<{
       return;
     }
 
+    const write = isWrite(c.req.method);
+
+    // Reference reads open to every caller who passed the coarse umbrella —
+    // see ScmAreaGuardOpts above. Reads only; writes fall through to the check.
+    if (!write && opts?.openRead) {
+      await next();
+      return;
+    }
+
     // 2) Explicit SCM L2 config → enforce per-area, per-method.
-    const requiredLevel: AccessLevel = isWrite(c.req.method) ? "edit" : "view";
+    const requiredLevel: AccessLevel = write ? (opts?.writeLevel ?? "edit") : "view";
     const level: AccessLevel = (user.page_access?.[area] ?? "none") as AccessLevel;
     if (!meetsLevel(level, requiredLevel)) {
       return c.json(
