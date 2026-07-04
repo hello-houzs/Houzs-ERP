@@ -101,7 +101,7 @@ const newOrder = (): OrderDraft => ({ id: `ord-${++ORDER_SEQ}-${Date.now()}`, fr
    running; otherwise no interval. Section hides entirely when nothing is
    visible. Fields are dual-read camelCase ?? snake_case (pg camelCase rule)
    even though jobToJson camelizes today. */
-type ScanJob = {
+export type ScanJob = {
   id: string;
   status: string; // queued | running | done | error
   soDocNo: string | null;
@@ -110,9 +110,12 @@ type ScanJob = {
   createdAt: string | null;
   updatedAt: string | null;
 };
-type ScanJobsResp = { success?: boolean; data?: { jobs?: Array<Record<string, unknown>> } };
+export type ScanJobsResp = { success?: boolean; data?: { jobs?: Array<Record<string, unknown>> } };
 
-function normalizeJobs(resp: ScanJobsResp | undefined): ScanJob[] {
+/* Shared with MobileSalesOrders' draft-created notifier — same GET /scan-so/jobs
+   payload, same dual-read (camelCase ?? snake_case) normalisation, so both
+   screens read a done job's soDocNo identically. */
+export function normalizeJobs(resp: ScanJobsResp | undefined): ScanJob[] {
   const raw = resp?.data?.jobs ?? [];
   return raw
     .map((j) => ({
