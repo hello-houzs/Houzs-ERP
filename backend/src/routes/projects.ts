@@ -164,11 +164,11 @@ app.delete("/event-types/:id", requirePermission("projects.manage"), async (c) =
 app.get("/brands", async (c) => {
   const includeInactive = c.req.query("include_inactive") === "1";
   const rows = await c.env.DB.prepare(
-    `SELECT id, name, color, sort_order, active
+    `SELECT id, name, color, sort_order, active, logo_r2_key
        FROM project_brands
       ${includeInactive ? "" : "WHERE active = 1"}
       ORDER BY sort_order, name`
-  ).all<{ id: number; name: string; color: string; sort_order: number; active: number }>();
+  ).all<{ id: number; name: string; color: string; sort_order: number; active: number; logo_r2_key: string | null }>();
   const all = rows.results ?? [];
   // Backwards compatibility: if the caller didn't ask for the full
   // objects, return the flat name array the old frontend expects.
@@ -292,6 +292,166 @@ app.put("/brands/reorder", requirePermission("projects.manage"), async (c) => {
         .bind((idx + 1) * 10, id),
     ),
   );
+  return c.json({ ok: true });
+});
+
+// ── Brand logos (owner 2026-07) ──────────────────────────────
+// Per-brand letterhead logo for the SCM Sales Order PDF. Clones the
+// branding.ts company-logo endpoints EXACTLY (raw binary in, R2 stream
+// out), but the key pointer lives on the project_brands row
+// (logo_r2_key, migration-pg 0069) instead of the branding config.
+// Same permission as the rest of the brands CRUD (projects.manage).
+
+/* Only the two web-safe raster formats the jspdf letterhead can embed.
+   Maps the upload's Content-Type to the stored extension. */
+const BRAND_LOGO_TYPES: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/jpg": "jpg",
+};
+const BRAND_LOGO_MAX_BYTES = 1 * 1024 * 1024; // ~1 MB — a letterhead logo, not a photo
+
+/** Dual-read helper — the pg driver camelCases result columns (#1
+ *  recurring bug), so always read both spellings. */
+const brandLogoKeyOf = (row: unknown): string | null => {
+  const r = (row ?? {}) as Record<string, unknown>;
+  const v = (r.logoR2Key ?? r.logo_r2_key) as string | null | undefined;
+  const s = typeof v === "string" ? v.trim() : "";
+  return s || null;
+};
+
+/**
+ * GET /brands/logo?key=brands/…
+ * Serve-by-key stream for the PDF brand-logo loader (frontend
+ * lib/branding.ts ensureBrandLogoLoaded). Mirrors the scan-so
+ * /slip-image proxy: the `brands/` prefix guard stops an
+ * attacker-supplied key from reaching an unrelated R2 object.
+ * Registered BEFORE /brands/:id/logo purely for reading order —
+ * the segment counts differ so the routes never collide.
+ */
+app.get("/brands/logo", async (c) => {
+  const key = c.req.query("key") ?? "";
+  if (!key.startsWith("brands/")) {
+    return c.json({ error: "key must start with brands/" }, 400);
+  }
+  const obj = await c.env.POD_BUCKET.get(key);
+  if (!obj) return c.json({ error: "Logo missing" }, 404);
+  const headers = new Headers();
+  obj.writeHttpMetadata(headers);
+  // Keys carry a Date.now() stamp (immutable per upload), so a long
+  // browser cache is safe — matches the slip-image proxy cache policy.
+  headers.set("cache-control", "private, max-age=3600");
+  return new Response(obj.body, { headers });
+});
+
+/**
+ * POST /brands/:id/logo
+ * Raw binary upload of a brand logo. The R2 key carries a Date.now()
+ * stamp — same convention as the company logo — so every upload yields
+ * a NEW key and every consumer (blob-URL previews, the PDF brand-logo
+ * memo) can use the key itself as the cache-buster.
+ */
+app.post("/brands/:id/logo", requirePermission("projects.manage"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
+  const contentType = (c.req.header("content-type") || "").split(";")[0].trim().toLowerCase();
+  const ext = BRAND_LOGO_TYPES[contentType];
+  if (!ext) {
+    return c.json({ error: "Logo must be a PNG or JPG image" }, 415);
+  }
+  const buf = await c.req.arrayBuffer();
+  if (!buf.byteLength) return c.json({ error: "Empty body" }, 400);
+  if (buf.byteLength > BRAND_LOGO_MAX_BYTES) {
+    return c.json({ error: "Logo must be under 1 MB" }, 413);
+  }
+
+  const brand = await c.env.DB.prepare(
+    `SELECT id, name, logo_r2_key FROM project_brands WHERE id = ?`
+  )
+    .bind(id)
+    .first<{ id: number; name: string; logo_r2_key: string | null }>();
+  if (!brand) return c.json({ error: "Not found" }, 404);
+
+  const key = `brands/logo-${id}-${Date.now()}.${ext}`;
+  await c.env.POD_BUCKET.put(key, buf, { httpMetadata: { contentType } });
+
+  // Point the brand row at the new object; best-effort clean up the
+  // previous one (orphans are cheap; a failed delete never fails the upload).
+  const prevKey = brandLogoKeyOf(brand);
+  await c.env.DB.prepare(
+    `UPDATE project_brands SET logo_r2_key = ? WHERE id = ?`
+  )
+    .bind(key, id)
+    .run();
+  if (prevKey && prevKey !== key) {
+    try { await c.env.POD_BUCKET.delete(prevKey); } catch { /* orphan is fine */ }
+  }
+
+  await audit(c, {
+    action: "projects.brands",
+    entityType: "project_brand",
+    entityId: String(id),
+    summary: `Brand logo uploaded (${(brand as { name?: string }).name ?? id})`,
+    meta: { logo_r2_key: key, bytes: buf.byteLength },
+  });
+  return c.json({ ok: true, logo_r2_key: key });
+});
+
+/**
+ * GET /brands/:id/logo
+ * Streams the stored brand logo bytes. Any authed user — the Brands
+ * manager thumbnail and the SO PDF are drawn client-side by every
+ * signed-in user. 404 when no logo is set.
+ */
+app.get("/brands/:id/logo", async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
+  const brand = await c.env.DB.prepare(
+    `SELECT logo_r2_key FROM project_brands WHERE id = ?`
+  )
+    .bind(id)
+    .first<{ logo_r2_key: string | null }>();
+  if (!brand) return c.json({ error: "Not found" }, 404);
+  const key = brandLogoKeyOf(brand);
+  if (!key) return c.json({ error: "No logo uploaded" }, 404);
+  const obj = await c.env.POD_BUCKET.get(key);
+  if (!obj) return c.json({ error: "Logo missing" }, 404);
+  const headers = new Headers();
+  obj.writeHttpMetadata(headers);
+  headers.set("cache-control", "private, max-age=300");
+  return new Response(obj.body, { headers });
+});
+
+/**
+ * DELETE /brands/:id/logo
+ * Clears the logo pointer and best-effort deletes the object — the SO
+ * PDF falls back to the company letterhead logo.
+ */
+app.delete("/brands/:id/logo", requirePermission("projects.manage"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
+  const brand = await c.env.DB.prepare(
+    `SELECT logo_r2_key FROM project_brands WHERE id = ?`
+  )
+    .bind(id)
+    .first<{ logo_r2_key: string | null }>();
+  if (!brand) return c.json({ error: "Not found" }, 404);
+  const prevKey = brandLogoKeyOf(brand);
+  if (prevKey) {
+    await c.env.DB.prepare(
+      `UPDATE project_brands SET logo_r2_key = NULL WHERE id = ?`
+    )
+      .bind(id)
+      .run();
+    try { await c.env.POD_BUCKET.delete(prevKey); } catch { /* orphan is fine */ }
+  }
+  await audit(c, {
+    action: "projects.brands",
+    entityType: "project_brand",
+    entityId: String(id),
+    summary: "Brand logo removed",
+    meta: { logo_r2_key: prevKey },
+  });
   return c.json({ ok: true });
 });
 

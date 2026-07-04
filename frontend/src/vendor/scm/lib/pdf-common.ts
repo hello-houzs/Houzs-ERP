@@ -8,7 +8,7 @@
 // ----------------------------------------------------------------------------
 
 import { fmtDate } from '@2990s/shared';
-import { getBrandingCache, getBrandingLogoCache } from '../../../lib/branding';
+import { getBrandingCache, getBrandingLogoCache, type BrandingLogo } from '../../../lib/branding';
 
 /* HOUZS letterhead — name / reg no / address / phone / email now come from the
    centralised Branding config (one editable record in Settings → Branding),
@@ -146,6 +146,11 @@ export function drawHeader(
   opts: {
     docTitle: string;       // e.g. "SALES INVOICE"
     rightMeta: Array<{ label: string; value: string }>;
+    /** Per-document logo override (owner 2026-07 — brand letterheads): when
+     *  set, draws THIS logo (e.g. the SO's resolved brand logo) instead of
+     *  the company logo. null/undefined → the company logo memo, then the
+     *  historic text-only header — company letterhead stays the fallback. */
+    logo?: BrandingLogo | null;
   },
 ): number {
   const pageW = doc.internal.pageSize.getWidth();
@@ -160,7 +165,7 @@ export function drawHeader(
      generator, so multi-page / multi-print runs never refetch. */
   let textX = margin;
   let logoBottomY = 0;
-  const logo = getBrandingLogoCache();
+  const logo = opts.logo ?? getBrandingLogoCache();
   if (logo) {
     const maxW = 40;   // mm — letterhead-scale, never dominates the header
     const maxH = 16;   // mm — fits beside the 4-line text block

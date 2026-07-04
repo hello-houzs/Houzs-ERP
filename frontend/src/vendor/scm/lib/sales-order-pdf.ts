@@ -19,7 +19,11 @@ import {
 } from './pdf-common';
 import { loadFabricDescriptionMap, loadFabricSupplierMap } from './supplier-doc-data';
 import { composeSoLineDescription } from './so-line-description';
-import { ensureBrandingLogoLoaded } from '../../../lib/branding';
+import {
+  ensureBrandingLogoLoaded,
+  ensureBrandLogoLoaded,
+  getBrandLogoCache,
+} from '../../../lib/branding';
 
 // ----------------------------------------------------------------------------
 // Sales Order PDF generator — dynamic jspdf import so it doesn't bloat the
@@ -107,6 +111,13 @@ type SoHeader = {
   paid_centi_total?: number | null;
   /* POS handover customer signature (data-URL or bare base64 PNG). */
   signature_b64?: string | null;
+  /* Owner 2026-07 — brand letterhead. Stamped by GET /:docNo (SOFA→ZANOTTI,
+     else first-item description-prefix match against project_brands). When
+     set, the SO letterhead prints THIS brand's logo instead of the company
+     logo (company stays the fallback). Optional so the Consignment Order
+     reuse path simply omits it. */
+  resolvedBrandLogoKey?: string | null;
+  resolved_brand_logo_key?: string | null;
 };
 
 type SoItem = {
@@ -323,6 +334,16 @@ export async function renderSalesOrderInto(
      multi-SO combined export awaits a resolved promise after the first doc,
      and a broken logo just renders the historic text-only header. */
   await ensureBrandingLogoLoaded();
+  /* Brand letterhead (owner 2026-07) — GET /:docNo stamps the resolved brand
+     logo key (SOFA→ZANOTTI, else first-item description-prefix match). Warm
+     the per-key memo and pass the image to drawHeader IN PLACE OF the company
+     logo. Fail-soft end to end: a missing/broken brand logo leaves the memo
+     empty (getBrandLogoCache → null) and drawHeader falls back to the company
+     logo, then the text-only header. Dual-read camelCase ?? snake_case (#1
+     recurring bug). */
+  const brandLogoKey =
+    (header.resolvedBrandLogoKey ?? header.resolved_brand_logo_key ?? null) || null;
+  if (brandLogoKey) await ensureBrandLogoLoaded(brandLogoKey);
 
   // ── Header (shared pdf-common letterhead) ─────────────────────────
   let y = drawHeader(doc, {
@@ -331,6 +352,7 @@ export async function renderSalesOrderInto(
       { label: opts?.docNoLabel ?? 'Doc No', value: header.doc_no },
       { label: 'Date', value: fmtDocDate(header.so_date) },
     ],
+    logo: getBrandLogoCache(brandLogoKey),
   });
 
   // ── Resolve processing + delivery dates (folded into ORDER DETAILS below).
