@@ -3112,18 +3112,53 @@ async function recordScanReceiptPayments(
 // Validated option values (customerType / buildingType / state / venue /
 // payment fields) come straight from validateSlip's catalog-bound matches, so
 // the create handler's own dropdown re-validation accepts them.
+// Placeholder values a scan SHELL draft carries in the required fields the OCR
+// could not read. Clearly provisional so the rep knows to overwrite them; the
+// create core skips customer-identity resolution for _scanShell bodies so these
+// never spawn a phantom customer.
+const SHELL_NAME = 'Scan — please complete';
+const SHELL_PHONE = 'To be confirmed';
+
+/* A fully blank scan shell — used when the OCR produced NOTHING at all (blank
+   or unreadable photo). Still lands a draft carrying the slip photo so the rep
+   opens it and keys the order in by hand. */
+function buildEmptyShellBody(
+  keys: { imageKey: string | null; receiptImageKey: string | null },
+): Record<string, unknown> {
+  return {
+    customerName: SHELL_NAME,
+    debtorName: SHELL_NAME,
+    phone: SHELL_PHONE,
+    note: null,
+    depositCenti: 0,
+    slipImageKey: keys.imageKey,
+    receiptImageKey: keys.receiptImageKey,
+    asDraft: true,
+    _scanShell: true,
+    items: [],
+  };
+}
+
 function buildDraftSoBodyFromSlip(
   parsed: ExtractedSlip,
   catalog: Catalog,
   keys: { imageKey: string | null; receiptImageKey: string | null },
+  opts?: { allowShell?: boolean },
 ): { body: Record<string, unknown> | null; missing: string[] } {
   const missing: string[] = [];
-  const customerName = (parsed.customerName ?? '').trim();
+  let customerName = (parsed.customerName ?? '').trim();
   if (!customerName) missing.push('customer name');
   // parsed.phones are already national-significant digits (postProcessSlip).
-  const mainPhone = (parsed.phones[0] ?? '').trim();
+  let mainPhone = (parsed.phones[0] ?? '').trim();
   if (!mainPhone) missing.push('phone number');
-  if (missing.length > 0) return { body: null, missing };
+  // Owner 2026-07-04: a scan missing the required name/phone must STILL land a
+  // draft the rep opens and completes from the photo — not just an error. In
+  // shell mode we substitute clearly-provisional placeholders for the missing
+  // required fields, keep everything that WAS read (address, lines...), and tag
+  // the body `_scanShell` so the create core skips the customer upsert.
+  if (missing.length > 0 && !opts?.allowShell) return { body: null, missing };
+  const isShell = missing.length > 0;
+  if (!customerName) customerName = SHELL_NAME;
 
   const skuByCode = new Map(catalog.skus.map((s) => [s.code.toUpperCase(), s]));
   const items: Array<Record<string, unknown>> = [];
@@ -3183,7 +3218,7 @@ function buildDraftSoBodyFromSlip(
     customerName,
     debtorName: customerName,
     customerSoNo: (parsed.customerSoRef ?? '').trim() || null,
-    phone: `+60${mainPhone.replace(/\s+/g, '')}`,
+    phone: mainPhone ? `+60${mainPhone.replace(/\s+/g, '')}` : SHELL_PHONE,
     customerType: parsed.customerTypeMatch?.value ?? null,
     buildingType: parsed.buildingTypeMatch?.value ?? null,
     note: noteParts.length > 0 ? noteParts.join(' | ') : null,
@@ -3218,9 +3253,12 @@ function buildDraftSoBodyFromSlip(
     receiptImageKey: keys.receiptImageKey,
     // The whole point: land as DRAFT for the operator to review.
     asDraft: true,
+    // Shell = required fields were placeholdered; the create core skips the
+    // customer-identity upsert so placeholders never spawn a phantom customer.
+    _scanShell: isShell,
     items,
   };
-  return { body, missing: [] };
+  return { body, missing };
 }
 
 // The waitUntil pipeline — runs AFTER /enqueue has responded. Every failure
@@ -3293,39 +3331,50 @@ async function runScanJob(
       env.SO_ITEM_PHOTOS, svc, sampleId, job.uploadedImages, parsed,
     );
 
+    // Owner 2026-07-04: EVERY scan ends as a draft the rep can open — success,
+    // duplicate, OR unreadable. A scan that could not be turned into a full
+    // order still lands a SHELL draft carrying the slip photo (with a plain
+    // "please complete this from the photo" note the Orders-open toast shows),
+    // so the rep never has to hunt a lost scan or re-shoot just to key it in.
+    let body: Record<string, unknown>;
+    let shellNote: string | null = null;
+    let dupDocNo: string | null = null;
+
     if (!parsed) {
-      console.error('[scan-job] extraction failed:', job.id, call.errorMsg);
-      return await fail(call.timedOut ? JOB_MSG.timeout : JOB_MSG.unreadable);
-    }
+      // Nothing parsed at all (blank/unreadable photo, or the model timed out).
+      console.error('[scan-job] extraction failed, creating blank draft:', job.id, call.errorMsg);
+      const slipKey = imageKey ?? (job.imageKeys[0] ?? null);
+      body = buildEmptyShellBody({ imageKey: slipKey, receiptImageKey });
+      shellNote = 'The scan could not read this slip, so this draft is blank. Please open it and fill in the order from the photo.';
+    } else {
+      await postProcessSlip(parsed, svc, env.GOOGLE_MAPS_API_KEY, catalog);
 
-    await postProcessSlip(parsed, svc, env.GOOGLE_MAPS_API_KEY, catalog);
+      // Duplicate-upload warning (owner: 重复上传预警) — same photo scanned
+      // again recently, or the same customer/slip already has an SO. The DRAFT
+      // is STILL created for review; the flag rides on the job row (mobile
+      // surfaces it in the toast) and the SO note is prefixed below.
+      const dup = await findDuplicateSo(svc, { imageSha256, excludeSampleId: sampleId, parsed });
+      if (dup) { dupDocNo = dup.docNo; await touch({ duplicate_of: dup.docNo }); }
 
-    // TOTALLY-EMPTY extraction (evidence 2026-07: two prod samples came back
-    // with every field null and zero lines — a blank/unreadable photo, not a
-    // slip the model half-read). Tell the rep to retake instead of the
-    // misleading "could not read the customer name and phone" message.
-    if (!parsed.customerName && parsed.phones.length === 0 && parsed.lines.length === 0) {
-      return await fail('Nothing could be read from the photo. Please retake a clearer, well-lit photo of the whole slip.');
-    }
-
-    // Duplicate-upload warning (owner: 重复上传预警) — same photo scanned
-    // again recently, or the same customer/slip already has an SO. The DRAFT
-    // is STILL created for review; the flag rides on the job row (mobile
-    // surfaces it) and the SO note is prefixed below. Fail-soft throughout.
-    const dup = await findDuplicateSo(svc, { imageSha256, excludeSampleId: sampleId, parsed });
-    if (dup) await touch({ duplicate_of: dup.docNo });
-
-    const draft = buildDraftSoBodyFromSlip(parsed, catalog, { imageKey, receiptImageKey });
-    if (!draft.body) {
-      return await fail(
-        `The scan could not read the ${draft.missing.join(' and ')} on the slip. Please enter this order manually.`,
-      );
-    }
-    if (dup) {
-      const existingNote = typeof draft.body.note === 'string' && draft.body.note.trim() !== ''
-        ? ` | ${draft.body.note}`
-        : '';
-      draft.body.note = `POSSIBLE DUPLICATE of ${dup.docNo}${existingNote}`;
+      // allowShell → always returns a body; missing required fields become
+      // placeholders and the body is tagged `_scanShell`.
+      const draft = buildDraftSoBodyFromSlip(parsed, catalog, { imageKey, receiptImageKey }, { allowShell: true });
+      if (!draft.body) {
+        // Defensive — allowShell should never return null.
+        return await fail(
+          `The scan could not read the ${draft.missing.join(' and ')} on the slip. Please enter this order manually.`,
+        );
+      }
+      body = draft.body;
+      if (body._scanShell === true) {
+        shellNote = `The scan could not read the ${draft.missing.join(' and ')} on this slip. Please open this draft and complete it from the photo.`;
+      }
+      if (dupDocNo) {
+        const existingNote = typeof body.note === 'string' && body.note.trim() !== ''
+          ? ` | ${body.note}`
+          : '';
+        body.note = `POSSIBLE DUPLICATE of ${dupDocNo}${existingNote}`;
+      }
     }
 
     // PRICING-CRITICAL create — the factored mfg-sales-orders core, replayed
@@ -3334,10 +3383,20 @@ async function runScanJob(
       salespersonId: job.salespersonId,
       salespersonName: job.salespersonName,
       houzsUserId: job.houzsUserId,
-      body: draft.body,
+      body,
     });
     const docNo = (outcome.body as { docNo?: unknown }).docNo;
     if (outcome.status === 201 && typeof docNo === 'string' && docNo !== '') {
+      // Shell/blank draft — there is no reliable OCR payment to book. Record the
+      // plain "please complete" note so the Orders-open toast tells the rep, and
+      // stop here (no receipt-payment pass on a draft the model couldn't read).
+      if (shellNote) {
+        await touch({ status: 'done', so_doc_no: docNo, error: shellNote });
+        return;
+      }
+      // Past the shell paths, a null parse has already returned above — narrow
+      // `parsed` to non-null for the receipt-payment pass (defensive fallback).
+      if (!parsed) { await touch({ status: 'done', so_doc_no: docNo }); return; }
       // Payments from receipt OCR — one ledger row per classified payment
       // receipt, via the SAME recordSoPaymentRow core the interactive route
       // uses. GUARD: never fail the job — the DRAFT stands; a failure only

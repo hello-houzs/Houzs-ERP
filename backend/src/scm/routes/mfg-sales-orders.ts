@@ -2226,7 +2226,13 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
      PWP voucher binding below — all of which previously saw a permanently-null
      customer_id (the POS never sent one). */
   let orderCustomerId: string | null = null;
-  {
+  /* Scan blank-draft shell (owner 2026-07-04) — a scan that could not read the
+     customer's name/phone still lands a draft the rep completes by hand, but it
+     carries PLACEHOLDER name/phone. Resolving a customer identity off those
+     placeholders would spawn a phantom customer (and collide every blank shell
+     onto one bogus record), so shells skip the upsert; customer_id stays null
+     until the rep fills the real name/phone and re-saves. */
+  if (body._scanShell !== true) {
     const { data: resolvedCustomerId, error: customerErr } = await sb.rpc('upsert_customer_by_name_phone', {
       p_name:  customerName,
       p_phone: normPhone,
