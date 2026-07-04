@@ -1548,6 +1548,29 @@ mfgSalesOrders.get('/:docNo', async (c) => {
     paid_centi_total: paidCentiTotal,
     balance_centi: Math.max(0, totalRevenueCenti - paidCentiTotal),
   };
+  /* Owner batch 2026-07 — resolve the salesperson's display name + contact
+     phone (scm.staff) so the SO PDF's ORDER DETAILS can print "Salesperson:
+     name · phone" without a second round-trip. Best-effort: a failed lookup
+     (or a null salesperson_id) leaves both null and the PDF row is skipped. */
+  {
+    const spId = (h.data as { salesperson_id?: string | null }).salesperson_id ?? null;
+    let spName: string | null = null;
+    let spPhone: string | null = null;
+    if (spId) {
+      try {
+        const { data: sp } = await sb
+          .from('staff')
+          .select('name, phone')
+          .eq('id', spId)
+          .maybeSingle();
+        const row = sp as { name?: string | null; phone?: string | null } | null;
+        spName = (row?.name ?? '').trim() || null;
+        spPhone = (row?.phone ?? '').trim() || null;
+      } catch { /* best-effort — PDF falls back to omitting the row */ }
+    }
+    (salesOrder as Record<string, unknown>).salesperson_name = spName;
+    (salesOrder as Record<string, unknown>).salesperson_phone = spPhone;
+  }
   /* Per-line delivery breakdown so the SO views can show a "Delivered" column
      (which DO took how much, and the live balance) without a second round-trip.
      remaining/delivered come from the authoritative soDeliverableRemaining

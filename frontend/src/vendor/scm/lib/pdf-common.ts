@@ -8,7 +8,7 @@
 // ----------------------------------------------------------------------------
 
 import { fmtDate } from '@2990s/shared';
-import { getBrandingCache } from '../../../lib/branding';
+import { getBrandingCache, getBrandingLogoCache } from '../../../lib/branding';
 
 /* HOUZS letterhead — name / reg no / address / phone / email now come from the
    centralised Branding config (one editable record in Settings → Branding),
@@ -152,13 +152,36 @@ export function drawHeader(
   const margin = 14;
   let y = margin;
 
+  /* Branding logo (owner 2026-07 — 左上角): when the owner has uploaded a
+     logo it renders TOP-LEFT and the company name/address block shifts to
+     sit BESIDE it, keeping the exact same line spacing. No logo (or the
+     memo not yet warmed) → the historic text-only header, byte-identical.
+     The memo is primed by useBranding() at app load and awaited by the SO
+     generator, so multi-page / multi-print runs never refetch. */
+  let textX = margin;
+  let logoBottomY = 0;
+  const logo = getBrandingLogoCache();
+  if (logo) {
+    const maxW = 40;   // mm — letterhead-scale, never dominates the header
+    const maxH = 16;   // mm — fits beside the 4-line text block
+    const scale = Math.min(maxW / logo.width, maxH / logo.height);
+    const w = logo.width * scale;
+    const h = logo.height * scale;
+    const topY = margin - 5; // aligns the logo top with the company-name cap line
+    try {
+      doc.addImage(logo.dataUrl, logo.format, margin, topY, w, h);
+      textX = margin + w + 6;
+      logoBottomY = topY + h;
+    } catch { /* fail-soft: draw the text-only header */ }
+  }
+
   doc.setFont('helvetica', 'bold'); doc.setFontSize(16);
-  doc.text(COMPANY.name, margin, y);
+  doc.text(COMPANY.name, textX, y);
   doc.setFont('helvetica', 'normal'); doc.setFontSize(9); y += 5;
-  doc.text(COMPANY.reg, margin, y);
+  doc.text(COMPANY.reg, textX, y);
   for (const line of COMPANY.addressLines) {
     y += 4;
-    doc.text(line, margin, y);
+    doc.text(line, textX, y);
   }
 
   let rightY = margin;
@@ -172,6 +195,7 @@ export function drawHeader(
   }
 
   y = Math.max(y, rightY) + 6;
+  if (logoBottomY) y = Math.max(y, logoBottomY + 3); // divider clears the logo
   doc.setDrawColor(180); doc.line(margin, y, pageW - margin, y);
   return y + 4;
 }

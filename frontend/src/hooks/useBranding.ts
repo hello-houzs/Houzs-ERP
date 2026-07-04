@@ -4,6 +4,7 @@ import { api } from "../api/client";
 import {
   type Branding,
   DEFAULT_BRANDING,
+  ensureBrandingLogoLoaded,
   normalizeBranding,
   setBrandingCache,
 } from "../lib/branding";
@@ -35,7 +36,13 @@ export function useBranding(): Branding {
 
   // Keep the non-React PDF cache in sync once the real value lands.
   useEffect(() => {
-    if (q.data) setBrandingCache(branding);
+    if (q.data) {
+      setBrandingCache(branding);
+      // Warm the letterhead-logo memo in the background so the first PDF of
+      // the session already has it. Fail-soft + memoized inside — a broken
+      // logo never surfaces here, and repeat mounts don't refetch.
+      void ensureBrandingLogoLoaded();
+    }
     // branding is derived from q.data; depend on the raw payload to avoid a new
     // object identity re-firing the effect every render.
   }, [q.data, branding]);

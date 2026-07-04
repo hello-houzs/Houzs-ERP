@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { Building2, Database, Mail, Send } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Building2, Database, ImageIcon, Mail, Send, Trash2, Upload } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { TabStrip, type TabOption } from "../components/TabStrip";
 import { Button } from "../components/Button";
@@ -14,10 +14,12 @@ import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useStickyFilters } from "../hooks/useStickyFilters";
 import { useAuth } from "../auth/AuthContext";
 import { api, buildQuery } from "../api/client";
+import { invalidate } from "../api/cache";
 import { relativeTime } from "../lib/utils";
 import {
   type Branding,
   DEFAULT_BRANDING,
+  clearBrandingLogoCache,
   normalizeBranding,
   setBrandingCache,
 } from "../lib/branding";
@@ -462,13 +464,105 @@ function BrandingTab() {
   const [form, setForm] = useState<Branding | null>(null);
   const [saving, setSaving] = useState(false);
 
+  // Logo uploader state — the preview is a blob URL (the serve endpoint needs
+  // the bearer, so <img src> can't hit it directly — same pattern as Avatar).
+  const logoInputRef = useRef<HTMLInputElement>(null);
+  const [logoUrl, setLogoUrl] = useState<string | null>(null);
+  const [logoBusy, setLogoBusy] = useState(false);
+
   // Hydrate the editable form once the fetch lands (and on reloads).
   useEffect(() => {
     if (q.data) setForm(normalizeBranding(q.data.branding));
   }, [q.data]);
 
+  // Load / refresh the logo preview whenever the stored key changes. Keys carry
+  // a Date.now() stamp, so passing the key as a query param busts stale caches.
+  const logoKey = form?.logoR2Key ?? "";
+  useEffect(() => {
+    if (!logoKey) {
+      setLogoUrl(null);
+      return;
+    }
+    let url: string | null = null;
+    let cancelled = false;
+    api
+      .fetchBlobUrl(`/api/branding/logo?k=${encodeURIComponent(logoKey)}`)
+      .then((u) => {
+        if (cancelled) {
+          URL.revokeObjectURL(u);
+        } else {
+          url = u;
+          setLogoUrl(u);
+        }
+      })
+      .catch(() => setLogoUrl(null));
+    return () => {
+      cancelled = true;
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [logoKey]);
+
   function set<K extends keyof Branding>(key: K, value: Branding[K]) {
     setForm((f) => (f ? { ...f, [key]: value } : f));
+  }
+
+  /** Apply the server-confirmed branding after a logo change: form + module
+   *  cache + PDF logo memo, so the next generated PDF is immediately right. */
+  function applyBranding(raw: unknown) {
+    const next = normalizeBranding(raw);
+    setForm(next);
+    setBrandingCache(next);
+    clearBrandingLogoCache();
+    // postBinary (unlike api.put/del) doesn't auto-invalidate the SWR family —
+    // drop /api/branding explicitly so the reload below fetches fresh.
+    invalidate("/api/branding");
+    q.reload();
+  }
+
+  async function uploadLogo(file: File | null) {
+    if (!file) return;
+    if (!["image/png", "image/jpeg"].includes(file.type)) {
+      toast.error("Logo must be a PNG or JPG image");
+      return;
+    }
+    if (file.size > 1024 * 1024) {
+      toast.error("Logo must be under 1 MB");
+      return;
+    }
+    setLogoBusy(true);
+    try {
+      const res = await api.postBinary<BrandingResponse>(
+        "/api/branding/logo",
+        file,
+        file.type,
+      );
+      applyBranding(res?.branding ?? { ...(form ?? {}), logoR2Key: logoKey });
+      toast.success("Logo uploaded — it now prints on every document letterhead");
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to upload logo");
+    } finally {
+      setLogoBusy(false);
+    }
+  }
+
+  async function removeLogo() {
+    const ok = await dialog.confirm({
+      title: "Remove company logo?",
+      message:
+        "Document letterheads (PDFs) go back to the text-only company header.",
+      confirmLabel: "Remove",
+    });
+    if (!ok) return;
+    setLogoBusy(true);
+    try {
+      const res = await api.del<BrandingResponse>("/api/branding/logo");
+      applyBranding(res?.branding ?? { ...(form ?? {}), logoR2Key: "" });
+      toast.success("Logo removed");
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to remove logo");
+    } finally {
+      setLogoBusy(false);
+    }
   }
 
   async function save() {
@@ -548,10 +642,64 @@ function BrandingTab() {
             );
           })}
 
-          {/* Logo upload is deferred — placeholder so the surface is discoverable. */}
-          <div className="rounded-md border border-dashed border-border bg-bg/50 px-3 py-3 text-[11px] text-ink-muted">
-            Logo upload coming soon — the document letterheads currently use the
-            built-in wordmark.
+          {/* Company logo — prints TOP-LEFT on every document letterhead (PDF).
+              PNG/JPG up to 1 MB; stored in R2, key on the branding config. */}
+          <div>
+            <label className="mb-1 block text-[11px] font-semibold text-ink-secondary">
+              Company logo
+              <span className="ml-1 font-normal text-ink-muted">(optional)</span>
+            </label>
+            <div className="flex items-center gap-3 rounded-md border border-border bg-bg/50 px-3 py-3">
+              {logoUrl ? (
+                <img
+                  src={logoUrl}
+                  alt="Company logo"
+                  className="h-12 max-w-[160px] shrink-0 rounded-sm object-contain"
+                />
+              ) : (
+                <div className="grid h-12 w-16 shrink-0 place-items-center rounded-sm border border-dashed border-border text-ink-muted">
+                  <ImageIcon size={16} />
+                </div>
+              )}
+              <div className="min-w-0 flex-1 text-[11px] text-ink-muted">
+                {logoKey
+                  ? "Printed top-left on every document letterhead (PDF)."
+                  : "No logo uploaded — letterheads use the text-only company header."}
+                <div className="mt-0.5">PNG or JPG, up to 1 MB.</div>
+              </div>
+              {canEdit && (
+                <div className="flex shrink-0 items-center gap-2">
+                  <input
+                    ref={logoInputRef}
+                    type="file"
+                    accept="image/png,image/jpeg"
+                    className="hidden"
+                    onChange={(e) => {
+                      void uploadLogo(e.target.files?.[0] ?? null);
+                      e.target.value = "";
+                    }}
+                  />
+                  <Button
+                    variant="secondary"
+                    disabled={logoBusy || saving}
+                    onClick={() => logoInputRef.current?.click()}
+                  >
+                    <Upload size={13} />
+                    {logoBusy ? "Working…" : logoKey ? "Replace" : "Upload"}
+                  </Button>
+                  {logoKey && (
+                    <Button
+                      variant="secondary"
+                      disabled={logoBusy || saving}
+                      onClick={() => void removeLogo()}
+                    >
+                      <Trash2 size={13} />
+                      Remove
+                    </Button>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
 
           {canEdit ? (
