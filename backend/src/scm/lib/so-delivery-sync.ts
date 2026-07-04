@@ -169,11 +169,29 @@ export async function syncSoDeliveredFromDo(
       const shippedLines = soLines.filter((l) =>
         !isServiceLine({ itemGroup: l.item_group, itemCode: l.item_code }) &&
         (netByLine.get(l.id) ?? 0) >= l.qty);
+      const stampedCodes: string[] = [];
       for (const l of shippedLines) {
-        await sb.from('mfg_sales_order_items')
+        const { data: stamped } = await sb.from('mfg_sales_order_items')
           .update({ stock_status: 'READY', stock_qty_ready: l.qty })
           .eq('id', l.id)
-          .neq('stock_status', 'READY');
+          .neq('stock_status', 'READY')
+          .select('id');
+        if ((stamped ?? []).length > 0) stampedCodes.push(l.item_code ?? l.id);
+      }
+      /* History audit (owner requirement: automated changes visible) — one
+         summary row when shipped lines were auto-stamped READY. Only emitted
+         when a row ACTUALLY flipped (the .neq guard + .select tell us), so
+         idempotent re-runs stay silent. Best-effort by recordSoAudit design. */
+      if (stampedCodes.length > 0) {
+        await recordSoAudit(sb, {
+          docNo,
+          action: 'UPDATE_LINE',
+          actorId: actorId ?? null,
+          actorName: 'System (delivery sync)',
+          source: 'automation',
+          note: 'Line(s) marked READY — fully covered by delivery',
+          fieldChanges: [{ field: 'stockStatus', from: 'auto', to: `READY: ${stampedCodes.join(', ')}` }],
+        });
       }
 
       // Decide the reconciled status. No-op when it already matches (idempotent).

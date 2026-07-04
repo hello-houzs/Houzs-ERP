@@ -2633,9 +2633,22 @@ const FIELD_LABEL: Record<string, string> = {
   emergencyContactRelationship: 'Emergency relationship',
   targetDate: 'Target date', branding: 'Branding', venue: 'Venue', venueId: 'Venue (master)',
   salesLocation: 'Sales location', ref: 'Ref', poDocNo: 'PO doc no',
+  /* Coverage-audit additions (2026-07) — keys emitted by the DO amend mirror,
+     Delivery Planning /fields + /schedule and payment/automation entries, so
+     the History panel never falls back to a raw camelCase key for them. */
+  amendDateFromCustomer: 'Amend date (customer)', amendedDeliveryDate: 'Amended delivery date',
+  amendReason: 'Amend reason', deliveryState: 'Delivery region',
+  possessionDate: 'Possession date', houseType: 'House type',
+  replacementDisposal: 'Replacement / disposal', referral: 'Referral',
+  amountCenti: 'Amount', paidAt: 'Paid on', method: 'Method',
+  merchantProvider: 'Bank', installmentMonths: 'Installment months',
+  onlineType: 'Online type', approvalCode: 'Approval code',
+  stockStatus: 'Stock status', photoAdded: 'Photo added', photoRemoved: 'Photo removed',
+  photosCleaned: 'Photos removed', tbcVariants: 'Variants updated', sofaBuild: 'Sofa build',
+  pwpCode: 'PWP code', pwpRewardsReverted: 'PWP rewards reverted', pwpCodesDeleted: 'PWP codes deleted',
 };
 
-const MONEY_FIELDS = new Set(['unitPriceCenti', 'discountCenti', 'totalCenti', 'depositCenti', 'localTotalCenti', 'unitCostCenti']);
+const MONEY_FIELDS = new Set(['unitPriceCenti', 'discountCenti', 'totalCenti', 'depositCenti', 'localTotalCenti', 'unitCostCenti', 'amountCenti']);
 
 const fmtField = (field: string, val: unknown): string => {
   if (val === null || val === undefined || val === '') return '—';

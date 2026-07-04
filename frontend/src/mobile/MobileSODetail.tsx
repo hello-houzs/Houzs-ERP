@@ -5,6 +5,11 @@ import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { uploadSlipFull, fetchPaymentSlipUrl, fetchScanSlipImageBlobUrl } from "../vendor/scm/lib/slip";
 import { useStaff } from "../vendor/scm/lib/admin-queries";
+import {
+  useSalesOrderAuditLog,
+  type SoAuditEntry,
+  type SoAuditFieldChange,
+} from "../vendor/scm/lib/sales-order-queries";
 import { buildVariantSummary } from "../vendor/shared/variant-summary";
 import "./mobile.css";
 
@@ -438,6 +443,14 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
               return <ScannedPhotosCard slipKey={slipImageKey} receiptKey={receiptImageKey} />;
             })()}
 
+            {/* History — owner requirement (Inistate-style audit timeline): WHO
+                created / edited / changed status, WHEN, via WHICH app, with an
+                expandable field-level old → new diff. Accordion follows the
+                card pattern above; the audit-log fetch is LAZY — it only fires
+                the first time the section is opened (mirrors desktop's
+                historyOpen-mounted HistoryPanel). */}
+            <HistoryCard docNo={docNo} />
+
             {actionError && <div style={{ marginTop: 13, fontSize: 11.5, color: "var(--red)", textAlign: "center" }}>{actionError}</div>}
           </div>
         )}
@@ -632,6 +645,202 @@ function ScannedThumb({ imageKey, label, onView }: { imageKey: string; label: st
       )}
       <div style={{ padding: "6px 4px", fontSize: 10, fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", color: "#9aa093" }}>{label}</div>
     </button>
+  );
+}
+
+/* ── History timeline (owner requirement — Inistate-style audit trail) ──────
+   Reads GET /mfg-sales-orders/:docNo/audit-log (mfg_so_audit_log) via the SAME
+   vendored hook desktop's HistoryPanel uses. Lazy: the hook receives null until
+   the accordion opens, so `enabled: Boolean(docNo)` keeps the request unfired.
+   Entries arrive newest-first from the backend. */
+
+/* Human labels for the audit `field` keys — subset of desktop's FIELD_LABEL
+   plus the payment / amendment / automation keys the mobile timeline surfaces. */
+const HIST_FIELD_LABEL: Record<string, string> = {
+  debtorName: "Customer", debtorCode: "Customer code", agent: "Agent",
+  phone: "Phone", email: "Email", soDate: "SO date", status: "Status",
+  paymentMethod: "Payment method", depositCenti: "Deposit",
+  internalExpectedDd: "Processing date", customerSoNo: "Customer SO ref",
+  customerPo: "Customer PO", customerDeliveryDate: "Delivery date",
+  amendedDeliveryDate: "Amended delivery date",
+  amendDateFromCustomer: "Amend date (customer)", amendReason: "Amend reason",
+  deliveryState: "Delivery region", possessionDate: "Possession date",
+  houseType: "House type", replacementDisposal: "Replacement / disposal",
+  referral: "Referral", city: "City", postcode: "Postcode",
+  buildingType: "Building type", address1: "Address 1", address2: "Address 2",
+  address3: "Address 3", address4: "Address 4", note: "Note", remark: "Remark",
+  itemCode: "Item", itemGroup: "Group", description: "Description",
+  description2: "Description 2", uom: "UOM", qty: "Qty",
+  unitPriceCenti: "Unit price", discountCenti: "Discount",
+  unitCostCenti: "Unit cost", totalCenti: "Line total", lineCount: "Lines",
+  localTotalCenti: "Total", amountCenti: "Amount", paidAt: "Paid on",
+  method: "Method", merchantProvider: "Bank", installmentMonths: "Installment months",
+  onlineType: "Online type", approvalCode: "Approval code",
+  stockStatus: "Stock status", salespersonId: "Salesperson",
+  customerType: "Customer type", venue: "Venue", venueId: "Venue (master)",
+  salesLocation: "Sales location", customerState: "State", cancelled: "Cancelled",
+  photoAdded: "Photo added", photoRemoved: "Photo removed",
+  tbcVariants: "Variants updated", sofaBuild: "Sofa build",
+  pwpCode: "PWP code", pwpRewardsReverted: "PWP rewards reverted",
+  pwpCodesDeleted: "PWP codes deleted", photosCleaned: "Photos removed",
+};
+const HIST_MONEY_FIELDS = new Set([
+  "unitPriceCenti", "discountCenti", "totalCenti", "depositCenti",
+  "localTotalCenti", "unitCostCenti", "amountCenti",
+]);
+const histVal = (field: string, v: unknown): string => {
+  if (v === null || v === undefined || v === "") return "—";
+  if ((HIST_MONEY_FIELDS.has(field) || /Centi$/.test(field)) && typeof v === "number") return `RM ${rm(v)}`;
+  if (typeof v === "object") return JSON.stringify(v);
+  return String(v).replace(/_/g, " ");
+};
+/* Timestamp — desktop-standard numeric DD/MM/YYYY + HH:mm. */
+const histWhen = (iso: string): string => {
+  const d = new Date(iso);
+  if (isNaN(+d)) return "—";
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+};
+const histHue = (s: string): number => {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return Math.abs(h) % 360;
+};
+const histInitials = (name: string): string => {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  const first = parts[0] ?? "";
+  if (parts.length === 1) return first.slice(0, 2).toUpperCase();
+  const last = parts[parts.length - 1] ?? "";
+  return ((first[0] ?? "") + (last[0] ?? "")).toUpperCase();
+};
+/* Action → plain sentence ("<actor> <sentence>"), pulling the headline value
+   (status pair / amount / item code) out of the entry's field_changes. */
+const histSentence = (e: SoAuditEntry): string => {
+  const fc: SoAuditFieldChange[] = Array.isArray(e.field_changes) ? e.field_changes : [];
+  const find = (f: string) => fc.find((c) => c.field === f);
+  switch (e.action) {
+    case "CREATE":
+      return e.status_snapshot === "DRAFT" ? "created this order (draft)" : "created this order";
+    case "UPDATE_DETAILS":
+      return "updated details";
+    case "UPDATE_STATUS": {
+      const s = find("status");
+      const to = (s?.to ?? e.status_snapshot ?? "?") as string;
+      return s?.from ? `changed status ${String(s.from)} → ${to}` : `changed status to ${to}`;
+    }
+    case "ADD_PAYMENT": {
+      const a = find("amountCenti");
+      return typeof a?.to === "number" ? `added payment RM ${rm(a.to)}` : "added a payment";
+    }
+    case "DELETE_PAYMENT": {
+      const a = find("amountCenti");
+      return typeof a?.from === "number" ? `removed payment RM ${rm(a.from)}` : "removed a payment";
+    }
+    case "ADD_LINE": {
+      const cd = find("itemCode");
+      return cd?.to ? `added line ${String(cd.to)}` : "added a line";
+    }
+    case "UPDATE_LINE": {
+      const cd = find("itemCode");
+      const code = cd?.to ?? cd?.from;
+      return code ? `edited line ${String(code)}` : "edited a line";
+    }
+    case "DELETE_LINE": {
+      const cd = find("itemCode");
+      return cd?.from ? `removed line ${String(cd.from)}` : "removed a line";
+    }
+    default:
+      return e.action.replace(/_/g, " ").toLowerCase();
+  }
+};
+
+function HistoryCard({ docNo }: { docNo: string }) {
+  const [open, setOpen] = useState(false);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  /* Lazy load — hook gets null until first open, so nothing is fetched for the
+     common "just glancing at the order" visit (mirrors desktop historyOpen). */
+  const q = useSalesOrderAuditLog(open ? docNo : null);
+  const entries = q.data ?? [];
+
+  return (
+    <div className="card">
+      <div
+        className="card-h"
+        role="button"
+        tabIndex={0}
+        onClick={() => setOpen((o) => !o)}
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen((o) => !o); } }}
+        style={{ cursor: "pointer", userSelect: "none" }}
+        aria-expanded={open}
+      >
+        <span className="card-t">History</span>
+        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {open && !q.isLoading && !q.error && <span className="card-sub">{entries.length}</span>}
+          <span style={{ fontSize: 12, color: "var(--mut)", transform: open ? "rotate(90deg)" : "none", transition: "transform .15s", display: "inline-block" }}>{"›"}</span>
+        </span>
+      </div>
+      {open && (
+        <>
+          {q.isLoading && <div style={{ padding: "11px 13px", borderTop: "1px solid var(--line2)", fontSize: 11.5, color: "var(--mut2)" }}>Loading{"…"}</div>}
+          {!!q.error && (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "11px 13px", borderTop: "1px solid var(--line2)" }}>
+              <span style={{ fontSize: 11.5, color: "var(--red)", fontWeight: 600 }}>Couldn't load the history</span>
+              <button onClick={() => q.refetch()} style={{ border: "none", background: "transparent", color: "var(--red)", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}>Retry</button>
+            </div>
+          )}
+          {!q.isLoading && !q.error && (entries.length ? entries.map((e) => {
+            const name = e.actor_name_snapshot ?? "(unknown)";
+            const fc: SoAuditFieldChange[] = Array.isArray(e.field_changes) ? e.field_changes : [];
+            const isX = !!expanded[e.id];
+            return (
+              <div key={e.id} style={{ display: "flex", gap: 9, padding: "10px 13px", borderTop: "1px solid var(--line2)", alignItems: "flex-start" }}>
+                <span aria-hidden style={{ width: 24, height: 24, minWidth: 24, borderRadius: "50%", background: `hsl(${histHue(name)}, 45%, 55%)`, color: "#fff", fontSize: 9.5, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", marginTop: 1 }}>
+                  {histInitials(name)}
+                </span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12.5, color: "var(--ink)", lineHeight: 1.35 }}>
+                    <span style={{ fontWeight: 700 }}>{name}</span>{" "}{histSentence(e)}
+                  </div>
+                  <div className="money" style={{ fontSize: 10.5, color: "var(--mut)", marginTop: 2 }}>
+                    {histWhen(e.created_at)}{e.source ? ` · via ${e.source}` : ""}
+                  </div>
+                  {e.note ? <div style={{ fontSize: 10.5, color: "var(--mut2)", marginTop: 2, fontStyle: "italic" }}>{e.note}</div> : null}
+                  {fc.length > 0 && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setExpanded((s) => ({ ...s, [e.id]: !s[e.id] }))}
+                        style={{ border: "none", background: "transparent", padding: 0, marginTop: 4, fontFamily: "inherit", fontSize: 11, fontWeight: 700, color: "var(--teal)", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 }}
+                      >
+                        <span style={{ transform: isX ? "rotate(90deg)" : "none", transition: "transform .15s", display: "inline-block", fontSize: 10 }}>{"›"}</span>
+                        Changes ({fc.length})
+                      </button>
+                      {isX && (
+                        <div style={{ marginTop: 5, background: "#f4f6f3", border: "1px solid #e3e6e0", borderRadius: 8, padding: "7px 9px", display: "flex", flexDirection: "column", gap: 4 }}>
+                          {fc.map((ch, idx) => (
+                            <div key={idx} style={{ fontSize: 11, lineHeight: 1.4, color: "var(--ink)", wordBreak: "break-word" }}>
+                              <span style={{ fontWeight: 700, color: "var(--mut)" }}>{HIST_FIELD_LABEL[ch.field] ?? ch.field}:</span>{" "}
+                              {ch.from !== undefined && ch.from !== null && ch.from !== "" ? (
+                                <>
+                                  <span style={{ color: "#b23a3a", textDecoration: "line-through" }}>{histVal(ch.field, ch.from)}</span>
+                                  <span style={{ color: "var(--mut2)" }}>{" → "}</span>
+                                </>
+                              ) : null}
+                              <span style={{ color: "#0c3f39", fontWeight: 600 }}>{histVal(ch.field, ch.to)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+            );
+          }) : <div style={{ padding: "11px 13px", borderTop: "1px solid var(--line2)", fontSize: 11.5, color: "var(--mut2)" }}>No history yet.</div>)}
+        </>
+      )}
+    </div>
   );
 }
 

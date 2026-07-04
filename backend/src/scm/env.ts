@@ -22,6 +22,9 @@ export interface Variables {
   houzsUser: {
     id: number;
     email?: string;
+    /** Real display name from public.users — used for audit-trail actor
+     *  snapshots (mfg_so_audit_log.actor_name_snapshot). */
+    name?: string | null;
     permissions?: string[];
     permissions_set?: Set<string>;
   } | undefined;
