@@ -172,13 +172,22 @@ async function binaryFetch(url: string, init: RequestInit, timeoutMs: number): P
 // is aborted, then retried once the connection has had a moment to warm.
 // Mutations are NOT retried (not idempotent) and are left uncapped.
 const GET_TIMEOUT_MS = 27_000;
-const GET_RETRIES = 2;
+// Cold-start ride-through (2026-07-04): a Worker isolate that just restarted
+// (deploy) OR woke from idle (first user in the morning) opens COLD Hyperdrive
+// connections; for a few seconds requests answer 503 "briefly unavailable"
+// before self-healing. HOOKKA rarely shows this because it stays warm under
+// steady daily traffic — Houzs, under active dev + lighter traffic, hits the
+// cold window more. We can't shorten the window (the pg connection layer is the
+// months-proven HOOKKA config and MUST NOT gain retries/pool — 2026-06-13), so
+// we widen the CLIENT's patience: 4 spaced retries (~10s) rides out a typical
+// cold window silently instead of dumping "Couldn't load" on the first tap.
+const GET_RETRIES = 4;
 // A cold Hyperdrive pool answers with a 503 carrying a "database is briefly
 // unavailable" body — raised by the connection layer BEFORE the handler/DB is
 // touched, so the request never executed. That makes it safe to retry even for
 // a mutation (no double-write). We retry ONLY this specific cold-pool 503; every
 // other 503 and all 4xx/5xx still surface as-is.
-const COLD_POOL_RETRIES = 3;
+const COLD_POOL_RETRIES = 4;
 const isColdPool503 = (e: HttpError) =>
   e.status === 503 &&
   /briefly unavailable|warming up|try again in a moment/i.test(String(e.message || ""));
