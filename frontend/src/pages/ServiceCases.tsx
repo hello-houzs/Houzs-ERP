@@ -1840,6 +1840,11 @@ function CreatePanel({
   const [dropdownRect, setDropdownRect] = useState<{ top: number; left: number; width: number } | null>(null);
   const [lookupItems, setLookupItems] = useState<{ item_code: string; item_description: string | null; qty?: number }[] | null>(null);
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
+  // Per-item affected quantity (owner 2026-07: multiselect + per-product
+  // qty). Seeded from the SO line qty when an item is ticked; editable via
+  // the Qty input on each selected row. Backend create already stores a
+  // qty per assr_items row, so this is frontend-only.
+  const [itemQty, setItemQty] = useState<Record<string, number>>({});
   const [issue, setIssue] = useState("");
   // "" → unset; OTHER_SENTINEL → user picked Other but hasn't typed yet;
   // any other string → either a canonical category or a custom label.
@@ -1957,6 +1962,7 @@ function CreatePanel({
       );
       setLookupItems(res.items);
       setSelectedItems(new Set());
+      setItemQty({});
     } catch (e: any) {
       toast.error(`Lookup failed: ${e?.message || e}`);
     } finally {
@@ -2023,6 +2029,7 @@ function CreatePanel({
     if (s.ref && !refNo.trim()) setRefNo(s.ref);
     setLookupItems(null);
     setSelectedItems(new Set());
+    setItemQty({});
     // Auto-run the items lookup so the form proceeds in one click.
     setTimeout(() => {
       void (async () => {
@@ -2045,10 +2052,12 @@ function CreatePanel({
     if (!docNo.trim() || !issue.trim()) return;
     const items = [...selectedItems].map((code) => {
       const found = lookupItems?.find((i) => i.item_code === code);
+      // User-chosen affected qty wins; falls back to the SO line qty.
+      const chosen = itemQty[code];
       return {
         item_code: code,
         item_description: found?.item_description ?? null,
-        qty: found?.qty && found.qty > 0 ? found.qty : 1,
+        qty: chosen && chosen > 0 ? chosen : found?.qty && found.qty > 0 ? found.qty : 1,
       };
     });
     if (!items.length) {
@@ -2120,12 +2129,24 @@ function CreatePanel({
   }
 
   function toggleItem(code: string) {
+    const deselecting = selectedItems.has(code);
     setSelectedItems((prev) => {
       const next = new Set(prev);
       if (next.has(code)) next.delete(code);
       else next.add(code);
       return next;
     });
+    if (deselecting) {
+      // Drop the qty so re-ticking re-seeds from the SO line qty.
+      setItemQty((q) => {
+        const { [code]: _dropped, ...rest } = q;
+        return rest;
+      });
+    } else {
+      // Seed the affected qty from the SO line qty (fallback 1).
+      const found = lookupItems?.find((i) => i.item_code === code);
+      setItemQty((q) => ({ ...q, [code]: found?.qty && found.qty > 0 ? found.qty : 1 }));
+    }
   }
 
   return (
@@ -2230,8 +2251,31 @@ function CreatePanel({
                       {item.item_description}
                     </span>
                   )}
-                  {item.qty != null && item.qty > 0 && (
-                    <span className="ml-auto text-[11px] text-ink-muted">&times;{item.qty}</span>
+                  {selectedItems.has(item.item_code) ? (
+                    // Selected → editable affected qty (seeded from the SO
+                    // line qty). Click/keys stay in the input — never toggle
+                    // the row's checkbox.
+                    <span
+                      className="ml-auto flex flex-none items-center gap-1"
+                      onClick={(e) => e.preventDefault()}
+                    >
+                      <span className="text-[10px] uppercase tracking-brand text-ink-muted">Qty</span>
+                      <input
+                        type="number"
+                        min={1}
+                        value={itemQty[item.item_code] ?? (item.qty && item.qty > 0 ? item.qty : 1)}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => {
+                          const n = parseInt(e.target.value, 10);
+                          setItemQty((q) => ({ ...q, [item.item_code]: Number.isFinite(n) && n > 0 ? n : 1 }));
+                        }}
+                        className="w-14 rounded-md border border-border bg-bg px-2 py-1 text-right text-[12px] outline-none focus:border-primary"
+                      />
+                    </span>
+                  ) : (
+                    item.qty != null && item.qty > 0 && (
+                      <span className="ml-auto text-[11px] text-ink-muted">&times;{item.qty}</span>
+                    )
                   )}
                 </label>
               ))}

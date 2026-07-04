@@ -1067,7 +1067,14 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
   const [soQuery, setSoQuery] = useState("");
   const [soPicked, setSoPicked] = useState<SoHit | null>(null);
   const { results: soResults, loading: soLoading } = useSoSearch(soPicked ? "" : soQuery);
-  const [itemCode, setItemCode] = useState("");
+  // Affected products — MULTISELECT with per-product qty (owner 2026-07:
+  // sometimes 1 product, sometimes several). The backend create endpoint
+  // already accepts an `items` array of { item_code, item_description, qty }
+  // (assr_items rows, same as desktop CreatePanel) — no schema change.
+  type SelItem = { item_code: string; item_description: string | null; qty: number };
+  const [selItems, setSelItems] = useState<SelItem[]>([]);
+  // Free-text adder draft (used when the SO has no lookup items).
+  const [manualCode, setManualCode] = useState("");
   const [complaint, setComplaint] = useState("");
   const [category, setCategory] = useState("");
   const [priority, setPriority] = useState("normal");
@@ -1090,8 +1097,26 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
     setSoPicked(hit);
     setDocNo(String(get(hit, "docNo", "doc_no") ?? "").trim());
     setSoQuery("");
+    // Different SO → its items no longer apply; start the pick list fresh.
+    setSelItems([]);
+    setManualCode("");
   };
-  const clearSo = () => { setSoPicked(null); setDocNo(""); setSoQuery(""); };
+  const clearSo = () => { setSoPicked(null); setDocNo(""); setSoQuery(""); setSelItems([]); setManualCode(""); };
+
+  // ── multi-item helpers ──
+  const addSelItem = (item: SelItem) => {
+    setSelItems((prev) =>
+      prev.some((it) => it.item_code === item.item_code) ? prev : [...prev, item],
+    );
+  };
+  const removeSelItem = (code: string) =>
+    setSelItems((prev) => prev.filter((it) => it.item_code !== code));
+  const setSelQty = (code: string, qty: number) =>
+    setSelItems((prev) => prev.map((it) => (it.item_code === code ? { ...it, qty: Math.max(1, qty) } : it)));
+  // SO items not yet on the pick list (dropdown adder source).
+  const remainingSoItems = soItems.filter(
+    (it) => !selItems.some((s) => s.item_code === String(get(it, "itemCode", "item_code") ?? "")),
+  );
   // Defect photos/videos staged locally, uploaded after the case is
   // created (attachments require the case id). Up to 5, matching the design.
   const [files, setFiles] = useState<File[]>([]);
@@ -1115,9 +1140,13 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
       // shows up on desktop (owner's acceptance test).
       const res = await api.post<{ id: number; assr_no?: string }>("/api/assr", {
         doc_no: docNo.trim(),
-        items: itemCode.trim()
-          ? [{ item_code: itemCode.trim(), item_description: null, qty: 1 }]
-          : [],
+        // Multi-item: every picked row lands as its own assr_items row with
+        // its chosen qty — identical shape to desktop CreatePanel's submit.
+        items: selItems.map((it) => ({
+          item_code: it.item_code,
+          item_description: it.item_description,
+          qty: it.qty > 0 ? it.qty : 1,
+        })),
         complaint_issue: complaint.trim(),
         issue_category: category.trim() || null,
         priority,
@@ -1163,10 +1192,16 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
     },
   });
 
-  const valid = docNo.trim() && itemCode.trim() && complaint.trim() && complainedDate.trim();
+  const valid = docNo.trim() && selItems.length > 0 && complaint.trim() && complainedDate.trim();
 
+  // FIXED + z-index 40 (the .sheet-bd pattern) — NOT absolute/z20. When
+  // Service is the active TAB this sheet renders inside the tab-content
+  // div, and the floating tab bar (.navwrap, absolute bottom, z-index 30)
+  // would otherwise sit ON TOP of the sheet's bottom actbar, hiding the
+  // Create button entirely (owner: "no way to create"). Fixed + 40 lifts
+  // the whole sheet above the tab bar, exactly like the Menu sheet.
   return (
-    <div className="hz-m" style={{ position: "absolute", inset: 0, zIndex: 20, background: "rgba(17,20,15,.4)", display: "flex", flexDirection: "column", justifyContent: "flex-end" }} onClick={onClose}>
+    <div className="hz-m" style={{ position: "fixed", inset: 0, zIndex: 40, background: "rgba(17,20,15,.4)", display: "flex", flexDirection: "column", justifyContent: "flex-end" }} onClick={onClose}>
       <div onClick={(e) => e.stopPropagation()} style={{ background: "var(--app-bg)", borderTopLeftRadius: 18, borderTopRightRadius: 18, maxHeight: "92%", display: "flex", flexDirection: "column", paddingBottom: "env(safe-area-inset-bottom)" }}>
         {/* header (.hdr) — design: eyebrow "Document" + title, top-right × close */}
         <header className="hdr" style={{ borderTopLeftRadius: 18, borderTopRightRadius: 18 }}>
@@ -1218,23 +1253,102 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
                   </>
                 )}
               </div>
-              {/* Affected product — SO line-item picker when the SO is known;
-                  free text otherwise. Backend requires at least one item_code. */}
-              <label className="fld">
-                <span className="fld-l">Affected product *</span>
-                {soItems.length ? (
-                  <select value={itemCode} onChange={(e) => setItemCode(e.target.value)} className="fld-i money">
-                    <option value="">— select item —</option>
-                    {soItems.map((it, i) => {
+              {/* Affected products — MULTISELECT rows with a per-product qty
+                  stepper (owner: sometimes 1 product, sometimes several).
+                  Backend requires at least one item; each row posts as its
+                  own assr_items entry, same as desktop CreatePanel. */}
+              <div className="fld">
+                <span className="fld-l">Affected products * ({selItems.length})</span>
+                {selItems.map((it) => (
+                  <div key={it.item_code} style={{ display: "flex", alignItems: "center", gap: 8, border: "1px solid #e3e6e0", borderRadius: 10, padding: "8px 10px", marginBottom: 6, background: "#fff" }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div className="money" style={{ fontSize: 11, fontWeight: 700, color: BROWN, wordBreak: "break-word" }}>{it.item_code}</div>
+                      {it.item_description && <div style={{ fontSize: 11, color: MUTED, marginTop: 1, ...cellEllipsis }}>{it.item_description}</div>}
+                    </div>
+                    {/* qty stepper — min 1 */}
+                    <div style={{ flex: "none", display: "flex", alignItems: "center", gap: 0, border: "1px solid #e3e6e0", borderRadius: 8, overflow: "hidden" }}>
+                      <button
+                        onClick={() => setSelQty(it.item_code, it.qty - 1)}
+                        disabled={it.qty <= 1}
+                        aria-label="Decrease quantity"
+                        style={{ width: 26, height: 28, border: "none", background: FIELD_BG, color: it.qty <= 1 ? GREY : INK, fontSize: 15, lineHeight: 1, cursor: it.qty <= 1 ? "default" : "pointer" }}
+                      >
+                        −
+                      </button>
+                      <span className="money" style={{ minWidth: 24, textAlign: "center", fontSize: 12, fontWeight: 700, color: INK }}>{it.qty}</span>
+                      <button
+                        onClick={() => setSelQty(it.item_code, it.qty + 1)}
+                        aria-label="Increase quantity"
+                        style={{ width: 26, height: 28, border: "none", background: FIELD_BG, color: INK, fontSize: 15, lineHeight: 1, cursor: "pointer" }}
+                      >
+                        +
+                      </button>
+                    </div>
+                    <button
+                      onClick={() => removeSelItem(it.item_code)}
+                      aria-label="Remove product"
+                      style={{ flex: "none", width: 26, height: 26, borderRadius: 8, border: "1px solid #e3e6e0", background: "#fff", color: RED, fontSize: 15, lineHeight: 1, cursor: "pointer" }}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+                {/* Adder — SO line-item picker when the SO has items left to
+                    add; a select that appends a row on choose. */}
+                {remainingSoItems.length > 0 && (
+                  <select
+                    value=""
+                    onChange={(e) => {
+                      const code = e.target.value;
+                      if (!code) return;
+                      const hit = soItems.find((it) => String(get(it, "itemCode", "item_code") ?? "") === code);
+                      const soQty = Number(get(hit ?? {}, "qty") ?? 0);
+                      addSelItem({
+                        item_code: code,
+                        item_description: hit ? (get(hit, "itemDescription", "item_description") as string | undefined) ?? null : null,
+                        qty: soQty > 0 ? soQty : 1,
+                      });
+                    }}
+                    className="fld-i money"
+                  >
+                    <option value="">+ Add product from this SO…</option>
+                    {remainingSoItems.map((it, i) => {
                       const code = String(get(it, "itemCode", "item_code") ?? "");
                       const desc = get(it, "itemDescription", "item_description");
                       return <option key={code + i} value={code}>{code}{desc ? ` — ${String(desc)}` : ""}</option>;
                     })}
                   </select>
-                ) : (
-                  <input value={itemCode} onChange={(e) => setItemCode(e.target.value)} placeholder="Affected item code — e.g. AK-GUARDIAN MATT (K)" className="fld-i money" />
                 )}
-              </label>
+                {/* Free-text adder — kept for SOs whose lookup returns no
+                    items: type a code, tap Add (qty starts at 1). */}
+                {!soItems.length && (
+                  <div style={{ display: "flex", gap: 7 }}>
+                    <input
+                      value={manualCode}
+                      onChange={(e) => setManualCode(e.target.value)}
+                      placeholder="Affected item code — e.g. AK-GUARDIAN MATT (K)"
+                      className="fld-i money"
+                      style={{ flex: 1, minWidth: 0 }}
+                    />
+                    <button
+                      onClick={() => {
+                        const code = manualCode.trim();
+                        if (!code) return;
+                        addSelItem({ item_code: code, item_description: null, qty: 1 });
+                        setManualCode("");
+                      }}
+                      disabled={!manualCode.trim()}
+                      className="tinybtn"
+                      style={{ flex: "none", padding: "0 14px", opacity: manualCode.trim() ? 1 : 0.5 }}
+                    >
+                      Add
+                    </button>
+                  </div>
+                )}
+                {!selItems.length && (
+                  <div style={{ fontSize: 10, color: GREY, marginTop: 4 }}>Add at least one affected product. Adjust the quantity per product with − / +.</div>
+                )}
+              </div>
             </div>
           </div>
 
@@ -1324,7 +1438,7 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
               ? uploadProgress
                 ? `Uploading ${uploadProgress.done}/${uploadProgress.total}…`
                 : "Creating…"
-              : "Create Case"}
+              : "Create Service Case"}
           </button>
         </footer>
       </div>
