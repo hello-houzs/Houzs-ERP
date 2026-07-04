@@ -414,10 +414,11 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
             {(() => {
               const slipImageKey =
                 (h as unknown as { slipImageKey?: string | null }).slipImageKey ?? h.slip_image_key ?? null;
-              const receiptImageKey =
-                (h as unknown as { receiptImageKey?: string | null }).receiptImageKey ?? h.receipt_image_key ?? null;
-              if (!slipImageKey && !receiptImageKey) return null;
-              return <ScannedPhotosCard slipKey={slipImageKey} receiptKey={receiptImageKey} />;
+              // Owner: the payment RECEIPT does NOT belong in this card -- it
+              // lives on its payment row's slip (the camera icon there). This
+              // card shows ONLY the customer's order slip.
+              if (!slipImageKey) return null;
+              return <ScannedPhotosCard slipKey={slipImageKey} receiptKey={null} />;
             })()}
 
             {/* Payments — read-only rows (method / date · account · collected_by /
