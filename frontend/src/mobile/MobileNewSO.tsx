@@ -690,8 +690,7 @@ export function MobileNewSO({
 
   /* Venue derives from the picked salesperson's staff.venue_id (falls back to
      the auth user's own venue, the persisted venue on edit, or the active
-     project's venue). Mirrors SalesOrderNew resolvedVenue*. It stays read-only
-     on mobile (the owner scopes venue picking to the desktop). */
+     project's venue). Mirrors SalesOrderNew resolvedVenue*. */
   const resolvedVenueId: string | null =
     prefillVenueId ?? selectedStaff?.venueId ?? authStaff?.venueId ?? autoVenue?.venueId ?? null;
   const resolvedVenueName: string = useMemo(() => {
@@ -701,6 +700,19 @@ export function MobileNewSO({
     }
     return prefillVenueName || autoVenue?.venueName || "";
   }, [resolvedVenueId, venuesQ.data, prefillVenueName, autoVenue]);
+
+  /* Owner 2026-07-04 — Venue is EDITABLE on mobile too ("虽然是 by default 的,
+     可是为什么不给更改呢?"). Mirrors desktop SalesOrderNew pickedVenueId: the
+     select DEFAULTS to the derived venue above and the operator can override
+     from the same useVenues() master. null = untouched → the auto-derived
+     value keeps flowing (including a later salesperson change re-deriving it);
+     picking "—" reverts to the derived default (desktop-verbatim behaviour). */
+  const [pickedVenueId, setPickedVenueId] = useState<string | null>(null);
+  const effectiveVenueId = pickedVenueId ?? resolvedVenueId;
+  const effectiveVenueName: string = useMemo(() => {
+    if (pickedVenueId == null) return resolvedVenueName;
+    return (venuesQ.data ?? []).find((r) => r.id === pickedVenueId)?.name ?? "";
+  }, [pickedVenueId, venuesQ.data, resolvedVenueName]);
 
   /* Sales Location derives from state_warehouse_mappings for the picked state
      (desktop parity: SalesOrderNew state → salesLocation cascade). */
@@ -712,10 +724,11 @@ export function MobileNewSO({
     return hit?.warehouse?.code ?? "";
   }, [state, stateWarehousesQ.data]);
 
-  /* Effective venue to SEND on save (resolvedVenueId already folds in the
-     persisted / salesperson / active-project fallbacks). */
-  const outgoingVenueId = resolvedVenueId;
-  const outgoingVenueName = resolvedVenueName;
+  /* Effective venue to SEND on save — the operator's manual pick when they
+     changed it, otherwise the derived default (resolvedVenueId already folds
+     in the persisted / salesperson / active-project fallbacks). */
+  const outgoingVenueId = effectiveVenueId;
+  const outgoingVenueName = effectiveVenueName;
 
   /* Salesperson to SEND — the "self" sentinel maps to null so the backend
      stamps the logged-in caller (a real staff id is sent as-is). */
@@ -1446,13 +1459,28 @@ export function MobileNewSO({
                       {buildingTypeOpts.map((t) => <option key={t.id} value={t.value}>{t.label}</option>)}
                     </select>
                   </Field>
-                  {/* Venue is derived (salesperson's active project / home venue);
-                      shown read-only with the resolved NAME (desktop parity). */}
+                  {/* Owner 2026-07-04 — Venue is a real select (was read-only).
+                      Defaults to the derived venue (salesperson's active project
+                      / home venue / persisted on edit); the operator can override
+                      from the venues master, mirroring desktop SalesOrderNew. */}
                   <Field label="Venue" style={{ flex: 1 }}>
-                    <div className="fld-ro">{resolvedVenueName || "—"}</div>
+                    <select
+                      className="fld-i"
+                      value={effectiveVenueId ?? ""}
+                      onChange={(e) => setPickedVenueId(e.target.value || null)}
+                    >
+                      <option value="">—</option>
+                      {effectiveVenueId && !(venuesQ.data ?? []).some((v) => v.id === effectiveVenueId) && (
+                        <option value={effectiveVenueId}>{effectiveVenueName || resolvedVenueName || effectiveVenueId}</option>
+                      )}
+                      {(venuesQ.data ?? []).map((v) => (
+                        <option key={v.id} value={v.id}>{v.name}</option>
+                      ))}
+                    </select>
                   </Field>
                 </div>
-                {!isEdit && autoVenue?.venueId && autoVenue?.projectName && (
+                {!isEdit && autoVenue?.venueId && autoVenue?.projectName &&
+                  (pickedVenueId == null || pickedVenueId === autoVenue.venueId) && (
                   <div style={{ fontSize: 10, color: "#16695f", marginTop: -4 }}>Auto-filled from {autoVenue.projectName}</div>
                 )}
                 <div style={{ display: "flex", gap: 9 }}>
@@ -2000,8 +2028,10 @@ function LineCard({
   };
 
   return (
-    <div style={{ border: "1px solid rgba(34,31,32,.12)", borderRadius: 11, overflow: "hidden" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: "#f4f6f3", borderBottom: "1px solid rgba(34,31,32,.1)" }}>
+    /* Owner 2026-07-04 — hairline borders (--line2 #eceee9); the old
+       rgba(34,31,32,.12) dividers read visually heavy on the phone. */
+    <div style={{ border: "1px solid #eceee9", borderRadius: 11, overflow: "hidden" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: "#f4f6f3", borderBottom: "1px solid #eceee9" }}>
         <span style={{ width: 19, height: 19, flex: "none", borderRadius: 6, background: "#16695f", color: "#fff", fontSize: 10.5, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center" }}>{index + 1}</span>
         <button
           type="button"
@@ -2076,7 +2106,7 @@ function LineCard({
             {/* Bedframe build — 3 selects stacked in a responsive grid so DIVAN /
                 LEG / GAP each get full width and read completely (owner: the old
                 3-in-a-row cramped them to "No Le"). */}
-            <div style={{ background: "#f4f6f3", border: "1px solid #e3e6e0", borderRadius: 10, padding: "9px 10px" }}>
+            <div style={{ background: "#f4f6f3", border: "1px solid #eceee9", borderRadius: 10, padding: "9px 10px" }}>
               <div className="fld-l" style={{ marginBottom: 7 }}>Bedframe build</div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
                 <SpecSel label="Divan" required invalid={showErrors && missing.has("divanHeight")}
@@ -2095,7 +2125,7 @@ function LineCard({
             (POS semantics). Collapsed by default; auto-open when the line
             already carries specials (edit mode). */}
         {picked && pools.ready && (line.cat === "sofa" || line.cat === "bedframe") && (specialOptions.length > 0 || pickedSpecials.length > 0) && (
-          <div style={{ border: "1px solid #e3e6e0", borderRadius: 10, overflow: "hidden" }}>
+          <div style={{ border: "1px solid #eceee9", borderRadius: 10, overflow: "hidden" }}>
             <button
               type="button"
               onClick={() => setSpecialsOpen((o) => !o)}
@@ -2115,7 +2145,11 @@ function LineCard({
                     <label key={a.code} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, cursor: "pointer" }}>
                       <input type="checkbox" checked={on} onChange={() => toggleSpecial(a.code)} style={{ width: 16, height: 16, flex: "none", accentColor: "#16695f" }} />
                       <span style={{ flex: 1, minWidth: 0, color: "#11140f" }}>{a.label}</span>
-                      <span className="money" style={{ fontSize: 11.5, color: "#767b6e", flex: "none" }}>+RM {(a.sellingPriceSen / 100).toFixed(2)}</span>
+                      {/* Owner 2026-07-04 — config prices are hand-entered and mostly
+                          0; a wall of "+RM 0.00" is noise. Only price non-zero addons. */}
+                      {a.sellingPriceSen !== 0 && (
+                        <span className="money" style={{ fontSize: 11.5, color: "#767b6e", flex: "none" }}>+RM {(a.sellingPriceSen / 100).toFixed(2)}</span>
+                      )}
                     </label>
                   );
                 })}
@@ -2135,7 +2169,7 @@ function LineCard({
         )}
 
         {picked && pools.ready && line.cat === "mattress" && (
-          <div style={{ fontSize: 10.5, color: "#767b6e", background: "#f4f6f3", border: "1px solid #e3e6e0", borderRadius: 9, padding: "7px 9px" }}>
+          <div style={{ fontSize: 10.5, color: "#767b6e", background: "#f4f6f3", border: "1px solid #eceee9", borderRadius: 9, padding: "7px 9px" }}>
             Mattress SKUs carry their spec in the item itself — no per-line variants to pick.
           </div>
         )}
@@ -2356,8 +2390,9 @@ function PayCard({ pay, staff, onChange, onRemove }: { pay: Payment; staff: Arra
     }
   };
   return (
-    <div style={{ border: "1px solid rgba(34,31,32,.12)", borderRadius: 11, overflow: "hidden" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: "#f4f6f3", borderBottom: "1px solid rgba(34,31,32,.1)" }}>
+    /* Owner 2026-07-04 — hairline borders, matching the LineCard. */
+    <div style={{ border: "1px solid #eceee9", borderRadius: 11, overflow: "hidden" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: "#f4f6f3", borderBottom: "1px solid #eceee9" }}>
         <span style={{ fontSize: 9, fontWeight: 700, color: "#767b6e", textTransform: "uppercase", letterSpacing: ".06em" }}>Method</span>
         <select className="fld-i" style={{ flex: 1, fontWeight: 600 }} value={pay.method} onChange={(e) => onChange({ method: e.target.value })}>
           {PAY_METHODS.map((m) => <option key={m} value={m}>{m}</option>)}

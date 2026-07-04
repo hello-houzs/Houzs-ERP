@@ -191,7 +191,8 @@
 .hz-m input[type="date"]::-webkit-datetime-edit { padding: 0; }
 .hz-m input[type="date"]::-webkit-calendar-picker-indicator { margin: 0; padding: 0; opacity: .55; }
 .hz-m .addline { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; padding: 11px; background: transparent; border: 1px dashed #16695f; border-radius: 12px; color: #16695f; font-family: inherit; font-size: 13px; font-weight: 700; cursor: pointer; }
-.hz-m .so-sub-row { display: flex; justify-content: flex-end; align-items: baseline; gap: 8px; margin-top: 2px; padding-top: 10px; border-top: 1px solid rgba(34,31,32,.12); }
+/* Owner 2026-07-04 — hairline Subtotal divider (--line2); rgba(34,31,32,.12) read heavy. */
+.hz-m .so-sub-row { display: flex; justify-content: flex-end; align-items: baseline; gap: 8px; margin-top: 2px; padding-top: 10px; border-top: 1px solid var(--line2); }
 
 /* ---- SO list ---- */
 .hz-m .sokpi { background: #f4f6f3; border: 1px solid #d6d9d2; border-radius: 12px; padding: 9px 12px; }
