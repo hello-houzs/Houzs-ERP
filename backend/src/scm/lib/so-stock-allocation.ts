@@ -34,6 +34,7 @@ import { computeVariantKey, isServiceLine, type VariantAttrs } from '../shared';
 import { summariseReadiness } from './so-readiness';
 import { loadSofaBatchStock, findCoveringBatch, claimSofaBatch } from './sofa-set-coverage';
 import { paginateAll, chunkIn } from './paginate-all';
+import { recordSoAudit } from './so-audit';
 
 export type AllocationResult = {
   ok: boolean;
@@ -511,12 +512,40 @@ export async function recomputeSoStockAllocation(
       }));
       const r = summariseReadiness(readinessLines);
       const cur = order.status;
+      /* Owner requirement — the SO History timeline must show AUTOMATED status
+         transitions too ("the system did it" disputes). Mirror the manual
+         status-PATCH audit pattern: one mfg_so_status_changes row (legacy
+         StatusTimeline) + one mfg_so_audit_log row. Best-effort, never blocks
+         the allocation result (recordSoAudit swallows failures internally). */
+      const auditAutoStatus = async (from: string, to: string, note: string) => {
+        try {
+          await sb.from('mfg_so_status_changes').insert({
+            doc_no: docNo, from_status: from, to_status: to, changed_by: null, notes: note,
+          });
+        } catch { /* best-effort */ }
+        await recordSoAudit(sb, {
+          docNo,
+          action: 'UPDATE_STATUS',
+          actorId: null,
+          actorName: 'System (auto-allocate)',
+          fieldChanges: [{ field: 'status', from, to }],
+          statusSnapshot: to,
+          source: 'automation',
+          note,
+        });
+      };
       if (r.isMainReady && (cur === 'CONFIRMED' || cur === 'IN_PRODUCTION')) {
         const { error } = await sb.from('mfg_sales_orders').update({ status: 'READY_TO_SHIP' }).eq('doc_no', docNo);
-        if (!error) ordersAdvanced += 1;
+        if (!error) {
+          ordersAdvanced += 1;
+          await auditAutoStatus(cur, 'READY_TO_SHIP', 'Auto-advanced: every main product line is READY (stock allocation)');
+        }
       } else if (!r.isMainReady && cur === 'READY_TO_SHIP') {
         const { error } = await sb.from('mfg_sales_orders').update({ status: 'CONFIRMED' }).eq('doc_no', docNo);
-        if (!error) ordersRegressed += 1;
+        if (!error) {
+          ordersRegressed += 1;
+          await auditAutoStatus(cur, 'CONFIRMED', 'Auto-regressed: a main product line is no longer READY (stock re-allocated)');
+        }
       }
     }
 

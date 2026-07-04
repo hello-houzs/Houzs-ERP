@@ -30,6 +30,7 @@ export const supabaseAuth = createMiddleware<{ Bindings: Env; Variables: Variabl
     const hu = c.get("user") as unknown as {
       id?: number | string;
       email?: string;
+      name?: string | null;
       permissions?: string[];
       permissions_set?: Set<string>;
     } | undefined;
@@ -44,6 +45,7 @@ export const supabaseAuth = createMiddleware<{ Bindings: Env; Variables: Variabl
         ? {
             id: Number(hu.id),
             email: hu.email,
+            name: hu.name ?? null,
             permissions: hu.permissions,
             permissions_set: hu.permissions_set,
           }
@@ -53,7 +55,14 @@ export const supabaseAuth = createMiddleware<{ Bindings: Env; Variables: Variabl
       id: SCM_SYSTEM_STAFF_ID,
       email: hu?.email ?? "",
       app_metadata: {},
-      user_metadata: {},
+      /* Audit-trail attribution — the SO History timeline (mfg_so_audit_log)
+         snapshots `user.user_metadata.name` as the actor. Before this carried
+         the REAL caller's name, every entry fell back to the seeded system
+         staff row's name, so the timeline could not answer "WHO edited this"
+         (the exact dispute the History feature exists to settle). user.id
+         stays the pinned system staff uuid — role lookups / created_by FKs
+         are unchanged; only the display-name snapshot is personalised. */
+      user_metadata: { name: hu?.name ?? hu?.email ?? undefined },
       aud: "authenticated",
       created_at: "",
     } as unknown as User);

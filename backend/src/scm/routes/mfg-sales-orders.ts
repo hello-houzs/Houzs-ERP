@@ -1791,6 +1791,14 @@ export type SoCreateContext = {
   get(key: 'houzsUser'): Variables['houzsUser'];
   env: Env;
   json(body: unknown, status?: number): SoCreateOutcome;
+  /* Audit-trail source tag for the CREATE entry ("via <source>" in the History
+     panel). Omitted → 'web' (interactive POST /). The background scan job
+     passes 'scan' so the timeline distinguishes an OCR-created draft from a
+     hand-typed order. */
+  auditSource?: string;
+  /* Optional free-text note stamped on the CREATE audit row (the scan job uses
+     it to say the draft came from the background OCR pipeline). */
+  auditNote?: string;
 };
 
 async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome> {
@@ -3718,7 +3726,12 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
     actorId: user.id,
     actorName: (user.user_metadata as { name?: string } | undefined)?.name ?? null,
     fieldChanges: createFields,
-    statusSnapshot: 'CONFIRMED',
+    /* Snapshot the REAL insert status — asDraft creates land as DRAFT (the
+       background scan job path), everything else as CONFIRMED. Previously
+       hardcoded 'CONFIRMED', which mislabelled scan drafts. */
+    statusSnapshot: (body as { asDraft?: unknown }).asDraft === true ? 'DRAFT' : 'CONFIRMED',
+    source: c.auditSource ?? 'web',
+    note: c.auditNote,
   });
 
   /* B2C auto-allocation — if stock is already on hand, the new SO's lines flip
@@ -3785,6 +3798,11 @@ export async function createDraftSalesOrder(
     get: syntheticGet as unknown as SoCreateContext['get'],
     env,
     json: (b, status) => ({ status: status ?? 200, body: b as Record<string, unknown> }),
+    /* History attribution — the CREATE audit row shows the salesperson captured
+       at enqueue time as the actor, tagged "via scan" so a rep can't claim a
+       hand-typed order was OCR'd (or vice versa). */
+    auditSource: 'scan',
+    auditNote: 'Draft created by the background slip-scan job (photo OCR)',
   });
 }
 

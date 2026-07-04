@@ -31,9 +31,58 @@ import { resolveExpectedBatchBySoItem, buildDropshipOffenders } from '../lib/dro
 import { loadSofaBatchStock, sofaStockKey } from '../lib/sofa-set-coverage';
 import { currentDocNoByKey, type CurrentEvent } from '../lib/current-doc';
 import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
+import { recordSoAudit, type FieldChange } from '../lib/so-audit';
 
 export const deliveryOrdersMfg = new Hono<{ Bindings: Env; Variables: Variables }>();
 deliveryOrdersMfg.use('*', supabaseAuth);
+
+/* ── SO amend-mirror audit (owner's History requirement) ─────────────────────
+   The DO create/PATCH handlers mirror the amend fields (amend_date_from_customer
+   / amended_delivery_date / amend_reason) onto the parent SO. Those are SO
+   header writes, so the SO History timeline must show them with a field-level
+   old→new diff. Reads the BEFORE values, returns a callback the caller invokes
+   AFTER the mirror update succeeds. Best-effort throughout — never blocks the
+   DO write. */
+async function prepareSoAmendMirrorAudit(
+  sb: Variables['supabase'],
+  soDocNo: string,
+  mirror: Record<string, unknown>,
+  actor: { id: string | null; name: string | null },
+  viaLabel: string,
+): Promise<() => Promise<void>> {
+  let before: Record<string, unknown> = {};
+  try {
+    const { data } = await sb.from('mfg_sales_orders')
+      .select('amend_date_from_customer, amended_delivery_date, amend_reason, status')
+      .eq('doc_no', soDocNo).maybeSingle();
+    before = (data ?? {}) as Record<string, unknown>;
+  } catch { /* best-effort — diff will show only the new values */ }
+  return async () => {
+    const CAMEL: Array<[camel: string, snake: string]> = [
+      ['amendDateFromCustomer', 'amend_date_from_customer'],
+      ['amendedDeliveryDate',   'amended_delivery_date'],
+      ['amendReason',           'amend_reason'],
+    ];
+    const fieldChanges: FieldChange[] = [];
+    for (const [camel, snake] of CAMEL) {
+      if (!(snake in mirror)) continue;
+      const from = before[snake] ?? null;
+      const to = mirror[snake] ?? null;
+      if (String(from ?? '') !== String(to ?? '')) fieldChanges.push({ field: camel, from, to });
+    }
+    if (fieldChanges.length === 0) return;
+    await recordSoAudit(sb, {
+      docNo: soDocNo,
+      action: 'UPDATE_DETAILS',
+      actorId: actor.id,
+      actorName: actor.name,
+      fieldChanges,
+      statusSnapshot: (before as { status?: string }).status ?? null,
+      source: 'delivery-order',
+      note: `Delivery amendment mirrored from ${viaLabel}`,
+    });
+  };
+}
 
 /* ── DO child-lock guard (Tier 2 — downstream lock) ─────────────────────────
    A DO locks (read-only — no line edit / no CANCELLED transition) once it has
@@ -1672,6 +1721,11 @@ deliveryOrdersMfg.post('/', async (c) => {
       createSoMirror.amend_reason = (body.amendReason === '' ? null : body.amendReason);
     }
     if (Object.keys(createSoMirror).length > 0) {
+      const emitMirrorAudit = await prepareSoAmendMirrorAudit(
+        sb, createSoDocNo, createSoMirror,
+        { id: user.id, name: (user.user_metadata as { name?: string } | undefined)?.name ?? null },
+        `Delivery Order ${h.do_number ?? h.id}`,
+      );
       createSoMirror.updated_at = new Date().toISOString();
       const { error: soErr } = await sb.from('mfg_sales_orders').update(createSoMirror).eq('doc_no', createSoDocNo);
       if (soErr) {
@@ -1680,6 +1734,7 @@ deliveryOrdersMfg.post('/', async (c) => {
         soAmendMirrorError = soErr.message;
       } else {
         soAmendMirrored = true;
+        await emitMirrorAudit();
       }
     }
   }
@@ -2155,6 +2210,12 @@ deliveryOrdersMfg.patch('/:id', async (c) => {
 
   if (Object.keys(soAmendMirror).length > 0) {
     if (mirrorSoDocNo) {
+      const patchUser = c.get('user');
+      const emitMirrorAudit = await prepareSoAmendMirrorAudit(
+        sb, mirrorSoDocNo, soAmendMirror,
+        { id: patchUser.id, name: (patchUser.user_metadata as { name?: string } | undefined)?.name ?? null },
+        `Delivery Order ${id}`,
+      );
       soAmendMirror.updated_at = new Date().toISOString();
       const { error: soErr } = await sb.from('mfg_sales_orders').update(soAmendMirror).eq('doc_no', mirrorSoDocNo);
       if (soErr) {
@@ -2163,6 +2224,7 @@ deliveryOrdersMfg.patch('/:id', async (c) => {
         soMirrorError = soErr.message;
       } else {
         writtenSo = true;
+        await emitMirrorAudit();
       }
     } else {
       /* Drift safety — an orphan DO (no so_doc_no) can't be mirrored. Surface

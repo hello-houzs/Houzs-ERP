@@ -68,6 +68,7 @@ import { paginateAll } from '../lib/paginate-all';
 import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { summariseReadiness, type ReadinessLine } from '../lib/so-readiness';
 import { soDeliverableRemaining } from './delivery-orders-mfg';
+import { recordSoAudit, type FieldChange } from '../lib/so-audit';
 
 export const deliveryPlanning = new Hono<{ Bindings: Env; Variables: Variables }>();
 deliveryPlanning.use('*', supabaseAuth);
@@ -1049,6 +1050,17 @@ deliveryPlanning.patch('/:type/:id/fields', async (c) => {
 
   // SO-context update.
   if (Object.keys(soUpdates).length > 0 && soDocNo) {
+    /* History audit (owner requirement) — these are SO header writes made from
+       the Delivery Planning board, so the SO History timeline must record WHO
+       changed WHICH field old→new. Snapshot the before-values, diff after the
+       update succeeds. Best-effort: an audit failure never blocks the save. */
+    let beforeRow: Record<string, unknown> = {};
+    try {
+      const { data: beforeData } = await sb.from('mfg_sales_orders')
+        .select(`status, ${Object.values(SO_FIELD_COLS).join(', ')}`)
+        .eq('doc_no', soDocNo).maybeSingle();
+      beforeRow = (beforeData ?? {}) as unknown as Record<string, unknown>;
+    } catch { /* best-effort */ }
     soUpdates.updated_at = new Date().toISOString();
     const { error } = await sb.from('mfg_sales_orders').update(soUpdates).eq('doc_no', soDocNo);
     if (error) {
@@ -1056,6 +1068,27 @@ deliveryPlanning.patch('/:type/:id/fields', async (c) => {
       return c.json({ error: 'update_failed', reason: error.message }, 500);
     }
     written.so = true;
+    {
+      const fieldChanges: FieldChange[] = [];
+      for (const [camel, snake] of Object.entries(SO_FIELD_COLS)) {
+        if (!(snake in soUpdates)) continue;
+        const from = beforeRow[snake] ?? null;
+        const to = soUpdates[snake] ?? null;
+        if (String(from ?? '') !== String(to ?? '')) fieldChanges.push({ field: camel, from, to });
+      }
+      if (fieldChanges.length > 0) {
+        const user = c.get('user');
+        await recordSoAudit(sb, {
+          docNo: soDocNo,
+          action: 'UPDATE_DETAILS',
+          actorId: user.id,
+          actorName: (user.user_metadata as { name?: string } | undefined)?.name ?? null,
+          fieldChanges,
+          statusSnapshot: (beforeRow as { status?: string }).status ?? null,
+          source: 'delivery-planning',
+        });
+      }
+    }
   }
 
   // DO-execution update — only when a DO exists; otherwise hint, don't error.
@@ -1190,12 +1223,48 @@ deliveryPlanning.patch('/:type/:id/schedule', async (c) => {
   // Skip the header UPDATE when only trip info changed (nothing to write to the
   // header) — just re-read it so the response shape is unchanged.
   if (Object.keys(updates).length > 1) {
+    /* History audit (owner requirement) — a :type=so schedule writes
+       amended_delivery_date / delivery_state on the SO header. Snapshot the
+       before-values so the timeline shows old→new. Best-effort. */
+    let scheduleBefore: Record<string, unknown> = {};
+    if (type === 'so') {
+      try {
+        const { data: b } = await sb.from('mfg_sales_orders')
+          .select('amended_delivery_date, delivery_state, status').eq('doc_no', id).maybeSingle();
+        scheduleBefore = (b ?? {}) as Record<string, unknown>;
+      } catch { /* best-effort */ }
+    }
     const res = await sb.from(table).update(updates).eq(keyCol, id).select(selectCols).single();
     if (res.error) {
       if (res.error.code === '42501') return c.json({ error: 'forbidden', reason: res.error.message }, 403);
       return c.json({ error: 'update_failed', reason: res.error.message }, 500);
     }
     data = res.data as unknown as Record<string, unknown> | null;
+    if (type === 'so') {
+      const fieldChanges: FieldChange[] = [];
+      for (const [camel, snake] of [
+        ['amendedDeliveryDate', 'amended_delivery_date'],
+        ['deliveryState',       'delivery_state'],
+      ] as const) {
+        if (!(snake in updates)) continue;
+        const from = scheduleBefore[snake] ?? null;
+        const to = updates[snake] ?? null;
+        if (String(from ?? '') !== String(to ?? '')) fieldChanges.push({ field: camel, from, to });
+      }
+      if (fieldChanges.length > 0) {
+        const user = c.get('user');
+        await recordSoAudit(sb, {
+          docNo: id,
+          action: 'UPDATE_DETAILS',
+          actorId: user.id,
+          actorName: (user.user_metadata as { name?: string } | undefined)?.name ?? null,
+          fieldChanges,
+          statusSnapshot: (scheduleBefore as { status?: string }).status ?? null,
+          source: 'delivery-planning',
+          note: 'Delivery scheduled from the planning board',
+        });
+      }
+    }
   } else {
     const res = await sb.from(table).select(selectCols).eq(keyCol, id).maybeSingle();
     data = res.data as unknown as Record<string, unknown> | null;

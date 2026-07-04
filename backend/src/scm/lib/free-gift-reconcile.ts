@@ -32,6 +32,7 @@ import { loadProductsByCodes, loadModelDefaultGifts } from './mfg-pricing-recomp
 // imports recomputeTotals) — safe with esbuild because neither is called at
 // module-eval time. Same pattern the route already uses with delivery-orders-mfg.
 import { recomputeTotals } from '../routes/mfg-sales-orders';
+import { recordSoAudit, type FieldChange } from './so-audit';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -114,6 +115,23 @@ export async function reconcileFreeGiftLinesForSo(sb: any, docNo: string): Promi
     // 7. Delete gift lines the triggers no longer grant.
     if (toDeleteIds.length > 0) {
       await sb.from('mfg_sales_order_items').delete().in('id', toDeleteIds);
+      /* History audit (owner requirement: AUTOMATED line changes must show on
+         the SO timeline). One summary row naming the removed gift codes. */
+      const removedCodes = items
+        .filter((it) => toDeleteIds.includes(it.id))
+        .map((it) => it.item_code)
+        .filter(Boolean);
+      await recordSoAudit(sb, {
+        docNo,
+        action: 'DELETE_LINE',
+        actorId: null,
+        actorName: 'System (free gift)',
+        source: 'automation',
+        note: 'Free-gift line(s) auto-removed — the triggering product left the order',
+        fieldChanges: [
+          { field: 'itemCode', from: removedCodes.join(', ') || `${toDeleteIds.length} gift line(s)` },
+        ] satisfies FieldChange[],
+      });
     }
 
     // 8. Insert the missing gift lines. giftProductId is an mfg_products.id; load
@@ -189,6 +207,19 @@ export async function reconcileFreeGiftLinesForSo(sb: any, docNo: string): Promi
       }
       if (rows.length > 0) {
         await sb.from('mfg_sales_order_items').insert(rows);
+        /* History audit — one summary row naming the auto-added gift codes. */
+        await recordSoAudit(sb, {
+          docNo,
+          action: 'ADD_LINE',
+          actorId: null,
+          actorName: 'System (free gift)',
+          source: 'automation',
+          note: 'Free-gift line(s) auto-added by the campaign trigger',
+          fieldChanges: [
+            { field: 'itemCode', to: rows.map((r) => String(r.item_code ?? '')).filter(Boolean).join(', ') },
+            { field: 'qty', to: rows.reduce((s, r) => s + Number(r.qty ?? 0), 0) },
+          ] satisfies FieldChange[],
+        });
       }
     }
   } catch (e) {
