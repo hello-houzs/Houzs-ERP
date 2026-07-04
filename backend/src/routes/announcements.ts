@@ -263,8 +263,11 @@ function userCanSee(
 //     the composer's targeting can't be bypassed by a read-only caller.
 // ============================================================
 app.get("/", requirePermission("announcements.read"), async (c) => {
+  // System per-user notices (source='scan') are delivered only through the
+  // /banner + mobile Announcements screen — they must NOT clutter this office
+  // composer list. Human-authored posts have source NULL.
   const res = await c.env.DB.prepare(
-    "SELECT * FROM announcements ORDER BY created_at DESC",
+    "SELECT * FROM announcements WHERE source IS NULL OR source <> 'scan' ORDER BY created_at DESC",
   ).all<AnnouncementRow>();
   const user = c.get("user");
   const granted = user?.permissions_set ?? user?.permissions ?? [];
