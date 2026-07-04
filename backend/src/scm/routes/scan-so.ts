@@ -3514,7 +3514,7 @@ scanSo.post('/enqueue', async (c) => {
 });
 
 // ---------------------------------------------------------------------------
-// Stale-job reaper — a scan job stuck in queued/running for >10 minutes is
+// Stale-job reaper — a scan job stuck in queued/running for >3 minutes is
 // dead (isolate evicted / Worker DEPLOY killed the waitUntil, pipeline crashed
 // without reaching its own error-update). Deploys are the common cause, so a
 // stale job is NOT errored on first sight: it gets ONE automatic re-run
@@ -3524,7 +3524,7 @@ scanSo.post('/enqueue', async (c) => {
 // photos never made it to R2 — is flipped to the terminal error.
 //
 // Staleness clock = updated_at (NOT created_at): the retry claim stamps
-// updated_at = now, giving the re-run its own fresh 10-minute window instead
+// updated_at = now, giving the re-run its own fresh 3-minute window instead
 // of being re-reaped on the next poll. (First attempts are equivalent either
 // way — a job's updated_at only moves when the pipeline is actually alive.)
 //
@@ -3534,7 +3534,12 @@ scanSo.post('/enqueue', async (c) => {
 // (retry_count = 0 AND still queued/running), so two concurrent polls can
 // never double-run one job.
 // ---------------------------------------------------------------------------
-const SCAN_JOB_STALE_MINUTES = 10;
+// 3 min (was 10): /extract carries a 110s AbortSignal.timeout, so a job still
+// queued/running past 3 minutes is a deploy/isolate-killed zombie, not a
+// slow-but-alive call — safe to retry (first pass) / error (terminal pass) at
+// 3 min. Both the RETRY-claim pass and the TERMINAL pass derive their cutoff
+// from this one constant, so this single change tightens both.
+const SCAN_JOB_STALE_MINUTES = 3;
 const STALE_JOB_ERROR = 'The scan took too long and was stopped. Please scan this slip again.';
 
 // Rebuild runScanJob's file inputs from the durable R2 copies — the inverse of

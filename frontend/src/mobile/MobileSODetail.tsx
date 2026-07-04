@@ -402,6 +402,24 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
               }) : <div style={{ padding: "11px 13px", borderTop: "1px solid var(--line2)", fontSize: 11.5, color: "var(--mut2)" }}>No items.</div>}
             </div>
 
+            {/* Photos — the scan-flow proof images (order slip + payment receipt),
+                parity with desktop's ScannedImageCard pair. Owner 2026-07-04
+                asked "which button shows the customer's photographed order slip":
+                the card sits HIGH (right under Line items, above Payments) so the
+                Order slip thumbnail is easy to find, and each thumb is
+                tap-to-fullscreen. Keys dual-read camelCase ?? snake_case; the
+                whole card is hidden only when the SO carries NEITHER key
+                (hand-keyed orders). Served as authed blob fetches — the bearer
+                can't ride on an <img src>. */}
+            {(() => {
+              const slipImageKey =
+                (h as unknown as { slipImageKey?: string | null }).slipImageKey ?? h.slip_image_key ?? null;
+              const receiptImageKey =
+                (h as unknown as { receiptImageKey?: string | null }).receiptImageKey ?? h.receipt_image_key ?? null;
+              if (!slipImageKey && !receiptImageKey) return null;
+              return <ScannedPhotosCard slipKey={slipImageKey} receiptKey={receiptImageKey} />;
+            })()}
+
             {/* Payments — read-only rows (method / date · account · collected_by /
                 approval / amount), design layout. Owner 2026-07-04: recording a
                 payment lives INSIDE Edit (MobileNewSO edit mode's PAYMENTS card),
@@ -443,20 +461,6 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
                 </div>
               )) : <div style={{ padding: "11px 13px", borderTop: "1px solid var(--line2)", fontSize: 11.5, color: "var(--mut2)" }}>No payments recorded.</div>)}
             </div>
-
-            {/* Photos — the scan-flow proof images (order slip + payment receipt),
-                parity with desktop's ScannedImageCard pair. Keys dual-read
-                camelCase ?? snake_case; the whole card is hidden when the SO
-                carries neither key (hand-keyed orders). Served as authed blob
-                fetches — the bearer can't ride on an <img src>. */}
-            {(() => {
-              const slipImageKey =
-                (h as unknown as { slipImageKey?: string | null }).slipImageKey ?? h.slip_image_key ?? null;
-              const receiptImageKey =
-                (h as unknown as { receiptImageKey?: string | null }).receiptImageKey ?? h.receipt_image_key ?? null;
-              if (!slipImageKey && !receiptImageKey) return null;
-              return <ScannedPhotosCard slipKey={slipImageKey} receiptKey={receiptImageKey} />;
-            })()}
 
             {/* History — owner requirement (Inistate-style audit timeline): WHO
                 created / edited / changed status, WHEN, via WHICH app, with an
@@ -606,10 +610,19 @@ function ScannedPhotosCard({ slipKey, receiptKey }: { slipKey: string | null; re
   const [viewer, setViewer] = useState<{ src: string; label: string } | null>(null);
   return (
     <>
-      <div className="card"><div className="card-h"><span className="card-t">Photos</span></div>
-        <div className="card-b" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 9 }}>
-          {slipKey ? <ScannedThumb imageKey={slipKey} label="Order slip" onView={(src, label) => setViewer({ src, label })} /> : null}
-          {receiptKey ? <ScannedThumb imageKey={receiptKey} label="Payment receipt" onView={(src, label) => setViewer({ src, label })} /> : null}
+      {/* Owner 2026-07-04 — "which button shows the customer's photographed order
+          slip?": the card is titled "Order slip photo" (the thing he's looking
+          for), sits high in the page, and each thumb is tap-to-open-fullscreen.
+          A one-line hint spells out the interaction so it's unmistakable. */}
+      <div className="card"><div className="card-h"><span className="card-t">Order slip photo</span><span className="card-sub">Tap to enlarge</span></div>
+        <div className="card-b" style={{ paddingTop: 4 }}>
+          <div style={{ fontSize: 11, color: "var(--mut)", marginBottom: 9, lineHeight: 1.4 }}>
+            The customer's photographed slip{receiptKey ? " and payment receipt" : ""} this order was scanned from. Tap a photo to view it full-screen.
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: slipKey && receiptKey ? "1fr 1fr" : "1fr", gap: 9 }}>
+            {slipKey ? <ScannedThumb imageKey={slipKey} label="Order slip" onView={(src, label) => setViewer({ src, label })} /> : null}
+            {receiptKey ? <ScannedThumb imageKey={receiptKey} label="Payment receipt" onView={(src, label) => setViewer({ src, label })} /> : null}
+          </div>
         </div>
       </div>
       {viewer && (
