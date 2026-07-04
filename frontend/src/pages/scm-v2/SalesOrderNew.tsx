@@ -70,7 +70,7 @@ import { useFabricLibrary } from '../../vendor/scm/lib/queries';
    specialCode to its label + required option groups, so the seeded line writes
    the SAME variant keys SoLineCard.toggleSpecial does and the special renders
    checked on the New SO line. */
-import { useSpecialAddons } from '../../vendor/scm/lib/mfg-products-queries';
+import { useSpecialAddons, type MfgProductRow } from '../../vendor/scm/lib/mfg-products-queries';
 import {
   SCAN_PREFILL_KEY, type ScanPrefill, type ExtractedSlip,
 } from '../../vendor/scm/components/ScanOrderModal';
@@ -559,6 +559,14 @@ export const SalesOrderNew = () => {
     setShowDebtorSuggest(false);
   };
 
+  /* Fabric-identity keys a colour pick writes (SoLineCard.pickFabricColour).
+     When one sofa compartment picks a colour we mirror exactly these onto the
+     sibling compartments (item 1) — the same keys, so the sibling dropdowns +
+     swatches + pricing tier all follow. */
+  const FABRIC_SYNC_KEYS = [
+    'fabricCode', 'colourId', 'fabricId', 'fabricLabel', 'colourLabel', 'colourHex',
+  ] as const;
+
   const updateLine = (rid: string, patch: Partial<SoLineDraft>) =>
     setLines((prev) => {
       const target = prev.find((l) => l.rid === rid);
@@ -574,15 +582,54 @@ export const SalesOrderNew = () => {
           ? (target.variants as { buildKey?: unknown } | null)?.buildKey
           : undefined;
       const cascadeRemark = typeof bk === 'string' && bk !== '';
+
+      /* Owner — sofa compartment colour auto-sync. When any compartment of a
+         sofa sets its fabric COLOUR, the other compartments of the SAME sofa
+         (same variants.buildKey) auto-fill the SAME colour. Scoped by buildKey
+         so a second, different sofa keeps its own colour; a manually-added
+         stand-alone sofa (no buildKey) never cascades. The sibling is left
+         alone if it has manually overridden its own fabricCode (overriddenKeys),
+         so a deliberately-different compartment colour is never stomped. */
+      const patchVariants =
+        patch.variants && typeof patch.variants === 'object'
+          ? (patch.variants as Record<string, unknown>)
+          : null;
+      const fbk =
+        target && patchVariants && 'fabricCode' in patchVariants
+          ? (patchVariants as { buildKey?: unknown }).buildKey
+              ?? (target.variants as { buildKey?: unknown } | null)?.buildKey
+          : undefined;
+      const newFabricCode =
+        patchVariants && typeof patchVariants.fabricCode === 'string'
+          ? patchVariants.fabricCode
+          : '';
+      const cascadeFabric =
+        typeof fbk === 'string' && fbk !== '' && newFabricCode !== '';
+      const fabricSync: Record<string, unknown> = {};
+      if (cascadeFabric && patchVariants) {
+        for (const k of FABRIC_SYNC_KEYS) {
+          if (k in patchVariants) fabricSync[k] = patchVariants[k];
+        }
+      }
+
       return prev.map((l) => {
         if (l.rid === rid) return { ...l, ...patch };
-        if (
-          cascadeRemark &&
-          (l.variants as { buildKey?: unknown } | null)?.buildKey === bk
-        ) {
-          return { ...l, remark: patch.remark as string };
+        const lbk = (l.variants as { buildKey?: unknown } | null)?.buildKey;
+        let next = l;
+        if (cascadeRemark && lbk === bk) {
+          next = { ...next, remark: patch.remark as string };
         }
-        return l;
+        if (
+          cascadeFabric &&
+          lbk === fbk &&
+          !(l.overriddenKeys ?? []).includes('fabricCode')
+        ) {
+          next = {
+            ...next,
+            variants: { ...(next.variants ?? {}), ...fabricSync },
+          };
+        }
+        return next;
       });
     });
 
@@ -592,6 +639,34 @@ export const SalesOrderNew = () => {
      changes. */
   const addLine  = () => setLines((prev) => [...prev, newLine(deliveryDate || null)]);
   const dropLine = (rid: string) => setLines((prev) => prev.filter((l) => l.rid !== rid));
+
+  /* Desktop sofa multi-add (MobileSkuPicker.onPickMany parity). SoLineCard's
+     multi-select commits the FIRST tick to the current line and hands the REST
+     here — each becomes a fresh line seeded exactly like a single pick: real
+     itemGroup, SKU sell price, and the same category variant inherit (so a
+     second, third… sofa in the same shot follows LINE 1's seat/leg the way a
+     manually-added follower line would; the per-sofa colour sync stays scoped
+     to real split builds). */
+  const addProducts = (rows: MfgProductRow[]) => {
+    if (rows.length === 0) return;
+    setLines((prev) => {
+      const seed: DraftLine[] = rows.map((p) => {
+        const category = p.category.toLowerCase();
+        const inherited = inheritVariantsByCategory[category];
+        const base = newLine(deliveryDate || null);
+        return {
+          ...base,
+          itemCode:       p.code,
+          itemGroup:      category,
+          description:    p.name,
+          unitPriceCenti: p.sell_price_sen ?? 0,
+          variants:       inherited ? { ...inherited } : {},
+          overriddenKeys: [],
+        };
+      });
+      return [...prev, ...seed];
+    });
+  };
 
   /* PR-E — Client-side master-follower cascade for delivery date. Mirrors
      the server-side cascade in PATCH /mfg-sales-orders/:docNo. */
@@ -622,6 +697,7 @@ export const SalesOrderNew = () => {
       if (l.variants) masterByCategory[l.itemGroup] = l.variants;
     });
 
+    const fabricSyncSet = new Set<string>(FABRIC_SYNC_KEYS);
     let didUpdate = false;
     const next = lines.map((l, idx) => {
       if (!l.itemGroup) return l;
@@ -630,10 +706,23 @@ export const SalesOrderNew = () => {
       if (!masterVariants) return l;
       const cur = (l.variants ?? {}) as Record<string, unknown>;
       const overridden = new Set(l.overriddenKeys ?? []);
+      /* Owner — fabric COLOUR only follows within the SAME sofa. When both the
+         master and this follower carry a variants.buildKey (a split sofa) and
+         they DIFFER, this follower is a different sofa: do NOT let the category
+         master's fabric-identity keys cross into it (the per-sofa colour sync
+         in updateLine handles same-buildKey compartments). Non-fabric axes
+         (seat/leg height etc.) keep the pre-existing category-wide behavior. */
+      const masterBk = (masterVariants as { buildKey?: unknown }).buildKey;
+      const followerBk = (cur as { buildKey?: unknown }).buildKey;
+      const differentSofa =
+        typeof masterBk === 'string' && masterBk !== '' &&
+        typeof followerBk === 'string' && followerBk !== '' &&
+        masterBk !== followerBk;
       const patch: Record<string, unknown> = {};
       let hasChange = false;
       for (const k of Object.keys(masterVariants)) {
         if (overridden.has(k)) continue;
+        if (differentSofa && fabricSyncSet.has(k)) continue;
         const masterVal = masterVariants[k];
         if (masterVal === undefined || masterVal === null || masterVal === '') continue;
         if (cur[k] !== masterVal) {
@@ -1856,6 +1945,7 @@ export const SalesOrderNew = () => {
                   onRemove={() => dropLine(line.rid)}
                   canRemove={lines.length > 1}
                   inheritVariantsByCategory={inheritVariantsByCategory}
+                  onAddProducts={addProducts}
                   /* Scan-Order (Task #73) — a NO-MATCH scanned line seeds an
                      empty SKU picker; pass the slip rawText as the picker's
                      placeholder hint so the operator can pick a real SKU

@@ -437,6 +437,22 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
                   <div style={{ minWidth: 0 }}>
                     <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--ink)" }}>{methodLabel(p.method)}</div>
                     <div className="money" style={{ fontSize: 10.5, color: "var(--mut)", marginTop: 2 }}>{[dm(p.paid_at), p.account_sheet, p.collected_by_name].filter((x) => x && String(x).trim()).join(" · ")}</div>
+                    {/* Bank + tenure (Merchant) / online type (Transfer) — parity
+                        with desktop PaymentsTable. Dual-read camelCase ?? snake_case. */}
+                    {(() => {
+                      const pc = p as unknown as { merchantProvider?: string | null; installmentMonths?: number | null; onlineType?: string | null };
+                      const bank = pc.merchantProvider ?? p.merchant_provider;
+                      const months = pc.installmentMonths ?? p.installment_months;
+                      const online = pc.onlineType ?? p.online_type;
+                      if (p.method === "merchant") {
+                        const tenure = typeof months === "number" ? `${months} month${months === 1 ? "" : "s"}` : "One shot";
+                        return <div className="money" style={{ fontSize: 10, color: "var(--mut2)" }}>{[bank, tenure].filter((x) => x && String(x).trim()).join(" · ")}</div>;
+                      }
+                      if (p.method === "transfer" && online) {
+                        return <div className="money" style={{ fontSize: 10, color: "var(--mut2)" }}>{online}</div>;
+                      }
+                      return null;
+                    })()}
                     {p.approval_code ? <div className="money" style={{ fontSize: 10, color: "var(--mut2)" }}>Approval {p.approval_code}</div> : null}
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>

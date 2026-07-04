@@ -712,6 +712,13 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
                       {p.installment_months ? `${p.installment_months}m` : ''}
                     </span>
                   )}
+                  {/* Approval code — parity with mobile MobileSODetail. Dual-read
+                      camelCase ?? snake_case. */}
+                  {(((p as unknown as { approvalCode?: string | null }).approvalCode ?? p.approval_code)) && (
+                    <span style={{ fontSize: 'var(--fs-11)', color: 'var(--fg-muted)' }}>
+                      Approval {(p as unknown as { approvalCode?: string | null }).approvalCode ?? p.approval_code}
+                    </span>
+                  )}
                 </span>
                 <span className={paymentsStyles.cellRight} data-label="Amount"
                       style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
