@@ -3491,23 +3491,41 @@ scanSo.post('/enqueue', async (c) => {
     }
   }
 
-  // 3) Run the pipeline AFTER responding — same waitUntil pattern as the
-  //    confirm endpoint's fire-and-forget distill.
-  const pipeline = runScanJob(c.env, {
-    id: jobId,
-    salesperson: repGiven,
-    salespersonId: user.id,
-    salespersonName,
-    houzsUserId,
-    fileBlocks,
-    uploadedImages,
-    firstBuffer,
-    imageKeys,
-  });
-  try {
-    c.executionCtx.waitUntil(pipeline);
-  } catch {
-    /* non-Workers runtime (tests) — let the floating promise run */
+  // 3) Hand the job to the Cloudflare Queue. The consumer (index.ts `queue()`)
+  //    rebuilds EVERYTHING from the scan_jobs row + R2 photos, so the message
+  //    carries only the job id. A queue-owned attempt survives a mid-run deploy
+  //    / isolate eviction (retried up to max_retries, then DLQ) — the whole
+  //    reason we moved off waitUntil, which Cloudflare evicts on the 60-110s
+  //    real-slip OCR calls, leaving jobs stuck 'running' forever.
+  //
+  //    FALLBACK: if SCAN_QUEUE is unbound (older deploy / test runtime), run the
+  //    pipeline in waitUntil exactly as before so nothing regresses.
+  if (c.env.SCAN_QUEUE) {
+    try {
+      await c.env.SCAN_QUEUE.send({ jobId });
+    } catch (e) {
+      // Send failed AFTER the row + photos are durable — the reaper will pick
+      // the job up (stale queued → one re-run). Log and still 202 so the phone
+      // shows a queued job it can poll.
+      console.error('[scan-so enqueue] SCAN_QUEUE.send failed:', jobId, (e as Error).message);
+    }
+  } else {
+    const pipeline = runScanJob(c.env, {
+      id: jobId,
+      salesperson: repGiven,
+      salespersonId: user.id,
+      salespersonName,
+      houzsUserId,
+      fileBlocks,
+      uploadedImages,
+      firstBuffer,
+      imageKeys,
+    });
+    try {
+      c.executionCtx.waitUntil(pipeline);
+    } catch {
+      /* non-Workers runtime (tests) — let the floating promise run */
+    }
   }
 
   return c.json({ job_id: jobId, status: 'queued' }, 202);
@@ -3583,6 +3601,85 @@ async function loadScanJobFilesFromR2(
     blockIndex += 1;
   }
   return { fileBlocks, uploadedImages, firstBuffer };
+}
+
+// ---------------------------------------------------------------------------
+// Cloudflare Queue consumer entry point (called from index.ts `queue()`). The
+// message carries ONLY { jobId } — everything else is rebuilt from the durable
+// scan_jobs row + the R2 photo copies the enqueue path persisted. This is the
+// reliable replacement for the old waitUntil pipeline: a queue-owned attempt
+// survives isolate eviction (Cloudflare retries up to max_retries, then DLQ).
+//
+// IDEMPOTENCY: a queue redelivery must NOT create a second draft. If the row is
+// already status='done' (the pipeline finished and wrote so_doc_no), return
+// without re-running so the caller acks. A missing row also acks (nothing to
+// do). Any other status re-runs runScanJob, whose own status writes stand — a
+// job stuck 'running' from an evicted attempt is safe to replay because the
+// draft-create only happened at the very end (a mid-run eviction means no draft
+// was written). runScanJob is otherwise unchanged from the enqueue path.
+export async function processScanQueueMessage(env: Env, jobId: string): Promise<void> {
+  const id = String(jobId ?? '');
+  if (!id) return;
+  const svc = serviceClient(env);
+
+  const { data: row, error } = await svc
+    .from('scan_jobs')
+    .select('id, status, salesperson, salesperson_id, houzs_user_id, image_keys')
+    .eq('id', id)
+    .single();
+  if (error) {
+    // Missing row (deleted / never inserted) — ack, nothing to run. Any other
+    // read error: throw so the message retries (transient DB blip).
+    if ((error as { code?: string }).code === 'PGRST116') {
+      console.warn('[scan-queue] job row not found, acking:', id);
+      return;
+    }
+    throw new Error(`scan_jobs read failed for ${id}: ${error.message}`);
+  }
+
+  const r = row as Record<string, unknown>;
+  const status = typeof r.status === 'string' ? r.status : '';
+  // IDEMPOTENT ACK — the draft already exists; a redelivery must not make a 2nd.
+  if (status === 'done') {
+    console.warn('[scan-queue] job already done, skipping:', id);
+    return;
+  }
+
+  // Dual-read both casings (postgres.js / PostgREST camelCases result cols —
+  // the #1 recurring result-column bug class).
+  const rawKeys = r.imageKeys ?? r.image_keys;
+  const imageKeys = Array.isArray(rawKeys) ? rawKeys.map(String) : [];
+  const salesperson = typeof r.salesperson === 'string' ? r.salesperson : '';
+  const salespersonId = String(r.salespersonId ?? r.salesperson_id ?? '');
+  const huRaw = r.houzsUserId ?? r.houzs_user_id;
+  const houzsUserId = huRaw != null && Number.isFinite(Number(huRaw)) ? Number(huRaw) : null;
+
+  const files = salespersonId ? await loadScanJobFilesFromR2(env.SO_ITEM_PHOTOS, imageKeys) : null;
+  if (!files) {
+    // No durable photos (enqueue-time R2 put failed / bucket unbound) or no
+    // replayable identity — the job can never run. Terminal error, then ack
+    // (retrying would loop to the DLQ for the same unrecoverable reason).
+    console.warn('[scan-queue] job not replayable, erroring:', id);
+    await svc
+      .from('scan_jobs')
+      .update({ status: 'error', error: STALE_JOB_ERROR, updated_at: new Date().toISOString() })
+      .eq('id', id);
+    return;
+  }
+
+  await runScanJob(env, {
+    id,
+    salesperson,
+    // The enqueue-time user_metadata name is not on the row; the normalized rep
+    // display name is the closest replay identity (same as the reaper).
+    salespersonName: salesperson || null,
+    salespersonId,
+    houzsUserId,
+    fileBlocks: files.fileBlocks,
+    uploadedImages: files.uploadedImages,
+    firstBuffer: files.firstBuffer,
+    imageKeys,
+  });
 }
 
 async function reapStaleScanJobs(
