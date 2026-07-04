@@ -78,7 +78,9 @@ const toApi = (r: CodeRow) => ({
       the reward configurator's "Apply PWP" toggle (which code is available in
       THIS cart). Keyed by cart_line_key on the client. */
 pwpCodes.get('/mine', async (c) => {
-  const userId = c.get('user').id;
+  const u = c.get('user');
+  if (!u?.id) return c.json({ error: 'auth_required' }, 401);
+  const userId = u.id;
   const supabase = c.get('supabase');
   const { data, error } = await supabase
     .from('pwp_codes')
@@ -109,7 +111,9 @@ const reserveSchema = z.object({
       qty rather than double-generating. Returns the line's full RESERVED set.
       No rule matches → []. */
 pwpCodes.post('/reserve', async (c) => {
-  const userId = c.get('user').id;
+  const u = c.get('user');
+  if (!u?.id) return c.json({ error: 'auth_required' }, 401);
+  const userId = u.id;
   const supabase = c.get('supabase');
 
   let body: unknown;
@@ -290,7 +294,9 @@ pwpCodes.get('/by-so/:docNo', async (c) => {
       model (the configurator has both); the per-SKU price authority stays at
       order Confirm (server uses pwp_price_sen). Marks nothing used. */
 pwpCodes.get('/:code', async (c) => {
-  const userId = c.get('user').id;
+  const u = c.get('user');
+  if (!u?.id) return c.json({ error: 'auth_required' }, 401);
+  const userId = u.id;
   const supabase = c.get('supabase');
   const code = c.req.param('code');
   const rewardCategory = (c.req.query('rewardCategory') ?? '').toUpperCase();

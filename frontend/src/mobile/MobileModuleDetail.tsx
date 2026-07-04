@@ -716,7 +716,7 @@ function DocActionFooter({ moduleKey, id, header, invalidate, onPOD, onDeleted }
   return (
     <>
       {error && (
-        <div style={{ position: "absolute", left: 0, right: 0, bottom: hasRow && onPOD ? 130 : 76, padding: "0 16px", textAlign: "center", fontSize: 11.5, color: "#b23a3a" }}>{error}</div>
+        <div style={{ position: "absolute", left: 0, right: 0, bottom: hasRow && onPOD ? 130 : 76, padding: "0 16px", textAlign: "center", fontSize: 11.5, color: "#b23a3a", zIndex: 1, maxWidth: "calc(100% - 32px)" }}>{error}</div>
       )}
       <footer className="actbar" style={{ position: "absolute", left: 0, right: 0, bottom: 0 }}>
         {onPOD && (

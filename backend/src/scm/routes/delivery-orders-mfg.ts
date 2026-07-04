@@ -1396,7 +1396,14 @@ deliveryOrdersMfg.get('/', async (c) => {
   const sb = c.get('supabase');
   // Row-level "own / downline chain" scope (scm.staff uuids) — see lib/salesScope.ts.
   // Pass the REAL Houzs user id, NOT user.id (bridge-pinned staff uuid — was the non-admin 500).
-  const scopeIds = await resolveSalesScopeIds(sb, c.env, c.get('houzsUser')?.id, hasHouzsPerm(c, 'scm.so.view_all'));
+  const canViewAll = hasHouzsPerm(c, 'scm.so.view_all');
+  const houzsUserId = c.get('houzsUser')?.id;
+  if (!canViewAll && houzsUserId == null) {
+    // No Houzs identity to scope by — say so plainly instead of silently
+    // returning an empty list (the match-nothing scope hides the real cause).
+    return c.json({ error: 'Your account is not linked to a Houzs user, so delivery orders cannot be shown — please contact IT.' }, 403);
+  }
+  const scopeIds = await resolveSalesScopeIds(sb, c.env, houzsUserId, canViewAll);
   let q = sb.from('delivery_orders').select(HEADER).order('do_date', { ascending: false }).limit(500);
   if (scopeIds) q = q.in('salesperson_id', scopeIds);
   const status = c.req.query('status'); if (status) q = q.eq('status', status);

@@ -883,13 +883,16 @@ productModels.post('/:id/photo', async (c) => {
     return c.json({ error: 'file_too_large', maxBytes: PHOTO_MAX_BYTES, got: file.size }, 400);
   }
 
+  const u = c.get('user');
+  if (!u?.id) return c.json({ error: 'auth_required' }, 401);
+
   const photoId = crypto.randomUUID();
   const photoKey = `product-models/${id}/${photoId}.${ext}`;
 
   try {
     await c.env.SO_ITEM_PHOTOS.put(photoKey, file.stream(), {
       httpMetadata: { contentType: file.type },
-      customMetadata: { modelId: id, uploadedBy: c.get('user').id },
+      customMetadata: { modelId: id, uploadedBy: u.id },
     });
   } catch (e) {
     return c.json({ error: 'r2_put_failed', reason: e instanceof Error ? e.message : String(e) }, 500);

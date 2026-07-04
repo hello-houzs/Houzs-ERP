@@ -87,7 +87,9 @@ async function requireWrite(c: AppCtx) {
   if (!hasHouzsPerm(c, 'scm.config.write')) {
     return { ok: false as const, res: c.json({ error: 'forbidden', reason: 'missing_scm_config_write' }, 403) };
   }
-  const userId = c.get('user').id;
+  const u = c.get('user');
+  if (!u?.id) return { ok: false as const, res: c.json({ error: 'auth_required' }, 401) };
+  const userId = u.id;
   return { ok: true as const, userId };
 }
 
