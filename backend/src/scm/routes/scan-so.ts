@@ -3054,12 +3054,16 @@ async function recordScanReceiptPayments(
     const slipKey = args.storedImageKeys.includes(jobKey)
       ? jobKey
       : (first ? args.receiptImageKey : null);
-    // Conservative amounts: first receipt = the OCR'd deposit; anything the
-    // OCR could not read books at 0 with a plain "please verify" note.
+    // Only the FIRST receipt carries the OCR'd amount; extras have none.
     const amountCenti = first ? depositCenti : 0;
+    // Owner: do NOT create RM 0.00 phantom payment rows. A receipt with no
+    // readable amount books NOTHING — the operator adds that payment manually
+    // in Edit (its slip is still on R2 and viewable). Only book real amounts.
+    if (amountCenti <= 0) {
+      console.warn('[scan-job] receipt has no readable amount — not booking a RM0 row:', args.docNo, jobKey);
+      continue;
+    }
     const noteParts = ['Recorded from scanned payment receipt'];
-    if (first && amountCenti === 0) noteParts.push('amount could not be read — please verify');
-    if (!first) noteParts.push('extra receipt — amount not read, please verify');
     if (m.guessed) noteParts.push('method not read — assumed card terminal (Merchant)');
     try {
       const { errorMessage } = await recordSoPaymentRow(svc, {
@@ -3130,15 +3134,11 @@ function buildDraftSoBodyFromSlip(
     // a line counts once it has a name or a matched code (drops blank rows).
     const name = (sku?.name ?? l.rawText ?? '').trim();
     if (!name && !sku) continue;
-    const remarkParts: string[] = [];
-    if (sku && (l.rawText ?? '').trim() && (l.rawText ?? '').trim() !== name) {
-      remarkParts.push(`Slip: ${(l.rawText ?? '').trim()}`);
-    }
-    if (l.fabricMatch?.code) remarkParts.push(`Fabric: ${l.fabricMatch.code}`);
-    if (l.specialsMatch.length > 0) remarkParts.push(`Specials: ${l.specialsMatch.map((s) => s.code).join(', ')}`);
-    if (l.notes) remarkParts.push(l.notes);
+    // Owner (said many times): the line REMARK must stay CLEAN -- do NOT stuff
+    // the raw slip text / fabric code / specials / OCR notes into it. The
+    // operator reviews the draft against the order-slip photo (shown on the SO
+    // detail). Only genuine structured variant numbers ride along below.
     const variants: Record<string, unknown> = {};
-    if (remarkParts.length > 0) variants.remark = remarkParts.join(' | ');
     // Bedframe numbers (reparseSpec-overruled) -> the same inch-string variant
     // keys the New SO form writes, so the draft's line editor seeds correctly.
     if (l.divanHeightInches != null) variants.divanHeight = `${l.divanHeightInches}"`;
@@ -3171,14 +3171,13 @@ function buildDraftSoBodyFromSlip(
   // nulls the delivery-date columns — "1 month notice" isn't a date — and the
   // slip's written grand total is the operator's cross-check against the line
   // prices, which mostly arrive unpriced).
+  // Owner (said many times): the note carries ONLY the customer's genuine
+  // handwritten order remark -- NOT slip delivery text / grand total / any
+  // other OCR meta. Those each have their own place or are the operator's
+  // review-against-the-photo job.
   const noteParts: string[] = [];
   const remarkNote = (parsed.remarks ?? '').trim();
   if (remarkNote) noteParts.push(remarkNote);
-  const slipDelivery = (parsed.deliveryDate ?? '').trim();
-  if (slipDelivery) noteParts.push(`Slip delivery: ${slipDelivery}`);
-  if (typeof parsed.totalRm === 'number' && parsed.totalRm > 0) {
-    noteParts.push(`Slip total: RM${parsed.totalRm}`);
-  }
 
   const body: Record<string, unknown> = {
     customerName,
