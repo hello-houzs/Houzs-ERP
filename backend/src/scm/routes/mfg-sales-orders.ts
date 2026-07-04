@@ -1601,6 +1601,60 @@ mfgSalesOrders.get('/:docNo', async (c) => {
       (r) => r.item_group as string | null | undefined,
     ),
   );
+  /* Brand letterhead resolution (owner 2026-07) — stamp the R2 key of the
+     brand logo the SO PDF should print IN PLACE OF the company logo (the
+     company letterhead stays the fallback when this is null). Brands +
+     their logos live in public.project_brands (Project Maintenance →
+     Brands; logo_r2_key, migration-pg 0069), read via c.env.DB — same
+     public-schema hop as the venue lookup above. Rules:
+       1. Any line whose item_group contains SOFA → the brand named
+          "ZANOTTI" (case-insensitive), but only if it has a logo.
+       2. Else match the FIRST item's description prefix against the
+          active brand names (longest name wins) → that brand's logo key.
+       3. Else null.
+     Best-effort: any failure stamps null and the PDF keeps the company
+     letterhead — a PDF must never fail because of a logo. */
+  {
+    let brandLogoKey: string | null = null;
+    try {
+      const brandRows = await c.env.DB.prepare(
+        `SELECT name, logo_r2_key FROM project_brands WHERE active = 1`
+      ).all<{ name: string; logo_r2_key: string | null }>();
+      /* Dual-read logoR2Key ?? logo_r2_key — the pg driver camelCases
+         result columns (#1 recurring bug). */
+      const brands = ((brandRows.results ?? []) as Array<Record<string, unknown>>)
+        .map((r) => ({
+          name: String(r.name ?? '').trim(),
+          logoKey: (() => {
+            const v = (r.logoR2Key ?? r.logo_r2_key) as string | null | undefined;
+            const s = typeof v === 'string' ? v.trim() : '';
+            return s || null;
+          })(),
+        }))
+        .filter((b) => b.name);
+      const hasSofa = itemRows.some((it) =>
+        String((it as { item_group?: string | null }).item_group ?? '').toUpperCase().includes('SOFA'),
+      );
+      if (hasSofa) {
+        const zanotti = brands.find((b) => b.name.toUpperCase() === 'ZANOTTI' && b.logoKey);
+        if (zanotti) brandLogoKey = zanotti.logoKey;
+      }
+      if (!brandLogoKey) {
+        const firstDesc = String(
+          ((itemRows[0] ?? {}) as { description?: string | null }).description ?? '',
+        ).trim().toUpperCase();
+        if (firstDesc) {
+          let best: { name: string; logoKey: string | null } | null = null;
+          for (const b of brands) {
+            if (!firstDesc.startsWith(b.name.toUpperCase())) continue;
+            if (!best || b.name.length > best.name.length) best = b;
+          }
+          brandLogoKey = best?.logoKey ?? null;
+        }
+      }
+    } catch { brandLogoKey = null; }
+    (salesOrder as Record<string, unknown>).resolvedBrandLogoKey = brandLogoKey;
+  }
   /* Coverage comes from the SAME allocation engine the MRP page uses (Wei Siang
      2026-05-31): stock first → earliest-ETA outstanding PO → shortage. A bare
      FK-only PO lookup missed stock-replenishment POs (raised without a per-line

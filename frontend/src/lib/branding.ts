@@ -171,3 +171,73 @@ export async function ensureBrandingLogoLoaded(): Promise<void> {
   })();
   return logoInflight;
 }
+
+// ── Per-brand logo memo (owner 2026-07 — brand letterheads on the SO PDF) ─────
+// Same contract as the company-logo memo above, but keyed by the brand's R2
+// key (project_brands.logo_r2_key, served by GET /api/projects/brands/logo).
+// GET /api/scm/mfg-sales-orders/:docNo stamps `resolvedBrandLogoKey`; the SO
+// PDF warms this memo with it and passes the result to drawHeader() in place
+// of the company logo (company letterhead stays the fallback). Upload keys
+// carry a Date.now() stamp (new upload = new key), so key equality is a
+// correct cache check and the memo never serves a stale image.
+
+const brandLogoCache = new Map<string, BrandingLogo>();
+const brandLogoInflight = new Map<string, Promise<void>>();
+const brandLogoFailed = new Set<string>(); // don't hammer a 404/broken key
+
+/** Sync accessor for drawHeader() callers. null = not loaded / no brand logo
+ *  (the header falls back to the company logo, then text-only). */
+export function getBrandLogoCache(key: string | null | undefined): BrandingLogo | null {
+  if (!key) return null;
+  return brandLogoCache.get(key) ?? null;
+}
+
+/** Drop the memo — called after a brand-logo upload/remove in Project
+ *  Maintenance so the next PDF re-reads the new state instead of a stale
+ *  image. */
+export function clearBrandLogoCache(): void {
+  brandLogoCache.clear();
+  brandLogoInflight.clear();
+  brandLogoFailed.clear();
+}
+
+/**
+ * Ensure a brand logo is memoized for the PDF libs. Fail-soft: any
+ * fetch/decode failure leaves the memo empty and the SO letterhead falls back
+ * to the company logo — a PDF must never fail because of a logo. Concurrent
+ * callers share one in-flight fetch per key.
+ */
+export async function ensureBrandLogoLoaded(key: string | null | undefined): Promise<void> {
+  if (!key) return;                                    // no brand logo resolved
+  if (brandLogoCache.has(key)) return;                 // memo is current
+  if (brandLogoFailed.has(key)) return;                // known-bad — don't retry per print
+  const inflight = brandLogoInflight.get(key);
+  if (inflight) return inflight;
+
+  const p = (async () => {
+    try {
+      // Lazy import avoids a static api/client dependency for the many
+      // consumers that only need the text branding (same as the company memo).
+      const { api, tokenStore } = await import("../api/client");
+      const token = tokenStore.get();
+      const res = await fetch(
+        `${api.baseUrl}/api/projects/brands/logo?key=${encodeURIComponent(key)}`,
+        { headers: token ? { Authorization: `Bearer ${token}` } : {} },
+      );
+      if (!res.ok) throw new Error(`brand logo fetch ${res.status}`);
+      const blob = await res.blob();
+      const dataUrl = await blobToDataUrl(blob);
+      const { width, height } = await dataUrlDimensions(dataUrl);
+      if (!width || !height) throw new Error("logo has no dimensions");
+      const format: BrandingLogo["format"] =
+        blob.type === "image/png" || dataUrl.startsWith("data:image/png") ? "PNG" : "JPEG";
+      brandLogoCache.set(key, { key, dataUrl, format, width, height });
+    } catch {
+      brandLogoFailed.add(key); // fail-soft: company letterhead this session
+    } finally {
+      brandLogoInflight.delete(key);
+    }
+  })();
+  brandLogoInflight.set(key, p);
+  return p;
+}

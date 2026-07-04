@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { GripVertical, ChevronUp, ChevronDown, Plus, Pencil, Trash2, ShieldCheck, Eye, EyeOff } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { GripVertical, ChevronUp, ChevronDown, Plus, Pencil, Trash2, ShieldCheck, Eye, EyeOff, Upload, Image as ImageIcon } from "lucide-react";
 import { useReorderable } from "../hooks/useReorderable";
 import { PageHeader } from "../components/Layout";
 import { Button } from "../components/Button";
@@ -10,6 +10,7 @@ import { useDialog } from "../hooks/useDialog";
 import { Skeleton } from "../components/Skeleton";
 import { api } from "../api/client";
 import { cn } from "../lib/utils";
+import { clearBrandLogoCache } from "../lib/branding";
 
 // ── Projects tab ─────────────────────────────────────────────
 // Lookup management for the project module: organizers, venues, and
@@ -1311,6 +1312,156 @@ interface BrandRow {
   color: string;
   sort_order: number;
   active: number;
+  /** R2 key of the brand's letterhead logo (migration-pg 0069); null/'' =
+   *  none. The pg driver camelCases result columns, so consumers dual-read
+   *  logo_r2_key ?? logoR2Key. */
+  logo_r2_key?: string | null;
+  logoR2Key?: string | null;
+}
+
+/** Dual-read the brand logo key (camelCase ?? snake_case — #1 recurring bug). */
+const brandLogoKey = (b: BrandRow): string =>
+  (b.logo_r2_key ?? b.logoR2Key ?? "").trim();
+
+// ── Per-row brand logo cell ─────────────────────────────────
+// Thumb + Upload/Replace/Remove, cloning the Settings → Branding company
+// logo uploader (api.postBinary raw-binary upload + fetchBlobUrl preview,
+// because the serve endpoint needs the bearer so <img src> can't hit it
+// directly + in-app dialog.confirm for Remove). The uploaded logo prints
+// on SCM Sales Order PDFs when the SO resolves to this brand.
+function BrandLogoCell({
+  brand,
+  onChanged,
+}: {
+  brand: BrandRow;
+  onChanged: () => void;
+}) {
+  const toast = useToast();
+  const dialog = useDialog();
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [url, setUrl] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const key = brandLogoKey(brand);
+
+  // Load / refresh the thumb whenever the stored key changes. Keys carry a
+  // Date.now() stamp, so passing the key as a query param busts stale caches.
+  useEffect(() => {
+    if (!key) {
+      setUrl(null);
+      return;
+    }
+    let obj: string | null = null;
+    let cancelled = false;
+    api
+      .fetchBlobUrl(`/api/projects/brands/${brand.id}/logo?k=${encodeURIComponent(key)}`)
+      .then((u) => {
+        if (cancelled) {
+          URL.revokeObjectURL(u);
+        } else {
+          obj = u;
+          setUrl(u);
+        }
+      })
+      .catch(() => setUrl(null));
+    return () => {
+      cancelled = true;
+      if (obj) URL.revokeObjectURL(obj);
+    };
+  }, [brand.id, key]);
+
+  async function upload(file: File | null) {
+    if (!file) return;
+    if (!["image/png", "image/jpeg"].includes(file.type)) {
+      toast.error("Logo must be a PNG or JPG image");
+      return;
+    }
+    if (file.size > 1024 * 1024) {
+      toast.error("Logo must be under 1 MB");
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.postBinary(`/api/projects/brands/${brand.id}/logo`, file, file.type);
+      clearBrandLogoCache(); // next SO PDF re-reads the new image
+      toast.success(`${brand.name} logo uploaded`);
+      onChanged();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to upload logo");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove() {
+    const ok = await dialog.confirm({
+      title: "Remove brand logo?",
+      message: `Sales Order PDFs for "${brand.name}" go back to the company letterhead.`,
+      confirmLabel: "Remove",
+    });
+    if (!ok) return;
+    setBusy(true);
+    try {
+      await api.del(`/api/projects/brands/${brand.id}/logo`);
+      clearBrandLogoCache();
+      toast.success("Logo removed");
+      onChanged();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to remove logo");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="flex shrink-0 items-center gap-1.5">
+      {url ? (
+        <img
+          src={url}
+          alt={`${brand.name} logo`}
+          className="h-8 max-w-[80px] shrink-0 rounded-sm object-contain"
+        />
+      ) : (
+        <div
+          className="grid h-8 w-10 shrink-0 place-items-center rounded-sm border border-dashed border-border text-ink-muted"
+          title="No logo — SO PDFs use the company letterhead"
+        >
+          <ImageIcon size={13} />
+        </div>
+      )}
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/png,image/jpeg"
+        className="hidden"
+        onChange={(e) => {
+          void upload(e.target.files?.[0] ?? null);
+          e.target.value = "";
+        }}
+      />
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => inputRef.current?.click()}
+        title={key ? "Replace logo (PNG/JPG, up to 1 MB)" : "Upload logo (PNG/JPG, up to 1 MB)"}
+        className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-[10.5px] font-medium text-ink-secondary hover:bg-bg/70 hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        <Upload size={11} />
+        {busy ? "Working…" : key ? "Replace" : "Upload"}
+      </button>
+      {key && (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void remove()}
+          title="Remove logo"
+          className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-[10.5px] font-medium text-ink-secondary hover:bg-bg/70 hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <Trash2 size={11} />
+          Remove
+        </button>
+      )}
+    </div>
+  );
 }
 
 function BrandManager() {
@@ -1478,6 +1629,10 @@ function BrandManager() {
               }}
               className="flex-1 min-w-[140px] h-8 rounded-md border border-transparent bg-transparent px-2 text-[13px] font-medium text-ink hover:border-border focus:border-primary focus:bg-surface focus:ring-1 focus:ring-primary/20 focus:outline-none"
             />
+            {/* Brand logo (owner 2026-07) — prints on SCM Sales Order PDFs
+                in place of the company letterhead when the SO resolves to
+                this brand. */}
+            <BrandLogoCell brand={b} onChanged={() => q.reload()} />
             <span
               className={cn(
                 "rounded px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider",
