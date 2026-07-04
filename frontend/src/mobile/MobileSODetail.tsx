@@ -1,9 +1,9 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
-import { uploadSlipFull, fetchPaymentSlipUrl } from "../vendor/scm/lib/slip";
+import { uploadSlipFull, fetchPaymentSlipUrl, fetchScanSlipImageBlobUrl } from "../vendor/scm/lib/slip";
 import { useStaff } from "../vendor/scm/lib/admin-queries";
 import { buildVariantSummary } from "../vendor/shared/variant-summary";
 import "./mobile.css";
@@ -68,6 +68,12 @@ type SoHeader = {
      non-cancelled DO/SI references this SO (locks Edit + Cancel). */
   has_children: boolean | null;
   delivery_state: string | null;
+  /* Scan-flow proof photos (migrations 0033 + 0034) — R2 keys for the
+     handwritten order slip and the card-terminal payment receipt this SO was
+     scanned from. Dual-read camelCase ?? snake_case at the use site (the pg
+     driver camelCases result columns on some paths). */
+  slip_image_key: string | null;
+  receipt_image_key: string | null;
 };
 type SoItem = {
   id: string;
@@ -348,23 +354,31 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
 
             {/* Line items — description / variants / SKU / ×qty / line total */}
             <div className="card"><div className="card-h"><span className="card-t">Line items</span><span className="card-sub">{items.length} {items.length === 1 ? "line" : "lines"}</span></div>
-              {items.length ? items.map((it, i) => (
+              {items.length ? items.map((it, i) => {
+                /* Owner 2026-07-04 — the long product name 爆掉/被挤掉 at phone
+                   width ("呈现 Code 即可"): the row's primary label is the item
+                   CODE (dual-read camelCase ?? snake_case), the name dropped.
+                   Description only shows when the line carries no code at all. */
+                const code = (((it as unknown as { itemCode?: string | null }).itemCode ?? it.item_code) ?? "").trim();
+                return (
                 <div key={it.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "11px 13px", borderTop: i ? "1px solid var(--line2)" : "none" }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: "var(--ink)" }}>{it.description || it.item_code || "—"}</div>
+                    <div className="money" style={{ fontSize: 13, fontWeight: 700, color: "var(--ink)" }}>{code || it.description || "—"}</div>
                     {/* Category-aware variant spec (sofa Fabric·config / bedframe
                         size·Headboard·Storage / mattress size·firmness·height) —
                         built from the variants JSON; falls back to the server's
                         stamped description2 summary when variants is empty. */}
                     {(() => { const vs = buildVariantSummary(it.item_group, it.variants) || (it.description2 ?? "").trim(); return vs ? <div style={{ fontSize: 11.5, color: "var(--mut)", marginTop: 2 }}>{vs}</div> : null; })()}
-                    <div className="money" style={{ fontSize: 10, color: "var(--mut2)", marginTop: 3 }}>SKU {val(it.item_code)}{(it.uom ?? "").trim() ? ` · ${it.uom!.trim()}` : ""}</div>
+                    {/* UOM only — the code moved up to the primary line. */}
+                    {(it.uom ?? "").trim() ? <div className="money" style={{ fontSize: 10, color: "var(--mut2)", marginTop: 3 }}>{it.uom!.trim()}</div> : null}
                   </div>
                   <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>
                     <div className="money" style={{ fontSize: 13, fontWeight: 700, color: "#0c3f39" }}>RM {rm(lineTotalCenti(it))}</div>
                     <div className="money" style={{ fontSize: 11, color: "var(--mut)", marginTop: 2 }}>×{it.qty ?? 0}</div>
                   </div>
                 </div>
-              )) : <div style={{ padding: "11px 13px", borderTop: "1px solid var(--line2)", fontSize: 11.5, color: "var(--mut2)" }}>No items.</div>}
+                );
+              }) : <div style={{ padding: "11px 13px", borderTop: "1px solid var(--line2)", fontSize: 11.5, color: "var(--mut2)" }}>No items.</div>}
             </div>
 
             {/* Payments — read-only rows (method / date · account · collected_by /
@@ -387,7 +401,8 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
                     {p.approval_code ? <div className="money" style={{ fontSize: 10, color: "var(--mut2)" }}>Approval {p.approval_code}</div> : null}
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    {p.slip_key ? <SlipLink docNo={docNo} paymentId={p.id} /> : null}
+                    {/* Slip present — dual-read camelCase ?? snake_case. */}
+                    {((p as unknown as { slipKey?: string | null }).slipKey ?? p.slip_key) ? <SlipLink docNo={docNo} paymentId={p.id} /> : null}
                     <span className="money-row">RM {rm(p.amount_centi)}</span>
                     {/* Delete payment — parity with desktop PaymentsTable. Hidden
                         on cancelled / edit-locked (SHIPPED+ / has children) orders,
@@ -408,6 +423,20 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
                 </div>
               )) : <div style={{ padding: "11px 13px", borderTop: "1px solid var(--line2)", fontSize: 11.5, color: "var(--mut2)" }}>No payments recorded.</div>)}
             </div>
+
+            {/* Photos — the scan-flow proof images (order slip + payment receipt),
+                parity with desktop's ScannedImageCard pair. Keys dual-read
+                camelCase ?? snake_case; the whole card is hidden when the SO
+                carries neither key (hand-keyed orders). Served as authed blob
+                fetches — the bearer can't ride on an <img src>. */}
+            {(() => {
+              const slipImageKey =
+                (h as unknown as { slipImageKey?: string | null }).slipImageKey ?? h.slip_image_key ?? null;
+              const receiptImageKey =
+                (h as unknown as { receiptImageKey?: string | null }).receiptImageKey ?? h.receipt_image_key ?? null;
+              if (!slipImageKey && !receiptImageKey) return null;
+              return <ScannedPhotosCard slipKey={slipImageKey} receiptKey={receiptImageKey} />;
+            })()}
 
             {actionError && <div style={{ marginTop: 13, fontSize: 11.5, color: "var(--red)", textAlign: "center" }}>{actionError}</div>}
           </div>
@@ -527,6 +556,81 @@ function SlipLink({ docNo, paymentId }: { docNo: string; paymentId: string }) {
       style={{ border: "none", background: "transparent", cursor: "pointer", padding: "0 6px", display: "flex", alignItems: "center", opacity: busy ? 0.5 : 1 }}
     >
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#16695f" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3Z" /><circle cx="12" cy="13" r="3" /></svg>
+    </button>
+  );
+}
+
+/* ── Scanned photos card (mobile port of desktop's ScannedImageCard pair) ────
+   Order slip (slip_image_key, mig 0033) + payment receipt (receipt_image_key,
+   mig 0034) as tappable thumbnails; tap opens a full-size overlay (tap again to
+   dismiss). The images are served by GET /scan-so/slip-image?key=… which needs
+   the bearer, so each thumb authed-fetches the blob (fetchScanSlipImageBlobUrl)
+   and renders the object URL — revoked when the thumb unmounts, so the overlay
+   (which shows while the thumb stays mounted) always has a live URL. */
+function ScannedPhotosCard({ slipKey, receiptKey }: { slipKey: string | null; receiptKey: string | null }) {
+  const [viewer, setViewer] = useState<{ src: string; label: string } | null>(null);
+  return (
+    <>
+      <div className="card"><div className="card-h"><span className="card-t">Photos</span></div>
+        <div className="card-b" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 9 }}>
+          {slipKey ? <ScannedThumb imageKey={slipKey} label="Order slip" onView={(src, label) => setViewer({ src, label })} /> : null}
+          {receiptKey ? <ScannedThumb imageKey={receiptKey} label="Payment receipt" onView={(src, label) => setViewer({ src, label })} /> : null}
+        </div>
+      </div>
+      {viewer && (
+        <div
+          onClick={() => setViewer(null)}
+          role="dialog"
+          aria-label={viewer.label}
+          style={{ position: "fixed", inset: 0, zIndex: 2600, background: "rgba(0,0,0,0.84)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 16 }}
+        >
+          <img src={viewer.src} alt={viewer.label} style={{ maxWidth: "100%", maxHeight: "84vh", borderRadius: 10, objectFit: "contain", background: "#fff" }} />
+          <div style={{ marginTop: 12, fontSize: 12, fontWeight: 700, color: "#fff", opacity: 0.85 }}>{viewer.label} · tap anywhere to close</div>
+        </div>
+      )}
+    </>
+  );
+}
+
+/* One authed thumbnail — fetches the scan image as a blob, shows a skeleton
+   while loading and a plain-language line when the fetch fails. */
+function ScannedThumb({ imageKey, label, onView }: { imageKey: string; label: string; onView: (src: string, label: string) => void }) {
+  const [src, setSrc] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    let url: string | null = null;
+    setSrc(null);
+    setFailed(false);
+    fetchScanSlipImageBlobUrl(imageKey)
+      .then((u) => {
+        if (cancelled) { URL.revokeObjectURL(u); return; }
+        url = u;
+        setSrc(u);
+      })
+      .catch(() => { if (!cancelled) setFailed(true); });
+    return () => {
+      cancelled = true;
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [imageKey]);
+
+  return (
+    <button
+      type="button"
+      onClick={() => { if (src) onView(src, label); }}
+      aria-label={`View ${label} photo`}
+      style={{ border: "1px solid var(--line2, #e3e6e0)", background: "#f4f6f3", borderRadius: 12, padding: 0, overflow: "hidden", cursor: src ? "pointer" : "default", fontFamily: "inherit", textAlign: "center" }}
+    >
+      {failed ? (
+        <div style={{ height: 96, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 8px", fontSize: 10.5, color: "var(--mut2)", lineHeight: 1.4 }}>Couldn't load this photo.</div>
+      ) : src ? (
+        <img src={src} alt={label} style={{ width: "100%", height: 96, objectFit: "cover", display: "block" }} />
+      ) : (
+        <div className="ph" style={{ height: 96 }} />
+      )}
+      <div style={{ padding: "6px 4px", fontSize: 10, fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", color: "#9aa093" }}>{label}</div>
     </button>
   );
 }
