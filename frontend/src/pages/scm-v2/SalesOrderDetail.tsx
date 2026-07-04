@@ -826,6 +826,21 @@ export const SalesOrderDetail = () => {
   const hasChildren = Boolean((header as { has_children?: boolean }).has_children);
   const isLocked = (lockedStatuses.includes(header.status) && !unlockOverride) || hasChildren;
 
+  /* Owner 2026-07-05 — SO PROCESS lock: once the SO has been PROCEEDED
+     (proceeded_at stamped) AND its processing day has passed, we PO to the
+     supplier, so the LINE ITEMS freeze (State + Postcode freeze in the customer
+     card below). Payment + the rest of the customer data stay editable. This is
+     independent of `isLocked` (status/downstream) — it applies while the SO is
+     still in an otherwise-editable status. */
+  const todayMY = new Date().toLocaleDateString('en-CA');
+  const procOrig = (header as { internal_expected_dd?: string | null }).internal_expected_dd ?? '';
+  const procLockActive =
+    Boolean((header as { proceeded_at?: string | null }).proceeded_at)
+    && procOrig !== '' && procOrig < todayMY;
+  /* Line editing is locked by EITHER the status/downstream lock OR the process
+     lock — both mean the lines are no longer ours to change. */
+  const linesLocked = isLocked || procLockActive;
+
   // Cancel SO flow (Commander 2026-05-29) — a cancelled SO stops proceeding
   // (no PO / DO / production; the whole page greys out) and can be reopened
   // back to CONFIRMED. Cancel is offered only on in-flight statuses (not once
@@ -1112,7 +1127,7 @@ export const SalesOrderDetail = () => {
               bottom of the table (no more modal). Button hides itself
               while a draft is open to avoid stacking two add-cards. */}
           {isEditing && !addingDraft && (
-            <Button variant="primary" size="sm" onClick={startAddLine} disabled={isLocked}>
+            <Button variant="primary" size="sm" onClick={startAddLine} disabled={linesLocked}>
               <Plus {...ICON} />
               <span>Add Line Item</span>
             </Button>
@@ -1145,8 +1160,8 @@ export const SalesOrderDetail = () => {
                       doesn't expose, so it stays in this small action bar. */}
                   <div className={styles.actionsCell} style={{ marginBottom: 'var(--space-2)' }}>
                     <button type="button" className={styles.iconBtn} title="Override price"
-                      disabled={isLocked}
-                      onClick={() => !isLocked && setOverriding(it)}>
+                      disabled={linesLocked}
+                      onClick={() => !linesLocked && setOverriding(it)}>
                       <DollarSign {...SM_ICON} />
                     </button>
                   </div>
@@ -1155,13 +1170,13 @@ export const SalesOrderDetail = () => {
                     draft={editDraft}
                     onChange={cb?.onChange ?? ((patch) => patchEditingDraft(it.id, patch))}
                     onRemove={cb?.onRemove ?? (() => removeEditingLine(it.id))}
-                    canRemove={!isLocked}
+                    canRemove={!linesLocked}
                     /* PR-F (#79) wiring — enable photo upload on already-saved
                        lines. New lines (addingDraft) have no itemId yet so
                        their photos defer to after the first save. */
                     docNo={header.doc_no}
                     itemId={it.id}
-                    isEditing={!isLocked}
+                    isEditing={!linesLocked}
                   />
                 </div>
               );
@@ -1796,6 +1811,16 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
   const originalDelivery = header.customer_delivery_date ?? '';
   const processingLocked = originalProcessing !== '' && originalProcessing < today;
 
+  /* Owner 2026-07-05 — the SO PROCESS lock fires only once the SO has been
+     PROCEEDED (proceeded_at stamped) AND its processing day has passed. That is
+     the moment we PO to the supplier, so from then on the LINE ITEMS and the
+     customer STATE + POSTCODE (which drive the line warehouse + the PO delivery
+     location) freeze. PAYMENT and every other customer field stay editable.
+     This is stricter than `processingLocked` (which grandfather-locks the past
+     Processing-Date input alone, proceeded or not) — keep the two separate. */
+  const procLockActive =
+    Boolean(header.proceeded_at) && originalProcessing !== '' && originalProcessing < today;
+
   /* Returns the first blocking date error, or null when the dates are valid.
      Shared by the imperative validate() (page-level Save runs this BEFORE
      committing any line) and trySave (defence-in-depth on the header write). */
@@ -2159,7 +2184,8 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
               <span className={styles.selectWrap}>
                 <select className={styles.fieldSelect} value={form.state}
                   onChange={(e) => setForm((s) => ({ ...s, state: e.target.value, city: '', postcode: '' }))}
-                  disabled={inputsDisabled || localities.isLoading}>
+                  disabled={inputsDisabled || procLockActive || localities.isLoading}
+                  title={procLockActive ? 'Processing has passed — State is locked (it drives the PO delivery location).' : undefined}>
                   <option value="">{localities.isLoading ? 'Loading…' : 'Pick state'}</option>
                   {sortByText(states).map((s) => <option key={s} value={s}>{s}</option>)}
                 </select>
@@ -2183,7 +2209,8 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
               <span className={styles.selectWrap}>
                 <select className={styles.fieldSelect} value={form.postcode}
                   onChange={(e) => set('postcode', e.target.value)}
-                  disabled={inputsDisabled || !form.city}>
+                  disabled={inputsDisabled || procLockActive || !form.city}
+                  title={procLockActive ? 'Processing has passed — Postcode is locked (it drives the PO delivery location).' : undefined}>
                   <option value="">{form.city ? 'Pick postcode' : '— pick city first'}</option>
                   {sortByNumeric(postcodes).map((p) => <option key={p} value={p}>{p}</option>)}
                 </select>
