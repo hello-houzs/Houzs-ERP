@@ -2,35 +2,23 @@ import type { R2Bucket } from '@cloudflare/workers-types';
 
 export interface SlipEnv {
   // Optional so the route's c.env (Houzs Env) is assignable; slipBindings below
-  // guards each (throws if unset) for a clear runtime error.
+  // guards it (throws if unset) for a clear runtime error.
+  //
+  // 2026-07-04 — the slip flow no longer needs R2 S3-API creds
+  // (R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_ENDPOINT / R2_BUCKET_NAME):
+  // browser presigned PUT/HEAD/GET were replaced by Worker-proxy upload +
+  // binding-served reads (slips.ts / mfg-sales-orders.ts slip-url routes).
+  // Everything goes through the SLIPS binding, now bound in wrangler.toml.
   SLIPS?: R2Bucket;
-  R2_ACCESS_KEY_ID?: string;
-  R2_SECRET_ACCESS_KEY?: string;
-  R2_ENDPOINT?: string;
-  R2_BUCKET_NAME?: string;
 }
 
 export interface SlipBindings {
   bucket: R2Bucket;
-  accessKeyId: string;
-  secretAccessKey: string;
-  endpoint: string;
-  bucketName: string;
 }
 
 export function slipBindings(env: SlipEnv): SlipBindings {
   if (!env.SLIPS) throw new Error('R2 binding SLIPS not configured');
-  if (!env.R2_ACCESS_KEY_ID) throw new Error('R2_ACCESS_KEY_ID not configured');
-  if (!env.R2_SECRET_ACCESS_KEY) throw new Error('R2_SECRET_ACCESS_KEY not configured');
-  if (!env.R2_ENDPOINT) throw new Error('R2_ENDPOINT not configured');
-  if (!env.R2_BUCKET_NAME) throw new Error('R2_BUCKET_NAME not configured');
-  return {
-    bucket: env.SLIPS,
-    accessKeyId: env.R2_ACCESS_KEY_ID,
-    secretAccessKey: env.R2_SECRET_ACCESS_KEY,
-    endpoint: env.R2_ENDPOINT,
-    bucketName: env.R2_BUCKET_NAME,
-  };
+  return { bucket: env.SLIPS };
 }
 
 export function hashesMatch(a: string, b: string): boolean {

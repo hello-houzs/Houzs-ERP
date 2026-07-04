@@ -337,7 +337,8 @@ async function persistReceiptAsSlip(
   buf: ArrayBuffer,
   mime: SlipMime,
 ): Promise<SlipPersistResult> {
-  // R2 unbound (creds not configured) → skip silently; OCR fields still flow.
+  // SLIPS binding unbound → skip silently; OCR fields still flow. (Since
+  // 2026-07-04 the binding is all slipBindings needs — no R2 S3 creds.)
   let bindings;
   try { bindings = slipBindings(c.env); }
   catch { return null; }

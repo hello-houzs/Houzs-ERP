@@ -12,11 +12,12 @@ export const SlipInitRequestSchema = z.object({
   orderDraftId: z.string().min(1).max(64).optional(),
 });
 
+// 2026-07-04 — Houzs deviation from 2990: the slip flow is a Worker-proxy
+// upload (routes/slips.ts), so init returns NO presigned putUrl; the bytes go
+// to POST /slips/:session/upload (raw binary) instead.
 export const SlipInitResponseSchema = z.object({
   uploadSessionId: z.string().uuid(),
-  putUrl: z.string().url(),
   r2Key: z.string(),
-  expiresAt: z.string(),
 });
 
 export const SlipConfirmRequestSchema = z.object({}).strict();
@@ -26,10 +27,12 @@ export const SlipConfirmResponseSchema = z.object({
   r2Key: z.string(),
 });
 
+// Houzs deviation: the /slip-url routes now STREAM the slip bytes through the
+// Worker (binding-served) — this JSON shape survives only client-side, where
+// vendor/scm/lib/slip.ts wraps the blob in an object URL for its callers.
 export const SlipUrlResponseSchema = z.object({
-  url: z.string().url(),
+  url: z.string(),
   contentType: z.string(),
-  expiresAt: z.string(),
 });
 
 export type SlipInitRequest = z.infer<typeof SlipInitRequestSchema>;

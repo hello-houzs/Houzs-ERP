@@ -1,6 +1,5 @@
-// Vendored SLICE of apps/backend/src/lib/slip.ts — the payment-slip presigned
-// GET + the init→PUT→confirm upload sequence the SO PaymentsTable +
-// SlipUploadField use.
+// Vendored SLICE of apps/backend/src/lib/slip.ts — the payment-slip fetch +
+// the init→upload→confirm sequence the SO PaymentsTable + SlipUploadField use.
 //
 // HOUZS VENDOR NOTES:
 //   - The token + base URL come from the vendored authed-fetch boundary
@@ -10,6 +9,20 @@
 //     MAX_SLIP_SIZE_BYTES) lived in @2990s/shared/schemas (not vendored); they
 //     are inlined here and re-exported so SlipUploadField + PaymentsTable can
 //     import them from this module instead.
+//   - OPERATIONAL DEVIATION from 2990 (2026-07-04, precedent: the
+//     VITE_API_URL `||` fix): 2990 uploads via a browser presigned R2 PUT and
+//     views via presigned GET URLs. Houzs prod never provisioned the R2
+//     S3-API creds those need (every /slips/init 500'd), so this lib now
+//     drives the Worker-proxy flow instead:
+//       upload: POST /slips/init (no putUrl) → POST /slips/:id/upload (raw
+//               binary) → POST /slips/:id/confirm — same session vocabulary,
+//               bytes proxied through the Worker's SLIPS binding.
+//       view:   /slip-url routes STREAM the object; fetchSoSlipUrl /
+//               fetchPaymentSlipUrl blob-fetch it and return an object URL,
+//               so their {url, contentType} contract to callers is unchanged.
+//     Callers (SlipUploadField, PaymentsTable, MobileNewSO PayCard,
+//     MobilePOD) are untouched — uploadSlipFull keeps its signature and the
+//     'init'|'put'|'confirm' phase vocabulary.
 
 import { humanApiError } from './authed-fetch';
 
@@ -24,8 +37,8 @@ const token = (): string => {
 };
 
 /* These slip fetches go straight to fetch(), bypassing authedFetch's deadline,
-   so a stalled cold-start / slow R2 PUT hangs the upload UI forever. Cap each
-   one — generous for the image OCR + R2 PUT uploads, tighter for the presigned
+   so a stalled cold-start / slow upload hangs the upload UI forever. Cap each
+   one — generous for the image OCR + binary uploads, tighter for the slip
    GETs / confirm — and turn a timeout into a plain-language retryable error. */
 const SLIP_UPLOAD_TIMEOUT_MS = 120_000;
 const SLIP_TIMEOUT_MS = 60_000;
@@ -50,7 +63,9 @@ export type SlipInitRequest = {
   contentType: 'image/jpeg' | 'image/png' | 'image/webp' | 'application/pdf';
   contentHash: string;
 };
-export type SlipInitResponse = { uploadSessionId: string; putUrl: string; r2Key: string };
+/* Proxy-upload deviation: init returns NO putUrl — the bytes go to
+   POST /slips/:id/upload instead of a presigned R2 PUT. */
+export type SlipInitResponse = { uploadSessionId: string; r2Key: string };
 export type SlipConfirmResponse = { ok: boolean };
 
 export const ALLOWED_SLIP_MIMES = [
@@ -58,33 +73,38 @@ export const ALLOWED_SLIP_MIMES = [
 ] as const;
 export const MAX_SLIP_SIZE_BYTES = 5 * 1024 * 1024;
 
-/** Presigned GET URL for a manufacturing Sales Order's payment slip. */
-export async function fetchSoSlipUrl(docNo: string): Promise<SlipUrlResponse> {
-  const res = await slipFetch(`${API_URL}/mfg-sales-orders/${encodeURIComponent(docNo)}/slip-url`, {
+/* Proxy-view deviation (see header): the /slip-url routes now STREAM the slip
+   bytes through the Worker (authed) instead of returning a presigned R2 URL.
+   Blob-fetch + object URL keeps the {url, contentType} contract for callers
+   (<img src>, <a href target=_blank>, window.open all take blob: URLs). The
+   object URLs are never revoked here — same accepted trade-off as
+   fetchScanSlipImageBlobUrl's callers that view-then-navigate. */
+async function fetchSlipAsObjectUrl(path: string): Promise<SlipUrlResponse> {
+  const res = await slipFetch(`${API_URL}${path}`, {
     headers: { authorization: `Bearer ${token()}` },
   }, SLIP_TIMEOUT_MS);
   if (!res.ok) {
     const text = await res.text().catch(() => '<no body>');
     throw new Error(humanApiError(res.status, text));
   }
-  return res.json() as Promise<SlipUrlResponse>;
+  const contentType = res.headers.get('content-type') ?? 'image/jpeg';
+  const blob = await res.blob();
+  return { url: URL.createObjectURL(blob), contentType };
 }
 
-/** Presigned GET URL for a single SO payment row's slip. */
+/** A manufacturing Sales Order's payment slip, as a blob object URL. */
+export async function fetchSoSlipUrl(docNo: string): Promise<SlipUrlResponse> {
+  return fetchSlipAsObjectUrl(`/mfg-sales-orders/${encodeURIComponent(docNo)}/slip-url`);
+}
+
+/** A single SO payment row's slip, as a blob object URL. */
 export async function fetchPaymentSlipUrl(
   docNo: string,
   paymentId: string,
 ): Promise<SlipUrlResponse> {
-  const res = await slipFetch(
-    `${API_URL}/mfg-sales-orders/${encodeURIComponent(docNo)}/payments/${encodeURIComponent(paymentId)}/slip-url`,
-    { headers: { authorization: `Bearer ${token()}` } },
-    SLIP_TIMEOUT_MS,
+  return fetchSlipAsObjectUrl(
+    `/mfg-sales-orders/${encodeURIComponent(docNo)}/payments/${encodeURIComponent(paymentId)}/slip-url`,
   );
-  if (!res.ok) {
-    const text = await res.text().catch(() => '<no body>');
-    throw new Error(humanApiError(res.status, text));
-  }
-  return res.json() as Promise<SlipUrlResponse>;
 }
 
 /** Authed GET of a scanned "Original Slip" image (GET /scan-so/slip-image?key=…)
@@ -172,14 +192,21 @@ async function initSlipUpload(file: File): Promise<SlipInitResponse> {
   return res.json() as Promise<SlipInitResponse>;
 }
 
-async function putToR2(putUrl: string, file: File): Promise<void> {
-  const res = await slipFetch(putUrl, {
-    method: 'PUT',
-    headers: { 'content-type': file.type },
+/* Proxy-upload deviation (replaces 2990's putToR2 presigned PUT): raw binary
+   POST to the Worker, which writes through its SLIPS binding. Authed like
+   every other API call — no presigned URL, no R2 S3 creds. */
+async function uploadSlipBytes(sessionId: string, file: File): Promise<void> {
+  const res = await slipFetch(`${API_URL}/slips/${encodeURIComponent(sessionId)}/upload`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${token()}`,
+      'content-type': file.type,
+    },
     body: file,
   }, SLIP_UPLOAD_TIMEOUT_MS);
   if (!res.ok) {
-    throw new Error(humanApiError(res.status, ''));
+    const text = await res.text().catch(() => '<no body>');
+    throw new Error(humanApiError(res.status, text));
   }
 }
 
@@ -195,6 +222,8 @@ async function confirmUpload(sessionId: string): Promise<SlipConfirmResponse> {
   return res.json() as Promise<SlipConfirmResponse>;
 }
 
+/* 'put' kept in the phase vocabulary (SlipUploadField's busy states key off
+   it) even though the transfer is now a Worker-proxy POST, not an R2 PUT. */
 export type SlipUploadPhase = 'init' | 'put' | 'confirm';
 
 export interface UploadSlipOptions {
@@ -215,7 +244,7 @@ export async function uploadSlipFull(opts: UploadSlipOptions): Promise<UploadSli
   let putErr: unknown;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      await putToR2(init.putUrl, opts.file);
+      await uploadSlipBytes(init.uploadSessionId, opts.file);
       putErr = undefined;
       break;
     } catch (err) {

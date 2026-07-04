@@ -68,7 +68,7 @@ import { recordSoAudit, diffFields, type FieldChange } from '../lib/so-audit';
 /* TBC sofa exchange PWP re-evaluation (Loo 2026-06-12) — reuse the voucher
    generator + model-list matcher from the reserve route. */
 import { genCode, inList } from './pwp-codes';
-import { signSoItemPhotoUrl, soItemPhotoBindings, presign, type SlipMime } from '../lib/r2';
+import { signSoItemPhotoUrl, soItemPhotoBindings, type SlipMime } from '../lib/r2';
 import { slipBindings } from '../lib/slip';
 import {
   loadMaintenanceConfig,
@@ -1148,11 +1148,17 @@ mfgSalesOrders.get('/mine', async (c) => {
   return c.json({ salesOrders });
 });
 
-/* P1 (Owner 2026-06-03, migration 0143) — presign a short-lived GET URL for an
-   SO's payment slip so the Backend SO detail page can display the proof.
-   (Mirrored the legacy /orders/:id/slip-url route, removed 2026-06-12.) Auth is
-   router-level (same as the SO detail GET); RLS governs which SOs the caller
-   can read. */
+/* P1 (Owner 2026-06-03, migration 0143) — serve an SO's payment slip so the
+   Backend SO detail page can display the proof. (Mirrored the legacy
+   /orders/:id/slip-url route, removed 2026-06-12.) Auth is router-level (same
+   as the SO detail GET); RLS governs which SOs the caller can read.
+
+   2026-07-04 — converted from returning a presigned S3 GET URL (JSON {url})
+   to STREAMING the object through the SLIPS binding, part of killing the
+   never-provisioned R2 S3 creds (see routes/slips.ts header). The frontend
+   (vendor/scm/lib/slip.ts fetchSoSlipUrl / fetchPaymentSlipUrl) blob-fetches
+   this and hands consumers an object URL, keeping their {url, contentType}
+   contract intact. */
 function mimeFromKey(key: string): SlipMime {
   const ext = key.split('.').pop()?.toLowerCase();
   switch (ext) {
@@ -1177,21 +1183,17 @@ mfgSalesOrders.get('/:docNo/slip-url', async (c) => {
   const slipKey = (row as { slip_key?: string | null }).slip_key ?? null;
   if (!slipKey) return c.json({ error: 'no_slip_attached' }, 400);
 
-  const bindings = slipBindings(c.env);
-  const url = await presign({
-    bucket: bindings.bucketName,
-    region: 'auto',
-    accessKeyId: bindings.accessKeyId,
-    secretAccessKey: bindings.secretAccessKey,
-    endpoint: bindings.endpoint,
-    key: slipKey,
-    method: 'GET',
-    expiresInSeconds: 5 * 60,
-  });
-  return c.json({
-    url,
-    contentType: mimeFromKey(slipKey),
-    expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+  let bindings;
+  try { bindings = slipBindings(c.env); }
+  catch (e) { return c.json({ error: 'r2_not_configured', reason: (e as Error).message }, 500); }
+  const obj = await bindings.bucket.get(slipKey);
+  if (!obj) return c.json({ error: 'file_not_in_r2' }, 404);
+  return new Response(obj.body as unknown as BodyInit, {
+    headers: {
+      'content-type': obj.httpMetadata?.contentType ?? mimeFromKey(slipKey),
+      'content-disposition': 'inline',
+      'cache-control': 'private, max-age=300',
+    },
   });
 });
 
@@ -7765,9 +7767,10 @@ mfgSalesOrders.delete('/:docNo/payments/:id', async (c) => {
   return c.json({ ok: true });
 });
 
-/* Spec D4 — per-payment slip view. Same presign helper + vocabulary as the
-   order-level /:docNo/slip-url route; legacy rows (slip_key NULL) →
-   no_slip_attached and the UI falls back to the order slip. */
+/* Spec D4 — per-payment slip view. Same binding-served proxy + vocabulary as
+   the order-level /:docNo/slip-url route (converted from presign 2026-07-04,
+   see that route's comment); legacy rows (slip_key NULL) → no_slip_attached
+   and the UI falls back to the order slip. */
 mfgSalesOrders.get('/:docNo/payments/:id/slip-url', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const id = c.req.param('id');
   const { data: row, error } = await sb
@@ -7780,21 +7783,17 @@ mfgSalesOrders.get('/:docNo/payments/:id/slip-url', async (c) => {
   if (!r || r.so_doc_no !== docNo) return c.json({ error: 'not_found' }, 404);
   if (!r.slip_key) return c.json({ error: 'no_slip_attached' }, 400);
 
-  const bindings = slipBindings(c.env);
-  const url = await presign({
-    bucket: bindings.bucketName,
-    region: 'auto',
-    accessKeyId: bindings.accessKeyId,
-    secretAccessKey: bindings.secretAccessKey,
-    endpoint: bindings.endpoint,
-    key: r.slip_key,
-    method: 'GET',
-    expiresInSeconds: 5 * 60,
-  });
-  return c.json({
-    url,
-    contentType: mimeFromKey(r.slip_key),
-    expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+  let bindings;
+  try { bindings = slipBindings(c.env); }
+  catch (e) { return c.json({ error: 'r2_not_configured', reason: (e as Error).message }, 500); }
+  const obj = await bindings.bucket.get(r.slip_key);
+  if (!obj) return c.json({ error: 'file_not_in_r2' }, 404);
+  return new Response(obj.body as unknown as BodyInit, {
+    headers: {
+      'content-type': obj.httpMetadata?.contentType ?? mimeFromKey(r.slip_key),
+      'content-disposition': 'inline',
+      'cache-control': 'private, max-age=300',
+    },
   });
 });
 

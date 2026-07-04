@@ -266,12 +266,14 @@ scm.route("/scan-so", scanSo);
 // /scan-payment/extract returns 503 anthropic_key_missing when absent.
 scm.use("/scan-payment/*", scmAreaGuard("scm.sales.orders"));
 scm.route("/scan-payment", scanPayment);
-// Ported 2026-06-24 — payment-slip upload session (init → browser presigned
-// PUT → confirm). PRODUCES the pending_slip_uploads row that the SO-create +
-// add-payment handlers (mfg-sales-orders.ts) CONSUME by upload_session_id;
-// without it the New-SO payment-slip upload 404'd on /slips/init. Needs the
-// SLIPS R2 binding + R2 S3 creds (intentionally unbound until configured —
-// slipBindings() throws a clear r2_not_configured error until then).
+// Ported 2026-06-24 — payment-slip upload session (init → upload → confirm).
+// PRODUCES the pending_slip_uploads row that the SO-create + add-payment
+// handlers (mfg-sales-orders.ts) CONSUME by upload_session_id; without it the
+// New-SO payment-slip upload 404'd on /slips/init.
+// 2026-07-04 — converted from browser presigned PUT (needed R2 S3 creds that
+// were never created, so /slips/init 500'd r2_not_configured) to a
+// Worker-proxy upload (POST /slips/:session/upload, raw binary). Needs ONLY
+// the SLIPS R2 binding, now bound in wrangler.toml (prod + staging).
 scm.use("/slips/*", scmAreaGuard("scm.sales.orders"));
 scm.route("/slips", slips);
 

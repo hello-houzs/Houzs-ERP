@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
-import { uploadSlipFull, fetchPaymentSlipUrl, fetchScanSlipImageBlobUrl } from "../vendor/scm/lib/slip";
+import { fetchPaymentSlipUrl, fetchScanSlipImageBlobUrl } from "../vendor/scm/lib/slip";
 import { useStaff } from "../vendor/scm/lib/admin-queries";
 import {
   useSalesOrderAuditLog,
@@ -158,7 +158,6 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
   const confirm = useConfirm();
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [payOpen, setPayOpen] = useState(false);
 
   const detail = useQuery({
     queryKey: ["mobile-so-detail", docNo],
@@ -404,16 +403,13 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
             </div>
 
             {/* Payments — read-only rows (method / date · account · collected_by /
-                approval / amount), design layout. "+ Record payment" affordance in
-                the card header opens our RecordPaymentSheet (real workflow, kept). */}
+                approval / amount), design layout. Owner 2026-07-04: recording a
+                payment lives INSIDE Edit (MobileNewSO edit mode's PAYMENTS card),
+                not on the detail — this card is display-only (the per-row delete
+                stays, parity with desktop PaymentsTable). */}
             <div className="card"><div className="card-h"><span className="card-t">Payments</span>
               <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 {!!payments.length && <span className="card-sub">{payments.length}</span>}
-                {/* Hidden on cancelled AND draft — payments are only recorded
-                    after the order is confirmed (owner 2026-07-04). */}
-                {ph === "submitted" && bal > 0 && (
-                  <button type="button" disabled={busy} onClick={() => { setActionError(null); setPayOpen(true); }} style={{ border: "none", background: "transparent", color: "var(--teal)", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, cursor: "pointer", padding: 0, opacity: busy ? 0.55 : 1 }}>+ Add payment</button>
-                )}
               </span>
             </div>
               {paymentsQ.isLoading && <div style={{ padding: "11px 13px", borderTop: "1px solid var(--line2)", fontSize: 11.5, color: "var(--mut2)" }}>Loading{"…"}</div>}
@@ -477,15 +473,9 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
 
       {!detail.isLoading && !detail.error && h && (
         <footer className="actbar">
-          {/* Record Payment — repeatable; accumulates 2, 3, N payments. Offered
-              only on a CONFIRMED live order with a positive balance — never on
-              drafts (owner 2026-07-04: payments come after confirmation, so a
-              draft's primary action stays Create Sales Order) or cancelled
-              orders. Each payment needs a slip (backend enforces slip_required),
-              captured in the sheet. */}
-          {ph === "submitted" && bal > 0 && (
-            <button className="btn" disabled={busy} onClick={() => { setActionError(null); setPayOpen(true); }} style={{ marginBottom: 9, opacity: busy ? 0.55 : 1 }}>Add Payment</button>
-          )}
+          {/* Owner 2026-07-04 — NO Add Payment here: recording payments happens
+              inside Edit (MobileNewSO edit mode's PAYMENTS card, + Add Payment
+              per the owner's screenshot). The detail page only displays them. */}
           {ph === "draft" && (
             <div style={{ display: "flex", gap: 9 }}>
               <button className="btn-ghost" style={{ flex: 1, opacity: busy ? 0.55 : 1 }} disabled={busy} onClick={() => onEdit?.(docNo)}>Edit Draft</button>
@@ -514,20 +504,6 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
         </footer>
       )}
 
-      {payOpen && h && (
-        <RecordPaymentSheet
-          docNo={docNo}
-          totalCenti={total(h)}
-          paidCenti={h.paid_centi_total ?? 0}
-          balanceCenti={bal}
-          onClose={() => setPayOpen(false)}
-          onDone={() => {
-            void qc.invalidateQueries({ queryKey: ["mobile-so-payments", docNo] });
-            void qc.invalidateQueries({ queryKey: ["mobile-so-detail", docNo] });
-            void qc.invalidateQueries({ queryKey: ["mobile-so-list"] });
-          }}
-        />
-      )}
     </div>
   );
 }
@@ -589,8 +565,9 @@ function composeEmergency(h: SoHeader): string {
 const lineTotalCenti = (it: SoItem): number =>
   it.total_centi ?? Math.round((it.unit_price_centi ?? 0) * (it.qty ?? 0));
 
-/* Slip link on a persisted payment row — fetches a short-lived presigned URL on
-   demand (GET /:docNo/payments/:id/slip-url) and opens it in a new tab. */
+/* Slip link on a persisted payment row — blob-fetches the slip on demand
+   (GET /:docNo/payments/:id/slip-url, Worker-proxied) and opens the object
+   URL in a new tab. */
 function SlipLink({ docNo, paymentId }: { docNo: string; paymentId: string }) {
   const [busy, setBusy] = useState(false);
   const notify = useNotify();
@@ -900,242 +877,3 @@ function StatusPill({ status }: { status: string | null }) {
   return <span className={`badge ${cls}`} style={p === "draft" ? { border: "1px solid #e0cf9e" } : undefined}>{label}</span>;
 }
 
-/* ── Record Payment sheet — the multi-payment core ──────────────────────────
-   A repeatable bottom sheet: the salesperson records ONE payment at a time, and
-   each successful record accumulates on the SO (2, 3, N payments per order). It
-   mirrors the desktop PaymentsTable's per-row contract:
-     • method-aware sub-fields — Cash / Online (sub-type) / Merchant (bank +
-       plan) / Installment (plan)
-     • a slip photo (image/*, PDF) uploaded via uploadSlipFull → uploadSessionId
-     • POST /mfg-sales-orders/:docNo/payments with the full field set
-
-   The backend REQUIRES a slip (slip_required) and rejects over-payment
-   (over_payment); both surface through useNotify. On success the caller
-   invalidates the payments + header queries so the balance updates live. */
-
-// Method label → backend enum (transfer surfaces as "Online" in the UI).
-const PAY_METHODS: Array<{ label: string; code: "cash" | "transfer" | "merchant" | "installment" }> = [
-  { label: "Cash", code: "cash" },
-  { label: "Online", code: "transfer" },
-  { label: "Merchant", code: "merchant" },
-  { label: "Installment", code: "installment" },
-];
-const BANK_OPTS = ["Maybank", "CIMB", "Public Bank", "HSBC", "RHB"];
-const PLAN_OPTS = ["One Shot", "6 months", "12 months", "24 months", "36 months"];
-const ONLINE_OPTS = ["Bank Transfer", "TNG eWallet", "DuitNow", "Cheque"];
-// 'One Shot' → null (no installment); 'N months' → N.
-const planToMonths = (label: string): number | null => {
-  const m = /^(\d+)\s*month/i.exec(label.trim());
-  return m ? Number(m[1]) : null;
-};
-
-function RecordPaymentSheet({
-  docNo, totalCenti, paidCenti, balanceCenti, onClose, onDone,
-}: {
-  docNo: string;
-  totalCenti: number;
-  paidCenti: number;
-  balanceCenti: number;
-  onClose: () => void;
-  onDone: () => void;
-}) {
-  const notify = useNotify();
-  const staffQ = useStaff();
-  const fileRef = useRef<HTMLInputElement | null>(null);
-
-  const [amount, setAmount] = useState(() => (balanceCenti > 0 ? (balanceCenti / 100).toFixed(2) : ""));
-  const [methodCode, setMethodCode] = useState<"cash" | "transfer" | "merchant" | "installment">("cash");
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const [bank, setBank] = useState(BANK_OPTS[0]);
-  const [plan, setPlan] = useState(PLAN_OPTS[0]);
-  const [online, setOnline] = useState(ONLINE_OPTS[0]);
-  const [account, setAccount] = useState("");
-  const [approval, setApproval] = useState("");
-  const [collectedBy, setCollectedBy] = useState("");
-  const [slipName, setSlipName] = useState<string | null>(null);
-  const [slipSession, setSlipSession] = useState<string | null>(null);
-  const [slipPhase, setSlipPhase] = useState<"" | "uploading" | "done" | "error">("");
-  const [error, setError] = useState<string | null>(null);
-
-  const staff = staffQ.data ?? [];
-
-  const onPickFile = async (f: File | null) => {
-    if (!f) return;
-    setError(null);
-    setSlipName(f.name);
-    setSlipSession(null);
-    setSlipPhase("uploading");
-    try {
-      const { uploadSessionId } = await uploadSlipFull({ file: f });
-      setSlipSession(uploadSessionId);
-      setSlipPhase("done");
-    } catch (e) {
-      setSlipPhase("error");
-      setError(e instanceof Error ? e.message : "Slip upload failed. Please try again.");
-    }
-  };
-
-  const mutation = useMutation({
-    mutationFn: async () => {
-      const amountCenti = Math.round(Number(String(amount).replace(/,/g, "")) * 100);
-      if (!Number.isFinite(amountCenti) || amountCenti <= 0) throw new Error("Enter a valid amount greater than zero.");
-      if (!slipSession) throw new Error("slip_required");
-      const body: Record<string, unknown> = {
-        paidAt: date,
-        method: methodCode,
-        amountCenti,
-        accountSheet: account.trim() || null,
-        approvalCode: approval.trim() || null,
-        collectedBy: collectedBy || null,
-        uploadSessionId: slipSession,
-      };
-      if (methodCode === "merchant") {
-        body.merchantProvider = bank || null;
-        body.installmentMonths = planToMonths(plan);
-      } else if (methodCode === "installment") {
-        body.installmentMonths = planToMonths(plan);
-      } else if (methodCode === "transfer") {
-        body.onlineType = online || null;
-      }
-      await authedFetch(`/mfg-sales-orders/${encodeURIComponent(docNo)}/payments`, {
-        method: "POST",
-        body: JSON.stringify(body),
-      });
-    },
-    onSuccess: () => { onDone(); onClose(); void notify({ title: "Payment recorded" }); },
-    onError: (e) => {
-      const msg = e instanceof Error ? e.message : String(e);
-      if (/slip_required/i.test(msg)) setError("Please capture the payment slip before recording.");
-      else if (/over_payment/i.test(msg)) setError("This amount exceeds the order balance. Reduce it and try again.");
-      else setError(msg || "Couldn't record the payment. Please try again.");
-    },
-  });
-
-  const inputStyle: React.CSSProperties = {
-    width: "100%", boxSizing: "border-box", height: 42, padding: "0 12px", borderRadius: 10,
-    border: "1px solid #e3e6e0", background: "#fff", fontFamily: "inherit", fontSize: 14, color: "var(--ink)",
-  };
-  const selStyle: React.CSSProperties = { ...inputStyle, appearance: "none", WebkitAppearance: "none" };
-  const labelStyle: React.CSSProperties = { fontSize: 9.5, fontWeight: 700, letterSpacing: ".14em", textTransform: "uppercase", color: "#9aa093", marginBottom: 5, display: "block" };
-
-  return (
-    <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 2500, background: "rgba(0,0,0,0.32)", display: "flex", alignItems: "flex-end" }}>
-      <div onClick={(e) => e.stopPropagation()} className="hz-m" style={{ width: "100%", maxHeight: "88vh", overflowY: "auto", background: "#fff", borderRadius: "18px 18px 0 0", padding: "18px 16px calc(env(safe-area-inset-bottom) + 16px)", boxShadow: "0 -8px 28px rgba(0,0,0,0.16)" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
-          <div style={{ fontSize: 16, fontWeight: 800, color: "var(--ink)" }}>Record Payment</div>
-          <button onClick={onClose} style={{ border: "none", background: "transparent", fontSize: 15, fontWeight: 700, color: "var(--teal)", cursor: "pointer", fontFamily: "inherit" }}>Close</button>
-        </div>
-
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 14 }}>
-          <MiniStat label="Total" value={rm(totalCenti)} color="var(--ink)" />
-          <MiniStat label="Paid" value={rm(paidCenti)} color="#2f8a5b" />
-          <MiniStat label="Balance" value={rm(balanceCenti)} color={balanceCenti > 0 ? "#a16a2e" : "var(--ink)"} />
-        </div>
-
-        <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
-          <div style={{ flex: 1 }}>
-            <label style={labelStyle}>Amount (RM)</label>
-            <input inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" style={inputStyle} />
-          </div>
-          <div style={{ flex: 1 }}>
-            <label style={labelStyle}>Date</label>
-            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={inputStyle} />
-          </div>
-        </div>
-
-        <div style={{ marginBottom: 12 }}>
-          <label style={labelStyle}>Method</label>
-          <select value={methodCode} onChange={(e) => setMethodCode(e.target.value as typeof methodCode)} style={selStyle}>
-            {PAY_METHODS.map((m) => <option key={m.code} value={m.code}>{m.label}</option>)}
-          </select>
-        </div>
-
-        {methodCode === "merchant" && (
-          <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
-            <div style={{ flex: 1 }}>
-              <label style={labelStyle}>Bank</label>
-              <select value={bank} onChange={(e) => setBank(e.target.value)} style={selStyle}>{BANK_OPTS.map((o) => <option key={o} value={o}>{o}</option>)}</select>
-            </div>
-            <div style={{ flex: 1 }}>
-              <label style={labelStyle}>Plan</label>
-              <select value={plan} onChange={(e) => setPlan(e.target.value)} style={selStyle}>{PLAN_OPTS.map((o) => <option key={o} value={o}>{o}</option>)}</select>
-            </div>
-          </div>
-        )}
-        {methodCode === "installment" && (
-          <div style={{ marginBottom: 12 }}>
-            <label style={labelStyle}>Installment plan</label>
-            <select value={plan} onChange={(e) => setPlan(e.target.value)} style={selStyle}>{PLAN_OPTS.map((o) => <option key={o} value={o}>{o}</option>)}</select>
-          </div>
-        )}
-        {methodCode === "transfer" && (
-          <div style={{ marginBottom: 12 }}>
-            <label style={labelStyle}>Sub-type</label>
-            <select value={online} onChange={(e) => setOnline(e.target.value)} style={selStyle}>{ONLINE_OPTS.map((o) => <option key={o} value={o}>{o}</option>)}</select>
-          </div>
-        )}
-
-        <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
-          <div style={{ flex: 1 }}>
-            <label style={labelStyle}>Account Sheet</label>
-            <input value={account} onChange={(e) => setAccount(e.target.value)} placeholder="Sheet ref" style={inputStyle} />
-          </div>
-          <div style={{ flex: 1 }}>
-            <label style={labelStyle}>Approval Code</label>
-            <input value={approval} onChange={(e) => setApproval(e.target.value)} placeholder="Terminal no" style={inputStyle} />
-          </div>
-        </div>
-
-        <div style={{ marginBottom: 12 }}>
-          <label style={labelStyle}>Collected By</label>
-          <select value={collectedBy} onChange={(e) => setCollectedBy(e.target.value)} style={selStyle}>
-            <option value="">—</option>
-            {staff.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-          </select>
-        </div>
-
-        <div style={{ marginBottom: 14 }}>
-          <label style={labelStyle}>Payment Slip (required)</label>
-          <input ref={fileRef} type="file" accept="image/*,application/pdf" style={{ display: "none" }} onChange={(e) => { void onPickFile(e.target.files?.[0] ?? null); e.target.value = ""; }} />
-          <button
-            type="button"
-            onClick={() => fileRef.current?.click()}
-            disabled={slipPhase === "uploading"}
-            style={{
-              width: "100%", boxSizing: "border-box", height: 42, borderRadius: 10, cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700,
-              border: slipPhase === "done" ? "1px solid #bcdcd7" : "1px solid #d6d9d2",
-              background: slipPhase === "done" ? "#e1efed" : "#f4f6f3",
-              color: slipPhase === "done" ? "#16695f" : "#414539",
-              display: "flex", alignItems: "center", justifyContent: "center", gap: 7,
-            }}
-          >
-            {slipPhase === "uploading" ? "Uploading…"
-              : slipPhase === "done" ? `Slip attached · ${slipName ?? ""}`
-              : slipPhase === "error" ? "Retry slip upload"
-              : "Capture / attach slip"}
-          </button>
-        </div>
-
-        {error && <div style={{ fontSize: 11.5, color: "#b23a3a", marginBottom: 12, textAlign: "center" }}>{error}</div>}
-
-        <button
-          className="btn"
-          disabled={mutation.isPending || slipPhase === "uploading"}
-          onClick={() => { setError(null); mutation.mutate(); }}
-          style={{ opacity: mutation.isPending || slipPhase === "uploading" ? 0.6 : 1 }}
-        >
-          {mutation.isPending ? "Recording…" : "Record Payment"}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function MiniStat({ label, value, color }: { label: string; value: string; color: string }) {
-  return (
-    <div style={{ background: "#f4f6f3", border: "1px solid #e3e6e0", borderRadius: 11, padding: "9px 6px", textAlign: "center" }}>
-      <div className="money" style={{ fontSize: 12.5, fontWeight: 800, color }}>{value}</div>
-      <div style={{ fontSize: 8.5, fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", color: "#9aa093", marginTop: 3 }}>{label}</div>
-    </div>
-  );
-}

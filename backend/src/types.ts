@@ -27,13 +27,17 @@ export type Env = {
   // photo/asset endpoints are exercised (they fail at runtime until then).
   SO_ITEM_PHOTOS: R2Bucket;
   PUBLIC_ASSETS: R2Bucket;
-  // R2 S3-API credentials for presigned SO-item-photo / slip URLs (ported SCM
-  // photo/slip features). Optional — those endpoints fail at runtime until set.
+  // Payment-slip bucket (bound in wrangler.toml since 2026-07-04). The slip
+  // flow is a Worker-proxy upload through this binding — it needs NO R2 S3
+  // creds (see scm/routes/slips.ts). Optional so tests without the binding
+  // still compile; scm/lib/slip.ts slipBindings() guards at runtime.
   SLIPS?: R2Bucket;
+  // R2 S3-API credentials for presigned SO-item-photo GET URLs ONLY (the slip
+  // flow no longer uses them). Optional — those endpoints fail at runtime
+  // until set.
   R2_ACCESS_KEY_ID?: string;
   R2_SECRET_ACCESS_KEY?: string;
   R2_ENDPOINT?: string;
-  R2_BUCKET_NAME?: string;
   SO_ITEM_PHOTOS_BUCKET_NAME?: string;
   // Optional KV cache for the hydrated session user (see services/sessionCache.ts).
   // Absent in tests/local — auth falls back to the DB path unchanged.
