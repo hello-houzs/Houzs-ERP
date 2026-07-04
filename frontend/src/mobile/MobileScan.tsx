@@ -301,6 +301,11 @@ export function MobileScan({
   const [orders, setOrders] = useState<OrderDraft[]>(() => [newOrder()]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Per-order inline errors, keyed by OrderDraft.id — today only the /enqueue
+  // 409 duplicate_slip refusal ("This slip was already uploaded — it created
+  // <doc no>."). Rendered inside that order's card; cleared when the order's
+  // photos change (a retake is a new attempt).
+  const [orderErrors, setOrderErrors] = useState<Record<string, string>>({});
   const [unavailable, setUnavailable] = useState(false);
   // ONE hidden front input + ONE hidden payment input, both re-targeted to the
   // active order right before each capture. capture="environment" opens the rear
@@ -348,6 +353,15 @@ export function MobileScan({
     payInputRef.current?.click();
   };
 
+  // Drop one order's inline error (its photos changed — new attempt).
+  const clearOrderError = (orderId: string) =>
+    setOrderErrors((cur) => {
+      if (!cur[orderId]) return cur;
+      const next = { ...cur };
+      delete next[orderId];
+      return next;
+    });
+
   const onFrontFile = (file: File | undefined) => {
     if (!file) return;
     const orderId = activeOrderIdRef.current;
@@ -361,6 +375,7 @@ export function MobileScan({
       }),
     );
     setError(null);
+    clearOrderError(orderId);
   };
   const clearFront = (orderId: string) => {
     if (submitting) return;
@@ -371,6 +386,7 @@ export function MobileScan({
         return { ...o, front: null };
       }),
     );
+    clearOrderError(orderId);
   };
 
   // Append captured payment slips to the active order (each = one payment). The
@@ -384,6 +400,7 @@ export function MobileScan({
     const shots: Shot[] = Array.from(files).map((file) => ({ file, url: URL.createObjectURL(file) }));
     setOrders((cur) => cur.map((o) => (o.id === orderId ? { ...o, payShots: [...o.payShots, ...shots] } : o)));
     setError(null);
+    clearOrderError(orderId);
   };
   const removePayShot = (orderId: string, i: number) => {
     if (submitting) return;
@@ -395,6 +412,7 @@ export function MobileScan({
         return { ...o, payShots: o.payShots.filter((_, k) => k !== i) };
       }),
     );
+    clearOrderError(orderId);
   };
 
   const addOrder = () => {
@@ -415,6 +433,7 @@ export function MobileScan({
       const next = cur.filter((o) => o.id !== orderId);
       return next.length ? next : [newOrder()];
     });
+    clearOrderError(orderId);
   };
 
   // POST one order's front slip + ONE payment slip to /scan-so/extract. The
@@ -503,26 +522,68 @@ export function MobileScan({
     setSubmitting(true);
     setError(null);
     setUnavailable(false);
+    setOrderErrors({});
     try {
       // Enqueue every queued order (upload-only — fast). Each order = one
       // background job = one DRAFT SO. The await here is just the photo upload,
       // not the OCR, so the operator leaves this screen in seconds.
       let queued = 0;
+      const dupErrors: Record<string, string> = {};
       for (const order of orders) {
         if (!order.front || order.payShots.length === 0) continue;
         try {
           await enqueueOne(order);
           queued++;
         } catch (e) {
-          const err = e as Error & { status?: number };
+          const err = e as Error & { status?: number; body?: string };
+          // 409 duplicate_slip = the backend refused THIS order at upload
+          // because its slip photo already created an SO (hard reject, nothing
+          // queued). Keep that order on screen with the reason — which names
+          // the existing order number — inline on its card; the OTHER orders
+          // in the batch still enqueue. NEVER falls through to the legacy
+          // path (that would create the duplicate client-side anyway).
+          if (err.status === 409 && typeof err.body === "string" && err.body.includes("duplicate_slip")) {
+            let reason = "This slip was already uploaded.";
+            try {
+              const b = JSON.parse(err.body) as { reason?: string };
+              if (typeof b.reason === "string" && b.reason.trim() !== "") reason = b.reason;
+            } catch { /* body wasn't JSON — keep the fallback wording */ }
+            dupErrors[order.id] = reason;
+            continue;
+          }
           // 404 = worker without /enqueue yet — do the WHOLE batch the legacy
-          // way (mixing paths would double-create the already-queued orders).
-          if (err.status === 404 && queued === 0) {
+          // way (mixing paths would double-create the already-queued orders,
+          // and a duplicate-refused order must never be re-created either).
+          if (err.status === 404 && queued === 0 && Object.keys(dupErrors).length === 0) {
             await submitLegacy();
             return;
           }
           throw e;
         }
+      }
+      if (Object.keys(dupErrors).length > 0) {
+        // Stay on this screen so the operator SEES which order was refused:
+        // keep only the refused order cards (with their inline reason); the
+        // queued ones are already running server-side, so drop them here and
+        // say so.
+        setOrders((cur) => {
+          for (const o of cur) {
+            if (dupErrors[o.id]) continue;
+            if (o.front) URL.revokeObjectURL(o.front.url);
+            for (const s of o.payShots) URL.revokeObjectURL(s.url);
+          }
+          const keep = cur.filter((o) => dupErrors[o.id]);
+          return keep.length ? keep : [newOrder()];
+        });
+        setOrderErrors(dupErrors);
+        if (queued > 0) {
+          void serviceNotify({
+            title: `${queued} draft${queued === 1 ? "" : "s"} queued`,
+            body: "The other orders were queued. Only the duplicate slip below was not.",
+            tone: "info",
+          });
+        }
+        return;
       }
       if (queued === 0) {
         setError("Couldn't read the slip — try again.");
@@ -708,6 +769,15 @@ export function MobileScan({
                 <div style={{ fontSize: 10.5, color: "#9aa093", textAlign: "center", marginTop: 10 }}>
                   1 front slip + {order.payShots.length || 1} payment slip{(order.payShots.length || 1) === 1 ? "" : "s"} · each payment slip = one payment
                 </div>
+
+                {/* Order-level refusal (409 duplicate_slip): this order's slip
+                    already created an SO, so the upload was rejected. Names the
+                    existing order number; retaking/removing a photo clears it. */}
+                {orderErrors[order.id] && (
+                  <div style={{ marginTop: 10, background: "#f8eaea", border: "1px solid #f0d4d4", borderRadius: 11, padding: "10px 12px", fontSize: 12, color: "#b23a3a", lineHeight: 1.5 }}>
+                    {orderErrors[order.id]}
+                  </div>
+                )}
               </div>
             ))}
 
