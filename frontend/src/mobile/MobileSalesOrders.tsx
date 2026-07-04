@@ -394,19 +394,21 @@ export function MobileSalesOrders({ onScan, onOpen, onNew }: { onScan: () => voi
                     <span style={{ minWidth: 0, fontSize: 14, fontWeight: 800, color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.debtor_name || "—"}</span>
                     <StatusPill status={r.status} />
                   </div>
-                  {/* Line 2 — doc_no · customer_so_no  |  warehouse */}
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: 5, fontSize: 11.5, color: "var(--mut)" }}>
-                    <span style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
-                      <span className="money" style={{ fontWeight: 700, color: "var(--brand-d)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.doc_no}</span>
-                      {r.customer_so_no && <><span style={{ opacity: .4, flex: "none" }}>·</span><span className="money" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.customer_so_no}</span></>}
-                    </span>
-                    {warehouse && (
-                      <span style={{ display: "flex", alignItems: "center", gap: 4, flex: "none", fontWeight: 600, color: "var(--ink2)" }}>
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#a16a2e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 21V8l9-5 9 5v13" /><path d="M7 21v-8h10v8" /></svg>
-                        {warehouse}
-                      </span>
-                    )}
+                  {/* Line 2 — doc_no · customer_so_no on their OWN full-width row
+                      (owner: the SO number + reference were squeezed to "SO-260…
+                      · HC 1…" by the warehouse sharing the line). doc_no stays
+                      whole (flex:none); only the ref ellipsises if truly long. */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0, marginTop: 5, fontSize: 11.5, color: "var(--mut)" }}>
+                    <span className="money" style={{ fontWeight: 700, color: "var(--brand-d)", flex: "none" }}>{r.doc_no}</span>
+                    {r.customer_so_no && <><span style={{ opacity: .4, flex: "none" }}>·</span><span className="money" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.customer_so_no}</span></>}
                   </div>
+                  {/* Line 2b — warehouse on its own line so it never crowds the ids */}
+                  {warehouse && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 4, minWidth: 0, marginTop: 4, fontSize: 11.5, fontWeight: 600, color: "var(--ink2)" }}>
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#a16a2e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flex: "none" }}><path d="M3 21V8l9-5 9 5v13" /><path d="M7 21v-8h10v8" /></svg>
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{warehouse}</span>
+                    </div>
+                  )}
                   {/* Line 3 — Processing -> Delivery */}
                   <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, fontSize: 11, color: "var(--ink2)" }}>
                     <span style={{ color: "var(--mut2)", fontWeight: 600 }}>Processing</span>
