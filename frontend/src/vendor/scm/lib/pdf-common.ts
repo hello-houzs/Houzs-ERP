@@ -172,7 +172,16 @@ export function drawHeader(
     const scale = Math.min(maxW / logo.width, maxH / logo.height);
     const w = logo.width * scale;
     const h = logo.height * scale;
-    const topY = margin - 5; // aligns the logo top with the company-name cap line
+    /* Vertical centring (owner 2026-07 — 左上角的中间位置): the company text
+       block spans from the name's cap line (margin - 5, the 16pt cap height
+       above the baseline at `margin`) down to the last address-line baseline
+       (margin + 5 for the reg line, then 4mm per address line). Centre the
+       logo's midline on that block's midline; a logo TALLER than the block
+       keeps the historic top alignment so it never floats above the page
+       margin. */
+    const blockTop = margin - 5;
+    const blockH = (margin + 5 + 4 * COMPANY.addressLines.length) - blockTop;
+    const topY = h < blockH ? blockTop + (blockH - h) / 2 : blockTop;
     try {
       doc.addImage(logo.dataUrl, logo.format, margin, topY, w, h);
       textX = margin + w + 6;

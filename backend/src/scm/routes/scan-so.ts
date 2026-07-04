@@ -689,7 +689,7 @@ MULTIPLE IMAGES
 ===============
 You may receive ONE or TWO images: a HANDWRITTEN order slip (a carbon-copy form with the customer, line items, handwriting, and payment checkboxes) and/or a PRINTED card-terminal payment RECEIPT (a thermal print: a bank name e.g. Maybank / Public Bank / CIMB, VISA / Mastercard, an APPROVAL CODE, a TOTAL amount, and often a TENURE / number of months for an EPP plan). Decide what each input image is:
 - Read the ORDER fields (customerName, address, phones, line items, deliveryDate, processingDate, salesRep) from the HANDWRITTEN slip.
-- Read the PAYMENT fields (paymentMethodMatch / bankMatch / installmentPlanMatch / approvalCode / depositRm or the receipt's amount) PREFERENTIALLY from the PRINTED receipt when one is present — the printed thermal receipt is far more accurate than the handwritten payment note. Still keep the handwritten payment note verbatim in paymentMethod. When NO receipt is present, fall back to the handwritten slip's payment note exactly as before.
+- Read the PAYMENT fields (paymentMethodMatch / bankMatch / installmentPlanMatch / approvalCode / depositRm or the receipt's amount) PREFERENTIALLY from the PRINTED receipt when one is present — the printed thermal receipt is far more accurate than the handwritten payment note. Still keep the handwritten payment note verbatim in paymentMethod. When NO receipt is present, fall back to the handwritten slip's payment note exactly as before. When BOTH are present and they DISAGREE (a different bank, a different amount, a different approval code), the PRINTED receipt wins for the structured fields — but you MUST state the disagreement in that field's reason (e.g. "slip writes PBB but receipt terminal is Maybank — using receipt") so the operator sees the conflict.
 You MUST also classify every input image in the OUTPUT "images" array (see below).
 
 A reference CATALOG follows this prompt (live product SKUs, fabrics, sofa sizes, leg heights). It is the FULL master (≈1100+ SKUs) — every catalog row is "code | name". Use it for AGGRESSIVE fuzzy / keyword / substring / abbreviation matching: a slip token should resolve to the SKU whose NAME contains that token's keyword, even when the rep wrote only a fragment. Search the WHOLE catalog before giving up.
@@ -701,12 +701,12 @@ EXTRACTION RULES
 3. phones — ALL phone numbers on the slip, as raw strings exactly as written (e.g. "012-345 6789", "+6017 888 9999"). Multiple numbers are common (customer + spouse). Do NOT normalize or reformat. A phone is CRITICAL — transcribe EVERY digit, including REPEATED / doubled digits: read "01137166720" as 0-1-1-3-7-1-6-6-7-2-0 (eleven digits), NEVER collapse a doubled "66" into a single "6". A Malaysian number is 10-11 digits INCLUDING the leading trunk 0 (011-XXXX XXXX = 11 digits; 01X-XXX XXXX = 10). If your reading has FEWER than 10 digits, you almost certainly dropped or merged a digit — re-examine the handwriting (look for a doubled digit) before returning it. If a single digit is genuinely unclear, return your best reading at confidence < 0.6 and say so in the field's reason so the operator double-checks.
 4. location — the showroom / venue / branch the order was taken at, if written (often a header checkbox or stamp).
 5. deliveryDate — as written. If it is a real date, convert to YYYY-MM-DD (slips write DD/MM or DD/MM/YYYY — Malaysian day-first). If it says "TBC", "call first", "after CNY" or any non-date text, return that text verbatim.
-6. processingDate — the order/slip date if present, YYYY-MM-DD when parseable, else verbatim text, else null.
+6. processingDate — the order/slip date if present, YYYY-MM-DD when parseable, else verbatim text, else null. The year is often omitted or scrawled: when the year is missing/unreadable, take it from the PRINTED payment receipt's date when one is present, else assume the CURRENT year — NEVER invent a distant past year (a slip is days old, not years). If even the day/month is unclear, return the verbatim text instead of a made-up date.
 7. salesRep — the salesperson's name from the footer/header.
 8. paymentMethod — as written ("cash", "TNG", "bank transfer", "CC", deposit slips etc.). null if absent.
-9. depositRm / totalRm — RM amounts as NUMBERS (e.g. "RM 1,500" → 1500, "550.50" → 550.5). null when blank.
+9. depositRm / totalRm — RM amounts as NUMBERS (e.g. "RM 1,500" → 1500, "550.50" → 550.5). null when blank. When a PRINTED receipt is present, depositRm = the receipt's printed TOTAL/AMOUNT (the money actually charged); if the handwritten deposit differs from the receipt amount, use the RECEIPT amount and flag the mismatch (state both figures in paymentMethodMatch's reason). Never swap depositRm and totalRm — the deposit is the smaller paid-now figure, the total is the whole order.
 10. remarks — ONLY the genuine ORDER REMARK: a handwritten free-text note that is not a line item and does not already belong to a dedicated field — e.g. a promo note, a special handling instruction like "FOC dispose, not dismantle", "lift access", "self collect", floor info. Do NOT copy the venue/location, the phone numbers, the payment method/bank/EPP term, the deposit/total amounts, the delivery date, or the salesperson into remarks — those each have their own output fields and must NOT be duplicated here. Return null when there is no such standalone remark.
-11. approvalCode — the approval / reference number printed on the PAYMENT line, typically a card-terminal approval code written in parentheses (e.g. "(001586)" → "001586", "Appr 028471" → "028471"). Strip surrounding brackets/labels and return the bare digits/alphanumerics as a string. null when no such number is on the payment line.
+11. approvalCode — the approval / reference number of the card payment. When a PRINTED receipt is present, read it from the receipt's "APPROVAL CODE" / "APPR CODE" / "AUTH CODE" line — the PRINTED code wins over any handwritten parenthesised number (the rep often copies it wrong); the handwritten note still rides verbatim in paymentMethod. With no receipt, use the handwritten payment-line code (e.g. "(001586)" → "001586", "Appr 028471" → "028471"). Strip surrounding brackets/labels and return the bare digits/alphanumerics as a string. null when neither carries one.
 12. customerSoRef — the CUSTOMER'S OWN reference number for this order: the slip's / docket's OWN serial, usually in the TOP-RIGHT corner. On a showroom / supplier slip this is the PRE-PRINTED coloured serial — typically a LETTER-prefixed code (letters + digits, e.g. "HC14032", "ZNT5329"). PREFER that pre-printed letter-prefixed serial. A hand-written "SO ####" jotting (or a bare "SO 1234" scrawled by the rep) is NOT the docket — do NOT return it as customerSoRef; the printed serial wins over any handwritten "SO…" note. It is the SLIP's own number, NOT a phone number, NOT a price, NOT the salesperson code, NOT the delivery date. Return the bare reference string exactly as written (keep its letter prefix, e.g. "HC14032", "ZNT5329"). null when no such number is on the slip.
     Example: a slip with a printed top-right serial "ZNT5329" AND a handwritten "SO 88" in the body → customerSoRef = "ZNT5329" (the pre-printed letter-prefixed docket), NOT "SO 88".
     Example: a slip whose only top-right reference is the pre-printed "HC14032" → customerSoRef = "HC14032".
@@ -726,7 +726,7 @@ For EVERY handwritten row in the item table output one lines[] entry:
 - rawSpec — when the row (or its margin / continuation text) carries a SPECIFICATION string for the item — the variant text such as "Col: PC151-01 + front / Side Divan 8\"+0\"", "divan10+4/gap12", "8\" + no leg" — copy the row's specification text verbatim into rawSpec; do not rephrase, reorder or normalise it (keep punctuation, slashes and inch marks exactly). null when the row has no spec text. rawSpec may overlap rawText — that is fine: rawText is the whole row, rawSpec is just the specification portion.
 - divanHeightInches / legHeightInches / gapInches / noLeg — BEDFRAME variant NUMBERS read from the spec text: the divan/drawer height in inches, the leg height in inches, the mattress gap in inches, and noLeg = true when the spec says no legs ("no leg", "noleg"). Read the FULL numeric token (12" is 12, NEVER 1). Use null (and noLeg = false) when absent or when the row is not a bedframe.
 - qtyGuess — quantity (default 1 when blank or unreadable).
-- priceRmGuess — the row's unit price in RM as a number; null when blank. If only a line total is written and qty > 1, still report the written figure and say so in notes.
+- priceRmGuess — the row's unit price in RM as a number; null when blank. If only a line total is written and qty > 1, still report the written figure and say so in notes. SET / PACKAGE TOTALS: when ONE written amount covers SEVERAL lines (a multi-compartment sofa set, a bundle where only the first row carries a figure), attach that amount as priceRmGuess on the FIRST emitted line of the set ONLY — every other line of the set gets priceRmGuess = null — and write "set/package total" in the first line's notes. Never attach the same set total to more than one line, and never attach it to a later compartment.
 - skuMatch — your best FUZZY match against the catalog SKUS:
     { "code": <exact catalog code>, "confidence": 0-1, "reason": <short why> }
   Handwriting mangles model names AND reps write heavy shorthand — match AGGRESSIVELY against the FULL catalog. Try HARD before returning null; a slip token almost always corresponds to some catalog row whose NAME contains that keyword:
@@ -741,7 +741,7 @@ For EVERY handwritten row in the item table output one lines[] entry:
     • If the catalog encodes size/variant as distinct SKU rows for that model, pick the SKU whose name matches the written size/variant; the divan-height / side / leg / gap details that the catalog does NOT encode as a SKU stay in "notes" for the operator to set in the form's variant picker.
     • A bare fabric code with NO model word on the row (or above it) is NOT enough to choose a model — set skuMatch = null, put the fabric in fabricMatch, and let rawText + notes carry the variant text. Never guess a model from a fabric code alone.
   Rules:
-    • PREFER THE PLAIN / GENERIC ROW over a branded variant. When several catalog SKUs match a slip token, choose the most generic catalog match — the row WITHOUT a brand prefix (e.g. "JM", "AKEMI", a maker name) — UNLESS the slip explicitly writes that brand. Example: "W. Protector (King)" → the plain "MATTRESS PROTECTOR (KING)" / "WATERPROOF PROTECTOR (KING)", NOT a "JM …" branded protector, because the slip names no brand. Only pick the branded SKU when the slip itself writes the brand token.
+    • PREFER THE PLAIN / GENERIC ROW over a branded variant. When several catalog SKUs match a slip token, choose the most generic catalog match — the row WITHOUT a brand prefix (e.g. "JM", "AKEMI", a maker name) — UNLESS the slip explicitly writes that brand. Example: "W. Protector (King)" → the plain "MATTRESS PROTECTOR (KING)" / "WATERPROOF PROTECTOR (KING)", NOT a "JM …" branded protector, because the slip names no brand. Only pick the branded SKU when the slip itself writes the brand token. EXCEPTION — the FORM'S OWN PRINTED BRAND counts as a written brand: on a brand-headed order form (e.g. an AKEMI carbon-copy form), an unbranded accessory row prefers THAT brand's SKU when one exists ("W. Protector (King)" on an AKEMI form → the AKEMI waterproof protector King), falling back to the generic row only when the form's brand has no such SKU. Apply this consistently — do not alternate between the branded and generic row across lines of the same slip.
     • The code MUST be copied character-for-character from the catalog. NEVER invent, modify, or extrapolate a code that is not in the catalog. NEVER assemble a code out of a fabric code + a size; the code must already exist verbatim in the SKUS list.
     • Only AFTER genuinely searching the whole catalog by keyword/substring/abbreviation and finding nothing defensible, set skuMatch = null and let rawText speak. A null with good rawText is worth more than a wrong code — but a real catalog row keyworded in the slip token must NOT be returned as null.
     • confidence: 0.9+ only when the written text clearly identifies one specific catalog row; 0.5-0.8 when the model matches but the size/variant is ambiguous; below 0.5 prefer null.
@@ -767,9 +767,9 @@ The catalog ends with ALLOWED VALUES lists (PAYMENT METHODS, MERCHANT BANKS, ONL
 
 Map the slip's handwritten notes to these fields:
 - paymentMethodMatch — the top-level method, one of PAYMENT METHODS. The ONLY valid values are "Merchant", "Online", and "Cash"; never return any other method. A CREDIT CARD paid through a BANK — a card machine / credit-card terminal / a bank name with a card swipe, WITH OR WITHOUT an EPP/installment term → "Merchant" (a bank EPP is a Merchant card payment plus an installment term carried in installmentPlanMatch). Bank transfer / TNG / DuitNow / cheque → "Online". Cash → "Cash".
-- bankMatch — one of MERCHANT BANKS when a bank is named ("mbb"/"maybank" → the Maybank value (MBB), "pbb"/"public bank" → the Public-bank value, "cimb" → CIMB, "hlb"/"hong leong" → HLB, "rhb" → RHB, "aeon"/"aeon credit" → the AEON value, "hsbc" → the HSBC value). AEON Credit / HSBC issuers appear on EPP receipts. On a CREDIT card / EPP payment the named bank is the merchant bank — always populate bankMatch alongside paymentMethodMatch = "Merchant".
+- bankMatch — one of MERCHANT BANKS when a bank is named ("mbb"/"maybank" → the Maybank value (MBB), "pbb"/"public bank" → the Public-bank value, "cimb" → CIMB, "hlb"/"hong leong" → HLB, "rhb" → RHB, "aeon"/"aeon credit" → the AEON value, "hsbc" → the HSBC value). On a CREDIT card / EPP payment the named bank is the merchant bank — always populate bankMatch alongside paymentMethodMatch = "Merchant". WHICH BANK on a printed receipt: bankMatch is the bank/company OPERATING THE TERMINAL (the receipt's own letterhead / logo / "Host" line — a Maybank-headed receipt → MBB, a Public Bank receipt → Public, an AEON Credit Service receipt → AEON). It is NOT the "Card Issuer:" line — the issuer is the customer's own card bank and must be IGNORED for bankMatch (an AEON EPP receipt showing "Card Issuer: HSBC Bank" → AEON, never HSBC). Only when the receipt letterhead itself is HSBC does bankMatch = HSBC. When receipt and handwriting disagree, the receipt's terminal bank wins (say so in reason).
 - onlineTypeMatch — one of ONLINE TYPES when the transfer channel is named (TNG / DuitNow / cheque / bank transfer). Only meaningful when the method is Online.
-- installmentPlanMatch — one of INSTALLMENT PLANS. This is the plan UNDER a Merchant card payment. Rule: only return an N-month value when the receipt/slip ACTUALLY shows a tenure / month count ("12 EPP", "x12", "12 bln", "12个月", "12 months", "Tenure: 12 Months") → the matching N-month value (e.g. the 12-month value). For ANY card paid through a bank with NO month/tenure written — including a plain swipe AND an EPP/installment note that omits the month count — return the "One Shot" value from the INSTALLMENT PLANS list (a Maybank receipt with no tenure = One Shot). NEVER default to 12 months when no tenure is written.
+- installmentPlanMatch — one of INSTALLMENT PLANS. This is the plan UNDER a Merchant card payment. Rule: only return an N-month value when the receipt/slip ACTUALLY shows a tenure / month count ("12 EPP", "x12", "12 bln", "12个月", "12 months", "Tenure: 12 Months") → the matching N-month value (e.g. the 12-month value). For ANY card paid through a bank with NO month/tenure written — including a plain swipe AND an EPP/installment note that omits the month count — return the "One Shot" value from the INSTALLMENT PLANS list (a Maybank receipt with no tenure = One Shot). NEVER default to 12 months when no tenure is written. When a PRINTED receipt is present you MUST actively scan the WHOLE receipt for a tenure line ("TENURE", "EPP", "INSTAL", "MONTHS", "BLN") BEFORE answering One Shot — an EPP receipt prints its tenure in small type near the bottom; your reason must say either the tenure you found or that you searched the receipt and no tenure line exists.
 - customerTypeMatch — one of CUSTOMER TYPES when the slip marks new/existing (header checkbox or note).
 - buildingTypeMatch — one of BUILDING TYPES when the slip notes condo / landed / apartment etc.
 - locationMatch — one of VENUES when the written showroom/venue/branch clearly matches a list entry. Still report the raw text in the location field.
@@ -2502,7 +2502,23 @@ async function postProcessSlip(
     /* fail-soft — keep the LLM address parse */
   }
 
-  return validateSlip(parsed, catalog);
+  const warnings = validateSlip(parsed, catalog);
+
+  // Phone plausibility (evidence 2026-07: the OCR dropped a doubled digit —
+  // "01137166720" read as "0113716720"): a Malaysian national-significant
+  // number (after the trunk 0 strip above) is 9-10 digits for mobiles and
+  // 8-9 for landlines. Anything under 9 or over 10 very likely lost/gained a
+  // digit — warn the operator so the form gets a second look.
+  for (const p of parsed.phones) {
+    if (p.length < 9 || p.length > 10) {
+      warnings.push({
+        field: 'phones',
+        value: p,
+        message: `Phone "+60${p}" has an unusual digit count — the scan may have dropped or doubled a digit; please verify against the slip.`,
+      });
+    }
+  }
+  return warnings;
 }
 
 // ===========================================================================
@@ -2953,9 +2969,20 @@ async function recordScanReceiptPayments(
     ? Math.round(parsed.depositRm * 100)
     : 0;
   // Payment date = the slip/order date when readable, else today (MYT).
-  const paidAt = /^\d{4}-\d{2}-\d{2}$/.test((parsed.processingDate ?? '').trim())
-    ? (parsed.processingDate as string).trim()
-    : todayMyt();
+  // SANITY CLAMP (evidence 2026-07: the OCR invented years — "2015-09-17" /
+  // "2019-12-17" for a current slip — which would book the money YEARS in the
+  // past): only trust a slip date within a plausible window (up to 60 days
+  // back, 7 days forward); anything outside books at today instead.
+  const paidAt = (() => {
+    const d = (parsed.processingDate ?? '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return todayMyt();
+    const t = Date.parse(`${d}T00:00:00Z`);
+    if (!Number.isFinite(t)) return todayMyt();
+    const now = Date.now();
+    const dayMs = 86_400_000;
+    if (t < now - 60 * dayMs || t > now + 7 * dayMs) return todayMyt();
+    return d;
+  })();
 
   // Receipt dedup ACROSS SOs (owner 2026-07-04 policy change: never book
   // money off a receipt image that already backs a payment row on ANY order).
@@ -3139,6 +3166,20 @@ function buildDraftSoBodyFromSlip(
   const planMonths = planMonthsMatch ? Number(planMonthsMatch[1]) : null;
   const paymentMethod = parsed.paymentMethodMatch?.value ?? null;
 
+  // NOTHING OCR'D IS LOST: fields the model extracted but the draft has no
+  // dedicated column for ride in the header note (the draft intentionally
+  // nulls the delivery-date columns — "1 month notice" isn't a date — and the
+  // slip's written grand total is the operator's cross-check against the line
+  // prices, which mostly arrive unpriced).
+  const noteParts: string[] = [];
+  const remarkNote = (parsed.remarks ?? '').trim();
+  if (remarkNote) noteParts.push(remarkNote);
+  const slipDelivery = (parsed.deliveryDate ?? '').trim();
+  if (slipDelivery) noteParts.push(`Slip delivery: ${slipDelivery}`);
+  if (typeof parsed.totalRm === 'number' && parsed.totalRm > 0) {
+    noteParts.push(`Slip total: RM${parsed.totalRm}`);
+  }
+
   const body: Record<string, unknown> = {
     customerName,
     debtorName: customerName,
@@ -3146,7 +3187,7 @@ function buildDraftSoBodyFromSlip(
     phone: `+60${mainPhone.replace(/\s+/g, '')}`,
     customerType: parsed.customerTypeMatch?.value ?? null,
     buildingType: parsed.buildingTypeMatch?.value ?? null,
-    note: (parsed.remarks ?? '').trim() || null,
+    note: noteParts.length > 0 ? noteParts.join(' | ') : null,
     address1: (parsed.addressLine1 ?? parsed.address ?? '').trim() || null,
     customerState: parsed.addressStateMatch?.value ?? null,
     city: (parsed.city ?? '').trim() || null,
@@ -3259,6 +3300,14 @@ async function runScanJob(
     }
 
     await postProcessSlip(parsed, svc, env.GOOGLE_MAPS_API_KEY, catalog);
+
+    // TOTALLY-EMPTY extraction (evidence 2026-07: two prod samples came back
+    // with every field null and zero lines — a blank/unreadable photo, not a
+    // slip the model half-read). Tell the rep to retake instead of the
+    // misleading "could not read the customer name and phone" message.
+    if (!parsed.customerName && parsed.phones.length === 0 && parsed.lines.length === 0) {
+      return await fail('Nothing could be read from the photo. Please retake a clearer, well-lit photo of the whole slip.');
+    }
 
     // Duplicate-upload warning (owner: 重复上传预警) — same photo scanned
     // again recently, or the same customer/slip already has an SO. The DRAFT
