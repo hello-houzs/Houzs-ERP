@@ -192,35 +192,65 @@ export function MobileSalesOrders({ onScan, onOpen, onNew }: { onScan: () => voi
     if (notifiedRef.current || !jobsData) return;
     const now = Date.now();
     const acked = readAckedJobIds();
-    // Fresh DONE drafts we haven't toasted yet, newest first.
-    const fresh = normalizeJobs(jobsData)
-      .filter((j) => j.status === "done" && j.soDocNo && !j.duplicateOf)
-      .filter((j) => now - jobTsMs(j.updatedAt ?? j.createdAt) < SCAN_ACK_WINDOW_MS)
-      .filter((j) => !acked.has(j.id))
+    const fresh = (j: { id: string; updatedAt: string | null; createdAt: string | null }) =>
+      now - jobTsMs(j.updatedAt ?? j.createdAt) < SCAN_ACK_WINDOW_MS && !acked.has(j.id);
+    const all = normalizeJobs(jobsData);
+    // Owner 2026-07-04: EVERY scan lands a draft, so the toast announces them all
+    // — a clean draft, a possible-duplicate draft, and a blank "please complete"
+    // draft (the case that used to just error) all open the same way. Genuine
+    // SYSTEM failures (status 'error' — no draft was created) are surfaced too,
+    // so the rep knows to scan again. Newest first.
+    const drafts = all
+      .filter((j) => j.status === "done" && j.soDocNo && fresh(j))
       .sort((a, b) => jobTsMs(b.updatedAt ?? b.createdAt) - jobTsMs(a.updatedAt ?? a.createdAt));
-    if (fresh.length === 0) return;
+    const failures = all.filter((j) => j.status === "error" && fresh(j));
+    if (drafts.length === 0 && failures.length === 0) return;
     notifiedRef.current = true; // once per screen mount — never double-fire on navigation
 
-    // Ack every fresh job now, so re-mounts (or the combined toast) don't repeat.
-    for (const j of fresh) acked.add(j.id);
+    // Ack everything we're about to surface, so re-mounts don't repeat it.
+    for (const j of [...drafts, ...failures]) acked.add(j.id);
     writeAckedJobIds(acked);
 
-    if (fresh.length === 1) {
-      const doc = fresh[0].soDocNo!;
+    // Single draft, nothing else → open it straight after the toast.
+    if (drafts.length === 1 && failures.length === 0) {
+      const j = drafts[0];
+      const doc = j.soDocNo!;
+      // A shell/blank or payment-warning draft carries a plain note in `error`;
+      // a possible-duplicate carries the earlier doc no. Either rides in the body.
+      const extra = j.duplicateOf
+        ? ` This looks like a possible duplicate of ${j.duplicateOf}.`
+        : j.error
+          ? ` ${j.error}`
+          : "";
       void notify({
         title: "Scan complete",
-        body: `${doc} was saved as a draft. Tap OK, then open it from your Orders to review.`,
+        body: `${doc} was saved as a draft.${extra} Tap OK, then open it from your Orders to review.`,
       }).then(() => {
         // Nudge the list so the new draft is visible before the operator taps in.
         void refetch();
         onOpen(doc);
       });
-    } else {
-      void notify({
-        title: `${fresh.length} drafts saved`,
-        body: `${fresh.length} scanned orders were saved as drafts. Review them in your Orders list.`,
-      }).then(() => void refetch());
+      return;
     }
+
+    // Several drafts and/or a system failure → one combined summary, no auto-open.
+    const parts: string[] = [];
+    if (drafts.length > 0) {
+      parts.push(
+        drafts.length === 1
+          ? `${drafts[0].soDocNo} was saved as a draft`
+          : `${drafts.length} scanned orders were saved as drafts`,
+      );
+    }
+    if (failures.length > 0) {
+      parts.push(
+        `${failures.length} ${failures.length === 1 ? "scan" : "scans"} could not be read — please scan again`,
+      );
+    }
+    void notify({
+      title: "Scan update",
+      body: `${parts.join(". ")}. Review them in your Orders list.`,
+    }).then(() => void refetch());
   }, [jobsData, notify, onOpen, refetch]);
 
   /* ── Item 3 — bulk confirm helpers ──────────────────────────────────────

@@ -147,11 +147,14 @@ const hhmm = (t: number): string => {
 /* A job is "active" while the server is still working it — the only states
    that keep the 4s poll running. */
 const isActiveJob = (j: ScanJob): boolean => j.status === "queued" || j.status === "running";
-/* Sticky rows the operator must not miss: failures, duplicate warnings, and a
-   done job carrying a warning note in `error` (e.g. "payment could not be
-   recorded"). These skip the transient-done expiry. */
-const isStickyJob = (j: ScanJob): boolean =>
-  j.status === "error" || j.duplicateOf != null || (j.status === "done" && j.error != null);
+/* Owner 2026-07-04: a DONE scan is already a draft in Orders (announced by the
+   Orders-open toast), so it must NOT linger on the Scan screen — not even a
+   done-with-duplicate or done-with-a-note row. The Scan screen now shows only
+   live progress (queued/running) plus genuine SYSTEM failures (status 'error',
+   which produced no draft at all — a clearable "please rescan" row). The
+   common "couldn't read the slip" case is no longer an error: the backend
+   lands a blank draft for it, so it flows through the toast like any draft. */
+const isStickyJob = (j: ScanJob): boolean => j.status === "error";
 
 /* Visit tracking for the sticky-row dismissal — module scope so it survives
    screen unmounts. A sticky row stays visible for the ENTIRE visit in which it
@@ -477,53 +480,26 @@ export function MobileScan({
   });
   const jobs = useMemo(() => normalizeJobs(jobsData), [jobsData]);
 
-  // First-seen-as-done stamps (this visit) — a transient done row shows for
-  // ~10s from the moment THIS screen first sees it done, then drops.
-  const doneSeenRef = useRef<Map<string, number>>(new Map());
-  useEffect(() => {
-    const t = Date.now();
-    for (const j of jobs) {
-      if (j.status === "done" && !doneSeenRef.current.has(j.id)) doneSeenRef.current.set(j.id, t);
-    }
-  }, [jobs]);
-
-  // Local clock — ticks only while a transient done row is on screen, so its
-  // 10s / 2min expiry actually re-renders (the 4s poll has stopped by then).
-  const [nowMs, setNowMs] = useState(() => Date.now());
-
   const visibleJobs = useMemo(
     () =>
       jobs.filter((j) => {
         if (!isTodayTs(jobTs(j.createdAt))) return false; // today's jobs only
         if (isActiveJob(j)) return true;
-        const settledAt = jobTs(j.updatedAt ?? j.createdAt);
-        // Sticky failures/warnings: whole-visit visibility; dismissed only once
-        // a full later visit has already shown them.
-        if (isStickyJob(j)) return settledAt > dismissBefore;
-        if (j.status === "done") {
-          // A done job lives in Orders now — show once, briefly, then drop.
-          if (nowMs - settledAt > 120_000) return false;
-          const seen = doneSeenRef.current.get(j.id);
-          return seen === undefined || nowMs - seen < 10_000;
-        }
+        // Genuine system failures stay for the whole visit (dismissed once a
+        // full later visit has shown them). DONE jobs never show here — they
+        // are drafts in Orders, announced by the Orders-open toast.
+        if (isStickyJob(j)) return jobTs(j.updatedAt ?? j.createdAt) > dismissBefore;
         return false;
       }),
-    [jobs, nowMs, dismissBefore],
+    [jobs, dismissBefore],
   );
-  const hasTransientDone = visibleJobs.some((j) => j.status === "done" && !isStickyJob(j));
-  useEffect(() => {
-    if (!hasTransientDone) return;
-    const t = window.setInterval(() => setNowMs(Date.now()), 1000);
-    return () => window.clearInterval(t);
-  }, [hasTransientDone]);
 
   /* "Clear" for failed rows — POST /scan-so/jobs/clear-failed deletes THIS
      salesperson's terminal error rows server-side (self-scoped by the
      caller's name on the backend; a wildcard admin clears all), then the list
-     refetches. Shown while any error/duplicate row is visible. Plain cleanup
-     of rows already read — no in-app confirm (the drafts themselves are
-     untouched). Fail-soft: on error the rows just stay; next tap retries. */
-  const hasFailedRows = visibleJobs.some((j) => j.status === "error" || j.duplicateOf != null);
+     refetches. Shown while any error row is visible. Plain cleanup of rows
+     already read. Fail-soft: on error the rows just stay; next tap retries. */
+  const hasFailedRows = visibleJobs.some((j) => j.status === "error");
   const [clearingFailed, setClearingFailed] = useState(false);
   const clearFailedJobs = async () => {
     if (clearingFailed) return;

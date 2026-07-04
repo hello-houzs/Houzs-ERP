@@ -168,6 +168,10 @@ The mobile app had been built largely from the **simplified `react-tsx/` port**,
 
 **Verified live in-browser (v109):** SO Edit → Items step shows real Fabric (706)/Divan/Leg/Gap dropdowns from maintenance-config; PMS chips show the real backend stages.
 
+### Scan → draft: notification model, no lingering list (v140)
+66. **"Done 了就直接進 draft 就不需要保留了 — 我打開 app 你 pop 一個提示就可以"** → the **Recent scans** panel no longer keeps finished rows. It now shows only **live progress** (queued/running) plus genuine **system failures** (a scan that produced no draft at all, with a Clear/rescan affordance). Every finished scan is announced instead by a **notification when the app is next opened** (Orders screen), exactly like Announcements.
+67. **"Failed 也是一樣 — 點進去 draft 空的 重新 submit"** → a scan the OCR **could not read now still lands a (blank) DRAFT** carrying the slip photo, instead of a dead error. The Orders-open toast announces it ("… saved as a draft. The scan could not read this slip — please open it and fill in the order from the photo."), tapping opens the blank draft, the rep keys it in against the photo and submits. Backend: `runScanJob` builds a **shell** body (placeholder name/phone, empty items, slip photo) tagged `_scanShell`; the pricing-critical create core **skips the customer-identity upsert** for shells so placeholders never spawn a phantom customer. The Orders toast also now surfaces **possible-duplicate** drafts (was silently excluded) and true system failures ("N scans could not be read — please scan again").
+
 ---
 
 ## Still open (flagged, awaiting direction)
