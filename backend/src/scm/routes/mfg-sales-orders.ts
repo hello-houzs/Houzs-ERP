@@ -172,9 +172,14 @@ const SO_PROCESSING_LOCKED_RESPONSE = {
 } as const;
 
 function soProcessingLocked(
-  header: { internal_expected_dd?: string | null; processing_date?: string | null } | null | undefined,
+  header: { internal_expected_dd?: string | null; processing_date?: string | null; proceeded_at?: string | null } | null | undefined,
 ): boolean {
   if (!header) return false;
+  /* Owner 2026-07-05 — the lock requires BOTH: the SO was actually PROCEEDED
+     (proceeded_at stamped) AND its processing day has passed. A future-dated
+     or never-proceeded SO whose processing date merely elapsed stays editable
+     — we only PO to the supplier once the sales side has Proceeded. */
+  if (!header.proceeded_at) return false;
   const proc = header.internal_expected_dd ?? header.processing_date ?? null;
   if (!proc) return false;
   const procYmd = String(proc).slice(0, 10);            // 'YYYY-MM-DD' (date or timestamp)
@@ -190,9 +195,9 @@ function soProcessingLocked(
    soProcessingLocked directly instead of re-querying. */
 async function soProcessingLockBlocked(sb: any, docNo: string): Promise<typeof SO_PROCESSING_LOCKED_RESPONSE | null> {
   const { data } = await sb.from('mfg_sales_orders')
-    .select('internal_expected_dd, processing_date')
+    .select('internal_expected_dd, processing_date, proceeded_at')
     .eq('doc_no', docNo).maybeSingle();
-  return soProcessingLocked(data as { internal_expected_dd?: string | null; processing_date?: string | null } | null)
+  return soProcessingLocked(data as { internal_expected_dd?: string | null; processing_date?: string | null; proceeded_at?: string | null } | null)
     ? SO_PROCESSING_LOCKED_RESPONSE
     : null;
 }
@@ -222,11 +227,15 @@ const SO_IDENTITY_LOCK_COLS = new Set<string>([
    warehouse is what the PO ships from. Once the SO is locked the line warehouse
    is frozen + PO'd, so letting State change afterwards would silently desync the
    warehouse / PO from the customer's address. The REST of the address (address
-   lines / city / postcode) + payment stay editable — only the State (and the
-   Location it derives) lock. */
+   lines / city) + payment stay editable — the State (and the Location it
+   derives) plus the Postcode lock.
+
+   Owner 2026-07-05 — postcode ALSO freezes here. Like State, the postcode is
+   part of the PO delivery location the supplier ships to, so it must not drift
+   after the SO is locked + PO'd. */
 const SO_PROCESSING_LOCK_COLS = new Set<string>([
   'internal_expected_dd', 'customer_delivery_date',
-  'customer_state', 'sales_location',
+  'customer_state', 'sales_location', 'postcode',
 ]);
 
 /* Loose equality for the lock diff — null / undefined / '' all collapse so a
@@ -4524,7 +4533,7 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
      and stay open. Sits AFTER the cancelled/downstream-agnostic validations
      above but before any write. (`before` carries internal_expected_dd via
      the map + processing_date appended above.) */
-  if (soProcessingLocked(before as unknown as { internal_expected_dd?: string | null; processing_date?: string | null } | null)) {
+  if (soProcessingLocked(before as unknown as { internal_expected_dd?: string | null; processing_date?: string | null; proceeded_at?: string | null } | null)) {
     /* Field-scoped (Loo 2026-06-13) — only a genuine change to a production-
        schedule date column is rejected; customer / address / payment header
        fields stay editable in the Proceed lane. `before` carries every patched
@@ -4933,11 +4942,11 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
   /* PR-E — pull customer_delivery_date alongside debtor/agent/venue so a
      line added later still inherits the SO header's delivery date by
      default. Client can override by sending lineDeliveryDate explicitly. */
-  const { data: header } = await sb.from('mfg_sales_orders').select('debtor_code, debtor_name, agent, branding, venue, customer_delivery_date, customer_state, internal_expected_dd, processing_date, customer_id').eq('doc_no', docNo).maybeSingle();
+  const { data: header } = await sb.from('mfg_sales_orders').select('debtor_code, debtor_name, agent, branding, venue, customer_delivery_date, customer_state, internal_expected_dd, processing_date, proceeded_at, customer_id').eq('doc_no', docNo).maybeSingle();
   if (!header) return c.json({ error: 'not_found' }, 404);
-  /* Owner 2026-06-12 — processing-date lock: no line ADD once the processing
-     day has passed (the locked order is already PO'd to the supplier). */
-  if (soProcessingLocked(header as { internal_expected_dd?: string | null; processing_date?: string | null })) {
+  /* Owner 2026-06-12 — processing-date lock: no line ADD once the SO is
+     proceeded AND the processing day has passed (already PO'd to the supplier). */
+  if (soProcessingLocked(header as { internal_expected_dd?: string | null; processing_date?: string | null; proceeded_at?: string | null })) {
     return c.json(SO_PROCESSING_LOCKED_RESPONSE, 409);
   }
   /* Commander 2026-05-31 — a line added later inherits the SO state's warehouse

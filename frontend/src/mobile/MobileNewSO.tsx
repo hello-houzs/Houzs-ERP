@@ -218,6 +218,13 @@ const toCenti = (s: string) => Math.round(num(s) * 100);
 const fromCenti = (c: number | null | undefined) =>
   ((c ?? 0) / 100).toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmt = (n: number) => n.toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+/* Fabric-identity variant keys a colour pick writes (FabricPicker.onPick /
+   SoLineCard.pickFabricColour). Colour auto-sync mirrors exactly these across
+   the compartments of one sofa. */
+const FABRIC_SYNC_KEYS: string[] = [
+  "fabricCode", "colourId", "fabricId", "fabricLabel", "colourLabel", "colourHex",
+];
+
 /* Inches parser — mirrors SoLineCard.parseInches (handles `10"`, `10`, `-2`). */
 const parseInches = (s: unknown): number => {
   if (s == null) return 0;
@@ -919,10 +926,22 @@ export function MobileNewSO({
         if (l.cat !== "sofa" && l.cat !== "bedframe") return l;
         const overrides = new Set(l.overriddenKeys);
         const merged: Record<string, unknown> = { ...l.variants };
+        /* Fabric COLOUR only follows within the SAME sofa: when master and this
+           follower are distinct split sofas (different variants.buildKey), keep
+           the master's fabric-identity keys out of it (the per-sofa colour sync
+           in the FabricPicker handles same-buildKey compartments). Other axes
+           keep the category-wide inherit. */
+        const masterBk = (master.variants as { buildKey?: unknown }).buildKey;
+        const followerBk = (l.variants as { buildKey?: unknown }).buildKey;
+        const differentSofa =
+          typeof masterBk === "string" && masterBk !== "" &&
+          typeof followerBk === "string" && followerBk !== "" &&
+          masterBk !== followerBk;
         let changed = false;
         for (const [k, v] of Object.entries(master.variants)) {
           if (k === "remark") continue; // remark is per-line, never inherited
           if (overrides.has(k)) continue; // manual override wins
+          if (differentSofa && FABRIC_SYNC_KEYS.includes(k)) continue;
           if (merged[k] !== v) { merged[k] = v; changed = true; }
         }
         if (changed) { mutated = true; return { ...l, variants: merged }; }
@@ -1830,10 +1849,21 @@ export function MobileNewSO({
                 ...(c?.label ? { colourLabel: c.label } : {}),
                 ...(c?.swatchHex ? { colourHex: c.swatchHex } : {}),
               };
+              const targetBk = (line?.variants as { buildKey?: unknown } | undefined)?.buildKey;
+              const cascadeBk = typeof targetBk === "string" && targetBk !== "" ? targetBk : null;
               setLines((prev) => prev.map((x) => {
-                if (x.key !== fabricPickerFor) return x;
-                const overrides = Array.from(new Set([...x.overriddenKeys, ...Object.keys(patch)]));
-                return { ...x, variants: { ...x.variants, ...patch }, overriddenKeys: overrides };
+                if (x.key === fabricPickerFor) {
+                  const overrides = Array.from(new Set([...x.overriddenKeys, ...Object.keys(patch)]));
+                  return { ...x, variants: { ...x.variants, ...patch }, overriddenKeys: overrides };
+                }
+                /* Sofa compartment colour auto-sync — the other compartments of
+                   the SAME sofa (same variants.buildKey) follow this colour,
+                   unless a compartment manually overrode its own fabricCode. */
+                const xbk = (x.variants as { buildKey?: unknown } | null)?.buildKey;
+                if (cascadeBk && xbk === cascadeBk && !x.overriddenKeys.includes("fabricCode")) {
+                  return { ...x, variants: { ...x.variants, ...patch } };
+                }
+                return x;
               }));
               setFabricPickerFor(null);
             }}
