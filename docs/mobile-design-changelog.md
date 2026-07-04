@@ -144,7 +144,11 @@ the current-state reference.
 68. **Catalog caching** — `useMfgProducts` now caches 5 minutes with `keepPreviousData`, so the SKU picker no longer blanks to "Loading Catalog" on every open/keystroke (vendored perf deviation, commented in-file).
 69. **Scan now uploads and finishes in the background** — the Scan screen POSTs to the new `/scan-so/enqueue` (photos + salesperson) and returns in seconds; the OCR + DRAFT SO create run server-side (`ctx.waitUntil`, `scm.scan_jobs`), so the operator can close the app immediately. Toast wording updated ("Order uploaded ... you can close the app"); the Orders list re-nudges at 2.5s/45s/120s so a finished job's draft surfaces without a reload. The legacy on-screen flow is kept verbatim as the automatic fallback when `/enqueue` is not served.
 70. **Venue is editable on the SO form** — a real select fed by the venues master; default stays the auto-derived value (salesperson's project), picking "—" reverts to auto; the auto-fill hint hides once overridden. **Specials price noise removed** — the "+RM 0.00" suffix only renders for non-zero configured prices. **Hairline dividers** — line/pay/specials card inner borders standardized to the `--line2` token (#eceee9).
+<<<<<<< Updated upstream
 71. **Organisation entries moved into Profile** (owner 2026-07-04: "这全部在 profile 里面") — the menu sheet's ORGANISATION section (Inbox, Mail Center, Announcements, Members, Positions, Departments) is removed; the six entries render as icon rows in a new Organisation card on the Profile home (between Account and App), same Item pattern, identical permission gating (Announcements keeps its always-visible bypass).
+=======
+71. **Recent scans "Clear" button** — a small teal text-button on the right of the "Recent scans" card header, shown only while error/duplicate rows are visible. Tapping POSTs `/scan-so/jobs/clear-failed` (server deletes the caller's own `status='error'` job rows; a wildcard admin clears every rep's) and refetches the list. Plain cleanup — no confirm dialog; shows "Clearing…" while in flight and fails soft (rows just stay). Also backend: a scan job stuck queued/running >10 min (deploy-killed pipeline) is now auto-RE-RUN once from its durable R2 photos before being errored (`scan_jobs.retry_count`, migration 0070).
+>>>>>>> Stashed changes
 
 ---
 

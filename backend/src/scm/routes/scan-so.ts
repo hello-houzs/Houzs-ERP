@@ -26,6 +26,7 @@
 //   POST /scan-so/enqueue                     — same inputs; queue a BACKGROUND job that OCRs + creates a DRAFT SO
 //   GET  /scan-so/jobs/:id                    — poll a background job (status / soDocNo / error)
 //   GET  /scan-so/jobs?salesperson=           — latest 20 background jobs (optionally one rep's)
+//   POST /scan-so/jobs/clear-failed           — delete the caller's failed (status=error) jobs ('*' clears all reps')
 //   POST /scan-so/samples/:id/confirm         — store operator-corrected JSON (+ salesperson); auto-distills rep rules
 //   GET  /scan-so/salespeople                 — distinct reps seen across samples + rules (modal datalist)
 //   GET  /scan-so/rules/:salesperson          — view a rep's distilled rules
@@ -2662,6 +2663,14 @@ scanSo.post('/extract', async (c) => {
 //                                  beyond anthropicFetchWithRetry).
 //   GET  /scan-so/jobs/:id       — poll one job (status / soDocNo / error).
 //   GET  /scan-so/jobs?salesperson= — latest 20 jobs (optionally one rep's).
+//   POST /scan-so/jobs/clear-failed — delete the caller's failed jobs (mobile
+//                                  "Clear" button; self-scoped by normalized
+//                                  rep name, wildcard '*' clears all).
+//
+// Both poll endpoints also run the stale-job reaper: a job stuck
+// queued/running >10 min (a Worker deploy kills in-flight waitUntil work) is
+// RE-RUN once from its durable R2 photos (retry_count 0 → 1, migration 0070)
+// and only errored once that single retry is spent.
 //
 // The pipeline calls the EXACT machinery /extract uses (loadCatalog,
 // buildCachedPrefix, loadPromptInjections, callClaudeSlipExtract,
@@ -3457,25 +3466,166 @@ scanSo.post('/enqueue', async (c) => {
 
 // ---------------------------------------------------------------------------
 // Stale-job reaper — a scan job stuck in queued/running for >10 minutes is
-// dead (isolate evicted, waitUntil lost, pipeline crashed without reaching
-// its own error-update). Flip it to a terminal error so the mobile Scan
-// screen stops showing a forever-spinner and tells the rep to rescan.
-// Piggybacked on the two poll endpoints (no cron on this worker); fail-soft —
-// a reaper error must never break the poll itself.
+// dead (isolate evicted / Worker DEPLOY killed the waitUntil, pipeline crashed
+// without reaching its own error-update). Deploys are the common cause, so a
+// stale job is NOT errored on first sight: it gets ONE automatic re-run
+// (retry_count 0 → 1, migration 0070) rebuilt from the R2 photo copies the
+// enqueue path already persisted (scan-jobs/{jobId}/{n}, image_keys on the
+// row). Only a job whose single retry is spent (retry_count >= 1) — or whose
+// photos never made it to R2 — is flipped to the terminal error.
+//
+// Staleness clock = updated_at (NOT created_at): the retry claim stamps
+// updated_at = now, giving the re-run its own fresh 10-minute window instead
+// of being re-reaped on the next poll. (First attempts are equivalent either
+// way — a job's updated_at only moves when the pipeline is actually alive.)
+//
+// Piggybacked on the two poll endpoints (no cron on this worker); the re-run
+// itself rides the poll's executionCtx.waitUntil. Fail-soft — a reaper error
+// must never break the poll itself. The claim update is conditional
+// (retry_count = 0 AND still queued/running), so two concurrent polls can
+// never double-run one job.
 // ---------------------------------------------------------------------------
 const SCAN_JOB_STALE_MINUTES = 10;
-async function reapStaleScanJobs(svc: ReturnType<typeof serviceClient>): Promise<void> {
+const STALE_JOB_ERROR = 'The scan took too long and was stopped. Please scan this slip again.';
+
+// Rebuild runScanJob's file inputs from the durable R2 copies — the inverse of
+// parseScanFiles for a retry (the original in-memory buffers died with the
+// isolate). Block order matches upload order because image_keys was appended
+// in file order; the stored contentType decides image vs document block, same
+// mapping as parseScanFiles. Returns null (caller errors the job) if the
+// bucket is unbound or ANY key is missing.
+async function loadScanJobFilesFromR2(
+  bucket: Env['SO_ITEM_PHOTOS'] | undefined,
+  keys: string[],
+): Promise<{
+  fileBlocks: ContentBlock[];
+  uploadedImages: UploadedImage[];
+  firstBuffer: ArrayBuffer | null;
+} | null> {
+  if (!bucket || keys.length === 0) return null;
+  const fileBlocks: ContentBlock[] = [];
+  const uploadedImages: UploadedImage[] = [];
+  let firstBuffer: ArrayBuffer | null = null;
+  let blockIndex = 0;
+  for (const key of keys) {
+    const obj = await bucket.get(key);
+    if (!obj) return null;
+    const buf = await obj.arrayBuffer();
+    if (!firstBuffer) firstBuffer = buf;
+    const mime = obj.httpMetadata?.contentType || 'image/jpeg';
+    const data = toBase64(buf);
+    if (mime === 'application/pdf') {
+      fileBlocks.push({
+        type: 'document',
+        source: { type: 'base64', media_type: 'application/pdf', data },
+      });
+    } else {
+      uploadedImages.push({ index: blockIndex, buffer: buf, mime });
+      fileBlocks.push({
+        type: 'image',
+        source: { type: 'base64', media_type: mime, data },
+      });
+    }
+    blockIndex += 1;
+  }
+  return { fileBlocks, uploadedImages, firstBuffer };
+}
+
+async function reapStaleScanJobs(
+  env: Env,
+  svc: ReturnType<typeof serviceClient>,
+  // The calling poll handler's executionCtx.waitUntil (try/catch-wrapped for
+  // non-Workers test runtimes) — the retry pipeline must outlive the poll
+  // response, exactly like the enqueue path.
+  runInBackground: (p: Promise<unknown>) => void,
+): Promise<void> {
   try {
+    const nowIso = new Date().toISOString();
     const cutoff = new Date(Date.now() - SCAN_JOB_STALE_MINUTES * 60 * 1000).toISOString();
+
+    // 1) RETRY pass — stale first-attempt jobs get one re-run. limit(5) bounds
+    //    the work a single poll can pick up; anything left is caught by the
+    //    next poll (the screen polls every 4s while jobs are active).
+    const { data: retryRows, error: retryErr } = await svc
+      .from('scan_jobs')
+      .select('id, salesperson, salesperson_id, houzs_user_id, image_keys, retry_count')
+      .in('status', ['queued', 'running'])
+      .lt('updated_at', cutoff)
+      .eq('retry_count', 0)
+      .limit(5);
+    if (retryErr) {
+      // retry_count likely missing (migration 0070 not applied yet) — fall
+      // back to the pre-retry blanket reap so stale jobs still terminate
+      // instead of spinning forever.
+      console.warn('[scan-so jobs] retry pass failed (blanket reap fallback):', retryErr.message);
+      await svc
+        .from('scan_jobs')
+        .update({ status: 'error', error: STALE_JOB_ERROR, updated_at: nowIso })
+        .in('status', ['queued', 'running'])
+        .lt('updated_at', cutoff);
+      return;
+    }
+
+    for (const r of (retryRows ?? []) as Array<Record<string, unknown>>) {
+      const id = String(r.id ?? '');
+      if (!id) continue;
+      // CLAIM — conditional update; under concurrent polls Postgres row
+      // locking makes exactly one caller see a non-empty result.
+      const { data: claimed, error: claimErr } = await svc
+        .from('scan_jobs')
+        .update({ status: 'queued', retry_count: 1, updated_at: nowIso })
+        .eq('id', id)
+        .eq('retry_count', 0)
+        .in('status', ['queued', 'running'])
+        .select('id');
+      if (claimErr || !claimed || claimed.length === 0) continue;
+
+      // Dual-read both casings (the #1 recurring result-column bug class).
+      const rawKeys = r.imageKeys ?? r.image_keys;
+      const imageKeys = Array.isArray(rawKeys) ? rawKeys.map(String) : [];
+      const salesperson = typeof r.salesperson === 'string' ? r.salesperson : '';
+      const salespersonId = String(r.salespersonId ?? r.salesperson_id ?? '');
+      const huRaw = r.houzsUserId ?? r.houzs_user_id;
+      const houzsUserId = huRaw != null && Number.isFinite(Number(huRaw)) ? Number(huRaw) : null;
+
+      // Heavy part (R2 reads + the whole pipeline) runs AFTER the poll
+      // responds — never inline in the GET.
+      runInBackground((async () => {
+        const files = salespersonId ? await loadScanJobFilesFromR2(env.SO_ITEM_PHOTOS, imageKeys) : null;
+        if (!files) {
+          // No durable photos (enqueue-time R2 put failed / bucket unbound) or
+          // no replayable identity — the retry cannot run; terminal error now.
+          console.warn('[scan-so jobs] retry not replayable, erroring:', id);
+          await svc
+            .from('scan_jobs')
+            .update({ status: 'error', error: STALE_JOB_ERROR, updated_at: new Date().toISOString() })
+            .eq('id', id);
+          return;
+        }
+        console.warn('[scan-so jobs] re-running stale job (retry 1/1):', id);
+        await runScanJob(env, {
+          id,
+          salesperson,
+          salespersonId,
+          // The enqueue-time user_metadata name is not on the row; the
+          // normalized rep display name is the closest replay identity.
+          salespersonName: salesperson || null,
+          houzsUserId,
+          fileBlocks: files.fileBlocks,
+          uploadedImages: files.uploadedImages,
+          firstBuffer: files.firstBuffer,
+          imageKeys,
+        });
+      })());
+    }
+
+    // 2) TERMINAL pass — stale jobs whose single retry is already spent.
     await svc
       .from('scan_jobs')
-      .update({
-        status: 'error',
-        error: 'The scan took too long and was stopped. Please scan this slip again.',
-        updated_at: new Date().toISOString(),
-      })
+      .update({ status: 'error', error: STALE_JOB_ERROR, updated_at: nowIso })
       .in('status', ['queued', 'running'])
-      .lt('created_at', cutoff);
+      .lt('updated_at', cutoff)
+      .gte('retry_count', 1);
   } catch (e) {
     console.warn('[scan-so jobs] stale-job reaper failed:', (e as Error).message);
   }
@@ -3488,7 +3638,13 @@ async function reapStaleScanJobs(svc: ReturnType<typeof serviceClient>): Promise
 scanSo.get('/jobs', async (c) => {
   const rep = normalizeRepKey(c.req.query('salesperson'));
   const svc = serviceClient(c.env);
-  await reapStaleScanJobs(svc);
+  await reapStaleScanJobs(c.env, svc, (p) => {
+    try {
+      c.executionCtx.waitUntil(p);
+    } catch {
+      /* non-Workers runtime (tests) — let the floating promise run */
+    }
+  });
   let q = svc
     .from('scan_jobs')
     .select('id, status, salesperson, so_doc_no, error, sample_id, duplicate_of, image_keys, created_at, updated_at')
@@ -3511,7 +3667,13 @@ scanSo.get('/jobs/:id', async (c) => {
   const id = (c.req.param('id') ?? '').trim();
   if (!id) return c.json({ error: 'bad_request', reason: 'Missing job id.' }, 400);
   const svc = serviceClient(c.env);
-  await reapStaleScanJobs(svc);
+  await reapStaleScanJobs(c.env, svc, (p) => {
+    try {
+      c.executionCtx.waitUntil(p);
+    } catch {
+      /* non-Workers runtime (tests) — let the floating promise run */
+    }
+  });
   const { data, error } = await svc
     .from('scan_jobs')
     .select('id, status, salesperson, so_doc_no, error, sample_id, duplicate_of, image_keys, created_at, updated_at')
@@ -3524,6 +3686,49 @@ scanSo.get('/jobs/:id', async (c) => {
   }
   if (!data) return c.json({ error: 'not_found', reason: 'Scan job not found.' }, 404);
   return c.json({ success: true, data: { job: jobToJson(data as Record<string, unknown>) } });
+});
+
+// ---------------------------------------------------------------------------
+// POST /scan-so/jobs/clear-failed — the mobile "Clear" button on Recent scans.
+// Deletes terminal status='error' rows (sticky failure cards the rep has read
+// and dealt with). SELF-SCOPED: a normal caller only clears rows whose
+// salesperson matches their OWN normalized name (the same identity the mobile
+// screen scopes its list with — auth.ts stamps user_metadata.name = real name
+// ?? email, mirroring the frontend's user.name || user.email); a wildcard-'*'
+// caller (owner/admin, checked against houzsUser — NEVER scm.staff.role,
+// which is the pinned system row) clears every rep's failed rows. Done rows
+// carrying a warning note / duplicateOf are NOT touched — they point at a
+// real SO. No in-app confirm needed client-side: plain cleanup of already
+// terminal rows; nothing about the drafts themselves changes.
+// ---------------------------------------------------------------------------
+scanSo.post('/jobs/clear-failed', async (c) => {
+  const svc = serviceClient(c.env);
+  const houzsUser = c.get('houzsUser');
+  const clearsAll =
+    houzsUser?.permissions_set?.has('*') || houzsUser?.permissions?.includes('*') || false;
+  const caller = normalizeRepKey(
+    (c.get('user').user_metadata as { name?: string } | undefined)?.name,
+  );
+  if (!clearsAll && !caller) {
+    return c.json(
+      { error: 'bad_request', reason: 'Could not work out which salesperson you are.' },
+      400,
+    );
+  }
+  let q = svc.from('scan_jobs').delete().eq('status', 'error');
+  if (!clearsAll) q = q.ilike('salesperson', ilikeExact(caller));
+  const { error } = await q;
+  if (error) {
+    if (isMissingTable(error)) {
+      return c.json({ error: 'table_missing', reason: SCAN_JOBS_MISSING_MSG }, 503);
+    }
+    console.error('[scan-so jobs] clear-failed failed:', error.message);
+    return c.json(
+      { error: 'delete_failed', reason: 'Could not clear the failed scans. Please try again.' },
+      500,
+    );
+  }
+  return c.json({ success: true });
 });
 
 // ===========================================================================
