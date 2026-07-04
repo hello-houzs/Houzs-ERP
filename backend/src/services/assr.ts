@@ -927,6 +927,29 @@ export interface ListAssrFilters {
   exclude_stage?: string;
   sort_by?: string;
   sort_dir?: "asc" | "desc";
+  /** Row-level visibility scope (owner spec 2026-07): when set, only cases
+   *  CREATED BY or ASSIGNED TO one of these user ids are returned — the
+   *  caller + their full manager_id downline chain (services/orgScope.ts).
+   *  undefined = unrestricted (admin `*` / service_cases.manage). An empty
+   *  array matches NOTHING (fail closed). */
+  visible_to_user_ids?: number[];
+}
+
+/** Shared WHERE fragment for the visibility scope — used by both the
+ *  paginated list and the CSV export so they can never drift apart. */
+function pushVisibilityScope(
+  where: string[],
+  binds: any[],
+  ids: number[] | undefined,
+): void {
+  if (ids === undefined) return; // unrestricted
+  if (ids.length === 0) {
+    where.push("1 = 0"); // scoped caller with no resolvable identity → nothing
+    return;
+  }
+  const ph = ids.map(() => "?").join(",");
+  where.push(`(c.created_by IN (${ph}) OR c.assigned_to IN (${ph}))`);
+  binds.push(...ids, ...ids);
 }
 
 // Allow-listed sort columns. Computed aliases (stage_since,
@@ -1007,6 +1030,7 @@ export async function listAssrCases(env: Env, f: ListAssrFilters) {
     const like = `%${f.search}%`;
     binds.push(like, like, like);
   }
+  pushVisibilityScope(where, binds, f.visible_to_user_ids);
 
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
   const page = f.page && f.page > 0 ? f.page : 1;
@@ -1131,6 +1155,7 @@ export async function exportAssrCases(
     const like = `%${f.search}%`;
     binds.push(like, like, like);
   }
+  pushVisibilityScope(where, binds, f.visible_to_user_ids);
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
   const rows = await env.DB.prepare(
     `SELECT c.assr_no, c.doc_no, c.stage, c.status, c.priority,

@@ -76,7 +76,7 @@ const ROUTE_TO_CONFIG: Record<string, string> = {
  *  mobile screen and is still permission-gated by the matching desktop nav entry
  *  (an item whose nav tab isn't visible for the user's position is hidden). The
  *  bottom tabs cover Sales Orders / Calendar / Inbox / Profile. */
-const MOBILE_MENU_GROUPS: { group: string; items: { to: string; label: string }[] }[] = [
+const MOBILE_MENU_GROUPS: { group: string; items: { to: string; label: string; alwaysShow?: boolean }[] }[] = [
   { group: "Sales & Finance", items: [
     { to: "/scm/sales-orders", label: "Sales Orders" },
     { to: "/scm/delivery-orders", label: "Delivery Orders" },
@@ -113,7 +113,12 @@ const MOBILE_MENU_GROUPS: { group: string; items: { to: string; label: string }[
     { to: "/team?tab=positions", label: "Positions" },
     { to: "/team?tab=departments", label: "Departments" },
     { to: "/mail-center", label: "Mail Center" },
-    { to: "/announcements", label: "Announcements" },
+    /* Owner rule 2026-07: Announcements is readable by EVERY active user —
+       the mobile screen reads /api/announcements/banner, which needs no
+       permission and is audience-filtered server-side (only notices addressed
+       to this user). So the menu item bypasses the desktop nav gate
+       (announcements.read = the desktop ADMIN list/composer permission). */
+    { to: "/announcements", label: "Announcements", alwaysShow: true },
   ]},
 ];
 
@@ -201,7 +206,7 @@ function MobileAppInner() {
     return matches.length === 0 ? true : matches.some(visible);
   };
   const menuGroups = MOBILE_MENU_GROUPS
-    .map((g) => ({ group: g.group, items: g.items.filter((it) => allowed(it.to)) }))
+    .map((g) => ({ group: g.group, items: g.items.filter((it) => it.alwaysShow || allowed(it.to)) }))
     .filter((g) => g.items.length > 0);
 
   const openRoute = (to: string, label: string) => {

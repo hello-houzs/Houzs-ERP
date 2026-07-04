@@ -3161,26 +3161,58 @@ app.get("/calendar/events", requirePageAccess("projects.calendar"), async (c) =>
   if (!from || !to) return c.json({ error: "from & to required (YYYY-MM-DD)" }, 400);
 
   const user = c.get("user");
+
+  /* ── Venue-assignment scoping (owner rule, 2026-07) ─────────────────────
+     A non-admin caller sees ONLY the venues/projects they are ASSIGNED to:
+       · PIC arm    — project's PIC (COALESCE(pic_id, created_by) for legacy
+                      pre-039 rows) is them. scope_to_pic roles KEEP their
+                      existing desktop behavior unchanged: PIC in
+                      [self, manager] AND the department brand allow-list
+                      (services/projectAcl.ts).
+       · Attendee arm — they are on the project's Sales Attending list
+                      (project_sales_attendees → sales_reps.user_id, mig 087
+                      — the same linkage the SO venue auto-fill uses).
+     Admins (`*` wildcard) see everything, unchanged. Previously only
+     scope_to_pic roles were filtered — every other non-admin saw ALL
+     venue events; that lane is now assignment-scoped too. */
+  const granted = user?.permissions_set ?? user?.permissions ?? [];
+  const isAdmin = !!user && hasPermission(granted, "*");
   const scope = getProjectScope(user);
-  // Scoped user with no PIC line OR no brand coverage → return empty.
-  if (scope && (scope.pic_ids.length === 0 || scope.brands.length === 0)) {
-    return c.json({ projects: [], tasks: [] });
-  }
-  // COALESCE(pic_id, created_by) so legacy projects (pre-039) still
-  // attach to their creator's team under the scoped ACL.
-  const scopeWhereParts: string[] = [];
+  const assignArms: string[] = [];
   const scopeBinds: any[] = [];
-  if (scope) {
-    scopeWhereParts.push(
-      `COALESCE(p.pic_id, p.created_by) IN (${scope.pic_ids.map(() => "?").join(",")})`
-    );
-    scopeBinds.push(...scope.pic_ids);
-    scopeWhereParts.push(
-      `(p.brand IS NOT NULL AND p.brand IN (${scope.brands.map(() => "?").join(",")}))`
-    );
-    scopeBinds.push(...scope.brands);
+  if (!isAdmin) {
+    if (scope) {
+      // Existing scoped-role behavior, verbatim (one-hop PIC + brand gate) —
+      // just OR-extended with the attendee arm below so an attending rep
+      // also sees venues where they aren't the PIC.
+      if (scope.pic_ids.length > 0 && scope.brands.length > 0) {
+        assignArms.push(
+          `(COALESCE(p.pic_id, p.created_by) IN (${scope.pic_ids.map(() => "?").join(",")})` +
+          ` AND p.brand IS NOT NULL AND p.brand IN (${scope.brands.map(() => "?").join(",")}))`
+        );
+        scopeBinds.push(...scope.pic_ids, ...scope.brands);
+      }
+    } else if (user?.id) {
+      // Non-scoped non-admin (NEW lane): PIC-self only, no brand gate —
+      // being the project's PIC is already an explicit assignment.
+      assignArms.push(`COALESCE(p.pic_id, p.created_by) = ?`);
+      scopeBinds.push(user.id);
+    }
+    if (user?.id) {
+      assignArms.push(
+        `EXISTS (SELECT 1 FROM project_sales_attendees psa` +
+        ` JOIN sales_reps sr ON sr.id = psa.sales_rep_id` +
+        ` WHERE psa.project_id = p.id AND sr.user_id = ?)`
+      );
+      scopeBinds.push(user.id);
+    }
   }
-  const scopeWhere = scopeWhereParts.length ? ` AND ${scopeWhereParts.join(" AND ")}` : "";
+  // Non-admin with no resolvable arms (no session id) → fail closed.
+  const scopeWhere = isAdmin
+    ? ""
+    : assignArms.length
+      ? ` AND (${assignArms.join(" OR ")})`
+      : ` AND 1 = 0`;
 
   // Projects whose [start_date, end_date] overlaps [from, to]. The
   // active_section_name subquery returns the project's current

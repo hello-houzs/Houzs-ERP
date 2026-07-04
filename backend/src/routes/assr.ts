@@ -24,8 +24,32 @@ import { issueStaffToken } from "../services/caseTracking";
 import { sendEmail, publicUrl } from "../services/email";
 import { AutoCountClient } from "../services/autocount";
 import { requirePermission, requireAnyPermission } from "../middleware/auth";
+import { hasPermission } from "../services/permissions";
+import { subtreeUserIds } from "../services/orgScope";
 
 const app = new Hono<{ Bindings: Env }>();
+
+// ── Row-level visibility (owner spec 2026-07) ─────────────────
+// Full view = `*` wildcard (Owner / IT Admin) or `service_cases.manage`
+// (the existing admin-tier ASSR key — no new permission invented).
+// Everyone else sees only cases they CREATED or are ASSIGNED TO, plus
+// the same for every user under them in the users.manager_id reporting
+// chain (full depth — services/orgScope.ts). Returns undefined for the
+// unrestricted tier, or the allow-listed user ids otherwise.
+async function assrVisibleUserIds(c: {
+  get(key: "user"): unknown;
+  env: Env;
+}): Promise<number[] | undefined> {
+  const user = c.get("user") as
+    | { id?: number; permissions?: string[]; permissions_set?: Set<string> }
+    | undefined;
+  const granted = user?.permissions_set ?? user?.permissions ?? [];
+  if (hasPermission(granted, "*") || hasPermission(granted, "service_cases.manage")) {
+    return undefined; // unrestricted
+  }
+  if (user?.id == null) return []; // fail closed, never open
+  return subtreeUserIds(c.env, Number(user.id));
+}
 
 // ── Module-level settings (default assignee) ──────────────────
 //
@@ -467,6 +491,7 @@ app.get("/summary", requirePermission("service_cases.read"), async (c) => {
 app.get("/", requirePermission("service_cases.read"), async (c) => {
   const assignedToParam = c.req.query("assigned_to");
   const result = await listAssrCases(c.env, {
+    visible_to_user_ids: await assrVisibleUserIds(c),
     stage: c.req.query("stage"),
     status: c.req.query("status"),
     search: c.req.query("search"),
@@ -650,6 +675,7 @@ app.post("/bulk/assign", requirePermission("service_cases.manage"), async (c) =>
 
 app.get("/export.csv", requirePermission("service_cases.read"), async (c) => {
   const rows = await exportAssrCases(c.env, {
+    visible_to_user_ids: await assrVisibleUserIds(c),
     stage: c.req.query("stage"),
     status: c.req.query("status"),
     search: c.req.query("search"),
@@ -825,6 +851,21 @@ app.get("/:id{[0-9]+}", requirePermission("service_cases.read"), async (c) => {
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const detail = await getAssrDetail(c.env, id);
   if (!detail) return c.json({ error: "Not found" }, 404);
+  /* Row-level visibility — same rule as the list: a scoped caller may open
+     only cases created by / assigned to them or their downline. Out-of-scope
+     answers 404, indistinguishable from a nonexistent id (mirrors the SCM SO
+     detail behavior). Dual-read camelCase ?? snake_case — the PG driver
+     camelCases result columns. */
+  const visibleIds = await assrVisibleUserIds(c);
+  if (visibleIds !== undefined) {
+    const row = (detail as { case?: Record<string, unknown> }).case ?? (detail as Record<string, unknown>);
+    const createdBy = Number((row as any).createdBy ?? (row as any).created_by ?? NaN);
+    const assignedTo = Number((row as any).assignedTo ?? (row as any).assigned_to ?? NaN);
+    const inScope =
+      (Number.isFinite(createdBy) && visibleIds.includes(createdBy)) ||
+      (Number.isFinite(assignedTo) && visibleIds.includes(assignedTo));
+    if (!inScope) return c.json({ error: "Not found" }, 404);
+  }
   return c.json(detail);
 });
 

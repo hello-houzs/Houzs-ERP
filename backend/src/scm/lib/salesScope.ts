@@ -1,34 +1,81 @@
 // ─────────────────────────────────────────────────────────────────────────
-// salesScope.ts — row-level "own / subordinates" visibility for the SCM
+// salesScope.ts — row-level "own / downline" visibility for the SCM
 // sales-side documents (sales orders, delivery orders, sales invoices,
-// consignment orders). Houzs-flavoured: the original 2990 staff-role tier
-// lookup is dead in Houzs (the SCM bridge pins every caller to one
-// super_admin row) — so the view-all tier is now gated on the flat
-// permission key `scm.so.view_all` against the REAL caller, computed by the
-// caller via `hasHouzsPerm(c, 'scm.so.view_all')` and passed in as the
-// `canViewAll` flag. The position-subtree tier (services/salesTeam.ts)
-// continues to scope reps to their own id + downline.
+// consignment orders).
+//
+// HOUZS VOCABULARY (2026-07 fix — this was the non-admin 500):
+//   · The caller identity must be the REAL Houzs user (integer public.users
+//     id from c.get('houzsUser')), NOT c.get('user').id — the SCM auth
+//     bridge pins user.id to ONE system scm.staff uuid, and feeding that
+//     uuid into the old sales_reps integer lookup threw
+//     "invalid input syntax for type integer" → 500 for every caller
+//     without scm.so.view_all.
+//   · The scope this returns is a list of scm.staff UUIDs (matching the
+//     `salesperson_id` column stamped from the mig-0066 staff picker), NOT
+//     Houzs integer user ids. Integer ids against the uuid column would
+//     22P02 the PostgREST filter — the second half of the same 500.
+//
+// VISIBILITY RULE (owner spec, 2026-07): view-all callers (`*` wildcard or
+// `scm.so.view_all`) are unrestricted; everyone else sees SELF + FULL
+// REPORTING CHAIN — every user under them in the public.users.manager_id
+// tree, any depth (services/orgScope.ts). This supersedes the old
+// sales_reps-subtree tier AND the old "non-reps see all" fallback: a
+// non-admin caller without view_all is ALWAYS scoped now.
 //
 // Keep this as the single source of truth so every sales-doc list/detail
 // scopes identically.
 // ─────────────────────────────────────────────────────────────────────────
 
 import type { Env } from "../../types";
-import { salesVisibilityUserIds } from "../../services/salesTeam";
+import { subtreeUserIds } from "../../services/orgScope";
+
+/* An all-zeros uuid no scm.staff row ever carries (the seeded system row is
+   …-000000000001). Returned instead of an EMPTY scope list because
+   PostgREST rejects an empty `in.()` filter (400 → the routes would 500);
+   a one-element impossible id keeps `.in('salesperson_id', scope)` valid
+   while matching nothing — fail closed, never open. */
+const MATCH_NOTHING_STAFF_ID = "00000000-0000-0000-0000-000000000000";
 
 /**
- * The salesperson_ids a caller may see, or null for "no restriction".
- * `canViewAll` is computed by the caller via the Houzs `scm.so.view_all`
- * permission (Owner + IT Admin pass via `*`).
+ * The scm.staff uuids (salesperson_id vocabulary) a caller may see, or
+ * null for "no restriction". `canViewAll` is computed by the caller via
+ * the Houzs `scm.so.view_all` permission (Owner + IT Admin pass via `*`).
+ *
+ * `houzsUserId` is the REAL caller's public.users integer id
+ * (c.get('houzsUser')?.id) — never the bridge's pinned staff uuid.
+ * An absent id (should not happen on an authed request) scopes to
+ * nothing rather than everything.
  */
 export async function resolveSalesScopeIds(
-  _sb: any,
+  sb: any,
   env: Env,
-  userId: number | string,
+  houzsUserId: number | null | undefined,
   canViewAll: boolean,
-): Promise<number[] | null> {
+): Promise<string[] | null> {
   if (canViewAll) return null; // view-all tier
-  return salesVisibilityUserIds(env, userId); // rep subtree, or null if not a rep
+  if (houzsUserId == null || !Number.isFinite(Number(houzsUserId))) {
+    return [MATCH_NOTHING_STAFF_ID];
+  }
+  // Self + full downline chain (users.manager_id tree, cycle-guarded).
+  const userIds = await subtreeUserIds(env, Number(houzsUserId));
+  // Map integer user ids → scm.staff uuids via the mig-0066 sync link
+  // (staff.user_id). Every non-disabled user has a deterministic staff row
+  // (md5('houzs-user:'||id)::uuid) from the 0066 backfill + trigger.
+  const { data, error } = await sb
+    .from("staff")
+    .select("id")
+    .in("user_id", userIds);
+  if (error) {
+    // Fail CLOSED (own/none) — never fail open to the whole book.
+    console.log(
+      `[salesScope] staff uuid lookup failed for user=${houzsUserId}: ${error.message}`,
+    );
+    return [MATCH_NOTHING_STAFF_ID];
+  }
+  const ids = ((data ?? []) as Array<{ id?: string }>)
+    .map((r) => r.id)
+    .filter((x): x is string => !!x);
+  return ids.length > 0 ? ids : [MATCH_NOTHING_STAFF_ID];
 }
 
 /**
@@ -39,11 +86,30 @@ export async function resolveSalesScopeIds(
 export async function salesDocOutOfScope(
   sb: any,
   env: Env,
-  userId: number | string,
+  houzsUserId: number | null | undefined,
   canViewAll: boolean,
   salespersonId: number | string | null | undefined,
 ): Promise<boolean> {
-  const ids = await resolveSalesScopeIds(sb, env, userId, canViewAll);
+  const ids = await resolveSalesScopeIds(sb, env, houzsUserId, canViewAll);
   if (ids === null) return false; // unrestricted
-  return salespersonId == null || !ids.includes(Number(salespersonId));
+  return salespersonId == null || !ids.includes(String(salespersonId));
+}
+
+/**
+ * The caller's OWN scm.staff uuid (mig 0066 deterministic row, linked by
+ * staff.user_id), or null when the sync row is missing. Used for
+ * self-attribution (SO create stamp, /mine, /my-mtd) — the bridge's pinned
+ * system staff uuid must never be used for per-person attribution.
+ */
+export async function resolveCallerStaffId(
+  sb: any,
+  houzsUserId: number | null | undefined,
+): Promise<string | null> {
+  if (houzsUserId == null || !Number.isFinite(Number(houzsUserId))) return null;
+  const { data } = await sb
+    .from("staff")
+    .select("id")
+    .eq("user_id", Number(houzsUserId))
+    .maybeSingle();
+  return ((data as { id?: string } | null)?.id as string | undefined) ?? null;
 }

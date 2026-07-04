@@ -63,7 +63,7 @@ import { monthBoundsMy, rangeBoundsMy, todayMyt } from '../lib/my-time';
 // gates `scm.so.view_all` / `scm.so.attribute_other` against the REAL Houzs
 // caller; see lib/houzs-perms.ts.)
 import { hasHouzsPerm } from '../lib/houzs-perms';
-import { resolveSalesScopeIds, salesDocOutOfScope } from '../lib/salesScope';
+import { resolveSalesScopeIds, salesDocOutOfScope, resolveCallerStaffId } from '../lib/salesScope';
 import { recordSoAudit, diffFields, type FieldChange } from '../lib/so-audit';
 /* TBC sofa exchange PWP re-evaluation (Loo 2026-06-12) — reuse the voucher
    generator + model-list matcher from the reserve route. */
@@ -585,14 +585,15 @@ const snapshotUnitCostSen = async (
 
 mfgSalesOrders.get('/', async (c) => {
   const sb = c.get('supabase');
-  const user = c.get('user');
 
-  /* Row-level visibility scope — list of allowed salesperson_ids, or null =
-     unrestricted. Single source of truth in lib/salesScope.ts: view-all roles
-     → all; POS sellers → own; any other sales rep → self + downline subtree
-     (Manager sees their branch, leaf rep sees only themselves); non-reps → all.
-     Subsumes the old Backend SO emergency hatch (isSelfScopedSales → own). */
-  const scopeIds = await resolveSalesScopeIds(sb, c.env, user.id, hasHouzsPerm(c, 'scm.so.view_all'));
+  /* Row-level visibility scope — list of allowed salesperson_ids (scm.staff
+     uuids), or null = unrestricted. Single source of truth in
+     lib/salesScope.ts: view-all callers (`*` / scm.so.view_all) → all;
+     everyone else → SELF + full manager_id downline chain (owner spec).
+     NOTE: must pass the REAL Houzs integer user id — user.id here is the
+     bridge's pinned system staff uuid and feeding it to the scope lookup
+     was the non-admin 500 (uuid bound to an integer column). */
+  const scopeIds = await resolveSalesScopeIds(sb, c.env, c.get('houzsUser')?.id, hasHouzsPerm(c, 'scm.so.view_all'));
 
   /* Dashboard summary mode (`?summary=1`): the landing page only needs to bucket
      SOs by status/proceeded_at and count "new today" — it does NOT need the
@@ -969,7 +970,13 @@ mfgSalesOrders.get('/', async (c) => {
    current Malaysia-calendar month, excluding CANCELLED / DRAFT (not real
    sales). Registered BEFORE '/:docNo' so 'my-mtd' is never a doc-no param. */
 mfgSalesOrders.get('/my-mtd', async (c) => {
-  const sb = c.get('supabase'); const user = c.get('user');
+  const sb = c.get('supabase');
+  /* Self = the caller's REAL scm.staff uuid (mig 0066), NOT user.id — the
+     bridge pins user.id to the shared system staff row, so matching on it
+     returned the SAME (system-attributed) orders for every caller instead
+     of the person's own. No sync row → zero stats, not someone else's. */
+  const myStaffId = await resolveCallerStaffId(sb, c.get('houzsUser')?.id);
+  if (!myStaffId) return c.json({ mtd_orders: 0, mtd_sales_centi: 0 });
   // Current month in Malaysia time → UTC [start, end) bounds for created_at.
   const ymd = todayMyt();
   const { startUtc, endUtc } = monthBoundsMy(Number(ymd.slice(0, 4)), Number(ymd.slice(5, 7)) - 1);
@@ -977,7 +984,7 @@ mfgSalesOrders.get('/my-mtd', async (c) => {
   const { data, error } = await sb
     .from('mfg_sales_orders')
     .select('local_total_centi, total_revenue_centi')
-    .eq('salesperson_id', user.id)
+    .eq('salesperson_id', myStaffId)
     .not('status', 'in', '("CANCELLED","DRAFT")')
     .gte('created_at', startUtc)
     .lt('created_at', endUtc)
@@ -1025,7 +1032,12 @@ mfgSalesOrders.get('/mine', async (c) => {
      else: the param is ignored and they stay self-scoped on their own client. */
   const wantSalesperson = c.req.query('salesperson') ?? null;
   let client = sb;
-  let targetSalespersonId: string | null = user.id; // default: own orders only
+  /* Self = the caller's REAL scm.staff uuid (mig 0066) — user.id is the
+     bridge's pinned system row shared by every caller (see /my-mtd note).
+     Fall back to user.id so a missing sync row degrades to the old
+     (system-attributed) behavior instead of erroring. */
+  let targetSalespersonId: string | null =
+    (await resolveCallerStaffId(sb, c.get('houzsUser')?.id)) ?? user.id; // default: own orders only
   if (wantSalesperson) {
     // Houzs-flavoured: gate on the flat permission key `scm.so.view_all`
     // against the REAL caller (the 2990 staff_role lookup is dead in Houzs —
@@ -1463,7 +1475,6 @@ mfgSalesOrders.get('/active-venue', async (c) => {
 
 mfgSalesOrders.get('/:docNo', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo');
-  const user = c.get('user');
   const [h, i] = await Promise.all([
     /* `${HEADER}, proceeded_at` — proceeded_at lives ONLY on the base table,
        NOT the mfg_sales_orders_with_payment_totals view that the LIST route
@@ -1494,7 +1505,7 @@ mfgSalesOrders.get('/:docNo', async (c) => {
     // sellers pass only their own; other reps are held to their subtree. An
     // out-of-scope doc_no answers 404 — indistinguishable from a missing one.
     const sp = (h.data as { salesperson_id?: number | string | null }).salesperson_id;
-    if (await salesDocOutOfScope(sb, c.env, user.id, hasHouzsPerm(c, 'scm.so.view_all'), sp)) {
+    if (await salesDocOutOfScope(sb, c.env, c.get('houzsUser')?.id, hasHouzsPerm(c, 'scm.so.view_all'), sp)) {
       return c.json({ error: 'not_found' }, 404);
     }
   }
@@ -1950,12 +1961,18 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
 
   const docNo = await nextDocNo(sb);
 
-  /* Caller's staff row — drives the venue auto-stamp AND the salesperson
-     self-lock below. */
+  /* Caller's REAL scm.staff identity (mig 0066 deterministic sync row,
+     linked by staff.user_id) — drives the venue auto-stamp AND the
+     salesperson self-lock below. `user.id` is the bridge's pinned SYSTEM
+     staff uuid shared by every caller; stamping it as salesperson_id made
+     every self-created SO belong to "System" instead of the person, which
+     breaks the self-scoped visibility (own + downline) rule. Fall back to
+     the system row only when the sync row is missing (inactive/unsynced). */
+  const callerStaffId = (await resolveCallerStaffId(sb, c.get('houzsUser')?.id)) ?? user.id;
   const { data: callerStaff } = await sb
     .from('staff')
     .select('role, venue_id')
-    .eq('id', user.id)
+    .eq('id', callerStaffId)
     .maybeSingle();
   /* Loo 2026-06-05 — a self-scoped sales caller can only create orders under
      their OWN account: whatever salespersonId the client sent is overridden
@@ -1967,7 +1984,7 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
      via the Team > Positions matrix. */
   const salespersonIdToStamp = hasHouzsPerm(c, 'scm.so.attribute_other')
     ? ((body.salespersonId as string) ?? null)
-    : user.id;
+    : callerStaffId;
 
   /* Migration 0086 + Loo 2026-06-06 — venue follows the SELECTED salesperson:
      an admin/coordinator entering an SO on behalf of a PJ salesperson stamps
@@ -1980,7 +1997,7 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
      NULL — admins oversee every venue by design. */
   let venueIdToStamp: string | null = (body.venueId as string | null | undefined) ?? null;
   if (!venueIdToStamp && salespersonIdToStamp) {
-    if (salespersonIdToStamp === user.id) {
+    if (salespersonIdToStamp === callerStaffId) {
       venueIdToStamp = (callerStaff?.venue_id as string | null) ?? null;
     } else {
       const { data: spStaff } = await sb
