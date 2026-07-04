@@ -3139,6 +3139,52 @@ function buildEmptyShellBody(
   };
 }
 
+/* Owner 2026-07-04: "就用 announcement 的功能,只有自己看到,像 notification 那样."
+   Each finished scan posts a PRIVATE announcement to the one salesperson who
+   scanned it (target_type USER_IDS = [that user]) so it rides the announcements
+   machinery they already have — the unread dot + banner + Announcements screen —
+   as a personal notification. `source='scan'` keeps these out of the office
+   composer list (GET /api/announcements filters them; /banner still shows them).
+   7-day expiry so the banner self-clears; written to public.announcements via
+   env.DB (the D1-compat Postgres shim, same handle the announcements route uses).
+   Fail-soft: a notice insert must NEVER fail the scan job. Skipped when we have
+   no houzsUserId (a private notice needs a target user). */
+async function postScanNotice(
+  env: Env,
+  opts: {
+    houzsUserId: number | null;
+    category: 'GENERAL' | 'WARNING';
+    title: string;
+    body: string;
+  },
+): Promise<void> {
+  if (opts.houzsUserId == null) return;
+  try {
+    const id = `ann-${crypto.randomUUID().slice(0, 12).replace(/-/g, '')}`;
+    const nowIso = new Date().toISOString();
+    const expiresIso = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    await env.DB.prepare(
+      `INSERT INTO announcements
+         (id, title, body, is_active, expires_at, created_by, created_at,
+          translations, attachments, target_type,
+          target_dept_ids, target_position_ids, target_user_ids, category, source)
+       VALUES (?, ?, ?, 1, ?, NULL, ?, NULL, NULL, 'USER_IDS', NULL, NULL, ?, ?, 'scan')`,
+    )
+      .bind(
+        id,
+        opts.title,
+        opts.body,
+        expiresIso,
+        nowIso,
+        JSON.stringify([opts.houzsUserId]),
+        opts.category,
+      )
+      .run();
+  } catch (e) {
+    console.error('[scan-job] scan notice insert failed:', (e as Error).message);
+  }
+}
+
 function buildDraftSoBodyFromSlip(
   parsed: ExtractedSlip,
   catalog: Catalog,
@@ -3296,6 +3342,14 @@ async function runScanJob(
   };
   const fail = async (plainMsg: string): Promise<void> => {
     await touch({ status: 'error', error: plainMsg });
+    // A hard failure produced no draft — tell the rep privately so they know to
+    // scan again (system faults only now; unreadable slips land a shell draft).
+    await postScanNotice(env, {
+      houzsUserId: job.houzsUserId,
+      category: 'WARNING',
+      title: 'Scan could not be processed',
+      body: `${plainMsg} Please scan again.`,
+    });
   };
 
   try {
@@ -3392,6 +3446,12 @@ async function runScanJob(
       // stop here (no receipt-payment pass on a draft the model couldn't read).
       if (shellNote) {
         await touch({ status: 'done', so_doc_no: docNo, error: shellNote });
+        await postScanNotice(env, {
+          houzsUserId: job.houzsUserId,
+          category: 'WARNING',
+          title: `Scan saved as a draft — ${docNo}`,
+          body: shellNote,
+        });
         return;
       }
       // Past the shell paths, a null parse has already returned above — narrow
@@ -3428,6 +3488,18 @@ async function runScanJob(
         status: 'done',
         so_doc_no: docNo,
         ...(paymentNote ? { error: paymentNote } : {}),
+      });
+      // Private "your scan is a draft now" notice. Duplicate/payment caveats
+      // ride in the body + bump it to WARNING so it stands out.
+      const noticeExtras = [
+        dupDocNo ? `This looks like a possible duplicate of ${dupDocNo}.` : null,
+        paymentNote,
+      ].filter(Boolean);
+      await postScanNotice(env, {
+        houzsUserId: job.houzsUserId,
+        category: dupDocNo || paymentNote ? 'WARNING' : 'GENERAL',
+        title: `Sales order saved — ${docNo}`,
+        body: [`Your scan was saved as a draft. Open it from your Orders to review.`, ...noticeExtras].join(' '),
       });
       return;
     }
