@@ -3456,12 +3456,39 @@ scanSo.post('/enqueue', async (c) => {
 });
 
 // ---------------------------------------------------------------------------
+// Stale-job reaper — a scan job stuck in queued/running for >10 minutes is
+// dead (isolate evicted, waitUntil lost, pipeline crashed without reaching
+// its own error-update). Flip it to a terminal error so the mobile Scan
+// screen stops showing a forever-spinner and tells the rep to rescan.
+// Piggybacked on the two poll endpoints (no cron on this worker); fail-soft —
+// a reaper error must never break the poll itself.
+// ---------------------------------------------------------------------------
+const SCAN_JOB_STALE_MINUTES = 10;
+async function reapStaleScanJobs(svc: ReturnType<typeof serviceClient>): Promise<void> {
+  try {
+    const cutoff = new Date(Date.now() - SCAN_JOB_STALE_MINUTES * 60 * 1000).toISOString();
+    await svc
+      .from('scan_jobs')
+      .update({
+        status: 'error',
+        error: 'The scan took too long and was stopped. Please scan this slip again.',
+        updated_at: new Date().toISOString(),
+      })
+      .in('status', ['queued', 'running'])
+      .lt('created_at', cutoff);
+  } catch (e) {
+    console.warn('[scan-so jobs] stale-job reaper failed:', (e as Error).message);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // GET /scan-so/jobs?salesperson= — latest 20 jobs, optionally one rep's
 // (normalized + case-insensitive match, same pool rule as the samples).
 // ---------------------------------------------------------------------------
 scanSo.get('/jobs', async (c) => {
   const rep = normalizeRepKey(c.req.query('salesperson'));
   const svc = serviceClient(c.env);
+  await reapStaleScanJobs(svc);
   let q = svc
     .from('scan_jobs')
     .select('id, status, salesperson, so_doc_no, error, sample_id, duplicate_of, image_keys, created_at, updated_at')
@@ -3484,6 +3511,7 @@ scanSo.get('/jobs/:id', async (c) => {
   const id = (c.req.param('id') ?? '').trim();
   if (!id) return c.json({ error: 'bad_request', reason: 'Missing job id.' }, 400);
   const svc = serviceClient(c.env);
+  await reapStaleScanJobs(svc);
   const { data, error } = await svc
     .from('scan_jobs')
     .select('id, status, salesperson, so_doc_no, error, sample_id, duplicate_of, image_keys, created_at, updated_at')
