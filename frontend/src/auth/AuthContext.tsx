@@ -122,6 +122,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         "/api/auth/login",
         { email, password },
       );
+      // Remember the account (email ONLY, never the password) so the login screen
+      // pre-fills it next time — or forget it when Remember me is unchecked.
+      try {
+        if (remember) localStorage.setItem("auth:lastEmail", email.trim());
+        else localStorage.removeItem("auth:lastEmail");
+      } catch { /* storage disabled (private mode) — non-fatal */ }
       // 2FA accounts get a challenge instead of a token — the caller collects a
       // code and calls verifyTotpLogin. No token is stored yet.
       if (res.totp_required && res.challenge) {
