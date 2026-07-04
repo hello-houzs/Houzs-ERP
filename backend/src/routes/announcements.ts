@@ -18,6 +18,7 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
 import { requirePermission } from "../middleware/auth";
+import { hasPermission } from "../services/permissions";
 import {
   translateAnnouncement,
   type AnnouncementTranslations,
@@ -253,13 +254,36 @@ function userCanSee(
 }
 
 // ============================================================
-// LIST (admin) — every active + inactive + expired row, newest first.
+// LIST — newest first.
+//   · Managers (`*` wildcard or announcements.write, i.e. composers) get the
+//     FULL admin list: every active + inactive + expired row.
+//   · Everyone else with announcements.read gets ONLY live announcements
+//     addressed to THEM (owner rule 2026-07: audience-targeted content —
+//     same active + not-expired + audience filter as /banner). Server-side;
+//     the composer's targeting can't be bypassed by a read-only caller.
 // ============================================================
 app.get("/", requirePermission("announcements.read"), async (c) => {
   const res = await c.env.DB.prepare(
     "SELECT * FROM announcements ORDER BY created_at DESC",
   ).all<AnnouncementRow>();
-  return c.json({ success: true, data: (res.results ?? []).map(toPublic) });
+  const user = c.get("user");
+  const granted = user?.permissions_set ?? user?.permissions ?? [];
+  const isManager =
+    hasPermission(granted, "*") || hasPermission(granted, "announcements.write");
+  const rows = isManager
+    ? (res.results ?? [])
+    : (res.results ?? []).filter(
+        (r) =>
+          isActiveFlag(r.isActive ?? r.is_active ?? null) &&
+          notExpired(r.expiresAt ?? r.expires_at ?? null) &&
+          userCanSee(
+            r,
+            user!.id,
+            user!.department_id ?? null,
+            user!.position_id ?? null,
+          ),
+      );
+  return c.json({ success: true, data: rows.map(toPublic) });
 });
 
 // ============================================================

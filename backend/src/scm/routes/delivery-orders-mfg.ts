@@ -1394,9 +1394,9 @@ async function soRemainingByItemId(
 // ── List ────────────────────────────────────────────────────────────────
 deliveryOrdersMfg.get('/', async (c) => {
   const sb = c.get('supabase');
-  const user = c.get('user');
-  // Row-level "own / subordinates" scope — see lib/salesScope.ts.
-  const scopeIds = await resolveSalesScopeIds(sb, c.env, user.id, hasHouzsPerm(c, 'scm.so.view_all'));
+  // Row-level "own / downline chain" scope (scm.staff uuids) — see lib/salesScope.ts.
+  // Pass the REAL Houzs user id, NOT user.id (bridge-pinned staff uuid — was the non-admin 500).
+  const scopeIds = await resolveSalesScopeIds(sb, c.env, c.get('houzsUser')?.id, hasHouzsPerm(c, 'scm.so.view_all'));
   let q = sb.from('delivery_orders').select(HEADER).order('do_date', { ascending: false }).limit(500);
   if (scopeIds) q = q.in('salesperson_id', scopeIds);
   const status = c.req.query('status'); if (status) q = q.eq('status', status);
