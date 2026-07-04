@@ -69,8 +69,12 @@ import { getSupabaseService } from '../../db/supabase';
 import { paginateAll } from '../lib/paginate-all';
 import { getBranding } from '../../services/branding';
 // Background scan job — the DRAFT SO is created through mfg-sales-orders'
-// factored create core (PRICING-CRITICAL; never reimplemented here).
-import { createDraftSalesOrder } from './mfg-sales-orders';
+// factored create core (PRICING-CRITICAL; never reimplemented here), and each
+// scanned payment RECEIPT becomes a payments-ledger row through the same
+// factored insert+audit core the interactive POST /:docNo/payments route uses.
+import { createDraftSalesOrder, recordSoPaymentRow } from './mfg-sales-orders';
+import { todayMyt } from '../lib/my-time';
+import { normalizePhone } from '../shared/phone';
 
 // The scm-scoped service client (getSupabaseService, db:{schema:'scm'}) and the
 // middleware-attached c.get('supabase') are both schema-parameterised clients.
@@ -2597,10 +2601,19 @@ scanSo.post('/extract', async (c) => {
   // postProcessSlip, shared with the background job.
   const warnings = await postProcessSlip(parsed, sb, c.env.GOOGLE_MAPS_API_KEY, catalog);
 
+  // Duplicate-upload warning — shared findDuplicateSo (same rules as the
+  // background job: recent same-photo sha256, or same phone + same slip
+  // ref / same slip date+total). Cheap indexed lookups; fail-soft null.
+  const duplicate = await findDuplicateSo(svc, { imageSha256, excludeSampleId: sampleId, parsed });
+
   return c.json({
     success: true,
     data: {
       sampleId,
+      // Suspected re-upload: { docNo, rule: 'image' | 'content' } of the SO
+      // this slip already became, else null. The modal can warn the operator
+      // before they create a second order.
+      duplicate,
       // Original-slip R2 key (null when the upload was a PDF or the put
       // failed). The modal carries it onto the New SO create body.
       imageKey,
@@ -2680,10 +2693,290 @@ function jobToJson(r: Record<string, unknown>): Record<string, unknown> {
     soDocNo: r.soDocNo ?? r.so_doc_no ?? null,
     error: r.error ?? null,
     sampleId: r.sampleId ?? r.sample_id ?? null,
+    // Duplicate-upload warning (migration 0068) — doc_no of the suspected
+    // original SO; the mobile Scan screen surfaces it on the job card.
+    duplicateOf: r.duplicateOf ?? r.duplicate_of ?? null,
     imageKeys: r.imageKeys ?? r.image_keys ?? [],
     createdAt: r.createdAt ?? r.created_at ?? null,
     updatedAt: r.updatedAt ?? r.updated_at ?? null,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Duplicate-upload detection (owner 2026-07-04: 重复上传预警 / "已经开过单").
+// Runs BEFORE the DRAFT create in the background pipeline (and in /extract for
+// the interactive path). Two rules, cheapest first:
+//   A) IMAGE  — the first uploaded photo's sha256 matches a so_scan_samples
+//      row from the last 30 days whose background scan job already minted an
+//      SO (so_scan_samples.image_sha256 -> scan_jobs.sample_id/so_doc_no; both
+//      indexed by migration 0068).
+//   B) CONTENT — an existing non-cancelled SO carries the SAME normalized
+//      customer phone AND (the same customer SO ref [slip serial,
+//      case-insensitive] OR the same slip date [so_date] + the same grand
+//      total). Phone equality uses the exact E.164 form the create path
+//      stores (normalizePhone), the same probe the cross-category auto-match
+//      runs on every customer change (mfg-sales-orders ~4196).
+// A suspected duplicate NEVER blocks the draft — the owner reviews. Callers
+// prefix the SO note with "POSSIBLE DUPLICATE of <doc_no>" and stamp
+// scan_jobs.duplicate_of (migration 0068). Fail-soft: any query error just
+// skips the warning.
+// ---------------------------------------------------------------------------
+const DUP_LOOKBACK_DAYS = 30;
+
+async function findDuplicateSo(
+  svc: SupabaseClient,
+  args: {
+    imageSha256: string | null;
+    // The sample THIS scan just inserted — excluded or every scan would
+    // "duplicate" itself.
+    excludeSampleId: string | null;
+    parsed: ExtractedSlip | null;
+  },
+): Promise<{ docNo: string; rule: 'image' | 'content' } | null> {
+  // A) Same slip photo already processed into an SO recently.
+  try {
+    if (args.imageSha256) {
+      const since = new Date(Date.now() - DUP_LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString();
+      let q = svc
+        .from('so_scan_samples')
+        .select('id')
+        .eq('image_sha256', args.imageSha256)
+        .gte('created_at', since)
+        .order('created_at', { ascending: false })
+        .limit(10);
+      if (args.excludeSampleId) q = q.neq('id', args.excludeSampleId);
+      const { data: sampleRows } = await q;
+      const sampleIds = (((sampleRows as Array<Record<string, unknown>> | null) ?? [])
+        .map((r) => r.id)
+        .filter((v): v is string => typeof v === 'string' && v !== ''));
+      if (sampleIds.length > 0) {
+        const { data: jobRows } = await svc
+          .from('scan_jobs')
+          .select('so_doc_no, created_at')
+          .in('sample_id', sampleIds)
+          .not('so_doc_no', 'is', null)
+          .order('created_at', { ascending: false })
+          .limit(1);
+        const row = ((jobRows as Array<Record<string, unknown>> | null) ?? [])[0];
+        const doc = (row?.soDocNo ?? row?.so_doc_no) as string | undefined;
+        if (typeof doc === 'string' && doc !== '') return { docNo: doc, rule: 'image' };
+      }
+    }
+  } catch (e) {
+    console.warn('[scan-so dup] image check failed:', (e as Error).message);
+  }
+
+  // B) Same phone + (same slip serial OR same slip date + same total).
+  try {
+    const parsed = args.parsed;
+    // parsed.phones are already national-significant digits (postProcessSlip).
+    const phoneNat = (parsed?.phones?.[0] ?? '').replace(/\s+/g, '');
+    if (parsed && phoneNat) {
+      const storedPhone = normalizePhone(`+60${phoneNat}`) ?? `+60${phoneNat}`;
+      const ref = (parsed.customerSoRef ?? '').trim().toUpperCase();
+      const slipDate = /^\d{4}-\d{2}-\d{2}$/.test((parsed.processingDate ?? '').trim())
+        ? (parsed.processingDate as string).trim()
+        : null;
+      const totalCenti = typeof parsed.totalRm === 'number' && parsed.totalRm > 0
+        ? Math.round(parsed.totalRm * 100)
+        : null;
+      // Nothing comparable beyond the phone alone → phone-only would be far
+      // too noisy (repeat customers are normal); skip.
+      if (ref || (slipDate && totalCenti != null)) {
+        const { data } = await svc
+          .from('mfg_sales_orders')
+          .select('doc_no, customer_so_no, so_date, total_revenue_centi')
+          .eq('phone', storedPhone)
+          .neq('status', 'CANCELLED')
+          .order('created_at', { ascending: false })
+          .limit(25);
+        for (const r of ((data as Array<Record<string, unknown>> | null) ?? [])) {
+          const doc = (r.docNo ?? r.doc_no) as string | undefined;
+          if (typeof doc !== 'string' || doc === '') continue;
+          const candRef = String(r.customerSoNo ?? r.customer_so_no ?? '').trim().toUpperCase();
+          if (ref && candRef && candRef === ref) return { docNo: doc, rule: 'content' };
+          const candDate = String(r.soDate ?? r.so_date ?? '').slice(0, 10);
+          const candTotal = Number(r.totalRevenueCenti ?? r.total_revenue_centi ?? NaN);
+          if (slipDate && totalCenti != null && candDate === slipDate && candTotal === totalCenti) {
+            return { docNo: doc, rule: 'content' };
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[scan-so dup] content check failed:', (e as Error).message);
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Payment rows from receipt OCR (owner 2026-07-04: "OCR Payment detect 不到").
+// The background draft used to carry only the payment HEADER fields, so the
+// operator opened the draft and saw NO payment. After the DRAFT SO is created,
+// every uploaded image Claude classified `payment_receipt` now becomes a
+// payments-ledger row through mfg-sales-orders' recordSoPaymentRow — the SAME
+// factored insert+audit core the interactive POST /:docNo/payments route uses
+// (payment field derivation / Account Sheet auto-fill never reimplemented
+// here). Amounts are CONSERVATIVE: the OCR extracts ONE payment field set per
+// scan (not one per receipt), so the FIRST receipt carries the slip/receipt
+// deposit (depositRm — read preferentially from the printed receipt) and any
+// further receipt books at 0 with a "please verify" note. The receipt's
+// existing R2 object (scan-jobs/{jobId}/{n} — SO_ITEM_PHOTOS, the same
+// physical houzs-erp bucket the payment slip presigner serves) is REFERENCED
+// as the payment slip; no copy. Never fails the job: the caller logs + notes.
+// ---------------------------------------------------------------------------
+
+// Slip payment header -> ledger method vocabulary. Mirrors the interactive
+// client's mapping (MobileNewSO PAY_METHOD_CODE + its scan prefill, which
+// folds a legacy 'Installment' L1 into Merchant): Merchant -> 'merchant' (+
+// bank + plan months), Online -> 'transfer' (+ online type), Cash -> 'cash'.
+// No/unknown method match -> 'merchant' (a printed card-terminal receipt IS a
+// Merchant transaction), flagged `guessed` so the row's note says so.
+function ledgerMethodFromSlip(parsed: ExtractedSlip): {
+  method: 'merchant' | 'transfer' | 'cash';
+  merchantProvider: string | null;
+  installmentMonths: number | null;
+  onlineType: string | null;
+  guessed: boolean;
+} {
+  // 'One Shot' -> null; 'N months' -> N (same planToMonths rule as the
+  // client and buildDraftSoBodyFromSlip).
+  const planLabel = (parsed.installmentPlanMatch?.value ?? '').trim();
+  const planMonthsMatch = /^(\d+)\s*month/i.exec(planLabel);
+  const planMonths = planMonthsMatch ? Number(planMonthsMatch[1]) : null;
+  const raw = (parsed.paymentMethodMatch?.value ?? '').trim().toLowerCase();
+  if (raw === 'cash') {
+    return { method: 'cash', merchantProvider: null, installmentMonths: null, onlineType: null, guessed: false };
+  }
+  if (raw === 'online') {
+    return {
+      method: 'transfer',
+      merchantProvider: null,
+      installmentMonths: null,
+      onlineType: parsed.onlineTypeMatch?.value ?? null,
+      guessed: false,
+    };
+  }
+  // 'Merchant', legacy 'Installment', or nothing readable (guessed).
+  return {
+    method: 'merchant',
+    merchantProvider: parsed.bankMatch?.value ?? null,
+    installmentMonths: planMonths,
+    onlineType: null,
+    guessed: raw !== 'merchant' && raw !== 'installment',
+  };
+}
+
+async function recordScanReceiptPayments(
+  svc: SupabaseClient,
+  args: {
+    docNo: string;
+    jobId: string;
+    parsed: ExtractedSlip;
+    uploadedImages: UploadedImage[];
+    // scan-jobs/{jobId}/{n} keys whose R2 put SUCCEEDED at enqueue time.
+    storedImageKeys: string[];
+    // storeScanImages' receipt copy (scan-slips/{sampleId}-receipt) — the
+    // fallback slip reference when the enqueue-time put failed.
+    receiptImageKey: string | null;
+    salespersonId: string;
+    salespersonName: string | null;
+  },
+): Promise<{ recorded: number; failed: number }> {
+  const { parsed } = args;
+  // Which uploaded IMAGES are receipts — the model's own classification only.
+  // storeScanImages' positional fallback is intentionally NOT applied here:
+  // booking money off an unclassified photo would be a guess; the operator
+  // can still add the payment on the draft.
+  const seen = new Set<number>();
+  const receiptIdxs: number[] = [];
+  for (const img of parsed.images) {
+    if (img.kind !== 'payment_receipt' || seen.has(img.index)) continue;
+    seen.add(img.index);
+    if (args.uploadedImages.some((u) => u.index === img.index)) receiptIdxs.push(img.index);
+  }
+  if (receiptIdxs.length === 0) return { recorded: 0, failed: 0 };
+
+  // Double-book guard. The create core books its own is_deposit ledger row
+  // for the POS vocabulary (lowercase methods) — the scan draft's header
+  // method is a dropdown VALUE ('Merchant'/'Online'/'Cash') so it never
+  // matches today, but if the SO somehow already carries a payment row,
+  // recording again would double count. Skip loudly instead.
+  const { data: existingRows, error: existingErr } = await svc
+    .from('mfg_sales_order_payments')
+    .select('id')
+    .eq('so_doc_no', args.docNo)
+    .limit(1);
+  if (existingErr) {
+    console.error('[scan-job] payment pre-check failed:', args.docNo, existingErr.message);
+    return { recorded: 0, failed: receiptIdxs.length };
+  }
+  if (((existingRows as unknown[] | null) ?? []).length > 0) {
+    console.warn('[scan-job] SO already has payment rows — skipping receipt payments:', args.docNo);
+    return { recorded: 0, failed: 0 };
+  }
+
+  const m = ledgerMethodFromSlip(parsed);
+  const depositCenti = typeof parsed.depositRm === 'number' && parsed.depositRm > 0
+    ? Math.round(parsed.depositRm * 100)
+    : 0;
+  // Payment date = the slip/order date when readable, else today (MYT).
+  const paidAt = /^\d{4}-\d{2}-\d{2}$/.test((parsed.processingDate ?? '').trim())
+    ? (parsed.processingDate as string).trim()
+    : todayMyt();
+
+  let recorded = 0;
+  let failed = 0;
+  for (let i = 0; i < receiptIdxs.length; i += 1) {
+    const idx = receiptIdxs[i];
+    const first = i === 0;
+    // Prefer REFERENCING the durable enqueue-time copy (same bucket the slip
+    // presigner serves); fall back to the provenance receipt copy.
+    const jobKey = `scan-jobs/${args.jobId}/${idx}`;
+    const slipKey = args.storedImageKeys.includes(jobKey)
+      ? jobKey
+      : (first ? args.receiptImageKey : null);
+    // Conservative amounts: first receipt = the OCR'd deposit; anything the
+    // OCR could not read books at 0 with a plain "please verify" note.
+    const amountCenti = first ? depositCenti : 0;
+    const noteParts = ['Recorded from scanned payment receipt'];
+    if (first && amountCenti === 0) noteParts.push('amount could not be read — please verify');
+    if (!first) noteParts.push('extra receipt — amount not read, please verify');
+    if (m.guessed) noteParts.push('method not read — assumed card terminal (Merchant)');
+    try {
+      const { errorMessage } = await recordSoPaymentRow(svc, {
+        docNo: args.docNo,
+        paidAt,
+        method: m.method,
+        merchantProvider: m.merchantProvider,
+        installmentMonths: m.installmentMonths,
+        onlineType: m.onlineType,
+        approvalCode: first ? ((parsed.approvalCode ?? '').trim() || null) : null,
+        amountCenti,
+        slipKey,
+        collectedBy: args.salespersonId,
+        note: noteParts.join('; '),
+        createdBy: args.salespersonId,
+        actorName: args.salespersonName,
+        // The first receipt row IS the header deposit — is_deposit stops the
+        // list/detail paid-rollup adding the header deposit_centi on top of
+        // this ledger row (double count).
+        isDeposit: first,
+        auditSource: 'automation',
+        auditNote: 'Auto: payment recorded from scanned receipt (background scan job)',
+      });
+      if (errorMessage) {
+        failed += 1;
+        console.error('[scan-job] receipt payment insert failed:', args.docNo, errorMessage);
+      } else {
+        recorded += 1;
+      }
+    } catch (e) {
+      failed += 1;
+      console.error('[scan-job] receipt payment threw:', args.docNo, (e as Error).message);
+    }
+  }
+  return { recorded, failed };
 }
 
 // Extracted slip -> DRAFT SO create body. Mirrors the SHIPPED headless client
@@ -2778,9 +3071,11 @@ function buildDraftSoBodyFromSlip(
     // resolves it from the salesperson's current exhibition project.
     venue: parsed.locationMatch?.value ?? null,
     // Payment header fields (validated matches; the operator reviews the
-    // draft before it becomes a real order). No payments[] ledger rows — a
-    // slip-backed payment row is an interactive step, exactly like the
-    // shipped headless client flow.
+    // draft before it becomes a real order). No payments[] in the create
+    // body — the ledger rows are booked AFTER the create by
+    // recordScanReceiptPayments (one per classified payment receipt),
+    // through the same recordSoPaymentRow core the interactive
+    // POST /:docNo/payments route uses.
     paymentMethod,
     merchantProvider: paymentMethod === 'Merchant' ? (parsed.bankMatch?.value ?? null) : null,
     installmentMonths: planMonths,
@@ -2813,6 +3108,9 @@ async function runScanJob(
     fileBlocks: ContentBlock[];
     uploadedImages: UploadedImage[];
     firstBuffer: ArrayBuffer | null;
+    // scan-jobs/{jobId}/{n} keys whose enqueue-time R2 put succeeded — the
+    // receipt-payment rows reference these as their slip proof.
+    imageKeys: string[];
   },
 ): Promise<void> {
   const svc = serviceClient(env);
@@ -2871,11 +3169,24 @@ async function runScanJob(
 
     await postProcessSlip(parsed, svc, env.GOOGLE_MAPS_API_KEY, catalog);
 
+    // Duplicate-upload warning (owner: 重复上传预警) — same photo scanned
+    // again recently, or the same customer/slip already has an SO. The DRAFT
+    // is STILL created for review; the flag rides on the job row (mobile
+    // surfaces it) and the SO note is prefixed below. Fail-soft throughout.
+    const dup = await findDuplicateSo(svc, { imageSha256, excludeSampleId: sampleId, parsed });
+    if (dup) await touch({ duplicate_of: dup.docNo });
+
     const draft = buildDraftSoBodyFromSlip(parsed, catalog, { imageKey, receiptImageKey });
     if (!draft.body) {
       return await fail(
         `The scan could not read the ${draft.missing.join(' and ')} on the slip. Please enter this order manually.`,
       );
+    }
+    if (dup) {
+      const existingNote = typeof draft.body.note === 'string' && draft.body.note.trim() !== ''
+        ? ` | ${draft.body.note}`
+        : '';
+      draft.body.note = `POSSIBLE DUPLICATE of ${dup.docNo}${existingNote}`;
     }
 
     // PRICING-CRITICAL create — the factored mfg-sales-orders core, replayed
@@ -2888,7 +3199,34 @@ async function runScanJob(
     });
     const docNo = (outcome.body as { docNo?: unknown }).docNo;
     if (outcome.status === 201 && typeof docNo === 'string' && docNo !== '') {
-      await touch({ status: 'done', so_doc_no: docNo });
+      // Payments from receipt OCR — one ledger row per classified payment
+      // receipt, via the SAME recordSoPaymentRow core the interactive route
+      // uses. GUARD: never fail the job — the DRAFT stands; a failure only
+      // appends a plain note (job stays done with so_doc_no).
+      let paymentNote: string | null = null;
+      try {
+        const pay = await recordScanReceiptPayments(svc, {
+          docNo,
+          jobId: job.id,
+          parsed,
+          uploadedImages: job.uploadedImages,
+          storedImageKeys: job.imageKeys,
+          receiptImageKey,
+          salespersonId: job.salespersonId,
+          salespersonName: job.salespersonName,
+        });
+        if (pay.failed > 0) {
+          paymentNote = 'Draft created; the payment could not be recorded — please add it on the order.';
+        }
+      } catch (e) {
+        console.error('[scan-job] receipt payment recording threw:', job.id, (e as Error).message);
+        paymentNote = 'Draft created; the payment could not be recorded — please add it on the order.';
+      }
+      await touch({
+        status: 'done',
+        so_doc_no: docNo,
+        ...(paymentNote ? { error: paymentNote } : {}),
+      });
       return;
     }
     console.error(
@@ -2996,6 +3334,7 @@ scanSo.post('/enqueue', async (c) => {
     fileBlocks,
     uploadedImages,
     firstBuffer,
+    imageKeys,
   });
   try {
     c.executionCtx.waitUntil(pipeline);
@@ -3015,7 +3354,7 @@ scanSo.get('/jobs', async (c) => {
   const svc = serviceClient(c.env);
   let q = svc
     .from('scan_jobs')
-    .select('id, status, salesperson, so_doc_no, error, sample_id, image_keys, created_at, updated_at')
+    .select('id, status, salesperson, so_doc_no, error, sample_id, duplicate_of, image_keys, created_at, updated_at')
     .order('created_at', { ascending: false })
     .limit(20);
   if (rep) q = q.ilike('salesperson', ilikeExact(rep));
@@ -3037,7 +3376,7 @@ scanSo.get('/jobs/:id', async (c) => {
   const svc = serviceClient(c.env);
   const { data, error } = await svc
     .from('scan_jobs')
-    .select('id, status, salesperson, so_doc_no, error, sample_id, image_keys, created_at, updated_at')
+    .select('id, status, salesperson, so_doc_no, error, sample_id, duplicate_of, image_keys, created_at, updated_at')
     .eq('id', id)
     .limit(1)
     .maybeSingle();

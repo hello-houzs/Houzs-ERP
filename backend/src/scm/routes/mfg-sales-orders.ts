@@ -7478,6 +7478,105 @@ const paymentCreateSchema = z.object({
   uploadSessionId:    z.string().min(1),
 });
 
+/* ── recordSoPaymentRow — the factored insert+audit core of
+   POST /:docNo/payments (same pattern as createSalesOrderCore). ONE place
+   derives the method-scoped fields (merchant/installment vs transfer vs cash),
+   auto-fills the Account Sheet, inserts the mfg_sales_order_payments row and
+   appends the ADD_PAYMENT audit entry. The HTTP route keeps its own guards
+   (self-scope, SO existence, overpayment, slip-session resolution + promote)
+   and calls this for the write; the background scan job (scan-so.ts) calls it
+   directly with an R2 key it already owns (scan-jobs/{jobId}/{n}) — payment
+   field derivation is never reimplemented outside this function. */
+export type SoPaymentRowInput = {
+  docNo: string;
+  paidAt: string;
+  method: 'merchant' | 'transfer' | 'cash' | 'installment';
+  merchantProvider?: string | null;
+  installmentMonths?: number | null;
+  onlineType?: string | null;
+  approvalCode?: string | null;
+  amountCenti: number;
+  accountSheet?: string | null;
+  slipKey: string | null;
+  collectedBy?: string | null;
+  note?: string | null;
+  createdBy: string;
+  actorName?: string | null;
+  /* First-deposit marker — the list/detail paid-rollup adds the header
+     deposit_centi on top of the ledger UNLESS an is_deposit row marks the
+     deposit as already booked (migration 0155 semantics). The scan job's
+     first receipt row IS the header deposit, so it sets this. */
+  isDeposit?: boolean;
+  auditSource?: string;
+  auditNote?: string;
+};
+
+export async function recordSoPaymentRow(
+  sb: any,
+  p: SoPaymentRowInput,
+): Promise<{ payment: Record<string, unknown> | null; errorMessage: string | null }> {
+  // Method-scoped fields per the cascade:
+  //   merchant    → merchant_provider + installment_months (0 / null = One-off)
+  //   installment → merchant_provider + installment_months (merchant-like —
+  //                 mirrors the SO-create deposit path, which keeps both)
+  //   transfer    → online_type
+  //   cash        → no extras
+  const merchantLike      = p.method === 'merchant' || p.method === 'installment';
+  const merchantProvider  = merchantLike ? (p.merchantProvider ?? null) : null;
+  // 0 = "One-off" — store as NULL so the integer column carries semantic
+  // "no installment". Anything > 0 is the term in months.
+  const installmentMonths = merchantLike
+    ? (typeof p.installmentMonths === 'number' && p.installmentMonths > 0 ? p.installmentMonths : null)
+    : null;
+  const onlineType        = p.method === 'transfer' ? (p.onlineType ?? null) : null;
+
+  const { data, error } = await sb.from('mfg_sales_order_payments').insert({
+    so_doc_no:          p.docNo,
+    paid_at:            p.paidAt,
+    method:             p.method,
+    merchant_provider:  merchantProvider,
+    installment_months: installmentMonths,
+    online_type:        onlineType,
+    approval_code:      p.approvalCode ?? null,
+    amount_centi:       p.amountCenti,
+    /* Account Sheet auto-fill (Loo 2026-06-07) — a hand-typed value wins;
+       blank/whitespace falls back to the method-derived default. */
+    account_sheet:      p.accountSheet?.trim() || deriveAccountSheet(p.method, merchantProvider, onlineType),
+    slip_key:           p.slipKey,
+    collected_by:       p.collectedBy ?? null,
+    note:               p.note ?? null,
+    created_by:         p.createdBy,
+    /* Only set when explicitly asked — the manual route's rows are balance
+       payments and keep the column default (false). */
+    ...(p.isDeposit === true ? { is_deposit: true } : {}),
+  }).select(PAYMENT_COLS).single();
+  if (error) return { payment: null, errorMessage: error.message };
+
+  /* Post-merge stitch — wire ADD_PAYMENT into the PR-D audit ledger.
+     Field-changes list mirrors what the user typed so the History panel
+     can render a readable diff. Best-effort inside recordSoAudit. */
+  await recordSoAudit(sb, {
+    docNo: p.docNo,
+    action: 'ADD_PAYMENT',
+    actorId: p.createdBy,
+    actorName: p.actorName ?? null,
+    ...(p.auditSource ? { source: p.auditSource } : {}),
+    ...(p.auditNote ? { note: p.auditNote } : {}),
+    fieldChanges: [
+      { field: 'paidAt',             from: null, to: p.paidAt },
+      { field: 'method',             from: null, to: p.method },
+      { field: 'amountCenti',        from: null, to: p.amountCenti },
+      ...(merchantProvider  ? [{ field: 'merchantProvider',  from: null, to: merchantProvider  } satisfies FieldChange] : []),
+      ...(installmentMonths ? [{ field: 'installmentMonths', from: null, to: installmentMonths } satisfies FieldChange] : []),
+      ...(onlineType        ? [{ field: 'onlineType',        from: null, to: onlineType        } satisfies FieldChange] : []),
+      ...(p.approvalCode    ? [{ field: 'approvalCode',      from: null, to: p.approvalCode    } satisfies FieldChange] : []),
+      ...(p.accountSheet    ? [{ field: 'accountSheet',      from: null, to: p.accountSheet    } satisfies FieldChange] : []),
+    ],
+  });
+
+  return { payment: data as Record<string, unknown>, errorMessage: null };
+}
+
 mfgSalesOrders.post('/:docNo/payments', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const user = c.get('user');
   // Audit 2026-06-20 — self-scoped sales may only touch their OWN SO (mirror the line/header guards).
@@ -7528,39 +7627,26 @@ mfgSalesOrders.post('/:docNo/payments', async (c) => {
   }
   const paymentSlipKey = slipRowT.r2_key;
 
-  // Method-scoped fields per the cascade:
-  //   merchant    → merchant_provider + installment_months (0 / null = One-off)
-  //   installment → merchant_provider + installment_months (merchant-like —
-  //                 mirrors the SO-create deposit path, which keeps both)
-  //   transfer    → online_type
-  //   cash        → no extras
-  const merchantLike      = p.method === 'merchant' || p.method === 'installment';
-  const merchantProvider  = merchantLike ? (p.merchantProvider ?? null) : null;
-  // 0 = "One-off" — store as NULL so the integer column carries semantic
-  // "no installment". Anything > 0 is the term in months.
-  const installmentMonths = merchantLike
-    ? (typeof p.installmentMonths === 'number' && p.installmentMonths > 0 ? p.installmentMonths : null)
-    : null;
-  const onlineType        = p.method === 'transfer' ? (p.onlineType ?? null) : null;
-
-  const { data, error } = await sb.from('mfg_sales_order_payments').insert({
-    so_doc_no:          docNo,
-    paid_at:            p.paidAt,
-    method:             p.method,
-    merchant_provider:  merchantProvider,
-    installment_months: installmentMonths,
-    online_type:        onlineType,
-    approval_code:      p.approvalCode ?? null,
-    amount_centi:       p.amountCenti,
-    /* Account Sheet auto-fill (Loo 2026-06-07) — a hand-typed value wins;
-       blank/whitespace falls back to the method-derived default. */
-    account_sheet:      p.accountSheet?.trim() || deriveAccountSheet(p.method, merchantProvider, onlineType),
-    slip_key:           paymentSlipKey,
-    collected_by:       p.collectedBy ?? null,
-    note:               p.note ?? null,
-    created_by:         user.id,
-  }).select(PAYMENT_COLS).single();
-  if (error) return c.json({ error: 'insert_failed', reason: error.message }, 500);
+  /* Insert + ADD_PAYMENT audit — the factored recordSoPaymentRow core (shared
+     with the background scan job). Same derivation, same insert, same audit
+     shape as the pre-factoring inline code. */
+  const { payment, errorMessage } = await recordSoPaymentRow(sb, {
+    docNo,
+    paidAt:            p.paidAt,
+    method:            p.method,
+    merchantProvider:  p.merchantProvider,
+    installmentMonths: p.installmentMonths,
+    onlineType:        p.onlineType,
+    approvalCode:      p.approvalCode,
+    amountCenti:       p.amountCenti,
+    accountSheet:      p.accountSheet,
+    slipKey:           paymentSlipKey,
+    collectedBy:       p.collectedBy,
+    note:              p.note,
+    createdBy:         user.id,
+    actorName:         (user.user_metadata as { name?: string } | undefined)?.name ?? null,
+  });
+  if (errorMessage) return c.json({ error: 'insert_failed', reason: errorMessage }, 500);
 
   /* Promote — 'promoted' rows are excluded from the slip reaper (same dance
      as the SO-create slip). The UPDATE runs under the caller's RLS
@@ -7584,27 +7670,8 @@ mfgSalesOrders.post('/:docNo/payments', async (c) => {
     );
   }
 
-  /* Post-merge stitch — wire ADD_PAYMENT into the PR-D audit ledger.
-     Field-changes list mirrors what the user typed so the History panel
-     can render a readable diff. */
-  await recordSoAudit(sb, {
-    docNo,
-    action: 'ADD_PAYMENT',
-    actorId: user.id,
-    actorName: (user.user_metadata as { name?: string } | undefined)?.name ?? null,
-    fieldChanges: [
-      { field: 'paidAt',             from: null, to: p.paidAt },
-      { field: 'method',             from: null, to: p.method },
-      { field: 'amountCenti',        from: null, to: p.amountCenti },
-      ...(merchantProvider  ? [{ field: 'merchantProvider',  from: null, to: merchantProvider  } satisfies FieldChange] : []),
-      ...(installmentMonths ? [{ field: 'installmentMonths', from: null, to: installmentMonths } satisfies FieldChange] : []),
-      ...(onlineType        ? [{ field: 'onlineType',        from: null, to: onlineType        } satisfies FieldChange] : []),
-      ...(p.approvalCode    ? [{ field: 'approvalCode',      from: null, to: p.approvalCode    } satisfies FieldChange] : []),
-      ...(p.accountSheet    ? [{ field: 'accountSheet',      from: null, to: p.accountSheet    } satisfies FieldChange] : []),
-    ],
-  });
-
-  return c.json({ payment: data }, 201);
+  /* ADD_PAYMENT audit already appended inside recordSoPaymentRow. */
+  return c.json({ payment }, 201);
 });
 
 mfgSalesOrders.delete('/:docNo/payments/:id', async (c) => {
