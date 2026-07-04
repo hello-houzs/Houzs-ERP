@@ -4580,6 +4580,18 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
     if (effProc && effDeliv && effProc > effDeliv) {
       return c.json({ error: 'processing_after_delivery', reason: 'Processing Date cannot be later than the Delivery Date.' }, 400);
     }
+    /* Owner 2026-07-04 — Processing + Delivery are all-or-nothing (both set or
+       both empty), same as the CREATE path. The CREATE guard existed but the
+       edit path skipped it, so a PATCH could set one date without the other and
+       bypass the rule. Only fires when THIS request touches a date — a patch
+       that doesn't touch dates grandfathers any legacy unpaired row through. */
+    const touchesDates = typeof proc === 'string' || typeof deliv === 'string';
+    if (touchesDates && Boolean(effProc) !== Boolean(effDeliv)) {
+      return c.json({
+        error: 'processing_delivery_must_pair',
+        reason: 'Processing Date and Delivery Date must be set together (or both left empty).',
+      }, 400);
+    }
   }
 
   /* Loo 2026-06-13 — POS "Save" opt-in (recustomer:true). Re-resolve customer_id
