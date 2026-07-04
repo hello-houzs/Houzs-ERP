@@ -145,22 +145,27 @@ export async function authedFetch<T>(path: string, init?: RequestInit): Promise<
   // Weak-wifi / Hyperdrive cold-start resilience (ported from HOOKKA
   // 2026-06-30 + our core api-client): a transient 503 or network drop on an
   // idempotent GET self-heals on retry instead of surfacing as a failed mobile
-  // list. GETs only (mutations aren't safe to replay); 2 retries w/ backoff.
+  // list. GETs only (mutations aren't safe to replay).
+  // Cold-start ride-through (2026-07-04): widened 2→4 to MATCH the desktop
+  // api-client (GET_RETRIES=4 / COLD_POOL_RETRIES=4, sw v142). The mobile SCM
+  // screens (Orders/SO/Service/Delivery) go through THIS helper, not the core
+  // client — the earlier widen missed them, so a cold window still dumped
+  // "Couldn't load orders" here. ~10s of spaced retries now rides it out.
   const isGet = !init?.method || String(init.method).toUpperCase() === 'GET';
   let res: Response;
   for (let attempt = 0; ; attempt++) {
     try {
       res = await fetchWithTimeout(`${API_URL}${path}`, { ...init, headers }, path);
     } catch (e) {
-      if (isGet && attempt < 2) { await new Promise((r) => setTimeout(r, 600 + attempt * 1200)); continue; }
+      if (isGet && attempt < 4) { await new Promise((r) => setTimeout(r, 600 + attempt * 1200)); continue; }
       throw e;
     }
-    if (res.status === 503 && isGet && attempt < 2) { await new Promise((r) => setTimeout(r, 600 + attempt * 1200)); continue; }
+    if (res.status === 503 && isGet && attempt < 4) { await new Promise((r) => setTimeout(r, 600 + attempt * 1200)); continue; }
     // Cold Hyperdrive pool answers 503 with a "database briefly unavailable" body
     // BEFORE the handler/DB runs, so a mutation never executed → safe to retry
     // (no double-write). Retry ONLY this specific cold-pool 503 for mutations, so
     // an SO save early after idle self-heals instead of dumping a raw 503.
-    if (res.status === 503 && !isGet && attempt < 3) {
+    if (res.status === 503 && !isGet && attempt < 4) {
       const warmText = await res.clone().text().catch(() => '');
       if (/briefly unavailable|warming up|try again in a moment/i.test(warmText)) {
         await new Promise((r) => setTimeout(r, 600 + attempt * 1200)); continue;
