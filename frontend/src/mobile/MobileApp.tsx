@@ -156,13 +156,12 @@ function MobileAppInner() {
   const [screen, setScreen] = useState<Screen>({ t: "tab" });
   const back = () => setScreen({ t: "tab" });
 
-  /* Scan → background DRAFT: MobileScan has already FIRED the create fetch(es)
-     (they survive this navigation). We just land the operator back on the Orders
-     list, nudge its query to refetch so the fresh draft surfaces without a manual
-     reload, and confirm with a plain-language toast. */
+  /* Scan → background DRAFT: MobileScan has FIRED the enqueue(s)/create(s).
+     The operator now STAYS on the Scan screen (owner 2026-07-04) watching the
+     Recent-scans pills progress — navigation was split OUT of this handler; he
+     leaves via Cancel/back whenever. This handler only nudges the Orders-list
+     query (so the drafts surface when he does go back) and toasts. */
   const onScanDrafted = (count: number) => {
-    setTab("orders");
-    setScreen({ t: "tab" });
     void qc.invalidateQueries({ queryKey: ["mobile-so-list"] });
     // The scan runs as a BACKGROUND job now (upload returns before the OCR),
     // so refetch again on the OCR's typical timescale — a slow job still
@@ -173,8 +172,8 @@ function MobileAppInner() {
     void notify({
       title: count > 1 ? `${count} orders uploaded` : "Order uploaded",
       body: count > 1
-        ? "They're being read in the background — you can close the app. Each one appears in Orders as a draft when it finishes."
-        : "It's being read in the background — you can close the app. It appears in Orders as a draft when it finishes.",
+        ? "They're being read in the background — watch their progress under Recent scans, or close the app. Each one appears in Orders as a draft when it finishes."
+        : "It's being read in the background — watch its progress under Recent scans, or close the app. It appears in Orders as a draft when it finishes.",
     });
   };
 
@@ -229,7 +228,7 @@ function MobileAppInner() {
   // Overlay screens (pushed above the tab bar).
   if (screen.t === "so-detail") return <MobileSODetail docNo={screen.docNo} onBack={back} onEdit={(d) => setScreen({ t: "new-so", mode: "edit", docNo: d })} />;
   if (screen.t === "new-so") return <MobileNewSO mode={screen.mode} docNo={screen.docNo} scanPrefill={screen.scanPrefill} onBack={back} onSaved={(d) => setScreen({ t: "so-detail", docNo: d })} />;
-  if (screen.t === "scan") return <MobileScan onBack={back} onDrafted={onScanDrafted} />;
+  if (screen.t === "scan") return <MobileScan onBack={back} onDrafted={onScanDrafted} onOpenSo={(docNo) => setScreen({ t: "so-detail", docNo })} />;
   if (screen.t === "module") {
     const k = screen.key;
     const convertTarget = MODULE_TO_CONVERT[k];
