@@ -2723,6 +2723,50 @@ function jobToJson(r: Record<string, unknown>): Record<string, unknown> {
 // ---------------------------------------------------------------------------
 const DUP_LOOKBACK_DAYS = 30;
 
+// Rule A core — the ONE image-hash lookup, shared by findDuplicateSo (the
+// soft warning inside /extract and the background job) AND the synchronous
+// hard reject in POST /enqueue (owner 2026-07-04 policy change: an exact slip
+// re-upload is refused at upload time, before anything is queued). "Has this
+// exact photo (sha256) already been scanned into an SO within the last
+// DUP_LOOKBACK_DAYS?" — two indexed queries (so_scan_samples.image_sha256 ->
+// scan_jobs.sample_id/so_doc_no, both indexed by migration 0068). THROWS on a
+// query error so each caller picks its own fail-open behaviour: the soft path
+// warns + skips the flag, the /enqueue path queues normally.
+async function findRecentSoForSlipSha(
+  svc: SupabaseClient,
+  imageSha256: string,
+  // The sample the CURRENT scan just inserted — excluded or every scan would
+  // "duplicate" itself. null when nothing has been inserted yet (/enqueue).
+  excludeSampleId: string | null,
+): Promise<string | null> {
+  const since = new Date(Date.now() - DUP_LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  let q = svc
+    .from('so_scan_samples')
+    .select('id')
+    .eq('image_sha256', imageSha256)
+    .gte('created_at', since)
+    .order('created_at', { ascending: false })
+    .limit(10);
+  if (excludeSampleId) q = q.neq('id', excludeSampleId);
+  const { data: sampleRows, error: sampleErr } = await q;
+  if (sampleErr) throw new Error(sampleErr.message);
+  const sampleIds = (((sampleRows as Array<Record<string, unknown>> | null) ?? [])
+    .map((r) => r.id)
+    .filter((v): v is string => typeof v === 'string' && v !== ''));
+  if (sampleIds.length === 0) return null;
+  const { data: jobRows, error: jobErr } = await svc
+    .from('scan_jobs')
+    .select('so_doc_no, created_at')
+    .in('sample_id', sampleIds)
+    .not('so_doc_no', 'is', null)
+    .order('created_at', { ascending: false })
+    .limit(1);
+  if (jobErr) throw new Error(jobErr.message);
+  const row = ((jobRows as Array<Record<string, unknown>> | null) ?? [])[0];
+  const doc = (row?.soDocNo ?? row?.so_doc_no) as string | undefined;
+  return typeof doc === 'string' && doc !== '' ? doc : null;
+}
+
 async function findDuplicateSo(
   svc: SupabaseClient,
   args: {
@@ -2733,34 +2777,12 @@ async function findDuplicateSo(
     parsed: ExtractedSlip | null;
   },
 ): Promise<{ docNo: string; rule: 'image' | 'content' } | null> {
-  // A) Same slip photo already processed into an SO recently.
+  // A) Same slip photo already processed into an SO recently — the shared
+  //    findRecentSoForSlipSha core (also the /enqueue hard-reject probe).
   try {
     if (args.imageSha256) {
-      const since = new Date(Date.now() - DUP_LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString();
-      let q = svc
-        .from('so_scan_samples')
-        .select('id')
-        .eq('image_sha256', args.imageSha256)
-        .gte('created_at', since)
-        .order('created_at', { ascending: false })
-        .limit(10);
-      if (args.excludeSampleId) q = q.neq('id', args.excludeSampleId);
-      const { data: sampleRows } = await q;
-      const sampleIds = (((sampleRows as Array<Record<string, unknown>> | null) ?? [])
-        .map((r) => r.id)
-        .filter((v): v is string => typeof v === 'string' && v !== ''));
-      if (sampleIds.length > 0) {
-        const { data: jobRows } = await svc
-          .from('scan_jobs')
-          .select('so_doc_no, created_at')
-          .in('sample_id', sampleIds)
-          .not('so_doc_no', 'is', null)
-          .order('created_at', { ascending: false })
-          .limit(1);
-        const row = ((jobRows as Array<Record<string, unknown>> | null) ?? [])[0];
-        const doc = (row?.soDocNo ?? row?.so_doc_no) as string | undefined;
-        if (typeof doc === 'string' && doc !== '') return { docNo: doc, rule: 'image' };
-      }
+      const doc = await findRecentSoForSlipSha(svc, args.imageSha256, args.excludeSampleId);
+      if (doc) return { docNo: doc, rule: 'image' };
     }
   } catch (e) {
     console.warn('[scan-so dup] image check failed:', (e as Error).message);
@@ -2882,7 +2904,7 @@ async function recordScanReceiptPayments(
     salespersonId: string;
     salespersonName: string | null;
   },
-): Promise<{ recorded: number; failed: number }> {
+): Promise<{ recorded: number; failed: number; skippedDuplicate: number }> {
   const { parsed } = args;
   // Which uploaded IMAGES are receipts — the model's own classification only.
   // storeScanImages' positional fallback is intentionally NOT applied here:
@@ -2895,13 +2917,14 @@ async function recordScanReceiptPayments(
     seen.add(img.index);
     if (args.uploadedImages.some((u) => u.index === img.index)) receiptIdxs.push(img.index);
   }
-  if (receiptIdxs.length === 0) return { recorded: 0, failed: 0 };
+  if (receiptIdxs.length === 0) return { recorded: 0, failed: 0, skippedDuplicate: 0 };
 
   // Double-book guard. The create core books its own is_deposit ledger row
   // for the POS vocabulary (lowercase methods) — the scan draft's header
   // method is a dropdown VALUE ('Merchant'/'Online'/'Cash') so it never
   // matches today, but if the SO somehow already carries a payment row,
-  // recording again would double count. Skip loudly instead.
+  // recording again would double count. Skip + surface a plain note (owner
+  // 2026-07-04: "A matching payment was already recorded") instead.
   const { data: existingRows, error: existingErr } = await svc
     .from('mfg_sales_order_payments')
     .select('id')
@@ -2909,11 +2932,11 @@ async function recordScanReceiptPayments(
     .limit(1);
   if (existingErr) {
     console.error('[scan-job] payment pre-check failed:', args.docNo, existingErr.message);
-    return { recorded: 0, failed: receiptIdxs.length };
+    return { recorded: 0, failed: receiptIdxs.length, skippedDuplicate: 0 };
   }
   if (((existingRows as unknown[] | null) ?? []).length > 0) {
     console.warn('[scan-job] SO already has payment rows — skipping receipt payments:', args.docNo);
-    return { recorded: 0, failed: 0 };
+    return { recorded: 0, failed: 0, skippedDuplicate: receiptIdxs.length };
   }
 
   const m = ledgerMethodFromSlip(parsed);
@@ -2925,14 +2948,73 @@ async function recordScanReceiptPayments(
     ? (parsed.processingDate as string).trim()
     : todayMyt();
 
+  // Receipt dedup ACROSS SOs (owner 2026-07-04 policy change: never book
+  // money off a receipt image that already backs a payment row on ANY order).
+  // Receipt sha256s are not stored anywhere today, so a true image-hash match
+  // would mean fetching + re-hashing every prior job's R2 objects inside
+  // waitUntil — too heavy. Two CHEAP probes instead, both fail-OPEN (a query
+  // error just books normally):
+  //   1) R2 key lineage — a payment row already references this job's
+  //      scan-jobs/{jobId}/{idx} object (a re-run of the same job).
+  //   2) Transaction fingerprint — a payment row on ANY SO already carries
+  //      this receipt's approval code AND the same amount. A re-photographed
+  //      receipt gets a different R2 key and a different sha256 (JPEG
+  //      re-encode), but the PRINTED approval code is per-transaction — the
+  //      cheapest honest equivalent of the image match.
+  const alreadyBookedKeys = new Set<string>();
+  try {
+    const candidateKeys = receiptIdxs.map((idx) => `scan-jobs/${args.jobId}/${idx}`);
+    const { data: lineageRows, error: lineageErr } = await svc
+      .from('mfg_sales_order_payments')
+      .select('slip_key')
+      .in('slip_key', candidateKeys);
+    if (lineageErr) {
+      console.warn('[scan-job] payment key-lineage check failed:', lineageErr.message);
+    } else {
+      for (const r of ((lineageRows as Array<Record<string, unknown>> | null) ?? [])) {
+        const k = (r.slipKey ?? r.slip_key) as string | undefined;
+        if (typeof k === 'string' && k !== '') alreadyBookedKeys.add(k);
+      }
+    }
+  } catch (e) {
+    console.warn('[scan-job] payment key-lineage check threw:', (e as Error).message);
+  }
+  const approvalCode = (parsed.approvalCode ?? '').trim();
+  let fingerprintDup = false;
+  if (approvalCode && depositCenti > 0) {
+    try {
+      const { data: fpRows, error: fpErr } = await svc
+        .from('mfg_sales_order_payments')
+        .select('id')
+        .eq('approval_code', approvalCode)
+        .eq('amount_centi', depositCenti)
+        .limit(1);
+      if (fpErr) console.warn('[scan-job] payment fingerprint check failed:', fpErr.message);
+      else if ((((fpRows as unknown[] | null) ?? []).length > 0)) fingerprintDup = true;
+    } catch (e) {
+      console.warn('[scan-job] payment fingerprint check threw:', (e as Error).message);
+    }
+  }
+
   let recorded = 0;
   let failed = 0;
+  let skippedDuplicate = 0;
   for (let i = 0; i < receiptIdxs.length; i += 1) {
     const idx = receiptIdxs[i];
     const first = i === 0;
     // Prefer REFERENCING the durable enqueue-time copy (same bucket the slip
     // presigner serves); fall back to the provenance receipt copy.
     const jobKey = `scan-jobs/${args.jobId}/${idx}`;
+    // A receipt that already backs a payment row books NOTHING — the caller
+    // appends the plain "matching payment already recorded" note instead.
+    // The fingerprint only vouches for the FIRST receipt (the only one that
+    // carries the OCR'd amount + approval code); extras book their 0-amount
+    // "please verify" rows as usual.
+    if (alreadyBookedKeys.has(jobKey) || (first && fingerprintDup)) {
+      skippedDuplicate += 1;
+      console.warn('[scan-job] receipt already booked — skipped:', args.docNo, jobKey);
+      continue;
+    }
     const slipKey = args.storedImageKeys.includes(jobKey)
       ? jobKey
       : (first ? args.receiptImageKey : null);
@@ -2976,7 +3058,7 @@ async function recordScanReceiptPayments(
       console.error('[scan-job] receipt payment threw:', args.docNo, (e as Error).message);
     }
   }
-  return { recorded, failed };
+  return { recorded, failed, skippedDuplicate };
 }
 
 // Extracted slip -> DRAFT SO create body. Mirrors the SHIPPED headless client
@@ -3217,6 +3299,10 @@ async function runScanJob(
         });
         if (pay.failed > 0) {
           paymentNote = 'Draft created; the payment could not be recorded — please add it on the order.';
+        } else if (pay.skippedDuplicate > 0) {
+          // Receipt dedup fired — the money row already exists somewhere, so
+          // nothing was booked twice. Plain note per the standing rule.
+          paymentNote = 'A matching payment was already recorded, so it was not added again.';
         }
       } catch (e) {
         console.error('[scan-job] receipt payment recording threw:', job.id, (e as Error).message);
@@ -3276,6 +3362,30 @@ scanSo.post('/enqueue', async (c) => {
     ((user.user_metadata as { name?: string } | undefined)?.name ?? '').trim() || repGiven || null;
 
   const svc = serviceClient(c.env);
+
+  // 0) HARD REJECT on an exact re-upload (owner 2026-07-04 policy change:
+  //    image-hash duplicate = refuse AT UPLOAD, nothing queued). sha256 the
+  //    FIRST file (the order slip — the mobile client appends it first) and
+  //    run the same 30-day slip-hash -> SO lookup findDuplicateSo rule A uses
+  //    (findRecentSoForSlipSha — shared core, not a copy). Synchronous so the
+  //    rep hears "already uploaded" on the spot instead of finding a second
+  //    draft later. Fail-OPEN: if the lookup itself errors we queue normally
+  //    and the background job's soft duplicate warning still applies. Rule B
+  //    (same phone + same slip serial / date+total) intentionally STAYS a
+  //    soft warning inside the job — a genuine repeat order is legal.
+  if (firstBuffer) {
+    try {
+      const dupDocNo = await findRecentSoForSlipSha(svc, await sha256Hex(firstBuffer), null);
+      if (dupDocNo) {
+        return c.json(
+          { error: 'duplicate_slip', reason: `This slip was already uploaded — it created ${dupDocNo}.` },
+          409,
+        );
+      }
+    } catch (e) {
+      console.warn('[scan-so enqueue] duplicate check failed (queuing anyway):', (e as Error).message);
+    }
+  }
 
   // 1) Job row FIRST — the durable record the phone can poll even if it
   //    disconnects the instant this response is sent.
