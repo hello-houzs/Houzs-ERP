@@ -71,7 +71,7 @@ import { runProjectDueReminders } from "./services/projectReminders";
 // Weekly OCR rule-distill (scan-so self-evolution). Run via the daily 02:00
 // slot gated to Sundays — no new cron trigger. getSupabaseService is the same
 // service client scan-so.ts uses internally (serviceClient(env)).
-import { distillAllSalespersonRules, warmCatalogCacheForCron } from "./scm/routes/scan-so";
+import { distillAllSalespersonRules, warmCatalogCacheForCron, processScanQueueMessage } from "./scm/routes/scan-so";
 import { getSupabaseService } from "./db/supabase";
 import { getBranding } from "./services/branding";
 
@@ -356,6 +356,26 @@ export default {
             }
           })(),
         );
+      }
+    }
+  },
+  // Cloudflare Queue consumer for the background scan-so OCR pipeline (queue
+  // `houzs-scan-ocr`, DLQ `houzs-scan-ocr-dlq`). max_batch_size = 1, so each
+  // batch is one job. A queue-owned attempt survives isolate eviction — the
+  // reliability fix for the old waitUntil pipeline. On success ack; on failure
+  // retry (up to max_retries in wrangler.toml, then the message lands in the
+  // DLQ and the read-time reaper marks it stale as a final backstop).
+  async queue(batch: MessageBatch<{ jobId: string }>, env: Env, _ctx: ExecutionContext) {
+    // Mirror the scheduled handler: the consumer writes via env.DB too, so
+    // point it at Postgres.
+    env = withPgDb(env);
+    for (const msg of batch.messages) {
+      try {
+        await processScanQueueMessage(env, msg.body.jobId);
+        msg.ack();
+      } catch (e) {
+        console.error("[scan-queue]", msg.body?.jobId, e);
+        msg.retry();
       }
     }
   },

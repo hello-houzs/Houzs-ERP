@@ -32,6 +32,12 @@ export type Env = {
   // creds (see scm/routes/slips.ts). Optional so tests without the binding
   // still compile; scm/lib/slip.ts slipBindings() guards at runtime.
   SLIPS?: R2Bucket;
+  // Cloudflare Queue for the background scan-so OCR pipeline (queue
+  // `houzs-scan-ocr`, DLQ `houzs-scan-ocr-dlq`). The /scan-so/enqueue producer
+  // sends ONLY the job id; the consumer (index.ts `queue()` handler) rebuilds
+  // everything from the scan_jobs row + R2 photos. Optional so tests / older
+  // deploys without the binding compile and fall back to the waitUntil path.
+  SCAN_QUEUE?: Queue<{ jobId: string }>;
   // R2 S3-API credentials for presigned SO-item-photo GET URLs ONLY (the slip
   // flow no longer uses them). Optional — those endpoints fail at runtime
   // until set.
