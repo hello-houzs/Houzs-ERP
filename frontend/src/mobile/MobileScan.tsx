@@ -514,6 +514,27 @@ export function MobileScan({
     return () => window.clearInterval(t);
   }, [hasTransientDone]);
 
+  /* "Clear" for failed rows — POST /scan-so/jobs/clear-failed deletes THIS
+     salesperson's terminal error rows server-side (self-scoped by the
+     caller's name on the backend; a wildcard admin clears all), then the list
+     refetches. Shown while any error/duplicate row is visible. Plain cleanup
+     of rows already read — no in-app confirm (the drafts themselves are
+     untouched). Fail-soft: on error the rows just stay; next tap retries. */
+  const hasFailedRows = visibleJobs.some((j) => j.status === "error" || j.duplicateOf != null);
+  const [clearingFailed, setClearingFailed] = useState(false);
+  const clearFailedJobs = async () => {
+    if (clearingFailed) return;
+    setClearingFailed(true);
+    try {
+      await authedFetch("/scan-so/jobs/clear-failed", { method: "POST" });
+      await refetchJobs();
+    } catch {
+      /* fail-soft — keep the rows; the button stays for another try */
+    } finally {
+      setClearingFailed(false);
+    }
+  };
+
   // The session is submittable once EVERY queued order has its front slip AND at
   // least one payment slip. (An order that's still blank blocks submit — the
   // operator should finish it or remove it.)
@@ -850,7 +871,20 @@ export function MobileScan({
                 when nothing is visible. */}
             {visibleJobs.length > 0 && (
               <div style={{ marginBottom: 14 }}>
-                <div className="ey" style={{ letterSpacing: ".14em", color: "#9aa093", fontSize: 10.5, marginBottom: 6 }}>Recent scans</div>
+                <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 6 }}>
+                  <div className="ey" style={{ letterSpacing: ".14em", color: "#9aa093", fontSize: 10.5 }}>Recent scans</div>
+                  {/* Clear failed rows — only while error/duplicate rows are on
+                      screen; deletes the caller's own error rows server-side. */}
+                  {hasFailedRows && (
+                    <button
+                      onClick={() => void clearFailedJobs()}
+                      disabled={clearingFailed}
+                      style={{ border: "none", background: "none", padding: "0 2px", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, color: "#16695f", cursor: "pointer", opacity: clearingFailed ? 0.5 : 1 }}
+                    >
+                      {clearingFailed ? "Clearing…" : "Clear"}
+                    </button>
+                  )}
+                </div>
                 <div style={{ border: "1px solid #e3e6e0", borderRadius: 14, background: "#fff", overflow: "hidden" }}>
                   {visibleJobs.map((j, i) => {
                     const createdAt = jobTs(j.createdAt);
