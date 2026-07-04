@@ -3226,12 +3226,26 @@ function buildDraftSoBodyFromSlip(
     if (l.noLeg) variants.legHeight = '0"';
     else if (l.legHeightInches != null) variants.legHeight = `${l.legHeightInches}"`;
     if (l.gapInches != null) variants.gap = `${l.gapInches}"`;
+    // Owner 2026-07-04: a scan line must equal a DESKTOP manual line — itemGroup =
+    // the SKU's REAL category (not 'others'), and bedframe/sofa carry the fabric
+    // COLOUR + special-order add-ons the OCR read, keyed exactly as the New SO form
+    // writes them (fabricCode = fabric_colours colourId; specials = addon codes).
+    // The create core then validates + REPRICES the line through the SAME engine
+    // the desktop form uses, so a scanned bedframe prices identically to a hand-
+    // keyed one. Fields the OCR can't read (sofa seat/leg height) are left for the
+    // operator to pick on review — same as desktop. If the stricter category
+    // validation rejects a line (an OCR fabric not allowed on that model, an
+    // incomplete sofa), runScanJob degrades it to a loose 'others' line so an
+    // imperfect read NEVER loses the whole scanned order.
+    const cat = (sku?.category ?? 'OTHERS').toLowerCase();
+    if (cat === 'bedframe' || cat === 'sofa') {
+      if (l.fabricMatch?.code) variants.fabricCode = l.fabricMatch.code;
+      const specialCodes = (l.specialsMatch ?? []).map((s) => s.code).filter(Boolean);
+      if (specialCodes.length > 0) variants.specials = specialCodes;
+    }
     items.push({
       itemCode: sku?.code ?? '',
-      // 'others' mirrors the shipped headless client (category-specific
-      // machinery — sofa split, variant gates — is the operator's review
-      // step, not the background draft's).
-      itemGroup: 'others',
+      itemGroup: cat,
       description: name,
       qty: l.qtyGuess > 0 ? l.qtyGuess : 1,
       unitPriceCenti: Math.round(Math.max(0, l.priceRmGuess ?? 0) * 100),
@@ -3452,10 +3466,18 @@ async function runScanJob(
       houzsUserId: job.houzsUserId,
       body,
     });
-    // Belt-and-suspenders: if the create rejects AND we set slip dates, the
-    // date/variant pairing rules are the likely cause — retry once WITHOUT dates
-    // so the draft still lands (the operator sets dates on review). Never let a
-    // date rule cost the whole scanned order.
+    // Belt-and-suspenders TIER 1: if the create rejects AND we set slip dates,
+    // the date/variant pairing rules are the likely cause (a Processing Date
+    // needs complete line variants) — retry WITHOUT dates, KEEPING the full
+    // category lines (itemGroup/fabric/specials). The operator sets dates on
+    // review. This is what recovers a sofa with a delivery date but no seat
+    // height while preserving desktop-parity lines.
+    const replay = (b: Record<string, unknown>) => createDraftSalesOrder(env, {
+      salespersonId: job.salespersonId,
+      salespersonName: job.salespersonName,
+      houzsUserId: job.houzsUserId,
+      body: b,
+    });
     if (
       outcome.status !== 201 &&
       (body.internalExpectedDd != null || body.customerDeliveryDate != null)
@@ -3463,12 +3485,26 @@ async function runScanJob(
       console.warn('[scan-job] create rejected with dates, retrying dateless:', job.id, outcome.status);
       body.internalExpectedDd = null;
       body.customerDeliveryDate = null;
-      outcome = await createDraftSalesOrder(env, {
-        salespersonId: job.salespersonId,
-        salespersonName: job.salespersonName,
-        houzsUserId: job.houzsUserId,
-        body,
-      });
+      outcome = await replay(body);
+    }
+    // TIER 2 last resort: the category-strict lines still reject (an OCR fabric
+    // not allowed on that model, a special not on the model, an incomplete sofa).
+    // Degrade EVERY line to a loose 'others' line (description + qty + price only,
+    // no variants) so the scanned order STILL lands as a draft — the operator
+    // re-picks the category variants against the slip photo. Never lose the scan.
+    if (outcome.status !== 201 && Array.isArray(body.items) && (body.items as unknown[]).length > 0) {
+      console.warn('[scan-job] category lines rejected, retrying as loose lines:', job.id, outcome.status);
+      body.internalExpectedDd = null;
+      body.customerDeliveryDate = null;
+      body.items = (body.items as Array<Record<string, unknown>>).map((it) => ({
+        itemCode: it.itemCode,
+        itemGroup: 'others',
+        description: it.description,
+        qty: it.qty,
+        unitPriceCenti: it.unitPriceCenti,
+        lineDeliveryDate: null,
+      }));
+      outcome = await replay(body);
     }
     const docNo = (outcome.body as { docNo?: unknown }).docNo;
     if (outcome.status === 201 && typeof docNo === 'string' && docNo !== '') {
