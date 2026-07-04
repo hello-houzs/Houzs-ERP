@@ -11,7 +11,10 @@ name: Deploy (Staging)
 # staging deploy never queues behind / cancels a prod deploy.
 on:
   push:
-    branches: [staging]
+    # Owner 2026-07-04: staging must TRACK prod — every main release also
+    # ships to the staging stack (worker + pages). The legacy push-to-staging
+    # trigger stays for ad-hoc staging-only experiments.
+    branches: [main, staging]
   workflow_dispatch:
     inputs:
       skip_migrate:
@@ -61,7 +64,12 @@ jobs:
       # — e.g. after seeding staging from a prod snapshot, or when the pooler
       # credentials are being rotated. push-to-`staging` deploys always run
       # the step (default false).
+      # continue-on-error: the free-tier staging Supabase auto-pauses when
+      # idle; a paused DB must not fail every prod release's staging mirror.
+      # The worker still deploys and the schema heals on the first run after
+      # a dashboard Restore.
       - if: ${{ !inputs.skip_migrate }}
+        continue-on-error: true
         run: node scripts/pg-migrate.mjs
         env:
           DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
@@ -92,8 +100,28 @@ jobs:
       # behaviour so we don't introduce a new failure mode here.
       - run: node scripts/smoke-check.mjs "${{ vars.STAGING_SMOKE_URL || 'https://autocount-sync-api-staging.houzs-erp.workers.dev' }}"
 
-  # NOTE: no frontend job. The staging Worker is the only artefact this
-  # workflow ships. If a staging frontend Pages project is needed later, add
-  # a second job here mirroring deploy.yml's `frontend` job — separate Pages
-  # project name (e.g. `houzs-erp-staging`) + VITE_API_URL pointing at the
-  # staging Worker URL.
+  # Staging frontend — mirrors deploy.yml's frontend job onto the
+  # houzs-erp-staging Pages project, bundle pointed at the staging Worker.
+  frontend:
+    runs-on: ubuntu-latest
+    environment: Staging
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run build
+        env:
+          VITE_API_URL: https://autocount-sync-api-staging.houzs-erp.workers.dev
+      - uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: frontend
+          command: pages deploy ./dist --project-name=houzs-erp-staging --commit-dirty=true
