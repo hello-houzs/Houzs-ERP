@@ -50,7 +50,9 @@ fabricTierAddonConfig.patch('/', async (c) => {
   if (!hasHouzsPerm(c, 'scm.config.write')) {
     return c.json({ error: 'forbidden', reason: 'missing_scm_config_write' }, 403);
   }
-  const userId   = c.get('user').id;
+  const u = c.get('user');
+  if (!u?.id) return c.json({ error: 'auth_required' }, 401);
+  const userId   = u.id;
   const supabase = c.get('supabase');
 
   let body: unknown;
@@ -91,7 +93,9 @@ const requireFabricEditor = async (c: AppContext) => {
   if (!hasHouzsPerm(c, 'scm.config.write')) {
     return { error: c.json({ error: 'forbidden', reason: 'missing_scm_config_write' }, 403) };
   }
-  const userId   = c.get('user').id;
+  const u = c.get('user');
+  if (!u?.id) return { error: c.json({ error: 'auth_required' }, 401) };
+  const userId   = u.id;
   const supabase = c.get('supabase');
   return { userId, supabase };
 };

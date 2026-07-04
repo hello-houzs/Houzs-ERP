@@ -1024,6 +1024,7 @@ export function MobileNewSO({
     const rows = pays.filter((p) => p.slipSession && toCenti(p.amount) > 0);
     if (rows.length === 0) return;
     let failed = 0;
+    let firstError = "";
     for (const p of rows) {
       const code = PAY_METHOD_CODE[p.method] ?? "cash";
       const body: Record<string, unknown> = {
@@ -1042,12 +1043,14 @@ export function MobileNewSO({
         await authedFetch(`/mfg-sales-orders/${encodeURIComponent(createdDocNo)}/payments`, {
           method: "POST", body: JSON.stringify(body),
         });
-      } catch {
+      } catch (e) {
         failed += 1;
+        if (!firstError && e instanceof Error && e.message) firstError = e.message;
       }
     }
     if (failed > 0) {
-      void notify({ title: "Some payments weren't recorded", body: `${failed} of ${rows.length} payment slip(s) failed to post. Record them again from the SO detail screen.`, tone: "error" });
+      const detail = firstError ? ` ${firstError}` : "";
+      void notify({ title: "Some payments weren't recorded", body: `${failed} of ${rows.length} payment slip(s) failed to post.${detail} Record them again from the SO detail screen.`, tone: "error" });
     }
   }
 
