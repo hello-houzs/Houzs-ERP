@@ -286,6 +286,20 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
 
         {!detail.isLoading && !detail.error && h && (
           <div>
+            {/* DRAFT banner — owner 2026-07-04: "根本不知道自己是在 Confirm 还是
+                Draft". An unmissable amber card sits FIRST, directly under the
+                header, whenever the SO is still a draft. Pairs with the amber
+                Draft pill in the header (StatusPill below). */}
+            {ph === "draft" && (
+              <div role="status" style={{ display: "flex", alignItems: "flex-start", gap: 9, background: "var(--amber-bg, #f6efd9)", border: "1px solid #e0cf9e", borderRadius: 12, padding: "11px 13px", marginBottom: 12 }}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--amber, #8a6a2e)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: 1 }}><path d="M12 9v4" /><path d="M12 17h.01" /><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z" /></svg>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--amber, #8a6a2e)" }}>Draft — not confirmed</div>
+                  <div style={{ fontSize: 11.5, color: "#6d5626", marginTop: 2, lineHeight: 1.45 }}>This order is not confirmed yet. Review it and tap Create Sales Order to confirm.</div>
+                </div>
+              </div>
+            )}
+
             {/* Locked-view hint (design VERBATIM) — Edit unlocks the same New SO
                 form; there's no in-place edit here, so wording drops the mode.
                 When the SO is genuinely edit-locked (SHIPPED+ / downstream DO-SI /
@@ -308,13 +322,16 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
               </div>
             )}
 
-            {/* KPI — Total / Paid / Balance (nowrap tabular money, cards min-width:0).
-                Colours VERBATIM from the design: Total + Paid both brand-dark
-                (#0c3f39), Balance always red (#b23a3a). */}
-            <div style={{ display: "flex", gap: 9, marginBottom: 12 }}>
-              <div className="card" style={{ flex: 1, minWidth: 0, marginBottom: 0 }}><div className="card-b" style={{ padding: "10px 11px" }}><div className="fld-l">Total</div><div className="money" style={{ fontSize: 14, fontWeight: 800, color: "#0c3f39", marginTop: 3, whiteSpace: "nowrap" }}>RM {rm(total(h))}</div></div></div>
-              <div className="card" style={{ flex: 1, minWidth: 0, marginBottom: 0 }}><div className="card-b" style={{ padding: "10px 11px" }}><div className="fld-l">Paid</div><div className="money" style={{ fontSize: 14, fontWeight: 800, color: "#0c3f39", marginTop: 3, whiteSpace: "nowrap" }}>RM {rm(h.paid_centi_total)}</div></div></div>
-              <div className="card" style={{ flex: 1, minWidth: 0, marginBottom: 0 }}><div className="card-b" style={{ padding: "10px 11px" }}><div className="fld-l">Balance</div><div className="money" style={{ fontSize: 14, fontWeight: 800, color: "#b23a3a", marginTop: 3, whiteSpace: "nowrap" }}>RM {rm(bal)}</div></div></div>
+            {/* KPI — Total / Paid / Balance. Colours VERBATIM from the design:
+                Total + Paid both brand-dark (#0c3f39), Balance always red
+                (#b23a3a). Overflow-hardened for 375px (owner 2026-07-04 "上面
+                那一块都爆掉了"): flex 1 1 0 + minWidth 0 per card, tighter
+                gap/padding, ellipsis-safe nowrap values, and the RM figure
+                steps down a size once it passes 6 digits — see <Kpi/>. */}
+            <div style={{ display: "flex", gap: 7, marginBottom: 12 }}>
+              <Kpi label="Total" centi={total(h)} color="#0c3f39" />
+              <Kpi label="Paid" centi={h.paid_centi_total} color="#0c3f39" />
+              <Kpi label="Balance" centi={bal} color="#b23a3a" />
             </div>
 
             {/* Customer — locked .fld-ro fields (design layout VERBATIM) */}
@@ -392,7 +409,9 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
             <div className="card"><div className="card-h"><span className="card-t">Payments</span>
               <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 {!!payments.length && <span className="card-sub">{payments.length}</span>}
-                {ph !== "cancelled" && bal > 0 && (
+                {/* Hidden on cancelled AND draft — payments are only recorded
+                    after the order is confirmed (owner 2026-07-04). */}
+                {ph === "submitted" && bal > 0 && (
                   <button type="button" disabled={busy} onClick={() => { setActionError(null); setPayOpen(true); }} style={{ border: "none", background: "transparent", color: "var(--teal)", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, cursor: "pointer", padding: 0, opacity: busy ? 0.55 : 1 }}>+ Add payment</button>
                 )}
               </span>
@@ -458,10 +477,13 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
 
       {!detail.isLoading && !detail.error && h && (
         <footer className="actbar">
-          {/* Record Payment — repeatable; accumulates 2, 3, N payments. Offered on
-              any live (non-cancelled) order with a positive balance. Each payment
-              needs a slip (backend enforces slip_required), captured in the sheet. */}
-          {ph !== "cancelled" && bal > 0 && (
+          {/* Record Payment — repeatable; accumulates 2, 3, N payments. Offered
+              only on a CONFIRMED live order with a positive balance — never on
+              drafts (owner 2026-07-04: payments come after confirmation, so a
+              draft's primary action stays Create Sales Order) or cancelled
+              orders. Each payment needs a slip (backend enforces slip_required),
+              captured in the sheet. */}
+          {ph === "submitted" && bal > 0 && (
             <button className="btn" disabled={busy} onClick={() => { setActionError(null); setPayOpen(true); }} style={{ marginBottom: 9, opacity: busy ? 0.55 : 1 }}>Add Payment</button>
           )}
           {ph === "draft" && (
@@ -515,6 +537,29 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
    operator recognises (transfer surfaces as "Online" per the shared map). */
 const METHOD_LABELS: Record<string, string> = { cash: "Cash", transfer: "Online", merchant: "Merchant", installment: "Installment" };
 const methodLabel = (m: string | null): string => (m ? METHOD_LABELS[m] ?? m : "—");
+
+/* KPI stat card — one third of the Total / Paid / Balance strip. Sized to fit
+   three-up at 375px: flex 1 1 0 (equal thirds regardless of content width) +
+   minWidth 0 so a long RM figure can't blow the row open; the value line is
+   nowrap + ellipsis as the final safety net. `.money` supplies tabular-nums.
+   The figure renders at 13.5px and steps down to 12px once the amount passes
+   6 digits (>= RM 10,000.00); the "RM" prefix rides smaller so the digits keep
+   the room. Visual style (card / .fld-l label / weights / colours) unchanged
+   from the design. */
+function Kpi({ label, centi, color }: { label: string; centi: number | null | undefined; color: string }) {
+  const v = rm(centi);
+  const big = v.replace(/\D/g, "").length > 6;
+  return (
+    <div className="card" style={{ flex: "1 1 0", minWidth: 0, marginBottom: 0 }}>
+      <div className="card-b" style={{ padding: "9px 9px" }}>
+        <div className="fld-l" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{label}</div>
+        <div className="money" style={{ fontSize: big ? 12 : 13.5, fontWeight: 800, color, marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          <span style={{ fontSize: big ? 9 : 10, fontWeight: 700, opacity: 0.75, marginRight: 3 }}>RM</span>{v}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 /* Locked read-only field — the design's `.fld` + `.fld-l` + `.fld-ro` trio, the
    detail screen's whole "form rendered locked" idiom. `mono` opts the value into
@@ -844,14 +889,15 @@ function HistoryCard({ docNo }: { docNo: string }) {
   );
 }
 
-/* soPill — VERBATIM from the design's status→color map:
-   Draft [#f4f6f3,#767b6e,border] · Submitted [#e1efed,#0c3f39,none] ·
-   Cancelled [#f8eaea,#b23a3a,none]. */
+/* soPill — from the design's status→color map (Submitted [#e1efed,#0c3f39] ·
+   Cancelled [#f8eaea,#b23a3a]), EXCEPT Draft: owner 2026-07-04 couldn't tell
+   Draft from Confirmed, so Draft upgraded from the design's grey to the shared
+   amber "pending" badge (+ border) so it reads unmistakably as unconfirmed. */
 function StatusPill({ status }: { status: string | null }) {
   const p = phase(status);
-  const cls = p === "draft" ? "b-grey" : p === "cancelled" ? "b-red" : "b-brand";
+  const cls = p === "draft" ? "b-amber" : p === "cancelled" ? "b-red" : "b-brand";
   const label = p === "draft" ? "Draft" : p === "cancelled" ? "Cancelled" : "Submitted";
-  return <span className={`badge ${cls}`}>{label}</span>;
+  return <span className={`badge ${cls}`} style={p === "draft" ? { border: "1px solid #e0cf9e" } : undefined}>{label}</span>;
 }
 
 /* ── Record Payment sheet — the multi-payment core ──────────────────────────
