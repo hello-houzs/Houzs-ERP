@@ -17,6 +17,8 @@ import "./mobile.css";
 // The legacy on-screen flow (await /scan-so/extract per payment slip, then
 // createDraftFromPrefill client-side) is kept verbatim as submitLegacy — the
 // automatic fallback when /enqueue 404s (a worker without the route yet).
+// createDraftFromPrefill sends asDraft: true (status DRAFT — the backend
+// drafts ONLY on that explicit flag, never on empty dates alone).
 //
 // SURVIVES NAVIGATION — the create fetch is FIRED (not awaited before we leave):
 // once it's in flight it completes even if the operator has navigated away or
@@ -51,9 +53,12 @@ import "./mobile.css";
 // handoff limit), EVERY queued order becomes its own DRAFT: we OCR each order
 // and fire one createDraftFromPrefill per order. N orders → N drafts in Orders.
 //
-// Camera capture uses a hidden <input type="file" accept="image/*"
-// capture="environment"> per slot — the standard PWA pattern that opens the
-// phone's rear camera on tap. No getUserMedia / live video.
+// Camera capture uses a hidden <input type="file" accept="image/*"> per slot —
+// the standard PWA pattern. The FRONT slip input keeps capture="environment"
+// (one slip, straight to the rear camera); the PAYMENT input is `multiple`
+// WITHOUT capture so the OS picker can offer gallery multi-select (owner: pick
+// all the payment photos in one go — capture forces a one-shot camera and
+// ignores `multiple`). No getUserMedia / live video.
 //
 // The multipart POST reuses authedFetch: it stamps the bearer from
 // localStorage['auth:token'], leaves the multipart content-type to the browser
@@ -368,14 +373,16 @@ export function MobileScan({
     );
   };
 
-  // Append a captured payment slip to the active order (each = one payment). No
-  // cap — an order can take as many payments as slips.
-  const addPayFile = (file: File | undefined) => {
-    if (!file) return;
+  // Append captured payment slips to the active order (each = one payment). The
+  // input is `multiple`, so a single pick can carry a whole batch of slip photos
+  // — EVERY selected file becomes its own payShot. No cap — an order can take as
+  // many payments as slips.
+  const addPayFiles = (files: FileList | null | undefined) => {
+    if (!files || files.length === 0) return;
     const orderId = activeOrderIdRef.current;
     if (!orderId) return;
-    const url = URL.createObjectURL(file);
-    setOrders((cur) => cur.map((o) => (o.id === orderId ? { ...o, payShots: [...o.payShots, { file, url }] } : o)));
+    const shots: Shot[] = Array.from(files).map((file) => ({ file, url: URL.createObjectURL(file) }));
+    setOrders((cur) => cur.map((o) => (o.id === orderId ? { ...o, payShots: [...o.payShots, ...shots] } : o)));
     setError(null);
   };
   const removePayShot = (orderId: string, i: number) => {
@@ -572,8 +579,11 @@ export function MobileScan({
         ) : (
           <>
             {/* Hidden inputs: one for the front slip, one for payment slips. Both
-                re-targeted to activeOrderIdRef before each capture.
-                capture="environment" opens the rear camera. */}
+                re-targeted to activeOrderIdRef before each capture. The front
+                input keeps capture="environment" (single slip, rear camera); the
+                payment input is `multiple` without capture so the picker offers
+                gallery multi-select (capture would force a one-shot camera and
+                drop `multiple`). */}
             <input
               ref={frontInputRef}
               type="file"
@@ -589,10 +599,10 @@ export function MobileScan({
               ref={payInputRef}
               type="file"
               accept="image/*"
-              capture="environment"
+              multiple
               style={{ display: "none" }}
               onChange={(e) => {
-                addPayFile(e.target.files?.[0]);
+                addPayFiles(e.target.files);
                 e.target.value = "";
               }}
             />

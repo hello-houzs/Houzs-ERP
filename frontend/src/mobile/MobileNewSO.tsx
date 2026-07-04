@@ -275,7 +275,8 @@ function buildItemBody(l: LineItem): Record<string, unknown> {
    must survive the operator navigating away / pressing Cancel.
 
    This is the SAME create call the interactive form fires on "Save draft":
-   POST /mfg-sales-orders with the dates left null (which the backend treats as a
+   POST /mfg-sales-orders with the dates left null AND asDraft: true (the
+   backend statuses on body.asDraft === true — empty dates alone do NOT make a
    DRAFT). We deliberately REUSE the pure body-shaping (newLine seeding + the
    module-level buildItemBody, identical to the interactive path) instead of
    duplicating it, and we DO NOT touch the backend's honest-pricing recompute —
@@ -330,6 +331,10 @@ export async function createDraftFromPrefill(prefill: MobileScanPrefill): Promis
     // DRAFT: no dates (the interactive "Save draft" nulls these too).
     internalExpectedDd: null,
     customerDeliveryDate: null,
+    /* EXPLICIT draft flag — the backend statuses the SO on body.asDraft === true
+       (mfg-sales-orders.ts POST /), NOT on empty dates. Without it a scanned,
+       date-less SO landed CONFIRMED (owner hit this on the legacy scan path). */
+    asDraft: true,
     emergencyContactPhone: ecPhoneOut,
     items,
   };
@@ -1248,6 +1253,9 @@ export function MobileNewSO({
         emergencyContactPhone: ecPhoneOut,
         emergencyContactRelationship: ecRel || null,
         salespersonId: outgoingSalespersonId,
+        /* EXPLICIT draft flag — the backend statuses DRAFT only on
+           body.asDraft === true; nulling the dates alone saves CONFIRMED. */
+        asDraft: asDraft === true,
         items,
       };
 
