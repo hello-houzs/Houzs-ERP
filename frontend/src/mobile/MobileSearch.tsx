@@ -1,0 +1,241 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { api } from "../api/client";
+import { HighlightedText } from "../lib/highlight";
+import "./mobile.css";
+
+/**
+ * Mobile system-wide search palette.
+ *
+ * Hits the SAME multi-source endpoint the desktop Cmd+K palette uses
+ * (GET /api/search?q=…, backend/src/routes/search.ts). Results are grouped by
+ * type, the matched keyword is BOLDED (shared HighlightedText helper), each hit
+ * shows its date (numeric DD/MM/YYYY, owner-locked), and a tap routes into the
+ * matching mobile screen via the `onNavigate` callback.
+ *
+ * Navigation is expressed as a typed intent (SearchNav) rather than a raw SPA
+ * link so the mobile shell can map each hit onto its own screen stack:
+ *   - sales_order → so-detail (by doc_no)
+ *   - project     → calendar, jumped to the project's start-date month + the
+ *                   project highlighted (falls back to PMS if no date)
+ *   - assr_case   → service case list
+ *   - product     → products module list
+ *   - user        → members module list
+ */
+
+export type SearchHitType =
+  | "project"
+  | "assr_case"
+  | "user"
+  | "sales_order"
+  | "product";
+
+export interface SearchHit {
+  type: SearchHitType;
+  id: string | number;
+  title: string;
+  subtitle?: string | null;
+  date?: string | null;
+  link: string;
+}
+
+/** Typed navigation intent emitted when a hit is tapped. The shell decides
+ *  which screen each maps to (see MobileApp). */
+export type SearchNav =
+  | { kind: "sales_order"; docNo: string }
+  | { kind: "project"; projectId: number; date: string | null }
+  | { kind: "assr_case" }
+  | { kind: "product" }
+  | { kind: "user" };
+
+/* Numeric DD/MM/YYYY — the owner-locked mobile date format (never month names),
+   matching MobileSalesOrders / MobileCalendar. */
+const dm = (d: string | null | undefined): string => {
+  if (!d) return "";
+  // Date-only strings compare/format directly without a timezone shift.
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(d);
+  if (m) return `${m[3]}/${m[2]}/${m[1]}`;
+  const dt = new Date(d);
+  if (isNaN(+dt)) return "";
+  const p = (n: number) => `${n}`.padStart(2, "0");
+  return `${p(dt.getDate())}/${p(dt.getMonth() + 1)}/${dt.getFullYear()}`;
+};
+
+const TYPE_ORDER: SearchHitType[] = [
+  "sales_order",
+  "project",
+  "assr_case",
+  "product",
+  "user",
+];
+const TYPE_LABEL: Record<SearchHitType, string> = {
+  sales_order: "Sales Orders",
+  project: "Projects",
+  assr_case: "Service Cases",
+  product: "Products",
+  user: "People",
+};
+const TYPE_COLOR: Record<SearchHitType, string> = {
+  sales_order: "#16695f",
+  project: "#2f8a5b",
+  assr_case: "#a16a2e",
+  product: "#4b6b86",
+  user: "#7a5c86",
+};
+
+function navFor(hit: SearchHit): SearchNav {
+  switch (hit.type) {
+    case "sales_order":
+      return { kind: "sales_order", docNo: String(hit.id) };
+    case "project":
+      return { kind: "project", projectId: Number(hit.id), date: hit.date ?? null };
+    case "assr_case":
+      return { kind: "assr_case" };
+    case "product":
+      return { kind: "product" };
+    case "user":
+      return { kind: "user" };
+  }
+}
+
+export function MobileSearch({
+  onBack,
+  onNavigate,
+}: {
+  onBack: () => void;
+  onNavigate: (nav: SearchNav) => void;
+}) {
+  const [q, setQ] = useState("");
+  const [hits, setHits] = useState<SearchHit[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  // Debounced fetch — same contract as the desktop palette.
+  useEffect(() => {
+    const term = q.trim();
+    if (term.length < 2) {
+      setHits([]);
+      setLoading(false);
+      setError(null);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    const t = setTimeout(async () => {
+      try {
+        const res = await api.get<{ hits: SearchHit[] }>(
+          `/api/search?q=${encodeURIComponent(term)}`,
+        );
+        setHits(res.hits ?? []);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setLoading(false);
+      }
+    }, 200);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  const groups = useMemo(() => {
+    const map = new Map<SearchHitType, SearchHit[]>();
+    for (const h of hits) {
+      const arr = map.get(h.type) ?? [];
+      arr.push(h);
+      map.set(h.type, arr);
+    }
+    return TYPE_ORDER.map((t) => ({ type: t, items: map.get(t) ?? [] })).filter(
+      (g) => g.items.length > 0,
+    );
+  }, [hits]);
+
+  const term = q.trim();
+
+  return (
+    <div
+      className="hz-m"
+      style={{ position: "fixed", inset: 0, background: "var(--app-bg)", display: "flex", flexDirection: "column" }}
+    >
+      <header className="hdr">
+        <div className="hdr-row">
+          <button onClick={onBack} className="back" aria-label="Back">‹ Back</button>
+          <div className="searchbar" style={{ marginLeft: 4 }}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--mut)" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
+            <input
+              ref={inputRef}
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Search orders, projects, cases, products, people…"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+            />
+            {q && (
+              <button onClick={() => setQ("")} aria-label="Clear" style={{ background: "none", border: "none", padding: 0, lineHeight: 0, color: "var(--mut)" }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M6 6l12 12M18 6 6 18" /></svg>
+              </button>
+            )}
+          </div>
+        </div>
+      </header>
+
+      <div className="scroll" style={{ padding: 12, paddingBottom: 40 }}>
+        {term.length < 2 && (
+          <div style={{ padding: "40px 16px", textAlign: "center", color: "var(--mut2)", fontSize: 12.5 }}>
+            Type at least 2 characters to search across sales orders, projects, service cases, products and people.
+          </div>
+        )}
+        {term.length >= 2 && loading && (
+          <div style={{ padding: "30px 0", textAlign: "center", color: "var(--mut2)", fontSize: 12.5 }}>Searching…</div>
+        )}
+        {error && (
+          <div style={{ margin: "8px 0", borderRadius: 10, border: "1px solid #e6c3c3", background: "#fbeded", padding: "10px 12px", fontSize: 12, color: "var(--red)" }}>
+            Couldn't search right now. Please try again.
+          </div>
+        )}
+        {term.length >= 2 && !loading && !error && hits.length === 0 && (
+          <div style={{ padding: "40px 16px", textAlign: "center", color: "var(--mut2)", fontSize: 12.5 }}>
+            No matches for "{term}". Try a different keyword.
+          </div>
+        )}
+
+        {groups.map((g) => (
+          <div key={g.type} style={{ marginBottom: 14 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 7, padding: "2px 2px 7px" }}>
+              <span style={{ width: 8, height: 8, borderRadius: "50%", background: TYPE_COLOR[g.type] }} />
+              <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: ".07em", textTransform: "uppercase", color: "var(--mut)" }}>{TYPE_LABEL[g.type]}</span>
+              <span style={{ fontSize: 10, color: "var(--mut2)" }}>· {g.items.length}</span>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {g.items.map((hit) => (
+                <button
+                  key={`${hit.type}-${hit.id}`}
+                  className="card"
+                  onClick={() => onNavigate(navFor(hit))}
+                  style={{ textAlign: "left", padding: "11px 13px", borderLeft: `4px solid ${TYPE_COLOR[hit.type]}`, cursor: "pointer", fontFamily: "inherit" }}
+                >
+                  <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8 }}>
+                    <span style={{ fontSize: 13.5, fontWeight: 700, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>
+                      <HighlightedText text={hit.title} query={term} />
+                    </span>
+                    {hit.date && (
+                      <span style={{ fontSize: 10.5, color: "var(--mut2)", flex: "none" }}>{dm(hit.date)}</span>
+                    )}
+                  </div>
+                  {hit.subtitle && (
+                    <div style={{ marginTop: 3, fontSize: 11.5, color: "var(--mut)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                      <HighlightedText text={hit.subtitle} query={term} />
+                    </div>
+                  )}
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}

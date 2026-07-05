@@ -19,9 +19,12 @@ import {
   CornerDownLeft,
   ArrowUp,
   ArrowDown,
+  FileText,
+  Package,
 } from "lucide-react";
 import { api } from "../api/client";
 import { cn, formatDate } from "../lib/utils";
+import { HighlightedText } from "../lib/highlight";
 
 /**
  * Global Cmd+K palette.
@@ -42,7 +45,9 @@ import { cn, formatDate } from "../lib/utils";
 export type SearchHitType =
   | "project"
   | "assr_case"
-  | "user";
+  | "user"
+  | "sales_order"
+  | "product";
 
 export interface SearchHit {
   type: SearchHitType;
@@ -215,7 +220,7 @@ function Palette({ onClose }: { onClose: () => void }) {
             ref={inputRef}
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Search projects, service cases, people…"
+            placeholder="Search orders, projects, service cases, products, people…"
             className="flex-1 bg-transparent text-[14px] text-ink outline-none placeholder:text-ink-muted"
           />
           <kbd className="hidden rounded border border-border bg-bg px-1.5 py-0.5 font-mono text-[10px] text-ink-muted sm:inline">
@@ -264,6 +269,7 @@ function Palette({ onClose }: { onClose: () => void }) {
                   <HitRow
                     key={`${item.type}-${item.id}`}
                     item={item}
+                    query={q}
                     isSelected={item._idx === selected}
                     onHover={() => setSelected(item._idx)}
                     onSelect={() => {
@@ -303,11 +309,13 @@ function Palette({ onClose }: { onClose: () => void }) {
 
 function HitRow({
   item,
+  query,
   isSelected,
   onHover,
   onSelect,
 }: {
   item: SearchHit & { _idx: number };
+  query: string;
   isSelected: boolean;
   onHover: () => void;
   onSelect: () => void;
@@ -330,7 +338,10 @@ function HitRow({
       </span>
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
-          <span className="truncate text-[12.5px] font-semibold text-ink">{item.title}</span>
+          {/* Bold the matched keyword in the title (query passed from palette). */}
+          <span className="truncate text-[12.5px] font-medium text-ink">
+            <HighlightedText text={item.title} query={query} />
+          </span>
           {item.date && (
             <span className="shrink-0 text-[10px] text-ink-muted">
               {formatDate(item.date)}
@@ -338,7 +349,9 @@ function HitRow({
           )}
         </div>
         {item.subtitle && (
-          <div className="truncate text-[11px] text-ink-secondary">{item.subtitle}</div>
+          <div className="truncate text-[11px] text-ink-secondary">
+            <HighlightedText text={item.subtitle} query={query} />
+          </div>
         )}
       </div>
       {isSelected && (
@@ -356,12 +369,20 @@ function EmptyHelp() {
       </div>
       <ul className="space-y-1.5 text-[12px] text-ink-secondary">
         <li className="flex items-center gap-2">
+          <FileText size={12} className="text-accent/70" />
+          Sales orders by SO no, customer, phone, PO, or ref
+        </li>
+        <li className="flex items-center gap-2">
           <Layers size={12} className="text-accent/70" />
-          Projects by code, name, venue, organizer
+          Projects by code, name, venue, organizer, or brand
         </li>
         <li className="flex items-center gap-2">
           <Wrench size={12} className="text-accent/70" />
           Service cases by ASSR no, customer, phone, or issue
+        </li>
+        <li className="flex items-center gap-2">
+          <Package size={12} className="text-accent/70" />
+          Products by code or name
         </li>
         <li className="flex items-center gap-2">
           <Users size={12} className="text-accent/70" />
@@ -378,7 +399,13 @@ function groupHits(hits: SearchHit[]): Array<{
   type: SearchHitType;
   items: Array<SearchHit & { _idx: number }>;
 }> {
-  const order: SearchHitType[] = ["project", "assr_case", "user"];
+  const order: SearchHitType[] = [
+    "sales_order",
+    "project",
+    "assr_case",
+    "product",
+    "user",
+  ];
   const map = new Map<SearchHitType, Array<SearchHit & { _idx: number }>>();
   hits.forEach((h, i) => {
     const arr = map.get(h.type) ?? [];
@@ -394,8 +421,10 @@ function groupHits(hits: SearchHit[]): Array<{
 }
 
 const TYPE_META: Record<SearchHitType, { label: string; icon: ReactNode }> = {
+  sales_order: { label: "Sales Orders", icon: <FileText size={13} /> },
   project: { label: "Projects", icon: <Layers size={13} /> },
   assr_case: { label: "Service Cases", icon: <Wrench size={13} /> },
+  product: { label: "Products", icon: <Package size={13} /> },
   user: { label: "Users", icon: <Users size={13} /> },
 };
 
