@@ -43,7 +43,7 @@ import {
   projectAccessLevel,
   canSeeProject,
 } from "../services/projectAcl";
-import { getPmsAccess } from "../services/pmsAccess";
+import { getPmsAccess, getPmsRole } from "../services/pmsAccess";
 import { audit } from "../services/audit";
 import { hasPermission } from "../services/permissions";
 import { recomputeAutoCostLines } from "../services/projectCostRates";
@@ -3337,10 +3337,17 @@ app.get("/calendar/events", requirePageAccess("projects.calendar"), async (c) =>
      venue events; that lane is now assignment-scoped too. */
   const granted = user?.permissions_set ?? user?.permissions ?? [];
   const isAdmin = !!user && hasPermission(granted, "*");
+  /* Owner 2026-07-05 — a DIRECTOR-level user (Owner/IT via `*`, Super Admin,
+     Sales Director, Finance Manager — see pmsAccess getPmsRole) sees the WHOLE
+     calendar, not just their assigned venues. Reuses the existing PMS role
+     classification so it stays position-driven (toggle via the position name /
+     `*`), not a hardcoded string here. The DIRECTOR branch of getPmsRole is
+     project-independent, so a throwaway project shape is fine. */
+  const seeAll = !!user && (isAdmin || getPmsRole(user, { pic_id: null }) === "DIRECTOR");
   const scope = getProjectScope(user);
   const assignArms: string[] = [];
   const scopeBinds: any[] = [];
-  if (!isAdmin) {
+  if (!seeAll) {
     if (scope) {
       // Existing scoped-role behavior, verbatim (one-hop PIC + brand gate) —
       // just OR-extended with the attendee arm below so an attending rep
@@ -3368,7 +3375,7 @@ app.get("/calendar/events", requirePageAccess("projects.calendar"), async (c) =>
     }
   }
   // Non-admin with no resolvable arms (no session id) → fail closed.
-  const scopeWhere = isAdmin
+  const scopeWhere = seeAll
     ? ""
     : assignArms.length
       ? ` AND (${assignArms.join(" OR ")})`
