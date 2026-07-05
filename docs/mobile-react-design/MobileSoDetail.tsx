@@ -105,6 +105,13 @@ export function MobileSoDetail({ order, onBack, onIssueDo, onCancelOrder, onSave
         </div>
 
         {/* Payments */}
+        {/* Live build (changelog #69): this card header also carries a standalone
+            "+ Add Payment" control on a SUBMITTED, non-cancelled SO that is not
+            SHIPPED+/child-locked (paymentLocked) — reachable even when Edit is
+            locked by the processing-date lock, because payment is never gated by
+            the processing lock (desktop parity: PaymentsTable locked = isLocked
+            only). Opens AddPaymentSheet → POST /:docNo/payments. Omitted from
+            this simplified static mirror (no backend/mutations here). */}
         <div className="card"><div className="card-h"><span className="card-t">Payments</span><span className="card-sub">{order.payments.length}</span></div>
           {order.payments.length ? order.payments.map((p, i) => (
             <div key={i} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, padding: '11px 13px', borderTop: i ? '1px solid #eceee9' : 'none' }}>
