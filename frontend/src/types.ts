@@ -100,9 +100,8 @@ export interface Creditor {
   total_local_ex_tax?: number;
 }
 
-// 10-stage workflow (backend mig 074 + supplier-inspection stage,
-// Nick 2026-07-05). Stage names mirror the SQL enum. The legacy
-// 6-stage vocabulary is no longer accepted by writes.
+// v3.1 9-stage workflow (backend mig 074). Stage names mirror the SQL
+// enum. The legacy 6-stage vocabulary is no longer accepted by writes.
 export type AssrStage =
   | "pending_review"
   | "under_verification"
@@ -110,7 +109,6 @@ export type AssrStage =
   | "pending_inspection"
   | "pending_item_pickup"
   | "pending_supplier_pickup"
-  | "pending_supplier_inspection"
   | "pending_item_ready"
   | "pending_delivery_service"
   | "completed";

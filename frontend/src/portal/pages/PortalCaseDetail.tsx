@@ -21,7 +21,6 @@ const STAGE_COPY: Record<string, { step: 1 | 2 | 3 | 4 | 5; eyebrow: string; tit
   pending_inspection:       { step: 3, eyebrow: "In progress",      title: "Item in for inspection",           body: "Your item has been received and our QC team is inspecting the reported issue." },
   pending_item_pickup:      { step: 3, eyebrow: "In progress",      title: "Arranging collection",             body: "We're scheduling pickup of your item. Someone will reach out to confirm date and time." },
   pending_supplier_pickup:  { step: 3, eyebrow: "In progress",      title: "With our service specialist",      body: "Your item is with our specialist for repair. We'll ping you as soon as it's back with us." },
-  pending_supplier_inspection: { step: 3, eyebrow: "In progress",   title: "Being inspected by our specialist", body: "Our specialist is inspecting and servicing your item. We'll update you as soon as it's done." },
   pending_item_ready:       { step: 4, eyebrow: "Nearly done",      title: "Final quality check",              body: "Your item is back with us and going through a final quality check before delivery." },
   pending_delivery_service: { step: 5, eyebrow: "On its way",       title: "Being delivered",                  body: "Your item is on its way back to you. We'll confirm a delivery window shortly." },
   completed:                { step: 5, eyebrow: "Completed",        title: "All done — thank you",             body: "Your service case has been closed. We'd love to hear how we did." },

@@ -48,7 +48,6 @@ const STAGES: { key: string; label: string }[] = [
   { key: "pending_inspection", label: "Inspection" },
   { key: "pending_item_pickup", label: "Item Pickup" },
   { key: "pending_supplier_pickup", label: "Supplier" },
-  { key: "pending_supplier_inspection", label: "Sup. Inspect" },
   { key: "pending_item_ready", label: "Item Ready" },
   { key: "pending_delivery_service", label: "Delivery" },
   { key: "completed", label: "Completed" },
@@ -105,7 +104,6 @@ const STAGE_PILL: Record<string, [string, string]> = {
   pending_inspection: ["#e1efed", TEAL_DK],
   pending_item_pickup: ["#f6efd9", "#6e4d12"],
   pending_supplier_pickup: ["#f6efd9", "#6e4d12"],
-  pending_supplier_inspection: ["#f6efd9", "#6e4d12"],
   pending_item_ready: ["#e1efed", TEAL_DK],
   pending_delivery_service: ["#f6efd9", "#6e4d12"],
   completed: ["#e2f0e9", GREEN],
@@ -288,7 +286,7 @@ function CaseList({
   // Design chips (m-service): All / Pending / Item ready / Delivery / Completed.
   const CHIPS: { key: string; label: string; match: (r: Any) => boolean }[] = [
     { key: "all", label: "All", match: () => true },
-    { key: "pending", label: "Pending", match: (r) => ["pending_item_pickup", "pending_supplier_pickup", "pending_supplier_inspection", "pending_review", "under_verification", "pending_solution", "pending_inspection"].includes(stageOf(r)) },
+    { key: "pending", label: "Pending", match: (r) => ["pending_item_pickup", "pending_supplier_pickup", "pending_review", "under_verification", "pending_solution", "pending_inspection"].includes(stageOf(r)) },
     { key: "item_ready", label: "Item ready", match: (r) => stageOf(r) === "pending_item_ready" },
     { key: "delivery", label: "Delivery", match: (r) => stageOf(r) === "pending_delivery_service" },
     { key: "completed", label: "Completed", match: (r) => stageOf(r) === "completed" },

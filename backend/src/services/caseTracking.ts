@@ -154,7 +154,6 @@ export function customerStatusFor(stage: string | null | undefined): {
     case "pending_inspection":        return { label: "Pending Inspection", color: "amber" };
     case "pending_item_pickup":       return { label: "Pending Item Pickup", color: "violet" };
     case "pending_supplier_pickup":   return { label: "Pending Supplier Pickup", color: "violet" };
-    case "pending_supplier_inspection": return { label: "Pending Supplier Inspection", color: "violet" };
     case "pending_item_ready":        return { label: "Pending Item Ready", color: "violet" };
     case "pending_delivery_service":  return { label: "Pending Delivery / Service", color: "violet" };
     case "completed":                 return { label: "Completed", color: "green" };

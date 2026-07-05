@@ -7,8 +7,9 @@
  * Prod is Supabase Postgres (post 2026-06-13 cutover). Mapping per
  * Nick's confirmed assr-farra-mapping-zh-v3.xlsx (2026-07-05):
  *
- *   ASSR Status                      → stage/status (incl. the new
- *                                      pending_supplier_inspection)
+ *   ASSR Status                      → stage/status ("Pending Supplier
+ *                                      Inspection" maps to pending_inspection
+ *                                      — same stage, own team OR supplier)
  *   S/O · ASSR NO · Complained date  → doc_no · assr_no · complained_date
  *   Ref No                           → ref_no
  *   Customer Name/HP/Location/Agent  → customer_name/phone/location/sales_agent
@@ -68,15 +69,17 @@ if (!dbUrl) {
 }
 const pg = postgres(dbUrl, { ssl: "require", prepare: false, max: 1 });
 
-// ── Stage mapping (10-stage; mig 074 + 0072) ───────────────────
+// ── Stage mapping (v3.1 nine-stage, mig 074) ───────────────────
 // Keys are whitespace-normalised (collapse runs, trim) before lookup —
 // the sheet has "Pending Supplier  Inspection" with a double space.
+// Nick 2026-07-05: "Pending Supplier Inspection" is the SAME stage as
+// Pending Inspection — inspection can be done by us or the supplier.
 const STAGE_MAP = {
   "Completed":                    "completed",
   "Pending Delivery/Service":     "pending_delivery_service",
   "Pending Delivery / Service":   "pending_delivery_service",
   "Pending Item Ready":           "pending_item_ready",
-  "Pending Supplier Inspection":  "pending_supplier_inspection",
+  "Pending Supplier Inspection":  "pending_inspection",
   "Pending Supplier Pickup":      "pending_supplier_pickup",
   "Pending Item Pickup":          "pending_item_pickup",
   "Pending Inspection":           "pending_inspection",
@@ -102,7 +105,6 @@ const DEFAULT_STAGE_TARGET_DAYS = {
   pending_inspection: 2,
   pending_item_pickup: 2,
   pending_supplier_pickup: 3,
-  pending_supplier_inspection: 3,
   pending_item_ready: 5,
   pending_delivery_service: 4,
   completed: 0,

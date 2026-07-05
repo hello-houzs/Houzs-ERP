@@ -97,7 +97,6 @@ const STAGE_LABEL: Record<string, string> = {
   pending_inspection: "Pending Inspection",
   pending_item_pickup: "Pending Item Pickup",
   pending_supplier_pickup: "Pending Supplier Pickup",
-  pending_supplier_inspection: "Pending Supplier Inspection",
   pending_item_ready: "Pending Item Ready",
   pending_delivery_service: "Pending Delivery / Service",
   completed: "Completed",
@@ -113,7 +112,6 @@ const STAGE_COLOR: Record<string, PortalStatusColor> = {
   pending_inspection: "violet",
   pending_item_pickup: "violet",
   pending_supplier_pickup: "violet",
-  pending_supplier_inspection: "violet",
   pending_item_ready: "violet",
   pending_delivery_service: "blue",
   completed: "green",
@@ -134,8 +132,6 @@ function supplierStepFor(cs: { stage: string; items_ready_at: string | null }): 
     case "completed":
     case "pending_delivery_service":
       return 5;
-    case "pending_supplier_inspection":
-      return 3;
     case "pending_item_ready":
       return cs.items_ready_at ? 4 : 3;
     case "pending_supplier_pickup":
