@@ -1,4 +1,14 @@
 import type { AuthUser } from "./auth";
+import { getPmsRole } from "./pmsAccess";
+
+/* Owner 2026-07-05 — a DIRECTOR-level user (Owner/IT `*`, Super Admin, Sales
+   Director, Finance Manager — pmsAccess getPmsRole) sees EVERY project's full
+   details, not just their assigned line. Mirrors the /calendar/events see-all
+   rule so the calendar and the project detail stay consistent. The DIRECTOR
+   branch of getPmsRole is project-independent, so a throwaway shape is fine. */
+function isProjectDirector(user: AuthUser | null | undefined): boolean {
+  return !!user && getPmsRole(user, { pic_id: null }) === "DIRECTOR";
+}
 
 export interface ProjectScope {
   /** PIC allow-list as today: [user.id, user.manager_id] (nulls dropped). */
@@ -76,7 +86,7 @@ export function projectAccessLevel(
   user: AuthUser,
   project: { pic_id: number | null; created_by?: number | null }
 ): "full" | "limited" {
-  if (!user.scope_to_pic) return "full";
+  if (!user.scope_to_pic || isProjectDirector(user)) return "full";
   if (effectivePicId(project) === user.id) return "full";
   return "limited";
 }
@@ -95,7 +105,7 @@ export function canSeeProject(
     end_date?: string | null;
   }
 ): boolean {
-  if (!user.scope_to_pic) return true;
+  if (!user.scope_to_pic || isProjectDirector(user)) return true;
   // PIC visibility expires PIC_GRACE_DAYS after the project ends.
   if (!withinPicGrace(project)) return false;
   const pic = effectivePicId(project);
