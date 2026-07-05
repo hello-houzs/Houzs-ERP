@@ -43,7 +43,7 @@ export type Stage =
   | "pending_review"            // Stage 1 — Service Admin
   | "under_verification"        // Stage 2 — Service Admin
   | "pending_solution"          // Stage 3 — Service Admin / Manager
-  | "pending_inspection"        // Stage 4 — SA assigns Logistic Admin
+  | "pending_inspection"        // Stage 4 — inspection (own team OR supplier)
   | "pending_item_pickup"       // Stage 5 — SA assigns Logistic Admin
   | "pending_supplier_pickup"   // Stage 6 — SA contacts supplier
   | "pending_item_ready"        // Stage 7 — SA updates on supplier return
@@ -657,6 +657,9 @@ const PATCH_FIELDS = [
   // the main case, supplier edits supplier_service_note from the
   // supplier portal.
   "goods_returned_note", "supplier_service_note",
+  // Mig 0073 — who performs the inspection stage: 'own' | 'supplier'.
+  // Own-team inspections link into delivery planning for the visit.
+  "inspection_by",
 ] as const;
 
 export async function patchAssrCase(
