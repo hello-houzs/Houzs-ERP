@@ -62,10 +62,20 @@ const CREATED_BY_EMAIL = "farraellya02@gmail.com"; // Farra
 const ASSIGNED_TO_EMAIL = "farraellya02@gmail.com"; // single column; Nancy co-owns operationally
 
 // ── DB ─────────────────────────────────────────────────────────
-const dotEnv = existsSync(".dev.vars") ? ".dev.vars" : "backend/.dev.vars";
-const dbUrl = readFileSync(dotEnv, "utf8").match(/DATABASE_URL="([^"]+)"/)?.[1];
+// CI passes DATABASE_URL as an env var (GitHub secret, same as
+// pg-migrate.mjs); locally we fall back to backend/.dev.vars.
+function resolveDbUrl() {
+  if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
+  const dotEnv = existsSync(".dev.vars") ? ".dev.vars" : "backend/.dev.vars";
+  try {
+    return readFileSync(dotEnv, "utf8").match(/DATABASE_URL="([^"]+)"/)?.[1];
+  } catch {
+    return undefined;
+  }
+}
+const dbUrl = resolveDbUrl();
 if (!dbUrl) {
-  console.error("DATABASE_URL not found in backend/.dev.vars");
+  console.error("DATABASE_URL not set (env var or backend/.dev.vars)");
   process.exit(2);
 }
 const pg = postgres(dbUrl, { ssl: "require", prepare: false, max: 1 });
