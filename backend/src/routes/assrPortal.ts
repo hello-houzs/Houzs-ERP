@@ -29,6 +29,7 @@ const STAGES = [
   "pending_inspection",
   "pending_item_pickup",
   "pending_supplier_pickup",
+  "pending_supplier_inspection",
   "pending_item_ready",
   "pending_delivery_service",
   "completed",

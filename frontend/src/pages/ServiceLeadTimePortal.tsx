@@ -30,6 +30,7 @@ const STAGE_ORDER: { value: string; label: string; short: string }[] = [
   { value: "pending_inspection",       label: "Pending Inspection",        short: "Inspect" },
   { value: "pending_item_pickup",      label: "Pending Item Pickup",       short: "Pickup" },
   { value: "pending_supplier_pickup",  label: "Pending Supplier Pickup",   short: "Supplier" },
+  { value: "pending_supplier_inspection", label: "Pending Supplier Inspection", short: "Sup. Inspect" },
   { value: "pending_item_ready",       label: "Pending Item Ready",        short: "Ready" },
   { value: "pending_delivery_service", label: "Pending Delivery / Service", short: "Delivery" },
 ];

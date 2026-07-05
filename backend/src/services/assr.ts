@@ -40,15 +40,16 @@ export interface CreateAssrInput {
 // explicit handover steps (item pickup / supplier pickup / item ready
 // / delivery).
 export type Stage =
-  | "pending_review"            // Stage 1 — Service Admin
-  | "under_verification"        // Stage 2 — Service Admin
-  | "pending_solution"          // Stage 3 — Service Admin / Manager
-  | "pending_inspection"        // Stage 4 — SA assigns Logistic Admin
-  | "pending_item_pickup"       // Stage 5 — SA assigns Logistic Admin
-  | "pending_supplier_pickup"   // Stage 6 — SA contacts supplier
-  | "pending_item_ready"        // Stage 7 — SA updates on supplier return
-  | "pending_delivery_service"  // Stage 8 — SA assigns Logistic Admin
-  | "completed";                // Stage 9 — system
+  | "pending_review"              // Stage 1 — Service Admin
+  | "under_verification"          // Stage 2 — Service Admin
+  | "pending_solution"            // Stage 3 — Service Admin / Manager
+  | "pending_inspection"          // Stage 4 — SA assigns Logistic Admin
+  | "pending_item_pickup"         // Stage 5 — SA assigns Logistic Admin
+  | "pending_supplier_pickup"     // Stage 6 — SA contacts supplier
+  | "pending_supplier_inspection" // Stage 7 — supplier inspecting at their site (Nick 2026-07-05, farra-sheet status)
+  | "pending_item_ready"          // Stage 8 — SA updates on supplier return
+  | "pending_delivery_service"    // Stage 9 — SA assigns Logistic Admin
+  | "completed";                  // Stage 10 — system
 
 type Priority = "low" | "normal" | "high" | "urgent";
 
@@ -87,6 +88,7 @@ export const ALL_STAGES: ReadonlyArray<Stage> = [
   "pending_inspection",
   "pending_item_pickup",
   "pending_supplier_pickup",
+  "pending_supplier_inspection",
   "pending_item_ready",
   "pending_delivery_service",
   "completed",
@@ -102,6 +104,7 @@ const DEFAULT_STAGE_TARGET_DAYS: Record<Stage, number> = {
   pending_inspection: 2,
   pending_item_pickup: 2,
   pending_supplier_pickup: 3,
+  pending_supplier_inspection: 3,
   pending_item_ready: 5,
   pending_delivery_service: 4,
   completed: 0,

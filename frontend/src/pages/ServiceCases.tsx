@@ -94,6 +94,7 @@ const STAGE_OPTIONS: { value: StageFilter; label: string }[] = [
   { value: "pending_inspection", label: "Pending Inspection" },
   { value: "pending_item_pickup", label: "Pending Item Pickup" },
   { value: "pending_supplier_pickup", label: "Pending Supplier Pickup" },
+  { value: "pending_supplier_inspection", label: "Pending Supplier Inspection" },
   { value: "pending_item_ready", label: "Pending Item Ready" },
   { value: "pending_delivery_service", label: "Pending Delivery / Service" },
   { value: "completed", label: "Completed" },
@@ -132,7 +133,8 @@ const NEXT_STAGE: Record<string, { stage: AssrStage; label: string }> = {
   pending_solution:         { stage: "pending_inspection",       label: "Schedule Inspection" },
   pending_inspection:       { stage: "pending_item_pickup",      label: "Arrange Item Pickup" },
   pending_item_pickup:      { stage: "pending_supplier_pickup",  label: "Hand to Supplier" },
-  pending_supplier_pickup:  { stage: "pending_item_ready",       label: "Mark Item Ready" },
+  pending_supplier_pickup:  { stage: "pending_supplier_inspection", label: "Supplier Inspecting" },
+  pending_supplier_inspection: { stage: "pending_item_ready",    label: "Mark Item Ready" },
   pending_item_ready:       { stage: "pending_delivery_service", label: "Arrange Delivery" },
   pending_delivery_service: { stage: "completed",                label: "Close Case" },
 };
@@ -3518,6 +3520,15 @@ function DetailContent({
                   value={c.supplier_pickup_at}
                   onSave={(v) => patch({ supplier_pickup_at: v || null })}
                 />
+                {/* Nick 2026-07-05 — the return leg lives here too:
+                    when the supplier brings the item back. Same field
+                    the Item Ready QC reads (items_ready_at). */}
+                <InlineEdit
+                  label="Supplier Return Date"
+                  type="date"
+                  value={c.items_ready_at}
+                  onSave={(v) => patch({ items_ready_at: v || null })}
+                />
                 {/* Mig 106 — send-out slip that goes with the item
                     when supplier collects. Supplier sees this on
                     their portal (read-only). */}
@@ -3542,6 +3553,41 @@ function DetailContent({
                     toast={toast}
                   />
                 )}
+              </div>
+            </StageRow>
+
+            {/* pending_supplier_inspection — item at the supplier's
+                site being inspected/serviced (Nick 2026-07-05; also a
+                status in the farra history sheet). Ops tracks progress
+                via the supplier's portal note — nothing to edit here. */}
+            <StageRow
+              stageId="pending_supplier_inspection"
+              title="Supplier Inspection"
+              summary={
+                c.stage === "pending_supplier_inspection"
+                  ? "Item with the supplier — inspection / service in progress"
+                  : c.supplier_service_note
+                  ? "Supplier note on file"
+                  : "Supplier inspects after pickup"
+              }
+              currentStage={c.stage}
+              stages={activeStages}
+              openStage={openStage}
+              setOpenStage={setOpenStage}
+            >
+              <div className="space-y-2.5 rounded-md border border-border-subtle bg-surface px-3 py-2.5">
+                <div className="text-[12px] leading-relaxed text-ink-secondary">
+                  The item is at the supplier's site for inspection / service.
+                  Their running note (from the supplier portal) shows below —
+                  move to <b>Item Ready</b> once it's back for QC.
+                </div>
+                <InlineEdit
+                  label="Supplier Service Note"
+                  textarea
+                  value={c.supplier_service_note}
+                  onSave={(v) => patch({ supplier_service_note: v })}
+                  placeholder="What the supplier reports while the item is with them"
+                />
               </div>
             </StageRow>
 
@@ -3604,7 +3650,7 @@ function DetailContent({
             </div>
 
           {/* Logistics */}
-          {(c.stage === "pending_item_pickup" || c.stage === "pending_supplier_pickup" || c.stage === "pending_item_ready" || c.stage === "pending_delivery_service" || c.stage === "completed" || logistics.length > 0) && (
+          {(c.stage === "pending_item_pickup" || c.stage === "pending_supplier_pickup" || c.stage === "pending_supplier_inspection" || c.stage === "pending_item_ready" || c.stage === "pending_delivery_service" || c.stage === "completed" || logistics.length > 0) && (
             <PanelSection title={`Logistics (${logistics.length})`}>
               {logistics.map((l) => (
                 <LogisticsRow
@@ -4449,15 +4495,16 @@ const VERIFICATION_OPTIONS = [
 // filtering land in later PRs; this PR only refreshes the header strip.
 
 const DETAIL_STAGES: { id: AssrStage; short: string; long: string }[] = [
-  { id: "pending_review",           short: "Review",       long: "Pending Review" },
-  { id: "under_verification",       short: "Verification", long: "Under Verification" },
-  { id: "pending_solution",         short: "Solution",     long: "Pending Solution" },
-  { id: "pending_inspection",       short: "Inspection",   long: "Pending Inspection" },
-  { id: "pending_item_pickup",      short: "Item Pickup",  long: "Pending Item Pickup" },
-  { id: "pending_supplier_pickup",  short: "Supplier",     long: "Pending Supplier Pickup" },
-  { id: "pending_item_ready",       short: "Item Ready",   long: "Pending Item Ready" },
-  { id: "pending_delivery_service", short: "Delivery",     long: "Pending Delivery / Service" },
-  { id: "completed",                short: "Completed",    long: "Completed" },
+  { id: "pending_review",              short: "Review",       long: "Pending Review" },
+  { id: "under_verification",          short: "Verification", long: "Under Verification" },
+  { id: "pending_solution",            short: "Solution",     long: "Pending Solution" },
+  { id: "pending_inspection",          short: "Inspection",   long: "Pending Inspection" },
+  { id: "pending_item_pickup",         short: "Item Pickup",  long: "Pending Item Pickup" },
+  { id: "pending_supplier_pickup",     short: "Supplier",     long: "Pending Supplier Pickup" },
+  { id: "pending_supplier_inspection", short: "Sup. Inspect", long: "Pending Supplier Inspection" },
+  { id: "pending_item_ready",          short: "Item Ready",   long: "Pending Item Ready" },
+  { id: "pending_delivery_service",    short: "Delivery",     long: "Pending Delivery / Service" },
+  { id: "completed",                   short: "Completed",    long: "Completed" },
 ];
 
 // Which side of the flow a resolution method routes to. Drives dot
@@ -4471,18 +4518,18 @@ function resolutionRoute(m: string | null | undefined): "supplier" | "internal" 
 }
 
 // PR 4 — filtered stage list. When the case's resolution method is
-// on-site (own team) / return to store, the two supplier-only stages
-// (Supplier Pickup + Item Ready) drop out and the workflow shrinks
-// from 9 to 7. We keep the current stage in the list unconditionally
-// as a safety net so a case parked on a filtered-out stage still
-// renders (unlikely, but ops can happen).
+// on-site (own team) / return to store, the three supplier-only stages
+// (Supplier Pickup + Supplier Inspection + Item Ready) drop out and
+// the workflow shrinks from 10 to 7. We keep the current stage in the
+// list unconditionally as a safety net so a case parked on a
+// filtered-out stage still renders (unlikely, but ops can happen).
 function getActiveStages(
   method: string | null | undefined,
   currentStage: AssrStage,
 ): typeof DETAIL_STAGES {
   const route = resolutionRoute(method);
   if (route !== "internal") return DETAIL_STAGES;
-  const SKIP: AssrStage[] = ["pending_supplier_pickup", "pending_item_ready"];
+  const SKIP: AssrStage[] = ["pending_supplier_pickup", "pending_supplier_inspection", "pending_item_ready"];
   return DETAIL_STAGES.filter(
     (s) => !SKIP.includes(s.id) || s.id === currentStage,
   );
@@ -4781,6 +4828,7 @@ const INSPECTION_STAGES_OR_LATER: AssrStage[] = [
   "pending_inspection",
   "pending_item_pickup",
   "pending_supplier_pickup",
+  "pending_supplier_inspection",
   "pending_item_ready",
   "pending_delivery_service",
   "completed",
