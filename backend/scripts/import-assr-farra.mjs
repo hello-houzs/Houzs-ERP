@@ -62,10 +62,21 @@ const CREATED_BY_EMAIL = "farraellya02@gmail.com"; // Farra
 const ASSIGNED_TO_EMAIL = "farraellya02@gmail.com"; // single column; Nancy co-owns operationally
 
 // ── DB ─────────────────────────────────────────────────────────
-const dotEnv = existsSync(".dev.vars") ? ".dev.vars" : "backend/.dev.vars";
-const dbUrl = readFileSync(dotEnv, "utf8").match(/DATABASE_URL="([^"]+)"/)?.[1];
+// CI passes DATABASE_URL as an env var (GitHub secret, same as
+// pg-migrate.mjs); locally we fall back to backend/.dev.vars.
+function resolveDbUrl() {
+  if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
+  const dotEnv = existsSync(".dev.vars") ? ".dev.vars" : "backend/.dev.vars";
+  try {
+    // Line-anchored so a commented-out `# DATABASE_URL=…` doesn't match.
+    return readFileSync(dotEnv, "utf8").match(/^DATABASE_URL="([^"]+)"/m)?.[1];
+  } catch {
+    return undefined;
+  }
+}
+const dbUrl = resolveDbUrl();
 if (!dbUrl) {
-  console.error("DATABASE_URL not found in backend/.dev.vars");
+  console.error("DATABASE_URL not set (env var or backend/.dev.vars)");
   process.exit(2);
 }
 const pg = postgres(dbUrl, { ssl: "require", prepare: false, max: 1 });
@@ -81,6 +92,7 @@ const STAGE_MAP = {
   "Pending Delivery / Service":   "pending_delivery_service",
   "Pending Item Ready":           "pending_item_ready",
   "Pending Supplier Inspection":  "pending_inspection",
+  "Pending Supplier Inpsection":  "pending_inspection",
   "Pending Supplier Pickup":      "pending_supplier_pickup",
   "Pending Item Pickup":          "pending_item_pickup",
   "Pending Inspection":           "pending_inspection",
@@ -117,7 +129,7 @@ const DEFAULT_STAGE_TARGET_DAYS = {
 function inferResolution(text) {
   if (!text) return null;
   const t = text.toLowerCase();
-  if (/replac/.test(t)) return "replace_unit";
+  if (/replac|exchange/.test(t)) return "replace_unit";
   if (/repair|send\s*back|fix/.test(t)) return "supplier_repair";
   return null;
 }
@@ -140,8 +152,10 @@ function parseDate(s) {
 function parseTsv(path) {
   const raw = readFileSync(path, "utf8");
   const lines = raw.split(/\r?\n/);
-  const headerRow = lines.findIndex((l) => /^ASSR Status\tS\/O\tASSR NO\b/.test(l));
-  if (headerRow < 0) throw new Error("Couldn't find header row (`ASSR Status\\tS/O\\tASSR NO`)");
+  const headerRow = lines.findIndex(
+    (l) => /\tASSR NO\t/.test(l) && l.includes("Complained date")
+  );
+  if (headerRow < 0) throw new Error("Couldn't find header row (needs `ASSR NO` + `Complained date` columns)");
   const headers = lines[headerRow].split("\t").map((h) => h.trim());
   const rows = [];
   for (let i = headerRow + 1; i < lines.length; i++) {
@@ -220,7 +234,7 @@ for (const row of rows) {
   if (existing.has(assrNo)) { skipped++; continue; }
   if (LIMIT && planned.length >= LIMIT) break;
 
-  const statusText = norm(row["ASSR Status"]);
+  const statusText = norm(row["Delivery Message Status"] ?? row["ASSR Status"]);
   let stage = STAGE_MAP[statusText];
   if (stage === undefined) {
     unknownStatuses.set(statusText, (unknownStatuses.get(statusText) ?? 0) + 1);
@@ -231,11 +245,11 @@ for (const row of rows) {
   // Who performs the inspection — the sheet tracked it via two status
   // values; keep the distinction on the merged stage.
   const inspectionBy =
-    statusText === "Pending Supplier Inspection" ? "supplier"
+    statusText === "Pending Supplier Inspection" || statusText === "Pending Supplier Inpsection" ? "supplier"
     : statusText === "Pending Inspection" ? "own"
     : null;
 
-  const docNo = (row["S/O"] ?? "").trim() || "";
+  const docNo = (row["SO NO"] ?? row["S/O"] ?? "").trim() || "";
   const customerName = (row["Customer Name"] ?? "").trim() || null;
   const phone = (row["HP"] ?? "").trim() || null;
   const location = (row["Location"] ?? "").trim() || null;
