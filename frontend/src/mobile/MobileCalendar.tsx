@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { getHolidaysOn } from "../lib/holidays";
@@ -117,10 +117,25 @@ function monthWeeks(y: number, m: number): (number | null)[][] {
   return weeks;
 }
 
-export function MobileCalendar({ onOpenProject }: { onOpenProject?: (projectId: number) => void } = {}) {
+export function MobileCalendar({
+  onOpenProject,
+  onOpenSearch,
+  initialYear,
+  initialMonth,
+  focusProjectId,
+}: {
+  onOpenProject?: (projectId: number) => void;
+  /** Open the system-wide search palette (header magnifying-glass). */
+  onOpenSearch?: () => void;
+  /** Jump the calendar to a specific month on mount (search → calendar jump). */
+  initialYear?: number;
+  initialMonth?: number; // 0-11
+  /** Visually highlight this project's bar (paired with initialYear/Month). */
+  focusProjectId?: number;
+} = {}) {
   const today = new Date();
-  const [year, setYear] = useState(today.getFullYear());
-  const [month, setMonth] = useState(today.getMonth());
+  const [year, setYear] = useState(initialYear ?? today.getFullYear());
+  const [month, setMonth] = useState(initialMonth ?? today.getMonth());
   const [mode, setMode] = useState<"month" | "week">("month");
   const [brandF, setBrandF] = useState("all");
   const [sectionF, setSectionF] = useState("all");
@@ -135,6 +150,15 @@ export function MobileCalendar({ onOpenProject }: { onOpenProject?: (projectId: 
   // link, mirroring the desktop CalendarDayModal. Holds the tapped day (1-31)
   // so the sheet can list that day's project/task bars + public holidays.
   const [daySheet, setDaySheet] = useState<number | null>(null);
+
+  // Search → calendar jump: when the shell re-mounts the Calendar tab with a new
+  // target month (the tapped project's start_date), snap to it. Keyed on the
+  // incoming values so a subsequent manual nav is not clobbered.
+  useEffect(() => {
+    if (initialYear != null) setYear(initialYear);
+    if (initialMonth != null) setMonth(initialMonth);
+    if (initialYear != null || initialMonth != null) setMode("month");
+  }, [initialYear, initialMonth]);
 
   // Fetch the full month in one call, keyed by month so navigation refetches.
   const from = iso(year, month, 1);
@@ -253,6 +277,20 @@ export function MobileCalendar({ onOpenProject }: { onOpenProject?: (projectId: 
     return map;
   }, [events]);
 
+  // Search → calendar jump: once the target month's data is in, surface the
+  // focused project by opening its day sheet (so it's visible even when its bar
+  // sits under a "+N more" overflow). Runs once per focus target + load.
+  useEffect(() => {
+    if (!focusProjectId) return;
+    const p = projects.find((x) => x.id === focusProjectId);
+    if (!p) return;
+    const d = new Date(p.start_date.slice(0, 10));
+    if (d.getFullYear() === year && d.getMonth() === month) {
+      setDaySheet(d.getDate());
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusProjectId, projects, year, month]);
+
   const nav = (delta: number) => {
     const d = new Date(year, month + delta, 1);
     setYear(d.getFullYear());
@@ -282,9 +320,15 @@ export function MobileCalendar({ onOpenProject }: { onOpenProject?: (projectId: 
             <div style={{ fontSize: 14, fontWeight: 800, color: "#15161a" }}>HOUZS</div>
             <div style={{ fontSize: 7.5, fontWeight: 700, letterSpacing: ".28em", color: "var(--brand)", marginTop: 2 }}>CENTURY · ERP</div>
           </div>
-          <div className="iconbtn" aria-hidden>
+          <button
+            className="iconbtn"
+            onClick={onOpenSearch}
+            aria-label="Search"
+            title="Search"
+            style={{ fontFamily: "inherit" }}
+          >
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#414539" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
-          </div>
+          </button>
         </div>
       </header>
 
@@ -355,7 +399,7 @@ export function MobileCalendar({ onOpenProject }: { onOpenProject?: (projectId: 
             uncapped, exactly as the prototype's calRender() does. No separate
             agenda list (the prototype has none). */}
         {!isLoading && !error && (
-          <MonthGrid weeks={weeks} byDay={byDay} expand={expand || mode === "week"} onExpandAll={() => setExpand(true)} onOpenDay={setDaySheet} empty={events.length === 0} onOpen={onOpenProject} />
+          <MonthGrid weeks={weeks} byDay={byDay} expand={expand || mode === "week"} onExpandAll={() => setExpand(true)} onOpenDay={setDaySheet} empty={events.length === 0} onOpen={onOpenProject} focusProjectId={focusProjectId} />
         )}
       </div>
 
@@ -376,7 +420,7 @@ export function MobileCalendar({ onOpenProject }: { onOpenProject?: (projectId: 
   );
 }
 
-function MonthGrid({ weeks, byDay, expand, onExpandAll, onOpenDay, empty, onOpen }: {
+function MonthGrid({ weeks, byDay, expand, onExpandAll, onOpenDay, empty, onOpen, focusProjectId }: {
   weeks: (number | null)[][];
   byDay: Record<number, CalEvent[]>;
   expand: boolean;
@@ -384,6 +428,7 @@ function MonthGrid({ weeks, byDay, expand, onExpandAll, onOpenDay, empty, onOpen
   onOpenDay: (day: number) => void;
   empty: boolean;
   onOpen?: (projectId: number) => void;
+  focusProjectId?: number;
 }) {
   return (
     <>
@@ -430,15 +475,18 @@ function MonthGrid({ weeks, byDay, expand, onExpandAll, onOpenDay, empty, onOpen
                 );
               })}
             </div>
-            {cells.slice(0, cap).map(({ e, idx }, i) => (
-              <div
-                key={`${e.key}-${i}`}
-                className="cal-bar"
-                title={e.sub || undefined}
-                onClick={() => { if (e.kind === "holiday") onOpenDay(dayOf(e.date)); else onOpen?.(e.projectId); }}
-                style={{ ["--bar" as string]: e.color, marginLeft: `${(idx * 14.2857).toFixed(3)}%` }}
-              >{e.label}</div>
-            ))}
+            {cells.slice(0, cap).map(({ e, idx }, i) => {
+              const focused = focusProjectId != null && e.kind === "project" && e.projectId === focusProjectId;
+              return (
+                <div
+                  key={`${e.key}-${i}`}
+                  className={focused ? "cal-bar cal-bar-focus" : "cal-bar"}
+                  title={e.sub || undefined}
+                  onClick={() => { if (e.kind === "holiday") onOpenDay(dayOf(e.date)); else onOpen?.(e.projectId); }}
+                  style={{ ["--bar" as string]: e.color, marginLeft: `${(idx * 14.2857).toFixed(3)}%` }}
+                >{e.label}</div>
+              );
+            })}
             {overflow > 0 && (
               <div className="cal-more" style={{ marginLeft: `${(overflowIdx * 14.2857).toFixed(3)}%` }} onClick={onExpandAll}>+{overflow} more</div>
             )}
