@@ -186,6 +186,8 @@ export interface AssrCase {
   supplier_pickup_at?: string | null;
   // Mig 107 — date we collect the faulty item from the customer's house.
   customer_pickup_at?: string | null;
+  // Mig 0073 — who performs the inspection stage: 'own' | 'supplier'.
+  inspection_by?: "own" | "supplier" | null;
   items_ready_at?: string | null;
   stage_changed_at?: string | null;
   // Mig 081 — Verification card (gate between Under Verification and

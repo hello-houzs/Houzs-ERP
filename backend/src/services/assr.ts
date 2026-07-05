@@ -657,6 +657,9 @@ const PATCH_FIELDS = [
   // the main case, supplier edits supplier_service_note from the
   // supplier portal.
   "goods_returned_note", "supplier_service_note",
+  // Mig 0073 — who performs the inspection stage: 'own' | 'supplier'.
+  // Own-team inspections link into delivery planning for the visit.
+  "inspection_by",
 ] as const;
 
 export async function patchAssrCase(

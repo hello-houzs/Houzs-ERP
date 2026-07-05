@@ -9,7 +9,8 @@
  *
  *   ASSR Status                      → stage/status ("Pending Supplier
  *                                      Inspection" maps to pending_inspection
- *                                      — same stage, own team OR supplier)
+ *                                      + inspection_by='supplier'; plain
+ *                                      "Pending Inspection" sets 'own')
  *   S/O · ASSR NO · Complained date  → doc_no · assr_no · complained_date
  *   Ref No                           → ref_no
  *   Customer Name/HP/Location/Agent  → customer_name/phone/location/sales_agent
@@ -227,6 +228,13 @@ for (const row of rows) {
   }
   stats.byStage.set(stage, (stats.byStage.get(stage) ?? 0) + 1);
 
+  // Who performs the inspection — the sheet tracked it via two status
+  // values; keep the distinction on the merged stage.
+  const inspectionBy =
+    statusText === "Pending Supplier Inspection" ? "supplier"
+    : statusText === "Pending Inspection" ? "own"
+    : null;
+
   const docNo = (row["S/O"] ?? "").trim() || "";
   const customerName = (row["Customer Name"] ?? "").trim() || null;
   const phone = (row["HP"] ?? "").trim() || null;
@@ -311,7 +319,7 @@ for (const row of rows) {
   planned.push({
     assrNo, docNo, complainedDate, customerName, phone, location, salesAgent, refNo,
     itemCode, complaintText, issueCategory, poNo, addr1, addr2, addr3, addr4,
-    creditorCode, actionRemark, resolutionMethod, goodsReturnedNote,
+    creditorCode, actionRemark, resolutionMethod, goodsReturnedNote, inspectionBy,
     customerPickupAt, supplierPickupAt, itemsReadyAt, completionDate, doDate, deliveryOrder,
     activityNotes,
     stage, sysStatus: statusForStage(stage),
@@ -367,7 +375,7 @@ for (const p of planned) {
           customer_name, phone, location, sales_agent, ref_no, item_code,
           complaint_issue, issue_category, priority, po_no,
           addr1, addr2, addr3, addr4,
-          creditor_code, action_remark, resolution_method, goods_returned_note,
+          creditor_code, action_remark, resolution_method, goods_returned_note, inspection_by,
           customer_pickup_at, supplier_pickup_at, items_ready_at,
           completion_date, do_date, delivery_order,
           created_by, assigned_to, sla_hours, deadline_at,
@@ -378,7 +386,7 @@ for (const p of planned) {
           ${p.customerName}, ${p.phone}, ${p.location}, ${p.salesAgent}, ${p.refNo}, ${p.itemCode},
           ${p.complaintText}, ${p.issueCategory}, ${p.priority}, ${p.poNo},
           ${p.addr1}, ${p.addr2}, ${p.addr3}, ${p.addr4},
-          ${p.creditorCode}, ${p.actionRemark}, ${p.resolutionMethod}, ${p.goodsReturnedNote},
+          ${p.creditorCode}, ${p.actionRemark}, ${p.resolutionMethod}, ${p.goodsReturnedNote}, ${p.inspectionBy},
           ${p.customerPickupAt}, ${p.supplierPickupAt}, ${p.itemsReadyAt},
           ${p.completionDate}, ${p.doDate}, ${p.deliveryOrder},
           ${createdById}, ${assignedToId}, ${p.slaHours}, ${p.deadlineAt},
