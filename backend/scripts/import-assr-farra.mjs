@@ -68,7 +68,8 @@ function resolveDbUrl() {
   if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
   const dotEnv = existsSync(".dev.vars") ? ".dev.vars" : "backend/.dev.vars";
   try {
-    return readFileSync(dotEnv, "utf8").match(/DATABASE_URL="([^"]+)"/)?.[1];
+    // Line-anchored so a commented-out `# DATABASE_URL=…` doesn't match.
+    return readFileSync(dotEnv, "utf8").match(/^DATABASE_URL="([^"]+)"/m)?.[1];
   } catch {
     return undefined;
   }
