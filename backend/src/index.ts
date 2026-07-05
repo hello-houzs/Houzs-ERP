@@ -48,6 +48,7 @@ import projectsPrint from "./routes/projects_print";
 import search from "./routes/search";
 import assrPrint from "./routes/assr_print";
 import assrPortal from "./routes/assrPortal";
+import assrFormIntake from "./routes/assrFormIntake";
 import survey from "./routes/survey";
 import track from "./routes/track";
 import portal from "./routes/portal";
@@ -156,6 +157,9 @@ app.use("/api/projects/*", inboxBustAfterWrite);
 // Mount the Lead Time Portal first so /api/assr/portal/* doesn't
 // fall through into the catch-all /:id handler on the main module.
 app.route("/api/assr/portal", assrPortal);
+// Google Form intake webhook — self-guarded by the FORM_INTAKE_KEY
+// shared secret (no user session; called by Google Apps Script).
+app.route("/api/assr-form-intake", assrFormIntake);
 app.route("/api/assr", assr);
 app.route("/api/logs", logs);
 app.route("/api/audit", auditRoutes);
