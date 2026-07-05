@@ -40,6 +40,12 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: backend
           command: deploy
+          # Worker secrets pushed on every deploy (idempotent). FORM_INTAKE_KEY
+          # guards the Google Form intake webhook (/api/assr-form-intake).
+          secrets: |
+            FORM_INTAKE_KEY
+        env:
+          FORM_INTAKE_KEY: ${{ secrets.FORM_INTAKE_KEY }}
       # Post-deploy smoke check: confirm the new Worker is serving AND its
       # DB path (Hyperdrive -> Supabase) is alive before calling the deploy
       # good. Detects the 2026-06-13 failure mode (Worker up, DB hung). Set
