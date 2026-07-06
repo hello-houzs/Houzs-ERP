@@ -211,19 +211,32 @@ export function PortalCaseDetailPage() {
     <PortalFrame>
       <div className="mx-auto flex max-w-md flex-col gap-4 px-1 py-1 sm:px-0">
 
-        {/* Customer view keeps the product row (they opened the link
-            knowing their item). The sales view drops it — the header IS
-            the case-reference card (Nick: basic info, not the service
-            item; the item still shows under "Items under service"). */}
+        {/* Customer header card — the case at a glance (Nick: make the
+            item + issue the clear focal point). Item headline + ASSR no,
+            with the reported issue right underneath (clamped; the full
+            text + category stay in the Reported issue section below).
+            The sales view has its own reference card instead. */}
         {!isSales && (
-          <div className="flex items-center gap-3">
-            <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-accent-soft to-accent/25 text-accent shadow-stone">
-              <Package size={22} />
+          <div className="rounded-2xl border border-border bg-surface p-4">
+            <div className="flex items-center gap-3">
+              <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-accent-soft to-accent/25 text-accent shadow-stone">
+                <Package size={22} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-[15px] font-bold leading-tight text-ink">{productHeadline}</div>
+                <div className="mt-0.5 font-mono text-[11px] text-ink-muted">{cs.assr_no}</div>
+              </div>
             </div>
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-[15px] font-bold leading-tight text-ink">{productHeadline}</div>
-              <div className="mt-0.5 font-mono text-[11px] text-ink-muted">{cs.assr_no}</div>
-            </div>
+            {cs.complaint_issue && (
+              <div className="mt-3 border-t border-border-subtle pt-3">
+                <div className="mb-1 text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
+                  Reported issue
+                </div>
+                <div className="line-clamp-3 whitespace-pre-line text-[13px] leading-relaxed text-ink">
+                  {cs.complaint_issue}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
