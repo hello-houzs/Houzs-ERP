@@ -3343,8 +3343,16 @@ app.get("/calendar/events", requirePageAccess("projects.calendar"), async (c) =>
      classification so it stays position-driven (toggle via the position name /
      `*`), not a hardcoded string here. The DIRECTOR branch of getPmsRole is
      project-independent, so a throwaway project shape is fine. */
-  const seeAll = !!user && (isAdmin || getPmsRole(user, { pic_id: null }) === "DIRECTOR");
   const scope = getProjectScope(user);
+  /* Owner 2026-07-06 — unscoped non-admin staff (logistics, drivers, ops,
+     purchasing, etc.) see the WHOLE event calendar again, as they did before
+     the 2026-07-05 assignment-scoping. `scope === null` means the role isn't
+     scope_to_pic, so getProjectScope already treats them as unfiltered
+     everywhere else; the calendar now matches. Only scope_to_pic roles
+     (sales reps) stay filtered to their own assigned events. */
+  const seeAll =
+    !!user &&
+    (isAdmin || getPmsRole(user, { pic_id: null }) === "DIRECTOR" || scope === null);
   const assignArms: string[] = [];
   const scopeBinds: any[] = [];
   if (!seeAll) {
