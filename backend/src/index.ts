@@ -133,6 +133,13 @@ app.route("/api/supplier-portal", supplierPortal);
 // never shadows it.
 app.route("/api/mail-center/inbound", mailInbound);
 
+// Google Form intake webhook — PRE-AUTH like mail-inbound: called by
+// Google Apps Script (no staff session), self-guarded by the
+// FORM_INTAKE_KEY shared secret (X-Intake-Key header). Was mounted
+// below the gate at first, so every call 401'd at the gate before the
+// route's own key check ever ran.
+app.route("/api/assr-form-intake", assrFormIntake);
+
 // Auth gate for everything else under /api/*. Mounted AFTER the
 // public API routes above so they stay unauthenticated.
 app.use("/api/*", auth);
@@ -157,9 +164,6 @@ app.use("/api/projects/*", inboxBustAfterWrite);
 // Mount the Lead Time Portal first so /api/assr/portal/* doesn't
 // fall through into the catch-all /:id handler on the main module.
 app.route("/api/assr/portal", assrPortal);
-// Google Form intake webhook — self-guarded by the FORM_INTAKE_KEY
-// shared secret (no user session; called by Google Apps Script).
-app.route("/api/assr-form-intake", assrFormIntake);
 app.route("/api/assr", assr);
 app.route("/api/logs", logs);
 app.route("/api/audit", auditRoutes);
