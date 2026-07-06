@@ -493,13 +493,6 @@ function CasesView({
       ),
     },
     {
-      key: "assr_no",
-      filterable: true,
-      label: "ASSR No",
-      render: (r) => <span className="font-mono text-xs font-medium">{r.assr_no}</span>,
-      getValue: (r) => r.assr_no,
-    },
-    {
       key: "stage",
       filterable: true,
       label: "Stage",
@@ -539,6 +532,51 @@ function CasesView({
       // helper only maps the 5 legacy slugs, so 9-stage rows fell through
       // to raw slugs in the funnel filter + CSV export.
       getValue: (r) => caseStageLabel(r.stage),
+    },
+    {
+      key: "assr_no",
+      filterable: true,
+      label: "ASSR No",
+      render: (r) => <span className="font-mono text-xs font-medium">{r.assr_no}</span>,
+      getValue: (r) => r.assr_no,
+    },
+    {
+      key: "complained_date",
+      filterable: true,
+      label: "Date",
+      render: (r) => formatDate(r.complained_date),
+      getValue: (r) => formatDate(r.complained_date),
+    },
+    {
+      key: "doc_no",
+      filterable: true,
+      label: "SO No",
+      render: (r) => <span className="font-mono text-xs">{r.doc_no}</span>,
+      getValue: (r) => r.doc_no,
+    },
+    {
+      key: "ref_no",
+      filterable: true,
+      label: "Ref No",
+      // The SO's customer reference (HC/ZNT/PG…) — what the branches
+      // and suppliers quote back, so it earns a default-visible slot
+      // next to SO No.
+      render: (r) => <span className="font-mono text-xs">{r.ref_no || "—"}</span>,
+      getValue: (r) => r.ref_no,
+    },
+    {
+      key: "customer_name",
+      filterable: true,
+      label: "Customer",
+      render: (r) => (
+        <span
+          className="block max-w-[180px] truncate"
+          title={r.customer_name || undefined}
+        >
+          {r.customer_name || "—"}
+        </span>
+      ),
+      getValue: (r) => r.customer_name,
     },
     {
       key: "priority_dwell",
@@ -594,42 +632,11 @@ function CasesView({
       getValue: (r) => r.days_in_stage ?? -1,
     },
     {
-      key: "doc_no",
+      key: "assigned_to_name",
       filterable: true,
-      label: "SO No",
-      render: (r) => <span className="font-mono text-xs">{r.doc_no}</span>,
-      getValue: (r) => r.doc_no,
-    },
-    {
-      key: "ref_no",
-      filterable: true,
-      label: "Ref No",
-      // The SO's customer reference (HC/ZNT/PG…) — what the branches
-      // and suppliers quote back, so it earns a default-visible slot
-      // next to SO No.
-      render: (r) => <span className="font-mono text-xs">{r.ref_no || "—"}</span>,
-      getValue: (r) => r.ref_no,
-    },
-    {
-      key: "complained_date",
-      filterable: true,
-      label: "Date",
-      render: (r) => formatDate(r.complained_date),
-      getValue: (r) => formatDate(r.complained_date),
-    },
-    {
-      key: "customer_name",
-      filterable: true,
-      label: "Customer",
-      render: (r) => (
-        <span
-          className="block max-w-[180px] truncate"
-          title={r.customer_name || undefined}
-        >
-          {r.customer_name || "—"}
-        </span>
-      ),
-      getValue: (r) => r.customer_name,
+      label: "Assigned To",
+      render: (r) => r.assigned_to_name || "—",
+      getValue: (r) => r.assigned_to_name,
     },
     {
       key: "item_code",
@@ -655,13 +662,6 @@ function CasesView({
         </span>
       ),
       getValue: (r) => resolutionLabel(r.resolution_method),
-    },
-    {
-      key: "assigned_to_name",
-      filterable: true,
-      label: "Assigned To",
-      render: (r) => r.assigned_to_name || "—",
-      getValue: (r) => r.assigned_to_name,
     },
     {
       key: "supplier_pickup_at",
