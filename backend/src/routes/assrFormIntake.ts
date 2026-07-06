@@ -26,8 +26,25 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
 import { createAssrCase, assrAttachmentKey, saveAttachment } from "../services/assr";
+import { timingSafeEqualStr } from "../services/auth";
+import { checkRateLimit, clientIp } from "../middleware/rateLimit";
 
 const app = new Hono<{ Bindings: Env }>();
+
+// Shared-secret guard for every intake endpoint. Constant-time compare
+// (the key is 48 random chars — brute force is hopeless, but the
+// comparison shouldn't leak match length anyway), a small failure
+// delay, and a per-IP failure limiter so key-guessing runs cost real
+// time and eventually 429.
+async function badIntakeKey(c: any): Promise<Response | null> {
+  const provided = c.req.header("X-Intake-Key") || "";
+  const expected = c.env.FORM_INTAKE_KEY || "";
+  if (expected && timingSafeEqualStr(provided, expected)) return null;
+  const limited = await checkRateLimit(c, "intake_badkey", clientIp(c), 10, 900);
+  await new Promise((r) => setTimeout(r, 250));
+  if (limited) return limited;
+  return c.json({ error: "unauthorized" }, 401);
+}
 
 // Photo relay limits — Apps Script reads the Drive file and streams the
 // bytes here. Mirrors the portal upload allow-list, plus mp4 because
@@ -52,11 +69,8 @@ const pick = (values: Record<string, unknown>, key: string): string | null => {
 };
 
 app.post("/", async (c) => {
-  const provided = c.req.header("X-Intake-Key") || "";
-  const expected = c.env.FORM_INTAKE_KEY || "";
-  if (!expected || provided !== expected) {
-    return c.json({ error: "unauthorized" }, 401);
-  }
+  const denied = await badIntakeKey(c);
+  if (denied) return denied;
 
   const body = await c.req
     .json<{ response_id?: string; row?: number; values?: Record<string, string> }>()
@@ -148,11 +162,8 @@ app.post("/", async (c) => {
 // grid, the lightbox, and the prints.
 
 app.post("/attachments", async (c) => {
-  const provided = c.req.header("X-Intake-Key") || "";
-  const expected = c.env.FORM_INTAKE_KEY || "";
-  if (!expected || provided !== expected) {
-    return c.json({ error: "unauthorized" }, 401);
-  }
+  const denied = await badIntakeKey(c);
+  if (denied) return denied;
 
   const caseId = parseInt(c.req.query("case_id") || "", 10);
   if (isNaN(caseId)) return c.json({ error: "case_id is required" }, 400);
@@ -229,11 +240,8 @@ const normAlnum = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, "");
 const digitCore = (s: string) => s.replace(/[^0-9]/g, "").replace(/^0+/, "");
 
 app.post("/attachments-by-so", async (c) => {
-  const provided = c.req.header("X-Intake-Key") || "";
-  const expected = c.env.FORM_INTAKE_KEY || "";
-  if (!expected || provided !== expected) {
-    return c.json({ error: "unauthorized" }, 401);
-  }
+  const denied = await badIntakeKey(c);
+  if (denied) return denied;
 
   const so = (c.req.query("so") || "").trim();
   if (!so) return c.json({ error: "so is required" }, 400);
