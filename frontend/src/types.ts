@@ -138,6 +138,9 @@ export interface AssrCase {
   priority: string;
   assigned_to: number | null;
   assigned_to_name?: string | null;
+  // Co-assignee — the after-sales desk is run by two people.
+  assigned_to_2?: number | null;
+  assigned_to_2_name?: string | null;
   ref_no: string | null;
   delivery_order: string | null;
   do_date: string | null;

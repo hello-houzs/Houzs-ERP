@@ -267,19 +267,26 @@ export async function createAssrCase(
   // An explicit PIC picked at intake (input.assigned_to) takes
   // precedence over the admin default.
   let defaultAssigneeId: number | null = null;
+  let defaultAssignee2Id: number | null = null;
   if (input.assigned_to != null) {
     defaultAssigneeId = input.assigned_to;
   } else {
     try {
-      const r = await env.DB.prepare(
-        `SELECT value FROM system_settings WHERE key = 'assr_default_assignee_id'`
-      ).first<{ value: string | null }>();
-      if (r?.value != null) {
+      const rows = await env.DB.prepare(
+        `SELECT key, value FROM system_settings
+          WHERE key IN ('assr_default_assignee_id', 'assr_default_assignee2_id')`
+      ).all<{ key: string; value: string | null }>();
+      for (const r of rows.results ?? []) {
+        if (r.value == null) continue;
         const n = parseInt(r.value, 10);
-        if (!isNaN(n)) defaultAssigneeId = n;
+        if (isNaN(n)) continue;
+        if (r.key === "assr_default_assignee_id") defaultAssigneeId = n;
+        else defaultAssignee2Id = n;
       }
+      // The same person twice adds nothing — keep the co-slot empty.
+      if (defaultAssignee2Id === defaultAssigneeId) defaultAssignee2Id = null;
     } catch (e) {
-      console.warn("[assr.create] could not read default assignee:", e);
+      console.warn("[assr.create] could not read default assignees:", e);
     }
   }
 
@@ -300,9 +307,9 @@ export async function createAssrCase(
        assr_no, status, stage, doc_no, complained_date, customer_name, phone, location,
        sales_agent, item_code, complaint_issue, issue_category, priority, po_no, addr1, addr2, addr3, addr4, created_by,
        ref_no, customer_email, service_category, delivery_order, do_date,
-       assigned_to, sla_hours, deadline_at,
+       assigned_to, assigned_to_2, sla_hours, deadline_at,
        stage_entered_at, stage_target_days, stage_changed_at, lead_time_profile_id
-     ) VALUES (?, 'Open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     ) VALUES (?, 'Open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       assrNo,
@@ -340,6 +347,7 @@ export async function createAssrCase(
       null,
       null,
       defaultAssigneeId,
+      defaultAssignee2Id,
       slaHours,
       deadlineAt,
       nowIso,
@@ -387,6 +395,17 @@ export async function createAssrCase(
       input.created_by
     );
   }
+  if (defaultAssignee2Id != null) {
+    await logActivity(
+      env,
+      assrId,
+      "assignment_2",
+      null,
+      String(defaultAssignee2Id),
+      "default co-assignee",
+      input.created_by
+    );
+  }
 
   // Fire-and-forget creditor resolution from the primary item. A
   // failed lookup (item unknown upstream, network, etc.) must not
@@ -409,6 +428,7 @@ export async function getAssrDetail(env: Env, id: number) {
             u2.name as created_by_name,
             u3.name as approved_by_name,
             u4.name as verified_by_name,
+            u5.name as assigned_to_2_name,
             cr.company_name as creditor_name,
             cr.email as creditor_email,
             cr.phone1 as creditor_phone,
@@ -425,6 +445,7 @@ export async function getAssrDetail(env: Env, id: number) {
        LEFT JOIN users u2 ON u2.id = c.created_by
        LEFT JOIN users u3 ON u3.id = c.approved_by
        LEFT JOIN users u4 ON u4.id = c.verified_by
+       LEFT JOIN users u5 ON u5.id = c.assigned_to_2
        LEFT JOIN creditors cr ON cr.creditor_code = c.creditor_code
       WHERE c.id = ?`
   )
@@ -633,7 +654,7 @@ const PATCH_FIELDS = [
   "customer_name", "customer_email", "phone", "location", "sales_agent", "item_code",
   "complaint_issue", "action_remark", "service_category",
   "completion_date", "po_no", "resolution_method", "issue_category",
-  "priority", "assigned_to", "ref_no", "delivery_order", "do_date",
+  "priority", "assigned_to", "assigned_to_2", "ref_no", "delivery_order", "do_date",
   "satisfaction_rating", "satisfaction_notes",
   "addr1", "addr2", "addr3", "addr4",
   // QMS additions
@@ -734,6 +755,9 @@ export async function patchAssrCase(
   // Log assignment changes
   if ("assigned_to" in body) {
     await logActivity(env, id, "assignment", null, String(body.assigned_to ?? ""), null, userId);
+  }
+  if ("assigned_to_2" in body) {
+    await logActivity(env, id, "assignment_2", null, String(body.assigned_to_2 ?? ""), null, userId);
   }
 
   // Audit complaint edits so the customer-facing description has a
@@ -951,8 +975,10 @@ function pushVisibilityScope(
     return;
   }
   const ph = ids.map(() => "?").join(",");
-  where.push(`(c.created_by IN (${ph}) OR c.assigned_to IN (${ph}))`);
-  binds.push(...ids, ...ids);
+  where.push(
+    `(c.created_by IN (${ph}) OR c.assigned_to IN (${ph}) OR c.assigned_to_2 IN (${ph}))`
+  );
+  binds.push(...ids, ...ids, ...ids);
 }
 
 // Allow-listed sort columns. Computed aliases (stage_since,
@@ -1021,8 +1047,8 @@ export async function listAssrCases(env: Env, f: ListAssrFilters) {
     binds.push(f.status);
   }
   if (f.assigned_to != null) {
-    where.push("c.assigned_to = ?");
-    binds.push(f.assigned_to);
+    where.push("(c.assigned_to = ? OR c.assigned_to_2 = ?)");
+    binds.push(f.assigned_to, f.assigned_to);
   }
   if (f.creditor_code) {
     where.push("c.creditor_code = ?");
@@ -1061,6 +1087,7 @@ export async function listAssrCases(env: Env, f: ListAssrFilters) {
 
   const baseSelect = `
     SELECT c.*, u.name as assigned_to_name, u2.name as created_by_name,
+           ua2.name as assigned_to_2_name,
            cr.company_name as creditor_name,
            cr.email as creditor_email,
            cr.phone1 as creditor_phone,
@@ -1095,6 +1122,7 @@ export async function listAssrCases(env: Env, f: ListAssrFilters) {
       FROM assr_cases c
       LEFT JOIN users u ON u.id = c.assigned_to
       LEFT JOIN users u2 ON u2.id = c.created_by
+      LEFT JOIN users ua2 ON ua2.id = c.assigned_to_2
       LEFT JOIN creditors cr ON cr.creditor_code = c.creditor_code
     ${whereSql}
   `;
@@ -1150,8 +1178,8 @@ export async function exportAssrCases(
     binds.push(f.status);
   }
   if (f.assigned_to != null) {
-    where.push("c.assigned_to = ?");
-    binds.push(f.assigned_to);
+    where.push("(c.assigned_to = ? OR c.assigned_to_2 = ?)");
+    binds.push(f.assigned_to, f.assigned_to);
   }
   if (f.search) {
     where.push("(c.assr_no LIKE ? OR c.doc_no LIKE ? OR c.customer_name LIKE ?)");
