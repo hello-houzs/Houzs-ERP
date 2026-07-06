@@ -39,12 +39,7 @@ app.post("/", async (c) => {
   const provided = c.req.header("X-Intake-Key") || "";
   const expected = c.env.FORM_INTAKE_KEY || "";
   if (!expected || provided !== expected) {
-    // Diagnostic breadcrumbs only — presence + lengths, never values.
-    // (Added while chasing a 401 after the secret upload reported OK.)
-    return c.json(
-      { error: "unauthorized", has_key: !!expected, key_len: expected.length, provided_len: provided.length },
-      401
-    );
+    return c.json({ error: "unauthorized" }, 401);
   }
 
   const body = await c.req
