@@ -25,9 +25,23 @@
  */
 import { Hono } from "hono";
 import type { Env } from "../types";
-import { createAssrCase } from "../services/assr";
+import { createAssrCase, assrAttachmentKey, saveAttachment } from "../services/assr";
 
 const app = new Hono<{ Bindings: Env }>();
+
+// Photo relay limits — Apps Script reads the Drive file and streams the
+// bytes here. Mirrors the portal upload allow-list, plus mp4 because
+// the form column is literally "Photo / Video".
+const EXT_BY_MIME: Record<string, string> = {
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+  "image/heic": "heic",
+  "video/mp4": "mp4",
+  "application/pdf": "pdf",
+};
+const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024; // Apps Script UrlFetch tops out well below this
+const MAX_ATTACHMENTS_PER_CASE = 20;
 
 const pick = (values: Record<string, unknown>, key: string): string | null => {
   const v = values[key];
@@ -119,6 +133,73 @@ app.post("/", async (c) => {
     .run();
 
   return c.json({ ok: true, id, assr_no }, 201);
+});
+
+// ── POST /attachments?case_id=&name= ────────────────────────────
+//
+// Photo/video relay for a case the main handler just created. The
+// Apps Script trigger reads each Drive file from the form's
+// "Photo / Video" column (it runs under Nick's Google account, so it
+// can read files the ERP could never fetch by URL) and streams the
+// raw bytes here. Stored in R2 + assr_attachments exactly like an
+// in-app upload, so the photos show in the case's Photos/Videos
+// grid, the lightbox, and the prints.
+
+app.post("/attachments", async (c) => {
+  const provided = c.req.header("X-Intake-Key") || "";
+  const expected = c.env.FORM_INTAKE_KEY || "";
+  if (!expected || provided !== expected) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+
+  const caseId = parseInt(c.req.query("case_id") || "", 10);
+  if (isNaN(caseId)) return c.json({ error: "case_id is required" }, 400);
+  const fileName = (c.req.query("name") || "").slice(0, 200) || null;
+
+  const contentType = (c.req.header("Content-Type") || "").split(";")[0].trim().toLowerCase();
+  const ext = EXT_BY_MIME[contentType];
+  if (!ext) {
+    return c.json({ error: `content-type '${contentType}' not allowed` }, 415);
+  }
+
+  // Only cases that came in via this webhook accept relayed photos —
+  // keeps the shared-secret surface scoped to its own creations.
+  const isFormCase = await c.env.DB.prepare(
+    `SELECT 1 FROM assr_activity
+      WHERE assr_id = ? AND source_channel = 'google_form'
+      LIMIT 1`
+  )
+    .bind(caseId)
+    .first();
+  if (!isFormCase) return c.json({ error: "not a form-intake case" }, 404);
+
+  const count = await c.env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM assr_attachments WHERE assr_id = ? AND archived_at IS NULL`
+  )
+    .bind(caseId)
+    .first<{ n: number }>();
+  if ((count?.n ?? 0) >= MAX_ATTACHMENTS_PER_CASE) {
+    return c.json({ error: "attachment limit reached" }, 413);
+  }
+
+  const buf = await c.req.arrayBuffer();
+  if (buf.byteLength === 0) return c.json({ error: "empty body" }, 400);
+  if (buf.byteLength > MAX_ATTACHMENT_BYTES) {
+    return c.json({ error: "file exceeds 25MB limit" }, 413);
+  }
+
+  const key = assrAttachmentKey(caseId, "evidence", ext);
+  await c.env.POD_BUCKET.put(key, buf, { httpMetadata: { contentType } });
+  const attId = await saveAttachment(c.env, caseId, key, fileName, contentType, "evidence", null);
+
+  await c.env.DB.prepare(
+    `INSERT INTO assr_activity (assr_id, action, from_value, to_value, note, source_channel)
+     VALUES (?, 'note', NULL, ?, ?, 'google_form')`
+  )
+    .bind(caseId, String(attId), `Photo relayed from Google Form${fileName ? `: ${fileName}` : ""}`)
+    .run();
+
+  return c.json({ ok: true, id: attId }, 201);
 });
 
 export default app;
