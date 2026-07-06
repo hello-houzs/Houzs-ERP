@@ -46,6 +46,7 @@ import {
 } from "../components/DetailLayout";
 import { Button } from "../components/Button";
 import { DataTable, type Column } from "../components/DataTable";
+import { UserMultiSelect } from "../components/UserMultiSelect";
 import {
   StatusDot,
   stageVariant,
@@ -2806,7 +2807,9 @@ function DetailContent({
     ? users.data
         .filter(
           (u: any) =>
-            /operation/i.test(u.department_name || "") || u.id === c?.assigned_to,
+            /operation/i.test(u.department_name || "") ||
+            u.id === c?.assigned_to ||
+            u.id === c?.assigned_to_2,
         )
         .map((u) => ({ id: u.id, name: u.name }))
     : [];
@@ -3845,44 +3848,24 @@ function DetailContent({
               across the page; picking a user snaps to the standard
               filled select. */}
           <PanelSection title="Assigned to" icon={<UserPlus size={13} />}>
-            <select
-              className={cn(
-                "w-full appearance-none rounded-md px-3 py-2 pr-8 text-[13px] outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/20",
-                c.assigned_to == null
-                  ? "border border-dashed border-amber-500/60 bg-amber-50/60 font-semibold text-amber-800"
-                  : "border border-border bg-surface text-ink",
-              )}
-              value={c.assigned_to ?? ""}
-              onChange={(e) => {
-                const v = e.target.value;
-                patch({ assigned_to: v ? parseInt(v, 10) : null });
-              }}
-            >
-              <option value="">Unassigned — click to assign</option>
-              {opsUserOptions.map((u) => (
-                <option key={u.id} value={u.id}>{u.name}</option>
-              ))}
-            </select>
-            {/* Co-assignee — the desk is run by two people; optional,
-                so an empty slot renders as a plain (non-amber) select. */}
-            <div className="mt-2">
-              <div className="mb-1 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
-                Co-assignee
+            {/* Searchable A→Z multi-select, max 2 — first pick is the
+                primary assignee, second the co-assignee. Unassigned
+                keeps the amber "attention needed" treatment via the
+                warning row below. */}
+            <UserMultiSelect
+              options={opsUserOptions}
+              value={[c.assigned_to, c.assigned_to_2].filter((n): n is number => n != null)}
+              onChange={(ids) =>
+                patch({ assigned_to: ids[0] ?? null, assigned_to_2: ids[1] ?? null })
+              }
+              max={2}
+              placeholder="Unassigned — search to assign"
+            />
+            {c.assigned_to == null && (
+              <div className="mt-1.5 rounded-md border border-dashed border-amber-500/60 bg-amber-50/60 px-2 py-1 text-[11px] font-semibold text-amber-800">
+                Needs an assignee
               </div>
-              <select
-                className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 pr-8 text-[13px] text-ink outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/20"
-                value={c.assigned_to_2 ?? ""}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  patch({ assigned_to_2: v ? parseInt(v, 10) : null });
-                }}
-              >
-                <option value="">None</option>
-                {opsUserOptions.map((u) => (
-                  <option key={u.id} value={u.id}>{u.name}</option>
-                ))}
-              </select>
-            </div>
+            )}
           </PanelSection>
 
           {/* SLA — Design PR 2. Full red card + big mono countdown +
