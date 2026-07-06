@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { Env } from "../types";
 import { customerStatusFor } from "../services/caseTracking";
 import { assrAttachmentKey, saveAttachment, ALL_STAGES } from "../services/assr";
+import { checkRateLimit } from "../middleware/rateLimit";
 
 // Customer portal API. All routes are gated by the `caseTrack`
 // middleware (see src/index.ts), which resolves the bearer token to
@@ -166,6 +167,9 @@ app.get("/case", async (c) => {
 app.post("/case/comments", async (c) => {
   const { assr_id, source } = c.get("trackedCase");
   const asSales = source === "sales";
+  // Spam brake — a stolen/shared link can't flood the timeline.
+  const limited = await checkRateLimit(c, "portal_comment", `${assr_id}:${source}`, 20, 3600);
+  if (limited) return limited;
   const body = await c.req.json<{ text?: string }>().catch(() => ({} as { text?: string }));
   const text = (body.text || "").trim();
   if (!text) return c.json({ error: "Comment cannot be empty" }, 400);
@@ -189,6 +193,10 @@ const MAX_ATTACHMENTS_PER_CASE = 20;
 app.put("/case/attachments", async (c) => {
   const { assr_id, source } = c.get("trackedCase");
   const asSales = source === "sales";
+  // Upload brake — the 20-per-case cap already bounds storage; this
+  // bounds the churn rate (upload/archive cycling around the cap).
+  const limited = await checkRateLimit(c, "portal_upload", `${assr_id}:${source}`, 15, 3600);
+  if (limited) return limited;
 
   const ext = (c.req.query("ext") || "jpg").toLowerCase();
   const fileName = c.req.query("name") || null;

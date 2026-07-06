@@ -13,6 +13,7 @@
  */
 import { Hono } from "hono";
 import type { Env } from "../types";
+import { checkRateLimit } from "../middleware/rateLimit";
 import { assrAttachmentKey, saveAttachment } from "../services/assr";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -213,6 +214,9 @@ app.post("/quote", async (c) => {
 
 app.post("/remarks", async (c) => {
   const { assr_id } = c.get("supplierScope");
+  // Spam brake — same treatment as the customer portal's comments.
+  const limited = await checkRateLimit(c, "supplier_remark", String(assr_id), 20, 3600);
+  if (limited) return limited;
   const body = await c.req.json<{ note?: string }>();
   const note = (body.note || "").trim();
   if (!note) return c.json({ error: "note is required" }, 400);
@@ -267,6 +271,9 @@ app.put("/service-note", async (c) => {
 
 app.put("/attachments", async (c) => {
   const { assr_id } = c.get("supplierScope");
+  // Upload brake — bounds churn around the 20-per-case attachment cap.
+  const limited = await checkRateLimit(c, "supplier_upload", String(assr_id), 15, 3600);
+  if (limited) return limited;
 
   const ext = (c.req.query("ext") || "jpg").toLowerCase();
   const fileName = c.req.query("name") || null;
