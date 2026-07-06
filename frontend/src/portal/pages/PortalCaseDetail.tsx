@@ -212,51 +212,59 @@ export function PortalCaseDetailPage() {
     <PortalFrame>
       <div className="mx-auto flex max-w-md flex-col gap-4 px-1 py-1 sm:px-0">
 
-        {/* Product row — small squircle icon + product name + ASSR-no.
-            The customer opened this link knowing their item; the row is
-            confirmation, not navigation. */}
-        <div className="flex items-center gap-3">
-          <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-accent-soft to-accent/25 text-accent shadow-stone">
-            <Package size={22} />
+        {/* Customer view keeps the product row (they opened the link
+            knowing their item). The sales view drops it — the header IS
+            the case-reference card (Nick: basic info, not the service
+            item; the item still shows under "Items under service"). */}
+        {!isSales && (
+          <div className="flex items-center gap-3">
+            <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-accent-soft to-accent/25 text-accent shadow-stone">
+              <Package size={22} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-[15px] font-bold leading-tight text-ink">{productHeadline}</div>
+              <div className="mt-0.5 font-mono text-[11px] text-ink-muted">{cs.assr_no}</div>
+            </div>
           </div>
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-[15px] font-bold leading-tight text-ink">{productHeadline}</div>
-            <div className="mt-0.5 font-mono text-[11px] text-ink-muted">{cs.assr_no}</div>
-          </div>
-          {isSales && (
-            <span className="shrink-0 rounded-full bg-primary/10 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-primary">
-              Sales view
-            </span>
-          )}
-        </div>
+        )}
 
-        {/* Sales-only case reference card — the numbers a salesperson
-            cross-references against their own orders. Customer tokens
-            never receive doc_no / ref_no. */}
+        {/* Sales header: the case-reference card — the numbers a
+            salesperson cross-references against their own orders.
+            Customer tokens never receive doc_no / ref_no. */}
         {isSales && (
-          <div className="grid grid-cols-2 gap-x-4 gap-y-2 rounded-2xl border border-border bg-surface p-4">
-            {(
-              [
-                { label: "ASSR No", value: cs.assr_no },
-                { label: "Customer", value: cs.customer_name, plain: true },
-                { label: "SO No", value: cs.doc_no },
-                { label: "Ref No", value: cs.ref_no },
-              ] as Array<{ label: string; value?: string | null; plain?: boolean }>
-            ).map((f) => (
-              <div key={f.label} className="min-w-0">
-                <div className="text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
-                  {f.label}
-                </div>
-                <div
-                  className={
-                    "truncate text-[12.5px] text-ink " + (f.plain ? "font-medium" : "font-mono")
-                  }
-                  title={f.value || undefined}
-                >
-                  {f.value || "—"}
-                </div>
+          <div className="rounded-2xl border border-border bg-surface p-4">
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <div className="min-w-0 truncate text-[15px] font-bold leading-tight text-ink">
+                {cs.customer_name || cs.assr_no}
               </div>
-            ))}
+              <span className="shrink-0 rounded-full bg-primary/10 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-primary">
+                Sales view
+              </span>
+            </div>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+              {(
+                [
+                  { label: "ASSR No", value: cs.assr_no },
+                  { label: "Customer", value: cs.customer_name, plain: true },
+                  { label: "SO No", value: cs.doc_no },
+                  { label: "Ref No", value: cs.ref_no },
+                ] as Array<{ label: string; value?: string | null; plain?: boolean }>
+              ).map((f) => (
+                <div key={f.label} className="min-w-0">
+                  <div className="text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
+                    {f.label}
+                  </div>
+                  <div
+                    className={
+                      "truncate text-[12.5px] text-ink " + (f.plain ? "font-medium" : "font-mono")
+                    }
+                    title={f.value || undefined}
+                  >
+                    {f.value || "—"}
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
