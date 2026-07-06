@@ -137,6 +137,16 @@ export const NAV_TABS: NavTab[] = [
     anyPerm: ["*", "scm.access"],
     anyAccess: ["scm.sales.orders"],
   },
+  // Sales Entries — rep-entered sales log + Director approval queue.
+  // Restored 2026-07-06 (stripped in the core-slim pass); visibility
+  // follows the per-page matrix key `sales`.
+  {
+    section: "workspace",
+    to: "/sales",
+    label: "Sales Entries",
+    icon: ReceiptText,
+    pageAccess: "sales",
+  },
 
   // ══ OPERATIONS ═══════════════════════════════════════════════
   // ── Service — quality + ASSR. Header links to the Cases page; the
