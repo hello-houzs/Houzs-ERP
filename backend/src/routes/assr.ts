@@ -1169,11 +1169,11 @@ app.post("/attachments/:attId/archive", requirePermission("service_cases.write")
   return c.json({ ok: true });
 });
 
-// Activity archive — only non-system actions (notes, customer
-// comments). Stage transitions, created, approval, po_generated,
+// Activity archive — only non-system actions (notes, customer and
+// sales comments). Stage transitions, created, approval, po_generated,
 // escalated, survey_submitted are all part of the audit trail and
 // must not be archive-able.
-const ARCHIVABLE_ACTIONS = new Set(["note", "customer_comment"]);
+const ARCHIVABLE_ACTIONS = new Set(["note", "customer_comment", "sales_comment"]);
 
 app.post("/activity/:actId/archive", requirePermission("service_cases.write"), async (c) => {
   const actId = parseInt(c.req.param("actId"), 10);

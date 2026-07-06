@@ -2604,7 +2604,7 @@ function DetailContent({
   //   customer = anything the customer posted or uploaded on their portal
   //   supplier = anything the supplier posted / did via /portal/supplier
   const [activityFilter, setActivityFilter] = useState<
-    "all" | "service" | "customer" | "supplier"
+    "all" | "service" | "customer" | "supplier" | "sales"
   >("all");
   const [transitioning, setTransitioning] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -4037,7 +4037,8 @@ function DetailContent({
 
             {/* Filter tabs — Design PR 2. Roles reflect who authored the
                 activity (Service = internal, Customer = via customer
-                portal, Supplier = via supplier portal). */}
+                portal, Supplier = via supplier portal, Sales = via the
+                sales portal link). */}
             <div className="mb-3 flex flex-wrap gap-1.5">
               {(
                 [
@@ -4045,6 +4046,7 @@ function DetailContent({
                   { value: "service" as const, label: "Service" },
                   { value: "customer" as const, label: "Customer" },
                   { value: "supplier" as const, label: "Supplier" },
+                  { value: "sales" as const, label: "Sales" },
                 ]
               ).map((opt) => {
                 const active = activityFilter === opt.value;
@@ -4071,8 +4073,9 @@ function DetailContent({
             {(() => {
               // Design PR 2 — derive an actor role from source_channel /
               // action so the filter tabs and the per-entry pill agree.
-              const roleOf = (a: any): "customer" | "supplier" | "service" => {
+              const roleOf = (a: any): "customer" | "supplier" | "service" | "sales" => {
                 const ch = a.source_channel;
+                if (a.source === "sales" || a.action === "sales_comment" || a.action === "sales_upload") return "sales";
                 if (ch === "customer_portal" || a.source === "customer" || a.action === "customer_comment") return "customer";
                 if (ch === "supplier_portal") return "supplier";
                 return "service";
@@ -4095,12 +4098,14 @@ function DetailContent({
                     const author =
                       a.source === "customer"
                         ? a.customer_name_display || a.customer_email || "Customer"
-                        : a.user_name || "System";
+                        : a.source === "sales"
+                          ? c.sales_agent || "Sales"
+                          : a.user_name || "System";
                     const isEscalated = a.action === "escalated";
                     const isCustomer = a.source === "customer";
                     const archivable =
                       !c.archived_at &&
-                      (a.action === "note" || a.action === "customer_comment");
+                      (a.action === "note" || a.action === "customer_comment" || a.action === "sales_comment");
                     let title: React.ReactNode = a.action;
                     let body: React.ReactNode = null;
                     switch (a.action) {
@@ -4175,6 +4180,16 @@ function DetailContent({
                         title = "Photo uploaded";
                         if (a.note) body = a.note;
                         break;
+                      case "sales_comment":
+                        // Same reasoning as customer_comment — the pill
+                        // already says Sales; the comment is the headline.
+                        title = null;
+                        body = a.note;
+                        break;
+                      case "sales_upload":
+                        title = "Photo uploaded";
+                        if (a.note) body = a.note;
+                        break;
                     }
                     const actorRole = roleOf(a);
                     return (
@@ -4188,7 +4203,9 @@ function DetailContent({
                                 ? "border-amber-500"
                                 : actorRole === "supplier"
                                   ? "border-primary"
-                                  : "border-border"
+                                  : actorRole === "sales"
+                                    ? "border-accent"
+                                    : "border-border"
                           )}
                         />
                         <div className="flex items-center gap-2 text-[10.5px] text-ink-muted">
@@ -4231,10 +4248,11 @@ function DetailContent({
                               "rounded px-1.5 py-[1px] text-[9px] font-bold uppercase tracking-wider",
                               actorRole === "customer" && "bg-amber-100 text-amber-800",
                               actorRole === "supplier" && "bg-primary/10 text-primary",
+                              actorRole === "sales" && "bg-accent-soft text-accent",
                               actorRole === "service" && "bg-bg text-ink-secondary",
                             )}
                           >
-                            {actorRole === "service" ? "Service" : actorRole === "customer" ? "Customer" : "Supplier"}
+                            {actorRole === "service" ? "Service" : actorRole === "customer" ? "Customer" : actorRole === "supplier" ? "Supplier" : "Sales"}
                           </span>
                           <span>by {author}</span>
                         </div>
