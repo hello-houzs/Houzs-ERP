@@ -601,6 +601,16 @@ function CasesView({
       getValue: (r) => r.doc_no,
     },
     {
+      key: "ref_no",
+      filterable: true,
+      label: "Ref No",
+      // The SO's customer reference (HC/ZNT/PG…) — what the branches
+      // and suppliers quote back, so it earns a default-visible slot
+      // next to SO No.
+      render: (r) => <span className="font-mono text-xs">{r.ref_no || "—"}</span>,
+      getValue: (r) => r.ref_no,
+    },
+    {
       key: "complained_date",
       filterable: true,
       label: "Date",
