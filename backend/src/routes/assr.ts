@@ -20,7 +20,7 @@ import {
   nextServicePONumber,
 } from "../services/assr";
 import { runSlaEscalation } from "../services/assrEscalation";
-import { issueStaffToken } from "../services/caseTracking";
+import { issueStaffToken, issueSalesToken } from "../services/caseTracking";
 import { sendEmail, publicUrl } from "../services/email";
 import { AutoCountClient } from "../services/autocount";
 import { requirePermission, requireAnyPermission } from "../middleware/auth";
@@ -1035,6 +1035,23 @@ app.post("/:id/track-link", requirePermission("service_cases.write"), async (c) 
     .first();
   if (!exists) return c.json({ error: "Not found" }, 404);
   const token = await issueStaffToken(c.env, id);
+  return c.json({ token, path: `/portal/case/${token}` }, 201);
+});
+
+// ── Sales portal link ─────────────────────────────────────────
+// Same per-case portal as the customer link but source='sales' —
+// the portal shows the salesperson variant (full stage progress,
+// comments attributed to sales). Idempotent per case.
+app.post("/:id/sales-link", requirePermission("service_cases.write"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+  const exists = await c.env.DB.prepare(
+    `SELECT id FROM assr_cases WHERE id = ?`
+  )
+    .bind(id)
+    .first();
+  if (!exists) return c.json({ error: "Not found" }, 404);
+  const token = await issueSalesToken(c.env, id);
   return c.json({ token, path: `/portal/case/${token}` }, 201);
 });
 

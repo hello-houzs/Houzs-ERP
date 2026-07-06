@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
 import { customerStatusFor } from "../services/caseTracking";
-import { assrAttachmentKey, saveAttachment } from "../services/assr";
+import { assrAttachmentKey, saveAttachment, ALL_STAGES } from "../services/assr";
 
 // Customer portal API. All routes are gated by the `caseTrack`
 // middleware (see src/index.ts), which resolves the bearer token to
@@ -19,7 +19,10 @@ const app = new Hono<{ Bindings: Env }>();
 // (supplier, cost, action_remark, addresses, approval, PO no, SLA
 // flags, assigned officer, etc.).
 app.get("/case", async (c) => {
-  const { assr_id } = c.get("trackedCase");
+  const { assr_id, source: viewer } = c.get("trackedCase");
+  // Staff-issued customer links behave exactly like customer ones;
+  // only 'sales' tokens unlock the salesperson variant.
+  const isSales = viewer === "sales";
 
   const cs = await c.env.DB.prepare(
     `SELECT id, assr_no, stage, complained_date, complaint_issue,
@@ -67,6 +70,9 @@ app.get("/case", async (c) => {
   const timeline = (activityRaw.results ?? [])
     .filter((a: any) => {
       if (a.source === "customer") return true;
+      // Sales-authored entries stay off the customer's page — the
+      // salesperson may be asking the team internal-ish questions.
+      if (a.source === "sales") return isSales;
       if (a.action === "stage_change") return true;
       if (a.action === "created") return true;
       if (a.action === "survey_submitted") return true;
@@ -83,13 +89,18 @@ app.get("/case", async (c) => {
       if (a.action === "stage_change") {
         const to = customerStatusFor(a.to_value);
         base.label = `Status updated to ${to.label}`;
-      } else if (a.action === "created") {
-        base.label = "Case received";
       } else if (a.action === "customer_comment") {
         base.label = "Comment";
         base.note = a.note;
+      } else if (a.action === "sales_comment") {
+        base.label = "Comment (Sales)";
+        base.note = a.note;
+      } else if (a.action === "created") {
+        base.label = "Case received";
       } else if (a.action === "customer_upload") {
         base.label = "Photo uploaded";
+      } else if (a.action === "sales_upload") {
+        base.label = "Photo uploaded (Sales)";
       } else if (a.action === "survey_submitted") {
         base.label = "Satisfaction survey submitted";
       } else if (a.action === "note" && a.category === "customer") {
@@ -101,7 +112,32 @@ app.get("/case", async (c) => {
       return base;
     });
 
+  // Salesperson variant: the real 9-stage progress with entry dates.
+  // Customers keep the simplified 5-step tracker (client-side).
+  let stages: any[] | undefined;
+  if (isSales) {
+    const hist = await c.env.DB.prepare(
+      `SELECT stage, MIN(entered_at) AS entered_at
+         FROM assr_stage_history
+        WHERE assr_id = ?
+        GROUP BY stage`
+    )
+      .bind(assr_id)
+      .all<{ stage: string; entered_at: string }>();
+    const enteredAt = new Map((hist.results ?? []).map((h) => [h.stage, h.entered_at]));
+    const curIdx = ALL_STAGES.indexOf(cs.stage);
+    stages = ALL_STAGES.map((s, i) => ({
+      stage: s,
+      label: customerStatusFor(s).label,
+      entered_at: enteredAt.get(s) ?? null,
+      done: curIdx >= 0 && (i < curIdx || (i === curIdx && cs.stage === "completed")),
+      current: i === curIdx && cs.stage !== "completed",
+    }));
+  }
+
   return c.json({
+    viewer,
+    stages,
     case: {
       id: cs.id,
       assr_no: cs.assr_no,
@@ -125,8 +161,11 @@ app.get("/case", async (c) => {
 });
 
 // ── POST /case/comments ────────────────────────────────────
+// Staff-issued customer links post as the customer (the staff token
+// is USED by the customer); sales tokens post as sales.
 app.post("/case/comments", async (c) => {
-  const { assr_id } = c.get("trackedCase");
+  const { assr_id, source } = c.get("trackedCase");
+  const asSales = source === "sales";
   const body = await c.req.json<{ text?: string }>().catch(() => ({} as { text?: string }));
   const text = (body.text || "").trim();
   if (!text) return c.json({ error: "Comment cannot be empty" }, 400);
@@ -135,9 +174,9 @@ app.post("/case/comments", async (c) => {
   await c.env.DB.prepare(
     `INSERT INTO assr_activity
        (assr_id, action, from_value, to_value, note, customer_id, source, user_id)
-     VALUES (?, 'customer_comment', NULL, NULL, ?, NULL, 'customer', NULL)`
+     VALUES (?, ?, NULL, NULL, ?, NULL, ?, NULL)`
   )
-    .bind(assr_id, text)
+    .bind(assr_id, asSales ? "sales_comment" : "customer_comment", text, asSales ? "sales" : "customer")
     .run();
   return c.json({ ok: true });
 });
@@ -148,7 +187,8 @@ const MAX_SIZE = 10 * 1024 * 1024; // 10 MB
 const MAX_ATTACHMENTS_PER_CASE = 20;
 
 app.put("/case/attachments", async (c) => {
-  const { assr_id } = c.get("trackedCase");
+  const { assr_id, source } = c.get("trackedCase");
+  const asSales = source === "sales";
 
   const ext = (c.req.query("ext") || "jpg").toLowerCase();
   const fileName = c.req.query("name") || null;
@@ -179,22 +219,22 @@ app.put("/case/attachments", async (c) => {
   await c.env.POD_BUCKET.put(key, buf, { httpMetadata: { contentType } });
   const attId = await saveAttachment(c.env, assr_id, key, fileName, contentType, "evidence", null);
 
-  // Mark as posted by the customer side.
+  // Mark as posted by the portal side (customer or sales).
   await c.env.DB.prepare(
     `UPDATE assr_attachments
-        SET source = 'customer', visible_to_customer = 1
+        SET source = ?, visible_to_customer = 1
       WHERE id = ?`
   )
-    .bind(attId)
+    .bind(asSales ? "sales" : "customer", attId)
     .run();
 
   // Activity log entry.
   await c.env.DB.prepare(
     `INSERT INTO assr_activity
        (assr_id, action, from_value, to_value, note, customer_id, source, user_id)
-     VALUES (?, 'customer_upload', NULL, ?, ?, NULL, 'customer', NULL)`
+     VALUES (?, ?, NULL, ?, ?, NULL, ?, NULL)`
   )
-    .bind(assr_id, String(attId), fileName)
+    .bind(assr_id, asSales ? "sales_upload" : "customer_upload", String(attId), fileName, asSales ? "sales" : "customer")
     .run();
 
   return c.json({ id: attId }, 201);
@@ -229,12 +269,15 @@ app.get("/case/attachments/:attId", async (c) => {
   });
 });
 
-// ── Customer self-archive (own content only) ───────────────
-// The customer can retract their own comment or their own photo.
-// Anything authored by staff is off-limits from the portal side.
+// ── Portal self-archive (own content only) ─────────────────
+// The viewer can retract their own comment or their own photo —
+// customer tokens retract customer content, sales tokens retract
+// sales content. Anything authored by staff (or the other party)
+// is off-limits from the portal side.
 
 app.post("/case/comments/:actId/archive", async (c) => {
-  const { assr_id } = c.get("trackedCase");
+  const { assr_id, source } = c.get("trackedCase");
+  const asSales = source === "sales";
   const actId = parseInt(c.req.param("actId"), 10);
   if (isNaN(actId)) return c.json({ error: "Not found" }, 404);
   const r = await c.env.DB.prepare(
@@ -242,18 +285,18 @@ app.post("/case/comments/:actId/archive", async (c) => {
         SET archived_at = datetime('now')
       WHERE id = ?
         AND assr_id = ?
-        AND action = 'customer_comment'
-        AND source = 'customer'
+        AND action = ?
+        AND source = ?
         AND archived_at IS NULL`
   )
-    .bind(actId, assr_id)
+    .bind(actId, assr_id, asSales ? "sales_comment" : "customer_comment", asSales ? "sales" : "customer")
     .run();
   if (!(r.meta.changes ?? 0)) return c.json({ error: "Not found" }, 404);
   return c.json({ ok: true });
 });
 
 app.post("/case/attachments/:attId/archive", async (c) => {
-  const { assr_id } = c.get("trackedCase");
+  const { assr_id, source } = c.get("trackedCase");
   const attId = parseInt(c.req.param("attId"), 10);
   if (isNaN(attId)) return c.json({ error: "Not found" }, 404);
   const r = await c.env.DB.prepare(
@@ -261,10 +304,10 @@ app.post("/case/attachments/:attId/archive", async (c) => {
         SET archived_at = datetime('now')
       WHERE id = ?
         AND assr_id = ?
-        AND source = 'customer'
+        AND source = ?
         AND archived_at IS NULL`
   )
-    .bind(attId, assr_id)
+    .bind(attId, assr_id, source === "sales" ? "sales" : "customer")
     .run();
   if (!(r.meta.changes ?? 0)) return c.json({ error: "Not found" }, 404);
   return c.json({ ok: true });

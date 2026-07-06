@@ -5769,7 +5769,7 @@ function PortalLinksMenu({
       <button
         onClick={() => setOpen((v) => !v)}
         className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-[10px] font-semibold text-ink hover:border-accent/40"
-        title="Generate a customer or supplier portal link"
+        title="Generate a customer, supplier or sales portal link"
       >
         Portal Link
         <ChevronRight
@@ -5786,6 +5786,7 @@ function PortalLinksMenu({
             onGenerated={onGenerated}
           />
           <SupplierPortalLinkRow id={id} toast={toast} />
+          <SalesPortalLinkRow id={id} toast={toast} />
         </div>
       )}
     </div>
@@ -6366,6 +6367,85 @@ function SupplierPortalLinkRow({
             className="inline-flex items-center gap-1 rounded-md border border-accent/40 bg-accent-soft/20 px-3 py-1.5 text-[11px] font-semibold text-accent hover:bg-accent-soft/40 disabled:opacity-50"
           >
             {busy ? "Generating…" : "Generate Supplier Link"}
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── Sales portal link ────────────────────────────────────────────
+//
+// Third variant of the per-case portal link: same /portal/case route
+// as the customer link but the token is source='sales', so the portal
+// shows the salesperson view — full 9-stage progress with dates, and
+// comments/uploads attributed to sales. Idempotent per case.
+
+function SalesPortalLinkRow({
+  id,
+  toast,
+}: {
+  id: number;
+  toast: ReturnType<typeof useToast>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [link, setLink] = useState<string | null>(null);
+
+  async function generate() {
+    setBusy(true);
+    try {
+      const r = await api.post<{ token: string; path: string }>(
+        `/api/assr/${id}/sales-link`
+      );
+      setLink(`${window.location.origin}/portal/case/${r.token}`);
+      toast.success("Sales link generated.");
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to generate link");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mt-2 rounded-md border border-border bg-bg/40 p-3">
+      <div className="mb-1 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+        Sales Portal Link
+      </div>
+      {link ? (
+        <>
+          <div className="flex items-center gap-2">
+            <input
+              readOnly
+              value={link}
+              onFocus={(e) => e.currentTarget.select()}
+              className="flex-1 rounded-md border border-border bg-surface px-2 py-1.5 font-mono text-[11px]"
+            />
+            <button
+              onClick={() => {
+                navigator.clipboard?.writeText(link);
+                toast.success("Copied");
+              }}
+              className="rounded-md border border-border bg-surface px-2 py-1.5 text-[10px] font-semibold"
+            >
+              Copy
+            </button>
+          </div>
+          <div className="mt-1.5 text-[10px] text-ink-muted">
+            30-day link. Paste into WhatsApp for the salesperson.
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="mb-1.5 text-[11px] text-ink-secondary">
+            Share with the salesperson — full stage progress for this case,
+            and they can message the team. No costs or internal notes.
+          </div>
+          <button
+            onClick={generate}
+            disabled={busy}
+            className="inline-flex items-center gap-1 rounded-md border border-accent/40 bg-accent-soft/20 px-3 py-1.5 text-[11px] font-semibold text-accent hover:bg-accent-soft/40 disabled:opacity-50"
+          >
+            {busy ? "Generating…" : "Generate Sales Link"}
           </button>
         </>
       )}
