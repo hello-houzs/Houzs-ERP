@@ -27,7 +27,8 @@ app.get("/case", async (c) => {
   const cs = await c.env.DB.prepare(
     `SELECT id, assr_no, stage, complained_date, complaint_issue,
             service_category, deadline_at, completion_date, closed_at,
-            satisfaction_rating, customer_name, resolution_method
+            satisfaction_rating, customer_name, resolution_method,
+            doc_no, ref_no
        FROM assr_cases WHERE id = ?`
   )
     .bind(assr_id)
@@ -142,6 +143,10 @@ app.get("/case", async (c) => {
       id: cs.id,
       assr_no: cs.assr_no,
       customer_name: cs.customer_name,   // safe to echo back for confirmation
+      // SO / Ref numbers are for the salesperson (they cross-reference
+      // their own orders by these) — never sent to customer tokens.
+      doc_no: isSales ? cs.doc_no : undefined,
+      ref_no: isSales ? cs.ref_no : undefined,
       complained_date: cs.complained_date,
       complaint_issue: cs.complaint_issue,
       category: cs.service_category,
