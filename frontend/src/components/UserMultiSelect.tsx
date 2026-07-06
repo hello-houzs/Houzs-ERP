@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { X, Search, Check } from "lucide-react";
 import { cn } from "../lib/utils";
 
@@ -17,6 +18,10 @@ export interface UserOptionItem {
  *
  * Selection ORDER is meaningful to callers (first = primary), so chips
  * keep insertion order while the dropdown stays alphabetical.
+ *
+ * The dropdown renders through a PORTAL with fixed positioning so it
+ * escapes any card/panel overflow clipping (Nick's follow-up: options
+ * must never be trapped inside the card, on every page).
  */
 export function UserMultiSelect({
   options,
@@ -35,17 +40,39 @@ export function UserMultiSelect({
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const rootRef = useRef<HTMLDivElement | null>(null);
+  const [rect, setRect] = useState<{ top: number; left: number; width: number } | null>(null);
+  const controlRef = useRef<HTMLDivElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
-  // Close on outside click.
+  // Track the control's viewport position while open so the portalled
+  // menu follows it through scrolling panels and window resizes.
+  useLayoutEffect(() => {
+    if (!open) return;
+    function place() {
+      const el = controlRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      setRect({ top: r.bottom + 4, left: r.left, width: r.width });
+    }
+    place();
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    return () => {
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+    };
+  }, [open]);
+
+  // Close on outside click — the menu lives in a portal, so check both.
   useEffect(() => {
     if (!open) return;
     function onDown(e: MouseEvent) {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
-        setOpen(false);
-        setQuery("");
-      }
+      const t = e.target as Node;
+      if (controlRef.current?.contains(t)) return;
+      if (menuRef.current?.contains(t)) return;
+      setOpen(false);
+      setQuery("");
     }
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
@@ -81,8 +108,49 @@ export function UserMultiSelect({
     inputRef.current?.focus();
   }
 
+  const menu =
+    open && rect
+      ? createPortal(
+          <div
+            ref={menuRef}
+            style={{ position: "fixed", top: rect.top, left: rect.left, width: rect.width, zIndex: 90 }}
+            className="max-h-64 overflow-y-auto rounded-md border border-border bg-surface py-1 shadow-stone"
+          >
+            {max != null && (
+              <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+                Up to {max} {max === 1 ? "person" : "people"}
+                {atMax ? " — remove one to change" : ""}
+              </div>
+            )}
+            {filtered.length === 0 && (
+              <div className="px-3 py-2 text-[12px] text-ink-muted">No matches</div>
+            )}
+            {filtered.map((o) => {
+              const isSel = value.includes(o.id);
+              return (
+                <button
+                  key={o.id}
+                  type="button"
+                  onClick={() => toggle(o.id)}
+                  disabled={!isSel && atMax}
+                  className={cn(
+                    "flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-[13px] hover:bg-bg",
+                    isSel && "font-semibold text-primary",
+                    !isSel && atMax && "cursor-not-allowed opacity-45"
+                  )}
+                >
+                  <span className="truncate">{labelOf(o)}</span>
+                  {isSel && <Check size={13} className="shrink-0" />}
+                </button>
+              );
+            })}
+          </div>,
+          document.body
+        )
+      : null;
+
   return (
-    <div ref={rootRef} className="relative">
+    <div ref={controlRef} className="relative">
       <div
         onClick={() => {
           if (disabled) return;
@@ -130,39 +198,7 @@ export function UserMultiSelect({
           />
         </span>
       </div>
-
-      {open && (
-        <div className="absolute inset-x-0 top-full z-30 mt-1 max-h-64 overflow-y-auto rounded-md border border-border bg-surface py-1 shadow-stone">
-          {max != null && (
-            <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
-              Up to {max} {max === 1 ? "person" : "people"}
-              {atMax ? " — remove one to change" : ""}
-            </div>
-          )}
-          {filtered.length === 0 && (
-            <div className="px-3 py-2 text-[12px] text-ink-muted">No matches</div>
-          )}
-          {filtered.map((o) => {
-            const isSel = value.includes(o.id);
-            return (
-              <button
-                key={o.id}
-                type="button"
-                onClick={() => toggle(o.id)}
-                disabled={!isSel && atMax}
-                className={cn(
-                  "flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-[13px] hover:bg-bg",
-                  isSel && "font-semibold text-primary",
-                  !isSel && atMax && "cursor-not-allowed opacity-45"
-                )}
-              >
-                <span className="truncate">{labelOf(o)}</span>
-                {isSel && <Check size={13} className="shrink-0" />}
-              </button>
-            );
-          })}
-        </div>
-      )}
+      {menu}
     </div>
   );
 }
