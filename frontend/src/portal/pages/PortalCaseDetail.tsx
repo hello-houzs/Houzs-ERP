@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { Upload, Send, Package, Star, X, ChevronLeft, ChevronRight, Trash2, Clock, Phone, MessageSquare, ShieldCheck, Check } from "lucide-react";
+import { Upload, Send, Package, Star, X, ChevronLeft, ChevronRight, Trash2, Clock, MessageSquare, ShieldCheck, Check } from "lucide-react";
 import { createPortal } from "react-dom";
 import { portalApi } from "../portalApi";
 import { PortalFrame } from "../components/PortalFrame";
@@ -206,7 +206,6 @@ export function PortalCaseDetailPage() {
     (t) => t.source === "customer" && (t.note || "").startsWith("✅ Customer approved"),
   );
   const productHeadline = items[0]?.item_description || items[0]?.item_code || cs.category || "Service case";
-  const supportPhoneNumber = "+60312345678";
 
   return (
     <PortalFrame>
@@ -426,15 +425,10 @@ export function PortalCaseDetailPage() {
           </div>
         )}
 
-        {/* Contact row — Call (tel:) + Message (scroll & focus the
-            comment textarea further down). */}
+        {/* Contact row — Message scrolls & focuses the comment textarea
+            further down. (Call button removed with the phone channel,
+            Nick 2026-07-06 — email/portal messages are the channels.) */}
         <div className="flex gap-2">
-          <a
-            href={`tel:${supportPhoneNumber}`}
-            className="flex h-11 flex-1 items-center justify-center gap-2 rounded-xl border border-border bg-surface text-[13px] font-semibold text-ink"
-          >
-            <Phone size={14} /> Call support
-          </a>
           <button
             onClick={focusCommentBox}
             className="flex h-11 flex-1 items-center justify-center gap-2 rounded-xl border border-border bg-surface text-[13px] font-semibold text-ink"
