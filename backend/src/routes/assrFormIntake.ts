@@ -239,7 +239,7 @@ app.post("/attachments-by-so", async (c) => {
   }
 
   const candidates = await c.env.DB.prepare(
-    `SELECT id, complained_date FROM assr_cases WHERE doc_no = ?`
+    `SELECT id, complained_date FROM assr_cases WHERE doc_no = ? ORDER BY id`
   )
     .bind(so)
     .all<{ id: number; complained_date: string | null }>();
