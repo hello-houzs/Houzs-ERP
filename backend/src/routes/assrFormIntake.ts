@@ -214,9 +214,19 @@ app.post("/attachments", async (c) => {
 // (doc_no); when one SO has several cases, the one whose
 // complained_date sits closest to the form-submission timestamp wins.
 //
+// The form's SO field is staff free-text, so matching is tiered
+// (dump of all 242 historical photo rows, 2026-07-06): exact doc_no,
+// then normalized alnum (SO011006 / so-008485 / "PG AKEMI DISPLAY
+// SET B"), then digit-core (bare "008892", S0-typos), then ref_no
+// (HC10931 / PG0678 / ZNT4860, and the ref half of mixed entries
+// like "SO-007357 HC8245"). A lower tier never overrides a higher.
+//
 // Idempotent per Drive file per case via a `[gdrive:<drive_id>]`
 // marker in the activity note, so the migration trigger can re-run
 // from a cursor without duplicating uploads.
+
+const normAlnum = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, "");
+const digitCore = (s: string) => s.replace(/[^0-9]/g, "").replace(/^0+/, "");
 
 app.post("/attachments-by-so", async (c) => {
   const provided = c.req.header("X-Intake-Key") || "";
@@ -238,17 +248,41 @@ app.post("/attachments-by-so", async (c) => {
     return c.json({ error: `content-type '${contentType}' not allowed` }, 415);
   }
 
+  // Pre-extract an SO-looking token (S0→SO typo folded in) and a
+  // ref-looking token from the free text, for the mixed entries.
+  const soToken = so.match(/S[O0]\s?-?\s?\d{3,}/i)?.[0].replace(/^S0/i, "SO") ?? null;
+  const refToken = so.match(/(?:HC|PG|ZNT|EGT)\s?-?\s?\d{2,}/i)?.[0] ?? null;
+  const norm = normAlnum(soToken ?? so);
+  const core = refToken && !soToken ? "" : digitCore(soToken ?? so);
+  const coreParam = core.length >= 3 ? core : "-";
+  const refNorm = refToken ? normAlnum(refToken) : "-";
+
   const candidates = await c.env.DB.prepare(
-    `SELECT id, complained_date FROM assr_cases WHERE doc_no = ? ORDER BY id`
+    `SELECT id, doc_no, ref_no, complained_date,
+            CASE
+              WHEN doc_no = ? THEN 0
+              WHEN UPPER(REGEXP_REPLACE(COALESCE(doc_no,''), '[^A-Za-z0-9]', '', 'g')) = ? THEN 1
+              WHEN NULLIF(LTRIM(REGEXP_REPLACE(COALESCE(doc_no,''), '[^0-9]', '', 'g'), '0'), '') = ? THEN 2
+              ELSE 3
+            END AS tier
+       FROM assr_cases
+      WHERE doc_no = ?
+         OR UPPER(REGEXP_REPLACE(COALESCE(doc_no,''), '[^A-Za-z0-9]', '', 'g')) = ?
+         OR NULLIF(LTRIM(REGEXP_REPLACE(COALESCE(doc_no,''), '[^0-9]', '', 'g'), '0'), '') = ?
+         OR UPPER(REGEXP_REPLACE(COALESCE(ref_no,''), '[^A-Za-z0-9]', '', 'g')) IN (?, ?)
+      ORDER BY tier, id`
   )
-    .bind(so)
-    .all<{ id: number; complained_date: string | null }>();
+    .bind(so, norm, coreParam, so, norm, coreParam, norm, refNorm)
+    .all<{ id: number; complained_date: string | null; tier: number }>();
   if (!candidates.results.length) return c.json({ error: "no case for SO", skipped: "no_case" }, 404);
 
-  let caseId = candidates.results[0].id;
-  if (candidates.results.length > 1 && !isNaN(ts)) {
+  // Best tier only; complained_date proximity breaks ties within it.
+  const topTier = candidates.results[0].tier;
+  const pool = candidates.results.filter((r) => r.tier === topTier);
+  let caseId = pool[0].id;
+  if (pool.length > 1 && !isNaN(ts)) {
     let best = Infinity;
-    for (const cand of candidates.results) {
+    for (const cand of pool) {
       const d = cand.complained_date ? Math.abs(new Date(cand.complained_date).getTime() - ts) : Infinity;
       if (d < best || (d === best && cand.id < caseId)) {
         best = d;
