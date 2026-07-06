@@ -2604,7 +2604,7 @@ function DetailContent({
   //   customer = anything the customer posted or uploaded on their portal
   //   supplier = anything the supplier posted / did via /portal/supplier
   const [activityFilter, setActivityFilter] = useState<
-    "all" | "service" | "customer" | "supplier"
+    "all" | "service" | "customer" | "supplier" | "sales"
   >("all");
   const [transitioning, setTransitioning] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -4037,7 +4037,8 @@ function DetailContent({
 
             {/* Filter tabs — Design PR 2. Roles reflect who authored the
                 activity (Service = internal, Customer = via customer
-                portal, Supplier = via supplier portal). */}
+                portal, Supplier = via supplier portal, Sales = via the
+                sales portal link). */}
             <div className="mb-3 flex flex-wrap gap-1.5">
               {(
                 [
@@ -4045,6 +4046,7 @@ function DetailContent({
                   { value: "service" as const, label: "Service" },
                   { value: "customer" as const, label: "Customer" },
                   { value: "supplier" as const, label: "Supplier" },
+                  { value: "sales" as const, label: "Sales" },
                 ]
               ).map((opt) => {
                 const active = activityFilter === opt.value;
@@ -4071,8 +4073,9 @@ function DetailContent({
             {(() => {
               // Design PR 2 — derive an actor role from source_channel /
               // action so the filter tabs and the per-entry pill agree.
-              const roleOf = (a: any): "customer" | "supplier" | "service" => {
+              const roleOf = (a: any): "customer" | "supplier" | "service" | "sales" => {
                 const ch = a.source_channel;
+                if (a.source === "sales" || a.action === "sales_comment" || a.action === "sales_upload") return "sales";
                 if (ch === "customer_portal" || a.source === "customer" || a.action === "customer_comment") return "customer";
                 if (ch === "supplier_portal") return "supplier";
                 return "service";
@@ -4095,12 +4098,14 @@ function DetailContent({
                     const author =
                       a.source === "customer"
                         ? a.customer_name_display || a.customer_email || "Customer"
-                        : a.user_name || "System";
+                        : a.source === "sales"
+                          ? c.sales_agent || "Sales"
+                          : a.user_name || "System";
                     const isEscalated = a.action === "escalated";
                     const isCustomer = a.source === "customer";
                     const archivable =
                       !c.archived_at &&
-                      (a.action === "note" || a.action === "customer_comment");
+                      (a.action === "note" || a.action === "customer_comment" || a.action === "sales_comment");
                     let title: React.ReactNode = a.action;
                     let body: React.ReactNode = null;
                     switch (a.action) {
@@ -4175,6 +4180,16 @@ function DetailContent({
                         title = "Photo uploaded";
                         if (a.note) body = a.note;
                         break;
+                      case "sales_comment":
+                        // Same reasoning as customer_comment — the pill
+                        // already says Sales; the comment is the headline.
+                        title = null;
+                        body = a.note;
+                        break;
+                      case "sales_upload":
+                        title = "Photo uploaded";
+                        if (a.note) body = a.note;
+                        break;
                     }
                     const actorRole = roleOf(a);
                     return (
@@ -4188,7 +4203,9 @@ function DetailContent({
                                 ? "border-amber-500"
                                 : actorRole === "supplier"
                                   ? "border-primary"
-                                  : "border-border"
+                                  : actorRole === "sales"
+                                    ? "border-accent"
+                                    : "border-border"
                           )}
                         />
                         <div className="flex items-center gap-2 text-[10.5px] text-ink-muted">
@@ -4231,10 +4248,11 @@ function DetailContent({
                               "rounded px-1.5 py-[1px] text-[9px] font-bold uppercase tracking-wider",
                               actorRole === "customer" && "bg-amber-100 text-amber-800",
                               actorRole === "supplier" && "bg-primary/10 text-primary",
+                              actorRole === "sales" && "bg-accent-soft text-accent",
                               actorRole === "service" && "bg-bg text-ink-secondary",
                             )}
                           >
-                            {actorRole === "service" ? "Service" : actorRole === "customer" ? "Customer" : "Supplier"}
+                            {actorRole === "service" ? "Service" : actorRole === "customer" ? "Customer" : actorRole === "supplier" ? "Supplier" : "Sales"}
                           </span>
                           <span>by {author}</span>
                         </div>
@@ -5769,7 +5787,7 @@ function PortalLinksMenu({
       <button
         onClick={() => setOpen((v) => !v)}
         className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-[10px] font-semibold text-ink hover:border-accent/40"
-        title="Generate a customer or supplier portal link"
+        title="Generate a customer, supplier or sales portal link"
       >
         Portal Link
         <ChevronRight
@@ -5786,6 +5804,7 @@ function PortalLinksMenu({
             onGenerated={onGenerated}
           />
           <SupplierPortalLinkRow id={id} toast={toast} />
+          <SalesPortalLinkRow id={id} toast={toast} />
         </div>
       )}
     </div>
@@ -6366,6 +6385,85 @@ function SupplierPortalLinkRow({
             className="inline-flex items-center gap-1 rounded-md border border-accent/40 bg-accent-soft/20 px-3 py-1.5 text-[11px] font-semibold text-accent hover:bg-accent-soft/40 disabled:opacity-50"
           >
             {busy ? "Generating…" : "Generate Supplier Link"}
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── Sales portal link ────────────────────────────────────────────
+//
+// Third variant of the per-case portal link: same /portal/case route
+// as the customer link but the token is source='sales', so the portal
+// shows the salesperson view — full 9-stage progress with dates, and
+// comments/uploads attributed to sales. Idempotent per case.
+
+function SalesPortalLinkRow({
+  id,
+  toast,
+}: {
+  id: number;
+  toast: ReturnType<typeof useToast>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [link, setLink] = useState<string | null>(null);
+
+  async function generate() {
+    setBusy(true);
+    try {
+      const r = await api.post<{ token: string; path: string }>(
+        `/api/assr/${id}/sales-link`
+      );
+      setLink(`${window.location.origin}/portal/case/${r.token}`);
+      toast.success("Sales link generated.");
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to generate link");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mt-2 rounded-md border border-border bg-bg/40 p-3">
+      <div className="mb-1 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+        Sales Portal Link
+      </div>
+      {link ? (
+        <>
+          <div className="flex items-center gap-2">
+            <input
+              readOnly
+              value={link}
+              onFocus={(e) => e.currentTarget.select()}
+              className="flex-1 rounded-md border border-border bg-surface px-2 py-1.5 font-mono text-[11px]"
+            />
+            <button
+              onClick={() => {
+                navigator.clipboard?.writeText(link);
+                toast.success("Copied");
+              }}
+              className="rounded-md border border-border bg-surface px-2 py-1.5 text-[10px] font-semibold"
+            >
+              Copy
+            </button>
+          </div>
+          <div className="mt-1.5 text-[10px] text-ink-muted">
+            30-day link. Paste into WhatsApp for the salesperson.
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="mb-1.5 text-[11px] text-ink-secondary">
+            Share with the salesperson — full stage progress for this case,
+            and they can message the team. No costs or internal notes.
+          </div>
+          <button
+            onClick={generate}
+            disabled={busy}
+            className="inline-flex items-center gap-1 rounded-md border border-accent/40 bg-accent-soft/20 px-3 py-1.5 text-[11px] font-semibold text-accent hover:bg-accent-soft/40 disabled:opacity-50"
+          >
+            {busy ? "Generating…" : "Generate Sales Link"}
           </button>
         </>
       )}

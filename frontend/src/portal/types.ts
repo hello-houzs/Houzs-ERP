@@ -1,6 +1,22 @@
 export type PortalStatusColor = "grey" | "blue" | "amber" | "violet" | "green";
 
+// Who this token belongs to. 'staff' tokens are staff-ISSUED customer
+// links, so the portal treats them as customer; 'sales' unlocks the
+// salesperson variant (full stage progress, sales-attributed posts).
+export type PortalViewer = "customer" | "staff" | "sales";
+
+export interface PortalStageStep {
+  stage: string;
+  label: string;
+  entered_at: string | null;
+  done: boolean;
+  current: boolean;
+}
+
 export interface PortalCaseDetail {
+  viewer?: PortalViewer;
+  // Present only for sales tokens — the real 9-stage progress.
+  stages?: PortalStageStep[];
   case: {
     id: number;
     assr_no: string;
@@ -28,7 +44,7 @@ export interface PortalCaseDetail {
     category: string;
     file_name: string | null;
     content_type: string | null;
-    source: "staff" | "customer" | "system" | null;
+    source: "staff" | "customer" | "system" | "sales" | null;
     created_at: string;
   }>;
   timeline: Array<{
@@ -36,7 +52,7 @@ export interface PortalCaseDetail {
     action: string;
     label: string;
     at: string;
-    source: "staff" | "customer" | "system";
+    source: "staff" | "customer" | "system" | "sales";
     note?: string;
   }>;
 }
