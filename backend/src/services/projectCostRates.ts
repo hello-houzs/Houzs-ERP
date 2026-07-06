@@ -88,10 +88,17 @@ export async function recomputeAutoCostLines(
   // Sum non-auto lines only. Auto rows are excluded from the base
   // because they're outputs of this function — counting them would
   // create a feedback loop on commission (commission of commission).
+  //
+  // COGS is summed across the whole family — the legacy `cogs` slug plus the
+  // three product sub-categories (matt/sofa, bedframe, accessories) — so the GP
+  // used for the commission boost gate matches the "COGS Total" shown in the
+  // Financial Snapshot, which folds the same four categories together. Reading
+  // only `cogs` here would see 0 when COGS is entered split, inflate GP to
+  // ~100%, and wrongly trip the boost rate.
   const sums = await env.DB.prepare(
     `SELECT
        COALESCE(SUM(CASE WHEN kind='income' AND category='sales' THEN amount END), 0) AS sales,
-       COALESCE(SUM(CASE WHEN kind='cost'   AND category='cogs'  THEN amount END), 0) AS cogs
+       COALESCE(SUM(CASE WHEN kind='cost'   AND category IN ('cogs','cogs_matt_sofa','cogs_bedframe','cogs_accessories') THEN amount END), 0) AS cogs
        FROM project_finance_lines
       WHERE project_id = ?
         AND archived_at IS NULL
