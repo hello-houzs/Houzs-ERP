@@ -13,6 +13,9 @@ interface ServiceSettingsResponse {
   default_assignee_id: number | null;
   default_assignee_name: string | null;
   default_assignee_email: string | null;
+  default_assignee2_id: number | null;
+  default_assignee2_name: string | null;
+  default_assignee2_email: string | null;
 }
 
 interface UserOption {
@@ -116,13 +119,11 @@ function DefaultAssigneeSection() {
   const users = useQuery<{ users: UserOption[] }>(() => api.get("/api/users"));
   const [saving, setSaving] = useState(false);
 
-  async function setDefault(idStr: string) {
+  async function setDefault(field: "default_assignee_id" | "default_assignee2_id", idStr: string) {
     setSaving(true);
     try {
       const id = idStr ? parseInt(idStr, 10) : null;
-      await api.put("/api/assr/settings", {
-        default_assignee_id: idStr ? id : null,
-      });
+      await api.put("/api/assr/settings", { [field]: idStr ? id : null });
       settings.reload();
       toast.success(idStr ? "Default assignee updated" : "Default assignee cleared");
     } catch (e: any) {
@@ -133,6 +134,7 @@ function DefaultAssigneeSection() {
   }
 
   const currentId = settings.data?.default_assignee_id ?? "";
+  const currentId2 = settings.data?.default_assignee2_id ?? "";
 
   return (
     <section className="relative overflow-hidden rounded-md border border-border bg-surface p-6 shadow-stone">
@@ -140,22 +142,22 @@ function DefaultAssigneeSection() {
         <Wrench size={12} /> Default Case Assignee
       </h2>
       <p className="mb-4 max-w-xl text-[12.5px] leading-relaxed text-ink-secondary">
-        New service cases will be automatically assigned to this person on
-        creation. Change at any time — existing cases keep whoever they were
-        assigned to.
+        New service cases will be automatically assigned to these people on
+        creation — a primary assignee and an optional co-assignee. Change at
+        any time — existing cases keep whoever they were assigned to.
       </p>
       {settings.loading && (
         <div className="text-[12px] text-ink-muted">Loading…</div>
       )}
       {settings.data && (
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap items-start gap-3">
           <label className="block flex-1 min-w-[260px]">
             <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
               Assigned to
             </span>
             <select
               value={currentId}
-              onChange={(e) => setDefault(e.target.value)}
+              onChange={(e) => setDefault("default_assignee_id", e.target.value)}
               disabled={saving || users.loading}
               className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:bg-bg disabled:text-ink-muted"
             >
@@ -167,19 +169,34 @@ function DefaultAssigneeSection() {
               ))}
             </select>
           </label>
-          {settings.data.default_assignee_name && (
+          <label className="block flex-1 min-w-[260px]">
+            <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+              Co-assignee
+            </span>
+            <select
+              value={currentId2}
+              onChange={(e) => setDefault("default_assignee2_id", e.target.value)}
+              disabled={saving || users.loading}
+              className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:bg-bg disabled:text-ink-muted"
+            >
+              <option value="">— None —</option>
+              {(users.data?.users ?? []).map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.name || u.email}
+                </option>
+              ))}
+            </select>
+          </label>
+          {(settings.data.default_assignee_name || settings.data.default_assignee2_name) && (
             <div className="rounded-md border border-accent/30 bg-accent-soft/40 px-3 py-2 text-[11.5px]">
               <div className="font-mono text-[9px] font-semibold uppercase tracking-brand text-accent">
                 Currently
               </div>
               <div className="font-semibold text-ink">
-                {settings.data.default_assignee_name}
+                {[settings.data.default_assignee_name, settings.data.default_assignee2_name]
+                  .filter(Boolean)
+                  .join(" · ")}
               </div>
-              {settings.data.default_assignee_email && (
-                <div className="text-[10.5px] text-ink-muted">
-                  {settings.data.default_assignee_email}
-                </div>
-              )}
             </div>
           )}
         </div>

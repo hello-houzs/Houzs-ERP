@@ -51,49 +51,65 @@ async function assrVisibleUserIds(c: {
   return subtreeUserIds(c.env, Number(user.id));
 }
 
-// ── Module-level settings (default assignee) ──────────────────
+// ── Module-level settings (default assignees) ─────────────────
 //
-// Stored in `system_settings` under key `assr_default_assignee_id`.
-// Read on each create_case call so changes take effect immediately
-// without a deploy.
+// Stored in `system_settings` under keys `assr_default_assignee_id`
+// (primary) and `assr_default_assignee2_id` (co-assignee — the desk
+// is run by two people). Read on each create_case call so changes
+// take effect immediately without a deploy.
+
+const DEFAULT_ASSIGNEE_KEYS = {
+  default_assignee_id: "assr_default_assignee_id",
+  default_assignee2_id: "assr_default_assignee2_id",
+} as const;
 
 app.get("/settings", requirePermission("service_cases.read"), async (c) => {
-  const row = await c.env.DB.prepare(
-    `SELECT s.value AS value, u.id AS user_id, u.name AS user_name, u.email AS user_email
+  const rows = await c.env.DB.prepare(
+    `SELECT s.key AS key, u.id AS user_id, u.name AS user_name, u.email AS user_email
        FROM system_settings s
        LEFT JOIN users u ON CAST(s.value AS INTEGER) = u.id
-      WHERE s.key = 'assr_default_assignee_id'`
-  ).first<{
-    value: string | null;
+      WHERE s.key IN ('assr_default_assignee_id', 'assr_default_assignee2_id')`
+  ).all<{
+    key: string;
     user_id: number | null;
     user_name: string | null;
     user_email: string | null;
   }>();
+  const byKey = new Map((rows.results ?? []).map((r) => [r.key, r]));
+  const primary = byKey.get("assr_default_assignee_id");
+  const second = byKey.get("assr_default_assignee2_id");
   return c.json({
-    default_assignee_id: row?.user_id ?? null,
-    default_assignee_name: row?.user_name ?? null,
-    default_assignee_email: row?.user_email ?? null,
+    default_assignee_id: primary?.user_id ?? null,
+    default_assignee_name: primary?.user_name ?? null,
+    default_assignee_email: primary?.user_email ?? null,
+    default_assignee2_id: second?.user_id ?? null,
+    default_assignee2_name: second?.user_name ?? null,
+    default_assignee2_email: second?.user_email ?? null,
   });
 });
 
 app.put("/settings", requirePermission("service_cases.manage"), async (c) => {
-  const body = await c.req.json<{ default_assignee_id?: number | null }>();
-  const id = body.default_assignee_id;
-  if (id === null || id === undefined) {
-    await c.env.DB.prepare(
-      `DELETE FROM system_settings WHERE key = 'assr_default_assignee_id'`
-    ).run();
-  } else {
-    if (typeof id !== "number" || isNaN(id)) {
-      return c.json({ error: "default_assignee_id must be a number or null" }, 400);
+  const body = await c.req.json<{
+    default_assignee_id?: number | null;
+    default_assignee2_id?: number | null;
+  }>();
+  for (const [field, key] of Object.entries(DEFAULT_ASSIGNEE_KEYS)) {
+    if (!(field in body)) continue; // untouched fields stay as-is
+    const id = body[field as keyof typeof DEFAULT_ASSIGNEE_KEYS];
+    if (id === null || id === undefined) {
+      await c.env.DB.prepare(`DELETE FROM system_settings WHERE key = ?`).bind(key).run();
+    } else {
+      if (typeof id !== "number" || isNaN(id)) {
+        return c.json({ error: `${field} must be a number or null` }, 400);
+      }
+      // INSERT OR REPLACE so we don't care whether the row exists yet.
+      await c.env.DB.prepare(
+        `INSERT INTO system_settings (key, value) VALUES (?, ?)
+           ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+      )
+        .bind(key, String(id))
+        .run();
     }
-    // INSERT OR REPLACE so we don't care whether the row exists yet.
-    await c.env.DB.prepare(
-      `INSERT INTO system_settings (key, value) VALUES ('assr_default_assignee_id', ?)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value`
-    )
-      .bind(String(id))
-      .run();
   }
   return c.json({ ok: true });
 });

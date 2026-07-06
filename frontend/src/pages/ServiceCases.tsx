@@ -635,8 +635,11 @@ function CasesView({
       key: "assigned_to_name",
       filterable: true,
       label: "Assigned To",
-      render: (r) => r.assigned_to_name || "—",
-      getValue: (r) => r.assigned_to_name,
+      // Both responsible people, primary first ("Farra · Nancy").
+      render: (r) =>
+        [r.assigned_to_name, r.assigned_to_2_name].filter(Boolean).join(" · ") || "—",
+      getValue: (r) =>
+        [r.assigned_to_name, r.assigned_to_2_name].filter(Boolean).join(" · ") || null,
     },
     {
       key: "item_code",
@@ -3860,6 +3863,26 @@ function DetailContent({
                 <option key={u.id} value={u.id}>{u.name}</option>
               ))}
             </select>
+            {/* Co-assignee — the desk is run by two people; optional,
+                so an empty slot renders as a plain (non-amber) select. */}
+            <div className="mt-2">
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+                Co-assignee
+              </div>
+              <select
+                className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 pr-8 text-[13px] text-ink outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/20"
+                value={c.assigned_to_2 ?? ""}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  patch({ assigned_to_2: v ? parseInt(v, 10) : null });
+                }}
+              >
+                <option value="">None</option>
+                {opsUserOptions.map((u) => (
+                  <option key={u.id} value={u.id}>{u.name}</option>
+                ))}
+              </select>
+            </div>
           </PanelSection>
 
           {/* SLA — Design PR 2. Full red card + big mono countdown +
@@ -4146,6 +4169,14 @@ function DetailContent({
                           userOptions.find((u) => String(u.id) === a.to_value)
                             ?.name || `user #${a.to_value}`
                         }`;
+                        break;
+                      case "assignment_2":
+                        title = a.to_value
+                          ? `Co-assignee set to ${
+                              userOptions.find((u) => String(u.id) === a.to_value)
+                                ?.name || `user #${a.to_value}`
+                            }`
+                          : "Co-assignee cleared";
                         break;
                       case "approval":
                         title = (
