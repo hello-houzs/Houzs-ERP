@@ -37,10 +37,12 @@ const EXT_BY_MIME: Record<string, string> = {
   "image/png": "png",
   "image/webp": "webp",
   "image/heic": "heic",
+  "image/gif": "gif",
   "video/mp4": "mp4",
+  "video/quicktime": "mov", // iPhone videos in the historical form rows
   "application/pdf": "pdf",
 };
-const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024; // Apps Script UrlFetch tops out well below this
+const MAX_ATTACHMENT_BYTES = 40 * 1024 * 1024; // Apps Script UrlFetch POST caps at 50MB
 const MAX_ATTACHMENTS_PER_CASE = 20;
 
 const pick = (values: Record<string, unknown>, key: string): string | null => {
@@ -185,7 +187,7 @@ app.post("/attachments", async (c) => {
   const buf = await c.req.arrayBuffer();
   if (buf.byteLength === 0) return c.json({ error: "empty body" }, 400);
   if (buf.byteLength > MAX_ATTACHMENT_BYTES) {
-    return c.json({ error: "file exceeds 25MB limit" }, 413);
+    return c.json({ error: "file exceeds 40MB limit" }, 413);
   }
 
   const key = assrAttachmentKey(caseId, "evidence", ext);
@@ -200,6 +202,99 @@ app.post("/attachments", async (c) => {
     .run();
 
   return c.json({ ok: true, id: attId }, 201);
+});
+
+// ── POST /attachments-by-so?so=&ts=&drive_id=&name= ─────────────
+//
+// One-off historical migration (Nick 2026-07-06): the Form Responses
+// rows that predate the webhook carry Drive photo links whose cases
+// were imported from Farra's tab — those cases have no google_form
+// activity row and no case_id known to the sheet, so the relay above
+// can't serve them. This variant matches the case by SO number
+// (doc_no); when one SO has several cases, the one whose
+// complained_date sits closest to the form-submission timestamp wins.
+//
+// Idempotent per Drive file per case via a `[gdrive:<drive_id>]`
+// marker in the activity note, so the migration trigger can re-run
+// from a cursor without duplicating uploads.
+
+app.post("/attachments-by-so", async (c) => {
+  const provided = c.req.header("X-Intake-Key") || "";
+  const expected = c.env.FORM_INTAKE_KEY || "";
+  if (!expected || provided !== expected) {
+    return c.json({ error: "unauthorized" }, 401);
+  }
+
+  const so = (c.req.query("so") || "").trim();
+  if (!so) return c.json({ error: "so is required" }, 400);
+  const driveId = (c.req.query("drive_id") || "").trim().slice(0, 120);
+  if (!driveId) return c.json({ error: "drive_id is required" }, 400);
+  const ts = parseInt(c.req.query("ts") || "", 10); // form-submission epoch millis
+  const fileName = (c.req.query("name") || "").slice(0, 200) || null;
+
+  const contentType = (c.req.header("Content-Type") || "").split(";")[0].trim().toLowerCase();
+  const ext = EXT_BY_MIME[contentType];
+  if (!ext) {
+    return c.json({ error: `content-type '${contentType}' not allowed` }, 415);
+  }
+
+  const candidates = await c.env.DB.prepare(
+    `SELECT id, complained_date FROM assr_cases WHERE doc_no = ? ORDER BY id`
+  )
+    .bind(so)
+    .all<{ id: number; complained_date: string | null }>();
+  if (!candidates.results.length) return c.json({ error: "no case for SO", skipped: "no_case" }, 404);
+
+  let caseId = candidates.results[0].id;
+  if (candidates.results.length > 1 && !isNaN(ts)) {
+    let best = Infinity;
+    for (const cand of candidates.results) {
+      const d = cand.complained_date ? Math.abs(new Date(cand.complained_date).getTime() - ts) : Infinity;
+      if (d < best || (d === best && cand.id < caseId)) {
+        best = d;
+        caseId = cand.id;
+      }
+    }
+  }
+
+  const dupe = await c.env.DB.prepare(
+    `SELECT 1 FROM assr_activity WHERE assr_id = ? AND note LIKE ? LIMIT 1`
+  )
+    .bind(caseId, `%[gdrive:${driveId}]%`)
+    .first();
+  if (dupe) return c.json({ ok: true, duplicate: true, id: caseId });
+
+  const count = await c.env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM assr_attachments WHERE assr_id = ? AND archived_at IS NULL`
+  )
+    .bind(caseId)
+    .first<{ n: number }>();
+  if ((count?.n ?? 0) >= MAX_ATTACHMENTS_PER_CASE) {
+    return c.json({ error: "attachment limit reached", skipped: "limit" }, 413);
+  }
+
+  const buf = await c.req.arrayBuffer();
+  if (buf.byteLength === 0) return c.json({ error: "empty body" }, 400);
+  if (buf.byteLength > MAX_ATTACHMENT_BYTES) {
+    return c.json({ error: "file exceeds 40MB limit", skipped: "size" }, 413);
+  }
+
+  const key = assrAttachmentKey(caseId, "evidence", ext);
+  await c.env.POD_BUCKET.put(key, buf, { httpMetadata: { contentType } });
+  const attId = await saveAttachment(c.env, caseId, key, fileName, contentType, "evidence", null);
+
+  await c.env.DB.prepare(
+    `INSERT INTO assr_activity (assr_id, action, from_value, to_value, note, source_channel)
+     VALUES (?, 'note', NULL, ?, ?, 'google_form')`
+  )
+    .bind(
+      caseId,
+      String(attId),
+      `Photo migrated from Google Form history${fileName ? `: ${fileName}` : ""} [gdrive:${driveId}]`
+    )
+    .run();
+
+  return c.json({ ok: true, id: attId, case_id: caseId }, 201);
 });
 
 export default app;
