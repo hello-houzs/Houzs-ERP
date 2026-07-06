@@ -230,6 +230,36 @@ export function PortalCaseDetailPage() {
           )}
         </div>
 
+        {/* Sales-only case reference card — the numbers a salesperson
+            cross-references against their own orders. Customer tokens
+            never receive doc_no / ref_no. */}
+        {isSales && (
+          <div className="grid grid-cols-2 gap-x-4 gap-y-2 rounded-2xl border border-border bg-surface p-4">
+            {(
+              [
+                { label: "ASSR No", value: cs.assr_no },
+                { label: "Customer", value: cs.customer_name, plain: true },
+                { label: "SO No", value: cs.doc_no },
+                { label: "Ref No", value: cs.ref_no },
+              ] as Array<{ label: string; value?: string | null; plain?: boolean }>
+            ).map((f) => (
+              <div key={f.label} className="min-w-0">
+                <div className="text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
+                  {f.label}
+                </div>
+                <div
+                  className={
+                    "truncate text-[12.5px] text-ink " + (f.plain ? "font-medium" : "font-mono")
+                  }
+                  title={f.value || undefined}
+                >
+                  {f.value || "—"}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Status hero — black card. Friendly copy per stage; NO SLA
             countdown, only a soft "expected update by" date chip. */}
         <div className="relative overflow-hidden rounded-2xl bg-[#13201c] p-6 text-white shadow-stone">

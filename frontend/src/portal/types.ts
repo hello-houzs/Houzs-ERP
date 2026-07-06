@@ -21,6 +21,9 @@ export interface PortalCaseDetail {
     id: number;
     assr_no: string;
     customer_name: string | null;
+    // Present only for sales tokens.
+    doc_no?: string | null;
+    ref_no?: string | null;
     complained_date: string | null;
     complaint_issue: string | null;
     category: string | null;
