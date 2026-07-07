@@ -2844,6 +2844,7 @@ function DetailContent({
             <PrintMenu caseId={id} toast={toast} />
             <PortalLinksMenu
               id={id}
+              assrNo={c.assr_no}
               existingToken={detail.data?.portal_token ?? null}
               toast={toast}
               onGenerated={() => detail.reload()}
@@ -5785,11 +5786,13 @@ function PrintMenu({
 // Customer card.
 function PortalLinksMenu({
   id,
+  assrNo,
   existingToken,
   onGenerated,
   toast,
 }: {
   id: number;
+  assrNo: string;
   existingToken: string | null;
   onGenerated: () => void;
   toast: ReturnType<typeof useToast>;
@@ -5823,12 +5826,13 @@ function PortalLinksMenu({
         <div className="absolute right-0 top-full z-30 mt-1 w-72 rounded-md border border-border bg-surface p-2 shadow-stone">
           <PortalLinkRow
             id={id}
+            assrNo={assrNo}
             existingToken={existingToken}
             toast={toast}
             onGenerated={onGenerated}
           />
           <SupplierPortalLinkRow id={id} toast={toast} />
-          <SalesPortalLinkRow id={id} toast={toast} />
+          <SalesPortalLinkRow id={id} assrNo={assrNo} toast={toast} />
         </div>
       )}
     </div>
@@ -6258,22 +6262,32 @@ function CustomerHistory({ id }: { id: number }) {
   );
 }
 
+// URL-safe ASSR slug for readable portal links (ASSR/2607-008 →
+// ASSR-2607-008). Cosmetic only — the portal resolves by token.
+function assrSlug(assrNo: string): string {
+  return assrNo.replace(/[^A-Za-z0-9-]+/g, "-");
+}
+
 // ── Portal tracking link generator (shown on every case) ────
 
 function PortalLinkRow({
   id,
+  assrNo,
   existingToken,
   onGenerated,
   toast,
 }: {
   id: number;
+  assrNo: string;
   existingToken: string | null;
   onGenerated: () => void;
   toast: ReturnType<typeof useToast>;
 }) {
   const [busy, setBusy] = useState(false);
+  // Readable link: the ASSR slug rides in the path (cosmetic — the
+  // token alone still resolves, old bare links keep working).
   const link = existingToken
-    ? `${window.location.origin}/portal/case/${existingToken}`
+    ? `${window.location.origin}/portal/case/${assrSlug(assrNo)}/${existingToken}`
     : null;
 
   async function generate() {
@@ -6316,7 +6330,7 @@ function PortalLinkRow({
             </button>
           </div>
           <div className="mt-1.5 text-[10px] text-ink-muted">
-            30-day link. Paste into WhatsApp for the customer.
+            Permanent link. Paste into WhatsApp for the customer.
           </div>
         </>
       ) : (
@@ -6425,9 +6439,11 @@ function SupplierPortalLinkRow({
 
 function SalesPortalLinkRow({
   id,
+  assrNo,
   toast,
 }: {
   id: number;
+  assrNo: string;
   toast: ReturnType<typeof useToast>;
 }) {
   const [busy, setBusy] = useState(false);
@@ -6439,7 +6455,7 @@ function SalesPortalLinkRow({
       const r = await api.post<{ token: string; path: string }>(
         `/api/assr/${id}/sales-link`
       );
-      setLink(`${window.location.origin}/portal/case/${r.token}`);
+      setLink(`${window.location.origin}/portal/case/${assrSlug(assrNo)}/${r.token}`);
       toast.success("Sales link generated.");
     } catch (e: any) {
       toast.error(e?.message || "Failed to generate link");
@@ -6473,7 +6489,7 @@ function SalesPortalLinkRow({
             </button>
           </div>
           <div className="mt-1.5 text-[10px] text-ink-muted">
-            30-day link. Paste into WhatsApp for the salesperson.
+            Permanent link. Paste into WhatsApp for the salesperson.
           </div>
         </>
       ) : (

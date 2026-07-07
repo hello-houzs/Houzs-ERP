@@ -482,6 +482,7 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
   }, [activity, tlFilter]);
 
   const assignedTo = get(c, "assignedToName", "assigned_to_name");
+  const assignedTo2 = get(c, "assignedTo2Name", "assigned_to_2_name");
 
   // ── Add-item picker source — the case's SO line items (desktop parity) ──
   // Mirrors desktop openAddItem(): GET /api/assr/lookup-items/:doc_no returns
@@ -585,6 +586,31 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
     await patchCase({ assigned_to: nextId }, "Couldn't reassign");
   };
 
+  // Co-assignee — same picker, writes assigned_to_2 (desktop parity).
+  const assignCoPic = async () => {
+    if (busy) return;
+    const curId = Number(get(c, "assignedTo2", "assigned_to_2") ?? 0) || null;
+    const ops = assignableUsers.filter(
+      (u) => /operation/i.test(u.department_name || "") || u.id === curId,
+    );
+    if (!ops.length) {
+      await notify({ title: "No assignable users", body: "No Operations members are available to assign." });
+      return;
+    }
+    const picked = await choose({
+      title: "Co-assignee",
+      body: assignedTo2 ? `Currently ${String(assignedTo2)}.` : "Currently none.",
+      options: [
+        { value: "", label: "— None —" },
+        ...ops.map((u) => ({ value: String(u.id), label: u.name })),
+      ],
+    });
+    if (picked == null) return;
+    const nextId = picked === "" ? null : Number(picked);
+    if (nextId === curId) return;
+    await patchCase({ assigned_to_2: nextId }, "Couldn't set co-assignee");
+  };
+
   // ── Case-level values ──
   const poNo = get(c, "poNo", "po_no");
   const creditorCode = get(c, "creditorCode", "creditor_code");
@@ -629,7 +655,9 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
         <div className="scr-title money">{String(caseNo(c))}</div>
         <div style={{ fontSize: 11.5, color: "var(--mut)", marginTop: 3 }}>
           {customer(c)}
-          {assignedTo ? <span> · Assigned {String(assignedTo)}</span> : null}
+          {assignedTo ? (
+            <span> · Assigned {[assignedTo, assignedTo2].filter(Boolean).map(String).join(" · ")}</span>
+          ) : null}
         </div>
       </header>
 
@@ -664,13 +692,15 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
               {resolutionMethod && <span>Resolution <b style={{ color: INK }}>{resolutionLabel(String(resolutionMethod))}</b></span>}
             </div>
 
-            {/* Print copy + Portal link (design .tinybtn row) */}
+            {/* Print copy + Portal link + Sales link (design .tinybtn row).
+                Links carry the ASSR slug for readability; permanent tokens. */}
             <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
               <button onClick={printCopy} disabled={isLoading || !!error} className="tinybtn" style={{ flex: 1, padding: 9, opacity: isLoading || error ? 0.5 : 1 }}>Print copy</button>
               <button
                 onClick={async () => {
                   if (!portalToken) return;
-                  const url = `${window.location.origin}/portal/case/${portalToken}`;
+                  const slug = String(caseNo(c)).replace(/[^A-Za-z0-9-]+/g, "-");
+                  const url = `${window.location.origin}/portal/case/${slug}/${portalToken}`;
                   try {
                     if (navigator.clipboard) await navigator.clipboard.writeText(url);
                     await notify({ title: "Portal link copied", body: url });
@@ -683,6 +713,25 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
                 style={{ flex: 1, padding: 9, opacity: portalToken ? 1 : 0.5 }}
               >
                 Portal link
+              </button>
+              <button
+                onClick={async () => {
+                  if (busy) return;
+                  try {
+                    const r = await api.post<{ token: string }>(`/api/assr/${id}/sales-link`);
+                    const slug = String(caseNo(c)).replace(/[^A-Za-z0-9-]+/g, "-");
+                    const url = `${window.location.origin}/portal/case/${slug}/${r.token}`;
+                    if (navigator.clipboard) await navigator.clipboard.writeText(url);
+                    await notify({ title: "Sales link copied", body: url });
+                  } catch (e: any) {
+                    await notify({ title: "Sales link failed", body: e?.message || "Try again." });
+                  }
+                }}
+                disabled={isLoading || !!error}
+                className="tinybtn"
+                style={{ flex: 1, padding: 9, opacity: isLoading || error ? 0.5 : 1 }}
+              >
+                Sales link
               </button>
             </div>
 
@@ -939,18 +988,28 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
             <Acc
               title="PIC"
               open
-              headRight={assignedTo ? String(assignedTo) : "Unassigned"}
+              headRight={[assignedTo, assignedTo2].filter(Boolean).map(String).join(" · ") || "Unassigned"}
               headSlot={
-                <span
-                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); if (!busy) assignPic(); }}
-                  className="tinybtn"
-                  style={{ color: BROWN, opacity: busy ? 0.5 : 1 }}
-                >
-                  Assign
-                </span>
+                <>
+                  <span
+                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); if (!busy) assignPic(); }}
+                    className="tinybtn"
+                    style={{ color: BROWN, opacity: busy ? 0.5 : 1 }}
+                  >
+                    Assign
+                  </span>
+                  <span
+                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); if (!busy) assignCoPic(); }}
+                    className="tinybtn"
+                    style={{ color: BROWN, opacity: busy ? 0.5 : 1, marginLeft: 6 }}
+                  >
+                    Co-assign
+                  </span>
+                </>
               }
             >
               <KV label="Assigned to" value={assignedTo ? String(assignedTo) : "Unassigned"} />
+              <KV label="Co-assignee" value={assignedTo2 ? String(assignedTo2) : "None"} />
               <KV label="Created by" value={String(get(c, "createdByName", "created_by_name") ?? "—")} />
             </Acc>
 
