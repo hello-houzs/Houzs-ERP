@@ -96,7 +96,7 @@ const ScmLorryCapacityV2 = lazy(() => import("./pages/scm-v2/LorryCapacity").the
 const Overview = lazy(() => import("./pages/Overview").then((m) => ({ default: m.Overview })));
 // Supply Chain Hub — section landing page (flattens the 3-level SCM nesting).
 const ScmHub = lazy(() => import("./pages/ScmHub").then((m) => ({ default: m.ScmHub })));
-const ScmSalesOrdersV2 = lazy(() => import("./pages/scm-v2/MfgSalesOrdersList").then((m) => ({ default: m.MfgSalesOrdersList })));
+const ScmSalesOrdersV2 = lazy(() => import("./pages/scm-v2/MfgSalesOrdersListV2").then((m) => ({ default: m.MfgSalesOrdersListV2 })));
 const ScmSalesOrderMaintenanceV2 = lazy(() => import("./pages/scm-v2/SalesOrderMaintenance").then((m) => ({ default: m.SalesOrderMaintenance })));
 const ScmSalesOrderNewV2 = lazy(() => import("./pages/scm-v2/SalesOrderNew").then((m) => ({ default: m.SalesOrderNew })));
 const ScmSalesOrderNewGuidedV2 = lazy(() => import("./pages/scm-v2/SalesOrderNewGuided").then((m) => ({ default: m.SalesOrderNewGuided })));
