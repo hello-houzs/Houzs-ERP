@@ -79,7 +79,7 @@ import {
   missingMethodSubField, parseInstallmentMonths, type PaymentDraft,
 } from '../../vendor/scm/components/PaymentsTable';
 import { formatPhone } from '@2990s/shared/phone';
-import styles from './SalesOrderDetail.module.css';
+import styles from './SalesOrderNew.module.css';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -1785,7 +1785,7 @@ export const SalesOrderNew = () => {
             style={{
               display: 'flex', alignItems: 'flex-start', gap: 'var(--space-3)',
               padding: 'var(--space-3)',
-              background: fillAddressLater ? 'rgba(232, 107, 58, 0.08)' : 'var(--c-cream)',
+              background: fillAddressLater ? 'rgba(22, 105, 95, 0.08)' : 'var(--c-cream)',
               border: '1px solid ' + (fillAddressLater ? 'var(--c-orange)' : 'var(--line)'),
               borderRadius: 'var(--radius-md)',
               marginBottom: 'var(--space-3)',
