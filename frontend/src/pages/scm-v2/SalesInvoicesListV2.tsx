@@ -910,63 +910,76 @@ export function SalesInvoicesListV2() {
         </div>
       </div>
 
-      <div className="hidden md:block">
-        <PageHeader
-          eyebrow="Supply Chain"
-          title="Sales Invoices"
-          description="Every Houzs sales invoice — Sent to Paid. Click any row for the quick view; open the full page to edit or record a payment."
-          primaryAction={
-            <div className="flex items-stretch">
-              <Button
-                variant="primary"
-                icon={<Plus size={14} />}
-                onClick={goNewSi}
-                className="rounded-r-none"
-              >
-                New Sales Invoice
-              </Button>
-              <SplitDropdown
-                onFromDo={goFromDo}
-                onFromSo={goFromSo}
-                onImport={goImport}
-              />
-            </div>
-          }
-          secondaryActions={[
-            { label: "Delivery Orders", icon: Truck, onClick: goDoList },
-            { label: "Outstanding Ledger", icon: Wrench, onClick: goOutstanding },
-          ]}
-        />
-      </div>
+      {/* Desktop sticky page chrome — matches SO/DO listing pattern. */}
+      <div className="sticky top-0 z-20 -mx-4 hidden bg-bg/95 pb-3 backdrop-blur-sm sm:-mx-6 md:block">
+        <div className="px-4 sm:px-6">
+          <PageHeader
+            eyebrow="Supply Chain"
+            title="Sales Invoices"
+            description="Every Houzs sales invoice — Sent to Paid. Click any row for the quick view; open the full page to edit or record a payment."
+            primaryAction={
+              <div className="flex items-stretch">
+                <Button
+                  variant="primary"
+                  icon={<Plus size={14} />}
+                  onClick={goNewSi}
+                  className="rounded-r-none"
+                >
+                  New Sales Invoice
+                </Button>
+                <SplitDropdown
+                  onFromDo={goFromDo}
+                  onFromSo={goFromSo}
+                  onImport={goImport}
+                />
+              </div>
+            }
+            secondaryActions={[
+              { label: "Delivery Orders", icon: Truck, onClick: goDoList },
+              { label: "Outstanding Ledger", icon: Wrench, onClick: goOutstanding },
+            ]}
+          />
 
-      <div className="mb-5 hidden grid-cols-2 gap-3 md:grid lg:grid-cols-4">
-        <StatCard
-          label="Total Invoices"
-          value={stats.total.toLocaleString("en-MY")}
-          subtitle="Scoped to current filter"
-          rail="bg-primary"
-          active
-        />
-        <StatCard
-          label="Billed"
-          value={fmtRm(stats.revenueCenti)}
-          subtitle="Sum of invoice totals"
-          rail="bg-accent"
-        />
-        <StatCard
-          label="Outstanding"
-          value={fmtRm(stats.outstandingCenti)}
-          subtitle="Balance across visible rows"
-          tone="error"
-          rail="bg-err"
-        />
-        <StatCard
-          label="Paid"
-          value={fmtRm(stats.paidCenti)}
-          subtitle="Receipts logged"
-          tone="success"
-          rail="bg-synced"
-        />
+          <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <StatCard
+              label="Total Invoices"
+              value={stats.total.toLocaleString("en-MY")}
+              subtitle="Scoped to current filter"
+              rail="bg-primary"
+              active
+            />
+            <StatCard
+              label="Billed"
+              value={fmtRm(stats.revenueCenti)}
+              subtitle="Sum of invoice totals"
+              rail="bg-accent"
+            />
+            <StatCard
+              label="Outstanding"
+              value={fmtRm(stats.outstandingCenti)}
+              subtitle="Balance across visible rows"
+              tone="error"
+              rail="bg-err"
+            />
+            <StatCard
+              label="Paid"
+              value={fmtRm(stats.paidCenti)}
+              subtitle="Receipts logged"
+              tone="success"
+              rail="bg-synced"
+            />
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <FilterPills
+              options={statusPillOptions}
+              value={status}
+              onChange={(v) => setStatusChip(v)}
+            />
+            <div className="flex-1" />
+            <ViewToggle value={view} onChange={setView} />
+          </div>
+        </div>
       </div>
 
       <div className="sticky top-0 z-10 -mx-4 mb-3 bg-bg/95 px-4 py-2 backdrop-blur-sm md:hidden">
@@ -979,16 +992,12 @@ export function SalesInvoicesListV2() {
         />
       </div>
 
-      <div className="mb-4 flex flex-wrap items-center gap-3">
+      <div className="mb-4 flex flex-wrap items-center gap-3 md:hidden">
         <FilterPills
           options={statusPillOptions}
           value={status}
           onChange={(v) => setStatusChip(v)}
         />
-        <div className="flex-1" />
-        <div className="hidden md:block">
-          <ViewToggle value={view} onChange={setView} />
-        </div>
       </div>
 
       <div className="md:hidden">

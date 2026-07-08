@@ -23,7 +23,6 @@
 // useUpdateMfgDeliveryOrderStatus (unchanged from prior V2).
 
 import { useMemo, useState, type ReactNode } from "react";
-import { createPortal } from "react-dom";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -55,6 +54,11 @@ import {
   useUpdateMfgDeliveryOrderStatus,
 } from "../../vendor/scm/lib/delivery-order-queries";
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
+import {
+  DocumentRelationshipMapModal,
+  ModalOverlay,
+  type ChainNode,
+} from "../../components/scm-v2/DocumentRelationshipMapModal";
 import { cn } from "../../lib/utils";
 
 // ─── Header + item shapes (subset — full 40-field row lives in the list V2) ─
@@ -392,75 +396,10 @@ function DriverSubCard({ header }: { header: DoHeader }) {
   );
 }
 
-// ─── Modal shell ───────────────────────────────────────────────────────────
+// ModalOverlay is now imported from the shared component so the SO/DO/SI/DR
+// detail pages don't drift on modal chrome. HistoryModal + PrintPdfModal
+// below both consume it.
 
-function ModalOverlay({
-  open,
-  onClose,
-  title,
-  icon,
-  size = "sm",
-  children,
-  footer,
-}: {
-  open: boolean;
-  onClose: () => void;
-  title: string;
-  icon?: ReactNode;
-  size?: "sm" | "lg";
-  children: ReactNode;
-  footer?: ReactNode;
-}) {
-  // Portal to <body> so `fixed` positioning latches to the viewport instead
-  // of an ancestor with `transform` / `filter` / `will-change` set. Without
-  // this the modals render pinned to the bottom of their containing block —
-  // Nick's 2026-07-08 screenshot showed the From-Sales-Order dialog stuck
-  // near the Emergency Contact section instead of viewport-centred.
-  return createPortal(
-    <>
-      <div
-        onClick={onClose}
-        aria-hidden
-        className={cn(
-          "fixed inset-0 z-[80] bg-ink/45 backdrop-blur-[1px] transition-opacity duration-200",
-          open ? "opacity-100" : "pointer-events-none opacity-0"
-        )}
-      />
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        className={cn(
-          "fixed left-1/2 top-[8vh] z-[81] flex max-h-[84vh] w-[calc(100%-32px)] -translate-x-1/2 flex-col overflow-hidden rounded-2xl bg-surface shadow-slab transition-all duration-200",
-          size === "lg" ? "max-w-[760px]" : "max-w-[480px]",
-          open ? "scale-100 opacity-100" : "pointer-events-none scale-[.97] opacity-0"
-        )}
-      >
-        <div className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-border-subtle px-5">
-          <div className="flex items-center gap-2.5">
-            {icon && <span className="text-accent-ink">{icon}</span>}
-            <span className="text-[15px] font-bold text-ink">{title}</span>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-ink-muted hover:text-ink"
-            aria-label="Close"
-          >
-            <XIcon size={18} />
-          </button>
-        </div>
-        <div className="thin-scroll flex-1 overflow-y-auto p-5">{children}</div>
-        {footer && (
-          <div className="flex shrink-0 items-center gap-2 border-t border-border-subtle bg-surface-2 px-5 py-3">
-            {footer}
-          </div>
-        )}
-      </div>
-    </>,
-    document.body
-  );
-}
 
 // ─── Modal · Change history timeline ───────────────────────────────────────
 
@@ -551,281 +490,11 @@ function HistoryModal({
   );
 }
 
-// ─── Modal · Relationship Map (node graph) ─────────────────────────────────
-//
-// Renders the document chain as a node-graph on an SVG canvas — NOT an
-// inline pipeline. Upstream nodes (Customer PO → Sales Order) sit on the
-// top row; the current DO is the brass-highlighted node; downstream nodes
-// (GRN → Sales Invoice) branch off the bottom row in muted grey until they
-// exist. Each node card carries a Linked/Current/Pending badge.
-
-type ChainNode = {
-  type: string;
-  doc: string;
-  meta: string;
-  state: "done" | "current" | "pending";
-};
-
-function RelationshipMapModal({
-  open,
-  onClose,
-  header,
-  navigate,
-}: {
-  open: boolean;
-  onClose: () => void;
-  header: DoHeader;
-  navigate: (path: string) => void;
-}) {
-  const nodes: ChainNode[] = [
-    {
-      type: "Customer PO",
-      doc: header.po_doc_no || header.customer_so_no || "Not linked",
-      meta: header.po_doc_no || header.customer_so_no ? fmtDate(header.do_date) : "—",
-      state: header.po_doc_no || header.customer_so_no ? "done" : "pending",
-    },
-    {
-      type: "Sales Order",
-      doc: header.so_doc_no || "Not linked",
-      meta: header.so_doc_no ? fmtDate(header.do_date) : "—",
-      state: header.so_doc_no ? "done" : "pending",
-    },
-    {
-      type: "Delivery Order",
-      doc: header.do_number,
-      meta: "This document",
-      state: "current",
-    },
-    {
-      type: "GRN",
-      doc: "Not created",
-      meta: "After delivery",
-      state: "pending",
-    },
-    {
-      type: "Sales Invoice",
-      doc: header.lifecycle_state === "invoiced" ? "Issued" : "Not created",
-      meta: header.lifecycle_state === "invoiced" ? fmtDate(header.do_date) : "On completion",
-      state: header.lifecycle_state === "invoiced" ? "done" : "pending",
-    },
-  ];
-
-  const onNodeClick = (type: string) => {
-    if (type === "Sales Order" && header.so_doc_no) {
-      navigate(`/scm/sales-orders/${header.so_doc_no}`);
-      onClose();
-    } else if (type === "Sales Invoice" && header.lifecycle_state === "invoiced") {
-      // No direct SI id on the DO detail payload — punt to the SI listing
-      // scoped to this DO.
-      navigate(`/scm/sales-invoices?q=${encodeURIComponent(header.do_number)}`);
-      onClose();
-    }
-  };
-
-  const nodeCard = (n: ChainNode, opts: { left: number; top: number }) => {
-    const cur = n.state === "current";
-    const done = n.state === "done";
-    return (
-      <button
-        key={n.type}
-        type="button"
-        onClick={() => onNodeClick(n.type)}
-        style={{ position: "absolute", left: opts.left, top: opts.top, width: 148 }}
-        className={cn(
-          "rounded-xl px-3 py-2.5 text-left transition-all",
-          cur
-            ? "border-2 border-accent bg-accent-soft shadow-[0_10px_22px_-12px_rgba(161,133,47,.55)]"
-            : done
-              ? "border border-primary/30 bg-primary-soft"
-              : "border border-border bg-surface-2",
-          (n.type === "Sales Order" && header.so_doc_no) || (n.type === "Sales Invoice" && done)
-            ? "cursor-pointer hover:-translate-y-px hover:shadow-slab"
-            : "cursor-default"
-        )}
-      >
-        <div className="flex items-center gap-1.5">
-          <span
-            className={cn(
-              "flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold",
-              cur
-                ? "bg-accent text-white"
-                : done
-                  ? "bg-primary text-white"
-                  : "border border-border-strong bg-surface"
-            )}
-          >
-            {cur ? "◉" : done ? "✓" : ""}
-          </span>
-          <span
-            className={cn(
-              "font-mono text-[9px] font-bold uppercase tracking-brand",
-              cur ? "text-accent-ink" : done ? "text-primary-ink" : "text-ink-muted"
-            )}
-          >
-            {n.type}
-          </span>
-        </div>
-        <div
-          className={cn(
-            "mt-1.5 truncate font-mono text-[12.5px] font-bold",
-            cur ? "text-accent-ink" : done ? "text-primary-ink" : "text-ink-muted"
-          )}
-        >
-          {n.doc}
-        </div>
-        <div
-          className={cn(
-            "mt-0.5 truncate text-[10.5px]",
-            cur ? "text-accent-ink/80" : "text-ink-muted"
-          )}
-        >
-          {n.meta}
-        </div>
-      </button>
-    );
-  };
-
-  // Canvas layout — top row: PO → SO → DO (current). Bottom row: GRN → SI
-  // branching down from the current DO.
-  const layout = {
-    row1Top: 40,
-    row2Top: 190,
-    x0: 12,
-    xStep: 176,
-  };
-  const positions = [
-    { left: layout.x0 + layout.xStep * 0, top: layout.row1Top },
-    { left: layout.x0 + layout.xStep * 1, top: layout.row1Top },
-    { left: layout.x0 + layout.xStep * 2, top: layout.row1Top },
-    { left: layout.x0 + layout.xStep * 2, top: layout.row2Top },
-    { left: layout.x0 + layout.xStep * 3, top: layout.row2Top },
-  ];
-
-  return (
-    <ModalOverlay
-      open={open}
-      onClose={onClose}
-      title="Relationship map"
-      icon={<Share2 size={16} />}
-      size="lg"
-    >
-      <div className="mb-3 text-[12.5px] leading-relaxed text-ink-secondary">
-        How this delivery order links to its source documents and the documents
-        generated downstream.
-      </div>
-      <div
-        className="relative h-[320px] overflow-hidden rounded-xl border border-border-subtle"
-        style={{
-          backgroundImage: "radial-gradient(rgba(180, 185, 175, .45) 1px, transparent 1px)",
-          backgroundSize: "16px 16px",
-          backgroundColor: "var(--surface, #fbfcfa)",
-        }}
-      >
-        {/* Row labels */}
-        <span className="absolute left-3 top-2 font-mono text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
-          Upstream
-        </span>
-        <span
-          className="absolute font-mono text-[9px] font-semibold uppercase tracking-brand text-ink-muted"
-          style={{ left: 360, top: 168 }}
-        >
-          Generated after delivery
-        </span>
-
-        {/* SVG connectors */}
-        <svg
-          width="100%"
-          height="100%"
-          className="pointer-events-none absolute inset-0"
-          preserveAspectRatio="none"
-        >
-          {/* PO → SO arrow (row 1) */}
-          <line
-            x1={layout.x0 + 150}
-            y1={layout.row1Top + 42}
-            x2={layout.x0 + layout.xStep}
-            y2={layout.row1Top + 42}
-            stroke="var(--primary, #16695f)"
-            strokeWidth="2"
-            markerEnd="url(#arrowP)"
-          />
-          {/* SO → DO arrow (row 1) */}
-          <line
-            x1={layout.x0 + layout.xStep + 150}
-            y1={layout.row1Top + 42}
-            x2={layout.x0 + layout.xStep * 2}
-            y2={layout.row1Top + 42}
-            stroke="var(--primary, #16695f)"
-            strokeWidth="2"
-            markerEnd="url(#arrowP)"
-          />
-          {/* DO → GRN branch (down) */}
-          <line
-            x1={layout.x0 + layout.xStep * 2 + 74}
-            y1={layout.row1Top + 88}
-            x2={layout.x0 + layout.xStep * 2 + 74}
-            y2={layout.row2Top}
-            stroke="var(--border-strong, #b3b8ac)"
-            strokeWidth="2"
-            strokeDasharray="4 4"
-            markerEnd="url(#arrowM)"
-          />
-          {/* GRN → SI arrow */}
-          <line
-            x1={layout.x0 + layout.xStep * 2 + 148}
-            y1={layout.row2Top + 40}
-            x2={layout.x0 + layout.xStep * 3}
-            y2={layout.row2Top + 40}
-            stroke="var(--border-strong, #b3b8ac)"
-            strokeWidth="2"
-            strokeDasharray="4 4"
-            markerEnd="url(#arrowM)"
-          />
-          <defs>
-            <marker
-              id="arrowP"
-              markerWidth="7"
-              markerHeight="7"
-              refX="6"
-              refY="3.5"
-              orient="auto"
-              markerUnits="strokeWidth"
-            >
-              <path d="M0,0 L7,3.5 L0,7 z" fill="var(--primary, #16695f)" />
-            </marker>
-            <marker
-              id="arrowM"
-              markerWidth="7"
-              markerHeight="7"
-              refX="6"
-              refY="3.5"
-              orient="auto"
-              markerUnits="strokeWidth"
-            >
-              <path d="M0,0 L7,3.5 L0,7 z" fill="var(--border-strong, #b3b8ac)" />
-            </marker>
-          </defs>
-        </svg>
-
-        {/* Cards */}
-        {nodes.map((n, i) => nodeCard(n, positions[i]!))}
-      </div>
-
-      {/* Legend */}
-      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-ink-muted">
-        <span className="inline-flex items-center gap-1.5">
-          <span className="inline-block h-2.5 w-2.5 rounded-full bg-primary" /> Linked
-        </span>
-        <span className="inline-flex items-center gap-1.5">
-          <span className="inline-block h-2.5 w-2.5 rounded-full bg-accent" /> Current
-        </span>
-        <span className="inline-flex items-center gap-1.5">
-          <span className="inline-block h-2.5 w-2.5 rounded-full border border-border-strong bg-surface" /> Pending
-        </span>
-      </div>
-    </ModalOverlay>
-  );
-}
+// Relationship map — the inline node-graph + ModalOverlay copies that used
+// to live here were moved to a shared component (see the imports at the top
+// of the file) so SO/DO/SI/DR detail pages share one renderer. Nodes are
+// built in the main component below (chainNodes memo) and passed in as
+// props; onNodeClick handles navigation to linked cross-docs.
 
 // ─── Modal · Print PDF preview ─────────────────────────────────────────────
 
@@ -983,6 +652,49 @@ export function DeliveryOrderDetailV2() {
     () => deliveryOrder?.note || deliveryOrder?.notes || null,
     [deliveryOrder?.note, deliveryOrder?.notes]
   );
+
+  // Chain nodes for the shared Relationship Map modal — PO → SO → DO (current)
+  // → GRN → SI. Downstream nodes stay Pending until they're stamped on the
+  // header (lifecycle_state = 'invoiced' flips SI to done).
+  const chainNodes: ChainNode[] = useMemo(() => {
+    if (!deliveryOrder) return [];
+    const poRef = deliveryOrder.po_doc_no || deliveryOrder.customer_so_no || "";
+    return [
+      {
+        type: "Customer PO",
+        doc: poRef || "Not linked",
+        meta: poRef ? fmtDate(deliveryOrder.do_date) : "—",
+        state: poRef ? "done" : "pending",
+      },
+      {
+        type: "Sales Order",
+        doc: deliveryOrder.so_doc_no || "Not linked",
+        meta: deliveryOrder.so_doc_no ? fmtDate(deliveryOrder.do_date) : "—",
+        state: deliveryOrder.so_doc_no ? "done" : "pending",
+      },
+      {
+        type: "Delivery Order",
+        doc: deliveryOrder.do_number,
+        meta: "This document",
+        state: "current",
+      },
+      {
+        type: "GRN",
+        doc: "Not created",
+        meta: "After delivery",
+        state: "pending",
+      },
+      {
+        type: "Sales Invoice",
+        doc: deliveryOrder.lifecycle_state === "invoiced" ? "Issued" : "Not created",
+        meta:
+          deliveryOrder.lifecycle_state === "invoiced"
+            ? fmtDate(deliveryOrder.do_date)
+            : "On completion",
+        state: deliveryOrder.lifecycle_state === "invoiced" ? "done" : "pending",
+      },
+    ];
+  }, [deliveryOrder]);
 
   const goBack = () => {
     if (params.get("from") === "list") navigate("/scm/delivery-orders");
@@ -1581,11 +1293,26 @@ export function DeliveryOrderDetailV2() {
         header={deliveryOrder}
         itemsCount={items.length}
       />
-      <RelationshipMapModal
+      <DocumentRelationshipMapModal
         open={modal === "relmap"}
         onClose={closeModal}
-        header={deliveryOrder}
-        navigate={navigate}
+        nodes={chainNodes}
+        onNodeClick={(n) => {
+          if (n.type === "Sales Order" && deliveryOrder.so_doc_no) {
+            navigate(`/scm/sales-orders/${deliveryOrder.so_doc_no}`);
+            closeModal();
+          } else if (
+            n.type === "Sales Invoice" &&
+            deliveryOrder.lifecycle_state === "invoiced"
+          ) {
+            // No direct SI id on the DO payload — punt to the SI listing
+            // scoped to this DO doc no.
+            navigate(
+              `/scm/sales-invoices?q=${encodeURIComponent(deliveryOrder.do_number)}`
+            );
+            closeModal();
+          }
+        }}
       />
       <PrintPdfModal
         open={modal === "print"}

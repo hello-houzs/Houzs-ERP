@@ -923,66 +923,77 @@ export function DeliveryReturnsListV2() {
         </div>
       </div>
 
-      {/* Desktop chrome */}
-      <div className="hidden md:block">
-        <PageHeader
-          eyebrow="Supply Chain"
-          title="Delivery Returns"
-          description="Goods returned by customers — Pending to Refunded. Click any row for the quick view; open the full page to edit."
-          primaryAction={
-            <div className="flex items-stretch">
-              <Button
-                variant="primary"
-                icon={<Plus size={14} />}
-                onClick={goNewDr}
-                className="rounded-r-none"
-              >
-                New Delivery Return
-              </Button>
-              <SplitDropdown
-                onFromDo={goFromDo}
-                onImport={goImport}
-                onDuplicate={goDuplicate}
-              />
-            </div>
-          }
-          secondaryActions={[
-            { label: "Delivery Orders", icon: Truck, onClick: goDoList },
-            { label: "Sales Invoices", icon: Receipt, onClick: goInvoiceList },
-          ]}
-        />
-      </div>
+      {/* Desktop sticky page chrome — matches SO/DO/SI listing pattern. */}
+      <div className="sticky top-0 z-20 -mx-4 hidden bg-bg/95 pb-3 backdrop-blur-sm sm:-mx-6 md:block">
+        <div className="px-4 sm:px-6">
+          <PageHeader
+            eyebrow="Supply Chain"
+            title="Delivery Returns"
+            description="Goods returned by customers — Pending to Refunded. Click any row for the quick view; open the full page to edit."
+            primaryAction={
+              <div className="flex items-stretch">
+                <Button
+                  variant="primary"
+                  icon={<Plus size={14} />}
+                  onClick={goNewDr}
+                  className="rounded-r-none"
+                >
+                  New Delivery Return
+                </Button>
+                <SplitDropdown
+                  onFromDo={goFromDo}
+                  onImport={goImport}
+                  onDuplicate={goDuplicate}
+                />
+              </div>
+            }
+            secondaryActions={[
+              { label: "Delivery Orders", icon: Truck, onClick: goDoList },
+              { label: "Sales Invoices", icon: Receipt, onClick: goInvoiceList },
+            ]}
+          />
 
-      {/* Stat strip — money-out framing */}
-      <div className="mb-5 hidden grid-cols-2 gap-3 md:grid lg:grid-cols-4">
-        <StatCard
-          label="Total Returns"
-          value={stats.total.toLocaleString("en-MY")}
-          subtitle="Scoped to current filter"
-          rail="bg-primary"
-          active
-        />
-        <StatCard
-          label="Refund Value"
-          value={fmtRm(stats.refundCenti)}
-          subtitle="Money owed back"
-          tone="error"
-          rail="bg-err"
-        />
-        <StatCard
-          label="Pending"
-          value={stats.pendingCount.toLocaleString("en-MY")}
-          subtitle="Received · awaiting refund"
-          tone="warning"
-          rail="bg-accent-bright"
-        />
-        <StatCard
-          label="Refunded"
-          value={stats.refundedCount.toLocaleString("en-MY")}
-          subtitle="Refunded / credit noted"
-          tone="success"
-          rail="bg-synced"
-        />
+          <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <StatCard
+              label="Total Returns"
+              value={stats.total.toLocaleString("en-MY")}
+              subtitle="Scoped to current filter"
+              rail="bg-primary"
+              active
+            />
+            <StatCard
+              label="Refund Value"
+              value={fmtRm(stats.refundCenti)}
+              subtitle="Money owed back"
+              tone="error"
+              rail="bg-err"
+            />
+            <StatCard
+              label="Pending"
+              value={stats.pendingCount.toLocaleString("en-MY")}
+              subtitle="Received · awaiting refund"
+              tone="warning"
+              rail="bg-accent-bright"
+            />
+            <StatCard
+              label="Refunded"
+              value={stats.refundedCount.toLocaleString("en-MY")}
+              subtitle="Refunded / credit noted"
+              tone="success"
+              rail="bg-synced"
+            />
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <FilterPills
+              options={statusPillOptions}
+              value={status}
+              onChange={(v) => setStatusChip(v)}
+            />
+            <div className="flex-1" />
+            <ViewToggle value={view} onChange={setView} />
+          </div>
+        </div>
       </div>
 
       {/* Mobile sticky search */}
@@ -996,17 +1007,13 @@ export function DeliveryReturnsListV2() {
         />
       </div>
 
-      {/* Filter row */}
-      <div className="mb-4 flex flex-wrap items-center gap-3">
+      {/* Mobile filter row */}
+      <div className="mb-4 flex flex-wrap items-center gap-3 md:hidden">
         <FilterPills
           options={statusPillOptions}
           value={status}
           onChange={(v) => setStatusChip(v)}
         />
-        <div className="flex-1" />
-        <div className="hidden md:block">
-          <ViewToggle value={view} onChange={setView} />
-        </div>
       </div>
 
       {/* Phone → Cards */}
