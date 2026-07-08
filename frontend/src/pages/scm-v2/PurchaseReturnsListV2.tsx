@@ -1,0 +1,700 @@
+// PurchaseReturnsListV2 — Theme C redesign of the Purchase Return listing.
+// Procurement-side mirror of DR (Delivery Return): goods flow BACK to the
+// supplier and money is expected back from them (usually via a credit note
+// booked on Complete). Money-IN framing — a rare thing on the procurement
+// side where every other doc is money-out.
+
+import { useMemo, useState, type ReactNode } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import {
+  Plus,
+  ChevronDown,
+  Users,
+  Package,
+  LayoutGrid,
+  Table as TableIcon,
+  X as XIcon,
+  ExternalLink,
+  Edit3,
+  Printer,
+  CheckCircle2,
+  Send,
+} from "lucide-react";
+import { PageHeader } from "../../components/Layout";
+import { StatCard } from "../../components/StatCard";
+import { FilterPills } from "../../components/FilterPills";
+import { DataTable, type Column } from "../../components/DataTable";
+import { Badge } from "../../components/Badge";
+import { Button } from "../../components/Button";
+import { PullToRefresh } from "../../components/PullToRefresh";
+import {
+  usePurchaseReturns,
+  usePurchaseReturnDetail,
+  usePostPurchaseReturn,
+  useCancelPurchaseReturn,
+} from "../../vendor/scm/lib/purchase-return-queries";
+import { useQueryClient } from "@tanstack/react-query";
+import { cn } from "../../lib/utils";
+
+type PrRow = {
+  id: string;
+  return_number: string;
+  status: string;
+  return_date: string | null;
+  refund_centi?: number;
+  reason?: string | null;
+  notes?: string | null;
+  currency?: string;
+  supplier?: { id: string; code: string; name: string; contact_person?: string | null; phone?: string | null; email?: string | null } | null;
+  purchase_order?: { id: string; po_number: string } | null;
+  grn?: { id: string; grn_number: string } | null;
+  line_count?: number;
+};
+
+type PrItem = {
+  id: string;
+  material_code?: string | null;
+  item_code?: string | null;
+  description?: string | null;
+  description2?: string | null;
+  uom?: string;
+  qty?: number;
+  qty_returned?: number;
+  condition?: string | null;
+  unit_price_centi?: number;
+  line_total_centi?: number;
+};
+
+type StatusTab = "all" | "draft" | "posted" | "completed" | "cancelled";
+
+const fmtRm = (centi: number): string =>
+  `RM ${(centi / 100).toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+const fmtDate = (iso: string | null | undefined): string => {
+  if (!iso) return "—";
+  return iso.replace(/T.*$/, "").replace(/-/g, "/");
+};
+
+const supplierNameOf = (r: PrRow): string => r.supplier?.name || "—";
+const supplierCodeOf = (r: PrRow): string => r.supplier?.code || "—";
+const sourceOf = (r: PrRow): string => r.grn?.grn_number || r.purchase_order?.po_number || "—";
+const refundOf = (r: PrRow): number => r.refund_centi ?? 0;
+
+const STATUS_TONE: Record<string, { tone: "success" | "warning" | "error" | "neutral"; label: string; bucket: StatusTab }> = {
+  DRAFT:     { tone: "warning", label: "Draft",     bucket: "draft" },
+  POSTED:    { tone: "warning", label: "Posted",    bucket: "posted" },
+  COMPLETED: { tone: "success", label: "Completed", bucket: "completed" },
+  CANCELLED: { tone: "error",   label: "Cancelled", bucket: "cancelled" },
+};
+
+const statusFor = (s: string) =>
+  STATUS_TONE[(s || "").toUpperCase()] ?? { tone: "neutral" as const, label: s || "—", bucket: "posted" as StatusTab };
+
+function SplitDropdown({ onImport, onDuplicate }: { onImport: () => void; onDuplicate: () => void }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className="inline-flex h-9 items-center rounded-md border border-primary/60 bg-primary/10 px-2.5 text-primary hover:bg-primary/20"
+      >
+        <ChevronDown size={14} />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-[80]" onClick={() => setOpen(false)} aria-hidden />
+          <div role="menu" className="absolute right-0 top-full z-[81] mt-1.5 min-w-[220px] rounded-md border border-border bg-surface py-1 shadow-slab">
+            <button type="button" className="block w-full px-3.5 py-2 text-left text-[12.5px] text-ink hover:bg-primary-soft" onClick={() => { setOpen(false); onImport(); }}>
+              Import from file
+            </button>
+            <button type="button" className="block w-full px-3.5 py-2 text-left text-[12.5px] text-ink hover:bg-primary-soft" onClick={() => { setOpen(false); onDuplicate(); }}>
+              Duplicate last return
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ViewToggle({ value, onChange }: { value: "table" | "cards"; onChange: (v: "table" | "cards") => void }) {
+  const btn = (which: "table" | "cards", label: string, Icon: typeof TableIcon) => {
+    const active = value === which;
+    return (
+      <button
+        type="button"
+        onClick={() => onChange(which)}
+        aria-pressed={active}
+        className={cn(
+          "inline-flex items-center gap-1.5 rounded px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider transition-colors",
+          active ? "bg-primary text-white shadow-sm" : "text-ink-secondary hover:bg-primary-soft hover:text-primary"
+        )}
+      >
+        <Icon size={13} />
+        {label}
+      </button>
+    );
+  };
+  return (
+    <div className="inline-flex items-center gap-0.5 rounded-md border border-border bg-surface p-1 shadow-stone">
+      {btn("table", "Table", TableIcon)}
+      {btn("cards", "Cards", LayoutGrid)}
+    </div>
+  );
+}
+
+function CardsGrid({ rows, onOpen }: { rows: PrRow[]; onOpen: (r: PrRow) => void }) {
+  if (rows.length === 0) {
+    return (
+      <div className="rounded-lg border border-dashed border-border bg-surface px-6 py-16 text-center shadow-stone">
+        <div className="text-[13px] font-semibold text-ink">No purchase returns</div>
+        <div className="mt-1 text-[12px] text-ink-muted">
+          No returns match the current filters. Try Reset layout to clear the search and status tabs.
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
+      {rows.map((r) => {
+        const st = statusFor(r.status);
+        return (
+          <button
+            key={r.id}
+            type="button"
+            onClick={() => onOpen(r)}
+            className="group relative overflow-hidden rounded-lg border border-border bg-surface px-4 py-4 text-left shadow-stone transition-all duration-200 hover:-translate-y-px hover:border-primary/40 hover:shadow-slab focus:outline-none focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/30"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-mono text-[12.5px] font-semibold text-ink">{r.return_number}</span>
+              <Badge tone={st.tone} size="xs">{st.label}</Badge>
+            </div>
+            <div className="mt-2 truncate text-[15px] font-semibold text-ink">{supplierNameOf(r)}</div>
+            <div className="mt-1 flex items-center gap-2">
+              <span className="text-[11.5px] text-ink-muted">{fmtDate(r.return_date)}</span>
+            </div>
+            {r.reason && (
+              <div className="mt-2.5 truncate text-[12.5px] italic text-ink-secondary">
+                “{r.reason}”
+              </div>
+            )}
+            <div className="mt-3.5 flex items-end justify-between border-t border-border-subtle pt-3">
+              <div className="min-w-0">
+                <div className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">From GRN</div>
+                <div className="mt-0.5 truncate font-mono text-[12px] font-semibold text-ink-secondary">{sourceOf(r)}</div>
+              </div>
+              <div className="text-right">
+                <div className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">Credit</div>
+                <div className="mt-0.5 font-money text-[15px] font-bold text-synced">{fmtRm(refundOf(r))}</div>
+              </div>
+            </div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function DetailDrawer({
+  row,
+  onClose,
+  onOpenFull,
+  onEdit,
+  onPrint,
+  onPost,
+  onComplete,
+  onCancel,
+}: {
+  row: PrRow | null;
+  onClose: () => void;
+  onOpenFull: () => void;
+  onEdit: () => void;
+  onPrint: () => void;
+  onPost: () => void;
+  onComplete: () => void;
+  onCancel: () => void;
+}) {
+  const detailQ = usePurchaseReturnDetail(row?.id ?? null);
+  const items: PrItem[] = ((detailQ.data as { items?: PrItem[] } | undefined)?.items ?? []);
+  const open = !!row;
+  const st = row ? statusFor(row.status) : null;
+  const refund = row ? refundOf(row) : 0;
+
+  return (
+    <>
+      <div
+        onClick={onClose}
+        aria-hidden
+        className={cn(
+          "fixed inset-0 z-[90] bg-ink/40 backdrop-blur-[1px] transition-opacity duration-200 md:hidden",
+          open ? "opacity-100" : "pointer-events-none opacity-0"
+        )}
+      />
+      <aside
+        role="dialog"
+        aria-modal="true"
+        aria-label={row ? `Purchase return ${row.return_number}` : "Purchase return details"}
+        className={cn(
+          "fixed right-0 top-0 z-[91] flex h-full w-full max-w-[520px] flex-col border-l border-border bg-surface shadow-slab transition-transform duration-200",
+          open ? "translate-x-0" : "translate-x-full"
+        )}
+      >
+        {row && st && (
+          <>
+            <div className="flex h-[60px] shrink-0 items-center gap-3 bg-sidebar px-5 text-sidebar-ink">
+              <button type="button" onClick={onClose} className="text-sidebar-ink-muted hover:text-sidebar-ink" aria-label="Close details">
+                <XIcon size={18} />
+              </button>
+              <div className="min-w-0 flex-1">
+                <div className="font-mono text-[14px] font-bold tracking-wide">{row.return_number}</div>
+                <div className="mt-0.5 text-[11px] text-sidebar-ink-muted">Purchase Return</div>
+              </div>
+              <button type="button" onClick={onOpenFull} className="inline-flex items-center gap-1.5 rounded-md border border-accent-bright/40 px-2.5 py-1.5 text-[11.5px] font-semibold text-accent-bright hover:bg-accent-bright/10">
+                Open full page <ExternalLink size={12} />
+              </button>
+              <Badge tone={st.tone} variant="solid" size="xs">{st.label}</Badge>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-5 py-5">
+              <div className="text-[19px] font-bold text-ink">{supplierNameOf(row)}</div>
+              <div className="mt-1.5 flex items-center gap-2.5">
+                <span className="font-mono text-[11.5px] text-ink-muted">{supplierCodeOf(row)}</span>
+                <span className="text-[12.5px] text-ink-muted">Returned {fmtDate(row.return_date)}</span>
+              </div>
+
+              {row.reason && (
+                <div className="mt-4 rounded-lg border-l-4 border-primary bg-primary-soft px-4 py-3">
+                  <div className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">Return reason</div>
+                  <div className="mt-1 text-[13.5px] font-semibold italic text-ink">“{row.reason}”</div>
+                </div>
+              )}
+
+              <dl className="mt-5 grid grid-cols-2 gap-x-4 gap-y-3 rounded-lg border border-border bg-surface-2 px-4 py-4">
+                <MetaItem k="From GRN" v={sourceOf(row)} mono />
+                <MetaItem k="Return date" v={fmtDate(row.return_date)} />
+                <MetaItem k="Supplier code" v={supplierCodeOf(row)} mono />
+                <MetaItem k="Line count" v={row.line_count ?? items.length ?? "—"} />
+              </dl>
+
+              <SectionHeading>Supplier</SectionHeading>
+              <div className="overflow-hidden rounded-lg border border-border bg-surface">
+                <div className="flex items-center gap-3 border-b border-border-subtle px-4 py-3.5">
+                  <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-accent-soft text-[13px] font-bold text-accent-ink">
+                    {(supplierNameOf(row) || "S")
+                      .split(/\s+/).filter(Boolean).slice(0, 2)
+                      .map((w) => w[0]?.toUpperCase()).join("") || "S"}
+                  </span>
+                  <div className="min-w-0">
+                    <div className="text-[14px] font-bold text-ink">{supplierNameOf(row)}</div>
+                    <div className="mt-0.5 font-mono text-[11.5px] text-ink-muted">{supplierCodeOf(row)}</div>
+                  </div>
+                </div>
+                <RowKV k="Contact" v={row.supplier?.contact_person || "—"} />
+                <RowKV k="Phone" v={row.supplier?.phone || "—"} />
+                <RowKV k="Email" v={row.supplier?.email || "—"} />
+              </div>
+
+              <SectionHeading>Returned items</SectionHeading>
+              <div className="overflow-hidden rounded-lg border border-border">
+                <div className="grid grid-cols-[1fr_52px_92px] gap-2 border-b border-border-subtle bg-surface-2 px-4 py-2 font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
+                  <span>Item</span>
+                  <span className="text-right">Qty</span>
+                  <span className="text-right">Credit</span>
+                </div>
+                {detailQ.isLoading && (
+                  <div className="px-4 py-8 text-center text-[12px] text-ink-muted">Loading lines…</div>
+                )}
+                {!detailQ.isLoading && items.length === 0 && (
+                  <div className="px-4 py-8 text-center text-[12px] text-ink-muted">No lines</div>
+                )}
+                {items.map((l, i) => (
+                  <div key={l.id ?? i} className="grid grid-cols-[1fr_52px_92px] items-center gap-2 border-b border-border-subtle px-4 py-3 last:border-b-0">
+                    <div>
+                      <div className="text-[13px] font-semibold text-ink">
+                        {l.description || l.material_code || l.item_code || "—"}
+                      </div>
+                      <div className="mt-0.5 flex items-center gap-2">
+                        {(l.material_code || l.item_code) && (
+                          <span className="font-mono text-[11px] text-ink-muted">{l.material_code || l.item_code}</span>
+                        )}
+                        {l.condition && <Badge tone="warning" variant="soft" size="xs">{l.condition}</Badge>}
+                      </div>
+                    </div>
+                    <span className="text-right font-money text-[12.5px] text-ink-secondary">{l.qty_returned ?? l.qty ?? 0}</span>
+                    <span className="text-right font-money text-[12.5px] font-semibold text-synced">{fmtRm(l.line_total_centi ?? 0)}</span>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-4 rounded-lg border-l-4 border-synced bg-primary-soft px-5 py-4">
+                <TotalRow k="Credit expected" v={fmtRm(refund)} strong tone="success" />
+              </div>
+            </div>
+
+            <div className="flex shrink-0 items-center gap-2 border-t border-border bg-surface px-5 py-3">
+              <Button variant="ghost" icon={<Edit3 size={14} />} onClick={onEdit}>Edit</Button>
+              <Button variant="ghost" icon={<Printer size={14} />} onClick={onPrint}>Print</Button>
+              <div className="flex-1" />
+              {(() => {
+                const s = (row.status || "").toUpperCase();
+                if (s === "DRAFT") {
+                  return (
+                    <Button variant="primary" icon={<Send size={14} />} onClick={onPost}>
+                      Post
+                    </Button>
+                  );
+                }
+                if (s === "POSTED") {
+                  return (
+                    <Button variant="primary" icon={<CheckCircle2 size={14} />} onClick={onComplete}>
+                      Complete
+                    </Button>
+                  );
+                }
+                if (s !== "COMPLETED" && s !== "CANCELLED") {
+                  return (
+                    <Button variant="danger" icon={<XIcon size={14} />} onClick={onCancel}>
+                      Cancel
+                    </Button>
+                  );
+                }
+                return null;
+              })()}
+            </div>
+          </>
+        )}
+      </aside>
+    </>
+  );
+}
+
+function MetaItem({ k, v, mono }: { k: string; v: ReactNode; mono?: boolean }) {
+  return (
+    <div>
+      <dt className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">{k}</dt>
+      <dd className={cn("mt-0.5 text-[13px] font-semibold text-ink", mono && "font-mono")}>{v}</dd>
+    </div>
+  );
+}
+
+function SectionHeading({ children }: { children: ReactNode }) {
+  return <div className="mb-2.5 mt-6 font-mono text-[10px] font-semibold uppercase tracking-brand text-ink-muted">{children}</div>;
+}
+
+function RowKV({ k, v }: { k: string; v: ReactNode }) {
+  return (
+    <div className="flex items-start gap-3 border-b border-border-subtle px-4 py-2.5 last:border-b-0">
+      <span className="w-20 shrink-0 font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">{k}</span>
+      <span className="flex-1 text-[13px] font-semibold leading-relaxed text-ink">{v}</span>
+    </div>
+  );
+}
+
+function TotalRow({ k, v, strong, tone }: { k: string; v: string; strong?: boolean; tone?: "success" }) {
+  return (
+    <div className="flex items-center justify-between py-1.5">
+      <span className={cn("text-[12px] text-ink-muted", strong && "text-[13px] font-semibold text-ink")}>{k}</span>
+      <span className={cn("font-money text-[13px] font-semibold", strong && "text-[15px] font-bold", tone === "success" ? "text-synced" : "text-ink")}>
+        {v}
+      </span>
+    </div>
+  );
+}
+
+export function PurchaseReturnsListV2() {
+  const navigate = useNavigate();
+  const [params, setParams] = useSearchParams();
+  const queryClient = useQueryClient();
+
+  const status = (params.get("status") ?? "all") as StatusTab;
+  const view = (params.get("view") ?? "table") as "table" | "cards";
+  const search = params.get("q") ?? "";
+
+  const [selected, setSelected] = useState<PrRow | null>(null);
+
+  const { data, isLoading, error } = usePurchaseReturns();
+  const postPr = usePostPurchaseReturn();
+  const cancelPr = useCancelPurchaseReturn();
+
+  const allRows = useMemo<PrRow[]>(
+    () => ((data?.purchaseReturns ?? []) as PrRow[]),
+    [data]
+  );
+
+  const scopedByBucket = useMemo(() => {
+    if (status === "all") return allRows;
+    return allRows.filter((r) => statusFor(r.status).bucket === status);
+  }, [allRows, status]);
+
+  const filtered = useMemo(() => {
+    if (!search.trim()) return scopedByBucket;
+    const q = search.toLowerCase();
+    return scopedByBucket.filter((r) => {
+      const hay = [r.return_number, supplierNameOf(r), supplierCodeOf(r), sourceOf(r), r.reason, r.notes]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(q);
+    });
+  }, [scopedByBucket, search]);
+
+  const counts = useMemo(() => {
+    const acc = { all: allRows.length, draft: 0, posted: 0, completed: 0, cancelled: 0 };
+    for (const r of allRows) {
+      const b = statusFor(r.status).bucket;
+      if (b === "draft") acc.draft += 1;
+      else if (b === "posted") acc.posted += 1;
+      else if (b === "completed") acc.completed += 1;
+      else if (b === "cancelled") acc.cancelled += 1;
+    }
+    return acc;
+  }, [allRows]);
+
+  const stats = useMemo(() => {
+    let credit = 0;
+    let pending = 0;
+    let settled = 0;
+    for (const r of filtered) {
+      const amt = refundOf(r);
+      credit += amt;
+      const b = statusFor(r.status).bucket;
+      if (b === "draft" || b === "posted") pending += amt;
+      if (b === "completed") settled += amt;
+    }
+    return { total: filtered.length, credit, pending, settled };
+  }, [filtered]);
+
+  const setStatusChip = (s: StatusTab) => {
+    const next = new URLSearchParams(params);
+    if (s === "all") next.delete("status"); else next.set("status", s);
+    setParams(next, { replace: true });
+  };
+  const setView = (v: "table" | "cards") => {
+    const next = new URLSearchParams(params);
+    if (v === "table") next.delete("view"); else next.set("view", v);
+    setParams(next, { replace: true });
+  };
+  const setSearch = (q: string) => {
+    const next = new URLSearchParams(params);
+    if (!q.trim()) next.delete("q"); else next.set("q", q);
+    setParams(next, { replace: true });
+  };
+  const resetLayout = () => setParams(new URLSearchParams(), { replace: true });
+  const filtersActive = status !== "all" || view !== "table" || search.trim().length > 0;
+
+  const onPullToRefresh = async () => {
+    await queryClient.invalidateQueries({ queryKey: ["purchase-returns"] });
+  };
+
+  const goNewPr = () => navigate("/scm/purchase-returns/new");
+  const goImport = () => navigate("/scm/purchase-returns?import=1");
+  const goDuplicate = () => navigate("/scm/purchase-returns?duplicate=1");
+  const goGrns = () => navigate("/scm/grns");
+  const goSuppliers = () => navigate("/scm/suppliers");
+  const goEdit = (r: PrRow) => navigate(`/scm/purchase-returns/${r.id}?edit=1`);
+  const goPrint = (r: PrRow) => navigate(`/scm/purchase-returns/${r.id}?print=1`);
+  const goFullPage = (r: PrRow) => navigate(`/scm/purchase-returns/${r.id}`);
+  const doPost = (r: PrRow) => {
+    if (window.confirm(`Post return ${r.return_number}? A credit-owed entry will be booked against the supplier.`)) {
+      postPr.mutate(r.id, { onSuccess: () => setSelected(null) });
+    }
+  };
+  const doComplete = (r: PrRow) => navigate(`/scm/purchase-returns/${r.id}?tab=complete`);
+  const doCancel = (r: PrRow) => {
+    if (window.confirm(`Cancel return ${r.return_number}? Stock will be reversed.`)) {
+      cancelPr.mutate(r.id, { onSuccess: () => setSelected(null) });
+    }
+  };
+
+  const columns: Column<PrRow>[] = [
+    {
+      key: "return_number",
+      label: "Return No.",
+      width: "140px",
+      alwaysVisible: true,
+      getValue: (r) => r.return_number,
+      render: (r) => <span className="font-mono text-[12.5px] font-semibold text-ink">{r.return_number}</span>,
+    },
+    {
+      key: "return_date",
+      label: "Date",
+      width: "108px",
+      getValue: (r) => r.return_date ?? "",
+      render: (r) => <span className="text-[12.5px] text-ink-secondary">{fmtDate(r.return_date)}</span>,
+    },
+    {
+      key: "source",
+      label: "From GRN",
+      width: "132px",
+      getValue: (r) => sourceOf(r),
+      render: (r) => <span className="font-mono text-[12px] text-ink-secondary">{sourceOf(r)}</span>,
+    },
+    {
+      key: "supplier",
+      label: "Supplier",
+      getValue: (r) => supplierNameOf(r),
+      render: (r) => (
+        <div className="min-w-0">
+          <div className="truncate text-[13px] font-semibold text-ink">{supplierNameOf(r)}</div>
+          <div className="mt-0.5 font-mono text-[11px] text-ink-muted">{supplierCodeOf(r)}</div>
+        </div>
+      ),
+    },
+    {
+      key: "reason",
+      label: "Reason",
+      width: "180px",
+      getValue: (r) => r.reason ?? "",
+      render: (r) =>
+        r.reason
+          ? <span className="truncate text-[12.5px] italic text-ink-secondary">{r.reason}</span>
+          : <span className="text-[12.5px] text-ink-muted">—</span>,
+    },
+    {
+      key: "status",
+      label: "Status",
+      width: "120px",
+      getValue: (r) => r.status,
+      render: (r) => {
+        const st = statusFor(r.status);
+        return <Badge tone={st.tone} size="xs">{st.label}</Badge>;
+      },
+    },
+    {
+      key: "credit",
+      label: "Credit",
+      width: "128px",
+      align: "right",
+      getValue: (r) => refundOf(r),
+      render: (r) => <span className="font-money text-[13px] font-semibold text-synced">{fmtRm(refundOf(r))}</span>,
+    },
+  ];
+
+  const statusPillOptions: Array<{ value: StatusTab; label: string }> = [
+    { value: "all", label: `All · ${counts.all}` },
+    { value: "draft", label: `Draft · ${counts.draft}` },
+    { value: "posted", label: `Posted · ${counts.posted}` },
+    { value: "completed", label: `Completed · ${counts.completed}` },
+    { value: "cancelled", label: `Cancelled · ${counts.cancelled}` },
+  ];
+
+  return (
+    <PullToRefresh onRefresh={onPullToRefresh}>
+      <div className={cn("transition-[padding] duration-200", selected ? "md:pr-[540px]" : "")}>
+        <div className="mb-3 flex items-start justify-between gap-3 md:hidden">
+          <div className="min-w-0">
+            <h1 className="font-display text-[22px] font-extrabold leading-tight tracking-tight text-ink">Purchase Returns</h1>
+            <div className="mt-0.5 text-[12.5px] text-ink-muted">
+              {stats.total} return{stats.total === 1 ? "" : "s"} · <span className="font-money text-synced">{fmtRm(stats.credit)}</span> credit
+            </div>
+          </div>
+        </div>
+
+        <div className="hidden md:block">
+          <PageHeader
+            eyebrow="Procurement"
+            title="Purchase Returns"
+            description="Goods returned to suppliers — Draft through Completed. Click any row for the quick view; open the full page to edit."
+            primaryAction={
+              <div className="flex items-stretch">
+                <Button variant="primary" icon={<Plus size={14} />} onClick={goNewPr} className="rounded-r-none">
+                  New Purchase Return
+                </Button>
+                <SplitDropdown onImport={goImport} onDuplicate={goDuplicate} />
+              </div>
+            }
+            secondaryActions={[
+              { label: "Goods Received", icon: Package, onClick: goGrns },
+              { label: "Suppliers", icon: Users, onClick: goSuppliers },
+            ]}
+          />
+        </div>
+
+        <div className="mb-5 hidden grid-cols-2 gap-3 md:grid lg:grid-cols-4">
+          <StatCard label="Total Returns" value={stats.total.toLocaleString("en-MY")} subtitle="Scoped to current filter" rail="bg-primary" active />
+          <StatCard label="Credit Value" value={fmtRm(stats.credit)} subtitle="Money owed back to us" tone="success" rail="bg-synced" />
+          <StatCard label="Pending" value={fmtRm(stats.pending)} subtitle="Draft + Posted · awaiting credit note" tone="warning" rail="bg-accent-bright" />
+          <StatCard label="Settled" value={fmtRm(stats.settled)} subtitle="Completed · loop closed" rail="bg-accent" />
+        </div>
+
+        <div className="sticky top-0 z-10 -mx-4 mb-3 bg-bg/95 px-4 py-2 backdrop-blur-sm md:hidden">
+          <input
+            type="search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search return, supplier, reason…"
+            className="h-10 w-full rounded-lg border border-border bg-surface px-3.5 text-[14px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20"
+          />
+        </div>
+
+        <div className="mb-4 flex flex-wrap items-center gap-3">
+          <FilterPills options={statusPillOptions} value={status} onChange={(v) => setStatusChip(v)} />
+          <div className="flex-1" />
+          <div className="hidden md:block"><ViewToggle value={view} onChange={setView} /></div>
+        </div>
+
+        <div className="md:hidden">
+          <CardsGrid rows={filtered} onOpen={(r) => setSelected(r)} />
+          {filtered.length > 0 && (
+            <div className="mt-4 pb-24 text-center text-[11.5px] text-ink-muted">
+              {filtered.length} return{filtered.length === 1 ? "" : "s"}
+            </div>
+          )}
+        </div>
+
+        <div className="hidden md:block">
+          {view === "table" ? (
+            <DataTable<PrRow>
+              tableId="purchase-returns-v2"
+              rows={filtered}
+              loading={isLoading}
+              error={error ? (error as Error).message ?? "Failed to load" : null}
+              columns={columns}
+              getRowKey={(r) => r.id}
+              onRowClick={(r) => setSelected(r)}
+              exportName="purchase-returns"
+              emptyLabel={filtersActive ? "No purchase returns match — try Reset layout to clear filters." : "No purchase returns yet."}
+              search={{ value: search, onChange: setSearch, placeholder: "Search return, supplier, reason, source…" }}
+              resetFilters={{ active: filtersActive, onReset: resetLayout, label: "Reset layout" }}
+            />
+          ) : (
+            <>
+              <div className="mb-3 flex items-center justify-between">
+                <div className="flex flex-1 items-center gap-2">
+                  <input
+                    type="search"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    placeholder="Search return, supplier, reason, source…"
+                    className="h-9 max-w-[320px] flex-1 rounded-md border border-border bg-surface px-3.5 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20"
+                  />
+                  {filtersActive && (
+                    <button type="button" onClick={resetLayout} className="text-[12px] font-semibold text-primary hover:underline">Reset layout</button>
+                  )}
+                </div>
+                <span className="text-[12px] text-ink-muted">{filtered.length} return{filtered.length === 1 ? "" : "s"}</span>
+              </div>
+              <CardsGrid rows={filtered} onOpen={(r) => setSelected(r)} />
+            </>
+          )}
+        </div>
+      </div>
+
+      <DetailDrawer
+        row={selected}
+        onClose={() => setSelected(null)}
+        onOpenFull={() => selected && goFullPage(selected)}
+        onEdit={() => selected && goEdit(selected)}
+        onPrint={() => selected && goPrint(selected)}
+        onPost={() => selected && doPost(selected)}
+        onComplete={() => selected && doComplete(selected)}
+        onCancel={() => selected && doCancel(selected)}
+      />
+    </PullToRefresh>
+  );
+}
+
+export default PurchaseReturnsListV2;
