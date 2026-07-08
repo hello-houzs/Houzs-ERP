@@ -1,25 +1,28 @@
-// DeliveryOrderDetailV2 — Theme C ("Ink & Petrol") redesign of the Delivery
-// Order detail page, mirroring SalesOrderDetailV2's read-first structure.
+// DeliveryOrderDetailV2 — Theme C ("Ink & Petrol") design of the Delivery
+// Order detail page, matching the 2026-07-08 design handoff prototypes.
 //
-// Key departures from the SO detail template (all Nick / owner calls):
-//   · DO is QUANTITY-only (Owner 2026-06-26) — the Order-total dark hero and
-//     every unit-price / discount / amount column that lives on the SO detail
-//     are dropped. In their place the aside carries a "Delivery" hero card
-//     (driver + vehicle + expected date) since dispatch info IS the DO's
-//     primary payload.
-//   · Status flow is document-lifecycle-driven: Draft → Shipped → Invoiced →
-//     Returned, plus Cancelled. Mirrors the DO listing V2 tone map.
-//   · Origin doc is SO (not a quotation), so "From SO" ref is promoted into
-//     the sticky header meta line + the People aside card.
-//   · Header CTA switches by status:
-//       Mark signed   — LOADED / DISPATCHED / IN_TRANSIT
-//       Convert to SI — SIGNED / DELIVERED  (routes to the SI-from-DO flow)
-//     Plus the shared History / Print / Cancel / Edit set.
+// The 4 primary actions in the sticky header all open real modal overlays:
+//   · History         — change-history timeline
+//   · Relationship Map — a node-graph modal showing the document chain
+//     PO → SO → DO (current) → GRN → Invoice, NOT an inline pipeline
+//   · Print PDF       — print-preview card + Download/Print
+//   · Edit            — navigate to the New DO form
 //
-// The old ledger-style DeliveryOrderDetail.tsx stays in the tree; App.tsx
-// route swap on /scm/delivery-orders/:id decides which one users see.
+// Stateful DO transitions (Cancel DO / Mark signed / Convert to SI) are
+// kept as CONDITIONAL secondary buttons within the same header, positioned
+// between Print PDF and Edit so they don't hide from ops but also don't
+// dominate the primary action bar.
+//
+// Aside dark hero flips from the earlier "Dispatch" (driver-info-forward)
+// version to a "Delivery status" card — status label + scheduled date +
+// Total items + Warehouse — because ops opens a DO detail asking "is it
+// on the road yet?", not "who's driving". Driver info moves INTO the
+// Delivery info section as an ink-tinted sub-card.
+//
+// Route: /scm/delivery-orders/:id. Data: useMfgDeliveryOrderDetail /
+// useUpdateMfgDeliveryOrderStatus (unchanged from prior V2).
 
-import { useMemo, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -28,12 +31,14 @@ import {
   XCircle,
   Edit3,
   Warehouse,
-  Truck,
   CircleDot,
   Phone as PhoneIcon,
   MoreHorizontal,
   CheckCircle2,
   Receipt,
+  Share2,
+  X as XIcon,
+  Download,
 } from "lucide-react";
 import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
@@ -51,8 +56,7 @@ import {
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
 import { cn } from "../../lib/utils";
 
-// ─── Header + item shapes (subset — see DeliveryOrderDetail.tsx / the DO list
-// V2 for the full 40-field row) ────────────────────────────────────────────
+// ─── Header + item shapes (subset — full 40-field row lives in the list V2) ─
 
 type DoLifecycle = "shipped" | "invoiced" | "returned";
 
@@ -67,6 +71,7 @@ type DoHeader = {
   debtor_code: string | null;
   debtor_name: string;
   salesperson_id: string | null;
+  salesperson_name?: string | null;
   agent: string | null;
   branding: string | null;
   venue: string | null;
@@ -86,6 +91,8 @@ type DoHeader = {
   email: string | null;
   driver_id: string | null;
   driver_name: string | null;
+  driver_ic: string | null;
+  driver_phone: string | null;
   vehicle: string | null;
   note: string | null;
   notes: string | null;
@@ -94,6 +101,9 @@ type DoHeader = {
   emergency_contact_relationship: string | null;
   lifecycle_state?: DoLifecycle;
   currency: string;
+  created_at?: string;
+  created_by?: string | null;
+  issued_by_name?: string | null;
 };
 
 type DoItem = {
@@ -103,8 +113,10 @@ type DoItem = {
   description2: string | null;
   uom: string;
   qty: number;
+  unit_price_centi?: number;
   cancelled?: boolean;
   item_group?: string;
+  variants?: Record<string, unknown> | null;
 };
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -117,7 +129,6 @@ const fmtDate = (iso: string | null | undefined): string => {
   return `${m[3]}/${m[2]}/${m[1]}`;
 };
 
-// Ref chain matches the DO list V2: PO no > customer SO no > free-text ref.
 const refOf = (h: DoHeader): string =>
   h.po_doc_no || h.customer_so_no || h.ref || "—";
 
@@ -125,10 +136,6 @@ const soOf = (h: DoHeader): string => h.so_doc_no || "—";
 
 const brandOf = (h: DoHeader): string => h.branding || "—";
 
-// Same reduce as the DO listing V2: the recorded status is a stage in the raw
-// flow (LOADED/DISPATCHED/…) but display is lifecycle-based — Draft / Shipped
-// / Invoiced / Returned / Cancelled. Keep the raw status in the Badge label
-// so ops still see the exact stage; the effective bucket drives the tone.
 type Effective = "draft" | "shipped" | "invoiced" | "returned" | "cancelled";
 const effectiveOf = (h: DoHeader): Effective => {
   const s = (h.status || "").toUpperCase();
@@ -139,8 +146,6 @@ const effectiveOf = (h: DoHeader): Effective => {
   return "shipped";
 };
 
-// Tone + label + blurb per effective bucket. Uses the same
-// success/warning/error/neutral Badge tones as the DO listing V2.
 const EFFECTIVE_TONE: Record<
   Effective,
   { tone: "success" | "warning" | "error" | "neutral"; label: string; blurb: string }
@@ -152,8 +157,8 @@ const EFFECTIVE_TONE: Record<
   },
   shipped: {
     tone: "warning",
-    label: "Shipped",
-    blurb: "Shipped · goods on the road",
+    label: "Ready to dispatch",
+    blurb: "Scheduled · goods on the road",
   },
   invoiced: {
     tone: "success",
@@ -172,8 +177,9 @@ const EFFECTIVE_TONE: Record<
   },
 };
 
-// Fine-grained stage label — the DO row Badge in the SO/DO chrome; kept here
-// so the sticky header reads "Signed" instead of collapsing to "Shipped".
+// Fine-grained stage label — kept for the sticky header Badge so ops sees
+// the exact stored status (Loaded / Dispatched / In transit / Signed / …)
+// even when the effective bucket collapses to "shipped".
 const STAGE_LABEL: Record<string, string> = {
   DRAFT: "Draft",
   LOADED: "Loaded",
@@ -198,31 +204,38 @@ const initialsOf = (name: string | null | undefined): string => {
   );
 };
 
-// ─── Field cell (identical shape to SO detail V2) ──────────────────────────
+const shipTo = (h: DoHeader): string[] =>
+  [
+    h.address1,
+    h.address2,
+    [h.city, h.postcode].filter(Boolean).join(" "),
+    [h.customer_state, h.customer_country].filter(Boolean).join(", "),
+  ].filter((s): s is string => !!s && s.trim().length > 0);
+
+// ─── Field cell ────────────────────────────────────────────────────────────
 
 function Field({
   label,
   value,
-  span = 1,
   muted,
   mono,
+  accent,
 }: {
   label: string;
   value: ReactNode;
-  span?: 1 | 2 | 3 | 4;
   muted?: boolean;
   mono?: boolean;
+  accent?: boolean;
 }) {
-  const spanCls = span === 1 ? "" : span === 2 ? "sm:col-span-2" : span === 3 ? "sm:col-span-3" : "sm:col-span-4";
   return (
-    <div className={spanCls}>
+    <div>
       <div className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
         {label}
       </div>
       <div
         className={cn(
           "mt-1 text-[14px] font-semibold leading-snug",
-          muted ? "text-ink-muted" : "text-ink",
+          muted ? "text-ink-muted" : accent ? "text-accent-ink" : "text-ink",
           mono && "font-mono"
         )}
       >
@@ -232,7 +245,7 @@ function Field({
   );
 }
 
-// ─── Aside sub-primitives ───────────────────────────────────────────────────
+// ─── Aside primitives ──────────────────────────────────────────────────────
 
 function AsideCard({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -292,64 +305,30 @@ function PersonRow({
   );
 }
 
-type ActivityDot = "success" | "primary" | "muted";
-const DOT_CLS: Record<ActivityDot, string> = {
-  success: "bg-synced",
-  primary: "bg-primary",
-  muted: "bg-border-strong",
-};
-function ActivityRow({
-  title,
-  meta,
-  dot,
-  isLast,
-}: {
-  title: string;
-  meta: string;
-  dot: ActivityDot;
-  isLast?: boolean;
-}) {
-  return (
-    <div className="flex gap-3 pb-3.5">
-      <div className="flex flex-col items-center">
-        <span className={cn("mt-1 h-2 w-2 rounded-full", DOT_CLS[dot])} />
-        {!isLast && <span className="mt-1 w-[2px] flex-1 bg-border-subtle" />}
-      </div>
-      <div className="min-w-0">
-        <div className="text-[12.5px] font-semibold text-ink">{title}</div>
-        <div className="mt-0.5 text-[11px] text-ink-muted">{meta}</div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Delivery hero (dark aside card replacing SO's Order-total) ─────────────
+// ─── Delivery-status aside hero (dark slab) ────────────────────────────────
 //
-// The SO detail leans on a money hero because a sales order IS a money
-// promise. A delivery order isn't — it's a dispatch promise. The dark
-// aside slab here surfaces WHO's driving WHAT to the customer WHEN, so
-// dispatch questions ("did DO XYZ ever leave the yard?") answer at a
-// glance without opening a modal.
+// Replaces the earlier "Dispatch" driver-focused hero. Now surfaces the four
+// signals ops opens a DO for: state label · scheduled date · total items ·
+// warehouse. Matches the design handoff card exactly.
 
-function DeliveryHeroCard({ header }: { header: DoHeader }) {
+function DeliveryStatusCard({
+  header,
+  totalQty,
+}: {
+  header: DoHeader;
+  totalQty: number;
+}) {
   const eff = effectiveOf(header);
   const t = EFFECTIVE_TONE[eff];
-  const stageLabel =
-    STAGE_LABEL[(header.status || "").toUpperCase()] ?? header.status;
   return (
     <div className="rounded-lg bg-sidebar px-5 py-5 text-sidebar-ink shadow-stone">
       <div className="font-mono text-[10px] font-semibold uppercase tracking-brand text-sidebar-ink-muted">
-        Dispatch
+        Delivery status
       </div>
-      <div className="mt-1.5 flex items-baseline gap-2">
-        <span className="font-display text-[24px] font-bold leading-none tracking-tight text-white">
-          {stageLabel}
-        </span>
-        <span className="text-[12px] text-sidebar-ink-muted">
-          · {t.label.toLowerCase()}
-        </span>
+      <div className="mt-2 font-display text-[22px] font-bold leading-tight tracking-tight text-white">
+        {t.label}
       </div>
-      <div className="mt-3 flex items-center gap-2">
+      <div className="mt-2.5 flex items-center gap-2">
         <span
           className={cn(
             "h-2 w-2 rounded-full",
@@ -362,34 +341,597 @@ function DeliveryHeroCard({ header }: { header: DoHeader }) {
                   : "bg-sidebar-ink-muted"
           )}
         />
-        <span className="text-[12.5px] text-sidebar-ink-muted">{t.blurb}</span>
+        <span className="text-[12.5px] text-sidebar-ink-muted">
+          {header.customer_delivery_date
+            ? `Scheduled ${fmtDate(header.customer_delivery_date)}`
+            : header.expected_delivery_at
+              ? `Expected ${fmtDate(header.expected_delivery_at)}`
+              : "Not yet scheduled"}
+        </span>
       </div>
 
-      <div className="mt-4 space-y-2 border-t border-white/10 pt-4">
-        <HeroLine k="Driver" v={header.driver_name || "Unassigned"} />
-        <HeroLine k="Vehicle" v={header.vehicle || "—"} />
-        <HeroLine
-          k="Expected"
-          v={
-            header.expected_delivery_at
-              ? fmtDate(header.expected_delivery_at)
-              : header.customer_delivery_date
-                ? fmtDate(header.customer_delivery_date)
-                : "Not scheduled"
-          }
-        />
+      <div className="mt-4 space-y-2.5 border-t border-white/10 pt-4">
+        <div className="flex items-center justify-between">
+          <span className="text-[12.5px] text-sidebar-ink-muted">Total items</span>
+          <span className="font-money text-[14px] font-bold text-white">
+            {totalQty}
+          </span>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-[12.5px] text-sidebar-ink-muted">Warehouse</span>
+          <span className="text-[13px] font-semibold text-sidebar-ink">
+            {header.sales_location || "—"}
+          </span>
+        </div>
       </div>
     </div>
   );
 }
 
-function HeroLine({ k, v }: { k: string; v: string }) {
+// ─── Driver sub-card (embedded inside Delivery info) ───────────────────────
+
+function DriverSubCard({ header }: { header: DoHeader }) {
   return (
-    <div className="flex items-center justify-between">
-      <span className="text-[12.5px] text-sidebar-ink-muted">{k}</span>
-      <span className="text-[13px] font-semibold text-sidebar-ink">{v}</span>
+    <div className="mt-4 rounded-lg border border-border-subtle bg-surface-2 px-4 py-4">
+      <div className="mb-3 font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-secondary">
+        Driver
+      </div>
+      <div className="grid grid-cols-2 gap-x-5 gap-y-4 sm:grid-cols-4">
+        <Field label="Driver name" value={header.driver_name || "Unassigned"} muted={!header.driver_name} />
+        <Field label="IC number" value={header.driver_ic || "—"} mono={!!header.driver_ic} muted={!header.driver_ic} />
+        <Field
+          label="Phone"
+          value={header.driver_phone || "—"}
+          mono={!!header.driver_phone}
+          muted={!header.driver_phone}
+        />
+        <Field label="Vehicle" value={header.vehicle || "—"} mono={!!header.vehicle} muted={!header.vehicle} />
+      </div>
     </div>
   );
+}
+
+// ─── Modal shell ───────────────────────────────────────────────────────────
+
+function ModalOverlay({
+  open,
+  onClose,
+  title,
+  icon,
+  size = "sm",
+  children,
+  footer,
+}: {
+  open: boolean;
+  onClose: () => void;
+  title: string;
+  icon?: ReactNode;
+  size?: "sm" | "lg";
+  children: ReactNode;
+  footer?: ReactNode;
+}) {
+  return (
+    <>
+      <div
+        onClick={onClose}
+        aria-hidden
+        className={cn(
+          "fixed inset-0 z-[80] bg-ink/45 backdrop-blur-[1px] transition-opacity duration-200",
+          open ? "opacity-100" : "pointer-events-none opacity-0"
+        )}
+      />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        className={cn(
+          "fixed left-1/2 top-1/2 z-[81] flex max-h-[82vh] w-[calc(100%-32px)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl bg-surface shadow-slab transition-all duration-200",
+          size === "lg" ? "max-w-[760px]" : "max-w-[480px]",
+          open ? "scale-100 opacity-100" : "pointer-events-none scale-[.97] opacity-0"
+        )}
+      >
+        <div className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-border-subtle px-5">
+          <div className="flex items-center gap-2.5">
+            {icon && <span className="text-accent-ink">{icon}</span>}
+            <span className="text-[15px] font-bold text-ink">{title}</span>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-ink-muted hover:text-ink"
+            aria-label="Close"
+          >
+            <XIcon size={18} />
+          </button>
+        </div>
+        <div className="thin-scroll flex-1 overflow-y-auto p-5">{children}</div>
+        {footer && (
+          <div className="flex shrink-0 items-center gap-2 border-t border-border-subtle bg-surface-2 px-5 py-3">
+            {footer}
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+// ─── Modal · Change history timeline ───────────────────────────────────────
+
+function HistoryModal({
+  open,
+  onClose,
+  header,
+  itemsCount,
+}: {
+  open: boolean;
+  onClose: () => void;
+  header: DoHeader;
+  itemsCount: number;
+}) {
+  // Derived timeline from the header's timestamps + status. A future backend
+  // history endpoint can replace this with a proper audit log; for now the
+  // detail endpoint doesn't return one, so we synthesize from what we know.
+  const events: Array<{ title: string; at: string; by: string; dot: "success" | "primary" | "muted" }> =
+    useMemo(() => {
+      const list: Array<{ title: string; at: string; by: string; dot: "success" | "primary" | "muted" }> = [];
+      list.push({
+        title: header.so_doc_no
+          ? `DO created from ${header.so_doc_no}`
+          : "DO created",
+        at: fmtDate(header.created_at || header.do_date),
+        by: header.issued_by_name || header.created_by || "System",
+        dot: "success",
+      });
+      if (header.driver_name) {
+        list.push({
+          title: `Driver ${header.driver_name} assigned`,
+          at: fmtDate(header.do_date),
+          by: header.issued_by_name || "System",
+          dot: "primary",
+        });
+      }
+      if (header.customer_delivery_date) {
+        list.push({
+          title: `Delivery scheduled ${fmtDate(header.customer_delivery_date)}`,
+          at: fmtDate(header.do_date),
+          by: header.issued_by_name || "System",
+          dot: "primary",
+        });
+      }
+      list.push({
+        title: `Status → ${EFFECTIVE_TONE[effectiveOf(header)].label}`,
+        at: fmtDate(header.do_date),
+        by: "System",
+        dot: "muted",
+      });
+      list.push({
+        title: `${itemsCount} line item${itemsCount === 1 ? "" : "s"} on this DO`,
+        at: fmtDate(header.do_date),
+        by: "System",
+        dot: "muted",
+      });
+      return list;
+    }, [header, itemsCount]);
+
+  const DOT_CLS: Record<"success" | "primary" | "muted", string> = {
+    success: "bg-synced",
+    primary: "bg-primary",
+    muted: "bg-border-strong",
+  };
+
+  return (
+    <ModalOverlay open={open} onClose={onClose} title="Change history" icon={<History size={16} />}>
+      <div className="flex flex-col">
+        {events.map((e, i) => {
+          const isLast = i === events.length - 1;
+          return (
+            <div key={i} className="flex gap-3 pb-4 last:pb-0">
+              <div className="flex flex-col items-center">
+                <span className={cn("mt-1 h-2.5 w-2.5 rounded-full", DOT_CLS[e.dot])} />
+                {!isLast && <span className="mt-1 w-[2px] flex-1 bg-border-subtle" />}
+              </div>
+              <div className="min-w-0 flex-1 pb-1">
+                <div className="text-[13px] font-semibold text-ink">{e.title}</div>
+                <div className="mt-0.5 text-[11.5px] text-ink-muted">
+                  {e.at} · {e.by}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </ModalOverlay>
+  );
+}
+
+// ─── Modal · Relationship Map (node graph) ─────────────────────────────────
+//
+// Renders the document chain as a node-graph on an SVG canvas — NOT an
+// inline pipeline. Upstream nodes (Customer PO → Sales Order) sit on the
+// top row; the current DO is the brass-highlighted node; downstream nodes
+// (GRN → Sales Invoice) branch off the bottom row in muted grey until they
+// exist. Each node card carries a Linked/Current/Pending badge.
+
+type ChainNode = {
+  type: string;
+  doc: string;
+  meta: string;
+  state: "done" | "current" | "pending";
+};
+
+function RelationshipMapModal({
+  open,
+  onClose,
+  header,
+  navigate,
+}: {
+  open: boolean;
+  onClose: () => void;
+  header: DoHeader;
+  navigate: (path: string) => void;
+}) {
+  const nodes: ChainNode[] = [
+    {
+      type: "Customer PO",
+      doc: header.po_doc_no || header.customer_so_no || "Not linked",
+      meta: header.po_doc_no || header.customer_so_no ? fmtDate(header.do_date) : "—",
+      state: header.po_doc_no || header.customer_so_no ? "done" : "pending",
+    },
+    {
+      type: "Sales Order",
+      doc: header.so_doc_no || "Not linked",
+      meta: header.so_doc_no ? fmtDate(header.do_date) : "—",
+      state: header.so_doc_no ? "done" : "pending",
+    },
+    {
+      type: "Delivery Order",
+      doc: header.do_number,
+      meta: "This document",
+      state: "current",
+    },
+    {
+      type: "GRN",
+      doc: "Not created",
+      meta: "After delivery",
+      state: "pending",
+    },
+    {
+      type: "Sales Invoice",
+      doc: header.lifecycle_state === "invoiced" ? "Issued" : "Not created",
+      meta: header.lifecycle_state === "invoiced" ? fmtDate(header.do_date) : "On completion",
+      state: header.lifecycle_state === "invoiced" ? "done" : "pending",
+    },
+  ];
+
+  const onNodeClick = (type: string) => {
+    if (type === "Sales Order" && header.so_doc_no) {
+      navigate(`/scm/sales-orders/${header.so_doc_no}`);
+      onClose();
+    } else if (type === "Sales Invoice" && header.lifecycle_state === "invoiced") {
+      // No direct SI id on the DO detail payload — punt to the SI listing
+      // scoped to this DO.
+      navigate(`/scm/sales-invoices?q=${encodeURIComponent(header.do_number)}`);
+      onClose();
+    }
+  };
+
+  const nodeCard = (n: ChainNode, opts: { left: number; top: number }) => {
+    const cur = n.state === "current";
+    const done = n.state === "done";
+    return (
+      <button
+        key={n.type}
+        type="button"
+        onClick={() => onNodeClick(n.type)}
+        style={{ position: "absolute", left: opts.left, top: opts.top, width: 148 }}
+        className={cn(
+          "rounded-xl px-3 py-2.5 text-left transition-all",
+          cur
+            ? "border-2 border-accent bg-accent-soft shadow-[0_10px_22px_-12px_rgba(161,133,47,.55)]"
+            : done
+              ? "border border-primary/30 bg-primary-soft"
+              : "border border-border bg-surface-2",
+          (n.type === "Sales Order" && header.so_doc_no) || (n.type === "Sales Invoice" && done)
+            ? "cursor-pointer hover:-translate-y-px hover:shadow-slab"
+            : "cursor-default"
+        )}
+      >
+        <div className="flex items-center gap-1.5">
+          <span
+            className={cn(
+              "flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold",
+              cur
+                ? "bg-accent text-white"
+                : done
+                  ? "bg-primary text-white"
+                  : "border border-border-strong bg-surface"
+            )}
+          >
+            {cur ? "◉" : done ? "✓" : ""}
+          </span>
+          <span
+            className={cn(
+              "font-mono text-[9px] font-bold uppercase tracking-brand",
+              cur ? "text-accent-ink" : done ? "text-primary-ink" : "text-ink-muted"
+            )}
+          >
+            {n.type}
+          </span>
+        </div>
+        <div
+          className={cn(
+            "mt-1.5 truncate font-mono text-[12.5px] font-bold",
+            cur ? "text-accent-ink" : done ? "text-primary-ink" : "text-ink-muted"
+          )}
+        >
+          {n.doc}
+        </div>
+        <div
+          className={cn(
+            "mt-0.5 truncate text-[10.5px]",
+            cur ? "text-accent-ink/80" : "text-ink-muted"
+          )}
+        >
+          {n.meta}
+        </div>
+      </button>
+    );
+  };
+
+  // Canvas layout — top row: PO → SO → DO (current). Bottom row: GRN → SI
+  // branching down from the current DO.
+  const layout = {
+    row1Top: 40,
+    row2Top: 190,
+    x0: 12,
+    xStep: 176,
+  };
+  const positions = [
+    { left: layout.x0 + layout.xStep * 0, top: layout.row1Top },
+    { left: layout.x0 + layout.xStep * 1, top: layout.row1Top },
+    { left: layout.x0 + layout.xStep * 2, top: layout.row1Top },
+    { left: layout.x0 + layout.xStep * 2, top: layout.row2Top },
+    { left: layout.x0 + layout.xStep * 3, top: layout.row2Top },
+  ];
+
+  return (
+    <ModalOverlay
+      open={open}
+      onClose={onClose}
+      title="Relationship map"
+      icon={<Share2 size={16} />}
+      size="lg"
+    >
+      <div className="mb-3 text-[12.5px] leading-relaxed text-ink-secondary">
+        How this delivery order links to its source documents and the documents
+        generated downstream.
+      </div>
+      <div
+        className="relative h-[320px] overflow-hidden rounded-xl border border-border-subtle"
+        style={{
+          backgroundImage: "radial-gradient(rgba(180, 185, 175, .45) 1px, transparent 1px)",
+          backgroundSize: "16px 16px",
+          backgroundColor: "var(--surface, #fbfcfa)",
+        }}
+      >
+        {/* Row labels */}
+        <span className="absolute left-3 top-2 font-mono text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
+          Upstream
+        </span>
+        <span
+          className="absolute font-mono text-[9px] font-semibold uppercase tracking-brand text-ink-muted"
+          style={{ left: 360, top: 168 }}
+        >
+          Generated after delivery
+        </span>
+
+        {/* SVG connectors */}
+        <svg
+          width="100%"
+          height="100%"
+          className="pointer-events-none absolute inset-0"
+          preserveAspectRatio="none"
+        >
+          {/* PO → SO arrow (row 1) */}
+          <line
+            x1={layout.x0 + 150}
+            y1={layout.row1Top + 42}
+            x2={layout.x0 + layout.xStep}
+            y2={layout.row1Top + 42}
+            stroke="var(--primary, #16695f)"
+            strokeWidth="2"
+            markerEnd="url(#arrowP)"
+          />
+          {/* SO → DO arrow (row 1) */}
+          <line
+            x1={layout.x0 + layout.xStep + 150}
+            y1={layout.row1Top + 42}
+            x2={layout.x0 + layout.xStep * 2}
+            y2={layout.row1Top + 42}
+            stroke="var(--primary, #16695f)"
+            strokeWidth="2"
+            markerEnd="url(#arrowP)"
+          />
+          {/* DO → GRN branch (down) */}
+          <line
+            x1={layout.x0 + layout.xStep * 2 + 74}
+            y1={layout.row1Top + 88}
+            x2={layout.x0 + layout.xStep * 2 + 74}
+            y2={layout.row2Top}
+            stroke="var(--border-strong, #b3b8ac)"
+            strokeWidth="2"
+            strokeDasharray="4 4"
+            markerEnd="url(#arrowM)"
+          />
+          {/* GRN → SI arrow */}
+          <line
+            x1={layout.x0 + layout.xStep * 2 + 148}
+            y1={layout.row2Top + 40}
+            x2={layout.x0 + layout.xStep * 3}
+            y2={layout.row2Top + 40}
+            stroke="var(--border-strong, #b3b8ac)"
+            strokeWidth="2"
+            strokeDasharray="4 4"
+            markerEnd="url(#arrowM)"
+          />
+          <defs>
+            <marker
+              id="arrowP"
+              markerWidth="7"
+              markerHeight="7"
+              refX="6"
+              refY="3.5"
+              orient="auto"
+              markerUnits="strokeWidth"
+            >
+              <path d="M0,0 L7,3.5 L0,7 z" fill="var(--primary, #16695f)" />
+            </marker>
+            <marker
+              id="arrowM"
+              markerWidth="7"
+              markerHeight="7"
+              refX="6"
+              refY="3.5"
+              orient="auto"
+              markerUnits="strokeWidth"
+            >
+              <path d="M0,0 L7,3.5 L0,7 z" fill="var(--border-strong, #b3b8ac)" />
+            </marker>
+          </defs>
+        </svg>
+
+        {/* Cards */}
+        {nodes.map((n, i) => nodeCard(n, positions[i]!))}
+      </div>
+
+      {/* Legend */}
+      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-ink-muted">
+        <span className="inline-flex items-center gap-1.5">
+          <span className="inline-block h-2.5 w-2.5 rounded-full bg-primary" /> Linked
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="inline-block h-2.5 w-2.5 rounded-full bg-accent" /> Current
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span className="inline-block h-2.5 w-2.5 rounded-full border border-border-strong bg-surface" /> Pending
+        </span>
+      </div>
+    </ModalOverlay>
+  );
+}
+
+// ─── Modal · Print PDF preview ─────────────────────────────────────────────
+
+function PrintPdfModal({
+  open,
+  onClose,
+  header,
+  items,
+  onDownload,
+  onPrint,
+}: {
+  open: boolean;
+  onClose: () => void;
+  header: DoHeader;
+  items: DoItem[];
+  onDownload: () => void;
+  onPrint: () => void;
+}) {
+  const totalQty = items.reduce((sum, l) => sum + Number(l.qty ?? 0), 0);
+  return (
+    <ModalOverlay
+      open={open}
+      onClose={onClose}
+      title="Print preview"
+      icon={<Printer size={16} />}
+      footer={
+        <div className="ml-auto flex items-center gap-2">
+          <Button
+            variant="secondary"
+            icon={<Printer size={14} />}
+            onClick={onPrint}
+          >
+            Print now
+          </Button>
+          <Button
+            variant="primary"
+            icon={<Download size={14} />}
+            onClick={onDownload}
+          >
+            Download PDF
+          </Button>
+        </div>
+      }
+    >
+      <div className="overflow-hidden rounded-xl border border-border-subtle">
+        <div className="flex items-start justify-between gap-3 bg-sidebar px-5 py-4 text-sidebar-ink">
+          <div>
+            <div className="font-display text-[14px] font-bold tracking-wider text-white">
+              HOUZS CENTURY
+            </div>
+            <div className="mt-0.5 text-[10.5px] uppercase tracking-brand text-sidebar-ink-muted">
+              Delivery Order
+            </div>
+          </div>
+          <div className="text-right font-mono text-[13px] font-bold text-accent-bright">
+            {header.do_number}
+          </div>
+        </div>
+        <div className="space-y-2 px-5 py-4 text-[12.5px] leading-relaxed text-ink">
+          <div>
+            <span className="font-semibold text-ink-secondary">Deliver to: </span>
+            {header.debtor_name}
+          </div>
+          <div className="text-ink-secondary">
+            {shipTo(header).join(", ") || "No address on file"}
+          </div>
+          <div>
+            <span className="font-semibold text-ink-secondary">Driver: </span>
+            {header.driver_name || "Unassigned"}
+            {header.vehicle ? ` · ${header.vehicle}` : ""}
+          </div>
+          <div>
+            <span className="font-semibold text-ink-secondary">DO date: </span>
+            {fmtDate(header.do_date)}
+            {header.customer_delivery_date
+              ? ` · Scheduled ${fmtDate(header.customer_delivery_date)}`
+              : ""}
+          </div>
+          <div>
+            <span className="font-semibold text-ink-secondary">Items: </span>
+            {items.length} line{items.length === 1 ? "" : "s"} · {totalQty} unit{totalQty === 1 ? "" : "s"}
+          </div>
+        </div>
+      </div>
+    </ModalOverlay>
+  );
+}
+
+// ─── Line item variant chip helper ─────────────────────────────────────────
+
+function VariantChip({ k, v }: { k: string; v: string }) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-border-subtle bg-surface-2 px-2 py-0.5">
+      <span className="font-mono text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
+        {k}
+      </span>
+      <span className="text-[11px] font-semibold text-ink-secondary">{v}</span>
+    </span>
+  );
+}
+
+// Best-effort extraction of variant chips from the item's variants JSON blob.
+function variantsOf(item: DoItem): Array<{ k: string; v: string }> {
+  const raw = item.variants;
+  if (!raw || typeof raw !== "object") return [];
+  const out: Array<{ k: string; v: string }> = [];
+  for (const [k, val] of Object.entries(raw)) {
+    if (val == null || val === "") continue;
+    if (typeof val === "string" || typeof val === "number") {
+      out.push({ k, v: String(val) });
+    }
+  }
+  return out;
 }
 
 // ─── Main page ─────────────────────────────────────────────────────────────
@@ -410,12 +952,18 @@ export function DeliveryOrderDetailV2() {
       (l) => !l.cancelled
     );
 
-  // Replace the auto-derived "Delivery Orders" crumb (fine at the top level)
-  // with the actual DO number as the trailing crumb, matching SO detail V2.
+  const totalQty = useMemo(
+    () => items.reduce((sum, l) => sum + Number(l.qty ?? 0), 0),
+    [items]
+  );
+
   useSetBreadcrumbs([
     { label: "Delivery Orders", to: "/scm/delivery-orders" },
     { label: deliveryOrder?.do_number ?? id ?? "Delivery Order" },
   ]);
+
+  const [modal, setModal] = useState<"history" | "relmap" | "print" | null>(null);
+  const closeModal = () => setModal(null);
 
   const eff = deliveryOrder ? effectiveOf(deliveryOrder) : null;
   const stageLabel = deliveryOrder
@@ -433,7 +981,7 @@ export function DeliveryOrderDetailV2() {
     if (params.get("from") === "list") navigate("/scm/delivery-orders");
     else navigate(-1);
   };
-  const goEdit = () => id && navigate(`/scm/delivery-orders/${id}?edit=1`);
+  const goEdit = () => id && navigate(`/scm/delivery-orders/new?edit=${id}`);
   const doCancel = () => {
     if (!deliveryOrder) return;
     if (
@@ -444,8 +992,6 @@ export function DeliveryOrderDetailV2() {
       updateStatus.mutate({ id: deliveryOrder.id, status: "cancelled" });
     }
   };
-  const goHistory = () => id && navigate(`/scm/delivery-orders/${id}?tab=history`);
-  const goPrintPdf = () => id && navigate(`/scm/delivery-orders/${id}?print=1`);
   const doMarkSigned = () => {
     if (!deliveryOrder) return;
     updateStatus.mutate({ id: deliveryOrder.id, status: "delivered" });
@@ -454,40 +1000,72 @@ export function DeliveryOrderDetailV2() {
     deliveryOrder &&
     navigate(`/scm/sales-invoices/from-do?do=${deliveryOrder.id}`);
 
-  // ── DO line item columns — qty only, no money (owner 2026-06-26) ──────
+  const doDownloadPdf = () => {
+    closeModal();
+    id && navigate(`/scm/delivery-orders/${id}?print=1`);
+  };
+  const doPrintNow = () => {
+    window.print();
+  };
+
+  // ── DO line item columns — Item (with variant chips) · Type (FOC/Sale) · Qty ─
   const lineColumns: Column<DoItem>[] = [
     {
       key: "item",
       label: "Item",
       alwaysVisible: true,
       getValue: (l) => l.item_code,
-      render: (l) => (
-        <div className="min-w-0">
-          <div className="truncate text-[13px] font-semibold text-ink">
-            {l.description || l.item_code}
-          </div>
-          <div className="mt-0.5 flex items-center gap-2 font-mono text-[11px] text-ink-muted">
-            <span>{l.item_code}</span>
-            {l.description2 && (
-              <span className="truncate text-ink-secondary">
-                · {l.description2}
-              </span>
+      render: (l) => {
+        const vs = variantsOf(l);
+        return (
+          <div className="min-w-0">
+            <div className="text-[13px] font-semibold text-ink">
+              {l.description || l.item_code}
+            </div>
+            <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-ink-muted">
+              <span>{l.item_code}</span>
+              {l.description2 && (
+                <span className="truncate text-ink-secondary">
+                  · {l.description2}
+                </span>
+              )}
+            </div>
+            {vs.length > 0 && (
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                {vs.map((c) => (
+                  <VariantChip key={c.k} k={c.k} v={c.v} />
+                ))}
+              </div>
             )}
           </div>
-        </div>
-      ),
+        );
+      },
+    },
+    {
+      key: "type",
+      label: "Type",
+      width: "88px",
+      getValue: (l) => (Number(l.unit_price_centi ?? 0) === 0 ? "FOC" : "Sale"),
+      render: (l) => {
+        const isFoc = Number(l.unit_price_centi ?? 0) === 0;
+        return (
+          <Badge tone={isFoc ? "warning" : "neutral"} size="xs">
+            {isFoc ? "FOC" : "Sale"}
+          </Badge>
+        );
+      },
     },
     {
       key: "qty",
-      label: "Qty",
-      width: "108px",
+      label: "Qty to deliver",
+      width: "132px",
       align: "right",
       getValue: (l) => l.qty,
       render: (l) => (
-        <span className="font-money text-[13.5px] font-semibold text-ink">
-          {l.qty}{" "}
-          <span className="text-[10.5px] font-normal text-ink-muted">
-            {l.uom}
+        <span className="font-money text-[14px] font-semibold text-ink">
+          {l.qty}
+          <span className="ml-1 text-[10.5px] font-normal text-ink-muted">
+            {l.uom || ""}
           </span>
         </span>
       ),
@@ -533,8 +1111,6 @@ export function DeliveryOrderDetailV2() {
     window.location.href = `tel:${deliveryOrder.phone.replace(/\s+/g, "")}`;
   };
 
-  // Header CTA switch — same logic as the list V2 drawer, promoted to the
-  // sticky bar so a status advance from Detail matches the drawer's shape.
   const rawStatus = (deliveryOrder.status || "").toLowerCase();
   const canMarkSigned =
     rawStatus === "loaded" ||
@@ -543,6 +1119,8 @@ export function DeliveryOrderDetailV2() {
   const canConvertToSi =
     rawStatus === "signed" || rawStatus === "delivered";
   const isCancelled = rawStatus === "cancelled";
+
+  const soNo = deliveryOrder.so_doc_no;
 
   return (
     <div className="pb-24 md:pb-0">
@@ -583,7 +1161,7 @@ export function DeliveryOrderDetailV2() {
       {/* ─── Desktop sticky header ─────────────────────────────────── */}
       <div className="sticky top-0 z-10 -mx-4 hidden border-b border-border bg-bg/95 px-4 py-4 backdrop-blur-sm sm:-mx-6 sm:px-6 md:block">
         <div className="flex flex-wrap items-start justify-between gap-4">
-          <div className="flex items-start gap-3 min-w-0">
+          <div className="flex min-w-0 items-start gap-3">
             <button
               type="button"
               onClick={goBack}
@@ -602,31 +1180,22 @@ export function DeliveryOrderDetailV2() {
                 </Badge>
               </div>
               <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12.5px] text-ink-secondary">
-                <span className="font-mono font-semibold text-primary-ink">
+                <span className="font-mono font-semibold text-accent-ink">
                   {deliveryOrder.do_number}
                 </span>
                 <Divider />
                 <span>DO date {fmtDate(deliveryOrder.do_date)}</span>
                 <Divider />
-                <span>{items.length} line{items.length === 1 ? "" : "s"}</span>
-                {soOf(deliveryOrder) !== "—" && (
+                <span>
+                  {items.length} line{items.length === 1 ? "" : "s"}
+                </span>
+                {soNo && (
                   <>
                     <Divider />
-                    <span>
-                      From SO{" "}
+                    <span className="inline-flex items-center gap-1">
+                      ⇄ from{" "}
                       <span className="font-mono font-semibold text-ink-secondary">
-                        {soOf(deliveryOrder)}
-                      </span>
-                    </span>
-                  </>
-                )}
-                {refOf(deliveryOrder) !== "—" && (
-                  <>
-                    <Divider />
-                    <span>
-                      Ref{" "}
-                      <span className="font-mono font-semibold text-ink-secondary">
-                        {refOf(deliveryOrder)}
+                        {soNo}
                       </span>
                     </span>
                   </>
@@ -634,18 +1203,25 @@ export function DeliveryOrderDetailV2() {
               </div>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-shrink-0 flex-wrap items-center gap-2">
             <Button
               variant="ghost"
               icon={<History size={14} />}
-              onClick={goHistory}
+              onClick={() => setModal("history")}
             >
               History
             </Button>
             <Button
+              variant="ghost"
+              icon={<Share2 size={14} />}
+              onClick={() => setModal("relmap")}
+            >
+              Relationship Map
+            </Button>
+            <Button
               variant="secondary"
               icon={<Printer size={14} />}
-              onClick={goPrintPdf}
+              onClick={() => setModal("print")}
             >
               Print PDF
             </Button>
@@ -689,41 +1265,51 @@ export function DeliveryOrderDetailV2() {
 
       {/* ─── Detail body ────────────────────────────────────────────── */}
       <div className="py-5">
-        {/* Mobile-only Dispatch hero — sits at the top of the scroll body.
-            On md+ the dark Delivery hero lives in the sticky aside instead. */}
+        {/* Mobile-only Delivery status hero */}
         <div className="mb-3 rounded-lg border border-border bg-surface p-4 shadow-stone md:hidden">
-          <div className="flex items-baseline gap-2">
-            <div className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
-              Dispatch
-            </div>
+          <div className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
+            Delivery status
           </div>
-          <div className="mt-1 font-display text-[22px] font-bold leading-none tracking-tight text-ink">
-            {stageLabel}
+          <div className="mt-1 font-display text-[22px] font-bold leading-tight text-ink">
+            {EFFECTIVE_TONE[effectiveOf(deliveryOrder)].label}
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-ink-muted">
             <span>
-              <Truck size={11} className="mr-1 inline" />
-              {deliveryOrder.driver_name || "Unassigned"}
-              {deliveryOrder.vehicle ? ` · ${deliveryOrder.vehicle}` : ""}
+              {deliveryOrder.customer_delivery_date
+                ? `Scheduled ${fmtDate(deliveryOrder.customer_delivery_date)}`
+                : deliveryOrder.expected_delivery_at
+                  ? `Expected ${fmtDate(deliveryOrder.expected_delivery_at)}`
+                  : "Not scheduled"}
             </span>
-            <span>
-              Expected{" "}
-              {deliveryOrder.expected_delivery_at
-                ? fmtDate(deliveryOrder.expected_delivery_at)
-                : deliveryOrder.customer_delivery_date
-                  ? fmtDate(deliveryOrder.customer_delivery_date)
-                  : "TBD"}
-            </span>
+            <span>· {totalQty} items</span>
+            {deliveryOrder.sales_location && (
+              <span>· {deliveryOrder.sales_location}</span>
+            )}
           </div>
         </div>
+
         <DetailGrid>
           <DetailMain>
-            {/* Customer */}
-            <Section title="Customer">
-              <div className="grid grid-cols-1 gap-x-5 gap-y-4 sm:grid-cols-3">
+            {/* Customer info — Customer SO No. first, per design */}
+            <Section title="Customer info">
+              <div className="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-3">
+                <Field
+                  label="Customer SO No."
+                  value={soOf(deliveryOrder)}
+                  mono={soOf(deliveryOrder) !== "—"}
+                  accent={soOf(deliveryOrder) !== "—"}
+                  muted={soOf(deliveryOrder) === "—"}
+                />
                 <Field
                   label="Customer name"
                   value={deliveryOrder.debtor_name || "—"}
+                />
+                <Field
+                  label="Customer SO ref"
+                  value={refOf(deliveryOrder)}
+                  mono={refOf(deliveryOrder) !== "—"}
+                  accent={refOf(deliveryOrder) !== "—"}
+                  muted={refOf(deliveryOrder) === "—"}
                 />
                 <Field
                   label="Phone"
@@ -742,50 +1328,18 @@ export function DeliveryOrderDetailV2() {
                   muted={!deliveryOrder.customer_type}
                 />
                 <Field
-                  label="From SO"
-                  value={soOf(deliveryOrder)}
-                  mono={soOf(deliveryOrder) !== "—"}
-                  muted={soOf(deliveryOrder) === "—"}
-                />
-                <Field
-                  label="Customer ref"
-                  value={refOf(deliveryOrder)}
-                  mono={refOf(deliveryOrder) !== "—"}
-                  muted={refOf(deliveryOrder) === "—"}
-                />
-              </div>
-            </Section>
-
-            {/* Dispatch info — DO's editorial primary section (SO detail's
-                Order-info equivalent). Driver / vehicle / expected date /
-                customer delivery date + branding + venue. Foot-of-section
-                amber Note if there's one. */}
-            <Section title="Dispatch">
-              <div className="grid grid-cols-1 gap-x-5 gap-y-4 sm:grid-cols-4">
-                <Field
-                  label="Driver"
-                  value={deliveryOrder.driver_name || "Unassigned"}
-                  muted={!deliveryOrder.driver_name}
-                />
-                <Field
-                  label="Vehicle"
-                  value={deliveryOrder.vehicle || "—"}
-                  muted={!deliveryOrder.vehicle}
-                  mono={!!deliveryOrder.vehicle}
-                />
-                <Field
-                  label="Expected at"
-                  value={fmtDate(deliveryOrder.expected_delivery_at)}
-                  muted={!deliveryOrder.expected_delivery_at}
-                />
-                <Field
-                  label="Customer delivery"
+                  label="Salesperson"
                   value={
-                    deliveryOrder.customer_delivery_date
-                      ? fmtDate(deliveryOrder.customer_delivery_date)
-                      : "Not scheduled"
+                    deliveryOrder.agent ||
+                    deliveryOrder.salesperson_name ||
+                    deliveryOrder.salesperson_id ||
+                    "Unassigned"
                   }
-                  muted={!deliveryOrder.customer_delivery_date}
+                  muted={
+                    !deliveryOrder.agent &&
+                    !deliveryOrder.salesperson_name &&
+                    !deliveryOrder.salesperson_id
+                  }
                 />
                 <Field
                   label="Branding"
@@ -793,44 +1347,18 @@ export function DeliveryOrderDetailV2() {
                   muted={brandOf(deliveryOrder) === "—"}
                 />
                 <Field
-                  label="Venue"
-                  value={deliveryOrder.venue || "—"}
-                  muted={!deliveryOrder.venue}
-                />
-                <Field
-                  label="Salesperson"
+                  label="Building / venue"
                   value={
-                    deliveryOrder.agent ||
-                    deliveryOrder.salesperson_id ||
-                    "Unassigned"
+                    [deliveryOrder.building_type, deliveryOrder.venue]
+                      .filter(Boolean)
+                      .join(" · ") || "—"
                   }
-                  muted={
-                    !deliveryOrder.agent && !deliveryOrder.salesperson_id
-                  }
-                />
-                <Field
-                  label="Building type"
-                  value={deliveryOrder.building_type || "—"}
-                  muted={!deliveryOrder.building_type}
+                  muted={!deliveryOrder.building_type && !deliveryOrder.venue}
                 />
               </div>
-
-              {foldedNote && (
-                <div className="mt-4 rounded-lg border border-warning-text/25 bg-warning-bg px-4 py-3">
-                  <div className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-warning-text">
-                    Note
-                  </div>
-                  <p className="mt-1.5 text-[13px] leading-relaxed text-warning-text">
-                    {foldedNote}
-                  </p>
-                </div>
-              )}
             </Section>
 
-            {/* Delivery address + Emergency contact — identical layout to SO
-                detail V2 but the emergency-contact side reads the DO's own
-                emergency_contact_* fields (they're distinct from the phone
-                on the customer record, per the SO/DO editable schema). */}
+            {/* Delivery address + Emergency contact */}
             <Section title="Delivery address">
               <div className="grid grid-cols-1 gap-6 sm:grid-cols-[1.4fr_1fr] sm:divide-x sm:divide-border-subtle">
                 <div className="sm:pr-6">
@@ -838,21 +1366,11 @@ export function DeliveryOrderDetailV2() {
                     Ship to
                   </div>
                   <div className="mt-1.5 text-[14px] font-semibold leading-relaxed text-ink">
-                    {[
-                      deliveryOrder.address1,
-                      deliveryOrder.address2,
-                      [deliveryOrder.city, deliveryOrder.postcode]
-                        .filter(Boolean)
-                        .join(" "),
-                      [deliveryOrder.customer_state, deliveryOrder.customer_country]
-                        .filter(Boolean)
-                        .join(", "),
-                    ]
-                      .filter(Boolean)
-                      .map((line, i) => (
+                    {shipTo(deliveryOrder).length > 0 ? (
+                      shipTo(deliveryOrder).map((line, i) => (
                         <div key={i}>{line}</div>
-                      ))}
-                    {!deliveryOrder.address1 && !deliveryOrder.city && (
+                      ))
+                    ) : (
                       <span className="text-ink-muted">Not provided</span>
                     )}
                   </div>
@@ -868,14 +1386,18 @@ export function DeliveryOrderDetailV2() {
                     Emergency contact
                   </div>
                   <div className="mt-1.5 text-[12.5px] text-ink-muted">
-                    Called if driver can't reach the customer
+                    Only if unreachable on delivery day
                   </div>
                   <div className="mt-2.5 text-[14px] font-semibold text-ink">
-                    {deliveryOrder.emergency_contact_name || "Not provided"}
+                    {deliveryOrder.emergency_contact_name ||
+                      deliveryOrder.emergency_contact_phone ||
+                      "Not provided"}
                   </div>
-                  <div className="mt-1 font-mono text-[12.5px] text-ink-secondary">
-                    {deliveryOrder.emergency_contact_phone || "—"}
-                  </div>
+                  {deliveryOrder.emergency_contact_phone && (
+                    <div className="mt-1 font-mono text-[12.5px] text-ink-secondary">
+                      {deliveryOrder.emergency_contact_phone}
+                    </div>
+                  )}
                   {deliveryOrder.emergency_contact_relationship && (
                     <div className="mt-1 text-[12px] text-ink-muted">
                       {deliveryOrder.emergency_contact_relationship}
@@ -885,8 +1407,50 @@ export function DeliveryOrderDetailV2() {
               </div>
             </Section>
 
-            {/* Line items — qty only, no money (owner 2026-06-26). */}
-            <Section title={`Line items · ${items.length}`}>
+            {/* Delivery info (with embedded Driver sub-card) */}
+            <Section title="Delivery info">
+              <div className="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-3">
+                <Field label="DO date" value={fmtDate(deliveryOrder.do_date)} />
+                <Field
+                  label="Expected delivery"
+                  value={fmtDate(deliveryOrder.expected_delivery_at)}
+                  muted={!deliveryOrder.expected_delivery_at}
+                />
+                <Field
+                  label="Customer delivery date"
+                  value={
+                    deliveryOrder.customer_delivery_date
+                      ? fmtDate(deliveryOrder.customer_delivery_date)
+                      : "Not scheduled"
+                  }
+                  muted={!deliveryOrder.customer_delivery_date}
+                />
+              </div>
+
+              {/* Driver sub-card — moved into Delivery info per the new design */}
+              <DriverSubCard header={deliveryOrder} />
+
+              {foldedNote && (
+                <div className="mt-4 rounded-lg border border-warning-text/25 bg-warning-bg px-4 py-3">
+                  <div className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-warning-text">
+                    Note
+                  </div>
+                  <p className="mt-1.5 text-[13px] leading-relaxed text-warning-text">
+                    {foldedNote}
+                  </p>
+                </div>
+              )}
+            </Section>
+
+            {/* Line items */}
+            <Section
+              title={`Line items · ${items.length}`}
+              actions={
+                <span className="text-[11.5px] text-ink-muted">
+                  Delivery quantities — no pricing
+                </span>
+              }
+            >
               <DataTable<DoItem>
                 tableId={`do-lines-${id}`}
                 rows={items}
@@ -899,27 +1463,29 @@ export function DeliveryOrderDetailV2() {
           </DetailMain>
 
           <DetailAside>
-            {/* Aside is hidden on phone (Dispatch hero is a light card at
-                the top of main; Key dates / People / Recent activity are
-                omitted on mobile). Reappears from md up. */}
             <div className="hidden lg:sticky lg:top-[124px] space-y-3 md:block">
-              <DeliveryHeroCard header={deliveryOrder} />
+              <DeliveryStatusCard header={deliveryOrder} totalQty={totalQty} />
 
               <AsideCard title="Key dates">
                 <KeyDateRow k="DO date" v={fmtDate(deliveryOrder.do_date)} />
                 <KeyDateRow
-                  k="Expected"
-                  v={fmtDate(deliveryOrder.expected_delivery_at)}
-                  muted={!deliveryOrder.expected_delivery_at}
-                />
-                <KeyDateRow
-                  k="Customer delivery"
+                  k="Scheduled"
                   v={
                     deliveryOrder.customer_delivery_date
                       ? fmtDate(deliveryOrder.customer_delivery_date)
-                      : "Not set"
+                      : deliveryOrder.expected_delivery_at
+                        ? fmtDate(deliveryOrder.expected_delivery_at)
+                        : "Not set"
                   }
-                  muted={!deliveryOrder.customer_delivery_date}
+                  muted={
+                    !deliveryOrder.customer_delivery_date &&
+                    !deliveryOrder.expected_delivery_at
+                  }
+                />
+                <KeyDateRow
+                  k="Delivered"
+                  v={effectiveOf(deliveryOrder) === "shipped" ? "Pending" : EFFECTIVE_TONE[effectiveOf(deliveryOrder)].label}
+                  muted={effectiveOf(deliveryOrder) === "shipped" || effectiveOf(deliveryOrder) === "draft"}
                 />
               </AsideCard>
 
@@ -939,65 +1505,27 @@ export function DeliveryOrderDetailV2() {
                   tone={deliveryOrder.driver_name ? "accent" : "neutral"}
                 />
                 <PersonRow
-                  initials={
-                    deliveryOrder.agent || deliveryOrder.salesperson_id
-                      ? initialsOf(
-                          deliveryOrder.agent || deliveryOrder.salesperson_id
-                        )
-                      : "?"
-                  }
+                  initials={initialsOf(
+                    deliveryOrder.issued_by_name ||
+                      deliveryOrder.agent ||
+                      deliveryOrder.salesperson_name ||
+                      deliveryOrder.salesperson_id
+                  )}
                   name={
+                    deliveryOrder.issued_by_name ||
                     deliveryOrder.agent ||
+                    deliveryOrder.salesperson_name ||
                     deliveryOrder.salesperson_id ||
-                    "Salesperson"
+                    "Issued by"
                   }
                   role={
-                    deliveryOrder.agent || deliveryOrder.salesperson_id
-                      ? "Salesperson"
-                      : "Not yet assigned"
+                    deliveryOrder.issued_by_name
+                      ? "Issued by"
+                      : deliveryOrder.agent || deliveryOrder.salesperson_id
+                        ? "Salesperson"
+                        : "Not recorded"
                   }
-                  tone={
-                    deliveryOrder.agent || deliveryOrder.salesperson_id
-                      ? "accent"
-                      : "neutral"
-                  }
-                />
-                <PersonRow
-                  initials={initialsOf(deliveryOrder.debtor_name)}
-                  name={deliveryOrder.debtor_name || "—"}
-                  role={`Customer${
-                    soOf(deliveryOrder) !== "—"
-                      ? ` · SO ${soOf(deliveryOrder)}`
-                      : ""
-                  }`}
-                  tone="accent"
-                />
-              </AsideCard>
-
-              <AsideCard title="Recent activity">
-                <ActivityRow
-                  title={`DO ${EFFECTIVE_TONE[effectiveOf(deliveryOrder)].label.toLowerCase()}`}
-                  meta={fmtDate(deliveryOrder.do_date)}
-                  dot={
-                    EFFECTIVE_TONE[effectiveOf(deliveryOrder)].tone === "success"
-                      ? "success"
-                      : "primary"
-                  }
-                />
-                <ActivityRow
-                  title={`Lines loaded (${items.length})`}
-                  meta={fmtDate(deliveryOrder.do_date)}
-                  dot="primary"
-                />
-                <ActivityRow
-                  title="Created"
-                  meta={`${fmtDate(deliveryOrder.do_date)}${
-                    deliveryOrder.sales_location
-                      ? ` · ${deliveryOrder.sales_location}`
-                      : ""
-                  }`}
-                  dot="muted"
-                  isLast
+                  tone="neutral"
                 />
               </AsideCard>
             </div>
@@ -1005,7 +1533,7 @@ export function DeliveryOrderDetailV2() {
         </DetailGrid>
       </div>
 
-      {/* ─── Fixed bottom action bar (phone only) ───────────────────── */}
+      {/* Fixed bottom action bar (phone only) */}
       <div className="fixed inset-x-0 bottom-0 z-20 border-t border-border bg-surface/95 px-3 pb-6 pt-2.5 shadow-slab backdrop-blur-sm md:hidden">
         <div className="flex items-center gap-2">
           <button
@@ -1017,7 +1545,7 @@ export function DeliveryOrderDetailV2() {
           </button>
           <button
             type="button"
-            onClick={goPrintPdf}
+            onClick={() => setModal("print")}
             className="inline-flex h-11 w-11 items-center justify-center rounded-lg bg-surface-2 text-primary-ink hover:bg-primary-soft"
             aria-label="Print PDF"
           >
@@ -1038,6 +1566,28 @@ export function DeliveryOrderDetailV2() {
           </button>
         </div>
       </div>
+
+      {/* Modals */}
+      <HistoryModal
+        open={modal === "history"}
+        onClose={closeModal}
+        header={deliveryOrder}
+        itemsCount={items.length}
+      />
+      <RelationshipMapModal
+        open={modal === "relmap"}
+        onClose={closeModal}
+        header={deliveryOrder}
+        navigate={navigate}
+      />
+      <PrintPdfModal
+        open={modal === "print"}
+        onClose={closeModal}
+        header={deliveryOrder}
+        items={items}
+        onDownload={doDownloadPdf}
+        onPrint={doPrintNow}
+      />
     </div>
   );
 }
