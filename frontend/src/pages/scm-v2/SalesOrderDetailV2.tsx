@@ -40,8 +40,10 @@ import {
   DetailAside,
   Section,
 } from "../../components/DetailLayout";
+import { FilterPills } from "../../components/FilterPills";
 import {
   useMfgSalesOrderDetail,
+  useMfgSalesOrders,
   useUpdateMfgSalesOrderStatus,
 } from "../../vendor/scm/lib/sales-order-queries";
 import { cn } from "../../lib/utils";
@@ -395,6 +397,209 @@ function TotalLine({
   );
 }
 
+// ─── iPad / desktop master-detail rail ────────────────────────────────────
+// Compact SO list rendered beside the detail pane at lg+ (iPad landscape and
+// desktop). Selecting a row swaps the detail pane by navigating to the row's
+// docNo. Below lg the rail is hidden entirely — phones get the full-screen
+// stacked detail from Item C.
+
+type SoRailRow = {
+  doc_no: string;
+  so_date: string;
+  debtor_name: string;
+  customer_so_no: string | null;
+  po_doc_no: string | null;
+  ref: string | null;
+  status: string;
+  local_total_centi: number;
+};
+
+const railRefOf = (r: SoRailRow): string =>
+  r.po_doc_no || r.customer_so_no || r.ref || "—";
+
+function SalesOrderRail({
+  currentDocNo,
+  onOpenNewSo,
+}: {
+  currentDocNo: string | null;
+  onOpenNewSo: () => void;
+}) {
+  const [params, setParams] = useSearchParams();
+  const navigate = useNavigate();
+  const status = (params.get("railStatus") ?? "all") as
+    | "all"
+    | "draft"
+    | "confirmed"
+    | "cancelled";
+  const search = params.get("railQ") ?? "";
+
+  const { data, isLoading } = useMfgSalesOrders(
+    status === "all" ? undefined : status
+  );
+  const rows = useMemo<SoRailRow[]>(
+    () => ((data?.salesOrders ?? []) as SoRailRow[]),
+    [data]
+  );
+
+  const filtered = useMemo(() => {
+    if (!search.trim()) return rows;
+    const q = search.toLowerCase();
+    return rows.filter((r) =>
+      [r.doc_no, r.debtor_name, railRefOf(r)]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+        .includes(q)
+    );
+  }, [rows, search]);
+
+  const counts = useMemo(() => {
+    const acc = { all: rows.length, draft: 0, confirmed: 0, cancelled: 0 };
+    for (const r of rows) {
+      const s = (r.status || "").toLowerCase();
+      if (s === "draft") acc.draft += 1;
+      else if (s === "confirmed") acc.confirmed += 1;
+      else if (s === "cancelled" || s === "cancel") acc.cancelled += 1;
+    }
+    return acc;
+  }, [rows]);
+
+  const setRailStatus = (v: typeof status) => {
+    const next = new URLSearchParams(params);
+    if (v === "all") next.delete("railStatus");
+    else next.set("railStatus", v);
+    setParams(next, { replace: true });
+  };
+  const setRailSearch = (q: string) => {
+    const next = new URLSearchParams(params);
+    if (!q.trim()) next.delete("railQ");
+    else next.set("railQ", q);
+    setParams(next, { replace: true });
+  };
+  const openSo = (docNo: string) => {
+    if (docNo === currentDocNo) return;
+    navigate(`/scm/sales-orders/${docNo}`);
+  };
+
+  return (
+    <aside
+      aria-label="Sales orders rail"
+      className="hidden lg:flex lg:w-[340px] lg:shrink-0 lg:flex-col lg:border-r lg:border-border lg:bg-surface"
+    >
+      {/* Rail header — title + New SO shortcut */}
+      <div className="border-b border-border-subtle px-4 pb-3 pt-4">
+        <div className="flex items-center justify-between gap-2">
+          <div className="font-display text-[17px] font-extrabold tracking-tight text-ink">
+            Sales Orders
+          </div>
+          <button
+            type="button"
+            onClick={onOpenNewSo}
+            aria-label="New Sales Order"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-md bg-primary text-[16px] font-light text-white shadow-sm hover:bg-primary-ink"
+          >
+            +
+          </button>
+        </div>
+        <input
+          type="search"
+          value={search}
+          onChange={(e) => setRailSearch(e.target.value)}
+          placeholder="Search…"
+          className="mt-3 h-9 w-full rounded-md border border-border bg-surface-2 px-3 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20"
+        />
+        <div className="-mx-0.5 mt-3 overflow-x-auto">
+          <FilterPills
+            options={[
+              { value: "all", label: `All ${counts.all}` },
+              { value: "draft", label: `Draft ${counts.draft}` },
+              { value: "confirmed", label: `Confirmed ${counts.confirmed}` },
+              { value: "cancelled", label: `Cancelled ${counts.cancelled}` },
+            ]}
+            value={status}
+            onChange={(v) => setRailStatus(v)}
+          />
+        </div>
+      </div>
+
+      {/* Rail card list — scrollable */}
+      <div className="flex-1 overflow-y-auto p-2.5">
+        {isLoading && (
+          <div className="animate-fade-in px-3 py-6 text-center text-[12px] text-ink-muted">
+            Loading orders…
+          </div>
+        )}
+        {!isLoading && filtered.length === 0 && (
+          <div className="rounded-lg border border-dashed border-border px-3 py-6 text-center text-[12px] text-ink-muted">
+            No orders match.
+          </div>
+        )}
+        {filtered.map((r) => {
+          const active = r.doc_no === currentDocNo;
+          const st = statusFor(r.status);
+          return (
+            <button
+              key={r.doc_no}
+              type="button"
+              onClick={() => openSo(r.doc_no)}
+              aria-current={active ? "true" : undefined}
+              className={cn(
+                "mb-1.5 block w-full rounded-md border p-3 text-left transition-colors",
+                active
+                  ? "border-primary/60 bg-primary-soft ring-1 ring-primary/30"
+                  : "border-border-subtle bg-surface hover:border-primary/30 hover:bg-primary-soft/40"
+              )}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span
+                  className={cn(
+                    "font-mono text-[11.5px] font-semibold",
+                    active ? "text-primary-ink" : "text-primary-ink/85"
+                  )}
+                >
+                  {r.doc_no}
+                </span>
+                <span
+                  className={cn(
+                    "h-2 w-2 rounded-full shrink-0",
+                    st.tone === "success"
+                      ? "bg-synced"
+                      : st.tone === "warning"
+                        ? "bg-accent-bright"
+                        : st.tone === "error"
+                          ? "bg-err"
+                          : "bg-border-strong"
+                  )}
+                  aria-label={st.label}
+                />
+              </div>
+              <div className="mt-1 truncate text-[13.5px] font-semibold text-ink">
+                {r.debtor_name || "—"}
+              </div>
+              <div className="mt-0.5 truncate font-mono text-[10.5px] text-ink-muted">
+                Ref {railRefOf(r)}
+              </div>
+              <div className="mt-1.5 flex items-center justify-between">
+                <span className="text-[11px] text-ink-muted">
+                  {fmtDate(r.so_date)}
+                </span>
+                <span
+                  className={cn(
+                    "font-money text-[12px] font-semibold",
+                    active ? "text-primary-ink" : "text-ink-secondary"
+                  )}
+                >
+                  {fmtMoney(r.local_total_centi)}
+                </span>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </aside>
+  );
+}
+
 // ─── Main page ─────────────────────────────────────────────────────────────
 
 export function SalesOrderDetailV2() {
@@ -579,7 +784,17 @@ export function SalesOrderDetailV2() {
   };
 
   return (
-    <div className="pb-24 md:pb-0">
+    <div className="lg:-mx-6 lg:flex lg:h-[calc(100vh-64px)] lg:overflow-hidden">
+      {/* iPad / desktop 340px master-detail rail (hidden below lg). */}
+      <SalesOrderRail
+        currentDocNo={salesOrder.doc_no}
+        onOpenNewSo={() => navigate("/scm/sales-orders/new")}
+      />
+
+      {/* Detail pane — becomes an independently-scrolling column at lg+ so
+          the rail stays put while the detail scrolls. Below lg it behaves
+          exactly like Item C (mobile) / Item B (desktop) did. */}
+      <div className="pb-24 md:pb-0 lg:flex-1 lg:overflow-y-auto lg:min-w-0 lg:px-6">
       {/* ─── Mobile-only dark sticky header ─────────────────────────── */}
       <div className="sticky top-0 z-20 -mx-4 -mt-4 bg-sidebar text-sidebar-ink shadow-slab md:hidden">
         <div className="flex items-center justify-between gap-3 px-4 pt-3">
@@ -1020,6 +1235,7 @@ export function SalesOrderDetailV2() {
             <PhoneIcon size={17} />
           </button>
         </div>
+      </div>
       </div>
     </div>
   );
