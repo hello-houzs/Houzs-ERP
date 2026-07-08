@@ -369,27 +369,18 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
   const draftsRef = useRef<PaymentDraft[]>(drafts);
   draftsRef.current = drafts;
 
-  /* Default Collected By → current logged-in staff (2026-05-27 audit pass).
-     Commander's screenshot showed new payment rows defaulting to '—' / first
-     dropdown entry instead of the staff who's actually entering the
-     payment. Resolves auth.staff?.id and validates that the id exists in
-     the active staff dropdown before applying — guards against the race
-     where the user clicks Add Payment before useStaff() resolves, and the
-     edge case where the auth'd user's staff row is inactive (rare; happens
-     when an admin disables themselves). Falls back to '' (= '—' option)
-     so the dropdown doesn't lie about who collected the cash. Existing
-     persisted payments retain their saved `collected_by` value — this
-     default only seeds NEW draft rows. */
-  const defaultStaffId = (() => {
-    const id = auth.staff?.id ?? '';
-    if (!id) return '';
-    // Validate the staff id is in the active list. If staff hasn't loaded
-    // yet (staffQ.isLoading) the filter is empty — still return the id
-    // so the dropdown gets the right initial value once the option lands.
-    if (staff.length === 0) return id;
-    const hit = staff.find((s) => s.id === id && s.active);
-    return hit ? id : '';
-  })();
+  /* Default Collected By → current logged-in staff. Nick 2026-07-09:
+     "Collect By needs default user" — the row was landing empty when
+     auth.staff resolved AFTER the staff dropdown, since the previous
+     check filtered the id out when it wasn't found in the active list
+     yet. Relax to: always return auth.staff?.id when auth has it,
+     regardless of whether staff has loaded. If the id turns out to
+     match no active staff, the dropdown falls through to '—' at render
+     time — but the common case (owner / staff clicking Add Payment on
+     their own account) now defaults reliably.
+     Existing persisted payments still show their stored `collected_by`
+     name — this default only seeds NEW draft rows. */
+  const defaultStaffId = auth.staff?.id ?? '';
 
   const addDraft = () => {
     /* Loo 2026-06-09 — seed the new row's amount with the OUTSTANDING balance
@@ -593,17 +584,20 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isSaved, slipProp?.slipKey]);
 
-  /* 8-column override when the Slip column is shown (inserts a 64px slip column
-     just before Collected By). Leaves the shared 7-column CSS untouched.
-     Bug #4 (2026-06-24) — pin a min-width equal to the sum of the eight tracks
-     so the grid OVERFLOWS (and scrolls, via .grid { overflow-x:auto }) inside
-     the overflow:hidden card rather than crushing the Slip column off the right
-     edge. 140+140+120+140+140+64+160+32 = 936px of track + 8 cells × 2×8px
-     padding ≈ 1064px; round to 1040px (the 1fr/1.4fr tracks absorb the rest). */
+  /* 8-column override when the Slip column is shown. Nick 2026-07-09:
+     the previous 1040px min-width forced a horizontal scrollbar even on
+     wide desktop viewports, so the whole row wouldn't fit at a glance
+     ("间隔太远 需要缩小一些 一页看完"). Tightened every track by ~20%
+     and dropped min-width to 800px so the grid fits inside a typical
+     ~960-1000px SCM detail body without scrolling; when the aside
+     drawer is open, the scroll wrapper still lets the tail nudge into
+     view without clipping the Slip cell.
+     New sum: 112+116+92+104+104+52+128+28 = 736px of track. */
   const gridStyle: CSSProperties | undefined = showSlip
     ? {
-        gridTemplateColumns: '140px 140px minmax(120px, 1fr) minmax(140px, 1.4fr) minmax(140px, 1.4fr) 64px 160px 32px',
-        minWidth: 1040,
+        gridTemplateColumns:
+          '112px 116px minmax(92px, 0.9fr) minmax(104px, 1fr) minmax(104px, 1fr) 52px 128px 28px',
+        minWidth: 800,
       }
     : undefined;
 
