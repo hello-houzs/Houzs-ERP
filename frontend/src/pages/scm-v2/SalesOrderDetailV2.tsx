@@ -17,7 +17,7 @@
 // The old ledger-style SalesOrderDetail.tsx stays in the tree; App.tsx route
 // swap on /scm/sales-orders/:docNo decides which one users see.
 
-import { useMemo, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -45,6 +45,10 @@ import {
   useUpdateMfgSalesOrderStatus,
 } from "../../vendor/scm/lib/sales-order-queries";
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
+import {
+  DocumentRelationshipMapModal,
+  type ChainNode,
+} from "../../components/scm-v2/DocumentRelationshipMapModal";
 import { cn } from "../../lib/utils";
 
 // ─── Row types (subset — see MfgSalesOrdersList.tsx for the full SoRow) ────
@@ -458,10 +462,53 @@ export function SalesOrderDetailV2() {
     }
   };
   const goHistory = () => docNo && navigate(`/scm/sales-orders/${docNo}?tab=history`);
-  const goRelationshipMap = () =>
-    docNo && navigate(`/scm/sales-orders/${docNo}?tab=relationship`);
+  const [relMapOpen, setRelMapOpen] = useState(false);
+  const goRelationshipMap = () => setRelMapOpen(true);
   const goPrintPdf = () =>
     docNo && navigate(`/scm/sales-orders/${docNo}?print=1`);
+
+  // Build the 5-node document chain for this SO. The SO is CURRENT; upstream
+  // (Customer PO) is "done" when a PO ref exists; downstream (DO / GRN / SI)
+  // are Pending until they're actually generated. Live lookup of downstream
+  // docs would need extra API — for now show them as Pending with a helpful
+  // meta string, matching the design handoff prototype.
+  const chainNodes: ChainNode[] = useMemo(() => {
+    if (!salesOrder) return [];
+    const poRef =
+      salesOrder.po_doc_no || salesOrder.customer_so_no || salesOrder.ref || "";
+    return [
+      {
+        type: "Customer PO",
+        doc: poRef || "Not linked",
+        meta: poRef ? "Customer's own doc" : "—",
+        state: poRef ? "done" : "pending",
+      },
+      {
+        type: "Sales Order",
+        doc: salesOrder.doc_no,
+        meta: "This document",
+        state: "current",
+      },
+      {
+        type: "Delivery Order",
+        doc: "Not created",
+        meta: "After confirmation",
+        state: "pending",
+      },
+      {
+        type: "GRN",
+        doc: "Not created",
+        meta: "After delivery",
+        state: "pending",
+      },
+      {
+        type: "Sales Invoice",
+        doc: "Not created",
+        meta: "On completion",
+        state: "pending",
+      },
+    ];
+  }, [salesOrder]);
 
   // ── Line item columns ────────────────────────────────────────────────
   const lineColumns: Column<SoItem>[] = [
@@ -1030,6 +1077,18 @@ export function SalesOrderDetailV2() {
           </button>
         </div>
       </div>
+
+      {/* Relationship map modal — 5-node graph per Nick's 2026-07-08 handoff */}
+      <DocumentRelationshipMapModal
+        open={relMapOpen}
+        onClose={() => setRelMapOpen(false)}
+        nodes={chainNodes}
+        onNodeClick={(n) => {
+          // Non-current nodes with a linked doc could navigate to that doc
+          // — for now only the current SO exists, so noop.
+          void n;
+        }}
+      />
     </div>
   );
 }
