@@ -913,67 +913,79 @@ export function MfgSalesOrdersListV2() {
         </div>
       </div>
 
-      {/* Desktop chrome — hidden on phone (compact header + FAB take over). */}
-      <div className="hidden md:block">
-        <PageHeader
-          eyebrow="Supply Chain"
-          title="Sales Orders"
-          description="Every Houzs sales order — Draft to Delivered. Click any row for the quick view; open the full page to edit."
-          primaryAction={
-            <div className="flex items-stretch">
-              <Button
-                variant="primary"
-                icon={<Plus size={14} />}
-                onClick={goNewSo}
-                className="rounded-r-none"
-              >
-                New Sales Order
-              </Button>
-              <SplitDropdown
-                onFromQuotation={goFromQuotation}
-                onImport={goImport}
-                onDuplicate={goDuplicate}
-              />
-            </div>
-          }
-          secondaryActions={[
-            { label: "Scan Order", icon: ScanLine, onClick: goScanOrder },
-            { label: "SO Maintenance", icon: Wrench, onClick: goSoMaintenance },
-          ]}
-        />
-      </div>
+      {/* Desktop sticky page chrome — Nick 2026-07-09: pin PageHeader + KPIs
+          + filter pills at the top so the table gets more vertical space and
+          the chrome never scrolls away. Mobile flow keeps its own sticky
+          search below. */}
+      <div className="sticky top-0 z-20 -mx-4 hidden bg-bg/95 pb-3 backdrop-blur-sm sm:-mx-6 md:block">
+        <div className="px-4 sm:px-6">
+          <PageHeader
+            eyebrow="Supply Chain"
+            title="Sales Orders"
+            description="Every Houzs sales order — Draft to Delivered. Click any row for the quick view; open the full page to edit."
+            primaryAction={
+              <div className="flex items-stretch">
+                <Button
+                  variant="primary"
+                  icon={<Plus size={14} />}
+                  onClick={goNewSo}
+                  className="rounded-r-none"
+                >
+                  New Sales Order
+                </Button>
+                <SplitDropdown
+                  onFromQuotation={goFromQuotation}
+                  onImport={goImport}
+                  onDuplicate={goDuplicate}
+                />
+              </div>
+            }
+            secondaryActions={[
+              { label: "Scan Order", icon: ScanLine, onClick: goScanOrder },
+              { label: "SO Maintenance", icon: Wrench, onClick: goSoMaintenance },
+            ]}
+          />
 
-      {/* Stat strip — 4 StatCards on md+. On phone we drop the strip and rely
-          on the compact header's "17 orders · RM 89k" line instead — mobile
-          screens don't have space for four separate KPI slabs. */}
-      <div className="mb-5 hidden grid-cols-2 gap-3 md:grid lg:grid-cols-4">
-        <StatCard
-          label="Total Orders"
-          value={stats.total.toLocaleString("en-MY")}
-          subtitle="Scoped to current filter"
-          rail="bg-primary"
-          active
-        />
-        <StatCard
-          label="Revenue"
-          value={fmtRm(stats.revenueCenti)}
-          subtitle="Sum of local total"
-          rail="bg-accent"
-        />
-        <StatCard
-          label="Outstanding"
-          value={fmtRm(stats.outstandingCenti)}
-          subtitle="Balance across visible rows"
-          tone="error"
-          rail="bg-err"
-        />
-        <StatCard
-          label="Paid"
-          value={fmtRm(stats.paidCenti)}
-          subtitle="Receipts logged"
-          tone="success"
-          rail="bg-synced"
-        />
+          <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <StatCard
+              label="Total Orders"
+              value={stats.total.toLocaleString("en-MY")}
+              subtitle="Scoped to current filter"
+              rail="bg-primary"
+              active
+            />
+            <StatCard
+              label="Revenue"
+              value={fmtRm(stats.revenueCenti)}
+              subtitle="Sum of local total"
+              rail="bg-accent"
+            />
+            <StatCard
+              label="Outstanding"
+              value={fmtRm(stats.outstandingCenti)}
+              subtitle="Balance across visible rows"
+              tone="error"
+              rail="bg-err"
+            />
+            <StatCard
+              label="Paid"
+              value={fmtRm(stats.paidCenti)}
+              subtitle="Receipts logged"
+              tone="success"
+              rail="bg-synced"
+            />
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <FilterPills
+              options={statusPillOptions}
+              value={status}
+              onChange={(v) => setStatusChip(v)}
+            />
+            <div className="flex-1" />
+            <ViewToggle value={view} onChange={setView} />
+          </div>
+        </div>
       </div>
 
       {/* Mobile-only sticky search — sits above the pill row on phones. */}
@@ -987,17 +999,13 @@ export function MfgSalesOrdersListV2() {
         />
       </div>
 
-      {/* Filter row — pills scroll horizontally on phone; toggle hidden. */}
-      <div className="mb-4 flex flex-wrap items-center gap-3">
+      {/* Mobile filter row — desktop pills live inside the sticky chrome above. */}
+      <div className="mb-4 flex flex-wrap items-center gap-3 md:hidden">
         <FilterPills
           options={statusPillOptions}
           value={status}
           onChange={(v) => setStatusChip(v)}
         />
-        <div className="flex-1" />
-        <div className="hidden md:block">
-          <ViewToggle value={view} onChange={setView} />
-        </div>
       </div>
 
       {/* Phone → CardsGrid ALWAYS. Desktop → the view toggle decides. */}
