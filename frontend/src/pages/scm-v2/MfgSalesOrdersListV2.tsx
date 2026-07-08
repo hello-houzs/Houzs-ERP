@@ -41,11 +41,13 @@ import { FilterPills } from "../../components/FilterPills";
 import { DataTable, type Column } from "../../components/DataTable";
 import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
+import { PullToRefresh } from "../../components/PullToRefresh";
 import {
   useMfgSalesOrders,
   useUpdateMfgSalesOrderStatus,
   useMfgSalesOrderDetail,
 } from "../../vendor/scm/lib/sales-order-queries";
+import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "../../lib/utils";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -647,8 +649,11 @@ function TotalRow({
 export function MfgSalesOrdersListV2() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
+  const queryClient = useQueryClient();
 
   const status = (params.get("status") ?? "all") as StatusTab;
+  // View toggle applies at md+; on phones we always render the card list
+  // regardless of the URL param (a 9-col DataTable is unreadable on 360dpi).
   const view = (params.get("view") ?? "table") as "table" | "cards";
   const search = params.get("q") ?? "";
 
@@ -872,37 +877,61 @@ export function MfgSalesOrdersListV2() {
     { value: "cancelled", label: `Cancelled · ${counts.cancelled}` },
   ];
 
-  return (
-    <div>
-      <PageHeader
-        eyebrow="Supply Chain"
-        title="Sales Orders"
-        description="Every Houzs sales order — Draft to Delivered. Click any row for the quick view; open the full page to edit."
-        primaryAction={
-          <div className="flex items-stretch">
-            <Button
-              variant="primary"
-              icon={<Plus size={14} />}
-              onClick={goNewSo}
-              className="rounded-r-none"
-            >
-              New Sales Order
-            </Button>
-            <SplitDropdown
-              onFromQuotation={goFromQuotation}
-              onImport={goImport}
-              onDuplicate={goDuplicate}
-            />
-          </div>
-        }
-        secondaryActions={[
-          { label: "Scan Order", icon: ScanLine, onClick: goScanOrder },
-          { label: "SO Maintenance", icon: Wrench, onClick: goSoMaintenance },
-        ]}
-      />
+  const onPullToRefresh = async () => {
+    // Wipe the SO list cache for every status tab so the pull's spinner
+    // reflects a real network round-trip. Detail queries stay warm.
+    await queryClient.invalidateQueries({ queryKey: ["mfg-sales-orders"] });
+  };
 
-      {/* Stat strip — 4 StatCards. Rail tint colour-codes the metric. */}
-      <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
+  return (
+    <PullToRefresh onRefresh={onPullToRefresh}>
+      {/* Mobile-only compact header — hides at md+. */}
+      <div className="mb-3 flex items-start justify-between gap-3 md:hidden">
+        <div className="min-w-0">
+          <h1 className="font-display text-[22px] font-extrabold leading-tight tracking-tight text-ink">
+            Sales Orders
+          </h1>
+          <div className="mt-0.5 text-[12.5px] text-ink-muted">
+            {stats.total} order{stats.total === 1 ? "" : "s"} ·{" "}
+            <span className="font-money">{fmtRm(stats.revenueCenti)}</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Desktop chrome — hidden on phone (compact header + FAB take over). */}
+      <div className="hidden md:block">
+        <PageHeader
+          eyebrow="Supply Chain"
+          title="Sales Orders"
+          description="Every Houzs sales order — Draft to Delivered. Click any row for the quick view; open the full page to edit."
+          primaryAction={
+            <div className="flex items-stretch">
+              <Button
+                variant="primary"
+                icon={<Plus size={14} />}
+                onClick={goNewSo}
+                className="rounded-r-none"
+              >
+                New Sales Order
+              </Button>
+              <SplitDropdown
+                onFromQuotation={goFromQuotation}
+                onImport={goImport}
+                onDuplicate={goDuplicate}
+              />
+            </div>
+          }
+          secondaryActions={[
+            { label: "Scan Order", icon: ScanLine, onClick: goScanOrder },
+            { label: "SO Maintenance", icon: Wrench, onClick: goSoMaintenance },
+          ]}
+        />
+      </div>
+
+      {/* Stat strip — 4 StatCards on md+. On phone we drop the strip and rely
+          on the compact header's "17 orders · RM 89k" line instead — mobile
+          screens don't have space for four separate KPI slabs. */}
+      <div className="mb-5 hidden grid-cols-2 gap-3 md:grid lg:grid-cols-4">
         <StatCard
           label="Total Orders"
           value={stats.total.toLocaleString("en-MY")}
@@ -932,7 +961,18 @@ export function MfgSalesOrdersListV2() {
         />
       </div>
 
-      {/* Filter row */}
+      {/* Mobile-only sticky search — sits above the pill row on phones. */}
+      <div className="sticky top-0 z-10 -mx-4 mb-3 bg-bg/95 px-4 py-2 backdrop-blur-sm md:hidden">
+        <input
+          type="search"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search SO, customer, ref…"
+          className="h-10 w-full rounded-lg border border-border bg-surface px-3.5 text-[14px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20"
+        />
+      </div>
+
+      {/* Filter row — pills scroll horizontally on phone; toggle hidden. */}
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <FilterPills
           options={statusPillOptions}
@@ -940,10 +980,23 @@ export function MfgSalesOrdersListV2() {
           onChange={(v) => setStatusChip(v)}
         />
         <div className="flex-1" />
-        <ViewToggle value={view} onChange={setView} />
+        <div className="hidden md:block">
+          <ViewToggle value={view} onChange={setView} />
+        </div>
       </div>
 
-      {/* Table / Cards */}
+      {/* Phone → CardsGrid ALWAYS. Desktop → the view toggle decides. */}
+      <div className="md:hidden">
+        <CardsGrid rows={filtered} onOpen={(r) => setSelected(r)} />
+        {filtered.length > 0 && (
+          <div className="mt-4 pb-24 text-center text-[11.5px] text-ink-muted">
+            {filtered.length} order{filtered.length === 1 ? "" : "s"}
+          </div>
+        )}
+      </div>
+
+      {/* Table / Cards (md+) */}
+      <div className="hidden md:block">
       {view === "table" ? (
         <DataTable<SoRow>
           tableId="sales-orders-v2"
@@ -998,6 +1051,7 @@ export function MfgSalesOrdersListV2() {
           <CardsGrid rows={filtered} onOpen={(r) => setSelected(r)} />
         </>
       )}
+      </div>
 
       <DetailDrawer
         row={selected}
@@ -1008,7 +1062,7 @@ export function MfgSalesOrdersListV2() {
         onConfirm={() => selected && doConfirm(selected)}
         onDeliver={() => selected && doDeliver(selected)}
       />
-    </div>
+    </PullToRefresh>
   );
 }
 

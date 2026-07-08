@@ -28,6 +28,8 @@ import {
   Edit3,
   Warehouse,
   CircleDot,
+  Phone as PhoneIcon,
+  MoreHorizontal,
 } from "lucide-react";
 import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
@@ -570,10 +572,52 @@ export function SalesOrderDetailV2() {
     );
   }
 
+  // Bottom-bar CTA on phone opens tel: with the customer's phone if present.
+  const goCall = () => {
+    if (!salesOrder?.phone) return;
+    window.location.href = `tel:${salesOrder.phone.replace(/\s+/g, "")}`;
+  };
+
   return (
-    <div>
-      {/* ─── Sticky detail header ────────────────────────────────────── */}
-      <div className="sticky top-0 z-10 -mx-4 border-b border-border bg-bg/95 px-4 py-4 backdrop-blur-sm sm:-mx-6 sm:px-6">
+    <div className="pb-24 md:pb-0">
+      {/* ─── Mobile-only dark sticky header ─────────────────────────── */}
+      <div className="sticky top-0 z-20 -mx-4 -mt-4 bg-sidebar text-sidebar-ink shadow-slab md:hidden">
+        <div className="flex items-center justify-between gap-3 px-4 pt-3">
+          <button
+            type="button"
+            onClick={goBack}
+            className="inline-flex items-center gap-1 text-[14px] font-semibold text-accent-bright"
+            aria-label="Back to Sales Orders"
+          >
+            <ArrowLeft size={16} /> Orders
+          </button>
+          <span className="font-mono text-[12.5px] font-semibold text-sidebar-ink">
+            {salesOrder.doc_no}
+          </span>
+          <button
+            type="button"
+            className="text-sidebar-ink-muted"
+            aria-label="More actions"
+          >
+            <MoreHorizontal size={18} />
+          </button>
+        </div>
+        <div className="px-4 pb-4 pt-3">
+          <h1 className="font-display text-[19px] font-bold leading-tight text-white">
+            {salesOrder.debtor_name || "—"}
+          </h1>
+          {st && (
+            <div className="mt-2">
+              <Badge tone={st.tone} variant="solid" size="xs">
+                {st.label}
+              </Badge>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ─── Desktop sticky header (hidden on phone) ────────────────── */}
+      <div className="sticky top-0 z-10 -mx-4 hidden border-b border-border bg-bg/95 px-4 py-4 backdrop-blur-sm sm:-mx-6 sm:px-6 md:block">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="flex items-start gap-3 min-w-0">
             <button
@@ -661,6 +705,20 @@ export function SalesOrderDetailV2() {
 
       {/* ─── Detail body ────────────────────────────────────────────── */}
       <div className="py-5">
+        {/* Mobile-only Order total hero — sits at the very top of the scroll
+            body, above the Customer section. On md+ the dark Order total lives
+            in the sticky aside instead (below). */}
+        <div className="mb-3 rounded-lg border border-border bg-surface p-4 shadow-stone md:hidden">
+          <div className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
+            Order total
+          </div>
+          <div className="mt-1 font-money text-[26px] font-bold leading-none tracking-tight text-ink">
+            {fmtMoney(totalCenti, salesOrder.currency)}
+          </div>
+          <div className="mt-1.5 text-[12px] text-ink-muted">
+            {items.length} line{items.length === 1 ? "" : "s"} · {st?.blurb}
+          </div>
+        </div>
         <DetailGrid>
           <DetailMain>
             {/* Customer */}
@@ -837,7 +895,10 @@ export function SalesOrderDetailV2() {
           </DetailMain>
 
           <DetailAside>
-            <div className="lg:sticky lg:top-[124px] space-y-3">
+            {/* Aside is hidden on phone (Order total is a light card at the
+                top of main; Key dates / People / Recent activity are omitted
+                on mobile per the design). Reappears from md up. */}
+            <div className="hidden lg:sticky lg:top-[124px] space-y-3 md:block">
               <OrderTotalCard
                 header={salesOrder}
                 subtotalCenti={subtotalCenti}
@@ -929,6 +990,36 @@ export function SalesOrderDetailV2() {
             </div>
           </DetailAside>
         </DetailGrid>
+      </div>
+
+      {/* ─── Fixed bottom action bar (phone only) ───────────────────── */}
+      <div className="fixed inset-x-0 bottom-0 z-20 border-t border-border bg-surface/95 px-3 pb-6 pt-2.5 shadow-slab backdrop-blur-sm md:hidden">
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={goEdit}
+            className="inline-flex h-11 flex-1 items-center justify-center gap-1.5 rounded-lg bg-primary text-[13.5px] font-bold text-white shadow-sm hover:bg-primary-ink"
+          >
+            <Edit3 size={16} /> Edit
+          </button>
+          <button
+            type="button"
+            onClick={goPrintPdf}
+            className="inline-flex h-11 w-11 items-center justify-center rounded-lg bg-surface-2 text-primary-ink hover:bg-primary-soft"
+            aria-label="Print PDF"
+          >
+            <Printer size={17} />
+          </button>
+          <button
+            type="button"
+            onClick={goCall}
+            disabled={!salesOrder.phone}
+            className="inline-flex h-11 w-11 items-center justify-center rounded-lg bg-surface-2 text-primary-ink hover:bg-primary-soft disabled:opacity-40"
+            aria-label={salesOrder.phone ? `Call ${salesOrder.phone}` : "No phone on file"}
+          >
+            <PhoneIcon size={17} />
+          </button>
+        </div>
       </div>
     </div>
   );
