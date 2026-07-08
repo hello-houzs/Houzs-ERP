@@ -119,7 +119,7 @@ const ScmSalesInvoiceDetailV2 = lazy(() => import("./pages/scm-v2/SalesInvoiceDe
 const ScmDeliveryReturnsV2 = lazy(() => import("./pages/scm-v2/DeliveryReturnsListV2").then((m) => ({ default: m.DeliveryReturnsListV2 })));
 const ScmDeliveryReturnNewV2 = lazy(() => import("./pages/scm-v2/DeliveryReturnNew").then((m) => ({ default: m.DeliveryReturnNew })));
 const ScmDeliveryReturnFromDoV2 = lazy(() => import("./pages/scm-v2/DeliveryReturnFromDo").then((m) => ({ default: m.DeliveryReturnFromDo })));
-const ScmDeliveryReturnDetailV2 = lazy(() => import("./pages/scm-v2/DeliveryReturnDetail").then((m) => ({ default: m.DeliveryReturnDetail })));
+const ScmDeliveryReturnDetailV2 = lazy(() => import("./pages/scm-v2/DeliveryReturnDetailV2").then((m) => ({ default: m.DeliveryReturnDetailV2 })));
 const ScmConsignmentOrdersV2 = lazy(() => import("./pages/scm-v2/ConsignmentOrders").then((m) => ({ default: m.ConsignmentOrders })));
 const ScmConsignmentOrderNewV2 = lazy(() => import("./pages/scm-v2/ConsignmentOrderNew").then((m) => ({ default: m.ConsignmentOrderNew })));
 const ScmConsignmentOrderDetailV2 = lazy(() => import("./pages/scm-v2/ConsignmentOrderDetail").then((m) => ({ default: m.ConsignmentOrderDetail })));
