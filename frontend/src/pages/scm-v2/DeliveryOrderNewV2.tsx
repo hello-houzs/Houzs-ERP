@@ -26,6 +26,7 @@
 // Route: /scm/delivery-orders/new (App.tsx flips ScmDeliveryOrderNewV2 here).
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -418,7 +419,12 @@ function VariantPickerModal({
 }) {
   const menu = line ? variantMenuFor(line) : [];
   const open = !!line;
-  return (
+  // Portal to <body> so `fixed` positioning latches to the viewport instead
+  // of getting trapped inside an ancestor with `transform` / `filter` /
+  // `will-change` (the Layout's overflow-hidden main pane triggers this on
+  // mobile browsers). Without the portal the modal renders at the bottom of
+  // its containing block — see 2026-07-08 bug report from Nick.
+  return createPortal(
     <>
       <div
         onClick={onClose}
@@ -485,7 +491,8 @@ function VariantPickerModal({
           ))}
         </div>
       </div>
-    </>
+    </>,
+    document.body
   );
 }
 
@@ -507,7 +514,8 @@ function FromSoPickerModal({
     if (open) setValue(currentValue ?? "");
   }, [open, currentValue]);
 
-  return (
+  // Portal to <body> — see the VariantPickerModal note above; same fix.
+  return createPortal(
     <>
       <div
         onClick={onClose}
@@ -563,7 +571,8 @@ function FromSoPickerModal({
           </Button>
         </div>
       </div>
-    </>
+    </>,
+    document.body
   );
 }
 

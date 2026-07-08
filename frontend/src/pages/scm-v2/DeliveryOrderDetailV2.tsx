@@ -23,6 +23,7 @@
 // useUpdateMfgDeliveryOrderStatus (unchanged from prior V2).
 
 import { useMemo, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -410,7 +411,12 @@ function ModalOverlay({
   children: ReactNode;
   footer?: ReactNode;
 }) {
-  return (
+  // Portal to <body> so `fixed` positioning latches to the viewport instead
+  // of an ancestor with `transform` / `filter` / `will-change` set. Without
+  // this the modals render pinned to the bottom of their containing block —
+  // Nick's 2026-07-08 screenshot showed the From-Sales-Order dialog stuck
+  // near the Emergency Contact section instead of viewport-centred.
+  return createPortal(
     <>
       <div
         onClick={onClose}
@@ -451,7 +457,8 @@ function ModalOverlay({
           </div>
         )}
       </div>
-    </>
+    </>,
+    document.body
   );
 }
 
