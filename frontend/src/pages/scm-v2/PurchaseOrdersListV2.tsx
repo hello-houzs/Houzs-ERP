@@ -1,0 +1,884 @@
+// PurchaseOrdersListV2 — Theme C redesign of the Purchase Orders listing.
+// Twin of the SO/DO/SI/DR listing V2 template, but flipped for the procurement
+// side of the ERP: money moves OUT to suppliers, and the star of the show is
+// what's still on order + committed but not yet received.
+//
+// Route: /scm/purchase-orders (App.tsx flips ScmPurchaseOrdersV2 here).
+// Data: usePurchaseOrders (vendored suppliers-queries slice).
+
+import { useMemo, useState, type ReactNode } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import {
+  Plus,
+  ChevronDown,
+  Users,
+  Truck,
+  LayoutGrid,
+  Table as TableIcon,
+  X as XIcon,
+  ExternalLink,
+  Edit3,
+  Printer,
+  CheckCircle2,
+  Package,
+} from "lucide-react";
+import { PageHeader } from "../../components/Layout";
+import { StatCard } from "../../components/StatCard";
+import { FilterPills } from "../../components/FilterPills";
+import { DataTable, type Column } from "../../components/DataTable";
+import { Badge } from "../../components/Badge";
+import { Button } from "../../components/Button";
+import { PullToRefresh } from "../../components/PullToRefresh";
+import {
+  usePurchaseOrders,
+  usePurchaseOrderDetail,
+  useCancelPurchaseOrder,
+  type PoHeaderRow,
+  type PoItemRow,
+} from "../../vendor/scm/lib/suppliers-queries";
+import { useQueryClient } from "@tanstack/react-query";
+import { cn } from "../../lib/utils";
+
+// ─── Types ──────────────────────────────────────────────────────────────────
+
+type StatusTab =
+  | "all"
+  | "draft"
+  | "open"
+  | "partial"
+  | "received"
+  | "cancelled";
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+const fmtRm = (centi: number): string =>
+  `RM ${(centi / 100).toLocaleString("en-MY", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+
+const fmtDate = (iso: string | null | undefined): string => {
+  if (!iso) return "—";
+  const s = iso.replace(/T.*$/, "").replace(/-/g, "/");
+  return s;
+};
+
+const supplierNameOf = (r: PoHeaderRow): string =>
+  r.supplier?.name || r.supplier_id || "—";
+
+const supplierCodeOf = (r: PoHeaderRow): string => r.supplier?.code || "—";
+
+// Committed value = total_centi (subtotal + tax); the PO's face value.
+const totalOf = (r: PoHeaderRow): number =>
+  r.total_centi ?? r.subtotal_centi ?? 0;
+
+// PO lifecycle: DRAFT → SUBMITTED → PARTIALLY_RECEIVED → RECEIVED, plus
+// CANCELLED. Bucket them for the pills; the raw status still surfaces in
+// the row Badge.
+const STATUS_TONE: Record<
+  string,
+  { tone: "success" | "warning" | "error" | "neutral"; label: string; bucket: StatusTab }
+> = {
+  DRAFT:              { tone: "warning", label: "Draft",              bucket: "draft" },
+  SUBMITTED:          { tone: "warning", label: "Submitted",          bucket: "open" },
+  PARTIALLY_RECEIVED: { tone: "warning", label: "Partially received", bucket: "partial" },
+  RECEIVED:           { tone: "success", label: "Received",           bucket: "received" },
+  CANCELLED:          { tone: "error",   label: "Cancelled",          bucket: "cancelled" },
+};
+
+const statusFor = (
+  s: string
+): { tone: "success" | "warning" | "error" | "neutral"; label: string; bucket: StatusTab } =>
+  STATUS_TONE[(s || "").toUpperCase()] ?? {
+    tone: "neutral",
+    label: s || "—",
+    bucket: "open",
+  };
+
+// ─── Split-menu dropdown ───────────────────────────────────────────────────
+
+function SplitDropdown({
+  onFromSo,
+  onImport,
+  onDuplicate,
+}: {
+  onFromSo: () => void;
+  onImport: () => void;
+  onDuplicate: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className="inline-flex h-9 items-center rounded-md border border-primary/60 bg-primary/10 px-2.5 text-primary hover:bg-primary/20"
+      >
+        <ChevronDown size={14} />
+      </button>
+      {open && (
+        <>
+          <div
+            className="fixed inset-0 z-[80]"
+            onClick={() => setOpen(false)}
+            aria-hidden
+          />
+          <div
+            role="menu"
+            className="absolute right-0 top-full z-[81] mt-1.5 min-w-[220px] rounded-md border border-border bg-surface py-1 shadow-slab"
+          >
+            <button
+              type="button"
+              className="block w-full px-3.5 py-2 text-left text-[12.5px] text-ink hover:bg-primary-soft"
+              onClick={() => { setOpen(false); onFromSo(); }}
+            >
+              New from Sales Order
+            </button>
+            <button
+              type="button"
+              className="block w-full px-3.5 py-2 text-left text-[12.5px] text-ink hover:bg-primary-soft"
+              onClick={() => { setOpen(false); onImport(); }}
+            >
+              Import from file
+            </button>
+            <button
+              type="button"
+              className="block w-full px-3.5 py-2 text-left text-[12.5px] text-ink hover:bg-primary-soft"
+              onClick={() => { setOpen(false); onDuplicate(); }}
+            >
+              Duplicate last PO
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ViewToggle({
+  value,
+  onChange,
+}: {
+  value: "table" | "cards";
+  onChange: (v: "table" | "cards") => void;
+}) {
+  const btn = (which: "table" | "cards", label: string, Icon: typeof TableIcon) => {
+    const active = value === which;
+    return (
+      <button
+        type="button"
+        onClick={() => onChange(which)}
+        aria-pressed={active}
+        className={cn(
+          "inline-flex items-center gap-1.5 rounded px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider transition-colors",
+          active
+            ? "bg-primary text-white shadow-sm"
+            : "text-ink-secondary hover:bg-primary-soft hover:text-primary"
+        )}
+      >
+        <Icon size={13} />
+        {label}
+      </button>
+    );
+  };
+  return (
+    <div className="inline-flex items-center gap-0.5 rounded-md border border-border bg-surface p-1 shadow-stone">
+      {btn("table", "Table", TableIcon)}
+      {btn("cards", "Cards", LayoutGrid)}
+    </div>
+  );
+}
+
+// ─── Cards grid ────────────────────────────────────────────────────────────
+
+function CardsGrid({ rows, onOpen }: { rows: PoHeaderRow[]; onOpen: (r: PoHeaderRow) => void }) {
+  if (rows.length === 0) {
+    return (
+      <div className="rounded-lg border border-dashed border-border bg-surface px-6 py-16 text-center shadow-stone">
+        <div className="text-[13px] font-semibold text-ink">No purchase orders</div>
+        <div className="mt-1 text-[12px] text-ink-muted">
+          No POs match the current filters. Try Reset layout to clear the search
+          and status tabs.
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
+      {rows.map((r) => {
+        const st = statusFor(r.status);
+        const supplier = supplierNameOf(r);
+        return (
+          <button
+            key={r.id}
+            type="button"
+            onClick={() => onOpen(r)}
+            className="group relative overflow-hidden rounded-lg border border-border bg-surface px-4 py-4 text-left shadow-stone transition-all duration-200 hover:-translate-y-px hover:border-primary/40 hover:shadow-slab focus:outline-none focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/30"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-mono text-[12.5px] font-semibold text-ink">
+                {r.po_number}
+              </span>
+              <Badge tone={st.tone} size="xs">{st.label}</Badge>
+            </div>
+            <div className="mt-2 truncate text-[15px] font-semibold text-ink">
+              {supplier}
+            </div>
+            <div className="mt-1 flex items-center gap-2">
+              <span className="text-[11.5px] text-ink-muted">{fmtDate(r.po_date)}</span>
+              {r.expected_at && (
+                <span className="text-[11.5px] text-ink-muted">
+                  · Expected {fmtDate(r.expected_at)}
+                </span>
+              )}
+            </div>
+            <div className="mt-3.5 flex items-end justify-between border-t border-border-subtle pt-3">
+              <div className="min-w-0">
+                <div className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
+                  Supplier
+                </div>
+                <div className="mt-0.5 truncate font-mono text-[12px] font-semibold text-ink-secondary">
+                  {supplierCodeOf(r)}
+                </div>
+              </div>
+              <span className="font-money text-[15px] font-bold text-ink">
+                {fmtRm(totalOf(r))}
+              </span>
+            </div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── Detail drawer ─────────────────────────────────────────────────────────
+
+function DetailDrawer({
+  row,
+  onClose,
+  onOpenFull,
+  onEdit,
+  onPrint,
+  onCancel,
+}: {
+  row: PoHeaderRow | null;
+  onClose: () => void;
+  onOpenFull: () => void;
+  onEdit: () => void;
+  onPrint: () => void;
+  onCancel: () => void;
+}) {
+  const detailQ = usePurchaseOrderDetail(row?.id ?? null);
+  const items: PoItemRow[] =
+    ((detailQ.data as { items?: PoItemRow[] } | undefined)?.items ?? []);
+
+  const open = !!row;
+  const st = row ? statusFor(row.status) : null;
+  const total = row ? totalOf(row) : 0;
+
+  return (
+    <>
+      <div
+        onClick={onClose}
+        aria-hidden
+        className={cn(
+          "fixed inset-0 z-[90] bg-ink/40 backdrop-blur-[1px] transition-opacity duration-200 md:hidden",
+          open ? "opacity-100" : "pointer-events-none opacity-0"
+        )}
+      />
+      <aside
+        role="dialog"
+        aria-modal="true"
+        aria-label={row ? `Purchase order ${row.po_number}` : "Purchase order details"}
+        className={cn(
+          "fixed right-0 top-0 z-[91] flex h-full w-full max-w-[520px] flex-col border-l border-border bg-surface shadow-slab transition-transform duration-200",
+          open ? "translate-x-0" : "translate-x-full"
+        )}
+      >
+        {row && st && (
+          <>
+            <div className="flex h-[60px] shrink-0 items-center gap-3 bg-sidebar px-5 text-sidebar-ink">
+              <button
+                type="button"
+                onClick={onClose}
+                className="text-sidebar-ink-muted hover:text-sidebar-ink"
+                aria-label="Close details"
+              >
+                <XIcon size={18} />
+              </button>
+              <div className="min-w-0 flex-1">
+                <div className="font-mono text-[14px] font-bold tracking-wide">
+                  {row.po_number}
+                </div>
+                <div className="mt-0.5 text-[11px] text-sidebar-ink-muted">Purchase Order</div>
+              </div>
+              <button
+                type="button"
+                onClick={onOpenFull}
+                className="inline-flex items-center gap-1.5 rounded-md border border-accent-bright/40 px-2.5 py-1.5 text-[11.5px] font-semibold text-accent-bright hover:bg-accent-bright/10"
+              >
+                Open full page <ExternalLink size={12} />
+              </button>
+              <Badge tone={st.tone} variant="solid" size="xs">
+                {st.label}
+              </Badge>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-5 py-5">
+              <div className="text-[19px] font-bold text-ink">{supplierNameOf(row)}</div>
+              <div className="mt-1.5 flex items-center gap-2.5">
+                <span className="font-mono text-[11.5px] text-ink-muted">
+                  {supplierCodeOf(row)}
+                </span>
+                <span className="text-[12.5px] text-ink-muted">
+                  Ordered {fmtDate(row.po_date)}
+                </span>
+              </div>
+
+              <dl className="mt-5 grid grid-cols-2 gap-x-4 gap-y-3 rounded-lg border border-border bg-surface-2 px-4 py-4">
+                <MetaItem k="PO date" v={fmtDate(row.po_date)} />
+                <MetaItem
+                  k="Expected"
+                  v={row.expected_at ? fmtDate(row.expected_at) : "—"}
+                />
+                <MetaItem k="Currency" v={row.currency} />
+                <MetaItem k="Lines" v={row.items?.length ?? "—"} />
+              </dl>
+
+              <SectionHeading>Supplier</SectionHeading>
+              <div className="overflow-hidden rounded-lg border border-border bg-surface">
+                <div className="flex items-center gap-3 border-b border-border-subtle px-4 py-3.5">
+                  <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-accent-soft text-[13px] font-bold text-accent-ink">
+                    {(supplierNameOf(row) || "S")
+                      .split(/\s+/)
+                      .filter(Boolean)
+                      .slice(0, 2)
+                      .map((w) => w[0]?.toUpperCase())
+                      .join("") || "S"}
+                  </span>
+                  <div className="min-w-0">
+                    <div className="text-[14px] font-bold text-ink">
+                      {supplierNameOf(row)}
+                    </div>
+                    <div className="mt-0.5 font-mono text-[11.5px] text-ink-muted">
+                      {supplierCodeOf(row)}
+                    </div>
+                  </div>
+                </div>
+                <RowKV k="Contact" v={row.supplier?.contact_person || "—"} />
+                <RowKV k="Phone" v={row.supplier?.phone || "—"} />
+                <RowKV k="Email" v={row.supplier?.email || "—"} />
+              </div>
+
+              <SectionHeading>Line items</SectionHeading>
+              <div className="overflow-hidden rounded-lg border border-border">
+                <div className="grid grid-cols-[1fr_52px_92px] gap-2 border-b border-border-subtle bg-surface-2 px-4 py-2 font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
+                  <span>Item</span>
+                  <span className="text-right">Qty</span>
+                  <span className="text-right">Amount</span>
+                </div>
+                {detailQ.isLoading && (
+                  <div className="px-4 py-8 text-center text-[12px] text-ink-muted">
+                    Loading lines…
+                  </div>
+                )}
+                {!detailQ.isLoading && items.length === 0 && (
+                  <div className="px-4 py-8 text-center text-[12px] text-ink-muted">
+                    No lines
+                  </div>
+                )}
+                {items.map((l) => (
+                  <div
+                    key={l.id}
+                    className="grid grid-cols-[1fr_52px_92px] items-center gap-2 border-b border-border-subtle px-4 py-3 last:border-b-0"
+                  >
+                    <div>
+                      <div className="text-[13px] font-semibold text-ink">
+                        {l.description || l.material_name || l.material_code}
+                      </div>
+                      {l.material_code && (
+                        <div className="mt-0.5 font-mono text-[11px] text-ink-muted">
+                          {l.material_code}
+                        </div>
+                      )}
+                    </div>
+                    <span className="text-right font-money text-[12.5px] text-ink-secondary">
+                      {l.qty}
+                    </span>
+                    <span className="text-right font-money text-[12.5px] font-semibold text-ink">
+                      {fmtRm(l.line_total_centi ?? 0)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-4 rounded-lg border border-border bg-surface px-5 py-4">
+                <TotalRow k="PO total" v={fmtRm(total)} strong />
+              </div>
+            </div>
+
+            <div className="flex shrink-0 items-center gap-2 border-t border-border bg-surface px-5 py-3">
+              <Button variant="ghost" icon={<Edit3 size={14} />} onClick={onEdit}>
+                Edit
+              </Button>
+              <Button variant="ghost" icon={<Printer size={14} />} onClick={onPrint}>
+                Print
+              </Button>
+              <div className="flex-1" />
+              {(() => {
+                const s = (row.status || "").toUpperCase();
+                if (s === "DRAFT" || s === "SUBMITTED" || s === "PARTIALLY_RECEIVED") {
+                  return (
+                    <Button
+                      variant="danger"
+                      icon={<XIcon size={14} />}
+                      onClick={onCancel}
+                    >
+                      Cancel PO
+                    </Button>
+                  );
+                }
+                if (s === "PARTIALLY_RECEIVED" || s === "SUBMITTED") {
+                  return (
+                    <Button
+                      variant="primary"
+                      icon={<CheckCircle2 size={14} />}
+                      onClick={() => {}}
+                    >
+                      Convert to GRN
+                    </Button>
+                  );
+                }
+                return null;
+              })()}
+            </div>
+          </>
+        )}
+      </aside>
+    </>
+  );
+}
+
+function MetaItem({ k, v, mono }: { k: string; v: ReactNode; mono?: boolean }) {
+  return (
+    <div>
+      <dt className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
+        {k}
+      </dt>
+      <dd className={cn("mt-0.5 text-[13px] font-semibold text-ink", mono && "font-mono")}>
+        {v}
+      </dd>
+    </div>
+  );
+}
+
+function SectionHeading({ children }: { children: ReactNode }) {
+  return (
+    <div className="mb-2.5 mt-6 font-mono text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+      {children}
+    </div>
+  );
+}
+
+function RowKV({ k, v }: { k: string; v: ReactNode }) {
+  return (
+    <div className="flex items-start gap-3 border-b border-border-subtle px-4 py-2.5 last:border-b-0">
+      <span className="w-20 shrink-0 font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
+        {k}
+      </span>
+      <span className="flex-1 text-[13px] font-semibold leading-relaxed text-ink">
+        {v}
+      </span>
+    </div>
+  );
+}
+
+function TotalRow({ k, v, strong }: { k: string; v: string; strong?: boolean }) {
+  return (
+    <div className="flex items-center justify-between py-1.5">
+      <span className={cn("text-[12px] text-ink-muted", strong && "text-[13px] font-semibold text-ink")}>
+        {k}
+      </span>
+      <span className={cn("font-money text-[13px] font-semibold", strong && "text-[15px] font-bold text-ink")}>
+        {v}
+      </span>
+    </div>
+  );
+}
+
+// ─── Main page ──────────────────────────────────────────────────────────────
+
+export function PurchaseOrdersListV2() {
+  const navigate = useNavigate();
+  const [params, setParams] = useSearchParams();
+  const queryClient = useQueryClient();
+
+  const status = (params.get("status") ?? "all") as StatusTab;
+  const view = (params.get("view") ?? "table") as "table" | "cards";
+  const search = params.get("q") ?? "";
+
+  const [selected, setSelected] = useState<PoHeaderRow | null>(null);
+
+  const { data, isLoading, error } = usePurchaseOrders();
+  const cancelPo = useCancelPurchaseOrder();
+
+  const allRows = useMemo<PoHeaderRow[]>(() => data ?? [], [data]);
+
+  const scopedByBucket = useMemo(() => {
+    if (status === "all") return allRows;
+    return allRows.filter((r) => statusFor(r.status).bucket === status);
+  }, [allRows, status]);
+
+  const filtered = useMemo(() => {
+    if (!search.trim()) return scopedByBucket;
+    const q = search.toLowerCase();
+    return scopedByBucket.filter((r) => {
+      const hay = [
+        r.po_number,
+        supplierNameOf(r),
+        supplierCodeOf(r),
+        r.notes,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(q);
+    });
+  }, [scopedByBucket, search]);
+
+  const counts = useMemo(() => {
+    const acc = { all: allRows.length, draft: 0, open: 0, partial: 0, received: 0, cancelled: 0 };
+    for (const r of allRows) {
+      const b = statusFor(r.status).bucket;
+      if (b === "draft") acc.draft += 1;
+      else if (b === "open") acc.open += 1;
+      else if (b === "partial") acc.partial += 1;
+      else if (b === "received") acc.received += 1;
+      else if (b === "cancelled") acc.cancelled += 1;
+    }
+    return acc;
+  }, [allRows]);
+
+  // Money-out framing: Total POs / Committed / Outstanding (open+partial value)
+  // / Received value.
+  const stats = useMemo(() => {
+    let committed = 0;
+    let outstanding = 0;
+    let received = 0;
+    for (const r of filtered) {
+      const t = totalOf(r);
+      committed += t;
+      const b = statusFor(r.status).bucket;
+      if (b === "open" || b === "partial") outstanding += t;
+      if (b === "received") received += t;
+    }
+    return {
+      total: filtered.length,
+      committed,
+      outstanding,
+      received,
+    };
+  }, [filtered]);
+
+  const setStatusChip = (s: StatusTab) => {
+    const next = new URLSearchParams(params);
+    if (s === "all") next.delete("status");
+    else next.set("status", s);
+    setParams(next, { replace: true });
+  };
+  const setView = (v: "table" | "cards") => {
+    const next = new URLSearchParams(params);
+    if (v === "table") next.delete("view");
+    else next.set("view", v);
+    setParams(next, { replace: true });
+  };
+  const setSearch = (q: string) => {
+    const next = new URLSearchParams(params);
+    if (!q.trim()) next.delete("q");
+    else next.set("q", q);
+    setParams(next, { replace: true });
+  };
+  const resetLayout = () => setParams(new URLSearchParams(), { replace: true });
+  const filtersActive =
+    status !== "all" || view !== "table" || search.trim().length > 0;
+
+  const onPullToRefresh = async () => {
+    await queryClient.invalidateQueries({ queryKey: ["mfg-purchase-orders"] });
+  };
+
+  const goNewPo = () => navigate("/scm/purchase-orders/new");
+  const goFromSo = () => navigate("/scm/purchase-orders/from-so");
+  const goImport = () => navigate("/scm/purchase-orders?import=1");
+  const goDuplicate = () => navigate("/scm/purchase-orders?duplicate=1");
+  const goSuppliers = () => navigate("/scm/suppliers");
+  const goGrn = () => navigate("/scm/grns");
+  const goEdit = (r: PoHeaderRow) => navigate(`/scm/purchase-orders/${r.id}?edit=1`);
+  const goPrint = (r: PoHeaderRow) => navigate(`/scm/purchase-orders/${r.id}?print=1`);
+  const goFullPage = (r: PoHeaderRow) => navigate(`/scm/purchase-orders/${r.id}`);
+  const doCancel = (r: PoHeaderRow) => {
+    if (window.confirm(`Cancel PO ${r.po_number}? This can only be undone if no GRN has been raised.`)) {
+      cancelPo.mutate(r.id, { onSuccess: () => setSelected(null) });
+    }
+  };
+
+  const columns: Column<PoHeaderRow>[] = [
+    {
+      key: "po_number",
+      label: "PO No.",
+      width: "132px",
+      alwaysVisible: true,
+      getValue: (r) => r.po_number,
+      render: (r) => (
+        <span className="font-mono text-[12.5px] font-semibold text-ink">{r.po_number}</span>
+      ),
+    },
+    {
+      key: "po_date",
+      label: "Date",
+      width: "108px",
+      getValue: (r) => r.po_date,
+      render: (r) => <span className="text-[12.5px] text-ink-secondary">{fmtDate(r.po_date)}</span>,
+    },
+    {
+      key: "supplier",
+      label: "Supplier",
+      getValue: (r) => supplierNameOf(r),
+      render: (r) => (
+        <div className="min-w-0">
+          <div className="truncate text-[13px] font-semibold text-ink">
+            {supplierNameOf(r)}
+          </div>
+          <div className="mt-0.5 font-mono text-[11px] text-ink-muted">
+            {supplierCodeOf(r)}
+          </div>
+        </div>
+      ),
+    },
+    {
+      key: "expected",
+      label: "Expected",
+      width: "128px",
+      getValue: (r) => r.expected_at ?? "",
+      render: (r) => (
+        <span className="text-[12.5px] text-ink-secondary">{fmtDate(r.expected_at)}</span>
+      ),
+    },
+    {
+      key: "status",
+      label: "Status",
+      width: "144px",
+      getValue: (r) => r.status,
+      render: (r) => {
+        const st = statusFor(r.status);
+        return <Badge tone={st.tone} size="xs">{st.label}</Badge>;
+      },
+    },
+    {
+      key: "total",
+      label: "Total",
+      width: "128px",
+      align: "right",
+      getValue: (r) => totalOf(r),
+      render: (r) => (
+        <span className="font-money text-[13px] font-semibold text-ink">
+          {fmtRm(totalOf(r))}
+        </span>
+      ),
+    },
+  ];
+
+  const statusPillOptions: Array<{ value: StatusTab; label: string }> = [
+    { value: "all", label: `All · ${counts.all}` },
+    { value: "draft", label: `Draft · ${counts.draft}` },
+    { value: "open", label: `Submitted · ${counts.open}` },
+    { value: "partial", label: `Partial · ${counts.partial}` },
+    { value: "received", label: `Received · ${counts.received}` },
+    { value: "cancelled", label: `Cancelled · ${counts.cancelled}` },
+  ];
+
+  return (
+    <PullToRefresh onRefresh={onPullToRefresh}>
+      <div
+        className={cn(
+          "transition-[padding] duration-200",
+          selected ? "md:pr-[540px]" : ""
+        )}
+      >
+        {/* Mobile-only compact header */}
+        <div className="mb-3 flex items-start justify-between gap-3 md:hidden">
+          <div className="min-w-0">
+            <h1 className="font-display text-[22px] font-extrabold leading-tight tracking-tight text-ink">
+              Purchase Orders
+            </h1>
+            <div className="mt-0.5 text-[12.5px] text-ink-muted">
+              {stats.total} PO{stats.total === 1 ? "" : "s"} · {fmtRm(stats.committed)} committed
+            </div>
+          </div>
+        </div>
+
+        {/* Desktop chrome */}
+        <div className="hidden md:block">
+          <PageHeader
+            eyebrow="Procurement"
+            title="Purchase Orders"
+            description="Every PO raised to a supplier — Draft through Received. Click any row for the quick view; open the full page to edit or receive."
+            primaryAction={
+              <div className="flex items-stretch">
+                <Button
+                  variant="primary"
+                  icon={<Plus size={14} />}
+                  onClick={goNewPo}
+                  className="rounded-r-none"
+                >
+                  New Purchase Order
+                </Button>
+                <SplitDropdown onFromSo={goFromSo} onImport={goImport} onDuplicate={goDuplicate} />
+              </div>
+            }
+            secondaryActions={[
+              { label: "Suppliers", icon: Users, onClick: goSuppliers },
+              { label: "Goods Received", icon: Package, onClick: goGrn },
+            ]}
+          />
+        </div>
+
+        {/* Stat strip */}
+        <div className="mb-5 hidden grid-cols-2 gap-3 md:grid lg:grid-cols-4">
+          <StatCard
+            label="Total POs"
+            value={stats.total.toLocaleString("en-MY")}
+            subtitle="Scoped to current filter"
+            rail="bg-primary"
+            active
+          />
+          <StatCard
+            label="Committed"
+            value={fmtRm(stats.committed)}
+            subtitle="Sum of PO totals"
+            rail="bg-accent"
+          />
+          <StatCard
+            label="Outstanding"
+            value={fmtRm(stats.outstanding)}
+            subtitle="Submitted + partial · not yet received"
+            tone="warning"
+            rail="bg-accent-bright"
+          />
+          <StatCard
+            label="Received"
+            value={fmtRm(stats.received)}
+            subtitle="Fully received · loop closed"
+            tone="success"
+            rail="bg-synced"
+          />
+        </div>
+
+        {/* Mobile sticky search */}
+        <div className="sticky top-0 z-10 -mx-4 mb-3 bg-bg/95 px-4 py-2 backdrop-blur-sm md:hidden">
+          <input
+            type="search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search PO, supplier…"
+            className="h-10 w-full rounded-lg border border-border bg-surface px-3.5 text-[14px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20"
+          />
+        </div>
+
+        {/* Filter row */}
+        <div className="mb-4 flex flex-wrap items-center gap-3">
+          <FilterPills
+            options={statusPillOptions}
+            value={status}
+            onChange={(v) => setStatusChip(v)}
+          />
+          <div className="flex-1" />
+          <div className="hidden md:block">
+            <ViewToggle value={view} onChange={setView} />
+          </div>
+        </div>
+
+        {/* Phone → Cards */}
+        <div className="md:hidden">
+          <CardsGrid rows={filtered} onOpen={(r) => setSelected(r)} />
+          {filtered.length > 0 && (
+            <div className="mt-4 pb-24 text-center text-[11.5px] text-ink-muted">
+              {filtered.length} PO{filtered.length === 1 ? "" : "s"}
+            </div>
+          )}
+        </div>
+
+        {/* Desktop → Table / Cards */}
+        <div className="hidden md:block">
+          {view === "table" ? (
+            <DataTable<PoHeaderRow>
+              tableId="purchase-orders-v2"
+              rows={filtered}
+              loading={isLoading}
+              error={error ? (error as Error).message ?? "Failed to load" : null}
+              columns={columns}
+              getRowKey={(r) => r.id}
+              onRowClick={(r) => setSelected(r)}
+              exportName="purchase-orders"
+              emptyLabel={
+                filtersActive
+                  ? "No purchase orders match — try Reset layout to clear filters."
+                  : "No purchase orders yet."
+              }
+              search={{
+                value: search,
+                onChange: setSearch,
+                placeholder: "Search PO no, supplier…",
+              }}
+              resetFilters={{
+                active: filtersActive,
+                onReset: resetLayout,
+                label: "Reset layout",
+              }}
+            />
+          ) : (
+            <>
+              <div className="mb-3 flex items-center justify-between">
+                <div className="flex flex-1 items-center gap-2">
+                  <input
+                    type="search"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    placeholder="Search PO no, supplier…"
+                    className="h-9 max-w-[320px] flex-1 rounded-md border border-border bg-surface px-3.5 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20"
+                  />
+                  {filtersActive && (
+                    <button
+                      type="button"
+                      onClick={resetLayout}
+                      className="text-[12px] font-semibold text-primary hover:underline"
+                    >
+                      Reset layout
+                    </button>
+                  )}
+                </div>
+                <span className="text-[12px] text-ink-muted">
+                  {filtered.length} PO{filtered.length === 1 ? "" : "s"}
+                </span>
+              </div>
+              <CardsGrid rows={filtered} onOpen={(r) => setSelected(r)} />
+            </>
+          )}
+        </div>
+      </div>
+
+      <DetailDrawer
+        row={selected}
+        onClose={() => setSelected(null)}
+        onOpenFull={() => selected && goFullPage(selected)}
+        onEdit={() => selected && goEdit(selected)}
+        onPrint={() => selected && goPrint(selected)}
+        onCancel={() => selected && doCancel(selected)}
+      />
+    </PullToRefresh>
+  );
+}
+
+export default PurchaseOrdersListV2;
