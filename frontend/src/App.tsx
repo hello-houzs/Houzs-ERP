@@ -76,9 +76,9 @@ const ScmStockTakeNewV2 = lazy(() => import("./pages/scm-v2/StockTakeNew").then(
 const ScmStockTakeDetailV2 = lazy(() => import("./pages/scm-v2/StockTakeDetail").then((m) => ({ default: m.StockTakeDetail })));
 // TEMP — vendored 2990's PR / Inventory / Stock Card / Supplier Detail / Drivers
 // pages (this wave), parallel to the native /scm/* routes below.
-const ScmPurchaseReturnsV2 = lazy(() => import("./pages/scm-v2/PurchaseReturnsList").then((m) => ({ default: m.PurchaseReturns })));
+const ScmPurchaseReturnsV2 = lazy(() => import("./pages/scm-v2/PurchaseReturnsListV2").then((m) => ({ default: m.PurchaseReturnsListV2 })));
 const ScmPurchaseReturnNewV2 = lazy(() => import("./pages/scm-v2/PurchaseReturnNew").then((m) => ({ default: m.PurchaseReturnNew })));
-const ScmPurchaseReturnDetailV2 = lazy(() => import("./pages/scm-v2/PurchaseReturnDetail").then((m) => ({ default: m.PurchaseReturnDetail })));
+const ScmPurchaseReturnDetailV2 = lazy(() => import("./pages/scm-v2/PurchaseReturnDetailV2").then((m) => ({ default: m.PurchaseReturnDetailV2 })));
 const ScmInventoryV2 = lazy(() => import("./pages/scm-v2/Inventory").then((m) => ({ default: m.Inventory })));
 const ScmStockCardV2 = lazy(() => import("./pages/scm-v2/StockCard").then((m) => ({ default: m.StockCard })));
 const ScmSupplierDetailV2 = lazy(() => import("./pages/scm-v2/SupplierDetail").then((m) => ({ default: m.SupplierDetail })));
