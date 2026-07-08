@@ -33,12 +33,13 @@
 // ScmDeliveryReturnDetailV2 is the whole switch. Data + mutations use
 // the vendored delivery-return-queries slice.
 
-import { useMemo, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
   History,
   Printer,
+  Share2,
   XCircle,
   Edit3,
   Warehouse,
@@ -63,6 +64,10 @@ import {
 } from "../../vendor/scm/lib/delivery-return-queries";
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
 import { useStaffLookup } from "../../hooks/useStaffLookup";
+import {
+  DocumentRelationshipMapModal,
+  type ChainNode,
+} from "../../components/scm-v2/DocumentRelationshipMapModal";
 import { cn } from "../../lib/utils";
 
 // ─── Row shapes (subset — see DeliveryReturnDetail.tsx for full 40-field
@@ -514,8 +519,52 @@ export function DeliveryReturnDetailV2() {
       updateStatus.mutate({ id: deliveryReturn.id, status: "CANCELLED" });
     }
   };
+  const [relMapOpen, setRelMapOpen] = useState(false);
   const goHistory = () => id && navigate(`/scm/delivery-returns/${id}?tab=history`);
+  const goRelationshipMap = () => setRelMapOpen(true);
   const goPrintPdf = () => id && navigate(`/scm/delivery-returns/${id}?print=1`);
+
+  // Chain nodes for the shared Relationship Map modal — PO → SO → DO → SI →
+  // DR (CURRENT). Return branches OFF the DO, so DO is the immediate parent;
+  // SI + upstream nodes are done when the DR header references them.
+  const chainNodes: ChainNode[] = useMemo(() => {
+    if (!deliveryReturn) return [];
+    const doRef = deliveryReturn.do_doc_no || deliveryReturn.delivery_order_id || "";
+    const soRef = deliveryReturn.customer_so_no || "";
+    return [
+      {
+        type: "Customer PO",
+        doc: soRef || "Not linked",
+        meta: soRef ? "Customer's own doc" : "—",
+        state: soRef ? "done" : "pending",
+      },
+      {
+        type: "Sales Order",
+        doc: "Upstream of DO",
+        meta: doRef ? "Linked via DO" : "—",
+        state: doRef ? "done" : "pending",
+      },
+      {
+        type: "Delivery Order",
+        doc: doRef || "Not linked",
+        meta: doRef ? fmtDate(deliveryReturn.return_date) : "—",
+        state: doRef ? "done" : "pending",
+      },
+      {
+        type: "Sales Invoice",
+        doc: "Upstream doc",
+        meta: "Prior to return",
+        state: "pending",
+      },
+      {
+        type: "Delivery Return",
+        doc: deliveryReturn.return_number,
+        meta: "This document",
+        state: "current",
+      },
+    ];
+  }, [deliveryReturn]);
+
   const doMarkInspected = () => {
     if (!deliveryReturn) return;
     updateStatus.mutate({ id: deliveryReturn.id, status: "INSPECTED" });
@@ -751,6 +800,13 @@ export function DeliveryReturnDetailV2() {
               onClick={goHistory}
             >
               History
+            </Button>
+            <Button
+              variant="ghost"
+              icon={<Share2 size={14} />}
+              onClick={goRelationshipMap}
+            >
+              Relationship Map
             </Button>
             <Button
               variant="secondary"
@@ -1129,6 +1185,24 @@ export function DeliveryReturnDetailV2() {
           </button>
         </div>
       </div>
+
+      {/* Relationship map modal — shared 5-node graph */}
+      <DocumentRelationshipMapModal
+        open={relMapOpen}
+        onClose={() => setRelMapOpen(false)}
+        nodes={chainNodes}
+        onNodeClick={(n) => {
+          if (
+            n.type === "Delivery Order" &&
+            deliveryReturn.delivery_order_id
+          ) {
+            navigate(
+              `/scm/delivery-orders/${deliveryReturn.delivery_order_id}`
+            );
+            setRelMapOpen(false);
+          }
+        }}
+      />
     </div>
   );
 }

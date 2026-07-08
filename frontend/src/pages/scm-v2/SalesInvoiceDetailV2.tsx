@@ -27,12 +27,13 @@
 // vendored sales-invoice-queries slice (useSalesInvoiceDetail /
 // useUpdateSalesInvoiceStatus).
 
-import { useMemo, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
   History,
   Printer,
+  Share2,
   XCircle,
   Edit3,
   Warehouse,
@@ -58,6 +59,10 @@ import {
 } from "../../vendor/scm/lib/sales-invoice-queries";
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
 import { useStaffLookup } from "../../hooks/useStaffLookup";
+import {
+  DocumentRelationshipMapModal,
+  type ChainNode,
+} from "../../components/scm-v2/DocumentRelationshipMapModal";
 import { cn } from "../../lib/utils";
 
 // ─── Row shapes (subset — see SalesInvoiceDetail.tsx for the full 40-field
@@ -556,8 +561,55 @@ export function SalesInvoiceDetailV2() {
       updateStatus.mutate({ id: salesInvoice.id, status: "cancelled" });
     }
   };
+  const [relMapOpen, setRelMapOpen] = useState(false);
   const goHistory = () => id && navigate(`/scm/sales-invoices/${id}?tab=history`);
+  const goRelationshipMap = () => setRelMapOpen(true);
   const goPrintPdf = () => id && navigate(`/scm/sales-invoices/${id}?print=1`);
+
+  // Chain nodes for the shared Relationship Map modal — PO → SO → DO → GRN →
+  // SI (CURRENT). The SI is downstream of every other doc so all upstream
+  // nodes are 'done' when the doc references them (via so_doc_no /
+  // delivery_order_id / do_doc_no on the SI header).
+  const chainNodes: ChainNode[] = useMemo(() => {
+    if (!salesInvoice) return [];
+    const soRef = salesInvoice.customer_so_no || salesInvoice.po_doc_no || "";
+    const doRef = salesInvoice.do_doc_no || salesInvoice.delivery_order_id || "";
+    return [
+      {
+        type: "Customer PO",
+        doc: soRef || "Not linked",
+        meta: soRef ? "Customer's own doc" : "—",
+        state: soRef ? "done" : "pending",
+      },
+      {
+        type: "Sales Order",
+        doc: salesInvoice.so_doc_no || "Not linked",
+        meta: salesInvoice.so_doc_no
+          ? fmtDate(salesInvoice.invoice_date)
+          : "—",
+        state: salesInvoice.so_doc_no ? "done" : "pending",
+      },
+      {
+        type: "Delivery Order",
+        doc: doRef || "Not linked",
+        meta: doRef ? "Source doc" : "—",
+        state: doRef ? "done" : "pending",
+      },
+      {
+        type: "GRN",
+        doc: "Not created",
+        meta: "Sales side · no GRN",
+        state: "pending",
+      },
+      {
+        type: "Sales Invoice",
+        doc: salesInvoice.invoice_number,
+        meta: "This document",
+        state: "current",
+      },
+    ];
+  }, [salesInvoice]);
+
   const goRecordPayment = () =>
     id && navigate(`/scm/sales-invoices/${id}?tab=payments&record=1`);
   const doMarkPaid = () => {
@@ -812,6 +864,13 @@ export function SalesInvoiceDetailV2() {
               onClick={goHistory}
             >
               History
+            </Button>
+            <Button
+              variant="ghost"
+              icon={<Share2 size={14} />}
+              onClick={goRelationshipMap}
+            >
+              Relationship Map
             </Button>
             <Button
               variant="secondary"
@@ -1219,6 +1278,27 @@ export function SalesInvoiceDetailV2() {
           </button>
         </div>
       </div>
+
+      {/* Relationship map modal — shared 5-node graph */}
+      <DocumentRelationshipMapModal
+        open={relMapOpen}
+        onClose={() => setRelMapOpen(false)}
+        nodes={chainNodes}
+        onNodeClick={(n) => {
+          if (n.type === "Sales Order" && salesInvoice.so_doc_no) {
+            navigate(`/scm/sales-orders/${salesInvoice.so_doc_no}`);
+            setRelMapOpen(false);
+          } else if (
+            n.type === "Delivery Order" &&
+            salesInvoice.delivery_order_id
+          ) {
+            navigate(
+              `/scm/delivery-orders/${salesInvoice.delivery_order_id}`
+            );
+            setRelMapOpen(false);
+          }
+        }}
+      />
     </div>
   );
 }
