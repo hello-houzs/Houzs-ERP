@@ -53,9 +53,9 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 20px;
+  gap: 16px;
   flex-wrap: nowrap;
-  padding: 20px 30px 15px;
+  padding: 14px 26px 12px;
   background: #dcdfd9;
   border-bottom: 1px solid #cdd1c8;
 }
@@ -88,7 +88,7 @@
 
 .title {
   font-family: var(--font-title, var(--font-sans, system-ui));
-  font-size: 21px;
+  font-size: 18px;
   font-weight: 700;
   color: #11140f;
   letter-spacing: -0.01em;
@@ -101,7 +101,7 @@
 
 .subtitle {
   font-family: var(--font-sans, system-ui);
-  font-size: 12.5px;
+  font-size: 11.5px;
   color: #767b6e;
   margin: 2px 0 0;
 }
@@ -136,16 +136,6 @@
 }
 .statusDraft { background: rgba(17, 20, 15, 0.08); color: #767b6e; }
 
-/* ── Body wrapper ──────────────────────────────────────────────────── */
-.body {
-  padding: 22px 30px 40px;
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-  max-width: 1180px;
-  width: 100%;
-}
-
 /* ── Section card ──────────────────────────────────────────────────── */
 .card {
   background: #fff;
@@ -154,14 +144,28 @@
   overflow: hidden;
 }
 
+/* Every direct .page child EXCEPT the sticky .headerRow gets the same
+   horizontal margin + max-width, so sections, the fromScan banner, AND
+   the PaymentsTable (rendered without a .card wrapper) all line up.
+   flex-direction: column + align-self: center centers each row horiz. */
+.page > *:not(.headerRow) {
+  margin: 0 26px;
+  max-width: 1160px;
+  width: calc(100% - 52px);
+  align-self: center;
+}
+.page > *:not(.headerRow) + *:not(.headerRow) { margin-top: 12px; }
+.page > .headerRow + *:not(.headerRow) { margin-top: 14px; }
+.page > *:last-child { margin-bottom: 28px; }
+
 .cardHeader {
-  padding: 14px 22px;
+  padding: 11px 20px;
   border-bottom: 1px solid #ecebe2;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  min-height: 44px;
+  min-height: 38px;
 }
 
 .cardTitle {
@@ -199,23 +203,26 @@
 }
 
 .cardBody {
-  padding: 20px 22px;
+  padding: 14px 20px 16px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
 }
 
-/* ── Form grid (default 4-col; child sections can override inline) ── */
-.formGrid {
+/* ── Form grid (4-col; child fields can override span via gridColumn) ── */
+.formGrid,
+.formGrid4 {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr 1fr;
-  gap: 18px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px 14px;
 }
-@media (max-width: 960px) {
-  .formGrid { grid-template-columns: 1fr 1fr; }
+@media (max-width: 1100px) {
+  .formGrid,
+  .formGrid4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 640px) {
-  .formGrid { grid-template-columns: 1fr; }
+  .formGrid,
+  .formGrid4 { grid-template-columns: minmax(0, 1fr); }
 }
 
 .field {
@@ -231,7 +238,7 @@
   letter-spacing: 0.09em;
   text-transform: uppercase;
   color: #9aa093;
-  margin-bottom: 7px;
+  margin-bottom: 5px;
   line-height: 1;
 }
 
@@ -239,13 +246,13 @@
 .fieldInput,
 .fieldSelect {
   width: 100%;
-  height: 40px;
+  height: 36px;
   border: 1px solid #d6d9d2;
-  border-radius: 9px;
+  border-radius: 8px;
   background: #fcfdfb;
-  padding: 0 12px;
+  padding: 0 11px;
   font-family: var(--font-sans, system-ui);
-  font-size: 13.5px;
+  font-size: 13px;
   color: #11140f;
   outline: none;
   transition: border-color 0.15s, box-shadow 0.15s;
