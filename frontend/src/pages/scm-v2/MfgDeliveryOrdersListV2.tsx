@@ -33,6 +33,7 @@ import { DataTable, type Column } from "../../components/DataTable";
 import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
 import { PullToRefresh } from "../../components/PullToRefresh";
+import { useStaffLookup } from "../../hooks/useStaffLookup";
 import {
   useMfgDeliveryOrders,
   useMfgDeliveryOrderDetail,
@@ -319,6 +320,7 @@ function DetailDrawer({
   onPrint,
   onMarkSigned,
   onConvertToSi,
+  salespersonName,
 }: {
   row: DoRow | null;
   onClose: () => void;
@@ -327,6 +329,7 @@ function DetailDrawer({
   onPrint: () => void;
   onMarkSigned: () => void;
   onConvertToSi: () => void;
+  salespersonName: string;
 }) {
   const detailQ = useMfgDeliveryOrderDetail(row?.id ?? null);
   const items: Array<{
@@ -423,7 +426,7 @@ function DetailDrawer({
                 <MetaItem k="Driver" v={row.driver_name || "—"} />
                 <MetaItem k="Vehicle" v={row.vehicle || "—"} />
                 <MetaItem k="Location" v={row.sales_location || "—"} />
-                <MetaItem k="Salesperson" v={row.salesperson_id || "—"} />
+                <MetaItem k="Salesperson" v={salespersonName} />
               </dl>
 
               <SectionHeading>Customer &amp; delivery</SectionHeading>
@@ -629,6 +632,7 @@ export function MfgDeliveryOrdersListV2() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const queryClient = useQueryClient();
+  const { nameOf: salespersonNameOf } = useStaffLookup();
 
   const status = (params.get("status") ?? "all") as StatusTab;
   const view = (params.get("view") ?? "table") as "table" | "cards";
@@ -1047,6 +1051,9 @@ export function MfgDeliveryOrdersListV2() {
         onPrint={() => selected && goPrint(selected)}
         onMarkSigned={() => selected && doMarkSigned(selected)}
         onConvertToSi={() => selected && doConvertToSi(selected)}
+        salespersonName={
+          selected ? salespersonNameOf(null, selected.salesperson_id) : "—"
+        }
       />
     </PullToRefresh>
   );

@@ -439,7 +439,7 @@ function VariantPickerModal({
         aria-modal="true"
         aria-label="Add variant"
         className={cn(
-          "fixed left-1/2 top-1/2 z-[81] flex max-h-[76vh] w-[calc(100%-32px)] max-w-[460px] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl bg-surface shadow-slab transition-all duration-200",
+          "fixed left-1/2 top-[8vh] z-[81] flex max-h-[84vh] w-[calc(100%-32px)] max-w-[460px] -translate-x-1/2 flex-col overflow-hidden rounded-2xl bg-surface shadow-slab transition-all duration-200",
           open ? "scale-100 opacity-100" : "pointer-events-none scale-[.97] opacity-0"
         )}
       >
@@ -530,7 +530,7 @@ function FromSoPickerModal({
         aria-modal="true"
         aria-label="Pull lines from a Sales Order"
         className={cn(
-          "fixed left-1/2 top-1/2 z-[81] flex w-[calc(100%-32px)] max-w-[440px] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl bg-surface shadow-slab transition-all duration-200",
+          "fixed left-1/2 top-[10vh] z-[81] flex w-[calc(100%-32px)] max-w-[440px] -translate-x-1/2 flex-col overflow-hidden rounded-2xl bg-surface shadow-slab transition-all duration-200",
           open ? "scale-100 opacity-100" : "pointer-events-none scale-[.97] opacity-0"
         )}
       >

@@ -34,6 +34,7 @@ import { DataTable, type Column } from "../../components/DataTable";
 import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
 import { PullToRefresh } from "../../components/PullToRefresh";
+import { useStaffLookup } from "../../hooks/useStaffLookup";
 import {
   useSalesInvoices,
   useSalesInvoiceDetail,
@@ -321,6 +322,7 @@ function DetailDrawer({
   onPrint,
   onMarkPaid,
   onRecordPayment,
+  salespersonName,
 }: {
   row: SiRow | null;
   onClose: () => void;
@@ -329,6 +331,7 @@ function DetailDrawer({
   onPrint: () => void;
   onMarkPaid: () => void;
   onRecordPayment: () => void;
+  salespersonName: string;
 }) {
   const detailQ = useSalesInvoiceDetail(row?.id ?? null);
   const items: Array<{
@@ -425,7 +428,7 @@ function DetailDrawer({
                 <MetaItem k="Customer ref" v={refOf(row)} mono />
                 <MetaItem k="Due date" v={fmtDate(row.due_date)} />
                 <MetaItem k="Location" v={row.sales_location || "—"} />
-                <MetaItem k="Salesperson" v={row.salesperson_id || "—"} />
+                <MetaItem k="Salesperson" v={salespersonName} />
               </dl>
 
               <SectionHeading>Customer</SectionHeading>
@@ -649,6 +652,7 @@ export function SalesInvoicesListV2() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const queryClient = useQueryClient();
+  const { nameOf: salespersonNameOf } = useStaffLookup();
 
   const status = (params.get("status") ?? "all") as StatusTab;
   const view = (params.get("view") ?? "table") as "table" | "cards";
@@ -1062,6 +1066,9 @@ export function SalesInvoicesListV2() {
         onPrint={() => selected && goPrint(selected)}
         onMarkPaid={() => selected && doMarkPaid(selected)}
         onRecordPayment={() => selected && goRecordPayment(selected)}
+        salespersonName={
+          selected ? salespersonNameOf(null, selected.salesperson_id) : "—"
+        }
       />
     </PullToRefresh>
   );

@@ -42,6 +42,7 @@ import { DataTable, type Column } from "../../components/DataTable";
 import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
 import { PullToRefresh } from "../../components/PullToRefresh";
+import { useStaffLookup } from "../../hooks/useStaffLookup";
 import {
   useMfgSalesOrders,
   useUpdateMfgSalesOrderStatus,
@@ -315,6 +316,7 @@ function DetailDrawer({
   onPrint,
   onConfirm,
   onDeliver,
+  salespersonName,
 }: {
   row: SoRow | null;
   onClose: () => void;
@@ -323,6 +325,7 @@ function DetailDrawer({
   onPrint: () => void;
   onConfirm: () => void;
   onDeliver: () => void;
+  salespersonName: string;
 }) {
   const detailQ = useMfgSalesOrderDetail(row?.doc_no ?? null);
   const items: Array<{ product_code?: string; product_name?: string; qty?: number; unit_price_centi?: number; amount_centi?: number }> =
@@ -416,7 +419,7 @@ function DetailDrawer({
 
               {/* meta grid */}
               <dl className="mt-5 grid grid-cols-2 gap-x-4 gap-y-3 rounded-lg border border-border bg-surface-2 px-4 py-4">
-                <MetaItem k="Salesperson" v={row.agent || row.salesperson_id || "—"} />
+                <MetaItem k="Salesperson" v={salespersonName} />
                 <MetaItem k="Location" v={row.sales_location || "—"} />
                 <MetaItem k="Reference" v={refOf(row)} mono />
                 <MetaItem k="Branding" v={brandOf(row)} />
@@ -652,6 +655,7 @@ export function MfgSalesOrdersListV2() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const queryClient = useQueryClient();
+  const { nameOf: salespersonNameOf } = useStaffLookup();
 
   const status = (params.get("status") ?? "all") as StatusTab;
   // View toggle applies at md+; on phones we always render the card list
@@ -804,11 +808,11 @@ export function MfgSalesOrdersListV2() {
     {
       key: "salesperson",
       label: "Salesperson",
-      width: "128px",
-      getValue: (r) => r.agent || r.salesperson_id || "",
+      width: "148px",
+      getValue: (r) => salespersonNameOf(r.agent, r.salesperson_id, ""),
       render: (r) => (
         <span className="text-[12.5px] text-ink-secondary">
-          {r.agent || r.salesperson_id || "—"}
+          {salespersonNameOf(r.agent, r.salesperson_id, "—")}
         </span>
       ),
     },
@@ -1073,6 +1077,11 @@ export function MfgSalesOrdersListV2() {
         onPrint={() => selected && goPrint(selected)}
         onConfirm={() => selected && doConfirm(selected)}
         onDeliver={() => selected && doDeliver(selected)}
+        salespersonName={
+          selected
+            ? salespersonNameOf(selected.agent, selected.salesperson_id)
+            : "—"
+        }
       />
     </PullToRefresh>
   );

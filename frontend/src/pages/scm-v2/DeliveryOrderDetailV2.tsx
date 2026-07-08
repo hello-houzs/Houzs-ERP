@@ -431,7 +431,7 @@ function ModalOverlay({
         aria-modal="true"
         aria-label={title}
         className={cn(
-          "fixed left-1/2 top-1/2 z-[81] flex max-h-[82vh] w-[calc(100%-32px)] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-2xl bg-surface shadow-slab transition-all duration-200",
+          "fixed left-1/2 top-[8vh] z-[81] flex max-h-[84vh] w-[calc(100%-32px)] -translate-x-1/2 flex-col overflow-hidden rounded-2xl bg-surface shadow-slab transition-all duration-200",
           size === "lg" ? "max-w-[760px]" : "max-w-[480px]",
           open ? "scale-100 opacity-100" : "pointer-events-none scale-[.97] opacity-0"
         )}

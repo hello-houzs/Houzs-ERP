@@ -38,6 +38,7 @@ import { DataTable, type Column } from "../../components/DataTable";
 import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
 import { PullToRefresh } from "../../components/PullToRefresh";
+import { useStaffLookup } from "../../hooks/useStaffLookup";
 import {
   useDeliveryReturns,
   useDeliveryReturnDetail,
@@ -326,6 +327,7 @@ function DetailDrawer({
   onPrint,
   onMarkInspected,
   onMarkRefunded,
+  salespersonName,
 }: {
   row: DrRow | null;
   onClose: () => void;
@@ -334,6 +336,7 @@ function DetailDrawer({
   onPrint: () => void;
   onMarkInspected: () => void;
   onMarkRefunded: () => void;
+  salespersonName: string;
 }) {
   const detailQ = useDeliveryReturnDetail(row?.id ?? null);
   const items: Array<{
@@ -437,7 +440,7 @@ function DetailDrawer({
                 <MetaItem k="From DO" v={doOf(row)} mono />
                 <MetaItem k="Customer ref" v={refOf(row)} mono />
                 <MetaItem k="Location" v={row.sales_location || "—"} />
-                <MetaItem k="Salesperson" v={row.salesperson_id || "—"} />
+                <MetaItem k="Salesperson" v={salespersonName} />
                 <MetaItem k="Venue" v={row.venue || "—"} />
                 <MetaItem k="Line count" v={row.line_count ?? "—"} />
               </dl>
@@ -655,6 +658,7 @@ export function DeliveryReturnsListV2() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const queryClient = useQueryClient();
+  const { nameOf: salespersonNameOf } = useStaffLookup();
 
   const status = (params.get("status") ?? "all") as StatusTab;
   const view = (params.get("view") ?? "table") as "table" | "cards";
@@ -851,11 +855,11 @@ export function DeliveryReturnsListV2() {
     {
       key: "salesperson",
       label: "Salesperson",
-      width: "132px",
-      getValue: (r) => r.salesperson_id ?? "",
+      width: "148px",
+      getValue: (r) => salespersonNameOf(null, r.salesperson_id, ""),
       render: (r) => (
         <span className="text-[12.5px] text-ink-secondary">
-          {r.salesperson_id || "—"}
+          {salespersonNameOf(null, r.salesperson_id, "—")}
         </span>
       ),
     },
@@ -1082,6 +1086,9 @@ export function DeliveryReturnsListV2() {
         onPrint={() => selected && goPrint(selected)}
         onMarkInspected={() => selected && doMarkInspected(selected)}
         onMarkRefunded={() => selected && doMarkRefunded(selected)}
+        salespersonName={
+          selected ? salespersonNameOf(null, selected.salesperson_id) : "—"
+        }
       />
     </PullToRefresh>
   );
