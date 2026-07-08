@@ -1098,6 +1098,12 @@ function ProjectsListView() {
       getValue: (r) => r.brand,
     },
     {
+      key: "state",
+      label: "State",
+      render: (r) => <span className="text-[11px]">{r.state || "—"}</span>,
+      getValue: (r) => r.state ?? "",
+    },
+    {
       key: "event_type_name",
       label: "Type",
       render: (r) => <span className="text-[11px]">{r.event_type_name || "—"}</span>,
