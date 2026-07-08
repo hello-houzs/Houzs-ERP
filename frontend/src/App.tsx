@@ -58,20 +58,20 @@ const ScmWarehousesV2 = lazy(() => import("./pages/scm-v2/Warehouses").then((m) 
 const ScmProductsV2 = lazy(() => import("./pages/scm-v2/Products").then((m) => ({ default: m.Products })));
 const ScmProductModelsV2 = lazy(() => import("./pages/scm-v2/ProductModels").then((m) => ({ default: m.ProductModels })));
 const ScmProductModelDetailV2 = lazy(() => import("./pages/scm-v2/ProductModelDetail").then((m) => ({ default: m.ProductModelDetail })));
-const ScmGoodsReceivedV2 = lazy(() => import("./pages/scm-v2/GoodsReceived").then((m) => ({ default: m.GoodsReceived })));
+const ScmGoodsReceivedV2 = lazy(() => import("./pages/scm-v2/GoodsReceivedListV2").then((m) => ({ default: m.GoodsReceivedListV2 })));
 const ScmGrnNewV2 = lazy(() => import("./pages/scm-v2/GrnNew").then((m) => ({ default: m.GrnNew })));
 const ScmGrnFromPoV2 = lazy(() => import("./pages/scm-v2/GrnFromPo").then((m) => ({ default: m.GrnFromPo })));
-const ScmGoodsReceivedDetailV2 = lazy(() => import("./pages/scm-v2/GoodsReceivedDetail").then((m) => ({ default: m.GoodsReceivedDetail })));
+const ScmGoodsReceivedDetailV2 = lazy(() => import("./pages/scm-v2/GoodsReceivedDetailV2").then((m) => ({ default: m.GoodsReceivedDetailV2 })));
 const ScmPurchaseInvoicesV2 = lazy(() => import("./pages/scm-v2/PurchaseInvoicesListV2").then((m) => ({ default: m.PurchaseInvoicesListV2 })));
 const ScmPurchaseInvoiceNewV2 = lazy(() => import("./pages/scm-v2/PurchaseInvoiceNew").then((m) => ({ default: m.PurchaseInvoiceNew })));
 const ScmPurchaseInvoiceFromGrnV2 = lazy(() => import("./pages/scm-v2/PurchaseInvoiceFromGrn").then((m) => ({ default: m.PurchaseInvoiceFromGrn })));
 const ScmPurchaseInvoiceDetailV2 = lazy(() => import("./pages/scm-v2/PurchaseInvoiceDetailV2").then((m) => ({ default: m.PurchaseInvoiceDetailV2 })));
 const ScmStockAdjustmentsV2 = lazy(() => import("./pages/scm-v2/StockAdjustments").then((m) => ({ default: m.StockAdjustments })));
 const ScmStockAdjustmentNewV2 = lazy(() => import("./pages/scm-v2/StockAdjustmentNew").then((m) => ({ default: m.StockAdjustmentNew })));
-const ScmStockTransfersV2 = lazy(() => import("./pages/scm-v2/StockTransfers").then((m) => ({ default: m.StockTransfers })));
+const ScmStockTransfersV2 = lazy(() => import("./pages/scm-v2/StockTransfersListV2").then((m) => ({ default: m.StockTransfersListV2 })));
 const ScmStockTransferNewV2 = lazy(() => import("./pages/scm-v2/StockTransferNew").then((m) => ({ default: m.StockTransferNew })));
 const ScmStockTransferDetailV2 = lazy(() => import("./pages/scm-v2/StockTransferDetail").then((m) => ({ default: m.StockTransferDetail })));
-const ScmStockTakesV2 = lazy(() => import("./pages/scm-v2/StockTakes").then((m) => ({ default: m.StockTakes })));
+const ScmStockTakesV2 = lazy(() => import("./pages/scm-v2/StockTakesListV2").then((m) => ({ default: m.StockTakesListV2 })));
 const ScmStockTakeNewV2 = lazy(() => import("./pages/scm-v2/StockTakeNew").then((m) => ({ default: m.StockTakeNew })));
 const ScmStockTakeDetailV2 = lazy(() => import("./pages/scm-v2/StockTakeDetail").then((m) => ({ default: m.StockTakeDetail })));
 // TEMP — vendored 2990's PR / Inventory / Stock Card / Supplier Detail / Drivers
