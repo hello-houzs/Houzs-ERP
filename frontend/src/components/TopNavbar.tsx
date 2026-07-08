@@ -115,17 +115,6 @@ const ROUTE_LABELS: Array<[RegExp, string]> = [
   [/^\/$/, "Overview"],
   [/^\/orders\/.+$/, "Sales Order"],
   [/^\/orders$/, "Sales Orders"],
-  // SCM V2 routes — the vendored /scm/* pages own their own header, so the
-  // navbar just labels the route rather than deriving "Scm" from the first
-  // path segment.
-  [/^\/scm\/sales-orders\/.+$/, "Sales Order"],
-  [/^\/scm\/sales-orders$/, "Sales Orders"],
-  [/^\/scm\/delivery-orders\/.+$/, "Delivery Order"],
-  [/^\/scm\/delivery-orders$/, "Delivery Orders"],
-  [/^\/scm\/sales-invoices\/.+$/, "Sales Invoice"],
-  [/^\/scm\/sales-invoices$/, "Sales Invoices"],
-  [/^\/scm\/delivery-returns\/.+$/, "Delivery Return"],
-  [/^\/scm\/delivery-returns$/, "Delivery Returns"],
   [/^\/delivery-orders$/, "Delivery Orders"],
   [/^\/delivery\/.+$/, "Delivery"],
   [/^\/logistics$/, "Logistics"],
@@ -146,11 +135,103 @@ const ROUTE_LABELS: Array<[RegExp, string]> = [
   [/^\/profile$/, "Profile"],
 ];
 
+// SCM V2 routes ship dozens of /scm/* pages — hand-rolling a regex per page
+// bloats the list. Instead the second URL segment picks the label from this
+// table: [plural, singular] where plural covers the listing (and its
+// action children like /new or /from-*) and singular covers the detail
+// page (a trailing entity id). Kept as one central table so adding a new
+// SCM route only means one map entry, not two regex lines.
+const SCM_SEGMENT_LABELS: Record<string, [string, string]> = {
+  // Sales chain
+  "sales-orders": ["Sales Orders", "Sales Order"],
+  "delivery-orders": ["Delivery Orders", "Delivery Order"],
+  "sales-invoices": ["Sales Invoices", "Sales Invoice"],
+  "delivery-returns": ["Delivery Returns", "Delivery Return"],
+  // Procurement chain
+  "purchase-orders": ["Purchase Orders", "Purchase Order"],
+  "purchase-invoices": ["Purchase Invoices", "Purchase Invoice"],
+  "purchase-returns": ["Purchase Returns", "Purchase Return"],
+  "grns": ["Goods Received Notes", "Goods Received Note"],
+  "mrp": ["MRP", "MRP"],
+  "suppliers": ["Suppliers", "Supplier"],
+  // Warehouse / stock
+  "warehouses": ["Warehouses", "Warehouse"],
+  "inventory": ["Inventory", "Inventory"],
+  "stock-adjustments": ["Stock Adjustments", "Stock Adjustment"],
+  "stock-transfers": ["Stock Transfers", "Stock Transfer"],
+  "stock-takes": ["Stock Takes", "Stock Take"],
+  // Products
+  "products": ["Products", "Product"],
+  "categories": ["Categories", "Category"],
+  "product-models": ["Product Models", "Product Model"],
+  "fabric-tracking": ["Fabric Tracking", "Fabric Tracking"],
+  // Finance
+  "accounting": ["Accounting", "Accounting"],
+  "outstanding": ["Outstanding", "Outstanding"],
+  // Transportation
+  "drivers": ["Drivers", "Driver"],
+  "delivery-planning": ["Delivery Planning", "Delivery Planning"],
+  "delivery-planning-regions": ["Delivery Planning Regions", "Delivery Planning Regions"],
+  "fleet": ["Fleet", "Fleet"],
+  "lorry-capacity": ["Lorry Capacity", "Lorry Capacity"],
+  // Consignment (sale side)
+  "consignment-orders": ["Consignment Orders", "Consignment Order"],
+  "consignment-notes": ["Consignment Notes", "Consignment Note"],
+  "consignment-returns": ["Consignment Returns", "Consignment Return"],
+  // Consignment (purchase side)
+  "purchase-consignment-orders": ["Purchase Consignment Orders", "Purchase Consignment Order"],
+  "purchase-consignment-receives": ["Purchase Consignment Receives", "Purchase Consignment Receive"],
+  "purchase-consignment-returns": ["Purchase Consignment Returns", "Purchase Consignment Return"],
+  // Misc
+  "maintenance": ["Maintenance", "Maintenance"],
+};
+
+// /scm/reports/<report-slug> — its own table since these live one level
+// deeper (segs[2] is the report slug).
+const SCM_REPORT_LABELS: Record<string, string> = {
+  "sales-order-detail-listing": "SO Detail Listing",
+  "delivery-order-detail-listing": "DO Detail Listing",
+  "sales-invoice-detail-listing": "SI Detail Listing",
+  "delivery-return-detail-listing": "DR Detail Listing",
+};
+
+// Path segments that are actions/children rather than entity IDs — used to
+// keep the plural label on /scm/<x>/new, /scm/<x>/from-so, etc. Anything
+// not in this set (and not obviously an action prefix) is treated as an
+// entity id → singular label.
+const SCM_ACTION_SEGMENTS = new Set([
+  "new",
+  "guided",
+  "maintenance",
+  "generate",
+  "stock-card",
+]);
+
+function isScmActionSegment(seg: string): boolean {
+  if (SCM_ACTION_SEGMENTS.has(seg)) return true;
+  if (seg.startsWith("from-")) return true;
+  return false;
+}
+
 function labelForPath(pathname: string): string {
   for (const [re, label] of ROUTE_LABELS) {
     if (re.test(pathname)) return label;
   }
-  // Generic fallback: capitalise the first segment.
-  const seg = pathname.split("/").filter(Boolean)[0] || "";
+  const segs = pathname.split("/").filter(Boolean);
+  // /scm/* — resolve via the segment tables above.
+  if (segs[0] === "scm" && segs.length >= 2) {
+    if (segs[1] === "reports" && segs[2]) {
+      return SCM_REPORT_LABELS[segs[2]] ?? "Report";
+    }
+    const entry = SCM_SEGMENT_LABELS[segs[1]];
+    if (entry) {
+      const [plural, singular] = entry;
+      const isDetail = !!segs[2] && !isScmActionSegment(segs[2]);
+      return isDetail ? singular : plural;
+    }
+    // Unknown /scm/* — fall through to the generic first-segment
+    // uppercase so at least it reads something, not blank.
+  }
+  const seg = segs[0] || "";
   return seg ? seg[0].toUpperCase() + seg.slice(1) : "";
 }
