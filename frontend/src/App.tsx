@@ -62,10 +62,10 @@ const ScmGoodsReceivedV2 = lazy(() => import("./pages/scm-v2/GoodsReceivedListV2
 const ScmGrnNewV2 = lazy(() => import("./pages/scm-v2/GrnNew").then((m) => ({ default: m.GrnNew })));
 const ScmGrnFromPoV2 = lazy(() => import("./pages/scm-v2/GrnFromPo").then((m) => ({ default: m.GrnFromPo })));
 const ScmGoodsReceivedDetailV2 = lazy(() => import("./pages/scm-v2/GoodsReceivedDetailV2").then((m) => ({ default: m.GoodsReceivedDetailV2 })));
-const ScmPurchaseInvoicesV2 = lazy(() => import("./pages/scm-v2/PurchaseInvoices").then((m) => ({ default: m.PurchaseInvoices })));
+const ScmPurchaseInvoicesV2 = lazy(() => import("./pages/scm-v2/PurchaseInvoicesListV2").then((m) => ({ default: m.PurchaseInvoicesListV2 })));
 const ScmPurchaseInvoiceNewV2 = lazy(() => import("./pages/scm-v2/PurchaseInvoiceNew").then((m) => ({ default: m.PurchaseInvoiceNew })));
 const ScmPurchaseInvoiceFromGrnV2 = lazy(() => import("./pages/scm-v2/PurchaseInvoiceFromGrn").then((m) => ({ default: m.PurchaseInvoiceFromGrn })));
-const ScmPurchaseInvoiceDetailV2 = lazy(() => import("./pages/scm-v2/PurchaseInvoiceDetail").then((m) => ({ default: m.PurchaseInvoiceDetail })));
+const ScmPurchaseInvoiceDetailV2 = lazy(() => import("./pages/scm-v2/PurchaseInvoiceDetailV2").then((m) => ({ default: m.PurchaseInvoiceDetailV2 })));
 const ScmStockAdjustmentsV2 = lazy(() => import("./pages/scm-v2/StockAdjustments").then((m) => ({ default: m.StockAdjustments })));
 const ScmStockAdjustmentNewV2 = lazy(() => import("./pages/scm-v2/StockAdjustmentNew").then((m) => ({ default: m.StockAdjustmentNew })));
 const ScmStockTransfersV2 = lazy(() => import("./pages/scm-v2/StockTransfers").then((m) => ({ default: m.StockTransfers })));
