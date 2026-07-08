@@ -54,6 +54,7 @@ import {
   useUpdateMfgDeliveryOrderStatus,
 } from "../../vendor/scm/lib/delivery-order-queries";
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
+import { useStaffLookup } from "../../hooks/useStaffLookup";
 import {
   DocumentRelationshipMapModal,
   ModalOverlay,
@@ -619,6 +620,7 @@ export function DeliveryOrderDetailV2() {
 
   const detail = useMfgDeliveryOrderDetail(id ?? null);
   const updateStatus = useUpdateMfgDeliveryOrderStatus();
+  const { nameOf: salespersonNameOf } = useStaffLookup();
 
   const deliveryOrder =
     (detail.data as { deliveryOrder?: DoHeader } | undefined)?.deliveryOrder ??
@@ -1049,10 +1051,12 @@ export function DeliveryOrderDetailV2() {
                 <Field
                   label="Salesperson"
                   value={
-                    deliveryOrder.agent ||
                     deliveryOrder.salesperson_name ||
-                    deliveryOrder.salesperson_id ||
-                    "Unassigned"
+                    salespersonNameOf(
+                      deliveryOrder.agent,
+                      deliveryOrder.salesperson_id,
+                      "Unassigned"
+                    )
                   }
                   muted={
                     !deliveryOrder.agent &&
@@ -1226,16 +1230,22 @@ export function DeliveryOrderDetailV2() {
                 <PersonRow
                   initials={initialsOf(
                     deliveryOrder.issued_by_name ||
-                      deliveryOrder.agent ||
+                      deliveryOrder.issued_by_name ||
                       deliveryOrder.salesperson_name ||
-                      deliveryOrder.salesperson_id
+                      salespersonNameOf(
+                        deliveryOrder.agent,
+                        deliveryOrder.salesperson_id,
+                        ""
+                      )
                   )}
                   name={
                     deliveryOrder.issued_by_name ||
-                    deliveryOrder.agent ||
                     deliveryOrder.salesperson_name ||
-                    deliveryOrder.salesperson_id ||
-                    "Issued by"
+                    salespersonNameOf(
+                      deliveryOrder.agent,
+                      deliveryOrder.salesperson_id,
+                      "Issued by"
+                    )
                   }
                   role={
                     deliveryOrder.issued_by_name

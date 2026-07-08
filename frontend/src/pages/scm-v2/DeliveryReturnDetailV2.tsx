@@ -62,6 +62,7 @@ import {
   useUpdateDeliveryReturnStatus,
 } from "../../vendor/scm/lib/delivery-return-queries";
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
+import { useStaffLookup } from "../../hooks/useStaffLookup";
 import { cn } from "../../lib/utils";
 
 // ─── Row shapes (subset — see DeliveryReturnDetail.tsx for full 40-field
@@ -466,6 +467,7 @@ export function DeliveryReturnDetailV2() {
 
   const detail = useDeliveryReturnDetail(id ?? null);
   const updateStatus = useUpdateDeliveryReturnStatus();
+  const { nameOf: salespersonNameOf } = useStaffLookup();
 
   const deliveryReturn =
     (detail.data as { deliveryReturn?: DrHeader } | undefined)?.deliveryReturn ??
@@ -878,11 +880,11 @@ export function DeliveryReturnDetailV2() {
                 />
                 <Field
                   label="Salesperson"
-                  value={
-                    deliveryReturn.agent ||
-                    deliveryReturn.salesperson_id ||
+                  value={salespersonNameOf(
+                    deliveryReturn.agent,
+                    deliveryReturn.salesperson_id,
                     "Unassigned"
-                  }
+                  )}
                   muted={
                     !deliveryReturn.agent && !deliveryReturn.salesperson_id
                   }
@@ -1009,15 +1011,19 @@ export function DeliveryReturnDetailV2() {
                   initials={
                     deliveryReturn.agent || deliveryReturn.salesperson_id
                       ? initialsOf(
-                          deliveryReturn.agent || deliveryReturn.salesperson_id
+                          salespersonNameOf(
+                            deliveryReturn.agent,
+                            deliveryReturn.salesperson_id,
+                            ""
+                          )
                         )
                       : "?"
                   }
-                  name={
-                    deliveryReturn.agent ||
-                    deliveryReturn.salesperson_id ||
+                  name={salespersonNameOf(
+                    deliveryReturn.agent,
+                    deliveryReturn.salesperson_id,
                     "Salesperson"
-                  }
+                  )}
                   role={
                     deliveryReturn.agent || deliveryReturn.salesperson_id
                       ? "Salesperson"

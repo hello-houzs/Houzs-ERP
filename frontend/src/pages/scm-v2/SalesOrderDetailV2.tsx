@@ -45,6 +45,7 @@ import {
   useUpdateMfgSalesOrderStatus,
 } from "../../vendor/scm/lib/sales-order-queries";
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
+import { useStaffLookup } from "../../hooks/useStaffLookup";
 import {
   DocumentRelationshipMapModal,
   type ChainNode,
@@ -409,6 +410,7 @@ export function SalesOrderDetailV2() {
 
   const detail = useMfgSalesOrderDetail(docNo ?? null);
   const updateStatus = useUpdateMfgSalesOrderStatus();
+  const { nameOf: salespersonNameOf } = useStaffLookup();
 
   // Replace the auto-derived "Scm" module crumb with the actual SO doc no.
   // Falls back to the raw route param while detail is loading so the top bar
@@ -808,11 +810,11 @@ export function SalesOrderDetailV2() {
                 />
                 <Field
                   label="Salesperson"
-                  value={
-                    salesOrder.agent ||
-                    salesOrder.salesperson_id ||
+                  value={salespersonNameOf(
+                    salesOrder.agent,
+                    salesOrder.salesperson_id,
                     "Unassigned"
-                  }
+                  )}
                   muted={
                     !salesOrder.agent && !salesOrder.salesperson_id
                   }
@@ -985,15 +987,19 @@ export function SalesOrderDetailV2() {
                   initials={
                     salesOrder.agent || salesOrder.salesperson_id
                       ? initialsOf(
-                          salesOrder.agent || salesOrder.salesperson_id
+                          salespersonNameOf(
+                            salesOrder.agent,
+                            salesOrder.salesperson_id,
+                            ""
+                          )
                         )
                       : "?"
                   }
-                  name={
-                    salesOrder.agent ||
-                    salesOrder.salesperson_id ||
+                  name={salespersonNameOf(
+                    salesOrder.agent,
+                    salesOrder.salesperson_id,
                     "Salesperson"
-                  }
+                  )}
                   role={
                     salesOrder.agent || salesOrder.salesperson_id
                       ? "Salesperson"

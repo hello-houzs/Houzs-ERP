@@ -57,6 +57,7 @@ import {
   useUpdateSalesInvoiceStatus,
 } from "../../vendor/scm/lib/sales-invoice-queries";
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
+import { useStaffLookup } from "../../hooks/useStaffLookup";
 import { cn } from "../../lib/utils";
 
 // ─── Row shapes (subset — see SalesInvoiceDetail.tsx for the full 40-field
@@ -503,6 +504,7 @@ export function SalesInvoiceDetailV2() {
 
   const detail = useSalesInvoiceDetail(id ?? null);
   const updateStatus = useUpdateSalesInvoiceStatus();
+  const { nameOf: salespersonNameOf } = useStaffLookup();
 
   const salesInvoice =
     (detail.data as { salesInvoice?: SiHeader } | undefined)?.salesInvoice ??
@@ -967,11 +969,11 @@ export function SalesInvoiceDetailV2() {
                 />
                 <Field
                   label="Salesperson"
-                  value={
-                    salesInvoice.agent ||
-                    salesInvoice.salesperson_id ||
+                  value={salespersonNameOf(
+                    salesInvoice.agent,
+                    salesInvoice.salesperson_id,
                     "Unassigned"
-                  }
+                  )}
                   muted={
                     !salesInvoice.agent && !salesInvoice.salesperson_id
                   }
@@ -1100,15 +1102,19 @@ export function SalesInvoiceDetailV2() {
                   initials={
                     salesInvoice.agent || salesInvoice.salesperson_id
                       ? initialsOf(
-                          salesInvoice.agent || salesInvoice.salesperson_id
+                          salespersonNameOf(
+                            salesInvoice.agent,
+                            salesInvoice.salesperson_id,
+                            ""
+                          )
                         )
                       : "?"
                   }
-                  name={
-                    salesInvoice.agent ||
-                    salesInvoice.salesperson_id ||
+                  name={salespersonNameOf(
+                    salesInvoice.agent,
+                    salesInvoice.salesperson_id,
                     "Salesperson"
-                  }
+                  )}
                   role={
                     salesInvoice.agent || salesInvoice.salesperson_id
                       ? "Salesperson"
