@@ -45,10 +45,10 @@ const ScmSuppliersV2 = lazy(() => import("./pages/scm-v2/SuppliersV2Route"));
 // Each list/detail page is a NAMED export wrapped at the route in <Scm2990Shell>
 // (the Notify/Confirm/dialog-service providers).
 const Scm2990Shell = lazy(() => import("./pages/scm-v2/Scm2990Shell"));
-const ScmPurchaseOrdersV2 = lazy(() => import("./pages/scm-v2/PurchaseOrders").then((m) => ({ default: m.PurchaseOrders })));
+const ScmPurchaseOrdersV2 = lazy(() => import("./pages/scm-v2/PurchaseOrdersListV2").then((m) => ({ default: m.PurchaseOrdersListV2 })));
 const ScmPurchaseOrderNewV2 = lazy(() => import("./pages/scm-v2/PurchaseOrderNew").then((m) => ({ default: m.PurchaseOrderNew })));
 const ScmPurchaseOrderFromSoV2 = lazy(() => import("./pages/scm-v2/PurchaseOrderFromSo").then((m) => ({ default: m.PurchaseOrderFromSo })));
-const ScmPurchaseOrderDetailV2 = lazy(() => import("./pages/scm-v2/PurchaseOrderDetail").then((m) => ({ default: m.PurchaseOrderDetail })));
+const ScmPurchaseOrderDetailV2 = lazy(() => import("./pages/scm-v2/PurchaseOrderDetailV2").then((m) => ({ default: m.PurchaseOrderDetailV2 })));
 // TEMP — vendored 2990's MRP + read/list pages (wave 2), parallel to native.
 const ScmMrpV2 = lazy(() => import("./pages/scm-v2/Mrp").then((m) => ({ default: m.Mrp })));
 const ScmAccountingV2 = lazy(() => import("./pages/scm-v2/Accounting").then((m) => ({ default: m.Accounting })));
