@@ -350,12 +350,14 @@ function DetailDrawer({
 
   return (
     <>
-      {/* scrim */}
+      {/* scrim — mobile only. On desktop the outer wrapper reflows via
+          md:pr-[540px] so the underlying content stays fully visible next
+          to the drawer; no need to dim it. */}
       <div
         onClick={onClose}
         aria-hidden
         className={cn(
-          "fixed inset-0 z-[90] bg-ink/40 backdrop-blur-[1px] transition-opacity duration-200",
+          "fixed inset-0 z-[90] bg-ink/40 backdrop-blur-[1px] transition-opacity duration-200 md:hidden",
           open ? "opacity-100" : "pointer-events-none opacity-0"
         )}
       />
@@ -885,6 +887,15 @@ export function MfgSalesOrdersListV2() {
 
   return (
     <PullToRefresh onRefresh={onPullToRefresh}>
+      {/* When the drawer is open the desktop shell reflows into the left
+          520 + gutter, so stats/table are cleanly visible next to it instead
+          of being half-covered. Mobile keeps the full-width overlay. */}
+      <div
+        className={cn(
+          "transition-[padding] duration-200",
+          selected ? "md:pr-[540px]" : ""
+        )}
+      >
       {/* Mobile-only compact header — hides at md+. */}
       <div className="mb-3 flex items-start justify-between gap-3 md:hidden">
         <div className="min-w-0">
@@ -1051,6 +1062,7 @@ export function MfgSalesOrdersListV2() {
           <CardsGrid rows={filtered} onOpen={(r) => setSelected(r)} />
         </>
       )}
+      </div>
       </div>
 
       <DetailDrawer
