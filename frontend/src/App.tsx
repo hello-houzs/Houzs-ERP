@@ -103,7 +103,7 @@ const ScmSalesOrderNewGuidedV2 = lazy(() => import("./pages/scm-v2/SalesOrderNew
 const ScmSalesOrderNewFromProductsV2 = lazy(() => import("./pages/scm-v2/SalesOrderNewFromProducts").then((m) => ({ default: m.SalesOrderNewFromProducts })));
 const ScmCategoriesV2 = lazy(() => import("./pages/scm-v2/Categories").then((m) => ({ default: m.Categories })));
 const ScmSoFromProductsV2 = lazy(() => import("./pages/scm-v2/SoFromProducts").then((m) => ({ default: m.SoFromProducts })));
-const ScmSalesOrderDetailV2 = lazy(() => import("./pages/scm-v2/SalesOrderDetail").then((m) => ({ default: m.SalesOrderDetail })));
+const ScmSalesOrderDetailV2 = lazy(() => import("./pages/scm-v2/SalesOrderDetailV2").then((m) => ({ default: m.SalesOrderDetailV2 })));
 const ScmSoDetailListingV2 = lazy(() => import("./pages/scm-v2/SalesOrderDetailListing").then((m) => ({ default: m.SalesOrderDetailListing })));
 const ScmDoDetailListingV2 = lazy(() => import("./pages/scm-v2/DeliveryOrderDetailListing").then((m) => ({ default: m.DeliveryOrderDetailListing })));
 const ScmSiDetailListingV2 = lazy(() => import("./pages/scm-v2/SalesInvoiceDetailListing").then((m) => ({ default: m.SalesInvoiceDetailListing })));
