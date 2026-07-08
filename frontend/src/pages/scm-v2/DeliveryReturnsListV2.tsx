@@ -1,39 +1,35 @@
-// MfgSalesOrdersListV2 — Theme C ("Ink & Petrol") redesign of the Sales Orders
-// listing (Supply Chain). Composed with the real Houzs DS primitives:
-// PageHeader / StatCard grid / FilterPills / DataTable / Badge / Button + a
-// right slide-over detail drawer built with the same tokens.
+// DeliveryReturnsListV2 — Theme C redesign of the Delivery Returns listing.
+// Third + final piece of the three-headed sales chain sweep (SO/DO/SI/DR):
+// same PageHeader + StatCard + FilterPills + Table/Cards + right slide-over
+// drawer template as MfgDeliveryOrdersListV2 / SalesInvoicesListV2. Data is
+// the vendored delivery-return-queries slice, unchanged. See the DO V2 file
+// for the deep dive on primitives + Theme C conventions.
 //
-// Scope of THIS file (Item A of the 4-part redesign):
-//   · Desktop listing (table + cards toggle)
-//   · Row/card click → quick-view detail drawer (dark header, meta grid,
-//     order lines, totals, action buttons)
-//   · Wired to the existing useMfgSalesOrders query so status tab / search
-//     narrow the same data the old grid uses. Status mutations still route
-//     through useUpdateMfgSalesOrderStatus.
+// Route: /scm/delivery-returns (App.tsx flips ScmDeliveryReturnsV2 here).
 //
-// Follow-ups (separate PRs):
-//   · Full Detail page (DetailLayout + two-col grid + sticky aside)
-//   · Phone card list + FAB + PullToRefresh
-//   · iPad 340px master-detail rail
-//
-// The old ledger-style page (MfgSalesOrdersList.tsx, DataGrid-based) stays in
-// the tree; App.tsx route swap decides which one users see.
+// A Delivery Return = goods coming BACK from the customer → creating one
+// INCREASES stock server-side. Money moves OUT of the business, so the
+// chrome leans hard on that: the money stat card + drawer totals both use
+// the error tone to signal "refund pending" versus the DO/SI green-when-good
+// idiom. Return-reason is promoted to a first-class table column and a
+// prominent meta row in the drawer — it's the field ops actually cares
+// about when triaging a return.
 
 import { useMemo, useState, type ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Plus,
   ChevronDown,
-  ScanLine,
-  Wrench,
+  Truck,
+  Receipt,
   LayoutGrid,
   Table as TableIcon,
   X as XIcon,
   ExternalLink,
   Edit3,
   Printer,
+  ClipboardCheck,
   CheckCircle2,
-  Truck,
 } from "lucide-react";
 import { PageHeader } from "../../components/Layout";
 import { StatCard } from "../../components/StatCard";
@@ -43,35 +39,33 @@ import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
 import { PullToRefresh } from "../../components/PullToRefresh";
 import {
-  useMfgSalesOrders,
-  useUpdateMfgSalesOrderStatus,
-  useMfgSalesOrderDetail,
-} from "../../vendor/scm/lib/sales-order-queries";
+  useDeliveryReturns,
+  useDeliveryReturnDetail,
+  useUpdateDeliveryReturnStatus,
+} from "../../vendor/scm/lib/delivery-return-queries";
 import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "../../lib/utils";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
-// Minimal row shape the listing needs. The full SoRow (in MfgSalesOrdersList
-// .tsx) has 60+ fields; we pluck what the redesign shows. Everything is
-// typed loosely as any-safe (nullable) because the backend legacy fields.
+// Subset of the DR header (see DeliveryReturnsList.tsx for the full 40-field
+// row). Fields not listed still exist on the API payload — V2 just doesn't
+// render them.
 
-type SoRow = {
-  doc_no: string;
-  so_date: string;
+type DrRow = {
+  id: string;
+  return_number: string;
+  do_doc_no: string | null;
+  delivery_order_id: string | null;
+  return_date: string;
   debtor_name: string;
   debtor_code: string | null;
-  agent: string | null;
   salesperson_id: string | null;
   sales_location: string | null;
   customer_so_no: string | null;
-  po_doc_no: string | null;
   ref: string | null;
   branding: string | null;
-  first_item_branding: string | null;
-  status: string;
-  local_total_centi: number;
-  balance_centi: number;
-  paid_centi: number;
+  venue: string | null;
+  reason: string | null;
   phone: string | null;
   email: string | null;
   address1: string | null;
@@ -79,11 +73,14 @@ type SoRow = {
   city: string | null;
   postcode: string | null;
   customer_state: string | null;
-  payment_method: string | null;
-  payment_methods_summary?: string;
+  status: string;
+  currency: string;
+  local_total_centi: number;
+  line_count?: number;
+  note: string | null;
 };
 
-type StatusTab = "all" | "draft" | "confirmed" | "cancelled";
+type StatusTab = "all" | "open" | "inspected" | "refunded" | "cancelled";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -93,23 +90,18 @@ const fmtRm = (centi: number): string =>
     maximumFractionDigits: 2,
   })}`;
 
-const fmtDate = (iso: string | null): string => {
+const fmtDate = (iso: string | null | undefined): string => {
   if (!iso) return "—";
-  // Accept "2026-07-04" / "2026/07/04" / ISO datetime — normalise to yyyy/mm/dd.
   const s = iso.replace(/T.*$/, "").replace(/-/g, "/");
   return s;
 };
 
-// Customer's PO / Ref number — spec: "Every list must show the customer SO
-// Ref number". Prefer po_doc_no (populated by the SO New form's "Customer
-// PO #"), then customer_so_no, then the legacy `ref` column, then dash.
-const refOf = (r: SoRow): string =>
-  r.po_doc_no || r.customer_so_no || r.ref || "—";
+// Customer's PO / Ref. Same fallback chain as SO / DO V2.
+const refOf = (r: DrRow): string => r.customer_so_no || r.ref || "—";
 
-// Branding badge tone. Spec: 2990 SOFA = success (green), AKEMI = neutral,
-// other brands = warning (amber). Falls back to first_item_branding when the
-// header brand is blank (mixed-line SOs).
-const brandOf = (r: SoRow): string => r.branding || r.first_item_branding || "—";
+const doOf = (r: DrRow): string => r.do_doc_no || "—";
+
+const brandOf = (r: DrRow): string => r.branding || "—";
 const brandTone = (b: string): "success" | "neutral" | "warning" | "accent" => {
   const s = (b || "").toUpperCase();
   if (s.includes("2990") || s.includes("SOFA")) return "success";
@@ -118,33 +110,44 @@ const brandTone = (b: string): "success" | "neutral" | "warning" | "accent" => {
   return "warning";
 };
 
-// Status → tone + label. The upstream `status` string is one of the SO
-// lifecycle values plus a couple of AutoCount-legacy synonyms. Anything not
-// matched falls through as neutral.
-const STATUS_TONE: Record<string, { tone: "success" | "warning" | "error" | "neutral"; label: string }> = {
-  draft: { tone: "warning", label: "Draft" },
-  confirmed: { tone: "success", label: "Confirmed" },
-  cancelled: { tone: "error", label: "Cancelled" },
-  cancel: { tone: "error", label: "Cancelled" },
-  invoiced: { tone: "success", label: "Invoiced" },
-  delivered: { tone: "success", label: "Delivered" },
-  completed: { tone: "success", label: "Completed" },
+// DR status flow: PENDING → RECEIVED (goods back, stock IN) → INSPECTED →
+// REFUNDED / CREDIT_NOTED, plus REJECTED / CANCELLED. Compress into 4
+// buckets for the pills; the row Badge still carries the raw stage label.
+// The everyday chips finance / ops watch:
+//   Open       = Pending + Received  (goods back, awaiting QC)
+//   Inspected  = QC done, awaiting refund action
+//   Refunded   = Refunded + Credit noted (loop closed)
+//   Cancelled  = Rejected + Cancelled (loop closed unhappily)
+const STATUS_TONE: Record<
+  string,
+  { tone: "success" | "warning" | "error" | "neutral"; label: string; bucket: StatusTab }
+> = {
+  pending:      { tone: "warning", label: "Pending",      bucket: "open" },
+  received:     { tone: "warning", label: "Received",     bucket: "open" },
+  inspected:    { tone: "warning", label: "Inspected",    bucket: "inspected" },
+  refunded:     { tone: "success", label: "Refunded",     bucket: "refunded" },
+  credit_noted: { tone: "success", label: "Credit noted", bucket: "refunded" },
+  rejected:     { tone: "error",   label: "Rejected",     bucket: "cancelled" },
+  cancelled:    { tone: "error",   label: "Cancelled",    bucket: "cancelled" },
 };
 
-const statusFor = (s: string): { tone: "success" | "warning" | "error" | "neutral"; label: string } =>
-  STATUS_TONE[s?.toLowerCase() ?? ""] ?? { tone: "neutral", label: s || "—" };
+const statusFor = (
+  s: string
+): { tone: "success" | "warning" | "error" | "neutral"; label: string; bucket: StatusTab } =>
+  STATUS_TONE[(s || "").toLowerCase()] ?? {
+    tone: "neutral",
+    label: s || "—",
+    bucket: "open",
+  };
 
-// ─── Salesperson dropdown / split-menu ──────────────────────────────────────
+// ─── Split-menu dropdown (mirrors DO V2) ───────────────────────────────────
 
-/** Small controlled dropdown that renders under the "New Sales Order" split
- *  button. Simple menu — no portal, no keyboard-nav layer; the target this
- *  redesign is showing off is the visual composition, not menu wizardry. */
 function SplitDropdown({
-  onFromQuotation,
+  onFromDo,
   onImport,
   onDuplicate,
 }: {
-  onFromQuotation: () => void;
+  onFromDo: () => void;
   onImport: () => void;
   onDuplicate: () => void;
 }) {
@@ -176,10 +179,10 @@ function SplitDropdown({
               className="block w-full px-3.5 py-2 text-left text-[12.5px] text-ink hover:bg-primary-soft"
               onClick={() => {
                 setOpen(false);
-                onFromQuotation();
+                onFromDo();
               }}
             >
-              New from quotation
+              New from Delivery Order
             </button>
             <button
               type="button"
@@ -199,7 +202,7 @@ function SplitDropdown({
                 onDuplicate();
               }}
             >
-              Duplicate last SO
+              Duplicate last return
             </button>
           </div>
         </>
@@ -207,8 +210,6 @@ function SplitDropdown({
     </div>
   );
 }
-
-// ─── Table / Cards view toggle ──────────────────────────────────────────────
 
 function ViewToggle({
   value,
@@ -244,16 +245,16 @@ function ViewToggle({
   );
 }
 
-// ─── Cards grid ─────────────────────────────────────────────────────────────
+// ─── Cards grid (shared shape with DO V2 — DR shows reason + refund) ───────
 
-function CardsGrid({ rows, onOpen }: { rows: SoRow[]; onOpen: (r: SoRow) => void }) {
+function CardsGrid({ rows, onOpen }: { rows: DrRow[]; onOpen: (r: DrRow) => void }) {
   if (rows.length === 0) {
     return (
       <div className="rounded-lg border border-dashed border-border bg-surface px-6 py-16 text-center shadow-stone">
-        <div className="text-[13px] font-semibold text-ink">No sales orders</div>
+        <div className="text-[13px] font-semibold text-ink">No delivery returns</div>
         <div className="mt-1 text-[12px] text-ink-muted">
-          No orders match the current filters. Try Reset layout to clear the search
-          and status tabs.
+          No returns match the current filters. Try Reset layout to clear the
+          search and status tabs.
         </div>
       </div>
     );
@@ -265,14 +266,14 @@ function CardsGrid({ rows, onOpen }: { rows: SoRow[]; onOpen: (r: SoRow) => void
         const brand = brandOf(r);
         return (
           <button
-            key={r.doc_no}
+            key={r.id}
             type="button"
             onClick={() => onOpen(r)}
             className="group relative overflow-hidden rounded-lg border border-border bg-surface px-4 py-4 text-left shadow-stone transition-all duration-200 hover:-translate-y-px hover:border-primary/40 hover:shadow-slab focus:outline-none focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/30"
           >
             <div className="flex items-center justify-between gap-2">
               <span className="font-mono text-[12.5px] font-semibold text-ink">
-                {r.doc_no}
+                {r.return_number}
               </span>
               <Badge tone={st.tone} size="xs">{st.label}</Badge>
             </div>
@@ -283,20 +284,30 @@ function CardsGrid({ rows, onOpen }: { rows: SoRow[]; onOpen: (r: SoRow) => void
               <Badge tone={brandTone(brand)} variant="soft" size="xs">
                 {brand}
               </Badge>
-              <span className="text-[11.5px] text-ink-muted">{fmtDate(r.so_date)}</span>
+              <span className="text-[11.5px] text-ink-muted">{fmtDate(r.return_date)}</span>
             </div>
+            {r.reason && (
+              <div className="mt-2.5 truncate text-[12.5px] italic text-ink-secondary">
+                “{r.reason}”
+              </div>
+            )}
             <div className="mt-3.5 flex items-end justify-between border-t border-border-subtle pt-3">
               <div className="min-w-0">
                 <div className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
-                  Ref
+                  From DO
                 </div>
                 <div className="mt-0.5 truncate font-mono text-[12px] font-semibold text-ink-secondary">
-                  {refOf(r)}
+                  {doOf(r)}
                 </div>
               </div>
-              <span className="font-money text-[15px] font-bold text-ink">
-                {fmtRm(r.local_total_centi)}
-              </span>
+              <div className="text-right">
+                <div className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
+                  Refund
+                </div>
+                <div className="mt-0.5 font-money text-[15px] font-bold text-err">
+                  {fmtRm(r.local_total_centi)}
+                </div>
+              </div>
             </div>
           </button>
         );
@@ -305,7 +316,7 @@ function CardsGrid({ rows, onOpen }: { rows: SoRow[]; onOpen: (r: SoRow) => void
   );
 }
 
-// ─── Detail drawer ──────────────────────────────────────────────────────────
+// ─── Detail drawer ─────────────────────────────────────────────────────────
 
 function DetailDrawer({
   row,
@@ -313,44 +324,43 @@ function DetailDrawer({
   onOpenFull,
   onEdit,
   onPrint,
-  onConfirm,
-  onDeliver,
+  onMarkInspected,
+  onMarkRefunded,
 }: {
-  row: SoRow | null;
+  row: DrRow | null;
   onClose: () => void;
   onOpenFull: () => void;
   onEdit: () => void;
   onPrint: () => void;
-  onConfirm: () => void;
-  onDeliver: () => void;
+  onMarkInspected: () => void;
+  onMarkRefunded: () => void;
 }) {
-  const detailQ = useMfgSalesOrderDetail(row?.doc_no ?? null);
-  const items: Array<{ product_code?: string; product_name?: string; qty?: number; unit_price_centi?: number; amount_centi?: number }> =
-    (detailQ.data as { items?: unknown[] } | undefined)?.items as Array<{
-      product_code?: string;
-      product_name?: string;
-      qty?: number;
-      unit_price_centi?: number;
-      amount_centi?: number;
-    }> ?? [];
+  const detailQ = useDeliveryReturnDetail(row?.id ?? null);
+  const items: Array<{
+    item_code?: string | null;
+    description?: string | null;
+    qty_returned?: number | null;
+    condition?: string | null;
+    unit_price_centi?: number | null;
+    line_total_centi?: number | null;
+  }> =
+    ((detailQ.data as { items?: unknown[] } | undefined)?.items as Array<{
+      item_code?: string | null;
+      description?: string | null;
+      qty_returned?: number | null;
+      condition?: string | null;
+      unit_price_centi?: number | null;
+      line_total_centi?: number | null;
+    }>) ?? [];
 
   const open = !!row;
   const st = row ? statusFor(row.status) : null;
 
-  // Totals from live line items when the detail query has resolved; fall back
-  // to header totals otherwise so the drawer still reads immediately.
-  const subtotalCenti =
-    items.length > 0
-      ? items.reduce((sum, l) => sum + (l.amount_centi ?? (l.qty ?? 0) * (l.unit_price_centi ?? 0)), 0)
-      : row?.local_total_centi ?? 0;
-  const sstCenti = Math.round(subtotalCenti * 0.06);
-  const totalCenti = subtotalCenti + sstCenti;
-  const paidCenti = row?.paid_centi ?? 0;
-  const outstandingCenti = totalCenti - paidCenti;
+  const totalCenti = row?.local_total_centi ?? 0;
 
   return (
     <>
-      {/* scrim — mobile only. On desktop the outer wrapper reflows via
+      {/* Scrim — mobile only. On desktop the outer wrapper reflows via
           md:pr-[540px] so the underlying content stays fully visible next
           to the drawer; no need to dim it. */}
       <div
@@ -361,11 +371,10 @@ function DetailDrawer({
           open ? "opacity-100" : "pointer-events-none opacity-0"
         )}
       />
-      {/* slide-over */}
       <aside
         role="dialog"
         aria-modal="true"
-        aria-label={row ? `Sales order ${row.doc_no}` : "Sales order details"}
+        aria-label={row ? `Delivery return ${row.return_number}` : "Delivery return details"}
         className={cn(
           "fixed right-0 top-0 z-[91] flex h-full w-full max-w-[520px] flex-col border-l border-border bg-surface shadow-slab transition-transform duration-200",
           open ? "translate-x-0" : "translate-x-full"
@@ -373,7 +382,6 @@ function DetailDrawer({
       >
         {row && st && (
           <>
-            {/* dark header */}
             <div className="flex h-[60px] shrink-0 items-center gap-3 bg-sidebar px-5 text-sidebar-ink">
               <button
                 type="button"
@@ -385,9 +393,9 @@ function DetailDrawer({
               </button>
               <div className="min-w-0 flex-1">
                 <div className="font-mono text-[14px] font-bold tracking-wide">
-                  {row.doc_no}
+                  {row.return_number}
                 </div>
-                <div className="mt-0.5 text-[11px] text-sidebar-ink-muted">Sales Order</div>
+                <div className="mt-0.5 text-[11px] text-sidebar-ink-muted">Delivery Return</div>
               </div>
               <button
                 type="button"
@@ -401,34 +409,40 @@ function DetailDrawer({
               </Badge>
             </div>
 
-            {/* scroll body */}
             <div className="flex-1 overflow-y-auto px-5 py-5">
-              {/* customer + brand + date */}
               <div className="text-[19px] font-bold text-ink">{row.debtor_name || "—"}</div>
               <div className="mt-1.5 flex items-center gap-2.5">
                 <Badge tone={brandTone(brandOf(row))} variant="soft" size="xs">
                   {brandOf(row)}
                 </Badge>
                 <span className="text-[12.5px] text-ink-muted">
-                  Ordered {fmtDate(row.so_date)}
+                  Returned {fmtDate(row.return_date)}
                 </span>
               </div>
 
-              {/* meta grid */}
+              {/* Reason banner — DR's most distinctive field, pulled out
+                  above the meta grid so triage doesn't have to scan for it. */}
+              {row.reason && (
+                <div className="mt-4 rounded-lg border-l-4 border-err bg-err-soft px-4 py-3">
+                  <div className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
+                    Return reason
+                  </div>
+                  <div className="mt-1 text-[13.5px] font-semibold italic text-ink">
+                    “{row.reason}”
+                  </div>
+                </div>
+              )}
+
               <dl className="mt-5 grid grid-cols-2 gap-x-4 gap-y-3 rounded-lg border border-border bg-surface-2 px-4 py-4">
-                <MetaItem k="Salesperson" v={row.agent || row.salesperson_id || "—"} />
+                <MetaItem k="From DO" v={doOf(row)} mono />
+                <MetaItem k="Customer ref" v={refOf(row)} mono />
                 <MetaItem k="Location" v={row.sales_location || "—"} />
-                <MetaItem k="Reference" v={refOf(row)} mono />
-                <MetaItem k="Branding" v={brandOf(row)} />
-                <MetaItem k="Order date" v={fmtDate(row.so_date)} />
-                <MetaItem
-                  k="Payment"
-                  v={row.payment_methods_summary || row.payment_method || "—"}
-                />
+                <MetaItem k="Salesperson" v={row.salesperson_id || "—"} />
+                <MetaItem k="Venue" v={row.venue || "—"} />
+                <MetaItem k="Line count" v={row.line_count ?? "—"} />
               </dl>
 
-              {/* customer & delivery card */}
-              <SectionHeading>Customer &amp; delivery</SectionHeading>
+              <SectionHeading>Customer</SectionHeading>
               <div className="overflow-hidden rounded-lg border border-border bg-surface">
                 <div className="flex items-center gap-3 border-b border-border-subtle px-4 py-3.5">
                   <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-accent-soft text-[13px] font-bold text-accent-ink">
@@ -460,13 +474,12 @@ function DetailDrawer({
                 />
               </div>
 
-              {/* order lines */}
-              <SectionHeading>Order lines</SectionHeading>
+              <SectionHeading>Returned items</SectionHeading>
               <div className="overflow-hidden rounded-lg border border-border">
                 <div className="grid grid-cols-[1fr_52px_92px] gap-2 border-b border-border-subtle bg-surface-2 px-4 py-2 font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
                   <span>Item</span>
                   <span className="text-right">Qty</span>
-                  <span className="text-right">Amount</span>
+                  <span className="text-right">Refund</span>
                 </div>
                 {detailQ.isLoading && (
                   <div className="px-4 py-8 text-center text-[12px] text-ink-muted">
@@ -479,7 +492,9 @@ function DetailDrawer({
                   </div>
                 )}
                 {items.map((l, i) => {
-                  const amt = l.amount_centi ?? (l.qty ?? 0) * (l.unit_price_centi ?? 0);
+                  const amt =
+                    l.line_total_centi ??
+                    (l.qty_returned ?? 0) * (l.unit_price_centi ?? 0);
                   return (
                     <div
                       key={i}
@@ -487,18 +502,25 @@ function DetailDrawer({
                     >
                       <div>
                         <div className="text-[13px] font-semibold text-ink">
-                          {l.product_name || "—"}
+                          {l.description || l.item_code || "—"}
                         </div>
-                        {l.product_code && (
-                          <div className="mt-0.5 font-mono text-[11px] text-ink-muted">
-                            {l.product_code}
-                          </div>
-                        )}
+                        <div className="mt-0.5 flex items-center gap-2">
+                          {l.item_code && (
+                            <span className="font-mono text-[11px] text-ink-muted">
+                              {l.item_code}
+                            </span>
+                          )}
+                          {l.condition && (
+                            <Badge tone="warning" variant="soft" size="xs">
+                              {l.condition}
+                            </Badge>
+                          )}
+                        </div>
                       </div>
                       <span className="text-right font-money text-[12.5px] text-ink-secondary">
-                        {l.qty ?? 0}
+                        {l.qty_returned ?? 0}
                       </span>
-                      <span className="text-right font-money text-[12.5px] font-semibold text-ink">
+                      <span className="text-right font-money text-[12.5px] font-semibold text-err">
                         {fmtRm(amt)}
                       </span>
                     </div>
@@ -506,21 +528,12 @@ function DetailDrawer({
                 })}
               </div>
 
-              {/* totals */}
-              <div className="mt-4 rounded-lg border border-border bg-surface px-5 py-4">
-                <TotalRow k="Subtotal" v={fmtRm(subtotalCenti)} />
-                <TotalRow k="SST · 6%" v={fmtRm(sstCenti)} />
-                <TotalRow k="Total" v={fmtRm(totalCenti)} strong />
-                {paidCenti > 0 ? (
-                  <TotalRow k="Paid" v={fmtRm(paidCenti)} tone="success" />
-                ) : null}
-                {outstandingCenti > 0 ? (
-                  <TotalRow k="Outstanding" v={fmtRm(outstandingCenti)} tone="error" />
-                ) : null}
+              {/* Refund total — err-tinted since money leaves the biz. */}
+              <div className="mt-4 rounded-lg border-l-4 border-err bg-err-soft px-5 py-4">
+                <TotalRow k="Refund total" v={fmtRm(totalCenti)} strong tone="err" />
               </div>
             </div>
 
-            {/* footer actions */}
             <div className="flex shrink-0 items-center gap-2 border-t border-border bg-surface px-5 py-3">
               <Button variant="ghost" icon={<Edit3 size={14} />} onClick={onEdit}>
                 Edit
@@ -530,28 +543,26 @@ function DetailDrawer({
               </Button>
               <div className="flex-1" />
               {(() => {
-                // Backend can hand back status in any case ("Draft" / "draft" /
-                // "DRAFT"); normalise once so the CTA switch works regardless.
                 const s = (row.status || "").toLowerCase();
-                if (s === "draft") {
+                if (["pending", "received"].includes(s)) {
+                  return (
+                    <Button
+                      variant="primary"
+                      icon={<ClipboardCheck size={14} />}
+                      onClick={onMarkInspected}
+                    >
+                      Mark inspected
+                    </Button>
+                  );
+                }
+                if (s === "inspected") {
                   return (
                     <Button
                       variant="primary"
                       icon={<CheckCircle2 size={14} />}
-                      onClick={onConfirm}
+                      onClick={onMarkRefunded}
                     >
-                      Confirm
-                    </Button>
-                  );
-                }
-                if (s === "confirmed") {
-                  return (
-                    <Button
-                      variant="primary"
-                      icon={<Truck size={14} />}
-                      onClick={onDeliver}
-                    >
-                      Deliver
+                      Mark refunded
                     </Button>
                   );
                 }
@@ -564,8 +575,6 @@ function DetailDrawer({
     </>
   );
 }
-
-// ─── Drawer sub-primitives ──────────────────────────────────────────────────
 
 function MetaItem({ k, v, mono }: { k: string; v: ReactNode; mono?: boolean }) {
   return (
@@ -615,15 +624,10 @@ function TotalRow({
   k: string;
   v: string;
   strong?: boolean;
-  tone?: "success" | "error";
+  tone?: "err";
 }) {
   return (
-    <div
-      className={cn(
-        "flex items-center justify-between py-1.5",
-        strong && "border-t border-border-subtle pt-2.5 mt-1"
-      )}
-    >
+    <div className="flex items-center justify-between py-1.5">
       <span
         className={cn(
           "text-[12px] text-ink-muted",
@@ -635,9 +639,8 @@ function TotalRow({
       <span
         className={cn(
           "font-money text-[13px] font-semibold",
-          strong && "text-[15px] font-bold text-ink",
-          tone === "success" && "text-synced",
-          tone === "error" && "text-err"
+          strong && "text-[15px] font-bold",
+          tone === "err" ? "text-err" : "text-ink"
         )}
       >
         {v}
@@ -648,82 +651,86 @@ function TotalRow({
 
 // ─── Main page ──────────────────────────────────────────────────────────────
 
-export function MfgSalesOrdersListV2() {
+export function DeliveryReturnsListV2() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const queryClient = useQueryClient();
 
   const status = (params.get("status") ?? "all") as StatusTab;
-  // View toggle applies at md+; on phones we always render the card list
-  // regardless of the URL param (a 9-col DataTable is unreadable on 360dpi).
   const view = (params.get("view") ?? "table") as "table" | "cards";
   const search = params.get("q") ?? "";
 
-  const [selected, setSelected] = useState<SoRow | null>(null);
+  const [selected, setSelected] = useState<DrRow | null>(null);
 
-  const { data, isLoading, error } = useMfgSalesOrders(
-    status === "all" ? undefined : status
-  );
-  const updateStatus = useUpdateMfgSalesOrderStatus();
+  // The backend delivery-returns endpoint accepts a status arg but not our
+  // compressed buckets — pull the full set and filter client-side (matches
+  // the DO V2 pattern).
+  const { data, isLoading, error } = useDeliveryReturns(undefined);
+  const updateStatus = useUpdateDeliveryReturnStatus();
 
-  const allRows = useMemo<SoRow[]>(
-    () => ((data?.salesOrders ?? []) as SoRow[]),
+  const allRows = useMemo<DrRow[]>(
+    () => ((data?.deliveryReturns ?? []) as DrRow[]),
     [data]
   );
 
-  // Client-side search filter — matches doc_no, customer name, ref number,
-  // and salesperson. Server hits still respect status (query param above).
+  const scopedByBucket = useMemo(() => {
+    if (status === "all") return allRows;
+    return allRows.filter((r) => statusFor(r.status).bucket === status);
+  }, [allRows, status]);
+
   const filtered = useMemo(() => {
-    if (!search.trim()) return allRows;
+    if (!search.trim()) return scopedByBucket;
     const q = search.toLowerCase();
-    return allRows.filter((r) => {
+    return scopedByBucket.filter((r) => {
       const hay = [
-        r.doc_no,
+        r.return_number,
+        r.do_doc_no,
         r.debtor_name,
         r.debtor_code,
-        r.agent,
         r.salesperson_id,
         refOf(r),
         r.branding,
         r.sales_location,
+        r.reason,
+        r.venue,
       ]
         .filter(Boolean)
         .join(" ")
         .toLowerCase();
       return hay.includes(q);
     });
-  }, [allRows, search]);
+  }, [scopedByBucket, search]);
 
-  // Status tab counts — computed on the FULL query result (unfiltered by
-  // search), so the pill counts stay stable while the user types.
   const counts = useMemo(() => {
-    const byStatus = { all: allRows.length, draft: 0, confirmed: 0, cancelled: 0 };
+    const acc = { all: allRows.length, open: 0, inspected: 0, refunded: 0, cancelled: 0 };
     for (const r of allRows) {
-      const s = (r.status || "").toLowerCase();
-      if (s === "draft") byStatus.draft += 1;
-      else if (s === "confirmed") byStatus.confirmed += 1;
-      else if (s === "cancelled" || s === "cancel") byStatus.cancelled += 1;
+      const b = statusFor(r.status).bucket;
+      if (b === "open") acc.open += 1;
+      else if (b === "inspected") acc.inspected += 1;
+      else if (b === "refunded") acc.refunded += 1;
+      else if (b === "cancelled") acc.cancelled += 1;
     }
-    return byStatus;
+    return acc;
   }, [allRows]);
 
-  // KPI stats — scoped to the SEARCH-FILTERED rows so narrowing the filter
-  // row re-scopes the headline numbers (matches the interactive feel we've
-  // established elsewhere in the app).
+  // KPI stats — scoped to filtered rows. DR chrome leans money-out:
+  //   Total returns · Refund value · Pending (open+inspected, needs action)
+  //   Refunded (loop closed)
   const stats = useMemo(() => {
-    let revenueCenti = 0;
-    let outstandingCenti = 0;
-    let paidCenti = 0;
+    let refundCenti = 0;
+    let pendingCount = 0;
+    let refundedCount = 0;
     for (const r of filtered) {
-      revenueCenti += r.local_total_centi ?? 0;
-      outstandingCenti += r.balance_centi ?? 0;
-      paidCenti += r.paid_centi ?? 0;
+      refundCenti += r.local_total_centi ?? 0;
+      const b = statusFor(r.status).bucket;
+      if (b === "open" || b === "inspected") pendingCount += 1;
+      if (b === "refunded") refundedCount += 1;
     }
     return {
       total: filtered.length,
-      revenueCenti,
-      outstandingCenti,
-      paidCenti,
+      refundCenti,
+      pendingCount,
+      refundedCount,
     };
   }, [filtered]);
 
@@ -751,44 +758,61 @@ export function MfgSalesOrdersListV2() {
   const filtersActive =
     status !== "all" || view !== "table" || search.trim().length > 0;
 
-  // ── Actions wired to real routes / mutations ──────────────────────────
-  const goNewSo = () => navigate("/scm/sales-orders/new");
-  const goScanOrder = () => navigate("/scm/sales-orders/new/from-products");
-  const goSoMaintenance = () => navigate("/scm/sales-orders/maintenance");
-  const goFromQuotation = () => navigate("/scm/sales-orders/new/guided");
-  const goImport = () => navigate("/scm/sales-orders/maintenance?tab=import");
-  const goDuplicate = () => navigate("/scm/sales-orders/maintenance?tab=duplicate");
-  const goEdit = (r: SoRow) => navigate(`/scm/sales-orders/${r.doc_no}?edit=1`);
-  const goPrint = (r: SoRow) => navigate(`/scm/sales-orders/${r.doc_no}?print=1`);
-  const goFullPage = (r: SoRow) => navigate(`/scm/sales-orders/${r.doc_no}`);
-  const doConfirm = (r: SoRow) =>
+  const onPullToRefresh = async () => {
+    await queryClient.invalidateQueries({ queryKey: ["delivery-returns"] });
+  };
+
+  // Wired actions
+  const goNewDr = () => navigate("/scm/delivery-returns/new");
+  const goFromDo = () => navigate("/scm/delivery-returns/from-do");
+  const goImport = () => navigate("/scm/delivery-returns?import=1");
+  const goDuplicate = () => navigate("/scm/delivery-returns?duplicate=1");
+  const goDoList = () => navigate("/scm/delivery-orders");
+  const goInvoiceList = () => navigate("/scm/sales-invoices");
+  const goEdit = (r: DrRow) => navigate(`/scm/delivery-returns/${r.id}?edit=1`);
+  const goPrint = (r: DrRow) => navigate(`/scm/delivery-returns/${r.id}?print=1`);
+  const goFullPage = (r: DrRow) => navigate(`/scm/delivery-returns/${r.id}`);
+  const doMarkInspected = (r: DrRow) =>
     updateStatus.mutate(
-      { docNo: r.doc_no, status: "confirmed" },
+      { id: r.id, status: "INSPECTED" },
       { onSuccess: () => setSelected(null) }
     );
-  const doDeliver = (r: SoRow) => navigate(`/scm/delivery-orders/from-so?so=${r.doc_no}`);
+  const doMarkRefunded = (r: DrRow) =>
+    updateStatus.mutate(
+      { id: r.id, status: "REFUNDED" },
+      { onSuccess: () => setSelected(null) }
+    );
 
-  // ── Table columns ─────────────────────────────────────────────────────
-  const columns: Column<SoRow>[] = [
+  // Table columns — Reason gets a first-class spot (a DR-only signal).
+  const columns: Column<DrRow>[] = [
     {
-      key: "doc_no",
-      label: "Doc No.",
-      width: "132px",
+      key: "return_number",
+      label: "Return No.",
+      width: "140px",
       alwaysVisible: true,
-      getValue: (r) => r.doc_no,
+      getValue: (r) => r.return_number,
       render: (r) => (
         <span className="font-mono text-[12.5px] font-semibold text-ink">
-          {r.doc_no}
+          {r.return_number}
         </span>
       ),
     },
     {
-      key: "so_date",
+      key: "return_date",
       label: "Date",
       width: "108px",
-      getValue: (r) => r.so_date,
+      getValue: (r) => r.return_date,
       render: (r) => (
-        <span className="text-[12.5px] text-ink-secondary">{fmtDate(r.so_date)}</span>
+        <span className="text-[12.5px] text-ink-secondary">{fmtDate(r.return_date)}</span>
+      ),
+    },
+    {
+      key: "do_doc_no",
+      label: "From DO",
+      width: "128px",
+      getValue: (r) => r.do_doc_no ?? "",
+      render: (r) => (
+        <span className="font-mono text-[12px] text-ink-secondary">{doOf(r)}</span>
       ),
     },
     {
@@ -802,52 +826,43 @@ export function MfgSalesOrdersListV2() {
       ),
     },
     {
-      key: "salesperson",
-      label: "Salesperson",
-      width: "128px",
-      getValue: (r) => r.agent || r.salesperson_id || "",
-      render: (r) => (
-        <span className="text-[12.5px] text-ink-secondary">
-          {r.agent || r.salesperson_id || "—"}
-        </span>
-      ),
-    },
-    {
-      key: "sales_location",
-      label: "Location",
-      width: "132px",
-      getValue: (r) => r.sales_location ?? "",
-      render: (r) => (
-        <span className="text-[12.5px] text-ink-secondary">{r.sales_location || "—"}</span>
-      ),
+      key: "reason",
+      label: "Reason",
+      width: "180px",
+      getValue: (r) => r.reason ?? "",
+      render: (r) =>
+        r.reason ? (
+          <span className="truncate text-[12.5px] italic text-ink-secondary">
+            {r.reason}
+          </span>
+        ) : (
+          <span className="text-[12.5px] text-ink-muted">—</span>
+        ),
     },
     {
       key: "reference",
-      label: "Reference",
-      width: "132px",
+      label: "Customer ref",
+      width: "128px",
       getValue: (r) => refOf(r),
       render: (r) => (
         <span className="font-mono text-[12px] text-ink-secondary">{refOf(r)}</span>
       ),
     },
     {
-      key: "branding",
-      label: "Branding",
-      width: "112px",
-      getValue: (r) => brandOf(r),
-      render: (r) => {
-        const b = brandOf(r);
-        return (
-          <Badge tone={brandTone(b)} variant="soft" size="xs">
-            {b}
-          </Badge>
-        );
-      },
+      key: "salesperson",
+      label: "Salesperson",
+      width: "132px",
+      getValue: (r) => r.salesperson_id ?? "",
+      render: (r) => (
+        <span className="text-[12.5px] text-ink-secondary">
+          {r.salesperson_id || "—"}
+        </span>
+      ),
     },
     {
       key: "status",
       label: "Status",
-      width: "108px",
+      width: "120px",
       getValue: (r) => r.status,
       render: (r) => {
         const st = statusFor(r.status);
@@ -859,13 +874,13 @@ export function MfgSalesOrdersListV2() {
       },
     },
     {
-      key: "amount",
-      label: "Amount",
+      key: "refund",
+      label: "Refund",
       width: "128px",
       align: "right",
       getValue: (r) => r.local_total_centi,
       render: (r) => (
-        <span className="font-money text-[13px] font-semibold text-ink">
+        <span className="font-money text-[13px] font-semibold text-err">
           {fmtRm(r.local_total_centi)}
         </span>
       ),
@@ -874,21 +889,16 @@ export function MfgSalesOrdersListV2() {
 
   const statusPillOptions: Array<{ value: StatusTab; label: string }> = [
     { value: "all", label: `All · ${counts.all}` },
-    { value: "draft", label: `Draft · ${counts.draft}` },
-    { value: "confirmed", label: `Confirmed · ${counts.confirmed}` },
+    { value: "open", label: `Open · ${counts.open}` },
+    { value: "inspected", label: `Inspected · ${counts.inspected}` },
+    { value: "refunded", label: `Refunded · ${counts.refunded}` },
     { value: "cancelled", label: `Cancelled · ${counts.cancelled}` },
   ];
-
-  const onPullToRefresh = async () => {
-    // Wipe the SO list cache for every status tab so the pull's spinner
-    // reflects a real network round-trip. Detail queries stay warm.
-    await queryClient.invalidateQueries({ queryKey: ["mfg-sales-orders"] });
-  };
 
   return (
     <PullToRefresh onRefresh={onPullToRefresh}>
       {/* When the drawer is open the desktop shell reflows into the left
-          520 + gutter, so stats/table are cleanly visible next to it instead
+          520 + gutter so stats/table are cleanly visible next to it instead
           of being half-covered. Mobile keeps the full-width overlay. */}
       <div
         className={cn(
@@ -900,90 +910,89 @@ export function MfgSalesOrdersListV2() {
       <div className="mb-3 flex items-start justify-between gap-3 md:hidden">
         <div className="min-w-0">
           <h1 className="font-display text-[22px] font-extrabold leading-tight tracking-tight text-ink">
-            Sales Orders
+            Delivery Returns
           </h1>
           <div className="mt-0.5 text-[12.5px] text-ink-muted">
-            {stats.total} order{stats.total === 1 ? "" : "s"} ·{" "}
-            <span className="font-money">{fmtRm(stats.revenueCenti)}</span>
+            {stats.total} return{stats.total === 1 ? "" : "s"} ·{" "}
+            <span className="font-money text-err">{fmtRm(stats.refundCenti)}</span>
           </div>
         </div>
       </div>
 
-      {/* Desktop chrome — hidden on phone (compact header + FAB take over). */}
+      {/* Desktop chrome */}
       <div className="hidden md:block">
         <PageHeader
           eyebrow="Supply Chain"
-          title="Sales Orders"
-          description="Every Houzs sales order — Draft to Delivered. Click any row for the quick view; open the full page to edit."
+          title="Delivery Returns"
+          description="Goods returned by customers — Pending to Refunded. Click any row for the quick view; open the full page to edit."
           primaryAction={
             <div className="flex items-stretch">
               <Button
                 variant="primary"
                 icon={<Plus size={14} />}
-                onClick={goNewSo}
+                onClick={goNewDr}
                 className="rounded-r-none"
               >
-                New Sales Order
+                New Delivery Return
               </Button>
               <SplitDropdown
-                onFromQuotation={goFromQuotation}
+                onFromDo={goFromDo}
                 onImport={goImport}
                 onDuplicate={goDuplicate}
               />
             </div>
           }
           secondaryActions={[
-            { label: "Scan Order", icon: ScanLine, onClick: goScanOrder },
-            { label: "SO Maintenance", icon: Wrench, onClick: goSoMaintenance },
+            { label: "Delivery Orders", icon: Truck, onClick: goDoList },
+            { label: "Sales Invoices", icon: Receipt, onClick: goInvoiceList },
           ]}
         />
       </div>
 
-      {/* Stat strip — 4 StatCards on md+. On phone we drop the strip and rely
-          on the compact header's "17 orders · RM 89k" line instead — mobile
-          screens don't have space for four separate KPI slabs. */}
+      {/* Stat strip — money-out framing */}
       <div className="mb-5 hidden grid-cols-2 gap-3 md:grid lg:grid-cols-4">
         <StatCard
-          label="Total Orders"
+          label="Total Returns"
           value={stats.total.toLocaleString("en-MY")}
           subtitle="Scoped to current filter"
           rail="bg-primary"
           active
         />
         <StatCard
-          label="Revenue"
-          value={fmtRm(stats.revenueCenti)}
-          subtitle="Sum of local total"
-          rail="bg-accent"
-        />
-        <StatCard
-          label="Outstanding"
-          value={fmtRm(stats.outstandingCenti)}
-          subtitle="Balance across visible rows"
+          label="Refund Value"
+          value={fmtRm(stats.refundCenti)}
+          subtitle="Money owed back"
           tone="error"
           rail="bg-err"
         />
         <StatCard
-          label="Paid"
-          value={fmtRm(stats.paidCenti)}
-          subtitle="Receipts logged"
+          label="Pending"
+          value={stats.pendingCount.toLocaleString("en-MY")}
+          subtitle="Received · awaiting refund"
+          tone="warning"
+          rail="bg-accent-bright"
+        />
+        <StatCard
+          label="Refunded"
+          value={stats.refundedCount.toLocaleString("en-MY")}
+          subtitle="Refunded / credit noted"
           tone="success"
           rail="bg-synced"
         />
       </div>
 
-      {/* Mobile-only sticky search — sits above the pill row on phones. */}
+      {/* Mobile sticky search */}
       <div className="sticky top-0 z-10 -mx-4 mb-3 bg-bg/95 px-4 py-2 backdrop-blur-sm md:hidden">
         <input
           type="search"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search SO, customer, ref…"
+          placeholder="Search return, customer, reason…"
           className="h-10 w-full rounded-lg border border-border bg-surface px-3.5 text-[14px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20"
         />
       </div>
 
-      {/* Filter row — pills scroll horizontally on phone; toggle hidden. */}
+      {/* Filter row */}
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <FilterPills
           options={statusPillOptions}
@@ -996,72 +1005,72 @@ export function MfgSalesOrdersListV2() {
         </div>
       </div>
 
-      {/* Phone → CardsGrid ALWAYS. Desktop → the view toggle decides. */}
+      {/* Phone → Cards */}
       <div className="md:hidden">
         <CardsGrid rows={filtered} onOpen={(r) => setSelected(r)} />
         {filtered.length > 0 && (
           <div className="mt-4 pb-24 text-center text-[11.5px] text-ink-muted">
-            {filtered.length} order{filtered.length === 1 ? "" : "s"}
+            {filtered.length} return{filtered.length === 1 ? "" : "s"}
           </div>
         )}
       </div>
 
-      {/* Table / Cards (md+) */}
+      {/* Desktop → Table / Cards */}
       <div className="hidden md:block">
-      {view === "table" ? (
-        <DataTable<SoRow>
-          tableId="sales-orders-v2"
-          rows={filtered}
-          loading={isLoading}
-          error={error ? (error as Error).message ?? "Failed to load" : null}
-          columns={columns}
-          getRowKey={(r) => r.doc_no}
-          onRowClick={(r) => setSelected(r)}
-          exportName="sales-orders"
-          emptyLabel={
-            filtersActive
-              ? "No sales orders match — try Reset layout to clear filters."
-              : "No sales orders yet."
-          }
-          search={{
-            value: search,
-            onChange: setSearch,
-            placeholder: "Search doc no, customer, ref…",
-          }}
-          resetFilters={{
-            active: filtersActive,
-            onReset: resetLayout,
-            label: "Reset layout",
-          }}
-        />
-      ) : (
-        <>
-          <div className="mb-3 flex items-center justify-between">
-            <div className="flex flex-1 items-center gap-2">
-              <input
-                type="search"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search doc no, customer, ref…"
-                className="h-9 max-w-[320px] flex-1 rounded-md border border-border bg-surface px-3.5 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20"
-              />
-              {filtersActive && (
-                <button
-                  type="button"
-                  onClick={resetLayout}
-                  className="text-[12px] font-semibold text-primary hover:underline"
-                >
-                  Reset layout
-                </button>
-              )}
+        {view === "table" ? (
+          <DataTable<DrRow>
+            tableId="delivery-returns-v2"
+            rows={filtered}
+            loading={isLoading}
+            error={error ? (error as Error).message ?? "Failed to load" : null}
+            columns={columns}
+            getRowKey={(r) => r.id}
+            onRowClick={(r) => setSelected(r)}
+            exportName="delivery-returns"
+            emptyLabel={
+              filtersActive
+                ? "No delivery returns match — try Reset layout to clear filters."
+                : "No delivery returns yet."
+            }
+            search={{
+              value: search,
+              onChange: setSearch,
+              placeholder: "Search return, customer, reason, salesperson…",
+            }}
+            resetFilters={{
+              active: filtersActive,
+              onReset: resetLayout,
+              label: "Reset layout",
+            }}
+          />
+        ) : (
+          <>
+            <div className="mb-3 flex items-center justify-between">
+              <div className="flex flex-1 items-center gap-2">
+                <input
+                  type="search"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search return, customer, reason, salesperson…"
+                  className="h-9 max-w-[320px] flex-1 rounded-md border border-border bg-surface px-3.5 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20"
+                />
+                {filtersActive && (
+                  <button
+                    type="button"
+                    onClick={resetLayout}
+                    className="text-[12px] font-semibold text-primary hover:underline"
+                  >
+                    Reset layout
+                  </button>
+                )}
+              </div>
+              <span className="text-[12px] text-ink-muted">
+                {filtered.length} return{filtered.length === 1 ? "" : "s"}
+              </span>
             </div>
-            <span className="text-[12px] text-ink-muted">
-              {filtered.length} order{filtered.length === 1 ? "" : "s"}
-            </span>
-          </div>
-          <CardsGrid rows={filtered} onOpen={(r) => setSelected(r)} />
-        </>
-      )}
+            <CardsGrid rows={filtered} onOpen={(r) => setSelected(r)} />
+          </>
+        )}
       </div>
       </div>
 
@@ -1071,11 +1080,11 @@ export function MfgSalesOrdersListV2() {
         onOpenFull={() => selected && goFullPage(selected)}
         onEdit={() => selected && goEdit(selected)}
         onPrint={() => selected && goPrint(selected)}
-        onConfirm={() => selected && doConfirm(selected)}
-        onDeliver={() => selected && doDeliver(selected)}
+        onMarkInspected={() => selected && doMarkInspected(selected)}
+        onMarkRefunded={() => selected && doMarkRefunded(selected)}
       />
     </PullToRefresh>
   );
 }
 
-export default MfgSalesOrdersListV2;
+export default DeliveryReturnsListV2;

@@ -115,6 +115,17 @@ const ROUTE_LABELS: Array<[RegExp, string]> = [
   [/^\/$/, "Overview"],
   [/^\/orders\/.+$/, "Sales Order"],
   [/^\/orders$/, "Sales Orders"],
+  // SCM V2 routes — the vendored /scm/* pages own their own header, so the
+  // navbar just labels the route rather than deriving "Scm" from the first
+  // path segment.
+  [/^\/scm\/sales-orders\/.+$/, "Sales Order"],
+  [/^\/scm\/sales-orders$/, "Sales Orders"],
+  [/^\/scm\/delivery-orders\/.+$/, "Delivery Order"],
+  [/^\/scm\/delivery-orders$/, "Delivery Orders"],
+  [/^\/scm\/sales-invoices\/.+$/, "Sales Invoice"],
+  [/^\/scm\/sales-invoices$/, "Sales Invoices"],
+  [/^\/scm\/delivery-returns\/.+$/, "Delivery Return"],
+  [/^\/scm\/delivery-returns$/, "Delivery Returns"],
   [/^\/delivery-orders$/, "Delivery Orders"],
   [/^\/delivery\/.+$/, "Delivery"],
   [/^\/logistics$/, "Logistics"],
