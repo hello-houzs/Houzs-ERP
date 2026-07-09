@@ -278,6 +278,7 @@ export const NAV_TABS: NavTab[] = [
         label: "Sales Order",
         icon: ShoppingCart,
         groupId: "scm-sales",
+        to: "/scm/sales-order",
         anyPerm: ["*", "scm.access"],
         anyAccess: ["scm.sales", "scm.sales.orders", "scm.sales.delivery", "scm.sales.invoices", "scm.sales.returns"],
         children: [
@@ -291,6 +292,7 @@ export const NAV_TABS: NavTab[] = [
         label: "Consignment",
         icon: Handshake,
         groupId: "scm-consignment",
+        to: "/scm/consignment",
         anyPerm: ["*", "scm.access"],
         anyAccess: ["scm.consignment", "scm.consignment.orders", "scm.consignment.notes", "scm.consignment.returns", "scm.consignment.po_orders", "scm.consignment.po_receives", "scm.consignment.po_returns"],
         children: [
@@ -306,6 +308,7 @@ export const NAV_TABS: NavTab[] = [
         label: "Procurement",
         icon: Package,
         groupId: "scm-procurement",
+        to: "/scm/procurement",
         anyPerm: ["*", "scm.access"],
         anyAccess: ["scm.procurement", "scm.procurement.products", "scm.procurement.suppliers", "scm.procurement.mrp", "scm.procurement.po", "scm.procurement.grn", "scm.procurement.pi", "scm.procurement.pr"],
         children: [
@@ -322,6 +325,7 @@ export const NAV_TABS: NavTab[] = [
         label: "Transportation",
         icon: Truck,
         groupId: "scm-transportation",
+        to: "/scm/transportation",
         anyPerm: ["*", "scm.access"],
         anyAccess: ["scm.transportation", "scm.transportation.drivers"],
         children: [
@@ -336,6 +340,7 @@ export const NAV_TABS: NavTab[] = [
         label: "Warehouse",
         icon: Warehouse,
         groupId: "scm-warehouse",
+        to: "/scm/warehouse",
         anyPerm: ["*", "scm.access"],
         anyAccess: ["scm.warehouse", "scm.warehouse.inventory", "scm.warehouse.adjustments", "scm.warehouse.transfers", "scm.warehouse.stock_take"],
         children: [
@@ -352,6 +357,7 @@ export const NAV_TABS: NavTab[] = [
         label: "Finance",
         icon: BookOpen,
         groupId: "scm-finance",
+        to: "/scm/finance",
         anyPerm: ["*", "scm.access"],
         anyAccess: ["scm.finance", "scm.finance.accounting", "scm.finance.outstanding"],
         children: [

@@ -97,6 +97,7 @@ const ScmLorryCapacityV2 = lazy(() => import("./pages/scm-v2/LorryCapacity").the
 const Overview = lazy(() => import("./pages/Overview").then((m) => ({ default: m.Overview })));
 // Supply Chain Hub — section landing page (flattens the 3-level SCM nesting).
 const ScmHub = lazy(() => import("./pages/ScmHub").then((m) => ({ default: m.ScmHub })));
+const ScmSubgroupHub = lazy(() => import("./pages/ScmSubgroupHub").then((m) => ({ default: m.ScmSubgroupHub })));
 const ScmSalesOrdersV2 = lazy(() => import("./pages/scm-v2/MfgSalesOrdersListV2").then((m) => ({ default: m.MfgSalesOrdersListV2 })));
 const ScmSalesOrderMaintenanceV2 = lazy(() => import("./pages/scm-v2/SalesOrderMaintenance").then((m) => ({ default: m.SalesOrderMaintenance })));
 const ScmSalesOrderNewV2 = lazy(() => import("./pages/scm-v2/SalesOrderNew").then((m) => ({ default: m.SalesOrderNew })));
@@ -399,6 +400,17 @@ export default function App() {
         <Route path="/scm/lorry-capacity"            element={<ScmGuard area="scm.transportation.drivers"><Scm2990Shell><ScmLorryCapacityV2 /></Scm2990Shell></ScmGuard>} />
         {/* Supply Chain Hub — section landing page (main app layout, NOT the 2990 shell). */}
         <Route path="/scm" element={<ScmGuard area="scm"><ScmHub /></ScmGuard>} />
+        {/* Nick 2026-07-09 — Level 2 sub-group hubs (mirror /projects?view=hub).
+            Each renders NAV_TABS children of the corresponding scm sub-group as
+            a card grid. Same ScmGuard as ScmHub — a role with any SCM access
+            passes; per-card visibility inside the hub is filtered against
+            NAV_TABS' own permission fields. */}
+        <Route path="/scm/sales-order"    element={<ScmGuard area="scm"><ScmSubgroupHub groupId="scm-sales"          description="Pick a section — sales orders, delivery orders, invoices or returns." /></ScmGuard>} />
+        <Route path="/scm/consignment"    element={<ScmGuard area="scm"><ScmSubgroupHub groupId="scm-consignment"    description="Consignment flow — orders, notes, returns and their purchase-side counterparts." /></ScmGuard>} />
+        <Route path="/scm/procurement"    element={<ScmGuard area="scm"><ScmSubgroupHub groupId="scm-procurement"    description="Procurement flow — products, suppliers, MRP, POs, receipts, invoices and returns." /></ScmGuard>} />
+        <Route path="/scm/transportation" element={<ScmGuard area="scm"><ScmSubgroupHub groupId="scm-transportation" description="Delivery planning, fleet, lorry capacity, drivers and regions." /></ScmGuard>} />
+        <Route path="/scm/warehouse"      element={<ScmGuard area="scm"><ScmSubgroupHub groupId="scm-warehouse"      description="Warehouses, inventory, adjustments, transfers and stock take." /></ScmGuard>} />
+        <Route path="/scm/finance"        element={<ScmGuard area="scm"><ScmSubgroupHub groupId="scm-finance"        description="Accounting and outstanding receivables." /></ScmGuard>} />
         {/* Sales Orders READ side (vendored). The literal /maintenance route
             MUST precede /:docNo so 'maintenance' isn't caught as a doc number.
             2990 uses :docNo (not :id) for the SO detail. */}
