@@ -90,17 +90,48 @@ export function SlipUploadField({
         <button
           type="button"
           className={paymentsStyles.addBtn}
-          style={{ margin: 0, height: 24, padding: '0 8px', fontSize: 'var(--fs-11)' }}
+          /* Ink & Petrol density — icon-only trigger. The Slip grid track is
+             only 52 px wide, so "↑ Slip *" wraps and drives the button
+             taller than its row. Icon + native tooltip carry the meaning;
+             a small "*" glued to the button's top-right corner keeps the
+             required signal (SO route rejects a payment without a slip). */
+          title={
+            busy ? 'Uploading slip…'
+              : scanning ? 'Scanning receipt…'
+              : (required ? 'Upload payment slip (required)' : 'Upload payment slip')
+          }
+          style={{
+            position: 'relative',
+            margin: 0,
+            width: 30,
+            height: 22,
+            padding: 0,
+            fontSize: 0,
+            gap: 0,
+            justifyContent: 'center',
+            flexShrink: 0,
+          }}
           onClick={() => inputRef.current?.click()}
           disabled={busy || disabled}
         >
-          {/* Icon swaps to a same-size spinner while uploading OR OCR-scanning
-              the receipt — no extra element, so the narrow Slip column never
-              shifts. The button label is unchanged. */}
           {busy || scanning
-            ? <Loader2 size={14} strokeWidth={1.75} className={paymentsStyles.slipScanSpin} />
-            : <Upload size={14} strokeWidth={1.75} />}
-          {busy ? 'Uploading…' : (required ? 'Slip *' : 'Slip')}
+            ? <Loader2 size={13} strokeWidth={1.75} className={paymentsStyles.slipScanSpin} />
+            : <Upload size={13} strokeWidth={1.75} />}
+          {required && !busy && (
+            <span
+              aria-hidden
+              style={{
+                position: 'absolute',
+                top: -2,
+                right: -3,
+                fontSize: 9,
+                lineHeight: 1,
+                color: 'var(--c-festive-b, #B8331F)',
+                fontWeight: 700,
+                pointerEvents: 'none',
+              }}
+            >*</span>
+          )}
         </button>
       ) : (
         <span
