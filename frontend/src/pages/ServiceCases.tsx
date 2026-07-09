@@ -732,8 +732,8 @@ function CasesView({
               className={cn(
                 "inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold transition-colors",
                 caseView === v
-                  ? "bg-accent text-white"
-                  : "text-ink-muted hover:text-accent"
+                  ? "bg-primary text-white"
+                  : "text-ink-muted hover:text-primary"
               )}
             >
               <Icon size={13} />
