@@ -43,6 +43,7 @@ import {
   type PoHeaderRow,
   type PoItemRow,
 } from "../../vendor/scm/lib/suppliers-queries";
+import { useWarehouses } from "../../vendor/scm/lib/inventory-queries";
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
 import { cn } from "../../lib/utils";
 
@@ -340,6 +341,21 @@ export function PurchaseOrderDetailV2() {
   const confirmPo = useConfirmPurchaseOrder();
   const cancelPo = useCancelPurchaseOrder();
   const reopenPo = useReopenPurchaseOrder();
+
+  /* Nick 2026-07-09 — Ship-to warehouse cell was rendering the raw
+     `purchase_location_id` UUID because the field only carries the id;
+     the backend join for the name/code hasn't been surfaced on this
+     header shape. Look it up client-side via the same useWarehouses
+     hook every other PO screen uses. includeInactive so a warehouse
+     that was toggled off after the PO was raised still resolves. */
+  const warehousesQ = useWarehouses({ includeInactive: true });
+  const warehouseNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const w of warehousesQ.data ?? []) {
+      m.set(w.id, `${w.code} · ${w.name}`);
+    }
+    return m;
+  }, [warehousesQ.data]);
 
   const purchaseOrder =
     (detail.data as { purchaseOrder?: PoHeaderRow } | undefined)?.purchaseOrder ??
@@ -707,9 +723,13 @@ export function PurchaseOrderDetailV2() {
                 <Field label="Currency" value={purchaseOrder.currency} />
                 <Field
                   label="Ship-to warehouse"
-                  value={purchaseOrder.purchase_location_id || "—"}
+                  value={
+                    purchaseOrder.purchase_location_id
+                      ? (warehouseNameById.get(purchaseOrder.purchase_location_id)
+                          ?? (warehousesQ.isLoading ? "Loading…" : "—"))
+                      : "—"
+                  }
                   muted={!purchaseOrder.purchase_location_id}
-                  mono={!!purchaseOrder.purchase_location_id}
                 />
               </div>
 
