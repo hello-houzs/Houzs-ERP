@@ -128,13 +128,26 @@ export function MediaLightbox({
             </span>
           )}
         </div>
-        <button
-          onClick={onClose}
-          aria-label="Close"
-          className="rounded-full bg-white/10 p-2 text-white transition-colors hover:bg-white/20"
-        >
-          <X size={18} />
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => {
+              const name = item.caption || item.r2_key.split("/").pop() || "download";
+              void api.downloadFile(`${baseUrl}/${item.r2_key}`, name).catch(() => {});
+            }}
+            aria-label="Download"
+            title="Download"
+            className="rounded-full bg-white/10 p-2 text-white transition-colors hover:bg-white/20"
+          >
+            <Download size={18} />
+          </button>
+          <button
+            onClick={onClose}
+            aria-label="Close"
+            className="rounded-full bg-white/10 p-2 text-white transition-colors hover:bg-white/20"
+          >
+            <X size={18} />
+          </button>
+        </div>
       </div>
 
       {(isImage || isVideo) && mediaIndices.length > 1 && (

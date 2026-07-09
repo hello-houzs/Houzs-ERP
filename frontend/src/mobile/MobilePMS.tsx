@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, ReactNode, SetStateAction } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
+import { MediaLightbox, type MediaItem } from "../components/MediaLightbox";
 import { useAuth } from "../auth/AuthContext";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
@@ -1212,6 +1213,11 @@ function TaskRow({
   reload: () => void;
 }) {
   const fileRef = useRef<HTMLInputElement | null>(null);
+  // Attachment viewer — every user (incl. read-only drivers) can open the
+  // task's files fullscreen; MediaLightbox fetches with the bearer token,
+  // so this also sidesteps mobile popup-blockers that ate window.open.
+  const [viewIdx, setViewIdx] = useState<number | null>(null);
+  const files = attachments.filter((a) => !a.archived_at);
   const status = (it.status ?? "").toLowerCase();
   const done = status === "done";
   const na = status === "na";
@@ -1294,6 +1300,43 @@ function TaskRow({
     }
   };
 
+  // Tappable file chips + fullscreen viewer, shared by both row variants.
+  const fileChips = files.length > 0 && (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, padding: "0 0 8px 24px" }}>
+      {files.map((a, i) => (
+        <button
+          key={a.id}
+          type="button"
+          className="tinybtn"
+          style={{ display: "inline-flex", alignItems: "center", gap: 5, maxWidth: 190 }}
+          onClick={() => setViewIdx(i)}
+          title={a.file_name ?? undefined}
+        >
+          {(a.mime_type || "").startsWith("image/") ? (
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flex: "none" }}><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="9" cy="9" r="2" /><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21" /></svg>
+          ) : (
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flex: "none" }}><path d="M13.2 6.5 7 12.7a4.4 4.4 0 1 0 6.2 6.2l6.5-6.5a2.9 2.9 0 1 0-4.1-4.1l-6.5 6.5a1.5 1.5 0 1 0 2.1 2.1l6.1-6.2" /></svg>
+          )}
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.file_name || "File"}</span>
+        </button>
+      ))}
+    </div>
+  );
+  const fileViewer = viewIdx != null && files[viewIdx] ? (
+    <MediaLightbox
+      items={files.map((a): MediaItem => ({
+        r2_key: a.r2_key,
+        content_type: a.mime_type ?? mimeFromKey(a.r2_key),
+        caption: a.file_name,
+      }))}
+      index={viewIdx}
+      onChange={setViewIdx}
+      onClose={() => setViewIdx(null)}
+      baseUrl="/api/projects/attachments"
+      badge={it.title}
+    />
+  ) : null;
+
   // Payment / deposit pill rows: N/A / PENDING / PAID instead of the tick.
   if (it.pill_kind) {
     const opts: Array<[string, string]> =
@@ -1302,6 +1345,7 @@ function TaskRow({
         : [["none", "N/A"], ["unpaid", "PENDING"], ["refunded", "REFUNDED"]];
     const cur = it.pill_value || "unpaid";
     return (
+      <>
       <div className="docrow" style={{ flexWrap: "wrap" }}>
         <span style={{ width: 15, height: 15, flex: "none" }} />
         <span style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600, color: "#11140f" }}>{it.title}</span>
@@ -1321,6 +1365,9 @@ function TaskRow({
           );
         })}
       </div>
+      {fileChips}
+      {fileViewer}
+      </>
     );
   }
 
@@ -1363,14 +1410,31 @@ function TaskRow({
         </>
       )}
     </div>
+    {fileChips}
     {reviewStatus && reviewStatus !== "approved" && (
       <div style={{ padding: "0 0 6px 24px" }}>
         <span className="rbadge" style={{ background: reviewStatus === "rejected" ? "#f7e7e5" : "#f6efd9", color: reviewStatus === "rejected" ? "#a13a34" : "#6e4d12" }}>{humanize(reviewStatus).toUpperCase()}</span>
       </div>
     )}
+    {fileViewer}
     </div>
   );
 }
+
+// Best-effort content type from an R2 key's extension — some payloads
+// (finance lines, phase photos) don't carry a stored mime type, and the
+// lightbox needs one to decide between inline <img>/<video> and a
+// download tile.
+const mimeFromKey = (key: string): string | null => {
+  const m = /\.([a-z0-9]+)$/i.exec(key);
+  if (!m) return null;
+  const ext = m[1].toLowerCase();
+  if (["png", "jpg", "jpeg", "webp", "gif", "heic"].includes(ext)) return `image/${ext === "jpg" ? "jpeg" : ext}`;
+  if (["mp4", "webm"].includes(ext)) return `video/${ext}`;
+  if (ext === "mov") return "video/quicktime";
+  if (ext === "pdf") return "application/pdf";
+  return null;
+};
 
 // Split an ISO "date T time" into the parts an <input type=date/time> wants.
 const isoDatePart = (iso: string | null | undefined): string => {
@@ -1522,6 +1586,10 @@ function PhaseBlock({
 
   const [date, setDate] = useState(isoDatePart(startAt));
   const [time, setTime] = useState(isoTimePart(startAt));
+  // Existing phase photo — thumbnail + tap-to-view for everyone (drivers
+  // included); upload/replace stays gated on canWrite.
+  const photoKey = photo?.r2_key ?? null;
+  const [photoOpen, setPhotoOpen] = useState(false);
 
   // Compose date + time → the ISO the backend stores. Only PATCHes when a date
   // is present (time-only is meaningless without a day).
@@ -1604,17 +1672,34 @@ function PhaseBlock({
       )}
       <button
         type="button"
-        disabled={busy || !canWrite}
-        onClick={() => canWrite && fileRef.current?.click()}
-        style={{ width: "100%", border: "1px solid #d6d9d2", borderRadius: 11, background: "#fff", display: "flex", alignItems: "center", gap: 10, marginTop: 4, overflow: "hidden", cursor: canWrite ? "pointer" : "default", fontFamily: "inherit", padding: 0, textAlign: "left" }}
+        disabled={busy || (!photoKey && !canWrite)}
+        onClick={() => { if (photoKey) setPhotoOpen(true); else if (canWrite) fileRef.current?.click(); }}
+        style={{ width: "100%", border: "1px solid #d6d9d2", borderRadius: 11, background: "#fff", display: "flex", alignItems: "center", gap: 10, marginTop: 4, overflow: "hidden", cursor: photoKey || canWrite ? "pointer" : "default", fontFamily: "inherit", padding: 0, textAlign: "left" }}
       >
-        <div className="ph" style={{ width: 64, height: 54, flex: "none" }} />
+        {photoKey ? (
+          <R2Thumb r2Key={photoKey} style={{ width: 64, height: 54, flex: "none" }} />
+        ) : (
+          <div className="ph" style={{ width: 64, height: 54, flex: "none" }} />
+        )}
         <div style={{ padding: "7px 0", minWidth: 0 }}>
-          <div style={{ fontSize: 11.5, fontWeight: 700, color: "#11140f" }}>{kind} photo{canWrite ? " · tap to upload" : ""}</div>
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: "#11140f" }}>{kind} photo{photoKey ? " · tap to view" : canWrite ? " · tap to upload" : ""}</div>
           <div style={{ fontSize: 9.5, color: "#9aa093", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{uploaderCredit(photo)}</div>
         </div>
       </button>
+      {photoKey && canWrite && (
+        <button className="tinybtn" disabled={busy} style={{ marginTop: 6 }} onClick={() => fileRef.current?.click()}>Replace photo</button>
+      )}
       <input ref={fileRef} type="file" accept="image/*,.pdf,.mp4,.mov,.webm" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void uploadPhoto(f); }} />
+      {photoOpen && photoKey && (
+        <MediaLightbox
+          items={[{ r2_key: photoKey, content_type: mimeFromKey(photoKey), caption: photo?.caption ?? `${kind} photo` }]}
+          index={0}
+          onChange={() => {}}
+          onClose={() => setPhotoOpen(false)}
+          baseUrl="/api/projects/attachments"
+          badge={kind}
+        />
+      )}
     </>
   );
 }
@@ -1643,21 +1728,19 @@ function FloorPlans({
 
   // Unfilled = first floorplan attachment, Filled = second (matches the
   // prototype's two "tap to view" tiles). Opens the stored plan when present.
+  // Viewing goes through MediaLightbox rather than window.open(blobUrl):
+  // mobile browsers popup-block window.open once an await has broken the
+  // user-gesture chain, which made these tiles dead on phones.
   const plans = (attachments ?? []).filter((a) => (a.category || "").toLowerCase() === "floorplan");
+  const [planIdx, setPlanIdx] = useState<number | null>(null);
+  const [docView, setDocView] = useState<MediaItem | null>(null);
   const openPlan = async (a: ProjectAttachment | undefined, which: string) => {
     if (!a) {
       await notify({ title: `${which} plan not uploaded`, body: "No floor plan has been uploaded for this project yet.", tone: "info" });
       return;
     }
-    const key = pick(a.r2_key, a.r2Key);
-    if (!key) return;
-    try {
-      const url = await api.fetchBlobUrl(`/api/projects/attachments/${key}`);
-      window.open(url, "_blank");
-      setTimeout(() => URL.revokeObjectURL(url), 60_000);
-    } catch (e) {
-      await notify({ title: "Couldn't open plan", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
-    }
+    if (!pick(a.r2_key, a.r2Key)) return;
+    setPlanIdx(plans.indexOf(a));
   };
 
   const uploadTransfer = async (file: File) => {
@@ -1744,10 +1827,19 @@ function FloorPlans({
             {transfers.map((t, i) => {
               const who = pick(t.created_by_name, t.createdByName);
               const when = pick(t.transferred_at, t.transferredAt);
+              const recKey = pick(t.record_r2_key, t.recordR2Key);
               return (
                 <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 11px", borderTop: i === 0 ? "none" : "1px solid #eceee9", flexWrap: "wrap" }}>
                   <span className="rbadge" style={{ background: "#e2f0e9", color: "#2f8a5b" }}>OUT</span>
                   <span style={{ flex: 1, minWidth: 80, fontSize: 11, color: "#414539" }}>{[who || "—", when ? dm(when) : null].filter(Boolean).join(" · ")}</span>
+                  {recKey && (
+                    <button
+                      className="tinybtn"
+                      onClick={() => setDocView({ r2_key: recKey, content_type: mimeFromKey(recKey), caption: pick(t.file_name, t.fileName) ?? "Stock transfer record" })}
+                    >
+                      View
+                    </button>
+                  )}
                 </div>
               );
             })}
@@ -1758,6 +1850,29 @@ function FloorPlans({
             <input ref={fileRef} type="file" accept=".jpg,.jpeg,.png,.webp,.pdf,.xlsx" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void uploadTransfer(f); }} />
             <button className="tinybtn" disabled={busy} onClick={() => fileRef.current?.click()}>Upload stock-out record</button>
           </div>
+        )}
+        {planIdx != null && plans[planIdx] && (
+          <MediaLightbox
+            items={plans.map((a): MediaItem => {
+              const k = pick(a.r2_key, a.r2Key) ?? "";
+              return { r2_key: k, content_type: pick(a.mime_type, a.mimeType) ?? mimeFromKey(k), caption: pick(a.file_name, a.fileName) };
+            })}
+            index={planIdx}
+            onChange={setPlanIdx}
+            onClose={() => setPlanIdx(null)}
+            baseUrl="/api/projects/attachments"
+            badge="Floor plan"
+          />
+        )}
+        {docView && (
+          <MediaLightbox
+            items={[docView]}
+            index={0}
+            onChange={() => {}}
+            onClose={() => setDocView(null)}
+            baseUrl="/api/projects/attachments"
+            badge="Stock transfer"
+          />
         )}
       </div>
     </details>
@@ -1778,16 +1893,13 @@ function FinancialSnapshot({
   notify: NotifyFn;
   reload: () => void;
 }) {
-  const openReceipt = async (line: FinanceLine) => {
+  // Receipts open in the lightbox — window.open(blobUrl) after an await is
+  // popup-blocked on mobile browsers.
+  const [receipt, setReceipt] = useState<MediaItem | null>(null);
+  const openReceipt = (line: FinanceLine) => {
     const key = pick(line.r2_key, line.r2Key);
     if (!key) return;
-    try {
-      const url = await api.fetchBlobUrl(`/api/projects/attachments/${key}`);
-      window.open(url, "_blank");
-      setTimeout(() => URL.revokeObjectURL(url), 60_000);
-    } catch (e) {
-      await notify({ title: "Couldn't open receipt", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
-    }
+    setReceipt({ r2_key: key, content_type: mimeFromKey(key), caption: pick(line.file_name, line.fileName) ?? "Receipt" });
   };
 
   // Quick-log a sale at the project (POST /api/sales/entries { quick_log }).
@@ -1881,7 +1993,7 @@ function FinancialSnapshot({
           </div>
         )}
 
-        {/* Cost ledger — read-only snapshot. A stored receipt opens in a new tab. */}
+        {/* Cost ledger — read-only snapshot. A stored receipt opens in the lightbox. */}
         <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: ".1em", textTransform: "uppercase", color: "#9aa093", margin: "12px 0 6px" }}>Cost lines</div>
         {costLines.length === 0 ? (
           <div style={{ fontSize: 12, color: "#9aa093" }}>No cost lines yet.</div>
@@ -1906,6 +2018,16 @@ function FinancialSnapshot({
               <span className="money" style={{ color: netColor }}>RM {rm(net)}</span>
             </div>
           </div>
+        )}
+        {receipt && (
+          <MediaLightbox
+            items={[receipt]}
+            index={0}
+            onChange={() => {}}
+            onClose={() => setReceipt(null)}
+            baseUrl="/api/projects/attachments"
+            badge="Receipt"
+          />
         )}
       </div>
     </details>
