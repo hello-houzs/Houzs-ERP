@@ -746,11 +746,12 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                 )}
                 <svg className="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
               </summary>
-              {/* Body — design "Project" card rows VERBATIM: Dates / Venue /
+              {/* Body — design "Project" card rows: Dates / Venue / Booth no. /
                   Organizer / Branding, wired to our real columns. */}
               <div className="pbody">
                 <div className="row" style={{ borderTop: "none" }}><span className="row-l">Dates</span><span className="row-v money">{dm(p.start_date)} – {dm(p.end_date)}</span></div>
                 <div className="row"><span className="row-l">Venue</span><span className="row-v">{p.venue || p.state || "—"}</span></div>
+                <div className="row"><span className="row-l">Booth no.</span><span className="row-v">{p.booth_no || "—"}</span></div>
                 <div className="row"><span className="row-l">Organizer</span><span className="row-v">{p.organizer || "—"}</span></div>
                 <div className="row" style={{ borderBottom: "none" }}><span className="row-l">Branding</span><span className="row-v">{p.brand || "—"}</span></div>
               </div>
