@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Eye, EyeOff } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 import "./mobile.css";
 
@@ -18,6 +19,8 @@ export function MobileLogin() {
   const [err, setErr] = useState<string | null>(null);
   const [challenge, setChallenge] = useState<string | null>(null);
   const [code, setCode] = useState("");
+  /* Nick 2026-07-09 — show-password toggle on both login + code steps. */
+  const [showPw, setShowPw] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   // ---- ambient snow (ported from the design prototype) ----
@@ -137,8 +140,25 @@ export function MobileLogin() {
               </label>
               <label style={{ display: "block" }}>
                 <span style={labelStyle}>Password</span>
-                <input id="hz-pw" type="password" value={password} onChange={(e) => setPassword(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") onSignIn(); }} style={inputStyle} placeholder="••••••••" />
+                <div style={{ position: "relative" }}>
+                  <input id="hz-pw" type={showPw ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") onSignIn(); }} style={{ ...inputStyle, paddingRight: 44 }} placeholder="••••••••" />
+                  <button
+                    type="button"
+                    onClick={() => setShowPw((s) => !s)}
+                    aria-label={showPw ? "Hide password" : "Show password"}
+                    title={showPw ? "Hide password" : "Show password"}
+                    tabIndex={-1}
+                    style={{
+                      position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)",
+                      width: 32, height: 32, display: "inline-flex", alignItems: "center", justifyContent: "center",
+                      background: "transparent", border: "none", borderRadius: 6, cursor: "pointer",
+                      color: "rgba(231,234,228,.6)",
+                    }}
+                  >
+                    {showPw ? <EyeOff size={16} strokeWidth={1.75} /> : <Eye size={16} strokeWidth={1.75} />}
+                  </button>
+                </div>
               </label>
             </div>
             <div className="hz-lg-item" style={{ ...delay(4), display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 13 }}>
