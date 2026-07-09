@@ -9,7 +9,12 @@
   "cssEntry": "./.design-sync/tailwind-built.css",
   "readmeHeader": ".design-sync/conventions.md",
   "runtimeFontPrefixes": ["IBM Plex"],
-  "buildCmd": "npx tailwindcss -i .design-sync/tailwind-src.css -o .design-sync/tailwind-built.css --content './src/components/**/*.tsx' --minify && printf '\\n/* vendor tokens */\\n' >> .design-sync/tailwind-built.css && cat src/vendor/design-system/tokens.css >> .design-sync/tailwind-built.css",
+  "buildCmd": "npx tailwindcss -i .design-sync/tailwind-src.css -o .design-sync/tailwind-built.css --content './src/components/**/*.tsx,./.design-sync/previews/**/*.tsx' --minify && node .design-sync/annotate-tw-tokens.mjs && printf '\\n/* vendor tokens */\\n' >> .design-sync/tailwind-built.css && cat src/vendor/design-system/tokens.css >> .design-sync/tailwind-built.css",
+  "overrides": {
+    "PageHeader": { "cardMode": "column" },
+    "HeaderButton": { "cardMode": "column" },
+    "TableSkeleton": { "cardMode": "column" }
+  },
   "componentSrcMap": {
     "AnnouncementBanner": "src/components/AnnouncementBanner.tsx",
     "Avatar": "src/components/Avatar.tsx",

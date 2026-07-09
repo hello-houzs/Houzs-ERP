@@ -60,6 +60,10 @@ export default {
         // ── Semantic ───────────────────────────────────────
         synced: { DEFAULT: "#2f8a5b", bg: "#e2f0e9" },
         err: { DEFAULT: "#b23a3a", bg: "#f8eaea" },
+        // LEARNING announcements — trend blue, mirrors --c-secondary-b in
+        // vendor tokens.css. Hex literal (not var()) so /40-style opacity
+        // modifiers compose like the other semantic colors here.
+        learning: "#1f3a8a",
         expired: { bg: "#f7e9e9", text: "#7a2222" },
         warning: { bg: "#f6efd9", text: "#6e4d12" },
       },

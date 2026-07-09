@@ -29,7 +29,27 @@ Starting without `cfg.provider` — will add as `[RENDER]` errors surface specif
 - Vendored 2990 SCM tokens at `src/vendor/design-system/tokens.css` — pulled in via `tokensGlob`. The `:root` block was copied verbatim from 2990's design-system package and remapped to Theme C colors (cream→white, beige→Theme C surface-dim).
 
 ## Fonts
-- IBM Plex Mono (used only via `font-money` for amounts) is **not shipped**; suppressed via `runtimeFontPrefixes: ["IBM Plex"]`. Money cells fall back to `ui-monospace, SFMono-Regular, Menlo, Consolas, monospace` — acceptable substitute per owner.
+- All IBM Plex (Sans/Serif/Mono) + Noto Sans/Serif SC loaded via `@import url('https://fonts.googleapis.com/...')` at the top of `.design-sync/tailwind-src.css` (mirrored to `src/index.css` for the live app).
+- 2026-07-09: Caveat (`--font-script`) + Archivo (`--font-mark`) added to the same Google Fonts import — design-side check flagged them as token-referenced but face-less. Tokens keep the original family names per the design handoff; do NOT re-point them at the system stack.
+- `runtimeFontPrefixes: ["IBM Plex"]` stays — fonts load at runtime via CDN @import, no shipped @font-face files. Suppresses `[FONT_MISSING]` correctly.
+- Brass / theme colors via tokens: `--font-system` resolves to IBM Plex Sans + Noto Sans SC + system fallback chain. `font-money` (Tailwind class) stays mapped to IBM Plex Mono via tailwind.config.js.
+- Offline / air-gapped deploys: replace the @import with self-hosted @font-face. Files would go under `frontend/public/fonts/` or pull via `cfg.extraFonts`.
+
+## Tailwind runtime vars (`--tw-*`) — token-scan noise
+`tailwind-built.css` carries Tailwind's compiled runtime variables
+(`--tw-translate-x`, `--tw-shadow`, … under `*,::before,::after`, `::backdrop`
+and utility classes). The claude.ai/design `check_design_system` scan was
+classifying them as unknown design tokens (89/307 unclassifiable + 128
+component-scoped custom props). Fixed 2026-07-09: `cfg.buildCmd` now runs
+`.design-sync/annotate-tw-tokens.mjs` after the Tailwind build, tagging every
+`--tw-*` declaration with `/* @kind other */`. The utilities themselves must
+stay in the bundle — component previews render with them.
+
+Related: the bad `@import url(…)` that kept reappearing at the top of
+`_ds_bundle.css` came from the hoist step below matching a LITERAL
+`@import url(…)` inside a comment in `src/vendor/design-system/tokens.css`
+(line ~152). That comment is now reworded — keep literal `@import url(...)`
+text out of CSS comments anywhere in the token/bundle closure.
 
 ## Build-time @import hoist (manual post-step after rebuild)
 
@@ -48,4 +68,14 @@ node -e "const fs=require('fs'); const c=fs.readFileSync('ds-bundle/_ds_bundle.c
 when the re-sync flow stabilizes.)
 
 ## Known render warns
-_(populated after first headless render check)_
+Triaged 2026-07-09 — all legitimate, renderHashes match the uploaded project:
+- `[RENDER_BLANK]` (PNG 4.5–5KB, just under the 5KB heuristic) on 12 small
+  floor-card components: Badge, ColorPicker, ExpandableText, HeaderButton,
+  IconButton, InlineEdit, ListSkeleton, PageHeader, PageSkeleton,
+  RowActionsMenu, StatusDot, TableSkeleton. These are genuinely small solo
+  renders, not failures. Fix = author `.design-sync/previews/<Name>.tsx`
+  (standing incremental-authoring offer), not a pipeline issue.
+- `[FONT_REMOTE]` listing Archivo / Caveat / Mistrully / Brush Script MT /
+  Arial Black / Microsoft YaHei — expected: Caveat (--font-script) + Archivo
+  (--font-mark) load via the Google Fonts @import (added 2026-07-09); the
+  rest are stack fallbacks.
