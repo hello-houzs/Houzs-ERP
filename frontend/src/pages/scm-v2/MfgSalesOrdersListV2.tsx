@@ -342,12 +342,15 @@ function DetailDrawer({
 
   // Totals from live line items when the detail query has resolved; fall back
   // to header totals otherwise so the drawer still reads immediately.
+  // Nick 2026-07-09 — SST used to be ADDED at 6 % on top of subtotal, but SO
+  // prices are quoted SST-inclusive (mirrors SalesOrderDetailV2's "SST ·
+  // Inclusive" line). Adding another 6 % double-taxed the drawer's Total
+  // against the aside on the detail page. Total is now just subtotal.
   const subtotalCenti =
     items.length > 0
       ? items.reduce((sum, l) => sum + (l.amount_centi ?? (l.qty ?? 0) * (l.unit_price_centi ?? 0)), 0)
       : row?.local_total_centi ?? 0;
-  const sstCenti = Math.round(subtotalCenti * 0.06);
-  const totalCenti = subtotalCenti + sstCenti;
+  const totalCenti = subtotalCenti;
   const paidCenti = row?.paid_centi ?? 0;
   const outstandingCenti = totalCenti - paidCenti;
 
@@ -512,7 +515,6 @@ function DetailDrawer({
               {/* totals */}
               <div className="mt-4 rounded-lg border border-border bg-surface px-5 py-4">
                 <TotalRow k="Subtotal" v={fmtRm(subtotalCenti)} />
-                <TotalRow k="SST · 6%" v={fmtRm(sstCenti)} />
                 <TotalRow k="Total" v={fmtRm(totalCenti)} strong />
                 {paidCenti > 0 ? (
                   <TotalRow k="Paid" v={fmtRm(paidCenti)} tone="success" />
