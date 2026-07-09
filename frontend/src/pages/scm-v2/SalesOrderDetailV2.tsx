@@ -17,7 +17,7 @@
 // The old ledger-style SalesOrderDetail.tsx stays in the tree; App.tsx route
 // swap on /scm/sales-orders/:docNo decides which one users see.
 
-import { useMemo, useState, type ReactNode } from "react";
+import { Suspense, lazy, useMemo, useState, type ReactNode } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -401,9 +401,40 @@ function TotalLine({
   );
 }
 
+// ─── Legacy inline editor (lazy) ───────────────────────────────────────────
+// V2 is READ-ONLY by design (sticky header + section cards + Order-total
+// aside). The full 2014-LOC inline editor lives in ./SalesOrderDetail — we
+// forward to it whenever ?edit=1 lands on this route so Nick's Edit button
+// actually opens editable fields (the whole read-first redesign left goEdit
+// pointing at a URL nobody handled → the button was a dead-link on
+// CONFIRMED SOs). Lazy-loaded so the editor bundle only ships when someone
+// actually clicks Edit.
+const SalesOrderDetailInlineEditor = lazy(() =>
+  import("./SalesOrderDetail").then((m) => ({ default: m.SalesOrderDetail })),
+);
+
 // ─── Main page ─────────────────────────────────────────────────────────────
 
+/* Thin router — the only hook it calls is useSearchParams, so Rules of Hooks
+   are respected when the ?edit=1 flip swaps between the read-only body and
+   the lazy inline editor (the two children have different hook counts;
+   letting either side call hooks conditionally inside the same function
+   would break on navigation). */
 export function SalesOrderDetailV2() {
+  const [params] = useSearchParams();
+  if (params.get("edit") === "1") {
+    return (
+      <Suspense
+        fallback={<div className="p-8 text-[13px] text-ink-muted">Loading editor…</div>}
+      >
+        <SalesOrderDetailInlineEditor />
+      </Suspense>
+    );
+  }
+  return <SalesOrderDetailV2ReadOnly />;
+}
+
+function SalesOrderDetailV2ReadOnly() {
   const { docNo } = useParams<{ docNo: string }>();
   const [params] = useSearchParams();
   const navigate = useNavigate();
@@ -675,7 +706,13 @@ export function SalesOrderDetailV2() {
       </div>
 
       {/* ─── Desktop sticky header (hidden on phone) ────────────────── */}
-      <div className="sticky top-0 z-10 -mx-4 hidden border-b border-border bg-bg/95 px-4 py-4 backdrop-blur-sm sm:-mx-6 sm:px-6 md:block">
+      {/* Nick 2026-07-09 — "这个圈起来的需要 pin 起来".
+          TopNavbar (components/TopNavbar.tsx) sits sticky top-0 z-30 h-12
+          inside the SAME <main class="overflow-y-auto"> that scrolls this
+          page — so a naive top-0 here parks the SO title BEHIND the top
+          nav. Offset to top-12 (48 px = TopNavbar h-12) and bump z-20 to
+          stack above the section cards while staying below the top nav. */}
+      <div className="sticky top-12 z-20 -mx-4 hidden border-b border-border bg-bg/95 px-4 py-4 backdrop-blur-sm sm:-mx-6 sm:px-6 md:block">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="flex items-start gap-3 min-w-0">
             <button

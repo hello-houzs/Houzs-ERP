@@ -21,7 +21,7 @@ import {
   type CSSProperties,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeft, FileText, Pencil, Plus, X, Printer, Save,
   DollarSign, Lock, History, ChevronDown, ChevronRight, Ban,
@@ -431,8 +431,14 @@ export const SalesOrderDetail = () => {
      the page header → entire page enters edit mode (CustomerCard inputs
      unlock, line-item actions appear, Edit button is replaced with Save +
      Cancel). Save commits via updateHeader; Cancel resets the local form.
-     Status transitions remain accessible outside edit mode. */
-  const [isEditing, setIsEditing] = useState(false);
+     Status transitions remain accessible outside edit mode.
+     Nick 2026-07-09 — when this component is forwarded to from V2 with
+     ?edit=1, jump straight into edit mode so the operator doesn't have to
+     click Edit again after Detail V2's Edit already navigated them here. */
+  const [editSearchParams] = useSearchParams();
+  const [isEditing, setIsEditing] = useState(
+    editSearchParams.get('edit') === '1',
+  );
   const [saveError, setSaveError] = useState<string | null>(null);
   const customerCardRef = useRef<CustomerCardHandle | null>(null);
 

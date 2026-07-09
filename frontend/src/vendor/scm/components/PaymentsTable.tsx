@@ -266,6 +266,11 @@ type SavedModeProps = {
    *  proof backs each payment row). Only the Sales Order detail passes this; the
    *  DO / SI tables that also use PaymentsTable leave it unset and are unchanged. */
   slip?: { slipKey: string | null; fetcher: (id: string) => Promise<SlipUrlResponse> };
+  /** Nick 2026-07-09 — restrict Collected By picker to staff whose id is in
+   *  the set. Any per-row already-selected id + the seeded default id are
+   *  always grandfathered in so the <select> value stays valid. Undefined =
+   *  no restriction (show every active staff). */
+  collectedByAllowedIds?: Set<string> | null;
 };
 
 type DraftModeProps = {
@@ -278,6 +283,8 @@ type DraftModeProps = {
   /** Render the per-draft slip uploader (SO-route batching only — the SO payments
    *  endpoint requires a slip per payment; DO/SI endpoints don't accept one). */
   slipUpload?: boolean;
+  /** See SavedModeProps.collectedByAllowedIds. */
+  collectedByAllowedIds?: Set<string> | null;
 };
 
 export type PaymentsTableProps = SavedModeProps | DraftModeProps;
@@ -941,9 +948,20 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
                     onChange={(e) => patchDraft(d.uid, { collectedBy: e.target.value })}
                   >
                     <option value="">—</option>
-                    {sortByText(staff.filter((s) => s.active)).map((s) => (
-                      <option key={s.id} value={s.id}>{s.name}</option>
-                    ))}
+                    {(() => {
+                      const allowed = props.collectedByAllowedIds;
+                      const active = staff.filter((s) => s.active);
+                      const filtered = allowed
+                        ? active.filter((s) =>
+                            allowed.has(s.id) ||
+                            s.id === d.collectedBy ||
+                            s.id === defaultStaffId,
+                          )
+                        : active;
+                      return sortByText(filtered).map((s) => (
+                        <option key={s.id} value={s.id}>{s.name}</option>
+                      ));
+                    })()}
                   </select>
                 </span>
                 <span className={paymentsStyles.cell}>

@@ -892,6 +892,21 @@ export const SalesOrderNew = () => {
     });
   }, [staffList, salespersonAllowedEmails, salespersonId, currentUser?.email]);
 
+  /* Same Sales+Management filter, projected to staff IDs — piped into
+     PaymentsTable so the "Collected By" dropdown mirrors the salesperson
+     picker's roster. Null = don't restrict (loading / no dept data). */
+  const paymentsCollectedByAllowedIds = useMemo(() => {
+    if (!salespersonAllowedEmails || salespersonAllowedEmails.size === 0) return null;
+    const selfEmail = (currentUser?.email ?? '').trim().toLowerCase();
+    const set = new Set<string>();
+    for (const s of staffList) {
+      const em = (s.email ?? '').trim().toLowerCase();
+      if (em && salespersonAllowedEmails.has(em)) set.add(s.id);
+      if (em && selfEmail && em === selfEmail) set.add(s.id);
+    }
+    return set;
+  }, [staffList, salespersonAllowedEmails, currentUser?.email]);
+
   /* Owner 2026-06-23 — the Salesperson must NEVER be blank for whoever creates
      the order: the creator IS the salesperson. The 2990 bridge only knew the
      creator when they had a scm.staff row, so a user without one (the owner)
@@ -2078,6 +2093,7 @@ export const SalesOrderNew = () => {
         grandTotalCenti={subtotalCenti}
         currency="MYR"
         slipUpload
+        collectedByAllowedIds={paymentsCollectedByAllowedIds}
       />
 
     </div>
