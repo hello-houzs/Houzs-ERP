@@ -1002,7 +1002,7 @@ export const DeliveryPlanning = () => {
   ], [activeRegion, regionLabel, sched, drivers, lorries]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <div className={styles.page ?? ''} style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)', padding: 'var(--space-3) var(--space-4) var(--space-4)', background: 'var(--c-cream)', minHeight: '100%' }}>
+    <div className={styles.page ?? ''} style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)', padding: 'var(--space-3) var(--space-4) var(--space-4)', background: '#dcdfd9', minHeight: '100%' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--space-4)', flexWrap: 'wrap' }}>
         <div>
           <h1 style={{ fontFamily: 'var(--font-title)', fontSize: 'var(--fs-15, 15px)', fontWeight: 600, color: 'var(--c-ink)', margin: 0 }}>

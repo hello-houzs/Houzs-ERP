@@ -1,8 +1,28 @@
 /* Delivery Planning — STAGE 4 of the Delivery / TMS module.
    Two tab rows: the 4 state tabs (Pending Delivery / Pending Schedule /
    Overdue / Delivered, with counts) and a region chip row (All · PJ·KL ·
-   Penang · Sabah · Sarawak · Singapore). 2990 cream brand styling. The page /
-   drawer / field scaffolding is reused from Suppliers.module.css. */
+   Penang · Sabah · Sarawak · Singapore). Ink & Petrol admin form styling.
+   The drawer / field scaffolding is reused from Suppliers.module.css. */
+
+/* Ink & Petrol token overrides — same cascade as SalesOrderNew.module.css.
+   The .page class was previously unused (JSX read styles.page ?? ''); now
+   it establishes the palette every descendant that reads var(--c-orange)
+   etc. resolves against, and provides the warm sage page bg. */
+.page {
+  --c-orange:        #16695f;
+  --c-burnt:         #0c3f39;
+  --c-cream:         #f4f6f3;
+  --c-paper:         #fcfdfb;
+  --c-ink:           #11140f;
+  --c-ink-secondary: #767b6e;
+  --c-ink-muted:     #9aa093;
+  --fg:              #11140f;
+  --fg-muted:        #767b6e;
+  --line:            #d6d9d2;
+  --line-strong:     #c2c6bd;
+  --c-accent-soft:   #eff6f4;
+  background: #dcdfd9;
+}
 
 /* ── State tab row (the 4 delivery-state tabs) ────────────────────────────── */
 .stateTabs {
@@ -55,7 +75,7 @@
 }
 
 .stateTabActive .tabCount {
-  background: rgba(232, 107, 58, 0.16);
+  background: rgba(22, 105, 95, 0.16);
   color: var(--c-burnt);
 }
 
@@ -92,7 +112,7 @@
 
 .regionChipActive {
   border-color: var(--c-burnt);
-  background: rgba(232, 107, 58, 0.10);
+  background: rgba(22, 105, 95, 0.10);
   color: var(--c-burnt);
 }
 
@@ -124,7 +144,7 @@
 }
 
 .dstatePendingDelivery { background: rgba(34, 31, 32, 0.06); color: var(--fg-muted); }
-.dstatePendingSchedule { background: rgba(232, 107, 58, 0.12); color: var(--c-burnt); }
+.dstatePendingSchedule { background: rgba(22, 105, 95, 0.12); color: var(--c-burnt); }
 .dstateOverdue         { background: rgba(184, 51, 31, 0.12); color: var(--c-festive-b, #B8331F); }
 .dstateDelivered       { background: rgba(47, 93, 79, 0.12);  color: var(--c-secondary-a); }
 
@@ -177,7 +197,7 @@
   gap: var(--space-2);
   flex-wrap: wrap;
   padding: var(--space-2) var(--space-3);
-  background: rgba(232, 107, 58, 0.06);
+  background: rgba(22, 105, 95, 0.06);
   border: 1px solid var(--c-orange);
   border-radius: var(--radius-md);
 }
