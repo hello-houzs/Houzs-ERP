@@ -1,5 +1,5 @@
-import { useRef, useState } from 'react';
-import { Check, Loader2, Upload, X } from 'lucide-react';
+import { useRef, useState, type CSSProperties } from 'react';
+import { Camera, Check, ImagePlus, Loader2, X } from 'lucide-react';
 import {
   ALLOWED_SLIP_MIMES, MAX_SLIP_SIZE_BYTES,
   uploadSlipFull, type SlipUploadPhase,
@@ -38,11 +38,17 @@ export function SlipUploadField({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
-  const inputRef = useRef<HTMLInputElement | null>(null);
+  /* Two hidden inputs — one for the OS photo picker / file browser, one
+     that uses `capture="environment"` to open the device's rear camera
+     directly. Mobile browsers honour capture; on desktop the second one
+     falls back to a file picker so the operator still has an escape. */
+  const libInputRef = useRef<HTMLInputElement | null>(null);
+  const camInputRef = useRef<HTMLInputElement | null>(null);
 
   const reset = () => {
     setPhase('idle'); setErrorMsg(null); setFileName(null); setScanning(false);
-    if (inputRef.current) inputRef.current.value = '';
+    if (libInputRef.current) libInputRef.current.value = '';
+    if (camInputRef.current) camInputRef.current.value = '';
     onCleared();
   };
 
@@ -76,55 +82,82 @@ export function SlipUploadField({
   };
 
   const busy = phase === 'init' || phase === 'put' || phase === 'confirm';
+
+  /* Compact icon-button style shared by both triggers. Grid track for the
+     Slip cell is 52 px so both fit: 22 + 22 + 3 gap = 47 px. */
+  const iconBtnStyle: CSSProperties = {
+    position: 'relative',
+    margin: 0,
+    width: 22,
+    height: 22,
+    padding: 0,
+    fontSize: 0,
+    gap: 0,
+    justifyContent: 'center',
+    flexShrink: 0,
+    borderRadius: 6,
+  };
   return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, minWidth: 0, position: 'relative' }}>
+      {/* Photo library / file browser — no capture, so mobile shows the
+          picker sheet (Camera / Photo library / Files) and desktop shows
+          a plain file dialog. Accepts PDF for card-terminal e-slips. */}
       <input
-        ref={inputRef}
+        ref={libInputRef}
         type="file"
         accept="image/jpeg,image/png,image/webp,application/pdf"
         style={{ display: 'none' }}
         disabled={disabled}
         onChange={(e) => void handleFile(e.target.files?.[0] ?? null)}
       />
+      {/* Camera capture — capture="environment" hints the rear camera on
+          mobile; desktop browsers ignore it and fall back to a file
+          dialog. Only image mimes (no PDF) since it's a live shot. */}
+      <input
+        ref={camInputRef}
+        type="file"
+        accept="image/jpeg,image/png,image/webp"
+        capture="environment"
+        style={{ display: 'none' }}
+        disabled={disabled}
+        onChange={(e) => void handleFile(e.target.files?.[0] ?? null)}
+      />
       {phase !== 'done' ? (
-        <button
-          type="button"
-          className={paymentsStyles.addBtn}
-          /* Ink & Petrol density — icon-only trigger. The Slip grid track is
-             only 52 px wide, so "↑ Slip *" wraps and drives the button
-             taller than its row. Icon + native tooltip carry the meaning;
-             a small "*" glued to the button's top-right corner keeps the
-             required signal (SO route rejects a payment without a slip). */
-          title={
-            busy ? 'Uploading slip…'
-              : scanning ? 'Scanning receipt…'
-              : (required ? 'Upload payment slip (required)' : 'Upload payment slip')
-          }
-          style={{
-            position: 'relative',
-            margin: 0,
-            width: 30,
-            height: 22,
-            padding: 0,
-            fontSize: 0,
-            gap: 0,
-            justifyContent: 'center',
-            flexShrink: 0,
-          }}
-          onClick={() => inputRef.current?.click()}
-          disabled={busy || disabled}
-        >
-          {busy || scanning
-            ? <Loader2 size={13} strokeWidth={1.75} className={paymentsStyles.slipScanSpin} />
-            : <Upload size={13} strokeWidth={1.75} />}
+        <>
+          <button
+            type="button"
+            className={paymentsStyles.addBtn}
+            title={
+              busy ? 'Uploading slip…'
+                : scanning ? 'Scanning receipt…'
+                : (required ? 'Upload photo (required)' : 'Upload photo')
+            }
+            style={iconBtnStyle}
+            onClick={() => libInputRef.current?.click()}
+            disabled={busy || disabled}
+          >
+            {busy || scanning
+              ? <Loader2 size={13} strokeWidth={1.75} className={paymentsStyles.slipScanSpin} />
+              : <ImagePlus size={13} strokeWidth={1.75} />}
+          </button>
+          <button
+            type="button"
+            className={paymentsStyles.addBtn}
+            title={busy ? 'Uploading slip…' : 'Take photo with camera'}
+            style={iconBtnStyle}
+            onClick={() => camInputRef.current?.click()}
+            disabled={busy || disabled}
+          >
+            <Camera size={13} strokeWidth={1.75} />
+          </button>
           {required && !busy && (
             <span
               aria-hidden
               style={{
                 position: 'absolute',
-                top: -2,
-                right: -3,
-                fontSize: 9,
+                top: -4,
+                right: -4,
+                fontSize: 10,
                 lineHeight: 1,
                 color: 'var(--c-festive-b, #B8331F)',
                 fontWeight: 700,
@@ -132,7 +165,7 @@ export function SlipUploadField({
               }}
             >*</span>
           )}
-        </button>
+        </>
       ) : (
         <span
           style={{
