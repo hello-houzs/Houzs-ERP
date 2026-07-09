@@ -159,8 +159,14 @@
      pages; body / buttons / mono stay on Plex Sans so dense data screens
      still read calm. Compact `.title` styles (e.g. SO detail at 15px) get
      the serif family without size change — hierarchy still driven by
-     weight + size, family now signals "hero". */
-  --font-title:   "IBM Plex Serif", "Noto Serif SC", Georgia, serif;
+     weight + size, family now signals "hero".
+     Nick 2026-07-09 "整个系统页面都要 C 字体" — the Ink & Petrol sweep
+     wants an admin-form rhythm, not a marketing hero. Point --font-title
+     at the same IBM Plex Sans stack as body via --font-system so every
+     page's title switches to sans without touching per-page CSS. Serif
+     stack kept in a comment above so we can pivot back if a genuine hero
+     header ever wants the display face again. */
+  --font-title:   var(--font-system);
   /* Buttons, links, navigation, eyebrows */
   --font-button:  var(--font-system);
   /* Hand-written touches (offers, scribbled accents) */
