@@ -286,8 +286,11 @@ export function ServiceCases() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [urlView]);
 
-  // "New Case" action lives on the Cases view's header.
-  const [showCreate, setShowCreate] = useState(false);
+  /* "New Case" action lives on the Cases view's header. Nick 2026-07-09:
+     the global QuickActionsFAB now offers "Create Service Case" too, so we
+     auto-open the create panel when the URL carries ?new=1 (e.g. the FAB
+     drops the operator here with the panel already open, no extra click). */
+  const [showCreate, setShowCreate] = useState(params.get("new") === "1");
 
   return (
     <div>
