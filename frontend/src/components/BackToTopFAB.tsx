@@ -16,7 +16,7 @@ import { useLocation } from "react-router-dom";
 import { ArrowUp } from "lucide-react";
 import { cn } from "../lib/utils";
 
-const SCROLL_THRESHOLD = 400;
+const SCROLL_THRESHOLD = 160;
 
 export function BackToTopFAB() {
   const [visible, setVisible] = useState(false);
@@ -58,13 +58,16 @@ export function BackToTopFAB() {
         "fixed z-40 inline-flex items-center justify-center rounded-full",
         "bg-surface text-ink-secondary border border-border shadow-slab",
         "transition-all duration-200 hover:scale-105 hover:text-primary hover:border-primary/40 active:scale-95",
-        // Sits LEFT of QuickActionsFAB. That FAB uses
-        //   mobile: h-12 w-12 · right-4 · bottom-24 + safe-area
-        //   desktop: h-14 w-14 · right-5 · bottom-5
-        // Push this one by (fab-width + gap) so the two live side-by-side.
-        "h-12 w-12 right-[calc(theme(spacing.4)+theme(spacing.12)+theme(spacing.2))]",
-        "lg:h-14 lg:w-14 lg:right-[calc(theme(spacing.5)+theme(spacing.14)+theme(spacing.2))]",
-        "bottom-[calc(theme(spacing.24)+env(safe-area-inset-bottom))] lg:bottom-5",
+        // Sits to the LEFT of the QuickActionsFAB "+". Sizes/right-offsets
+        // tuned to hard pixel values (Tailwind arbitrary-`calc(theme(...))`
+        // sometimes fails to JIT-compile) so the button lands exactly one
+        // FAB-width + 8 px to the left of the "+".
+        //   Mobile "+":   h-12 w-12 (48 px) · right-4 (16 px) · bottom-24 (96 px)
+        //   Desktop "+":  h-14 w-14 (56 px) · right-5 (20 px) · bottom-5 (20 px)
+        //   Back-to-top mobile:  right-[72px] = 48 + 16 + 8
+        //   Back-to-top desktop: right-[84px] = 56 + 20 + 8
+        "h-12 w-12 right-[72px] bottom-[calc(6rem+env(safe-area-inset-bottom))]",
+        "lg:h-14 lg:w-14 lg:right-[84px] lg:bottom-5",
       )}
     >
       <ArrowUp size={20} strokeWidth={2.4} />

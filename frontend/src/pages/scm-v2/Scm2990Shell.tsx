@@ -47,7 +47,17 @@ export function Scm2990Shell({ children }: { children: ReactNode }) {
         <PromptProvider>
           <ChoiceProvider>
             <DialogServiceBridge />
-            <div className="scm2990 max-w-full overflow-x-hidden">{children}</div>
+            {/* Nick 2026-07-09 — "local host 还没有上面 pin 起来". `overflow-x:
+                hidden` on this wrapper creates a scroll container that traps
+                position: sticky on every descendant edit-mode header (the SO
+                Detail sticky worked on the V2 read-only page but broke on
+                the forwarded editor because Suspense delays the render past
+                the point the sticky context was established). `overflow-x:
+                clip` clips the same overflow WITHOUT establishing a scroll
+                container, so descendant sticky elements work again. Modern
+                browsers (Chrome 90+, Firefox 81+, Safari 16+) all support
+                it — Nick's on current Chrome. */}
+            <div className="scm2990 max-w-full [overflow-x:clip]">{children}</div>
           </ChoiceProvider>
         </PromptProvider>
       </ConfirmProvider>

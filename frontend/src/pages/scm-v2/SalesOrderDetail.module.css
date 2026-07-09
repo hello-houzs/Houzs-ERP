@@ -101,6 +101,12 @@
      on desktop — there's always enough width there for one row. */
   flex-wrap: wrap;
   justify-content: flex-end;
+  /* Nick 2026-07-09 — "整个画面占全部, 目前只有一半". When .actions wraps to
+     its own row inside .headerRow, `space-between` collapses to flex-start
+     for a single-item row → actions ended up left-aligned with 400+ px of
+     dead space on the right. margin-left: auto keeps it flush right even
+     after wrap so the header uses the full page width. */
+  margin-left: auto;
 }
 
 /* PR — commander 2026-05-27 followup. Total badge moved out of the page
