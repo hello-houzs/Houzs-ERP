@@ -106,7 +106,7 @@
   border: 1px solid var(--c-orange);
   background: var(--c-orange);
   color: #fff;
-  box-shadow: 0 1px 2px rgba(166, 71, 30, 0.25);
+  box-shadow: 0 1px 2px rgba(12, 63, 57, 0.25);
   cursor: pointer;
 }
 .primaryBtn:hover:not(:disabled) { filter: brightness(0.95); }
@@ -201,7 +201,7 @@
 }
 .summaryChipWarn {
   border-color: var(--c-orange);
-  background: rgba(232, 107, 58, 0.08);
+  background: rgba(22, 105, 95, 0.08);
   color: var(--c-orange);
 }
 
@@ -318,10 +318,10 @@
   vertical-align: middle;
 }
 .skuRowShort {
-  background: rgba(232, 107, 58, 0.05);
+  background: rgba(22, 105, 95, 0.05);
   box-shadow: inset 3px 0 0 var(--c-orange);
 }
-.skuRowShort:hover { background: rgba(232, 107, 58, 0.1); }
+.skuRowShort:hover { background: rgba(22, 105, 95, 0.1); }
 
 .codeCell { font-weight: 700; white-space: nowrap; }
 .descCell { color: var(--fg-muted); }
@@ -355,10 +355,10 @@
   vertical-align: middle;
 }
 .variantRowShort {
-  background: rgba(232, 107, 58, 0.06);
-  box-shadow: inset 3px 0 0 rgba(232, 107, 58, 0.45);
+  background: rgba(22, 105, 95, 0.06);
+  box-shadow: inset 3px 0 0 rgba(22, 105, 95, 0.45);
 }
-.variantRowShort:hover { background: rgba(232, 107, 58, 0.11); }
+.variantRowShort:hover { background: rgba(22, 105, 95, 0.11); }
 .variantDescCell {
   display: flex;
   align-items: center;
@@ -454,7 +454,7 @@
   border-top: 1px solid var(--line);
   color: var(--c-ink);
 }
-.childShort { background: rgba(232, 107, 58, 0.07); }
+.childShort { background: rgba(22, 105, 95, 0.07); }
 
 .tag {
   display: inline-flex;
@@ -479,7 +479,7 @@
 }
 .tagStock { background: rgba(34, 139, 94, 0.08); color: #1f7a52; border-color: rgba(34, 139, 94, 0.25); }
 .tagPo    { background: rgba(60, 110, 200, 0.08); color: #2f5fb3; border-color: rgba(60, 110, 200, 0.25); }
-.tagShort { background: rgba(232, 107, 58, 0.10); color: var(--c-orange); border-color: rgba(232, 107, 58, 0.35); }
+.tagShort { background: rgba(22, 105, 95, 0.10); color: var(--c-orange); border-color: rgba(22, 105, 95, 0.35); }
 
 .stateCell {
   text-align: center;
