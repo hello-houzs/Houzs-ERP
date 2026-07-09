@@ -24,16 +24,28 @@
 }
 
 .headerRow {
+  /* Nick 2026-07-09 — sticky top:48 (below TopNavbar) so title + Back
+     + primary CTA stay visible on scroll, matches SO New / Detail. */
+  position: sticky;
+  top: 48px;
+  z-index: 20;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-4);
   flex-wrap: wrap;
+  padding: var(--space-3) 0 var(--space-2);
+  background: #dcdfd9;
+  border-bottom: 1px solid #cdd1c8;
 }
 
 .title {
-  font-family: var(--font-title);
+  /* Ink & Petrol admin form — sans 18 px with tight tracking. */
+  font-family: var(--font-sans, system-ui);
+  font-size: 18px;
   font-weight: 700;
+  letter-spacing: -0.01em;
+  line-height: 1.15;
   color: var(--c-ink);
   margin: 0;
 }
@@ -55,21 +67,22 @@
 }
 
 .tab {
-  font-family: var(--font-button);
-  font-size: var(--fs-13);
+  font-family: var(--font-sans, system-ui);
+  font-size: 12.5px;
   font-weight: 600;
   letter-spacing: 0.02em;
-  padding: var(--space-2) var(--space-4);
+  padding: 6px 14px;
   border-radius: var(--radius-pill);
   border: none;
   background: transparent;
   color: var(--fg-muted);
   cursor: pointer;
+  white-space: nowrap;
 }
 .tab:hover { color: var(--c-ink); }
 .tab[data-active='true'] {
-  background: var(--c-ink);
-  color: var(--c-cream);
+  background: #16695f;
+  color: #fff;
   box-shadow: var(--shadow-1);
 }
 
@@ -81,26 +94,52 @@
 }
 
 .warehouseChips {
+  /* Nick 2026-07-09 — "这个设计太丑了". Warehouse names run 40+ chars
+     ("KL SERVICE · BALAKONG RETURNED TO SUPPLIER FOR SERVICE") so the
+     old flex-wrap turned each pill into a 6-line balloon. Switch to a
+     horizontal scroll strip with tighter tag-style chips so a long
+     roster reads as one clean row.  */
   display: flex;
-  gap: var(--space-2);
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  max-width: 100%;
+  padding-bottom: 4px;
+  scroll-snap-type: x proximity;
 }
+.warehouseChips > .chip { scroll-snap-align: start; }
 
 .chip {
-  font-family: var(--font-button);
-  font-size: var(--fs-13);
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  padding: var(--space-2) var(--space-4);
-  border-radius: var(--radius-pill);
+  /* Compact Ink & Petrol tag — mono uppercase 10.5 px, 26 px tall pill.
+     white-space: nowrap keeps a long warehouse label on one line and
+     the parent .warehouseChips scrolls sideways instead of wrapping. */
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  white-space: nowrap;
+  height: 26px;
+  padding: 0 11px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border-radius: 20px;
   border: 1px solid var(--line);
   background: var(--c-paper);
-  color: var(--c-ink);
+  color: var(--fg-muted);
   cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.chip:hover {
+  background: #eff6f4;
+  color: #11140f;
+  border-color: #bcdcd6;
 }
 .chip[data-active='true'] {
-  border-color: var(--c-ink);
-  background: var(--c-ink);
-  color: var(--c-cream);
+  border-color: #16695f;
+  background: #16695f;
+  color: #fff;
 }
 
 .searchBox {
