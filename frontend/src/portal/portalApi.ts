@@ -9,9 +9,12 @@
 // proxy handles forwarding.
 import { humanHttpMessage } from "../api/client";
 
+// PROD default is same-origin — /api/* is proxied to the Worker by the Pages
+// Function (functions/api/[[path]].ts); portal links open on customers'
+// phones, where *.workers.dev is unreliable on some MY carriers.
 const baseUrl =
   (import.meta.env.VITE_API_URL as string) ||
-  "https://autocount-sync-api.houzs-erp.workers.dev";
+  (import.meta.env.PROD ? "" : "https://autocount-sync-api.houzs-erp.workers.dev");
 
 function url(path: string): string {
   return path.startsWith("http") ? path : `${baseUrl}${path}`;

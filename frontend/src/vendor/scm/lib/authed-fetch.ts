@@ -22,11 +22,13 @@
 import { serviceConfirm } from './dialog-service';
 
 // `||` not `??`: the CI build inlines VITE_API_URL as an EMPTY STRING when the
-// repo var is unset, and `'' ?? default` keeps `''` → the base collapses to a
-// relative `/api/scm` that hits the Pages origin (index.html) on prod, where
-// there is no dev proxy. `||` falls back on the empty string too.
+// repo var is unset, and `'' ?? default` keeps `''`. PROD fallback is now
+// same-origin — /api/* is proxied to the Worker by the Pages Function
+// (functions/api/[[path]].ts), avoiding *.workers.dev carrier blocking; local
+// `vite dev` has no proxy, so dev keeps the absolute Worker URL.
 const API_URL =
-  (import.meta.env.VITE_API_URL || 'https://autocount-sync-api.houzs-erp.workers.dev') +
+  (import.meta.env.VITE_API_URL ||
+    (import.meta.env.PROD ? '' : 'https://autocount-sync-api.houzs-erp.workers.dev')) +
   '/api/scm';
 
 /* ── Request timeout (ported from 2990 b9d0035c) ───────────────────────────
