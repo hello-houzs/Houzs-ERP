@@ -1,212 +1,340 @@
-/* Sales Order Maintenance page — State → Warehouse mapping +
-   States/Cities/Postcodes CRUD. Density and chrome mirror
-   MfgSalesOrdersList + SalesOrderDetail for visual consistency. */
+/* ====================================================================
+   Sales Order Maintenance — Ink & Petrol restyle (2026-07-09)
+
+   Same token-override cascade as SalesOrderNew.module.css: `.page`
+   redefines the 2990 Theme C colour variables to the Ink & Petrol
+   values, so every child that reads `var(--c-orange)` etc. resolves
+   to petrol green + warm off-white WHEN IT'S INSIDE THIS PAGE. No
+   vendored stylesheets need editing.
+   ==================================================================== */
 
 .page {
+  /* Ink & Petrol token overrides */
+  --c-orange:        #16695f;
+  --c-burnt:         #0c3f39;
+  --c-cream:         #f4f6f3;
+  --c-paper:         #fcfdfb;
+  --c-ink:           #11140f;
+  --c-ink-secondary: #767b6e;
+  --c-ink-muted:     #9aa093;
+  --fg:              #11140f;
+  --fg-muted:        #767b6e;
+  --fg-soft:         #9aa093;
+  --line:            #d6d9d2;
+  --line-strong:     #c2c6bd;
+  --c-accent-soft:   #eff6f4;
+  --bg-alt:          #f4f6f3;
+
+  --radius-md: 9px;
+  --radius-lg: 14px;
+
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
-  padding: var(--space-5) var(--space-6) var(--space-7);
-  background: var(--c-cream);
   min-height: 100%;
+  background: #dcdfd9;
 }
 
+/* ── Sticky page header ────────────────────────────────────────────── */
+/* TopNavbar is sticky top-0 z-30 h-12 inside the same scroll <main>, so
+   offset by 48 px to sit under it. */
 .headerRow {
+  position: sticky;
+  top: 48px;
+  z-index: 20;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-4);
-  flex-wrap: wrap;
+  gap: 16px;
+  flex-wrap: nowrap;
+  padding: 14px 26px 12px;
+  background: #dcdfd9;
+  border-bottom: 1px solid #cdd1c8;
 }
 
 .titleBlock {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: 14px;
+  min-width: 0;
 }
 
 .backBtn {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-1);
-  font-family: var(--font-button);
-  font-size: var(--fs-13);
+  gap: 7px;
+  height: 32px;
+  padding: 0 12px;
+  background: #fff;
+  border: 1px solid #d6d9d2;
+  border-radius: 8px;
+  font-size: 12.5px;
   font-weight: 600;
-  letter-spacing: 0.02em;
-  padding: var(--space-2) var(--space-3);
-  background: var(--c-paper);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  color: var(--c-ink);
+  color: #414539;
   text-decoration: none;
   cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
-.backBtn:hover { background: var(--c-cream); }
+.backBtn:hover { background: #f4f6f3; }
 
 .title {
-  font-family: var(--font-title);
-  font-size: var(--fs-32);
-  font-weight: 900;
-  color: var(--c-ink);
+  font-family: var(--font-title, var(--font-sans, system-ui));
+  font-size: 18px;
+  font-weight: 700;
+  color: #11140f;
+  letter-spacing: -0.01em;
   margin: 0;
+  line-height: 1.15;
 }
 
 .subtitle {
-  font-family: var(--font-sans);
-  font-size: var(--fs-13);
-  color: var(--fg-muted);
-  margin-top: 4px;
+  font-family: var(--font-sans, system-ui);
+  font-size: 11.5px;
+  color: #767b6e;
+  margin: 2px 0 0;
 }
 
-.sectionHead {
-  font-family: var(--font-button);
-  font-weight: var(--w-bold);
-  font-size: var(--fs-12);
-  letter-spacing: 0.14em;
+/* ── Sticky sub-nav (section-jump pills, right below the sticky header) */
+/* 48 px TopNavbar + 44 px .headerRow ≈ 92 px offset. */
+.subNav {
+  position: sticky;
+  top: 92px;
+  z-index: 19;
+  display: flex;
+  gap: 6px;
+  padding: 10px 26px;
+  background: #dcdfd9;
+  border-bottom: 1px solid #cdd1c8;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.subNavItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px;
+  background: #fff;
+  border: 1px solid #d6d9d2;
+  border-radius: 20px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--fg-muted);
-  margin: var(--space-3) 0 var(--space-2);
+  color: #767b6e;
+  cursor: pointer;
+  text-decoration: none;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.subNavItem:hover {
+  background: #eff6f4;
+  color: #11140f;
+  border-color: #bcdcd6;
 }
 
+/* ── Content indent — every direct .page child except sticky bars ── */
+.page > *:not(.headerRow):not(.subNav) {
+  margin: 0 26px;
+  max-width: 1180px;
+  width: calc(100% - 52px);
+  align-self: center;
+}
+.page > *:not(.headerRow):not(.subNav) + *:not(.headerRow):not(.subNav) {
+  margin-top: 12px;
+}
+.page > .subNav + *:not(.headerRow):not(.subNav) {
+  margin-top: 16px;
+}
+.page > .headerRow + *:not(.headerRow):not(.subNav) {
+  margin-top: 14px;
+}
+.page > *:last-child { margin-bottom: 28px; }
+
+/* ── Section eyebrow (petrol tick + mono uppercase, matches SO New) ─ */
+.sectionHead {
+  position: relative;
+  padding-left: 15px;
+  margin: 0 0 10px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #11140f;
+  line-height: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+.sectionHead::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 5px;
+  height: 14px;
+  background: #16695f;
+  border-radius: 3px;
+}
+
+/* ── Info banner — petrol-tinted breadcrumb line ──────────────────── */
 .banner {
-  background: var(--bg-alt);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  padding: var(--space-3) var(--space-4);
-  font-size: var(--fs-13);
-  color: var(--fg-muted);
-  margin-bottom: var(--space-3);
+  background: #eff6f4;
+  border: 1px solid #bcdcd6;
+  border-radius: 9px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: #414539;
+  line-height: 1.5;
 }
-.banner strong { color: var(--fg); font-weight: var(--w-semibold); }
+.banner strong { color: #0c3f39; font-weight: 700; }
 
-.tableCard {
-  background: var(--c-cream);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
+/* ── Section shell — same 14 px card chrome as SO New sections ────── */
+.tableCard,
+.venuesCard {
+  background: #fff;
+  border: 1px solid #d6d9d2;
+  border-radius: 14px;
   overflow: hidden;
 }
 
+/* ── Add-row inline form (bottom of a table card) ─────────────────── */
 .addRowCard {
-  background: var(--c-cream);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  padding: var(--space-3);
-  margin-bottom: var(--space-3);
+  background: #fafbf9;
+  border-top: 1px solid #ecebe2;
+  padding: 10px 14px;
 }
-
 .addRowGrid {
   display: grid;
   grid-template-columns: 1fr 100px 1fr 110px auto;
-  gap: var(--space-2);
+  gap: 8px;
 }
-
 .addRowEyebrow {
-  font-family: var(--font-button);
-  font-weight: var(--w-semibold);
-  font-size: var(--fs-12);
-  letter-spacing: 0.04em;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.09em;
   text-transform: uppercase;
-  color: var(--fg-muted);
-  margin-bottom: var(--space-2);
+  color: #9aa093;
+  margin-bottom: 6px;
 }
 
+/* ── Filter strip inside a table card ─────────────────────────────── */
 .filterBar {
-  padding: var(--space-2) var(--space-3);
-  border-bottom: 1px solid var(--line);
+  padding: 8px 14px;
+  border-bottom: 1px solid #ecebe2;
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
-
 .filterLabel {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
-  font-size: var(--fs-13);
+  gap: 6px;
+  font-size: 12px;
+  color: #767b6e;
 }
+.filterSelect { width: 220px; }
 
-.filterSelect { width: 240px; }
-
+/* ── Empty state row ──────────────────────────────────────────────── */
 .empty {
-  padding: var(--space-6) var(--space-5);
+  padding: 24px 20px;
   text-align: center;
-  color: var(--fg-muted);
+  font-size: 12.5px;
+  color: #9aa093;
 }
 
+/* ── Table — dense, admin-form density ────────────────────────────── */
 .table {
   width: 100%;
   border-collapse: collapse;
 }
 .table thead th {
-  font-family: var(--font-button);
-  font-weight: var(--w-semibold);
-  font-size: var(--fs-12);
-  letter-spacing: var(--tk-loud);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: 0.09em;
   text-transform: uppercase;
-  color: var(--fg-soft);
+  color: #9aa093;
   text-align: left;
-  padding: var(--space-3) var(--space-4);
-  background: var(--bg-alt);
-  border-bottom: 1px solid var(--line);
+  padding: 8px 14px;
+  background: #f4f6f3;
+  border-bottom: 1px solid #ecebe2;
 }
 .table tbody td {
-  padding: var(--space-3) var(--space-4);
-  border-bottom: 1px solid var(--line);
-  font-size: var(--fs-14);
+  padding: 8px 14px;
+  border-bottom: 1px solid #f1f0ea;
+  font-size: 12.5px;
+  color: #11140f;
   vertical-align: middle;
+  line-height: 1.4;
 }
 .table tbody tr:last-child td { border-bottom: none; }
+.table tbody tr:hover td { background: #fafbf9; }
 
 .code {
-  font-family: var(--font-mono);
-  font-size: var(--fs-13);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
   letter-spacing: 0.04em;
-  color: var(--fg-muted);
+  color: #767b6e;
 }
+.muted { color: #9aa093; }
 
-.muted { color: var(--fg-muted); }
-
+/* ── Input — compact 30 px, focus petrol ring ─────────────────────── */
 .input {
-  font-family: var(--font-sans);
-  font-size: var(--fs-14);
-  padding: 8px 10px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--c-cream);
-  color: var(--fg);
+  font-family: var(--font-sans, system-ui);
+  font-size: 12.5px;
+  padding: 6px 10px;
+  border: 1px solid #d6d9d2;
+  border-radius: 7px;
+  background: #fcfdfb;
+  color: #11140f;
   outline: none;
   width: 100%;
-  transition: border-color 120ms;
+  height: 30px;
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
-.input:focus { border-color: var(--c-orange); }
-.input:disabled { background: var(--bg-alt); color: var(--fg-muted); }
+.input:focus {
+  border-color: #16695f;
+  box-shadow: 0 0 0 3px rgba(22, 105, 95, 0.12);
+}
+.input:disabled { background: #f4f6f3; color: #9aa093; }
 
+/* ── Row-scoped edit button ───────────────────────────────────────── */
 .editBtn {
   background: transparent;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  padding: 6px 10px;
+  border: 1px solid #d6d9d2;
+  border-radius: 7px;
+  padding: 3px 9px;
+  height: 24px;
   cursor: pointer;
-  color: var(--fg-muted);
-  font-family: var(--font-button);
-  font-size: var(--fs-12);
-  font-weight: var(--w-semibold);
-  letter-spacing: 0.04em;
+  color: #767b6e;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  transition: background 120ms, color 120ms, border-color 120ms;
+  gap: 5px;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 .editBtn:hover {
-  background: var(--bg-alt);
-  color: var(--fg);
-  border-color: var(--line-strong);
+  background: #f4f6f3;
+  color: #11140f;
+  border-color: #c2c6bd;
 }
 
+/* ── Read-only banner (petrol tint, replaces the old amber) ───────── */
 .readOnlyBanner {
-  background: rgba(232, 107, 58, 0.08);
-  border: 1px solid rgba(232, 107, 58, 0.3);
-  border-radius: var(--radius-md);
-  padding: var(--space-3) var(--space-4);
-  font-size: var(--fs-13);
-  margin-bottom: var(--space-3);
-  color: var(--fg);
+  background: rgba(22, 105, 95, 0.08);
+  border: 1px solid rgba(22, 105, 95, 0.3);
+  border-radius: 9px;
+  padding: 9px 14px;
+  font-size: 12.5px;
+  color: #414539;
 }
-.readOnlyBanner strong { color: var(--c-burnt, #A6471E); font-weight: var(--w-semibold); }
+.readOnlyBanner strong { color: #0c3f39; font-weight: 700; }

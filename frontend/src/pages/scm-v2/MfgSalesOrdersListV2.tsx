@@ -42,6 +42,7 @@ import { DataTable, type Column } from "../../components/DataTable";
 import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
 import { PullToRefresh } from "../../components/PullToRefresh";
+import { useStaffLookup } from "../../hooks/useStaffLookup";
 import {
   useMfgSalesOrders,
   useUpdateMfgSalesOrderStatus,
@@ -315,6 +316,7 @@ function DetailDrawer({
   onPrint,
   onConfirm,
   onDeliver,
+  salespersonName,
 }: {
   row: SoRow | null;
   onClose: () => void;
@@ -323,6 +325,7 @@ function DetailDrawer({
   onPrint: () => void;
   onConfirm: () => void;
   onDeliver: () => void;
+  salespersonName: string;
 }) {
   const detailQ = useMfgSalesOrderDetail(row?.doc_no ?? null);
   const items: Array<{ product_code?: string; product_name?: string; qty?: number; unit_price_centi?: number; amount_centi?: number }> =
@@ -339,12 +342,15 @@ function DetailDrawer({
 
   // Totals from live line items when the detail query has resolved; fall back
   // to header totals otherwise so the drawer still reads immediately.
+  // Nick 2026-07-09 — SST used to be ADDED at 6 % on top of subtotal, but SO
+  // prices are quoted SST-inclusive (mirrors SalesOrderDetailV2's "SST ·
+  // Inclusive" line). Adding another 6 % double-taxed the drawer's Total
+  // against the aside on the detail page. Total is now just subtotal.
   const subtotalCenti =
     items.length > 0
       ? items.reduce((sum, l) => sum + (l.amount_centi ?? (l.qty ?? 0) * (l.unit_price_centi ?? 0)), 0)
       : row?.local_total_centi ?? 0;
-  const sstCenti = Math.round(subtotalCenti * 0.06);
-  const totalCenti = subtotalCenti + sstCenti;
+  const totalCenti = subtotalCenti;
   const paidCenti = row?.paid_centi ?? 0;
   const outstandingCenti = totalCenti - paidCenti;
 
@@ -416,7 +422,7 @@ function DetailDrawer({
 
               {/* meta grid */}
               <dl className="mt-5 grid grid-cols-2 gap-x-4 gap-y-3 rounded-lg border border-border bg-surface-2 px-4 py-4">
-                <MetaItem k="Salesperson" v={row.agent || row.salesperson_id || "—"} />
+                <MetaItem k="Salesperson" v={salespersonName} />
                 <MetaItem k="Location" v={row.sales_location || "—"} />
                 <MetaItem k="Reference" v={refOf(row)} mono />
                 <MetaItem k="Branding" v={brandOf(row)} />
@@ -509,7 +515,6 @@ function DetailDrawer({
               {/* totals */}
               <div className="mt-4 rounded-lg border border-border bg-surface px-5 py-4">
                 <TotalRow k="Subtotal" v={fmtRm(subtotalCenti)} />
-                <TotalRow k="SST · 6%" v={fmtRm(sstCenti)} />
                 <TotalRow k="Total" v={fmtRm(totalCenti)} strong />
                 {paidCenti > 0 ? (
                   <TotalRow k="Paid" v={fmtRm(paidCenti)} tone="success" />
@@ -652,6 +657,7 @@ export function MfgSalesOrdersListV2() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const queryClient = useQueryClient();
+  const { nameOf: salespersonNameOf } = useStaffLookup();
 
   const status = (params.get("status") ?? "all") as StatusTab;
   // View toggle applies at md+; on phones we always render the card list
@@ -804,11 +810,11 @@ export function MfgSalesOrdersListV2() {
     {
       key: "salesperson",
       label: "Salesperson",
-      width: "128px",
-      getValue: (r) => r.agent || r.salesperson_id || "",
+      width: "148px",
+      getValue: (r) => salespersonNameOf(r.agent, r.salesperson_id, ""),
       render: (r) => (
         <span className="text-[12.5px] text-ink-secondary">
-          {r.agent || r.salesperson_id || "—"}
+          {salespersonNameOf(r.agent, r.salesperson_id, "—")}
         </span>
       ),
     },
@@ -909,67 +915,79 @@ export function MfgSalesOrdersListV2() {
         </div>
       </div>
 
-      {/* Desktop chrome — hidden on phone (compact header + FAB take over). */}
-      <div className="hidden md:block">
-        <PageHeader
-          eyebrow="Supply Chain"
-          title="Sales Orders"
-          description="Every Houzs sales order — Draft to Delivered. Click any row for the quick view; open the full page to edit."
-          primaryAction={
-            <div className="flex items-stretch">
-              <Button
-                variant="primary"
-                icon={<Plus size={14} />}
-                onClick={goNewSo}
-                className="rounded-r-none"
-              >
-                New Sales Order
-              </Button>
-              <SplitDropdown
-                onFromQuotation={goFromQuotation}
-                onImport={goImport}
-                onDuplicate={goDuplicate}
-              />
-            </div>
-          }
-          secondaryActions={[
-            { label: "Scan Order", icon: ScanLine, onClick: goScanOrder },
-            { label: "SO Maintenance", icon: Wrench, onClick: goSoMaintenance },
-          ]}
-        />
-      </div>
+      {/* Desktop sticky page chrome — Nick 2026-07-09: pin PageHeader + KPIs
+          + filter pills at the top so the table gets more vertical space and
+          the chrome never scrolls away. Mobile flow keeps its own sticky
+          search below. */}
+      <div className="sticky top-0 z-20 -mx-4 hidden bg-bg/95 pb-3 backdrop-blur-sm sm:-mx-6 md:block">
+        <div className="px-4 sm:px-6">
+          <PageHeader
+            eyebrow="Supply Chain"
+            title="Sales Orders"
+            description="Every Houzs sales order — Draft to Delivered. Click any row for the quick view; open the full page to edit."
+            primaryAction={
+              <div className="flex items-stretch">
+                <Button
+                  variant="primary"
+                  icon={<Plus size={14} />}
+                  onClick={goNewSo}
+                  className="rounded-r-none"
+                >
+                  New Sales Order
+                </Button>
+                <SplitDropdown
+                  onFromQuotation={goFromQuotation}
+                  onImport={goImport}
+                  onDuplicate={goDuplicate}
+                />
+              </div>
+            }
+            secondaryActions={[
+              { label: "Scan Order", icon: ScanLine, onClick: goScanOrder },
+              { label: "SO Maintenance", icon: Wrench, onClick: goSoMaintenance },
+            ]}
+          />
 
-      {/* Stat strip — 4 StatCards on md+. On phone we drop the strip and rely
-          on the compact header's "17 orders · RM 89k" line instead — mobile
-          screens don't have space for four separate KPI slabs. */}
-      <div className="mb-5 hidden grid-cols-2 gap-3 md:grid lg:grid-cols-4">
-        <StatCard
-          label="Total Orders"
-          value={stats.total.toLocaleString("en-MY")}
-          subtitle="Scoped to current filter"
-          rail="bg-primary"
-          active
-        />
-        <StatCard
-          label="Revenue"
-          value={fmtRm(stats.revenueCenti)}
-          subtitle="Sum of local total"
-          rail="bg-accent"
-        />
-        <StatCard
-          label="Outstanding"
-          value={fmtRm(stats.outstandingCenti)}
-          subtitle="Balance across visible rows"
-          tone="error"
-          rail="bg-err"
-        />
-        <StatCard
-          label="Paid"
-          value={fmtRm(stats.paidCenti)}
-          subtitle="Receipts logged"
-          tone="success"
-          rail="bg-synced"
-        />
+          <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <StatCard
+              label="Total Orders"
+              value={stats.total.toLocaleString("en-MY")}
+              subtitle="Scoped to current filter"
+              rail="bg-primary"
+              active
+            />
+            <StatCard
+              label="Revenue"
+              value={fmtRm(stats.revenueCenti)}
+              subtitle="Sum of local total"
+              rail="bg-accent"
+            />
+            <StatCard
+              label="Outstanding"
+              value={fmtRm(stats.outstandingCenti)}
+              subtitle="Balance across visible rows"
+              tone="error"
+              rail="bg-err"
+            />
+            <StatCard
+              label="Paid"
+              value={fmtRm(stats.paidCenti)}
+              subtitle="Receipts logged"
+              tone="success"
+              rail="bg-synced"
+            />
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <FilterPills
+              options={statusPillOptions}
+              value={status}
+              onChange={(v) => setStatusChip(v)}
+            />
+            <div className="flex-1" />
+            <ViewToggle value={view} onChange={setView} />
+          </div>
+        </div>
       </div>
 
       {/* Mobile-only sticky search — sits above the pill row on phones. */}
@@ -983,17 +1001,13 @@ export function MfgSalesOrdersListV2() {
         />
       </div>
 
-      {/* Filter row — pills scroll horizontally on phone; toggle hidden. */}
-      <div className="mb-4 flex flex-wrap items-center gap-3">
+      {/* Mobile filter row — desktop pills live inside the sticky chrome above. */}
+      <div className="mb-4 flex flex-wrap items-center gap-3 md:hidden">
         <FilterPills
           options={statusPillOptions}
           value={status}
           onChange={(v) => setStatusChip(v)}
         />
-        <div className="flex-1" />
-        <div className="hidden md:block">
-          <ViewToggle value={view} onChange={setView} />
-        </div>
       </div>
 
       {/* Phone → CardsGrid ALWAYS. Desktop → the view toggle decides. */}
@@ -1073,6 +1087,11 @@ export function MfgSalesOrdersListV2() {
         onPrint={() => selected && goPrint(selected)}
         onConfirm={() => selected && doConfirm(selected)}
         onDeliver={() => selected && doDeliver(selected)}
+        salespersonName={
+          selected
+            ? salespersonNameOf(selected.agent, selected.salesperson_id)
+            : "—"
+        }
       />
     </PullToRefresh>
   );

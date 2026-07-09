@@ -33,6 +33,7 @@ import { DataTable, type Column } from "../../components/DataTable";
 import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
 import { PullToRefresh } from "../../components/PullToRefresh";
+import { useStaffLookup } from "../../hooks/useStaffLookup";
 import {
   useMfgDeliveryOrders,
   useMfgDeliveryOrderDetail,
@@ -319,6 +320,7 @@ function DetailDrawer({
   onPrint,
   onMarkSigned,
   onConvertToSi,
+  salespersonName,
 }: {
   row: DoRow | null;
   onClose: () => void;
@@ -327,6 +329,7 @@ function DetailDrawer({
   onPrint: () => void;
   onMarkSigned: () => void;
   onConvertToSi: () => void;
+  salespersonName: string;
 }) {
   const detailQ = useMfgDeliveryOrderDetail(row?.id ?? null);
   const items: Array<{
@@ -423,7 +426,7 @@ function DetailDrawer({
                 <MetaItem k="Driver" v={row.driver_name || "—"} />
                 <MetaItem k="Vehicle" v={row.vehicle || "—"} />
                 <MetaItem k="Location" v={row.sales_location || "—"} />
-                <MetaItem k="Salesperson" v={row.salesperson_id || "—"} />
+                <MetaItem k="Salesperson" v={salespersonName} />
               </dl>
 
               <SectionHeading>Customer &amp; delivery</SectionHeading>
@@ -629,6 +632,7 @@ export function MfgDeliveryOrdersListV2() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const queryClient = useQueryClient();
+  const { nameOf: salespersonNameOf } = useStaffLookup();
 
   const status = (params.get("status") ?? "all") as StatusTab;
   const view = (params.get("view") ?? "table") as "table" | "cards";
@@ -885,65 +889,77 @@ export function MfgDeliveryOrdersListV2() {
         </div>
       </div>
 
-      {/* Desktop chrome */}
-      <div className="hidden md:block">
-        <PageHeader
-          eyebrow="Supply Chain"
-          title="Delivery Orders"
-          description="Every Houzs delivery order — Loaded to Delivered. Click any row for the quick view; open the full page to edit."
-          primaryAction={
-            <div className="flex items-stretch">
-              <Button
-                variant="primary"
-                icon={<Plus size={14} />}
-                onClick={goNewDo}
-                className="rounded-r-none"
-              >
-                New Delivery Order
-              </Button>
-              <SplitDropdown
-                onFromSo={goFromSo}
-                onImport={goImport}
-                onDuplicate={goDuplicate}
-              />
-            </div>
-          }
-          secondaryActions={[
-            { label: "Sales Orders", icon: Wrench, onClick: goSoList },
-            { label: "Delivery Planning", icon: Truck, onClick: goPlanning },
-          ]}
-        />
-      </div>
+      {/* Desktop sticky page chrome — pinned PageHeader + KPIs + FilterPills
+          + ViewToggle. Matches SO listing V2 pattern. */}
+      <div className="sticky top-0 z-20 -mx-4 hidden bg-bg/95 pb-3 backdrop-blur-sm sm:-mx-6 md:block">
+        <div className="px-4 sm:px-6">
+          <PageHeader
+            eyebrow="Supply Chain"
+            title="Delivery Orders"
+            description="Every Houzs delivery order — Loaded to Delivered. Click any row for the quick view; open the full page to edit."
+            primaryAction={
+              <div className="flex items-stretch">
+                <Button
+                  variant="primary"
+                  icon={<Plus size={14} />}
+                  onClick={goNewDo}
+                  className="rounded-r-none"
+                >
+                  New Delivery Order
+                </Button>
+                <SplitDropdown
+                  onFromSo={goFromSo}
+                  onImport={goImport}
+                  onDuplicate={goDuplicate}
+                />
+              </div>
+            }
+            secondaryActions={[
+              { label: "Sales Orders", icon: Wrench, onClick: goSoList },
+              { label: "Delivery Planning", icon: Truck, onClick: goPlanning },
+            ]}
+          />
 
-      {/* Stat strip */}
-      <div className="mb-5 hidden grid-cols-2 gap-3 md:grid lg:grid-cols-4">
-        <StatCard
-          label="Total DOs"
-          value={stats.total.toLocaleString("en-MY")}
-          subtitle="Scoped to current filter"
-          rail="bg-primary"
-          active
-        />
-        <StatCard
-          label="Revenue"
-          value={fmtRm(stats.revenueCenti)}
-          subtitle="Sum of local total"
-          rail="bg-accent"
-        />
-        <StatCard
-          label="In transit"
-          value={stats.inTransitCount.toLocaleString("en-MY")}
-          subtitle="Dispatched · en route"
-          tone="warning"
-          rail="bg-accent-bright"
-        />
-        <StatCard
-          label="Delivered"
-          value={stats.deliveredCount.toLocaleString("en-MY")}
-          subtitle="Signed / delivered / invoiced"
-          tone="success"
-          rail="bg-synced"
-        />
+          <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <StatCard
+              label="Total DOs"
+              value={stats.total.toLocaleString("en-MY")}
+              subtitle="Scoped to current filter"
+              rail="bg-primary"
+              active
+            />
+            <StatCard
+              label="Revenue"
+              value={fmtRm(stats.revenueCenti)}
+              subtitle="Sum of local total"
+              rail="bg-accent"
+            />
+            <StatCard
+              label="In transit"
+              value={stats.inTransitCount.toLocaleString("en-MY")}
+              subtitle="Dispatched · en route"
+              tone="warning"
+              rail="bg-accent-bright"
+            />
+            <StatCard
+              label="Delivered"
+              value={stats.deliveredCount.toLocaleString("en-MY")}
+              subtitle="Signed / delivered / invoiced"
+              tone="success"
+              rail="bg-synced"
+            />
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <FilterPills
+              options={statusPillOptions}
+              value={status}
+              onChange={(v) => setStatusChip(v)}
+            />
+            <div className="flex-1" />
+            <ViewToggle value={view} onChange={setView} />
+          </div>
+        </div>
       </div>
 
       {/* Mobile sticky search */}
@@ -957,17 +973,13 @@ export function MfgDeliveryOrdersListV2() {
         />
       </div>
 
-      {/* Filter row */}
-      <div className="mb-4 flex flex-wrap items-center gap-3">
+      {/* Mobile filter row — desktop pills live inside the sticky chrome above. */}
+      <div className="mb-4 flex flex-wrap items-center gap-3 md:hidden">
         <FilterPills
           options={statusPillOptions}
           value={status}
           onChange={(v) => setStatusChip(v)}
         />
-        <div className="flex-1" />
-        <div className="hidden md:block">
-          <ViewToggle value={view} onChange={setView} />
-        </div>
       </div>
 
       {/* Phone → Cards */}
@@ -1047,6 +1059,9 @@ export function MfgDeliveryOrdersListV2() {
         onPrint={() => selected && goPrint(selected)}
         onMarkSigned={() => selected && doMarkSigned(selected)}
         onConvertToSi={() => selected && doConvertToSi(selected)}
+        salespersonName={
+          selected ? salespersonNameOf(null, selected.salesperson_id) : "—"
+        }
       />
     </PullToRefresh>
   );

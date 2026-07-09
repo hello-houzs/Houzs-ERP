@@ -17,7 +17,7 @@
 // The old ledger-style SalesOrderDetail.tsx stays in the tree; App.tsx route
 // swap on /scm/sales-orders/:docNo decides which one users see.
 
-import { useMemo, type ReactNode } from "react";
+import { Suspense, lazy, useMemo, useState, type ReactNode } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -45,6 +45,11 @@ import {
   useUpdateMfgSalesOrderStatus,
 } from "../../vendor/scm/lib/sales-order-queries";
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
+import { useStaffLookup } from "../../hooks/useStaffLookup";
+import {
+  DocumentRelationshipMapModal,
+  type ChainNode,
+} from "../../components/scm-v2/DocumentRelationshipMapModal";
 import { cn } from "../../lib/utils";
 
 // ─── Row types (subset — see MfgSalesOrdersList.tsx for the full SoRow) ────
@@ -396,15 +401,47 @@ function TotalLine({
   );
 }
 
+// ─── Legacy inline editor (lazy) ───────────────────────────────────────────
+// V2 is READ-ONLY by design (sticky header + section cards + Order-total
+// aside). The full 2014-LOC inline editor lives in ./SalesOrderDetail — we
+// forward to it whenever ?edit=1 lands on this route so Nick's Edit button
+// actually opens editable fields (the whole read-first redesign left goEdit
+// pointing at a URL nobody handled → the button was a dead-link on
+// CONFIRMED SOs). Lazy-loaded so the editor bundle only ships when someone
+// actually clicks Edit.
+const SalesOrderDetailInlineEditor = lazy(() =>
+  import("./SalesOrderDetail").then((m) => ({ default: m.SalesOrderDetail })),
+);
+
 // ─── Main page ─────────────────────────────────────────────────────────────
 
+/* Thin router — the only hook it calls is useSearchParams, so Rules of Hooks
+   are respected when the ?edit=1 flip swaps between the read-only body and
+   the lazy inline editor (the two children have different hook counts;
+   letting either side call hooks conditionally inside the same function
+   would break on navigation). */
 export function SalesOrderDetailV2() {
+  const [params] = useSearchParams();
+  if (params.get("edit") === "1") {
+    return (
+      <Suspense
+        fallback={<div className="p-8 text-[13px] text-ink-muted">Loading editor…</div>}
+      >
+        <SalesOrderDetailInlineEditor />
+      </Suspense>
+    );
+  }
+  return <SalesOrderDetailV2ReadOnly />;
+}
+
+function SalesOrderDetailV2ReadOnly() {
   const { docNo } = useParams<{ docNo: string }>();
   const [params] = useSearchParams();
   const navigate = useNavigate();
 
   const detail = useMfgSalesOrderDetail(docNo ?? null);
   const updateStatus = useUpdateMfgSalesOrderStatus();
+  const { nameOf: salespersonNameOf } = useStaffLookup();
 
   // Replace the auto-derived "Scm" module crumb with the actual SO doc no.
   // Falls back to the raw route param while detail is loading so the top bar
@@ -458,10 +495,53 @@ export function SalesOrderDetailV2() {
     }
   };
   const goHistory = () => docNo && navigate(`/scm/sales-orders/${docNo}?tab=history`);
-  const goRelationshipMap = () =>
-    docNo && navigate(`/scm/sales-orders/${docNo}?tab=relationship`);
+  const [relMapOpen, setRelMapOpen] = useState(false);
+  const goRelationshipMap = () => setRelMapOpen(true);
   const goPrintPdf = () =>
     docNo && navigate(`/scm/sales-orders/${docNo}?print=1`);
+
+  // Build the 5-node document chain for this SO. The SO is CURRENT; upstream
+  // (Customer PO) is "done" when a PO ref exists; downstream (DO / GRN / SI)
+  // are Pending until they're actually generated. Live lookup of downstream
+  // docs would need extra API — for now show them as Pending with a helpful
+  // meta string, matching the design handoff prototype.
+  const chainNodes: ChainNode[] = useMemo(() => {
+    if (!salesOrder) return [];
+    const poRef =
+      salesOrder.po_doc_no || salesOrder.customer_so_no || salesOrder.ref || "";
+    return [
+      {
+        type: "Customer PO",
+        doc: poRef || "Not linked",
+        meta: poRef ? "Customer's own doc" : "—",
+        state: poRef ? "done" : "pending",
+      },
+      {
+        type: "Sales Order",
+        doc: salesOrder.doc_no,
+        meta: "This document",
+        state: "current",
+      },
+      {
+        type: "Delivery Order",
+        doc: "Not created",
+        meta: "After confirmation",
+        state: "pending",
+      },
+      {
+        type: "GRN",
+        doc: "Not created",
+        meta: "After delivery",
+        state: "pending",
+      },
+      {
+        type: "Sales Invoice",
+        doc: "Not created",
+        meta: "On completion",
+        state: "pending",
+      },
+    ];
+  }, [salesOrder]);
 
   // ── Line item columns ────────────────────────────────────────────────
   const lineColumns: Column<SoItem>[] = [
@@ -626,7 +706,13 @@ export function SalesOrderDetailV2() {
       </div>
 
       {/* ─── Desktop sticky header (hidden on phone) ────────────────── */}
-      <div className="sticky top-0 z-10 -mx-4 hidden border-b border-border bg-bg/95 px-4 py-4 backdrop-blur-sm sm:-mx-6 sm:px-6 md:block">
+      {/* Nick 2026-07-09 — "这个圈起来的需要 pin 起来".
+          TopNavbar (components/TopNavbar.tsx) sits sticky top-0 z-30 h-12
+          inside the SAME <main class="overflow-y-auto"> that scrolls this
+          page — so a naive top-0 here parks the SO title BEHIND the top
+          nav. Offset to top-12 (48 px = TopNavbar h-12) and bump z-20 to
+          stack above the section cards while staying below the top nav. */}
+      <div className="sticky top-12 z-20 -mx-4 hidden border-b border-border bg-bg/95 px-4 py-4 backdrop-blur-sm sm:-mx-6 sm:px-6 md:block">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="flex items-start gap-3 min-w-0">
             <button
@@ -761,11 +847,11 @@ export function SalesOrderDetailV2() {
                 />
                 <Field
                   label="Salesperson"
-                  value={
-                    salesOrder.agent ||
-                    salesOrder.salesperson_id ||
+                  value={salespersonNameOf(
+                    salesOrder.agent,
+                    salesOrder.salesperson_id,
                     "Unassigned"
-                  }
+                  )}
                   muted={
                     !salesOrder.agent && !salesOrder.salesperson_id
                   }
@@ -938,15 +1024,19 @@ export function SalesOrderDetailV2() {
                   initials={
                     salesOrder.agent || salesOrder.salesperson_id
                       ? initialsOf(
-                          salesOrder.agent || salesOrder.salesperson_id
+                          salespersonNameOf(
+                            salesOrder.agent,
+                            salesOrder.salesperson_id,
+                            ""
+                          )
                         )
                       : "?"
                   }
-                  name={
-                    salesOrder.agent ||
-                    salesOrder.salesperson_id ||
+                  name={salespersonNameOf(
+                    salesOrder.agent,
+                    salesOrder.salesperson_id,
                     "Salesperson"
-                  }
+                  )}
                   role={
                     salesOrder.agent || salesOrder.salesperson_id
                       ? "Salesperson"
@@ -1030,6 +1120,18 @@ export function SalesOrderDetailV2() {
           </button>
         </div>
       </div>
+
+      {/* Relationship map modal — 5-node graph per Nick's 2026-07-08 handoff */}
+      <DocumentRelationshipMapModal
+        open={relMapOpen}
+        onClose={() => setRelMapOpen(false)}
+        nodes={chainNodes}
+        onNodeClick={(n) => {
+          // Non-current nodes with a linked doc could navigate to that doc
+          // — for now only the current SO exists, so noop.
+          void n;
+        }}
+      />
     </div>
   );
 }

@@ -80,9 +80,22 @@ export const SalesOrderMaintenance = () => {
           </Link>
           <div>
             <h1 className={styles.title}>Sales Order Maintenance</h1>
+            <div className={styles.subtitle}>
+              Reference data behind SO forms — venues, warehouses, geo, dropdowns.
+            </div>
           </div>
         </div>
       </div>
+
+      {/* Section-jump sub-nav — Nick 2026-07-09 "帮我整理容易看和修改的".
+          The page is a scroll-tower of five distinct config surfaces; these
+          anchor pills park under the sticky header so the operator can jump
+          directly to the section they want to edit without hunting. */}
+      <nav className={styles.subNav} aria-label="Sections">
+        <a href="#venues"    className={styles.subNavItem}>Venues</a>
+        <a href="#geo"       className={styles.subNavItem}>Geo &amp; Warehouses</a>
+        <a href="#dropdowns" className={styles.subNavItem}>Dropdowns</a>
+      </nav>
 
       {!canEdit && (
         <div className={styles.readOnlyBanner}>
@@ -384,6 +397,11 @@ const MaintenanceBody = ({ canEdit }: { canEdit: boolean }) => {
           L4  — Postcodes in city, columns: Postcode / delete
 
           Each level also has its own Add form at the bottom. */}
+      <div id="geo" style={{ scrollMarginTop: 96 }}>
+        <div className={styles.sectionHead}>
+          <span>Geo &amp; Warehouses</span>
+        </div>
+      </div>
       <div className={styles.banner}>
         <strong>
           {geoView === 'country'  && 'Countries.'}
@@ -1005,7 +1023,12 @@ const DropdownsSection = ({ canEdit }: { canEdit: boolean }) => {
 
   return (
     <>
-      <div className={styles.banner} style={{ marginTop: 'var(--space-4)' }}>
+      <div id="dropdowns" style={{ scrollMarginTop: 96 }}>
+        <div className={styles.sectionHead}>
+          <span>Dropdowns</span>
+        </div>
+      </div>
+      <div className={styles.banner}>
         <strong>Dropdowns.</strong> Edit the values commander sees in the
         Customer Type / Building Type / Relationship / Payment Method
         selects on New SO and Edit SO. Used to be hardcoded in code — now
@@ -1353,56 +1376,44 @@ const VenuesSection = (_props: { canEdit: boolean }) => {
   const venues = useVenues();
 
   return (
-    <section style={{ marginBottom: 'var(--space-6)' }}>
-      <header style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', marginBottom: 'var(--space-3)' }}>
-        <MapPin size={20} strokeWidth={1.75} />
-        <h2 style={{ margin: 0, fontFamily: 'var(--font-title)', fontSize: 'var(--fs-20)', fontWeight: 700 }}>
-          Venues
-        </h2>
-        <span style={{ fontFamily: 'var(--font-button)', fontSize: 'var(--fs-12)', letterSpacing: '0.18em', textTransform: 'uppercase', color: 'var(--fg-muted)' }}>
-          ({venues.data?.length ?? 0})
-        </span>
-      </header>
-      <p style={{
-        fontSize: 'var(--fs-13)', color: 'var(--fg-muted)',
-        marginBottom: 'var(--space-3)',
-      }}>
+    <section id="venues" style={{ scrollMarginTop: 96 }}>
+      <div className={styles.sectionHead}>
+        <MapPin size={12} strokeWidth={2} />
+        <span>Venues · {venues.data?.length ?? 0}</span>
+      </div>
+      <div className={styles.banner} style={{ marginBottom: 10 }}>
         Venues are maintained in Project Maintenance. This list is read-only;
         add, rename, or deactivate venues there.
-      </p>
+      </div>
 
-      <div style={{
-        background: 'var(--c-paper)', border: '1px solid var(--line)',
-        borderRadius: 'var(--radius-lg)', boxShadow: 'var(--shadow-2)', overflow: 'hidden',
-      }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+      <div className={styles.venuesCard}>
+        <table className={styles.table}>
           <thead>
             <tr>
-              <th style={thStyle}>Name</th>
-              <th style={thStyle}>State</th>
-              <th style={thStyle}>Status</th>
+              <th>Name</th>
+              <th>State</th>
+              <th>Status</th>
             </tr>
           </thead>
           <tbody>
             {venues.isLoading && (
-              <tr><td colSpan={3} style={emptyStyle}>Loading…</td></tr>
+              <tr><td colSpan={3} className={styles.empty}>Loading…</td></tr>
             )}
             {!venues.isLoading && (venues.data ?? []).length === 0 && (
-              <tr><td colSpan={3} style={emptyStyle}>No venues yet — add them in Project Maintenance.</td></tr>
+              <tr><td colSpan={3} className={styles.empty}>No venues yet — add them in Project Maintenance.</td></tr>
             )}
             {(venues.data ?? []).map((v) => (
-              <tr key={v.id} style={{ borderTop: '1px solid var(--line)' }}>
-                <td style={tdStyle}>
-                  <strong style={{ color: 'var(--c-ink)' }}>{v.name}</strong>
-                </td>
-                <td style={tdStyle}>{v.state ?? '—'}</td>
-                <td style={tdStyle}>
+              <tr key={v.id}>
+                <td><strong style={{ color: '#11140f', fontWeight: 600 }}>{v.name}</strong></td>
+                <td>{v.state ?? '—'}</td>
+                <td>
                   <span style={{
-                    display: 'inline-block', padding: '3px 10px',
-                    borderRadius: 999, fontSize: 'var(--fs-11)', fontWeight: 600,
+                    display: 'inline-block', padding: '2px 8px',
+                    borderRadius: 20, fontSize: 10, fontWeight: 700,
                     letterSpacing: '0.08em', textTransform: 'uppercase',
-                    background: v.active ? 'rgba(47, 93, 79, 0.12)' : 'rgba(34, 31, 32, 0.06)',
-                    color: v.active ? 'var(--c-secondary-a)' : 'var(--fg-muted)',
+                    fontFamily: 'var(--font-mono, ui-monospace, monospace)',
+                    background: v.active ? 'rgba(22, 105, 95, 0.12)' : 'rgba(17, 20, 15, 0.06)',
+                    color: v.active ? '#0c3f39' : '#767b6e',
                   }}>
                     {v.active ? 'Active' : 'Inactive'}
                   </span>
@@ -1416,23 +1427,8 @@ const VenuesSection = (_props: { canEdit: boolean }) => {
   );
 };
 
-const thStyle: CSSProperties = {
-  fontFamily: 'var(--font-button)', fontSize: 'var(--fs-12)', fontWeight: 600,
-  letterSpacing: '0.18em', textTransform: 'uppercase',
-  color: 'var(--fg-muted)', textAlign: 'left',
-  padding: 'var(--space-3) var(--space-4)', borderBottom: '1px solid var(--line)',
-};
-const tdStyle: CSSProperties = {
-  padding: 'var(--space-3) var(--space-4)',
-  fontSize: 'var(--fs-14)', color: 'var(--c-ink)',
-};
-const emptyStyle: CSSProperties = {
-  ...tdStyle, textAlign: 'center', color: 'var(--fg-muted)', padding: 'var(--space-5)',
-};
-const inputStyle: CSSProperties = {
-  fontFamily: 'var(--font-sans)', fontSize: 'var(--fs-14)',
-  background: 'var(--c-paper)', border: '1px solid var(--line)',
-  borderRadius: 'var(--radius-md)', padding: 'var(--space-2) var(--space-3)',
-  color: 'var(--c-ink)', outline: 'none',
-};
+/* thStyle / tdStyle / emptyStyle / inputStyle constants — removed with the
+   Ink & Petrol restyle. VenuesSection now composes with .table + .empty
+   from SalesOrderMaintenance.module.css (see the sectionHead + venuesCard
+   pattern in that file). */
 

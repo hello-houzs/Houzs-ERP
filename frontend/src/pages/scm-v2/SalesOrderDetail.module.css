@@ -1,25 +1,46 @@
 /* Sales Order detail page — HOUZS-style layout, 2990s tokens. */
 
-/* PR #163 — Commander 2026-05-27: "整个排版太大了 字体小一点 走系统风格".
-   Density pass — labels/inputs/cards all step down one size level so the
-   page reads like an admin tool rather than a brochure.
-   PR — Commander 2026-05-27 #2: "还是太大, 偏 AutoCount 风格". Second
-   density pass — tighter card padding, smaller title, less page gap. */
+/* Nick 2026-07-09 "edit 页面要和 create sales order 一样": Ink & Petrol
+   token overrides + sticky headerRow so the edit-mode Detail matches the
+   New SO form. Same cascade trick used in SalesOrderNew.module.css — the
+   descendants keep reading `var(--c-orange)` etc. and now resolve to
+   petrol green + warm off-white when they're inside this .page. */
 .page {
+  --c-orange:        #16695f;
+  --c-burnt:         #0c3f39;
+  --c-cream:         #f4f6f3;
+  --c-paper:         #fcfdfb;
+  --c-ink:           #11140f;
+  --c-ink-secondary: #767b6e;
+  --c-ink-muted:     #9aa093;
+  --fg-muted:        #767b6e;
+  --line:            #d6d9d2;
+  --line-strong:     #c2c6bd;
+  --c-accent-soft:   #eff6f4;
+
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4) var(--space-4);
-  background: var(--c-cream);
+  background: #dcdfd9;
   min-height: 100%;
 }
 
+/* Sticky title row — sits UNDER TopNavbar (h-12 = 48 px) so it doesn't
+   get occluded when the scroll starts. Same z-index recipe as the SO
+   Detail V2 read-only page (top-12 z-20 in Tailwind land). */
 .headerRow {
+  position: sticky;
+  top: 48px;
+  z-index: 20;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-4);
   flex-wrap: wrap;
+  padding: var(--space-3) 0;
+  background: #dcdfd9;
+  border-bottom: 1px solid #cdd1c8;
 }
 
 .titleBlock {
@@ -80,6 +101,12 @@
      on desktop — there's always enough width there for one row. */
   flex-wrap: wrap;
   justify-content: flex-end;
+  /* Nick 2026-07-09 — "整个画面占全部, 目前只有一半". When .actions wraps to
+     its own row inside .headerRow, `space-between` collapses to flex-start
+     for a single-item row → actions ended up left-aligned with 400+ px of
+     dead space on the right. margin-left: auto keeps it flush right even
+     after wrap so the header uses the full page width. */
+  margin-left: auto;
 }
 
 /* PR — commander 2026-05-27 followup. Total badge moved out of the page

@@ -1,0 +1,404 @@
+/* ====================================================================
+   Sales Order — NEW form
+   Theme: Ink & Petrol (2026-07-09 handoff)
+
+   Ships in ONE file so SoLineCard / PaymentsTable / DS Buttons continue
+   reading `var(--c-orange)` etc. but resolve to the Ink & Petrol
+   palette WHEN THEY'RE INSIDE THIS FORM.  Every 2990 SCM child
+   component inherits down .page and picks up petrol green instead of
+   the AutoCount amber, warm off-whites instead of cream — no touch to
+   the vendored 2990 stylesheets needed.
+
+   Palette map (2990 Theme C → Ink & Petrol):
+     --c-orange   #a16a2e amber-brown  →  #16695f petrol
+     --c-burnt    darker amber          →  #0c3f39 petrol dark
+     --c-cream    cream hover bg        →  #f4f6f3 warm off-white
+     --c-paper    near white surface    →  #fcfdfb near white
+     --c-ink                             →  #11140f deep ink
+     --line                              →  #d6d9d2 warm hair
+     --line-strong                       →  #c2c6bd warm hair strong
+     --c-accent-soft petrol-soft         →  #eff6f4 petrol-soft
+   Brass (#c79a5a) is preserved for brand / doc-number use only.
+   ==================================================================== */
+
+.page {
+  /* Ink & Petrol token overrides — cascade into every 2990 child. */
+  --c-orange:        #16695f;
+  --c-burnt:         #0c3f39;
+  --c-cream:         #f4f6f3;
+  --c-paper:         #fcfdfb;
+  --c-ink:           #11140f;
+  --c-ink-secondary: #767b6e;
+  --c-ink-muted:     #9aa093;
+  --fg-muted:        #767b6e;
+  --line:            #d6d9d2;
+  --line-strong:     #c2c6bd;
+  --c-accent-soft:   #eff6f4;
+
+  /* Round the section shell to 14px like the mockup. Inputs stay at 9px. */
+  --radius-md:  9px;
+  --radius-lg:  14px;
+
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  background: #dcdfd9;
+}
+
+/* ── Sticky page header ────────────────────────────────────────────── */
+/* TopNavbar (components/TopNavbar.tsx) sits sticky top-0 z-30 h-12 inside
+   the same <main class="overflow-y-auto"> that scrolls this page — a naive
+   top:0 here parks under it. Offset by the 48 px nav height. */
+.headerRow {
+  position: sticky;
+  top: 48px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: nowrap;
+  padding: 14px 26px 12px;
+  background: #dcdfd9;
+  border-bottom: 1px solid #cdd1c8;
+}
+
+.titleBlock {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+.backBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 36px;
+  padding: 0 14px;
+  background: #fff;
+  border: 1px solid #d6d9d2;
+  border-radius: 9px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #414539;
+  text-decoration: none;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.backBtn:hover { background: #f4f6f3; }
+
+.title {
+  font-family: var(--font-title, var(--font-sans, system-ui));
+  font-size: 18px;
+  font-weight: 700;
+  color: #11140f;
+  letter-spacing: -0.01em;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  line-height: 1.15;
+}
+
+.subtitle {
+  font-family: var(--font-sans, system-ui);
+  font-size: 11.5px;
+  color: #767b6e;
+  margin: 2px 0 0;
+}
+
+.actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+
+/* Total rail (from Detail — preserved for parity if referenced). */
+.totalRail { display: inline-flex; flex-direction: column; align-items: flex-end; gap: 1px; line-height: 1.1; margin-right: 8px; }
+.totalRailLabel { font-family: var(--font-mono, monospace); font-size: 9.5px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: #9aa093; }
+.totalRailValue { font-family: var(--font-money, ui-monospace, monospace); font-size: 15px; font-weight: 700; color: #0c3f39; font-variant-numeric: tabular-nums; }
+
+/* Status pill — used sparingly on New (form is a Draft). */
+.statusPill {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 3px 10px;
+  border-radius: 20px;
+  background: rgba(17, 20, 15, 0.08);
+  color: #414539;
+}
+.statusDraft { background: rgba(17, 20, 15, 0.08); color: #767b6e; }
+
+/* ── Section card ──────────────────────────────────────────────────── */
+.card {
+  background: #fff;
+  border: 1px solid #d6d9d2;
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+/* Every direct .page child EXCEPT the sticky .headerRow gets the same
+   horizontal margin + max-width, so sections, the fromScan banner, AND
+   the PaymentsTable (rendered without a .card wrapper) all line up.
+   flex-direction: column + align-self: center centers each row horiz. */
+.page > *:not(.headerRow) {
+  margin: 0 26px;
+  max-width: 1160px;
+  width: calc(100% - 52px);
+  align-self: center;
+}
+.page > *:not(.headerRow) + *:not(.headerRow) { margin-top: 12px; }
+.page > .headerRow + *:not(.headerRow) { margin-top: 14px; }
+.page > *:last-child { margin-bottom: 28px; }
+
+.cardHeader {
+  padding: 11px 20px;
+  border-bottom: 1px solid #ecebe2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 38px;
+}
+
+.cardTitle {
+  position: relative;
+  padding-left: 15px;
+  margin: 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #11140f;
+  line-height: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+.cardTitle::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 5px;
+  height: 14px;
+  background: #16695f;
+  border-radius: 3px;
+}
+.cardTitleMeta {
+  font-family: var(--font-sans, system-ui);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: #767b6e;
+}
+
+.cardBody {
+  padding: 14px 20px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ── Form grid (4-col; child fields can override span via gridColumn) ── */
+.formGrid,
+.formGrid4 {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px 14px;
+}
+@media (max-width: 1100px) {
+  .formGrid,
+  .formGrid4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 640px) {
+  .formGrid,
+  .formGrid4 { grid-template-columns: minmax(0, 1fr); }
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.fieldLabel {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: #9aa093;
+  margin-bottom: 5px;
+  line-height: 1;
+}
+
+/* Base input — matches mockup .fld exactly. */
+.fieldInput,
+.fieldSelect {
+  width: 100%;
+  height: 36px;
+  border: 1px solid #d6d9d2;
+  border-radius: 8px;
+  background: #fcfdfb;
+  padding: 0 11px;
+  font-family: var(--font-sans, system-ui);
+  font-size: 13px;
+  color: #11140f;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.fieldInput::placeholder,
+.fieldSelect::placeholder { color: #9aa093; }
+.fieldInput:focus,
+.fieldSelect:focus {
+  border-color: #16695f;
+  box-shadow: 0 0 0 3px rgba(22, 105, 95, 0.12);
+}
+.fieldInput:disabled,
+.fieldSelect:disabled { background: #f4f6f3; color: #9aa093; cursor: not-allowed; }
+
+/* Textarea variant */
+textarea.fieldInput { height: auto; padding: 11px 12px; line-height: 1.5; resize: vertical; }
+
+/* Select wrap holds the chevron overlay. */
+.selectWrap { position: relative; }
+.fieldSelect { appearance: none; padding-right: 30px; cursor: pointer; }
+.selectChevron {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #9aa093;
+  pointer-events: none;
+  font-size: 11px;
+  line-height: 1;
+}
+
+/* Field-level "edited" tint (from Detail's cascade highlight). */
+.edited { border-color: #c79a5a; background: #faf6ec; }
+
+/* ── Customer name suggestion popover ──────────────────────────────── */
+.suggestList {
+  position: absolute;
+  z-index: 20;
+  margin-top: 4px;
+  width: 100%;
+  max-height: 260px;
+  overflow-y: auto;
+  background: #fff;
+  border: 1px solid #c2c6bd;
+  border-radius: 10px;
+  box-shadow: 0 20px 40px -20px rgba(17, 24, 16, 0.24);
+}
+.suggestItem {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 9px 12px;
+  font-family: var(--font-sans, system-ui);
+  font-size: 13px;
+  color: #11140f;
+  border-bottom: 1px solid #ecebe2;
+  cursor: pointer;
+}
+.suggestItem:last-child { border-bottom: none; }
+.suggestItem:hover { background: #f4f6f3; }
+.suggestCode {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: #767b6e;
+}
+
+/* ── "Fill in address later" checkbox card ─────────────────────────── */
+.laterCard {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 11px;
+  border: 1px solid #e4e2d8;
+  background: #fafbf9;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.laterCardActive { background: #eff6f4; border-color: #bcdcd6; }
+.laterCardBox {
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  margin-top: 1px;
+  background: #fff;
+  border: 1.5px solid #c2c6bd;
+  transition: background 0.15s, border-color 0.15s;
+}
+.laterCardActive .laterCardBox { background: #16695f; border-color: #16695f; }
+.laterCardTitle { font-size: 13px; font-weight: 700; color: #11140f; }
+.laterCardHint { font-size: 12px; color: #767b6e; margin-top: 2px; line-height: 1.4; }
+
+/* ── Line items shell (SoLineCard slots into this) ─────────────────── */
+.linesBody {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 22px;
+}
+.addLineBtn {
+  height: 44px;
+  border: 1.5px dashed #b8bdb2;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: #0c3f39;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  background: #fcfdfb;
+  transition: background 0.15s, border-color 0.15s;
+}
+.addLineBtn:hover { background: #eff6f4; border-color: #16695f; }
+
+.subtotalRow {
+  padding: 16px 22px;
+  display: flex;
+  justify-content: flex-end;
+  border-top: 1px solid #f1f0ea;
+}
+.subtotalLabel {
+  font-size: 13px;
+  font-weight: 700;
+  color: #0c3f39;
+  margin-right: 12px;
+  align-self: baseline;
+}
+.subtotalValue {
+  font-family: var(--font-money, ui-monospace, monospace);
+  font-size: 20px;
+  font-weight: 700;
+  color: #0c3f39;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Toast + tiny meta (dates XOR warn, etc.) ──────────────────────── */
+.warnHint { font-size: 11px; margin-top: 4px; color: #b23a3a; }

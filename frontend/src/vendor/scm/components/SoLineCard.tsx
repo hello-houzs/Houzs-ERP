@@ -733,11 +733,14 @@ const SoLineCardInner = ({
           }}
         />
 
-        {/* 5. Unit Price — D4: locked to the SKU Master sell price below admin. */}
+        {/* 5. Unit Price — D4: locked to the SKU Master sell price below admin.
+             Uses a distinctive brass-tinted `.priceInput` (2026-07-09) so the
+             amount cell is impossible to miss between the qty and date
+             columns that sit either side of it. */}
         <input
           type="number"
           step="0.01"
-          className={styles.numericInput}
+          className={styles.priceInput}
           value={priceText}
           disabled={!isEditing || !canEditPrice}
           title={!canEditPrice ? 'Price follows the SKU Master sell price — admin can override' : undefined}
