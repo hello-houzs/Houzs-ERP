@@ -29,6 +29,8 @@ export const PERMISSIONS: PermissionDef[] = [
   { key: "projects.checklist.tick", resource: "Projects", verb: "write", label: "Tick checklist items", description: "Flip the status of (non-gated) checklist items, without editing project config" },
   { key: "projects.write",   resource: "Projects", verb: "write",  label: "Edit projects",     description: "Create and update projects, checklist items, finance" },
   { key: "projects.approve", resource: "Projects", verb: "manage", label: "Approve gated steps", description: "Tick permission-gated checklist items (e.g. 3D final approval)" },
+  { key: "stock_transfer.approve", resource: "Projects", verb: "manage", label: "Approve stock transfers", description: "Tick the Stock Out Transfer Record checklist step (director approval gate)" },
+  { key: "agreement.approve", resource: "Projects", verb: "manage", label: "Approve agreements", description: "Tick the Agreement / Quotation checklist step (director approval gate)" },
   { key: "projects.manage",  resource: "Projects", verb: "manage", label: "Manage projects",   description: "Archive, change stage, edit templates, backfill CSV" },
 
   // Sales entries — rep-facing sales log that later pushes to AutoCount
