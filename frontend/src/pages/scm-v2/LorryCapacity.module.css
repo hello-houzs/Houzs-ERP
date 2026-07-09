@@ -5,11 +5,25 @@
    brand styling — CSS variables + design-system tokens only, no raw palette. */
 
 .page {
+  /* Ink & Petrol token overrides — same cascade as SalesOrderNew.module.css. */
+  --c-orange:        #16695f;
+  --c-burnt:         #0c3f39;
+  --c-cream:         #f4f6f3;
+  --c-paper:         #fcfdfb;
+  --c-ink:           #11140f;
+  --c-ink-secondary: #767b6e;
+  --c-ink-muted:     #9aa093;
+  --fg:              #11140f;
+  --fg-muted:        #767b6e;
+  --line:            #d6d9d2;
+  --line-strong:     #c2c6bd;
+  --c-accent-soft:   #eff6f4;
+
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4) var(--space-4);
-  background: var(--c-cream);
+  background: #dcdfd9;
   min-height: 100%;
 }
 
@@ -69,7 +83,7 @@
 .segBtn:hover { color: var(--c-ink); }
 
 .segBtnActive {
-  background: rgba(232, 107, 58, 0.10);
+  background: rgba(22, 105, 95, 0.10);
   color: var(--c-burnt);
 }
 
@@ -223,7 +237,7 @@
   font-variant-numeric: tabular-nums;
 }
 .utilLow  { background: rgba(184, 51, 31, 0.12); color: var(--c-festive-b, #B8331F); }
-.utilMid  { background: rgba(232, 107, 58, 0.12); color: var(--c-burnt); }
+.utilMid  { background: rgba(22, 105, 95, 0.12); color: var(--c-burnt); }
 .utilHigh { background: rgba(47, 93, 79, 0.12);  color: var(--c-secondary-a); }
 
 /* Money cells — mark face, burnt when non-zero. */
@@ -237,7 +251,7 @@
   font-family: var(--font-mark);
   font-weight: 700;
   color: var(--c-ink);
-  background: rgba(232, 107, 58, 0.04);
+  background: rgba(22, 105, 95, 0.04);
   font-variant-numeric: tabular-nums;
 }
 .table tfoot td.left { text-align: left; text-transform: uppercase; font-family: var(--font-button); font-size: var(--fs-9, 9px); letter-spacing: 0.06em; color: var(--fg-muted); }
@@ -250,7 +264,7 @@
 }
 
 .bannerWarn {
-  background: rgba(232, 107, 58, 0.08);
+  background: rgba(22, 105, 95, 0.08);
   border: 1px solid var(--c-orange);
   color: var(--c-burnt);
   padding: var(--space-3) var(--space-4);
