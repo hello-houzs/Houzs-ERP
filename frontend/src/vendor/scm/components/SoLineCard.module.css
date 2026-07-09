@@ -41,7 +41,7 @@
     72px              /* Qty */
     96px              /* Unit Price */
     132px             /* Delivery Date */
-    auto              /* Amount (RM 9,999.99) */
+    96px              /* Amount — fixed narrow per 2026-07-09 mockup */
     auto              /* Group badge */
     28px;             /* Trash */
   align-items: center;
@@ -50,7 +50,7 @@
 
 @media (max-width: 1100px) {
   .row {
-    grid-template-columns: 32px minmax(180px, 1.5fr) minmax(120px, 1fr) 60px 84px 120px auto auto 28px;
+    grid-template-columns: 32px minmax(180px, 1.5fr) minmax(120px, 1fr) 60px 84px 120px 88px auto 28px;
   }
 }
 

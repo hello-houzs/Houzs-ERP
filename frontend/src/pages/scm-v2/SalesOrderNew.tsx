@@ -31,9 +31,12 @@
 // ----------------------------------------------------------------------------
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useQuery as useTanstackQuery } from '@tanstack/react-query';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Camera, ChevronDown, Plus, Save, X } from 'lucide-react';
 import { Button } from '@2990s/design-system';
+import { api } from '../../api/client';
+import type { Department, TeamMember } from '../../types';
 import { PhoneInput } from '../../vendor/scm/components/PhoneInput';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import {
@@ -821,6 +824,74 @@ export const SalesOrderNew = () => {
     [staffQ.data],
   );
 
+  /* Nick 2026-07-09 — "sales person 选项只出现 sales department 和 management
+     department 的成员". Cross-reference /api/users (Houzs member roster with
+     department_ids) against /api/departments so only staff belonging to a
+     Sales or Management department show up in the picker. Non-admins already
+     see a locked-to-self dropdown, so the queries only run for admins who can
+     re-pick. Any failure (403 for a user without users.read, offline, etc.)
+     falls back to the unfiltered staff list — better to show too many than
+     block SO creation. */
+  const houzsUsersQ = useTanstackQuery<{ users: TeamMember[] }>({
+    queryKey: ['salesperson-dept-filter', 'users'],
+    queryFn: () => api.get<{ users: TeamMember[] }>('/api/users'),
+    enabled: canChangeSalesperson,
+    staleTime: 10 * 60_000,
+    retry: false,
+  });
+  const departmentsQ = useTanstackQuery<{ departments: Department[] }>({
+    queryKey: ['salesperson-dept-filter', 'departments'],
+    queryFn: () => api.get<{ departments: Department[] }>('/api/departments'),
+    enabled: canChangeSalesperson,
+    staleTime: 10 * 60_000,
+    retry: false,
+  });
+  /* IDs of the "Sales" and "Management" departments — matched by name
+     case-insensitively so a rename to e.g. "Sales & Marketing" or
+     "Management Team" still lands. Empty when the queries are still
+     loading or an unrelated dept setup lacks either name. */
+  const salespersonAllowedDeptIds = useMemo(() => {
+    const rows = departmentsQ.data?.departments ?? [];
+    const ids = new Set<number>();
+    for (const d of rows) {
+      const n = (d.name ?? '').trim().toLowerCase();
+      if (n.includes('sales') || n.includes('management')) ids.add(d.id);
+    }
+    return ids;
+  }, [departmentsQ.data]);
+  /* Lowercase emails of Houzs users who belong (via department_ids or the
+     legacy single department_id) to at least one allowed dept — that's the
+     set we cross-reference against StaffRow.email. */
+  const salespersonAllowedEmails = useMemo(() => {
+    if (salespersonAllowedDeptIds.size === 0) return null;
+    const set = new Set<string>();
+    for (const u of houzsUsersQ.data?.users ?? []) {
+      const deptIds = u.department_ids ?? (u.department_id != null ? [u.department_id] : []);
+      const hit = deptIds.some((id) => salespersonAllowedDeptIds.has(id));
+      if (!hit) continue;
+      const em = (u.email ?? '').trim().toLowerCase();
+      if (em) set.add(em);
+    }
+    return set;
+  }, [houzsUsersQ.data, salespersonAllowedDeptIds]);
+  /* Staff subset the dropdown iterates. Always keep the currently-picked
+     staff (grandfather edit-mode / scan-seed rows whose original salesperson
+     is no longer in Sales/Management) and always keep the creator (they need
+     to see themselves as the default). Filter falls open when the queries
+     haven't produced a set yet — we don't want to hide every option while
+     loading. */
+  const filteredStaffList = useMemo(() => {
+    if (!salespersonAllowedEmails || salespersonAllowedEmails.size === 0) {
+      return staffList;
+    }
+    const selfEmail = (currentUser?.email ?? '').trim().toLowerCase();
+    return staffList.filter((s) => {
+      if (s.id === salespersonId) return true;
+      if (selfEmail && (s.email ?? '').trim().toLowerCase() === selfEmail) return true;
+      return salespersonAllowedEmails.has((s.email ?? '').trim().toLowerCase());
+    });
+  }, [staffList, salespersonAllowedEmails, salespersonId, currentUser?.email]);
+
   /* Owner 2026-06-23 — the Salesperson must NEVER be blank for whoever creates
      the order: the creator IS the salesperson. The 2990 bridge only knew the
      creator when they had a scm.staff row, so a user without one (the owner)
@@ -1607,7 +1678,7 @@ export const SalesOrderNew = () => {
                       {selfStaffMatch.name} ({selfStaffMatch.staffCode})
                     </option>
                   )}
-                  {canChangeSalesperson && sortByText(staffList).map((s) => (
+                  {canChangeSalesperson && sortByText(filteredStaffList).map((s) => (
                     <option key={s.id} value={s.id}>{s.name} ({s.staffCode})</option>
                   ))}
                 </select>

@@ -592,12 +592,15 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
      ~960-1000px SCM detail body without scrolling; when the aside
      drawer is open, the scroll wrapper still lets the tail nudge into
      view without clipping the Slip cell.
-     New sum: 112+116+92+104+104+52+128+28 = 736px of track. */
+     Amount collapsed 92px/0.9fr → 100px fixed (Nick 2026-07-09 "amount
+     列放窄一些") — no MYR-formatted number needs more than ~85px at
+     var(--font-money), so the fluid extra was empty air. Track sum:
+     112+116+100+104+104+52+128+28 = 744 px. */
   const gridStyle: CSSProperties | undefined = showSlip
     ? {
         gridTemplateColumns:
-          '112px 116px minmax(92px, 0.9fr) minmax(104px, 1fr) minmax(104px, 1fr) 52px 128px 28px',
-        minWidth: 800,
+          '112px 116px 100px minmax(104px, 1fr) minmax(104px, 1fr) 52px 128px 28px',
+        minWidth: 780,
       }
     : undefined;
 
