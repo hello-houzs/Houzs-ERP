@@ -2589,7 +2589,10 @@ function taskAttachmentKey(itemId: number, ext: string): string {
 
 app.put(
   "/checklist/:itemId/attachments",
-  requirePermission("projects.write"),
+  // Tick-only roles (drivers uploading setup/dismantle evidence) must be
+  // able to attach files to the tasks they can tick — same gate as the
+  // status/review routes above. Delete stays projects.write-only.
+  requireAnyPermission(["projects.write", "projects.checklist.tick"]),
   async (c) => {
     const itemId = parseInt(c.req.param("itemId"), 10);
     if (isNaN(itemId)) return c.json({ error: "Invalid ID" }, 400);
