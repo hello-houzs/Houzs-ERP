@@ -32,8 +32,14 @@
 }
 
 .title {
-  font-family: var(--font-title);
+  /* Nick 2026-07-09 Option C — sans 18 px matches SO New / Maintenance
+     admin-form density; drops the display serif so this reads like a
+     dense report title, not a marketing headline. */
+  font-family: var(--font-title, var(--font-sans, system-ui));
+  font-size: 18px;
   font-weight: 700;
+  letter-spacing: -0.01em;
+  line-height: 1.15;
   color: var(--c-ink);
   margin: 0;
 }
@@ -145,9 +151,10 @@
   border-bottom: 1px solid var(--line);
 }
 .tab {
-  font-family: var(--font-button);
-  font-size: var(--fs-14, 14px);
-  font-weight: 700;
+  /* Category tabs — sans compact, matches SO Maintenance sub-nav rhythm. */
+  font-family: var(--font-sans, system-ui);
+  font-size: 13px;
+  font-weight: 600;
   color: var(--fg-muted);
   background: transparent;
   border: none;
@@ -229,10 +236,11 @@
   gap: var(--space-2);
 }
 .filterLabel {
-  font-family: var(--font-sans);
-  font-size: var(--fs-11);
+  /* Ink & Petrol tag look — same mono uppercase treatment as thead th. */
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
   font-weight: 700;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--fg-muted);
 }
@@ -292,18 +300,27 @@
   white-space: nowrap;
 }
 .table thead th {
+  /* Ink & Petrol section-head look — mono uppercase 10.5 px with a wider
+     tracking, matches the SO New / Maintenance table header rhythm. */
   text-align: left;
-  font-size: var(--fs-11);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
   font-weight: 700;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--fg-muted);
-  padding: var(--space-3) var(--space-3);
+  padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--line-strong);
   background: var(--c-cream);
   white-space: nowrap;
 }
-.num { text-align: right; font-variant-numeric: tabular-nums; }
+.num {
+  text-align: right;
+  /* Numeric cells switch to the tabular money font so column edges stay
+     aligned across rows regardless of digit width. */
+  font-family: var(--font-money, ui-monospace, monospace);
+  font-variant-numeric: tabular-nums;
+}
 .colCaret { width: 30px; text-align: center; }
 .colSelect { width: 34px; text-align: center; }
 
