@@ -156,6 +156,10 @@ type ProjectDetail = {
     dismantle_driver_name?: string | null;
     setup_lorry_plate?: string | null;
     dismantle_lorry_plate?: string | null;
+    // Phase crew editor JSON (desktop parsePhaseCrew) — the desktop form
+    // writes crew here, NOT the FK columns above, so mobile must dual-read.
+    setup_crew?: string | null;
+    dismantle_crew?: string | null;
   };
   stock_transfers?: StockTransfer[];
   finance: {
@@ -1421,6 +1425,41 @@ function TaskRow({
   );
 }
 
+// The desktop Setup & Dismantle crew editor stores crew as JSON on
+// projects.setup_crew / dismantle_crew ({drivers:[{name,phone}], helpers,
+// lorries:["PLATE"], outsourced:{enabled,entries}}) and leaves the FK
+// columns (setup_driver_user_id / setup_lorry_id) untouched. Mobile shows
+// the FK-joined names when present and falls back to this JSON otherwise.
+type CrewPerson = { name: string; phone?: string | null };
+type PhaseCrew = { drivers: CrewPerson[]; helpers: CrewPerson[]; lorries: string[] };
+const parseCrewJson = (raw: string | null | undefined): PhaseCrew => {
+  const out: PhaseCrew = { drivers: [], helpers: [], lorries: [] };
+  if (!raw || raw === "{}") return out;
+  try {
+    const j = JSON.parse(raw) as Record<string, unknown>;
+    const people = (v: unknown): CrewPerson[] =>
+      (Array.isArray(v) ? v : [])
+        .filter((p): p is { name?: unknown; phone?: unknown } => !!p && typeof p === "object")
+        .filter((p) => typeof p.name === "string" && p.name.trim() !== "")
+        .map((p) => ({ name: String(p.name), phone: typeof p.phone === "string" && p.phone ? p.phone : null }));
+    out.drivers = people(j.drivers);
+    out.helpers = people(j.helpers);
+    out.lorries = (Array.isArray(j.lorries) ? j.lorries : []).filter((l): l is string => typeof l === "string" && l.trim() !== "");
+    const oc = j.outsourced as { enabled?: unknown; entries?: unknown } | undefined;
+    if (oc?.enabled && Array.isArray(oc.entries)) {
+      for (const e of oc.entries as Array<{ name?: unknown; phone?: unknown; plate?: unknown }>) {
+        if (typeof e?.name === "string" && e.name.trim()) out.drivers.push({ name: `${e.name} (outsource)`, phone: typeof e.phone === "string" && e.phone ? e.phone : null });
+        if (typeof e?.plate === "string" && e.plate.trim()) out.lorries.push(e.plate);
+      }
+    }
+  } catch {
+    // Legacy plain-text crew — nothing structured to show.
+  }
+  return out;
+};
+const crewLabel = (p: CrewPerson): string => (p.phone ? `${p.name} (${p.phone})` : p.name);
+const crewIsEmpty = (c: PhaseCrew): boolean => c.drivers.length === 0 && c.helpers.length === 0 && c.lorries.length === 0;
+
 // Best-effort content type from an R2 key's extension — some payloads
 // (finance lines, phase photos) don't carry a stored mime type, and the
 // lightbox needs one to decide between inline <img>/<video> and a
@@ -1474,7 +1513,8 @@ function SetupDismantle({
   const anyData =
     project.setup_start_at || project.dismantle_start_at ||
     project.setup_driver_name || project.dismantle_driver_name ||
-    project.setup_lorry_plate || project.dismantle_lorry_plate || photos.length > 0;
+    project.setup_lorry_plate || project.dismantle_lorry_plate || photos.length > 0 ||
+    !crewIsEmpty(parseCrewJson(project.setup_crew)) || !crewIsEmpty(parseCrewJson(project.dismantle_crew));
 
   return (
     <details className="pacc">
@@ -1590,6 +1630,10 @@ function PhaseBlock({
   // included); upload/replace stays gated on canWrite.
   const photoKey = photo?.r2_key ?? null;
   const [photoOpen, setPhotoOpen] = useState(false);
+  // Crew fallback: FK-joined name wins, else the crew-editor JSON.
+  const crew = parseCrewJson(isSetup ? project.setup_crew : project.dismantle_crew);
+  const driverDisplay = driverName || crew.drivers.map(crewLabel).join(", ") || "—";
+  const lorryDisplay = lorryPlate || crew.lorries.join(", ") || "—";
 
   // Compose date + time → the ISO the backend stores. Only PATCHes when a date
   // is present (time-only is meaningless without a day).
@@ -1661,13 +1705,25 @@ function PhaseBlock({
               {lorries.map((l) => <option key={l.id} value={l.id}>{l.plate || `#${l.id}`}{l.is_internal === false ? " (outsource)" : ""}</option>)}
             </select>
           </label>
+          {driverId == null && !crewIsEmpty(crew) && (
+            <div style={{ fontSize: 10.5, color: "#767b6e", margin: "0 0 6px", lineHeight: 1.5 }}>
+              Planned crew: {[
+                crew.drivers.map(crewLabel).join(", "),
+                crew.lorries.join(", "),
+                crew.helpers.length ? `Helpers: ${crew.helpers.map(crewLabel).join(", ")}` : "",
+              ].filter(Boolean).join(" · ")}
+            </div>
+          )}
         </>
       ) : (
         <div className="pgrid2" style={{ marginBottom: 6 }}>
           <div><div className="pkv-l">{kind} date</div><div className="pkv-v">{dOnly(startAt)}</div></div>
           <div><div className="pkv-l">Start time</div><div className="pkv-v">{tOnly(startAt)}</div></div>
-          <div><div className="pkv-l">{kind} driver</div><div className="pkv-v">{driverName || "—"}</div></div>
-          <div><div className="pkv-l">Lorry / vehicle</div><div className="pkv-v">{lorryPlate || "—"}</div></div>
+          <div><div className="pkv-l">{kind} driver</div><div className="pkv-v">{driverDisplay}</div></div>
+          <div><div className="pkv-l">Lorry / vehicle</div><div className="pkv-v">{lorryDisplay}</div></div>
+          {crew.helpers.length > 0 && (
+            <div style={{ gridColumn: "1 / -1" }}><div className="pkv-l">Helpers</div><div className="pkv-v">{crew.helpers.map(crewLabel).join(", ")}</div></div>
+          )}
         </div>
       )}
       <button
