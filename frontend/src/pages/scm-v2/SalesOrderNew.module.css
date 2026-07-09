@@ -46,10 +46,13 @@
 }
 
 /* ── Sticky page header ────────────────────────────────────────────── */
+/* TopNavbar (components/TopNavbar.tsx) sits sticky top-0 z-30 h-12 inside
+   the same <main class="overflow-y-auto"> that scrolls this page — a naive
+   top:0 here parks under it. Offset by the 48 px nav height. */
 .headerRow {
   position: sticky;
-  top: 0;
-  z-index: 6;
+  top: 48px;
+  z-index: 20;
   display: flex;
   align-items: center;
   justify-content: space-between;

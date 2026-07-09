@@ -24,7 +24,7 @@ import { createPortal } from 'react-dom';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeft, FileText, Pencil, Plus, X, Printer, Save,
-  DollarSign, Lock, History, ChevronDown, ChevronRight, Ban,
+  DollarSign, Lock, History, ChevronDown, ChevronRight, Ban, Share2,
 } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { formatPhone } from '@2990s/shared/phone';
@@ -49,7 +49,7 @@ import {
 } from '../../vendor/scm/lib/sales-order-queries';
 import { SoLineCard, emptySoLine, missingRequiredVariants, type SoLineDraft } from '../../vendor/scm/components/SoLineCard';
 import { PaymentsTable } from '../../vendor/scm/components/PaymentsTable';
-import { RelationshipMapButton } from '../../vendor/scm/components/RelationshipMapButton';
+import { DocumentRelationshipMapModal, type ChainNode } from '../../components/scm-v2/DocumentRelationshipMapModal';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { usePrompt } from '../../vendor/scm/components/PromptDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
@@ -439,6 +439,7 @@ export const SalesOrderDetail = () => {
   const [isEditing, setIsEditing] = useState(
     editSearchParams.get('edit') === '1',
   );
+  const [relMapOpen, setRelMapOpen] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const customerCardRef = useRef<CustomerCardHandle | null>(null);
 
@@ -958,7 +959,15 @@ export const SalesOrderDetail = () => {
             <History {...ICON} />
             <span>History</span>
           </Button>
-          <RelationshipMapButton type="so" id={docNo} />
+          {/* Nick 2026-07-09 "after edit 后的 relation map 还没配上":
+              swapped the old SAP-B1 flow modal for the shared 5-node
+              graph the read-only Detail V2 uses (Customer PO → SO → DO
+              → GRN → SI). Same chain shape both pages share so the map
+              is consistent whether Nick views or edits the SO. */}
+          <Button variant="ghost" size="md" onClick={() => setRelMapOpen(true)}>
+            <Share2 {...ICON} />
+            <span>Relationship Map</span>
+          </Button>
           <Button variant="ghost" size="md" onClick={handlePrint}>
             <Printer {...ICON} />
             <span>Print PDF</span>
@@ -1485,6 +1494,24 @@ export const SalesOrderDetail = () => {
       {historyOpen && (
         <HistoryPanel docNo={header.doc_no} onClose={closeHistory} />
       )}
+
+      {/* Nick 2026-07-09 — Relationship Map (5-node chain, same as V2). */}
+      <DocumentRelationshipMapModal
+        open={relMapOpen}
+        onClose={() => setRelMapOpen(false)}
+        nodes={((): ChainNode[] => {
+          const h = header as unknown as { customer_so_no?: string; ref?: string };
+          const poRef = h.customer_so_no || h.ref || '';
+          return [
+            { type: 'Customer PO',    doc: poRef || 'Not linked', meta: poRef ? "Customer's own doc" : '—', state: poRef ? 'done' : 'pending' },
+            { type: 'Sales Order',    doc: header.doc_no,         meta: 'This document',                    state: 'current' },
+            { type: 'Delivery Order', doc: 'Not created',         meta: 'After confirmation',               state: 'pending' },
+            { type: 'GRN',            doc: 'Not created',         meta: 'After delivery',                   state: 'pending' },
+            { type: 'Sales Invoice',  doc: 'Not created',         meta: 'On completion',                    state: 'pending' },
+          ];
+        })()}
+        onNodeClick={(n) => void n}
+      />
     </div>
   );
 };

@@ -35,10 +35,12 @@
 }
 
 /* ── Sticky page header ────────────────────────────────────────────── */
+/* TopNavbar is sticky top-0 z-30 h-12 inside the same scroll <main>, so
+   offset by 48 px to sit under it. */
 .headerRow {
   position: sticky;
-  top: 0;
-  z-index: 6;
+  top: 48px;
+  z-index: 20;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -93,10 +95,11 @@
 }
 
 /* ── Sticky sub-nav (section-jump pills, right below the sticky header) */
+/* 48 px TopNavbar + 44 px .headerRow ≈ 92 px offset. */
 .subNav {
   position: sticky;
-  top: 58px;
-  z-index: 5;
+  top: 92px;
+  z-index: 19;
   display: flex;
   gap: 6px;
   padding: 10px 26px;
