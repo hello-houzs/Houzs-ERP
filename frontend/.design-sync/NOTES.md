@@ -68,14 +68,20 @@ node -e "const fs=require('fs'); const c=fs.readFileSync('ds-bundle/_ds_bundle.c
 when the re-sync flow stabilizes.)
 
 ## Known render warns
-Triaged 2026-07-09 — all legitimate, renderHashes match the uploaded project:
-- `[RENDER_BLANK]` (PNG 4.5–5KB, just under the 5KB heuristic) on 12 small
-  floor-card components: Badge, ColorPicker, ExpandableText, HeaderButton,
-  IconButton, InlineEdit, ListSkeleton, PageHeader, PageSkeleton,
-  RowActionsMenu, StatusDot, TableSkeleton. These are genuinely small solo
-  renders, not failures. Fix = author `.design-sync/previews/<Name>.tsx`
-  (standing incremental-authoring offer), not a pipeline issue.
+Triaged 2026-07-09:
 - `[FONT_REMOTE]` listing Archivo / Caveat / Mistrully / Brush Script MT /
   Arial Black / Microsoft YaHei — expected: Caveat (--font-script) + Archivo
   (--font-mark) load via the Google Fonts @import (added 2026-07-09); the
   rest are stack fallbacks.
+- (resolved 2026-07-09) 12 small components used to warn `[RENDER_BLANK]`
+  as floor cards — all 12 now have authored previews in
+  `.design-sync/previews/` and grade good. Two root causes fixed along the
+  way, worth knowing on re-sync: (1) `.skeleton` shimmer CSS lives in
+  src/index.css and must stay mirrored in `.design-sync/tailwind-src.css`
+  or every Skeleton component renders invisible; (2) `cfg.buildCmd`'s
+  Tailwind --content scan must include `./.design-sync/previews/**/*.tsx`
+  or preview-only utility classes get purged. The resync driver does NOT
+  re-run cfg.buildCmd — run it manually after touching tailwind-src.css,
+  tokens.css, tailwind.config.js, or any preview file.
+- `cardMode: column` pinned for PageHeader / HeaderButton / TableSkeleton
+  (wide stories crop in the grid otherwise).
