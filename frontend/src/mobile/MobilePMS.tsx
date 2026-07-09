@@ -1218,6 +1218,7 @@ function TaskRow({
   reload: () => void;
 }) {
   const fileRef = useRef<HTMLInputElement | null>(null);
+  const { user } = useAuth();
   // Attachment viewer — every user (incl. read-only drivers) can open the
   // task's files fullscreen; MediaLightbox fetches with the bearer token,
   // so this also sidesteps mobile popup-blockers that ate window.open.
@@ -1230,6 +1231,15 @@ function TaskRow({
   // A row the caller can't tick because it needs a specific permission.
   const permBlocked = !!it.required_perm && !can(it.required_perm);
   const canRowTick = canTick && !permBlocked;
+  // Attach button: full-write users get it on every task; tick-only users
+  // (drivers) only on tasks badged for THEIR role — a driver should upload
+  // to "Setup Image · DRIVER", not to BD/PURCHASER/SALES PIC tasks
+  // (owner 2026-07-09).
+  const tickOnly = canTick && !can("projects.write");
+  const roleMatchesUser =
+    !!it.role_label && !!user?.role_name &&
+    it.role_label.trim().toUpperCase() === user.role_name.trim().toUpperCase();
+  const canAttach = canTick && (!tickOnly || roleMatchesUser);
 
   const cycle = async () => {
     if (!canRowTick || busy) return;
@@ -1400,7 +1410,7 @@ function TaskRow({
       <span style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600, color: na ? "#9aa093" : "#11140f", textDecoration: na ? "line-through" : "none" }}>{it.title}</span>
       {it.role_label && c && <span className="rbadge" style={{ background: `${c}1f`, color: c }}>{it.role_label}</span>}
       {it.due_date && <span style={{ fontSize: 9.5, color: "#9aa093", whiteSpace: "nowrap" }}>{dm(it.due_date)}</span>}
-      {canTick && (
+      {canAttach && (
         <>
           <input ref={fileRef} type="file" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void upload(f); }} />
           <button className="tinybtn" disabled={busy} onClick={() => fileRef.current?.click()} title={attachments.length ? `${attachments.length} file(s)` : "Attach"}>

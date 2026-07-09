@@ -2597,6 +2597,23 @@ app.put(
     const itemId = parseInt(c.req.param("itemId"), 10);
     if (isNaN(itemId)) return c.json({ error: "Invalid ID" }, 400);
     const user = c.get("user");
+    // Tick-only roles (no projects.write — i.e. drivers) may only attach to
+    // tasks badged for THEIR role (item.role_label vs the user's role name).
+    // Mirrors the mobile UI rule; owner 2026-07-09.
+    const granted = user?.permissions_set ?? user?.permissions;
+    if (!hasPermission(granted, "projects.write")) {
+      const item = await c.env.DB.prepare(
+        `SELECT role_label FROM project_checklist WHERE id = ?`
+      )
+        .bind(itemId)
+        .first<{ role_label: string | null }>();
+      if (!item) return c.json({ error: "Not found" }, 404);
+      const label = (item.role_label ?? "").trim().toUpperCase();
+      const roleName = (user?.role_name ?? "").trim().toUpperCase();
+      if (!label || !roleName || label !== roleName) {
+        return c.json({ error: "You can only attach files to tasks assigned to your role" }, 403);
+      }
+    }
     const ext = (c.req.query("ext") || "").toLowerCase();
     const fileName = c.req.query("name") || `attachment.${ext}`;
     if (!TASK_ATTACH_ALLOWED.has(ext)) {
