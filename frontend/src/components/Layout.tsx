@@ -165,9 +165,25 @@ export function PageHeader({
   return (
     <div
       className={
-        dense
-          ? "mb-3 flex flex-col gap-2 border-b border-border pb-2 sm:mb-4 sm:pb-3 md:flex-row md:items-end md:justify-between"
-          : "mb-4 flex flex-col gap-3 border-b border-border pb-3 sm:mb-8 sm:gap-3 sm:pb-6 md:flex-row md:items-end md:justify-between"
+        /* Nick 2026-07-09 — "每个页面的抬头都需要 PIN 起来". Made PageHeader
+           always sticky so the title + description + actions stay visible as
+           the operator scrolls through any long list or nested view.
+
+           · top-12 (48 px) — parks flush under TopNavbar (sticky top-0 h-12
+             z-30). z-20 keeps section content below.
+           · Negative -mx per breakpoint breaks out of the PullToRefresh
+             wrapper's px padding (px-4 sm:px-6 lg:px-10 xl:px-12 2xl:px-16)
+             so the sticky backdrop reads full-width edge-to-edge.
+           · Matching positive px so the inner content (h1 / actions) stays
+             aligned to the same page rhythm as when the page loaded.
+           · pt-3/sm:pt-4 gives the pinned header its own top breathing room
+             (the parent's pt-6 lives ABOVE us and stays there); the border-b
+             does the visual separation from below.
+           · bg-bg/95 + backdrop-blur keeps the header legible over any
+             content that would otherwise show through. */
+        (dense
+          ? "sticky top-12 z-20 -mx-4 sm:-mx-6 lg:-mx-10 xl:-mx-12 2xl:-mx-16 px-4 sm:px-6 lg:px-10 xl:px-12 2xl:px-16 bg-bg/95 backdrop-blur-sm mb-3 flex flex-col gap-2 border-b border-border pt-3 pb-2 sm:mb-4 sm:pt-4 sm:pb-3 md:flex-row md:items-end md:justify-between"
+          : "sticky top-12 z-20 -mx-4 sm:-mx-6 lg:-mx-10 xl:-mx-12 2xl:-mx-16 px-4 sm:px-6 lg:px-10 xl:px-12 2xl:px-16 bg-bg/95 backdrop-blur-sm mb-4 flex flex-col gap-3 border-b border-border pt-3 pb-3 sm:mb-8 sm:pt-4 sm:gap-3 sm:pb-6 md:flex-row md:items-end md:justify-between")
       }
     >
       <div className="min-w-0">
