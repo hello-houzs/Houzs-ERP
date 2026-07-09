@@ -1,11 +1,25 @@
 /* Inventory page — uses the new (post UI-density tightening) 2990s tokens. */
 
 .page {
+  /* Ink & Petrol token overrides — same cascade as SalesOrderNew.module.css. */
+  --c-orange:        #16695f;
+  --c-burnt:         #0c3f39;
+  --c-cream:         #f4f6f3;
+  --c-paper:         #fcfdfb;
+  --c-ink:           #11140f;
+  --c-ink-secondary: #767b6e;
+  --c-ink-muted:     #9aa093;
+  --fg:              #11140f;
+  --fg-muted:        #767b6e;
+  --line:            #d6d9d2;
+  --line-strong:     #c2c6bd;
+  --c-accent-soft:   #eff6f4;
+
   display: flex;
   flex-direction: column;
   gap: var(--space-5);
   padding: var(--space-5) var(--space-6) var(--space-7);
-  background: var(--c-cream);
+  background: #dcdfd9;
   min-height: 100%;
 }
 
