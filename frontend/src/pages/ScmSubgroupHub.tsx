@@ -5,6 +5,57 @@ import { HubGrid, type HubCard } from "../components/HubGrid";
 import { useAuth } from "../auth/AuthContext";
 
 /**
+ * Card copy per module — Nick 2026-07-09 "加上description". Keyed by
+ * the same `to` URL each leaf declares in NAV_TABS so a rename there
+ * lights up the empty-string fallback (safe) and adding a new leaf
+ * defaults to no description until we add it here (deliberate — copy
+ * is a hand-authored, on-brand line, not something to autogenerate).
+ * Kept as a plain object at module scope so it's a single flat lookup.
+ */
+const CARD_DESCRIPTIONS: Record<string, string> = {
+  // Sales Order
+  "/scm/sales-orders":     "Customer orders — draft to delivered.",
+  "/scm/delivery-orders":  "Dispatch and delivery tracking.",
+  "/scm/sales-invoices":   "Billing issued after delivery.",
+  "/scm/delivery-returns": "Returned goods and credit notes.",
+
+  // Consignment
+  "/scm/consignment-orders":            "Stock sent out on consignment terms.",
+  "/scm/consignment-notes":             "Delivery notes against consignment orders.",
+  "/scm/consignment-returns":           "Consigned stock returned to base.",
+  "/scm/purchase-consignment-orders":   "Stock received in on consignment terms.",
+  "/scm/purchase-consignment-receives": "Consigned stock coming in from suppliers.",
+  "/scm/purchase-consignment-returns":  "Consigned stock returned to supplier.",
+
+  // Procurement
+  "/scm/products":          "SKU master, categories, product models.",
+  "/scm/suppliers":         "Vendor directory and contact details.",
+  "/scm/mrp":               "Material requirements and stock status.",
+  "/scm/purchase-orders":   "Orders raised to suppliers.",
+  "/scm/grns":              "Goods received against a purchase order.",
+  "/scm/purchase-invoices": "Supplier invoices to pay.",
+  "/scm/purchase-returns":  "Stock returned to supplier.",
+
+  // Transportation
+  "/scm/delivery-planning":         "Route planning and dispatch board.",
+  "/scm/fleet":                     "Vehicle roster and status.",
+  "/scm/lorry-capacity":            "Available capacity by lorry.",
+  "/scm/drivers":                   "Driver directory.",
+  "/scm/delivery-planning-regions": "Delivery region maintenance.",
+
+  // Warehouse
+  "/scm/warehouses":         "Location master.",
+  "/scm/inventory":          "Stock on hand by SKU and warehouse.",
+  "/scm/stock-adjustments":  "Manual stock corrections.",
+  "/scm/stock-transfers":    "Stock moved between warehouses.",
+  "/scm/stock-takes":        "Physical count sessions.",
+
+  // Finance
+  "/scm/accounting":  "SCM-scoped GL and journals.",
+  "/scm/outstanding": "Receivables and payables ageing.",
+};
+
+/**
  * Generic Level 2 hub for a Supply Chain sub-group — Nick 2026-07-09:
  *   "这些也需要做成这样的页面 - 和 project"
  *
@@ -76,6 +127,7 @@ export function ScmSubgroupHub({
     .map((k) => ({
       key: k.to,
       label: k.label,
+      description: CARD_DESCRIPTIONS[k.to],
       icon: k.icon,
       onClick: () => navigate(k.to),
     }));
