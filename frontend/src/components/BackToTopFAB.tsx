@@ -16,7 +16,7 @@ import { useLocation } from "react-router-dom";
 import { ArrowUp } from "lucide-react";
 import { cn } from "../lib/utils";
 
-const SCROLL_THRESHOLD = 160;
+const SCROLL_THRESHOLD = 80;
 
 export function BackToTopFAB() {
   const [visible, setVisible] = useState(false);
@@ -58,16 +58,15 @@ export function BackToTopFAB() {
         "fixed z-40 inline-flex items-center justify-center rounded-full",
         "bg-surface text-ink-secondary border border-border shadow-slab",
         "transition-all duration-200 hover:scale-105 hover:text-primary hover:border-primary/40 active:scale-95",
-        // Sits to the LEFT of the QuickActionsFAB "+". Sizes/right-offsets
-        // tuned to hard pixel values (Tailwind arbitrary-`calc(theme(...))`
-        // sometimes fails to JIT-compile) so the button lands exactly one
-        // FAB-width + 8 px to the left of the "+".
-        //   Mobile "+":   h-12 w-12 (48 px) · right-4 (16 px) · bottom-24 (96 px)
-        //   Desktop "+":  h-14 w-14 (56 px) · right-5 (20 px) · bottom-5 (20 px)
-        //   Back-to-top mobile:  right-[72px] = 48 + 16 + 8
-        //   Back-to-top desktop: right-[84px] = 56 + 20 + 8
-        "h-12 w-12 right-[72px] bottom-[calc(6rem+env(safe-area-inset-bottom))]",
-        "lg:h-14 lg:w-14 lg:right-[84px] lg:bottom-5",
+        // Nick 2026-07-09 — "放在 + 的上方". Parks directly ABOVE the "+"
+        // FAB, sharing its right offset so both buttons stack vertically.
+        //   Mobile "+":   h-12 w-12 (48) · right-4 (16) · bottom = 96 + safe
+        //   Desktop "+":  h-14 w-14 (56) · right-5 (20) · bottom = 20
+        // Above-offsets = "+" bottom + "+" height + 8 px gap:
+        //   Mobile:  96 + 48 + 8 = 152 px  (+ safe-area-inset)
+        //   Desktop: 20 + 56 + 8 = 84 px
+        "h-12 w-12 right-4 bottom-[calc(9.5rem+env(safe-area-inset-bottom))]",
+        "lg:h-14 lg:w-14 lg:right-5 lg:bottom-[84px]",
       )}
     >
       <ArrowUp size={20} strokeWidth={2.4} />
