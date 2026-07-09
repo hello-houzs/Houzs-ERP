@@ -1055,9 +1055,14 @@ export async function listAssrCases(env: Env, f: ListAssrFilters) {
     binds.push(f.creditor_code);
   }
   if (f.search) {
-    where.push("(c.assr_no LIKE ? OR c.doc_no LIKE ? OR c.customer_name LIKE ?)");
-    const like = `%${f.search}%`;
-    binds.push(like, like, like);
+    // Case-insensitive (PG LIKE is case-sensitive, unlike SQLite) and
+    // covers the Ref No column too (Nick 2026-07-07). LOWER() instead
+    // of ILIKE so the D1 test mirror stays happy.
+    where.push(
+      "(LOWER(c.assr_no) LIKE ? OR LOWER(c.doc_no) LIKE ? OR LOWER(c.ref_no) LIKE ? OR LOWER(c.customer_name) LIKE ?)"
+    );
+    const like = `%${f.search.toLowerCase()}%`;
+    binds.push(like, like, like, like);
   }
   pushVisibilityScope(where, binds, f.visible_to_user_ids);
 
@@ -1182,9 +1187,14 @@ export async function exportAssrCases(
     binds.push(f.assigned_to, f.assigned_to);
   }
   if (f.search) {
-    where.push("(c.assr_no LIKE ? OR c.doc_no LIKE ? OR c.customer_name LIKE ?)");
-    const like = `%${f.search}%`;
-    binds.push(like, like, like);
+    // Case-insensitive (PG LIKE is case-sensitive, unlike SQLite) and
+    // covers the Ref No column too (Nick 2026-07-07). LOWER() instead
+    // of ILIKE so the D1 test mirror stays happy.
+    where.push(
+      "(LOWER(c.assr_no) LIKE ? OR LOWER(c.doc_no) LIKE ? OR LOWER(c.ref_no) LIKE ? OR LOWER(c.customer_name) LIKE ?)"
+    );
+    const like = `%${f.search.toLowerCase()}%`;
+    binds.push(like, like, like, like);
   }
   pushVisibilityScope(where, binds, f.visible_to_user_ids);
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";

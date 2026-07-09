@@ -5,7 +5,9 @@ type Variant = "synced" | "error" | "open" | "in-progress" | "closed" | "neutral
 const COLORS: Record<Variant, string> = {
   synced: "bg-synced",
   error: "bg-err",
-  open: "bg-amber-500",
+  // Same amber token the Stage funnel dots use, so list rows and the
+  // funnel read as one system (Nick 2026-07-07).
+  open: "bg-warning-text",
   "in-progress": "bg-accent",
   closed: "bg-synced",
   neutral: "bg-ink-muted",
@@ -35,6 +37,20 @@ export function statusVariantForAssr(status: string): Variant {
 }
 
 const STAGE_VARIANT: Record<string, Variant> = {
+  // v3.1 9-stage workflow — every open stage is amber and completed is
+  // green, matching the Stage funnel's dot semantics. Before this map
+  // the new slugs fell through to neutral, so the whole list rendered
+  // grey dots.
+  pending_review: "open",
+  under_verification: "open",
+  pending_solution: "open",
+  pending_inspection: "open",
+  pending_item_pickup: "open",
+  pending_supplier_pickup: "open",
+  pending_item_ready: "open",
+  pending_delivery_service: "open",
+  completed: "closed",
+  // Legacy 5-stage aliases.
   registration: "open",
   triage: "open",
   action: "in-progress",
