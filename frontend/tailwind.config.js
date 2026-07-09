@@ -70,10 +70,15 @@ export default {
         //   mono    = IBM Plex Mono                  (金额/编号)
         // Web fonts loaded via @import url() in src/index.css.
         body: ['"IBM Plex Sans"', '"Noto Sans SC"', "system-ui", "-apple-system", "BlinkMacSystemFont", '"Segoe UI"', "Roboto", '"Helvetica Neue"', "Arial", "sans-serif"],
-        // Display headings — serif per Theme C. `font-display` and
-        // `font-serif` are the same stack; keep both so existing call
-        // sites don't need a sweep.
-        display: ['"IBM Plex Serif"', '"Noto Serif SC"', "Georgia", "serif"],
+        // Nick 2026-07-09 "整个系统页面都要 C 字体": Ink & Petrol admin
+        // rhythm wants sans titles, not display serif. Point `font-display`
+        // at the same IBM Plex Sans stack as body so every V2 list / detail
+        // page (SO / DO / SI / DR / PO / PI / PR / GRN / Consignment) plus
+        // PageHeader / AuthShell / etc. render titles in sans — matching
+        // the CSS-module page rhythm we just switched via --font-title.
+        // `font-serif` stays on IBM Plex Serif for the rare place that
+        // deliberately opts into serif (`className="font-serif"`).
+        display: ['"IBM Plex Sans"', '"Noto Sans SC"', "system-ui", "-apple-system", "BlinkMacSystemFont", '"Segoe UI"', "Roboto", '"Helvetica Neue"', "Arial", "sans-serif"],
         // Real mono for codes / IDs / eyebrow labels (金额/编号 role).
         // Reverts the 2026-05-29 sans alias — Theme C wants Plex Mono.
         mono: ['"IBM Plex Mono"', "ui-monospace", "SFMono-Regular", "Menlo", "Consolas", "monospace"],
