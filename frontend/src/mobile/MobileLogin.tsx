@@ -14,7 +14,11 @@ export function MobileLogin() {
   const remembered = typeof localStorage !== "undefined" ? localStorage.getItem(REMEMBER_KEY) : null;
   const [email, setEmail] = useState(remembered ?? "");
   const [password, setPassword] = useState("");
-  const [remember, setRemember] = useState(remembered != null);
+  // Default Remember me ON — internal ERP, staff expect to stay signed in (7-day
+  // session). Was `remembered != null`, which left it UNCHECKED on a fresh/cleared
+  // device → the token went to sessionStorage and was lost on app close, forcing a
+  // re-login every open. Default true → token persists in localStorage.
+  const [remember, setRemember] = useState(true);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [challenge, setChallenge] = useState<string | null>(null);
@@ -104,7 +108,9 @@ export function MobileLogin() {
   }
 
   const labelStyle: React.CSSProperties = { display: "block", fontSize: 10, fontWeight: 700, letterSpacing: ".1em", textTransform: "uppercase", color: "rgba(231,234,228,.55)", marginBottom: 6 };
-  const inputStyle: React.CSSProperties = { width: "100%", background: "rgba(255,255,255,.07)", border: "1px solid rgba(231,234,228,.18)", borderRadius: 12, padding: "13px 14px", color: "#fff", fontFamily: "inherit", fontSize: 14, outline: "none" };
+  // fontSize MUST be >= 16 — iOS Safari auto-zooms the page when a focused input's
+  // font is under 16px (that's the "page keeps zooming when I type" bug).
+  const inputStyle: React.CSSProperties = { width: "100%", background: "rgba(255,255,255,.07)", border: "1px solid rgba(231,234,228,.18)", borderRadius: 12, padding: "13px 14px", color: "#fff", fontFamily: "inherit", fontSize: 16, outline: "none" };
   const delay = (i: number): React.CSSProperties => ({ animationDelay: `${0.05 + i * 0.07}s` });
 
   return (
