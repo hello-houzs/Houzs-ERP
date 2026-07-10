@@ -14,6 +14,7 @@ import { BreadcrumbsProvider } from "./hooks/useBreadcrumbs";
 import { PageSkeleton, ChunkReloadBoundary } from "./components/RouteFallback";
 import { NewVersionBanner } from "./components/NewVersionBanner";
 import { IosInstallGuide } from "./components/IosInstallGuide";
+import { AndroidInstallGuide } from "./components/AndroidInstallGuide";
 
 // Route-level code splitting: every page becomes its own chunk, fetched on
 // first visit, so the initial bundle carries only the shell. The .then()
@@ -211,6 +212,7 @@ export default function App() {
       <BackToTopFAB />
       <NewVersionBanner />
       <IosInstallGuide />
+      <AndroidInstallGuide />
       <Layout>
         <ChunkReloadBoundary>
         <Suspense fallback={<PageSkeleton />}>
