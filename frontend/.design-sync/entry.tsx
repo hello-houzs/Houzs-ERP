@@ -19,6 +19,7 @@ export { queryClient } from '../src/lib/queryClient';
 export { NotifyProvider } from '../src/vendor/scm/components/NotifyDialog';
 // App toast context — PullToRefresh (inside Layout) calls useToast().
 export { ToastProvider } from '../src/hooks/useToast';
+export * from '../src/components/AndroidInstallGuide';
 export * from '../src/components/Avatar';
 export * from '../src/components/Badge';
 export * from '../src/components/Breadcrumbs';

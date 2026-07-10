@@ -15,6 +15,9 @@
     "HeaderButton": { "cardMode": "column" },
     "TableSkeleton": { "cardMode": "column" },
     "AnnouncementBanner": { "cardMode": "single", "primaryStory": "Warning" },
+    "GlobalSearchProvider": { "cardMode": "single", "primaryStory": "PaletteWithResults" },
+    "IosInstallGuide": { "cardMode": "single", "primaryStory": "Guide" },
+    "AndroidInstallGuide": { "cardMode": "single", "primaryStory": "Guide" },
     "StatCard": { "cardMode": "column" },
     "Pagination": { "cardMode": "column" },
     "Panel": { "cardMode": "single", "primaryStory": "SalesOrderDocument" },
@@ -53,6 +56,7 @@
     "PhotoGallery": { "cardMode": "single", "primaryStory": "Gallery" }
   },
   "componentSrcMap": {
+    "AndroidInstallGuide": "src/components/AndroidInstallGuide.tsx",
     "AnnouncementBanner": "src/components/AnnouncementBanner.tsx",
     "AuthProvider": "src/auth/AuthContext.tsx",
     "Avatar": "src/components/Avatar.tsx",
