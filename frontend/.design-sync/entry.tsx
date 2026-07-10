@@ -2,6 +2,9 @@
 // from src/components/ so the converter can bundle them via esbuild.
 
 export * from '../src/components/AnnouncementBanner';
+// Auth context provider — connected components (AnnouncementBanner, Gate,
+// NotificationBell) read it; exported so previews can wrap them.
+export { AuthProvider } from '../src/auth/AuthContext';
 export * from '../src/components/Avatar';
 export * from '../src/components/Badge';
 export * from '../src/components/Breadcrumbs';
