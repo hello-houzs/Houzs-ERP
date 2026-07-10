@@ -13,10 +13,12 @@
   "overrides": {
     "PageHeader": { "cardMode": "column" },
     "HeaderButton": { "cardMode": "column" },
-    "TableSkeleton": { "cardMode": "column" }
+    "TableSkeleton": { "cardMode": "column" },
+    "AnnouncementBanner": { "cardMode": "single", "primaryStory": "Warning" }
   },
   "componentSrcMap": {
     "AnnouncementBanner": "src/components/AnnouncementBanner.tsx",
+    "AuthProvider": "src/auth/AuthContext.tsx",
     "Avatar": "src/components/Avatar.tsx",
     "Badge": "src/components/Badge.tsx",
     "Breadcrumbs": "src/components/Breadcrumbs.tsx",
