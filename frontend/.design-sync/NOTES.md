@@ -67,6 +67,28 @@ node -e "const fs=require('fs'); const c=fs.readFileSync('ds-bundle/_ds_bundle.c
 (`resync.mjs` driver workflow needs the same step — add it to a wrapper script
 when the re-sync flow stabilizes.)
 
+## Preview-authoring campaign (2026-07-09) — 57/70 authored
+All A/B-class components now carry authored previews graded good; the 13
+remaining floor cards are DELIBERATE (no static UI): AuthProvider,
+GlobalSearchProvider, PullToRefreshGuardProvider, BrowserPushSink,
+ChunkReloadBoundary, NewVersionBanner, PwaBanners, IosInstallGuide,
+MediaLightbox, PullToRefresh, ProjectChat, ProjectGantt (+ the LookupManager
+non-card export). Key mechanics a re-sync must know:
+- entry.tsx exports context helpers for previews: AuthProvider,
+  NotificationsProvider, BreadcrumbsProvider, ToastProvider, NotifyProvider
+  (scm), MemoryRouter, QueryClient(+Provider) + the app queryClient. NEVER
+  import these from source/node_modules in a preview — a second module
+  instance means a mismatched context and the hooks throw.
+- Connected components use the AnnouncementBanner stub pattern (module-scope
+  window.fetch stub + localStorage auth:token + provider wrap). The bundle's
+  useQuery is TanStack-backed — anything calling it needs
+  QueryClientProvider client={queryClient} from the bundle.
+- Sidebar/Layout `<img src="/logo-*.png">` can't be fetch-stubbed — those
+  cards show alt text; harmless.
+- cfg.overrides carries ~25 cardMode entries (column for wide stories,
+  single + primaryStory + viewport for fixed/portal components) — preserve
+  them when editing config.
+
 ## Known render warns
 Triaged 2026-07-09:
 - `[FONT_REMOTE]` listing Archivo / Caveat / Mistrully / Brush Script MT /
