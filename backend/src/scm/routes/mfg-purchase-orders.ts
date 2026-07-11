@@ -352,13 +352,20 @@ mfgPurchaseOrders.get('/:id', async (c) => {
   const id = c.req.param('id');
   const supabase = c.get('supabase');
 
-  const [headerRes, itemsRes] = await Promise.all([
+  /* Perf (go-live) — the downstream-lock GRN count is independent of the
+     header + items load, so fold it into the same parallel batch instead of a
+     third sequential round-trip. */
+  const [headerRes, itemsRes, childCountRes] = await Promise.all([
     supabase
       .from('purchase_orders')
       .select(`${HEADER_COLS}, supplier:suppliers(id, code, name, contact_person, phone, email, address)`)
       .eq('id', id)
       .maybeSingle(),
     supabase.from('purchase_order_items').select(ITEM_COLS).eq('purchase_order_id', id).order('created_at'),
+    supabase.from('grns')
+      .select('id', { head: true, count: 'exact' })
+      .eq('purchase_order_id', id)
+      .neq('status', 'CANCELLED'),
   ]);
 
   if (headerRes.error) return c.json({ error: 'load_failed', reason: headerRes.error.message }, 500);
@@ -366,10 +373,7 @@ mfgPurchaseOrders.get('/:id', async (c) => {
 
   /* Tier 2 downstream-lock — stamp has_children on the detail header so the
      PO Detail page can lock once any non-cancelled GRN exists. */
-  const { count: childCount } = await supabase.from('grns')
-    .select('id', { head: true, count: 'exact' })
-    .eq('purchase_order_id', id)
-    .neq('status', 'CANCELLED');
+  const childCount = childCountRes.count;
   const purchaseOrder = {
     ...(headerRes.data as Record<string, unknown>),
     has_children: (childCount ?? 0) > 0,
@@ -391,8 +395,6 @@ mfgPurchaseOrders.get('/:id', async (c) => {
       (r) => r.item_group as string | null | undefined,
     ),
   );
-  const receiptsMap = await poLineReceipts(supabase, itemRows.map((it) => it.id));
-
   /* 2026-06-12 — "Transferred SO" column on the PO PDF (DSL/AutoCount layout):
      resolve each line's so_item_id (migration 0098) to the source SO doc_no.
      Best-effort: a lookup failure leaves so_doc_no null, never blocks the
@@ -408,21 +410,31 @@ mfgPurchaseOrders.get('/:id', async (c) => {
      (same helper both sides) so a formatter change can't false-trip it. */
   type SoSnap = { item_code: string; item_group: string | null; description: string | null; variants: Record<string, unknown> | null; warehouse_id: string | null };
   const soLineById = new Map<string, SoSnap>();
-  try {
-    const soItemIds = [...new Set(
-      itemRows.map((it) => it.so_item_id as string | null | undefined).filter(Boolean),
-    )] as string[];
-    if (soItemIds.length > 0) {
-      const { data: soLines } = await supabase
-        .from('mfg_sales_order_items')
-        .select('id, doc_no, item_code, item_group, description, variants, warehouse_id')
-        .in('id', soItemIds);
-      for (const r of (soLines ?? []) as Array<{ id: string; doc_no: string } & SoSnap>) {
-        soDocByItem.set(r.id, r.doc_no);
-        soLineById.set(r.id, { item_code: r.item_code, item_group: r.item_group, description: r.description, variants: r.variants, warehouse_id: r.warehouse_id });
-      }
-    }
-  } catch { /* leave so_doc_no / drift null */ }
+  /* Perf (go-live) — the per-line receipts fetch and the SO-drift snapshot
+     fetch both depend only on `itemRows` and are independent of each other, so
+     run them concurrently instead of back-to-back. The SO-drift leg keeps its
+     own try/catch (best-effort) so a lookup failure still leaves so_doc_no /
+     drift null without blocking the detail response. */
+  const soItemIds = [...new Set(
+    itemRows.map((it) => it.so_item_id as string | null | undefined).filter(Boolean),
+  )] as string[];
+  const [receiptsMap] = await Promise.all([
+    poLineReceipts(supabase, itemRows.map((it) => it.id)),
+    (async () => {
+      try {
+        if (soItemIds.length > 0) {
+          const { data: soLines } = await supabase
+            .from('mfg_sales_order_items')
+            .select('id, doc_no, item_code, item_group, description, variants, warehouse_id')
+            .in('id', soItemIds);
+          for (const r of (soLines ?? []) as Array<{ id: string; doc_no: string } & SoSnap>) {
+            soDocByItem.set(r.id, r.doc_no);
+            soLineById.set(r.id, { item_code: r.item_code, item_group: r.item_group, description: r.description, variants: r.variants, warehouse_id: r.warehouse_id });
+          }
+        }
+      } catch { /* leave so_doc_no / drift null */ }
+    })(),
+  ]);
 
   const items = itemRows.map((it) => {
     const soId = it.so_item_id as string | null;
