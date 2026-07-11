@@ -24,7 +24,7 @@ import { createPortal } from 'react-dom';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeft, FileText, Pencil, Plus, X, Printer, Save,
-  DollarSign, Lock, History, ChevronDown, ChevronRight, Ban, Share2,
+  DollarSign, Lock, History, ChevronDown, ChevronRight, Ban, Share2, Check,
 } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { formatPhone } from '@2990s/shared/phone';
@@ -53,6 +53,17 @@ import { DocumentRelationshipMapModal, type ChainNode } from '../../components/s
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { usePrompt } from '../../vendor/scm/components/PromptDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
+import { StatusPill } from '../../vendor/scm/components/StatusPill';
+import {
+  useCreateAmendment,
+  useSupplierConfirm,
+  useApproveSo,
+  useAmendmentDetail,
+  useSoRevisions,
+  type CreateAmendmentLine,
+  type AmendmentLine,
+  type SoRevisionRow,
+} from '../../vendor/scm/lib/so-amendment-queries';
 import { fetchSoSlipUrl, fetchScanSlipImageBlobUrl } from '../../vendor/scm/lib/slip';
 import {
   useLocalities,
@@ -217,6 +228,14 @@ type SoHeader = {
   line_count: number;
   currency: string;
   note: string | null;
+  /* SO-amendment gate flags (Phase 1-C, read-only) — the GET /:docNo endpoint
+     derives these. amendment_eligible = the SO is processing-locked (already
+     PO'd) but still editable via the amendment flow, so a direct edit here must
+     go out as an amendment. open_amendment is the light summary of any in-flight
+     amendment (status NOT IN SENT/REJECTED). */
+  amendment_eligible?: boolean;
+  has_open_amendment?: boolean;
+  open_amendment?: { id: string; status: string; amendment_no: string } | null;
   // ── PR #35 additions ────────────────────────────────────────────────
   customer_id: string | null;
   customer_state: string | null;
@@ -387,6 +406,24 @@ export const SalesOrderDetail = () => {
   const updateItem = useUpdateMfgSalesOrderItem();
   const deleteItem = useDeleteMfgSalesOrderItem();
   const uploadPhoto = useUploadSoItemPhoto();
+
+  /* Phase 1-C — SO-amendment workflow. Same edit page; when the SO is
+     processing-locked (amendment_eligible) the primary Save submits an
+     amendment instead of writing the lines directly. The pending banner hosts
+     the supplier-confirm + approve-so gates, and the Revisions tab lists prior
+     SO snapshots. Buttons are gated on the Houzs scm.amendment.* permissions. */
+  const { can } = useHouzsAuth();
+  const createAmendment = useCreateAmendment();
+  const supplierConfirm = useSupplierConfirm();
+  const approveSo = useApproveSo();
+  /* Phase 1-C — main content tab. 'order' = the existing edit view; 'revisions'
+     lists prior SO snapshots read-only. */
+  const [activeTab, setActiveTab] = useState<'order' | 'revisions'>('order');
+  /* Amendment "view changes" modal — holds the open amendment id whose
+     before/after diff is being shown. */
+  const [viewingAmendmentId, setViewingAmendmentId] = useState<string | null>(null);
+  /* Inline supplier-confirmation form toggle inside the pending banner. */
+  const [showSupplierForm, setShowSupplierForm] = useState(false);
 
   const header = (detail.data?.salesOrder as SoHeader | undefined) ?? null;
   const items = useMemo(() => (detail.data?.items as SoItem[] | undefined) ?? [], [detail.data]);
@@ -560,6 +597,118 @@ export const SalesOrderDetail = () => {
       });
   };
 
+  /* ── Phase 1-C — SO-amendment submit ─────────────────────────────────────────
+     When the SO is processing-locked (amendment_eligible) the SAME edit view is
+     used, but the primary Save no longer writes the lines directly. Instead it
+     diffs the operator's in-flight drafts (editingDrafts / addingDraft) against
+     the pristine seed (originalDraftsRef / items) and packages the changes as a
+     CreateAmendmentLine[] for POST /mfg-sales-orders/:docNo/amendments. The
+     amendment then flows through the supplier-confirm / approve gates before it
+     re-derives the SO — direct line writes on a PO'd SO would break the supplier
+     copy, which is exactly what this workflow prevents. */
+  const buildAmendmentLines = (): CreateAmendmentLine[] => {
+    const out: CreateAmendmentLine[] = [];
+    // Existing lines — SPEC / QTY. An item still in editingDrafts whose signature
+    // moved from its pristine seed is a change; classify QTY-only vs SPEC.
+    for (const it of items) {
+      const draft = editingDrafts[it.id];
+      if (!draft) continue; // dropped → handled as REMOVE below
+      const orig = originalDraftsRef.current[it.id];
+      if (orig && lineCommitSig(draft) === lineCommitSig(orig)) continue; // untouched
+      const qtyOnly =
+        draft.itemCode === (orig?.itemCode ?? it.item_code)
+        && JSON.stringify(draft.variants ?? null) === JSON.stringify(orig?.variants ?? null)
+        && draft.unitPriceCenti === (orig?.unitPriceCenti ?? it.unit_price_centi)
+        && draft.qty !== (orig?.qty ?? it.qty);
+      out.push({
+        salesOrderItemId: it.id,
+        changeType: qtyOnly ? 'QTY' : 'SPEC',
+        newItemCode: draft.itemCode || undefined,
+        newVariants: draft.variants ?? undefined,
+        newQty: draft.qty,
+        newUnitPriceSen: draft.unitPriceCenti,
+        // Old snapshot for the before/after diff — the pre-edit line values.
+        oldSnapshot: {
+          itemCode: it.item_code,
+          variants: it.variants ?? null,
+          qty: it.qty,
+          unitPriceSen: it.unit_price_centi,
+          description2: it.description2 ?? null,
+        },
+      });
+    }
+    // Removed lines — an item present in `items` but whose draft was dropped
+    // from editingDrafts during this edit session (the trash button).
+    for (const it of items) {
+      if (editingDrafts[it.id]) continue;
+      out.push({
+        salesOrderItemId: it.id,
+        changeType: 'REMOVE',
+        oldSnapshot: {
+          itemCode: it.item_code,
+          variants: it.variants ?? null,
+          qty: it.qty,
+          unitPriceSen: it.unit_price_centi,
+          description2: it.description2 ?? null,
+        },
+      });
+    }
+    // Added line — the pending add-draft (no persisted id yet).
+    if (addingDraft && addingDraft.itemCode.trim()) {
+      out.push({
+        changeType: 'ADD',
+        newItemCode: addingDraft.itemCode,
+        newVariants: addingDraft.variants ?? undefined,
+        newQty: addingDraft.qty,
+        newUnitPriceSen: addingDraft.unitPriceCenti,
+      });
+    }
+    return out;
+  };
+
+  const submitAmendment = async () => {
+    if (!header || savingOrder) return;
+    setSaveError(null);
+    // Guard: an open add-draft must have a product picked.
+    if (addingDraft && !addingDraft.itemCode.trim()) {
+      setSaveError('Pick a product for the new line, or remove it before submitting.');
+      return;
+    }
+    const lines = buildAmendmentLines();
+    if (lines.length === 0) {
+      setSaveError('No changes to submit — edit a line first, then submit the amendment.');
+      return;
+    }
+    const reason = await askPrompt({
+      title: `Submit amendment for ${header.doc_no}?`,
+      body: 'This Sales Order is already ordered from the supplier, so your changes go out as an '
+        + 'amendment request. Coordinator + supplier confirm it before the order is revised. '
+        + 'Add a short reason (optional).',
+      placeholder: 'e.g. customer changed the fabric colour',
+      multiline: true,
+      confirmLabel: 'Submit amendment',
+    });
+    if (reason == null) return; // cancelled the prompt
+    setSavingOrder(true);
+    try {
+      await createAmendment.mutateAsync({
+        docNo: header.doc_no,
+        reason: reason.trim() || undefined,
+        lines,
+      });
+      setSavingOrder(false);
+      setIsEditing(false);
+      notify({
+        title: 'Amendment submitted',
+        body: 'It now needs supplier confirmation, then approval, before the order is revised.',
+      });
+    } catch (e) {
+      setSavingOrder(false);
+      // authed-fetch already humanises the API error to one plain sentence.
+      setSaveError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   /* Task #99 (UI perf) — Stable callbacks for the memo'd child cards. Without
      these, every parent render produces a new `onSave`/`onClose`, defeating
      React.memo on PaymentCard / CustomerCard / HistoryPanel. The mutations
@@ -692,15 +841,32 @@ export const SalesOrderDetail = () => {
       onChange: (patch: Partial<SoLineDraft>) => void;
       onRemove: () => void;
     }>();
+    /* Phase 1-C — on a processing-locked (PO'd) SO removing a line does NOT
+       delete the persisted row: the removal is packaged as a REMOVE amendment
+       line by buildAmendmentLines, so it only drops the draft here (which the
+       diff then reads as "gone"). A second-open guard (has_open_amendment)
+       falls back to the direct delete. */
+    const removeViaAmendment =
+      Boolean(header?.amendment_eligible) && !Boolean(header?.has_open_amendment);
     for (const it of items) {
       map.set(it.id, {
         onChange: (patch) => patchEditingDraft(it.id, patch),
         onRemove: async () => {
           if (await askConfirm({
-            title: `Remove ${it.item_code} from this SO?`,
+            title: removeViaAmendment
+              ? `Remove ${it.item_code} in this amendment?`
+              : `Remove ${it.item_code} from this SO?`,
+            body: removeViaAmendment
+              ? 'The line stays until the amendment is approved — Submit the amendment to request its removal.'
+              : undefined,
             confirmLabel: 'Remove',
             danger: true,
           })) {
+            if (removeViaAmendment) {
+              // Defer to the amendment: just drop the draft (→ REMOVE line).
+              removeEditingLine(it.id);
+              return;
+            }
             deleteItem.mutate(
               { docNo: it.doc_no, itemId: it.id },
               { onSuccess: () => removeEditingLine(it.id) },
@@ -710,7 +876,8 @@ export const SalesOrderDetail = () => {
       });
     }
     return map;
-  }, [items, patchEditingDraft, removeEditingLine, deleteItem, askConfirm]);
+  }, [items, patchEditingDraft, removeEditingLine, deleteItem, askConfirm,
+      header?.amendment_eligible, header?.has_open_amendment]);
 
   /* Add path — single inline SoLineCard appended below the table when
      "+ Add Line Item" is clicked. The draft is committed together with the
@@ -851,6 +1018,47 @@ export const SalesOrderDetail = () => {
   /* Line editing is locked by EITHER the status/downstream lock OR the process
      lock — both mean the lines are no longer ours to change. */
   const linesLocked = isLocked || procLockActive;
+
+  /* Phase 1-C — SO-amendment gating (server-derived flags on the header). When
+     amendment_eligible is true the SO is processing-locked (already PO'd) but not
+     hard-locked by a DO/SI: the edit page stays usable, but its primary Save
+     SUBMITS AN AMENDMENT rather than writing the lines directly. amendmentMode
+     also suppresses the immediate line-delete path (removals become REMOVE
+     amendment lines instead of live deletes). has_open_amendment gates the
+     pending banner + its supplier-confirm / approve actions. */
+  const amendmentEligible = Boolean(header.amendment_eligible) && !isLocked;
+  const openAmendment = header.open_amendment ?? null;
+  const hasOpenAmendment = Boolean(header.has_open_amendment) && openAmendment != null;
+  // While an amendment is already open, a second one can't be raised — the edit
+  // page reverts to the normal (direct) Save so the operator isn't blocked from
+  // fixing a still-editable field, and the amendment work happens in the banner.
+  const amendmentMode = amendmentEligible && !hasOpenAmendment;
+  // Houzs perm gates (mirror the server-side scm.amendment.* keys): the server
+  // 403 stays the real gate (its plain-language message is humanised by
+  // authed-fetch); these just hide the affordance from users who can't use it.
+  const canSupplierConfirm = can('scm.amendment.supplier_confirm');
+  const canApproveSo = can('scm.amendment.approve_so');
+
+  /* Phase 1-C — approve-so gate. Re-derives the SO + snapshots the old version
+     (SUPPLIER_PENDING → SO_APPROVED). useConfirm guards it; the mutation
+     invalidates the SO detail so the banner + Revisions tab refresh. */
+  const handleApproveSo = async () => {
+    if (!openAmendment) return;
+    if (!(await askConfirm({
+      title: `Approve SO revision for ${header.doc_no}?`,
+      body: 'This applies the supplier-confirmed changes: the Sales Order is re-derived and the '
+        + 'current version is snapshotted into Revisions. This cannot be undone.',
+      confirmLabel: 'Approve revision',
+    }))) return;
+    approveSo.mutate({ id: openAmendment.id }, {
+      onError: (e) => notify({
+        title: 'Could not approve the revision',
+        body: e instanceof Error ? e.message : String(e),
+        tone: 'error',
+      }),
+      onSuccess: () => notify({ title: 'SO revision approved' }),
+    });
+  };
 
   // Cancel SO flow (Commander 2026-05-29) — a cancelled SO stops proceeding
   // (no PO / DO / production; the whole page greys out) and can be reopened
@@ -1004,11 +1212,22 @@ export const SalesOrderDetail = () => {
                 onClick={cancelEdit} disabled={updateHeader.isPending || savingOrder}>
                 <span>Cancel</span>
               </Button>
-              <Button variant="primary" size="md"
-                onClick={saveEdit} disabled={updateHeader.isPending || savingOrder}>
-                <Save {...ICON} />
-                <span>{updateHeader.isPending || savingOrder ? 'Saving…' : 'Save'}</span>
-              </Button>
+              {/* Phase 1-C — on a processing-locked (PO'd) SO the primary Save
+                  SUBMITS AN AMENDMENT instead of writing the lines directly.
+                  Same edit view, same drafts — only the commit path changes. */}
+              {amendmentMode ? (
+                <Button variant="primary" size="md"
+                  onClick={submitAmendment} disabled={savingOrder || createAmendment.isPending}>
+                  <Save {...ICON} />
+                  <span>{savingOrder || createAmendment.isPending ? 'Submitting…' : 'Submit amendment request'}</span>
+                </Button>
+              ) : (
+                <Button variant="primary" size="md"
+                  onClick={saveEdit} disabled={updateHeader.isPending || savingOrder}>
+                  <Save {...ICON} />
+                  <span>{updateHeader.isPending || savingOrder ? 'Saving…' : 'Save'}</span>
+                </Button>
+              )}
             </>
           )}
         </div>
@@ -1119,6 +1338,107 @@ export const SalesOrderDetail = () => {
         </div>
       )}
 
+      {/* ── Amendment-mode banner (Phase 1-C) ─────────────────────────
+          The SO is processing-locked (already PO'd) but still editable via the
+          amendment flow. Explain that Save here submits an amendment, not a
+          direct edit. Only shown when there's no open amendment already. */}
+      {amendmentMode && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 8,
+          padding: 'var(--space-3) var(--space-4)',
+          background: 'rgba(232, 107, 58, 0.08)',
+          border: '1px solid var(--c-orange)',
+          borderRadius: 'var(--radius-md)',
+          fontSize: 'var(--fs-13)',
+        }}>
+          <Lock {...ICON} />
+          <span>This SO is already ordered from the supplier. Edit the lines as usual — your
+            {' '}<strong>Save</strong> submits an <strong>amendment request</strong> that the
+            coordinator and supplier confirm before the order is revised.</span>
+        </div>
+      )}
+
+      {/* ── Amendment-pending banner (Phase 1-C) ──────────────────────
+          An amendment is in flight. Show its status pill + the gate actions,
+          gated by permission AND the amendment's current state, plus a "view
+          changes" link opening the before/after diff. */}
+      {hasOpenAmendment && openAmendment && (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          flexWrap: 'wrap', gap: 'var(--space-3)',
+          padding: 'var(--space-3) var(--space-4)',
+          background: 'rgba(214, 158, 46, 0.14)',
+          border: '1px solid rgba(214, 158, 46, 0.55)',
+          borderRadius: 'var(--radius-md)',
+          fontSize: 'var(--fs-13)',
+        }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <History {...ICON} />
+            <span>Amendment <strong>{openAmendment.amendment_no}</strong> pending</span>
+            <StatusPill docType="soAmendment" status={openAmendment.status} />
+            <button type="button"
+              onClick={() => setViewingAmendmentId(openAmendment.id)}
+              style={{
+                background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                color: 'var(--c-burnt)', fontWeight: 600, fontSize: 'var(--fs-13)',
+                textDecoration: 'underline',
+              }}>
+              view changes
+            </button>
+          </span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            {/* Record supplier confirmation — only at REQUESTED, gated on perm */}
+            {openAmendment.status === 'REQUESTED' && canSupplierConfirm && (
+              <Button variant="primary" size="sm"
+                onClick={() => setShowSupplierForm((v) => !v)}
+                disabled={supplierConfirm.isPending}>
+                <Check {...ICON} />
+                <span>Record supplier confirmation</span>
+              </Button>
+            )}
+            {/* Approve SO revision — only at SUPPLIER_PENDING, gated on perm */}
+            {openAmendment.status === 'SUPPLIER_PENDING' && canApproveSo && (
+              <Button variant="primary" size="sm"
+                onClick={handleApproveSo} disabled={approveSo.isPending}>
+                <Check {...ICON} />
+                <span>Approve SO revision</span>
+              </Button>
+            )}
+          </span>
+          {/* Inline supplier-confirmation form (ref + note + attachment key) */}
+          {showSupplierForm && openAmendment.status === 'REQUESTED' && canSupplierConfirm && (
+            <div style={{ flexBasis: '100%' }}>
+              <SupplierConfirmForm
+                amendmentId={openAmendment.id}
+                onDone={() => setShowSupplierForm(false)}
+              />
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Tab strip (Phase 1-C) — Order vs Revisions ────────────────
+          The Revisions tab lists prior SO snapshots read-only. Default is the
+          Order view so nothing changes for never-amended SOs. */}
+      <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--line)' }}>
+        {(['order', 'revisions'] as const).map((t) => (
+          <button key={t} type="button" onClick={() => setActiveTab(t)}
+            style={{
+              padding: '8px 16px', border: 'none', background: 'none', cursor: 'pointer',
+              fontSize: 'var(--fs-13)', fontWeight: 600,
+              color: activeTab === t ? 'var(--c-burnt)' : 'var(--fg-muted)',
+              borderBottom: `2px solid ${activeTab === t ? 'var(--c-burnt)' : 'transparent'}`,
+              marginBottom: -1,
+            }}>
+            {t === 'order' ? 'Order' : 'Revisions'}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === 'revisions' ? (
+        <RevisionsTab docNo={header.doc_no} currency={header.currency} />
+      ) : (
+      <>
       {/* ── Customer info ───────────────────────────────────────── */}
       <CustomerCard
         ref={customerCardRef}
@@ -1490,6 +1810,8 @@ export const SalesOrderDetail = () => {
           unified feed. The underlying mfg_so_status_changes and
           mfg_so_price_overrides tables stay (writes continue), so old
           data remains queryable — only the rendering is removed. */}
+      </>
+      )}
 
       {/* ── Modals ─────────────────────────────────────────────── */}
       {/* Task #80 — LineItemModal removed (deleted with PR #125's inline
@@ -1501,6 +1823,15 @@ export const SalesOrderDetail = () => {
           docNo={header.doc_no}
           currency={header.currency}
           onClose={() => setOverriding(null)}
+        />
+      )}
+
+      {/* Phase 1-C — Amendment before/after diff modal ("view changes"). */}
+      {viewingAmendmentId && (
+        <AmendmentDiffModal
+          amendmentId={viewingAmendmentId}
+          currency={header.currency}
+          onClose={() => setViewingAmendmentId(null)}
         />
       )}
 
@@ -2889,3 +3220,317 @@ const HistoryPanel = memo(({
   );
 });
 HistoryPanel.displayName = 'HistoryPanel';
+
+/* ════════════════════════════════════════════════════════════════════════
+   Phase 1-C — SO-amendment UI: supplier-confirm form, before/after diff modal,
+   and the read-only Revisions tab. HOUZS VENDOR port of 2990's components.
+   ════════════════════════════════════════════════════════════════════════ */
+
+/* Inline supplier-confirmation form (rendered inside the pending banner).
+   Captures the supplier's acknowledgement: ref (required), note (optional),
+   attachment key (optional). Advances REQUESTED → SUPPLIER_PENDING via
+   useSupplierConfirm. Errors surface as one plain sentence via useNotify. */
+const SupplierConfirmForm = ({
+  amendmentId,
+  onDone,
+}: {
+  amendmentId: string;
+  onDone: () => void;
+}) => {
+  const supplierConfirm = useSupplierConfirm();
+  const notify = useNotify();
+  const [ref, setRef] = useState('');
+  const [note, setNote] = useState('');
+  const [attachmentKey, setAttachmentKey] = useState('');
+
+  const submit = () => {
+    if (!ref.trim()) {
+      notify({ title: 'Supplier reference is required', body: 'Enter the supplier\'s confirmation reference.', tone: 'error' });
+      return;
+    }
+    supplierConfirm.mutate(
+      {
+        id: amendmentId,
+        ref: ref.trim(),
+        note: note.trim() || undefined,
+        attachmentKey: attachmentKey.trim() || undefined,
+      },
+      {
+        onSuccess: () => { notify({ title: 'Supplier confirmation recorded' }); onDone(); },
+        onError: (e) => notify({
+          title: 'Could not record the confirmation',
+          body: e instanceof Error ? e.message : String(e),
+          tone: 'error',
+        }),
+      },
+    );
+  };
+
+  return (
+    <div style={{
+      marginTop: 'var(--space-2)', padding: 'var(--space-3)',
+      background: '#fff', border: '1px solid var(--line)', borderRadius: 'var(--radius-md)',
+    }}>
+      <div className={styles.formGrid4}>
+        <label className={styles.field} style={{ gridColumn: 'span 2' }}>
+          <span className={styles.fieldLabel}>Supplier confirmation ref *</span>
+          <input className={styles.fieldInput} value={ref}
+            placeholder="e.g. supplier WhatsApp / email ref"
+            onChange={(e) => setRef(e.target.value)} />
+        </label>
+        <label className={styles.field} style={{ gridColumn: 'span 2' }}>
+          <span className={styles.fieldLabel}>Attachment key (optional)</span>
+          <input className={styles.fieldInput} value={attachmentKey}
+            placeholder="R2 object key, if any"
+            onChange={(e) => setAttachmentKey(e.target.value)} />
+        </label>
+        <label className={styles.field} style={{ gridColumn: 'span 4' }}>
+          <span className={styles.fieldLabel}>Note (optional)</span>
+          <input className={styles.fieldInput} value={note}
+            placeholder="Anything the supplier flagged"
+            onChange={(e) => setNote(e.target.value)} />
+        </label>
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 'var(--space-2)' }}>
+        <Button variant="ghost" size="sm" onClick={onDone} disabled={supplierConfirm.isPending}>Cancel</Button>
+        <Button variant="primary" size="sm" onClick={submit} disabled={supplierConfirm.isPending}>
+          {supplierConfirm.isPending ? 'Recording…' : 'Record confirmation'}
+        </Button>
+      </div>
+    </div>
+  );
+};
+
+/* Before/after diff modal — opened by the "view changes" link. Reads the
+   amendment detail (useAmendmentDetail) and renders each requested line change
+   as an old → new pair. Falls back to plain messages while loading / on error
+   (authed-fetch already humanises the error). */
+const changeTypeLabel = (t: string): string =>
+  t === 'SPEC' ? 'Spec change' :
+  t === 'QTY' ? 'Quantity change' :
+  t === 'ADD' ? 'Added line' :
+  t === 'REMOVE' ? 'Removed line' : t;
+
+const AmendmentDiffModal = ({
+  amendmentId,
+  currency,
+  onClose,
+}: {
+  amendmentId: string;
+  currency: string;
+  onClose: () => void;
+}) => {
+  const { data, isLoading, error } = useAmendmentDetail(amendmentId);
+  const lines = (data?.lines ?? []) as AmendmentLine[];
+
+  const oldOf = (l: AmendmentLine): { itemCode?: string; qty?: number; unitPriceSen?: number; description2?: string | null } =>
+    (l.old_snapshot as { itemCode?: string; qty?: number; unitPriceSen?: number; description2?: string | null } | null) ?? {};
+
+  return (
+    <div className={styles.modalBackdrop} onClick={onClose}>
+      <div className={styles.modal} onClick={(e) => e.stopPropagation()} style={{ maxWidth: 720 }}>
+        <header className={styles.modalHeader}>
+          <h3 className={styles.modalTitle}>
+            <History {...ICON} style={{ verticalAlign: 'middle', marginRight: 6 }} />
+            Requested changes
+            {data?.amendment?.amendment_no ? ` — ${String(data.amendment.amendment_no)}` : ''}
+          </h3>
+          <button type="button" className={styles.iconBtn} onClick={onClose} title="Close">
+            <X {...ICON} />
+          </button>
+        </header>
+
+        <div className={styles.modalBody}>
+          {isLoading ? (
+            <p className={styles.muted}>Loading changes…</p>
+          ) : error ? (
+            <div className={styles.bannerWarn}>
+              <strong>Could not load the changes.</strong>{' '}
+              {error instanceof Error ? error.message : String(error)}
+            </div>
+          ) : lines.length === 0 ? (
+            <p className={styles.muted}>This amendment has no line changes recorded.</p>
+          ) : (
+            <table className={styles.table}>
+              <thead>
+                <tr>
+                  <th>Change</th>
+                  <th>Before</th>
+                  <th>After</th>
+                </tr>
+              </thead>
+              <tbody>
+                {lines.map((l) => {
+                  const old = oldOf(l);
+                  return (
+                    <tr key={l.id}>
+                      <td><strong>{changeTypeLabel(l.change_type)}</strong></td>
+                      <td>
+                        {l.change_type === 'ADD' ? (
+                          <span className={styles.muted}>—</span>
+                        ) : (
+                          <div>
+                            <div className={styles.codeCell}>{old.itemCode ?? '—'}</div>
+                            <div className={styles.muted}>
+                              Qty {old.qty ?? '—'}
+                              {typeof old.unitPriceSen === 'number' ? ` · ${fmtRm(old.unitPriceSen, currency)}` : ''}
+                            </div>
+                            {old.description2 && <div className={styles.muted}>{old.description2}</div>}
+                          </div>
+                        )}
+                      </td>
+                      <td>
+                        {l.change_type === 'REMOVE' ? (
+                          <span className={styles.muted}>Removed</span>
+                        ) : (
+                          <div>
+                            <div className={styles.codeCell}>{l.new_item_code ?? old.itemCode ?? '—'}</div>
+                            <div className={styles.muted}>
+                              Qty {l.new_qty ?? old.qty ?? '—'}
+                              {typeof l.new_unit_price_sen === 'number' ? ` · ${fmtRm(l.new_unit_price_sen, currency)}` : ''}
+                            </div>
+                            {(() => {
+                              const summary = buildVariantSummary(
+                                '', l.new_variants as Record<string, unknown> | null,
+                              );
+                              return summary ? <div className={styles.muted}>{summary}</div> : null;
+                            })()}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+          {data?.amendment?.reason ? (
+            <p className={styles.muted} style={{ marginTop: 'var(--space-3)' }}>
+              <strong>Reason:</strong> {String(data.amendment.reason)}
+            </p>
+          ) : null}
+        </div>
+
+        <footer className={styles.modalFooter}>
+          <Button variant="primary" size="md" onClick={onClose}>Close</Button>
+        </footer>
+      </div>
+    </div>
+  );
+};
+
+/* Read-only Revisions tab — lists prior SO snapshots (newest first) via
+   useSoRevisions. Clicking a revision expands its stored snapshot as read-only
+   detail. Mirrors the audit/history read pattern; no writes. */
+const RevisionsTab = ({ docNo, currency }: { docNo: string; currency: string }) => {
+  const { data, isLoading, error } = useSoRevisions(docNo);
+  const [openId, setOpenId] = useState<string | null>(null);
+  const revisions = (data?.revisions ?? []) as SoRevisionRow[];
+
+  return (
+    <section className={styles.card}>
+      <header className={styles.cardHeader}>
+        <h2 className={styles.cardTitle}>Revisions ({revisions.length})</h2>
+      </header>
+      <div className={styles.cardBody}>
+        {isLoading ? (
+          <p className={styles.muted}>Loading revisions…</p>
+        ) : error ? (
+          <div className={styles.bannerWarn}>
+            <strong>Could not load revisions.</strong>{' '}
+            {error instanceof Error ? error.message : String(error)}
+          </div>
+        ) : revisions.length === 0 ? (
+          <p className={styles.muted}>
+            No prior revisions — this Sales Order hasn't been amended yet. Approved
+            amendments snapshot the previous version here.
+          </p>
+        ) : (
+          <table className={styles.table}>
+            <thead>
+              <tr>
+                <th className={styles.tableRight}>Rev.</th>
+                <th>Date</th>
+                <th>Snapshot</th>
+              </tr>
+            </thead>
+            <tbody>
+              {revisions.map((r) => {
+                const isOpen = openId === r.id;
+                return (
+                  <tr key={r.id}>
+                    <td className={styles.tableRight}><strong>{r.revision}</strong></td>
+                    <td>{r.created_at ? fmtDateTime(r.created_at) : '—'}</td>
+                    <td>
+                      <button type="button"
+                        onClick={() => setOpenId(isOpen ? null : r.id)}
+                        style={{
+                          background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                          color: 'var(--c-burnt)', fontWeight: 600, fontSize: 'var(--fs-13)',
+                          textDecoration: 'underline',
+                        }}>
+                        {isOpen ? 'Hide snapshot' : 'View snapshot'}
+                      </button>
+                      {isOpen && (
+                        <RevisionSnapshot snapshot={r.snapshot} currency={currency} />
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </section>
+  );
+};
+
+/* Read-only render of a revision snapshot (header + lines). The snapshot JSON is
+   the full SO at that revision; we surface the key header fields + the line list.
+   Dual-reads snake/camel defensively (the approve-so snapshot shape isn't frozen). */
+const RevisionSnapshot = ({ snapshot, currency }: { snapshot: unknown; currency: string }) => {
+  const snap = (snapshot ?? {}) as Record<string, unknown>;
+  const header = (snap.header ?? snap.salesOrder ?? snap) as Record<string, unknown>;
+  const rawLines = (snap.lines ?? snap.items ?? []) as Array<Record<string, unknown>>;
+  const lines = Array.isArray(rawLines) ? rawLines : [];
+  const str = (v: unknown): string => (v == null ? '—' : String(v));
+  const centi = (v: unknown): string =>
+    typeof v === 'number' ? fmtRm(v, currency) : '—';
+
+  return (
+    <div style={{
+      marginTop: 'var(--space-2)', padding: 'var(--space-3)',
+      background: 'var(--bg-subtle, rgba(34,31,32,0.03))',
+      border: '1px solid var(--line)', borderRadius: 'var(--radius-md)',
+      fontSize: 'var(--fs-12)',
+    }}>
+      <div style={{ marginBottom: 'var(--space-2)' }}>
+        <strong>Customer:</strong> {str(header.debtor_name ?? header.debtorName)}
+        {' · '}<strong>Total:</strong> {centi(header.local_total_centi ?? header.localTotalCenti)}
+      </div>
+      {lines.length > 0 ? (
+        <table className={styles.table}>
+          <thead>
+            <tr>
+              <th>Item</th>
+              <th className={styles.tableRight}>Qty</th>
+              <th className={styles.tableRight}>Unit</th>
+            </tr>
+          </thead>
+          <tbody>
+            {lines.map((l, i) => (
+              <tr key={i}>
+                <td>{str(l.item_code ?? l.itemCode)}</td>
+                <td className={styles.tableRight}>{str(l.qty)}</td>
+                <td className={styles.tableRight}>{centi(l.unit_price_centi ?? l.unitPriceCenti)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : (
+        <span className={styles.muted}>Snapshot has no line detail.</span>
+      )}
+    </div>
+  );
+};

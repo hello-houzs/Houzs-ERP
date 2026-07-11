@@ -107,6 +107,7 @@ const ScmSalesOrderNewFromProductsV2 = lazy(() => import("./pages/scm-v2/SalesOr
 const ScmCategoriesV2 = lazy(() => import("./pages/scm-v2/Categories").then((m) => ({ default: m.Categories })));
 const ScmSoFromProductsV2 = lazy(() => import("./pages/scm-v2/SoFromProducts").then((m) => ({ default: m.SoFromProducts })));
 const ScmSalesOrderDetailV2 = lazy(() => import("./pages/scm-v2/SalesOrderDetailV2").then((m) => ({ default: m.SalesOrderDetailV2 })));
+const ScmAmendmentsV2 = lazy(() => import("./pages/scm-v2/Amendments").then((m) => ({ default: m.Amendments })));
 const ScmSoDetailListingV2 = lazy(() => import("./pages/scm-v2/SalesOrderDetailListing").then((m) => ({ default: m.SalesOrderDetailListing })));
 const ScmDoDetailListingV2 = lazy(() => import("./pages/scm-v2/DeliveryOrderDetailListing").then((m) => ({ default: m.DeliveryOrderDetailListing })));
 const ScmSiDetailListingV2 = lazy(() => import("./pages/scm-v2/SalesInvoiceDetailListing").then((m) => ({ default: m.SalesInvoiceDetailListing })));
@@ -417,6 +418,11 @@ export default function App() {
             MUST precede /:docNo so 'maintenance' isn't caught as a doc number.
             2990 uses :docNo (not :id) for the SO detail. */}
         <Route path="/scm/sales-orders" element={<ScmGuard area="scm.sales.orders"><Scm2990Shell><ScmSalesOrdersV2 /></Scm2990Shell></ScmGuard>} />
+        {/* SO amendment / revision queue (Phase 1-C). Gated on the amendment
+            permission keys (any of create / supplier-confirm / approve-so /
+            approve-po) — OR scm.access / Sales-Orders page access, so a full-
+            access SCM user still reaches it. Belongs to the Sales-Order domain. */}
+        <Route path="/scm/amendments" element={<Guard perm="scm.access" anyPerm={["scm.amendment.create", "scm.amendment.supplier_confirm", "scm.amendment.approve_so", "scm.amendment.approve_po"]} anyAccess={["scm.sales.orders"]}><Scm2990Shell><ScmAmendmentsV2 /></Scm2990Shell></Guard>} />
         <Route path="/scm/sales-orders/maintenance" element={<ScmGuard area="scm.sales.orders"><Scm2990Shell><ScmSalesOrderMaintenanceV2 /></Scm2990Shell></ScmGuard>} />
         {/* Literal /new + /generate MUST precede /:docNo so they match first. */}
         <Route path="/scm/sales-orders/new" element={<ScmGuard area="scm.sales.orders"><Scm2990Shell><ScmSalesOrderNewV2 /></Scm2990Shell></ScmGuard>} />

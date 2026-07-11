@@ -9,7 +9,7 @@
 //       useSubmitPurchaseOrder / useConfirmPurchaseOrder / useReopenPurchaseOrder
 //       (vendored suppliers-queries slice).
 
-import { useMemo, type ReactNode } from "react";
+import { Suspense, lazy, useMemo, type ReactNode } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -329,9 +329,37 @@ function HeroLine({
   );
 }
 
+// ─── Legacy inline editor (lazy) ───────────────────────────────────────────
+// V2 is READ-ONLY by design. The full inline editor — which also hosts the
+// SO-amendment "Revision ready" banner (Approve PO + Send) + Revisions tab —
+// lives in ./PurchaseOrderDetail. We forward to it whenever ?edit=1 lands on
+// this route so the Edit button (and the Amendments queue's PO rows) actually
+// open editable fields + the amendment banner. Mirrors SalesOrderDetailV2's
+// forward. Lazy-loaded so the editor bundle only ships when someone edits.
+const PurchaseOrderDetailInlineEditor = lazy(() =>
+  import("./PurchaseOrderDetail").then((m) => ({ default: m.PurchaseOrderDetail })),
+);
+
 // ─── Main page ─────────────────────────────────────────────────────────────
 
+/* Thin router — only calls useSearchParams so Rules of Hooks are respected when
+   the ?edit=1 flip swaps between the read-only body and the lazy inline editor
+   (the two children have different hook counts). */
 export function PurchaseOrderDetailV2() {
+  const [params] = useSearchParams();
+  if (params.get("edit") === "1") {
+    return (
+      <Suspense
+        fallback={<div className="p-8 text-[13px] text-ink-muted">Loading editor…</div>}
+      >
+        <PurchaseOrderDetailInlineEditor />
+      </Suspense>
+    );
+  }
+  return <PurchaseOrderDetailV2ReadOnly />;
+}
+
+function PurchaseOrderDetailV2ReadOnly() {
   const { id } = useParams<{ id: string }>();
   const [params] = useSearchParams();
   const navigate = useNavigate();

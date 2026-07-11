@@ -25,7 +25,8 @@ export const STATUS_TONES: Record<StatusTone, { bg: string; fg: string }> = {
 export type StatusDocType =
   | 'po' | 'grn' | 'pi' | 'pr'
   | 'so' | 'do' | 'si' | 'dr'
-  | 'stockTransfer' | 'stockTake';
+  | 'stockTransfer' | 'stockTake'
+  | 'soAmendment';
 
 type Entry = { label: string; tone: StatusTone };
 
@@ -106,10 +107,24 @@ const STOCK_TAKE: Record<string, Entry> = {
   CANCELLED: { label: 'Cancelled', tone: 'danger' },
 };
 
+// SO amendment / revision workflow (Phase 1-C). Two-gate state machine:
+// REQUESTED → SUPPLIER_PENDING → SO_APPROVED → PO_APPROVED → SENT / REJECTED.
+// The two mid-gates read as in-progress (progress/burnt); SENT is the terminal
+// happy path (success/green); REJECTED closes it (danger/red).
+const SO_AMENDMENT: Record<string, Entry> = {
+  REQUESTED:        { label: 'Requested',         tone: 'info' },
+  SUPPLIER_PENDING: { label: 'Supplier Pending',  tone: 'pending' },
+  SO_APPROVED:      { label: 'SO Approved',        tone: 'progress' },
+  PO_APPROVED:      { label: 'PO Approved',        tone: 'progress' },
+  SENT:             { label: 'Sent',               tone: 'success' },
+  REJECTED:         { label: 'Rejected',           tone: 'danger' },
+};
+
 const MAPS: Record<StatusDocType, Record<string, Entry>> = {
   po: PO, grn: GRN, pi: PI, pr: PR,
   so: SO, do: DO, si: SI, dr: DR,
   stockTransfer: STOCK_TRANSFER, stockTake: STOCK_TAKE,
+  soAmendment: SO_AMENDMENT,
 };
 
 const titleCase = (raw: string): string =>
