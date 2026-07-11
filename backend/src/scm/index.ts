@@ -24,6 +24,7 @@ import { suppliers } from "./routes/suppliers";
 import { mfgPurchaseOrders } from "./routes/mfg-purchase-orders";
 import { grns } from "./routes/grns";
 import { purchaseInvoices } from "./routes/purchase-invoices";
+import { paymentVouchers } from "./routes/payment-vouchers";
 import { mfgSalesOrders } from "./routes/mfg-sales-orders";
 import { soAmendments } from "./routes/so-amendments";
 import { stateWarehouseMappings } from "./routes/state-warehouse-mappings";
@@ -207,6 +208,12 @@ scm.route("/stock-takes", stockTakes);
 // ── SCM Finance (scm.finance.accounting) ────────────────────────────────────
 scm.use("/accounting/*", scmAreaGuard("scm.finance.accounting"));
 scm.route("/accounting", accounting);
+// Payment Vouchers — standalone AP cash-out doc (port of 2990 0189/0202, Phase
+// 1-B MYR). A finance document that posts a JE to the GL + can settle PIs, so it
+// rides the same L2 area guard as Accounting (GET=view, POST/PATCH=edit); the
+// finer scm.payment_voucher.* gates layer on inside the handlers.
+scm.use("/payment-vouchers/*", scmAreaGuard("scm.finance.accounting"));
+scm.route("/payment-vouchers", paymentVouchers);
 // ── MRP (scm.procurement.mrp) ───────────────────────────────────────────────
 scm.use("/mrp/*", scmAreaGuard("scm.procurement.mrp"));
 scm.route("/mrp", mrp);

@@ -20,6 +20,7 @@ import {
   Truck,
   PackageCheck,
   ReceiptText,
+  Wallet,
   Undo2,
   Warehouse,
   ArrowLeftRight,
@@ -364,6 +365,7 @@ export const NAV_TABS: NavTab[] = [
         anyAccess: ["scm.finance", "scm.finance.accounting", "scm.finance.outstanding"],
         children: [
           { to: "/scm/accounting", label: "Accounting", icon: BookOpen, anyPerm: ["*", "scm.access"], anyAccess: ["scm.finance.accounting"] },
+          { to: "/scm/payment-vouchers", label: "Payment Vouchers", icon: Wallet, anyPerm: ["*", "scm.access", "scm.payment_voucher.create", "scm.payment_voucher.write", "scm.payment_voucher.post", "scm.payment_voucher.cancel"], anyAccess: ["scm.finance.accounting"] },
           { to: "/scm/outstanding", label: "Outstanding", icon: AlertCircle, anyPerm: ["*", "scm.access"], anyAccess: ["scm.finance.outstanding"] },
         ],
       },

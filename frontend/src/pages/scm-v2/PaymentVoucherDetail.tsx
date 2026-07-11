@@ -1,0 +1,567 @@
+// ----------------------------------------------------------------------------
+// PaymentVoucherDetail — full-page route at /scm/payment-vouchers/:id.
+//
+// A View → Edit machine for a standalone Payment Voucher (PV):
+//   • View: header (payee, supplier, "Paid From" account, date, notes) + a
+//     read-only line table (description · debit account · amount) + total +
+//     status pill + the PIs this voucher settles.
+//   • Edit (DRAFT only): payee, supplier, purpose, credit account, date, notes,
+//     editable lines, and the supplier's outstanding PIs to settle.
+//   • Actions: Post (DRAFT → POSTED, writes the GL entry + settles PIs) and
+//     Cancel (reverses the GL entry + PI settlement, → CANCELLED). A POSTED /
+//     CANCELLED voucher is read-only.
+//
+// HOUZS VENDOR — port of 2990's apps/backend/src/pages/PaymentVoucherDetail.tsx,
+// Phase 1-B MYR: the foreign-currency UI (currency / exchange-rate / MYR-equiv)
+// is DROPPED (phase A). The "Apply to PI" picker derives the supplier's
+// outstanding PIs client-side from the PI list. Post/Cancel/Edit are gated on
+// the scm.payment_voucher.* flat permissions.
+// ----------------------------------------------------------------------------
+
+import { useEffect, useMemo, useState } from 'react';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
+import { ArrowLeft, ChevronDown, Pencil, Plus, Save, Send, Ban, Trash2, X } from 'lucide-react';
+import { Button } from '@2990s/design-system';
+import { fmtDateOrDash } from '@2990s/shared';
+import {
+  usePaymentVoucherDetail,
+  useUpdatePaymentVoucher,
+  usePostPaymentVoucher,
+  useCancelPaymentVoucher,
+} from '../../vendor/scm/lib/payment-voucher-queries';
+import { useAccounts, type Account } from '../../vendor/scm/lib/accounting-queries';
+import { usePurchaseInvoices } from '../../vendor/scm/lib/purchase-invoice-queries';
+import { useSuppliers } from '../../vendor/scm/lib/suppliers-queries';
+import { sortByText } from '../../vendor/scm/lib/sort-options';
+import { useAuth as useHouzsAuth } from '../../auth/AuthContext';
+import { MoneyInput } from '../../vendor/scm/components/MoneyInput';
+import { DateField } from '../../vendor/scm/components/DateField';
+import { AccountSelect } from '../../vendor/scm/components/AccountSelect';
+import { StatusPill } from '../../vendor/scm/components/StatusPill';
+import { SkeletonDetailPage } from '../../vendor/scm/components/Skeleton';
+import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
+import { useNotify } from '../../vendor/scm/components/NotifyDialog';
+import styles from './SalesOrderDetail.module.css';
+
+const ICON    = { size: 16, strokeWidth: 1.75 } as const;
+const SM_ICON = { size: 14, strokeWidth: 1.75 } as const;
+
+const fmtRm = (centi: number | null | undefined): string => {
+  const v = centi ?? 0;
+  return `MYR ${(v / 100).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+};
+
+/* Migration 0202 — human label for the PV purpose. */
+const purposeLabel = (p: string | null | undefined): string =>
+  p === 'FREIGHT' ? 'Freight'
+  : p === 'OTHER' ? 'Other'
+  : 'Supplier payment (settle PI)';
+
+type EditLine = {
+  rid:              string;
+  description:      string;
+  debitAccountCode: string;
+  amountCenti:      number;
+};
+
+const newLine = (): EditLine => ({
+  rid:              `l${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+  description:      '',
+  debitAccountCode: '',
+  amountCenti:      0,
+});
+
+function InfoCell({ label, value }: { label: string; value: string | null | undefined }) {
+  return (
+    <div>
+      <div style={{ fontSize: 'var(--fs-11)', textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--fg-muted)', marginBottom: 2 }}>{label}</div>
+      <div style={{ color: value ? 'var(--fg)' : 'var(--fg-muted)' }}>{value || '—'}</div>
+    </div>
+  );
+}
+
+export const PaymentVoucherDetail = () => {
+  const { id = '' } = useParams();
+  const [searchParams] = useSearchParams();
+  const askConfirm = useConfirm();
+  const notify = useNotify();
+  const { can } = useHouzsAuth();
+
+  const detailQ = usePaymentVoucherDetail(id || null);
+  const pv    = detailQ.data?.paymentVoucher as Record<string, any> | undefined;
+  const lines = (detailQ.data?.lines ?? []) as Array<Record<string, any>>;
+  // Migration 0202 — PIs this voucher settles (camelCase from the API).
+  const allocations = (detailQ.data?.allocations ?? []) as Array<Record<string, any>>;
+
+  const update = useUpdatePaymentVoucher();
+  const post   = usePostPaymentVoucher();
+  const cancel = useCancelPaymentVoucher();
+  const busy   = update.isPending || post.isPending || cancel.isPending;
+
+  const canWrite  = can('scm.payment_voucher.write');
+  const canPost   = can('scm.payment_voucher.post');
+  const canCancel = can('scm.payment_voucher.cancel');
+
+  const accountsQ = useAccounts();
+  const accounts  = useMemo<Account[]>(() => (accountsQ.data?.accounts ?? []).filter((a) => a.is_active), [accountsQ.data]);
+  const accountLabel = (code: string | null | undefined): string => {
+    if (!code) return '—';
+    const a = accounts.find((x) => x.account_code === code);
+    return a ? `${a.account_code} · ${a.account_name}` : code;
+  };
+
+  const suppliersQ = useSuppliers({ status: 'ACTIVE' });
+
+  const isDraft = pv?.status === 'DRAFT';
+  const [isEditing, setIsEditing] = useState(() => searchParams.get('edit') === '1');
+
+  // Edit draft state.
+  const [payeeName, setPayeeName]                 = useState('');
+  const [supplierId, setSupplierId]               = useState('');
+  const [purpose, setPurpose]                     = useState<'SUPPLIER_PAYMENT' | 'FREIGHT' | 'OTHER'>('SUPPLIER_PAYMENT');
+  const [creditAccountCode, setCreditAccountCode] = useState('');
+  const [voucherDate, setVoucherDate]             = useState('');
+  const [notes, setNotes]                         = useState('');
+  const [editLines, setEditLines]                 = useState<EditLine[]>([]);
+  // Migration 0202 — edit allocations: applied amount per PI id (centi).
+  const [allocAmounts, setAllocAmounts]           = useState<Record<string, number>>({});
+
+  // A POSTED/CANCELLED voucher can never enter edit mode.
+  useEffect(() => { if (!isDraft && isEditing) setIsEditing(false); }, [isDraft, isEditing]);
+
+  // Seed the draft from the loaded voucher whenever we enter edit mode.
+  useEffect(() => {
+    if (!isEditing || !pv) return;
+    setPayeeName(pv.payee_name ?? '');
+    setSupplierId(pv.supplier_id ?? '');
+    setPurpose((pv.purpose ?? 'SUPPLIER_PAYMENT') as 'SUPPLIER_PAYMENT' | 'FREIGHT' | 'OTHER');
+    setCreditAccountCode(pv.credit_account_code ?? '');
+    setVoucherDate(pv.voucher_date ?? '');
+    setNotes(pv.notes ?? '');
+    // Seed the applied-amount map from the loaded allocations (keyed by PI id).
+    setAllocAmounts(Object.fromEntries(
+      allocations.map((a) => [String(a.piId ?? a.pi_id ?? ''), Number(a.amountCenti ?? a.amount_centi ?? 0)]),
+    ));
+    setEditLines(
+      lines.length > 0
+        ? lines.map((l) => ({
+            rid:              `l${l.id}`,
+            description:      l.description ?? '',
+            debitAccountCode: l.debit_account_code ?? '',
+            amountCenti:      Number(l.amount_centi ?? 0),
+          }))
+        : [newLine()],
+    );
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEditing, pv?.id]);
+
+  const setLine  = (rid: string, patch: Partial<EditLine>) =>
+    setEditLines((prev) => prev.map((l) => (l.rid === rid ? { ...l, ...patch } : l)));
+  const dropLine = (rid: string) => setEditLines((prev) => (prev.length <= 1 ? prev : prev.filter((l) => l.rid !== rid)));
+  const addLine  = () => setEditLines((prev) => [...prev, newLine()]);
+
+  const editTotalCenti = useMemo(() => editLines.reduce((s, l) => s + l.amountCenti, 0), [editLines]);
+  const viewTotalCenti = Number(pv?.total_centi ?? 0);
+  const totalCenti = isEditing ? editTotalCenti : viewTotalCenti;
+
+  /* ── Edit allocations (migration 0202) ────────────────────────────────────
+     In Edit mode on a SUPPLIER_PAYMENT voucher, list the supplier's outstanding
+     PIs (derived client-side from the PI list) so the operator can add/adjust
+     settlements. The already-allocated PIs stay listed (their outstanding
+     excludes what this PV applies, so add it back). */
+  const editApplyToPi = isEditing && purpose === 'SUPPLIER_PAYMENT' && !!supplierId;
+  const piListQ = usePurchaseInvoices();
+  const editAllocRows = useMemo(() => {
+    if (!editApplyToPi) return [] as Array<{ piId: string; invoiceNumber: string; supplierInvoiceRef: string | null; outstandingCenti: number }>;
+    const appliedByThisPv = new Map<string, number>(
+      allocations.map((a) => [String(a.piId ?? a.pi_id ?? ''), Number(a.amountCenti ?? a.amount_centi ?? 0)]),
+    );
+    const byId = new Map<string, { piId: string; invoiceNumber: string; supplierInvoiceRef: string | null; outstandingCenti: number }>();
+    for (const r of ((piListQ.data?.purchaseInvoices ?? []) as Array<Record<string, any>>)) {
+      const sid = String(r.supplier_id ?? r.supplier?.id ?? '');
+      if (sid !== supplierId) continue;
+      const st = String(r.status ?? '').toUpperCase();
+      if (st !== 'POSTED' && st !== 'PARTIALLY_PAID') continue;
+      const piId = String(r.id ?? '');
+      if (!piId) continue;
+      const baseOutstanding = Number(r.total_centi ?? 0) - Number(r.paid_centi ?? 0);
+      const outstanding = baseOutstanding + (appliedByThisPv.get(piId) ?? 0);
+      if (outstanding <= 0) continue;
+      byId.set(piId, {
+        piId,
+        invoiceNumber:      String(r.invoice_number ?? piId),
+        supplierInvoiceRef: (r.supplier_invoice_ref ?? null) as string | null,
+        outstandingCenti:   outstanding,
+      });
+    }
+    // Ensure every already-allocated PI is present even if it dropped off.
+    for (const a of allocations) {
+      const piId = String(a.piId ?? a.pi_id ?? '');
+      if (!piId || byId.has(piId)) continue;
+      byId.set(piId, {
+        piId,
+        invoiceNumber:      String(a.invoiceNumber ?? a.invoice_number ?? piId),
+        supplierInvoiceRef: (a.supplierInvoiceRef ?? a.supplier_invoice_ref ?? null) as string | null,
+        outstandingCenti:   Number(a.amountCenti ?? a.amount_centi ?? 0),
+      });
+    }
+    return [...byId.values()];
+  }, [editApplyToPi, piListQ.data, allocations, supplierId]);
+
+  const editAllocatedCenti = useMemo(
+    () => editAllocRows.reduce((s, r) => s + (allocAmounts[r.piId] ?? 0), 0),
+    [editAllocRows, allocAmounts],
+  );
+  const editOverAllocated = editApplyToPi && editAllocatedCenti > editTotalCenti;
+
+  if (detailQ.isLoading || !pv) return <SkeletonDetailPage />;
+
+  const onSave = async () => {
+    const realLines = editLines.filter((l) => l.debitAccountCode && l.amountCenti > 0);
+    if (!payeeName.trim()) { notify({ title: 'Enter a payee', body: 'Who is this voucher paying?', tone: 'error' }); return; }
+    if (!creditAccountCode) { notify({ title: 'Pick a “Paid From” account', body: 'Choose the bank / cash / payables account.', tone: 'error' }); return; }
+    if (realLines.length === 0) { notify({ title: 'Add at least one line', body: 'Each line needs a debit account and an amount > 0.', tone: 'error' }); return; }
+    if (editOverAllocated) {
+      notify({ title: 'Applied more than the voucher total', body: `You've applied ${fmtRm(editAllocatedCenti)} to PIs but the voucher total is only ${fmtRm(editTotalCenti)}.`, tone: 'error' });
+      return;
+    }
+    // Migration 0202 — settled PIs (SUPPLIER_PAYMENT only). Send the full set of
+    // applied rows (amount > 0) so the server replaces the prior allocations.
+    const sendAllocations = editApplyToPi
+      ? editAllocRows
+          .map((r) => ({ piId: r.piId, amountCenti: allocAmounts[r.piId] ?? 0 }))
+          .filter((a) => a.amountCenti > 0)
+      : [];
+    try {
+      await update.mutateAsync({
+        id,
+        payeeName:         payeeName.trim(),
+        supplierId:        supplierId || null,
+        purpose,
+        creditAccountCode,
+        voucherDate,
+        notes:             notes || null,
+        currency:          'MYR',
+        exchangeRate:      1,
+        lines: realLines.map((l) => ({
+          description:      l.description || undefined,
+          debitAccountCode: l.debitAccountCode,
+          amountCenti:      l.amountCenti,
+        })),
+        // Always send allocations for a SUPPLIER_PAYMENT edit (empty clears
+        // them); FREIGHT/OTHER omit the key so the server leaves them untouched.
+        ...(editApplyToPi ? { allocations: sendAllocations } : {}),
+      });
+      setIsEditing(false);
+    } catch (err) {
+      notify({ title: 'Save failed', body: err instanceof Error ? err.message : String(err), tone: 'error' });
+    }
+  };
+
+  const onPost = async () => {
+    if (!(await askConfirm({ title: `Post voucher ${pv.pv_number}?`, body: 'This writes the journal entry to the General Ledger and locks the voucher.', confirmLabel: 'Post to GL' }))) return;
+    try {
+      await post.mutateAsync(id);
+    } catch (err) {
+      notify({ title: 'Post failed', body: err instanceof Error ? err.message : String(err), tone: 'error' });
+    }
+  };
+
+  const onCancel = async () => {
+    if (!(await askConfirm({ title: `Cancel voucher ${pv.pv_number}?`, body: 'This sets status to CANCELLED and reverses the GL entry if it was posted.', confirmLabel: 'Cancel voucher', danger: true }))) return;
+    try {
+      await cancel.mutateAsync(id);
+    } catch (err) {
+      notify({ title: 'Cancel failed', body: err instanceof Error ? err.message : String(err), tone: 'error' });
+    }
+  };
+
+  return (
+    <div className={styles.page}>
+      <div className={styles.headerRow}>
+        <div className={styles.titleBlock}>
+          <Link to="/scm/payment-vouchers" className={styles.backBtn}>
+            <ArrowLeft {...ICON} /> <span>Payment Vouchers</span>
+          </Link>
+          <h1 className={styles.title}>{pv.pv_number}</h1>
+        </div>
+        <div className={styles.actions} style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+          <StatusPill docType="pv" status={pv.status} />
+          {!isEditing ? (
+            <>
+              {isDraft && canWrite && (
+                <Button variant="ghost" size="md" onClick={() => setIsEditing(true)} disabled={busy}>
+                  <Pencil {...ICON} /> Edit
+                </Button>
+              )}
+              {isDraft && canPost && (
+                <Button variant="primary" size="md" onClick={onPost} disabled={busy}>
+                  <Send {...ICON} /> Post to GL
+                </Button>
+              )}
+              {pv.status !== 'CANCELLED' && canCancel && (
+                <Button variant="ghost" size="md" onClick={onCancel} disabled={busy}>
+                  <Ban {...ICON} /> Cancel
+                </Button>
+              )}
+            </>
+          ) : (
+            <>
+              <Button variant="ghost" size="md" onClick={() => setIsEditing(false)} disabled={busy}>
+                <X {...ICON} /> Back
+              </Button>
+              <Button variant="primary" size="md" onClick={onSave} disabled={busy}>
+                <Save {...ICON} /> {update.isPending ? 'Saving…' : 'Save'}
+              </Button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* ── Header card ───────────────────────────────────────────────── */}
+      <section className={styles.card}>
+        <div className={styles.cardHeader}><h2 className={styles.cardTitle}>Header</h2></div>
+        <div className={styles.cardBody}>
+          {!isEditing ? (
+            <div className={styles.formGrid2}>
+              <InfoCell label="Payee" value={pv.payee_name} />
+              <InfoCell label="Supplier" value={pv.supplier?.name ?? null} />
+              <InfoCell label="Purpose" value={purposeLabel(pv.purpose)} />
+              <InfoCell label="Paid From" value={accountLabel(pv.credit_account_code)} />
+              <InfoCell label="Voucher Date" value={pv.voucher_date ? fmtDateOrDash(pv.voucher_date) : null} />
+              <InfoCell label="Notes" value={pv.notes ?? null} />
+            </div>
+          ) : (
+            <div className={styles.formGrid2}>
+              <label className={styles.field}>
+                <span className={styles.fieldLabel}>Payee *</span>
+                <input type="text" value={payeeName} onChange={(e) => setPayeeName(e.target.value)} className={styles.fieldInput} />
+              </label>
+              <label className={styles.field}>
+                <span className={styles.fieldLabel}>Supplier {purpose === 'SUPPLIER_PAYMENT' ? '*' : '(optional)'}</span>
+                <select value={supplierId} onChange={(e) => setSupplierId(e.target.value)} className={styles.fieldInput} disabled={suppliersQ.isLoading}>
+                  <option value="">— None (free-text payee) —</option>
+                  {sortByText(suppliersQ.data ?? []).map((s) => (
+                    <option key={s.id} value={s.id}>{s.code} · {s.name}</option>
+                  ))}
+                </select>
+              </label>
+              <label className={styles.field}>
+                <span className={styles.fieldLabel}>Purpose</span>
+                <span className={styles.selectWrap}>
+                  <select className={styles.fieldSelect} value={purpose} onChange={(e) => setPurpose(e.target.value as 'SUPPLIER_PAYMENT' | 'FREIGHT' | 'OTHER')}>
+                    <option value="SUPPLIER_PAYMENT">Supplier payment (settle PI)</option>
+                    <option value="FREIGHT">Freight</option>
+                    <option value="OTHER">Other</option>
+                  </select>
+                  <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
+                </span>
+              </label>
+              <label className={styles.field}>
+                <span className={styles.fieldLabel}>Paid From (Credit) *</span>
+                <AccountSelect accounts={accounts} value={creditAccountCode} onChange={setCreditAccountCode} className={styles.fieldInput} />
+              </label>
+              <label className={styles.field}>
+                <span className={styles.fieldLabel}>Voucher Date *</span>
+                <DateField fullWidth value={voucherDate ?? ''} onChange={(iso) => setVoucherDate(iso)} className={styles.fieldInput} />
+              </label>
+              <label className={styles.field}>
+                <span className={styles.fieldLabel}>Notes</span>
+                <textarea value={notes} onChange={(e) => setNotes(e.target.value)} className={styles.fieldInput} rows={2} style={{ resize: 'vertical', minHeight: 60 }} />
+              </label>
+            </div>
+          )}
+        </div>
+      </section>
+
+      {/* ── Lines ─────────────────────────────────────────────────────── */}
+      <section className={styles.card}>
+        <div className={styles.cardHeader}>
+          <h2 className={styles.cardTitle}>Lines ({isEditing ? editLines.length : lines.length})</h2>
+          <span style={{ fontSize: 'var(--fs-12)', color: 'var(--fg-muted)' }}>total {fmtRm(totalCenti)}</span>
+        </div>
+        <div className={styles.cardBody} style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
+          {!isEditing ? (
+            lines.length === 0 ? (
+              <p style={{ color: 'var(--fg-muted)', fontSize: 'var(--fs-13)' }}>No lines.</p>
+            ) : (
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--fs-13)' }}>
+                <thead>
+                  <tr style={{ textAlign: 'left', color: 'var(--fg-muted)', fontSize: 'var(--fs-11)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                    <th style={{ padding: '6px 8px' }}>#</th>
+                    <th style={{ padding: '6px 8px' }}>Description</th>
+                    <th style={{ padding: '6px 8px' }}>Account (Debit)</th>
+                    <th style={{ padding: '6px 8px', textAlign: 'right' }}>Amount</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {lines.map((l, idx) => (
+                    <tr key={l.id} style={{ borderTop: '1px solid var(--line)' }}>
+                      <td style={{ padding: '6px 8px', color: 'var(--fg-muted)' }}>{idx + 1}</td>
+                      <td style={{ padding: '6px 8px' }}>{l.description || '—'}</td>
+                      <td style={{ padding: '6px 8px' }}>{accountLabel(l.debit_account_code)}</td>
+                      <td style={{ padding: '6px 8px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>{fmtRm(Number(l.amount_centi ?? 0))}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )
+          ) : (
+            <>
+              {editLines.map((l, idx) => (
+                <div key={l.rid} style={{
+                  background: 'var(--c-paper)', border: '1px solid var(--line)',
+                  borderRadius: 'var(--radius-lg)', padding: 'var(--space-4)',
+                  display: 'flex', flexDirection: 'column', gap: 'var(--space-3)',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span style={{ fontFamily: 'var(--font-button)', fontSize: 'var(--fs-12)', fontWeight: 700, letterSpacing: '0.10em', color: 'var(--fg-muted)' }}>LINE {idx + 1}</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+                      <span className={styles.previewPrice}>{fmtRm(l.amountCenti)}</span>
+                      {editLines.length > 1 && (
+                        <button type="button" onClick={() => dropLine(l.rid)} title="Remove line"
+                          style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--c-festive-b, #B8331F)', padding: 4, display: 'inline-flex' }}>
+                          <Trash2 {...SM_ICON} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <div className={styles.formGrid2}>
+                    <label className={styles.field}>
+                      <span className={styles.fieldLabel}>Description</span>
+                      <input type="text" value={l.description} onChange={(e) => setLine(l.rid, { description: e.target.value })} className={styles.fieldInput} />
+                    </label>
+                    <label className={styles.field}>
+                      <span className={styles.fieldLabel}>Account (Debit) *</span>
+                      <AccountSelect accounts={accounts} value={l.debitAccountCode} onChange={(v) => setLine(l.rid, { debitAccountCode: v })} className={styles.fieldInput} />
+                    </label>
+                  </div>
+                  <div className={styles.formGrid4} style={{ gridTemplateColumns: 'repeat(2, 1fr)' }}>
+                    <label className={styles.field}>
+                      <span className={styles.fieldLabel}>Amount (MYR)</span>
+                      <MoneyInput bare valueSen={l.amountCenti}
+                        onCommit={(sen) => setLine(l.rid, { amountCenti: sen ?? 0 })}
+                        inputClassName={styles.fieldInput} selectOnFocus />
+                    </label>
+                  </div>
+                </div>
+              ))}
+              <button type="button" onClick={addLine}
+                style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, width: '100%', padding: '12px 14px', border: '1px dashed var(--c-orange)', borderRadius: 'var(--radius-md)', background: 'transparent', color: 'var(--c-orange)', fontFamily: 'var(--font-sans)', fontSize: 'var(--fs-13)', fontWeight: 600, cursor: 'pointer' }}>
+                <Plus {...SM_ICON} /> Add another line
+              </button>
+            </>
+          )}
+        </div>
+      </section>
+
+      {/* ── Linked PIs (migration 0202) ─────────────────────────────────── */}
+      {(purpose === 'SUPPLIER_PAYMENT' || allocations.length > 0) && (
+        <section className={styles.card}>
+          <div className={styles.cardHeader}>
+            <h2 className={styles.cardTitle}>Linked Purchase Invoices</h2>
+            {isEditing && editApplyToPi ? (
+              <span style={{ fontSize: 'var(--fs-12)', color: editOverAllocated ? 'var(--c-festive-b, #B8331F)' : 'var(--fg-muted)' }}>
+                Allocated {fmtRm(editAllocatedCenti)} / PV total {fmtRm(editTotalCenti)}
+              </span>
+            ) : (
+              <span style={{ fontSize: 'var(--fs-12)', color: 'var(--fg-muted)' }}>
+                {allocations.length} invoice{allocations.length === 1 ? '' : 's'} settled
+              </span>
+            )}
+          </div>
+          <div className={styles.cardBody}>
+            {isEditing && editApplyToPi ? (
+              !supplierId ? (
+                <p style={{ color: 'var(--fg-muted)', fontSize: 'var(--fs-13)' }}>Pick a supplier to list outstanding invoices.</p>
+              ) : piListQ.isLoading ? (
+                <p style={{ color: 'var(--fg-muted)', fontSize: 'var(--fs-13)' }}>Loading outstanding invoices…</p>
+              ) : editAllocRows.length === 0 ? (
+                <p style={{ color: 'var(--fg-muted)', fontSize: 'var(--fs-13)' }}>This supplier has no outstanding purchase invoices.</p>
+              ) : (
+                <>
+                  {editOverAllocated && (
+                    <div style={{ fontSize: 'var(--fs-12)', color: 'var(--c-festive-b, #B8331F)', marginBottom: 'var(--space-2)' }}>
+                      You've applied more than the voucher total — reduce the amounts below before saving.
+                    </div>
+                  )}
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--fs-13)' }}>
+                    <thead>
+                      <tr style={{ textAlign: 'left', color: 'var(--fg-muted)', fontSize: 'var(--fs-11)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                        <th style={{ padding: '6px 8px' }}>Invoice</th>
+                        <th style={{ padding: '6px 8px' }}>Supplier Ref</th>
+                        <th style={{ padding: '6px 8px', textAlign: 'right' }}>Outstanding</th>
+                        <th style={{ padding: '6px 8px', textAlign: 'right' }}>Apply</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {editAllocRows.map((r) => (
+                        <tr key={r.piId} style={{ borderTop: '1px solid var(--line)' }}>
+                          <td style={{ padding: '6px 8px', fontFamily: 'var(--font-mono)' }}>{r.invoiceNumber}</td>
+                          <td style={{ padding: '6px 8px', color: r.supplierInvoiceRef ? 'var(--fg)' : 'var(--fg-muted)' }}>{r.supplierInvoiceRef || '—'}</td>
+                          <td style={{ padding: '6px 8px', textAlign: 'right', fontFamily: 'var(--font-mono)', color: 'var(--fg-muted)' }}>{fmtRm(r.outstandingCenti)}</td>
+                          <td style={{ padding: '6px 8px', textAlign: 'right' }}>
+                            <MoneyInput bare valueSen={allocAmounts[r.piId] ?? 0}
+                              onCommit={(sen) => {
+                                const v = Math.max(0, Math.min(r.outstandingCenti, sen ?? 0));
+                                setAllocAmounts((prev) => ({ ...prev, [r.piId]: v }));
+                              }}
+                              inputClassName={styles.fieldInput} selectOnFocus />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </>
+              )
+            ) : allocations.length === 0 ? (
+              <p style={{ color: 'var(--fg-muted)', fontSize: 'var(--fs-13)' }}>No purchase invoices settled by this voucher.</p>
+            ) : (
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--fs-13)' }}>
+                <thead>
+                  <tr style={{ textAlign: 'left', color: 'var(--fg-muted)', fontSize: 'var(--fs-11)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                    <th style={{ padding: '6px 8px' }}>Invoice</th>
+                    <th style={{ padding: '6px 8px' }}>Supplier Ref</th>
+                    <th style={{ padding: '6px 8px' }}>Status</th>
+                    <th style={{ padding: '6px 8px', textAlign: 'right' }}>Applied</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {allocations.map((a) => {
+                    const piId = String(a.piId ?? a.pi_id ?? '');
+                    return (
+                      <tr key={a.id ?? piId} style={{ borderTop: '1px solid var(--line)' }}>
+                        <td style={{ padding: '6px 8px', fontFamily: 'var(--font-mono)' }}>
+                          {piId
+                            ? <Link to={`/scm/purchase-invoices/${piId}`} style={{ color: 'var(--c-orange)' }}>{a.invoiceNumber ?? a.invoice_number ?? piId}</Link>
+                            : (a.invoiceNumber ?? a.invoice_number ?? '—')}
+                        </td>
+                        <td style={{ padding: '6px 8px', color: (a.supplierInvoiceRef ?? a.supplier_invoice_ref) ? 'var(--fg)' : 'var(--fg-muted)' }}>{a.supplierInvoiceRef ?? a.supplier_invoice_ref ?? '—'}</td>
+                        <td style={{ padding: '6px 8px' }}>
+                          {a.status ? <StatusPill docType="pi" status={String(a.status)} /> : '—'}
+                        </td>
+                        <td style={{ padding: '6px 8px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>{fmtRm(Number(a.amountCenti ?? a.amount_centi ?? 0))}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </section>
+      )}
+
+      {/* ── Totals ────────────────────────────────────────────────────── */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+        <section className={styles.card} style={{ maxWidth: 360, width: '100%' }}>
+          <div className={styles.cardBody}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 'var(--fs-16)', fontWeight: 700 }}>
+              <span>Total</span>
+              <span style={{ fontFamily: 'var(--font-mono)' }}>{fmtRm(totalCenti)}</span>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+};

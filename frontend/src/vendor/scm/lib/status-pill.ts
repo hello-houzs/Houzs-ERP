@@ -26,7 +26,7 @@ export type StatusDocType =
   | 'po' | 'grn' | 'pi' | 'pr'
   | 'so' | 'do' | 'si' | 'dr'
   | 'stockTransfer' | 'stockTake'
-  | 'soAmendment';
+  | 'soAmendment' | 'pv';
 
 type Entry = { label: string; tone: StatusTone };
 
@@ -120,11 +120,19 @@ const SO_AMENDMENT: Record<string, Entry> = {
   REJECTED:         { label: 'Rejected',           tone: 'danger' },
 };
 
+// Payment Voucher (Phase 1-B). DRAFT reads as pending; POSTED is the terminal
+// happy path (posted to the GL); CANCELLED closes it (danger/red).
+const PV: Record<string, Entry> = {
+  DRAFT:     { label: 'Draft',     tone: 'pending' },
+  POSTED:    { label: 'Posted',    tone: 'success' },
+  CANCELLED: { label: 'Cancelled', tone: 'danger' },
+};
+
 const MAPS: Record<StatusDocType, Record<string, Entry>> = {
   po: PO, grn: GRN, pi: PI, pr: PR,
   so: SO, do: DO, si: SI, dr: DR,
   stockTransfer: STOCK_TRANSFER, stockTake: STOCK_TAKE,
-  soAmendment: SO_AMENDMENT,
+  soAmendment: SO_AMENDMENT, pv: PV,
 };
 
 const titleCase = (raw: string): string =>

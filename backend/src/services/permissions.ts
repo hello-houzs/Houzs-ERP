@@ -69,6 +69,20 @@ export const PERMISSIONS: PermissionDef[] = [
   { key: "scm.amendment.approve_so",       resource: "Supply Chain", verb: "manage", label: "Approve SO revision",         description: "Approve the Sales Order revision of an amendment — applies the line diffs, re-runs pricing, snapshots the prior version (SUPPLIER_PENDING -> SO_APPROVED)" },
   { key: "scm.amendment.approve_po",       resource: "Supply Chain", verb: "manage", label: "Approve/send/reject PO revision", description: "Approve the bound Purchase Order revision, mark it sent, or reject an amendment (SO_APPROVED -> PO_APPROVED -> SENT, or -> REJECTED)" },
 
+  // Payment Vouchers — standalone AP cash-out document (port of 2990 0189/0202,
+  // Phase 1-B MYR). A PV pays a vendor that is NOT a goods invoice (freight
+  // forwarder, one-off service) and posts a balanced JE to the GL; a
+  // SUPPLIER_PAYMENT PV can also settle one or more Purchase Invoices at face
+  // value. Reading the list rides the coarse scm.access + the scm.finance area
+  // guard; these flat keys gate the write transitions against the REAL caller
+  // (2990's scm.staff.role gates are dead — the SCM bridge pins every caller to
+  // one super_admin row). Owner + IT Admin cover all via "*"; grant finance /
+  // purchasing positions via the Team > Positions matrix.
+  { key: "scm.payment_voucher.create", resource: "Supply Chain", verb: "write",  label: "Create payment voucher",  description: "Create a draft Payment Voucher (pay a non-goods vendor: freight forwarder, one-off service)" },
+  { key: "scm.payment_voucher.write",  resource: "Supply Chain", verb: "write",  label: "Edit payment voucher",    description: "Edit a DRAFT Payment Voucher (payee, accounts, lines, PI settlement allocations)" },
+  { key: "scm.payment_voucher.post",   resource: "Supply Chain", verb: "manage", label: "Post payment voucher",     description: "Post a Payment Voucher to the General Ledger (DRAFT -> POSTED; settles any linked PIs)" },
+  { key: "scm.payment_voucher.cancel", resource: "Supply Chain", verb: "manage", label: "Cancel payment voucher",   description: "Cancel a Payment Voucher (reverses the GL entry + any PI settlement)" },
+
   // Mail Center — in-ERP shared inbox (/api/mail-center). mail_center.read is the
   // nav/page gate (grant broadly); mail_center.manage gates the alias / access /
   // scope-level admin grids. Owner + IT Admin cover both via "*". Per-thread

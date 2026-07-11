@@ -68,6 +68,9 @@ const ScmPurchaseInvoicesV2 = lazy(() => import("./pages/scm-v2/PurchaseInvoices
 const ScmPurchaseInvoiceNewV2 = lazy(() => import("./pages/scm-v2/PurchaseInvoiceNew").then((m) => ({ default: m.PurchaseInvoiceNew })));
 const ScmPurchaseInvoiceFromGrnV2 = lazy(() => import("./pages/scm-v2/PurchaseInvoiceFromGrn").then((m) => ({ default: m.PurchaseInvoiceFromGrn })));
 const ScmPurchaseInvoiceDetailV2 = lazy(() => import("./pages/scm-v2/PurchaseInvoiceDetailV2").then((m) => ({ default: m.PurchaseInvoiceDetailV2 })));
+const ScmPaymentVouchersV2 = lazy(() => import("./pages/scm-v2/PaymentVouchers").then((m) => ({ default: m.PaymentVouchers })));
+const ScmPaymentVoucherNewV2 = lazy(() => import("./pages/scm-v2/PaymentVoucherNew").then((m) => ({ default: m.PaymentVoucherNew })));
+const ScmPaymentVoucherDetailV2 = lazy(() => import("./pages/scm-v2/PaymentVoucherDetail").then((m) => ({ default: m.PaymentVoucherDetail })));
 const ScmStockAdjustmentsV2 = lazy(() => import("./pages/scm-v2/StockAdjustments").then((m) => ({ default: m.StockAdjustments })));
 const ScmStockAdjustmentNewV2 = lazy(() => import("./pages/scm-v2/StockAdjustmentNew").then((m) => ({ default: m.StockAdjustmentNew })));
 const ScmStockTransfersV2 = lazy(() => import("./pages/scm-v2/StockTransfersListV2").then((m) => ({ default: m.StockTransfersListV2 })));
@@ -374,6 +377,11 @@ export default function App() {
         <Route path="/scm/purchase-invoices/new" element={<ScmGuard area="scm.procurement.pi"><Scm2990Shell><ScmPurchaseInvoiceNewV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/purchase-invoices/from-grn" element={<ScmGuard area="scm.procurement.pi"><Scm2990Shell><ScmPurchaseInvoiceFromGrnV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/purchase-invoices/:id" element={<ScmGuard area="scm.procurement.pi"><Scm2990Shell><ScmPurchaseInvoiceDetailV2 /></Scm2990Shell></ScmGuard>} />
+        {/* Payment Vouchers — standalone AP cash-out doc (port of 2990 0189/0202,
+            Phase 1-B MYR). Gated on the finance area; /new precedes /:id. */}
+        <Route path="/scm/payment-vouchers" element={<ScmGuard area="scm.finance.accounting"><Scm2990Shell><ScmPaymentVouchersV2 /></Scm2990Shell></ScmGuard>} />
+        <Route path="/scm/payment-vouchers/new" element={<ScmGuard area="scm.finance.accounting"><Scm2990Shell><ScmPaymentVoucherNewV2 /></Scm2990Shell></ScmGuard>} />
+        <Route path="/scm/payment-vouchers/:id" element={<ScmGuard area="scm.finance.accounting"><Scm2990Shell><ScmPaymentVoucherDetailV2 /></Scm2990Shell></ScmGuard>} />
         {/* TEMP — vendored 2990's stock-movement pages (wave 4: Adjustments /
             Transfers / Takes), parallel to the native /scm/* below. Each wrapped
             in <Scm2990Shell>. Literal /new precedes /:id so it matches first. */}
