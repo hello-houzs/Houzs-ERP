@@ -39,7 +39,7 @@ import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { todayMyt } from '../lib/my-time';
 import { recomputePcoReceived } from './purchase-consignment-receives';
-import { scopeToCompany, activeCompanyId, stampCompany } from '../lib/companyScope';
+import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 
 export const purchaseConsignmentReturns = new Hono<{ Bindings: Env; Variables: Variables }>();
 purchaseConsignmentReturns.use('*', supabaseAuth);
@@ -203,15 +203,16 @@ const ITEM =
      PDF order matches the sales side. */
   'item_group, variants, created_at';
 
-const nextNum = async (sb: any): Promise<string> => {
+const nextNum = async (sb: any, c: any): Promise<string> => {
   // PCT-YYMM-NNN. max(suffix)+1 (NEVER count+1) so a deleted mid-month row can't
   // make the counter re-mint a surviving number forever — see doc-no.ts.
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
+  const p = companyDocPrefix(c);
   const { data: existing } = await sb.from('purchase_consignment_returns')
     .select('return_number')
-    .like('return_number', `PCT-${yymm}-%`);
-  return nextMonthlyDocNo(`PCT-${yymm}`, ((existing ?? []) as Array<{ return_number: string }>).map((r) => r.return_number));
+    .like('return_number', `${p}PCT-${yymm}-%`);
+  return nextMonthlyDocNo(`${p}PCT-${yymm}`, ((existing ?? []) as Array<{ return_number: string }>).map((r) => r.return_number));
 };
 
 /* ── Recompute PC Return header money rollup ───────────────────────────────
@@ -452,7 +453,7 @@ purchaseConsignmentReturns.post('/', async (c) => {
   const pcOrderId = (body.pcOrderId as string | undefined) ?? null;
   const pcReceiveId = (body.pcReceiveId as string | undefined) ?? null;
   const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; return_number: string }>(
-    () => nextNum(sb),
+    () => nextNum(sb, c),
     (returnNumber) => sb.from('purchase_consignment_returns').insert({
     company_id: activeCompanyId(c), // multi-company: stamp the active company
     return_number: returnNumber,
@@ -543,7 +544,7 @@ purchaseConsignmentReturns.post('/from-pc-receives', async (c) => {
 
   const primaryReceiveId = recvList[0]!.id;
   const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; return_number: string }>(
-    () => nextNum(sb),
+    () => nextNum(sb, c),
     (returnNumber) => sb.from('purchase_consignment_returns').insert({
     company_id: activeCompanyId(c), // multi-company: stamp the active company
     return_number: returnNumber,
@@ -628,7 +629,7 @@ purchaseConsignmentReturns.post('/from-pc-receive', async (c) => {
   const totalRefund = lines.reduce((s, it) => s + (it._remaining * it.unit_price_centi), 0);
 
   const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; return_number: string }>(
-    () => nextNum(sb),
+    () => nextNum(sb, c),
     (returnNumber) => sb.from('purchase_consignment_returns').insert({
     company_id: activeCompanyId(c), // multi-company: stamp the active company
     return_number: returnNumber,

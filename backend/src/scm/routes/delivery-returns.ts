@@ -17,7 +17,7 @@ import { normalizePhone } from '../shared/phone';
 import { buildVariantSummary } from '../shared';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
-import { scopeToCompany, activeCompanyId, stampCompany } from '../lib/companyScope';
+import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { writeMovements, defaultWarehouseId } from '../lib/inventory-movements';
 import { computeVariantKey, type VariantAttrs } from '../shared';
 import { doLineRemaining, resolveCandidateDoIds, custKeyOf, type DoRemainingLine } from '../lib/do-line-remaining';
@@ -53,11 +53,12 @@ const ITEM =
   'uom, qty_returned, condition, unit_price_centi, discount_centi, line_total_centi, ' +
   'unit_cost_centi, line_cost_centi, line_margin_centi, refund_centi, variants, notes, created_at';
 
-const nextNum = async (sb: any): Promise<string> => {
+const nextNum = async (sb: any, c: any): Promise<string> => {
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
-  const { data: existing } = await sb.from('delivery_returns').select('return_number').like('return_number', `DR-${yymm}-%`);
-  return nextMonthlyDocNo(`DR-${yymm}`, ((existing ?? []) as Array<{ return_number: string }>).map((r) => r.return_number));
+  const p = companyDocPrefix(c);
+  const { data: existing } = await sb.from('delivery_returns').select('return_number').like('return_number', `${p}DR-${yymm}-%`);
+  return nextMonthlyDocNo(`${p}DR-${yymm}`, ((existing ?? []) as Array<{ return_number: string }>).map((r) => r.return_number));
 };
 
 /* Re-derive the DR header's per-category revenue/cost totals + grand total from
@@ -675,11 +676,11 @@ deliveryReturns.get('/:id', async (c) => {
 
 /* Insert the DR header from a client body. Shared by POST / and the
    convert-from-DO endpoint. Returns the inserted header row (HEADER cols). */
-async function insertHeader(sb: any, userId: string, body: Record<string, unknown>) {
+async function insertHeader(sb: any, userId: string, body: Record<string, unknown>, c: any) {
   const phoneRaw = (body.phone as string | undefined) ?? null;
   const emPhoneRaw = (body.emergencyContactPhone as string | undefined) ?? null;
   return insertWithDocNoRetry<{ id: string; return_number: string }>(
-    () => nextNum(sb),
+    () => nextNum(sb, c),
     (returnNumber) => sb.from('delivery_returns').insert({
     return_number: returnNumber,
     do_doc_no: (body.doDocNo as string) ?? null,
@@ -778,7 +779,7 @@ deliveryReturns.post('/', async (c) => {
     if (over) return c.json(over, 409);
   }
 
-  const { data: header, error: hErr } = await insertHeader(sb, user.id, body);
+  const { data: header, error: hErr } = await insertHeader(sb, user.id, body, c);
   if (hErr) return c.json({ error: 'insert_failed', reason: hErr.message }, 500);
   const h = header as unknown as { id: string; return_number: string };
 
@@ -991,7 +992,7 @@ const convertDoLinesToReturn = async (c: any) => {
     reason: distinctDoNumbers.length > 1
       ? `Return from DO ${distinctDoNumbers.join(', ')}`
       : `Return from DO ${String(doh.do_number ?? '')}`,
-  });
+  }, c);
   if (hErr) return c.json({ error: 'insert_failed', reason: hErr.message }, 500);
   const h = header as unknown as { id: string; return_number: string };
 

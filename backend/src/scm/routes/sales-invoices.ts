@@ -26,7 +26,7 @@ import { z } from 'zod';
 import { normalizePhone, buildVariantSummary, isServiceLine } from '../shared';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
-import { scopeToCompany, activeCompanyId, stampCompany } from '../lib/companyScope';
+import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { postSiRevenue, reverseSiRevenue, resyncSiRevenue } from '../lib/post-si-revenue';
 import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { todayMyt } from '../lib/my-time';
@@ -63,11 +63,12 @@ const PAYMENT_COLS =
   'online_type, approval_code, amount_centi, account_sheet, collected_by, note, ' +
   'created_at, created_by';
 
-const nextNum = async (sb: any): Promise<string> => {
+const nextNum = async (sb: any, c: any): Promise<string> => {
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
-  const { data: existing } = await sb.from('sales_invoices').select('invoice_number').like('invoice_number', `SI-${yymm}-%`);
-  return nextMonthlyDocNo(`SI-${yymm}`, ((existing ?? []) as Array<{ invoice_number: string }>).map((r) => r.invoice_number));
+  const p = companyDocPrefix(c);
+  const { data: existing } = await sb.from('sales_invoices').select('invoice_number').like('invoice_number', `${p}SI-${yymm}-%`);
+  return nextMonthlyDocNo(`${p}SI-${yymm}`, ((existing ?? []) as Array<{ invoice_number: string }>).map((r) => r.invoice_number));
 };
 
 /* Re-derive the SI header's per-category revenue/cost totals + grand total from
@@ -258,7 +259,7 @@ salesInvoices.post('/', async (c) => {
   const isDraft = (body as { asDraft?: unknown }).asDraft === true;
 
   const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; invoice_number: string; debtor_code: string | null; debtor_name: string | null; total_centi: number | null; paid_centi: number | null }>(
-    () => nextNum(sb),
+    () => nextNum(sb, c),
     (invoiceNumber) => sb.from('sales_invoices').insert({
     company_id: activeCompanyId(c), // multi-company: stamp the active company
     invoice_number: invoiceNumber,
@@ -448,7 +449,7 @@ salesInvoices.post('/from-dos', async (c) => {
   const emPhoneRaw = head.emergency_contact_phone as string | null;
 
   const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; invoice_number: string }>(
-    () => nextNum(sb),
+    () => nextNum(sb, c),
     (invoiceNumber) => sb.from('sales_invoices').insert({
     company_id: activeCompanyId(c), // multi-company: stamp the active company
     invoice_number: invoiceNumber,

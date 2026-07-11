@@ -94,3 +94,26 @@ export function withCompanyCode<T extends Record<string, unknown>>(
   const code = cid != null ? codes.get(Number(cid)) ?? null : null;
   return { ...row, company_code: code };
 }
+
+/**
+ * PER-COMPANY DOC-NUMBER PREFIX (Phase 0d). The base company HOUZS keeps BARE
+ * numbers (e.g. `SO-2607-001`) so its existing live doc numbers are unchanged;
+ * every OTHER company prefixes with its code (e.g. `2990-SO-2607-001`). The
+ * prefix alone keeps the two companies' monthly sequences from colliding on the
+ * GLOBAL unique doc_no index — no per-company unique constraint (no migration)
+ * needed, because a minter's `.like('SO-2607-%')` fetch never matches
+ * `2990-SO-2607-...`, so each company reads/advances only its own max+1.
+ *
+ * Returns "" when the company is unresolved (pre-activation / single-company)
+ * OR is the HOUZS base — so Houzs numbering is a strict no-op until a non-base
+ * company is active. Use at every PER-COMPANY minter: fold it into the month
+ * prefix passed to BOTH the `.like(...)` fetch AND `nextMonthlyDocNo(...)` so
+ * they agree, e.g. `const p = companyDocPrefix(c); ... .like(col, ${p}SO-${yymm}-%)`
+ * and `nextMonthlyDocNo(${p}SO-${yymm}, existing)`. Do NOT apply to CROSS-COMPANY
+ * shared docs (trips / delivery-planning) — those keep one shared sequence.
+ */
+export function companyDocPrefix(c: Context<any>): string {
+  const code = c.get("companyCode") as string | undefined;
+  if (!code || code === "HOUZS") return "";
+  return `${code}-`;
+}

@@ -11,7 +11,7 @@ import {
   sortSoLinesByGroupRank,
 } from '../shared/so-line-display';
 import { recostFromGrn } from '../lib/recost';
-import { scopeToCompany, activeCompanyId, stampCompany } from '../lib/companyScope';
+import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { nextMonthlyDocNo } from '../lib/doc-no';
 import { todayMyt } from '../lib/my-time';
 
@@ -179,11 +179,12 @@ const ITEM =
   /* Migration 0151 — physical rack placement */
   'rack_id';
 
-const nextNumber = async (sb: ReturnType<Variables['supabase']['valueOf']> extends never ? never : any, prefix: string, table: string, col: string): Promise<string> => {
+const nextNumber = async (sb: ReturnType<Variables['supabase']['valueOf']> extends never ? never : any, prefix: string, table: string, col: string, c: any): Promise<string> => {
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
-  const { data: existing } = await sb.from(table).select(col).like(col, `${prefix}-${yymm}-%`);
-  return nextMonthlyDocNo(`${prefix}-${yymm}`, ((existing ?? []) as Array<Record<string, string>>).map((r) => r[col] as string));
+  const p = companyDocPrefix(c);
+  const { data: existing } = await sb.from(table).select(col).like(col, `${p}${prefix}-${yymm}-%`);
+  return nextMonthlyDocNo(`${p}${prefix}-${yymm}`, ((existing ?? []) as Array<Record<string, string>>).map((r) => r[col] as string));
 };
 
 /* ── Recompute GRN header money rollups (migration 0101) ──────────────────
@@ -811,7 +812,7 @@ grns.post('/', async (c) => {
     }
   }
 
-  const grnNumber = await nextNumber(sb, 'GRN', 'grns', 'grn_number');
+  const grnNumber = await nextNumber(sb, 'GRN', 'grns', 'grn_number', c);
 
   /* PR-DRAFT-removal — Commander 2026-05-27: GRN is created as POSTED
      directly. Commander already enters Received/Accepted/Rejected per line
@@ -963,8 +964,9 @@ grns.post('/from-pos', async (c) => {
   // Generate GRN number using same pattern as the single-POST endpoint.
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
-  const { data: existingGrnNos } = await sb.from('grns').select('grn_number').like('grn_number', `GRN-${yymm}-%`);
-  const grnNumber = nextMonthlyDocNo(`GRN-${yymm}`, ((existingGrnNos ?? []) as Array<{ grn_number: string }>).map((r) => r.grn_number));
+  const cp = companyDocPrefix(c);
+  const { data: existingGrnNos } = await sb.from('grns').select('grn_number').like('grn_number', `${cp}GRN-${yymm}-%`);
+  const grnNumber = nextMonthlyDocNo(`${cp}GRN-${yymm}`, ((existingGrnNos ?? []) as Array<{ grn_number: string }>).map((r) => r.grn_number));
 
   const poNumbersJoined = poList.map((p) => p.po_number).join(', ');
   const { data: header, error: hErr } = await sb.from('grns').insert({
@@ -1184,9 +1186,10 @@ grns.post('/from-po-items', async (c) => {
   // Seed from max(suffix), NOT count — count+1 is non-self-healing (a mid-month
   // delete re-mints a surviving number → UNIQUE collision). Derive the next
   // suffix via nextMonthlyDocNo, then counter starts one below it.
-  const { data: existingBatchNos } = await sb.from('grns').select('grn_number').like('grn_number', `GRN-${yymm}-%`);
-  const firstNext = nextMonthlyDocNo(`GRN-${yymm}`, ((existingBatchNos ?? []) as Array<{ grn_number: string }>).map((r) => r.grn_number));
-  let counter = parseInt(firstNext.slice(`GRN-${yymm}-`.length), 10) - 1;
+  const cp = companyDocPrefix(c);
+  const { data: existingBatchNos } = await sb.from('grns').select('grn_number').like('grn_number', `${cp}GRN-${yymm}-%`);
+  const firstNext = nextMonthlyDocNo(`${cp}GRN-${yymm}`, ((existingBatchNos ?? []) as Array<{ grn_number: string }>).map((r) => r.grn_number));
+  let counter = parseInt(firstNext.slice(`${cp}GRN-${yymm}-`.length), 10) - 1;
 
   const receivedAt = body.receivedDate ?? todayMyt();
   const created: Array<{ id: string; grnNumber: string; purchaseOrderId: string; poNumber: string; lineCount: number; posted?: boolean; postError?: string; movementErrors?: string[] }> = [];
@@ -1215,15 +1218,15 @@ grns.post('/from-po-items', async (c) => {
        suffix from a fresh live count + bump. */
     let h: { id: string; grn_number: string } | null = null;
     for (let attempt = 0; attempt < 8 && !h; attempt += 1) {
-      const grnNumber = `GRN-${yymm}-${String(counter).padStart(3, '0')}`;
+      const grnNumber = `${cp}GRN-${yymm}-${String(counter).padStart(3, '0')}`;
       const { data: header, error: hErr } = await sb.from('grns')
         .insert({ grn_number: grnNumber, ...grnPayload })
         .select('id, grn_number').single();
       if (!hErr && header) { h = header as unknown as { id: string; grn_number: string }; break; }
       if (!hErr || (hErr as { code?: string }).code !== '23505') break;
       const { data: live } = await sb.from('grns')
-        .select('grn_number').like('grn_number', `GRN-${yymm}-%`);
-      counter = parseInt(nextMonthlyDocNo(`GRN-${yymm}`, ((live ?? []) as Array<{ grn_number: string }>).map((r) => r.grn_number)).slice(`GRN-${yymm}-`.length), 10);
+        .select('grn_number').like('grn_number', `${cp}GRN-${yymm}-%`);
+      counter = parseInt(nextMonthlyDocNo(`${cp}GRN-${yymm}`, ((live ?? []) as Array<{ grn_number: string }>).map((r) => r.grn_number)).slice(`${cp}GRN-${yymm}-`.length), 10);
     }
     if (!h) continue;
 

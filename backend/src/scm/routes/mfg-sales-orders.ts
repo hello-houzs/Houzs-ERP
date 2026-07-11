@@ -56,7 +56,7 @@ import { orderSofaModuleRowsWithinBuilds, sortSoLinesByGroupRank } from '../shar
    charge (gated by so_settings.pos_remark_extra_auto_sku). Pure code-resolution
    + row-build lives in the lib; this route batches the DB collision check. */
 import { buildOneShotMints, type OneShotMintReq } from '../lib/one-shot-mint';
-import { scopeToCompany, activeCompanyId, stampCompany } from '../lib/companyScope';
+import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { supabaseAuth } from '../middleware/auth';
 import { escapeForOr } from '../lib/postgrest-search';
 import { monthBoundsMy, rangeBoundsMy, todayMyt } from '../lib/my-time';
@@ -549,12 +549,13 @@ const deriveWarehouseIdFromState = async (
   return null;
 };
 
-const nextDocNo = async (sb: any): Promise<string> => {
+const nextDocNo = async (sb: any, c: any): Promise<string> => {
   // Format: SO-YYMM-NNN — matches PO/DO/GRN/SI/DR/PI/PRT.
   // Legacy SO-NNNNNN numbers stay as-is; only newly created SOs use this scheme.
   // max+1 via nextMonthlyDocNo, NOT count+1 — see lib/doc-no.ts for why
   // (2026-06-12: count+1 re-minted a surviving doc_no after a mid-month
   // delete and jammed every SO create on the pkey).
+  const p = companyDocPrefix(c);
   const yymm = (() => {
     const d = new Date();
     return `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
@@ -562,9 +563,9 @@ const nextDocNo = async (sb: any): Promise<string> => {
   const { data } = await sb
     .from('mfg_sales_orders')
     .select('doc_no')
-    .like('doc_no', `SO-${yymm}-%`);
+    .like('doc_no', `${p}SO-${yymm}-%`);
   const existing = ((data ?? []) as Array<{ doc_no: string }>).map((r) => r.doc_no);
-  return nextMonthlyDocNo(`SO-${yymm}`, existing);
+  return nextMonthlyDocNo(`${p}SO-${yymm}`, existing);
 };
 
 /* ─────────────────────────── Cost snapshot ────────────────────────────
@@ -2048,7 +2049,7 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
     }
   }
 
-  const docNo = await nextDocNo(sb);
+  const docNo = await nextDocNo(sb, c);
 
   /* Caller's REAL scm.staff identity (mig 0066 deterministic sync row,
      linked by staff.user_id) — drives the venue auto-stamp AND the

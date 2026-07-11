@@ -11,7 +11,7 @@ import {
 import { postPiAccounting, reversePiAccounting, resyncPiAccounting } from './accounting';
 import { recostForPi, recostFromGrn } from '../lib/recost';
 import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
-import { scopeToCompany, activeCompanyId, stampCompany } from '../lib/companyScope';
+import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { todayMyt } from '../lib/my-time';
 
 export const purchaseInvoices = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -26,11 +26,12 @@ const ITEM =
   'gap_inches, divan_height_inches, divan_price_sen, leg_height_inches, leg_price_sen, ' +
   'custom_specials, line_suffix, special_order_price_sen, unit_cost_centi, created_at';
 
-const nextNum = async (sb: any, prefix: string): Promise<string> => {
+const nextNum = async (sb: any, prefix: string, c: any): Promise<string> => {
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
-  const { data: existing } = await sb.from('purchase_invoices').select('invoice_number').like('invoice_number', `${prefix}-${yymm}-%`);
-  return nextMonthlyDocNo(`${prefix}-${yymm}`, ((existing ?? []) as Array<{ invoice_number: string }>).map((r) => r.invoice_number));
+  const p = companyDocPrefix(c);
+  const { data: existing } = await sb.from('purchase_invoices').select('invoice_number').like('invoice_number', `${p}${prefix}-${yymm}-%`);
+  return nextMonthlyDocNo(`${p}${prefix}-${yymm}`, ((existing ?? []) as Array<{ invoice_number: string }>).map((r) => r.invoice_number));
 };
 
 /* ── Recompute PI header money rollups (mirror recomputeGrnTotals) ─────────
@@ -408,7 +409,7 @@ purchaseInvoices.post('/', async (c) => {
      AP-only (no inventory impact — that landed at GRN time), so there's
      no side-effect helper to call after insert. */
   const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; invoice_number: string }>(
-    () => nextNum(sb, 'PI'),
+    () => nextNum(sb, 'PI', c),
     (invoiceNumber) => sb.from('purchase_invoices').insert({
     company_id: activeCompanyId(c), // multi-company: stamp the active company
     invoice_number: invoiceNumber,
@@ -716,8 +717,9 @@ purchaseInvoices.post('/from-grn-items', async (c) => {
   // Seed from max(suffix), NOT count — count+1 is non-self-healing (a mid-month
   // delete re-mints a surviving number → UNIQUE collision). Derive the next
   // suffix via nextMonthlyDocNo, then counter starts one below it.
-  const { data: existingPiNos } = await sb.from('purchase_invoices').select('invoice_number').like('invoice_number', `PI-${yymm}-%`);
-  let counter = parseInt(nextMonthlyDocNo(`PI-${yymm}`, ((existingPiNos ?? []) as Array<{ invoice_number: string }>).map((r) => r.invoice_number)).slice(`PI-${yymm}-`.length), 10) - 1;
+  const cp = companyDocPrefix(c);
+  const { data: existingPiNos } = await sb.from('purchase_invoices').select('invoice_number').like('invoice_number', `${cp}PI-${yymm}-%`);
+  let counter = parseInt(nextMonthlyDocNo(`${cp}PI-${yymm}`, ((existingPiNos ?? []) as Array<{ invoice_number: string }>).map((r) => r.invoice_number)).slice(`${cp}PI-${yymm}-`.length), 10) - 1;
 
   const invoiceDate = body.invoiceDate ?? todayMyt();
   const created: Array<{ id: string; invoiceNumber: string; supplierId: string; grnCount: number; lineCount: number }> = [];
@@ -760,15 +762,15 @@ purchaseInvoices.post('/from-grn-items', async (c) => {
        free suffix from a fresh live count + bump. */
     let h: { id: string; invoice_number: string } | null = null;
     for (let attempt = 0; attempt < 8 && !h; attempt += 1) {
-      const invoiceNumber = `PI-${yymm}-${String(counter).padStart(3, '0')}`;
+      const invoiceNumber = `${cp}PI-${yymm}-${String(counter).padStart(3, '0')}`;
       const { data: header, error: hErr } = await sb.from('purchase_invoices')
         .insert({ invoice_number: invoiceNumber, ...piPayload })
         .select('id, invoice_number').single();
       if (!hErr && header) { h = header as unknown as { id: string; invoice_number: string }; break; }
       if (!hErr || (hErr as { code?: string }).code !== '23505') break;
       const { data: live } = await sb.from('purchase_invoices')
-        .select('invoice_number').like('invoice_number', `PI-${yymm}-%`);
-      counter = parseInt(nextMonthlyDocNo(`PI-${yymm}`, ((live ?? []) as Array<{ invoice_number: string }>).map((r) => r.invoice_number)).slice(`PI-${yymm}-`.length), 10);
+        .select('invoice_number').like('invoice_number', `${cp}PI-${yymm}-%`);
+      counter = parseInt(nextMonthlyDocNo(`${cp}PI-${yymm}`, ((live ?? []) as Array<{ invoice_number: string }>).map((r) => r.invoice_number)).slice(`${cp}PI-${yymm}-`.length), 10);
     }
     if (!h) continue;
 
@@ -880,7 +882,7 @@ purchaseInvoices.post('/from-grn', async (c) => {
   const subtotal = lines.reduce((s, it) => s + (it._remaining * it.unit_price_centi - discFor(it)), 0);
 
   const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; invoice_number: string }>(
-    () => nextNum(sb, 'PI'),
+    () => nextNum(sb, 'PI', c),
     (invoiceNumber) => sb.from('purchase_invoices').insert({
     company_id: activeCompanyId(c), // multi-company: stamp the active company
     invoice_number: invoiceNumber,

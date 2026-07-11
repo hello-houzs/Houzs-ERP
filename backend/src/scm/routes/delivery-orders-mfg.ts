@@ -23,7 +23,7 @@ import { syncSoDeliveredFromDo } from '../lib/so-delivery-sync';
 import { todayMyt } from '../lib/my-time';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { resolveSalesScopeIds } from '../lib/salesScope';
-import { scopeToCompany, activeCompanyId, stampCompany } from '../lib/companyScope';
+import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { hasHouzsPerm } from '../lib/houzs-perms';
 import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item-codes';
 import { checkStockAvailability, shortStockResponse } from '../lib/check-stock-availability';
@@ -169,11 +169,12 @@ const crewSnapshotCols =
    the status is advanced (DISPATCHED step-by-step, or a jump to SIGNED). */
 const SHIPPED_STATES = ['DISPATCHED', 'IN_TRANSIT', 'SIGNED', 'DELIVERED', 'INVOICED'];
 
-const nextNum = async (sb: any): Promise<string> => {
+const nextNum = async (sb: any, c: any): Promise<string> => {
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
-  const { data: existing } = await sb.from('delivery_orders').select('do_number').like('do_number', `DO-${yymm}-%`);
-  return nextMonthlyDocNo(`DO-${yymm}`, ((existing ?? []) as Array<{ do_number: string }>).map((r) => r.do_number));
+  const p = companyDocPrefix(c);
+  const { data: existing } = await sb.from('delivery_orders').select('do_number').like('do_number', `${p}DO-${yymm}-%`);
+  return nextMonthlyDocNo(`${p}DO-${yymm}`, ((existing ?? []) as Array<{ do_number: string }>).map((r) => r.do_number));
 };
 
 /* Re-derive the DO header's per-category revenue/cost totals + grand total
@@ -1838,7 +1839,7 @@ deliveryOrdersMfg.post('/', async (c) => {
   const emPhoneRaw = (body.emergencyContactPhone as string | undefined) ?? null;
 
   const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; do_number: string }>(
-    () => nextNum(sb),
+    () => nextNum(sb, c),
     (doNumber) => sb.from('delivery_orders').insert({
     do_number: doNumber,
     so_doc_no: (body.soDocNo as string) ?? null,
@@ -2178,7 +2179,7 @@ deliveryOrdersMfg.post('/from-sos', async (c) => {
   const today = todayMyt();
 
   const { data: doHeader, error: hErr } = await insertWithDocNoRetry<{ id: string; do_number: string }>(
-    () => nextNum(sb),
+    () => nextNum(sb, c),
     (doNumber) => sb.from('delivery_orders').insert({
     do_number: doNumber,
     /* so_doc_no has a FK to mfg_sales_orders(doc_no) → one valid doc. The full

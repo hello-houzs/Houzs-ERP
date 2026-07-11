@@ -34,7 +34,7 @@ import {
 } from '../shared/so-line-display';
 import { resolveMaintenanceConfigForSupplier } from '../lib/po-pricing';
 import { nextMonthlyDocNo } from '../lib/doc-no';
-import { scopeToCompany, activeCompanyId, stampCompany } from '../lib/companyScope';
+import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { supabaseAuth } from '../middleware/auth';
 import { computeMrp } from './mrp';
 import type { Env, Variables } from '../env';
@@ -561,11 +561,12 @@ mfgPurchaseOrders.post('/', async (c) => {
   // PO# generation: max(suffix)+1 over the month's POs (see lib/doc-no.ts).
   // NOT count+1 — count+1 is non-self-healing (a mid-month delete leaves a gap
   // and re-mints a surviving number, jamming the NOT NULL UNIQUE po_number).
+  const p = companyDocPrefix(c);
   const { data: existingPoNos } = await supabase
     .from('purchase_orders')
     .select('po_number')
-    .like('po_number', `PO-${yymm}-%`);
-  const poNumber = nextMonthlyDocNo(`PO-${yymm}`, ((existingPoNos ?? []) as Array<{ po_number: string }>).map((r) => r.po_number));
+    .like('po_number', `${p}PO-${yymm}-%`);
+  const poNumber = nextMonthlyDocNo(`${p}PO-${yymm}`, ((existingPoNos ?? []) as Array<{ po_number: string }>).map((r) => r.po_number));
 
   // Compute totals
   let subtotal = 0;
@@ -1416,12 +1417,13 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
   // Seed from max(suffix), NOT count — count+1 is non-self-healing (a mid-month
   // delete re-mints a surviving number → UNIQUE collision). Derive the next
   // suffix via nextMonthlyDocNo, then counter starts one below it.
+  const p = companyDocPrefix(c);
   const { data: existingBatchPoNos } = await supabase
     .from('purchase_orders')
     .select('po_number')
-    .like('po_number', `PO-${yymm}-%`);
-  const firstNextPo = nextMonthlyDocNo(`PO-${yymm}`, ((existingBatchPoNos ?? []) as Array<{ po_number: string }>).map((r) => r.po_number));
-  let counter = parseInt(firstNextPo.slice(`PO-${yymm}-`.length), 10) - 1;
+    .like('po_number', `${p}PO-${yymm}-%`);
+  const firstNextPo = nextMonthlyDocNo(`${p}PO-${yymm}`, ((existingBatchPoNos ?? []) as Array<{ po_number: string }>).map((r) => r.po_number));
+  let counter = parseInt(firstNextPo.slice(`${p}PO-${yymm}-`.length), 10) - 1;
 
   const created: Array<{ id: string; poNumber: string; supplierId: string; lineCount: number }> = [];
   for (const bucket of byGroup.values()) {
@@ -1467,7 +1469,7 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
        table + bump, so the loser re-mints instead of vanishing. */
     let header: { id: string; po_number: string } | null = null;
     for (let attempt = 0; attempt < 8 && !header; attempt += 1) {
-      const poNumber = `PO-${yymm}-${String(counter).padStart(3, '0')}`;
+      const poNumber = `${p}PO-${yymm}-${String(counter).padStart(3, '0')}`;
       const { data: hd, error: hErr } = await supabase
         .from('purchase_orders')
         .insert({ po_number: poNumber, ...headerPayload })
@@ -1476,10 +1478,10 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
       if (!hErr && hd) { header = hd as unknown as { id: string; po_number: string }; break; }
       if (!hErr || (hErr as { code?: string }).code !== '23505') break;
       const { data: live } = await supabase
-        .from('purchase_orders').select('po_number').like('po_number', `PO-${yymm}-%`);
+        .from('purchase_orders').select('po_number').like('po_number', `${p}PO-${yymm}-%`);
       counter = parseInt(
-        nextMonthlyDocNo(`PO-${yymm}`, ((live ?? []) as Array<{ po_number: string }>).map((r) => r.po_number))
-          .slice(`PO-${yymm}-`.length), 10);
+        nextMonthlyDocNo(`${p}PO-${yymm}`, ((live ?? []) as Array<{ po_number: string }>).map((r) => r.po_number))
+          .slice(`${p}PO-${yymm}-`.length), 10);
     }
     if (!header) continue;
 

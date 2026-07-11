@@ -52,7 +52,7 @@ import { findIncompleteVariantLines } from '../lib/so-variant-check';
 import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item-codes';
 import { chunkIn } from '../lib/paginate-all';
 import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
-import { scopeToCompany, activeCompanyId, stampCompany } from '../lib/companyScope';
+import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 export const consignmentOrders = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -184,18 +184,19 @@ const deriveSalesLocationFromState = async (
   return wh ? (wh.code ?? wh.name ?? null) : null;
 };
 
-const nextDocNo = async (sb: any): Promise<string> => {
+const nextDocNo = async (sb: any, c: any): Promise<string> => {
   // Format: CS-YYMM-NNN. max(suffix)+1 (NEVER count+1) so a deleted mid-month
   // row can't make the counter re-mint a surviving number forever — see doc-no.ts.
   const yymm = (() => {
     const d = new Date();
     return `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
   })();
+  const p = companyDocPrefix(c);
   const { data: existing } = await sb
     .from('consignment_sales_orders')
     .select('doc_no')
-    .like('doc_no', `CS-${yymm}-%`);
-  return nextMonthlyDocNo(`CS-${yymm}`, ((existing ?? []) as Array<{ doc_no: string }>).map((r) => r.doc_no));
+    .like('doc_no', `${p}CS-${yymm}-%`);
+  return nextMonthlyDocNo(`${p}CS-${yymm}`, ((existing ?? []) as Array<{ doc_no: string }>).map((r) => r.doc_no));
 };
 
 /* ── Cost snapshot ──────────────────────────────────────────────────────
@@ -746,7 +747,7 @@ consignmentOrders.post('/', async (c) => {
     ));
 
   const { error: hErr } = await insertWithDocNoRetry<{ doc_no: string }>(
-    () => nextDocNo(sb),
+    () => nextDocNo(sb, c),
     (n) => { docNo = n; return sb.from('consignment_sales_orders').insert({
     company_id: activeCompanyId(c), // multi-company: stamp the active company
     doc_no: docNo,

@@ -44,7 +44,7 @@ import {
 } from '../shared/so-line-display';
 import { supabaseAuth } from '../middleware/auth';
 import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
-import { scopeToCompany, activeCompanyId, stampCompany } from '../lib/companyScope';
+import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 export const purchaseConsignmentOrders = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -284,12 +284,13 @@ purchaseConsignmentOrders.post('/', async (c) => {
 
   // Minted inside insertWithDocNoRetry below so a concurrent-create collision
   // (23505 on pc_number) re-derives the next free number instead of 500ing.
+  const p = companyDocPrefix(c);
   const nextPcNumber = async (): Promise<string> => {
     const { data: existingPc } = await supabase
       .from('purchase_consignment_orders')
       .select('pc_number')
-      .like('pc_number', `PCO-${yymm}-%`);
-    return nextMonthlyDocNo(`PCO-${yymm}`, ((existingPc ?? []) as Array<{ pc_number: string }>).map((r) => r.pc_number));
+      .like('pc_number', `${p}PCO-${yymm}-%`);
+    return nextMonthlyDocNo(`${p}PCO-${yymm}`, ((existingPc ?? []) as Array<{ pc_number: string }>).map((r) => r.pc_number));
   };
 
   // Compute totals.

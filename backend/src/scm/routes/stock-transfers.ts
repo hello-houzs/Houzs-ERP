@@ -24,7 +24,7 @@ import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { writeMovements, reverseMovements } from '../lib/inventory-movements';
-import { scopeToCompany, activeCompanyId, stampCompany } from '../lib/companyScope';
+import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 
@@ -39,13 +39,14 @@ const LINE =
 
 const VALID_STATUS = new Set(['POSTED', 'CANCELLED']);
 
-const nextTransferNo = async (sb: any): Promise<string> => {
+const nextTransferNo = async (sb: any, c: any): Promise<string> => {
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
+  const p = companyDocPrefix(c);
   const { data: existing } = await sb.from('stock_transfers')
     .select('transfer_no')
-    .like('transfer_no', `ST-${yymm}-%`);
-  return nextMonthlyDocNo(`ST-${yymm}`, ((existing ?? []) as Array<{ transfer_no: string }>).map((r) => r.transfer_no));
+    .like('transfer_no', `${p}ST-${yymm}-%`);
+  return nextMonthlyDocNo(`${p}ST-${yymm}`, ((existing ?? []) as Array<{ transfer_no: string }>).map((r) => r.transfer_no));
 };
 
 // ── List ──────────────────────────────────────────────────────────────
@@ -313,7 +314,7 @@ stockTransfers.post('/', async (c) => {
   if (body.transferDate) headerInsert.transfer_date = body.transferDate;
 
   const { data: headerData, error: hErr } = await insertWithDocNoRetry<{ id: string; transfer_no: string; from_warehouse_id: string; to_warehouse_id: string }>(
-    () => nextTransferNo(sb),
+    () => nextTransferNo(sb, c),
     (transferNo) => sb
       .from('stock_transfers').insert({ transfer_no: transferNo, ...headerInsert }).select(HEADER).single(),
   );

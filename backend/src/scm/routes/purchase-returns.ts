@@ -25,7 +25,7 @@ import {
   sortSoLinesByGroupRank,
 } from '../shared/so-line-display';
 import { recomputePoReceived, resolvePoBatchByItem } from './grns';
-import { scopeToCompany, activeCompanyId, stampCompany } from '../lib/companyScope';
+import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 
 export const purchaseReturns = new Hono<{ Bindings: Env; Variables: Variables }>();
 purchaseReturns.use('*', supabaseAuth);
@@ -42,13 +42,14 @@ const ITEM =
      order matches the sales side. */
   'item_group, variants, created_at';
 
-const nextNum = async (sb: any): Promise<string> => {
+const nextNum = async (sb: any, c: any): Promise<string> => {
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
+  const p = companyDocPrefix(c);
   const { data: existing } = await sb.from('purchase_returns')
     .select('return_number')
-    .like('return_number', `PRT-${yymm}-%`);
-  return nextMonthlyDocNo(`PRT-${yymm}`, ((existing ?? []) as Array<{ return_number: string }>).map((r) => r.return_number));
+    .like('return_number', `${p}PRT-${yymm}-%`);
+  return nextMonthlyDocNo(`${p}PRT-${yymm}`, ((existing ?? []) as Array<{ return_number: string }>).map((r) => r.return_number));
 };
 
 /* ── Recompute PR header money rollup (mirror recomputeGrnTotals) ──────────
@@ -487,7 +488,7 @@ purchaseReturns.post('/', async (c) => {
   /* PR-DRAFT-removal — PR is created POSTED, inventory OUT written inline. */
   const grnId = (body.grnId as string | undefined) ?? null;
   const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; return_number: string }>(
-    () => nextNum(sb),
+    () => nextNum(sb, c),
     (returnNumber) => sb.from('purchase_returns').insert({
     company_id: activeCompanyId(c), // multi-company: stamp the active company
     return_number: returnNumber,
@@ -581,9 +582,10 @@ purchaseReturns.post('/from-grns', async (c) => {
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
   // Minted inside insertWithDocNoRetry below so a concurrent-create collision
   // (23505 on return_number) re-derives the next free number instead of 500ing.
+  const p = companyDocPrefix(c);
   const nextPrtNumber = async (): Promise<string> => {
-    const { data: existingPrtNos } = await sb.from('purchase_returns').select('return_number').like('return_number', `PRT-${yymm}-%`);
-    return nextMonthlyDocNo(`PRT-${yymm}`, ((existingPrtNos ?? []) as Array<{ return_number: string }>).map((r) => r.return_number));
+    const { data: existingPrtNos } = await sb.from('purchase_returns').select('return_number').like('return_number', `${p}PRT-${yymm}-%`);
+    return nextMonthlyDocNo(`${p}PRT-${yymm}`, ((existingPrtNos ?? []) as Array<{ return_number: string }>).map((r) => r.return_number));
   };
 
   const grnNumbersJoined = grnList.map((g) => g.grn_number).join(', ');
@@ -681,7 +683,7 @@ purchaseReturns.post('/from-grn', async (c) => {
   const totalRefund = lines.reduce((s, it) => s + (it._remaining * it.unit_price_centi), 0);
 
   const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; return_number: string }>(
-    () => nextNum(sb),
+    () => nextNum(sb, c),
     (returnNumber) => sb.from('purchase_returns').insert({
     company_id: activeCompanyId(c), // multi-company: stamp the active company
     return_number: returnNumber,

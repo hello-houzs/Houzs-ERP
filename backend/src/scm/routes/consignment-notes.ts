@@ -34,7 +34,7 @@ import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item
 import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { todayMyt } from '../lib/my-time';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
-import { scopeToCompany, activeCompanyId, stampCompany } from '../lib/companyScope';
+import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 
 export const consignmentNotes = new Hono<{ Bindings: Env; Variables: Variables }>();
 consignmentNotes.use('*', supabaseAuth);
@@ -84,11 +84,12 @@ const PAYMENT_COLS =
    into ANY of these fires the loaner transfer. Same list as the DO. */
 const SHIPPED_STATES = ['DISPATCHED', 'IN_TRANSIT', 'SIGNED', 'DELIVERED', 'INVOICED'];
 
-const nextNum = async (sb: any): Promise<string> => {
+const nextNum = async (sb: any, c: any): Promise<string> => {
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
-  const { data: existing } = await sb.from('consignment_delivery_orders').select('do_number').like('do_number', `CN-${yymm}-%`);
-  return nextMonthlyDocNo(`CN-${yymm}`, ((existing ?? []) as Array<{ do_number: string }>).map((r) => r.do_number));
+  const p = companyDocPrefix(c);
+  const { data: existing } = await sb.from('consignment_delivery_orders').select('do_number').like('do_number', `${p}CN-${yymm}-%`);
+  return nextMonthlyDocNo(`${p}CN-${yymm}`, ((existing ?? []) as Array<{ do_number: string }>).map((r) => r.do_number));
 };
 
 /* Re-derive the note header's per-category revenue/cost totals + grand total from
@@ -483,7 +484,7 @@ consignmentNotes.post('/', async (c) => {
   const emPhoneRaw = (body.emergencyContactPhone as string | undefined) ?? null;
 
   const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; do_number: string }>(
-    () => nextNum(sb),
+    () => nextNum(sb, c),
     (doNumber) => sb.from('consignment_delivery_orders').insert({
     company_id: activeCompanyId(c), // multi-company: stamp the active company
     do_number: doNumber,
