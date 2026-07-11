@@ -143,6 +143,14 @@ mfgProducts.get('/', async (c) => {
       const m = Array.isArray(model) ? model[0] : model;
       return { ...p, allowed_options: m?.allowed_options ?? null };
     });
+  /* Perf (go-live) — the 1141-row SKU master is the catalog picker every SO /
+     PO / GRN / DO "new" page loads, and it changes rarely (price/config edits,
+     not per-order). A short PRIVATE max-age lets the browser reuse the payload
+     across a burst of page opens without a fresh 2-page paginate round-trip,
+     while staying per-user (never shared/CDN) and short enough that a
+     commander price edit shows within a minute. Follows the existing
+     `private, max-age` header convention used elsewhere in this router. */
+  c.header('cache-control', 'private, max-age=60');
   return c.json({ products });
 });
 

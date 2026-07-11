@@ -175,6 +175,12 @@ productModels.get('/', async (c) => {
     }
   }
   const models = rows.map((m) => ({ ...m, sku_count: counts.get(m.id) ?? 0 }));
+  /* Perf (go-live) — Models back the catalog picker's variant-filter pools and
+     the Modular list; they change rarely (config edits, not per-order). A short
+     PRIVATE max-age lets the browser reuse the list across a burst of picker
+     opens without re-running the list + grouped-count round-trip. Kept short so
+     a Model/allowed-options edit surfaces within a minute. */
+  c.header('cache-control', 'private, max-age=60');
   return c.json({ models });
 });
 

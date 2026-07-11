@@ -755,29 +755,41 @@ suppliers.get('/:id/scorecard', async (c) => {
   }
   const defectRate = totalReceived > 0 ? (totalRejected / totalReceived) * 100 : 0;
 
-  // Last 10 POs with ordered/received qty totals
+  // Last 10 POs with ordered/received qty totals.
+  // Perf (go-live) — was N+1: one purchase_order_items query PER PO (10
+  // subrequests). Collapsed to a SINGLE `.in(purchase_order_id, [...])` batch,
+  // then the qty totals are summed per PO in memory.
   const last10Raw = all.slice(0, 10);
-  const last10POs = await Promise.all(
-    last10Raw.map(async (po) => {
-      const { data: items } = await supabase
-        .from('purchase_order_items')
-        .select('qty, received_qty')
-        .eq('purchase_order_id', po.id);
-      const orderedQty = (items ?? []).reduce((s, r) => s + (r.qty || 0), 0);
-      const receivedQty = (items ?? []).reduce((s, r) => s + (r.received_qty || 0), 0);
-      return {
-        id: po.id,
-        poNo: po.po_number,
-        status: po.status,
-        poDate: po.po_date,
-        expectedDate: po.expected_at,
-        receivedDate: po.received_at,
-        totalCenti: po.total_centi,
-        orderedQty,
-        receivedQty,
-      };
-    }),
-  );
+  const last10Ids = last10Raw.map((po) => po.id);
+  const qtyByPo = new Map<string, { orderedQty: number; receivedQty: number }>();
+  if (last10Ids.length > 0) {
+    const { data: itemRows } = await supabase
+      .from('purchase_order_items')
+      .select('purchase_order_id, qty, received_qty')
+      .in('purchase_order_id', last10Ids);
+    for (const r of (itemRows ?? []) as Array<{ purchase_order_id: string; qty: number | null; received_qty: number | null }>) {
+      // Dual-read camelCase ?? snake_case for the FK column.
+      const poId = ((r as Record<string, unknown>).purchaseOrderId ?? r.purchase_order_id) as string;
+      const agg = qtyByPo.get(poId) ?? { orderedQty: 0, receivedQty: 0 };
+      agg.orderedQty += r.qty || 0;
+      agg.receivedQty += r.received_qty || 0;
+      qtyByPo.set(poId, agg);
+    }
+  }
+  const last10POs = last10Raw.map((po) => {
+    const agg = qtyByPo.get(po.id) ?? { orderedQty: 0, receivedQty: 0 };
+    return {
+      id: po.id,
+      poNo: po.po_number,
+      status: po.status,
+      poDate: po.po_date,
+      expectedDate: po.expected_at,
+      receivedDate: po.received_at,
+      totalCenti: po.total_centi,
+      orderedQty: agg.orderedQty,
+      receivedQty: agg.receivedQty,
+    };
+  });
 
   return c.json({
     supplierId: id,
