@@ -24,6 +24,7 @@ import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { writeMovements, reverseMovements } from '../lib/inventory-movements';
+import { scopeToCompany, activeCompanyId, stampCompany } from '../lib/companyScope';
 import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 
@@ -72,6 +73,7 @@ stockTransfers.get('/', async (c) => {
     if (toWarehouseId)   q = q.eq('to_warehouse_id',   toWarehouseId);
     if (dateFrom)        q = q.gte('transfer_date', dateFrom);
     if (dateTo)          q = q.lte('transfer_date', dateTo);
+    q = scopeToCompany(q, c); // multi-company: isolate to the active company
     return q.range(pFrom, pTo);
   });
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
@@ -137,6 +139,8 @@ async function writeTransferMovements(
   sb: any,
   header: { id: string; transfer_no: string; from_warehouse_id: string; to_warehouse_id: string },
   userId: string,
+  // Multi-company (mig 0061): stamp the transfer's company on every movement row.
+  companyId?: number | null,
 ): Promise<string[]> {
   const movementErrors: string[] = [];
   const { data: lines } = await sb.from('stock_transfer_lines')
@@ -187,6 +191,7 @@ async function writeTransferMovements(
     // (unambiguous). null → leave un-batched (multi-batch ambiguity or plain stock).
     const batchNo = batchByBucket.get(`${ln.product_code}::${variantKey}`) ?? null;
     const { data: outRow, error: outErr } = await sb.from('inventory_movements').insert({
+      ...(companyId != null ? { company_id: companyId } : {}),
       movement_type:  'OUT',
       warehouse_id:   header.from_warehouse_id,
       product_code:   ln.product_code,
@@ -236,7 +241,7 @@ async function writeTransferMovements(
       ...(batchNo ? { batch_no: batchNo } : {}),
       performed_by:   userId,
       notes:          `Transfer from warehouse ${header.from_warehouse_id}`,
-    }]);
+    }], companyId);
     if (!inOk.ok) {
       movementErrors.push(`IN ${ln.product_code}: ${inOk.reason ?? 'unknown'}`);
       /* CRITICAL — the OUT@from already committed (FIFO trigger consumed the
@@ -260,7 +265,7 @@ async function writeTransferMovements(
         ...(batchNo ? { batch_no: batchNo } : {}),
         performed_by:   userId,
         notes:          `Compensating reversal: IN@to failed, restoring source for transfer ${header.transfer_no}`,
-      }]);
+      }], companyId);
       if (!compIn.ok) movementErrors.push(`COMPENSATE ${ln.product_code}: ${compIn.reason ?? 'unknown'}`);
     }
   }
@@ -297,6 +302,7 @@ stockTransfers.post('/', async (c) => {
   if (items.length === 0) return c.json({ error: 'items_required' }, 400);
 
   const headerInsert: Record<string, unknown> = {
+    company_id:         activeCompanyId(c), // multi-company: stamp the active company
     status:             'POSTED',
     posted_at:          new Date().toISOString(),
     from_warehouse_id:  fromWarehouseId,
@@ -332,14 +338,14 @@ stockTransfers.post('/', async (c) => {
       notes: (it.notes as string | undefined) ?? null,
     };
   });
-  const { error: lErr } = await sb.from('stock_transfer_lines').insert(lineRows);
+  const { error: lErr } = await sb.from('stock_transfer_lines').insert(stampCompany(lineRows, c));
   if (lErr) {
     await sb.from('stock_transfers').delete().eq('id', header.id);
     return c.json({ error: 'lines_insert_failed', reason: lErr.message }, 500);
   }
 
   // Write inventory movements (paired OUT/IN) inline.
-  const movementErrors = await writeTransferMovements(sb, header, user.id);
+  const movementErrors = await writeTransferMovements(sb, header, user.id, activeCompanyId(c));
 
   /* If ANY line's movement failed, the transfer did NOT fully complete. We
      compensated the source side per-line above (so stock isn't destroyed), then

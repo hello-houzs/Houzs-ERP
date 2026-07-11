@@ -38,6 +38,7 @@
 import { Hono } from 'hono';
 import type { User } from '@supabase/supabase-js';
 import { supabaseAuth } from '../middleware/auth';
+import { activeCompanyId } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 import { slipBindings, expiresInOneHour, hashesMatch, isExpired } from '../lib/slip';
 import { buildSlipKey, r2Head, type SlipMime } from '../lib/r2';
@@ -99,6 +100,7 @@ slips.post('/init', async (c) => {
   const expiresAt = expiresInOneHour();
 
   const { error: insertErr } = await sb.from('pending_slip_uploads').insert({
+    company_id: activeCompanyId(c),
     id: sessionId,
     upload_session_id: sessionId,
     staff_id: staffId,

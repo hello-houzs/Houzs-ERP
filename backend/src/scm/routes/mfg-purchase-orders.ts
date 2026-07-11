@@ -34,6 +34,7 @@ import {
 } from '../shared/so-line-display';
 import { resolveMaintenanceConfigForSupplier } from '../lib/po-pricing';
 import { nextMonthlyDocNo } from '../lib/doc-no';
+import { scopeToCompany, activeCompanyId, stampCompany } from '../lib/companyScope';
 import { supabaseAuth } from '../middleware/auth';
 import { computeMrp } from './mrp';
 import type { Env, Variables } from '../env';
@@ -156,6 +157,8 @@ mfgPurchaseOrders.get('/', async (c) => {
 
   if (status && VALID_STATUSES.has(status)) q = q.eq('status', status);
   if (supplierId) q = q.eq('supplier_id', supplierId);
+
+  q = scopeToCompany(q, c); // multi-company: isolate to the active company
 
   const { data, error } = await q;
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
@@ -633,6 +636,7 @@ mfgPurchaseOrders.post('/', async (c) => {
      PATCH /submit stays an idempotent no-op for legacy callers. */
   const asDraft = body.asDraft === true;
   const headerInsert: Record<string, unknown> = {
+    company_id: activeCompanyId(c), // multi-company: stamp the active company
     po_number: poNumber,
     supplier_id: supplierId,
     status: asDraft ? 'DRAFT' : 'SUBMITTED',
@@ -673,7 +677,7 @@ mfgPurchaseOrders.post('/', async (c) => {
 
   if (itemRows.length > 0) {
     const itemsToInsert = itemRows.map((r) => ({ ...r, purchase_order_id: header.id }));
-    const { error: iErr } = await supabase.from('purchase_order_items').insert(itemsToInsert);
+    const { error: iErr } = await supabase.from('purchase_order_items').insert(stampCompany(itemsToInsert, c));
     if (iErr) {
       // Best-effort rollback of header so we don't leak a no-items PO.
       await supabase.from('purchase_orders').delete().eq('id', header.id);
@@ -1396,7 +1400,7 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
       // Commander 2026-05-31 — MRP-origin lines are reference-only (no SO lock).
       from_mrp: fromMrp,
     }));
-    const { error: iErr } = await supabase.from('purchase_order_items').insert(rows);
+    const { error: iErr } = await supabase.from('purchase_order_items').insert(stampCompany(rows, c));
     if (iErr) return c.json({ error: 'items_insert_failed', reason: iErr.message }, 500);
     await recomputePoTotals(supabase, target.id);
     // Recount po_qty_picked from the live PO lines for every appended SO line
@@ -1440,6 +1444,7 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
     const headerPurchaseLocationId: string | null = bucket.warehouseId;
 
     const headerPayload = {
+      company_id: activeCompanyId(c), // multi-company: stamp the active company
       supplier_id: supplierId,
       // PR #131 — Convert-from-SO bulk path also lands SUBMITTED.
       status: 'SUBMITTED',
@@ -1503,7 +1508,7 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
       // Commander 2026-05-31 — MRP-origin lines are reference-only (no SO lock).
       from_mrp: fromMrp,
     }));
-    const { error: iErr } = await supabase.from('purchase_order_items').insert(rows);
+    const { error: iErr } = await supabase.from('purchase_order_items').insert(stampCompany(rows, c));
     if (iErr) {
       await supabase.from('purchase_orders').delete().eq('id', header.id);
       continue;
@@ -1728,7 +1733,7 @@ mfgPurchaseOrders.post('/:id/items', async (c) => {
     supplier_delivery_date_4: (it.supplierDeliveryDate4 as string) ?? null,
     warehouse_id: (it.warehouseId as string) ?? null,
   };
-  const { data, error } = await sb.from('purchase_order_items').insert(row).select('*').single();
+  const { data, error } = await sb.from('purchase_order_items').insert({ ...row, company_id: activeCompanyId(c) }).select('*').single();
   if (error) return c.json({ error: 'insert_failed', reason: error.message }, 500);
   await recomputePoTotals(sb, poId);
   await recomputePoExpectedAt(sb, poId);

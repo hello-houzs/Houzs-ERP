@@ -52,6 +52,7 @@ import { z } from 'zod';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { paginateAll } from '../lib/paginate-all';
+import { activeCompanyId } from '../lib/companyScope';
 
 export const lorryCapacity = new Hono<{ Bindings: Env; Variables: Variables }>();
 lorryCapacity.use('*', supabaseAuth);
@@ -423,6 +424,7 @@ lorryCapacity.put('/lorries/:id/repair-days', async (c) => {
       if (counted >= days) break;
     }
     const { error } = await sb.from('lorry_maintenance').insert({
+      company_id: activeCompanyId(c),
       lorry_id: id,
       unavailable_from: isoOf(fromMs),
       unavailable_to: isoOf(end),

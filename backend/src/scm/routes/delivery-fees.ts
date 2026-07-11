@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { targetRefinementSchema } from '../shared';
 import { supabaseAuth } from '../middleware/auth';
 import { hasHouzsPerm } from '../lib/houzs-perms';
+import { activeCompanyId } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 type AppContext = Context<{ Bindings: Env; Variables: Variables }>;
@@ -177,7 +178,7 @@ deliveryFees.put('/special', async (c) => {
 
   const { data, error } = await gate.supabase
     .from('special_delivery_fee_rules')
-    .insert(fields)
+    .insert({ ...fields, company_id: activeCompanyId(c) })
     .select('id');
   if (error) return c.json({ error: 'insert_failed', reason: error.message }, 500);
   if (!data || data.length === 0) return c.json({ error: 'insert_failed', reason: 'rls_blocked_zero_rows' }, 403);

@@ -27,6 +27,7 @@ import { effectiveDelivery } from '../shared/effective-delivery';
 import { supabaseAuth } from '../middleware/auth';
 import { escapeForOr } from '../lib/postgrest-search';
 import { bindingToProductPatch } from '../lib/cost-anchor-sync';
+import { scopeToCompany, activeCompanyId, stampCompany } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 /* Task #91 — small helper: normalize a body field to E.164 phone storage,
@@ -236,6 +237,7 @@ suppliers.get('/', async (c) => {
     .limit(2000);
   if (status && SUPPLIER_STATUSES.has(status)) q = q.eq('status', status);
   if (search) { const s = escapeForOr(search); if (s) q = q.or(`code.ilike.%${s}%,name.ilike.%${s}%,contact_person.ilike.%${s}%`); }
+  q = scopeToCompany(q, c); // multi-company: suppliers are per-company (view exposes company_id via mig 0062)
 
   const { data, error } = await q;
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
@@ -312,7 +314,7 @@ suppliers.post('/', async (c) => {
   };
 
   const supabase = c.get('supabase');
-  const { data, error } = await supabase.from('suppliers').insert(row).select(SUPPLIER_COLS).single();
+  const { data, error } = await supabase.from('suppliers').insert({ ...row, company_id: activeCompanyId(c) }).select(SUPPLIER_COLS).single();
   if (error) {
     if (error.code === '23505') return c.json({ error: 'duplicate_code' }, 409);
     if (error.code === '42501') return c.json({ error: 'forbidden', reason: error.message }, 403);
@@ -450,7 +452,7 @@ suppliers.post('/:id/bindings', async (c) => {
       .eq('is_main_supplier', true);
   }
 
-  const { data, error } = await supabase.from('supplier_material_bindings').insert(row).select(BINDING_COLS).single();
+  const { data, error } = await supabase.from('supplier_material_bindings').insert({ ...row, company_id: activeCompanyId(c) }).select(BINDING_COLS).single();
   if (error) {
     if (error.code === '42501') return c.json({ error: 'forbidden', reason: error.message }, 403);
     return c.json({ error: 'insert_failed', reason: error.message }, 500);
@@ -528,7 +530,7 @@ suppliers.post('/:id/bindings/batch', async (c) => {
 
   const { data, error } = await supabase
     .from('supplier_material_bindings')
-    .insert(rows)
+    .insert(stampCompany(rows, c))
     .select(BINDING_COLS);
   if (error) {
     if (error.code === '42501') return c.json({ error: 'forbidden', reason: error.message }, 403);

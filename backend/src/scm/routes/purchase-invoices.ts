@@ -11,6 +11,7 @@ import {
 import { postPiAccounting, reversePiAccounting, resyncPiAccounting } from './accounting';
 import { recostForPi, recostFromGrn } from '../lib/recost';
 import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
+import { scopeToCompany, activeCompanyId, stampCompany } from '../lib/companyScope';
 import { todayMyt } from '../lib/my-time';
 
 export const purchaseInvoices = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -184,6 +185,7 @@ purchaseInvoices.get('/', async (c) => {
     // truncate the PI list — match the SO/DO/SI list convention.
     .limit(500);
   const status = c.req.query('status'); if (status) q = q.eq('status', status);
+  q = scopeToCompany(q, c); // multi-company: isolate to the active company
   const { data, error } = await q;
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
   return c.json({ purchaseInvoices: data ?? [] });
@@ -408,6 +410,7 @@ purchaseInvoices.post('/', async (c) => {
   const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; invoice_number: string }>(
     () => nextNum(sb, 'PI'),
     (invoiceNumber) => sb.from('purchase_invoices').insert({
+    company_id: activeCompanyId(c), // multi-company: stamp the active company
     invoice_number: invoiceNumber,
     supplier_invoice_ref: (body.supplierInvoiceRef as string) ?? null,
     supplier_id: body.supplierId,
@@ -428,7 +431,7 @@ purchaseInvoices.post('/', async (c) => {
   const h = header as unknown as { id: string; invoice_number: string };
 
   const rowsWithId = itemRows.map((r) => ({ ...r, purchase_invoice_id: h.id }));
-  const { error: iErr } = await sb.from('purchase_invoice_items').insert(rowsWithId);
+  const { error: iErr } = await sb.from('purchase_invoice_items').insert(stampCompany(rowsWithId, c));
   if (iErr) { await sb.from('purchase_invoices').delete().eq('id', h.id); return c.json({ error: 'items_insert_failed', reason: iErr.message }, 500); }
 
   /* Post-insert over-invoice verification (race guard) — the pre-check above is
@@ -734,6 +737,7 @@ purchaseInvoices.post('/from-grn-items', async (c) => {
     // discount > qty×price can't drive the PI subtotal negative.
     const subtotal = bucket.lines.reduce((s, { row, qty }) => s + Math.max(0, qty * row.unit_price_centi - discFor(row, qty)), 0);
     const piPayload = {
+      company_id: activeCompanyId(c), // multi-company: stamp the active company
       supplier_invoice_ref: body.supplierInvoiceNumber ?? null,
       supplier_id: bucket.supplierId,
       purchase_order_id: bucket.purchaseOrderId,
@@ -793,7 +797,7 @@ purchaseInvoices.post('/from-grn-items', async (c) => {
       special_order_price_sen: row.special_order_price_sen ?? 0,
       discount_centi: discFor(row, qty),
     }));
-    const { error: iErr } = await sb.from('purchase_invoice_items').insert(rows);
+    const { error: iErr } = await sb.from('purchase_invoice_items').insert(stampCompany(rows, c));
     if (iErr) {
       await sb.from('purchase_invoices').delete().eq('id', h.id);
       continue;
@@ -878,6 +882,7 @@ purchaseInvoices.post('/from-grn', async (c) => {
   const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; invoice_number: string }>(
     () => nextNum(sb, 'PI'),
     (invoiceNumber) => sb.from('purchase_invoices').insert({
+    company_id: activeCompanyId(c), // multi-company: stamp the active company
     invoice_number: invoiceNumber,
     supplier_id: g.supplier_id,
     purchase_order_id: g.purchase_order_id,
@@ -921,7 +926,7 @@ purchaseInvoices.post('/from-grn', async (c) => {
     special_order_price_sen: it.special_order_price_sen ?? 0,
     discount_centi: discFor(it),
   }));
-  const { error: insErr } = await sb.from('purchase_invoice_items').insert(rows);
+  const { error: insErr } = await sb.from('purchase_invoice_items').insert(stampCompany(rows, c));
   if (insErr) { await sb.from('purchase_invoices').delete().eq('id', h.id); return c.json({ error: 'items_insert_failed', reason: insErr.message }, 500); }
 
   /* Post-insert over-invoice verification (race guard) — the remaining filter
@@ -1037,7 +1042,7 @@ purchaseInvoices.post('/:id/items', async (c) => {
     description2: buildVariantSummary(String(it.itemGroup ?? ''), (it.variants as Record<string, unknown> | null) ?? null) || null,
     uom: (it.uom as string) ?? 'UNIT',
   };
-  const { data, error } = await sb.from('purchase_invoice_items').insert(row).select(ITEM).single();
+  const { data, error } = await sb.from('purchase_invoice_items').insert({ ...row, company_id: activeCompanyId(c) }).select(ITEM).single();
   if (error) return c.json({ error: 'insert_failed', reason: error.message }, 500);
 
   /* Bug #3/#11 — POST-INSERT over-invoice verification. The pre-check is a

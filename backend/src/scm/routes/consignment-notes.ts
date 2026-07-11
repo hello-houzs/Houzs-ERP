@@ -34,6 +34,7 @@ import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item
 import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { todayMyt } from '../lib/my-time';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
+import { scopeToCompany, activeCompanyId, stampCompany } from '../lib/companyScope';
 
 export const consignmentNotes = new Hono<{ Bindings: Env; Variables: Variables }>();
 consignmentNotes.use('*', supabaseAuth);
@@ -331,6 +332,7 @@ consignmentNotes.get('/', async (c) => {
   const sb = c.get('supabase');
   let q = sb.from('consignment_delivery_orders').select(HEADER).order('do_date', { ascending: false }).limit(500);
   const status = c.req.query('status'); if (status) q = q.eq('status', status);
+  q = scopeToCompany(q, c); // multi-company: isolate to the active company
   const { data, error } = await q;
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
 
@@ -483,6 +485,7 @@ consignmentNotes.post('/', async (c) => {
   const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; do_number: string }>(
     () => nextNum(sb),
     (doNumber) => sb.from('consignment_delivery_orders').insert({
+    company_id: activeCompanyId(c), // multi-company: stamp the active company
     do_number: doNumber,
     consignment_so_doc_no: (body.consignmentSoDocNo as string) ?? (body.soDocNo as string) ?? null,
     debtor_code: (body.debtorCode as string) ?? null,
@@ -531,7 +534,7 @@ consignmentNotes.post('/', async (c) => {
 
   if (items.length > 0) {
     const rows = items.map((it) => buildItemRow(h.id, it));
-    const { error: iErr } = await sb.from('consignment_delivery_order_items').insert(rows);
+    const { error: iErr } = await sb.from('consignment_delivery_order_items').insert(stampCompany(rows, c));
     if (iErr) { await sb.from('consignment_delivery_orders').delete().eq('id', h.id); return c.json({ error: 'items_insert_failed', reason: iErr.message }, 500); }
     await recomputeTotals(sb, h.id);
   }
@@ -613,7 +616,7 @@ consignmentNotes.post('/:id/items', async (c) => {
   if (!header) return c.json({ error: 'not_found' }, 404);
 
   const row = buildItemRow(id, it);
-  const { data, error } = await sb.from('consignment_delivery_order_items').insert(row).select(ITEM).single();
+  const { data, error } = await sb.from('consignment_delivery_order_items').insert({ company_id: activeCompanyId(c), ...row }).select(ITEM).single();
   if (error) return c.json({ error: 'insert_failed', reason: error.message }, 500);
   await recomputeTotals(sb, id);
   /* Reconcile inventory for the added line — resync writes the new line's OUT
@@ -744,6 +747,7 @@ consignmentNotes.post('/:id/payments', async (c) => {
   const onlineType        = p.method === 'transfer' ? (p.onlineType ?? null) : null;
 
   const { data, error } = await sb.from('consignment_delivery_order_payments').insert({
+    company_id:         activeCompanyId(c), // multi-company: stamp the active company
     consignment_delivery_order_id: id,
     paid_at:            p.paidAt,
     method:             p.method,

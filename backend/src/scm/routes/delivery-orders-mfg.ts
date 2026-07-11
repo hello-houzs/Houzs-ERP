@@ -23,6 +23,7 @@ import { syncSoDeliveredFromDo } from '../lib/so-delivery-sync';
 import { todayMyt } from '../lib/my-time';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { resolveSalesScopeIds } from '../lib/salesScope';
+import { scopeToCompany, activeCompanyId, stampCompany } from '../lib/companyScope';
 import { hasHouzsPerm } from '../lib/houzs-perms';
 import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item-codes';
 import { checkStockAvailability, shortStockResponse } from '../lib/check-stock-availability';
@@ -524,11 +525,11 @@ async function deductInventoryForDo(sb: any, deliveryOrderId: string, performedB
 
   /* Forward-compat (mig 0057): is_dropship column may not exist yet — retry without it. */
   let doHeaderRes = await sb.from('delivery_orders')
-    .select('do_number, warehouse_id, is_dropship')
+    .select('do_number, warehouse_id, is_dropship, company_id')
     .eq('id', deliveryOrderId).maybeSingle();
   if (doHeaderRes.error && (doHeaderRes.error.message ?? '').includes('is_dropship')) {
     doHeaderRes = await sb.from('delivery_orders')
-      .select('do_number, warehouse_id')
+      .select('do_number, warehouse_id, company_id')
       .eq('id', deliveryOrderId).maybeSingle();
   }
   const doHeader = doHeaderRes.data;
@@ -630,7 +631,7 @@ async function deductInventoryForDo(sb: any, deliveryOrderId: string, performedB
     /* Capture the best-effort write result so the caller can surface a failed
        stock OUT (was silently swallowed — DO flipped DISPATCHED with stock NOT
        moved and the caller never told). No rollback; just make it loud. */
-    const res = await writeMovements(sb, movements);
+    const res = await writeMovements(sb, movements, (doHeader as { company_id?: number | null } | null)?.company_id ?? null);
     if (!res.ok) movementErrors.push(`OUT ${doNo}: ${res.reason ?? 'unknown'}`);
     /* Costing C — the OUT rows now carry their real FIFO cost (trigger filled
        total_cost_sen). Restamp the DO lines from that actual cost so Margin is

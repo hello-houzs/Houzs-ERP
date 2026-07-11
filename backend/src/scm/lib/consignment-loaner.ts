@@ -121,9 +121,12 @@ export async function transferLoaner(
   sourceDocId: string,
   sourceDocNo: string,
   userId: string | null,
+  // Multi-company (mig 0061): stamp the source doc's company on every movement.
+  companyId?: number | null,
 ): Promise<string[]> {
   const errors: string[] = [];
   if (!fromWh || !toWh || fromWh === toWh || lines.length === 0) return errors;
+  const companyCol = companyId != null ? { company_id: companyId } : {};
 
   const batchByBucket = await resolveSourceBatches(sb, fromWh);
 
@@ -149,6 +152,7 @@ export async function transferLoaner(
     // 1) OUT @from — the FIFO trigger consumes the source lot(s) and fills
     //    total_cost_sen. CS_* source type = idempotency backstop for the ship.
     const { data: outRow, error: outErr } = await sb.from('inventory_movements').insert({
+      ...companyCol,
       movement_type:   'OUT',
       warehouse_id:    fromWh,
       product_code:    ln.product_code,
@@ -189,7 +193,7 @@ export async function transferLoaner(
       ...(batchNo ? { batch_no: batchNo } : {}),
       performed_by:    userId,
       notes:           `Consignment loaner transfer from warehouse ${fromWh} (value-neutral)`,
-    }]);
+    }], companyId);
     if (!inOk.ok) errors.push(`IN ${ln.product_code}: ${inOk.reason ?? 'unknown'}`);
   }
 
@@ -231,9 +235,12 @@ export async function reverseLoaner(
   fromWh: string,
   toWh: string,
   userId: string | null,
+  // Multi-company (mig 0061): stamp the source doc's company on every movement.
+  companyId?: number | null,
 ): Promise<string[]> {
   const errors: string[] = [];
   if (!fromWh || !toWh || fromWh === toWh) return errors;
+  const companyCol = companyId != null ? { company_id: companyId } : {};
   const cancelNo = `${sourceDocNo}-CANCEL`;
 
   // Idempotency — has this doc already been reversed? The reversal writes its
@@ -291,6 +298,7 @@ export async function reverseLoaner(
     const unitCost = b.out_qty > 0 ? Math.round(b.out_total_cost / b.out_qty) : 0;
 
     const { error: outErr } = await sb.from('inventory_movements').insert({
+      ...companyCol,
       movement_type:   'OUT',
       warehouse_id:    toWh,                 // consignment side gives the loaner back
       product_code:    b.product_code,
@@ -320,7 +328,7 @@ export async function reverseLoaner(
       ...(b.batch_no ? { batch_no: b.batch_no } : {}),
       performed_by:    userId,
       notes:           `Consignment loaner cancelled — reversing transfer (value-neutral)`,
-    }]);
+    }], companyId);
     if (!inOk.ok) errors.push(`reverse IN ${b.product_code}: ${inOk.reason ?? 'unknown'}`);
   }
 

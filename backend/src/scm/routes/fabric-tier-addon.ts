@@ -5,6 +5,7 @@ import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { supabaseAuth } from '../middleware/auth';
 import { hasHouzsPerm } from '../lib/houzs-perms';
+import { activeCompanyId } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 type AppContext = Context<{ Bindings: Env; Variables: Variables }>;
@@ -137,6 +138,7 @@ fabricTierAddonConfig.put('/special', async (c) => {
   const { data: updated, error } = await gate.supabase
     .from('model_fabric_tier_overrides')
     .upsert({
+      ...(activeCompanyId(c) != null ? { company_id: activeCompanyId(c) } : {}),
       model_id:    parsed.data.modelId,
       tier2_delta: parsed.data.tier2Delta,
       tier3_delta: parsed.data.tier3Delta,
@@ -207,6 +209,7 @@ fabricTierAddonConfig.put('/compartment-special', async (c) => {
   const { data: updated, error } = await gate.supabase
     .from('compartment_fabric_tier_overrides')
     .upsert({
+      ...(activeCompanyId(c) != null ? { company_id: activeCompanyId(c) } : {}),
       compartment_id: parsed.data.compartmentId,
       tier2_delta:    parsed.data.tier2Delta,
       tier3_delta:    parsed.data.tier3Delta,

@@ -23,6 +23,7 @@ import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import { hasHouzsPerm } from '../lib/houzs-perms';
 import { todayMyt } from '../lib/my-time';
+import { activeCompanyId } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 export const maintenanceConfig = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -184,6 +185,7 @@ maintenanceConfig.post('/changes', async (c) => {
   const { data, error } = await supabase
     .from('maintenance_config_history')
     .insert({
+      company_id: activeCompanyId(c),
       id,
       scope,
       config: body.config,

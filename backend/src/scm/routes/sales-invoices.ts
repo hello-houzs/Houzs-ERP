@@ -26,6 +26,7 @@ import { z } from 'zod';
 import { normalizePhone, buildVariantSummary, isServiceLine } from '../shared';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
+import { scopeToCompany, activeCompanyId, stampCompany } from '../lib/companyScope';
 import { postSiRevenue, reverseSiRevenue, resyncSiRevenue } from '../lib/post-si-revenue';
 import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { todayMyt } from '../lib/my-time';
@@ -195,6 +196,7 @@ salesInvoices.get('/', async (c) => {
   let q = sb.from('sales_invoices').select(HEADER).order('invoice_date', { ascending: false }).limit(500);
   if (scopeIds) q = q.in('salesperson_id', scopeIds);
   const status = c.req.query('status'); if (status) q = q.eq('status', status);
+  q = scopeToCompany(q, c); // multi-company: isolate to the active company
   const { data, error } = await q;
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
   return c.json({ salesInvoices: data ?? [] });
@@ -258,6 +260,7 @@ salesInvoices.post('/', async (c) => {
   const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; invoice_number: string; debtor_code: string | null; debtor_name: string | null; total_centi: number | null; paid_centi: number | null }>(
     () => nextNum(sb),
     (invoiceNumber) => sb.from('sales_invoices').insert({
+    company_id: activeCompanyId(c), // multi-company: stamp the active company
     invoice_number: invoiceNumber,
     so_doc_no: (body.soDocNo as string) ?? null,
     delivery_order_id: (body.deliveryOrderId as string) ?? null,
@@ -303,7 +306,7 @@ salesInvoices.post('/', async (c) => {
 
   if (items.length > 0) {
     const rows = items.map((it, lineNo) => buildItemRow(h.id, it, lineNo));
-    const { error: iErr } = await sb.from('sales_invoice_items').insert(rows);
+    const { error: iErr } = await sb.from('sales_invoice_items').insert(stampCompany(rows, c));
     if (iErr) { await sb.from('sales_invoices').delete().eq('id', h.id); return c.json({ error: 'items_insert_failed', reason: iErr.message }, 500); }
     await recomputeTotals(sb, h.id);
   }
@@ -447,6 +450,7 @@ salesInvoices.post('/from-dos', async (c) => {
   const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; invoice_number: string }>(
     () => nextNum(sb),
     (invoiceNumber) => sb.from('sales_invoices').insert({
+    company_id: activeCompanyId(c), // multi-company: stamp the active company
     invoice_number: invoiceNumber,
     so_doc_no: (head.so_doc_no as string | null) ?? null,
     delivery_order_id: firstDoId,
@@ -512,7 +516,7 @@ salesInvoices.post('/from-dos', async (c) => {
     lineSuffix: line.lineSuffix,
     specialOrderPriceSen: line.specialOrderPriceSen,
   }, lineNo));
-  const { error: iErr } = await sb.from('sales_invoice_items').insert(rows);
+  const { error: iErr } = await sb.from('sales_invoice_items').insert(stampCompany(rows, c));
   if (iErr) {
     await sb.from('sales_invoices').delete().eq('id', h.id);
     return c.json({ error: 'items_insert_failed', reason: iErr.message }, 500);
@@ -625,7 +629,7 @@ salesInvoices.post('/:id/items/from-do/:doId', async (c) => {
     }, baseLineNo === null ? null : baseLineNo + idx));
   if (rows.length === 0) return c.json({ error: 'do_fully_invoiced' }, 409);
 
-  const { error: iErr } = await sb.from('sales_invoice_items').insert(rows);
+  const { error: iErr } = await sb.from('sales_invoice_items').insert(stampCompany(rows, c));
   if (iErr) return c.json({ error: 'items_insert_failed', reason: iErr.message }, 500);
   await recomputeTotals(sb, id);
   await recomputePaid(sb, id);
@@ -713,7 +717,7 @@ salesInvoices.post('/:id/items', async (c) => {
     ? (maxNoRow as { line_no: number }).line_no + 1
     : null;
   const row = buildItemRow(id, it, nextLineNo);
-  const { data, error } = await sb.from('sales_invoice_items').insert(row).select(ITEM).single();
+  const { data, error } = await sb.from('sales_invoice_items').insert({ ...row, company_id: activeCompanyId(c) }).select(ITEM).single();
   if (error) return c.json({ error: 'insert_failed', reason: error.message }, 500);
   await recomputeTotals(sb, id);
   await recomputePaid(sb, id);
@@ -892,6 +896,7 @@ salesInvoices.post('/:id/payments', async (c) => {
   const onlineType        = p.method === 'transfer' ? (p.onlineType ?? null) : null;
 
   const { data, error } = await sb.from('sales_invoice_payments').insert({
+    company_id:         activeCompanyId(c), // multi-company: match the SI's company
     sales_invoice_id:   id,
     paid_at:            p.paidAt,
     method:             p.method,
@@ -1130,6 +1135,7 @@ salesInvoices.patch('/:id/payment', async (c) => {
   if ((cur as { status: string }).status === 'DRAFT') return c.json({ error: 'not_payable', message: 'SI is a draft — confirm it before recording payments' }, 409);
 
   const { error } = await sb.from('sales_invoice_payments').insert({
+    company_id: activeCompanyId(c), // multi-company: match the SI's company
     sales_invoice_id: id,
     paid_at: todayMyt(),
     method: 'cash',

@@ -11,6 +11,7 @@ import {
   sortSoLinesByGroupRank,
 } from '../shared/so-line-display';
 import { recostFromGrn } from '../lib/recost';
+import { scopeToCompany, activeCompanyId, stampCompany } from '../lib/companyScope';
 import { nextMonthlyDocNo } from '../lib/doc-no';
 import { todayMyt } from '../lib/my-time';
 
@@ -52,7 +53,7 @@ export async function resolvePoBatchByItem(
    Best-effort inventory write (matches existing /post behaviour). */
 async function postGrnAndRollup(sb: any, grnId: string, userId: string): Promise<{ ok: true; movementErrors?: string[] } | { ok: false; reason: string; status?: number }> {
   const { data: grnHeader } = await sb.from('grns')
-    .select('grn_number, warehouse_id')
+    .select('grn_number, warehouse_id, company_id')
     .eq('id', grnId).maybeSingle();
   const { data: items } = await sb.from('grn_items')
     .select('purchase_order_item_id, qty_accepted, material_code, material_name, unit_price_centi, item_group, variants')
@@ -110,7 +111,7 @@ async function postGrnAndRollup(sb: any, grnId: string, userId: string): Promise
       /* Capture the best-effort write result so the caller can surface a failed
          stock IN (was silently swallowed — GRN flipped POSTED with stock NOT
          booked and the caller never told). No rollback; just make it loud. */
-      const res = await writeMovements(sb, movements);
+      const res = await writeMovements(sb, movements, grnHeader?.company_id ?? null);
       if (!res.ok) movementErrors.push(`IN ${grnNo}: ${res.reason ?? 'unknown'}`);
       /* Drop-ship receipt reconcile (mig 0057) — the IN just created fresh
          batched lots. If a sofa was drop-shipped against this batch before
@@ -439,6 +440,7 @@ grns.get('/', async (c) => {
   let q = sb.from('grns').select(`${HEADER}, supplier:suppliers(id, code, name), purchase_order:purchase_orders(id, po_number)`).order('received_at', { ascending: false }).limit(500);
   const status = c.req.query('status'); if (status) q = q.eq('status', status);
   const supplierId = c.req.query('supplierId'); if (supplierId) q = q.eq('supplier_id', supplierId);
+  q = scopeToCompany(q, c); // multi-company: isolate to the active company
   const { data, error } = await q;
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
 
@@ -824,6 +826,7 @@ grns.post('/', async (c) => {
   const headerWarehouseId =
     (body.warehouseId as string | undefined) ?? (await defaultWarehouseId(sb)) ?? null;
   const { data: header, error: hErr } = await sb.from('grns').insert({
+    company_id: activeCompanyId(c), // multi-company: stamp the active company
     grn_number: grnNumber,
     purchase_order_id: (body.purchaseOrderId as string | undefined) ?? null,
     supplier_id: body.supplierId,
@@ -875,7 +878,7 @@ grns.post('/', async (c) => {
       rack_id: (it.rackId as string | undefined) || null,
     };
   });
-  const { error: iErr } = await sb.from('grn_items').insert(rows);
+  const { error: iErr } = await sb.from('grn_items').insert(stampCompany(rows, c));
   if (iErr) { await sb.from('grns').delete().eq('id', h.id); return c.json({ error: 'items_insert_failed', reason: iErr.message }, 500); }
 
   /* Post-insert over-receipt verification — the pre-check above is a read-then-
@@ -965,6 +968,7 @@ grns.post('/from-pos', async (c) => {
 
   const poNumbersJoined = poList.map((p) => p.po_number).join(', ');
   const { data: header, error: hErr } = await sb.from('grns').insert({
+    company_id: activeCompanyId(c), // multi-company: stamp the active company
     grn_number: grnNumber,
     purchase_order_id: poList[0]!.id,                    // primary PO ref (first one)
     supplier_id: supplierId,
@@ -1022,7 +1026,7 @@ grns.post('/from-pos', async (c) => {
       ),
     };
   });
-  const { error: iErr } = await sb.from('grn_items').insert(rows);
+  const { error: iErr } = await sb.from('grn_items').insert(stampCompany(rows, c));
   if (iErr) { await sb.from('grns').delete().eq('id', h.id); return c.json({ error: 'items_insert_failed', reason: iErr.message }, 500); }
 
   /* Post-insert over-receipt verification — the outstanding-qty prefill above is
@@ -1193,6 +1197,7 @@ grns.post('/from-po-items', async (c) => {
   for (const bucket of buckets.values()) {
     counter += 1;
     const grnPayload = {
+      company_id: activeCompanyId(c), // multi-company: stamp the active company
       purchase_order_id: bucket.primaryPoId,
       supplier_id: bucket.supplierId,
       received_at: receivedAt,
@@ -1262,7 +1267,7 @@ grns.post('/from-po-items', async (c) => {
         ),
       };
     });
-    const { error: iErr } = await sb.from('grn_items').insert(rows);
+    const { error: iErr } = await sb.from('grn_items').insert(stampCompany(rows, c));
     if (iErr) {
       await sb.from('grns').delete().eq('id', h.id);
       continue;
@@ -1429,7 +1434,7 @@ grns.patch('/:id/cancel', async (c) => {
           };
         });
       if (movements.length > 0) {
-        await writeMovements(sb, movements);
+        await writeMovements(sb, movements, activeCompanyId(c));
         /* GRN cancel pulled stock back out → other READY SOs that relied on
            this stock may need to regress. Re-walk allocation. Best-effort. */
         try {
@@ -1518,7 +1523,7 @@ grns.patch('/:id', async (c) => {
         });
       if (movements.length > 0) {
         try {
-          await writeMovements(sb, movements);
+          await writeMovements(sb, movements, activeCompanyId(c));
           try {
             const { recomputeSoStockAllocation } = await import('../lib/so-stock-allocation');
             await recomputeSoStockAllocation(sb);
@@ -1623,7 +1628,7 @@ grns.post('/:id/items', async (c) => {
     uom: (it.uom as string) ?? 'UNIT',
     delivery_date: (it.deliveryDate as string) ?? null,
   };
-  const { data, error } = await sb.from('grn_items').insert(row).select(ITEM).single();
+  const { data, error } = await sb.from('grn_items').insert({ ...row, company_id: activeCompanyId(c) }).select(ITEM).single();
   if (error) return c.json({ error: 'insert_failed', reason: error.message }, 500);
 
   /* Bug #3/#11 — POST-INSERT over-receipt verification. The pre-check above is a
@@ -1698,7 +1703,7 @@ grns.post('/:id/items', async (c) => {
           batch_no: addedPoItemId ? (batchByItem.get(addedPoItemId) ?? null) : null,
           performed_by: user.id,
           notes: 'GRN line added — receipt',
-        }]);
+        }], activeCompanyId(c));
         /* New stock landed → re-walk SO allocation. */
         try {
           const { recomputeSoStockAllocation } = await import('../lib/so-stock-allocation');
@@ -1895,7 +1900,7 @@ grns.patch('/:id/items/:itemId', async (c) => {
     }
     if (movements.length > 0) {
       try {
-        await writeMovements(sb, movements);
+        await writeMovements(sb, movements, activeCompanyId(c));
         try {
           const { recomputeSoStockAllocation } = await import('../lib/so-stock-allocation');
           await recomputeSoStockAllocation(sb);
@@ -2028,7 +2033,7 @@ grns.delete('/:id/items/:itemId', async (c) => {
             source_doc_no: (grnHeader as { grn_number: string } | null)?.grn_number ?? grnId,
             performed_by: user.id,
             notes: 'GRN line deleted — reversing receipt',
-          }]);
+          }], activeCompanyId(c));
           /* GRN line delete pulled stock back out → re-walk SO allocation. */
           try {
             const { recomputeSoStockAllocation } = await import('../lib/so-stock-allocation');

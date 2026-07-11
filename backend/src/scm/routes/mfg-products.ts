@@ -24,6 +24,7 @@ import { findSkuUsage } from '../lib/sku-usage';
 import { productToBindingPatch } from '../lib/cost-anchor-sync';
 import { moduleCodeFromSku, normalizeSofaTier, parseDefaultFreeGifts } from '../shared';
 import { hasHouzsPerm } from '../lib/houzs-perms';
+import { scopeToCompany, activeCompanyId } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 export const mfgProducts = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -134,6 +135,7 @@ mfgProducts.get('/', async (c) => {
     // 0166 — barcode rides the same OR-chain so a scanner blast into the SKU
     // Master search box finds the row (escapeForOr keeps the grammar safe).
     if (s) q = q.or(`code.ilike.%${s}%,name.ilike.%${s}%,description.ilike.%${s}%,barcode.ilike.%${s}%`);
+    q = scopeToCompany(q, c); // multi-company: mfg_products are per-company
     return q.range(from, to);
   });
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
@@ -202,7 +204,7 @@ mfgProducts.post('/', async (c) => {
        fabric_color removed (not used by 2990's retail catalogue). */
   };
 
-  const { data, error } = await supabase.from('mfg_products').insert(row).select('id, code').single();
+  const { data, error } = await supabase.from('mfg_products').insert({ ...row, company_id: activeCompanyId(c) }).select('id, code').single();
   if (error) {
     if (error.code === '23505') return c.json({ error: 'duplicate_code', reason: error.message }, 409);
     if (error.code === '42501') return c.json({ error: 'forbidden', reason: error.message }, 403);
@@ -301,7 +303,7 @@ mfgProducts.post('/batch-import', async (c) => {
         ? crypto.randomUUID()
         : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
       const id = `mfg-${rand.replace(/-/g, '').slice(0, 12)}`;
-      ({ error } = await supabase.from('mfg_products').insert({ ...row, id }));
+      ({ error } = await supabase.from('mfg_products').insert({ ...row, id, company_id: activeCompanyId(c) }));
     }
     if (error) {
       failures.push({ code, reason: error.message });
@@ -650,6 +652,7 @@ mfgProducts.patch('/:id', async (c) => {
     // rows — fixed here in one line; master_price_history.field is free-text).
     if (!PRICE_FIELDS.has(ch.field) && !ch.field.startsWith('seat_height')) continue;
     await supabase.from('master_price_history').insert({
+      company_id: activeCompanyId(c),
       product_code: current.code,
       field: ch.field,
       old_value_sen: ch.oldValueSen,

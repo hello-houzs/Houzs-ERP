@@ -44,6 +44,7 @@ import {
 } from '../shared/so-line-display';
 import { supabaseAuth } from '../middleware/auth';
 import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
+import { scopeToCompany, activeCompanyId, stampCompany } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 export const purchaseConsignmentOrders = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -107,6 +108,7 @@ purchaseConsignmentOrders.get('/', async (c) => {
 
   if (status && VALID_STATUSES.has(status)) q = q.eq('status', status);
   if (supplierId) q = q.eq('supplier_id', supplierId);
+  q = scopeToCompany(q, c); // multi-company: isolate to the active company
 
   const { data, error } = await q;
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
@@ -326,6 +328,7 @@ purchaseConsignmentOrders.post('/', async (c) => {
 
   // PC Order is created SUBMITTED directly (no DRAFT — migration 0154 default).
   const headerInsert: Record<string, unknown> = {
+    company_id: activeCompanyId(c), // multi-company: stamp the active company
     supplier_id: supplierId,
     status: 'SUBMITTED',
     submitted_at: new Date().toISOString(),
@@ -361,7 +364,7 @@ purchaseConsignmentOrders.post('/', async (c) => {
 
   if (itemRows.length > 0) {
     const itemsToInsert = itemRows.map((r) => ({ ...r, purchase_consignment_order_id: header.id }));
-    const { error: iErr } = await supabase.from('purchase_consignment_order_items').insert(itemsToInsert);
+    const { error: iErr } = await supabase.from('purchase_consignment_order_items').insert(stampCompany(itemsToInsert, c));
     if (iErr) {
       await supabase.from('purchase_consignment_orders').delete().eq('id', header.id);
       return c.json({ error: 'items_insert_failed', reason: iErr.message }, 500);
@@ -459,7 +462,7 @@ purchaseConsignmentOrders.post('/:id/items', async (c) => {
     supplier_delivery_date_4: (it.supplierDeliveryDate4 as string) ?? null,
     warehouse_id: (it.warehouseId as string) ?? null,
   };
-  const { data, error } = await sb.from('purchase_consignment_order_items').insert(row).select('*').single();
+  const { data, error } = await sb.from('purchase_consignment_order_items').insert({ company_id: activeCompanyId(c), ...row }).select('*').single();
   if (error) return c.json({ error: 'insert_failed', reason: error.message }, 500);
   await recomputePcoTotals(sb, pcoId);
   return c.json({ item: data }, 201);

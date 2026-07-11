@@ -14,6 +14,14 @@ import {
   type SalesItemInput,
   type SalesPaymentInput,
 } from "../services/salesEntries";
+// Multi-company (Phase 0b): active-company resolver. sales_entries + its item /
+// payment / activity / change-request children are a PER-COMPANY module (the
+// top-bar switcher isolates the two companies' books), so list/detail SELECTs
+// filter by the active company and every INSERT stamps it. companyContext runs
+// on the whole /api/* surface (index.ts), so c.get('companyId') is available
+// here; it's undefined only pre-migration / DB cold-start, and the scoping +
+// stamping both no-op in that case so single-company Houzs is unchanged.
+import { activeCompanyId } from "../scm/lib/companyScope";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -76,13 +84,18 @@ async function logSalesActivity(
   userId: number | null | undefined,
   action: string,
   note: string | null = null,
+  companyId?: number,
 ) {
+  // Phase 0b: stamp company_id (NOT NULL after mig 0061) from the parent
+  // entry's active company; omit the column when unresolved so single-company
+  // Houzs keeps logging.
+  const stampCo = companyId != null;
   try {
     await env.DB.prepare(
-      `INSERT INTO sales_entry_activity (entry_id, user_id, action, note)
-       VALUES (?, ?, ?, ?)`,
+      `INSERT INTO sales_entry_activity (entry_id, user_id, action, note${stampCo ? ", company_id" : ""})
+       VALUES (?, ?, ?, ?${stampCo ? ", ?" : ""})`,
     )
-      .bind(entryId, userId ?? null, action, note)
+      .bind(entryId, userId ?? null, action, note, ...(stampCo ? [companyId] : []))
       .run();
   } catch (e) {
     console.error("[logSalesActivity]", entryId, action, e);
@@ -123,8 +136,15 @@ app.get("/entries", requirePageAccess("sales"), async (c) => {
   const perPage = Math.min(parseInt(c.req.query("per_page") || "50", 10), 200);
   const offset = (page - 1) * perPage;
 
+  const companyId = activeCompanyId(c);
   const where: string[] = [];
   const binds: any[] = [];
+  // Per-company isolation: only the active company's sales entries. No-op when
+  // the active company is unresolved (pre-migration / cold-start).
+  if (companyId != null) {
+    where.push("s.company_id = ?");
+    binds.push(companyId);
+  }
   if (!includeArchived) where.push("s.archived_at IS NULL");
   if (status) {
     where.push("s.status = ?");
@@ -211,9 +231,14 @@ app.get("/entries", requirePageAccess("sales"), async (c) => {
       WHERE s.archived_at IS NULL
         AND s.status = 'draft'
         AND s.customer_name = ?
+        ${companyId != null ? "AND s.company_id = ?" : ""}
         ${ownership.sql ? `AND ${ownership.sql}` : ""}`
   )
-    .bind(QUICK_LOG_SENTINEL, ...ownership.binds)
+    .bind(
+      QUICK_LOG_SENTINEL,
+      ...(companyId != null ? [companyId] : []),
+      ...ownership.binds,
+    )
     .first<{ count: number }>();
 
   return c.json({
@@ -261,7 +286,12 @@ app.get("/entries/export", requirePageAccess("sales"), async (c) => {
   const db = getDb(c.env);
   const sp = alias(users, "sp");
 
+  const companyId = activeCompanyId(c);
   const conds: any[] = [];
+  // Per-company isolation. company_id isn't in the Drizzle schema (added by the
+  // raw-SQL migration 0061), so scope via a sql fragment on the table. No-op
+  // when the active company is unresolved.
+  if (companyId != null) conds.push(sql`${sales_entries}.company_id = ${companyId}`);
   if (!includeArchived) conds.push(isNull(sales_entries.archived_at));
   if (status) conds.push(eq(sales_entries.status, status));
   if (!isNaN(projectId)) conds.push(eq(sales_entries.project_id, projectId));
@@ -400,6 +430,7 @@ app.get("/entries/change-requests", requirePageAccess("sales"), async (c) => {
   const user = c.get("user");
   const canManage = c.get("access_level") === "full";
   const status = c.req.query("status") ?? "pending";
+  const companyId = activeCompanyId(c);
   let sql = `SELECT cr.id, cr.entry_id, cr.payload, cr.summary, cr.status,
                     cr.requested_by, cr.decided_by, cr.decided_at, cr.decide_note,
                     cr.created_at, e.doc_no, e.customer_name, e.status AS entry_status,
@@ -410,6 +441,11 @@ app.get("/entries/change-requests", requirePageAccess("sales"), async (c) => {
           LEFT JOIN users du ON du.id = cr.decided_by
               WHERE cr.status = ?`;
   const binds: any[] = [status];
+  // Per-company isolation. No-op when the active company is unresolved.
+  if (companyId != null) {
+    sql += ` AND cr.company_id = ?`;
+    binds.push(companyId);
+  }
   if (!canManage) {
     sql += ` AND cr.requested_by = ?`;
     binds.push(user?.id ?? 0);
@@ -423,6 +459,7 @@ app.post("/entries/change-requests/:reqId/approve", requirePageAccess("sales", "
   const reqId = parseInt(c.req.param("reqId"), 10);
   if (!reqId) return c.json({ error: "Invalid ID." }, 400);
   const user = c.get("user");
+  const companyId = activeCompanyId(c);
   const note = await c.req.json<{ note?: string }>().then((b) => b?.note ?? null).catch(() => null);
 
   const cr = await c.env.DB.prepare(
@@ -453,7 +490,7 @@ app.post("/entries/change-requests/:reqId/approve", requirePageAccess("sales", "
   if (invalid) return c.json({ error: `Can't apply: ${invalid.error}` }, invalid.status as 400);
 
   // Attribute the edit to the original requester; record the approver here.
-  await applyEntryPatch(c.env, entry.id, body, cr.requested_by ?? user?.id, entry.project_id);
+  await applyEntryPatch(c.env, entry.id, body, cr.requested_by ?? user?.id, entry.project_id, companyId);
   await c.env.DB.prepare(
     `UPDATE sales_entry_change_requests
         SET status = 'approved', decided_by = ?, decided_at = datetime('now'), decide_note = ?
@@ -461,7 +498,7 @@ app.post("/entries/change-requests/:reqId/approve", requirePageAccess("sales", "
   )
     .bind(user?.id ?? null, note, reqId)
     .run();
-  await logSalesActivity(c.env, entry.id, user?.id, "change_approved", note);
+  await logSalesActivity(c.env, entry.id, user?.id, "change_approved", note, companyId);
   return c.json({ ok: true });
 });
 
@@ -469,6 +506,7 @@ app.post("/entries/change-requests/:reqId/reject", requirePageAccess("sales", "f
   const reqId = parseInt(c.req.param("reqId"), 10);
   if (!reqId) return c.json({ error: "Invalid ID." }, 400);
   const user = c.get("user");
+  const companyId = activeCompanyId(c);
   const note = await c.req.json<{ note?: string }>().then((b) => b?.note ?? null).catch(() => null);
 
   const cr = await c.env.DB.prepare(
@@ -487,7 +525,7 @@ app.post("/entries/change-requests/:reqId/reject", requirePageAccess("sales", "f
   )
     .bind(user?.id ?? null, note, reqId)
     .run();
-  await logSalesActivity(c.env, cr.entry_id, user?.id, "change_rejected", note);
+  await logSalesActivity(c.env, cr.entry_id, user?.id, "change_rejected", note, companyId);
   return c.json({ ok: true });
 });
 
@@ -497,6 +535,7 @@ app.get("/entries/:id", requirePageAccess("sales"), async (c) => {
   if (!id) return c.json({ error: "Invalid ID." }, 400);
   const user = c.get("user");
   const canManage = c.get("access_level") === "full";
+  const companyId = activeCompanyId(c);
 
   const row = await c.env.DB.prepare(
     `SELECT s.*,
@@ -511,9 +550,9 @@ app.get("/entries/:id", requirePageAccess("sales"), async (c) => {
        LEFT JOIN users u ON u.id = s.created_by
        LEFT JOIN users sp ON sp.id = COALESCE(s.sales_person_id, s.created_by)
        LEFT JOIN projects p ON p.id = s.project_id
-      WHERE s.id = ?`
+      WHERE s.id = ?${companyId != null ? " AND s.company_id = ?" : ""}`
   )
-    .bind(id)
+    .bind(id, ...(companyId != null ? [companyId] : []))
     .first<any>();
   if (!row) return c.json({ error: "Not found" }, 404);
 
@@ -700,6 +739,15 @@ app.post("/entries", requirePageAccess("sales"), async (c) => {
     vals.push(typeof v === "string" ? v.trim() || null : v ?? null);
   }
 
+  // Phase 0b: stamp the active company (sales_entries.company_id NOT NULL after
+  // mig 0061). Omitted when unresolved (pre-migration / cold-start) so the
+  // single-company insert keeps working.
+  const companyId = activeCompanyId(c);
+  if (companyId != null) {
+    cols.push("company_id");
+    vals.push(companyId);
+  }
+
   const placeholders = cols.map(() => "?").join(", ");
   const r = await c.env.DB.prepare(
     `INSERT INTO sales_entries (${cols.join(", ")}) VALUES (${placeholders})`
@@ -709,8 +757,8 @@ app.post("/entries", requirePageAccess("sales"), async (c) => {
 
   const id = r.meta.last_row_id as number;
 
-  if (items.length) await replaceItems(c.env, id, items);
-  if (payments.length) await replacePayments(c.env, id, payments);
+  if (items.length) await replaceItems(c.env, id, items, companyId);
+  if (payments.length) await replacePayments(c.env, id, payments, companyId);
 
   // Persist custom field values via the existing UDF store. Silent-drop
   // anything with an unknown key so a renamed field doesn't 500 the
@@ -721,7 +769,7 @@ app.post("/entries", requirePageAccess("sales"), async (c) => {
 
   await bumpProjectFinance(c.env, body.project_id ?? null);
 
-  await logSalesActivity(c.env, id, user?.id, "created");
+  await logSalesActivity(c.env, id, user?.id, "created", null, companyId);
 
   return c.json({ id, doc_no: docNo }, 201);
 });
@@ -732,11 +780,13 @@ app.patch("/entries/:id", requirePageAccess("sales"), async (c) => {
   if (!id) return c.json({ error: "Invalid ID." }, 400);
   const user = c.get("user");
   const canManage = c.get("access_level") === "full";
+  const companyId = activeCompanyId(c);
 
   const current = await c.env.DB.prepare(
-    `SELECT id, created_by, status, project_id FROM sales_entries WHERE id = ?`
+    `SELECT id, created_by, status, project_id FROM sales_entries
+      WHERE id = ?${companyId != null ? " AND company_id = ?" : ""}`
   )
-    .bind(id)
+    .bind(id, ...(companyId != null ? [companyId] : []))
     .first<{ id: number; created_by: number; status: string; project_id: number | null }>();
   if (!current) return c.json({ error: "Not found" }, 404);
 
@@ -757,12 +807,12 @@ app.patch("/entries/:id", requirePageAccess("sales"), async (c) => {
   // pending request for a Sales Director to approve (re-apply) or reject.
   // Managers (sales=full) and edits to a still-draft entry apply immediately.
   if (!canManage && current.status !== "draft") {
-    const requestId = await queueEntryChange(c.env, id, body, user?.id);
-    await logSalesActivity(c.env, id, user?.id, "change_requested");
+    const requestId = await queueEntryChange(c.env, id, body, user?.id, companyId);
+    await logSalesActivity(c.env, id, user?.id, "change_requested", null, companyId);
     return c.json({ queued: true, request_id: requestId, status: current.status }, 202);
   }
 
-  await applyEntryPatch(c.env, id, body, user?.id, current.project_id);
+  await applyEntryPatch(c.env, id, body, user?.id, current.project_id, companyId);
   return c.json({ ok: true });
 });
 
@@ -819,6 +869,7 @@ async function applyEntryPatch(
   body: Record<string, any>,
   actorId: number | null | undefined,
   currentProjectId: number | null,
+  companyId?: number,
 ): Promise<void> {
   const sets: string[] = [];
   const binds: any[] = [];
@@ -849,11 +900,11 @@ async function applyEntryPatch(
   // Items + payments — replace-all when arrays are supplied. Mirrors the
   // deposit_amount / deposit_payment_type so the legacy list view renders.
   if (Array.isArray(body.items)) {
-    await replaceItems(env, id, body.items as SalesItemInput[]);
+    await replaceItems(env, id, body.items as SalesItemInput[], companyId);
   }
   if (Array.isArray(body.payments)) {
     const pays = body.payments as SalesPaymentInput[];
-    await replacePayments(env, id, pays);
+    await replacePayments(env, id, pays, companyId);
     const sum = summarisePayments(pays);
     if (!("deposit_amount" in body)) {
       sets.push("deposit_amount = ?");
@@ -885,7 +936,7 @@ async function applyEntryPatch(
     await bumpProjectFinance(env, currentProjectId);
   }
 
-  await logSalesActivity(env, id, actorId, "edited");
+  await logSalesActivity(env, id, actorId, "edited", null, companyId);
 }
 
 /** Short human-readable summary of which fields a change request touches. */
@@ -907,6 +958,7 @@ export async function queueEntryChange(
   entryId: number,
   body: Record<string, any>,
   requestedBy: number | null | undefined,
+  companyId?: number,
 ): Promise<number> {
   await env.DB.prepare(
     `UPDATE sales_entry_change_requests
@@ -915,11 +967,19 @@ export async function queueEntryChange(
   )
     .bind(entryId)
     .run();
+  // Phase 0b: stamp company_id (NOT NULL after mig 0061); omit when unresolved.
+  const stampCo = companyId != null;
   const res = await env.DB.prepare(
-    `INSERT INTO sales_entry_change_requests (entry_id, payload, summary, requested_by)
-     VALUES (?, ?, ?, ?)`,
+    `INSERT INTO sales_entry_change_requests (entry_id, payload, summary, requested_by${stampCo ? ", company_id" : ""})
+     VALUES (?, ?, ?, ?${stampCo ? ", ?" : ""})`,
   )
-    .bind(entryId, JSON.stringify(body), summariseChange(body), requestedBy ?? null)
+    .bind(
+      entryId,
+      JSON.stringify(body),
+      summariseChange(body),
+      requestedBy ?? null,
+      ...(stampCo ? [companyId] : []),
+    )
     .run();
   return res.meta.last_row_id as number;
 }
@@ -958,7 +1018,7 @@ app.post("/entries/:id/submit", requirePageAccess("sales"), async (c) => {
   )
     .bind(id)
     .run();
-  await logSalesActivity(c.env, id, user?.id, "submitted");
+  await logSalesActivity(c.env, id, user?.id, "submitted", null, activeCompanyId(c));
   return c.json({ ok: true });
 });
 
@@ -973,7 +1033,7 @@ app.post("/entries/:id/unsubmit", requirePageAccess("sales", "full"), async (c) 
   )
     .bind(id)
     .run();
-  await logSalesActivity(c.env, id, user?.id, "unsubmitted");
+  await logSalesActivity(c.env, id, user?.id, "unsubmitted", null, activeCompanyId(c));
   return c.json({ ok: true });
 });
 
@@ -993,7 +1053,7 @@ app.post("/entries/:id/void", requirePageAccess("sales", "full"), async (c) => {
     .bind(id)
     .run();
   await bumpProjectFinance(c.env, before?.project_id ?? null);
-  await logSalesActivity(c.env, id, user?.id, "voided");
+  await logSalesActivity(c.env, id, user?.id, "voided", null, activeCompanyId(c));
   return c.json({ ok: true });
 });
 

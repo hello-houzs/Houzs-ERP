@@ -56,6 +56,7 @@ import { orderSofaModuleRowsWithinBuilds, sortSoLinesByGroupRank } from '../shar
    charge (gated by so_settings.pos_remark_extra_auto_sku). Pure code-resolution
    + row-build lives in the lib; this route batches the DB collision check. */
 import { buildOneShotMints, type OneShotMintReq } from '../lib/one-shot-mint';
+import { scopeToCompany, activeCompanyId, stampCompany } from '../lib/companyScope';
 import { supabaseAuth } from '../middleware/auth';
 import { escapeForOr } from '../lib/postgrest-search';
 import { monthBoundsMy, rangeBoundsMy, todayMyt } from '../lib/my-time';
@@ -618,6 +619,7 @@ mfgSalesOrders.get('/', async (c) => {
       .order('so_date', { ascending: false })
       .limit(500);
     if (scopeIds) sq = sq.in('salesperson_id', scopeIds);
+    sq = scopeToCompany(sq, c); // multi-company: isolate to the active company
     const { data, error } = await sq;
     if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
     return c.json({ salesOrders: data ?? [] });
@@ -640,6 +642,7 @@ mfgSalesOrders.get('/', async (c) => {
   const LIST_COLS = `${HEADER}, proceeded_at, paid_total_centi, balance_centi_live`;
   let q = sb.from('mfg_sales_orders_with_payment_totals').select(LIST_COLS).order('so_date', { ascending: false }).limit(500);
   if (scopeIds) q = q.in('salesperson_id', scopeIds);
+  q = scopeToCompany(q, c); // multi-company: isolate to the active company
   const status = c.req.query('status'); if (status) q = q.eq('status', status);
   const debtor = c.req.query('debtor'); if (debtor) q = q.ilike('debtor_name', `%${debtor}%`);
   const { data, error } = await q;
@@ -1496,7 +1499,7 @@ mfgSalesOrders.get('/:docNo', async (c) => {
        are in the SAME boat — the payment-totals view's frozen column set
        (see VIEW-TRAP note above) does NOT carry them, so they're appended on
        the base-table detail read only. POST/PATCH persist them. */
-    sb.from('mfg_sales_orders').select(`${HEADER}, proceeded_at, amend_date_from_customer, amended_delivery_date, amend_reason, signature_b64, slip_key, slip_state, slip_image_key, receipt_image_key`).eq('doc_no', docNo).maybeSingle(),
+    scopeToCompany(sb.from('mfg_sales_orders').select(`${HEADER}, proceeded_at, amend_date_from_customer, amended_delivery_date, amend_reason, signature_b64, slip_key, slip_state, slip_image_key, receipt_image_key`).eq('doc_no', docNo), c).maybeSingle(),
     /* line_no = the persisted listing order (0165); NULLS LAST so pre-0165
        docs fall back to created_at + the rule re-derive below. */
     sb.from('mfg_sales_order_items').select(ITEM).eq('doc_no', docNo)
@@ -1876,6 +1879,9 @@ export type SoCreateContext = {
   get(key: 'supabase'): Variables['supabase'];
   get(key: 'user'): { id: string; user_metadata?: unknown };
   get(key: 'houzsUser'): Variables['houzsUser'];
+  /* Multi-company (mig 0061): active company from companyContext. Undefined pre-
+     migration / cold-start / headless (scan) so the stamping no-ops. */
+  get(key: 'companyId'): number | undefined;
   env: Env;
   json(body: unknown, status?: number): SoCreateOutcome;
   /* Audit-trail source tag for the CREATE entry ("via <source>" in the History
@@ -1891,6 +1897,13 @@ export type SoCreateContext = {
 async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome> {
   let body: Record<string, unknown>;
   try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
+  /* Multi-company (mig 0061): the active company for this create (SoCreateContext
+     carries no Hono Context, so companyScope's activeCompanyId/stampCompany can't
+     be applied structurally — read companyId here and stamp locally). No-op when
+     unresolved (pre-migration / cold-start / headless scan). */
+  const companyId = c.get('companyId');
+  const stampCo = <T extends Record<string, unknown>>(rows: T[]): Array<T & { company_id?: number }> =>
+    companyId != null ? rows.map((r) => ({ company_id: companyId, ...r })) : rows;
   /* PR #46 — accept customerName as alias for debtorName (rename in flight).
      Commander 2026-05-26: "Debtor Name 其实可以换成 Customer Name". */
   const customerName = (body.debtorName ?? body.customerName) as string | undefined;
@@ -3398,6 +3411,7 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
   }
 
   const { error: hErr } = await sb.from('mfg_sales_orders').insert({
+    company_id: companyId, // multi-company: stamp the active company
     doc_no: docNo,
     proceeded_at: autoProceed ? new Date().toISOString() : null,
     transfer_to: (body.transferTo as string) ?? null,
@@ -3574,6 +3588,7 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
         && typeof p.installmentMonths === 'number' && p.installmentMonths > 0
         ? p.installmentMonths : null;
       const { error: depErr } = await sb.from('mfg_sales_order_payments').insert({
+        company_id:         companyId, // multi-company: match the SO's company
         so_doc_no:          docNo,
         paid_at:            paidAt,
         method:             p.method,
@@ -3651,6 +3666,7 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
         ? body.installmentMonths : null;
       const paidAt = (body.paymentDate as string) ?? todayMyt();
       const { error: depErr } = await sb.from('mfg_sales_order_payments').insert({
+        company_id:         companyId, // multi-company: match the SO's company
         so_doc_no:          docNo,
         paid_at:            paidAt,
         method:             depositMethod,
@@ -3728,7 +3744,7 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
     // 23505 from an extremely rare 3+-order same-remark clash, or a transient
     // fault) is logged but never fails the SO — the line already references the
     // code and the SKU can be re-created from SKU Master.
-    const { error: skuErr } = await admin.from('mfg_products').insert(skuRows);
+    const { error: skuErr } = await admin.from('mfg_products').insert(stampCo(skuRows));
     if (skuErr && skuErr.code !== '23505') {
       // eslint-disable-next-line no-console
       console.error(`[so-create] one-shot SKU mint failed for ${docNo}: ${skuErr.message}`);
@@ -3740,7 +3756,7 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
        first-class column (created_at is identical across one bulk insert,
        so it can never recover this order on read). */
     const rowsWithDoc = itemRows.map((r, lineNo) => ({ ...r, doc_no: docNo, line_no: lineNo }));
-    const { error: iErr } = await sb.from('mfg_sales_order_items').insert(rowsWithDoc);
+    const { error: iErr } = await sb.from('mfg_sales_order_items').insert(stampCo(rowsWithDoc));
     if (iErr) { await rollbackPwpClaims(); await sb.from('mfg_sales_orders').delete().eq('doc_no', docNo); return c.json({ error: 'items_insert_failed', reason: iErr.message }, 500); }
     /* Commander 2026-05-29 — re-roll the header through recomputeTotals so a
        matched sofa SET picks up its MASTER combo cost (spread across the lines).
@@ -3869,7 +3885,7 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
 mfgSalesOrders.post('/', async (c) => {
   const out = await createSalesOrderCore({
     req: { json: () => c.req.json() },
-    get: ((key: 'supabase' | 'user' | 'houzsUser') => c.get(key as 'supabase')) as unknown as SoCreateContext['get'],
+    get: ((key: 'supabase' | 'user' | 'houzsUser' | 'companyId') => c.get(key as 'supabase')) as unknown as SoCreateContext['get'],
     env: c.env,
     json: (b, status) => ({ status: status ?? 200, body: b as Record<string, unknown> }),
   });
@@ -3899,8 +3915,11 @@ export async function createDraftSalesOrder(
   },
 ): Promise<SoCreateOutcome> {
   const svc = getSupabaseService(env);
-  const syntheticGet = (key: 'supabase' | 'user' | 'houzsUser'): unknown => {
+  const syntheticGet = (key: 'supabase' | 'user' | 'houzsUser' | 'companyId'): unknown => {
     if (key === 'supabase') return svc;
+    // Headless scan job has no request-scoped active company — leave unstamped
+    // (single-company no-op). mig 0061 backfill / DB default carries the column.
+    if (key === 'companyId') return undefined;
     if (key === 'user') {
       return {
         id: opts.salespersonId,
@@ -3996,6 +4015,7 @@ mfgSalesOrders.patch('/:docNo/status', async (c) => {
   // row for now (the existing StatusTimeline panel still reads it) and ALSO
   // emit the unified mfg_so_audit_log row for the PR-D History panel.
   await sb.from('mfg_so_status_changes').insert({
+    company_id: activeCompanyId(c), // multi-company: match the SO's company
     doc_no: docNo,
     from_status: fromStatus,
     to_status: body.status,
@@ -4122,6 +4142,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/override', async (c) => {
   const originalPriceSen = i.unit_price_centi;
   const overridePriceSen = newPrice;
   await sb.from('mfg_so_price_overrides').insert({
+    company_id: activeCompanyId(c), // multi-company: match the SO's company
     doc_no: docNo,
     item_id: itemId,
     item_code: i.item_code,
@@ -4283,8 +4304,8 @@ async function recomputeDeliveryFeeCore(
 
   // Header context for the rebuilt service rows.
   const { data: hdr } = await sb.from('mfg_sales_orders')
-    .select('debtor_name, venue, customer_delivery_date').eq('doc_no', docNo).maybeSingle();
-  const h = (hdr ?? {}) as { debtor_name?: string | null; venue?: string | null; customer_delivery_date?: string | null };
+    .select('debtor_name, venue, customer_delivery_date, company_id').eq('doc_no', docNo).maybeSingle();
+  const h = (hdr ?? {}) as { debtor_name?: string | null; venue?: string | null; customer_delivery_date?: string | null; company_id?: number | null };
 
   // Replace the SVC-DELIVERY* lines: delete the old, insert the recomputed.
   const { error: delErr } = await sb.from('mfg_sales_order_items').delete()
@@ -4293,6 +4314,8 @@ async function recomputeDeliveryFeeCore(
   if (specs.length > 0) {
     const lineDateToday = todayMyt();
     const rows = specs.map((spec, i) => ({
+      // Multi-company (mig 0061): the rebuilt delivery line inherits the SO's company.
+      ...(h.company_id != null ? { company_id: h.company_id } : {}),
       doc_no: docNo,                                    // ⚠️ NOT NULL — omitting it silently dropped the line (the bug)
       line_no: keptMaxLineNo >= 0 ? keptMaxLineNo + 1 + i : null,
       line_date: lineDateToday,
@@ -5419,7 +5442,7 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
       });
       const { data: moduleData, error: moduleError } = await sb
         .from('mfg_sales_order_items')
-        .insert(moduleRows)
+        .insert(stampCompany(moduleRows, c))
         .select('*');
       if (moduleError) {
         /* Don't burn a PWP code on a failed insert — mirror create's rollbackPwpClaims. */
@@ -5461,7 +5484,7 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
     /* Commander 2026-05-28 — "Description 2" auto-generated from variants. */
     description2: buildVariantSummary(String(it.itemGroup ?? ''), (it.variants as Record<string, unknown> | null) ?? null) || null,
   };
-  const { data, error } = await sb.from('mfg_sales_order_items').insert(row).select('*').single();
+  const { data, error } = await sb.from('mfg_sales_order_items').insert({ ...row, company_id: activeCompanyId(c) }).select('*').single();
   if (error) {
     /* Don't burn a PWP code on a failed insert — mirror create's rollbackPwpClaims. */
     if (addLinePwpClaimed) await rollbackSinglePwpClaim(sb, addLinePwpClaimed);
@@ -6563,6 +6586,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap', async (c) => {
           for (let attempt = 0; attempt < 5; attempt++) {
             const code = genCode();
             const { error } = await sb.from('pwp_codes').insert({
+              company_id: activeCompanyId(c), // multi-company: match the SO's company
               code,
               rule_id: r.id,
               reward_category: r.reward_category,
@@ -7171,7 +7195,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
 
   /* Insert the NEW set first, then remove the OLD — an insert failure leaves
      the order untouched; a delete failure rolls the inserts back. */
-  const { data: inserted, error: insErr } = await sb.from('mfg_sales_order_items').insert(rows).select('id');
+  const { data: inserted, error: insErr } = await sb.from('mfg_sales_order_items').insert(stampCompany(rows, c)).select('id');
   if (insErr) return c.json({ error: 'insert_failed', reason: insErr.message }, 500);
   const oldIds = oldLines.map((l) => l.id);
   const { error: delErr } = await sb.from('mfg_sales_order_items').delete().in('id', oldIds);
@@ -7288,6 +7312,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
           for (let attempt = 0; attempt < 5; attempt++) {
             const code = genCode();
             const { error } = await sb.from('pwp_codes').insert({
+              company_id: activeCompanyId(c), // multi-company: match the SO's company
               code,
               rule_id: r.id,
               reward_category: r.reward_category,
@@ -7772,7 +7797,13 @@ export async function recordSoPaymentRow(
     : null;
   const onlineType        = p.method === 'transfer' ? (p.onlineType ?? null) : null;
 
+  // Multi-company (mig 0061): the payment inherits the SO's company (resolved by
+  // doc_no — this factored writer has no request context). No-op when unresolved.
+  const { data: soCo } = await sb.from('mfg_sales_orders').select('company_id').eq('doc_no', p.docNo).maybeSingle();
+  const companyId = (soCo as { company_id?: number | null } | null)?.company_id ?? null;
+
   const { data, error } = await sb.from('mfg_sales_order_payments').insert({
+    ...(companyId != null ? { company_id: companyId } : {}),
     so_doc_no:          p.docNo,
     paid_at:            p.paidAt,
     method:             p.method,

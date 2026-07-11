@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
 import { requirePermission } from "../middleware/auth";
+import { activeCompanyId } from "../scm/lib/companyScope";
 
 /**
  * Cross-module P&L aggregation.
@@ -133,13 +134,21 @@ function placeRow(
 
 // ── Source pulls (raw date+amount tuples within an overall range) ──
 
-async function rawSales(env: Env, start: string, end: string) {
+// Multi-company (Phase 0b): the P&L is a per-company financial view (design:
+// financial/order data is scoped to the active company). sales_orders +
+// purchase_order_docs carry company_id (mig 0061), so the revenue + PO-cost
+// pulls filter by the active company. assr_cases (service cost) is a
+// CROSS-company module and project_finance_lines has no company_id, so both stay
+// unscoped. `companyId` is undefined pre-migration / cold-start → predicate is
+// omitted → single-company Houzs is unchanged.
+async function rawSales(env: Env, start: string, end: string, companyId?: number) {
   const rows = await env.DB.prepare(
     `SELECT doc_date AS d, COALESCE(local_total, 0) AS a
        FROM sales_orders
-      WHERE doc_date IS NOT NULL AND doc_date >= ? AND doc_date < ?`
+      WHERE doc_date IS NOT NULL AND doc_date >= ? AND doc_date < ?
+        ${companyId != null ? "AND company_id = ?" : ""}`
   )
-    .bind(start, end)
+    .bind(start, end, ...(companyId != null ? [companyId] : []))
     .all<{ d: string; a: number }>();
   return rows.results ?? [];
 }
@@ -170,14 +179,15 @@ async function rawServiceCost(env: Env, start: string, end: string) {
   return rows.results ?? [];
 }
 
-async function rawPoCost(env: Env, start: string, end: string) {
+async function rawPoCost(env: Env, start: string, end: string, companyId?: number) {
   const rows = await env.DB.prepare(
     `SELECT doc_date AS d, COALESCE(local_ex_tax, 0) AS a
        FROM purchase_order_docs
       WHERE local_ex_tax IS NOT NULL AND COALESCE(cancelled, 0) = 0
-        AND doc_date IS NOT NULL AND doc_date >= ? AND doc_date < ?`
+        AND doc_date IS NOT NULL AND doc_date >= ? AND doc_date < ?
+        ${companyId != null ? "AND company_id = ?" : ""}`
   )
-    .bind(start, end)
+    .bind(start, end, ...(companyId != null ? [companyId] : []))
     .all<{ d: string; a: number }>();
   return rows.results ?? [];
 }
@@ -204,13 +214,14 @@ app.get("/pnl", requirePermission("projects.read"), async (c) => {
     return c.json({ error: "invalid year" }, 400);
   }
 
+  const companyId = activeCompanyId(c);
   const buckets = emptyBuckets(granularity, anchorYear);
   const overallStart = buckets[0].start;
   const overallEnd = buckets[buckets.length - 1].endExclusive;
 
   const [salesRows, projectRows, serviceRows, poRows] = await Promise.all([
     scope === "all" || scope === "sales"
-      ? rawSales(c.env, overallStart, overallEnd)
+      ? rawSales(c.env, overallStart, overallEnd, companyId)
       : Promise.resolve([]),
     scope === "all" || scope === "projects"
       ? rawProjectCost(c.env, overallStart, overallEnd)
@@ -219,7 +230,7 @@ app.get("/pnl", requirePermission("projects.read"), async (c) => {
       ? rawServiceCost(c.env, overallStart, overallEnd)
       : Promise.resolve([]),
     scope === "all" || scope === "po"
-      ? rawPoCost(c.env, overallStart, overallEnd)
+      ? rawPoCost(c.env, overallStart, overallEnd, companyId)
       : Promise.resolve([]),
   ]);
 
@@ -261,9 +272,10 @@ app.get("/pnl", requirePermission("projects.read"), async (c) => {
         WHERE local_ex_tax IS NULL
           AND COALESCE(cancelled, 0) = 0
           AND doc_date IS NOT NULL
-          AND doc_date >= ? AND doc_date < ?`
+          AND doc_date >= ? AND doc_date < ?
+          ${companyId != null ? "AND company_id = ?" : ""}`
     )
-      .bind(overallStart, overallEnd)
+      .bind(overallStart, overallEnd, ...(companyId != null ? [companyId] : []))
       .first<{ c: number }>();
     poMissingPriceCount = r?.c ?? 0;
   }
@@ -288,17 +300,18 @@ app.get("/pnl", requirePermission("projects.read"), async (c) => {
 // Drill-down: returns the contributing rows for a single bucket
 // (whatever granularity).
 
-async function bucketDrilldown(env: Env, start: string, end: string) {
+async function bucketDrilldown(env: Env, start: string, end: string, companyId?: number) {
   const [sales, projectLines, cases, poLines] = await Promise.all([
     env.DB.prepare(
       `SELECT doc_no, debtor_name, doc_date, local_total, sales_agent, region
          FROM sales_orders
         WHERE doc_date IS NOT NULL
           AND doc_date >= ? AND doc_date < ?
+          ${companyId != null ? "AND company_id = ?" : ""}
         ORDER BY doc_date DESC, id DESC
         LIMIT 500`
     )
-      .bind(start, end)
+      .bind(start, end, ...(companyId != null ? [companyId] : []))
       .all(),
     env.DB.prepare(
       `SELECT l.id, l.project_id, l.category, l.description, l.amount,
@@ -339,10 +352,11 @@ async function bucketDrilldown(env: Env, start: string, end: string) {
           AND COALESCE(cancelled, 0) = 0
           AND doc_date IS NOT NULL
           AND doc_date >= ? AND doc_date < ?
+          ${companyId != null ? "AND company_id = ?" : ""}
         ORDER BY doc_date DESC, doc_no DESC
         LIMIT 500`
     )
-      .bind(start, end)
+      .bind(start, end, ...(companyId != null ? [companyId] : []))
       .all(),
   ]);
 

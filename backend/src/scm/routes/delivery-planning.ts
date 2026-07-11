@@ -68,6 +68,7 @@ import { paginateAll } from '../lib/paginate-all';
 import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { summariseReadiness, type ReadinessLine } from '../lib/so-readiness';
 import { soDeliverableRemaining } from './delivery-orders-mfg';
+import { activeCompanyId } from '../lib/companyScope';
 import { recordSoAudit, type FieldChange } from '../lib/so-audit';
 
 export const deliveryPlanning = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -1351,6 +1352,7 @@ async function scheduleOntoTrip(
       const { data: created, error: tErr } = await insertWithDocNoRetry<{ id: string; trip_no: string }>(
         () => nextTripNo(sb),
         (tripNo) => sb.from('trips').insert({
+        company_id:    activeCompanyId(c),
         trip_no:       tripNo,
         trip_date:     tripDate,
         lorry_id:      p.lorryId,
@@ -1379,6 +1381,7 @@ async function scheduleOntoTrip(
       const nextStopNo = ((cntRows ?? []) as Array<{ stop_no?: number; stopNo?: number }>)
         .reduce((m, r) => Math.max(m, Number(r.stopNo ?? r.stop_no ?? 0)), 0) + 1;
       await sb.from('trip_stops').insert({
+        company_id:    activeCompanyId(c),
         trip_id:       tripIdStr,
         stop_no:       nextStopNo,
         stop_type:     'DELIVERY',

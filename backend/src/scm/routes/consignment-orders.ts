@@ -52,6 +52,7 @@ import { findIncompleteVariantLines } from '../lib/so-variant-check';
 import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item-codes';
 import { chunkIn } from '../lib/paginate-all';
 import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
+import { scopeToCompany, activeCompanyId, stampCompany } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 export const consignmentOrders = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -226,6 +227,7 @@ consignmentOrders.get('/', async (c) => {
   if (scopeIds) q = q.in('salesperson_id', scopeIds);
   const status = c.req.query('status'); if (status) q = q.eq('status', status);
   const debtor = c.req.query('debtor'); if (debtor) q = q.ilike('debtor_name', `%${debtor}%`);
+  q = scopeToCompany(q, c); // multi-company: isolate to the active company
   const { data, error } = await q;
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
 
@@ -746,6 +748,7 @@ consignmentOrders.post('/', async (c) => {
   const { error: hErr } = await insertWithDocNoRetry<{ doc_no: string }>(
     () => nextDocNo(sb),
     (n) => { docNo = n; return sb.from('consignment_sales_orders').insert({
+    company_id: activeCompanyId(c), // multi-company: stamp the active company
     doc_no: docNo,
     transfer_to: (body.transferTo as string) ?? null,
     so_date: (body.soDate as string) ?? todayMyt(),
@@ -819,7 +822,7 @@ consignmentOrders.post('/', async (c) => {
 
   if (itemRows.length > 0) {
     const rowsWithDoc = itemRows.map((r) => ({ ...r, doc_no: docNo }));
-    const { error: iErr } = await sb.from('consignment_sales_order_items').insert(rowsWithDoc);
+    const { error: iErr } = await sb.from('consignment_sales_order_items').insert(stampCompany(rowsWithDoc, c));
     if (iErr) { await sb.from('consignment_sales_orders').delete().eq('doc_no', docNo); return c.json({ error: 'items_insert_failed', reason: iErr.message }, 500); }
     /* Re-roll the header through recomputeTotals so a matched sofa SET picks up
        its MASTER combo cost (spread across the lines). No-op otherwise. */
@@ -1377,7 +1380,7 @@ consignmentOrders.post('/:docNo/items', async (c) => {
     line_delivery_date: lineDeliveryDate,
     line_delivery_date_overridden: lineDeliveryDateOverridden,
   };
-  const { data, error } = await sb.from('consignment_sales_order_items').insert(row).select('*').single();
+  const { data, error } = await sb.from('consignment_sales_order_items').insert({ company_id: activeCompanyId(c), ...row }).select('*').single();
   if (error) return c.json({ error: 'insert_failed', reason: error.message }, 500);
   await recomputeTotals(sb, docNo);
 
@@ -1896,6 +1899,7 @@ consignmentOrders.post('/:docNo/payments', async (c) => {
   const onlineType        = p.method === 'transfer' ? (p.onlineType ?? null) : null;
 
   const { data, error } = await sb.from('consignment_sales_order_payments').insert({
+    company_id:         activeCompanyId(c), // multi-company: stamp the active company
     so_doc_no:          docNo,
     paid_at:            p.paidAt,
     method:             p.method,

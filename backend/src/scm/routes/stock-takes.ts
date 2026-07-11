@@ -30,6 +30,7 @@ import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
+import { scopeToCompany, activeCompanyId, stampCompany } from '../lib/companyScope';
 
 export const stockTakes = new Hono<{ Bindings: Env; Variables: Variables }>();
 stockTakes.use('*', supabaseAuth);
@@ -154,6 +155,7 @@ stockTakes.get('/', async (c) => {
     if (warehouseId) q = q.eq('warehouse_id', warehouseId);
     if (dateFrom)    q = q.gte('take_date', dateFrom);
     if (dateTo)      q = q.lte('take_date', dateTo);
+    q = scopeToCompany(q, c); // multi-company: isolate to the active company
     return q.range(pFrom, pTo);
   });
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
@@ -247,6 +249,7 @@ stockTakes.post('/', async (c) => {
   }
 
   const headerInsert: Record<string, unknown> = {
+    company_id:   activeCompanyId(c), // multi-company: stamp the active company
     status:       'OPEN',
     warehouse_id: warehouseId,
     scope_type:   scopeType,
@@ -277,7 +280,7 @@ stockTakes.post('/', async (c) => {
     system_qty:    r.qty,
     counted_qty:   null,
   }));
-  const { error: lErr } = await sb.from('stock_take_lines').insert(lineRows);
+  const { error: lErr } = await sb.from('stock_take_lines').insert(stampCompany(lineRows, c));
   if (lErr) {
     // Best-effort rollback so we don't leak a no-lines header.
     await sb.from('stock_takes').delete().eq('id', header.id);
@@ -423,7 +426,7 @@ stockTakes.patch('/:id/reverse', async (c) => {
 
   const movementErrors: string[] = [];
   if (reverseRows.length > 0) {
-    const { error: insErr } = await sb.from('inventory_movements').insert(reverseRows);
+    const { error: insErr } = await sb.from('inventory_movements').insert(stampCompany(reverseRows, c));
     if (insErr) movementErrors.push(insErr.message);
   }
 
@@ -539,7 +542,7 @@ stockTakes.patch('/:id/post', async (c) => {
     // One bulk insert — the FIFO trigger runs row-by-row anyway, but the
     // round-trip is single. Best-effort: failures listed, post not rolled
     // back (matches the audit-DLQ posture in writeMovements()).
-    const { error: mErr } = await sb.from('inventory_movements').insert(adjustmentRows);
+    const { error: mErr } = await sb.from('inventory_movements').insert(stampCompany(adjustmentRows, c));
     if (mErr) movementErrors.push(mErr.message);
   }
 

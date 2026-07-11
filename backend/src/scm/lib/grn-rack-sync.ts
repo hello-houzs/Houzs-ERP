@@ -31,13 +31,16 @@ export async function placeGrnLinesOnRacks(
   sb: AnySb, grnId: string, grnNo: string, userId: string,
 ): Promise<void> {
   const { data: items } = await sb.from('grn_items')
-    .select('rack_id, material_code, material_name, qty_accepted')
+    .select('rack_id, material_code, material_name, qty_accepted, company_id')
     .eq('grn_id', grnId);
   const lines = (items ?? []).filter(
     (it: { rack_id: string | null; qty_accepted: number | null }) =>
       it.rack_id && (it.qty_accepted ?? 0) > 0,
   );
   if (lines.length === 0) return;
+  // Multi-company (mig 0061): rack items/movements inherit the GRN's company.
+  const companyId = (lines[0] as { company_id?: number | null }).company_id ?? null;
+  const companyCol = companyId != null ? { company_id: companyId } : {};
 
   // Idempotency — already placed for this GRN?
   const { count: already } = await sb.from('warehouse_rack_items')
@@ -51,6 +54,7 @@ export async function placeGrnLinesOnRacks(
   const today = todayMyt();
 
   const itemRows = lines.map((l: { rack_id: string; material_code: string; material_name: string | null; qty_accepted: number }) => ({
+    ...companyCol,
     rack_id: l.rack_id,
     product_code: l.material_code,
     product_name: l.material_name,
@@ -66,6 +70,7 @@ export async function placeGrnLinesOnRacks(
   const moveRows = lines.map((l: { rack_id: string; material_code: string; material_name: string | null; qty_accepted: number }) => {
     const r = rackMap.get(l.rack_id) as { rack?: string; warehouse_id?: string } | undefined;
     return {
+      ...companyCol,
       movement_type: 'STOCK_IN',
       rack_id: l.rack_id,
       rack_label: r?.rack ?? null,
@@ -87,9 +92,12 @@ export async function reverseGrnRacks(
   sb: AnySb, grnId: string, grnNo: string, userId: string,
 ): Promise<void> {
   const { data: items } = await sb.from('warehouse_rack_items')
-    .select('id, rack_id, product_code, product_name, qty')
+    .select('id, rack_id, product_code, product_name, qty, company_id')
     .eq('source_grn_id', grnId);
   if (!items || items.length === 0) return;
+  // Multi-company (mig 0061): STOCK_OUT movements inherit the placed items' company.
+  const companyId = (items[0] as { company_id?: number | null }).company_id ?? null;
+  const companyCol = companyId != null ? { company_id: companyId } : {};
 
   const rackIds = [...new Set(items.map((i: { rack_id: string }) => i.rack_id))] as string[];
   const { data: racks } = await sb.from('warehouse_racks')
@@ -101,6 +109,7 @@ export async function reverseGrnRacks(
   const moveRows = items.map((i: { rack_id: string; product_code: string; product_name: string | null; qty: number }) => {
     const r = rackMap.get(i.rack_id) as { rack?: string; warehouse_id?: string } | undefined;
     return {
+      ...companyCol,
       movement_type: 'STOCK_OUT',
       rack_id: i.rack_id,
       rack_label: r?.rack ?? null,

@@ -62,10 +62,12 @@ export async function postSiRevenue(sb: any, invoiceNumber: string): Promise<Pos
 
   const { data: si, error } = await sb
     .from('sales_invoices')
-    .select('invoice_number, invoice_date, debtor_code, debtor_name, total_centi')
+    .select('invoice_number, invoice_date, debtor_code, debtor_name, total_centi, company_id')
     .eq('invoice_number', invoiceNumber)
     .single();
   if (error || !si) return { ok: false, status: 'invoice_not_found' };
+  // Multi-company (mig 0061): the JE + lines belong to the SI's company.
+  const companyId = (si as { company_id?: number | null }).company_id ?? null;
 
   const totalSen = Number(si.total_centi);
   if (totalSen <= 0) return { ok: false, status: 'zero_total' };
@@ -95,6 +97,7 @@ export async function postSiRevenue(sb: any, invoiceNumber: string): Promise<Pos
   const { data: je, error: jeErr } = await sb
     .from('journal_entries')
     .insert({
+      ...(companyId != null ? { company_id: companyId } : {}),
       je_no: jeNo,
       entry_date: si.invoice_date,
       source_type: 'SI',
@@ -108,6 +111,7 @@ export async function postSiRevenue(sb: any, invoiceNumber: string): Promise<Pos
   if (jeErr) return { ok: false, status: 'je_insert_failed', reason: jeErr.message };
 
   const lineRows = lines.map((l, i) => ({
+    ...(companyId != null ? { company_id: companyId } : {}),
     journal_entry_id: je.id,
     line_no: i + 1,
     account_code: l.accountCode,
@@ -159,10 +163,10 @@ export async function reverseSiRevenue(sb: any, invoiceNumber: string): Promise<
   // nothing to reverse.
   const { data: origRows } = await sb
     .from('journal_entries')
-    .select('id, je_no, entry_date, reversed, total_debit_sen, total_credit_sen, narration')
+    .select('id, je_no, entry_date, reversed, total_debit_sen, total_credit_sen, narration, company_id')
     .eq('source_type', 'SI')
     .eq('source_doc_no', invoiceNumber);
-  const orig = ((origRows ?? []) as Array<{ id: string; je_no: string; entry_date: string; reversed: boolean; total_debit_sen: number; total_credit_sen: number; narration: string | null }>)
+  const orig = ((origRows ?? []) as Array<{ id: string; je_no: string; entry_date: string; reversed: boolean; total_debit_sen: number; total_credit_sen: number; narration: string | null; company_id: number | null }>)
     .find((r) => !r.reversed);
   if (!orig) return { ok: true, status: 'nothing_to_reverse' };
 
@@ -201,10 +205,14 @@ export async function reverseSiRevenue(sb: any, invoiceNumber: string): Promise<
     party_type: string | null; party_code: string | null; party_name: string | null; notes: string | null;
   }>;
 
+  // Multi-company (mig 0061): a reversal belongs to the same company as the JE it undoes.
+  const companyId = orig.company_id ?? null;
+  const companyLine = companyId != null ? { company_id: companyId } : {};
   const revJeNo = await nextJeNo(sb, new Date(orig.entry_date));
   const { data: revJe, error: revErr } = await sb
     .from('journal_entries')
     .insert({
+      ...companyLine,
       je_no: revJeNo,
       entry_date: todayMyt(),
       source_type: 'SI_REVERSAL',
@@ -222,6 +230,7 @@ export async function reverseSiRevenue(sb: any, invoiceNumber: string): Promise<
   // zero. Fall back to the canonical 2-line entry if the original had no lines.
   const swapped = oLines.length > 0
     ? oLines.map((l, i) => ({
+        ...companyLine,
         journal_entry_id: revJe.id,
         line_no: i + 1,
         account_code: l.account_code,
@@ -233,8 +242,8 @@ export async function reverseSiRevenue(sb: any, invoiceNumber: string): Promise<
         notes: `Reversal — ${l.notes ?? ''}`.trim(),
       }))
     : [
-        { journal_entry_id: revJe.id, line_no: 1, account_code: '4000', debit_sen: totalSen, credit_sen: 0, party_type: null, party_code: null, party_name: null, notes: `Reverse revenue ${invoiceNumber}` },
-        { journal_entry_id: revJe.id, line_no: 2, account_code: '1100', debit_sen: 0, credit_sen: totalSen, party_type: null, party_code: null, party_name: null, notes: `Reverse AR ${invoiceNumber}` },
+        { ...companyLine, journal_entry_id: revJe.id, line_no: 1, account_code: '4000', debit_sen: totalSen, credit_sen: 0, party_type: null, party_code: null, party_name: null, notes: `Reverse revenue ${invoiceNumber}` },
+        { ...companyLine, journal_entry_id: revJe.id, line_no: 2, account_code: '1100', debit_sen: 0, credit_sen: totalSen, party_type: null, party_code: null, party_name: null, notes: `Reverse AR ${invoiceNumber}` },
       ];
   const { error: linesErr } = await sb.from('journal_entry_lines').insert(swapped);
   if (linesErr) {

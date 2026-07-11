@@ -24,6 +24,7 @@ import type { Env, Variables } from '../env';
 import { postSiRevenue } from '../lib/post-si-revenue';
 import { paginateAll } from '../lib/paginate-all';
 import { todayMyt } from '../lib/my-time';
+import { scopeToCompany, activeCompanyId } from '../lib/companyScope';
 
 export const accounting = new Hono<{ Bindings: Env; Variables: Variables }>();
 accounting.use('*', supabaseAuth);
@@ -98,6 +99,7 @@ accounting.get('/journal-entries', async (c) => {
   if (to)          q = q.lte('entry_date', to);
   if (posted === 'true')  q = q.eq('posted', true);
   if (posted === 'false') q = q.eq('posted', false);
+  q = scopeToCompany(q, c); // multi-company: isolate JEs to the active company
 
   const { data, error } = await q.limit(500);
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
@@ -144,9 +146,11 @@ accounting.post('/journal-entries', async (c) => {
   const sb = c.get('supabase');
   const jeNo = await nextJeNo(sb, new Date(entryDate));
 
+  const jeCompanyId = activeCompanyId(c);
   const { data: je, error: jeErr } = await sb
     .from('journal_entries')
     .insert({
+      ...(jeCompanyId != null ? { company_id: jeCompanyId } : {}),
       je_no: jeNo,
       entry_date: entryDate,
       source_type: sourceType,
@@ -160,6 +164,7 @@ accounting.post('/journal-entries', async (c) => {
   if (jeErr) return c.json({ error: 'insert_failed', reason: jeErr.message }, 500);
 
   const lineRows = lines.map((l, i) => ({
+    ...(jeCompanyId != null ? { company_id: jeCompanyId } : {}),
     journal_entry_id: je.id,
     line_no: i + 1,
     account_code: l.accountCode,
@@ -258,7 +263,7 @@ export async function postPiAccounting(sb: any, invoiceNumber: string): Promise<
 
   const { data: piRaw, error } = await sb
     .from('purchase_invoices')
-    .select('id, invoice_number, invoice_date, supplier_id, total_centi, suppliers(code, name)')
+    .select('id, invoice_number, invoice_date, supplier_id, total_centi, company_id, suppliers(code, name)')
     .eq('invoice_number', invoiceNumber)
     .single();
   if (error || !piRaw) return { ok: false, status: 'invoice_not_found' };
@@ -271,6 +276,7 @@ export async function postPiAccounting(sb: any, invoiceNumber: string): Promise<
     invoice_date: string;
     supplier_id: string | null;
     total_centi: number;
+    company_id: number | null;
     suppliers: { code: string | null; name: string | null } | null;
   };
 
@@ -295,9 +301,12 @@ export async function postPiAccounting(sb: any, invoiceNumber: string): Promise<
   ];
 
   const jeNo = await nextJeNo(sb, new Date(pi.invoice_date));
+  // Multi-company (mig 0061): the JE + its lines belong to the PI's company.
+  const companyId = pi.company_id ?? null;
   const { data: je, error: jeErr } = await sb
     .from('journal_entries')
     .insert({
+      ...(companyId != null ? { company_id: companyId } : {}),
       je_no: jeNo,
       entry_date: pi.invoice_date,
       source_type: 'PI',
@@ -311,6 +320,7 @@ export async function postPiAccounting(sb: any, invoiceNumber: string): Promise<
   if (jeErr) return { ok: false, status: 'je_insert_failed', reason: jeErr.message };
 
   const lineRows = lines.map((l, i) => ({
+    ...(companyId != null ? { company_id: companyId } : {}),
     journal_entry_id: je.id,
     line_no: i + 1,
     account_code: l.accountCode,
@@ -388,10 +398,10 @@ export async function reversePiAccounting(
   // nothing to reverse.
   const { data: origRows } = await sb
     .from('journal_entries')
-    .select('id, je_no, entry_date, reversed, total_debit_sen, total_credit_sen, narration')
+    .select('id, je_no, entry_date, reversed, total_debit_sen, total_credit_sen, narration, company_id')
     .eq('source_type', 'PI')
     .eq('source_doc_no', invoiceNumber);
-  const orig = ((origRows ?? []) as Array<{ id: string; je_no: string; entry_date: string; reversed: boolean; total_debit_sen: number; total_credit_sen: number; narration: string | null }>)
+  const orig = ((origRows ?? []) as Array<{ id: string; je_no: string; entry_date: string; reversed: boolean; total_debit_sen: number; total_credit_sen: number; narration: string | null; company_id: number | null }>)
     .find((r) => !r.reversed);
   if (!orig) return { ok: true, status: 'nothing_to_reverse' };
 
@@ -430,10 +440,13 @@ export async function reversePiAccounting(
     party_type: string | null; party_code: string | null; party_name: string | null; notes: string | null;
   }>;
 
+  // Multi-company (mig 0061): a reversal belongs to the same company as the JE it undoes.
+  const companyId = orig.company_id ?? null;
   const revJeNo = await nextJeNo(sb, new Date(orig.entry_date));
   const { data: revJe, error: revErr } = await sb
     .from('journal_entries')
     .insert({
+      ...(companyId != null ? { company_id: companyId } : {}),
       je_no: revJeNo,
       entry_date: todayMyt(),
       source_type: 'PI_REVERSAL',
@@ -450,8 +463,10 @@ export async function reversePiAccounting(
   // Swap each original line's debit/credit so the reversal nets the original to
   // zero (Dr Payables / Cr Inventory). Fall back to the canonical 2-line entry
   // if the original had no lines.
+  const companyLine = companyId != null ? { company_id: companyId } : {};
   const swapped = oLines.length > 0
     ? oLines.map((l, i) => ({
+        ...companyLine,
         journal_entry_id: revJe.id,
         line_no: i + 1,
         account_code: l.account_code,
@@ -463,8 +478,8 @@ export async function reversePiAccounting(
         notes: `Reversal — ${l.notes ?? ''}`.trim(),
       }))
     : [
-        { journal_entry_id: revJe.id, line_no: 1, account_code: '2000', debit_sen: totalSen, credit_sen: 0, party_type: null, party_code: null, party_name: null, notes: `Reverse AP ${invoiceNumber}` },
-        { journal_entry_id: revJe.id, line_no: 2, account_code: '1200', debit_sen: 0, credit_sen: totalSen, party_type: null, party_code: null, party_name: null, notes: `Reverse inventory ${invoiceNumber}` },
+        { ...companyLine, journal_entry_id: revJe.id, line_no: 1, account_code: '2000', debit_sen: totalSen, credit_sen: 0, party_type: null, party_code: null, party_name: null, notes: `Reverse AP ${invoiceNumber}` },
+        { ...companyLine, journal_entry_id: revJe.id, line_no: 2, account_code: '1200', debit_sen: 0, credit_sen: totalSen, party_type: null, party_code: null, party_name: null, notes: `Reverse inventory ${invoiceNumber}` },
       ];
   const { error: linesErr } = await sb.from('journal_entry_lines').insert(swapped);
   if (linesErr) {

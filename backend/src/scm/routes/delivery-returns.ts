@@ -17,6 +17,7 @@ import { normalizePhone } from '../shared/phone';
 import { buildVariantSummary } from '../shared';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
+import { scopeToCompany, activeCompanyId, stampCompany } from '../lib/companyScope';
 import { writeMovements, defaultWarehouseId } from '../lib/inventory-movements';
 import { computeVariantKey, type VariantAttrs } from '../shared';
 import { doLineRemaining, resolveCandidateDoIds, custKeyOf, type DoRemainingLine } from '../lib/do-line-remaining';
@@ -244,7 +245,7 @@ async function increaseInventoryForReturn(sb: any, deliveryReturnId: string, per
   if ((existing ?? 0) > 0) return []; // already increased — no-op
 
   const { data: drHeader } = await sb.from('delivery_returns')
-    .select('return_number, warehouse_id')
+    .select('return_number, warehouse_id, company_id')
     .eq('id', deliveryReturnId).maybeSingle();
   const { data: items } = await sb.from('delivery_return_items')
     .select('id, do_item_id, item_code, description, qty_returned, item_group, variants, unit_cost_centi')
@@ -315,7 +316,7 @@ async function increaseInventoryForReturn(sb: any, deliveryReturnId: string, per
     /* Capture the best-effort write result so the caller can surface a failed
        stock IN (was silently swallowed — DR created with goods NOT booked back
        and the caller never told). No rollback; just make it loud. */
-    const res = await writeMovements(sb, movements);
+    const res = await writeMovements(sb, movements, (drHeader as { company_id?: number | null } | null)?.company_id ?? null);
     if (!res.ok) movementErrors.push(`IN ${drNo}: ${res.reason ?? 'unknown'}`);
   }
   return movementErrors;
@@ -351,7 +352,7 @@ async function increaseInventoryForReturn(sb: any, deliveryReturnId: string, per
    a movement failure never blocks the edit/cancel. */
 async function resyncInventoryForReturn(sb: any, deliveryReturnId: string, performedBy: string) {
   const { data: drHeader } = await sb.from('delivery_returns')
-    .select('return_number, status, warehouse_id')
+    .select('return_number, status, warehouse_id, company_id')
     .eq('id', deliveryReturnId).maybeSingle();
   if (!drHeader) return;
   const drStatus = ((drHeader as { status: string | null }).status ?? '').toUpperCase();
@@ -466,7 +467,7 @@ async function resyncInventoryForReturn(sb: any, deliveryReturnId: string, perfo
     }
   }
   if (writes.length > 0) {
-    await writeMovements(sb, writes);
+    await writeMovements(sb, writes, (drHeader as { company_id?: number | null } | null)?.company_id ?? null);
     /* Returned-stock level changed → re-walk SO allocation. Best-effort. */
     try {
       const { recomputeSoStockAllocation } = await import('../lib/so-stock-allocation');
@@ -625,6 +626,7 @@ deliveryReturns.get('/', async (c) => {
   const sb = c.get('supabase');
   let q = sb.from('delivery_returns').select(HEADER).order('return_date', { ascending: false }).limit(500);
   const status = c.req.query('status'); if (status) q = q.eq('status', status);
+  q = scopeToCompany(q, c); // multi-company: isolate to the active company
   const { data, error } = await q;
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
   return c.json({ deliveryReturns: data ?? [] });

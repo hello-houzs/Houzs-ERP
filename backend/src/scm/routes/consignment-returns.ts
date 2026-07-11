@@ -32,6 +32,7 @@ import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item
 import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { todayMyt } from '../lib/my-time';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
+import { scopeToCompany, activeCompanyId, stampCompany } from '../lib/companyScope';
 
 export const consignmentReturns = new Hono<{ Bindings: Env; Variables: Variables }>();
 consignmentReturns.use('*', supabaseAuth);
@@ -336,6 +337,7 @@ consignmentReturns.get('/', async (c) => {
   const sb = c.get('supabase');
   let q = sb.from('consignment_delivery_returns').select(HEADER).order('return_date', { ascending: false }).limit(500);
   const status = c.req.query('status'); if (status) q = q.eq('status', status);
+  q = scopeToCompany(q, c); // multi-company: isolate to the active company
   const { data, error } = await q;
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
   return c.json({ deliveryReturns: data ?? [] });

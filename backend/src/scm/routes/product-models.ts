@@ -20,6 +20,7 @@ import { z } from 'zod';
 import { createClient } from '@supabase/supabase-js';
 import { supabaseAuth } from '../middleware/auth';
 import { findModelUsage } from '../lib/sku-usage';
+import { activeCompanyId, stampCompany } from '../lib/companyScope';
 import { hasHouzsPerm } from '../lib/houzs-perms';
 import { todayMyt } from '../lib/my-time';
 import type { Env, Variables } from '../env';
@@ -265,6 +266,7 @@ productModels.post('/', async (c) => {
 
   const supabase = c.get('supabase');
   const insert = {
+    company_id:      activeCompanyId(c),
     branding:        parsed.data.branding ?? null,
     model_code:      parsed.data.modelCode,
     name:            parsed.data.name,
@@ -421,7 +423,7 @@ productModels.patch('/:id', async (c) => {
         // Best-effort: allowed_options already saved; don't fail the PATCH if the
         // auto-create hiccups (Master Admin can still add via SKU Master). 23505
         // = a concurrent create already made it — treat as success (idempotent).
-        const { error: insErr } = await admin.from('mfg_products').insert(rows);
+        const { error: insErr } = await admin.from('mfg_products').insert(stampCompany(rows, c));
         if (!insErr || insErr.code === '23505') autoCreatedSkus.push(...rows.map((r) => r.code));
       }
     }
@@ -791,7 +793,7 @@ productModels.post('/:id/generate-skus', async (c) => {
 
   const { error: insErr } = await supabase
     .from('mfg_products')
-    .insert(rows);
+    .insert(stampCompany(rows, c));
   if (insErr) {
     return c.json({ error: 'insert_failed', reason: insErr.message }, 500);
   }
