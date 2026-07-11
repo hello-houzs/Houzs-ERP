@@ -411,6 +411,107 @@ async function warehouseCodeMap(
   return out;
 }
 
+/* Traceability (source-PO on a shipped DO line). Read this DO's OUT inventory
+   movements and collect the distinct batch_no (= source PO number, stamped by
+   the GRN receipt per migration 0120) per (product_code, variant_key) bucket —
+   the SAME bucket key the ship uses to write those movements. A DO line then
+   looks up its bucket to learn which supplier PO(s) supplied the goods it
+   shipped. Best-effort: absent batch_no column or plain-FIFO (un-batched) stock
+   → empty set → the line shows a dash. Cancelled/reversed DOs carry a
+   reversing IN row per OUT; we only read OUT rows, so a fully reversed line
+   still reports the PO(s) it originally shipped from (the shipment did happen).
+   Returns a Map keyed `${product_code}::${variant_key}` → ordered PO numbers. */
+async function resolveDoLineSourcePos(
+  sb: any,
+  deliveryOrderId: string,
+): Promise<Map<string, string[]>> {
+  const byBucket = new Map<string, Set<string>>();
+  try {
+    const { data: movs, error } = await sb.from('inventory_movements')
+      .select('product_code, variant_key, batch_no')
+      .eq('source_doc_type', 'DO')
+      .eq('source_doc_id', deliveryOrderId)
+      .eq('movement_type', 'OUT')
+      .not('batch_no', 'is', null);
+    if (error) return new Map();
+    for (const m of (movs ?? []) as Array<{ product_code: string; variant_key: string | null; batch_no: string | null }>) {
+      if (!m.batch_no) continue;
+      const k = `${m.product_code}::${m.variant_key ?? ''}`;
+      const set = byBucket.get(k) ?? new Set<string>();
+      set.add(m.batch_no);
+      byBucket.set(k, set);
+    }
+  } catch { /* column/table absent — every line shows a dash (no source PO) */ }
+  const out = new Map<string, string[]>();
+  for (const [k, set] of byBucket.entries()) {
+    out.set(k, [...set].sort());
+  }
+  return out;
+}
+
+/* Storekeeper picking — resolve the physical RACK(s) each DO line's goods sit on.
+   The rack ledger (warehouse_racks / warehouse_rack_items, migration 0094 + the
+   GRN→rack bridge 0151) is a SEPARATE placement ledger from the FIFO inventory
+   ledger, keyed by (rack's warehouse_id, product_code, variant_key) — it is NOT
+   batch-keyed (warehouse_rack_items has no batch_no), so batch is intentionally
+   ignored here. For each DO line we match its resolved ship-from warehouse +
+   item_code + variant_key against rack placements and collect the distinct rack
+   labels. Best-effort and honest: no matching placement → empty set → the line
+   shows a dash (never a guess). Note GRN auto-placement (placeGrnLinesOnRacks)
+   writes variant_key='' — so variant products (bedframe/sofa with a non-empty
+   variant_key) only resolve when the rack item was stocked in with that same
+   variant_key; otherwise they honestly report a dash.
+   Returns a Map keyed `${warehouse_id}::${product_code}::${variant_key}` → rack
+   labels (sorted). Takes the already-resolved per-line warehouses so it scopes
+   racks to the SAME warehouse each line ships from (a product can be racked in
+   more than one warehouse). */
+async function resolveDoLineRacks(
+  sb: any,
+  rawItems: Array<{ id: string } & Record<string, unknown>>,
+  lineWh: Map<string, string | null>,
+): Promise<Map<string, string[]>> {
+  const byBucket = new Map<string, Set<string>>();
+  try {
+    const whIds = new Set<string>();
+    const codes = new Set<string>();
+    for (const it of rawItems) {
+      const wid = lineWh.get(it.id) ?? null;
+      const code = (it.item_code as string | null) ?? null;
+      if (!wid || !code) continue;
+      whIds.add(wid);
+      codes.add(code);
+    }
+    if (whIds.size === 0 || codes.size === 0) return new Map();
+
+    // Racks in the ship-from warehouse(s) → id, label, warehouse_id.
+    const { data: racks, error: rErr } = await sb.from('warehouse_racks')
+      .select('id, rack, warehouse_id').in('warehouse_id', [...whIds]);
+    if (rErr || !racks || racks.length === 0) return new Map();
+    const rackById = new Map(
+      (racks as Array<{ id: string; rack: string | null; warehouse_id: string | null }>)
+        .map((r) => [r.id, r]),
+    );
+
+    // Placements for those racks limited to the codes this DO ships.
+    const { data: items, error: iErr } = await sb.from('warehouse_rack_items')
+      .select('rack_id, product_code, variant_key')
+      .in('rack_id', [...rackById.keys()])
+      .in('product_code', [...codes]);
+    if (iErr) return new Map();
+    for (const ri of (items ?? []) as Array<{ rack_id: string; product_code: string; variant_key: string | null }>) {
+      const r = rackById.get(ri.rack_id) as { rack: string | null; warehouse_id: string | null } | undefined;
+      if (!r || !r.rack || !r.warehouse_id) continue;
+      const k = `${r.warehouse_id}::${ri.product_code}::${ri.variant_key ?? ''}`;
+      const set = byBucket.get(k) ?? new Set<string>();
+      set.add(r.rack);
+      byBucket.set(k, set);
+    }
+  } catch { /* rack tables absent — every line shows a dash (no rack) */ }
+  const out = new Map<string, string[]>();
+  for (const [k, set] of byBucket.entries()) out.set(k, [...set].sort());
+  return out;
+}
+
 async function deductInventoryForDo(sb: any, deliveryOrderId: string, performedBy: string): Promise<string[]> {
   // Idempotency guard #1 — has this DO already written OUT movements?
   const { count: existing } = await sb
@@ -1167,6 +1268,65 @@ export async function doLineDownstream(
   return out;
 }
 
+/* Traceability (source-PO on a SHIPPED SO line). For each SO line, resolve the
+   supplier PO(s) that supplied the goods it actually shipped. Walk SO line → its
+   DO line(s) → that DO's OUT inventory movements' batch_no (= source PO number,
+   stamped by the GRN per migration 0120). Because movements aren't keyed by
+   so_item_id, we match within each DO by the SAME (product_code, variant_key)
+   bucket the ship writes them under. This lets the SO detail keep showing which
+   PO the line's goods came from even AFTER the line is delivered (the incoming-PO
+   coverage is otherwise dropped by MRP once the demand is satisfied). Best-effort
+   — un-batched (plain-FIFO) stock or a cancelled DO's fully-reversed OUT still
+   reports the PO(s) the shipment drew from. Returns Map<so_item_id, PO numbers>. */
+export async function soLineShippedSourcePos(
+  sb: any,
+  soItemIds: string[],
+): Promise<Map<string, string[]>> {
+  const out = new Map<string, string[]>();
+  const ids = [...new Set(soItemIds.filter((x): x is string => Boolean(x)))];
+  if (ids.length === 0) return out;
+  try {
+    // SO line → DO line(s): the DO items carry the SKU + variants we bucket by.
+    const { data: doItems } = await sb.from('delivery_order_items')
+      .select('so_item_id, delivery_order_id, item_code, item_group, variants')
+      .in('so_item_id', ids);
+    const doLines = (doItems ?? []) as Array<{
+      so_item_id: string | null; delivery_order_id: string; item_code: string;
+      item_group: string | null; variants: VariantAttrs | null;
+    }>;
+    if (doLines.length === 0) return out;
+    const doIds = [...new Set(doLines.map((r) => r.delivery_order_id).filter(Boolean))];
+    // OUT movements for those DOs, keyed by (do, product_code, variant_key) → batches.
+    const { data: movs } = await sb.from('inventory_movements')
+      .select('source_doc_id, product_code, variant_key, batch_no')
+      .eq('source_doc_type', 'DO')
+      .eq('movement_type', 'OUT')
+      .in('source_doc_id', doIds)
+      .not('batch_no', 'is', null);
+    const batchByBucket = new Map<string, Set<string>>();
+    for (const m of (movs ?? []) as Array<{ source_doc_id: string; product_code: string; variant_key: string | null; batch_no: string | null }>) {
+      if (!m.batch_no) continue;
+      const k = `${m.source_doc_id}::${m.product_code}::${m.variant_key ?? ''}`;
+      const set = batchByBucket.get(k) ?? new Set<string>();
+      set.add(m.batch_no);
+      batchByBucket.set(k, set);
+    }
+    const bySoItem = new Map<string, Set<string>>();
+    for (const dl of doLines) {
+      if (!dl.so_item_id) continue;
+      const variantKey = computeVariantKey(dl.item_group ?? null, dl.variants ?? null);
+      const k = `${dl.delivery_order_id}::${dl.item_code}::${variantKey}`;
+      const batches = batchByBucket.get(k);
+      if (!batches || batches.size === 0) continue;
+      const acc = bySoItem.get(dl.so_item_id) ?? new Set<string>();
+      for (const b of batches) acc.add(b);
+      bySoItem.set(dl.so_item_id, acc);
+    }
+    for (const [sid, set] of bySoItem.entries()) out.set(sid, [...set].sort());
+  } catch { /* movement/column absent — no shipped source PO (falls back to raised PO) */ }
+  return out;
+}
+
 /* Per-SO lifecycle state by "latest event wins" (Wei Siang 2026-05-31).
    Walks every NON-cancelled downstream document for each Sales Order — Delivery
    Orders, Sales Invoices, Delivery Returns — and keeps the one with the most
@@ -1536,18 +1696,40 @@ deliveryOrdersMfg.get('/:id', async (c) => {
      warehouse each line moves. Display-only — does not alter stock. */
   const rawItems = (i.data ?? []) as unknown as Array<{ id: string; so_item_id?: string | null } & Record<string, unknown>>;
   const headerWh = (h.data as { warehouse_id?: string | null }).warehouse_id ?? null;
-  const [lineWh, downstreamMap] = await Promise.all([
+  const [lineWh, downstreamMap, sourcePosByBucket] = await Promise.all([
     resolveDoLineWarehouses(sb, rawItems, headerWh),
     doLineDownstream(sb, rawItems.map((it) => it.id)),
+    /* Traceability — resolve which source PO(s) supplied each shipped line. GRN
+       stamps every inventory IN with batch_no = the source PO number (0120), and
+       the DO ship carries that batch onto its OUT movements. So the source PO is
+       recoverable from this DO's OUT movements' batch_no, keyed by
+       (product_code, variant_key). Best-effort — no batch → no source PO. */
+    resolveDoLineSourcePos(sb, id),
   ]);
   const codeMap = await warehouseCodeMap(sb, [...lineWh.values()]);
+  /* Storekeeper picking — physical rack(s) each line's goods sit on, scoped to
+     the SAME ship-from warehouse resolved above (keyed warehouse::code::variant).
+     Best-effort; unmapped lines get a dash. */
+  const racksByBucket = await resolveDoLineRacks(sb, rawItems, lineWh);
   const items = rawItems.map((it) => {
     const wid = lineWh.get(it.id) ?? null;
+    const variantKey = computeVariantKey(
+      (it.item_group as string | null) ?? null,
+      (it.variants as VariantAttrs | null) ?? null,
+    );
+    const bucketKey = `${(it.item_code as string) ?? ''}::${variantKey}`;
+    const rackKey = `${wid ?? ''}::${(it.item_code as string) ?? ''}::${variantKey}`;
     return {
       ...it,
       warehouse_id: wid,
       warehouse_code: wid ? (codeMap.get(wid) ?? null) : null,
       downstream: downstreamMap.get(it.id) ?? [],
+      /* Source PO number(s) the shipped goods came from (from the OUT movements'
+         batch_no). Empty for un-batched/plain-FIFO stock or service lines. */
+      source_pos: [...(sourcePosByBucket.get(bucketKey) ?? [])],
+      /* Physical rack label(s) the goods are stored on, for storekeeper picking.
+         Empty when no rack placement matches (dash) — never guessed. */
+      racks: [...(racksByBucket.get(rackKey) ?? [])],
     };
   });
   return c.json({ deliveryOrder, items });

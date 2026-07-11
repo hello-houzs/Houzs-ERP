@@ -120,7 +120,7 @@ import { recomputeSoStockAllocation } from '../lib/so-stock-allocation';
 import { creditFromCancelledSo, getCustomerCreditBalance } from '../lib/customer-credits';
 import { summariseReadiness } from '../lib/so-readiness';
 import { nextMonthlyDocNo } from '../lib/doc-no';
-import { soDeliverableRemaining, soLineDeliveries, computeSoLifecycle, soCurrentDocNo } from './delivery-orders-mfg';
+import { soDeliverableRemaining, soLineDeliveries, computeSoLifecycle, soCurrentDocNo, soLineShippedSourcePos } from './delivery-orders-mfg';
 /* Shared 4-state delivery-planning derivation — the SO list emits planning_state
    (the mobile Orders-list card's status) from the SAME helper the Delivery
    Planning board uses, so the two can never drift. */
@@ -1677,9 +1677,14 @@ mfgSalesOrders.get('/:docNo', async (c) => {
   } catch {
     coverageMap = new Map();
   }
-  const [remainingMap, deliveriesMap] = await Promise.all([
+  const [remainingMap, deliveriesMap, shippedPosMap] = await Promise.all([
     soDeliverableRemaining(sb, [docNo]),
     soLineDeliveries(sb, itemRows.map((it) => it.id)),
+    /* Traceability — the source PO(s) each line's SHIPPED goods came from,
+       recovered from the DO OUT movements' batch_no. Lets the detail keep
+       showing the incoming/source PO even after the line is delivered (MRP
+       coverage drops off once the demand is satisfied). */
+    soLineShippedSourcePos(sb, itemRows.map((it) => it.id)),
   ]);
   const items = itemRows.map((it) => {
     const rem = remainingMap.get(it.id);
@@ -1687,6 +1692,7 @@ mfgSalesOrders.get('/:docNo', async (c) => {
     const deliveredQty = deliveries.reduce((s, d) => s + d.qty, 0);
     const cov = coverageMap.get(it.id);
     const covered = cov?.source === 'po';
+    const shippedPos = shippedPosMap.get(it.id) ?? [];
     /* SOFA stock-coverage is decided by the batch-aware allocator (stock_status),
        NOT the MRP SKU-pool: MRP doesn't know about dye-lot batches, so it would
        wrongly report a sofa set as "stock" whenever same-SKU units exist in ANY
@@ -1708,6 +1714,11 @@ mfgSalesOrders.get('/:docNo', async (c) => {
       stock_state: stockState,
       coverage_po: covered ? cov?.po ?? null : null,
       coverage_eta: covered ? cov?.eta ?? null : null,
+      /* Source PO(s) the delivered goods actually shipped from (from the DO OUT
+         batch_no). Populated once the line has shipped; empty for un-batched
+         (plain-FIFO) stock. The detail shows these even after full delivery so
+         supplier→shipment traceability survives (falls back to coverage_po). */
+      shipped_source_pos: shippedPos,
     };
   });
   const totalDelivered = items.reduce((s, it) => s + Number(it.delivered_qty ?? 0), 0);

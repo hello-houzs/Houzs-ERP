@@ -316,9 +316,13 @@ type SoItem = {
   delivered_qty?: number;
   remaining_qty?: number;
   /* Incoming-stock coverage — the PO this line's goods were raised into +
-     earliest ETA, shown when the line hasn't shipped yet. null when no PO. */
+     earliest ETA, shown while the line is still on the way. null when no PO. */
   coverage_po?: string | null;
   coverage_eta?: string | null;
+  /* Source PO(s) the delivered goods actually shipped from (from the DO OUT
+     batch_no). Populated once shipped; kept visible even after full delivery so
+     the operator can trace which supplier PO supplied the shipped goods. */
+  shipped_source_pos?: string[];
 };
 
 /* Whole-order inline edit — build a SoLineDraft from a persisted SoItem.
@@ -1289,19 +1293,29 @@ export const SalesOrderDetail = () => {
                   <td data-label="Transfer To">
                     {(() => {
                       const hasDeliveries = it.deliveries && it.deliveries.length > 0;
-                      const notFullyDelivered = (it.remaining_qty ?? 1) > 0;
-                      /* Incoming-PO coverage (burnt, not green) — the goods are
-                         ordered but not yet here, so it must read differently from
-                         "Stock"/"Fully delivered". coverage_po is set only when the
-                         MRP allocation covers the line with an outstanding PO. */
-                      const coverage = (it.coverage_po && notFullyDelivered)
+                      const shippedPos = it.shipped_source_pos ?? [];
+                      /* Which supplier PO supplied this line's goods (burnt, not
+                         green — so it reads differently from "Stock"/"Fully
+                         delivered"):
+                          · Once (partly/fully) shipped: the ACTUAL source PO(s)
+                            the delivered goods came from (from the DO batch_no).
+                            Shown even after full delivery so the supplier→shipment
+                            trace is never lost (Owner 2026-07-11).
+                          · Still on the way: the incoming/raised PO the MRP
+                            allocation covers the line with, plus its ETA. */
+                      const coverageLabel = shippedPos.length > 0
+                        ? shippedPos.join(', ')
+                        : (it.coverage_po
+                            ? `${it.coverage_po}${it.coverage_eta ? ` · ETA ${fmtDateOrDash(it.coverage_eta)}` : ''}`
+                            : null);
+                      const coverage = coverageLabel
                         ? (
                           <div style={{
                             display: 'inline-block', marginTop: hasDeliveries ? 3 : 0,
                             fontSize: 'var(--fs-11)', fontWeight: 600,
                             whiteSpace: 'nowrap', color: 'var(--c-burnt)',
                           }}>
-                            {it.coverage_po}{it.coverage_eta ? ` · ETA ${fmtDateOrDash(it.coverage_eta)}` : ''}
+                            {coverageLabel}
                           </div>
                         )
                         : null;
