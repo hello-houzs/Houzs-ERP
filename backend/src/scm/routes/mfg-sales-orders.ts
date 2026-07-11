@@ -4136,6 +4136,22 @@ mfgSalesOrders.get('/:docNo/status-changes', async (c) => {
   return c.json({ statusChanges: data ?? [] });
 });
 
+// GET — list SO revision snapshots for the Detail "Revisions" tab (Phase 6b).
+// Each row is a full header+lines snapshot captured when an amendment's approve-so
+// gate re-derived the SO (so_revisions, keyed on so_doc_no + revision). Newest
+// first so the tab lists the latest revision on top. Mirrors the audit-log read
+// above: supabase select, plain load_failed on error. scopeToCompany: so_revisions
+// carries company_id (mig 0080); no-op pre-activation.
+mfgSalesOrders.get('/:docNo/revisions', async (c) => {
+  const sb = c.get('supabase'); const docNo = c.req.param('docNo');
+  const { data, error } = await scopeToCompany(sb.from('so_revisions')
+    .select('id, revision, snapshot, created_at, created_by')
+    .eq('so_doc_no', docNo), c)
+    .order('revision', { ascending: false });
+  if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
+  return c.json({ revisions: data ?? [] });
+});
+
 // GET — list line price overrides for the audit panel.
 mfgSalesOrders.get('/:docNo/price-overrides', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo');

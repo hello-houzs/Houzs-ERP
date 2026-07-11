@@ -110,6 +110,10 @@ const HEADER_COLS =
   'id, po_number, supplier_id, status, po_date, expected_at, currency, ' +
   'subtotal_centi, tax_centi, total_centi, notes, submitted_at, received_at, ' +
   'cancelled_at, created_at, created_by, updated_at, ' +
+  /* SO-amendment / revision workflow (2026-07-03) — bumped in place when a
+     supplier-confirmed amendment revises this PO; prior versions snapshot to
+     po_revisions. The PO Detail header shows a "Revised · rev N" badge when > 1. */
+  'revision, ' +
   /* PR #77 — default ship-to warehouse for every line on this PO */
   'purchase_location_id, ' +
   /* Migration 0180 — supplier-revised delivery dates (header). The EFFECTIVE
@@ -397,6 +401,9 @@ mfgPurchaseOrders.get('/:id', async (c) => {
   const purchaseOrder = {
     ...(headerRes.data as Record<string, unknown>),
     has_children: (childCount ?? 0) > 0,
+    // Stamped below once the source SO is resolved (SO-amendment workflow).
+    has_open_amendment: false,
+    open_amendment: null as { id: string; status: string; amendment_no: string } | null,
   };
 
   /* Per-line GR breakdown so the PO list expansion can show a "Received" column
@@ -455,6 +462,40 @@ mfgPurchaseOrders.get('/:id', async (c) => {
       } catch { /* leave so_doc_no / drift null */ }
     })(),
   ]);
+
+  /* SO-amendment workflow (2026-07-03) — stamp the open amendment for THIS PO so
+     the PO Detail page can show the green "Revision ready" banner + gate actions.
+     Resolve this PO → its source SO doc_no (via the lines' so_item_id →
+     mfg_sales_order_items.doc_no, already gathered into soDocByItem above), then
+     find the so_amendments row for that SO with status NOT IN ('SENT','REJECTED').
+     Mirrors the SO detail's open_amendment stamp (mfg-sales-orders.ts). A PO can
+     only be raised from ONE SO in this flow, so the distinct doc_no set is size 1;
+     if a stray multi-SO PO ever appears we key off the first resolved doc_no.
+     scopeToCompany: the so_amendments table carries company_id (mig 0080); no-op
+     pre-activation. Best-effort: any failure leaves open_amendment null, never
+     blocks the detail. */
+  try {
+    const soDocNos = [...new Set([...soDocByItem.values()].filter(Boolean))];
+    if (soDocNos.length > 0) {
+      const { data: amRows } = await scopeToCompany(supabase
+        .from('so_amendments')
+        .select('id, status, amendment_no')
+        .in('so_doc_no', soDocNos), c)
+        .not('status', 'in', '("SENT","REJECTED")')
+        .order('created_at', { ascending: false })
+        .limit(1);
+      const am = ((amRows ?? []) as Array<Record<string, unknown>>)[0];
+      if (am) {
+        purchaseOrder.open_amendment = {
+          // Postgres.js/PostgREST may surface columns camelCased; dual-read to be safe.
+          id: String((am.id ?? (am as Record<string, unknown>).id) ?? ''),
+          status: String(am.status ?? ''),
+          amendment_no: String((am.amendment_no ?? (am as Record<string, unknown>).amendmentNo) ?? ''),
+        };
+        purchaseOrder.has_open_amendment = true;
+      }
+    }
+  } catch { /* leave open_amendment null */ }
 
   const items = itemRows.map((it) => {
     const soId = it.so_item_id as string | null;
@@ -525,6 +566,23 @@ mfgPurchaseOrders.get('/:id/linked', async (c) => {
     invoices: piRes.data  ?? [],
     returns:  prRes.data  ?? [],
   });
+});
+
+// GET — list PO revision snapshots for the Detail "Revisions" tab (SO-amendment
+// workflow, 2026-07-03). Each row is a full snapshot captured when an amendment's
+// approve-po gate revised the bound PO in place (po_revisions, keyed on po_id +
+// revision). Newest first so the tab lists the latest revision on top. Mirrors
+// the SO /:docNo/revisions read (mfg-sales-orders.ts): bare supabase select,
+// plain load_failed on error. scopeToCompany: po_revisions carries company_id
+// (mig 0080); no-op pre-activation.
+mfgPurchaseOrders.get('/:id/revisions', async (c) => {
+  const sb = c.get('supabase'); const id = c.req.param('id');
+  const { data, error } = await scopeToCompany(sb.from('po_revisions')
+    .select('id, revision, snapshot, created_at, created_by')
+    .eq('po_id', id), c)
+    .order('revision', { ascending: false });
+  if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
+  return c.json({ revisions: data ?? [] });
 });
 
 // ── Create ────────────────────────────────────────────────────────────
