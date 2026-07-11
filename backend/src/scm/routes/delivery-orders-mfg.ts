@@ -36,6 +36,14 @@ import { recordSoAudit, type FieldChange } from '../lib/so-audit';
 export const deliveryOrdersMfg = new Hono<{ Bindings: Env; Variables: Variables }>();
 deliveryOrdersMfg.use('*', supabaseAuth);
 
+/* HC "Remark 4" delivery sub-status — the known values (mirrors the whitelist in
+   the Delivery Planning /fields route + HC_SUBSTATUS_VALUES on the frontend). Blank
+   ('' / null) always clears it. */
+const HC_SUBSTATUS_VALUES = [
+  'Pending Pickup', 'Done Shipout', 'Arrives EM Warehouse',
+  'Done Delivered', 'Confirm', 'House Not Ready', 'Request Hold',
+] as const;
+
 /* ── SO amend-mirror audit (owner's History requirement) ─────────────────────
    The DO create/PATCH handlers mirror the amend fields (amend_date_from_customer
    / amended_delivery_date / amend_reason) onto the parent SO. Those are SO
@@ -2127,6 +2135,17 @@ deliveryOrdersMfg.patch('/:id', async (c) => {
     ['customerSoNo', 'customer_so_no'],
     ['customerDeliveryDate', 'customer_delivery_date'],
     ['expectedDeliveryAt', 'expected_delivery_at'],
+    /* HC delivery-sheet DO-execution raw-data fields — also editable from the
+       Delivery Planning "Edit HC fields" drawer (same DO_FIELD_COLS columns);
+       surfaced on the DO detail form's Delivery Execution card. */
+    ['timeRange', 'time_range'],
+    ['timeConfirmed', 'time_confirmed'],
+    ['arrivalAt', 'arrival_at'],
+    ['departureAt', 'departure_at'],
+    ['shipoutDate', 'shipout_date'],
+    ['customerDeliveredDate', 'customer_delivered_date'],
+    ['etaArrivingPort', 'eta_arriving_port'],
+    ['deliverySubstatus', 'delivery_substatus'],
     /* Mig 0053 (port of 2990 0199) — DO-side sea-freight execution date. */
     ['arrivesEmWarehouseDate', 'arrives_em_warehouse_date'],
     ['email', 'email'], ['customerType', 'customer_type'],
@@ -2147,6 +2166,15 @@ deliveryOrdersMfg.patch('/:id', async (c) => {
       updates[to] = body[from];
     }
   }
+
+  /* Whitelist the HC "Remark 4" delivery sub-status to the known values (blank /
+     null always clears it) — mirrors the Delivery Planning /fields route, so the
+     same column can't be set to a stray value from either edit surface. */
+  if (updates.delivery_substatus != null && updates.delivery_substatus !== '' &&
+      !(HC_SUBSTATUS_VALUES as readonly string[]).includes(String(updates.delivery_substatus))) {
+    return c.json({ error: 'invalid_substatus', reason: `delivery_substatus must be one of: ${HC_SUBSTATUS_VALUES.join(', ')} (or blank).` }, 400);
+  }
+  if (updates.delivery_substatus === '') updates.delivery_substatus = null;
 
   /* SO↔DO amend mirror (Houzs port of 2990 fc7f0900, extended). The 2990 commit
      only wires read-only mirror cards in the frontend (each doc edits its own

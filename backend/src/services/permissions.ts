@@ -50,6 +50,13 @@ export const PERMISSIONS: PermissionDef[] = [
   { key: "scm.so.price_override",   resource: "Supply Chain", verb: "manage", label: "Override SO line unit price",  description: "Hand-override the unit price on a SCM Sales Order line (audited, admin-level)" },
   { key: "scm.so.view_all",         resource: "Supply Chain", verb: "read",   label: "View all salespersons' SOs",   description: "View every salesperson's My-Orders board (bypass per-rep attribution scoping)" },
   { key: "scm.so.attribute_other",  resource: "Supply Chain", verb: "manage", label: "Attribute SO to another rep",  description: "Create or edit a SCM Sales Order on behalf of another salesperson (stamp a different salesperson_id)" },
+  // Port of 2990 gate #717 — clearing an already-set Processing Date pulls the
+  // SO back out of the Proceed lane (and, once the day has elapsed, undoes the
+  // lock that says "this is what we PO to the supplier"). 2990 restricts it to
+  // super_admin; Houzs has no live staff_role (the SCM bridge pins every caller
+  // to one super_admin row), so gate on this admin-level key instead. Owner + IT
+  // Admin cover it via "*"; grant other positions via the Team > Positions matrix.
+  { key: "scm.so.remove_processing_date", resource: "Supply Chain", verb: "manage", label: "Remove SO Processing Date", description: "Clear an already-set Processing Date on a SCM Sales Order (admin-level; pulls the order back out of the Proceed lane)" },
 
   // Mail Center — in-ERP shared inbox (/api/mail-center). mail_center.read is the
   // nav/page gate (grant broadly); mail_center.manage gates the alias / access /

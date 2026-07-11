@@ -47,6 +47,23 @@ export const meetsProceedGate = (i: ProceedGateInput): boolean =>
   i.hasDeliveryDate &&
   (i.total <= 0 || i.paid / i.total >= PROCEED_PAID_THRESHOLD);
 
+/** May a Processing Date (factory-start / 开工日期) be SET on a Sales Order, given
+ *  collection so far? Owner/Loo 2026-06-30 — the Processing Date is production's
+ *  "ready to build" signal: once it is set, the backend treats the SO as a go and
+ *  orders materials / starts the build when the date arrives. So it must NOT be
+ *  set until the customer has paid the same ≥50% deposit the Proceed marker
+ *  requires. UNLIKE meetsProceedGate, customer-info / address completeness is
+ *  deliberately NOT gated here — an order with incomplete customer info may still
+ *  carry a Processing Date (Loo: resolve customer details in Proceed). Only the
+ *  money gates the date.
+ *
+ *  `paid` / `total` must share a unit (whole-MYR on the POS, centi on the server)
+ *  — only their ratio is used. Free order (total ≤ 0, e.g. a Free Item Campaign
+ *  giveaway): nothing to collect, so the gate is vacuously met (mirrors
+ *  meetsProceedGate, and avoids the 0/0 = NaN a `total > 0` guard would need). */
+export const meetsProcessingDatePaymentGate = (paid: number, total: number): boolean =>
+  total <= 0 || paid / total >= PROCEED_PAID_THRESHOLD;
+
 /** Total physical pieces in an order (for delivery slot allocation). */
 export const pieceCount = (_orderItems: unknown[]): number => {
   throw new Error('pieceCount: not yet implemented (Phase 3)');

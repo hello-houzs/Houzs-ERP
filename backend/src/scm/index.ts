@@ -61,6 +61,9 @@ import { trips } from "./routes/trips";
 import { lorryCapacity } from "./routes/lorry-capacity";
 import { helpers } from "./routes/helpers";
 import { lorries } from "./routes/lorries";
+import { soSettings } from "./routes/so-settings";
+import { freeItemCampaigns } from "./routes/free-item-campaigns";
+import { modelFreeGifts } from "./routes/model-free-gifts";
 
 import { scmAreaGuard } from "./middleware/area-guard";
 
@@ -131,6 +134,18 @@ scm.use("/sofa-quick-picks/*", scmAreaGuard("scm.procurement.products"));
 scm.route("/sofa-quick-picks", sofaQuickPicks);
 scm.use("/fabric-tracking/*", scmAreaGuard("scm.procurement.products"));
 scm.route("/fabric-tracking", fabricTracking);
+// Ported 2026-07-11 — three SO/pricing admin-config CRUD surfaces (backing
+// tables seeded via mig 0022; shared parsers already consumed by pricing).
+// All three are READ by the SO flow for every salesperson (so_settings extra-SKU
+// gate, free-item-campaign matcher, per-Model free-gift recompute) → openRead so
+// GET/HEAD pass the coarse umbrella; writes stay edit-gated on the flat perm
+// scm.config.write inside each route. Mirrors the SO-FLOW REFERENCE READS block.
+scm.use("/so-settings/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
+scm.route("/so-settings", soSettings);
+scm.use("/free-item-campaigns/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
+scm.route("/free-item-campaigns", freeItemCampaigns);
+scm.use("/model-free-gifts/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
+scm.route("/model-free-gifts", modelFreeGifts);
 // ── Suppliers (scm.procurement.suppliers) ───────────────────────────────────
 scm.use("/suppliers/*", scmAreaGuard("scm.procurement.suppliers"));
 scm.route("/suppliers", suppliers);
