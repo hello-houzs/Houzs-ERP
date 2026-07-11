@@ -51,7 +51,9 @@ declare module "hono" {
     companyId?: number;
     /** Active company code ('HOUZS' | '2990'). */
     companyCode?: string;
-    /** Companies this caller may see/act in. Phase 0b: ALL active companies. */
+    /** Companies this caller may see/act in. Phase 0e: the user's granted set
+     *  from `user_companies` when they have >=1 grant, else ALL active
+     *  companies (fail-open). Pre-activation this is left unset. */
     allowedCompanyIds?: number[];
     /** All active companies — lets cross-company views map company_id -> code
      *  without a second round-trip. */
@@ -118,12 +120,46 @@ export const companyContext = createMiddleware<{ Bindings: Env }>(async (c, next
   }
 
   if (companies.length > 0) {
-    // TODO(Phase 0e — per-company permission dimension): allowed-companies is
-    // currently EVERY active company. Replace this single line with a real
-    // per-user grant lookup (e.g. a user_companies table) once the Houzs
-    // permission matrix gains its per-(company × area) dimension. This is the
-    // ONE intentional gating shortcut in Phase 0b.
-    const allowed = companies.map((co) => co.id);
+    // Phase 0e — per-company user access. The default is ALL active companies
+    // (the Phase-0b behaviour). Only when multi-company is ACTUALLY active
+    // (>1 company) do we consult the per-user grant table `user_companies`.
+    // Pre-activation the companies master has 0 or 1 rows, so this per-user
+    // query NEVER runs — zero cost, zero risk on single-company Houzs.
+    //
+    // NEVER module-cache this result: it is user-specific. It runs at most once
+    // per request, and only while multi-company is live.
+    let allowed = companies.map((co) => co.id);
+
+    if (companies.length > 1) {
+      try {
+        const uid = Number(
+          (c.get("user") as { id?: number | string } | undefined)?.id,
+        );
+        if (Number.isFinite(uid) && uid > 0) {
+          const res = await c.env.DB.prepare(
+            "SELECT company_id FROM user_companies WHERE user_id = ?",
+          )
+            .bind(uid)
+            .all<{ company_id: number | string }>();
+          const granted = (res.results ?? [])
+            .map((r) => Number(r.company_id))
+            .filter((n) => Number.isFinite(n));
+          // FAIL OPEN: restrict ONLY when the user actually HAS >=1 grant row.
+          // No rows (or the table is absent — caught below) falls back to ALL
+          // active companies, so a user is never locked out by the mere
+          // presence of the feature.
+          if (granted.length > 0) {
+            const grantSet = new Set(granted);
+            allowed = companies
+              .filter((co) => grantSet.has(co.id))
+              .map((co) => co.id);
+          }
+        }
+      } catch {
+        // user_companies absent (pre-0f) or a transient DB error — keep the
+        // ALL-companies default. Never lock anyone out.
+      }
+    }
 
     // (a) explicit switcher pick — header wins, query is the link fallback.
     const rawPick = (c.req.header("X-Company-Id") ?? c.req.query("companyId") ?? "").trim();

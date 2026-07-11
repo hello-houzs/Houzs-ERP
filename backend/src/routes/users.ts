@@ -288,6 +288,89 @@ app.put("/:id/brands", requirePermission("users.manage"), async (c) => {
 });
 
 /**
+ * GET /api/users/:id/companies
+ * Per-user company allow-list (Phase 0e — mirrors the brand allow-list).
+ * NO-OP-SAFE: if the `user_companies` table is absent (pre-0f) the query
+ * throws and we return an empty grant list rather than 500.
+ */
+app.get("/:id/companies", requirePermission("users.read"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
+  try {
+    const res = await c.env.DB.prepare(
+      `SELECT company_id FROM user_companies WHERE user_id = ?`,
+    )
+      .bind(id)
+      .all<{ company_id: number | string }>();
+    const companyIds = (res.results ?? [])
+      .map((r) => Number(r.company_id))
+      .filter((n) => Number.isFinite(n));
+    return c.json({ companies: companyIds });
+  } catch {
+    // user_companies not present yet (Phase 0f migration unapplied) — no grants.
+    return c.json({ companies: [] });
+  }
+});
+
+/**
+ * PUT /api/users/:id/companies
+ * Body: { companies: number[] }  replace-set semantics, validated against the
+ * companies master (silent-drop unknowns). Mirrors PUT /:id/brands.
+ * NO-OP-SAFE: if `user_companies` (or `companies`) is absent (pre-0f) we return
+ * 200 with an empty list rather than 500 — the feature simply isn't active yet.
+ */
+app.put("/:id/companies", requirePermission("users.manage"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
+
+  const body = await c.req.json<{ companies?: unknown }>();
+  const incoming = Array.isArray(body.companies) ? body.companies : [];
+  const requested = Array.from(
+    new Set(
+      incoming
+        .map((x) => Number(x))
+        .filter((n) => Number.isFinite(n) && n > 0),
+    ),
+  );
+
+  const db = getDb(c.env);
+  const target = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.id, id))
+    .limit(1);
+  if (target.length === 0) return c.json({ error: "User not found" }, 404);
+
+  try {
+    // Validate against the canonical companies master (silent-drop unknowns).
+    let valid = requested;
+    if (requested.length > 0) {
+      const r = await c.env.DB.prepare(`SELECT id FROM companies`).all<{
+        id: number | string;
+      }>();
+      const known = new Set((r.results ?? []).map((x) => Number(x.id)));
+      valid = requested.filter((cid) => known.has(cid));
+    }
+
+    await c.env.DB.batch([
+      c.env.DB.prepare(`DELETE FROM user_companies WHERE user_id = ?`).bind(id),
+      ...valid.map((cid) =>
+        c.env.DB
+          .prepare(
+            `INSERT INTO user_companies (user_id, company_id) VALUES (?, ?)`,
+          )
+          .bind(id, cid),
+      ),
+    ]);
+
+    return c.json({ ok: true, companies: valid });
+  } catch {
+    // user_companies / companies not present yet (pre-0f) — no-op gracefully.
+    return c.json({ ok: true, companies: [] });
+  }
+});
+
+/**
  * GET /api/users/:id/activity
  * Recent audit_events touching this member, newest first — powers the
  * change-history panel on the member detail page. Two angles in one query:
