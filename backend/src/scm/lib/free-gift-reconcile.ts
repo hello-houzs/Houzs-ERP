@@ -76,6 +76,10 @@ export async function reconcileFreeGiftLinesForSo(sb: any, docNo: string): Promi
       const variants = it.variants ?? null;
       const product = productByCode.get((it.item_code ?? '').trim()) ?? null;
       const modelId = product?.model_id ?? null;
+      const cells = (variants?.cells as Array<{ moduleId?: unknown }> | undefined) ?? [];
+      const builtCompartments = Array.isArray(cells)
+        ? cells.map((cl) => String(cl?.moduleId ?? '')).filter(Boolean)
+        : [];
       return {
         triggerKey: it.id,
         itemCode:   product?.code ?? (it.item_code ?? ''),
@@ -84,6 +88,8 @@ export async function reconcileFreeGiftLinesForSo(sb: any, docNo: string): Promi
         modelId,
         buildKey:   (variants?.buildKey as string | undefined) ?? null,
         isFreeGift: Boolean((variants as Record<string, unknown> | null)?.freeGift),
+        sizeCode:   product?.size_code ? String(product.size_code).toUpperCase() : null,
+        builtCompartments,
         gifts:      modelId ? (modelGiftsById.get(modelId) ?? []) : [],
       };
     });
