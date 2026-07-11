@@ -1,0 +1,106 @@
+name: Purge test sales orders (one-off)
+
+# Manually-triggered, one-off purge of the ~18 TEST sales orders (doc_no
+# SO-2607-* / SO-2606-*) that were seeded directly into PROD during pre-launch
+# testing. There is no SO-level DELETE endpoint in the API, and local machines
+# cannot reach the Supabase pooler, so this runs in Actions with the prod
+# DATABASE_URL secret.
+#
+# Safety:
+#   - DRY RUN by default (dry_run = "true"): the script opens a transaction,
+#     reports exactly what WOULD be deleted per table, then ROLLS BACK. Nothing
+#     is committed. Set dry_run = "false" to actually purge.
+#   - ALWAYS pg_dumps the SO + child tables to an artifact BEFORE any write. If
+#     the backup step fails, the job stops and nothing is purged.
+#   - The purge runs in a single transaction and only touches the SO and its
+#     enumerated children (see backend/scripts/purge-test-sales-orders.mjs). It
+#     does NOT auto-delete or auto-reverse downstream delivery orders / sales
+#     invoices / stock ledgers — if any are linked it prints a loud warning and
+#     leaves them for manual handling.
+
+on:
+  workflow_dispatch:
+    inputs:
+      prefixes:
+        description: 'Comma-separated doc_no prefixes to purge'
+        required: true
+        default: "SO-2607-,SO-2606-"
+        type: string
+      dry_run:
+        description: 'Dry run? "true" = report only (default), "false" = APPLY'
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+concurrency:
+  group: purge-test-so
+  cancel-in-progress: false
+
+jobs:
+  purge:
+    runs-on: ubuntu-latest
+    environment: Production
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+
+      # BACKUP FIRST — data-only dump of the SO parent + every child table the
+      # purge can touch. If this fails (non-zero exit), the job stops here and
+      # nothing is purged. Supabase runs PG 17, so install the matching client.
+      - name: Backup SCM sales-order tables (pg_dump)
+        run: |
+          set -euo pipefail
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client-17
+          PG_DUMP=/usr/lib/postgresql/17/bin/pg_dump
+          "$PG_DUMP" --version
+          STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -p /tmp/backup
+          "$PG_DUMP" "$DATABASE_URL" --data-only --no-owner --no-privileges \
+            -t scm.mfg_sales_orders \
+            -t scm.mfg_sales_order_items \
+            -t scm.mfg_sales_order_payments \
+            -t scm.mfg_so_audit_log \
+            -t scm.mfg_so_price_overrides \
+            -t scm.mfg_so_status_changes \
+            -t scm.pwp_codes \
+            -t scm.scan_jobs \
+            -f "/tmp/backup/houzs-pre-purge-$STAMP.sql"
+          echo "Backup size:"; ls -lh /tmp/backup
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      - name: Upload backup artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: houzs-pre-purge-backup
+          path: /tmp/backup/*.sql
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Purge (dry_run=${{ inputs.dry_run }})
+        run: node scripts/purge-test-sales-orders.mjs
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          PREFIXES: ${{ inputs.prefixes }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          # GH runners have no IPv6 egress; ipv4first sidesteps Happy-Eyeballs
+          # when the Supabase pooler hostname returns both A and AAAA records.
+          NODE_OPTIONS: --dns-result-order=ipv4first
