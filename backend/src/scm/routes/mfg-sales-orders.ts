@@ -2517,6 +2517,10 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
       const variants = (it?.variants as Record<string, unknown> | null) ?? null;
       const product = lineProducts[idx] ?? null;
       const modelId = product?.model_id ?? null;
+      const cells = (variants?.cells as Array<{ moduleId?: unknown }> | undefined) ?? [];
+      const builtCompartments = Array.isArray(cells)
+        ? cells.map((cl) => String(cl?.moduleId ?? '')).filter(Boolean)
+        : [];
       return {
         triggerKey: `idx-${idx}`,
         itemCode:   product?.code ?? '',
@@ -2525,6 +2529,8 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
         modelId,
         buildKey:   (variants?.buildKey as string | undefined) ?? null,
         isFreeGift: Boolean(variants?.freeGift),
+        sizeCode:   product?.size_code ? String(product.size_code).toUpperCase() : null,
+        builtCompartments,
         gifts:      modelId ? (modelGiftsById.get(modelId) ?? []) : [],
       };
     });
@@ -2587,7 +2593,12 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
         ? cells.map((cl) => String(cl?.moduleId ?? '')).filter(Boolean)
         : [];
       const covering = campaignsCoveringLine(
-        { category: String(product?.category ?? ''), modelId: product?.model_id ?? null, builtModuleIds: built },
+        {
+          category: String(product?.category ?? ''),
+          modelId: product?.model_id ?? null,
+          sizeCode: product?.size_code ? String(product.size_code).toUpperCase() : null,
+          builtModuleIds: built,
+        },
         activeCampaigns,
         comboModulesById,
       );
@@ -5199,6 +5210,7 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
       {
         category:       String(productLite?.category ?? ''),
         modelId:        productLite?.model_id ?? null,
+        sizeCode:       productLite?.size_code ? String(productLite.size_code).toUpperCase() : null,
         builtModuleIds: addLineBuiltModuleIds,
       },
       addLineActiveCampaigns,
