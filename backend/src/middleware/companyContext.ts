@@ -72,20 +72,39 @@ function defaultCompanyCodeForHost(host: string): string {
 // so a rare edit still propagates.
 let cache: { at: number; rows: CompanyRow[] } | null = null;
 const TTL_MS = 5 * 60 * 1000;
+// Shorter re-check when the companies master is absent/unreadable (migration
+// 0077 not applied yet, or a DB cold-start). WITHOUT a negative cache, every
+// /api/* request pre-migration would re-run a guaranteed-failing SELECT — real
+// latency + Postgres error-log noise + a Hyperdrive connection per request on a
+// pool-sensitive app. Negative-caching an empty result bounds that to ~one
+// failed query per isolate per 30s, and the short TTL means multi-company
+// self-activates within 30s of 0077 being applied — no code redeploy needed.
+const EMPTY_TTL_MS = 30 * 1000;
 
 async function loadCompanies(env: Env): Promise<CompanyRow[]> {
-  if (cache && Date.now() - cache.at < TTL_MS) return cache.rows;
+  if (cache) {
+    const ttl = cache.rows.length > 0 ? TTL_MS : EMPTY_TTL_MS;
+    if (Date.now() - cache.at < ttl) return cache.rows;
+  }
   // public.companies (default search_path) via the Postgres-backed env.DB shim.
-  const res = await env.DB.prepare(
-    "SELECT id, code, name FROM companies WHERE is_active = 1 ORDER BY id",
-  ).all<{ id: number | string; code: string; name: string }>();
-  const rows: CompanyRow[] = (res.results ?? []).map((r) => ({
-    id: Number(r.id),
-    code: String(r.code),
-    name: String(r.name),
-  }));
-  cache = { at: Date.now(), rows };
-  return rows;
+  try {
+    const res = await env.DB.prepare(
+      "SELECT id, code, name FROM companies WHERE is_active = 1 ORDER BY id",
+    ).all<{ id: number | string; code: string; name: string }>();
+    const rows: CompanyRow[] = (res.results ?? []).map((r) => ({
+      id: Number(r.id),
+      code: String(r.code),
+      name: String(r.name),
+    }));
+    cache = { at: Date.now(), rows };
+    return rows;
+  } catch {
+    // Table absent (pre-migration) or a transient DB error — negative-cache an
+    // empty result (short TTL) so we don't hammer a failing query per request.
+    // Callers degrade to single-company (companyId undefined → helpers no-op).
+    cache = { at: Date.now(), rows: [] };
+    return [];
+  }
 }
 
 export const companyContext = createMiddleware<{ Bindings: Env }>(async (c, next) => {
