@@ -78,6 +78,10 @@ export const users = pgTable("users", {
   // The member's outward Mail Center alias (e.g. lim@houzscentury.com). Surfaced
   // in User Management; complements the email_addresses link (mig 0039+).
   email_alias: text("email_alias"),
+  // Per-user opt-out of ASSR service-case digest/escalation emails. The user
+  // keeps service_cases.manage (can still view + manage cases) — this only
+  // mutes the outbound mail. 0 = receives, 1 = muted.
+  assr_email_muted: integer("assr_email_muted").notNull().default(0),
 });
 
 // ── roles ──────────────────────────────────────────────────
