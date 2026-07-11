@@ -81,8 +81,31 @@ async function postGrnAndRollup(sb: any, grnId: string, userId: string): Promise
   // ── Inventory IN per item — best effort, doesn't roll back the post. ─
   const movementErrors: string[] = [];
   const grnNo = (grnHeader as { grn_number: string } | null)?.grn_number ?? grnId;
-  const warehouseId = (grnHeader as { warehouse_id: string | null } | null)?.warehouse_id
+  let warehouseId = (grnHeader as { warehouse_id: string | null } | null)?.warehouse_id
     ?? (await defaultWarehouseId(sb));
+  /* Owner 2026-07-02 — AUTHORITATIVE receiving warehouse = the source PO line's
+     bound warehouse. The warehouse binds at the SO/PO line and must flow into the
+     GRN's stock movements (per-warehouse model, no cross-warehouse pooling). A
+     frontend default once fell back to the FIRST warehouse (CHINA landing) and
+     silently received PO-bound goods into the wrong warehouse, so MRP for the
+     real (MY) warehouse still showed shortage. Guard it at this single post
+     chokepoint: when the GRN's PO-linked lines share ONE warehouse, that is the
+     truth — override a mismatched header + persist it so the movement (and the
+     detail/list) land where the PO expected. Manual (no-PO) or mixed-warehouse
+     GRNs keep the header/default untouched. */
+  const linkedPoItemIds = (items ?? [])
+    .map((it: { purchase_order_item_id: string | null }) => it.purchase_order_item_id)
+    .filter((x: string | null): x is string => !!x);
+  if (linkedPoItemIds.length > 0) {
+    const { data: poWhRows } = await sb.from('purchase_order_items')
+      .select('warehouse_id').in('id', [...new Set(linkedPoItemIds)]);
+    const poWhs = [...new Set(((poWhRows ?? []) as Array<{ warehouse_id: string | null }>)
+      .map((r) => r.warehouse_id).filter((x): x is string => !!x))];
+    if (poWhs.length === 1 && poWhs[0] !== warehouseId) {
+      warehouseId = poWhs[0]!;
+      await sb.from('grns').update({ warehouse_id: warehouseId, updated_at: new Date().toISOString() }).eq('id', grnId);
+    }
+  }
   if (warehouseId && items) {
     // Migration 0120 — stamp each IN with its source PO number as the batch.
     const batchByItem = await resolvePoBatchByItem(
@@ -437,7 +460,9 @@ grns.get('/', async (c) => {
   const sb = c.get('supabase');
   // .limit(500) bounds the result so PostgREST's default 1000-row cap can't
   // silently truncate the GRN list — match the SO/DO/SI list convention.
-  let q = sb.from('grns').select(`${HEADER}, supplier:suppliers(id, code, name), purchase_order:purchase_orders(id, po_number)`).order('received_at', { ascending: false }).limit(500);
+  // warehouse embeds the receiving location's NAME (Owner 2026-07-02 — the GRN
+  // list "Purchase Location" column); warehouse_id is already in HEADER.
+  let q = sb.from('grns').select(`${HEADER}, supplier:suppliers(id, code, name), purchase_order:purchase_orders(id, po_number), warehouse:warehouses!warehouse_id(id, code, name)`).order('received_at', { ascending: false }).limit(500);
   const status = c.req.query('status'); if (status) q = q.eq('status', status);
   const supplierId = c.req.query('supplierId'); if (supplierId) q = q.eq('supplier_id', supplierId);
   q = scopeToCompany(q, c); // multi-company: isolate to the active company
@@ -456,22 +481,45 @@ grns.get('/', async (c) => {
   const ids = rows.map((g) => g.id);
   // Migration 0106 — collect each GRN's lines for the lock/convert flags.
   const linesByGrn = new Map<string, Array<{ qty_accepted: number | null; invoiced_qty: number | null; returned_qty: number | null }>>();
+  // Owner 2026-07-02 — "Transfer To" list column: map each grn_item → its GRN so
+  // the per-line downstream (PI/PR) can be rolled up to a per-GRN doc-number set.
+  const grnByItem = new Map<string, string>();
   if (ids.length > 0) {
     const { data: lineRows, error: lineErr } = await sb
       .from('grn_items')
-      .select('grn_id, qty_accepted, invoiced_qty, returned_qty')
+      .select('id, grn_id, qty_accepted, invoiced_qty, returned_qty')
       .in('grn_id', ids);
     if (lineErr) return c.json({ error: 'load_failed', reason: lineErr.message }, 500);
-    for (const li of (lineRows ?? []) as Array<{ grn_id: string; qty_accepted: number | null; invoiced_qty: number | null; returned_qty: number | null }>) {
+    for (const li of (lineRows ?? []) as Array<{ id: string; grn_id: string; qty_accepted: number | null; invoiced_qty: number | null; returned_qty: number | null }>) {
       const arr = linesByGrn.get(li.grn_id) ?? [];
       arr.push({ qty_accepted: li.qty_accepted, invoiced_qty: li.invoiced_qty, returned_qty: li.returned_qty });
       linesByGrn.set(li.grn_id, arr);
+      if (li.id) grnByItem.set(li.id, li.grn_id);
+    }
+  }
+  // Per-GRN downstream: aggregate the per-line PI/PR breakdown into one deduped
+  // doc-number list per GRN (qty summed across lines of the same PI/PR). Reuses
+  // the same helper the detail page uses; cancelled PIs/PRs are already excluded.
+  const downstreamByGrn = new Map<string, Map<string, { docNumber: string; docType: 'PI' | 'PR'; qty: number }>>();
+  if (grnByItem.size > 0) {
+    const perItem = await grnLineDownstream(sb, [...grnByItem.keys()]);
+    for (const [itemId, entries] of perItem.entries()) {
+      const grnId = grnByItem.get(itemId);
+      if (!grnId) continue;
+      const acc = downstreamByGrn.get(grnId) ?? new Map();
+      for (const e of entries) {
+        const prev = acc.get(e.docNumber);
+        if (prev) prev.qty += e.qty;
+        else acc.set(e.docNumber, { docNumber: e.docNumber, docType: e.docType, qty: e.qty });
+      }
+      downstreamByGrn.set(grnId, acc);
     }
   }
   const grns = rows.map((g) => ({
     ...g,
     // Stored header total (= Σ qty*unit − discount). Falls back to 0 if unset.
     total_centi: (g.total_centi as number | null | undefined) ?? 0,
+    downstream: [...(downstreamByGrn.get(g.id)?.values() ?? [])],
     ...computeGrnFlags(linesByGrn.get(g.id) ?? []),
   }));
   return c.json({ grns });

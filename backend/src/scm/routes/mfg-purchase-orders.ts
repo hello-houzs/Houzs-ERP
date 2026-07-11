@@ -147,7 +147,10 @@ mfgPurchaseOrders.get('/', async (c) => {
       // inside each PO without drilling in. Nested select keeps it to one
       // query — Postgres / Supabase joins purchase_order_items on
       // purchase_order_id for every row.
-      `${HEADER_COLS}, supplier:suppliers(id, code, name), items:purchase_order_items(material_code, material_name, qty)`,
+      // purchase_location embeds the warehouse the PO ships to (PR #77 — the
+      // column is an FK → warehouses.id); the list needs its NAME, not just the
+      // id, for the "Purchase Location" column (Owner 2026-07-02).
+      `${HEADER_COLS}, supplier:suppliers(id, code, name), items:purchase_order_items(material_code, material_name, qty), purchase_location:warehouses!purchase_location_id(id, code, name)`,
     )
     .order('po_date', { ascending: false })
     .order('created_at', { ascending: false })
@@ -169,18 +172,32 @@ mfgPurchaseOrders.get('/', async (c) => {
      this to hide Edit / Cancel from POs that are downstream-locked. */
   const rows = (data ?? []) as Array<{ id: string } & Record<string, unknown>>;
   const childIds = new Set<string>();
+  // Owner 2026-07-02 — "Transfer To (GRN)" list column: collect the non-cancelled
+  // GRN doc-numbers each PO was received into, deduped + stable-ordered. Same one
+  // extra query that already powers has_children — just carry grn_number too.
+  const grnNumbersByPo = new Map<string, string[]>();
   if (rows.length > 0) {
     const ids = rows.map((r) => r.id);
     const { data: grnRows } = await supabase
       .from('grns')
-      .select('purchase_order_id')
+      .select('purchase_order_id, grn_number')
       .in('purchase_order_id', ids)
-      .neq('status', 'CANCELLED');
-    for (const g of (grnRows ?? []) as Array<{ purchase_order_id: string | null }>) {
-      if (g.purchase_order_id) childIds.add(g.purchase_order_id);
+      .neq('status', 'CANCELLED')
+      .order('grn_number', { ascending: true });
+    for (const g of (grnRows ?? []) as Array<{ purchase_order_id: string | null; grn_number: string | null }>) {
+      if (!g.purchase_order_id) continue;
+      childIds.add(g.purchase_order_id);
+      if (!g.grn_number) continue;
+      const arr = grnNumbersByPo.get(g.purchase_order_id) ?? [];
+      if (!arr.includes(g.grn_number)) arr.push(g.grn_number);
+      grnNumbersByPo.set(g.purchase_order_id, arr);
     }
   }
-  const purchaseOrders = rows.map((r) => ({ ...r, has_children: childIds.has(r.id) }));
+  const purchaseOrders = rows.map((r) => ({
+    ...r,
+    has_children: childIds.has(r.id),
+    transfer_to_grns: grnNumbersByPo.get(r.id) ?? [],
+  }));
   return c.json({ purchaseOrders });
 });
 
