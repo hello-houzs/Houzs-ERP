@@ -23,6 +23,7 @@ import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { postSiRevenue } from '../lib/post-si-revenue';
 import { paginateAll } from '../lib/paginate-all';
+import { safeRate, toMyrSen } from '../lib/fx';
 import { todayMyt } from '../lib/my-time';
 import { scopeToCompany, activeCompanyId } from '../lib/companyScope';
 
@@ -263,7 +264,7 @@ export async function postPiAccounting(sb: any, invoiceNumber: string): Promise<
 
   const { data: piRaw, error } = await sb
     .from('purchase_invoices')
-    .select('id, invoice_number, invoice_date, supplier_id, total_centi, company_id, suppliers(code, name)')
+    .select('id, invoice_number, invoice_date, supplier_id, total_centi, currency, exchange_rate, company_id, suppliers(code, name)')
     .eq('invoice_number', invoiceNumber)
     .single();
   if (error || !piRaw) return { ok: false, status: 'invoice_not_found' };
@@ -276,12 +277,22 @@ export async function postPiAccounting(sb: any, invoiceNumber: string): Promise<
     invoice_date: string;
     supplier_id: string | null;
     total_centi: number;
+    currency: string | null;
+    exchange_rate: string | number | null;
     company_id: number | null;
     suppliers: { code: string | null; name: string | null } | null;
   };
 
-  const totalSen = Number(pi.total_centi);
-  if (totalSen <= 0) return { ok: false, status: 'zero_total' };
+  /* Multi-currency AP (migration 0082) — the PI's total_centi is in the PI's OWN
+     currency (RMB / USD / SGD / MYR). The GL must be MYR, so convert AT POST TIME:
+     exchange_rate = MYR per 1 unit of `currency` (1 for MYR). The PI row is
+     untouched — only the JE legs below carry the converted amount. For an MYR PI
+     the rate is 1, so this is a no-op (totalSen unchanged) and existing MYR GL
+     behaviour is byte-for-byte identical. The single Dr/Cr pair post the SAME
+     figure, so the JE always balances. */
+  const foreignTotalSen = Number(pi.total_centi);
+  if (foreignTotalSen <= 0) return { ok: false, status: 'zero_total' };
+  const totalSen = toMyrSen(foreignTotalSen, pi.exchange_rate); // MYR posted to the GL
 
   const supplier = pi.suppliers ?? { code: null, name: null };
   const lines: JeLineIn[] = [
@@ -517,10 +528,14 @@ export async function resyncPiAccounting(
 
   const { data: pi } = await sb
     .from('purchase_invoices')
-    .select('total_centi')
+    .select('total_centi, exchange_rate')
     .eq('invoice_number', invoiceNumber)
     .maybeSingle();
-  const newTotal = Number((pi as { total_centi?: number } | null)?.total_centi ?? 0);
+  const piRow = pi as { total_centi?: number; exchange_rate?: string | number | null } | null;
+  // Migration 0082 — the posted JE is in MYR; compare against the MYR-equivalent
+  // of the (foreign) PI total so a foreign PI doesn't churn a void+repost every
+  // edit. MYR ⇒ rate 1, so newTotal === total_centi (unchanged behaviour).
+  const newTotal = toMyrSen(Number(piRow?.total_centi ?? 0), safeRate(piRow?.exchange_rate));
   if (Number(active.total_debit_sen) === newTotal) return { ok: true, status: 'unchanged' };
 
   // Total changed → void the stale JE, then re-post at the new amount.

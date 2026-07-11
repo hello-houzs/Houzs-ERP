@@ -39,6 +39,7 @@ import type { Env, Variables } from '../env';
 import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { hasHouzsPerm } from '../lib/houzs-perms';
+import { normalizeCurrency, normalizeExchangeRate, masterRateForCurrency } from '../lib/fx';
 import { todayMyt } from '../lib/my-time';
 
 export const paymentVouchers = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -57,19 +58,11 @@ const normalizePurpose = (raw: unknown): 'SUPPLIER_PAYMENT' | 'FREIGHT' | 'OTHER
   return v === 'FREIGHT' || v === 'OTHER' ? v : 'SUPPLIER_PAYMENT';
 };
 
-/* MYR-only (phase A ports FX): exchange_rate = MYR per 1 unit of the PV
-   currency. MYR is ALWAYS rate 1; a non-MYR currency with a finite rate > 0
-   keeps it, else falls back to 1 so the GL post can never be zeroed out. */
-function normalizeExchangeRate(raw: unknown, currency: string): number {
-  if (String(currency).toUpperCase() === 'MYR') return 1;
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? n : 1;
-}
-
-const normalizeCurrency = (raw: unknown): string => {
-  const v = String(raw ?? '').trim().toUpperCase();
-  return v || 'MYR';
-};
+/* FX (migration 0082) — exchange_rate = MYR per 1 unit of the PV currency, and
+   the currency auto-fills its rate from the currency MASTER. normalizeCurrency /
+   normalizeExchangeRate now come from the shared lib/fx (identical behaviour:
+   MYR ⇒ rate 1, a foreign rate must be finite > 0 else 1 — the GL post can never
+   be zeroed). */
 
 /* Next PV-YYMM-NNN (company-prefixed). Mirrors purchase-invoices nextNum —
    max(suffix)+1 via nextMonthlyDocNo (self-healing; never count+1). */
@@ -258,7 +251,12 @@ paymentVouchers.post('/', async (c) => {
 
   const sb = c.get('supabase'); const user = c.get('user');
   const currency = normalizeCurrency(body.currency);
-  const exchangeRate = normalizeExchangeRate(body.exchangeRate, currency);
+  /* Migration 0082 — the rate auto-fills from the currency MASTER (rate_to_myr)
+     unless the body sends an explicit one; MYR ⇒ 1, a strict no-op. */
+  const pvRateRaw = body.exchangeRate !== undefined && body.exchangeRate !== null
+    ? body.exchangeRate
+    : await masterRateForCurrency(sb, currency);
+  const exchangeRate = normalizeExchangeRate(pvRateRaw, currency);
 
   const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; pv_number: string }>(
     () => nextPvNo(sb, c),

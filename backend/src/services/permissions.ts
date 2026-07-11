@@ -83,6 +83,13 @@ export const PERMISSIONS: PermissionDef[] = [
   { key: "scm.payment_voucher.post",   resource: "Supply Chain", verb: "manage", label: "Post payment voucher",     description: "Post a Payment Voucher to the General Ledger (DRAFT -> POSTED; settles any linked PIs)" },
   { key: "scm.payment_voucher.cancel", resource: "Supply Chain", verb: "manage", label: "Cancel payment voucher",   description: "Cancel a Payment Voucher (reverses the GL entry + any PI settlement)" },
 
+  // Currency master — the owner-maintained list of currencies + each one's
+  // rate_to_myr (multi-currency FX, migration 0082). Reading the list is open to
+  // any authed SCM caller (the GRN/PI/PV currency dropdowns need it); this flat
+  // key gates create/edit of a currency + its rate. Owner + IT Admin cover it via
+  // "*"; grant finance / purchasing positions via the Team > Positions matrix.
+  { key: "scm.currency.manage",        resource: "Supply Chain", verb: "manage", label: "Manage currencies",        description: "Add or edit a currency in the master and set its exchange rate to MYR (used by GRN / PI / Payment Voucher foreign-currency posting)" },
+
   // Mail Center — in-ERP shared inbox (/api/mail-center). mail_center.read is the
   // nav/page gate (grant broadly); mail_center.manage gates the alias / access /
   // scope-level admin grids. Owner + IT Admin cover both via "*". Per-thread

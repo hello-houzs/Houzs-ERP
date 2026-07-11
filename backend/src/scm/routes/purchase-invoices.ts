@@ -10,6 +10,7 @@ import {
 } from '../shared/so-line-display';
 import { postPiAccounting, reversePiAccounting, resyncPiAccounting } from './accounting';
 import { recostForPi, recostFromGrn } from '../lib/recost';
+import { normalizeCurrency, normalizeExchangeRate, masterRateForCurrency } from '../lib/fx';
 import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { todayMyt } from '../lib/my-time';
@@ -18,7 +19,7 @@ export const purchaseInvoices = new Hono<{ Bindings: Env; Variables: Variables }
 purchaseInvoices.use('*', supabaseAuth);
 
 const HEADER =
-  'id, invoice_number, supplier_invoice_ref, supplier_id, purchase_order_id, grn_id, invoice_date, due_date, currency, subtotal_centi, tax_centi, total_centi, paid_centi, status, notes, posted_at, created_at, created_by, updated_at';
+  'id, invoice_number, supplier_invoice_ref, supplier_id, purchase_order_id, grn_id, invoice_date, due_date, currency, exchange_rate, subtotal_centi, tax_centi, total_centi, paid_centi, status, notes, posted_at, created_at, created_by, updated_at';
 const ITEM =
   'id, purchase_invoice_id, grn_item_id, material_kind, material_code, material_name, qty, unit_price_centi, line_total_centi, notes, ' +
   /* PR #42 — variant fields (migration 0057) */
@@ -408,6 +409,15 @@ purchaseInvoices.post('/', async (c) => {
   /* PR-DRAFT-removal — PIs are now created as POSTED directly. PI is
      AP-only (no inventory impact — that landed at GRN time), so there's
      no side-effect helper to call after insert. */
+  /* Migration 0082 — the PI's currency (MYR default) + its exchange_rate (MYR per
+     1 unit of that currency). The rate auto-fills from the currency MASTER unless
+     the body sends one; MYR ⇒ rate 1 (a strict no-op — the AP GL post converts at
+     this rate). */
+  const piCurrency = normalizeCurrency(body.currency);
+  const piRateRaw = body.exchangeRate !== undefined && body.exchangeRate !== null
+    ? body.exchangeRate
+    : await masterRateForCurrency(sb, piCurrency);
+  const piExchangeRate = normalizeExchangeRate(piRateRaw, piCurrency);
   const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; invoice_number: string }>(
     () => nextNum(sb, 'PI', c),
     (invoiceNumber) => sb.from('purchase_invoices').insert({
@@ -419,7 +429,8 @@ purchaseInvoices.post('/', async (c) => {
     grn_id: (body.grnId as string) ?? null,
     invoice_date: (body.invoiceDate as string) ?? todayMyt(),
     due_date: (body.dueDate as string) ?? null,
-    currency: ((body.currency as string) ?? 'MYR').toUpperCase(),
+    currency: piCurrency,
+    exchange_rate: piExchangeRate,
     subtotal_centi: subtotal,
     total_centi: subtotal,
     notes: (body.notes as string) ?? null,
@@ -657,7 +668,7 @@ purchaseInvoices.post('/from-grn-items', async (c) => {
       variants, gap_inches, divan_height_inches, divan_price_sen,
       leg_height_inches, leg_price_sen, custom_specials, line_suffix,
       special_order_price_sen, discount_centi,
-      grn:grns!inner ( id, grn_number, supplier_id, purchase_order_id, status )
+      grn:grns!inner ( id, grn_number, supplier_id, purchase_order_id, status, currency, exchange_rate )
     `)
     .in('id', ids);
   if (itemsErr) return c.json({ error: 'load_failed', reason: itemsErr.message }, 500);
@@ -671,7 +682,7 @@ purchaseInvoices.post('/from-grn-items', async (c) => {
     divan_price_sen: number; leg_height_inches: number | null; leg_price_sen: number;
     custom_specials: unknown; line_suffix: string | null; special_order_price_sen: number;
     discount_centi: number;
-    grn: { id: string; grn_number: string; supplier_id: string; purchase_order_id: string | null; status: string };
+    grn: { id: string; grn_number: string; supplier_id: string; purchase_order_id: string | null; status: string; currency?: string | null; exchange_rate?: string | number | null };
   };
 
   const itemList = (itemsData ?? []) as unknown as ItemRow[];
@@ -697,14 +708,19 @@ purchaseInvoices.post('/from-grn-items', async (c) => {
   // Group picks by GRN (each PI ↔ one GRN, per single FK).
   type Bucket = {
     grnId: string; grnNumber: string; supplierId: string; purchaseOrderId: string | null;
+    currency: string; exchangeRate: number;
     lines: Array<{ row: ItemRow; qty: number }>;
   };
   const buckets = new Map<string, Bucket>();
   for (const p of picks) {
     const row = byId.get(p.grnItemId)!;
+    // Migration 0082 — the PI inherits its source GRN's currency + exchange_rate
+    // (the receipt already fixed the FX). MYR ⇒ rate 1, no-op.
+    const grnCur = normalizeCurrency(row.grn.currency);
     const cur = buckets.get(row.grn.id) ?? {
       grnId: row.grn.id, grnNumber: row.grn.grn_number,
       supplierId: row.grn.supplier_id, purchaseOrderId: row.grn.purchase_order_id,
+      currency: grnCur, exchangeRate: normalizeExchangeRate(row.grn.exchange_rate, grnCur),
       lines: [],
     };
     cur.lines.push({ row, qty: p.qty });
@@ -746,7 +762,8 @@ purchaseInvoices.post('/from-grn-items', async (c) => {
       grn_id: bucket.grnId,
       invoice_date: invoiceDate,
       due_date: body.dueDate ?? null,
-      currency: 'MYR',
+      currency: bucket.currency,
+      exchange_rate: bucket.exchangeRate,
       subtotal_centi: subtotal,
       tax_centi: 0,
       total_centi: subtotal,
@@ -843,11 +860,11 @@ purchaseInvoices.post('/from-grn', async (c) => {
   if (!grnId) return c.json({ error: 'grn_id_required' }, 400);
 
   const { data: grn, error: grnErr } = await sb.from('grns')
-    .select('id, grn_number, supplier_id, purchase_order_id, status')
+    .select('id, grn_number, supplier_id, purchase_order_id, status, currency, exchange_rate')
     .eq('id', grnId).maybeSingle();
   if (grnErr) return c.json({ error: 'load_failed', reason: grnErr.message }, 500);
   if (!grn) return c.json({ error: 'grn_not_found' }, 404);
-  const g = grn as { id: string; grn_number: string; supplier_id: string; purchase_order_id: string | null; status: string };
+  const g = grn as { id: string; grn_number: string; supplier_id: string; purchase_order_id: string | null; status: string; currency?: string | null; exchange_rate?: string | number | null };
   if (g.status !== 'POSTED') return c.json({ error: 'grn_not_posted', status: g.status }, 409);
 
   const { data: items, error: iErr } = await sb.from('grn_items')
@@ -890,7 +907,9 @@ purchaseInvoices.post('/from-grn', async (c) => {
     purchase_order_id: g.purchase_order_id,
     grn_id: g.id,
     invoice_date: todayMyt(),
-    currency: 'MYR',
+    // Migration 0082 — inherit the source GRN's currency + rate (MYR ⇒ 1, no-op).
+    currency: normalizeCurrency(g.currency),
+    exchange_rate: normalizeExchangeRate(g.exchange_rate, normalizeCurrency(g.currency)),
     subtotal_centi: subtotal,
     tax_centi: 0,
     total_centi: subtotal,
@@ -977,11 +996,39 @@ purchaseInvoices.patch('/:id', async (c) => {
   ] as const) {
     if (body[from] !== undefined) updates[to] = body[from];
   }
-  // currency is an enum — normalise to upper-case like POST does.
-  if (updates.currency !== undefined) updates.currency = String(updates.currency).toUpperCase();
+  // currency is normalised to upper-case like POST does.
+  if (updates.currency !== undefined) updates.currency = normalizeCurrency(updates.currency);
   const sb = c.get('supabase');
+  /* Migration 0082 — keep exchange_rate consistent with the effective currency
+     (rate explicitly sent → normalise against it; currency flipped to MYR without
+     a rate → reset to 1; else untouched). MYR ⇒ 1, a no-op. */
+  let piRateChanged = false;
+  if (body.exchangeRate !== undefined || updates.currency !== undefined) {
+    let effectiveCurrency = updates.currency as string | undefined;
+    if (effectiveCurrency === undefined) {
+      const { data: curRow } = await sb.from('purchase_invoices').select('currency').eq('id', id).maybeSingle();
+      effectiveCurrency = (curRow as { currency?: string } | null)?.currency ?? 'MYR';
+    }
+    if (body.exchangeRate !== undefined) {
+      updates.exchange_rate = normalizeExchangeRate(body.exchangeRate, effectiveCurrency);
+      piRateChanged = true;
+    } else if (String(effectiveCurrency).toUpperCase() === 'MYR') {
+      updates.exchange_rate = 1;
+      piRateChanged = true;
+    }
+  }
   const { data, error } = await sb.from('purchase_invoices').update(updates).eq('id', id).select(HEADER).single();
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
+  /* A rate change moves the MYR AP amount posted to the GL. If the PI is posted,
+     re-align its JE (void stale + re-post at the new MYR total) + recost its lots
+     (the PI drives the authoritative MYR lot cost). Best-effort; no-op for MYR. */
+  if (piRateChanged) {
+    const inv = (data as { invoice_number?: string } | null)?.invoice_number;
+    if (inv) {
+      try { await resyncPiAccounting(sb, inv); } catch (e) { /* eslint-disable-next-line no-console */ console.error('[pi-patch] resync failed:', inv, e); }
+    }
+    try { await recostForPi(sb, id); } catch (e) { /* eslint-disable-next-line no-console */ console.error('[pi-patch] recost failed:', id, e); }
+  }
   return c.json({ purchaseInvoice: data });
 });
 

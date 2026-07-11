@@ -25,6 +25,7 @@ import { mfgPurchaseOrders } from "./routes/mfg-purchase-orders";
 import { grns } from "./routes/grns";
 import { purchaseInvoices } from "./routes/purchase-invoices";
 import { paymentVouchers } from "./routes/payment-vouchers";
+import { currencies } from "./routes/currencies";
 import { mfgSalesOrders } from "./routes/mfg-sales-orders";
 import { soAmendments } from "./routes/so-amendments";
 import { stateWarehouseMappings } from "./routes/state-warehouse-mappings";
@@ -214,6 +215,11 @@ scm.route("/accounting", accounting);
 // finer scm.payment_voucher.* gates layer on inside the handlers.
 scm.use("/payment-vouchers/*", scmAreaGuard("scm.finance.accounting"));
 scm.route("/payment-vouchers", paymentVouchers);
+// Currency MASTER — owner-maintained list + rate_to_myr, read by the GRN/PI/PV
+// currency dropdowns across areas. Like state-warehouse-mappings, it's a shared
+// lookup left on the coarse scm gate (reads open); writes are gated inside the
+// route by scm.currency.manage.
+scm.route("/currencies", currencies);
 // ── MRP (scm.procurement.mrp) ───────────────────────────────────────────────
 scm.use("/mrp/*", scmAreaGuard("scm.procurement.mrp"));
 scm.route("/mrp", mrp);
