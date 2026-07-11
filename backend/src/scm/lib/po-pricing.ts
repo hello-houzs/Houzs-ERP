@@ -17,7 +17,12 @@
 //
 // ----------------------------------------------------------------------------
 
-import type { MaintenanceConfig } from '../shared/mfg-pricing';
+import {
+  computeMfgPoUnitCost,
+  type MaintenanceConfig,
+  type MfgFabricTier,
+  type PoPriceMatrix,
+} from '../shared/mfg-pricing';
 import { todayMyt } from './my-time';
 
 const todayIso = () => todayMyt();
@@ -64,4 +69,116 @@ export async function resolveMaintenanceConfigForSupplier(
   const masterCfg = await loadConfigForScope(sb, 'master', asOf);
   if (masterCfg) return { config: masterCfg, scope: 'master' };
   return { config: null, scope: null };
+}
+
+/* ── deriveMfgPoUnitCost ────────────────────────────────────────────────────
+   Port of 2990 apps/api/src/lib/po-pricing.ts::deriveMfgPoUnitCost. Shared
+   supplier-cost anchor for a SINGLE (supplier, SKU, spec) line — the SAME
+   per-line base-cost derivation the "Create PO from SO" path runs in its
+   auto-cost pre-pass (mfg-purchase-orders.ts /from-sos, the `baseCostByItem`
+   loop): the supplier's own material binding (`price_matrix` P2/P1 cells + flat
+   `unit_price_centi` fallback) projected through the fabric tier resolved from
+   the line's fabricCode, plus the supplier's maintenance surcharges (divan /
+   leg / specials), via the shared pure `computeMfgPoUnitCost`.
+
+   Reused by reviseBoundPo (Approve-PO amendment engine) so a revised bound-PO
+   line re-derives its supplier cost from the now-revised SO line's spec instead
+   of carrying over the old cost — a fabric/spec swap re-prices the PO cost the
+   same way the create path would have.
+
+   Scope note vs the create path: this is the PER-LINE base cost. The create
+   path additionally applies SOFA-COMBO redistribution across a whole matched
+   module set (spreadComboTotal), which needs the full sibling-line group as
+   context; that group-level step is NOT reproduced here (a bound-PO revision is
+   a per-line re-derivation), so a sofa SET's combo discount is not re-spread on
+   revision — only the per-module matrix/surcharge cost is re-derived.
+
+   Returns the per-unit supplier cost in sen. When the SO line has NO item_group
+   (can't project a matrix) it returns the binding's flat `unit_price_centi`,
+   mirroring the create path's non-category fallback. When the SKU has no live
+   binding for this supplier it returns 0 (the create path's zero-priced
+   pseudo-binding — price keyed in at PI time). */
+export async function deriveMfgPoUnitCost(
+  sb: any,
+  input: {
+    supplierId: string;
+    itemCode: string;
+    itemGroup: string | null;
+    variants: Record<string, unknown> | null;
+  },
+): Promise<number> {
+  // (1) The supplier's own binding for this SKU (price_matrix + flat fallback).
+  const { data: bindingRow } = await sb
+    .from('supplier_material_bindings')
+    .select('unit_price_centi, price_matrix')
+    .eq('material_code', input.itemCode)
+    .eq('material_kind', 'mfg_product')
+    .eq('supplier_id', input.supplierId)
+    .order('is_main_supplier', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const binding = bindingRow as
+    | { unit_price_centi?: number | null; price_matrix?: Record<string, unknown> | null }
+    | null;
+  // No live binding for this supplier → zero-priced (mirrors the create path's
+  // pseudo-binding; real cost is keyed in at Purchase Invoice time).
+  const flatPriceCenti = Number(binding?.unit_price_centi ?? 0);
+  const priceMatrix = (binding?.price_matrix ?? null) as PoPriceMatrix;
+
+  const variants = (input.variants ?? {}) as Record<string, unknown>;
+  const category = (input.itemGroup?.toUpperCase() ?? '') as
+    'BEDFRAME' | 'SOFA' | 'MATTRESS' | 'ACCESSORY' | 'SERVICE' | '';
+  // No category on the SO line → can't project a matrix; keep the flat price.
+  if (!category) return flatPriceCenti;
+
+  // (2) Fabric tier from the line's fabricCode (sofa vs bedframe column),
+  //     mirroring the create path's resolveFabricTier.
+  const fabricTier = await resolveFabricTierForLine(sb, input.itemGroup, variants);
+
+  // (3) The supplier's maintenance config (supplier scope → master fallback).
+  const { config } = await resolveMaintenanceConfigForSupplier(sb, input.supplierId);
+
+  const specials = Array.isArray(variants.specials) ? (variants.specials as string[]) : [];
+  return computeMfgPoUnitCost(
+    {
+      category,
+      priceMatrix,
+      unitPriceCenti: flatPriceCenti,
+      fabricTier,
+      seatSize:      category === 'SOFA' ? ((variants.seatHeight as string | undefined) ?? null) : null,
+      divanHeight:   (variants.divanHeight as string | undefined) ?? null,
+      legHeight:     category === 'BEDFRAME' ? ((variants.legHeight as string | undefined) ?? null) : null,
+      sofaLegHeight: category === 'SOFA' ? ((variants.legHeight as string | undefined) ?? null) : null,
+      specials,
+    },
+    config,
+  ).unitPriceSen;
+}
+
+/** Resolve the fabric price tier for one line's fabricCode — the single-line
+ *  form of the create path's `resolveFabricTier` (sofa vs bedframe column,
+ *  falling back to the generic price_tier). Non-sofa/bedframe → null (P2). */
+async function resolveFabricTierForLine(
+  sb: any,
+  category: string | null,
+  variants: Record<string, unknown> | null,
+): Promise<MfgFabricTier | null> {
+  const code = String(variants?.fabricCode ?? '');
+  if (!code) return null;
+  const cat = (category ?? '').toLowerCase();
+  if (cat !== 'sofa' && cat !== 'bedframe') return null;
+  const { data } = await sb
+    .from('fabric_trackings')
+    .select('price_tier, sofa_price_tier, bedframe_price_tier')
+    .eq('fabric_code', code)
+    .limit(1)
+    .maybeSingle();
+  const f = data as {
+    price_tier?: MfgFabricTier | null;
+    sofa_price_tier?: MfgFabricTier | null;
+    bedframe_price_tier?: MfgFabricTier | null;
+  } | null;
+  if (!f) return null;
+  if (cat === 'sofa')     return f.sofa_price_tier ?? f.price_tier ?? null;
+  return f.bedframe_price_tier ?? f.price_tier ?? null;
 }

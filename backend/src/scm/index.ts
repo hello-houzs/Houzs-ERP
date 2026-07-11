@@ -25,6 +25,7 @@ import { mfgPurchaseOrders } from "./routes/mfg-purchase-orders";
 import { grns } from "./routes/grns";
 import { purchaseInvoices } from "./routes/purchase-invoices";
 import { mfgSalesOrders } from "./routes/mfg-sales-orders";
+import { soAmendments } from "./routes/so-amendments";
 import { stateWarehouseMappings } from "./routes/state-warehouse-mappings";
 import { deliveryOrdersMfg } from "./routes/delivery-orders-mfg";
 import { salesInvoices } from "./routes/sales-invoices";
@@ -159,6 +160,11 @@ scm.route("/purchase-invoices", purchaseInvoices);
 // ── Sales Orders (scm.sales.orders) ─────────────────────────────────────────
 scm.use("/mfg-sales-orders/*", scmAreaGuard("scm.sales.orders"));
 scm.route("/mfg-sales-orders", mfgSalesOrders);
+// SO amendment / revision workflow — SO-centric, so it rides the same L2 area
+// guard as Sales Orders (GET=view, PATCH=edit); the finer scm.amendment.* gates
+// layer on inside the handlers.
+scm.use("/so-amendments/*", scmAreaGuard("scm.sales.orders"));
+scm.route("/so-amendments", soAmendments);
 // state-warehouse-mappings: cross-area lookup (SO/DO warehouse routing) — left
 // on the coarse gate, see SHARED READ HELPERS note above.
 scm.route("/state-warehouse-mappings", stateWarehouseMappings);

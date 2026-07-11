@@ -57,6 +57,17 @@ export const PERMISSIONS: PermissionDef[] = [
   // to one super_admin row), so gate on this admin-level key instead. Owner + IT
   // Admin cover it via "*"; grant other positions via the Team > Positions matrix.
   { key: "scm.so.remove_processing_date", resource: "Supply Chain", verb: "manage", label: "Remove SO Processing Date", description: "Clear an already-set Processing Date on a SCM Sales Order (admin-level; pulls the order back out of the Proceed lane)" },
+  // SO amendment / revision workflow (port of 2990 0703). A processing-locked SO
+  // (already PO'd to the supplier) can only change through a supplier-confirmed,
+  // two-gate amendment: REQUESTED -> SUPPLIER_PENDING -> SO_APPROVED -> PO_APPROVED
+  // -> SENT. 2990 gated each step on scm.staff.role (dead in Houzs — the SCM bridge
+  // pins every caller to one super_admin row), so these flat keys gate the REAL
+  // caller instead. Owner + IT Admin cover all via "*"; grant purchasing / desk
+  // positions via the Team > Positions matrix. approve_po also gates send + reject.
+  { key: "scm.amendment.create",           resource: "Supply Chain", verb: "manage", label: "Raise SO amendment",          description: "Raise an amendment request against a processing-locked SCM Sales Order (opens the supplier-confirmed two-gate revision flow)" },
+  { key: "scm.amendment.supplier_confirm", resource: "Supply Chain", verb: "manage", label: "Confirm SO amendment (supplier)", description: "Record the supplier's confirmation of a requested SO amendment (REQUESTED -> SUPPLIER_PENDING)" },
+  { key: "scm.amendment.approve_so",       resource: "Supply Chain", verb: "manage", label: "Approve SO revision",         description: "Approve the Sales Order revision of an amendment — applies the line diffs, re-runs pricing, snapshots the prior version (SUPPLIER_PENDING -> SO_APPROVED)" },
+  { key: "scm.amendment.approve_po",       resource: "Supply Chain", verb: "manage", label: "Approve/send/reject PO revision", description: "Approve the bound Purchase Order revision, mark it sent, or reject an amendment (SO_APPROVED -> PO_APPROVED -> SENT, or -> REJECTED)" },
 
   // Mail Center — in-ERP shared inbox (/api/mail-center). mail_center.read is the
   // nav/page gate (grant broadly); mail_center.manage gates the alias / access /

@@ -26,3 +26,4 @@ export * from './effective-delivery'; // 2026-06-19 — PO supplier-revised deli
 export * from './rule-target'; // 2026-06-21 — unified rule targeting (model/variant/compartment/combo matcher)
 export * from './special-delivery-match'; // 2026-06-21 — model-agnostic delivery trigger matcher (reuses rule-target)
 export * from './fabric-tier-override-resolve'; // 2026-06-21 — effective fabric-tier delta = MAX(model, matching compartments)
+export * from './so-amendment'; // 2026-07-11 — SO amendment/revision state machine + guards (port of 2990 0703)
