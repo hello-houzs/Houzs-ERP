@@ -1,6 +1,6 @@
-import { Fragment } from "react";
+import { Fragment, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Link, NavLink, useLocation } from "react-router-dom";
-import { ChevronRight } from "lucide-react";
+import { Check, ChevronRight, ChevronsUpDown } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 import { useBreadcrumbs } from "../hooks/useBreadcrumbs";
 import { GlobalSearchTrigger } from "./GlobalSearch";
@@ -8,6 +8,14 @@ import { NotificationBell } from "./NotificationBell";
 import { PresenceIndicator } from "./PresenceIndicator";
 import { Avatar } from "./Avatar";
 import { cn } from "../lib/utils";
+import { api } from "../api/client";
+import { useQuery } from "../hooks/useQuery";
+import { queryClient } from "../lib/queryClient";
+import {
+  getActiveCompanySnapshot,
+  setActiveCompanyId,
+  subscribeActiveCompany,
+} from "../lib/activeCompany";
 
 /**
  * Desktop-only sticky top navbar. Hosts breadcrumb (left), search +
@@ -72,8 +80,9 @@ export function TopNavbar() {
         })}
       </nav>
 
-      {/* ── Right rail: search · online · bell · profile ───── */}
+      {/* ── Right rail: company · search · online · bell · profile ───── */}
       <div className="flex shrink-0 items-center gap-2">
+        <CompanySwitcher />
         <GlobalSearchTrigger collapsed={false} />
         {user && (
           <>
@@ -105,6 +114,126 @@ export function TopNavbar() {
         )}
       </div>
     </header>
+  );
+}
+
+// ── Company switcher ───────────────────────────────────────
+// Multi-company (Phase 0c). Fetches GET /api/companies and renders a compact
+// dropdown of the active company's name. NO-OP by design: renders NOTHING until
+// the companies master exists and returns MORE THAN ONE company — so today
+// (single-company Houzs) it is invisible and no X-Company-Id header is sent.
+// Selecting a company writes the active-company store (persisted to
+// localStorage) and invalidates every query so the whole app refetches scoped
+// to the new company. Styling reuses the navbar's Ink & Petrol tokens.
+
+interface CompaniesResponse {
+  companies: Array<{ id: number; code: string; name: string }>;
+  activeCompanyId: number | null;
+  activeCompanyCode: string | null;
+}
+
+function CompanySwitcher() {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+
+  // Persisted switcher pick (null = follow the backend hostname default).
+  const stored = useSyncExternalStore(
+    subscribeActiveCompany,
+    getActiveCompanySnapshot,
+    getActiveCompanySnapshot,
+  );
+
+  const { data } = useQuery<CompaniesResponse>(
+    () => api.get<CompaniesResponse>("/api/companies"),
+    [],
+  );
+  const companies = data?.companies ?? [];
+
+  useEffect(() => {
+    if (!open) return;
+    function onDocMouseDown(e: MouseEvent) {
+      if (!wrapRef.current) return;
+      if (!wrapRef.current.contains(e.target as Node)) setOpen(false);
+    }
+    function onEsc(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocMouseDown);
+    document.addEventListener("keydown", onEsc);
+    return () => {
+      document.removeEventListener("mousedown", onDocMouseDown);
+      document.removeEventListener("keydown", onEsc);
+    };
+  }, [open]);
+
+  // No-op: hidden entirely until there is a real choice to make.
+  if (companies.length <= 1) return null;
+
+  // Active = the stored pick when it's still a valid company, else the backend's
+  // resolved active (hostname default), else the first company.
+  const activeId =
+    (stored && companies.some((co) => co.id === stored) ? stored : null) ??
+    data?.activeCompanyId ??
+    companies[0]?.id ??
+    null;
+  const active = companies.find((co) => co.id === activeId) ?? companies[0];
+
+  function pick(id: number) {
+    setOpen(false);
+    if (id === activeId) return;
+    setActiveCompanyId(id);
+    // Refetch the whole app against the newly-active company.
+    void queryClient.invalidateQueries();
+  }
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1.5 rounded-md border border-border bg-bg/40 px-2 py-1 text-[11.5px] font-medium text-ink-secondary transition-colors hover:bg-bg/60 hover:text-accent"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        title="Switch company"
+      >
+        <span className="max-w-[9rem] truncate">{active?.name ?? "Company"}</span>
+        <ChevronsUpDown size={13} strokeWidth={2} className="shrink-0 text-ink-muted/70" />
+      </button>
+
+      {open && (
+        <div
+          role="listbox"
+          className="absolute right-0 top-full z-40 mt-1 min-w-[13rem] overflow-hidden rounded-md border border-border bg-surface py-1 shadow-lg"
+        >
+          {companies.map((co) => {
+            const isActive = co.id === activeId;
+            return (
+              <button
+                key={co.id}
+                type="button"
+                role="option"
+                aria-selected={isActive}
+                onClick={() => pick(co.id)}
+                className={cn(
+                  "flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] transition-colors hover:bg-bg/60",
+                  isActive ? "font-semibold text-primary" : "text-ink-secondary",
+                )}
+              >
+                <Check
+                  size={13}
+                  strokeWidth={2.5}
+                  className={cn("shrink-0", isActive ? "text-primary" : "text-transparent")}
+                />
+                <span className="min-w-0 flex-1 truncate">{co.name}</span>
+                <span className="shrink-0 text-[9.5px] uppercase tracking-wide text-ink-muted">
+                  {co.code}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }
 

@@ -8,6 +8,10 @@ import {
   currentEpoch,
   invalidatedSince,
 } from "./cache";
+// Multi-company (Phase 0c): stamp the active company on every request. Returns
+// {} when no company is selected (single-company / pre-activation), so the
+// backend falls back to its hostname default and nothing changes.
+import { companyHeader } from "../lib/activeCompany";
 
 // Production default is SAME-ORIGIN: /api/* is proxied to the Worker by the
 // Pages Function (functions/api/[[path]].ts). Calling the Worker's
@@ -240,6 +244,7 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
         headers: {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
           "Content-Type": "application/json",
+          ...companyHeader(),
           ...(opts?.headers || {}),
         },
       });
@@ -331,6 +336,7 @@ export const api = {
       headers: {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
         "Content-Type": contentType,
+        ...companyHeader(),
       },
       body,
     }, UPLOAD_TIMEOUT_MS);
@@ -355,6 +361,7 @@ export const api = {
       headers: {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
         "Content-Type": contentType,
+        ...companyHeader(),
       },
       body,
     }, UPLOAD_TIMEOUT_MS);
@@ -382,7 +389,7 @@ export const api = {
     for (const f of files) form.append(fieldName, f);
     const res = await binaryFetch(`${baseUrl}${path}`, {
       method: "POST",
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...companyHeader() },
       body: form,
     }, UPLOAD_TIMEOUT_MS);
     if (!res.ok) {
@@ -409,7 +416,7 @@ export const api = {
   async fetchBlobUrl(path: string): Promise<string> {
     const token = tokenStore.get();
     const res = await binaryFetch(`${baseUrl}${path}`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...companyHeader() },
     }, BINARY_GET_TIMEOUT_MS);
     if (!res.ok) throw new HttpError(res.status, res.statusText);
     const blob = await res.blob();
@@ -429,7 +436,7 @@ export const api = {
   async downloadFile(path: string, fallbackName = "download"): Promise<void> {
     const token = tokenStore.get();
     const res = await binaryFetch(`${baseUrl}${path}`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...companyHeader() },
     }, BINARY_GET_TIMEOUT_MS);
     if (!res.ok) throw new HttpError(res.status, res.statusText);
     const cd = res.headers.get("Content-Disposition") || "";
@@ -449,7 +456,7 @@ export const api = {
   async openHtml(path: string): Promise<void> {
     const token = tokenStore.get();
     const res = await binaryFetch(`${baseUrl}${path}`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...companyHeader() },
     }, BINARY_GET_TIMEOUT_MS);
     if (!res.ok) throw new HttpError(res.status, res.statusText);
     const html = await res.text();
