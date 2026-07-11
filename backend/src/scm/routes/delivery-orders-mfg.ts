@@ -153,6 +153,15 @@ const PAYMENT_COLS =
   'online_type, approval_code, amount_centi, account_sheet, collected_by, note, ' +
   'created_at, created_by';
 
+/* scm.delivery_order_crew columns (created in migration 0053) — the FK ids + the
+   assign-time name/ic/contact/plate snapshot. Read on the DO detail + returned
+   by PUT /:id/crew. */
+const crewSnapshotCols =
+  'id, do_id, driver_1_id, driver_2_id, helper_1_id, helper_2_id, lorry_id, ' +
+  'driver_1_name, driver_1_ic, driver_1_contact, driver_2_name, driver_2_ic, driver_2_contact, ' +
+  'helper_1_name, helper_1_contact, helper_2_name, helper_2_contact, lorry_plate, ' +
+  'assigned_at, assigned_by, updated_at';
+
 /* DO statuses that count as "shipped" — goods have left our hands, so stock
    has been deducted. The FIRST transition into ANY of these fires the
    inventory OUT. Kept here as one list so deduction is robust no matter how
@@ -1509,10 +1518,17 @@ deliveryOrdersMfg.get('/:id', async (c) => {
       .neq('status', 'CANCELLED'),
   ]);
   const lifecycleByDo = await computeDoLifecycle(sb, [id]);
+  /* Per-DO crew (scm.delivery_order_crew, migration 0053). One row per DO
+     (UNIQUE do_id); null when no crew has been assigned yet. Surfaced on the
+     detail so the Delivery Crew block can render the FK ids + assign-time
+     snapshots without a second round-trip. */
+  const { data: crew } = await sb.from('delivery_order_crew')
+    .select(crewSnapshotCols).eq('do_id', id).maybeSingle();
   const deliveryOrder = {
     ...(h.data as unknown as Record<string, unknown>),
     has_children: (drCount ?? 0) > 0 || (siCount ?? 0) > 0,
     lifecycle_state: lifecycleByDo.get(id) ?? 'shipped',
+    crew: crew ?? null,
   };
   /* Per-line Warehouse column (Agent D, TASK #32): resolve the SAME ship-from
      warehouse the inventory OUT uses (SO line → DO header → default) and stamp
@@ -2115,6 +2131,109 @@ deliveryOrdersMfg.post('/from-sos', async (c) => {
   }
 
   return c.json({ id: dh.id, doNumber: dh.do_number, movementErrors: movementErrors.length ? movementErrors : undefined }, 201);
+});
+
+/* ── Crew assignment (scm.delivery_order_crew, migration 0053) ────────────────
+   PUT /:id/crew — assign up to 2 drivers + 2 helpers + 1 lorry to a DO. The body
+   carries the chosen master ids (any nullable); the handler loads each master row
+   and UPSERTS one delivery_order_crew row (UNIQUE do_id) writing the FK ids PLUS
+   an assign-time SNAPSHOT of name/ic/contact/plate — the same denormalised
+   pattern the DO header already uses for driver_name, so the crew record is
+   stable if a master is later edited. The DO header's existing driver_id /
+   driver_name / vehicle quick-fields are kept in sync with driver 1 so the
+   "primary driver" field still reflects the first driver. */
+deliveryOrdersMfg.put('/:id/crew', async (c) => {
+  const sb = c.get('supabase'); const id = c.req.param('id'); const user = c.get('user');
+  let body: Record<string, unknown>;
+  try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
+
+  // The DO must exist (FK target + so the header sync below has a row to update).
+  const { data: doRow, error: doErr } = await sb.from('delivery_orders').select('id').eq('id', id).maybeSingle();
+  if (doErr) return c.json({ error: 'load_failed', reason: doErr.message }, 500);
+  if (!doRow) return c.json({ error: 'not_found' }, 404);
+
+  const str = (v: unknown): string | null => {
+    if (v === undefined || v === null) return null;
+    const s = String(v).trim();
+    return s === '' ? null : s;
+  };
+  const driver1Id = str(body.driver1Id);
+  const driver2Id = str(body.driver2Id);
+  const helper1Id = str(body.helper1Id);
+  const helper2Id = str(body.helper2Id);
+  const lorryId   = str(body.lorryId);
+
+  // Load the chosen master rows so the snapshot captures what's true at assign
+  // time. Batched per master (PostgREST returns snake_case columns directly).
+  const driverIds = [...new Set([driver1Id, driver2Id].filter((x): x is string => !!x))];
+  const helperIds = [...new Set([helper1Id, helper2Id].filter((x): x is string => !!x))];
+
+  type DriverRow = { id: string; name?: string | null; ic_number?: string | null; phone?: string | null; vehicle?: string | null };
+  type HelperRow = { id: string; name?: string | null; contact?: string | null; ic_number?: string | null };
+  type LorryRow  = { id: string; plate?: string | null };
+
+  const driverById = new Map<string, DriverRow>();
+  const helperById = new Map<string, HelperRow>();
+
+  const [driverRes, helperRes, lorryRes] = await Promise.all([
+    driverIds.length > 0
+      ? sb.from('drivers').select('id, name, ic_number, phone, vehicle').in('id', driverIds)
+      : Promise.resolve({ data: [] as DriverRow[] }),
+    helperIds.length > 0
+      ? sb.from('helpers').select('id, name, contact, ic_number').in('id', helperIds)
+      : Promise.resolve({ data: [] as HelperRow[] }),
+    lorryId
+      ? sb.from('lorries').select('id, plate').eq('id', lorryId).maybeSingle()
+      : Promise.resolve({ data: null as LorryRow | null }),
+  ]);
+  for (const d of (driverRes.data ?? []) as DriverRow[]) driverById.set(d.id, d);
+  for (const h of (helperRes.data ?? []) as HelperRow[]) helperById.set(h.id, h);
+  const lorry = (lorryRes.data ?? null) as LorryRow | null;
+
+  const d1 = driver1Id ? driverById.get(driver1Id) ?? null : null;
+  const d2 = driver2Id ? driverById.get(driver2Id) ?? null : null;
+  const h1 = helper1Id ? helperById.get(helper1Id) ?? null : null;
+  const h2 = helper2Id ? helperById.get(helper2Id) ?? null : null;
+
+  const now = new Date().toISOString();
+  const crewRow = {
+    do_id: id,
+    driver_1_id: driver1Id, driver_2_id: driver2Id,
+    helper_1_id: helper1Id, helper_2_id: helper2Id,
+    lorry_id: lorryId,
+    // snapshots captured at assign time
+    driver_1_name: d1?.name ?? null, driver_1_ic: d1?.ic_number ?? null, driver_1_contact: d1?.phone ?? null,
+    driver_2_name: d2?.name ?? null, driver_2_ic: d2?.ic_number ?? null, driver_2_contact: d2?.phone ?? null,
+    helper_1_name: h1?.name ?? null, helper_1_contact: h1?.contact ?? null,
+    helper_2_name: h2?.name ?? null, helper_2_contact: h2?.contact ?? null,
+    lorry_plate: lorry?.plate ?? null,
+    assigned_by: user.id,
+    updated_at: now,
+  };
+
+  // UPSERT on the UNIQUE do_id — idempotent (re-assign overwrites the crew row,
+  // keeping a single row per DO). assigned_at defaults on first insert; we leave
+  // it untouched on conflict so it records the original assign time, and bump
+  // updated_at each save.
+  const { data: crew, error: crewErr } = await sb.from('delivery_order_crew')
+    .upsert(crewRow, { onConflict: 'do_id' })
+    .select(crewSnapshotCols).maybeSingle();
+  if (crewErr) {
+    if (crewErr.code === '42501') return c.json({ error: 'forbidden', reason: crewErr.message }, 403);
+    return c.json({ error: 'crew_save_failed', reason: crewErr.message }, 500);
+  }
+
+  /* Keep the DO header's primary-driver quick-fields in lock-step with driver 1
+     (driver_id / driver_name / vehicle), so the existing Driver / Vehicle fields
+     on the DO still reflect the first crew driver. Clearing driver 1 clears them. */
+  await sb.from('delivery_orders').update({
+    driver_id: driver1Id,
+    driver_name: d1?.name ?? null,
+    vehicle: d1?.vehicle ?? lorry?.plate ?? null,
+    updated_at: now,
+  }).eq('id', id);
+
+  return c.json({ crew });
 });
 
 // ── Header PATCH (editable SO-style fields) ───────────────────────────────
