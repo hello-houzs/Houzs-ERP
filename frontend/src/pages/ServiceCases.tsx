@@ -510,7 +510,17 @@ function CasesView({
               Archived
             </Badge>
           )}
-          <StatusDot variant={stageVariant(r.stage)} label={caseStageLabel(r.stage)} />
+          {/* Funnel-consistent dot: red when this row is SLA-breached
+              (the funnel box goes red for the same reason), else the
+              stage's own colour (amber open / green completed). */}
+          <StatusDot
+            variant={
+              r.stage !== "completed" && r.is_breached === 1
+                ? "error"
+                : stageVariant(r.stage)
+            }
+            label={caseStageLabel(r.stage)}
+          />
           {r.stage !== "completed" && (r.is_breached === 1 || r.escalated_at) && (
             // One SLA badge: solid red = breached, outline = escalated
             // only (overdue >24h). Merged from the old separate SLA + Esc
@@ -875,7 +885,7 @@ function CasesView({
         search={{
           value: search,
           onChange: (v) => { setPage(1); setSearch(v); },
-          placeholder: "Search ASSR no, SO no, customer…",
+          placeholder: "Search ASSR no, SO no, Ref no, customer…",
         }}
         resetFilters={{
           active: !!(
