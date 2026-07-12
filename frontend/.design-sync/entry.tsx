@@ -2,6 +2,24 @@
 // from src/components/ so the converter can bundle them via esbuild.
 
 export * from '../src/components/AnnouncementBanner';
+// Context providers — connected components read these; exported so previews
+// can wrap them with the SAME context instance the bundle uses (an imported
+// second copy would create a mismatched context and the hooks would throw).
+export { AuthProvider } from '../src/auth/AuthContext';
+export { NotificationsProvider } from '../src/hooks/useNotifications';
+export { BreadcrumbsProvider } from '../src/hooks/useBreadcrumbs';
+// Router context for nav components (Sidebar, TopNavbar, MobileTabBar,
+// Breadcrumbs, QuickActionsFAB) — same single-instance rule as above.
+export { MemoryRouter } from 'react-router-dom';
+// TanStack Query — useQuery-backed components (PnlCalendar, scm-v2 lists)
+// need the provider + the app's client from the SAME bundle instance.
+export { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+export { queryClient } from '../src/lib/queryClient';
+// SCM notify dialog context — DetailListingShell calls useNotify() at mount.
+export { NotifyProvider } from '../src/vendor/scm/components/NotifyDialog';
+// App toast context — PullToRefresh (inside Layout) calls useToast().
+export { ToastProvider } from '../src/hooks/useToast';
+export * from '../src/components/AndroidInstallGuide';
 export * from '../src/components/Avatar';
 export * from '../src/components/Badge';
 export * from '../src/components/Breadcrumbs';

@@ -11,6 +11,7 @@ import { MobileSalesOrders } from "./MobileSalesOrders";
 import { MobileSODetail } from "./MobileSODetail";
 import { MobileNewSO } from "./MobileNewSO";
 import { MobileCalendar } from "./MobileCalendar";
+import { MobileSearch, type SearchNav } from "./MobileSearch";
 import { MobileInbox } from "./MobileInbox";
 import { MobileServiceCase } from "./MobileServiceCase";
 import { MobilePMS } from "./MobilePMS";
@@ -29,6 +30,7 @@ import "./mobile.css";
 type Tab = "orders" | "service" | "calendar" | "profile";
 type Screen =
   | { t: "tab" }
+  | { t: "search" }
   | { t: "so-detail"; docNo: string }
   | { t: "new-so"; mode: "new" | "edit" | "edit-draft"; docNo?: string; scanPrefill?: MobileScanPrefill }
   | { t: "scan" }
@@ -170,6 +172,42 @@ function MobileAppInner() {
   const [screen, setScreen] = useState<Screen>({ t: "tab" });
   const back = () => setScreen({ t: "tab" });
 
+  // Search → calendar jump target. When a project search hit is tapped we route
+  // to the Calendar tab and snap it to the project's start-date month, with the
+  // project's bar highlighted (see MobileCalendar focusProjectId). A monotonic
+  // nonce lets a repeat jump to the SAME month re-fire the calendar's effects.
+  const [calJump, setCalJump] = useState<{ year: number; month: number; projectId: number; nonce: number } | null>(null);
+
+  // Route a typed search hit onto the right mobile screen.
+  const onSearchNavigate = (nav: SearchNav) => {
+    switch (nav.kind) {
+      case "sales_order":
+        return setScreen({ t: "so-detail", docNo: nav.docNo });
+      case "project": {
+        // A dated project jumps the calendar to its month + highlights it; an
+        // undated one falls back to opening the project in PMS.
+        const iso = (nav.date ?? "").slice(0, 10);
+        const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+        if (m) {
+          setCalJump({ year: Number(m[1]), month: Number(m[2]) - 1, projectId: nav.projectId, nonce: Date.now() });
+          setTab("calendar");
+          return setScreen({ t: "tab" });
+        }
+        return setScreen({ t: "pms", projectId: nav.projectId });
+      }
+      case "assr_case":
+        return setScreen({ t: "service" });
+      case "product":
+        return MODULE_CONFIGS["products"]
+          ? setScreen({ t: "module", key: "products", title: "Products & Maintenance" })
+          : setScreen({ t: "tab" });
+      case "user":
+        return MODULE_CONFIGS["members"]
+          ? setScreen({ t: "module", key: "members", title: "Members" })
+          : setScreen({ t: "tab" });
+    }
+  };
+
   /* Scan → background DRAFT: MobileScan has FIRED the enqueue(s)/create(s).
      The operator now STAYS on the Scan screen (owner 2026-07-04) watching the
      Recent-scans pills progress — navigation was split OUT of this handler; he
@@ -245,6 +283,7 @@ function MobileAppInner() {
   };
 
   // Overlay screens (pushed above the tab bar).
+  if (screen.t === "search") return <MobileSearch onBack={back} onNavigate={onSearchNavigate} />;
   if (screen.t === "so-detail") return <MobileSODetail docNo={screen.docNo} onBack={back} onEdit={(d) => setScreen({ t: "new-so", mode: "edit", docNo: d })} />;
   if (screen.t === "new-so") return <MobileNewSO mode={screen.mode} docNo={screen.docNo} scanPrefill={screen.scanPrefill} onBack={back} onSaved={(d) => setScreen({ t: "so-detail", docNo: d })} />;
   if (screen.t === "scan") return <MobileScan onBack={back} onDrafted={onScanDrafted} onOpenSo={(docNo) => setScreen({ t: "so-detail", docNo })} />;
@@ -306,7 +345,18 @@ function MobileAppInner() {
           />
         )}
         {tab === "service" && <MobileServiceCase onBack={() => setTab("orders")} />}
-        {tab === "calendar" && <MobileCalendar onOpenProject={(id) => setScreen({ t: "pms", projectId: id })} />}
+        {tab === "calendar" && (
+          <MobileCalendar
+            onOpenProject={(id) => setScreen({ t: "pms", projectId: id })}
+            onOpenSearch={() => setScreen({ t: "search" })}
+            // Search → calendar jump: keyed by the jump nonce so re-jumping to the
+            // same month re-triggers the snap + highlight.
+            key={calJump ? `caljump-${calJump.nonce}` : "cal"}
+            initialYear={calJump?.year}
+            initialMonth={calJump?.month}
+            focusProjectId={calJump?.projectId}
+          />
+        )}
         {tab === "profile" && <MobileProfile onLogout={logout} orgItems={profileOrgItems} onOpenOrg={openRoute} />}
       </div>
 

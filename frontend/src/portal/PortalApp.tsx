@@ -12,6 +12,10 @@ export function PortalApp() {
   return (
     <Routes>
       <Route path="/track" element={<TrackForm />} />
+      {/* Readable form carries the ASSR slug (ASSR-2607-008) before the
+          token — the slug is cosmetic, resolution is token-only. The
+          bare form keeps every previously shared link working. */}
+      <Route path="/portal/case/:ref/:token" element={<PortalCaseDetailPage />} />
       <Route path="/portal/case/:token" element={<PortalCaseDetailPage />} />
       <Route path="/portal/supplier/:token" element={<PortalSupplierCasePage />} />
       {/* Anything else under /portal bounces to the tracking form. */}

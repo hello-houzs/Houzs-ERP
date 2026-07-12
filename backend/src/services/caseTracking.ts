@@ -2,23 +2,32 @@ import type { Env } from "../types";
 import { generateToken, isoIn } from "./auth";
 import { cleanPhone } from "./autocount";
 
-// Per-case tokenised tracking. Two flows produce a token:
+// Per-case tokenised tracking. Three flows produce a token:
 //   1. Customer hits /track, enters ASSR number + phone → server
 //      verifies the pair matches, issues a 30-min token.
 //   2. Staff hits the "Copy portal link" button on a case → server
-//      issues a 30-day token (shareable via WhatsApp without the
-//      customer having to type anything).
+//      issues a PERMANENT token (shareable via WhatsApp without the
+//      customer having to type anything; Nick 2026-07-07 — links must
+//      keep working forever, mig 0076 extended the existing ones).
+//   3. Staff hits "Sales Portal Link" — same permanent per-case token
+//      but source='sales'; the portal renders the salesperson
+//      variant (full stage progress, comments attributed to sales).
 //
-// In both flows the token grants access to ONE case only. The
+// In all flows the token grants access to ONE case only. The
 // middleware resolves the token to an `assr_id` which scopes every
 // subsequent portal API query.
 
 export const CUSTOMER_TTL_SECONDS = 60 * 30;            // 30 minutes
-export const STAFF_TTL_SECONDS    = 60 * 60 * 24 * 30;  // 30 days
+// Staff/sales links never expire. Stored as a far-future ISO stamp so
+// the existing `expires_at > now` reads keep working without a schema
+// change (expires_at is NOT NULL).
+export const PERMANENT_EXPIRES_AT = "9999-12-31T23:59:59.000Z";
+
+export type TrackSource = "customer" | "staff" | "sales";
 
 export interface TrackedCase {
   assr_id: number;
-  source: "customer" | "staff";
+  source: TrackSource;
   verified_phone: string | null;
 }
 
@@ -27,16 +36,16 @@ export interface TrackedCase {
 async function issueToken(
   env: Env,
   assrId: number,
-  source: "customer" | "staff",
+  source: TrackSource,
   verifiedPhone: string | null,
-  ttlSeconds: number
+  expiresAt: string
 ): Promise<string> {
   const token = generateToken(24);
   await env.DB.prepare(
     `INSERT INTO case_track_tokens (token, assr_id, source, verified_phone, expires_at)
      VALUES (?, ?, ?, ?, ?)`
   )
-    .bind(token, assrId, source, verifiedPhone, isoIn(ttlSeconds))
+    .bind(token, assrId, source, verifiedPhone, expiresAt)
     .run();
   return token;
 }
@@ -65,7 +74,7 @@ export async function verifyAndIssueCustomerToken(
   if (!row.phone) return null;
   if (cleanPhone(row.phone) !== cleaned) return null;
 
-  const token = await issueToken(env, row.id, "customer", cleaned, CUSTOMER_TTL_SECONDS);
+  const token = await issueToken(env, row.id, "customer", cleaned, isoIn(CUSTOMER_TTL_SECONDS));
   return { token, assr_id: row.id, assr_no: asNum };
 }
 
@@ -87,7 +96,26 @@ export async function issueStaffToken(env: Env, assrId: number): Promise<string>
     .bind(assrId)
     .first<{ token: string }>();
   if (existing) return existing.token;
-  return issueToken(env, assrId, "staff", null, STAFF_TTL_SECONDS);
+  return issueToken(env, assrId, "staff", null, PERMANENT_EXPIRES_AT);
+}
+
+/**
+ * Sales-portal token — same shape as the staff token but the portal
+ * renders the salesperson variant for it. Idempotent per case for
+ * the same reason issueStaffToken is.
+ */
+export async function issueSalesToken(env: Env, assrId: number): Promise<string> {
+  const existing = await env.DB.prepare(
+    `SELECT token FROM case_track_tokens
+      WHERE assr_id = ? AND source = 'sales'
+        AND expires_at > datetime('now')
+      ORDER BY created_at DESC
+      LIMIT 1`
+  )
+    .bind(assrId)
+    .first<{ token: string }>();
+  if (existing) return existing.token;
+  return issueToken(env, assrId, "sales", null, PERMANENT_EXPIRES_AT);
 }
 
 /**
@@ -121,7 +149,7 @@ export async function resolveTrackToken(
     .bind(token)
     .first<{
       assr_id: number;
-      source: "customer" | "staff";
+      source: TrackSource;
       verified_phone: string | null;
       expires_at: string;
     }>();

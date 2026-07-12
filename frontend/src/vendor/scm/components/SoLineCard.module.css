@@ -41,7 +41,7 @@
     72px              /* Qty */
     96px              /* Unit Price */
     132px             /* Delivery Date */
-    auto              /* Amount (RM 9,999.99) */
+    96px              /* Amount — fixed narrow per 2026-07-09 mockup */
     auto              /* Group badge */
     28px;             /* Trash */
   align-items: center;
@@ -50,7 +50,7 @@
 
 @media (max-width: 1100px) {
   .row {
-    grid-template-columns: 32px minmax(180px, 1.5fr) minmax(120px, 1fr) 60px 84px 120px auto auto 28px;
+    grid-template-columns: 32px minmax(180px, 1.5fr) minmax(120px, 1fr) 60px 84px 120px 88px auto 28px;
   }
 }
 
@@ -97,6 +97,41 @@
   composes: input;
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+/* Unit-price cell — Nick 2026-07-09: the amount input has to POP so the
+   operator can find it at a glance and doesn't fat-finger the price into
+   the remarks column. Brass tint + brand mark font + bolder weight +
+   slightly taller row so it visually separates from the qty/date cells
+   sitting either side of it. */
+.priceInput {
+  composes: input;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  height: 32px;
+  padding: 0 10px;
+  font-family: var(--font-mark);
+  font-size: var(--fs-13);
+  font-weight: 700;
+  color: var(--c-burnt);
+  background: color-mix(in srgb, var(--c-accent-soft, #f5ecd8) 55%, var(--c-paper));
+  border-color: color-mix(in srgb, var(--c-orange, #a16a2e) 45%, var(--line));
+  box-shadow: inset 0 0 0 1px rgba(161, 106, 46, 0.14);
+}
+
+.priceInput:focus {
+  border-color: var(--c-orange, #a16a2e);
+  background: var(--c-cream);
+  box-shadow:
+    inset 0 0 0 1px rgba(161, 106, 46, 0.35),
+    0 0 0 3px rgba(161, 106, 46, 0.18);
+}
+
+.priceInput:disabled {
+  background: var(--c-cream);
+  color: var(--fg-muted);
+  box-shadow: none;
+  cursor: not-allowed;
 }
 
 /* ── Item picker (the SKU search dropdown) ────────────────────────── */

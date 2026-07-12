@@ -16,6 +16,7 @@ import { Hono } from 'hono';
 import { normalizePhone } from '../shared';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
+import { activeCompanyId, scopeToAllowedCompanies } from '../lib/companyScope';
 
 export const drivers = new Hono<{ Bindings: Env; Variables: Variables }>();
 drivers.use('*', supabaseAuth);
@@ -27,6 +28,8 @@ drivers.get('/', async (c) => {
   const onlyActive = c.req.query('active') !== 'false';   // default: active only
   let q = sb.from('drivers').select(COLS).order('driver_code');
   if (onlyActive) q = q.eq('active', true);
+  // CROSS-COMPANY view: widen to every allowed company (one shared fleet).
+  q = scopeToAllowedCompanies(q, c);
   const { data, error } = await q;
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
   return c.json({ drivers: data ?? [] });
@@ -46,6 +49,7 @@ drivers.post('/', async (c) => {
 
   const sb = c.get('supabase');
   const { data, error } = await sb.from('drivers').insert({
+    company_id: activeCompanyId(c),
     driver_code: driverCode,
     name,
     phone: normalizedPhone,

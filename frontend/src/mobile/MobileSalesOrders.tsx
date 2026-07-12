@@ -1,6 +1,9 @@
-import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
+import { useNotify } from "../vendor/scm/components/NotifyDialog";
+import { useAuth } from "../auth/AuthContext";
+import { normalizeJobs, type ScanJobsResp } from "./MobileScan";
 import "./mobile.css";
 
 type SoRow = {
@@ -31,7 +34,46 @@ const total = (r: SoRow) => r.local_total_centi ?? r.total_revenue_centi ?? 0;
 const paid = (r: SoRow) => r.paid_total_centi ?? 0;
 const balance = (r: SoRow) => r.balance_centi_live ?? r.balance_centi ?? (total(r) - paid(r));
 const isCancelled = (r: SoRow) => (r.status ?? "").toLowerCase() === "cancelled";
+const isDraft = (r: SoRow) => (r.status ?? "").toLowerCase() === "draft";
 const soDate = (r: SoRow) => r.so_date ?? r.created_at ?? null;
+
+/* ── Draft-created notifier — localStorage ack set ─────────────────────────
+   Owner 2026-07-04: "after a scan creates a draft, next time I open the app tell
+   me 'SO xxx created as draft'." On the Orders screen mount we read the recent
+   done scan jobs (GET /scan-so/jobs) and toast the ones we haven't yet
+   acknowledged. Acknowledged job ids live in localStorage so the toast fires
+   ONCE per new draft, never re-fires on every navigation back to Orders.
+   Bounded to the last N ids so the set can't grow forever. */
+const SCAN_ACK_KEY = "houzs:scan-draft-acked";
+const SCAN_ACK_MAX = 200;
+/* Only consider jobs finished within this window — an old done job the operator
+   has long since seen must not toast just because the ack set was cleared. */
+const SCAN_ACK_WINDOW_MS = 30 * 60 * 1000; // 30 min
+
+function readAckedJobIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(SCAN_ACK_KEY);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw) as unknown;
+    return Array.isArray(arr) ? new Set(arr.map(String)) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+function writeAckedJobIds(ids: Set<string>): void {
+  try {
+    // Keep only the most recent SCAN_ACK_MAX ids (insertion order preserved).
+    const arr = Array.from(ids);
+    const trimmed = arr.length > SCAN_ACK_MAX ? arr.slice(arr.length - SCAN_ACK_MAX) : arr;
+    localStorage.setItem(SCAN_ACK_KEY, JSON.stringify(trimmed));
+  } catch {
+    /* private-mode / quota — the toast just re-fires next open, harmless */
+  }
+}
+const jobTsMs = (s: string | null | undefined): number => {
+  const t = s ? Date.parse(s) : NaN;
+  return Number.isNaN(t) ? 0 : t;
+};
 
 /* Period chips → client-side date buckets. The list endpoint returns all rows
    (no server range param), so — like the owner's prototype — we bucket by
@@ -77,10 +119,25 @@ function inRange(r: SoRow, range: Range): boolean {
  *  to the same /api/scm/mfg-sales-orders the desktop uses (row-scoped +
  *  permission-gated by the backend). Summary bar + period chips + card + FAB. */
 export function MobileSalesOrders({ onScan, onOpen, onNew }: { onScan: () => void; onOpen: (docNo: string) => void; onNew: () => void }) {
+  const qc = useQueryClient();
+  const notify = useNotify();
+  const { user } = useAuth();
   const [q, setQ] = useState("");
   const [status, setStatus] = useState<StatusFilter>("all");
   const [range, setRange] = useState<Range>("all");
   const [filterOpen, setFilterOpen] = useState(false);
+
+  /* Item 3 — bulk confirm. selectMode toggles the tick UI; `selected` is the set
+     of picked DRAFT doc_nos; `confirming` runs the sequential PATCH pass. */
+  const [selectMode, setSelectMode] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const [confirming, setConfirming] = useState(false);
+  const [confirmProgress, setConfirmProgress] = useState(0);
+  /* Long-press to ENTER select mode (and pre-tick the pressed DRAFT row). The
+     timer fires after 450ms; a tap that releases sooner opens the SO as usual.
+     `longPressFired` suppresses the click that follows the long-press release. */
+  const lpTimer = useRef<number | null>(null);
+  const lpFired = useRef(false);
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["mobile-so-list"],
@@ -113,6 +170,169 @@ export function MobileSalesOrders({ onScan, onOpen, onNew }: { onScan: () => voi
 
   const filterActive = status !== "all" || range !== "all";
 
+  /* ── Item 2 — "SO xxx created as draft" notification ──────────────────────
+     On mount, pull this rep's recent scan jobs and toast any DONE job (with a
+     soDocNo, finished in the last 30 min) we haven't acknowledged yet. One
+     toast per new draft, or a combined "N drafts saved" when several land at
+     once. Tapping a single-draft toast opens that SO. Acked ids are persisted
+     so the toast never re-fires on a later Orders visit. Fail-soft: any jobs
+     hiccup silently skips the notification (retry:false, no dialog). */
+  const salesperson = (user?.name || user?.email || "").trim();
+  const notifiedRef = useRef(false);
+  const { data: jobsData } = useQuery({
+    queryKey: ["mobile-so-scan-jobs", salesperson],
+    queryFn: () =>
+      authedFetch<ScanJobsResp>(
+        salesperson ? `/scan-so/jobs?salesperson=${encodeURIComponent(salesperson)}` : "/scan-so/jobs",
+      ),
+    staleTime: 0,
+    retry: false,
+  });
+  useEffect(() => {
+    if (notifiedRef.current || !jobsData) return;
+    const now = Date.now();
+    const acked = readAckedJobIds();
+    const fresh = (j: { id: string; updatedAt: string | null; createdAt: string | null }) =>
+      now - jobTsMs(j.updatedAt ?? j.createdAt) < SCAN_ACK_WINDOW_MS && !acked.has(j.id);
+    const all = normalizeJobs(jobsData);
+    // Owner 2026-07-04: EVERY scan lands a draft, so the toast announces them all
+    // — a clean draft, a possible-duplicate draft, and a blank "please complete"
+    // draft (the case that used to just error) all open the same way. Genuine
+    // SYSTEM failures (status 'error' — no draft was created) are surfaced too,
+    // so the rep knows to scan again. Newest first.
+    const drafts = all
+      .filter((j) => j.status === "done" && j.soDocNo && fresh(j))
+      .sort((a, b) => jobTsMs(b.updatedAt ?? b.createdAt) - jobTsMs(a.updatedAt ?? a.createdAt));
+    const failures = all.filter((j) => j.status === "error" && fresh(j));
+    if (drafts.length === 0 && failures.length === 0) return;
+    notifiedRef.current = true; // once per screen mount — never double-fire on navigation
+
+    // Ack everything we're about to surface, so re-mounts don't repeat it.
+    for (const j of [...drafts, ...failures]) acked.add(j.id);
+    writeAckedJobIds(acked);
+
+    // Single draft, nothing else → open it straight after the toast.
+    if (drafts.length === 1 && failures.length === 0) {
+      const j = drafts[0];
+      const doc = j.soDocNo!;
+      // A shell/blank or payment-warning draft carries a plain note in `error`;
+      // a possible-duplicate carries the earlier doc no. Either rides in the body.
+      const extra = j.duplicateOf
+        ? ` This looks like a possible duplicate of ${j.duplicateOf}.`
+        : j.error
+          ? ` ${j.error}`
+          : "";
+      void notify({
+        title: "Scan complete",
+        body: `${doc} was saved as a draft.${extra} Tap OK, then open it from your Orders to review.`,
+      }).then(() => {
+        // Nudge the list so the new draft is visible before the operator taps in.
+        void refetch();
+        onOpen(doc);
+      });
+      return;
+    }
+
+    // Several drafts and/or a system failure → one combined summary, no auto-open.
+    const parts: string[] = [];
+    if (drafts.length > 0) {
+      parts.push(
+        drafts.length === 1
+          ? `${drafts[0].soDocNo} was saved as a draft`
+          : `${drafts.length} scanned orders were saved as drafts`,
+      );
+    }
+    if (failures.length > 0) {
+      parts.push(
+        `${failures.length} ${failures.length === 1 ? "scan" : "scans"} could not be read — please scan again`,
+      );
+    }
+    void notify({
+      title: "Scan update",
+      body: `${parts.join(". ")}. Review them in your Orders list.`,
+    }).then(() => void refetch());
+  }, [jobsData, notify, onOpen, refetch]);
+
+  /* ── Item 3 — bulk confirm helpers ──────────────────────────────────────
+     Only DRAFT rows are selectable. exitSelect resets the whole selection UI. */
+  const exitSelect = () => {
+    setSelectMode(false);
+    setSelected(new Set());
+    setConfirmProgress(0);
+  };
+  const toggleSelect = (docNo: string) => {
+    setSelected((cur) => {
+      const next = new Set(cur);
+      if (next.has(docNo)) next.delete(docNo);
+      else next.add(docNo);
+      return next;
+    });
+  };
+  const clearLongPress = () => {
+    if (lpTimer.current !== null) { window.clearTimeout(lpTimer.current); lpTimer.current = null; }
+  };
+  /* A row tap: in select mode a DRAFT row toggles its tick (non-draft rows are
+     inert); otherwise it opens the SO. A long-press that already fired swallows
+     this click. */
+  const onCardTap = (r: SoRow) => {
+    if (lpFired.current) { lpFired.current = false; return; }
+    if (selectMode) { if (isDraft(r)) toggleSelect(r.doc_no); return; }
+    onOpen(r.doc_no);
+  };
+  /* Long-press on a DRAFT row enters select mode and pre-ticks it. Ignored while
+     already selecting or confirming, and on non-draft rows. */
+  const onCardPressStart = (r: SoRow) => {
+    if (selectMode || confirming || !isDraft(r)) return;
+    lpFired.current = false;
+    clearLongPress();
+    lpTimer.current = window.setTimeout(() => {
+      lpFired.current = true;
+      setSelectMode(true);
+      setSelected(new Set([r.doc_no]));
+    }, 450);
+  };
+  /* Sequentially PATCH each selected DRAFT → CONFIRMED via the SAME status
+     endpoint the single-confirm path uses (MobileSODetail.setStatus):
+     PATCH /mfg-sales-orders/:docNo/status {status:'CONFIRMED'}. One at a time so
+     a mid-batch failure is contained; tallies N confirmed / M failed and toasts
+     a summary, then refetches the list. */
+  const bulkConfirm = async () => {
+    if (confirming || selected.size === 0) return;
+    const docs = Array.from(selected);
+    setConfirming(true);
+    setConfirmProgress(0);
+    let ok = 0;
+    const failures: string[] = [];
+    for (const docNo of docs) {
+      try {
+        await authedFetch(`/mfg-sales-orders/${encodeURIComponent(docNo)}/status`, {
+          method: "PATCH",
+          body: JSON.stringify({ status: "CONFIRMED" }),
+        });
+        ok += 1;
+      } catch {
+        failures.push(docNo);
+      }
+      setConfirmProgress((p) => p + 1);
+    }
+    // Refresh the list + any open detail caches so statuses reflect the change.
+    await Promise.all([
+      refetch(),
+      qc.invalidateQueries({ queryKey: ["mobile-so-detail"] }),
+    ]);
+    setConfirming(false);
+    exitSelect();
+    const m = failures.length;
+    void notify({
+      title: m === 0 ? "Orders confirmed" : "Some orders couldn't be confirmed",
+      body:
+        m === 0
+          ? `${ok} order${ok === 1 ? "" : "s"} confirmed.`
+          : `${ok} confirmed, ${m} failed. The failed order${m === 1 ? "" : "s"} stayed as draft${m === 1 ? "" : "s"} — try again.`,
+      tone: m === 0 ? "info" : "error",
+    });
+  };
+
   return (
     <div className="hz-m" style={{ position: "relative", display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
       <header className="hdr">
@@ -121,9 +341,24 @@ export function MobileSalesOrders({ onScan, onOpen, onNew }: { onScan: () => voi
             <div className="eyebrow">Supply chain</div>
             <div className="scr-title">Sales Orders</div>
           </div>
-          <button onClick={onScan} aria-label="Scan slip" className="iconbtn">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#16695f" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3Z" /><circle cx="12" cy="13" r="3" /></svg>
-          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {/* Item 3 — Select toggle: enters/exits DRAFT multiselect. In select
+                mode it reads "Done" and clears the picks. */}
+            {selectMode ? (
+              <button onClick={exitSelect} className="iconbtn" aria-label="Exit selection" style={{ width: "auto", padding: "0 12px", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, color: "#16695f" }}>
+                Done
+              </button>
+            ) : (
+              <button onClick={() => setSelectMode(true)} className="iconbtn" aria-label="Select orders" title="Select drafts to confirm">
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#414539" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" /></svg>
+              </button>
+            )}
+            {!selectMode && (
+              <button onClick={onScan} aria-label="Scan slip" className="iconbtn">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#16695f" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3Z" /><circle cx="12" cy="13" r="3" /></svg>
+              </button>
+            )}
+          </div>
         </div>
         <div className="hdr-row" style={{ marginTop: 11 }}>
           <div className="searchbar">
@@ -189,19 +424,21 @@ export function MobileSalesOrders({ onScan, onOpen, onNew }: { onScan: () => voi
                     <span style={{ minWidth: 0, fontSize: 14, fontWeight: 800, color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.debtor_name || "—"}</span>
                     <StatusPill status={r.status} />
                   </div>
-                  {/* Line 2 — doc_no · customer_so_no  |  warehouse */}
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: 5, fontSize: 11.5, color: "var(--mut)" }}>
-                    <span style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
-                      <span className="money" style={{ fontWeight: 700, color: "var(--brand-d)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.doc_no}</span>
-                      {r.customer_so_no && <><span style={{ opacity: .4, flex: "none" }}>·</span><span className="money" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.customer_so_no}</span></>}
-                    </span>
-                    {warehouse && (
-                      <span style={{ display: "flex", alignItems: "center", gap: 4, flex: "none", fontWeight: 600, color: "var(--ink2)" }}>
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#a16a2e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 21V8l9-5 9 5v13" /><path d="M7 21v-8h10v8" /></svg>
-                        {warehouse}
-                      </span>
-                    )}
+                  {/* Line 2 — doc_no · customer_so_no on their OWN full-width row
+                      (owner: the SO number + reference were squeezed to "SO-260…
+                      · HC 1…" by the warehouse sharing the line). doc_no stays
+                      whole (flex:none); only the ref ellipsises if truly long. */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0, marginTop: 5, fontSize: 11.5, color: "var(--mut)" }}>
+                    <span className="money" style={{ fontWeight: 700, color: "var(--brand-d)", flex: "none" }}>{r.doc_no}</span>
+                    {r.customer_so_no && <><span style={{ opacity: .4, flex: "none" }}>·</span><span className="money" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.customer_so_no}</span></>}
                   </div>
+                  {/* Line 2b — warehouse on its own line so it never crowds the ids */}
+                  {warehouse && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 4, minWidth: 0, marginTop: 4, fontSize: 11.5, fontWeight: 600, color: "var(--ink2)" }}>
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#a16a2e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flex: "none" }}><path d="M3 21V8l9-5 9 5v13" /><path d="M7 21v-8h10v8" /></svg>
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{warehouse}</span>
+                    </div>
+                  )}
                   {/* Line 3 — Processing -> Delivery */}
                   <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, fontSize: 11, color: "var(--ink2)" }}>
                     <span style={{ color: "var(--mut2)", fontWeight: 600 }}>Processing</span>

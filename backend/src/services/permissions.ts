@@ -29,6 +29,8 @@ export const PERMISSIONS: PermissionDef[] = [
   { key: "projects.checklist.tick", resource: "Projects", verb: "write", label: "Tick checklist items", description: "Flip the status of (non-gated) checklist items, without editing project config" },
   { key: "projects.write",   resource: "Projects", verb: "write",  label: "Edit projects",     description: "Create and update projects, checklist items, finance" },
   { key: "projects.approve", resource: "Projects", verb: "manage", label: "Approve gated steps", description: "Tick permission-gated checklist items (e.g. 3D final approval)" },
+  { key: "stock_transfer.approve", resource: "Projects", verb: "manage", label: "Approve stock transfers", description: "Tick the Stock Out Transfer Record checklist step (director approval gate)" },
+  { key: "agreement.approve", resource: "Projects", verb: "manage", label: "Approve agreements", description: "Tick the Agreement / Quotation checklist step (director approval gate)" },
   { key: "projects.manage",  resource: "Projects", verb: "manage", label: "Manage projects",   description: "Archive, change stage, edit templates, backfill CSV" },
 
   // Sales entries — rep-facing sales log that later pushes to AutoCount
@@ -48,6 +50,45 @@ export const PERMISSIONS: PermissionDef[] = [
   { key: "scm.so.price_override",   resource: "Supply Chain", verb: "manage", label: "Override SO line unit price",  description: "Hand-override the unit price on a SCM Sales Order line (audited, admin-level)" },
   { key: "scm.so.view_all",         resource: "Supply Chain", verb: "read",   label: "View all salespersons' SOs",   description: "View every salesperson's My-Orders board (bypass per-rep attribution scoping)" },
   { key: "scm.so.attribute_other",  resource: "Supply Chain", verb: "manage", label: "Attribute SO to another rep",  description: "Create or edit a SCM Sales Order on behalf of another salesperson (stamp a different salesperson_id)" },
+  // Port of 2990 gate #717 — clearing an already-set Processing Date pulls the
+  // SO back out of the Proceed lane (and, once the day has elapsed, undoes the
+  // lock that says "this is what we PO to the supplier"). 2990 restricts it to
+  // super_admin; Houzs has no live staff_role (the SCM bridge pins every caller
+  // to one super_admin row), so gate on this admin-level key instead. Owner + IT
+  // Admin cover it via "*"; grant other positions via the Team > Positions matrix.
+  { key: "scm.so.remove_processing_date", resource: "Supply Chain", verb: "manage", label: "Remove SO Processing Date", description: "Clear an already-set Processing Date on a SCM Sales Order (admin-level; pulls the order back out of the Proceed lane)" },
+  // SO amendment / revision workflow (port of 2990 0703). A processing-locked SO
+  // (already PO'd to the supplier) can only change through a supplier-confirmed,
+  // two-gate amendment: REQUESTED -> SUPPLIER_PENDING -> SO_APPROVED -> PO_APPROVED
+  // -> SENT. 2990 gated each step on scm.staff.role (dead in Houzs — the SCM bridge
+  // pins every caller to one super_admin row), so these flat keys gate the REAL
+  // caller instead. Owner + IT Admin cover all via "*"; grant purchasing / desk
+  // positions via the Team > Positions matrix. approve_po also gates send + reject.
+  { key: "scm.amendment.create",           resource: "Supply Chain", verb: "manage", label: "Raise SO amendment",          description: "Raise an amendment request against a processing-locked SCM Sales Order (opens the supplier-confirmed two-gate revision flow)" },
+  { key: "scm.amendment.supplier_confirm", resource: "Supply Chain", verb: "manage", label: "Confirm SO amendment (supplier)", description: "Record the supplier's confirmation of a requested SO amendment (REQUESTED -> SUPPLIER_PENDING)" },
+  { key: "scm.amendment.approve_so",       resource: "Supply Chain", verb: "manage", label: "Approve SO revision",         description: "Approve the Sales Order revision of an amendment — applies the line diffs, re-runs pricing, snapshots the prior version (SUPPLIER_PENDING -> SO_APPROVED)" },
+  { key: "scm.amendment.approve_po",       resource: "Supply Chain", verb: "manage", label: "Approve/send/reject PO revision", description: "Approve the bound Purchase Order revision, mark it sent, or reject an amendment (SO_APPROVED -> PO_APPROVED -> SENT, or -> REJECTED)" },
+
+  // Payment Vouchers — standalone AP cash-out document (port of 2990 0189/0202,
+  // Phase 1-B MYR). A PV pays a vendor that is NOT a goods invoice (freight
+  // forwarder, one-off service) and posts a balanced JE to the GL; a
+  // SUPPLIER_PAYMENT PV can also settle one or more Purchase Invoices at face
+  // value. Reading the list rides the coarse scm.access + the scm.finance area
+  // guard; these flat keys gate the write transitions against the REAL caller
+  // (2990's scm.staff.role gates are dead — the SCM bridge pins every caller to
+  // one super_admin row). Owner + IT Admin cover all via "*"; grant finance /
+  // purchasing positions via the Team > Positions matrix.
+  { key: "scm.payment_voucher.create", resource: "Supply Chain", verb: "write",  label: "Create payment voucher",  description: "Create a draft Payment Voucher (pay a non-goods vendor: freight forwarder, one-off service)" },
+  { key: "scm.payment_voucher.write",  resource: "Supply Chain", verb: "write",  label: "Edit payment voucher",    description: "Edit a DRAFT Payment Voucher (payee, accounts, lines, PI settlement allocations)" },
+  { key: "scm.payment_voucher.post",   resource: "Supply Chain", verb: "manage", label: "Post payment voucher",     description: "Post a Payment Voucher to the General Ledger (DRAFT -> POSTED; settles any linked PIs)" },
+  { key: "scm.payment_voucher.cancel", resource: "Supply Chain", verb: "manage", label: "Cancel payment voucher",   description: "Cancel a Payment Voucher (reverses the GL entry + any PI settlement)" },
+
+  // Currency master — the owner-maintained list of currencies + each one's
+  // rate_to_myr (multi-currency FX, migration 0082). Reading the list is open to
+  // any authed SCM caller (the GRN/PI/PV currency dropdowns need it); this flat
+  // key gates create/edit of a currency + its rate. Owner + IT Admin cover it via
+  // "*"; grant finance / purchasing positions via the Team > Positions matrix.
+  { key: "scm.currency.manage",        resource: "Supply Chain", verb: "manage", label: "Manage currencies",        description: "Add or edit a currency in the master and set its exchange rate to MYR (used by GRN / PI / Payment Voucher foreign-currency posting)" },
 
   // Mail Center — in-ERP shared inbox (/api/mail-center). mail_center.read is the
   // nav/page gate (grant broadly); mail_center.manage gates the alias / access /

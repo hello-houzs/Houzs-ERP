@@ -25,6 +25,7 @@ import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
+import { activeCompanyId } from '../lib/companyScope';
 import { todayMyt } from '../lib/my-time';
 
 export const warehouse = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -273,6 +274,7 @@ warehouse.post('/stock-in', async (c) => {
   const notes = (body.notes as string) ?? null;
 
   const { data: item, error: itemErr } = await sb.from('warehouse_rack_items').insert({
+    company_id: activeCompanyId(c), // multi-company: stamp the active company
     rack_id: rackId,
     product_code: productCode,
     product_name: productName,
@@ -288,6 +290,7 @@ warehouse.post('/stock-in', async (c) => {
   const status = await refreshRackStatus(sb, rackId);
 
   await sb.from('warehouse_rack_movements').insert({
+    company_id: activeCompanyId(c), // multi-company: stamp the active company
     movement_type: 'STOCK_IN',
     rack_id: rackId,
     rack_label: rack.rack,
@@ -341,6 +344,7 @@ warehouse.post('/stock-out', async (c) => {
   if (rack) status = await refreshRackStatus(sb, rack.id);
 
   await sb.from('warehouse_rack_movements').insert({
+    company_id: activeCompanyId(c), // multi-company: stamp the active company
     movement_type: 'STOCK_OUT',
     rack_id: rack?.id ?? null,
     rack_label: rack?.rack ?? null,
@@ -418,6 +422,7 @@ warehouse.post('/transfer', async (c) => {
       .eq('id', (dstExisting as { id: string }).id);
   } else {
     await sb.from('warehouse_rack_items').insert({
+      company_id: activeCompanyId(c), // multi-company: stamp the active company
       rack_id: toRackId,
       product_code: itemRow.product_code,
       variant_key: vk,
@@ -434,6 +439,7 @@ warehouse.post('/transfer', async (c) => {
   const toStatus = await refreshRackStatus(sb, toRackId);
 
   await sb.from('warehouse_rack_movements').insert({
+    company_id: activeCompanyId(c), // multi-company: stamp the active company
     movement_type: 'TRANSFER',
     rack_id: fromRack.id,
     rack_label: fromRack.rack,

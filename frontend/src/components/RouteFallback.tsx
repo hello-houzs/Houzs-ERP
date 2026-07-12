@@ -38,9 +38,36 @@ const RELOAD_FLAG = "chunk-reloaded-once";
 
 function isStaleChunkError(err: unknown): boolean {
   const msg = String((err as Error)?.message ?? err ?? "");
-  return /dynamically imported module|Loading chunk|Importing a module script failed|error loading dynamically imported|Unable to preload CSS|Failed to fetch dynamically imported|preload/i.test(
+  return /dynamically imported module|Loading chunk|Importing a module script failed|error loading dynamically imported|Unable to preload CSS|Failed to fetch dynamically imported|preload|module script|MIME type/i.test(
     msg,
   );
+}
+
+/**
+ * HARD recovery after a redeploy strands the client. Purging Cache Storage
+ * alone was NOT enough (owner 2026-07-04, "Something went wrong loading this
+ * page" stuck across reloads): a still-registered OLD service worker keeps
+ * intercepting fetches and can serve the app-shell HTML for a hashed
+ * /assets/*.js request -> "Expected a JavaScript module but got text/html" ->
+ * the import fails AGAIN after a plain reload. So we UNREGISTER every service
+ * worker AND delete every cache, THEN reload — the next load fetches the fresh
+ * build from the network and registers the current SW. Best-effort; always
+ * reloads even if a step throws.
+ */
+async function hardRecover(): Promise<void> {
+  try {
+    if ("serviceWorker" in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map((r) => r.unregister().catch(() => false)));
+    }
+  } catch {}
+  try {
+    if ("caches" in window) {
+      const ks = await caches.keys();
+      await Promise.all(ks.map((k) => caches.delete(k).catch(() => false)));
+    }
+  } catch {}
+  window.location.reload();
 }
 
 interface BoundaryState {
@@ -62,19 +89,9 @@ export class ChunkReloadBoundary extends React.Component<
       try {
         if (!sessionStorage.getItem(RELOAD_FLAG)) {
           sessionStorage.setItem(RELOAD_FLAG, "1");
-          // A poisoned/old service-worker cache can keep serving a stale or
-          // empty asset even after a redeploy (so a plain reload re-fails).
-          // Purge all caches first, then reload once (guarded against loops),
-          // so the fresh hashed build is fetched from the network.
-          const reload = () => window.location.reload();
-          if ("caches" in window) {
-            caches
-              .keys()
-              .then((ks) => Promise.all(ks.map((k) => caches.delete(k))))
-              .finally(reload);
-          } else {
-            reload();
-          }
+          // Unregister the old SW + purge caches, THEN reload once (loop-
+          // guarded) so the fresh hashed build is fetched from the network.
+          void hardRecover();
           return;
         }
       } catch {
@@ -102,8 +119,9 @@ export class ChunkReloadBoundary extends React.Component<
           </p>
           <button
             onClick={() => {
-              this.setState({ error: null });
-              window.location.reload();
+              // Full recovery, not a plain reload: a plain reload kept failing
+              // for the owner because the old SW re-served the stale shell.
+              void hardRecover();
             }}
             className="rounded-lg border border-border-subtle px-4 py-2 text-sm font-medium text-ink hover:bg-surface-dim"
           >

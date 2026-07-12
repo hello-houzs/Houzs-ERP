@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
-import { fetchPaymentSlipUrl, fetchScanSlipImageBlobUrl } from "../vendor/scm/lib/slip";
+import { fetchPaymentSlipUrl, fetchScanSlipImageBlobUrl, uploadSlipFull } from "../vendor/scm/lib/slip";
 import { useStaff } from "../vendor/scm/lib/admin-queries";
 import {
   useSalesOrderAuditLog,
@@ -232,6 +232,28 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
 
   const editLocked = LOCKED.includes(rawStatus) || hasChildren || processingLocked;
 
+  /* Owner rule 2026-07-05 (desktop parity, SalesOrderDetail.tsx): a PROCEEDED
+     order that's past its processing date freezes its LINE ITEMS + State /
+     Postcode (that's `editLocked` above, which feeds the Edit button), but
+     PAYMENT must STAY addable. Desktop keeps this exact split — its
+     PaymentsTable `locked` prop is `isLocked` (SHIPPED+ / downstream children)
+     ONLY, deliberately NOT the processing lock. Mirror that here: payment is
+     lock-gated only by the terminal / downstream statuses, never by the
+     processing lock. Drafts + cancelled orders still take NO payment (owner:
+     "no payments on drafts"), matching desktop hiding Add Payment off-status. */
+  const paymentLocked = LOCKED.includes(rawStatus) || hasChildren;
+  const canAddPayment = ph === "submitted" && !paymentLocked;
+  const [payOpen, setPayOpen] = useState(false);
+
+  /* Refresh the payments ledger + header KPIs after a payment posts. Reused by
+     both the delete action and the standalone Add-Payment sheet's onSaved. */
+  const refreshAfterPayment = () =>
+    Promise.all([
+      qc.invalidateQueries({ queryKey: ["mobile-so-payments", docNo] }),
+      qc.invalidateQueries({ queryKey: ["mobile-so-detail", docNo] }),
+      qc.invalidateQueries({ queryKey: ["mobile-so-list"] }),
+    ]);
+
   /* Delete a persisted payment — parity with the desktop PaymentsTable trash
      action. In-app confirm, then DELETE /:docNo/payments/:id; on success the
      payments + header (balance) queries invalidate so the KPIs update live. */
@@ -242,11 +264,7 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
     setBusy(true);
     try {
       await authedFetch(`/mfg-sales-orders/${encodeURIComponent(docNo)}/payments/${encodeURIComponent(paymentId)}`, { method: "DELETE" });
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: ["mobile-so-payments", docNo] }),
-        qc.invalidateQueries({ queryKey: ["mobile-so-detail", docNo] }),
-        qc.invalidateQueries({ queryKey: ["mobile-so-list"] }),
-      ]);
+      await refreshAfterPayment();
     } catch (e) {
       setActionError(e instanceof Error ? e.message : "Couldn't delete the payment. Please try again.");
     } finally {
@@ -263,9 +281,9 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
             {h && <StatusPill status={h.status} />}
           </div>
         </div>
-        <div className="eyebrow" style={{ marginTop: 7, display: "flex", alignItems: "center", gap: 6 }}>
-          <span className="money">{h?.doc_no ?? docNo}</span>
-          {(h?.customer_so_no || h?.ref || h?.po_doc_no) && (<><span style={{ opacity: .5 }}>·</span><span className="money">{h?.customer_so_no || h?.ref || h?.po_doc_no}</span></>)}
+        <div className="eyebrow" style={{ marginTop: 7, display: "flex", alignItems: "center", gap: 6, minWidth: 0, flexWrap: "wrap" }}>
+          <span className="money" style={{ flex: "none" }}>{h?.doc_no ?? docNo}</span>
+          {(h?.customer_so_no || h?.ref || h?.po_doc_no) && (<><span style={{ opacity: .5, flex: "none" }}>·</span><span className="money" style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{h?.customer_so_no || h?.ref || h?.po_doc_no}</span></>)}
         </div>
         <div className="scr-title">{h?.debtor_name || "—"}</div>
       </header>
@@ -402,14 +420,48 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
               }) : <div style={{ padding: "11px 13px", borderTop: "1px solid var(--line2)", fontSize: 11.5, color: "var(--mut2)" }}>No items.</div>}
             </div>
 
+            {/* Photos — the scan-flow proof images (order slip + payment receipt),
+                parity with desktop's ScannedImageCard pair. Owner 2026-07-04
+                asked "which button shows the customer's photographed order slip":
+                the card sits HIGH (right under Line items, above Payments) so the
+                Order slip thumbnail is easy to find, and each thumb is
+                tap-to-fullscreen. Keys dual-read camelCase ?? snake_case; the
+                whole card is hidden only when the SO carries NEITHER key
+                (hand-keyed orders). Served as authed blob fetches — the bearer
+                can't ride on an <img src>. */}
+            {(() => {
+              const slipImageKey =
+                (h as unknown as { slipImageKey?: string | null }).slipImageKey ?? h.slip_image_key ?? null;
+              // Owner: the payment RECEIPT does NOT belong in this card -- it
+              // lives on its payment row's slip (the camera icon there). This
+              // card shows ONLY the customer's order slip.
+              if (!slipImageKey) return null;
+              return <ScannedPhotosCard slipKey={slipImageKey} receiptKey={null} />;
+            })()}
+
             {/* Payments — read-only rows (method / date · account · collected_by /
-                approval / amount), design layout. Owner 2026-07-04: recording a
-                payment lives INSIDE Edit (MobileNewSO edit mode's PAYMENTS card),
-                not on the detail — this card is display-only (the per-row delete
-                stays, parity with desktop PaymentsTable). */}
+                approval / amount), design layout. Recording a payment normally
+                lives INSIDE Edit (MobileNewSO edit mode's PAYMENTS card), but a
+                payment must STAY addable even when the SO is edit-locked (owner
+                rule 2026-07-05 + desktop parity — see paymentLocked above). So a
+                standalone "Add Payment" control sits on THIS card's header,
+                gated by `canAddPayment` (submitted status, not SHIPPED+/child-
+                locked) and NOT by the processing lock. The per-row delete stays
+                parity with desktop PaymentsTable (hidden on cancelled / SHIPPED+
+                / child-locked via editLocked). */}
             <div className="card"><div className="card-h"><span className="card-t">Payments</span>
               <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 {!!payments.length && <span className="card-sub">{payments.length}</span>}
+                {canAddPayment && (
+                  <button
+                    type="button"
+                    onClick={() => setPayOpen(true)}
+                    className="money"
+                    style={{ border: "1px solid #bcdcd7", background: "#e1efed", color: "#16695f", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, borderRadius: 8, padding: "4px 10px", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 }}
+                  >
+                    <span style={{ fontSize: 13, lineHeight: 1 }}>+</span> Add Payment
+                  </button>
+                )}
               </span>
             </div>
               {paymentsQ.isLoading && <div style={{ padding: "11px 13px", borderTop: "1px solid var(--line2)", fontSize: 11.5, color: "var(--mut2)" }}>Loading{"…"}</div>}
@@ -418,6 +470,22 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
                   <div style={{ minWidth: 0 }}>
                     <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--ink)" }}>{methodLabel(p.method)}</div>
                     <div className="money" style={{ fontSize: 10.5, color: "var(--mut)", marginTop: 2 }}>{[dm(p.paid_at), p.account_sheet, p.collected_by_name].filter((x) => x && String(x).trim()).join(" · ")}</div>
+                    {/* Bank + tenure (Merchant) / online type (Transfer) — parity
+                        with desktop PaymentsTable. Dual-read camelCase ?? snake_case. */}
+                    {(() => {
+                      const pc = p as unknown as { merchantProvider?: string | null; installmentMonths?: number | null; onlineType?: string | null };
+                      const bank = pc.merchantProvider ?? p.merchant_provider;
+                      const months = pc.installmentMonths ?? p.installment_months;
+                      const online = pc.onlineType ?? p.online_type;
+                      if (p.method === "merchant") {
+                        const tenure = typeof months === "number" ? `${months} month${months === 1 ? "" : "s"}` : "One shot";
+                        return <div className="money" style={{ fontSize: 10, color: "var(--mut2)" }}>{[bank, tenure].filter((x) => x && String(x).trim()).join(" · ")}</div>;
+                      }
+                      if (p.method === "transfer" && online) {
+                        return <div className="money" style={{ fontSize: 10, color: "var(--mut2)" }}>{online}</div>;
+                      }
+                      return null;
+                    })()}
                     {p.approval_code ? <div className="money" style={{ fontSize: 10, color: "var(--mut2)" }}>Approval {p.approval_code}</div> : null}
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -444,20 +512,6 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
               )) : <div style={{ padding: "11px 13px", borderTop: "1px solid var(--line2)", fontSize: 11.5, color: "var(--mut2)" }}>No payments recorded.</div>)}
             </div>
 
-            {/* Photos — the scan-flow proof images (order slip + payment receipt),
-                parity with desktop's ScannedImageCard pair. Keys dual-read
-                camelCase ?? snake_case; the whole card is hidden when the SO
-                carries neither key (hand-keyed orders). Served as authed blob
-                fetches — the bearer can't ride on an <img src>. */}
-            {(() => {
-              const slipImageKey =
-                (h as unknown as { slipImageKey?: string | null }).slipImageKey ?? h.slip_image_key ?? null;
-              const receiptImageKey =
-                (h as unknown as { receiptImageKey?: string | null }).receiptImageKey ?? h.receipt_image_key ?? null;
-              if (!slipImageKey && !receiptImageKey) return null;
-              return <ScannedPhotosCard slipKey={slipImageKey} receiptKey={receiptImageKey} />;
-            })()}
-
             {/* History — owner requirement (Inistate-style audit timeline): WHO
                 created / edited / changed status, WHEN, via WHICH app, with an
                 expandable field-level old → new diff. Accordion follows the
@@ -471,11 +525,29 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
         )}
       </div>
 
+      {/* Standalone Add-Payment sheet — reuses uploadSlipFull + the SAME
+          POST /:docNo/payments body the Edit flow uses (recordSlipBackedPayments).
+          Reachable even when the SO is edit-locked, because payment is never
+          lock-gated (only status/downstream via canAddPayment). */}
+      {payOpen && h && (
+        <AddPaymentSheet
+          docNo={docNo}
+          staff={staffQ.data ?? []}
+          onClose={() => setPayOpen(false)}
+          onSaved={async () => {
+            setPayOpen(false);
+            await refreshAfterPayment();
+          }}
+        />
+      )}
+
       {!detail.isLoading && !detail.error && h && (
         <footer className="actbar">
-          {/* Owner 2026-07-04 — NO Add Payment here: recording payments happens
-              inside Edit (MobileNewSO edit mode's PAYMENTS card, + Add Payment
-              per the owner's screenshot). The detail page only displays them. */}
+          {/* No Add Payment in the FOOTER — the standalone Add-Payment entry
+              lives on the Payments card header (see AddPaymentSheet above), so
+              it stays reachable even when this footer's Edit button is locked.
+              Adding a payment through Edit (MobileNewSO's PAYMENTS card) also
+              still works when the SO is unlocked. */}
           {ph === "draft" && (
             <div style={{ display: "flex", gap: 9 }}>
               <button className="btn-ghost" style={{ flex: 1, opacity: busy ? 0.55 : 1 }} disabled={busy} onClick={() => onEdit?.(docNo)}>Edit Draft</button>
@@ -595,6 +667,212 @@ function SlipLink({ docNo, paymentId }: { docNo: string; paymentId: string }) {
   );
 }
 
+/* ── Add Payment sheet ───────────────────────────────────────────────────────
+   Standalone payment-recording flow for a LOCKED (or unlocked) submitted SO.
+   Records ONE slip-backed payment through POST /:docNo/payments — the SAME
+   endpoint + body shape MobileNewSO.recordSlipBackedPayments uses — and reuses
+   uploadSlipFull for the slip. The SO payments route REQUIRES a slip, so Save
+   stays disabled until an amount > 0 AND a confirmed slip upload session exist
+   (mirrors desktop PaymentsTable.commitDraft's gate). No pricing logic lives
+   here; the backend recomputes the balance. Design = the shared .hz-m bottom
+   sheet + fld / fld-i / fld-l classes. */
+
+const PAY_METHODS = ["Cash", "Merchant", "Online", "Installment"] as const;
+type PayMethodLabel = (typeof PAY_METHODS)[number];
+/* Payment-row method label → backend enum (transfer surfaces as "Online") —
+   the SAME map MobileNewSO uses (PAY_METHOD_CODE). */
+const PAY_METHOD_CODE: Record<string, "cash" | "transfer" | "merchant" | "installment"> = {
+  Cash: "cash", Online: "transfer", Merchant: "merchant", Installment: "installment",
+};
+const BANK_OPTS = ["Maybank", "CIMB", "Public Bank", "HSBC", "RHB"];
+const PLAN_OPTS = ["One Shot", "6 months", "12 months", "24 months", "36 months"];
+const ONLINE_OPTS = ["Bank Transfer", "TNG eWallet", "DuitNow", "Cheque"];
+/* 'One Shot' → null (no installment term); 'N months' → N. Same as MobileNewSO. */
+const planToMonths = (label: string): number | null => {
+  const m = /^(\d+)\s*month/i.exec(String(label).trim());
+  return m ? Number(m[1]) : null;
+};
+const toCenti = (s: string) => Math.round((parseFloat(String(s).replace(/,/g, "")) || 0) * 100);
+
+function AddPaymentSheet({
+  docNo,
+  staff,
+  onClose,
+  onSaved,
+}: {
+  docNo: string;
+  staff: Array<{ id: string; name: string }>;
+  onClose: () => void;
+  onSaved: () => void | Promise<void>;
+}) {
+  const notify = useNotify();
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const [method, setMethod] = useState<PayMethodLabel>("Cash");
+  const [date, setDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
+  const [amount, setAmount] = useState("0.00");
+  const [account, setAccount] = useState("");
+  const [approval, setApproval] = useState("");
+  const [collectedBy, setCollectedBy] = useState("");
+  const [bank, setBank] = useState(BANK_OPTS[0]);
+  const [plan, setPlan] = useState(PLAN_OPTS[0]);
+  const [online, setOnline] = useState(ONLINE_OPTS[0]);
+  const [slipName, setSlipName] = useState("");
+  const [slipSession, setSlipSession] = useState("");
+  const [slipPhase, setSlipPhase] = useState<"" | "uploading" | "done" | "error">("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const onPickSlip = async (f: File | null) => {
+    if (!f) return;
+    setSlipName(f.name); setSlipSession(""); setSlipPhase("uploading");
+    try {
+      const { uploadSessionId } = await uploadSlipFull({ file: f });
+      setSlipSession(uploadSessionId); setSlipPhase("done");
+    } catch {
+      setSlipPhase("error");
+    }
+  };
+
+  const amtOk = toCenti(amount) > 0;
+  const slipOk = Boolean(slipSession);
+  const canSave = amtOk && slipOk && !busy && slipPhase !== "uploading";
+
+  const save = async () => {
+    if (!canSave) return;
+    setError(null);
+    setBusy(true);
+    /* Same body MobileNewSO.recordSlipBackedPayments POSTs — do NOT reimplement
+       pricing; the backend recomputes the balance from the amount. */
+    const code = PAY_METHOD_CODE[method] ?? "cash";
+    const body: Record<string, unknown> = {
+      paidAt: date,
+      method: code,
+      amountCenti: toCenti(amount),
+      accountSheet: account.trim() || null,
+      approvalCode: approval.trim() || null,
+      collectedBy: collectedBy || null,
+      uploadSessionId: slipSession,
+    };
+    if (code === "merchant") { body.merchantProvider = bank || null; body.installmentMonths = planToMonths(plan); }
+    else if (code === "installment") { body.installmentMonths = planToMonths(plan); }
+    else if (code === "transfer") { body.onlineType = online || null; }
+    try {
+      await authedFetch(`/mfg-sales-orders/${encodeURIComponent(docNo)}/payments`, {
+        method: "POST", body: JSON.stringify(body),
+      });
+      await onSaved();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't record the payment. Please try again.");
+      void notify({ title: "Payment not recorded", body: e instanceof Error ? e.message : String(e), tone: "error" });
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="hz-m sheet-bd" onClick={() => { if (!busy) onClose(); }}>
+      <div className="sheet" onClick={(e) => e.stopPropagation()}>
+        <div className="grab" />
+        <div className="sheet-head">
+          <div>
+            <div className="card-t" style={{ fontSize: 15 }}>Add payment</div>
+            <div style={{ fontSize: 11, color: "var(--mut)", marginTop: 2 }}>{docNo}</div>
+          </div>
+          <button type="button" className="sheet-x" onClick={() => { if (!busy) onClose(); }} aria-label="Close">{"✕"}</button>
+        </div>
+        <div className="sheet-scroll">
+          <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+            <div className="fld">
+              <span className="fld-l">Method</span>
+              <select className="fld-i" value={method} onChange={(e) => setMethod(e.target.value as PayMethodLabel)}>
+                {PAY_METHODS.map((m) => <option key={m} value={m}>{m}</option>)}
+              </select>
+            </div>
+            <div style={{ display: "flex", gap: 9 }}>
+              <label className="fld" style={{ flex: 1.1 }}>
+                <span className="fld-l">Date</span>
+                <input className="fld-i" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+              </label>
+              <label className="fld" style={{ flex: 1.1 }}>
+                <span className="fld-l">Amount</span>
+                <input className="fld-i money" value={amount} onChange={(e) => setAmount(e.target.value)} inputMode="decimal" />
+              </label>
+            </div>
+            {method === "Merchant" && (
+              <div style={{ display: "flex", gap: 9 }}>
+                <div className="fld" style={{ flex: 1 }}>
+                  <span className="fld-l">Bank</span>
+                  <select className="fld-i" value={bank} onChange={(e) => setBank(e.target.value)}>{BANK_OPTS.map((o) => <option key={o} value={o}>{o}</option>)}</select>
+                </div>
+                <div className="fld" style={{ flex: 1 }}>
+                  <span className="fld-l">Plan</span>
+                  <select className="fld-i" value={plan} onChange={(e) => setPlan(e.target.value)}>{PLAN_OPTS.map((o) => <option key={o} value={o}>{o}</option>)}</select>
+                </div>
+              </div>
+            )}
+            {method === "Installment" && (
+              <div className="fld">
+                <span className="fld-l">Installment plan</span>
+                <select className="fld-i" value={plan} onChange={(e) => setPlan(e.target.value)}>{PLAN_OPTS.map((o) => <option key={o} value={o}>{o}</option>)}</select>
+              </div>
+            )}
+            {method === "Online" && (
+              <div className="fld">
+                <span className="fld-l">Sub-type</span>
+                <select className="fld-i" value={online} onChange={(e) => setOnline(e.target.value)}>{ONLINE_OPTS.map((o) => <option key={o} value={o}>{o}</option>)}</select>
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 9 }}>
+              <label className="fld" style={{ flex: 1 }}>
+                <span className="fld-l">Account Sheet</span>
+                <input className="fld-i" value={account} onChange={(e) => setAccount(e.target.value)} placeholder="Sheet ref" />
+              </label>
+              <label className="fld" style={{ flex: 1 }}>
+                <span className="fld-l">Approval Code</span>
+                <input className="fld-i" value={approval} onChange={(e) => setApproval(e.target.value)} placeholder="Terminal no" />
+              </label>
+            </div>
+            <div className="fld">
+              <span className="fld-l">Collected By</span>
+              <select className="fld-i" value={collectedBy} onChange={(e) => setCollectedBy(e.target.value)}>
+                <option value="">—</option>
+                {staff.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </div>
+            <div className="fld">
+              <span className="fld-l" style={{ color: "#9aa093" }}>Slip</span>
+              <input ref={fileRef} type="file" accept="image/*,application/pdf" style={{ display: "none" }} onChange={(e) => { void onPickSlip(e.target.files?.[0] ?? null); e.target.value = ""; }} />
+              <button
+                type="button"
+                onClick={() => fileRef.current?.click()}
+                disabled={slipPhase === "uploading" || busy}
+                title={slipName || "Attach a payment slip"}
+                style={{
+                  width: "100%", boxSizing: "border-box", height: 40, borderRadius: 9, cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700,
+                  border: slipPhase === "done" ? "1px solid #bcdcd7" : "1px solid #d6d9d2",
+                  background: slipPhase === "done" ? "#e1efed" : "#f4f6f3",
+                  color: slipPhase === "done" ? "#16695f" : "#414539",
+                  display: "flex", alignItems: "center", justifyContent: "center", gap: 6, overflow: "hidden",
+                }}
+              >
+                {slipPhase === "uploading" ? "Uploading…"
+                  : slipPhase === "done" ? "Slip attached ✓"
+                  : slipPhase === "error" ? "Retry upload"
+                  : "Upload slip"}
+              </button>
+              {!slipOk && <div style={{ fontSize: 10, color: "#a16a2e", marginTop: 4 }}>A slip is required to record the payment.</div>}
+            </div>
+            {error && <div style={{ fontSize: 11.5, color: "var(--red)", textAlign: "center" }}>{error}</div>}
+          </div>
+        </div>
+        <div className="sheet-foot">
+          <button type="button" className="btn-ghost" style={{ flex: 1, opacity: busy ? 0.55 : 1 }} disabled={busy} onClick={() => onClose()}>Cancel</button>
+          <button type="button" className="btn" style={{ flex: 1.3, opacity: canSave ? 1 : 0.5 }} disabled={!canSave} onClick={() => void save()}>{busy ? "Recording…" : "Record Payment"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── Scanned photos card (mobile port of desktop's ScannedImageCard pair) ────
    Order slip (slip_image_key, mig 0033) + payment receipt (receipt_image_key,
    mig 0034) as tappable thumbnails; tap opens a full-size overlay (tap again to
@@ -606,10 +884,19 @@ function ScannedPhotosCard({ slipKey, receiptKey }: { slipKey: string | null; re
   const [viewer, setViewer] = useState<{ src: string; label: string } | null>(null);
   return (
     <>
-      <div className="card"><div className="card-h"><span className="card-t">Photos</span></div>
-        <div className="card-b" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 9 }}>
-          {slipKey ? <ScannedThumb imageKey={slipKey} label="Order slip" onView={(src, label) => setViewer({ src, label })} /> : null}
-          {receiptKey ? <ScannedThumb imageKey={receiptKey} label="Payment receipt" onView={(src, label) => setViewer({ src, label })} /> : null}
+      {/* Owner 2026-07-04 — "which button shows the customer's photographed order
+          slip?": the card is titled "Order slip photo" (the thing he's looking
+          for), sits high in the page, and each thumb is tap-to-open-fullscreen.
+          A one-line hint spells out the interaction so it's unmistakable. */}
+      <div className="card"><div className="card-h"><span className="card-t">Order slip photo</span><span className="card-sub">Tap to enlarge</span></div>
+        <div className="card-b" style={{ paddingTop: 4 }}>
+          <div style={{ fontSize: 11, color: "var(--mut)", marginBottom: 9, lineHeight: 1.4 }}>
+            The customer's photographed slip{receiptKey ? " and payment receipt" : ""} this order was scanned from. Tap a photo to view it full-screen.
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: slipKey && receiptKey ? "1fr 1fr" : "1fr", gap: 9 }}>
+            {slipKey ? <ScannedThumb imageKey={slipKey} label="Order slip" onView={(src, label) => setViewer({ src, label })} /> : null}
+            {receiptKey ? <ScannedThumb imageKey={receiptKey} label="Payment receipt" onView={(src, label) => setViewer({ src, label })} /> : null}
+          </div>
         </div>
       </div>
       {viewer && (

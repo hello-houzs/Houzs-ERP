@@ -22,11 +22,13 @@
 import { serviceConfirm } from './dialog-service';
 
 // `||` not `??`: the CI build inlines VITE_API_URL as an EMPTY STRING when the
-// repo var is unset, and `'' ?? default` keeps `''` → the base collapses to a
-// relative `/api/scm` that hits the Pages origin (index.html) on prod, where
-// there is no dev proxy. `||` falls back on the empty string too.
+// repo var is unset, and `'' ?? default` keeps `''`. PROD fallback is now
+// same-origin — /api/* is proxied to the Worker by the Pages Function
+// (functions/api/[[path]].ts), avoiding *.workers.dev carrier blocking; local
+// `vite dev` has no proxy, so dev keeps the absolute Worker URL.
 const API_URL =
-  (import.meta.env.VITE_API_URL || 'https://autocount-sync-api.houzs-erp.workers.dev') +
+  (import.meta.env.VITE_API_URL ||
+    (import.meta.env.PROD ? '' : 'https://autocount-sync-api.houzs-erp.workers.dev')) +
   '/api/scm';
 
 /* ── Request timeout (ported from 2990 b9d0035c) ───────────────────────────
@@ -137,30 +139,51 @@ export async function authedFetch<T>(path: string, init?: RequestInit): Promise<
   // payloads). For FormData (multipart upload) the browser sets the
   // boundary-aware content-type itself — overriding it here breaks the
   // multipart parse on the Worker side (parseBody returns {} → 400).
+  // Multi-company (Phase 0c): stamp the active company on every SCM request so
+  // the backend's companyContext resolves it. The id is written by the top-bar
+  // switcher (src/lib/activeCompany.ts) under 'houzs.activeCompanyId'; read the
+  // localStorage key DIRECTLY here to keep this vendored file self-contained
+  // (same style as the auth:token read above). Absent → NO header → backend
+  // falls back to its hostname default, so single-company Houzs is unchanged.
+  const activeCompanyId = (() => {
+    try {
+      const raw = localStorage.getItem('houzs.activeCompanyId');
+      const n = raw ? Number(raw) : NaN;
+      return Number.isFinite(n) && n > 0 ? String(n) : null;
+    } catch {
+      return null;
+    }
+  })();
   const headers = {
     ...(init?.headers ?? {}),
     authorization: `Bearer ${token}`,
+    ...(activeCompanyId ? { 'X-Company-Id': activeCompanyId } : {}),
     ...(typeof init?.body === 'string' ? { 'content-type': 'application/json' } : {}),
   };
   // Weak-wifi / Hyperdrive cold-start resilience (ported from HOOKKA
   // 2026-06-30 + our core api-client): a transient 503 or network drop on an
   // idempotent GET self-heals on retry instead of surfacing as a failed mobile
-  // list. GETs only (mutations aren't safe to replay); 2 retries w/ backoff.
+  // list. GETs only (mutations aren't safe to replay).
+  // Cold-start ride-through (2026-07-04): widened 2→4 to MATCH the desktop
+  // api-client (GET_RETRIES=4 / COLD_POOL_RETRIES=4, sw v142). The mobile SCM
+  // screens (Orders/SO/Service/Delivery) go through THIS helper, not the core
+  // client — the earlier widen missed them, so a cold window still dumped
+  // "Couldn't load orders" here. ~10s of spaced retries now rides it out.
   const isGet = !init?.method || String(init.method).toUpperCase() === 'GET';
   let res: Response;
   for (let attempt = 0; ; attempt++) {
     try {
       res = await fetchWithTimeout(`${API_URL}${path}`, { ...init, headers }, path);
     } catch (e) {
-      if (isGet && attempt < 2) { await new Promise((r) => setTimeout(r, 600 + attempt * 1200)); continue; }
+      if (isGet && attempt < 4) { await new Promise((r) => setTimeout(r, 600 + attempt * 1200)); continue; }
       throw e;
     }
-    if (res.status === 503 && isGet && attempt < 2) { await new Promise((r) => setTimeout(r, 600 + attempt * 1200)); continue; }
+    if (res.status === 503 && isGet && attempt < 4) { await new Promise((r) => setTimeout(r, 600 + attempt * 1200)); continue; }
     // Cold Hyperdrive pool answers 503 with a "database briefly unavailable" body
     // BEFORE the handler/DB runs, so a mutation never executed → safe to retry
     // (no double-write). Retry ONLY this specific cold-pool 503 for mutations, so
     // an SO save early after idle self-heals instead of dumping a raw 503.
-    if (res.status === 503 && !isGet && attempt < 3) {
+    if (res.status === 503 && !isGet && attempt < 4) {
       const warmText = await res.clone().text().catch(() => '');
       if (/briefly unavailable|warming up|try again in a moment/i.test(warmText)) {
         await new Promise((r) => setTimeout(r, 600 + attempt * 1200)); continue;

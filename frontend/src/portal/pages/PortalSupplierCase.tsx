@@ -91,14 +91,14 @@ type SupplierCase = {
 };
 
 const STAGE_LABEL: Record<string, string> = {
-  pending_review: "Pending Review",
-  under_verification: "Under Verification",
-  pending_solution: "Pending Solution",
-  pending_inspection: "Pending Inspection",
-  pending_item_pickup: "Pending Item Pickup",
-  pending_supplier_pickup: "Pending Supplier Pickup",
-  pending_item_ready: "Pending Item Ready",
-  pending_delivery_service: "Pending Delivery / Service",
+  pending_review: "Review",
+  under_verification: "Verification",
+  pending_solution: "Solution",
+  pending_inspection: "Inspection",
+  pending_item_pickup: "Item Pickup",
+  pending_supplier_pickup: "Supplier Pickup",
+  pending_item_ready: "Item Ready",
+  pending_delivery_service: "Delivery / Service",
   completed: "Completed",
 };
 

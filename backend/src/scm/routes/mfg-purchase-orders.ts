@@ -34,6 +34,7 @@ import {
 } from '../shared/so-line-display';
 import { resolveMaintenanceConfigForSupplier } from '../lib/po-pricing';
 import { nextMonthlyDocNo } from '../lib/doc-no';
+import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { supabaseAuth } from '../middleware/auth';
 import { computeMrp } from './mrp';
 import type { Env, Variables } from '../env';
@@ -109,6 +110,10 @@ const HEADER_COLS =
   'id, po_number, supplier_id, status, po_date, expected_at, currency, ' +
   'subtotal_centi, tax_centi, total_centi, notes, submitted_at, received_at, ' +
   'cancelled_at, created_at, created_by, updated_at, ' +
+  /* SO-amendment / revision workflow (2026-07-03) — bumped in place when a
+     supplier-confirmed amendment revises this PO; prior versions snapshot to
+     po_revisions. The PO Detail header shows a "Revised · rev N" badge when > 1. */
+  'revision, ' +
   /* PR #77 — default ship-to warehouse for every line on this PO */
   'purchase_location_id, ' +
   /* Migration 0180 — supplier-revised delivery dates (header). The EFFECTIVE
@@ -146,7 +151,10 @@ mfgPurchaseOrders.get('/', async (c) => {
       // inside each PO without drilling in. Nested select keeps it to one
       // query — Postgres / Supabase joins purchase_order_items on
       // purchase_order_id for every row.
-      `${HEADER_COLS}, supplier:suppliers(id, code, name), items:purchase_order_items(material_code, material_name, qty)`,
+      // purchase_location embeds the warehouse the PO ships to (PR #77 — the
+      // column is an FK → warehouses.id); the list needs its NAME, not just the
+      // id, for the "Purchase Location" column (Owner 2026-07-02).
+      `${HEADER_COLS}, supplier:suppliers(id, code, name), items:purchase_order_items(material_code, material_name, qty), purchase_location:warehouses!purchase_location_id(id, code, name)`,
     )
     .order('po_date', { ascending: false })
     .order('created_at', { ascending: false })
@@ -157,6 +165,8 @@ mfgPurchaseOrders.get('/', async (c) => {
   if (status && VALID_STATUSES.has(status)) q = q.eq('status', status);
   if (supplierId) q = q.eq('supplier_id', supplierId);
 
+  q = scopeToCompany(q, c); // multi-company: isolate to the active company
+
   const { data, error } = await q;
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
 
@@ -166,18 +176,32 @@ mfgPurchaseOrders.get('/', async (c) => {
      this to hide Edit / Cancel from POs that are downstream-locked. */
   const rows = (data ?? []) as Array<{ id: string } & Record<string, unknown>>;
   const childIds = new Set<string>();
+  // Owner 2026-07-02 — "Transfer To (GRN)" list column: collect the non-cancelled
+  // GRN doc-numbers each PO was received into, deduped + stable-ordered. Same one
+  // extra query that already powers has_children — just carry grn_number too.
+  const grnNumbersByPo = new Map<string, string[]>();
   if (rows.length > 0) {
     const ids = rows.map((r) => r.id);
     const { data: grnRows } = await supabase
       .from('grns')
-      .select('purchase_order_id')
+      .select('purchase_order_id, grn_number')
       .in('purchase_order_id', ids)
-      .neq('status', 'CANCELLED');
-    for (const g of (grnRows ?? []) as Array<{ purchase_order_id: string | null }>) {
-      if (g.purchase_order_id) childIds.add(g.purchase_order_id);
+      .neq('status', 'CANCELLED')
+      .order('grn_number', { ascending: true });
+    for (const g of (grnRows ?? []) as Array<{ purchase_order_id: string | null; grn_number: string | null }>) {
+      if (!g.purchase_order_id) continue;
+      childIds.add(g.purchase_order_id);
+      if (!g.grn_number) continue;
+      const arr = grnNumbersByPo.get(g.purchase_order_id) ?? [];
+      if (!arr.includes(g.grn_number)) arr.push(g.grn_number);
+      grnNumbersByPo.set(g.purchase_order_id, arr);
     }
   }
-  const purchaseOrders = rows.map((r) => ({ ...r, has_children: childIds.has(r.id) }));
+  const purchaseOrders = rows.map((r) => ({
+    ...r,
+    has_children: childIds.has(r.id),
+    transfer_to_grns: grnNumbersByPo.get(r.id) ?? [],
+  }));
   return c.json({ purchaseOrders });
 });
 
@@ -352,13 +376,20 @@ mfgPurchaseOrders.get('/:id', async (c) => {
   const id = c.req.param('id');
   const supabase = c.get('supabase');
 
-  const [headerRes, itemsRes] = await Promise.all([
+  /* Perf (go-live) — the downstream-lock GRN count is independent of the
+     header + items load, so fold it into the same parallel batch instead of a
+     third sequential round-trip. */
+  const [headerRes, itemsRes, childCountRes] = await Promise.all([
     supabase
       .from('purchase_orders')
       .select(`${HEADER_COLS}, supplier:suppliers(id, code, name, contact_person, phone, email, address)`)
       .eq('id', id)
       .maybeSingle(),
     supabase.from('purchase_order_items').select(ITEM_COLS).eq('purchase_order_id', id).order('created_at'),
+    supabase.from('grns')
+      .select('id', { head: true, count: 'exact' })
+      .eq('purchase_order_id', id)
+      .neq('status', 'CANCELLED'),
   ]);
 
   if (headerRes.error) return c.json({ error: 'load_failed', reason: headerRes.error.message }, 500);
@@ -366,13 +397,13 @@ mfgPurchaseOrders.get('/:id', async (c) => {
 
   /* Tier 2 downstream-lock — stamp has_children on the detail header so the
      PO Detail page can lock once any non-cancelled GRN exists. */
-  const { count: childCount } = await supabase.from('grns')
-    .select('id', { head: true, count: 'exact' })
-    .eq('purchase_order_id', id)
-    .neq('status', 'CANCELLED');
+  const childCount = childCountRes.count;
   const purchaseOrder = {
     ...(headerRes.data as Record<string, unknown>),
     has_children: (childCount ?? 0) > 0,
+    // Stamped below once the source SO is resolved (SO-amendment workflow).
+    has_open_amendment: false,
+    open_amendment: null as { id: string; status: string; amendment_no: string } | null,
   };
 
   /* Per-line GR breakdown so the PO list expansion can show a "Received" column
@@ -391,8 +422,6 @@ mfgPurchaseOrders.get('/:id', async (c) => {
       (r) => r.item_group as string | null | undefined,
     ),
   );
-  const receiptsMap = await poLineReceipts(supabase, itemRows.map((it) => it.id));
-
   /* 2026-06-12 — "Transferred SO" column on the PO PDF (DSL/AutoCount layout):
      resolve each line's so_item_id (migration 0098) to the source SO doc_no.
      Best-effort: a lookup failure leaves so_doc_no null, never blocks the
@@ -408,21 +437,65 @@ mfgPurchaseOrders.get('/:id', async (c) => {
      (same helper both sides) so a formatter change can't false-trip it. */
   type SoSnap = { item_code: string; item_group: string | null; description: string | null; variants: Record<string, unknown> | null; warehouse_id: string | null };
   const soLineById = new Map<string, SoSnap>();
+  /* Perf (go-live) — the per-line receipts fetch and the SO-drift snapshot
+     fetch both depend only on `itemRows` and are independent of each other, so
+     run them concurrently instead of back-to-back. The SO-drift leg keeps its
+     own try/catch (best-effort) so a lookup failure still leaves so_doc_no /
+     drift null without blocking the detail response. */
+  const soItemIds = [...new Set(
+    itemRows.map((it) => it.so_item_id as string | null | undefined).filter(Boolean),
+  )] as string[];
+  const [receiptsMap] = await Promise.all([
+    poLineReceipts(supabase, itemRows.map((it) => it.id)),
+    (async () => {
+      try {
+        if (soItemIds.length > 0) {
+          const { data: soLines } = await supabase
+            .from('mfg_sales_order_items')
+            .select('id, doc_no, item_code, item_group, description, variants, warehouse_id')
+            .in('id', soItemIds);
+          for (const r of (soLines ?? []) as Array<{ id: string; doc_no: string } & SoSnap>) {
+            soDocByItem.set(r.id, r.doc_no);
+            soLineById.set(r.id, { item_code: r.item_code, item_group: r.item_group, description: r.description, variants: r.variants, warehouse_id: r.warehouse_id });
+          }
+        }
+      } catch { /* leave so_doc_no / drift null */ }
+    })(),
+  ]);
+
+  /* SO-amendment workflow (2026-07-03) — stamp the open amendment for THIS PO so
+     the PO Detail page can show the green "Revision ready" banner + gate actions.
+     Resolve this PO → its source SO doc_no (via the lines' so_item_id →
+     mfg_sales_order_items.doc_no, already gathered into soDocByItem above), then
+     find the so_amendments row for that SO with status NOT IN ('SENT','REJECTED').
+     Mirrors the SO detail's open_amendment stamp (mfg-sales-orders.ts). A PO can
+     only be raised from ONE SO in this flow, so the distinct doc_no set is size 1;
+     if a stray multi-SO PO ever appears we key off the first resolved doc_no.
+     scopeToCompany: the so_amendments table carries company_id (mig 0080); no-op
+     pre-activation. Best-effort: any failure leaves open_amendment null, never
+     blocks the detail. */
   try {
-    const soItemIds = [...new Set(
-      itemRows.map((it) => it.so_item_id as string | null | undefined).filter(Boolean),
-    )] as string[];
-    if (soItemIds.length > 0) {
-      const { data: soLines } = await supabase
-        .from('mfg_sales_order_items')
-        .select('id, doc_no, item_code, item_group, description, variants, warehouse_id')
-        .in('id', soItemIds);
-      for (const r of (soLines ?? []) as Array<{ id: string; doc_no: string } & SoSnap>) {
-        soDocByItem.set(r.id, r.doc_no);
-        soLineById.set(r.id, { item_code: r.item_code, item_group: r.item_group, description: r.description, variants: r.variants, warehouse_id: r.warehouse_id });
+    const soDocNos = [...new Set([...soDocByItem.values()].filter(Boolean))];
+    if (soDocNos.length > 0) {
+      const { data: amRows } = await scopeToCompany(supabase
+        .from('so_amendments')
+        .select('id, status, amendment_no')
+        .in('so_doc_no', soDocNos), c)
+        .not('status', 'in', '("SENT","REJECTED")')
+        .order('created_at', { ascending: false })
+        .limit(1);
+      const am = ((amRows ?? []) as Array<Record<string, unknown>>)[0];
+      if (am) {
+        purchaseOrder.open_amendment = {
+          // Postgres.js/PostgREST may surface columns camelCased; dual-read to be safe.
+          id: String((am.id ?? (am as Record<string, unknown>).id) ?? ''),
+          status: String(am.status ?? ''),
+          amendment_no: String((am.amendment_no ?? (am as Record<string, unknown>).amendmentNo) ?? ''),
+        };
+        purchaseOrder.has_open_amendment = true;
       }
     }
-  } catch { /* leave so_doc_no / drift null */ }
+  } catch { /* leave open_amendment null */ }
 
   const items = itemRows.map((it) => {
     const soId = it.so_item_id as string | null;
@@ -495,6 +568,23 @@ mfgPurchaseOrders.get('/:id/linked', async (c) => {
   });
 });
 
+// GET — list PO revision snapshots for the Detail "Revisions" tab (SO-amendment
+// workflow, 2026-07-03). Each row is a full snapshot captured when an amendment's
+// approve-po gate revised the bound PO in place (po_revisions, keyed on po_id +
+// revision). Newest first so the tab lists the latest revision on top. Mirrors
+// the SO /:docNo/revisions read (mfg-sales-orders.ts): bare supabase select,
+// plain load_failed on error. scopeToCompany: po_revisions carries company_id
+// (mig 0080); no-op pre-activation.
+mfgPurchaseOrders.get('/:id/revisions', async (c) => {
+  const sb = c.get('supabase'); const id = c.req.param('id');
+  const { data, error } = await scopeToCompany(sb.from('po_revisions')
+    .select('id, revision, snapshot, created_at, created_by')
+    .eq('po_id', id), c)
+    .order('revision', { ascending: false });
+  if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
+  return c.json({ revisions: data ?? [] });
+});
+
 // ── Create ────────────────────────────────────────────────────────────
 // body: {
 //   supplierId, currency?, expectedAt?, notes?,
@@ -546,11 +636,12 @@ mfgPurchaseOrders.post('/', async (c) => {
   // PO# generation: max(suffix)+1 over the month's POs (see lib/doc-no.ts).
   // NOT count+1 — count+1 is non-self-healing (a mid-month delete leaves a gap
   // and re-mints a surviving number, jamming the NOT NULL UNIQUE po_number).
+  const p = companyDocPrefix(c);
   const { data: existingPoNos } = await supabase
     .from('purchase_orders')
     .select('po_number')
-    .like('po_number', `PO-${yymm}-%`);
-  const poNumber = nextMonthlyDocNo(`PO-${yymm}`, ((existingPoNos ?? []) as Array<{ po_number: string }>).map((r) => r.po_number));
+    .like('po_number', `${p}PO-${yymm}-%`);
+  const poNumber = nextMonthlyDocNo(`${p}PO-${yymm}`, ((existingPoNos ?? []) as Array<{ po_number: string }>).map((r) => r.po_number));
 
   // Compute totals
   let subtotal = 0;
@@ -621,6 +712,7 @@ mfgPurchaseOrders.post('/', async (c) => {
      PATCH /submit stays an idempotent no-op for legacy callers. */
   const asDraft = body.asDraft === true;
   const headerInsert: Record<string, unknown> = {
+    company_id: activeCompanyId(c), // multi-company: stamp the active company
     po_number: poNumber,
     supplier_id: supplierId,
     status: asDraft ? 'DRAFT' : 'SUBMITTED',
@@ -661,7 +753,7 @@ mfgPurchaseOrders.post('/', async (c) => {
 
   if (itemRows.length > 0) {
     const itemsToInsert = itemRows.map((r) => ({ ...r, purchase_order_id: header.id }));
-    const { error: iErr } = await supabase.from('purchase_order_items').insert(itemsToInsert);
+    const { error: iErr } = await supabase.from('purchase_order_items').insert(stampCompany(itemsToInsert, c));
     if (iErr) {
       // Best-effort rollback of header so we don't leak a no-items PO.
       await supabase.from('purchase_orders').delete().eq('id', header.id);
@@ -1384,7 +1476,7 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
       // Commander 2026-05-31 — MRP-origin lines are reference-only (no SO lock).
       from_mrp: fromMrp,
     }));
-    const { error: iErr } = await supabase.from('purchase_order_items').insert(rows);
+    const { error: iErr } = await supabase.from('purchase_order_items').insert(stampCompany(rows, c));
     if (iErr) return c.json({ error: 'items_insert_failed', reason: iErr.message }, 500);
     await recomputePoTotals(supabase, target.id);
     // Recount po_qty_picked from the live PO lines for every appended SO line
@@ -1400,12 +1492,13 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
   // Seed from max(suffix), NOT count — count+1 is non-self-healing (a mid-month
   // delete re-mints a surviving number → UNIQUE collision). Derive the next
   // suffix via nextMonthlyDocNo, then counter starts one below it.
+  const p = companyDocPrefix(c);
   const { data: existingBatchPoNos } = await supabase
     .from('purchase_orders')
     .select('po_number')
-    .like('po_number', `PO-${yymm}-%`);
-  const firstNextPo = nextMonthlyDocNo(`PO-${yymm}`, ((existingBatchPoNos ?? []) as Array<{ po_number: string }>).map((r) => r.po_number));
-  let counter = parseInt(firstNextPo.slice(`PO-${yymm}-`.length), 10) - 1;
+    .like('po_number', `${p}PO-${yymm}-%`);
+  const firstNextPo = nextMonthlyDocNo(`${p}PO-${yymm}`, ((existingBatchPoNos ?? []) as Array<{ po_number: string }>).map((r) => r.po_number));
+  let counter = parseInt(firstNextPo.slice(`${p}PO-${yymm}-`.length), 10) - 1;
 
   const created: Array<{ id: string; poNumber: string; supplierId: string; lineCount: number }> = [];
   for (const bucket of byGroup.values()) {
@@ -1428,6 +1521,7 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
     const headerPurchaseLocationId: string | null = bucket.warehouseId;
 
     const headerPayload = {
+      company_id: activeCompanyId(c), // multi-company: stamp the active company
       supplier_id: supplierId,
       // PR #131 — Convert-from-SO bulk path also lands SUBMITTED.
       status: 'SUBMITTED',
@@ -1450,7 +1544,7 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
        table + bump, so the loser re-mints instead of vanishing. */
     let header: { id: string; po_number: string } | null = null;
     for (let attempt = 0; attempt < 8 && !header; attempt += 1) {
-      const poNumber = `PO-${yymm}-${String(counter).padStart(3, '0')}`;
+      const poNumber = `${p}PO-${yymm}-${String(counter).padStart(3, '0')}`;
       const { data: hd, error: hErr } = await supabase
         .from('purchase_orders')
         .insert({ po_number: poNumber, ...headerPayload })
@@ -1459,10 +1553,10 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
       if (!hErr && hd) { header = hd as unknown as { id: string; po_number: string }; break; }
       if (!hErr || (hErr as { code?: string }).code !== '23505') break;
       const { data: live } = await supabase
-        .from('purchase_orders').select('po_number').like('po_number', `PO-${yymm}-%`);
+        .from('purchase_orders').select('po_number').like('po_number', `${p}PO-${yymm}-%`);
       counter = parseInt(
-        nextMonthlyDocNo(`PO-${yymm}`, ((live ?? []) as Array<{ po_number: string }>).map((r) => r.po_number))
-          .slice(`PO-${yymm}-`.length), 10);
+        nextMonthlyDocNo(`${p}PO-${yymm}`, ((live ?? []) as Array<{ po_number: string }>).map((r) => r.po_number))
+          .slice(`${p}PO-${yymm}-`.length), 10);
     }
     if (!header) continue;
 
@@ -1491,7 +1585,7 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
       // Commander 2026-05-31 — MRP-origin lines are reference-only (no SO lock).
       from_mrp: fromMrp,
     }));
-    const { error: iErr } = await supabase.from('purchase_order_items').insert(rows);
+    const { error: iErr } = await supabase.from('purchase_order_items').insert(stampCompany(rows, c));
     if (iErr) {
       await supabase.from('purchase_orders').delete().eq('id', header.id);
       continue;
@@ -1716,7 +1810,7 @@ mfgPurchaseOrders.post('/:id/items', async (c) => {
     supplier_delivery_date_4: (it.supplierDeliveryDate4 as string) ?? null,
     warehouse_id: (it.warehouseId as string) ?? null,
   };
-  const { data, error } = await sb.from('purchase_order_items').insert(row).select('*').single();
+  const { data, error } = await sb.from('purchase_order_items').insert({ ...row, company_id: activeCompanyId(c) }).select('*').single();
   if (error) return c.json({ error: 'insert_failed', reason: error.message }, 500);
   await recomputePoTotals(sb, poId);
   await recomputePoExpectedAt(sb, poId);

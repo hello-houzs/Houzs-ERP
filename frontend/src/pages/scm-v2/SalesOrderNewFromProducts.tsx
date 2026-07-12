@@ -483,7 +483,7 @@ function Catalogue({
             return (
               <li
                 key={p.id}
-                className="flex flex-wrap items-center gap-3 py-2.5"
+                className="flex min-h-[3.25rem] flex-nowrap items-center gap-3 py-2.5"
               >
                 {/* placeholder thumb */}
                 <div
@@ -681,16 +681,20 @@ function CartCard({
 
       {/* CTA — desktop. On mobile the sticky bottom bar handles submit. */}
       <div className="mt-3 hidden lg:block">
-        <Button
-          variant="primary"
-          onClick={onSubmit}
-          disabled={submitting || !canSubmit}
-          icon={submitting ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
-          className="w-full"
-        >
-          {submitting ? "Saving…" : "Create Sales Order"}
-        </Button>
-        <p className="mt-1 text-[10.5px] text-ink-muted">
+        <div className="flex items-center justify-between gap-3">
+          <span className="font-money text-[13px] font-bold text-primary-ink">
+            {fmtRm(subtotalSen)}
+          </span>
+          <Button
+            variant="primary"
+            onClick={onSubmit}
+            disabled={submitting || !canSubmit}
+            icon={submitting ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+          >
+            {submitting ? "Saving…" : "Create Sales Order"}
+          </Button>
+        </div>
+        <p className="mt-1 text-right text-[10.5px] text-ink-muted">
           Server validates SKU codes and re-prices any matching combo on save.
         </p>
       </div>

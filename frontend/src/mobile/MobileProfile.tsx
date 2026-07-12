@@ -166,6 +166,23 @@ export function MobileProfile({ onLogout, orgItems, onOpenOrg }: {
     [roster, user?.id],
   );
 
+  // Announcements unread count — this user's audience-matching notices (incl.
+  // the private scan-result notices, target USER_IDS) minus what they've acked.
+  // Drives the red pill on the Organisation → Announcements row so it reads like
+  // a notification. Polls 30s; fail-soft (a hiccup just shows no badge).
+  const bannerQ = useQuery({
+    queryKey: ["mobile-profile-ann-unread"],
+    queryFn: () => api.get<{ data?: { id: string }[]; ackedIds?: string[] }>("/api/announcements/banner"),
+    staleTime: 30_000,
+    refetchInterval: 30_000,
+    retry: false,
+  });
+  const annUnread = useMemo(() => {
+    const items = bannerQ.data?.data ?? [];
+    const acked = new Set(bannerQ.data?.ackedIds ?? []);
+    return items.filter((a) => !acked.has(a.id)).length;
+  }, [bannerQ.data]);
+
   // Salesperson MTD scoreboard (Orders MTD / Sales MTD) — the caller's OWN
   // sales orders this Malaysia-calendar month, from the SCM backend.
   // Self-scoped server-side (salesperson_id === caller). A non-sales user
@@ -306,7 +323,8 @@ export function MobileProfile({ onLogout, orgItems, onOpenOrg }: {
             <div className="ey" style={{ color: "#767b6e", margin: "18px 2px 9px" }}>Organisation</div>
             <div className="card" style={{ overflow: "hidden" }}>
               {(orgItems ?? []).map((it, i) => (
-                <Item key={it.to} icon={orgIconOf(it.to)} label={it.label} onClick={() => onOpenOrg(it.to, it.label)} first={i === 0} />
+                <Item key={it.to} icon={orgIconOf(it.to)} label={it.label} onClick={() => onOpenOrg(it.to, it.label)} first={i === 0}
+                  badge={it.to === "/announcements" ? annUnread : undefined} />
               ))}
             </div>
           </>
@@ -363,7 +381,7 @@ const orgIconOf = (to: string): keyof typeof ROW_ICONS => ORG_ROW_ICONS[to] ?? "
 
 // Prototype `profRow`: leading icon chip + label + optional right value +
 // chevron. Wired to our sub-screen navigation.
-function Item({ icon, label, right, onClick, first }: { icon: keyof typeof ROW_ICONS; label: string; right?: string; onClick: () => void; first?: boolean }) {
+function Item({ icon, label, right, onClick, first, badge }: { icon: keyof typeof ROW_ICONS; label: string; right?: string; onClick: () => void; first?: boolean; badge?: number }) {
   return (
     <button
       type="button"
@@ -374,6 +392,12 @@ function Item({ icon, label, right, onClick, first }: { icon: keyof typeof ROW_I
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#16695f" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{ROW_ICONS[icon]}</svg>
       </span>
       <span style={{ flex: 1, fontSize: 13.5, fontWeight: 600, color: "#11140f" }}>{label}</span>
+      {/* Unread count pill — notification-style. Only rendered when > 0. */}
+      {badge != null && badge > 0 && (
+        <span style={{ flex: "none", minWidth: 18, height: 18, padding: "0 5px", borderRadius: 9, background: "#c0392b", color: "#fff", fontSize: 11, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", lineHeight: 1 }}>
+          {badge > 99 ? "99+" : badge}
+        </span>
+      )}
       {right && <span style={{ fontSize: 12, color: "#9aa093" }}>{right}</span>}
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#c2c6bd" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
     </button>

@@ -1,11 +1,25 @@
 /* MRP · Stock Status Report — uses the shared 2990s density tokens. */
 
 .page {
+  /* Ink & Petrol token overrides — same cascade as SalesOrderNew.module.css. */
+  --c-orange:        #16695f;
+  --c-burnt:         #0c3f39;
+  --c-cream:         #f4f6f3;
+  --c-paper:         #fcfdfb;
+  --c-ink:           #11140f;
+  --c-ink-secondary: #767b6e;
+  --c-ink-muted:     #9aa093;
+  --fg:              #11140f;
+  --fg-muted:        #767b6e;
+  --line:            #d6d9d2;
+  --line-strong:     #c2c6bd;
+  --c-accent-soft:   #eff6f4;
+
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
   padding: var(--space-5) var(--space-6) var(--space-7);
-  background: var(--c-cream);
+  background: #dcdfd9;
   min-height: 100%;
 }
 
@@ -18,8 +32,14 @@
 }
 
 .title {
-  font-family: var(--font-title);
+  /* Nick 2026-07-09 Option C — sans 18 px matches SO New / Maintenance
+     admin-form density; drops the display serif so this reads like a
+     dense report title, not a marketing headline. */
+  font-family: var(--font-title, var(--font-sans, system-ui));
+  font-size: 18px;
   font-weight: 700;
+  letter-spacing: -0.01em;
+  line-height: 1.15;
   color: var(--c-ink);
   margin: 0;
 }
@@ -92,7 +112,7 @@
   border: 1px solid var(--c-orange);
   background: var(--c-orange);
   color: #fff;
-  box-shadow: 0 1px 2px rgba(166, 71, 30, 0.25);
+  box-shadow: 0 1px 2px rgba(12, 63, 57, 0.25);
   cursor: pointer;
 }
 .primaryBtn:hover:not(:disabled) { filter: brightness(0.95); }
@@ -131,9 +151,10 @@
   border-bottom: 1px solid var(--line);
 }
 .tab {
-  font-family: var(--font-button);
-  font-size: var(--fs-14, 14px);
-  font-weight: 700;
+  /* Category tabs — sans compact, matches SO Maintenance sub-nav rhythm. */
+  font-family: var(--font-sans, system-ui);
+  font-size: 13px;
+  font-weight: 600;
   color: var(--fg-muted);
   background: transparent;
   border: none;
@@ -187,7 +208,7 @@
 }
 .summaryChipWarn {
   border-color: var(--c-orange);
-  background: rgba(232, 107, 58, 0.08);
+  background: rgba(22, 105, 95, 0.08);
   color: var(--c-orange);
 }
 
@@ -215,10 +236,11 @@
   gap: var(--space-2);
 }
 .filterLabel {
-  font-family: var(--font-sans);
-  font-size: var(--fs-11);
+  /* Ink & Petrol tag look — same mono uppercase treatment as thead th. */
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
   font-weight: 700;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--fg-muted);
 }
@@ -278,18 +300,27 @@
   white-space: nowrap;
 }
 .table thead th {
+  /* Ink & Petrol section-head look — mono uppercase 10.5 px with a wider
+     tracking, matches the SO New / Maintenance table header rhythm. */
   text-align: left;
-  font-size: var(--fs-11);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
   font-weight: 700;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--fg-muted);
-  padding: var(--space-3) var(--space-3);
+  padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--line-strong);
   background: var(--c-cream);
   white-space: nowrap;
 }
-.num { text-align: right; font-variant-numeric: tabular-nums; }
+.num {
+  text-align: right;
+  /* Numeric cells switch to the tabular money font so column edges stay
+     aligned across rows regardless of digit width. */
+  font-family: var(--font-money, ui-monospace, monospace);
+  font-variant-numeric: tabular-nums;
+}
 .colCaret { width: 30px; text-align: center; }
 .colSelect { width: 34px; text-align: center; }
 
@@ -304,10 +335,10 @@
   vertical-align: middle;
 }
 .skuRowShort {
-  background: rgba(232, 107, 58, 0.05);
+  background: rgba(22, 105, 95, 0.05);
   box-shadow: inset 3px 0 0 var(--c-orange);
 }
-.skuRowShort:hover { background: rgba(232, 107, 58, 0.1); }
+.skuRowShort:hover { background: rgba(22, 105, 95, 0.1); }
 
 .codeCell { font-weight: 700; white-space: nowrap; }
 .descCell { color: var(--fg-muted); }
@@ -341,10 +372,10 @@
   vertical-align: middle;
 }
 .variantRowShort {
-  background: rgba(232, 107, 58, 0.06);
-  box-shadow: inset 3px 0 0 rgba(232, 107, 58, 0.45);
+  background: rgba(22, 105, 95, 0.06);
+  box-shadow: inset 3px 0 0 rgba(22, 105, 95, 0.45);
 }
-.variantRowShort:hover { background: rgba(232, 107, 58, 0.11); }
+.variantRowShort:hover { background: rgba(22, 105, 95, 0.11); }
 .variantDescCell {
   display: flex;
   align-items: center;
@@ -440,7 +471,7 @@
   border-top: 1px solid var(--line);
   color: var(--c-ink);
 }
-.childShort { background: rgba(232, 107, 58, 0.07); }
+.childShort { background: rgba(22, 105, 95, 0.07); }
 
 .tag {
   display: inline-flex;
@@ -465,7 +496,7 @@
 }
 .tagStock { background: rgba(34, 139, 94, 0.08); color: #1f7a52; border-color: rgba(34, 139, 94, 0.25); }
 .tagPo    { background: rgba(60, 110, 200, 0.08); color: #2f5fb3; border-color: rgba(60, 110, 200, 0.25); }
-.tagShort { background: rgba(232, 107, 58, 0.10); color: var(--c-orange); border-color: rgba(232, 107, 58, 0.35); }
+.tagShort { background: rgba(22, 105, 95, 0.10); color: var(--c-orange); border-color: rgba(22, 105, 95, 0.35); }
 
 .stateCell {
   text-align: center;

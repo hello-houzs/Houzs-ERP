@@ -21,6 +21,10 @@ export type Env = {
   // returns 503 anthropic_key_missing — the worker still boots and tsc passes.
   // Set via `wrangler secret put ANTHROPIC_API_KEY` (and in .dev.vars locally).
   ANTHROPIC_API_KEY?: string;
+  // Shared secret for the Google Form → ERP intake webhook
+  // (/api/assr-form-intake). GitHub secret, injected at deploy; the
+  // endpoint 401s on every request while unset.
+  FORM_INTAKE_KEY?: string;
   POD_BUCKET: R2Bucket;
   // R2 buckets used by the ported SCM routes (SO item photos, public assets).
   // Typed required so the ported code compiles; bind in wrangler.toml before the
@@ -32,6 +36,12 @@ export type Env = {
   // creds (see scm/routes/slips.ts). Optional so tests without the binding
   // still compile; scm/lib/slip.ts slipBindings() guards at runtime.
   SLIPS?: R2Bucket;
+  // Cloudflare Queue for the background scan-so OCR pipeline (queue
+  // `houzs-scan-ocr`, DLQ `houzs-scan-ocr-dlq`). The /scan-so/enqueue producer
+  // sends ONLY the job id; the consumer (index.ts `queue()` handler) rebuilds
+  // everything from the scan_jobs row + R2 photos. Optional so tests / older
+  // deploys without the binding compile and fall back to the waitUntil path.
+  SCAN_QUEUE?: Queue<{ jobId: string }>;
   // R2 S3-API credentials for presigned SO-item-photo GET URLs ONLY (the slip
   // flow no longer uses them). Optional — those endpoints fail at runtime
   // until set.

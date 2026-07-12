@@ -7,6 +7,7 @@ import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { supabaseAuth } from '../middleware/auth';
 import { hasHouzsPerm } from '../lib/houzs-perms';
+import { activeCompanyId } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 type AppCtx = Context<{ Bindings: Env; Variables: Variables }>;
@@ -120,6 +121,7 @@ pwpRules.post('/', async (c) => {
   const { data, error } = await supabase
     .from('pwp_rules')
     .insert({
+      company_id:                 activeCompanyId(c),
       trigger_category:           parsed.data.triggerCategory,
       trigger_eligible_model_ids: parsed.data.triggerEligibleModelIds,
       trigger_combo_ids:          parsed.data.triggerComboIds,

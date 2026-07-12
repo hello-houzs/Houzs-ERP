@@ -266,6 +266,11 @@ type SavedModeProps = {
    *  proof backs each payment row). Only the Sales Order detail passes this; the
    *  DO / SI tables that also use PaymentsTable leave it unset and are unchanged. */
   slip?: { slipKey: string | null; fetcher: (id: string) => Promise<SlipUrlResponse> };
+  /** Nick 2026-07-09 — restrict Collected By picker to staff whose id is in
+   *  the set. Any per-row already-selected id + the seeded default id are
+   *  always grandfathered in so the <select> value stays valid. Undefined =
+   *  no restriction (show every active staff). */
+  collectedByAllowedIds?: Set<string> | null;
 };
 
 type DraftModeProps = {
@@ -278,6 +283,8 @@ type DraftModeProps = {
   /** Render the per-draft slip uploader (SO-route batching only — the SO payments
    *  endpoint requires a slip per payment; DO/SI endpoints don't accept one). */
   slipUpload?: boolean;
+  /** See SavedModeProps.collectedByAllowedIds. */
+  collectedByAllowedIds?: Set<string> | null;
 };
 
 export type PaymentsTableProps = SavedModeProps | DraftModeProps;
@@ -369,27 +376,18 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
   const draftsRef = useRef<PaymentDraft[]>(drafts);
   draftsRef.current = drafts;
 
-  /* Default Collected By → current logged-in staff (2026-05-27 audit pass).
-     Commander's screenshot showed new payment rows defaulting to '—' / first
-     dropdown entry instead of the staff who's actually entering the
-     payment. Resolves auth.staff?.id and validates that the id exists in
-     the active staff dropdown before applying — guards against the race
-     where the user clicks Add Payment before useStaff() resolves, and the
-     edge case where the auth'd user's staff row is inactive (rare; happens
-     when an admin disables themselves). Falls back to '' (= '—' option)
-     so the dropdown doesn't lie about who collected the cash. Existing
-     persisted payments retain their saved `collected_by` value — this
-     default only seeds NEW draft rows. */
-  const defaultStaffId = (() => {
-    const id = auth.staff?.id ?? '';
-    if (!id) return '';
-    // Validate the staff id is in the active list. If staff hasn't loaded
-    // yet (staffQ.isLoading) the filter is empty — still return the id
-    // so the dropdown gets the right initial value once the option lands.
-    if (staff.length === 0) return id;
-    const hit = staff.find((s) => s.id === id && s.active);
-    return hit ? id : '';
-  })();
+  /* Default Collected By → current logged-in staff. Nick 2026-07-09:
+     "Collect By needs default user" — the row was landing empty when
+     auth.staff resolved AFTER the staff dropdown, since the previous
+     check filtered the id out when it wasn't found in the active list
+     yet. Relax to: always return auth.staff?.id when auth has it,
+     regardless of whether staff has loaded. If the id turns out to
+     match no active staff, the dropdown falls through to '—' at render
+     time — but the common case (owner / staff clicking Add Payment on
+     their own account) now defaults reliably.
+     Existing persisted payments still show their stored `collected_by`
+     name — this default only seeds NEW draft rows. */
+  const defaultStaffId = auth.staff?.id ?? '';
 
   const addDraft = () => {
     /* Loo 2026-06-09 — seed the new row's amount with the OUTSTANDING balance
@@ -593,17 +591,23 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isSaved, slipProp?.slipKey]);
 
-  /* 8-column override when the Slip column is shown (inserts a 64px slip column
-     just before Collected By). Leaves the shared 7-column CSS untouched.
-     Bug #4 (2026-06-24) — pin a min-width equal to the sum of the eight tracks
-     so the grid OVERFLOWS (and scrolls, via .grid { overflow-x:auto }) inside
-     the overflow:hidden card rather than crushing the Slip column off the right
-     edge. 140+140+120+140+140+64+160+32 = 936px of track + 8 cells × 2×8px
-     padding ≈ 1064px; round to 1040px (the 1fr/1.4fr tracks absorb the rest). */
+  /* 8-column override when the Slip column is shown. Nick 2026-07-09:
+     the previous 1040px min-width forced a horizontal scrollbar even on
+     wide desktop viewports, so the whole row wouldn't fit at a glance
+     ("间隔太远 需要缩小一些 一页看完"). Tightened every track by ~20%
+     and dropped min-width to 800px so the grid fits inside a typical
+     ~960-1000px SCM detail body without scrolling; when the aside
+     drawer is open, the scroll wrapper still lets the tail nudge into
+     view without clipping the Slip cell.
+     Amount collapsed 92px/0.9fr → 100px fixed (Nick 2026-07-09 "amount
+     列放窄一些") — no MYR-formatted number needs more than ~85px at
+     var(--font-money), so the fluid extra was empty air. Track sum:
+     112+116+100+104+104+52+128+28 = 744 px. */
   const gridStyle: CSSProperties | undefined = showSlip
     ? {
-        gridTemplateColumns: '140px 140px minmax(120px, 1fr) minmax(140px, 1.4fr) minmax(140px, 1.4fr) 64px 160px 32px',
-        minWidth: 1040,
+        gridTemplateColumns:
+          '112px 116px 100px minmax(104px, 1fr) minmax(104px, 1fr) 52px 128px 28px',
+        minWidth: 780,
       }
     : undefined;
 
@@ -710,6 +714,13 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
                     <span style={{ fontSize: 'var(--fs-11)', color: 'var(--fg-muted)' }}>
                       {p.merchant_provider ? `${p.merchant_provider} · ` : ''}
                       {p.installment_months ? `${p.installment_months}m` : ''}
+                    </span>
+                  )}
+                  {/* Approval code — parity with mobile MobileSODetail. Dual-read
+                      camelCase ?? snake_case. */}
+                  {(((p as unknown as { approvalCode?: string | null }).approvalCode ?? p.approval_code)) && (
+                    <span style={{ fontSize: 'var(--fs-11)', color: 'var(--fg-muted)' }}>
+                      Approval {(p as unknown as { approvalCode?: string | null }).approvalCode ?? p.approval_code}
                     </span>
                   )}
                 </span>
@@ -937,9 +948,20 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
                     onChange={(e) => patchDraft(d.uid, { collectedBy: e.target.value })}
                   >
                     <option value="">—</option>
-                    {sortByText(staff.filter((s) => s.active)).map((s) => (
-                      <option key={s.id} value={s.id}>{s.name}</option>
-                    ))}
+                    {(() => {
+                      const allowed = props.collectedByAllowedIds;
+                      const active = staff.filter((s) => s.active);
+                      const filtered = allowed
+                        ? active.filter((s) =>
+                            allowed.has(s.id) ||
+                            s.id === d.collectedBy ||
+                            s.id === defaultStaffId,
+                          )
+                        : active;
+                      return sortByText(filtered).map((s) => (
+                        <option key={s.id} value={s.id}>{s.name}</option>
+                      ));
+                    })()}
                   </select>
                 </span>
                 <span className={paymentsStyles.cell}>

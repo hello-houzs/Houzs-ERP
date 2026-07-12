@@ -33,6 +33,7 @@ import { escapeForOr } from '../lib/postgrest-search';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { recomputeSoStockAllocation } from '../lib/so-stock-allocation';
 import { reconcileLedger } from '../lib/reconcile-ledger';
+import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 export const inventory = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -155,6 +156,10 @@ inventory.get('/', async (c) => {
     if (warehouseId) q = q.eq('warehouse_id', warehouseId);
     if (s) q = q.or(`product_code.ilike.%${s}%,product_name.ilike.%${s}%`);
     if (showAll && category && category !== 'all') q = q.eq('category', category);
+    // multi-company: inventory_balances carries company_id (grouped per company);
+    // the showAll SKU rollup (v_inventory_all_skus) intentionally aggregates
+    // across companies and has NO company_id column, so scope only the balances.
+    if (!showAll) q = scopeToCompany(q, c);
     return q.order('product_code').range(from, to);
   });
   if (error) {
@@ -711,6 +716,7 @@ inventory.post('/adjustments', async (c) => {
   }
 
   const { data, error } = await sb.from('inventory_movements').insert({
+    company_id: activeCompanyId(c), // multi-company: stamp the active company
     movement_type: 'ADJUSTMENT',
     warehouse_id: warehouseId,
     product_code: productCode,

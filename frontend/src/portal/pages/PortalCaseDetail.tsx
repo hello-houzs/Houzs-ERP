@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { Upload, Send, Package, Star, X, ChevronLeft, ChevronRight, Trash2, Clock, Phone, MessageSquare, ShieldCheck, Check } from "lucide-react";
+import { Upload, Send, Package, Star, X, ChevronLeft, ChevronRight, Trash2, Clock, MessageSquare, ShieldCheck, Check } from "lucide-react";
 import { createPortal } from "react-dom";
 import { portalApi } from "../portalApi";
 import { PortalFrame } from "../components/PortalFrame";
@@ -194,6 +194,11 @@ export function PortalCaseDetailPage() {
   if (!data) return <PortalFrame><div /></PortalFrame>;
 
   const { case: cs, items, attachments, timeline } = data;
+  // Sales tokens get the salesperson variant; staff-issued customer
+  // links behave exactly like customer ones. `selfSource` is the
+  // source value this viewer's own posts carry.
+  const isSales = data.viewer === "sales";
+  const selfSource = isSales ? "sales" : "customer";
   const stageCopy = STAGE_COPY[cs.stage] ?? STAGE_COPY.pending_review;
   const currentStep = stageCopy.step;
   const resolution = cs.resolution_method ? RESOLUTION_COPY[cs.resolution_method] : null;
@@ -201,24 +206,79 @@ export function PortalCaseDetailPage() {
     (t) => t.source === "customer" && (t.note || "").startsWith("✅ Customer approved"),
   );
   const productHeadline = items[0]?.item_description || items[0]?.item_code || cs.category || "Service case";
-  const supportPhoneNumber = "+60312345678";
 
   return (
     <PortalFrame>
       <div className="mx-auto flex max-w-md flex-col gap-4 px-1 py-1 sm:px-0">
 
-        {/* Product row — small squircle icon + product name + ASSR-no.
-            The customer opened this link knowing their item; the row is
-            confirmation, not navigation. */}
-        <div className="flex items-center gap-3">
-          <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-accent-soft to-accent/25 text-accent shadow-stone">
-            <Package size={22} />
+        {/* Customer header card — the case at a glance (Nick: make the
+            item + issue the clear focal point). Item headline + ASSR no,
+            with the reported issue right underneath (clamped; the full
+            text + category stay in the Reported issue section below).
+            The sales view has its own reference card instead. */}
+        {!isSales && (
+          <div className="rounded-2xl border border-border bg-surface p-4">
+            <div className="flex items-center gap-3">
+              <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-accent-soft to-accent/25 text-accent shadow-stone">
+                <Package size={22} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-[15px] font-bold leading-tight text-ink">{productHeadline}</div>
+                <div className="mt-0.5 font-mono text-[11px] text-ink-muted">{cs.assr_no}</div>
+              </div>
+            </div>
+            {cs.complaint_issue && (
+              <div className="mt-3 border-t border-border-subtle pt-3">
+                <div className="mb-1 text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
+                  Reported issue
+                </div>
+                <div className="line-clamp-3 whitespace-pre-line text-[13px] leading-relaxed text-ink">
+                  {cs.complaint_issue}
+                </div>
+              </div>
+            )}
           </div>
-          <div className="min-w-0">
-            <div className="truncate text-[15px] font-bold leading-tight text-ink">{productHeadline}</div>
-            <div className="mt-0.5 font-mono text-[11px] text-ink-muted">{cs.assr_no}</div>
+        )}
+
+        {/* Sales header: the case-reference card — the numbers a
+            salesperson cross-references against their own orders.
+            Customer tokens never receive doc_no / ref_no. */}
+        {isSales && (
+          <div className="rounded-2xl border border-border bg-surface p-4">
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <div className="min-w-0 truncate text-[15px] font-bold leading-tight text-ink">
+                {cs.customer_name || cs.assr_no}
+              </div>
+              <span className="shrink-0 rounded-full bg-primary/10 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-primary">
+                Sales view
+              </span>
+            </div>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+              {(
+                [
+                  { label: "ASSR No", value: cs.assr_no },
+                  { label: "Customer", value: cs.customer_name, plain: true },
+                  { label: "SO No", value: cs.doc_no },
+                  { label: "Ref No", value: cs.ref_no },
+                ] as Array<{ label: string; value?: string | null; plain?: boolean }>
+              ).map((f) => (
+                <div key={f.label} className="min-w-0">
+                  <div className="text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
+                    {f.label}
+                  </div>
+                  <div
+                    className={
+                      "truncate text-[12.5px] text-ink " + (f.plain ? "font-medium" : "font-mono")
+                    }
+                    title={f.value || undefined}
+                  >
+                    {f.value || "—"}
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Status hero — black card. Friendly copy per stage; NO SLA
             countdown, only a soft "expected update by" date chip. */}
@@ -240,9 +300,56 @@ export function PortalCaseDetailPage() {
           )}
         </div>
 
-        {/* Simplified 5-step tracker. Every case flows through the same
-            5 customer-friendly steps; internal stages collapse into these
-            buckets per STAGE_COPY.step. */}
+        {/* Sales variant: the real 9-stage progress with entry dates —
+            salespeople answer customer questions, so they see the
+            internal stage names, not the softened 5-step summary. */}
+        {isSales && data.stages ? (
+          <div className="rounded-2xl border border-border bg-surface p-5">
+            <div className="mb-4 text-[13px] font-bold text-ink">Case progress</div>
+            <div className="space-y-0">
+              {data.stages.map((s, i) => {
+                const isLast = i === data.stages!.length - 1;
+                return (
+                  <div key={s.stage} className="flex gap-3.5 pb-3.5">
+                    <div className="flex flex-col items-center">
+                      <span
+                        className={
+                          "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold " +
+                          (s.done
+                            ? "bg-primary text-white"
+                            : s.current
+                            ? "bg-[#c79a5a] text-white ring-4 ring-[#c79a5a]/20"
+                            : "border border-border-subtle bg-surface text-ink-muted")
+                        }
+                      >
+                        {s.done ? <Check size={12} strokeWidth={3} /> : i + 1}
+                      </span>
+                      {!isLast && (
+                        <span
+                          className={"mt-1 h-full w-px flex-1 " + (s.done ? "bg-primary/50" : "bg-border-subtle")}
+                          aria-hidden
+                        />
+                      )}
+                    </div>
+                    <div className="flex flex-1 items-baseline justify-between gap-2 pt-0.5">
+                      <div
+                        className={
+                          "text-[13.5px] leading-tight " +
+                          (s.done ? "font-semibold text-ink-secondary" : s.current ? "font-bold text-ink" : "font-medium text-ink-muted")
+                        }
+                      >
+                        {s.label}
+                      </div>
+                      {s.entered_at && (
+                        <div className="shrink-0 font-mono text-[10.5px] text-ink-muted">{formatDate(s.entered_at)}</div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : (
         <div className="rounded-2xl border border-border bg-surface p-5">
           <div className="mb-4 text-[13px] font-bold text-ink">Your request</div>
           <div className="space-y-0">
@@ -288,6 +395,7 @@ export function PortalCaseDetailPage() {
             })}
           </div>
         </div>
+        )}
 
         {/* Proposed resolution — appears only after our team picks a
             resolution method. Customer can Approve (posts a marker
@@ -310,7 +418,7 @@ export function PortalCaseDetailPage() {
             <div className="text-[15px] font-bold text-ink">{resolution.title}</div>
             <div className="mt-1 text-[13px] font-semibold text-synced">{resolution.charge}</div>
             <div className="mt-2 text-[12.5px] leading-relaxed text-ink-secondary">{resolution.body}</div>
-            {!alreadyApproved && cs.stage !== "completed" && (
+            {!alreadyApproved && cs.stage !== "completed" && !isSales && (
               <div className="mt-4 flex gap-2">
                 <button
                   onClick={() => approveResolution(resolution.title)}
@@ -330,15 +438,10 @@ export function PortalCaseDetailPage() {
           </div>
         )}
 
-        {/* Contact row — Call (tel:) + Message (scroll & focus the
-            comment textarea further down). */}
+        {/* Contact row — Message scrolls & focuses the comment textarea
+            further down. (Call button removed with the phone channel,
+            Nick 2026-07-06 — email/portal messages are the channels.) */}
         <div className="flex gap-2">
-          <a
-            href={`tel:${supportPhoneNumber}`}
-            className="flex h-11 flex-1 items-center justify-center gap-2 rounded-xl border border-border bg-surface text-[13px] font-semibold text-ink"
-          >
-            <Phone size={14} /> Call support
-          </a>
           <button
             onClick={focusCommentBox}
             className="flex h-11 flex-1 items-center justify-center gap-2 rounded-xl border border-border bg-surface text-[13px] font-semibold text-ink"
@@ -405,10 +508,10 @@ export function PortalCaseDetailPage() {
                   token={token}
                   attId={a.id}
                   label={a.category}
-                  source={a.source ?? "staff"}
+                  mine={a.source === selfSource}
                   onClick={() => setLightboxIndex(i)}
                   onRemove={
-                    a.source === "customer" && cs.stage !== "completed"
+                    a.source === selfSource && cs.stage !== "completed"
                       ? () => archivePhoto(a.id)
                       : undefined
                   }
@@ -431,7 +534,7 @@ export function PortalCaseDetailPage() {
               <li key={t.id} className="group border-l-2 border-border pl-3 text-[13px]">
                 <div className="flex items-center gap-2 text-[11px] text-ink-muted">
                   <span>{formatDateTime(t.at)}</span>
-                  {t.source === "customer" && t.action === "customer_comment" && cs.stage !== "completed" && (
+                  {t.source === selfSource && t.action.endsWith("_comment") && cs.stage !== "completed" && (
                     <button
                       onClick={() => archiveComment(t.id)}
                       className="ml-auto rounded p-0.5 opacity-0 transition-opacity hover:text-err group-hover:opacity-100"
@@ -443,9 +546,14 @@ export function PortalCaseDetailPage() {
                   )}
                 </div>
                 <div>
-                  {t.source === "customer" && (
+                  {t.source === selfSource && (
                     <span className="mr-1 rounded-full bg-accent/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-accent">
                       You
+                    </span>
+                  )}
+                  {isSales && t.source === "customer" && (
+                    <span className="mr-1 rounded-full bg-primary/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-primary">
+                      Customer
                     </span>
                   )}
                   {t.label}
@@ -524,6 +632,7 @@ export function PortalCaseDetailPage() {
           attachments={attachments}
           token={token}
           index={lightboxIndex}
+          selfSource={selfSource}
           onChange={setLightboxIndex}
           onClose={() => setLightboxIndex(null)}
         />
@@ -532,11 +641,11 @@ export function PortalCaseDetailPage() {
   );
 }
 
-function PortalPhoto({ token, attId, label, source, onClick, onRemove }: {
+function PortalPhoto({ token, attId, label, mine, onClick, onRemove }: {
   token: string;
   attId: number;
   label: string;
-  source: string;
+  mine: boolean;
   onClick?: () => void;
   onRemove?: () => void;
 }) {
@@ -569,7 +678,7 @@ function PortalPhoto({ token, attId, label, source, onClick, onRemove }: {
         )}
         <div className="flex items-center justify-between px-1.5 py-1 text-[9px] uppercase tracking-wider text-ink-muted">
           <span>{label}</span>
-          {source === "customer" && <span className="text-accent">You</span>}
+          {mine && <span className="text-accent">You</span>}
         </div>
       </button>
       {onRemove && (
@@ -595,12 +704,14 @@ function Lightbox({
   attachments,
   token,
   index,
+  selfSource,
   onChange,
   onClose,
 }: {
   attachments: PortalCaseDetail["attachments"];
   token: string;
   index: number;
+  selfSource: string;
   onChange: (i: number) => void;
   onClose: () => void;
 }) {
@@ -666,7 +777,7 @@ function Lightbox({
           <span className="rounded-full border border-white/30 px-2 py-0.5 font-semibold">
             {att.category}
           </span>
-          {att.source === "customer" && (
+          {att.source === selfSource && (
             <span className="rounded-full bg-accent/90 px-2 py-0.5 font-semibold text-white">
               You
             </span>

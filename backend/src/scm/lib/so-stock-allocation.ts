@@ -479,6 +479,20 @@ export async function recomputeSoStockAllocation(
         });
       }
       if (auditRows.length > 0) {
+        // Multi-company (migration 0061): mfg_so_audit_log.company_id is NOT NULL.
+        // Batch-resolve each SO's company so an auto-allocation audit row inherits
+        // the company of the SO it describes. Best-effort (the insert is swallowed).
+        try {
+          const docNos = [...new Set(auditRows.map((r) => r.so_doc_no as string))];
+          const { data: coRows } = await sb.from('mfg_sales_orders')
+            .select('doc_no, company_id').in('doc_no', docNos);
+          const coByDoc = new Map(((coRows ?? []) as Array<{ doc_no: string; company_id: number | null }>)
+            .map((r) => [r.doc_no, r.company_id]));
+          for (const r of auditRows) {
+            const cid = coByDoc.get(r.so_doc_no as string);
+            if (cid != null) r.company_id = cid;
+          }
+        } catch { /* swallow — best-effort */ }
         try { await sb.from('mfg_so_audit_log').insert(auditRows); }
         catch (e) { /* eslint-disable-next-line no-console */ console.error('[so-allocation] audit insert failed:', e); }
       }

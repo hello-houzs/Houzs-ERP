@@ -46,6 +46,7 @@ import {
 } from "../components/DetailLayout";
 import { Button } from "../components/Button";
 import { DataTable, type Column } from "../components/DataTable";
+import { UserMultiSelect } from "../components/UserMultiSelect";
 import {
   StatusDot,
   stageVariant,
@@ -88,14 +89,14 @@ type StageFilter = "ALL" | AssrStage;
 // vocabulary; values are the SQL enum.
 const STAGE_OPTIONS: { value: StageFilter; label: string }[] = [
   { value: "ALL", label: "All" },
-  { value: "pending_review", label: "Pending Review" },
-  { value: "under_verification", label: "Under Verification" },
-  { value: "pending_solution", label: "Pending Solution" },
-  { value: "pending_inspection", label: "Pending Inspection" },
-  { value: "pending_item_pickup", label: "Pending Item Pickup" },
-  { value: "pending_supplier_pickup", label: "Pending Supplier Pickup" },
-  { value: "pending_item_ready", label: "Pending Item Ready" },
-  { value: "pending_delivery_service", label: "Pending Delivery / Service" },
+  { value: "pending_review", label: "Review" },
+  { value: "under_verification", label: "Verification" },
+  { value: "pending_solution", label: "Solution" },
+  { value: "pending_inspection", label: "Inspection" },
+  { value: "pending_item_pickup", label: "Item Pickup" },
+  { value: "pending_supplier_pickup", label: "Supplier Pickup" },
+  { value: "pending_item_ready", label: "Item Ready" },
+  { value: "pending_delivery_service", label: "Delivery / Service" },
   { value: "completed", label: "Completed" },
 ];
 
@@ -285,8 +286,11 @@ export function ServiceCases() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [urlView]);
 
-  // "New Case" action lives on the Cases view's header.
-  const [showCreate, setShowCreate] = useState(false);
+  /* "New Case" action lives on the Cases view's header. Nick 2026-07-09:
+     the global QuickActionsFAB now offers "Create Service Case" too, so we
+     auto-open the create panel when the URL carries ?new=1 (e.g. the FAB
+     drops the operator here with the panel already open, no extra click). */
+  const [showCreate, setShowCreate] = useState(params.get("new") === "1");
 
   return (
     <div>
@@ -493,13 +497,6 @@ function CasesView({
       ),
     },
     {
-      key: "assr_no",
-      filterable: true,
-      label: "ASSR No",
-      render: (r) => <span className="font-mono text-xs font-medium">{r.assr_no}</span>,
-      getValue: (r) => r.assr_no,
-    },
-    {
       key: "stage",
       filterable: true,
       label: "Stage",
@@ -539,6 +536,51 @@ function CasesView({
       // helper only maps the 5 legacy slugs, so 9-stage rows fell through
       // to raw slugs in the funnel filter + CSV export.
       getValue: (r) => caseStageLabel(r.stage),
+    },
+    {
+      key: "assr_no",
+      filterable: true,
+      label: "ASSR No",
+      render: (r) => <span className="font-mono text-xs font-medium">{r.assr_no}</span>,
+      getValue: (r) => r.assr_no,
+    },
+    {
+      key: "complained_date",
+      filterable: true,
+      label: "Date",
+      render: (r) => formatDate(r.complained_date),
+      getValue: (r) => formatDate(r.complained_date),
+    },
+    {
+      key: "doc_no",
+      filterable: true,
+      label: "SO No",
+      render: (r) => <span className="font-mono text-xs">{r.doc_no}</span>,
+      getValue: (r) => r.doc_no,
+    },
+    {
+      key: "ref_no",
+      filterable: true,
+      label: "Ref No",
+      // The SO's customer reference (HC/ZNT/PG…) — what the branches
+      // and suppliers quote back, so it earns a default-visible slot
+      // next to SO No.
+      render: (r) => <span className="font-mono text-xs">{r.ref_no || "—"}</span>,
+      getValue: (r) => r.ref_no,
+    },
+    {
+      key: "customer_name",
+      filterable: true,
+      label: "Customer",
+      render: (r) => (
+        <span
+          className="block max-w-[180px] truncate"
+          title={r.customer_name || undefined}
+        >
+          {r.customer_name || "—"}
+        </span>
+      ),
+      getValue: (r) => r.customer_name,
     },
     {
       key: "priority_dwell",
@@ -594,32 +636,14 @@ function CasesView({
       getValue: (r) => r.days_in_stage ?? -1,
     },
     {
-      key: "doc_no",
+      key: "assigned_to_name",
       filterable: true,
-      label: "SO No",
-      render: (r) => <span className="font-mono text-xs">{r.doc_no}</span>,
-      getValue: (r) => r.doc_no,
-    },
-    {
-      key: "complained_date",
-      filterable: true,
-      label: "Date",
-      render: (r) => formatDate(r.complained_date),
-      getValue: (r) => formatDate(r.complained_date),
-    },
-    {
-      key: "customer_name",
-      filterable: true,
-      label: "Customer",
-      render: (r) => (
-        <span
-          className="block max-w-[180px] truncate"
-          title={r.customer_name || undefined}
-        >
-          {r.customer_name || "—"}
-        </span>
-      ),
-      getValue: (r) => r.customer_name,
+      label: "Assigned To",
+      // Both responsible people, primary first ("Farra · Nancy").
+      render: (r) =>
+        [r.assigned_to_name, r.assigned_to_2_name].filter(Boolean).join(" · ") || "—",
+      getValue: (r) =>
+        [r.assigned_to_name, r.assigned_to_2_name].filter(Boolean).join(" · ") || null,
     },
     {
       key: "item_code",
@@ -645,13 +669,6 @@ function CasesView({
         </span>
       ),
       getValue: (r) => resolutionLabel(r.resolution_method),
-    },
-    {
-      key: "assigned_to_name",
-      filterable: true,
-      label: "Assigned To",
-      render: (r) => r.assigned_to_name || "—",
-      getValue: (r) => r.assigned_to_name,
     },
     {
       key: "supplier_pickup_at",
@@ -715,8 +732,8 @@ function CasesView({
               className={cn(
                 "inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold transition-colors",
                 caseView === v
-                  ? "bg-accent text-white"
-                  : "text-ink-muted hover:text-accent"
+                  ? "bg-primary text-white"
+                  : "text-ink-muted hover:text-primary"
               )}
             >
               <Icon size={13} />
@@ -2604,7 +2621,7 @@ function DetailContent({
   //   customer = anything the customer posted or uploaded on their portal
   //   supplier = anything the supplier posted / did via /portal/supplier
   const [activityFilter, setActivityFilter] = useState<
-    "all" | "service" | "customer" | "supplier"
+    "all" | "service" | "customer" | "supplier" | "sales"
   >("all");
   const [transitioning, setTransitioning] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -2793,7 +2810,9 @@ function DetailContent({
     ? users.data
         .filter(
           (u: any) =>
-            /operation/i.test(u.department_name || "") || u.id === c?.assigned_to,
+            /operation/i.test(u.department_name || "") ||
+            u.id === c?.assigned_to ||
+            u.id === c?.assigned_to_2,
         )
         .map((u) => ({ id: u.id, name: u.name }))
     : [];
@@ -2828,6 +2847,7 @@ function DetailContent({
             <PrintMenu caseId={id} toast={toast} />
             <PortalLinksMenu
               id={id}
+              assrNo={c.assr_no}
               existingToken={detail.data?.portal_token ?? null}
               toast={toast}
               onGenerated={() => detail.reload()}
@@ -3444,15 +3464,21 @@ function DetailContent({
           </PanelSection>
             </StageRow>
 
-            {/* pending_inspection — placeholder for now; PR 4 splits
-                the QC Inspection form so a receipt-side check lands
-                here (separate from the on-return check under Item
-                Ready). */}
+            {/* pending_inspection — one stage whoever inspects (Nick
+                2026-07-05). `inspection_by` picks the performer: own
+                team routes the visit into Delivery Planning (setting
+                customer_pickup_at surfaces the case on the board as an
+                unscheduled job — the "trip draft"); supplier handles it
+                on their side via the supplier portal. */}
             <StageRow
               stageId="pending_inspection"
               title="Inspection · QC Issue Inspection"
               summary={
-                c.stage === "pending_inspection"
+                c.inspection_by === "own"
+                  ? `Own-team inspection${c.customer_pickup_at ? ` · visit ${formatDate(c.customer_pickup_at)}` : " · schedule the visit"}`
+                  : c.inspection_by === "supplier"
+                  ? "Supplier inspection — tracked via supplier portal"
+                  : c.stage === "pending_inspection"
                   ? "QC issue inspection on receipt · action required now"
                   : "QC Issue Inspection (on receipt): assess the reported defect from photos & description, then decide whether to accept the case."
               }
@@ -3461,10 +3487,75 @@ function DetailContent({
               openStage={openStage}
               setOpenStage={setOpenStage}
             >
-              <div className="rounded-md border border-dashed border-border bg-surface px-3 py-2.5 text-[12px] text-ink-muted">
-                Assignment + receipt-inspection form lands here in a
-                follow-up PR. For now, ops can move the case to Item
-                Pickup / Supplier Pickup via the Workflow dropdown.
+              <div className="space-y-2.5 rounded-md border border-border-subtle bg-surface px-3 py-2.5">
+                <div>
+                  <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+                    Inspection by
+                  </div>
+                  <div className="flex gap-1.5">
+                    {([
+                      { v: "own", label: "Own team" },
+                      { v: "supplier", label: "Supplier" },
+                    ] as const).map((o) => (
+                      <button
+                        key={o.v}
+                        onClick={() =>
+                          patch({ inspection_by: c.inspection_by === o.v ? null : o.v })
+                        }
+                        disabled={!!c.archived_at}
+                        className={cn(
+                          "rounded-md border px-3 py-1.5 text-[12px] font-semibold transition-colors",
+                          c.inspection_by === o.v
+                            ? "border-primary bg-primary-soft text-primary"
+                            : "border-border bg-surface text-ink-secondary hover:border-primary/40",
+                        )}
+                      >
+                        {o.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {c.inspection_by === "own" && (
+                  <>
+                    <InlineEdit
+                      label="Inspection Visit Date"
+                      type="date"
+                      value={c.customer_pickup_at}
+                      onSave={(v) => patch({ customer_pickup_at: v || null })}
+                    />
+                    <div className="flex flex-wrap items-center gap-2 rounded-md bg-bg/60 px-3 py-2 text-[11.5px] leading-relaxed text-ink-secondary">
+                      {c.customer_pickup_at ? (
+                        <>
+                          <span>
+                            On the <b>Delivery Planning</b> board as an unscheduled
+                            job — assign a driver / lorry there.
+                          </span>
+                          <a
+                            href="/scm/delivery-planning"
+                            target="_blank"
+                            rel="noreferrer"
+                            className="font-semibold text-primary hover:underline"
+                          >
+                            Open Delivery Planning →
+                          </a>
+                        </>
+                      ) : (
+                        <span>
+                          Set the visit date — the case then appears on the
+                          <b> Delivery Planning</b> board automatically for
+                          driver / lorry assignment.
+                        </span>
+                      )}
+                    </div>
+                  </>
+                )}
+                {c.inspection_by === "supplier" && (
+                  <div className="rounded-md bg-bg/60 px-3 py-2 text-[11.5px] leading-relaxed text-ink-secondary">
+                    Supplier performs the inspection — progress lands in the
+                    supplier portal's service note (see the Supplier Pickup /
+                    Item Ready rows).
+                  </div>
+                )}
               </div>
             </StageRow>
 
@@ -3517,6 +3608,15 @@ function DetailContent({
                   type="date"
                   value={c.supplier_pickup_at}
                   onSave={(v) => patch({ supplier_pickup_at: v || null })}
+                />
+                {/* Nick 2026-07-05 — the return leg lives here too:
+                    when the supplier brings the item back. Same field
+                    the Item Ready QC reads (items_ready_at). */}
+                <InlineEdit
+                  label="Supplier Return Date"
+                  type="date"
+                  value={c.items_ready_at}
+                  onSave={(v) => patch({ items_ready_at: v || null })}
                 />
                 {/* Mig 106 — send-out slip that goes with the item
                     when supplier collects. Supplier sees this on
@@ -3752,24 +3852,24 @@ function DetailContent({
               across the page; picking a user snaps to the standard
               filled select. */}
           <PanelSection title="Assigned to" icon={<UserPlus size={13} />}>
-            <select
-              className={cn(
-                "w-full appearance-none rounded-md px-3 py-2 pr-8 text-[13px] outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/20",
-                c.assigned_to == null
-                  ? "border border-dashed border-amber-500/60 bg-amber-50/60 font-semibold text-amber-800"
-                  : "border border-border bg-surface text-ink",
-              )}
-              value={c.assigned_to ?? ""}
-              onChange={(e) => {
-                const v = e.target.value;
-                patch({ assigned_to: v ? parseInt(v, 10) : null });
-              }}
-            >
-              <option value="">Unassigned — click to assign</option>
-              {opsUserOptions.map((u) => (
-                <option key={u.id} value={u.id}>{u.name}</option>
-              ))}
-            </select>
+            {/* Searchable A→Z multi-select, max 2 — first pick is the
+                primary assignee, second the co-assignee. Unassigned
+                keeps the amber "attention needed" treatment via the
+                warning row below. */}
+            <UserMultiSelect
+              options={opsUserOptions}
+              value={[c.assigned_to, c.assigned_to_2].filter((n): n is number => n != null)}
+              onChange={(ids) =>
+                patch({ assigned_to: ids[0] ?? null, assigned_to_2: ids[1] ?? null })
+              }
+              max={2}
+              placeholder="Unassigned — search to assign"
+            />
+            {c.assigned_to == null && (
+              <div className="mt-1.5 rounded-md border border-dashed border-amber-500/60 bg-amber-50/60 px-2 py-1 text-[11px] font-semibold text-amber-800">
+                Needs an assignee
+              </div>
+            )}
           </PanelSection>
 
           {/* SLA — Design PR 2. Full red card + big mono countdown +
@@ -3957,7 +4057,8 @@ function DetailContent({
 
             {/* Filter tabs — Design PR 2. Roles reflect who authored the
                 activity (Service = internal, Customer = via customer
-                portal, Supplier = via supplier portal). */}
+                portal, Supplier = via supplier portal, Sales = via the
+                sales portal link). */}
             <div className="mb-3 flex flex-wrap gap-1.5">
               {(
                 [
@@ -3965,6 +4066,7 @@ function DetailContent({
                   { value: "service" as const, label: "Service" },
                   { value: "customer" as const, label: "Customer" },
                   { value: "supplier" as const, label: "Supplier" },
+                  { value: "sales" as const, label: "Sales" },
                 ]
               ).map((opt) => {
                 const active = activityFilter === opt.value;
@@ -3991,8 +4093,9 @@ function DetailContent({
             {(() => {
               // Design PR 2 — derive an actor role from source_channel /
               // action so the filter tabs and the per-entry pill agree.
-              const roleOf = (a: any): "customer" | "supplier" | "service" => {
+              const roleOf = (a: any): "customer" | "supplier" | "service" | "sales" => {
                 const ch = a.source_channel;
+                if (a.source === "sales" || a.action === "sales_comment" || a.action === "sales_upload") return "sales";
                 if (ch === "customer_portal" || a.source === "customer" || a.action === "customer_comment") return "customer";
                 if (ch === "supplier_portal") return "supplier";
                 return "service";
@@ -4015,12 +4118,14 @@ function DetailContent({
                     const author =
                       a.source === "customer"
                         ? a.customer_name_display || a.customer_email || "Customer"
-                        : a.user_name || "System";
+                        : a.source === "sales"
+                          ? c.sales_agent || "Sales"
+                          : a.user_name || "System";
                     const isEscalated = a.action === "escalated";
                     const isCustomer = a.source === "customer";
                     const archivable =
                       !c.archived_at &&
-                      (a.action === "note" || a.action === "customer_comment");
+                      (a.action === "note" || a.action === "customer_comment" || a.action === "sales_comment");
                     let title: React.ReactNode = a.action;
                     let body: React.ReactNode = null;
                     switch (a.action) {
@@ -4051,6 +4156,14 @@ function DetailContent({
                           userOptions.find((u) => String(u.id) === a.to_value)
                             ?.name || `user #${a.to_value}`
                         }`;
+                        break;
+                      case "assignment_2":
+                        title = a.to_value
+                          ? `Co-assignee set to ${
+                              userOptions.find((u) => String(u.id) === a.to_value)
+                                ?.name || `user #${a.to_value}`
+                            }`
+                          : "Co-assignee cleared";
                         break;
                       case "approval":
                         title = (
@@ -4095,6 +4208,16 @@ function DetailContent({
                         title = "Photo uploaded";
                         if (a.note) body = a.note;
                         break;
+                      case "sales_comment":
+                        // Same reasoning as customer_comment — the pill
+                        // already says Sales; the comment is the headline.
+                        title = null;
+                        body = a.note;
+                        break;
+                      case "sales_upload":
+                        title = "Photo uploaded";
+                        if (a.note) body = a.note;
+                        break;
                     }
                     const actorRole = roleOf(a);
                     return (
@@ -4108,7 +4231,9 @@ function DetailContent({
                                 ? "border-amber-500"
                                 : actorRole === "supplier"
                                   ? "border-primary"
-                                  : "border-border"
+                                  : actorRole === "sales"
+                                    ? "border-accent"
+                                    : "border-border"
                           )}
                         />
                         <div className="flex items-center gap-2 text-[10.5px] text-ink-muted">
@@ -4151,10 +4276,11 @@ function DetailContent({
                               "rounded px-1.5 py-[1px] text-[9px] font-bold uppercase tracking-wider",
                               actorRole === "customer" && "bg-amber-100 text-amber-800",
                               actorRole === "supplier" && "bg-primary/10 text-primary",
+                              actorRole === "sales" && "bg-accent-soft text-accent",
                               actorRole === "service" && "bg-bg text-ink-secondary",
                             )}
                           >
-                            {actorRole === "service" ? "Service" : actorRole === "customer" ? "Customer" : "Supplier"}
+                            {actorRole === "service" ? "Service" : actorRole === "customer" ? "Customer" : actorRole === "supplier" ? "Supplier" : "Sales"}
                           </span>
                           <span>by {author}</span>
                         </div>
@@ -4449,15 +4575,15 @@ const VERIFICATION_OPTIONS = [
 // filtering land in later PRs; this PR only refreshes the header strip.
 
 const DETAIL_STAGES: { id: AssrStage; short: string; long: string }[] = [
-  { id: "pending_review",           short: "Review",       long: "Pending Review" },
-  { id: "under_verification",       short: "Verification", long: "Under Verification" },
-  { id: "pending_solution",         short: "Solution",     long: "Pending Solution" },
-  { id: "pending_inspection",       short: "Inspection",   long: "Pending Inspection" },
-  { id: "pending_item_pickup",      short: "Item Pickup",  long: "Pending Item Pickup" },
-  { id: "pending_supplier_pickup",  short: "Supplier",     long: "Pending Supplier Pickup" },
-  { id: "pending_item_ready",       short: "Item Ready",   long: "Pending Item Ready" },
-  { id: "pending_delivery_service", short: "Delivery",     long: "Pending Delivery / Service" },
-  { id: "completed",                short: "Completed",    long: "Completed" },
+  { id: "pending_review",              short: "Review",       long: "Review" },
+  { id: "under_verification",          short: "Verification", long: "Verification" },
+  { id: "pending_solution",            short: "Solution",     long: "Solution" },
+  { id: "pending_inspection",          short: "Inspection",   long: "Inspection" },
+  { id: "pending_item_pickup",         short: "Item Pickup",  long: "Item Pickup" },
+  { id: "pending_supplier_pickup",     short: "Supplier",     long: "Supplier Pickup" },
+  { id: "pending_item_ready",          short: "Item Ready",   long: "Item Ready" },
+  { id: "pending_delivery_service",    short: "Delivery",     long: "Delivery / Service" },
+  { id: "completed",                   short: "Completed",    long: "Completed" },
 ];
 
 // Which side of the flow a resolution method routes to. Drives dot
@@ -5663,11 +5789,13 @@ function PrintMenu({
 // Customer card.
 function PortalLinksMenu({
   id,
+  assrNo,
   existingToken,
   onGenerated,
   toast,
 }: {
   id: number;
+  assrNo: string;
   existingToken: string | null;
   onGenerated: () => void;
   toast: ReturnType<typeof useToast>;
@@ -5689,7 +5817,7 @@ function PortalLinksMenu({
       <button
         onClick={() => setOpen((v) => !v)}
         className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-[10px] font-semibold text-ink hover:border-accent/40"
-        title="Generate a customer or supplier portal link"
+        title="Generate a customer, supplier or sales portal link"
       >
         Portal Link
         <ChevronRight
@@ -5701,11 +5829,13 @@ function PortalLinksMenu({
         <div className="absolute right-0 top-full z-30 mt-1 w-72 rounded-md border border-border bg-surface p-2 shadow-stone">
           <PortalLinkRow
             id={id}
+            assrNo={assrNo}
             existingToken={existingToken}
             toast={toast}
             onGenerated={onGenerated}
           />
           <SupplierPortalLinkRow id={id} toast={toast} />
+          <SalesPortalLinkRow id={id} assrNo={assrNo} toast={toast} />
         </div>
       )}
     </div>
@@ -6135,22 +6265,32 @@ function CustomerHistory({ id }: { id: number }) {
   );
 }
 
+// URL-safe ASSR slug for readable portal links (ASSR/2607-008 →
+// ASSR-2607-008). Cosmetic only — the portal resolves by token.
+function assrSlug(assrNo: string): string {
+  return assrNo.replace(/[^A-Za-z0-9-]+/g, "-");
+}
+
 // ── Portal tracking link generator (shown on every case) ────
 
 function PortalLinkRow({
   id,
+  assrNo,
   existingToken,
   onGenerated,
   toast,
 }: {
   id: number;
+  assrNo: string;
   existingToken: string | null;
   onGenerated: () => void;
   toast: ReturnType<typeof useToast>;
 }) {
   const [busy, setBusy] = useState(false);
+  // Readable link: the ASSR slug rides in the path (cosmetic — the
+  // token alone still resolves, old bare links keep working).
   const link = existingToken
-    ? `${window.location.origin}/portal/case/${existingToken}`
+    ? `${window.location.origin}/portal/case/${assrSlug(assrNo)}/${existingToken}`
     : null;
 
   async function generate() {
@@ -6193,7 +6333,7 @@ function PortalLinkRow({
             </button>
           </div>
           <div className="mt-1.5 text-[10px] text-ink-muted">
-            30-day link. Paste into WhatsApp for the customer.
+            Permanent link. Paste into WhatsApp for the customer.
           </div>
         </>
       ) : (
@@ -6286,6 +6426,87 @@ function SupplierPortalLinkRow({
             className="inline-flex items-center gap-1 rounded-md border border-accent/40 bg-accent-soft/20 px-3 py-1.5 text-[11px] font-semibold text-accent hover:bg-accent-soft/40 disabled:opacity-50"
           >
             {busy ? "Generating…" : "Generate Supplier Link"}
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── Sales portal link ────────────────────────────────────────────
+//
+// Third variant of the per-case portal link: same /portal/case route
+// as the customer link but the token is source='sales', so the portal
+// shows the salesperson view — full 9-stage progress with dates, and
+// comments/uploads attributed to sales. Idempotent per case.
+
+function SalesPortalLinkRow({
+  id,
+  assrNo,
+  toast,
+}: {
+  id: number;
+  assrNo: string;
+  toast: ReturnType<typeof useToast>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [link, setLink] = useState<string | null>(null);
+
+  async function generate() {
+    setBusy(true);
+    try {
+      const r = await api.post<{ token: string; path: string }>(
+        `/api/assr/${id}/sales-link`
+      );
+      setLink(`${window.location.origin}/portal/case/${assrSlug(assrNo)}/${r.token}`);
+      toast.success("Sales link generated.");
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to generate link");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mt-2 rounded-md border border-border bg-bg/40 p-3">
+      <div className="mb-1 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+        Sales Portal Link
+      </div>
+      {link ? (
+        <>
+          <div className="flex items-center gap-2">
+            <input
+              readOnly
+              value={link}
+              onFocus={(e) => e.currentTarget.select()}
+              className="flex-1 rounded-md border border-border bg-surface px-2 py-1.5 font-mono text-[11px]"
+            />
+            <button
+              onClick={() => {
+                navigator.clipboard?.writeText(link);
+                toast.success("Copied");
+              }}
+              className="rounded-md border border-border bg-surface px-2 py-1.5 text-[10px] font-semibold"
+            >
+              Copy
+            </button>
+          </div>
+          <div className="mt-1.5 text-[10px] text-ink-muted">
+            Permanent link. Paste into WhatsApp for the salesperson.
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="mb-1.5 text-[11px] text-ink-secondary">
+            Share with the salesperson — full stage progress for this case,
+            and they can message the team. No costs or internal notes.
+          </div>
+          <button
+            onClick={generate}
+            disabled={busy}
+            className="inline-flex items-center gap-1 rounded-md border border-accent/40 bg-accent-soft/20 px-3 py-1.5 text-[11px] font-semibold text-accent hover:bg-accent-soft/40 disabled:opacity-50"
+          >
+            {busy ? "Generating…" : "Generate Sales Link"}
           </button>
         </>
       )}

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, ReactNode, SetStateAction } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
+import { MediaLightbox, type MediaItem } from "../components/MediaLightbox";
 import { useAuth } from "../auth/AuthContext";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
@@ -155,6 +156,10 @@ type ProjectDetail = {
     dismantle_driver_name?: string | null;
     setup_lorry_plate?: string | null;
     dismantle_lorry_plate?: string | null;
+    // Phase crew editor JSON (desktop parsePhaseCrew) — the desktop form
+    // writes crew here, NOT the FK columns above, so mobile must dual-read.
+    setup_crew?: string | null;
+    dismantle_crew?: string | null;
   };
   stock_transfers?: StockTransfer[];
   finance: {
@@ -741,11 +746,12 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                 )}
                 <svg className="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
               </summary>
-              {/* Body — design "Project" card rows VERBATIM: Dates / Venue /
+              {/* Body — design "Project" card rows: Dates / Venue / Booth no. /
                   Organizer / Branding, wired to our real columns. */}
               <div className="pbody">
                 <div className="row" style={{ borderTop: "none" }}><span className="row-l">Dates</span><span className="row-v money">{dm(p.start_date)} – {dm(p.end_date)}</span></div>
                 <div className="row"><span className="row-l">Venue</span><span className="row-v">{p.venue || p.state || "—"}</span></div>
+                <div className="row"><span className="row-l">Booth no.</span><span className="row-v">{p.booth_no || "—"}</span></div>
                 <div className="row"><span className="row-l">Organizer</span><span className="row-v">{p.organizer || "—"}</span></div>
                 <div className="row" style={{ borderBottom: "none" }}><span className="row-l">Branding</span><span className="row-v">{p.brand || "—"}</span></div>
               </div>
@@ -1212,6 +1218,12 @@ function TaskRow({
   reload: () => void;
 }) {
   const fileRef = useRef<HTMLInputElement | null>(null);
+  const { user } = useAuth();
+  // Attachment viewer — every user (incl. read-only drivers) can open the
+  // task's files fullscreen; MediaLightbox fetches with the bearer token,
+  // so this also sidesteps mobile popup-blockers that ate window.open.
+  const [viewIdx, setViewIdx] = useState<number | null>(null);
+  const files = attachments.filter((a) => !a.archived_at);
   const status = (it.status ?? "").toLowerCase();
   const done = status === "done";
   const na = status === "na";
@@ -1219,6 +1231,15 @@ function TaskRow({
   // A row the caller can't tick because it needs a specific permission.
   const permBlocked = !!it.required_perm && !can(it.required_perm);
   const canRowTick = canTick && !permBlocked;
+  // Attach button: full-write users get it on every task; tick-only users
+  // (drivers) only on tasks badged for THEIR role — a driver should upload
+  // to "Setup Image · DRIVER", not to BD/PURCHASER/SALES PIC tasks
+  // (owner 2026-07-09).
+  const tickOnly = canTick && !can("projects.write");
+  const roleMatchesUser =
+    !!it.role_label && !!user?.role_name &&
+    it.role_label.trim().toUpperCase() === user.role_name.trim().toUpperCase();
+  const canAttach = canTick && (!tickOnly || roleMatchesUser);
 
   const cycle = async () => {
     if (!canRowTick || busy) return;
@@ -1294,6 +1315,43 @@ function TaskRow({
     }
   };
 
+  // Tappable file chips + fullscreen viewer, shared by both row variants.
+  const fileChips = files.length > 0 && (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, padding: "0 0 8px 24px" }}>
+      {files.map((a, i) => (
+        <button
+          key={a.id}
+          type="button"
+          className="tinybtn"
+          style={{ display: "inline-flex", alignItems: "center", gap: 5, maxWidth: 190 }}
+          onClick={() => setViewIdx(i)}
+          title={a.file_name ?? undefined}
+        >
+          {(a.mime_type || "").startsWith("image/") ? (
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flex: "none" }}><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="9" cy="9" r="2" /><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21" /></svg>
+          ) : (
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flex: "none" }}><path d="M13.2 6.5 7 12.7a4.4 4.4 0 1 0 6.2 6.2l6.5-6.5a2.9 2.9 0 1 0-4.1-4.1l-6.5 6.5a1.5 1.5 0 1 0 2.1 2.1l6.1-6.2" /></svg>
+          )}
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.file_name || "File"}</span>
+        </button>
+      ))}
+    </div>
+  );
+  const fileViewer = viewIdx != null && files[viewIdx] ? (
+    <MediaLightbox
+      items={files.map((a): MediaItem => ({
+        r2_key: a.r2_key,
+        content_type: a.mime_type ?? mimeFromKey(a.r2_key),
+        caption: a.file_name,
+      }))}
+      index={viewIdx}
+      onChange={setViewIdx}
+      onClose={() => setViewIdx(null)}
+      baseUrl="/api/projects/attachments"
+      badge={it.title}
+    />
+  ) : null;
+
   // Payment / deposit pill rows: N/A / PENDING / PAID instead of the tick.
   if (it.pill_kind) {
     const opts: Array<[string, string]> =
@@ -1302,6 +1360,7 @@ function TaskRow({
         : [["none", "N/A"], ["unpaid", "PENDING"], ["refunded", "REFUNDED"]];
     const cur = it.pill_value || "unpaid";
     return (
+      <>
       <div className="docrow" style={{ flexWrap: "wrap" }}>
         <span style={{ width: 15, height: 15, flex: "none" }} />
         <span style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600, color: "#11140f" }}>{it.title}</span>
@@ -1321,6 +1380,9 @@ function TaskRow({
           );
         })}
       </div>
+      {fileChips}
+      {fileViewer}
+      </>
     );
   }
 
@@ -1348,7 +1410,7 @@ function TaskRow({
       <span style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600, color: na ? "#9aa093" : "#11140f", textDecoration: na ? "line-through" : "none" }}>{it.title}</span>
       {it.role_label && c && <span className="rbadge" style={{ background: `${c}1f`, color: c }}>{it.role_label}</span>}
       {it.due_date && <span style={{ fontSize: 9.5, color: "#9aa093", whiteSpace: "nowrap" }}>{dm(it.due_date)}</span>}
-      {canTick && (
+      {canAttach && (
         <>
           <input ref={fileRef} type="file" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void upload(f); }} />
           <button className="tinybtn" disabled={busy} onClick={() => fileRef.current?.click()} title={attachments.length ? `${attachments.length} file(s)` : "Attach"}>
@@ -1363,14 +1425,66 @@ function TaskRow({
         </>
       )}
     </div>
+    {fileChips}
     {reviewStatus && reviewStatus !== "approved" && (
       <div style={{ padding: "0 0 6px 24px" }}>
         <span className="rbadge" style={{ background: reviewStatus === "rejected" ? "#f7e7e5" : "#f6efd9", color: reviewStatus === "rejected" ? "#a13a34" : "#6e4d12" }}>{humanize(reviewStatus).toUpperCase()}</span>
       </div>
     )}
+    {fileViewer}
     </div>
   );
 }
+
+// The desktop Setup & Dismantle crew editor stores crew as JSON on
+// projects.setup_crew / dismantle_crew ({drivers:[{name,phone}], helpers,
+// lorries:["PLATE"], outsourced:{enabled,entries}}) and leaves the FK
+// columns (setup_driver_user_id / setup_lorry_id) untouched. Mobile shows
+// the FK-joined names when present and falls back to this JSON otherwise.
+type CrewPerson = { name: string; phone?: string | null };
+type PhaseCrew = { drivers: CrewPerson[]; helpers: CrewPerson[]; lorries: string[] };
+const parseCrewJson = (raw: string | null | undefined): PhaseCrew => {
+  const out: PhaseCrew = { drivers: [], helpers: [], lorries: [] };
+  if (!raw || raw === "{}") return out;
+  try {
+    const j = JSON.parse(raw) as Record<string, unknown>;
+    const people = (v: unknown): CrewPerson[] =>
+      (Array.isArray(v) ? v : [])
+        .filter((p): p is { name?: unknown; phone?: unknown } => !!p && typeof p === "object")
+        .filter((p) => typeof p.name === "string" && p.name.trim() !== "")
+        .map((p) => ({ name: String(p.name), phone: typeof p.phone === "string" && p.phone ? p.phone : null }));
+    out.drivers = people(j.drivers);
+    out.helpers = people(j.helpers);
+    out.lorries = (Array.isArray(j.lorries) ? j.lorries : []).filter((l): l is string => typeof l === "string" && l.trim() !== "");
+    const oc = j.outsourced as { enabled?: unknown; entries?: unknown } | undefined;
+    if (oc?.enabled && Array.isArray(oc.entries)) {
+      for (const e of oc.entries as Array<{ name?: unknown; phone?: unknown; plate?: unknown }>) {
+        if (typeof e?.name === "string" && e.name.trim()) out.drivers.push({ name: `${e.name} (outsource)`, phone: typeof e.phone === "string" && e.phone ? e.phone : null });
+        if (typeof e?.plate === "string" && e.plate.trim()) out.lorries.push(e.plate);
+      }
+    }
+  } catch {
+    // Legacy plain-text crew — nothing structured to show.
+  }
+  return out;
+};
+const crewLabel = (p: CrewPerson): string => (p.phone ? `${p.name} (${p.phone})` : p.name);
+const crewIsEmpty = (c: PhaseCrew): boolean => c.drivers.length === 0 && c.helpers.length === 0 && c.lorries.length === 0;
+
+// Best-effort content type from an R2 key's extension — some payloads
+// (finance lines, phase photos) don't carry a stored mime type, and the
+// lightbox needs one to decide between inline <img>/<video> and a
+// download tile.
+const mimeFromKey = (key: string): string | null => {
+  const m = /\.([a-z0-9]+)$/i.exec(key);
+  if (!m) return null;
+  const ext = m[1].toLowerCase();
+  if (["png", "jpg", "jpeg", "webp", "gif", "heic"].includes(ext)) return `image/${ext === "jpg" ? "jpeg" : ext}`;
+  if (["mp4", "webm"].includes(ext)) return `video/${ext}`;
+  if (ext === "mov") return "video/quicktime";
+  if (ext === "pdf") return "application/pdf";
+  return null;
+};
 
 // Split an ISO "date T time" into the parts an <input type=date/time> wants.
 const isoDatePart = (iso: string | null | undefined): string => {
@@ -1410,7 +1524,8 @@ function SetupDismantle({
   const anyData =
     project.setup_start_at || project.dismantle_start_at ||
     project.setup_driver_name || project.dismantle_driver_name ||
-    project.setup_lorry_plate || project.dismantle_lorry_plate || photos.length > 0;
+    project.setup_lorry_plate || project.dismantle_lorry_plate || photos.length > 0 ||
+    !crewIsEmpty(parseCrewJson(project.setup_crew)) || !crewIsEmpty(parseCrewJson(project.dismantle_crew));
 
   return (
     <details className="pacc">
@@ -1522,6 +1637,14 @@ function PhaseBlock({
 
   const [date, setDate] = useState(isoDatePart(startAt));
   const [time, setTime] = useState(isoTimePart(startAt));
+  // Existing phase photo — thumbnail + tap-to-view for everyone (drivers
+  // included); upload/replace stays gated on canWrite.
+  const photoKey = photo?.r2_key ?? null;
+  const [photoOpen, setPhotoOpen] = useState(false);
+  // Crew fallback: FK-joined name wins, else the crew-editor JSON.
+  const crew = parseCrewJson(isSetup ? project.setup_crew : project.dismantle_crew);
+  const driverDisplay = driverName || crew.drivers.map(crewLabel).join(", ") || "—";
+  const lorryDisplay = lorryPlate || crew.lorries.join(", ") || "—";
 
   // Compose date + time → the ISO the backend stores. Only PATCHes when a date
   // is present (time-only is meaningless without a day).
@@ -1593,28 +1716,57 @@ function PhaseBlock({
               {lorries.map((l) => <option key={l.id} value={l.id}>{l.plate || `#${l.id}`}{l.is_internal === false ? " (outsource)" : ""}</option>)}
             </select>
           </label>
+          {driverId == null && !crewIsEmpty(crew) && (
+            <div style={{ fontSize: 10.5, color: "#767b6e", margin: "0 0 6px", lineHeight: 1.5 }}>
+              Planned crew: {[
+                crew.drivers.map(crewLabel).join(", "),
+                crew.lorries.join(", "),
+                crew.helpers.length ? `Helpers: ${crew.helpers.map(crewLabel).join(", ")}` : "",
+              ].filter(Boolean).join(" · ")}
+            </div>
+          )}
         </>
       ) : (
         <div className="pgrid2" style={{ marginBottom: 6 }}>
           <div><div className="pkv-l">{kind} date</div><div className="pkv-v">{dOnly(startAt)}</div></div>
           <div><div className="pkv-l">Start time</div><div className="pkv-v">{tOnly(startAt)}</div></div>
-          <div><div className="pkv-l">{kind} driver</div><div className="pkv-v">{driverName || "—"}</div></div>
-          <div><div className="pkv-l">Lorry / vehicle</div><div className="pkv-v">{lorryPlate || "—"}</div></div>
+          <div><div className="pkv-l">{kind} driver</div><div className="pkv-v">{driverDisplay}</div></div>
+          <div><div className="pkv-l">Lorry / vehicle</div><div className="pkv-v">{lorryDisplay}</div></div>
+          {crew.helpers.length > 0 && (
+            <div style={{ gridColumn: "1 / -1" }}><div className="pkv-l">Helpers</div><div className="pkv-v">{crew.helpers.map(crewLabel).join(", ")}</div></div>
+          )}
         </div>
       )}
       <button
         type="button"
-        disabled={busy || !canWrite}
-        onClick={() => canWrite && fileRef.current?.click()}
-        style={{ width: "100%", border: "1px solid #d6d9d2", borderRadius: 11, background: "#fff", display: "flex", alignItems: "center", gap: 10, marginTop: 4, overflow: "hidden", cursor: canWrite ? "pointer" : "default", fontFamily: "inherit", padding: 0, textAlign: "left" }}
+        disabled={busy || (!photoKey && !canWrite)}
+        onClick={() => { if (photoKey) setPhotoOpen(true); else if (canWrite) fileRef.current?.click(); }}
+        style={{ width: "100%", border: "1px solid #d6d9d2", borderRadius: 11, background: "#fff", display: "flex", alignItems: "center", gap: 10, marginTop: 4, overflow: "hidden", cursor: photoKey || canWrite ? "pointer" : "default", fontFamily: "inherit", padding: 0, textAlign: "left" }}
       >
-        <div className="ph" style={{ width: 64, height: 54, flex: "none" }} />
+        {photoKey ? (
+          <R2Thumb r2Key={photoKey} style={{ width: 64, height: 54, flex: "none" }} />
+        ) : (
+          <div className="ph" style={{ width: 64, height: 54, flex: "none" }} />
+        )}
         <div style={{ padding: "7px 0", minWidth: 0 }}>
-          <div style={{ fontSize: 11.5, fontWeight: 700, color: "#11140f" }}>{kind} photo{canWrite ? " · tap to upload" : ""}</div>
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: "#11140f" }}>{kind} photo{photoKey ? " · tap to view" : canWrite ? " · tap to upload" : ""}</div>
           <div style={{ fontSize: 9.5, color: "#9aa093", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{uploaderCredit(photo)}</div>
         </div>
       </button>
+      {photoKey && canWrite && (
+        <button className="tinybtn" disabled={busy} style={{ marginTop: 6 }} onClick={() => fileRef.current?.click()}>Replace photo</button>
+      )}
       <input ref={fileRef} type="file" accept="image/*,.pdf,.mp4,.mov,.webm" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void uploadPhoto(f); }} />
+      {photoOpen && photoKey && (
+        <MediaLightbox
+          items={[{ r2_key: photoKey, content_type: mimeFromKey(photoKey), caption: photo?.caption ?? `${kind} photo` }]}
+          index={0}
+          onChange={() => {}}
+          onClose={() => setPhotoOpen(false)}
+          baseUrl="/api/projects/attachments"
+          badge={kind}
+        />
+      )}
     </>
   );
 }
@@ -1643,21 +1795,19 @@ function FloorPlans({
 
   // Unfilled = first floorplan attachment, Filled = second (matches the
   // prototype's two "tap to view" tiles). Opens the stored plan when present.
+  // Viewing goes through MediaLightbox rather than window.open(blobUrl):
+  // mobile browsers popup-block window.open once an await has broken the
+  // user-gesture chain, which made these tiles dead on phones.
   const plans = (attachments ?? []).filter((a) => (a.category || "").toLowerCase() === "floorplan");
+  const [planIdx, setPlanIdx] = useState<number | null>(null);
+  const [docView, setDocView] = useState<MediaItem | null>(null);
   const openPlan = async (a: ProjectAttachment | undefined, which: string) => {
     if (!a) {
       await notify({ title: `${which} plan not uploaded`, body: "No floor plan has been uploaded for this project yet.", tone: "info" });
       return;
     }
-    const key = pick(a.r2_key, a.r2Key);
-    if (!key) return;
-    try {
-      const url = await api.fetchBlobUrl(`/api/projects/attachments/${key}`);
-      window.open(url, "_blank");
-      setTimeout(() => URL.revokeObjectURL(url), 60_000);
-    } catch (e) {
-      await notify({ title: "Couldn't open plan", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
-    }
+    if (!pick(a.r2_key, a.r2Key)) return;
+    setPlanIdx(plans.indexOf(a));
   };
 
   const uploadTransfer = async (file: File) => {
@@ -1744,10 +1894,19 @@ function FloorPlans({
             {transfers.map((t, i) => {
               const who = pick(t.created_by_name, t.createdByName);
               const when = pick(t.transferred_at, t.transferredAt);
+              const recKey = pick(t.record_r2_key, t.recordR2Key);
               return (
                 <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 11px", borderTop: i === 0 ? "none" : "1px solid #eceee9", flexWrap: "wrap" }}>
                   <span className="rbadge" style={{ background: "#e2f0e9", color: "#2f8a5b" }}>OUT</span>
                   <span style={{ flex: 1, minWidth: 80, fontSize: 11, color: "#414539" }}>{[who || "—", when ? dm(when) : null].filter(Boolean).join(" · ")}</span>
+                  {recKey && (
+                    <button
+                      className="tinybtn"
+                      onClick={() => setDocView({ r2_key: recKey, content_type: mimeFromKey(recKey), caption: pick(t.file_name, t.fileName) ?? "Stock transfer record" })}
+                    >
+                      View
+                    </button>
+                  )}
                 </div>
               );
             })}
@@ -1758,6 +1917,29 @@ function FloorPlans({
             <input ref={fileRef} type="file" accept=".jpg,.jpeg,.png,.webp,.pdf,.xlsx" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void uploadTransfer(f); }} />
             <button className="tinybtn" disabled={busy} onClick={() => fileRef.current?.click()}>Upload stock-out record</button>
           </div>
+        )}
+        {planIdx != null && plans[planIdx] && (
+          <MediaLightbox
+            items={plans.map((a): MediaItem => {
+              const k = pick(a.r2_key, a.r2Key) ?? "";
+              return { r2_key: k, content_type: pick(a.mime_type, a.mimeType) ?? mimeFromKey(k), caption: pick(a.file_name, a.fileName) };
+            })}
+            index={planIdx}
+            onChange={setPlanIdx}
+            onClose={() => setPlanIdx(null)}
+            baseUrl="/api/projects/attachments"
+            badge="Floor plan"
+          />
+        )}
+        {docView && (
+          <MediaLightbox
+            items={[docView]}
+            index={0}
+            onChange={() => {}}
+            onClose={() => setDocView(null)}
+            baseUrl="/api/projects/attachments"
+            badge="Stock transfer"
+          />
         )}
       </div>
     </details>
@@ -1778,16 +1960,13 @@ function FinancialSnapshot({
   notify: NotifyFn;
   reload: () => void;
 }) {
-  const openReceipt = async (line: FinanceLine) => {
+  // Receipts open in the lightbox — window.open(blobUrl) after an await is
+  // popup-blocked on mobile browsers.
+  const [receipt, setReceipt] = useState<MediaItem | null>(null);
+  const openReceipt = (line: FinanceLine) => {
     const key = pick(line.r2_key, line.r2Key);
     if (!key) return;
-    try {
-      const url = await api.fetchBlobUrl(`/api/projects/attachments/${key}`);
-      window.open(url, "_blank");
-      setTimeout(() => URL.revokeObjectURL(url), 60_000);
-    } catch (e) {
-      await notify({ title: "Couldn't open receipt", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
-    }
+    setReceipt({ r2_key: key, content_type: mimeFromKey(key), caption: pick(line.file_name, line.fileName) ?? "Receipt" });
   };
 
   // Quick-log a sale at the project (POST /api/sales/entries { quick_log }).
@@ -1881,7 +2060,7 @@ function FinancialSnapshot({
           </div>
         )}
 
-        {/* Cost ledger — read-only snapshot. A stored receipt opens in a new tab. */}
+        {/* Cost ledger — read-only snapshot. A stored receipt opens in the lightbox. */}
         <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: ".1em", textTransform: "uppercase", color: "#9aa093", margin: "12px 0 6px" }}>Cost lines</div>
         {costLines.length === 0 ? (
           <div style={{ fontSize: 12, color: "#9aa093" }}>No cost lines yet.</div>
@@ -1906,6 +2085,16 @@ function FinancialSnapshot({
               <span className="money" style={{ color: netColor }}>RM {rm(net)}</span>
             </div>
           </div>
+        )}
+        {receipt && (
+          <MediaLightbox
+            items={[receipt]}
+            index={0}
+            onChange={() => {}}
+            onClose={() => setReceipt(null)}
+            baseUrl="/api/projects/attachments"
+            badge="Receipt"
+          />
         )}
       </div>
     </details>

@@ -29,7 +29,27 @@ Starting without `cfg.provider` — will add as `[RENDER]` errors surface specif
 - Vendored 2990 SCM tokens at `src/vendor/design-system/tokens.css` — pulled in via `tokensGlob`. The `:root` block was copied verbatim from 2990's design-system package and remapped to Theme C colors (cream→white, beige→Theme C surface-dim).
 
 ## Fonts
-- IBM Plex Mono (used only via `font-money` for amounts) is **not shipped**; suppressed via `runtimeFontPrefixes: ["IBM Plex"]`. Money cells fall back to `ui-monospace, SFMono-Regular, Menlo, Consolas, monospace` — acceptable substitute per owner.
+- All IBM Plex (Sans/Serif/Mono) + Noto Sans/Serif SC loaded via `@import url('https://fonts.googleapis.com/...')` at the top of `.design-sync/tailwind-src.css` (mirrored to `src/index.css` for the live app).
+- 2026-07-09: Caveat (`--font-script`) + Archivo (`--font-mark`) added to the same Google Fonts import — design-side check flagged them as token-referenced but face-less. Tokens keep the original family names per the design handoff; do NOT re-point them at the system stack.
+- `runtimeFontPrefixes: ["IBM Plex"]` stays — fonts load at runtime via CDN @import, no shipped @font-face files. Suppresses `[FONT_MISSING]` correctly.
+- Brass / theme colors via tokens: `--font-system` resolves to IBM Plex Sans + Noto Sans SC + system fallback chain. `font-money` (Tailwind class) stays mapped to IBM Plex Mono via tailwind.config.js.
+- Offline / air-gapped deploys: replace the @import with self-hosted @font-face. Files would go under `frontend/public/fonts/` or pull via `cfg.extraFonts`.
+
+## Tailwind runtime vars (`--tw-*`) — token-scan noise
+`tailwind-built.css` carries Tailwind's compiled runtime variables
+(`--tw-translate-x`, `--tw-shadow`, … under `*,::before,::after`, `::backdrop`
+and utility classes). The claude.ai/design `check_design_system` scan was
+classifying them as unknown design tokens (89/307 unclassifiable + 128
+component-scoped custom props). Fixed 2026-07-09: `cfg.buildCmd` now runs
+`.design-sync/annotate-tw-tokens.mjs` after the Tailwind build, tagging every
+`--tw-*` declaration with `/* @kind other */`. The utilities themselves must
+stay in the bundle — component previews render with them.
+
+Related: the bad `@import url(…)` that kept reappearing at the top of
+`_ds_bundle.css` came from the hoist step below matching a LITERAL
+`@import url(…)` inside a comment in `src/vendor/design-system/tokens.css`
+(line ~152). That comment is now reworded — keep literal `@import url(...)`
+text out of CSS comments anywhere in the token/bundle closure.
 
 ## Build-time @import hoist (manual post-step after rebuild)
 
@@ -47,5 +67,43 @@ node -e "const fs=require('fs'); const c=fs.readFileSync('ds-bundle/_ds_bundle.c
 (`resync.mjs` driver workflow needs the same step — add it to a wrapper script
 when the re-sync flow stabilizes.)
 
+## Preview-authoring campaign (2026-07-09) — 57/70 authored
+All A/B-class components now carry authored previews graded good; the 13
+remaining floor cards are DELIBERATE (no static UI): AuthProvider,
+GlobalSearchProvider, PullToRefreshGuardProvider, BrowserPushSink,
+ChunkReloadBoundary, NewVersionBanner, PwaBanners, IosInstallGuide,
+MediaLightbox, PullToRefresh, ProjectChat, ProjectGantt (+ the LookupManager
+non-card export). Key mechanics a re-sync must know:
+- entry.tsx exports context helpers for previews: AuthProvider,
+  NotificationsProvider, BreadcrumbsProvider, ToastProvider, NotifyProvider
+  (scm), MemoryRouter, QueryClient(+Provider) + the app queryClient. NEVER
+  import these from source/node_modules in a preview — a second module
+  instance means a mismatched context and the hooks throw.
+- Connected components use the AnnouncementBanner stub pattern (module-scope
+  window.fetch stub + localStorage auth:token + provider wrap). The bundle's
+  useQuery is TanStack-backed — anything calling it needs
+  QueryClientProvider client={queryClient} from the bundle.
+- Sidebar/Layout `<img src="/logo-*.png">` can't be fetch-stubbed — those
+  cards show alt text; harmless.
+- cfg.overrides carries ~25 cardMode entries (column for wide stories,
+  single + primaryStory + viewport for fixed/portal components) — preserve
+  them when editing config.
+
 ## Known render warns
-_(populated after first headless render check)_
+Triaged 2026-07-09:
+- `[FONT_REMOTE]` listing Archivo / Caveat / Mistrully / Brush Script MT /
+  Arial Black / Microsoft YaHei — expected: Caveat (--font-script) + Archivo
+  (--font-mark) load via the Google Fonts @import (added 2026-07-09); the
+  rest are stack fallbacks.
+- (resolved 2026-07-09) 12 small components used to warn `[RENDER_BLANK]`
+  as floor cards — all 12 now have authored previews in
+  `.design-sync/previews/` and grade good. Two root causes fixed along the
+  way, worth knowing on re-sync: (1) `.skeleton` shimmer CSS lives in
+  src/index.css and must stay mirrored in `.design-sync/tailwind-src.css`
+  or every Skeleton component renders invisible; (2) `cfg.buildCmd`'s
+  Tailwind --content scan must include `./.design-sync/previews/**/*.tsx`
+  or preview-only utility classes get purged. The resync driver does NOT
+  re-run cfg.buildCmd — run it manually after touching tailwind-src.css,
+  tokens.css, tailwind.config.js, or any preview file.
+- `cardMode: column` pinned for PageHeader / HeaderButton / TableSkeleton
+  (wide stories crop in the grid otherwise).

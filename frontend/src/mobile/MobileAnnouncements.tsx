@@ -41,6 +41,7 @@ type Announcement = {
   targetPositionIds?: number[];
   targetUserIds?: number[];
   category: string;
+  source?: string | null;
 };
 
 // Audience-picker lookups. Dept + position come from the same core endpoints the
@@ -384,7 +385,10 @@ export function MobileAnnouncements({ onBack }: { onBack?: () => void }) {
     return (
       <Detail
         ann={open}
-        canReceipts={canCreate}
+        // Read-receipts only for company-wide human notices. A private/targeted
+        // notice (esp. a source='scan' per-user notice) must NOT show a roster —
+        // it's meant for one person, so "who read it" is meaningless + wrong.
+        canReceipts={canCreate && open.targetType === "ALL_USERS" && open.source !== "scan"}
         acked={ackedIds.has(open.id)}
         onAcked={() => markAcked(open.id)}
         onBack={() => setView("list")}

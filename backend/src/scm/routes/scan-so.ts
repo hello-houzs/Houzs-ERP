@@ -689,7 +689,7 @@ MULTIPLE IMAGES
 ===============
 You may receive ONE or TWO images: a HANDWRITTEN order slip (a carbon-copy form with the customer, line items, handwriting, and payment checkboxes) and/or a PRINTED card-terminal payment RECEIPT (a thermal print: a bank name e.g. Maybank / Public Bank / CIMB, VISA / Mastercard, an APPROVAL CODE, a TOTAL amount, and often a TENURE / number of months for an EPP plan). Decide what each input image is:
 - Read the ORDER fields (customerName, address, phones, line items, deliveryDate, processingDate, salesRep) from the HANDWRITTEN slip.
-- Read the PAYMENT fields (paymentMethodMatch / bankMatch / installmentPlanMatch / approvalCode / depositRm or the receipt's amount) PREFERENTIALLY from the PRINTED receipt when one is present — the printed thermal receipt is far more accurate than the handwritten payment note. Still keep the handwritten payment note verbatim in paymentMethod. When NO receipt is present, fall back to the handwritten slip's payment note exactly as before.
+- Read the PAYMENT fields (paymentMethodMatch / bankMatch / installmentPlanMatch / approvalCode / depositRm or the receipt's amount) PREFERENTIALLY from the PRINTED receipt when one is present — the printed thermal receipt is far more accurate than the handwritten payment note. Still keep the handwritten payment note verbatim in paymentMethod. When NO receipt is present, fall back to the handwritten slip's payment note exactly as before. When BOTH are present and they DISAGREE (a different bank, a different amount, a different approval code), the PRINTED receipt wins for the structured fields — but you MUST state the disagreement in that field's reason (e.g. "slip writes PBB but receipt terminal is Maybank — using receipt") so the operator sees the conflict.
 You MUST also classify every input image in the OUTPUT "images" array (see below).
 
 A reference CATALOG follows this prompt (live product SKUs, fabrics, sofa sizes, leg heights). It is the FULL master (≈1100+ SKUs) — every catalog row is "code | name". Use it for AGGRESSIVE fuzzy / keyword / substring / abbreviation matching: a slip token should resolve to the SKU whose NAME contains that token's keyword, even when the rep wrote only a fragment. Search the WHOLE catalog before giving up.
@@ -701,12 +701,12 @@ EXTRACTION RULES
 3. phones — ALL phone numbers on the slip, as raw strings exactly as written (e.g. "012-345 6789", "+6017 888 9999"). Multiple numbers are common (customer + spouse). Do NOT normalize or reformat. A phone is CRITICAL — transcribe EVERY digit, including REPEATED / doubled digits: read "01137166720" as 0-1-1-3-7-1-6-6-7-2-0 (eleven digits), NEVER collapse a doubled "66" into a single "6". A Malaysian number is 10-11 digits INCLUDING the leading trunk 0 (011-XXXX XXXX = 11 digits; 01X-XXX XXXX = 10). If your reading has FEWER than 10 digits, you almost certainly dropped or merged a digit — re-examine the handwriting (look for a doubled digit) before returning it. If a single digit is genuinely unclear, return your best reading at confidence < 0.6 and say so in the field's reason so the operator double-checks.
 4. location — the showroom / venue / branch the order was taken at, if written (often a header checkbox or stamp).
 5. deliveryDate — as written. If it is a real date, convert to YYYY-MM-DD (slips write DD/MM or DD/MM/YYYY — Malaysian day-first). If it says "TBC", "call first", "after CNY" or any non-date text, return that text verbatim.
-6. processingDate — the order/slip date if present, YYYY-MM-DD when parseable, else verbatim text, else null.
+6. processingDate — the order/slip date if present, YYYY-MM-DD when parseable, else verbatim text, else null. The year is often omitted or scrawled: when the year is missing/unreadable, take it from the PRINTED payment receipt's date when one is present, else assume the CURRENT year — NEVER invent a distant past year (a slip is days old, not years). If even the day/month is unclear, return the verbatim text instead of a made-up date.
 7. salesRep — the salesperson's name from the footer/header.
 8. paymentMethod — as written ("cash", "TNG", "bank transfer", "CC", deposit slips etc.). null if absent.
-9. depositRm / totalRm — RM amounts as NUMBERS (e.g. "RM 1,500" → 1500, "550.50" → 550.5). null when blank.
+9. depositRm / totalRm — RM amounts as NUMBERS (e.g. "RM 1,500" → 1500, "550.50" → 550.5). null when blank. When a PRINTED receipt is present, depositRm = the receipt's printed TOTAL/AMOUNT (the money actually charged); if the handwritten deposit differs from the receipt amount, use the RECEIPT amount and flag the mismatch (state both figures in paymentMethodMatch's reason). Never swap depositRm and totalRm — the deposit is the smaller paid-now figure, the total is the whole order.
 10. remarks — ONLY the genuine ORDER REMARK: a handwritten free-text note that is not a line item and does not already belong to a dedicated field — e.g. a promo note, a special handling instruction like "FOC dispose, not dismantle", "lift access", "self collect", floor info. Do NOT copy the venue/location, the phone numbers, the payment method/bank/EPP term, the deposit/total amounts, the delivery date, or the salesperson into remarks — those each have their own output fields and must NOT be duplicated here. Return null when there is no such standalone remark.
-11. approvalCode — the approval / reference number printed on the PAYMENT line, typically a card-terminal approval code written in parentheses (e.g. "(001586)" → "001586", "Appr 028471" → "028471"). Strip surrounding brackets/labels and return the bare digits/alphanumerics as a string. null when no such number is on the payment line.
+11. approvalCode — the approval / reference number of the card payment. When a PRINTED receipt is present, read it from the receipt's "APPROVAL CODE" / "APPR CODE" / "AUTH CODE" line — the PRINTED code wins over any handwritten parenthesised number (the rep often copies it wrong); the handwritten note still rides verbatim in paymentMethod. With no receipt, use the handwritten payment-line code (e.g. "(001586)" → "001586", "Appr 028471" → "028471"). Strip surrounding brackets/labels and return the bare digits/alphanumerics as a string. null when neither carries one.
 12. customerSoRef — the CUSTOMER'S OWN reference number for this order: the slip's / docket's OWN serial, usually in the TOP-RIGHT corner. On a showroom / supplier slip this is the PRE-PRINTED coloured serial — typically a LETTER-prefixed code (letters + digits, e.g. "HC14032", "ZNT5329"). PREFER that pre-printed letter-prefixed serial. A hand-written "SO ####" jotting (or a bare "SO 1234" scrawled by the rep) is NOT the docket — do NOT return it as customerSoRef; the printed serial wins over any handwritten "SO…" note. It is the SLIP's own number, NOT a phone number, NOT a price, NOT the salesperson code, NOT the delivery date. Return the bare reference string exactly as written (keep its letter prefix, e.g. "HC14032", "ZNT5329"). null when no such number is on the slip.
     Example: a slip with a printed top-right serial "ZNT5329" AND a handwritten "SO 88" in the body → customerSoRef = "ZNT5329" (the pre-printed letter-prefixed docket), NOT "SO 88".
     Example: a slip whose only top-right reference is the pre-printed "HC14032" → customerSoRef = "HC14032".
@@ -725,8 +725,9 @@ For EVERY handwritten row in the item table output one lines[] entry:
 - rawText — the row's text VERBATIM, exactly as written, including misspellings and abbreviations. This is the source of truth for the operator; never clean it up.
 - rawSpec — when the row (or its margin / continuation text) carries a SPECIFICATION string for the item — the variant text such as "Col: PC151-01 + front / Side Divan 8\"+0\"", "divan10+4/gap12", "8\" + no leg" — copy the row's specification text verbatim into rawSpec; do not rephrase, reorder or normalise it (keep punctuation, slashes and inch marks exactly). null when the row has no spec text. rawSpec may overlap rawText — that is fine: rawText is the whole row, rawSpec is just the specification portion.
 - divanHeightInches / legHeightInches / gapInches / noLeg — BEDFRAME variant NUMBERS read from the spec text: the divan/drawer height in inches, the leg height in inches, the mattress gap in inches, and noLeg = true when the spec says no legs ("no leg", "noleg"). Read the FULL numeric token (12" is 12, NEVER 1). Use null (and noLeg = false) when absent or when the row is not a bedframe.
+- seatHeightInches — SOFA seat-height in inches. A sofa row's seat size is usually written as a parenthesised inch figure right after the model / sections, e.g. "8030 (2R+1R)(28\")" → 28, or "seat 30\"" / "H30" → 30. Read the FULL numeric token as a plain NUMBER (28" is 28, NEVER 2). The seat size applies to EVERY compartment of that sofa, so repeat the SAME seatHeightInches on each compartment line you emit for the sofa. Use null when the row is not a sofa or no seat size is written (do NOT guess a seat height).
 - qtyGuess — quantity (default 1 when blank or unreadable).
-- priceRmGuess — the row's unit price in RM as a number; null when blank. If only a line total is written and qty > 1, still report the written figure and say so in notes.
+- priceRmGuess — the row's unit price in RM as a number; null when blank. If only a line total is written and qty > 1, still report the written figure and say so in notes. SET / PACKAGE TOTALS: when ONE written amount covers SEVERAL lines (a multi-compartment sofa set, a bundle where only the first row carries a figure), attach that amount as priceRmGuess on the FIRST emitted line of the set ONLY — every other line of the set gets priceRmGuess = null — and write "set/package total" in the first line's notes. Never attach the same set total to more than one line, and never attach it to a later compartment.
 - skuMatch — your best FUZZY match against the catalog SKUS:
     { "code": <exact catalog code>, "confidence": 0-1, "reason": <short why> }
   Handwriting mangles model names AND reps write heavy shorthand — match AGGRESSIVELY against the FULL catalog. Try HARD before returning null; a slip token almost always corresponds to some catalog row whose NAME contains that keyword:
@@ -741,15 +742,15 @@ For EVERY handwritten row in the item table output one lines[] entry:
     • If the catalog encodes size/variant as distinct SKU rows for that model, pick the SKU whose name matches the written size/variant; the divan-height / side / leg / gap details that the catalog does NOT encode as a SKU stay in "notes" for the operator to set in the form's variant picker.
     • A bare fabric code with NO model word on the row (or above it) is NOT enough to choose a model — set skuMatch = null, put the fabric in fabricMatch, and let rawText + notes carry the variant text. Never guess a model from a fabric code alone.
   Rules:
-    • PREFER THE PLAIN / GENERIC ROW over a branded variant. When several catalog SKUs match a slip token, choose the most generic catalog match — the row WITHOUT a brand prefix (e.g. "JM", "AKEMI", a maker name) — UNLESS the slip explicitly writes that brand. Example: "W. Protector (King)" → the plain "MATTRESS PROTECTOR (KING)" / "WATERPROOF PROTECTOR (KING)", NOT a "JM …" branded protector, because the slip names no brand. Only pick the branded SKU when the slip itself writes the brand token.
+    • PREFER THE PLAIN / GENERIC ROW over a branded variant. When several catalog SKUs match a slip token, choose the most generic catalog match — the row WITHOUT a brand prefix (e.g. "JM", "AKEMI", a maker name) — UNLESS the slip explicitly writes that brand. Example: "W. Protector (King)" → the plain "MATTRESS PROTECTOR (KING)" / "WATERPROOF PROTECTOR (KING)", NOT a "JM …" branded protector, because the slip names no brand. Only pick the branded SKU when the slip itself writes the brand token. EXCEPTION — the FORM'S OWN PRINTED BRAND counts as a written brand: on a brand-headed order form (e.g. an AKEMI carbon-copy form), an unbranded accessory row prefers THAT brand's SKU when one exists ("W. Protector (King)" on an AKEMI form → the AKEMI waterproof protector King), falling back to the generic row only when the form's brand has no such SKU. Apply this consistently — do not alternate between the branded and generic row across lines of the same slip.
     • The code MUST be copied character-for-character from the catalog. NEVER invent, modify, or extrapolate a code that is not in the catalog. NEVER assemble a code out of a fabric code + a size; the code must already exist verbatim in the SKUS list.
     • Only AFTER genuinely searching the whole catalog by keyword/substring/abbreviation and finding nothing defensible, set skuMatch = null and let rawText speak. A null with good rawText is worth more than a wrong code — but a real catalog row keyworded in the slip token must NOT be returned as null.
     • confidence: 0.9+ only when the written text clearly identifies one specific catalog row; 0.5-0.8 when the model matches but the size/variant is ambiguous; below 0.5 prefer null.
   MULTI-COMPARTMENT SOFA — ONE LINE PER COMPARTMENT. A sofa is often written as a base model PLUS several seat sections in one row, e.g. "8030 (2R+1R)(28\")" or "2A+1A", or drawn as a multi-box layout (the hand-drawn box+TV sketch shows the seating arrangement). When a sofa line names MORE THAN ONE seat section, EMIT ONE lines[] ENTRY PER COMPARTMENT (do NOT collapse them into a single line). For each compartment:
     • skuMatch = the catalog SKU {base_model}-{compartment} where compartment carries the arm direction, e.g. "8030-2A(LHF)" for the 2-seater and "8030-1A(RHF)" for the 1-seater. These per-compartment SKUs EXIST verbatim in the SOFA SKUS — copy the matching row character-for-character; never assemble one that is not in the catalog (if no per-compartment row exists, fall back to the base-model SKU + a notes flag).
     • The seat size (e.g. 28") and the fabric colour (e.g. "Col BO315-22") apply to EVERY compartment line — repeat them on each (qtyGuess per compartment is usually 1).
-    • DIRECTION (LHF = left-hand-facing / RHF = right-hand-facing) — read it from the drawing and from "左/右" or "X left Y right" notes (the box+TV sketch encodes which arm sits where). BE CONSERVATIVE: if the side is genuinely ambiguous, emit the compartment WITHOUT forcing a wrong direction — pick the {base_model}-{compartment} SKU without the (LHF/RHF) suffix (or set skuMatch=null with the compartment in notes) and lower confidence so the operator picks the side. Never guess a side confidently.
-    Example: "8030 (2R+1R)(28\") Col BO315-22" → TWO lines: line 1 skuMatch="8030-2A(LHF)", line 2 skuMatch="8030-1A(RHF)"; BOTH carry size 28" in notes and fabricMatch.code="BO315-22"; rawText on each line is the verbatim row.
+    • DIRECTION (LHF = left-hand-facing / RHF = right-hand-facing) — decide it per compartment PRIMARILY from the drawn "TV" marker: the hand sketch draws the sofa boxes facing a box labelled "TV" (the television / feature wall), and the compartment that sits to the VIEWER'S LEFT of the layout as it faces the TV is LHF, the one to the VIEWER'S RIGHT is RHF. Use the TV marker's position to orient the whole layout, then read each compartment's side off that orientation; also cross-check "左/右" or "X left Y right" notes. BE CONSERVATIVE: if there is NO TV marker and the side is genuinely ambiguous, emit the compartment WITHOUT forcing a wrong direction — pick the {base_model}-{compartment} SKU without the (LHF/RHF) suffix (or set skuMatch=null with the compartment in notes) and lower confidence so the operator picks the side. Never guess a side confidently without the TV marker or an explicit left/right note.
+    Example: "8030 (2R+1R)(28\") Col BO315-22" → TWO lines: line 1 skuMatch="8030-2A(LHF)", line 2 skuMatch="8030-1A(RHF)"; BOTH carry seatHeightInches=28 and fabricMatch.code="BO315-22"; rawText on each line is the verbatim row.
 - fabricMatch — match against the FABRICS catalog whenever the row (or a margin note, or a "Col:" / "Color" / "Fabric" prefix) names a fabric/colour code (e.g. "PC151-01", "Col: PC151-01"). The fabric code is frequently the FIRST token on a bedframe/sofa variant line; always look for it there. null when the row names no fabric. Same never-invent rule — the code must be copied character-for-character from the FABRICS list.
 - specialsMatch — an array of CONFIGURED SOFA SPECIAL ADD-ONS the row's free-text descriptor asks for. The catalog has a "SOFA SPECIAL ADD-ONS (code | label)" section; when a phrase on the row (or a margin note attached to the row) DESCRIBES one of those add-ons, emit it here as { "code": <exact catalog special code>, "confidence": 0-1, "reason": <short why> } INSTEAD of dumping that phrase into notes/remarks. Map by MEANING against each special's label:
     • "change nylon cover" / "nylon bottom" / "nylon fabric" / "尼龙布底" → the NYLON-fabric special.
@@ -767,9 +768,9 @@ The catalog ends with ALLOWED VALUES lists (PAYMENT METHODS, MERCHANT BANKS, ONL
 
 Map the slip's handwritten notes to these fields:
 - paymentMethodMatch — the top-level method, one of PAYMENT METHODS. The ONLY valid values are "Merchant", "Online", and "Cash"; never return any other method. A CREDIT CARD paid through a BANK — a card machine / credit-card terminal / a bank name with a card swipe, WITH OR WITHOUT an EPP/installment term → "Merchant" (a bank EPP is a Merchant card payment plus an installment term carried in installmentPlanMatch). Bank transfer / TNG / DuitNow / cheque → "Online". Cash → "Cash".
-- bankMatch — one of MERCHANT BANKS when a bank is named ("mbb"/"maybank" → the Maybank value (MBB), "pbb"/"public bank" → the Public-bank value, "cimb" → CIMB, "hlb"/"hong leong" → HLB, "rhb" → RHB, "aeon"/"aeon credit" → the AEON value, "hsbc" → the HSBC value). AEON Credit / HSBC issuers appear on EPP receipts. On a CREDIT card / EPP payment the named bank is the merchant bank — always populate bankMatch alongside paymentMethodMatch = "Merchant".
+- bankMatch — one of MERCHANT BANKS when a bank is named ("mbb"/"maybank" → the Maybank value (MBB), "pbb"/"public bank" → the Public-bank value, "cimb" → CIMB, "hlb"/"hong leong" → HLB, "rhb" → RHB, "aeon"/"aeon credit" → the AEON value, "hsbc" → the HSBC value). On a CREDIT card / EPP payment the named bank is the merchant bank — always populate bankMatch alongside paymentMethodMatch = "Merchant". WHICH BANK on a printed receipt: bankMatch is the bank/company OPERATING THE TERMINAL (the receipt's own letterhead / logo / "Host" line — a Maybank-headed receipt → MBB, a Public Bank receipt → Public, an AEON Credit Service receipt → AEON). It is NOT the "Card Issuer:" line — the issuer is the customer's own card bank and must be IGNORED for bankMatch (an AEON EPP receipt showing "Card Issuer: HSBC Bank" → AEON, never HSBC). Only when the receipt letterhead itself is HSBC does bankMatch = HSBC. When receipt and handwriting disagree, the receipt's terminal bank wins (say so in reason).
 - onlineTypeMatch — one of ONLINE TYPES when the transfer channel is named (TNG / DuitNow / cheque / bank transfer). Only meaningful when the method is Online.
-- installmentPlanMatch — one of INSTALLMENT PLANS. This is the plan UNDER a Merchant card payment. Rule: only return an N-month value when the receipt/slip ACTUALLY shows a tenure / month count ("12 EPP", "x12", "12 bln", "12个月", "12 months", "Tenure: 12 Months") → the matching N-month value (e.g. the 12-month value). For ANY card paid through a bank with NO month/tenure written — including a plain swipe AND an EPP/installment note that omits the month count — return the "One Shot" value from the INSTALLMENT PLANS list (a Maybank receipt with no tenure = One Shot). NEVER default to 12 months when no tenure is written.
+- installmentPlanMatch — one of INSTALLMENT PLANS. This is the plan UNDER a Merchant card payment. Rule: only return an N-month value when the receipt/slip ACTUALLY shows a tenure / month count ("12 EPP", "x12", "12 bln", "12个月", "12 months", "Tenure: 12 Months") → the matching N-month value (e.g. the 12-month value). For ANY card paid through a bank with NO month/tenure written — including a plain swipe AND an EPP/installment note that omits the month count — return the "One Shot" value from the INSTALLMENT PLANS list (a Maybank receipt with no tenure = One Shot). NEVER default to 12 months when no tenure is written. When a PRINTED receipt is present you MUST actively scan the WHOLE receipt for a tenure line ("TENURE", "EPP", "INSTAL", "MONTHS", "BLN") BEFORE answering One Shot — an EPP receipt prints its tenure in small type near the bottom; your reason must say either the tenure you found or that you searched the receipt and no tenure line exists.
 - customerTypeMatch — one of CUSTOMER TYPES when the slip marks new/existing (header checkbox or note).
 - buildingTypeMatch — one of BUILDING TYPES when the slip notes condo / landed / apartment etc.
 - locationMatch — one of VENUES when the written showroom/venue/branch clearly matches a list entry. Still report the raw text in the location field.
@@ -814,6 +815,7 @@ Return STRICT JSON, no markdown fences, no prose:
     "legHeightInches": number | null,
     "gapInches": number | null,
     "noLeg": boolean,
+    "seatHeightInches": number | null,
     "qtyGuess": number,
     "priceRmGuess": number | null,
     "skuMatch": { "code": string, "confidence": number, "reason": string } | null,
@@ -848,6 +850,14 @@ type ExtractedLine = {
   legHeightInches: number | null;
   gapInches: number | null;
   noLeg: boolean;
+  // SOFA seat-height in inches read from the slip (e.g. "(28")"). Applies to
+  // EVERY compartment of the sofa. buildDraftSoBodyFromSlip maps it to
+  // variants.seatHeight = `${n}"` so a scanned sofa seeds the seat axis the
+  // same way a hand-keyed one does. null when absent or not a sofa row.
+  // PRICING NOTE: itemGroup='sofa' reprices from seat height in the create
+  // core — an OCR'd seat height therefore MOVES the sofa price. Verify against
+  // real slips before trusting the read.
+  seatHeightInches: number | null;
   qtyGuess: number;
   priceRmGuess: number | null;
   skuMatch: SkuMatch | null;
@@ -951,6 +961,7 @@ function normalizeSlip(raw: unknown): ExtractedSlip {
           legHeightInches: num(li.legHeightInches),
           gapInches: num(li.gapInches),
           noLeg: li.noLeg === true,
+          seatHeightInches: num(li.seatHeightInches),
           qtyGuess:
             typeof li.qtyGuess === 'number' && Number.isFinite(li.qtyGuess) && li.qtyGuess > 0
               ? li.qtyGuess
@@ -2502,7 +2513,23 @@ async function postProcessSlip(
     /* fail-soft — keep the LLM address parse */
   }
 
-  return validateSlip(parsed, catalog);
+  const warnings = validateSlip(parsed, catalog);
+
+  // Phone plausibility (evidence 2026-07: the OCR dropped a doubled digit —
+  // "01137166720" read as "0113716720"): a Malaysian national-significant
+  // number (after the trunk 0 strip above) is 9-10 digits for mobiles and
+  // 8-9 for landlines. Anything under 9 or over 10 very likely lost/gained a
+  // digit — warn the operator so the form gets a second look.
+  for (const p of parsed.phones) {
+    if (p.length < 9 || p.length > 10) {
+      warnings.push({
+        field: 'phones',
+        value: p,
+        message: `Phone "+60${p}" has an unusual digit count — the scan may have dropped or doubled a digit; please verify against the slip.`,
+      });
+    }
+  }
+  return warnings;
 }
 
 // ===========================================================================
@@ -2953,9 +2980,20 @@ async function recordScanReceiptPayments(
     ? Math.round(parsed.depositRm * 100)
     : 0;
   // Payment date = the slip/order date when readable, else today (MYT).
-  const paidAt = /^\d{4}-\d{2}-\d{2}$/.test((parsed.processingDate ?? '').trim())
-    ? (parsed.processingDate as string).trim()
-    : todayMyt();
+  // SANITY CLAMP (evidence 2026-07: the OCR invented years — "2015-09-17" /
+  // "2019-12-17" for a current slip — which would book the money YEARS in the
+  // past): only trust a slip date within a plausible window (up to 60 days
+  // back, 7 days forward); anything outside books at today instead.
+  const paidAt = (() => {
+    const d = (parsed.processingDate ?? '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return todayMyt();
+    const t = Date.parse(`${d}T00:00:00Z`);
+    if (!Number.isFinite(t)) return todayMyt();
+    const now = Date.now();
+    const dayMs = 86_400_000;
+    if (t < now - 60 * dayMs || t > now + 7 * dayMs) return todayMyt();
+    return d;
+  })();
 
   // Receipt dedup ACROSS SOs (owner 2026-07-04 policy change: never book
   // money off a receipt image that already backs a payment row on ANY order).
@@ -3027,12 +3065,16 @@ async function recordScanReceiptPayments(
     const slipKey = args.storedImageKeys.includes(jobKey)
       ? jobKey
       : (first ? args.receiptImageKey : null);
-    // Conservative amounts: first receipt = the OCR'd deposit; anything the
-    // OCR could not read books at 0 with a plain "please verify" note.
+    // Only the FIRST receipt carries the OCR'd amount; extras have none.
     const amountCenti = first ? depositCenti : 0;
+    // Owner: do NOT create RM 0.00 phantom payment rows. A receipt with no
+    // readable amount books NOTHING — the operator adds that payment manually
+    // in Edit (its slip is still on R2 and viewable). Only book real amounts.
+    if (amountCenti <= 0) {
+      console.warn('[scan-job] receipt has no readable amount — not booking a RM0 row:', args.docNo, jobKey);
+      continue;
+    }
     const noteParts = ['Recorded from scanned payment receipt'];
-    if (first && amountCenti === 0) noteParts.push('amount could not be read — please verify');
-    if (!first) noteParts.push('extra receipt — amount not read, please verify');
     if (m.guessed) noteParts.push('method not read — assumed card terminal (Merchant)');
     try {
       const { errorMessage } = await recordSoPaymentRow(svc, {
@@ -3081,18 +3123,99 @@ async function recordScanReceiptPayments(
 // Validated option values (customerType / buildingType / state / venue /
 // payment fields) come straight from validateSlip's catalog-bound matches, so
 // the create handler's own dropdown re-validation accepts them.
+// Placeholder values a scan SHELL draft carries in the required fields the OCR
+// could not read. Clearly provisional so the rep knows to overwrite them; the
+// create core skips customer-identity resolution for _scanShell bodies so these
+// never spawn a phantom customer.
+const SHELL_NAME = 'Scan — please complete';
+const SHELL_PHONE = 'To be confirmed';
+
+/* A fully blank scan shell — used when the OCR produced NOTHING at all (blank
+   or unreadable photo). Still lands a draft carrying the slip photo so the rep
+   opens it and keys the order in by hand. */
+function buildEmptyShellBody(
+  keys: { imageKey: string | null; receiptImageKey: string | null },
+): Record<string, unknown> {
+  return {
+    customerName: SHELL_NAME,
+    debtorName: SHELL_NAME,
+    phone: SHELL_PHONE,
+    note: null,
+    depositCenti: 0,
+    slipImageKey: keys.imageKey,
+    receiptImageKey: keys.receiptImageKey,
+    asDraft: true,
+    _scanShell: true,
+    items: [],
+  };
+}
+
+/* Owner 2026-07-04: "就用 announcement 的功能,只有自己看到,像 notification 那样."
+   Each finished scan posts a PRIVATE announcement to the one salesperson who
+   scanned it (target_type USER_IDS = [that user]) so it rides the announcements
+   machinery they already have — the unread dot + banner + Announcements screen —
+   as a personal notification. `source='scan'` keeps these out of the office
+   composer list (GET /api/announcements filters them; /banner still shows them).
+   7-day expiry so the banner self-clears; written to public.announcements via
+   env.DB (the D1-compat Postgres shim, same handle the announcements route uses).
+   Fail-soft: a notice insert must NEVER fail the scan job. Skipped when we have
+   no houzsUserId (a private notice needs a target user). */
+async function postScanNotice(
+  env: Env,
+  opts: {
+    houzsUserId: number | null;
+    category: 'GENERAL' | 'WARNING';
+    title: string;
+    body: string;
+  },
+): Promise<void> {
+  if (opts.houzsUserId == null) return;
+  try {
+    const id = `ann-${crypto.randomUUID().slice(0, 12).replace(/-/g, '')}`;
+    const nowIso = new Date().toISOString();
+    const expiresIso = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    await env.DB.prepare(
+      `INSERT INTO announcements
+         (id, title, body, is_active, expires_at, created_by, created_at,
+          translations, attachments, target_type,
+          target_dept_ids, target_position_ids, target_user_ids, category, source)
+       VALUES (?, ?, ?, 1, ?, NULL, ?, NULL, NULL, 'USER_IDS', NULL, NULL, ?, ?, 'scan')`,
+    )
+      .bind(
+        id,
+        opts.title,
+        opts.body,
+        expiresIso,
+        nowIso,
+        JSON.stringify([opts.houzsUserId]),
+        opts.category,
+      )
+      .run();
+  } catch (e) {
+    console.error('[scan-job] scan notice insert failed:', (e as Error).message);
+  }
+}
+
 function buildDraftSoBodyFromSlip(
   parsed: ExtractedSlip,
   catalog: Catalog,
   keys: { imageKey: string | null; receiptImageKey: string | null },
+  opts?: { allowShell?: boolean },
 ): { body: Record<string, unknown> | null; missing: string[] } {
   const missing: string[] = [];
-  const customerName = (parsed.customerName ?? '').trim();
+  let customerName = (parsed.customerName ?? '').trim();
   if (!customerName) missing.push('customer name');
   // parsed.phones are already national-significant digits (postProcessSlip).
-  const mainPhone = (parsed.phones[0] ?? '').trim();
+  let mainPhone = (parsed.phones[0] ?? '').trim();
   if (!mainPhone) missing.push('phone number');
-  if (missing.length > 0) return { body: null, missing };
+  // Owner 2026-07-04: a scan missing the required name/phone must STILL land a
+  // draft the rep opens and completes from the photo — not just an error. In
+  // shell mode we substitute clearly-provisional placeholders for the missing
+  // required fields, keep everything that WAS read (address, lines...), and tag
+  // the body `_scanShell` so the create core skips the customer upsert.
+  if (missing.length > 0 && !opts?.allowShell) return { body: null, missing };
+  const isShell = missing.length > 0;
+  if (!customerName) customerName = SHELL_NAME;
 
   const skuByCode = new Map(catalog.skus.map((s) => [s.code.toUpperCase(), s]));
   const items: Array<Record<string, unknown>> = [];
@@ -3103,27 +3226,46 @@ function buildDraftSoBodyFromSlip(
     // a line counts once it has a name or a matched code (drops blank rows).
     const name = (sku?.name ?? l.rawText ?? '').trim();
     if (!name && !sku) continue;
-    const remarkParts: string[] = [];
-    if (sku && (l.rawText ?? '').trim() && (l.rawText ?? '').trim() !== name) {
-      remarkParts.push(`Slip: ${(l.rawText ?? '').trim()}`);
-    }
-    if (l.fabricMatch?.code) remarkParts.push(`Fabric: ${l.fabricMatch.code}`);
-    if (l.specialsMatch.length > 0) remarkParts.push(`Specials: ${l.specialsMatch.map((s) => s.code).join(', ')}`);
-    if (l.notes) remarkParts.push(l.notes);
+    // Owner (said many times): the line REMARK must stay CLEAN -- do NOT stuff
+    // the raw slip text / fabric code / specials / OCR notes into it. The
+    // operator reviews the draft against the order-slip photo (shown on the SO
+    // detail). Only genuine structured variant numbers ride along below.
     const variants: Record<string, unknown> = {};
-    if (remarkParts.length > 0) variants.remark = remarkParts.join(' | ');
     // Bedframe numbers (reparseSpec-overruled) -> the same inch-string variant
     // keys the New SO form writes, so the draft's line editor seeds correctly.
     if (l.divanHeightInches != null) variants.divanHeight = `${l.divanHeightInches}"`;
     if (l.noLeg) variants.legHeight = '0"';
     else if (l.legHeightInches != null) variants.legHeight = `${l.legHeightInches}"`;
     if (l.gapInches != null) variants.gap = `${l.gapInches}"`;
+    // Owner 2026-07-04: a scan line must equal a DESKTOP manual line — itemGroup =
+    // the SKU's REAL category (not 'others'), and bedframe/sofa carry the fabric
+    // COLOUR + special-order add-ons the OCR read, keyed exactly as the New SO form
+    // writes them (fabricCode = fabric_colours colourId; specials = addon codes).
+    // The create core then validates + REPRICES the line through the SAME engine
+    // the desktop form uses, so a scanned bedframe prices identically to a hand-
+    // keyed one. Fields the OCR can't read (sofa seat/leg height) are left for the
+    // operator to pick on review — same as desktop. If the stricter category
+    // validation rejects a line (an OCR fabric not allowed on that model, an
+    // incomplete sofa), runScanJob degrades it to a loose 'others' line so an
+    // imperfect read NEVER loses the whole scanned order.
+    const cat = (sku?.category ?? 'OTHERS').toLowerCase();
+    if (cat === 'bedframe' || cat === 'sofa') {
+      if (l.fabricMatch?.code) variants.fabricCode = l.fabricMatch.code;
+      const specialCodes = (l.specialsMatch ?? []).map((s) => s.code).filter(Boolean);
+      if (specialCodes.length > 0) variants.specials = specialCodes;
+    }
+    // SOFA seat height — the same inch-string key the New SO form's sofa panel
+    // writes (draft.variants.seatHeight). PRICING NOTE: the create core reprices
+    // itemGroup='sofa' from the seat height, so this OCR figure MOVES the sofa
+    // price — verify against real slips. If the stricter category validation
+    // later rejects the sofa line, runScanJob degrades it to a loose 'others'
+    // line (seat height dropped there), so an imperfect read never loses the row.
+    if (cat === 'sofa' && l.seatHeightInches != null) {
+      variants.seatHeight = `${l.seatHeightInches}"`;
+    }
     items.push({
       itemCode: sku?.code ?? '',
-      // 'others' mirrors the shipped headless client (category-specific
-      // machinery — sofa split, variant gates — is the operator's review
-      // step, not the background draft's).
-      itemGroup: 'others',
+      itemGroup: cat,
       description: name,
       qty: l.qtyGuess > 0 ? l.qtyGuess : 1,
       unitPriceCenti: Math.round(Math.max(0, l.priceRmGuess ?? 0) * 100),
@@ -3139,21 +3281,47 @@ function buildDraftSoBodyFromSlip(
   const planMonths = planMonthsMatch ? Number(planMonthsMatch[1]) : null;
   const paymentMethod = parsed.paymentMethodMatch?.value ?? null;
 
+  // NOTHING OCR'D IS LOST: fields the model extracted but the draft has no
+  // dedicated column for ride in the header note (the draft intentionally
+  // nulls the delivery-date columns — "1 month notice" isn't a date — and the
+  // slip's written grand total is the operator's cross-check against the line
+  // prices, which mostly arrive unpriced).
+  // Owner (said many times): the note carries ONLY the customer's genuine
+  // handwritten order remark -- NOT slip delivery text / grand total / any
+  // other OCR meta. Those each have their own place or are the operator's
+  // review-against-the-photo job.
+  const noteParts: string[] = [];
+  const remarkNote = (parsed.remarks ?? '').trim();
+  if (remarkNote) noteParts.push(remarkNote);
+
+  // Owner 2026-07-04: when the slip names a real DELIVERY date, carry it and pin
+  // the PROCESSING date to TODAY (a scan is keyed the day the order comes in;
+  // the processing date can never be a past date). The create core pairs the two
+  // (both set or both null) and rejects a past date, so we only set them when the
+  // slip's delivery date is a real YYYY-MM-DD that is today-or-later; a past /
+  // blank / "TBC" delivery leaves both null for the operator. runScanJob retries
+  // dateless if the create ever rejects the pair (belt-and-suspenders).
+  const scanToday = todayMyt();
+  const delivRaw = (parsed.deliveryDate ?? '').trim();
+  const scanDelivDate =
+    /^\d{4}-\d{2}-\d{2}$/.test(delivRaw) && delivRaw >= scanToday ? delivRaw : null;
+  const scanProcDate = scanDelivDate ? scanToday : null;
+
   const body: Record<string, unknown> = {
     customerName,
     debtorName: customerName,
     customerSoNo: (parsed.customerSoRef ?? '').trim() || null,
-    phone: `+60${mainPhone.replace(/\s+/g, '')}`,
+    phone: mainPhone ? `+60${mainPhone.replace(/\s+/g, '')}` : SHELL_PHONE,
     customerType: parsed.customerTypeMatch?.value ?? null,
     buildingType: parsed.buildingTypeMatch?.value ?? null,
-    note: (parsed.remarks ?? '').trim() || null,
+    note: noteParts.length > 0 ? noteParts.join(' | ') : null,
     address1: (parsed.addressLine1 ?? parsed.address ?? '').trim() || null,
     customerState: parsed.addressStateMatch?.value ?? null,
     city: (parsed.city ?? '').trim() || null,
     postcode: (parsed.postcode ?? '').trim() || null,
-    // DRAFT: no dates (the interactive "Save draft" nulls these too).
-    internalExpectedDd: null,
-    customerDeliveryDate: null,
+    // Delivery from the slip (today-or-later only); processing pinned to today.
+    internalExpectedDd: scanProcDate,
+    customerDeliveryDate: scanDelivDate,
     emergencyContactPhone: (parsed.phones[1] ?? '').trim()
       ? `+60${(parsed.phones[1] ?? '').replace(/\s+/g, '')}`
       : null,
@@ -3178,9 +3346,12 @@ function buildDraftSoBodyFromSlip(
     receiptImageKey: keys.receiptImageKey,
     // The whole point: land as DRAFT for the operator to review.
     asDraft: true,
+    // Shell = required fields were placeholdered; the create core skips the
+    // customer-identity upsert so placeholders never spawn a phantom customer.
+    _scanShell: isShell,
     items,
   };
-  return { body, missing: [] };
+  return { body, missing };
 }
 
 // The waitUntil pipeline — runs AFTER /enqueue has responded. Every failure
@@ -3218,6 +3389,14 @@ async function runScanJob(
   };
   const fail = async (plainMsg: string): Promise<void> => {
     await touch({ status: 'error', error: plainMsg });
+    // A hard failure produced no draft — tell the rep privately so they know to
+    // scan again (system faults only now; unreadable slips land a shell draft).
+    await postScanNotice(env, {
+      houzsUserId: job.houzsUserId,
+      category: 'WARNING',
+      title: 'Scan could not be processed',
+      body: `${plainMsg} Please scan again.`,
+    });
   };
 
   try {
@@ -3253,43 +3432,118 @@ async function runScanJob(
       env.SO_ITEM_PHOTOS, svc, sampleId, job.uploadedImages, parsed,
     );
 
+    // Owner 2026-07-04: EVERY scan ends as a draft the rep can open — success,
+    // duplicate, OR unreadable. A scan that could not be turned into a full
+    // order still lands a SHELL draft carrying the slip photo (with a plain
+    // "please complete this from the photo" note the Orders-open toast shows),
+    // so the rep never has to hunt a lost scan or re-shoot just to key it in.
+    let body: Record<string, unknown>;
+    let shellNote: string | null = null;
+    let dupDocNo: string | null = null;
+
     if (!parsed) {
-      console.error('[scan-job] extraction failed:', job.id, call.errorMsg);
-      return await fail(call.timedOut ? JOB_MSG.timeout : JOB_MSG.unreadable);
-    }
+      // Nothing parsed at all (blank/unreadable photo, or the model timed out).
+      console.error('[scan-job] extraction failed, creating blank draft:', job.id, call.errorMsg);
+      const slipKey = imageKey ?? (job.imageKeys[0] ?? null);
+      body = buildEmptyShellBody({ imageKey: slipKey, receiptImageKey });
+      shellNote = 'The scan could not read this slip, so this draft is blank. Please open it and fill in the order from the photo.';
+    } else {
+      await postProcessSlip(parsed, svc, env.GOOGLE_MAPS_API_KEY, catalog);
 
-    await postProcessSlip(parsed, svc, env.GOOGLE_MAPS_API_KEY, catalog);
+      // Duplicate-upload warning (owner: 重复上传预警) — same photo scanned
+      // again recently, or the same customer/slip already has an SO. The DRAFT
+      // is STILL created for review; the flag rides on the job row (mobile
+      // surfaces it in the toast) and the SO note is prefixed below.
+      const dup = await findDuplicateSo(svc, { imageSha256, excludeSampleId: sampleId, parsed });
+      if (dup) { dupDocNo = dup.docNo; await touch({ duplicate_of: dup.docNo }); }
 
-    // Duplicate-upload warning (owner: 重复上传预警) — same photo scanned
-    // again recently, or the same customer/slip already has an SO. The DRAFT
-    // is STILL created for review; the flag rides on the job row (mobile
-    // surfaces it) and the SO note is prefixed below. Fail-soft throughout.
-    const dup = await findDuplicateSo(svc, { imageSha256, excludeSampleId: sampleId, parsed });
-    if (dup) await touch({ duplicate_of: dup.docNo });
-
-    const draft = buildDraftSoBodyFromSlip(parsed, catalog, { imageKey, receiptImageKey });
-    if (!draft.body) {
-      return await fail(
-        `The scan could not read the ${draft.missing.join(' and ')} on the slip. Please enter this order manually.`,
-      );
-    }
-    if (dup) {
-      const existingNote = typeof draft.body.note === 'string' && draft.body.note.trim() !== ''
-        ? ` | ${draft.body.note}`
-        : '';
-      draft.body.note = `POSSIBLE DUPLICATE of ${dup.docNo}${existingNote}`;
+      // allowShell → always returns a body; missing required fields become
+      // placeholders and the body is tagged `_scanShell`.
+      const draft = buildDraftSoBodyFromSlip(parsed, catalog, { imageKey, receiptImageKey }, { allowShell: true });
+      if (!draft.body) {
+        // Defensive — allowShell should never return null.
+        return await fail(
+          `The scan could not read the ${draft.missing.join(' and ')} on the slip. Please enter this order manually.`,
+        );
+      }
+      body = draft.body;
+      if (body._scanShell === true) {
+        shellNote = `The scan could not read the ${draft.missing.join(' and ')} on this slip. Please open this draft and complete it from the photo.`;
+      }
+      if (dupDocNo) {
+        const existingNote = typeof body.note === 'string' && body.note.trim() !== ''
+          ? ` | ${body.note}`
+          : '';
+        body.note = `POSSIBLE DUPLICATE of ${dupDocNo}${existingNote}`;
+      }
     }
 
     // PRICING-CRITICAL create — the factored mfg-sales-orders core, replayed
     // with the identities captured at enqueue time. Never reimplemented here.
-    const outcome = await createDraftSalesOrder(env, {
+    let outcome = await createDraftSalesOrder(env, {
       salespersonId: job.salespersonId,
       salespersonName: job.salespersonName,
       houzsUserId: job.houzsUserId,
-      body: draft.body,
+      body,
     });
+    // Belt-and-suspenders TIER 1: if the create rejects AND we set slip dates,
+    // the date/variant pairing rules are the likely cause (a Processing Date
+    // needs complete line variants) — retry WITHOUT dates, KEEPING the full
+    // category lines (itemGroup/fabric/specials). The operator sets dates on
+    // review. This is what recovers a sofa with a delivery date but no seat
+    // height while preserving desktop-parity lines.
+    const replay = (b: Record<string, unknown>) => createDraftSalesOrder(env, {
+      salespersonId: job.salespersonId,
+      salespersonName: job.salespersonName,
+      houzsUserId: job.houzsUserId,
+      body: b,
+    });
+    if (
+      outcome.status !== 201 &&
+      (body.internalExpectedDd != null || body.customerDeliveryDate != null)
+    ) {
+      console.warn('[scan-job] create rejected with dates, retrying dateless:', job.id, outcome.status);
+      body.internalExpectedDd = null;
+      body.customerDeliveryDate = null;
+      outcome = await replay(body);
+    }
+    // TIER 2 last resort: the category-strict lines still reject (an OCR fabric
+    // not allowed on that model, a special not on the model, an incomplete sofa).
+    // Degrade EVERY line to a loose 'others' line (description + qty + price only,
+    // no variants) so the scanned order STILL lands as a draft — the operator
+    // re-picks the category variants against the slip photo. Never lose the scan.
+    if (outcome.status !== 201 && Array.isArray(body.items) && (body.items as unknown[]).length > 0) {
+      console.warn('[scan-job] category lines rejected, retrying as loose lines:', job.id, outcome.status);
+      body.internalExpectedDd = null;
+      body.customerDeliveryDate = null;
+      body.items = (body.items as Array<Record<string, unknown>>).map((it) => ({
+        itemCode: it.itemCode,
+        itemGroup: 'others',
+        description: it.description,
+        qty: it.qty,
+        unitPriceCenti: it.unitPriceCenti,
+        lineDeliveryDate: null,
+      }));
+      outcome = await replay(body);
+    }
     const docNo = (outcome.body as { docNo?: unknown }).docNo;
     if (outcome.status === 201 && typeof docNo === 'string' && docNo !== '') {
+      // Shell/blank draft — there is no reliable OCR payment to book. Record the
+      // plain "please complete" note so the Orders-open toast tells the rep, and
+      // stop here (no receipt-payment pass on a draft the model couldn't read).
+      if (shellNote) {
+        await touch({ status: 'done', so_doc_no: docNo, error: shellNote });
+        await postScanNotice(env, {
+          houzsUserId: job.houzsUserId,
+          category: 'WARNING',
+          title: `Scan saved as a draft — ${docNo}`,
+          body: shellNote,
+        });
+        return;
+      }
+      // Past the shell paths, a null parse has already returned above — narrow
+      // `parsed` to non-null for the receipt-payment pass (defensive fallback).
+      if (!parsed) { await touch({ status: 'done', so_doc_no: docNo }); return; }
       // Payments from receipt OCR — one ledger row per classified payment
       // receipt, via the SAME recordSoPaymentRow core the interactive route
       // uses. GUARD: never fail the job — the DRAFT stands; a failure only
@@ -3321,6 +3575,18 @@ async function runScanJob(
         status: 'done',
         so_doc_no: docNo,
         ...(paymentNote ? { error: paymentNote } : {}),
+      });
+      // Private "your scan is a draft now" notice. Duplicate/payment caveats
+      // ride in the body + bump it to WARNING so it stands out.
+      const noticeExtras = [
+        dupDocNo ? `This looks like a possible duplicate of ${dupDocNo}.` : null,
+        paymentNote,
+      ].filter(Boolean);
+      await postScanNotice(env, {
+        houzsUserId: job.houzsUserId,
+        category: dupDocNo || paymentNote ? 'WARNING' : 'GENERAL',
+        title: `Sales order saved — ${docNo}`,
+        body: [`Your scan was saved as a draft. Open it from your Orders to review.`, ...noticeExtras].join(' '),
       });
       return;
     }
@@ -3442,30 +3708,48 @@ scanSo.post('/enqueue', async (c) => {
     }
   }
 
-  // 3) Run the pipeline AFTER responding — same waitUntil pattern as the
-  //    confirm endpoint's fire-and-forget distill.
-  const pipeline = runScanJob(c.env, {
-    id: jobId,
-    salesperson: repGiven,
-    salespersonId: user.id,
-    salespersonName,
-    houzsUserId,
-    fileBlocks,
-    uploadedImages,
-    firstBuffer,
-    imageKeys,
-  });
-  try {
-    c.executionCtx.waitUntil(pipeline);
-  } catch {
-    /* non-Workers runtime (tests) — let the floating promise run */
+  // 3) Hand the job to the Cloudflare Queue. The consumer (index.ts `queue()`)
+  //    rebuilds EVERYTHING from the scan_jobs row + R2 photos, so the message
+  //    carries only the job id. A queue-owned attempt survives a mid-run deploy
+  //    / isolate eviction (retried up to max_retries, then DLQ) — the whole
+  //    reason we moved off waitUntil, which Cloudflare evicts on the 60-110s
+  //    real-slip OCR calls, leaving jobs stuck 'running' forever.
+  //
+  //    FALLBACK: if SCAN_QUEUE is unbound (older deploy / test runtime), run the
+  //    pipeline in waitUntil exactly as before so nothing regresses.
+  if (c.env.SCAN_QUEUE) {
+    try {
+      await c.env.SCAN_QUEUE.send({ jobId });
+    } catch (e) {
+      // Send failed AFTER the row + photos are durable — the reaper will pick
+      // the job up (stale queued → one re-run). Log and still 202 so the phone
+      // shows a queued job it can poll.
+      console.error('[scan-so enqueue] SCAN_QUEUE.send failed:', jobId, (e as Error).message);
+    }
+  } else {
+    const pipeline = runScanJob(c.env, {
+      id: jobId,
+      salesperson: repGiven,
+      salespersonId: user.id,
+      salespersonName,
+      houzsUserId,
+      fileBlocks,
+      uploadedImages,
+      firstBuffer,
+      imageKeys,
+    });
+    try {
+      c.executionCtx.waitUntil(pipeline);
+    } catch {
+      /* non-Workers runtime (tests) — let the floating promise run */
+    }
   }
 
   return c.json({ job_id: jobId, status: 'queued' }, 202);
 });
 
 // ---------------------------------------------------------------------------
-// Stale-job reaper — a scan job stuck in queued/running for >10 minutes is
+// Stale-job reaper — a scan job stuck in queued/running for >3 minutes is
 // dead (isolate evicted / Worker DEPLOY killed the waitUntil, pipeline crashed
 // without reaching its own error-update). Deploys are the common cause, so a
 // stale job is NOT errored on first sight: it gets ONE automatic re-run
@@ -3475,7 +3759,7 @@ scanSo.post('/enqueue', async (c) => {
 // photos never made it to R2 — is flipped to the terminal error.
 //
 // Staleness clock = updated_at (NOT created_at): the retry claim stamps
-// updated_at = now, giving the re-run its own fresh 10-minute window instead
+// updated_at = now, giving the re-run its own fresh 3-minute window instead
 // of being re-reaped on the next poll. (First attempts are equivalent either
 // way — a job's updated_at only moves when the pipeline is actually alive.)
 //
@@ -3485,7 +3769,12 @@ scanSo.post('/enqueue', async (c) => {
 // (retry_count = 0 AND still queued/running), so two concurrent polls can
 // never double-run one job.
 // ---------------------------------------------------------------------------
-const SCAN_JOB_STALE_MINUTES = 10;
+// 3 min (was 10): /extract carries a 110s AbortSignal.timeout, so a job still
+// queued/running past 3 minutes is a deploy/isolate-killed zombie, not a
+// slow-but-alive call — safe to retry (first pass) / error (terminal pass) at
+// 3 min. Both the RETRY-claim pass and the TERMINAL pass derive their cutoff
+// from this one constant, so this single change tightens both.
+const SCAN_JOB_STALE_MINUTES = 3;
 const STALE_JOB_ERROR = 'The scan took too long and was stopped. Please scan this slip again.';
 
 // Rebuild runScanJob's file inputs from the durable R2 copies — the inverse of
@@ -3529,6 +3818,85 @@ async function loadScanJobFilesFromR2(
     blockIndex += 1;
   }
   return { fileBlocks, uploadedImages, firstBuffer };
+}
+
+// ---------------------------------------------------------------------------
+// Cloudflare Queue consumer entry point (called from index.ts `queue()`). The
+// message carries ONLY { jobId } — everything else is rebuilt from the durable
+// scan_jobs row + the R2 photo copies the enqueue path persisted. This is the
+// reliable replacement for the old waitUntil pipeline: a queue-owned attempt
+// survives isolate eviction (Cloudflare retries up to max_retries, then DLQ).
+//
+// IDEMPOTENCY: a queue redelivery must NOT create a second draft. If the row is
+// already status='done' (the pipeline finished and wrote so_doc_no), return
+// without re-running so the caller acks. A missing row also acks (nothing to
+// do). Any other status re-runs runScanJob, whose own status writes stand — a
+// job stuck 'running' from an evicted attempt is safe to replay because the
+// draft-create only happened at the very end (a mid-run eviction means no draft
+// was written). runScanJob is otherwise unchanged from the enqueue path.
+export async function processScanQueueMessage(env: Env, jobId: string): Promise<void> {
+  const id = String(jobId ?? '');
+  if (!id) return;
+  const svc = serviceClient(env);
+
+  const { data: row, error } = await svc
+    .from('scan_jobs')
+    .select('id, status, salesperson, salesperson_id, houzs_user_id, image_keys')
+    .eq('id', id)
+    .single();
+  if (error) {
+    // Missing row (deleted / never inserted) — ack, nothing to run. Any other
+    // read error: throw so the message retries (transient DB blip).
+    if ((error as { code?: string }).code === 'PGRST116') {
+      console.warn('[scan-queue] job row not found, acking:', id);
+      return;
+    }
+    throw new Error(`scan_jobs read failed for ${id}: ${error.message}`);
+  }
+
+  const r = row as Record<string, unknown>;
+  const status = typeof r.status === 'string' ? r.status : '';
+  // IDEMPOTENT ACK — the draft already exists; a redelivery must not make a 2nd.
+  if (status === 'done') {
+    console.warn('[scan-queue] job already done, skipping:', id);
+    return;
+  }
+
+  // Dual-read both casings (postgres.js / PostgREST camelCases result cols —
+  // the #1 recurring result-column bug class).
+  const rawKeys = r.imageKeys ?? r.image_keys;
+  const imageKeys = Array.isArray(rawKeys) ? rawKeys.map(String) : [];
+  const salesperson = typeof r.salesperson === 'string' ? r.salesperson : '';
+  const salespersonId = String(r.salespersonId ?? r.salesperson_id ?? '');
+  const huRaw = r.houzsUserId ?? r.houzs_user_id;
+  const houzsUserId = huRaw != null && Number.isFinite(Number(huRaw)) ? Number(huRaw) : null;
+
+  const files = salespersonId ? await loadScanJobFilesFromR2(env.SO_ITEM_PHOTOS, imageKeys) : null;
+  if (!files) {
+    // No durable photos (enqueue-time R2 put failed / bucket unbound) or no
+    // replayable identity — the job can never run. Terminal error, then ack
+    // (retrying would loop to the DLQ for the same unrecoverable reason).
+    console.warn('[scan-queue] job not replayable, erroring:', id);
+    await svc
+      .from('scan_jobs')
+      .update({ status: 'error', error: STALE_JOB_ERROR, updated_at: new Date().toISOString() })
+      .eq('id', id);
+    return;
+  }
+
+  await runScanJob(env, {
+    id,
+    salesperson,
+    // The enqueue-time user_metadata name is not on the row; the normalized rep
+    // display name is the closest replay identity (same as the reaper).
+    salespersonName: salesperson || null,
+    salespersonId,
+    houzsUserId,
+    fileBlocks: files.fileBlocks,
+    uploadedImages: files.uploadedImages,
+    firstBuffer: files.firstBuffer,
+    imageKeys,
+  });
 }
 
 async function reapStaleScanJobs(

@@ -76,6 +76,10 @@ export async function reconcileFreeGiftLinesForSo(sb: any, docNo: string): Promi
       const variants = it.variants ?? null;
       const product = productByCode.get((it.item_code ?? '').trim()) ?? null;
       const modelId = product?.model_id ?? null;
+      const cells = (variants?.cells as Array<{ moduleId?: unknown }> | undefined) ?? [];
+      const builtCompartments = Array.isArray(cells)
+        ? cells.map((cl) => String(cl?.moduleId ?? '')).filter(Boolean)
+        : [];
       return {
         triggerKey: it.id,
         itemCode:   product?.code ?? (it.item_code ?? ''),
@@ -84,6 +88,8 @@ export async function reconcileFreeGiftLinesForSo(sb: any, docNo: string): Promi
         modelId,
         buildKey:   (variants?.buildKey as string | undefined) ?? null,
         isFreeGift: Boolean((variants as Record<string, unknown> | null)?.freeGift),
+        sizeCode:   product?.size_code ? String(product.size_code).toUpperCase() : null,
+        builtCompartments,
         gifts:      modelId ? (modelGiftsById.get(modelId) ?? []) : [],
       };
     });
@@ -155,12 +161,13 @@ export async function reconcileFreeGiftLinesForSo(sb: any, docNo: string): Promi
       // venue/branding ride along from the SO header).
       const { data: hdr } = await sb
         .from('mfg_sales_orders')
-        .select('debtor_code, debtor_name, agent, venue, branding')
+        .select('debtor_code, debtor_name, agent, venue, branding, company_id')
         .eq('doc_no', docNo)
         .maybeSingle();
       const header = (hdr ?? {}) as {
         debtor_code?: string | null; debtor_name?: string | null;
         agent?: string | null; venue?: string | null; branding?: string | null;
+        company_id?: number | null;
       };
 
       // Continue the doc's line numbering (max + 1, incrementing) when the doc
@@ -180,6 +187,8 @@ export async function reconcileFreeGiftLinesForSo(sb: any, docNo: string): Promi
         const cost = Number(acc.cost_price_sen ?? acc.base_price_sen ?? 0) || 0;
         const qty = Math.max(1, Number(g.qty ?? 1));
         rows.push({
+          // Multi-company (mig 0061): the free-gift line inherits the SO's company.
+          ...(header.company_id != null ? { company_id: header.company_id } : {}),
           doc_no:            docNo,
           ...(nextLineNo !== null ? { line_no: nextLineNo } : {}),
           debtor_code:       header.debtor_code ?? null,

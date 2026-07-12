@@ -3,6 +3,7 @@
 // from the trigger's configured `default_free_gifts`. The GIFT is always an
 // accessory; the TRIGGER may be a product (matched by id/model) or a sofa combo
 // (matched by combo, D9). One gift set per qualifying item (qty scales).
+import { parseTargetRefinement, refinementMatchesLine, type TargetRefinement } from './rule-target';
 
 export interface DefaultFreeGift {
   /** mfg_products.id of an ACCESSORY product (the gift). */
@@ -11,6 +12,10 @@ export interface DefaultFreeGift {
   qty: number;
   /** free-text; null/blank => the line shows "Free gift". */
   campaignName: string | null;
+  /** Optional gating: when set, the gift only triggers for lines whose
+   *  size_code / build compartments match (scope 'variant' / 'compartment').
+   *  Absent / scope 'model' = the whole Model (legacy behavior, 2026-06-20). */
+  condition?: TargetRefinement;
 }
 
 /** A trigger present in the cart/order, with the gifts it grants. */
@@ -71,7 +76,12 @@ export function parseDefaultFreeGifts(raw: unknown): DefaultFreeGift[] {
     if (!giftProductId || !Number.isFinite(qty) || qty < 1) continue;
     const campaignName =
       typeof r.campaignName === 'string' && r.campaignName.trim() !== '' ? r.campaignName.trim() : null;
-    out.push({ giftProductId, qty, campaignName });
+    // A 'model'-scope (or absent / malformed) condition is the legacy whole-Model
+    // gift — store no condition so non-gated entries serialize unchanged.
+    const cond = parseTargetRefinement(r.condition);
+    const entry: DefaultFreeGift = { giftProductId, qty, campaignName };
+    if (cond && cond.scope !== 'model') entry.condition = cond;
+    out.push(entry);
   }
   return out;
 }
@@ -232,6 +242,12 @@ export interface TriggerLine {
   buildKey: string | null;
   /** variants.freeGift present → never a trigger (one-way). */
   isFreeGift: boolean;
+  /** mfg_products.size_code (UPPERCASE) for mattress/bedframe; null otherwise.
+   *  Required by 'variant'-scope gift conditions (2026-06-20). */
+  sizeCode: string | null;
+  /** this line's sofa module codes (a split row carries only its own cell;
+   *  the builder unions them across the build). [] for non-sofa. */
+  builtCompartments: string[];
   /** the line's Model gifts, already resolved by the caller. */
   gifts: DefaultFreeGift[];
 }
@@ -242,16 +258,40 @@ export interface TriggerLine {
  *   - a SOFA line triggers ONE gift per complete sofa — dedup by buildKey
  *     (the split module rows share one buildKey); triggerQty is always 1;
  *   - any other line triggers from its Model's gifts, scaled by the line qty.
- * Identical on create (one sofa line) and reconcile (split rows) — no drift.
+ * A gift carrying a `condition` (size / compartment) only fires when the line
+ * matches it; for a sofa the build's compartments are UNIONed across its split
+ * rows first, so a "build contains CNR" condition resolves identically on create
+ * (one sofa line) and reconcile (split rows) — no drift.
  */
-export function buildFreeGiftTriggers(lines: TriggerLine[]): FreeGiftTrigger[] {
+export function buildFreeGiftTriggers(
+  lines: TriggerLine[],
+  comboModulesById: Map<string, string[][]> = new Map(),
+): FreeGiftTrigger[] {
+  // Union each sofa build's compartments across its (possibly split) rows.
+  const buildCompartments = new Map<string, string[]>();
+  for (const line of lines) {
+    if (String(line.category ?? '').toUpperCase() !== 'SOFA') continue;
+    const buildId = line.buildKey ?? line.triggerKey;
+    const cur = buildCompartments.get(buildId) ?? [];
+    buildCompartments.set(buildId, [...cur, ...line.builtCompartments]);
+  }
+
   const triggers: FreeGiftTrigger[] = [];
   const seenSofaBuilds = new Set<string>();
   for (const line of lines) {
     if (line.isFreeGift) continue;
     if (line.gifts.length === 0) continue;
-    if (String(line.category ?? '').toUpperCase() === 'SOFA') {
-      const buildId = line.buildKey ?? line.triggerKey;
+    const isSofa = String(line.category ?? '').toUpperCase() === 'SOFA';
+    const buildId = line.buildKey ?? line.triggerKey;
+    const li = {
+      category: line.category,
+      modelId: line.modelId,
+      sizeCode: line.sizeCode,
+      builtCompartments: isSofa ? (buildCompartments.get(buildId) ?? line.builtCompartments) : line.builtCompartments,
+    };
+    const gifts = line.gifts.filter((g) => !g.condition || refinementMatchesLine(li, g.condition, comboModulesById));
+    if (gifts.length === 0) continue;
+    if (isSofa) {
       if (seenSofaBuilds.has(buildId)) continue;   // one gift per complete sofa
       seenSofaBuilds.add(buildId);
       triggers.push({
@@ -259,7 +299,7 @@ export function buildFreeGiftTriggers(lines: TriggerLine[]): FreeGiftTrigger[] {
         triggerRef:  line.modelId ?? buildId,
         triggerKind: 'product',
         triggerQty:  1,                          // one complete sofa = one gift; never scale by module-row qty
-        gifts:       line.gifts,
+        gifts,
       });
     } else {
       triggers.push({
@@ -267,7 +307,7 @@ export function buildFreeGiftTriggers(lines: TriggerLine[]): FreeGiftTrigger[] {
         triggerRef:  line.itemCode || line.triggerKey,
         triggerKind: 'product',
         triggerQty:  Number(line.qty ?? 1),
-        gifts:       line.gifts,
+        gifts,
       });
     }
   }

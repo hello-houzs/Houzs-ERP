@@ -1098,6 +1098,12 @@ function ProjectsListView() {
       getValue: (r) => r.brand,
     },
     {
+      key: "state",
+      label: "State",
+      render: (r) => <span className="text-[11px]">{r.state || "—"}</span>,
+      getValue: (r) => r.state ?? "",
+    },
+    {
       key: "event_type_name",
       label: "Type",
       render: (r) => <span className="text-[11px]">{r.event_type_name || "—"}</span>,
@@ -5321,7 +5327,13 @@ function ProjectSpecStrip({
               onChange={async (e) => {
                 const v = e.target.value || null;
                 if (v && p.end_date && p.end_date < v) {
-                  toast.error("Start date can't be after end date");
+                  // New start is past the current end — don't block; shift the
+                  // whole event forward, keeping its length (owner reschedule).
+                  const base = p.start_date ?? p.end_date;
+                  const len = Math.max(0, Math.round((Date.parse(p.end_date + "T00:00:00Z") - Date.parse(base + "T00:00:00Z")) / 86400000));
+                  const ne = new Date(v + "T00:00:00Z");
+                  ne.setUTCDate(ne.getUTCDate() + len);
+                  await patch({ start_date: v, end_date: ne.toISOString().slice(0, 10) });
                   return;
                 }
                 await patch({ start_date: v });
@@ -5340,7 +5352,13 @@ function ProjectSpecStrip({
               onChange={async (e) => {
                 const v = e.target.value || null;
                 if (v && p.start_date && v < p.start_date) {
-                  toast.error("End date must be on or after start date");
+                  // New end is before the current start — don't block; shift the
+                  // whole event earlier, keeping its length (owner reschedule).
+                  const base = p.end_date ?? p.start_date;
+                  const len = Math.max(0, Math.round((Date.parse(base + "T00:00:00Z") - Date.parse(p.start_date + "T00:00:00Z")) / 86400000));
+                  const ns = new Date(v + "T00:00:00Z");
+                  ns.setUTCDate(ns.getUTCDate() - len);
+                  await patch({ start_date: ns.toISOString().slice(0, 10), end_date: v });
                   return;
                 }
                 await patch({ end_date: v });

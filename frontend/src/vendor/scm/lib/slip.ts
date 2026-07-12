@@ -28,7 +28,7 @@ import { humanApiError } from './authed-fetch';
 
 const API_URL =
   ((import.meta as { env?: Record<string, string | undefined> }).env?.VITE_API_URL
-    || 'https://autocount-sync-api.houzs-erp.workers.dev') + '/api/scm';
+    || (import.meta.env.PROD ? '' : 'https://autocount-sync-api.houzs-erp.workers.dev')) + '/api/scm';
 
 const token = (): string => {
   const t = localStorage.getItem('auth:token');

@@ -39,6 +39,7 @@
 
 import { computeVariantKey } from '../shared';
 import { restampDoActualCost } from '../routes/delivery-orders-mfg';
+import { toMyrSen } from './fx';
 
 /* Re-derive a Sales Invoice header's per-category revenue/cost totals from its
    line items. Mirror of the SI route's recomputeTotals (kept in lockstep). */
@@ -140,23 +141,34 @@ export async function restampSiFromDo(sb: any, deliveryOrderId: string) {
 export async function recostFromGrn(sb: any, grnId: string) {
   try {
     // 1. GRN lines — the received buckets + their GR (fallback) price.
+    //    Migration 0082 — also read allocated_charge_centi + qty_accepted so the
+    //    landed FREIGHT folded in at receive time survives a PI recost.
     const { data: grnItems } = await sb.from('grn_items')
-      .select('id, material_code, item_group, variants, unit_price_centi')
+      .select('id, material_code, item_group, variants, unit_price_centi, qty_accepted, allocated_charge_centi')
       .eq('grn_id', grnId);
     if (!grnItems || grnItems.length === 0) return;
     const giList = grnItems as Array<{
       id: string; material_code: string; item_group: string | null;
       variants: Record<string, unknown> | null; unit_price_centi: number | null;
+      qty_accepted: number | null; allocated_charge_centi: number | null;
     }>;
+
+    /* Landed-cost core (migration 0082) — the GRN's exchange_rate (MYR per 1 unit
+       of the GRN currency, 1 for MYR). Converts the GR-price FALLBACK
+       (g.unit_price_centi, in the GRN's currency) to MYR. The PI path below uses
+       the PI's OWN rate. rate 1 ⇒ toMyrSen is a no-op, so an MYR GRN recosts
+       byte-for-byte as before. */
+    const { data: grnHead } = await sb.from('grns').select('exchange_rate').eq('id', grnId).maybeSingle();
+    const grnRate = (grnHead as { exchange_rate?: string | number | null } | null)?.exchange_rate ?? 1;
 
     // 2. PI lines billing those GRN lines — the AUTHORITATIVE price (overrides
     //    GR). Weighted-average across all live (non-cancelled) PI lines per
     //    grn_item, so a partial / corrected invoice resolves cleanly.
     const giIds = giList.map((g) => g.id);
     const { data: piRows } = await sb.from('purchase_invoice_items')
-      .select('grn_item_id, qty, unit_price_centi, purchase_invoice_id')
+      .select('grn_item_id, qty, unit_price_centi, purchase_invoice_id, allocated_charge_centi')
       .in('grn_item_id', giIds);
-    const piList = (piRows ?? []) as Array<{ grn_item_id: string | null; qty: number; unit_price_centi: number | null; purchase_invoice_id: string }>;
+    const piList = (piRows ?? []) as Array<{ grn_item_id: string | null; qty: number; unit_price_centi: number | null; purchase_invoice_id: string; allocated_charge_centi: number | null }>;
     const piIds = [...new Set(piList.map((r) => r.purchase_invoice_id).filter(Boolean))];
     /* LEAK GUARD (DRAFT, PI two-state — 2026-06-25 anchoring diff vs 2990) — exclude
        both CANCELLED AND DRAFT PIs from the authoritative-cost aggregate. A DRAFT PI
@@ -164,21 +176,81 @@ export async function recostFromGrn(sb: any, grnId: string) {
        become the GRN lot's cost (which would silently flow into DO/SI margins). Only
        a confirmed POSTED/PARTIALLY_PAID/PAID PI is authoritative. */
     const piExcluded = new Set<string>();
+    /* Landed-cost core (migration 0082) — each PI's OWN exchange_rate. A PI line
+       price is in the PI's currency; the AUTHORITATIVE MYR lot cost is that price
+       × the PI's rate. Different PIs billing the same GRN can carry different
+       rates, so key the rate per purchase_invoice_id. */
+    const piRateById = new Map<string, string | number | null>();
     if (piIds.length > 0) {
-      const { data: pis } = await sb.from('purchase_invoices').select('id, status').in('id', piIds);
-      for (const p of (pis ?? []) as Array<{ id: string; status: string }>) {
+      const { data: pis } = await sb.from('purchase_invoices').select('id, status, exchange_rate').in('id', piIds);
+      for (const p of (pis ?? []) as Array<{ id: string; status: string; exchange_rate?: string | number | null }>) {
         const st = (p.status ?? '').toUpperCase();
         if (st === 'CANCELLED' || st === 'DRAFT') piExcluded.add(p.id);
+        piRateById.set(p.id, p.exchange_rate ?? 1);
       }
     }
+    // Aggregate the PI lines per grn_item as a weighted-average MYR cost: convert
+    // EACH line's foreign price to MYR at its own PI's rate BEFORE averaging.
     const piAgg = new Map<string, { qty: number; amt: number }>();
     for (const r of piList) {
       if (!r.grn_item_id || piExcluded.has(r.purchase_invoice_id)) continue;
       const a = piAgg.get(r.grn_item_id) ?? { qty: 0, amt: 0 };
       const q = Number(r.qty ?? 0);
+      const unitMyr = toMyrSen(Number(r.unit_price_centi ?? 0), piRateById.get(r.purchase_invoice_id) ?? 1);
       a.qty += q;
-      a.amt += q * Number(r.unit_price_centi ?? 0);
+      a.amt += q * unitMyr;
       piAgg.set(r.grn_item_id, a);
+    }
+
+    /* Landed-cost allocation (migration 0082) — per-bucket FREIGHT per unit. The
+       GRN allocated_charge_centi was folded into the lot at receive time as
+       round(allocated / qty) per unit. A PI recost re-derives the GOODS cost, so
+       we must re-add the SAME per-unit freight or it would silently drop out.
+       Aggregate per bucket as a qty-weighted average. 0 everywhere when no charge. */
+    const freightByBucket = new Map<string, number>();
+    {
+      const acc = new Map<string, { freight: number; qty: number }>();
+      for (const g of giList) {
+        const vkey = computeVariantKey(g.item_group, g.variants);
+        const key = `${g.material_code}::${vkey}`;
+        const qty = Math.max(0, Number(g.qty_accepted ?? 0));
+        const perUnit = qty > 0 ? Math.round(Number(g.allocated_charge_centi ?? 0) / qty) : 0;
+        const a = acc.get(key) ?? { freight: 0, qty: 0 };
+        a.freight += perUnit * qty; // total freight sen across this line
+        a.qty += qty;
+        acc.set(key, a);
+      }
+      for (const [key, a] of acc) freightByBucket.set(key, a.qty > 0 ? Math.round(a.freight / a.qty) : 0);
+    }
+
+    /* PI-level landed freight (migration 0082) — freight entered on the PI as a
+       SERVICE line, pooled + allocated across the PI's GOODS lines and stored per
+       line as purchase_invoice_items.allocated_charge_centi (already MYR sen via
+       the PI's own rate, computed at PI write time). SEPARATE from the GRN freight:
+       the user enters freight on the GRN OR the PI (or both, deliberately), and
+       each capitalises EXACTLY ONCE. Re-added here as a per-unit MYR figure ON TOP
+       of the GRN freight + goods cost. DRAFT/CANCELLED PIs excluded. 0 everywhere
+       when no PI freight, so a PI with no service line is unchanged. */
+    const piFreightByBucket = new Map<string, number>();
+    {
+      const giById = new Map(giList.map((g) => [g.id, g]));
+      const acc = new Map<string, { freight: number; qty: number }>();
+      for (const r of piList) {
+        if (!r.grn_item_id || piExcluded.has(r.purchase_invoice_id)) continue;
+        const alloc = Number(r.allocated_charge_centi ?? 0);
+        if (alloc === 0) continue;
+        const g = giById.get(r.grn_item_id);
+        if (!g) continue;
+        const vkey = computeVariantKey(g.item_group, g.variants);
+        const key = `${g.material_code}::${vkey}`;
+        const lotQty = Math.max(0, Number(g.qty_accepted ?? 0));
+        const perUnit = lotQty > 0 ? Math.round(alloc / lotQty) : 0;
+        const a = acc.get(key) ?? { freight: 0, qty: 0 };
+        a.freight += perUnit * lotQty;
+        a.qty += lotQty;
+        acc.set(key, a);
+      }
+      for (const [key, a] of acc) piFreightByBucket.set(key, a.qty > 0 ? Math.round(a.freight / a.qty) : 0);
     }
 
     // 3. Authoritative unit cost per (product_code, variant_key) bucket.
@@ -188,9 +260,13 @@ export async function recostFromGrn(sb: any, grnId: string) {
       const vkey = computeVariantKey(g.item_group, g.variants);
       const key = `${g.material_code}::${vkey}`;
       const pi = piAgg.get(g.id);
+      // GRN-allocated freight + PI-allocated freight. Both per-unit MYR; each
+      // folds onto the goods cost once (distinct user entries, never double-counted).
+      const freight = (freightByBucket.get(key) ?? 0) + (piFreightByBucket.get(key) ?? 0);
       let cost: number | null;
-      if (pi && pi.qty > 0) cost = Math.round(pi.amt / pi.qty);
-      else if (Number(g.unit_price_centi ?? 0) > 0) cost = Number(g.unit_price_centi);
+      // PI price (already MYR via piAgg) > GR price × GRN rate (→ MYR) > Pending.
+      if (pi && pi.qty > 0) cost = Math.round(pi.amt / pi.qty) + freight;
+      else if (Number(g.unit_price_centi ?? 0) > 0) cost = toMyrSen(Number(g.unit_price_centi), grnRate) + freight;
       else cost = null; // Pending — no price anywhere yet.
       const existing = costByBucket.get(key);
       if (existing === undefined) costByBucket.set(key, cost);

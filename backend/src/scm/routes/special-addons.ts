@@ -13,6 +13,7 @@ import { z } from 'zod';
 import { supabaseAuth } from '../middleware/auth';
 import { hasHouzsPerm } from '../lib/houzs-perms';
 import { todayMyt } from '../lib/my-time';
+import { activeCompanyId } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 type AppCtx = Context<{ Bindings: Env; Variables: Variables }>;
@@ -127,6 +128,7 @@ specialAddons.post('/', async (c) => {
   const { data, error } = await supabase
     .from('special_addons')
     .insert({
+      company_id:        activeCompanyId(c),
       code:              parsed.data.code,
       label:             parsed.data.label,
       so_description:    parsed.data.soDescription,
@@ -294,7 +296,7 @@ specialAddons.post('/save', async (c) => {
   const histId = genHistId();
   const { data: hist, error: histErr } = await supabase
     .from('special_addons_history')
-    .insert({ id: histId, addons, effective_from: effectiveFrom, notes: notes ?? null, created_by: userId })
+    .insert({ company_id: activeCompanyId(c), id: histId, addons, effective_from: effectiveFrom, notes: notes ?? null, created_by: userId })
     .select('id, addons, effective_from, notes, created_at')
     .single();
   if (histErr) return c.json({ error: 'history_insert_failed', reason: histErr.message }, 500);
@@ -303,7 +305,9 @@ specialAddons.post('/save', async (c) => {
   //    reads). Upsert by code; codes NOT in the snapshot are deactivated (never
   //    deleted) so existing orders keep resolving the value.
   const nowIso = new Date().toISOString();
+  const cid = activeCompanyId(c);
   const upsertRows = addons.map((a) => ({
+    ...(cid != null ? { company_id: cid } : {}),
     code:              a.code,
     label:             a.label,
     so_description:    a.soDescription,

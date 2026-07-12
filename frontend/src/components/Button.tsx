@@ -41,16 +41,46 @@ export function Button({ variant = "primary", icon, className, children, ...rest
   );
 }
 
+// IconButton — Plan B "Soft Card" (design handoff 2026-07-10): white card +
+// hairline border; hover turns petrol, lifts 1px and casts a petrol glow;
+// active settles back. Danger state stays the established pattern — callers
+// pass err utility classes via className (no danger variant).
+type IconButtonVariant = "ghost" | "primary" | "secondary";
+type IconButtonSize = "sm" | "md" | "lg";
+
+const ICON_BUTTON_SIZES: Record<IconButtonSize, string> = {
+  sm: "h-[30px] w-[30px] rounded-lg [&>svg]:h-[15px] [&>svg]:w-[15px]",
+  md: "h-9 w-9 rounded-[10px] [&>svg]:h-[18px] [&>svg]:w-[18px]",
+  lg: "h-[42px] w-[42px] rounded-xl [&>svg]:h-5 [&>svg]:w-5",
+};
+
+const ICON_BUTTON_VARIANTS: Record<IconButtonVariant, string> = {
+  ghost:
+    "border-border bg-surface text-ink shadow-[0_1px_1px_rgba(17,20,15,0.04)] hover:border-primary hover:text-primary hover:shadow-[0_2px_8px_rgba(22,105,95,0.18)] active:shadow-[0_1px_1px_rgba(17,20,15,0.05)]",
+  primary:
+    "border-primary bg-primary text-white shadow-[0_1px_3px_rgba(22,105,95,0.35)] hover:border-primary-ink hover:bg-primary-ink hover:shadow-[0_3px_10px_rgba(22,105,95,0.3)]",
+  secondary:
+    "border-transparent bg-surface-2 text-ink-muted hover:border-primary hover:bg-primary hover:text-white hover:shadow-[0_2px_8px_rgba(22,105,95,0.18)]",
+};
+
 export function IconButton({
   icon,
+  variant = "ghost",
+  size = "md",
   className,
   ...rest
-}: ButtonHTMLAttributes<HTMLButtonElement> & { icon: ReactNode }) {
+}: ButtonHTMLAttributes<HTMLButtonElement> & {
+  icon: ReactNode;
+  variant?: IconButtonVariant;
+  size?: IconButtonSize;
+}) {
   return (
     <button
       {...rest}
       className={cn(
-        "flex h-8 w-8 items-center justify-center rounded-md border border-border bg-surface text-ink-secondary transition-colors hover:border-primary/50 hover:bg-primary-soft hover:text-primary",
+        "flex shrink-0 items-center justify-center border transition-all duration-[160ms] ease-[cubic-bezier(0.22,1,0.36,1)] hover:-translate-y-px active:translate-y-0 disabled:pointer-events-none disabled:opacity-45 [&>svg]:stroke-[1.75]",
+        ICON_BUTTON_SIZES[size],
+        ICON_BUTTON_VARIANTS[variant],
         className
       )}
     >

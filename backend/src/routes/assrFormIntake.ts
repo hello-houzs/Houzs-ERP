@@ -1,0 +1,342 @@
+/**
+ * Google Form → ERP intake webhook (Nick 2026-07-05).
+ *
+ * The staff-facing service-request Google Form feeds the "Form
+ * Responses 3" tab of the HC Delivery sheet; a sheet-bound Apps Script
+ * onFormSubmit trigger POSTs the submitted row here so the case lands
+ * in the ERP immediately. The form carries only the SO number + item +
+ * issue (+ Drive photo links) — customer name/phone/address resolve
+ * from the SO via createAssrCase, exactly like the in-app New Case
+ * intake.
+ *
+ * Auth: shared secret in the X-Intake-Key header, compared against the
+ * FORM_INTAKE_KEY worker secret (set via GitHub secret → wrangler
+ * deploy). No user session — this endpoint is called by Google's
+ * servers.
+ *
+ * Payload: { response_id?: string, row?: number, values: Record<string,string> }
+ * where `values` keys are the Form Responses tab's column headers:
+ *   Timestamp · Email Address · Doc. No. (SO) · Item Code ·
+ *   Issue Category · Issue Description · Photo / Video
+ *
+ * Idempotent on response_id: the google_form activity note carries
+ * `[gform:<response_id>]`; a duplicate trigger for the same response is
+ * acknowledged without creating a second case.
+ */
+import { Hono } from "hono";
+import type { Env } from "../types";
+import { createAssrCase, assrAttachmentKey, saveAttachment } from "../services/assr";
+import { timingSafeEqualStr } from "../services/auth";
+import { checkRateLimit, clientIp } from "../middleware/rateLimit";
+
+const app = new Hono<{ Bindings: Env }>();
+
+// Shared-secret guard for every intake endpoint. Constant-time compare
+// (the key is 48 random chars — brute force is hopeless, but the
+// comparison shouldn't leak match length anyway), a small failure
+// delay, and a per-IP failure limiter so key-guessing runs cost real
+// time and eventually 429.
+async function badIntakeKey(c: any): Promise<Response | null> {
+  const provided = c.req.header("X-Intake-Key") || "";
+  const expected = c.env.FORM_INTAKE_KEY || "";
+  if (expected && timingSafeEqualStr(provided, expected)) return null;
+  const limited = await checkRateLimit(c, "intake_badkey", clientIp(c), 10, 900);
+  await new Promise((r) => setTimeout(r, 250));
+  if (limited) return limited;
+  return c.json({ error: "unauthorized" }, 401);
+}
+
+// Photo relay limits — Apps Script reads the Drive file and streams the
+// bytes here. Mirrors the portal upload allow-list, plus mp4 because
+// the form column is literally "Photo / Video".
+const EXT_BY_MIME: Record<string, string> = {
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+  "image/heic": "heic",
+  "image/gif": "gif",
+  "video/mp4": "mp4",
+  "video/quicktime": "mov", // iPhone videos in the historical form rows
+  "application/pdf": "pdf",
+};
+const MAX_ATTACHMENT_BYTES = 40 * 1024 * 1024; // Apps Script UrlFetch POST caps at 50MB
+const MAX_ATTACHMENTS_PER_CASE = 20;
+
+const pick = (values: Record<string, unknown>, key: string): string | null => {
+  const v = values[key];
+  const s = typeof v === "string" ? v.trim() : v != null ? String(v).trim() : "";
+  return s || null;
+};
+
+app.post("/", async (c) => {
+  const denied = await badIntakeKey(c);
+  if (denied) return denied;
+
+  const body = await c.req
+    .json<{ response_id?: string; row?: number; values?: Record<string, string> }>()
+    .catch(() => null);
+  if (!body?.values || typeof body.values !== "object") {
+    return c.json({ error: "values object is required" }, 400);
+  }
+  const values = body.values;
+  const responseId = (body.response_id || "").trim().slice(0, 120) || null;
+
+  // Idempotency — a Google trigger can fire twice for one submission.
+  if (responseId) {
+    const dupe = await c.env.DB.prepare(
+      `SELECT assr_id FROM assr_activity
+        WHERE source_channel = 'google_form' AND note LIKE ?
+        LIMIT 1`
+    )
+      .bind(`%[gform:${responseId}]%`)
+      .first<{ assr_id: number }>();
+    if (dupe) {
+      return c.json({ ok: true, duplicate: true, id: dupe.assr_id });
+    }
+  }
+
+  const soNo = pick(values, "Doc. No. (SO)");
+  const itemCode = pick(values, "Item Code");
+  const category = pick(values, "Issue Category");
+  const description = pick(values, "Issue Description");
+  const photos = pick(values, "Photo / Video");
+  const submitter = pick(values, "Email Address");
+
+  if (!soNo && !description) {
+    return c.json({ error: "submission carries neither SO number nor description" }, 400);
+  }
+
+  // Drive photo links ride in the complaint text for now — attachment
+  // migration to R2 is a later pass (mapping doc tab 3).
+  const complaint =
+    [description, photos ? `[Photos] ${photos}` : null].filter(Boolean).join("\n\n") ||
+    "(no description on form)";
+
+  // created_by: the submitter when their email has an ERP account,
+  // else Farra (the form's owner-operator).
+  let createdBy: number | undefined;
+  for (const email of [submitter, "farraellya02@gmail.com"]) {
+    if (!email) continue;
+    const u = await c.env.DB.prepare(`SELECT id FROM users WHERE LOWER(email) = ?`)
+      .bind(email.toLowerCase())
+      .first<{ id: number }>();
+    if (u) {
+      createdBy = u.id;
+      break;
+    }
+  }
+
+  // Same path as the in-app New Case intake: SO context (customer,
+  // phone, address, agent, ref) resolves from AutoCount's live
+  // getSingle; assr_no auto-generates; default assignee + SLA +
+  // stage history all seeded inside.
+  const { assr_no, id } = await createAssrCase(c.env, {
+    doc_no: soNo ?? "",
+    items: itemCode ? [{ item_code: itemCode }] : [],
+    complaint_issue: complaint,
+    issue_category: category,
+    created_by: createdBy,
+  });
+
+  await c.env.DB.prepare(
+    `INSERT INTO assr_activity (assr_id, action, note, category, source_channel)
+     VALUES (?, 'note', ?, 'customer', 'google_form')`
+  )
+    .bind(
+      id,
+      `Submitted via Google Form${submitter ? ` by ${submitter}` : ""}${body.row ? ` (sheet row ${body.row})` : ""}${responseId ? ` [gform:${responseId}]` : ""}`
+    )
+    .run();
+
+  return c.json({ ok: true, id, assr_no }, 201);
+});
+
+// ── POST /attachments?case_id=&name= ────────────────────────────
+//
+// Photo/video relay for a case the main handler just created. The
+// Apps Script trigger reads each Drive file from the form's
+// "Photo / Video" column (it runs under Nick's Google account, so it
+// can read files the ERP could never fetch by URL) and streams the
+// raw bytes here. Stored in R2 + assr_attachments exactly like an
+// in-app upload, so the photos show in the case's Photos/Videos
+// grid, the lightbox, and the prints.
+
+app.post("/attachments", async (c) => {
+  const denied = await badIntakeKey(c);
+  if (denied) return denied;
+
+  const caseId = parseInt(c.req.query("case_id") || "", 10);
+  if (isNaN(caseId)) return c.json({ error: "case_id is required" }, 400);
+  const fileName = (c.req.query("name") || "").slice(0, 200) || null;
+
+  const contentType = (c.req.header("Content-Type") || "").split(";")[0].trim().toLowerCase();
+  const ext = EXT_BY_MIME[contentType];
+  if (!ext) {
+    return c.json({ error: `content-type '${contentType}' not allowed` }, 415);
+  }
+
+  // Only cases that came in via this webhook accept relayed photos —
+  // keeps the shared-secret surface scoped to its own creations.
+  const isFormCase = await c.env.DB.prepare(
+    `SELECT 1 FROM assr_activity
+      WHERE assr_id = ? AND source_channel = 'google_form'
+      LIMIT 1`
+  )
+    .bind(caseId)
+    .first();
+  if (!isFormCase) return c.json({ error: "not a form-intake case" }, 404);
+
+  const count = await c.env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM assr_attachments WHERE assr_id = ? AND archived_at IS NULL`
+  )
+    .bind(caseId)
+    .first<{ n: number }>();
+  if ((count?.n ?? 0) >= MAX_ATTACHMENTS_PER_CASE) {
+    return c.json({ error: "attachment limit reached" }, 413);
+  }
+
+  const buf = await c.req.arrayBuffer();
+  if (buf.byteLength === 0) return c.json({ error: "empty body" }, 400);
+  if (buf.byteLength > MAX_ATTACHMENT_BYTES) {
+    return c.json({ error: "file exceeds 40MB limit" }, 413);
+  }
+
+  const key = assrAttachmentKey(caseId, "evidence", ext);
+  await c.env.POD_BUCKET.put(key, buf, { httpMetadata: { contentType } });
+  const attId = await saveAttachment(c.env, caseId, key, fileName, contentType, "evidence", null);
+
+  await c.env.DB.prepare(
+    `INSERT INTO assr_activity (assr_id, action, from_value, to_value, note, source_channel)
+     VALUES (?, 'note', NULL, ?, ?, 'google_form')`
+  )
+    .bind(caseId, String(attId), `Photo relayed from Google Form${fileName ? `: ${fileName}` : ""}`)
+    .run();
+
+  return c.json({ ok: true, id: attId }, 201);
+});
+
+// ── POST /attachments-by-so?so=&ts=&drive_id=&name= ─────────────
+//
+// One-off historical migration (Nick 2026-07-06): the Form Responses
+// rows that predate the webhook carry Drive photo links whose cases
+// were imported from Farra's tab — those cases have no google_form
+// activity row and no case_id known to the sheet, so the relay above
+// can't serve them. This variant matches the case by SO number
+// (doc_no); when one SO has several cases, the one whose
+// complained_date sits closest to the form-submission timestamp wins.
+//
+// The form's SO field is staff free-text, so matching is tiered
+// (dump of all 242 historical photo rows, 2026-07-06): exact doc_no,
+// then normalized alnum (SO011006 / so-008485 / "PG AKEMI DISPLAY
+// SET B"), then digit-core (bare "008892", S0-typos), then ref_no
+// (HC10931 / PG0678 / ZNT4860, and the ref half of mixed entries
+// like "SO-007357 HC8245"). A lower tier never overrides a higher.
+//
+// Idempotent per Drive file per case via a `[gdrive:<drive_id>]`
+// marker in the activity note, so the migration trigger can re-run
+// from a cursor without duplicating uploads.
+
+const normAlnum = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, "");
+const digitCore = (s: string) => s.replace(/[^0-9]/g, "").replace(/^0+/, "");
+
+app.post("/attachments-by-so", async (c) => {
+  const denied = await badIntakeKey(c);
+  if (denied) return denied;
+
+  const so = (c.req.query("so") || "").trim();
+  if (!so) return c.json({ error: "so is required" }, 400);
+  const driveId = (c.req.query("drive_id") || "").trim().slice(0, 120);
+  if (!driveId) return c.json({ error: "drive_id is required" }, 400);
+  const ts = parseInt(c.req.query("ts") || "", 10); // form-submission epoch millis
+  const fileName = (c.req.query("name") || "").slice(0, 200) || null;
+
+  const contentType = (c.req.header("Content-Type") || "").split(";")[0].trim().toLowerCase();
+  const ext = EXT_BY_MIME[contentType];
+  if (!ext) {
+    return c.json({ error: `content-type '${contentType}' not allowed` }, 415);
+  }
+
+  // Pre-extract an SO-looking token (S0→SO typo folded in) and a
+  // ref-looking token from the free text, for the mixed entries.
+  const soToken = so.match(/S[O0]\s?-?\s?\d{3,}/i)?.[0].replace(/^S0/i, "SO") ?? null;
+  const refToken = so.match(/(?:HC|PG|ZNT|EGT)\s?-?\s?\d{2,}/i)?.[0] ?? null;
+  const norm = normAlnum(soToken ?? so);
+  const core = refToken && !soToken ? "" : digitCore(soToken ?? so);
+  const coreParam = core.length >= 3 ? core : "-";
+  const refNorm = refToken ? normAlnum(refToken) : "-";
+
+  const candidates = await c.env.DB.prepare(
+    `SELECT id, doc_no, ref_no, complained_date,
+            CASE
+              WHEN doc_no = ? THEN 0
+              WHEN UPPER(REGEXP_REPLACE(COALESCE(doc_no,''), '[^A-Za-z0-9]', '', 'g')) = ? THEN 1
+              WHEN NULLIF(LTRIM(REGEXP_REPLACE(COALESCE(doc_no,''), '[^0-9]', '', 'g'), '0'), '') = ? THEN 2
+              ELSE 3
+            END AS tier
+       FROM assr_cases
+      WHERE doc_no = ?
+         OR UPPER(REGEXP_REPLACE(COALESCE(doc_no,''), '[^A-Za-z0-9]', '', 'g')) = ?
+         OR NULLIF(LTRIM(REGEXP_REPLACE(COALESCE(doc_no,''), '[^0-9]', '', 'g'), '0'), '') = ?
+         OR UPPER(REGEXP_REPLACE(COALESCE(ref_no,''), '[^A-Za-z0-9]', '', 'g')) IN (?, ?)
+      ORDER BY tier, id`
+  )
+    .bind(so, norm, coreParam, so, norm, coreParam, norm, refNorm)
+    .all<{ id: number; complained_date: string | null; tier: number }>();
+  if (!candidates.results.length) return c.json({ error: "no case for SO", skipped: "no_case" }, 404);
+
+  // Best tier only; complained_date proximity breaks ties within it.
+  const topTier = candidates.results[0].tier;
+  const pool = candidates.results.filter((r) => r.tier === topTier);
+  let caseId = pool[0].id;
+  if (pool.length > 1 && !isNaN(ts)) {
+    let best = Infinity;
+    for (const cand of pool) {
+      const d = cand.complained_date ? Math.abs(new Date(cand.complained_date).getTime() - ts) : Infinity;
+      if (d < best || (d === best && cand.id < caseId)) {
+        best = d;
+        caseId = cand.id;
+      }
+    }
+  }
+
+  const dupe = await c.env.DB.prepare(
+    `SELECT 1 FROM assr_activity WHERE assr_id = ? AND note LIKE ? LIMIT 1`
+  )
+    .bind(caseId, `%[gdrive:${driveId}]%`)
+    .first();
+  if (dupe) return c.json({ ok: true, duplicate: true, id: caseId });
+
+  const count = await c.env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM assr_attachments WHERE assr_id = ? AND archived_at IS NULL`
+  )
+    .bind(caseId)
+    .first<{ n: number }>();
+  if ((count?.n ?? 0) >= MAX_ATTACHMENTS_PER_CASE) {
+    return c.json({ error: "attachment limit reached", skipped: "limit" }, 413);
+  }
+
+  const buf = await c.req.arrayBuffer();
+  if (buf.byteLength === 0) return c.json({ error: "empty body" }, 400);
+  if (buf.byteLength > MAX_ATTACHMENT_BYTES) {
+    return c.json({ error: "file exceeds 40MB limit", skipped: "size" }, 413);
+  }
+
+  const key = assrAttachmentKey(caseId, "evidence", ext);
+  await c.env.POD_BUCKET.put(key, buf, { httpMetadata: { contentType } });
+  const attId = await saveAttachment(c.env, caseId, key, fileName, contentType, "evidence", null);
+
+  await c.env.DB.prepare(
+    `INSERT INTO assr_activity (assr_id, action, from_value, to_value, note, source_channel)
+     VALUES (?, 'note', NULL, ?, ?, 'google_form')`
+  )
+    .bind(
+      caseId,
+      String(attId),
+      `Photo migrated from Google Form history${fileName ? `: ${fileName}` : ""} [gdrive:${driveId}]`
+    )
+    .run();
+
+  return c.json({ ok: true, id: attId, case_id: caseId }, 201);
+});
+
+export default app;

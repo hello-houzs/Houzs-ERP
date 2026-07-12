@@ -231,3 +231,48 @@ export function isExpiringSoon(d: string | null | undefined, days = 3): boolean 
   const iso = `${yyyy}-${mm}-${dd}`;
   return iso >= today && iso <= cutoffIso;
 }
+
+// ── Search highlight ─────────────────────────────────────────
+//
+// Pure splitter used by BOTH the desktop Cmd+K palette and the mobile search
+// palette to BOLD the matched keyword in a result. Kept framework-free here (a
+// plain segment array) so this `.ts` module carries no JSX; the rendering
+// wrapper (<HighlightedText>) lives in lib/highlight.tsx.
+//
+// Case-insensitive, matches EVERY occurrence of `query` in `text`. The query is
+// regex-escaped so a term with special chars (a sofa code like `1A(LHF)`, a
+// phone with `+`) never breaks the split. Returns the original text as one
+// non-matching segment when the query is empty or absent.
+
+export interface HighlightSegment {
+  text: string;
+  match: boolean;
+}
+
+export function splitHighlight(
+  text: string | null | undefined,
+  query: string | null | undefined,
+): HighlightSegment[] {
+  const s = text ?? "";
+  const q = (query ?? "").trim();
+  if (!s) return [];
+  if (q.length === 0) return [{ text: s, match: false }];
+  // Escape regex metacharacters in the user's query.
+  const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  let re: RegExp;
+  try {
+    re = new RegExp(`(${escaped})`, "gi");
+  } catch {
+    return [{ text: s, match: false }];
+  }
+  const out: HighlightSegment[] = [];
+  let last = 0;
+  for (const m of s.matchAll(re)) {
+    const idx = m.index ?? 0;
+    if (idx > last) out.push({ text: s.slice(last, idx), match: false });
+    out.push({ text: m[0], match: true });
+    last = idx + m[0].length;
+  }
+  if (last < s.length) out.push({ text: s.slice(last), match: false });
+  return out;
+}

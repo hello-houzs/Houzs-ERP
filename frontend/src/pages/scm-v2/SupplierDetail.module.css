@@ -5,11 +5,25 @@
    fs-32/800 → fs-20/700, SKU mapping cells tightened. */
 
 .page {
+  /* Ink & Petrol token overrides — same cascade as SalesOrderNew.module.css. */
+  --c-orange:        #16695f;
+  --c-burnt:         #0c3f39;
+  --c-cream:         #f4f6f3;
+  --c-paper:         #fcfdfb;
+  --c-ink:           #11140f;
+  --c-ink-secondary: #767b6e;
+  --c-ink-muted:     #9aa093;
+  --fg:              #11140f;
+  --fg-muted:        #767b6e;
+  --line:            #d6d9d2;
+  --line-strong:     #c2c6bd;
+  --c-accent-soft:   #eff6f4;
+
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4) var(--space-4);
-  background: var(--c-cream);
+  background: #dcdfd9;
   min-height: 100%;
 }
 
@@ -404,7 +418,7 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
-  background: rgba(232, 107, 58, 0.08);
+  background: rgba(22, 105, 95, 0.08);
   border: 1px solid var(--c-orange);
   color: var(--c-burnt);
   padding: var(--space-3) var(--space-4);
@@ -543,7 +557,7 @@
 .fieldSelect:focus {
   border-color: var(--c-burnt);
   background: var(--c-paper);
-  box-shadow: 0 0 0 2px rgba(232, 107, 58, 0.16);
+  box-shadow: 0 0 0 2px rgba(22, 105, 95, 0.16);
 }
 
 .fieldInput:disabled,
@@ -650,7 +664,7 @@
 
 .matrixInput:focus {
   border-color: var(--c-burnt);
-  box-shadow: 0 0 0 2px rgba(232, 107, 58, 0.16);
+  box-shadow: 0 0 0 2px rgba(22, 105, 95, 0.16);
 }
 
 /* The supplier-sku inline editor + unit-price inline editor on
@@ -674,7 +688,7 @@
 
 .inlineSku:focus {
   border-color: var(--c-burnt);
-  box-shadow: 0 0 0 2px rgba(232, 107, 58, 0.16);
+  box-shadow: 0 0 0 2px rgba(22, 105, 95, 0.16);
 }
 
 .inlinePrice {
@@ -692,7 +706,7 @@
 
 .inlinePrice:focus {
   border-color: var(--c-burnt);
-  box-shadow: 0 0 0 2px rgba(232, 107, 58, 0.16);
+  box-shadow: 0 0 0 2px rgba(22, 105, 95, 0.16);
 }
 
 /* ── Variants pills (sub-section under line items) ──────────────── */

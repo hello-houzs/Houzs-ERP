@@ -43,7 +43,7 @@ import {
   projectAccessLevel,
   canSeeProject,
 } from "../services/projectAcl";
-import { getPmsAccess } from "../services/pmsAccess";
+import { getPmsAccess, getPmsRole } from "../services/pmsAccess";
 import { audit } from "../services/audit";
 import { hasPermission } from "../services/permissions";
 import { recomputeAutoCostLines } from "../services/projectCostRates";
@@ -2589,11 +2589,31 @@ function taskAttachmentKey(itemId: number, ext: string): string {
 
 app.put(
   "/checklist/:itemId/attachments",
-  requirePermission("projects.write"),
+  // Tick-only roles (drivers uploading setup/dismantle evidence) must be
+  // able to attach files to the tasks they can tick — same gate as the
+  // status/review routes above. Delete stays projects.write-only.
+  requireAnyPermission(["projects.write", "projects.checklist.tick"]),
   async (c) => {
     const itemId = parseInt(c.req.param("itemId"), 10);
     if (isNaN(itemId)) return c.json({ error: "Invalid ID" }, 400);
     const user = c.get("user");
+    // Tick-only roles (no projects.write — i.e. drivers) may only attach to
+    // tasks badged for THEIR role (item.role_label vs the user's role name).
+    // Mirrors the mobile UI rule; owner 2026-07-09.
+    const granted = user?.permissions_set ?? user?.permissions;
+    if (!hasPermission(granted, "projects.write")) {
+      const item = await c.env.DB.prepare(
+        `SELECT role_label FROM project_checklist WHERE id = ?`
+      )
+        .bind(itemId)
+        .first<{ role_label: string | null }>();
+      if (!item) return c.json({ error: "Not found" }, 404);
+      const label = (item.role_label ?? "").trim().toUpperCase();
+      const roleName = (user?.role_name ?? "").trim().toUpperCase();
+      if (!label || !roleName || label !== roleName) {
+        return c.json({ error: "You can only attach files to tasks assigned to your role" }, 403);
+      }
+    }
     const ext = (c.req.query("ext") || "").toLowerCase();
     const fileName = c.req.query("name") || `attachment.${ext}`;
     if (!TASK_ATTACH_ALLOWED.has(ext)) {
@@ -3337,10 +3357,25 @@ app.get("/calendar/events", requirePageAccess("projects.calendar"), async (c) =>
      venue events; that lane is now assignment-scoped too. */
   const granted = user?.permissions_set ?? user?.permissions ?? [];
   const isAdmin = !!user && hasPermission(granted, "*");
+  /* Owner 2026-07-05 — a DIRECTOR-level user (Owner/IT via `*`, Super Admin,
+     Sales Director, Finance Manager — see pmsAccess getPmsRole) sees the WHOLE
+     calendar, not just their assigned venues. Reuses the existing PMS role
+     classification so it stays position-driven (toggle via the position name /
+     `*`), not a hardcoded string here. The DIRECTOR branch of getPmsRole is
+     project-independent, so a throwaway project shape is fine. */
   const scope = getProjectScope(user);
+  /* Owner 2026-07-06 — unscoped non-admin staff (logistics, drivers, ops,
+     purchasing, etc.) see the WHOLE event calendar again, as they did before
+     the 2026-07-05 assignment-scoping. `scope === null` means the role isn't
+     scope_to_pic, so getProjectScope already treats them as unfiltered
+     everywhere else; the calendar now matches. Only scope_to_pic roles
+     (sales reps) stay filtered to their own assigned events. */
+  const seeAll =
+    !!user &&
+    (isAdmin || getPmsRole(user, { pic_id: null }) === "DIRECTOR" || scope === null);
   const assignArms: string[] = [];
   const scopeBinds: any[] = [];
-  if (!isAdmin) {
+  if (!seeAll) {
     if (scope) {
       // Existing scoped-role behavior, verbatim (one-hop PIC + brand gate) —
       // just OR-extended with the attendee arm below so an attending rep
@@ -3368,7 +3403,7 @@ app.get("/calendar/events", requirePageAccess("projects.calendar"), async (c) =>
     }
   }
   // Non-admin with no resolvable arms (no session id) → fail closed.
-  const scopeWhere = isAdmin
+  const scopeWhere = seeAll
     ? ""
     : assignArms.length
       ? ` AND (${assignArms.join(" OR ")})`

@@ -98,6 +98,23 @@ bucket_name = "houzs-erp"
 binding = "SLIPS"
 bucket_name = "houzs-erp"
 
+# Cloudflare Queue for the background scan-so OCR pipeline. The producer
+# (/scan-so/enqueue) sends only { jobId }; the consumer (index.ts `queue()`)
+# rebuilds everything from the scan_jobs row + R2 photos and runs the OCR +
+# draft-SO create — a queue-owned attempt survives the isolate eviction that
+# stranded the old waitUntil pipeline. Queue + DLQ already created on the
+# account. NOTE: `wrangler deploy` needs the API token to carry Queues:Edit to
+# bind the consumer, else deploy fails with a 10xxx queue-permission error.
+[[queues.producers]]
+binding = "SCAN_QUEUE"
+queue = "houzs-scan-ocr"
+
+[[queues.consumers]]
+queue = "houzs-scan-ocr"
+max_batch_size = 1
+max_retries = 3
+dead_letter_queue = "houzs-scan-ocr-dlq"
+
 # KV cache for the hydrated session user (services/sessionCache.ts). 60s TTL,
 # busted on logout. Pure optimization — auth falls back to the DB if absent.
 [[kv_namespaces]]
@@ -187,6 +204,20 @@ bucket_name = "houzs-erp"
 [[env.staging.r2_buckets]]
 binding = "SLIPS"
 bucket_name = "houzs-erp"
+
+# Scan-OCR queue — staging has its OWN queues (a Cloudflare queue allows only
+# ONE consumer worker; prod + staging sharing houzs-scan-ocr made the second
+# deploy fail 11004 "already has a consumer"). Dedicated staging queues keep
+# the two environments fully isolated.
+[[env.staging.queues.producers]]
+binding = "SCAN_QUEUE"
+queue = "houzs-scan-ocr-staging"
+
+[[env.staging.queues.consumers]]
+queue = "houzs-scan-ocr-staging"
+max_batch_size = 1
+max_retries = 3
+dead_letter_queue = "houzs-scan-ocr-staging-dlq"
 
 [[env.staging.kv_namespaces]]
 binding = "SESSION_CACHE"

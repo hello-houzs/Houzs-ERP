@@ -1,5 +1,6 @@
 import { useEffect, useState, lazy, Suspense, type ReactNode } from "react";
 import { useParams } from "react-router-dom";
+import { Eye, EyeOff } from "lucide-react";
 import { useAuth } from "./AuthContext";
 import { Button } from "../components/Button";
 import { cn } from "../lib/utils";
@@ -189,13 +190,50 @@ function TextInput(props: React.InputHTMLAttributes<HTMLInputElement>) {
   );
 }
 
+/* Nick 2026-07-09 — password fields need an eye toggle so operators can
+   verify what they typed. Wraps TextInput, flips its `type` between
+   "password" and "text", parks a small icon button inside the input's
+   right-pad (pr-10). Used by Login + Bootstrap + Set-password screens
+   below; MobileLogin has its own copy of the pattern for its inline
+   input. */
+function PasswordInput(
+  props: Omit<React.InputHTMLAttributes<HTMLInputElement>, "type">,
+) {
+  const [show, setShow] = useState(false);
+  return (
+    <div className="relative">
+      <TextInput
+        {...props}
+        type={show ? "text" : "password"}
+        className={cn(props.className, "pr-10")}
+      />
+      <button
+        type="button"
+        onClick={() => setShow((s) => !s)}
+        aria-label={show ? "Hide password" : "Show password"}
+        title={show ? "Hide password" : "Show password"}
+        className="absolute right-1 top-1/2 -translate-y-1/2 inline-flex h-8 w-8 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-2 hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
+        tabIndex={-1}
+      >
+        {show ? <EyeOff size={16} strokeWidth={1.75} /> : <Eye size={16} strokeWidth={1.75} />}
+      </button>
+    </div>
+  );
+}
+
 // ──────────────────────────────────────────────────────────
 // Login
 // ──────────────────────────────────────────────────────────
 export function LoginScreen() {
   const { login, verifyTotpLogin } = useAuth();
-  const [email, setEmail] = useState("");
+  // Remember the account: pre-fill the last email that signed in on THIS device
+  // (owner: "remember me remember 不到我的户口"). Only the email is stored, never
+  // the password — so the operator doesn't retype their account every time.
+  const [email, setEmail] = useState(() => {
+    try { return localStorage.getItem("auth:lastEmail") ?? ""; } catch { return ""; }
+  });
   const [password, setPassword] = useState("");
+  const [remember, setRemember] = useState(true);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   // Set once a password login returns a 2FA challenge — switches to the code step.
@@ -207,7 +245,7 @@ export function LoginScreen() {
     setErr(null);
     setBusy(true);
     try {
-      const res = await login(email, password);
+      const res = await login(email, password, remember);
       if (res.kind === "totp") setChallenge(res.challenge);
     } catch (e: any) {
       // A 401 here means bad credentials — show that specific wording rather
@@ -294,20 +332,29 @@ export function LoginScreen() {
             onChange={(e) => setEmail(e.target.value)}
             placeholder="you@houzscentury.com"
             required
-            autoFocus
+            autoFocus={!email}
           />
         </div>
         <div>
           <FieldLabel>Password</FieldLabel>
-          <TextInput
-            type="password"
+          <PasswordInput
             autoComplete="current-password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="••••••••"
             required
+            autoFocus={!!email}
           />
-          <div className="mt-1.5 text-right">
+          <div className="mt-2 flex items-center justify-between">
+            <label className="flex cursor-pointer select-none items-center gap-1.5 text-[11px] text-ink-muted">
+              <input
+                type="checkbox"
+                checked={remember}
+                onChange={(e) => setRemember(e.target.checked)}
+                className="h-3.5 w-3.5 accent-accent"
+              />
+              Remember me on this device
+            </label>
             <a
               href="#forgot"
               className="text-[11px] text-ink-muted underline-offset-2 transition-colors hover:text-accent hover:underline"
@@ -460,8 +507,7 @@ export function BootstrapScreen() {
         </div>
         <div>
           <FieldLabel>Password (min 12 chars)</FieldLabel>
-          <TextInput
-            type="password"
+          <PasswordInput
             autoComplete="new-password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
@@ -489,7 +535,7 @@ export function AcceptInviteScreen() {
   const { token: routeToken } = useParams<{ token: string }>();
   const baseUrl =
     (import.meta.env.VITE_API_URL as string) ||
-    "https://autocount-sync-api.houzs-erp.workers.dev";
+    (import.meta.env.PROD ? "" : "https://autocount-sync-api.houzs-erp.workers.dev");
   const [token, setToken] = useState("");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
@@ -595,8 +641,7 @@ export function AcceptInviteScreen() {
         </div>
         <div>
           <FieldLabel>Choose a password (min 12 chars)</FieldLabel>
-          <TextInput
-            type="password"
+          <PasswordInput
             autoComplete="new-password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}

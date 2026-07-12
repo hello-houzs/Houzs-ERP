@@ -11,7 +11,7 @@ import {
   isoIn,
 } from "../services/auth";
 import { bustUserSessions } from "../services/sessionCache";
-import { sendEmail, publicUrl, resetEmailHtml } from "../services/email";
+import { sendEmail, publicUrl, resetEmailHtml, inviteEmailHtml } from "../services/email";
 import { validatePasswordStrength } from "../services/passwordStrength";
 import { verifyTotp, consumeBackupCode } from "../services/totp";
 import { checkRateLimit, clearRateLimit, clientIp } from "../middleware/rateLimit";
@@ -236,11 +236,82 @@ app.post("/forgot-password", async (c) => {
   if (await checkRateLimit(c, "forgot", email, 5, 900)) return done();
 
   const user = await c.env.DB.prepare(
-    `SELECT id, email, name FROM users WHERE email = ? AND status = 'active'`
+    `SELECT u.id, u.email, u.name, u.status, u.role_id, u.department_id,
+            u.position_id, u.manager_id, r.name AS role_name
+       FROM users u LEFT JOIN roles r ON r.id = u.role_id
+      WHERE u.email = ?`
   )
     .bind(email)
-    .first<{ id: number; email: string; name: string | null }>();
+    .first<{
+      id: number;
+      email: string;
+      name: string | null;
+      status: string;
+      role_id: number;
+      department_id: number | null;
+      position_id: number | null;
+      manager_id: number | null;
+      role_name: string | null;
+    }>();
   if (!user) return done();
+
+  // Never-joined accounts ('invited') have no password to reset — a reset
+  // link would dead-end, and the old behavior (silent no-op) left invitees
+  // whose original invite expired or got spam-filtered with NO way to get
+  // in ("reset password but nothing arrives in Gmail", 2026-07-09). Re-send
+  // their invitation instead, behind the same anti-enumeration {ok}.
+  if (user.status === "invited") {
+    // 5-min cooldown against repeat taps (created_at can be NULL on legacy
+    // rows — treated as old).
+    const lastInv = await c.env.DB.prepare(
+      `SELECT created_at FROM invitations
+        WHERE email = ? AND accepted_at IS NULL
+        ORDER BY id DESC LIMIT 1`
+    )
+      .bind(email)
+      .first<{ created_at: string | null }>();
+    if (lastInv?.created_at) {
+      const cutoff = new Date(Date.now() - 5 * 60 * 1000)
+        .toISOString()
+        .slice(0, 19)
+        .replace("T", " ");
+      if (String(lastInv.created_at).replace("T", " ") > cutoff) return done();
+    }
+    const inviteToken = generateToken();
+    const inviteExpires = isoIn(60 * 60 * 24 * 14); // 14 days, matches /users/invite
+    await c.env.DB.prepare(
+      `INSERT INTO invitations
+         (email, role_id, token, invited_by, expires_at, department_id, position_id, manager_id)
+       VALUES (?, ?, ?, 0, ?, ?, ?, ?)`
+    )
+      .bind(
+        email,
+        user.role_id,
+        inviteToken,
+        inviteExpires,
+        user.department_id ?? null,
+        user.position_id ?? null,
+        user.manager_id ?? null
+      )
+      .run();
+    await sendEmail(c.env, {
+      to: user.email,
+      subject: "You're invited to Houzs ERP",
+      html: inviteEmailHtml({
+        link: publicUrl(c.env, `/invite/${inviteToken}`),
+        roleName: user.role_name || "a team member",
+        inviterName: "Houzs ERP",
+        expiresIn: "14 days",
+      }),
+      purpose: "member_invite",
+      refType: "user",
+      refId: user.id,
+    });
+    return done();
+  }
+
+  // Any other non-active status (disabled, etc.) stays a silent no-op.
+  if (user.status !== "active") return done();
 
   // Cooldown — skip silently if a reset was issued in the last 5 min.
   const last = await c.env.DB.prepare(

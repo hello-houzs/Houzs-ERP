@@ -24,7 +24,10 @@ import { suppliers } from "./routes/suppliers";
 import { mfgPurchaseOrders } from "./routes/mfg-purchase-orders";
 import { grns } from "./routes/grns";
 import { purchaseInvoices } from "./routes/purchase-invoices";
+import { paymentVouchers } from "./routes/payment-vouchers";
+import { currencies } from "./routes/currencies";
 import { mfgSalesOrders } from "./routes/mfg-sales-orders";
+import { soAmendments } from "./routes/so-amendments";
 import { stateWarehouseMappings } from "./routes/state-warehouse-mappings";
 import { deliveryOrdersMfg } from "./routes/delivery-orders-mfg";
 import { salesInvoices } from "./routes/sales-invoices";
@@ -61,6 +64,9 @@ import { trips } from "./routes/trips";
 import { lorryCapacity } from "./routes/lorry-capacity";
 import { helpers } from "./routes/helpers";
 import { lorries } from "./routes/lorries";
+import { soSettings } from "./routes/so-settings";
+import { freeItemCampaigns } from "./routes/free-item-campaigns";
+import { modelFreeGifts } from "./routes/model-free-gifts";
 
 import { scmAreaGuard } from "./middleware/area-guard";
 
@@ -131,6 +137,18 @@ scm.use("/sofa-quick-picks/*", scmAreaGuard("scm.procurement.products"));
 scm.route("/sofa-quick-picks", sofaQuickPicks);
 scm.use("/fabric-tracking/*", scmAreaGuard("scm.procurement.products"));
 scm.route("/fabric-tracking", fabricTracking);
+// Ported 2026-07-11 — three SO/pricing admin-config CRUD surfaces (backing
+// tables seeded via mig 0022; shared parsers already consumed by pricing).
+// All three are READ by the SO flow for every salesperson (so_settings extra-SKU
+// gate, free-item-campaign matcher, per-Model free-gift recompute) → openRead so
+// GET/HEAD pass the coarse umbrella; writes stay edit-gated on the flat perm
+// scm.config.write inside each route. Mirrors the SO-FLOW REFERENCE READS block.
+scm.use("/so-settings/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
+scm.route("/so-settings", soSettings);
+scm.use("/free-item-campaigns/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
+scm.route("/free-item-campaigns", freeItemCampaigns);
+scm.use("/model-free-gifts/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
+scm.route("/model-free-gifts", modelFreeGifts);
 // ── Suppliers (scm.procurement.suppliers) ───────────────────────────────────
 scm.use("/suppliers/*", scmAreaGuard("scm.procurement.suppliers"));
 scm.route("/suppliers", suppliers);
@@ -144,6 +162,11 @@ scm.route("/purchase-invoices", purchaseInvoices);
 // ── Sales Orders (scm.sales.orders) ─────────────────────────────────────────
 scm.use("/mfg-sales-orders/*", scmAreaGuard("scm.sales.orders"));
 scm.route("/mfg-sales-orders", mfgSalesOrders);
+// SO amendment / revision workflow — SO-centric, so it rides the same L2 area
+// guard as Sales Orders (GET=view, PATCH=edit); the finer scm.amendment.* gates
+// layer on inside the handlers.
+scm.use("/so-amendments/*", scmAreaGuard("scm.sales.orders"));
+scm.route("/so-amendments", soAmendments);
 // state-warehouse-mappings: cross-area lookup (SO/DO warehouse routing) — left
 // on the coarse gate, see SHARED READ HELPERS note above.
 scm.route("/state-warehouse-mappings", stateWarehouseMappings);
@@ -186,6 +209,17 @@ scm.route("/stock-takes", stockTakes);
 // ── SCM Finance (scm.finance.accounting) ────────────────────────────────────
 scm.use("/accounting/*", scmAreaGuard("scm.finance.accounting"));
 scm.route("/accounting", accounting);
+// Payment Vouchers — standalone AP cash-out doc (port of 2990 0189/0202, Phase
+// 1-B MYR). A finance document that posts a JE to the GL + can settle PIs, so it
+// rides the same L2 area guard as Accounting (GET=view, POST/PATCH=edit); the
+// finer scm.payment_voucher.* gates layer on inside the handlers.
+scm.use("/payment-vouchers/*", scmAreaGuard("scm.finance.accounting"));
+scm.route("/payment-vouchers", paymentVouchers);
+// Currency MASTER — owner-maintained list + rate_to_myr, read by the GRN/PI/PV
+// currency dropdowns across areas. Like state-warehouse-mappings, it's a shared
+// lookup left on the coarse scm gate (reads open); writes are gated inside the
+// route by scm.currency.manage.
+scm.route("/currencies", currencies);
 // ── MRP (scm.procurement.mrp) ───────────────────────────────────────────────
 scm.use("/mrp/*", scmAreaGuard("scm.procurement.mrp"));
 scm.route("/mrp", mrp);

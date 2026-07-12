@@ -72,6 +72,22 @@ export async function verifyPassword(password: string, stored: string): Promise<
   return diff === 0;
 }
 
+/**
+ * Constant-time string equality for shared-secret comparison (webhook
+ * keys etc.). XOR-folds every byte so the comparison cost doesn't leak
+ * how many leading characters matched. Length mismatch still returns
+ * early — the secret lengths aren't sensitive here.
+ */
+export function timingSafeEqualStr(a: string, b: string): boolean {
+  const enc = new TextEncoder();
+  const ab = enc.encode(a);
+  const bb = enc.encode(b);
+  if (ab.length !== bb.length) return false;
+  let diff = 0;
+  for (let i = 0; i < ab.length; i++) diff |= ab[i] ^ bb[i];
+  return diff === 0;
+}
+
 // ── Token helpers ────────────────────────────────────────
 // 32 random bytes → URL-safe base64. Used for both session and
 // invitation tokens.

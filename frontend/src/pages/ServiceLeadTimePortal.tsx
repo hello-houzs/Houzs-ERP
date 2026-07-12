@@ -24,14 +24,14 @@ import { ListSkeleton } from "../components/Skeleton";
 // readable without horizontal scroll on standard screens.
 
 const STAGE_ORDER: { value: string; label: string; short: string }[] = [
-  { value: "pending_review",           label: "Pending Review",            short: "Review" },
-  { value: "under_verification",       label: "Under Verification",        short: "Verify" },
-  { value: "pending_solution",         label: "Pending Solution",          short: "Solution" },
-  { value: "pending_inspection",       label: "Pending Inspection",        short: "Inspect" },
-  { value: "pending_item_pickup",      label: "Pending Item Pickup",       short: "Pickup" },
-  { value: "pending_supplier_pickup",  label: "Pending Supplier Pickup",   short: "Supplier" },
-  { value: "pending_item_ready",       label: "Pending Item Ready",        short: "Ready" },
-  { value: "pending_delivery_service", label: "Pending Delivery / Service", short: "Delivery" },
+  { value: "pending_review",           label: "Review",                    short: "Review" },
+  { value: "under_verification",       label: "Verification",              short: "Verify" },
+  { value: "pending_solution",         label: "Solution",                  short: "Solution" },
+  { value: "pending_inspection",       label: "Inspection",                short: "Inspect" },
+  { value: "pending_item_pickup",      label: "Item Pickup",               short: "Pickup" },
+  { value: "pending_supplier_pickup",  label: "Supplier Pickup",           short: "Supplier" },
+  { value: "pending_item_ready",       label: "Item Ready",                short: "Ready" },
+  { value: "pending_delivery_service", label: "Delivery / Service",        short: "Delivery" },
 ];
 
 export function ServiceLeadTimePortal() {

@@ -5,6 +5,7 @@ import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { supabaseAuth } from '../middleware/auth';
 import { hasHouzsPerm } from '../lib/houzs-perms';
+import { activeCompanyId } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 type AppContext = Context<{ Bindings: Env; Variables: Variables }>;
@@ -137,6 +138,7 @@ fabricTierAddonConfig.put('/special', async (c) => {
   const { data: updated, error } = await gate.supabase
     .from('model_fabric_tier_overrides')
     .upsert({
+      ...(activeCompanyId(c) != null ? { company_id: activeCompanyId(c) } : {}),
       model_id:    parsed.data.modelId,
       tier2_delta: parsed.data.tier2Delta,
       tier3_delta: parsed.data.tier3Delta,
@@ -159,5 +161,78 @@ fabricTierAddonConfig.delete('/special/:modelId', async (c) => {
     .delete()
     .eq('model_id', modelId);
   if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
+  return c.json({ ok: true });
+});
+
+/* ─── Per-compartment fabric-tier Δ overrides (migration 0025, ports 2990 0184) ─
+   A row gives a sofa compartment code its own selling fabric-tier Δ. The SO
+   recompute resolves the effective Δ by TAKING THE HIGHEST over the model
+   override and every matching compartment override (custom-build cells only);
+   NULL tier = not set (inherit global). Read by all staff (the SO POST
+   recomputes from it); write for the same editor set as the global config.
+   Mirrors the per-Model /special handlers above. */
+
+const compartmentSpecialSchema = z.object({
+  compartmentId: z.string().min(1),
+  tier2Delta:    z.number().int().nonnegative().nullable(),
+  tier3Delta:    z.number().int().nonnegative().nullable(),
+});
+
+// GET — list every compartment override row.
+fabricTierAddonConfig.get('/compartment-special', async (c) => {
+  const supabase = c.get('supabase');
+  const { data, error } = await supabase
+    .from('compartment_fabric_tier_overrides')
+    .select('compartment_id, tier2_delta, tier3_delta, updated_at');
+  if (error) return c.json({ error: 'fetch_failed', reason: error.message }, 500);
+  const rows = (data ?? []).map((r) => ({
+    compartmentId: (r as { compartment_id?: string; compartmentId?: string }).compartment_id ?? (r as { compartmentId?: string }).compartmentId ?? '',
+    tier2Delta:    (r as { tier2_delta?: number | null; tier2Delta?: number | null }).tier2_delta ?? (r as { tier2Delta?: number | null }).tier2Delta ?? null,
+    tier3Delta:    (r as { tier3_delta?: number | null; tier3Delta?: number | null }).tier3_delta ?? (r as { tier3Delta?: number | null }).tier3Delta ?? null,
+    updatedAt:     (r as { updated_at?: string; updatedAt?: string }).updated_at ?? (r as { updatedAt?: string }).updatedAt ?? null,
+  }));
+  return c.json(rows);
+});
+
+// PUT — upsert one compartment's override (tier deltas may be null = not set).
+fabricTierAddonConfig.put('/compartment-special', async (c) => {
+  const gate = await requireFabricEditor(c);
+  if ('error' in gate) return gate.error;
+
+  let body: unknown;
+  try { body = await c.req.json(); } catch { return c.json({ error: 'invalid_json' }, 400); }
+  const parsed = compartmentSpecialSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: 'validation_failed', issues: parsed.error.issues.map((i) => ({ path: i.path, message: i.message })) }, 400);
+  }
+
+  const { data: updated, error } = await gate.supabase
+    .from('compartment_fabric_tier_overrides')
+    .upsert({
+      ...(activeCompanyId(c) != null ? { company_id: activeCompanyId(c) } : {}),
+      compartment_id: parsed.data.compartmentId,
+      tier2_delta:    parsed.data.tier2Delta,
+      tier3_delta:    parsed.data.tier3Delta,
+      updated_at:     new Date().toISOString(),
+      updated_by:     gate.userId,
+    }, { onConflict: 'compartment_id' })
+    .select('compartment_id');
+  if (error) return c.json({ error: 'upsert_failed', reason: error.message }, 500);
+  if (!updated || updated.length === 0) return c.json({ error: 'upsert_failed', reason: 'rls_blocked_zero_rows' }, 403);
+  return c.json({ ok: true });
+});
+
+// DELETE — un-tag a compartment (reverts to model/global resolution).
+fabricTierAddonConfig.delete('/compartment-special/:compartmentId', async (c) => {
+  const gate = await requireFabricEditor(c);
+  if ('error' in gate) return gate.error;
+  const compartmentId = c.req.param('compartmentId');
+  const { data: deleted, error } = await gate.supabase
+    .from('compartment_fabric_tier_overrides')
+    .delete()
+    .eq('compartment_id', compartmentId)
+    .select('compartment_id');
+  if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
+  if (!deleted || deleted.length === 0) return c.json({ error: 'not_found' }, 404);
   return c.json({ ok: true });
 });

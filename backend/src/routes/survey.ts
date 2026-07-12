@@ -50,6 +50,8 @@ app.post("/:token", async (c) => {
   if (!body.rating || body.rating < 1 || body.rating > 5) {
     return c.json({ error: "Rating must be 1–5" }, 400);
   }
+  // Cap free-text like every other portal write path.
+  const notes = typeof body.notes === "string" ? body.notes.trim().slice(0, 2000) || null : null;
 
   const tok = await c.env.DB.prepare(
     `SELECT t.assr_id, t.submitted_at
@@ -68,7 +70,7 @@ app.post("/:token", async (c) => {
         SET satisfaction_rating = ?, satisfaction_notes = ?, updated_at = datetime('now')
       WHERE id = ?`
   )
-    .bind(body.rating, body.notes || null, tok.assr_id)
+    .bind(body.rating, notes, tok.assr_id)
     .run();
 
   await c.env.DB.prepare(
@@ -81,7 +83,7 @@ app.post("/:token", async (c) => {
     `INSERT INTO assr_activity (assr_id, action, from_value, to_value, note, user_id)
      VALUES (?, 'survey_submitted', NULL, ?, ?, NULL)`
   )
-    .bind(tok.assr_id, String(body.rating), body.notes || null)
+    .bind(tok.assr_id, String(body.rating), notes)
     .run();
 
   return c.json({ ok: true });

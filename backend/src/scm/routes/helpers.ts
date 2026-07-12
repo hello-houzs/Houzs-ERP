@@ -13,6 +13,7 @@ import { Hono } from 'hono';
 import { normalizePhone } from '../shared';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
+import { activeCompanyId, scopeToAllowedCompanies } from '../lib/companyScope';
 
 export const helpers = new Hono<{ Bindings: Env; Variables: Variables }>();
 helpers.use('*', supabaseAuth);
@@ -24,6 +25,8 @@ helpers.get('/', async (c) => {
   const onlyActive = c.req.query('active') !== 'false';   // default: active only
   let q = sb.from('helpers').select(COLS).order('helper_code');
   if (onlyActive) q = q.eq('active', true);
+  // CROSS-COMPANY view: widen to every allowed company (one shared fleet).
+  q = scopeToAllowedCompanies(q, c);
   const { data, error } = await q;
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
   return c.json({ helpers: data ?? [] });
@@ -42,6 +45,7 @@ helpers.post('/', async (c) => {
 
   const sb = c.get('supabase');
   const { data, error } = await sb.from('helpers').insert({
+    company_id: activeCompanyId(c),
     helper_code: helperCode,
     name,
     contact: normalizedContact,

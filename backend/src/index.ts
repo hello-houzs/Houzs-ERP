@@ -20,6 +20,7 @@ import users from "./routes/users";
 import roles from "./routes/roles";
 import positions from "./routes/positions";
 import departments from "./routes/departments";
+import companies from "./routes/companies";
 import notifications from "./routes/notifications";
 import presence from "./routes/presence";
 import events from "./routes/events";
@@ -48,6 +49,7 @@ import projectsPrint from "./routes/projects_print";
 import search from "./routes/search";
 import assrPrint from "./routes/assr_print";
 import assrPortal from "./routes/assrPortal";
+import assrFormIntake from "./routes/assrFormIntake";
 import survey from "./routes/survey";
 import track from "./routes/track";
 import portal from "./routes/portal";
@@ -63,6 +65,7 @@ import announcements from "./routes/announcements";
 import { caseTrack } from "./middleware/caseTrack";
 import { supplierTrack } from "./middleware/supplierTrack";
 import { dbInject, withPgDb } from "./middleware/db";
+import { companyContext } from "./middleware/companyContext";
 import { drainEmailOutbox } from "./services/email";
 import { runSlaEscalation } from "./services/assrEscalation";
 import { runAssrAlerts, runAssrDailyDigest } from "./services/assrAlerts";
@@ -71,7 +74,7 @@ import { runProjectDueReminders } from "./services/projectReminders";
 // Weekly OCR rule-distill (scan-so self-evolution). Run via the daily 02:00
 // slot gated to Sundays — no new cron trigger. getSupabaseService is the same
 // service client scan-so.ts uses internally (serviceClient(env)).
-import { distillAllSalespersonRules, warmCatalogCacheForCron } from "./scm/routes/scan-so";
+import { distillAllSalespersonRules, warmCatalogCacheForCron, processScanQueueMessage } from "./scm/routes/scan-so";
 import { getSupabaseService } from "./db/supabase";
 import { getBranding } from "./services/branding";
 
@@ -132,6 +135,13 @@ app.route("/api/supplier-portal", supplierPortal);
 // never shadows it.
 app.route("/api/mail-center/inbound", mailInbound);
 
+// Google Form intake webhook — PRE-AUTH like mail-inbound: called by
+// Google Apps Script (no staff session), self-guarded by the
+// FORM_INTAKE_KEY shared secret (X-Intake-Key header). Was mounted
+// below the gate at first, so every call 401'd at the gate before the
+// route's own key check ever ran.
+app.route("/api/assr-form-intake", assrFormIntake);
+
 // Auth gate for everything else under /api/*. Mounted AFTER the
 // public API routes above so they stay unauthenticated.
 app.use("/api/*", auth);
@@ -140,6 +150,18 @@ app.use("/api/*", auth);
 // `Idempotency-Key` header). Mounted after auth so `userId` is set, and
 // before the routes so it can replay a stored response. Fail-open.
 app.use("/api/*", idempotency);
+
+// Multi-company (Phase 0b): resolve the ACTIVE company + allowed companies per
+// request (X-Company-Id switcher header / hostname default) and stash them on
+// the context, so BOTH the SCM query-scoping helpers (scm/lib/companyScope.ts)
+// AND the native raw-SQL modules (sales / finance) can filter + stamp
+// company_id. Mounted on the whole authenticated /api/* surface: after auth +
+// idempotency, before every route. Reads only request headers + the companies
+// master, so native routes without any company table simply ignore
+// c.get('companyId'), and it DEGRADES SAFELY (leaves companyId undefined) when
+// the companies master isn't resolvable yet — so single-company Houzs keeps
+// serving unchanged and the pre-auth public routes above are untouched.
+app.use("/api/*", companyContext);
 
 // Inbox snapshot self-heal — the /api/inbox GET caches a per-user aggregate of
 // ASSR + Projects + Trips for ~60s. After the acting user makes a successful
@@ -166,6 +188,7 @@ app.route("/api/users", users);
 app.route("/api/roles", roles);
 app.route("/api/positions", positions);
 app.route("/api/departments", departments);
+app.route("/api/companies", companies);
 app.route("/api/notifications", notifications);
 app.route("/api/presence", presence);
 app.route("/api/events", events);
@@ -356,6 +379,26 @@ export default {
             }
           })(),
         );
+      }
+    }
+  },
+  // Cloudflare Queue consumer for the background scan-so OCR pipeline (queue
+  // `houzs-scan-ocr`, DLQ `houzs-scan-ocr-dlq`). max_batch_size = 1, so each
+  // batch is one job. A queue-owned attempt survives isolate eviction — the
+  // reliability fix for the old waitUntil pipeline. On success ack; on failure
+  // retry (up to max_retries in wrangler.toml, then the message lands in the
+  // DLQ and the read-time reaper marks it stale as a final backstop).
+  async queue(batch: MessageBatch<{ jobId: string }>, env: Env, _ctx: ExecutionContext) {
+    // Mirror the scheduled handler: the consumer writes via env.DB too, so
+    // point it at Postgres.
+    env = withPgDb(env);
+    for (const msg of batch.messages) {
+      try {
+        await processScanQueueMessage(env, msg.body.jobId);
+        msg.ack();
+      } catch (e) {
+        console.error("[scan-queue]", msg.body?.jobId, e);
+        msg.retry();
       }
     }
   },

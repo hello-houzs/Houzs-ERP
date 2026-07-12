@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { Phone, Mail, MapPin, ShieldCheck } from "lucide-react";
+import { Mail, MapPin, ShieldCheck } from "lucide-react";
 
 // Customer-facing portal shell. Designed to feel like a considered,
 // well-made document rather than a generic SaaS layout — this is a
@@ -59,7 +59,7 @@ export function PortalFrame({ children }: { children: ReactNode }) {
       {/* ═══ Footer ═════════════════════════════════════════
           Three loosely-defined columns on desktop, stacked on
           mobile with a visible divider between each section.
-          Phone / email are real anchors (tel:/mailto:) so
+          Email is a real mailto: anchor so
           mobile users can tap straight through. */}
       <footer className="border-t border-border bg-surface">
         {/* Decorative opener — tiny "mark" glyph centered above the content */}
@@ -102,22 +102,15 @@ export function PortalFrame({ children }: { children: ReactNode }) {
                 Get in touch
               </div>
               <ul className="space-y-2.5 text-[12.5px] text-ink-secondary">
+                {/* Phone removed (Nick 2026-07-06) — email is the service
+                    desk's contact channel. */}
                 <li>
                   <a
-                    href="tel:+60312345678"
-                    className="inline-flex items-center gap-2.5 py-1 transition-colors hover:text-accent"
-                  >
-                    <Phone size={13} className="shrink-0 text-ink-muted" aria-hidden />
-                    <span className="font-medium">+60 3-XXXX XXXX</span>
-                  </a>
-                </li>
-                <li>
-                  <a
-                    href="mailto:service@houzscentury.com"
+                    href="mailto:operation_service@houzscentury.com"
                     className="inline-flex items-center gap-2.5 py-1 transition-colors hover:text-accent"
                   >
                     <Mail size={13} className="shrink-0 text-ink-muted" aria-hidden />
-                    <span className="font-medium">service@houzscentury.com</span>
+                    <span className="font-medium">operation_service@houzscentury.com</span>
                   </a>
                 </li>
               </ul>

@@ -33,6 +33,7 @@ import {
 import { writeMovements, defaultWarehouseId, resolveWarehouseLotCosts } from '../lib/inventory-movements';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { nextMonthlyDocNo } from '../lib/doc-no';
+import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { todayMyt } from '../lib/my-time';
 
 export const purchaseConsignmentReceives = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -214,13 +215,14 @@ const ITEM =
   /* rack placement (nullable physical link; off-ledger, never required) */
   'rack_id';
 
-const nextNumber = async (sb: any, prefix: string, table: string, col: string): Promise<string> => {
+const nextNumber = async (sb: any, prefix: string, table: string, col: string, c: any): Promise<string> => {
   // <PREFIX>-YYMM-NNN. max(suffix)+1 (NEVER count+1) so a deleted mid-month row
   // can't make the counter re-mint a surviving number forever — see doc-no.ts.
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
-  const { data: existing } = await sb.from(table).select(col).like(col, `${prefix}-${yymm}-%`);
-  return nextMonthlyDocNo(`${prefix}-${yymm}`, ((existing ?? []) as Array<Record<string, string>>).map((r) => r[col]));
+  const p = companyDocPrefix(c);
+  const { data: existing } = await sb.from(table).select(col).like(col, `${p}${prefix}-${yymm}-%`);
+  return nextMonthlyDocNo(`${p}${prefix}-${yymm}`, ((existing ?? []) as Array<Record<string, string>>).map((r) => r[col]));
 };
 
 /* ── Recompute PC Receive header money rollups ────────────────────────────
@@ -377,6 +379,7 @@ purchaseConsignmentReceives.get('/', async (c) => {
   let q = sb.from('purchase_consignment_receives').select(`${HEADER}, supplier:suppliers(id, code, name), purchase_consignment_order:purchase_consignment_orders(id, pc_number)`).order('received_at', { ascending: false });
   const status = c.req.query('status'); if (status) q = q.eq('status', status);
   const supplierId = c.req.query('supplierId'); if (supplierId) q = q.eq('supplier_id', supplierId);
+  q = scopeToCompany(q, c); // multi-company: isolate to the active company
   const { data, error } = await q;
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
 
@@ -675,7 +678,7 @@ purchaseConsignmentReceives.post('/', async (c) => {
     }
   }
 
-  const receiveNumber = await nextNumber(sb, 'PCR', 'purchase_consignment_receives', 'receive_number');
+  const receiveNumber = await nextNumber(sb, 'PCR', 'purchase_consignment_receives', 'receive_number', c);
 
   // Snapshot the PC Order number (pc_order_no) when linked.
   const pcOrderId = (body.purchaseConsignmentOrderId as string | undefined) ?? null;
@@ -687,6 +690,7 @@ purchaseConsignmentReceives.post('/', async (c) => {
 
   // Created POSTED directly — no inventory IN is written.
   const { data: header, error: hErr } = await sb.from('purchase_consignment_receives').insert({
+    company_id: activeCompanyId(c), // multi-company: stamp the active company
     receive_number: receiveNumber,
     purchase_consignment_order_id: pcOrderId,
     pc_order_no: pcOrderNo,
@@ -730,7 +734,7 @@ purchaseConsignmentReceives.post('/', async (c) => {
       rack_id: (it.rackId as string | undefined) || null,
     };
   });
-  const { error: iErr } = await sb.from('purchase_consignment_receive_items').insert(rows);
+  const { error: iErr } = await sb.from('purchase_consignment_receive_items').insert(stampCompany(rows, c));
   if (iErr) { await sb.from('purchase_consignment_receives').delete().eq('id', h.id); return c.json({ error: 'items_insert_failed', reason: iErr.message }, 500); }
 
   /* Post-insert over-receipt verification — the pre-check above is a read-then-
@@ -795,10 +799,11 @@ purchaseConsignmentReceives.post('/from-pcos', async (c) => {
 
   if (itemList.length === 0) return c.json({ error: 'nothing_outstanding', message: 'All PC Order items are already fully received' }, 400);
 
-  const receiveNumber = await nextNumber(sb, 'PCR', 'purchase_consignment_receives', 'receive_number');
+  const receiveNumber = await nextNumber(sb, 'PCR', 'purchase_consignment_receives', 'receive_number', c);
 
   const pcoNumbersJoined = pcoList.map((p) => p.pc_number).join(', ');
   const { data: header, error: hErr } = await sb.from('purchase_consignment_receives').insert({
+    company_id: activeCompanyId(c), // multi-company: stamp the active company
     receive_number: receiveNumber,
     purchase_consignment_order_id: pcoList[0]!.id,
     pc_order_no: pcoList[0]!.pc_number,
@@ -846,7 +851,7 @@ purchaseConsignmentReceives.post('/from-pcos', async (c) => {
       delivery_date: it.delivery_date ?? null,
     };
   });
-  const { error: iErr } = await sb.from('purchase_consignment_receive_items').insert(rows);
+  const { error: iErr } = await sb.from('purchase_consignment_receive_items').insert(stampCompany(rows, c));
   if (iErr) { await sb.from('purchase_consignment_receives').delete().eq('id', h.id); return c.json({ error: 'items_insert_failed', reason: iErr.message }, 500); }
 
   {
@@ -1036,7 +1041,7 @@ purchaseConsignmentReceives.post('/:id/items', async (c) => {
     uom: (it.uom as string) ?? 'UNIT',
     delivery_date: (it.deliveryDate as string) ?? null,
   };
-  const { data, error } = await sb.from('purchase_consignment_receive_items').insert(row).select(ITEM).single();
+  const { data, error } = await sb.from('purchase_consignment_receive_items').insert({ company_id: activeCompanyId(c), ...row }).select(ITEM).single();
   if (error) return c.json({ error: 'insert_failed', reason: error.message }, 500);
 
   /* POST-INSERT over-receipt verification — the pre-check is a read-then-write

@@ -17,6 +17,7 @@
 import { Hono, type Context } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import { hasHouzsPerm } from '../lib/houzs-perms';
+import { activeCompanyId } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 import { canonicalizeLayoutModulesForStorage, type ComboSlots } from '../shared';
 
@@ -138,6 +139,7 @@ sofaQuickPicks.post('/', async (c) => {
   const { data, error } = await supabase
     .from('sofa_quick_picks')
     .insert({
+      company_id: activeCompanyId(c),
       base_model: baseModel,
       label: body.label ?? null,
       modules,

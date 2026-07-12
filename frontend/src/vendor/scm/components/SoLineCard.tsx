@@ -147,6 +147,7 @@ const SoLineCardInner = ({
   onRemove,
   canRemove,
   inheritVariantsByCategory,
+  onAddProducts,
   docNo,
   itemId,
   isEditing = true,
@@ -158,6 +159,12 @@ const SoLineCardInner = ({
   onRemove:  () => void;
   canRemove: boolean;
   inheritVariantsByCategory?: Record<string, Record<string, unknown> | undefined>;
+  /* Multi-add (desktop parity with MobileSkuPicker.onPickMany). When provided,
+     the SKU picker gains a multi-select mode: the operator ticks several SKUs
+     and hits "Add N" — the FIRST fills THIS line (via onChange, so cascades +
+     inherit still fire) and the REST are appended as new lines by the parent.
+     Absent → single-pick behavior only. */
+  onAddProducts?: (rows: MfgProductRow[]) => void;
   docNo?:    string;
   itemId?:   string;
   isEditing?: boolean;
@@ -204,6 +211,12 @@ const SoLineCardInner = ({
   // card (SO / DO / DR / consignment). Wei Siang 2026-06-06.
   const pickerWrapRef = useRef<HTMLDivElement>(null);
   const [menuPos, setMenuPos] = useState<{ top: number; left: number; width: number } | null>(null);
+  /* Multi-add (desktop MobileSkuPicker.onPickMany parity) — when the parent
+     wires onAddProducts, ticked SKUs collect here; "Add N" commits them (first
+     → this line, rest → new lines). Keyed by MfgProductRow.id. */
+  const multiEnabled = typeof onAddProducts === 'function';
+  const [multiMode, setMultiMode] = useState(false);
+  const [multiPicked, setMultiPicked] = useState<MfgProductRow[]>([]);
   /* Auto-open when the line carries a POS remark/extra special (Loo
      2026-06-12) so the coordinator sees it without a click. */
   const [specialsOpen, setSpecialsOpen] = useState(() => posRemarkSpecialOf(draft.variants) != null);
@@ -292,6 +305,25 @@ const SoLineCardInner = ({
       overriddenKeys: [],
     });
     setSearch(p.name);
+  };
+
+  /* Multi-add helpers (only meaningful when onAddProducts is wired). */
+  const toggleMultiPick = (p: MfgProductRow) =>
+    setMultiPicked((prev) =>
+      prev.some((x) => x.id === p.id)
+        ? prev.filter((x) => x.id !== p.id)
+        : [...prev, p],
+    );
+  const commitMulti = () => {
+    if (multiPicked.length === 0) return;
+    const [first, ...rest] = multiPicked;
+    // First selection fills THIS line — reuse pickProduct so inherit + cascade
+    // + price seeding all fire exactly as a single pick would.
+    if (first) pickProduct(first);
+    if (rest.length > 0) onAddProducts?.(rest);
+    setMultiPicked([]);
+    setMultiMode(false);
+    setShowPicker(false);
   };
 
   /* PR #136 — Auto-compute bedframe Total Height = Divan + Leg + Gap. */
@@ -612,20 +644,45 @@ const SoLineCardInner = ({
               className={styles.suggestList}
               style={{ position: 'fixed', top: menuPos.top, left: menuPos.left, width: menuPos.width, right: 'auto', marginTop: 0, zIndex: 1000 }}
             >
+              {multiEnabled && candidates.length > 0 && (
+                /* Multi-add toggle (MobileSkuPicker.onPickMany parity). onMouseDown
+                   + preventDefault keeps the search input focused so the portal
+                   stays open while ticking rows. */
+                <li
+                  className={styles.suggestItem}
+                  style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer', fontWeight: 600 }}
+                  onMouseDown={(e) => { e.preventDefault(); setMultiMode((m) => !m); if (multiMode) setMultiPicked([]); }}
+                >
+                  <span>{multiMode ? 'Add multiple — tap to tick' : '+ Add several at once'}</span>
+                  <span style={{ color: 'var(--fg-muted)', fontSize: 11 }}>
+                    {multiMode ? 'single-pick' : 'multi'}
+                  </span>
+                </li>
+              )}
               {candidates.length > 0 ? (
                 /* Commander 2026-05-27: picker rows show description only — one
                    scannable line per SKU. The code still binds on click. */
-                candidates.slice(0, 50).map((p) => (
-                  <li
-                    key={p.id}
-                    className={styles.suggestItem}
-                    onMouseDown={() => { pickProduct(p); setShowPicker(false); }}
-                  >
-                    <div className={styles.suggestItemMeta}>
-                      {p.name}
-                    </div>
-                  </li>
-                ))
+                candidates.slice(0, 50).map((p) => {
+                  const ticked = multiMode && multiPicked.some((x) => x.id === p.id);
+                  return (
+                    <li
+                      key={p.id}
+                      className={styles.suggestItem}
+                      style={multiMode ? { display: 'flex', alignItems: 'center', gap: 8 } : undefined}
+                      onMouseDown={(e) => {
+                        if (multiMode) { e.preventDefault(); toggleMultiPick(p); }
+                        else { pickProduct(p); setShowPicker(false); }
+                      }}
+                    >
+                      {multiMode && (
+                        <input type="checkbox" readOnly checked={ticked} style={{ pointerEvents: 'none' }} />
+                      )}
+                      <div className={styles.suggestItemMeta}>
+                        {p.name}
+                      </div>
+                    </li>
+                  );
+                })
               ) : (
                 <li className={styles.suggestItem} style={{ color: 'var(--fg-muted)', cursor: 'default' }}>
                   {/* Task #102 — Distinguish "type more" (gate hasn't tripped)
@@ -635,6 +692,15 @@ const SoLineCardInner = ({
                     : productsQuery.isFetching
                       ? 'Searching…'
                       : `No products match "${trimmedSearch}".`}
+                </li>
+              )}
+              {multiMode && multiPicked.length > 0 && (
+                <li
+                  className={styles.suggestItem}
+                  style={{ position: 'sticky', bottom: 0, background: 'var(--accent, #16695f)', color: '#fff', textAlign: 'center', fontWeight: 700, cursor: 'pointer' }}
+                  onMouseDown={(e) => { e.preventDefault(); commitMulti(); }}
+                >
+                  Add {multiPicked.length} product{multiPicked.length > 1 ? 's' : ''}
                 </li>
               )}
             </ul>,
@@ -667,11 +733,14 @@ const SoLineCardInner = ({
           }}
         />
 
-        {/* 5. Unit Price — D4: locked to the SKU Master sell price below admin. */}
+        {/* 5. Unit Price — D4: locked to the SKU Master sell price below admin.
+             Uses a distinctive brass-tinted `.priceInput` (2026-07-09) so the
+             amount cell is impossible to miss between the qty and date
+             columns that sit either side of it. */}
         <input
           type="number"
           step="0.01"
-          className={styles.numericInput}
+          className={styles.priceInput}
           value={priceText}
           disabled={!isEditing || !canEditPrice}
           title={!canEditPrice ? 'Price follows the SKU Master sell price — admin can override' : undefined}

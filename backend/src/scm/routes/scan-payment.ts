@@ -55,6 +55,7 @@
 import { Hono } from 'hono';
 import type { SupabaseClient as SupabaseClientGeneric } from '@supabase/supabase-js';
 import { supabaseAuth } from '../middleware/auth';
+import { activeCompanyId } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 import { paginateAll } from '../lib/paginate-all';
 import { getBranding } from '../../services/branding';
@@ -336,6 +337,7 @@ async function persistReceiptAsSlip(
   staffId: string,
   buf: ArrayBuffer,
   mime: SlipMime,
+  companyId?: number | null,
 ): Promise<SlipPersistResult> {
   // SLIPS binding unbound → skip silently; OCR fields still flow. (Since
   // 2026-07-04 the binding is all slipBindings needs — no R2 S3 creds.)
@@ -376,6 +378,7 @@ async function persistReceiptAsSlip(
   // Register the session as already 'uploaded' (the bytes are in R2) so the
   // consumer accepts it without a separate /confirm round-trip.
   const { error: insertErr } = await sb.from('pending_slip_uploads').insert({
+    company_id: companyId ?? null,
     id: sessionId,
     upload_session_id: sessionId,
     staff_id: staffId,
@@ -556,7 +559,7 @@ scanPayment.post('/extract', async (c) => {
   let slip: SlipPersistResult = null;
   try {
     const staffId = (c.get('user') as { id: string }).id;
-    slip = await persistReceiptAsSlip(c, sb, staffId, buf, slipMime);
+    slip = await persistReceiptAsSlip(c, sb, staffId, buf, slipMime, activeCompanyId(c));
   } catch {
     slip = null;
   }

@@ -32,6 +32,11 @@ export interface CreateAssrInput {
    *  the admin-configured default assignee. */
   assigned_to?: number | null;
   created_by?: number;
+  /** Multi-company (Phase 0b) — the active company (companies.id) resolved
+   *  from the request via activeCompanyId(c). Left undefined pre-migration /
+   *  cold-start; createAssrCase then falls back to the Houzs default and, if
+   *  that too is unresolvable, omits the column entirely (single-company safe). */
+  company_id?: number;
 }
 
 // v3.1 9-stage workflow. Old enum (registration / triage / action /
@@ -43,7 +48,7 @@ export type Stage =
   | "pending_review"            // Stage 1 — Service Admin
   | "under_verification"        // Stage 2 — Service Admin
   | "pending_solution"          // Stage 3 — Service Admin / Manager
-  | "pending_inspection"        // Stage 4 — SA assigns Logistic Admin
+  | "pending_inspection"        // Stage 4 — inspection (own team OR supplier)
   | "pending_item_pickup"       // Stage 5 — SA assigns Logistic Admin
   | "pending_supplier_pickup"   // Stage 6 — SA contacts supplier
   | "pending_item_ready"        // Stage 7 — SA updates on supplier return
@@ -229,6 +234,35 @@ export async function nextAssrNumber(env: Env): Promise<string> {
   return `${prefix}-${String(next).padStart(3, "0")}`;
 }
 
+// ── Company resolution (multi-company Phase 0b) ───────────────
+//
+// Service Cases are a CROSS-COMPANY queue, but each case still carries its
+// owning company_id so the shared list can show + split by company. Resolve
+// order: the request's ACTIVE company (passed from the route via
+// activeCompanyId(c)) → the Houzs default. A case raised from a LOCAL sales
+// order that carries a company_id would take precedence over both, but Houzs
+// ASSR cases are keyed to AutoCount SO doc numbers (external, no local
+// company_id), so active company is authoritative here.
+//
+// Returns null when neither is resolvable (companies master absent
+// pre-migration, or a DB cold-start). The INSERT then omits the column,
+// mirroring stampCompany's no-op so single-company Houzs keeps inserting
+// unchanged.
+async function resolveCaseCompanyId(
+  env: Env,
+  activeCompanyId?: number | null
+): Promise<number | null> {
+  if (activeCompanyId != null) return activeCompanyId;
+  try {
+    const row = await env.DB.prepare(
+      `SELECT id FROM companies WHERE code = 'HOUZS' LIMIT 1`
+    ).first<{ id: number | string }>();
+    return row?.id != null ? Number(row.id) : null;
+  } catch {
+    return null;
+  }
+}
+
 // ── Create case ───────────────────────────────────────────────
 
 export async function createAssrCase(
@@ -267,19 +301,26 @@ export async function createAssrCase(
   // An explicit PIC picked at intake (input.assigned_to) takes
   // precedence over the admin default.
   let defaultAssigneeId: number | null = null;
+  let defaultAssignee2Id: number | null = null;
   if (input.assigned_to != null) {
     defaultAssigneeId = input.assigned_to;
   } else {
     try {
-      const r = await env.DB.prepare(
-        `SELECT value FROM system_settings WHERE key = 'assr_default_assignee_id'`
-      ).first<{ value: string | null }>();
-      if (r?.value != null) {
+      const rows = await env.DB.prepare(
+        `SELECT key, value FROM system_settings
+          WHERE key IN ('assr_default_assignee_id', 'assr_default_assignee2_id')`
+      ).all<{ key: string; value: string | null }>();
+      for (const r of rows.results ?? []) {
+        if (r.value == null) continue;
         const n = parseInt(r.value, 10);
-        if (!isNaN(n)) defaultAssigneeId = n;
+        if (isNaN(n)) continue;
+        if (r.key === "assr_default_assignee_id") defaultAssigneeId = n;
+        else defaultAssignee2Id = n;
       }
+      // The same person twice adds nothing — keep the co-slot empty.
+      if (defaultAssignee2Id === defaultAssigneeId) defaultAssignee2Id = null;
     } catch (e) {
-      console.warn("[assr.create] could not read default assignee:", e);
+      console.warn("[assr.create] could not read default assignees:", e);
     }
   }
 
@@ -295,14 +336,21 @@ export async function createAssrCase(
   const activeProfileId = await getActiveLeadTimeProfileId(env);
   const nowIso = new Date().toISOString();
 
+  // Multi-company (Phase 0b): stamp the owning company. Append the column +
+  // bind ONLY when resolved so the pre-migration / cold-start window (no
+  // companies master, no company_id column yet) inserts unchanged.
+  const companyId = await resolveCaseCompanyId(env, input.company_id);
+  const companyCol = companyId != null ? ", company_id" : "";
+  const companyPlaceholder = companyId != null ? ", ?" : "";
+
   const result = await env.DB.prepare(
     `INSERT INTO assr_cases (
        assr_no, status, stage, doc_no, complained_date, customer_name, phone, location,
        sales_agent, item_code, complaint_issue, issue_category, priority, po_no, addr1, addr2, addr3, addr4, created_by,
        ref_no, customer_email, service_category, delivery_order, do_date,
-       assigned_to, sla_hours, deadline_at,
-       stage_entered_at, stage_target_days, stage_changed_at, lead_time_profile_id
-     ) VALUES (?, 'Open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       assigned_to, assigned_to_2, sla_hours, deadline_at,
+       stage_entered_at, stage_target_days, stage_changed_at, lead_time_profile_id${companyCol}
+     ) VALUES (?, 'Open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${companyPlaceholder})`
   )
     .bind(
       assrNo,
@@ -340,12 +388,14 @@ export async function createAssrCase(
       null,
       null,
       defaultAssigneeId,
+      defaultAssignee2Id,
       slaHours,
       deadlineAt,
       nowIso,
       initialTargetDays,
       nowIso,
-      activeProfileId
+      activeProfileId,
+      ...(companyId != null ? [companyId] : [])
     )
     .run();
 
@@ -387,6 +437,17 @@ export async function createAssrCase(
       input.created_by
     );
   }
+  if (defaultAssignee2Id != null) {
+    await logActivity(
+      env,
+      assrId,
+      "assignment_2",
+      null,
+      String(defaultAssignee2Id),
+      "default co-assignee",
+      input.created_by
+    );
+  }
 
   // Fire-and-forget creditor resolution from the primary item. A
   // failed lookup (item unknown upstream, network, etc.) must not
@@ -409,6 +470,7 @@ export async function getAssrDetail(env: Env, id: number) {
             u2.name as created_by_name,
             u3.name as approved_by_name,
             u4.name as verified_by_name,
+            u5.name as assigned_to_2_name,
             cr.company_name as creditor_name,
             cr.email as creditor_email,
             cr.phone1 as creditor_phone,
@@ -425,6 +487,7 @@ export async function getAssrDetail(env: Env, id: number) {
        LEFT JOIN users u2 ON u2.id = c.created_by
        LEFT JOIN users u3 ON u3.id = c.approved_by
        LEFT JOIN users u4 ON u4.id = c.verified_by
+       LEFT JOIN users u5 ON u5.id = c.assigned_to_2
        LEFT JOIN creditors cr ON cr.creditor_code = c.creditor_code
       WHERE c.id = ?`
   )
@@ -633,7 +696,7 @@ const PATCH_FIELDS = [
   "customer_name", "customer_email", "phone", "location", "sales_agent", "item_code",
   "complaint_issue", "action_remark", "service_category",
   "completion_date", "po_no", "resolution_method", "issue_category",
-  "priority", "assigned_to", "ref_no", "delivery_order", "do_date",
+  "priority", "assigned_to", "assigned_to_2", "ref_no", "delivery_order", "do_date",
   "satisfaction_rating", "satisfaction_notes",
   "addr1", "addr2", "addr3", "addr4",
   // QMS additions
@@ -657,6 +720,9 @@ const PATCH_FIELDS = [
   // the main case, supplier edits supplier_service_note from the
   // supplier portal.
   "goods_returned_note", "supplier_service_note",
+  // Mig 0073 — who performs the inspection stage: 'own' | 'supplier'.
+  // Own-team inspections link into delivery planning for the visit.
+  "inspection_by",
 ] as const;
 
 export async function patchAssrCase(
@@ -731,6 +797,9 @@ export async function patchAssrCase(
   // Log assignment changes
   if ("assigned_to" in body) {
     await logActivity(env, id, "assignment", null, String(body.assigned_to ?? ""), null, userId);
+  }
+  if ("assigned_to_2" in body) {
+    await logActivity(env, id, "assignment_2", null, String(body.assigned_to_2 ?? ""), null, userId);
   }
 
   // Audit complaint edits so the customer-facing description has a
@@ -948,8 +1017,10 @@ function pushVisibilityScope(
     return;
   }
   const ph = ids.map(() => "?").join(",");
-  where.push(`(c.created_by IN (${ph}) OR c.assigned_to IN (${ph}))`);
-  binds.push(...ids, ...ids);
+  where.push(
+    `(c.created_by IN (${ph}) OR c.assigned_to IN (${ph}) OR c.assigned_to_2 IN (${ph}))`
+  );
+  binds.push(...ids, ...ids, ...ids);
 }
 
 // Allow-listed sort columns. Computed aliases (stage_since,
@@ -1018,8 +1089,8 @@ export async function listAssrCases(env: Env, f: ListAssrFilters) {
     binds.push(f.status);
   }
   if (f.assigned_to != null) {
-    where.push("c.assigned_to = ?");
-    binds.push(f.assigned_to);
+    where.push("(c.assigned_to = ? OR c.assigned_to_2 = ?)");
+    binds.push(f.assigned_to, f.assigned_to);
   }
   if (f.creditor_code) {
     where.push("c.creditor_code = ?");
@@ -1058,9 +1129,15 @@ export async function listAssrCases(env: Env, f: ListAssrFilters) {
 
   const baseSelect = `
     SELECT c.*, u.name as assigned_to_name, u2.name as created_by_name,
+           ua2.name as assigned_to_2_name,
            cr.company_name as creditor_name,
            cr.email as creditor_email,
            cr.phone1 as creditor_phone,
+           -- Multi-company (Phase 0b): Service Cases are a CROSS-COMPANY queue —
+           -- c.* already carries c.company_id; join the companies master so each
+           -- row also shows a readable company_code column. Raw SQL via env.DB, so
+           -- this bypasses the supabase-js companyScope helper by necessity.
+           co.code as company_code,
            COALESCE(
              (SELECT MAX(a.created_at)
                 FROM assr_activity a
@@ -1092,7 +1169,9 @@ export async function listAssrCases(env: Env, f: ListAssrFilters) {
       FROM assr_cases c
       LEFT JOIN users u ON u.id = c.assigned_to
       LEFT JOIN users u2 ON u2.id = c.created_by
+      LEFT JOIN users ua2 ON ua2.id = c.assigned_to_2
       LEFT JOIN creditors cr ON cr.creditor_code = c.creditor_code
+      LEFT JOIN companies co ON co.id = c.company_id
     ${whereSql}
   `;
 
@@ -1147,8 +1226,8 @@ export async function exportAssrCases(
     binds.push(f.status);
   }
   if (f.assigned_to != null) {
-    where.push("c.assigned_to = ?");
-    binds.push(f.assigned_to);
+    where.push("(c.assigned_to = ? OR c.assigned_to_2 = ?)");
+    binds.push(f.assigned_to, f.assigned_to);
   }
   if (f.search) {
     where.push("(c.assr_no LIKE ? OR c.doc_no LIKE ? OR c.customer_name LIKE ?)");

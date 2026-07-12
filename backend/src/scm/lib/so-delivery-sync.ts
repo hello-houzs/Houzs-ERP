@@ -83,8 +83,10 @@ export async function syncSoDeliveredFromDo(
   for (const docNo of docs) {
     try {
       const { data: so } = await sb
-        .from('mfg_sales_orders').select('status').eq('doc_no', docNo).maybeSingle();
+        .from('mfg_sales_orders').select('status, company_id').eq('doc_no', docNo).maybeSingle();
       const status = (so as { status?: string } | null)?.status;
+      // Multi-company (mig 0061): the status-change audit row inherits the SO's company.
+      const soCompanyId = (so as { company_id?: number | null } | null)?.company_id ?? null;
       // Only DELIVERABLE_FROM (forward) or a currently-DELIVERED SO (reverse) are
       // in play; everything else is terminal/manual and left untouched.
       if (!status) continue;
@@ -209,6 +211,7 @@ export async function syncSoDeliveredFromDo(
       // Mirror the status-PATCH audit trail (both tables) so the SO History
       // panel shows this auto-transition beside manual transitions.
       await sb.from('mfg_so_status_changes').insert({
+        ...(soCompanyId != null ? { company_id: soCompanyId } : {}),
         doc_no: docNo, from_status: status, to_status: target,
         changed_by: actorId ?? null, notes: note,
       });
