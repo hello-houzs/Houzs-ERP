@@ -31,7 +31,7 @@ import {
 } from '../../vendor/scm/lib/payment-voucher-queries';
 import { useAccounts, type Account } from '../../vendor/scm/lib/accounting-queries';
 import { usePurchaseInvoices } from '../../vendor/scm/lib/purchase-invoice-queries';
-import { useSuppliers } from '../../vendor/scm/lib/suppliers-queries';
+import { useSuppliers, useSupplierDetail } from '../../vendor/scm/lib/suppliers-queries';
 import { sortByText } from '../../vendor/scm/lib/sort-options';
 import { useAuth as useHouzsAuth } from '../../auth/AuthContext';
 import { MoneyInput } from '../../vendor/scm/components/MoneyInput';
@@ -46,9 +46,9 @@ import styles from './SalesOrderDetail.module.css';
 const ICON    = { size: 16, strokeWidth: 1.75 } as const;
 const SM_ICON = { size: 14, strokeWidth: 1.75 } as const;
 
-const fmtRm = (centi: number | null | undefined): string => {
+const fmtRm = (centi: number | null | undefined, currency = 'MYR'): string => {
   const v = centi ?? 0;
-  return `MYR ${(v / 100).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return `${currency} ${(v / 100).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 };
 
 /* Migration 0202 — human label for the PV purpose. */
@@ -122,6 +122,9 @@ export const PaymentVoucherDetail = () => {
   const [creditAccountCode, setCreditAccountCode] = useState('');
   const [voucherDate, setVoucherDate]             = useState('');
   const [notes, setNotes]                         = useState('');
+  /* Multi-currency (Phase 1-A) — MYR per 1 unit of the PV currency, string-typed.
+     Seeded from the voucher on enter-edit; shown only for a foreign currency. */
+  const [exchangeRate, setExchangeRate]           = useState('1');
   const [editLines, setEditLines]                 = useState<EditLine[]>([]);
   // Migration 0202 — edit allocations: applied amount per PI id (centi).
   const [allocAmounts, setAllocAmounts]           = useState<Record<string, number>>({});
@@ -138,6 +141,7 @@ export const PaymentVoucherDetail = () => {
     setCreditAccountCode(pv.credit_account_code ?? '');
     setVoucherDate(pv.voucher_date ?? '');
     setNotes(pv.notes ?? '');
+    setExchangeRate(String(pv.exchange_rate ?? '1'));
     // Seed the applied-amount map from the loaded allocations (keyed by PI id).
     setAllocAmounts(Object.fromEntries(
       allocations.map((a) => [String(a.piId ?? a.pi_id ?? ''), Number(a.amountCenti ?? a.amount_centi ?? 0)]),
@@ -163,6 +167,19 @@ export const PaymentVoucherDetail = () => {
   const editTotalCenti = useMemo(() => editLines.reduce((s, l) => s + l.amountCenti, 0), [editLines]);
   const viewTotalCenti = Number(pv?.total_centi ?? 0);
   const totalCenti = isEditing ? editTotalCenti : viewTotalCenti;
+
+  /* Multi-currency (Phase 1-A) — the PV keeps its own currency; the exchange
+     rate converts the GL posting to MYR. In VIEW we show the stored currency; in
+     EDIT it follows the chosen supplier's default (MYR = strict no-op). */
+  const supplierDetailQ = useSupplierDetail(isEditing ? (supplierId || null) : null);
+  const supplierDetail  = supplierDetailQ.data?.supplier ?? null;
+  const supplierRow     = useMemo(() => (suppliersQ.data ?? []).find((s) => s.id === supplierId) ?? null, [suppliersQ.data, supplierId]);
+  const viewCurrency = (pv?.currency ?? 'MYR').toUpperCase();
+  const editCurrency = (supplierDetail?.currency ?? supplierRow?.currency ?? pv?.currency ?? 'MYR').toUpperCase();
+  const currency  = isEditing ? editCurrency : viewCurrency;
+  const isForeign = currency !== 'MYR';
+  useEffect(() => { if (isEditing && !isForeign) setExchangeRate('1'); }, [isEditing, isForeign]);
+  const rate = Number(isEditing ? exchangeRate : (pv?.exchange_rate ?? 1)) || 0;
 
   /* ── Edit allocations (migration 0202) ────────────────────────────────────
      In Edit mode on a SUPPLIER_PAYMENT voucher, list the supplier's outstanding
@@ -241,8 +258,12 @@ export const PaymentVoucherDetail = () => {
         creditAccountCode,
         voucherDate,
         notes:             notes || null,
-        currency:          'MYR',
-        exchangeRate:      1,
+        // Multi-currency (Phase 1-A) — resolved currency + rate. MYR forces 1
+        // (server enforces too); a blank/invalid foreign rate → 1.
+        currency:          editCurrency,
+        exchangeRate:      isForeign
+          ? ((Number(exchangeRate) > 0 && Number.isFinite(Number(exchangeRate))) ? Number(exchangeRate) : 1)
+          : 1,
         lines: realLines.map((l) => ({
           description:      l.description || undefined,
           debitAccountCode: l.debitAccountCode,
@@ -329,6 +350,8 @@ export const PaymentVoucherDetail = () => {
               <InfoCell label="Purpose" value={purposeLabel(pv.purpose)} />
               <InfoCell label="Paid From" value={accountLabel(pv.credit_account_code)} />
               <InfoCell label="Voucher Date" value={pv.voucher_date ? fmtDateOrDash(pv.voucher_date) : null} />
+              <InfoCell label="Currency" value={viewCurrency} />
+              {viewCurrency !== 'MYR' && <InfoCell label="Exchange Rate" value={`${pv.exchange_rate} (MYR per 1 ${viewCurrency})`} />}
               <InfoCell label="Notes" value={pv.notes ?? null} />
             </div>
           ) : (
@@ -365,6 +388,16 @@ export const PaymentVoucherDetail = () => {
                 <span className={styles.fieldLabel}>Voucher Date *</span>
                 <DateField fullWidth value={voucherDate ?? ''} onChange={(iso) => setVoucherDate(iso)} className={styles.fieldInput} />
               </label>
+              {/* Multi-currency (Phase 1-A) — exchange rate shown ONLY for a foreign
+                  currency (the PV follows the chosen supplier's default). */}
+              {isForeign && (
+                <label className={styles.field}>
+                  <span className={styles.fieldLabel}>Exchange rate (MYR per 1 {editCurrency})</span>
+                  <input type="number" min={0} step="0.000001" inputMode="decimal"
+                    value={exchangeRate} onChange={(e) => setExchangeRate(e.target.value)}
+                    className={styles.fieldInput} style={{ textAlign: 'right', fontFamily: 'var(--font-mono)' }} />
+                </label>
+              )}
               <label className={styles.field}>
                 <span className={styles.fieldLabel}>Notes</span>
                 <textarea value={notes} onChange={(e) => setNotes(e.target.value)} className={styles.fieldInput} rows={2} style={{ resize: 'vertical', minHeight: 60 }} />
@@ -378,7 +411,7 @@ export const PaymentVoucherDetail = () => {
       <section className={styles.card}>
         <div className={styles.cardHeader}>
           <h2 className={styles.cardTitle}>Lines ({isEditing ? editLines.length : lines.length})</h2>
-          <span style={{ fontSize: 'var(--fs-12)', color: 'var(--fg-muted)' }}>total {fmtRm(totalCenti)}</span>
+          <span style={{ fontSize: 'var(--fs-12)', color: 'var(--fg-muted)' }}>total {fmtRm(totalCenti, currency)}</span>
         </div>
         <div className={styles.cardBody} style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
           {!isEditing ? (
@@ -400,7 +433,7 @@ export const PaymentVoucherDetail = () => {
                       <td style={{ padding: '6px 8px', color: 'var(--fg-muted)' }}>{idx + 1}</td>
                       <td style={{ padding: '6px 8px' }}>{l.description || '—'}</td>
                       <td style={{ padding: '6px 8px' }}>{accountLabel(l.debit_account_code)}</td>
-                      <td style={{ padding: '6px 8px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>{fmtRm(Number(l.amount_centi ?? 0))}</td>
+                      <td style={{ padding: '6px 8px', textAlign: 'right', fontFamily: 'var(--font-mono)' }}>{fmtRm(Number(l.amount_centi ?? 0), currency)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -417,7 +450,7 @@ export const PaymentVoucherDetail = () => {
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                     <span style={{ fontFamily: 'var(--font-button)', fontSize: 'var(--fs-12)', fontWeight: 700, letterSpacing: '0.10em', color: 'var(--fg-muted)' }}>LINE {idx + 1}</span>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
-                      <span className={styles.previewPrice}>{fmtRm(l.amountCenti)}</span>
+                      <span className={styles.previewPrice}>{fmtRm(l.amountCenti, currency)}</span>
                       {editLines.length > 1 && (
                         <button type="button" onClick={() => dropLine(l.rid)} title="Remove line"
                           style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--c-festive-b, #B8331F)', padding: 4, display: 'inline-flex' }}>
@@ -557,8 +590,15 @@ export const PaymentVoucherDetail = () => {
           <div className={styles.cardBody}>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 'var(--fs-16)', fontWeight: 700 }}>
               <span>Total</span>
-              <span style={{ fontFamily: 'var(--font-mono)' }}>{fmtRm(totalCenti)}</span>
+              <span style={{ fontFamily: 'var(--font-mono)' }}>{fmtRm(totalCenti, currency)}</span>
             </div>
+            {/* Multi-currency (Phase 1-A) — MYR posted to GL for a foreign PV. */}
+            {isForeign && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 'var(--fs-13)', color: 'var(--fg-muted)', marginTop: 'var(--space-2)' }}>
+                <span>≈ posted to GL</span>
+                <span style={{ fontFamily: 'var(--font-mono)' }}>{fmtRm(Math.round(totalCenti * rate), 'MYR')}</span>
+              </div>
+            )}
           </div>
         </section>
       </div>

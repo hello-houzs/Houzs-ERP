@@ -26,7 +26,9 @@ import { Button } from '@2990s/design-system';
 import { useCreatePaymentVoucher } from '../../vendor/scm/lib/payment-voucher-queries';
 import { useAccounts, type Account } from '../../vendor/scm/lib/accounting-queries';
 import { usePurchaseInvoices } from '../../vendor/scm/lib/purchase-invoice-queries';
-import { useSuppliers } from '../../vendor/scm/lib/suppliers-queries';
+import { useSuppliers, useSupplierDetail } from '../../vendor/scm/lib/suppliers-queries';
+import { useActiveCurrencies, rateFor } from '../../vendor/scm/lib/currencies-queries';
+import { CurrencySelect } from '../../vendor/scm/components/CurrencySelect';
 import { sortByText } from '../../vendor/scm/lib/sort-options';
 import { todayMyt } from '../../vendor/scm/lib/dates';
 import { MoneyInput } from '../../vendor/scm/components/MoneyInput';
@@ -38,9 +40,9 @@ import styles from './SalesOrderDetail.module.css';
 const ICON    = { size: 16, strokeWidth: 1.75 } as const;
 const SM_ICON = { size: 14, strokeWidth: 1.75 } as const;
 
-const fmtRm = (centi: number | null | undefined): string => {
+const fmtRm = (centi: number | null | undefined, currency = 'MYR'): string => {
   const v = centi ?? 0;
-  return `MYR ${(v / 100).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return `${currency} ${(v / 100).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 };
 
 /* Migration 0202 — what this voucher is FOR. SUPPLIER_PAYMENT settles a
@@ -88,15 +90,41 @@ export const PaymentVoucherNew = () => {
   const [creditAccountCode, setCreditAccountCode] = useState<string>('');
   const [voucherDate, setVoucherDate]             = useState<string>(() => todayMyt());
   const [notes, setNotes]                         = useState<string>('');
+  /* Multi-currency (Phase 1-A) — MYR per 1 unit of the PV currency, string-typed.
+     Shown only for a foreign currency; MYR posts 1:1 (no-op). */
+  const [exchangeRate, setExchangeRate]           = useState<string>('1');
+  /* Track a manual rate edit so the currency-master auto-fill stops overwriting it. */
+  const [rateTouched, setRateTouched]             = useState<boolean>(false);
+  /* Multi-currency (Phase 1-A) — operator-chosen currency; defaults to the linked
+     supplier's currency (below). */
+  const [currencyOverride, setCurrencyOverride]   = useState<string | null>(null);
   const [lines, setLines]                         = useState<DraftLine[]>([newLine()]);
   const [dialog, setDialog] = useState<{ title: string; body: string; goTo?: string } | null>(null);
 
-  // Supplier link is optional. When set, auto-fill the payee (if blank).
+  // Supplier link is optional. When set, auto-fill the payee (if blank) + adopt
+  // the supplier's default currency (e.g. a China vendor billing RMB).
   const supplierRow = useMemo(() => (suppliersQ.data ?? []).find((s) => s.id === supplierId) ?? null, [suppliersQ.data, supplierId]);
+  const supplierDetailQ = useSupplierDetail(supplierId || null);
+  const supplierDetail  = supplierDetailQ.data?.supplier ?? null;
   useEffect(() => {
     if (!supplierRow) return;
     setPayeeName((prev) => prev.trim() ? prev : supplierRow.name);
   }, [supplierRow]);
+
+  /* Multi-currency (Phase 1-A) — the PV's currency defaults to the linked
+     supplier's currency; MYR when unset (strict no-op, no rate field). The
+     operator may override it. The rate converts the GL posting to MYR at
+     post-time server-side. */
+  const currency  = (currencyOverride ?? supplierDetail?.currency ?? supplierRow?.currency ?? 'MYR').toUpperCase();
+  const isForeign = currency !== 'MYR';
+  /* Auto-fill the rate from the currencies MASTER when the PV settles on a foreign
+     currency (still editable). MYR resets to 1; a manual edit wins. */
+  const currenciesQ = useActiveCurrencies();
+  useEffect(() => {
+    if (!isForeign) { setExchangeRate('1'); setRateTouched(false); return; }
+    if (rateTouched) return;
+    setExchangeRate(String(rateFor(currenciesQ.data, currency)));
+  }, [isForeign, currency, currenciesQ.data, rateTouched]);
 
   const setLine  = (rid: string, patch: Partial<DraftLine>) =>
     setLines((prev) => prev.map((l) => (l.rid === rid ? { ...l, ...patch } : l)));
@@ -177,8 +205,12 @@ export const PaymentVoucherNew = () => {
         creditAccountCode,
         voucherDate,
         notes:             notes || undefined,
-        currency:          'MYR',
-        exchangeRate:      1,
+        // Multi-currency (Phase 1-A) — resolved currency + rate. MYR forces 1
+        // (server enforces too); a blank/invalid foreign rate → 1.
+        currency,
+        exchangeRate:      isForeign
+          ? ((Number(exchangeRate) > 0 && Number.isFinite(Number(exchangeRate))) ? Number(exchangeRate) : 1)
+          : 1,
         lines: realLines.map((l) => ({
           description:      l.description || undefined,
           debitAccountCode: l.debitAccountCode,
@@ -271,6 +303,18 @@ export const PaymentVoucherNew = () => {
               <span className={styles.fieldLabel}>Notes</span>
               <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Internal notes" className={styles.fieldInput} rows={2} style={{ resize: 'vertical', minHeight: 60 }} />
             </label>
+
+            {/* Multi-currency (Phase 1-A). Currency defaults to the linked
+                supplier's currency (MYR = strict no-op, rate field hidden); a
+                foreign currency reveals the auto-filled, editable exchange rate. */}
+            <CurrencySelect
+              currency={currency}
+              onCurrencyChange={setCurrencyOverride}
+              exchangeRate={exchangeRate}
+              onRateChange={(v) => { setRateTouched(true); setExchangeRate(v); }}
+              rateHint={<>≈ {fmtRm(Math.round(totalCenti * (Number(exchangeRate) || 0)), 'MYR')} posted to GL</>}
+              styles={styles}
+            />
           </div>
         </div>
       </section>
@@ -406,8 +450,15 @@ export const PaymentVoucherNew = () => {
           <div className={styles.cardBody}>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 'var(--fs-16)', fontWeight: 700 }}>
               <span>Total</span>
-              <span style={{ fontFamily: 'var(--font-mono)' }}>{fmtRm(totalCenti)}</span>
+              <span style={{ fontFamily: 'var(--font-mono)' }}>{fmtRm(totalCenti, currency)}</span>
             </div>
+            {/* Multi-currency (Phase 1-A) — MYR posted to GL for a foreign PV. */}
+            {isForeign && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 'var(--fs-13)', color: 'var(--fg-muted)', marginTop: 'var(--space-2)' }}>
+                <span>≈ posted to GL</span>
+                <span style={{ fontFamily: 'var(--font-mono)' }}>{fmtRm(Math.round(totalCenti * (Number(exchangeRate) || 0)), 'MYR')}</span>
+              </div>
+            )}
           </div>
         </section>
       </div>

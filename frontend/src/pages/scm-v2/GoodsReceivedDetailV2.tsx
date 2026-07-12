@@ -41,6 +41,11 @@ type GrnHeader = {
   warehouse_id?: string | null;
   total_centi: number;
   currency: string;
+  /* Multi-currency / landed cost (Phase 1-A). exchange_rate = MYR per 1 unit of
+     `currency` (1 for an MYR receipt); allocation_method = the freight "平摊"
+     basis the server used to spread the SERVICE-line charge into the lot cost. */
+  exchange_rate?: string | number | null;
+  allocation_method?: string | null;
   notes?: string | null;
   supplier?: {
     id: string;
@@ -71,7 +76,12 @@ type GrnItem = {
   unit_price_centi?: number;
   line_total_centi?: number;
   warehouse_code?: string | null;
+  /* Landed-cost allocation (Phase 1-A) — freight (MYR sen) allocated to this line. */
+  allocated_charge_centi?: number | null;
 };
+
+/* Landed-cost allocation (Phase 1-A) — human labels for the freight basis. */
+const ALLOC_LABEL: Record<string, string> = { QTY: 'By quantity', VALUE: 'By value', CBM: 'By volume (CBM)' };
 
 const fmtMoney = (centi: number, currency = "MYR"): string =>
   `${currency} ${(centi / 100).toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -171,6 +181,9 @@ function ReceivedHeroCard({ header, items }: { header: GrnHeader; items: GrnItem
   const total = header.total_centi ?? 0;
   const { orderedQty, receivedQty } = receivedOf(items);
   const isPosted = eff === "posted";
+  // Multi-currency (Phase 1-A) — MYR-equivalent for a foreign receipt (no-op for MYR).
+  const isForeign = String(header.currency ?? "MYR").toUpperCase() !== "MYR";
+  const rate = Number(header.exchange_rate ?? 1) || 0;
   return (
     <div className="rounded-lg bg-sidebar px-5 py-5 text-sidebar-ink shadow-stone">
       <div className="font-mono text-[10px] font-semibold uppercase tracking-brand text-sidebar-ink-muted">
@@ -188,6 +201,12 @@ function ReceivedHeroCard({ header, items }: { header: GrnHeader; items: GrnItem
         <HeroLine k="Qty received" v={String(receivedQty)} />
         <HeroLine k="Qty on PO" v={String(orderedQty)} />
         <HeroLine k="Total value" v={fmtMoney(total, header.currency)} strong />
+        {isForeign && (
+          <>
+            <HeroLine k={`Rate (MYR / 1 ${header.currency})`} v={String(header.exchange_rate ?? 1)} />
+            <HeroLine k="Inventory cost (MYR)" v={fmtMoney(Math.round(total * rate), "MYR")} />
+          </>
+        )}
       </div>
 
       {header.warehouse_code && (
@@ -314,7 +333,18 @@ export function GoodsReceivedDetailV2() {
       width: "132px",
       align: "right",
       getValue: (l) => l.line_total_centi ?? 0,
-      render: (l) => <span className="font-money text-[13px] font-semibold text-ink">{fmtMoney(l.line_total_centi ?? 0, grn?.currency)}</span>,
+      render: (l) => {
+        const freight = Number(l.allocated_charge_centi ?? 0);
+        return (
+          <span className="inline-flex flex-col items-end">
+            <span className="font-money text-[13px] font-semibold text-ink">{fmtMoney(l.line_total_centi ?? 0, grn?.currency)}</span>
+            {/* Landed-cost allocation (Phase 1-A) — per-line freight (MYR sen). */}
+            {freight > 0 && (
+              <span className="font-money text-[10.5px] text-accent-ink">+freight {fmtMoney(freight, "MYR")}</span>
+            )}
+          </span>
+        );
+      },
     },
   ];
 
@@ -445,6 +475,12 @@ export function GoodsReceivedDetailV2() {
                 <Field label="Delivery note" value={grn.delivery_note_ref || "—"} muted={!grn.delivery_note_ref} mono={!!grn.delivery_note_ref} />
                 <Field label="Warehouse" value={grn.warehouse_code || "—"} muted={!grn.warehouse_code} mono={!!grn.warehouse_code} />
                 <Field label="Currency" value={grn.currency} />
+                {/* Multi-currency / landed cost (Phase 1-A) — shown only for a
+                    foreign receipt; an MYR GRN is byte-for-byte the old layout. */}
+                {String(grn.currency ?? "MYR").toUpperCase() !== "MYR" && (
+                  <Field label={`Exchange rate (MYR / 1 ${grn.currency})`} value={String(grn.exchange_rate ?? 1)} mono />
+                )}
+                <Field label="Charge allocation" value={ALLOC_LABEL[String(grn.allocation_method ?? "QTY")] ?? "By quantity"} />
               </div>
               {grn.notes && (
                 <div className="mt-4 rounded-lg border border-warning-text/25 bg-warning-bg px-4 py-3">

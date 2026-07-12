@@ -367,6 +367,10 @@ export const NAV_TABS: NavTab[] = [
           { to: "/scm/accounting", label: "Accounting", icon: BookOpen, anyPerm: ["*", "scm.access"], anyAccess: ["scm.finance.accounting"] },
           { to: "/scm/payment-vouchers", label: "Payment Vouchers", icon: Wallet, anyPerm: ["*", "scm.access", "scm.payment_voucher.create", "scm.payment_voucher.write", "scm.payment_voucher.post", "scm.payment_voucher.cancel"], anyAccess: ["scm.finance.accounting"] },
           { to: "/scm/outstanding", label: "Outstanding", icon: AlertCircle, anyPerm: ["*", "scm.access"], anyAccess: ["scm.finance.outstanding"] },
+          // Currencies master (Phase 1-A FX) — owner-maintained currency + rate
+          // table for GRN / PI / PV foreign-currency posting. Gated on the flat
+          // scm.currency.manage permission (Owner / IT Admin via *).
+          { to: "/scm/currencies", label: "Currencies", icon: DollarSign, anyPerm: ["*", "scm.currency.manage"] },
         ],
       },
     ],

@@ -33,12 +33,14 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Save, Trash2, X, ChevronDown, ArrowRightLeft } from 'lucide-react';
 import { ItemGroupPill } from '../../vendor/scm/lib/category-badges';
 import { Button } from '@2990s/design-system';
-import { activeOptions, buildVariantSummary, maintPickerValues } from '@2990s/shared';
+import { activeOptions, buildVariantSummary, isServiceLine, maintPickerValues } from '@2990s/shared';
 import {
   useCreatePurchaseInvoice,
   usePostPurchaseInvoice,
 } from '../../vendor/scm/lib/purchase-invoice-queries';
 import { useGrnDetail } from '../../vendor/scm/lib/grn-queries';
+import { useActiveCurrencies, rateFor } from '../../vendor/scm/lib/currencies-queries';
+import { CurrencySelect } from '../../vendor/scm/components/CurrencySelect';
 import { useSuppliers, useSupplierDetail } from '../../vendor/scm/lib/suppliers-queries';
 import { useMfgProducts, useMaintenanceConfig, useSpecialAddons } from '../../vendor/scm/lib/mfg-products-queries';
 import { sortByText, sortByNumeric } from '../../vendor/scm/lib/sort-options';
@@ -152,6 +154,18 @@ export const PurchaseInvoiceNew = () => {
      the auto-default stops overwriting their value. */
   const [dueTouched, setDueTouched]   = useState<boolean>(false);
   const [notes, setNotes]             = useState<string>('');
+  /* Multi-currency AP (Phase 1-A) — MYR per 1 unit of the PI currency, kept as a
+     string. Shown only for a foreign-currency PI; MYR posts 1:1 (no-op). */
+  const [exchangeRate, setExchangeRate] = useState<string>('1');
+  /* Track a manual rate edit so the currency-master auto-fill stops overwriting it. */
+  const [rateTouched, setRateTouched] = useState<boolean>(false);
+  /* Multi-currency AP (Phase 1-A) — the operator-chosen currency; defaults to the
+     resolved supplier's currency (below). A foreign currency reveals the rate. */
+  const [currencyOverride, setCurrencyOverride] = useState<string | null>(null);
+  /* PI-level freight allocation (Phase 1-A) — how a freight SERVICE line's charge
+     is spread across the goods lines into their landed cost: QTY | VALUE | CBM.
+     Mirrors GrnNew's "Charge allocation"; the server does the authoritative split. */
+  const [allocationMethod, setAllocationMethod] = useState<'QTY' | 'VALUE' | 'CBM'>('QTY');
   const [lines, setLines]             = useState<DraftLine[]>([]);
   const [dialog, setDialog] = useState<{ title: string; body: string; goTo?: string } | null>(null);
 
@@ -221,6 +235,38 @@ export const PurchaseInvoiceNew = () => {
     [lines],
   );
 
+  /* PI-level freight allocation preview (Phase 1-A) — mirror GrnNew's allocPreview
+     so the operator SEES the freight ("平摊") split across goods lines before
+     saving. Charge pool = Σ SERVICE-line values; per-line freight uses the chosen
+     basis (QTY / VALUE / CBM) with last-line-remainder. The server's
+     reallocatePiCharges is authoritative; this is just the live preview. */
+  const allocPreview = useMemo(() => {
+    const isSvc = (l: DraftLine) => isServiceLine({ itemGroup: l.itemGroup, itemCode: l.materialCode });
+    const goods = lines.filter((l) => l.materialCode.trim() && !isSvc(l));
+    const chargePool = lines
+      .filter((l) => l.materialCode.trim() && isSvc(l))
+      .reduce((s, l) => s + l.qty * l.unitPriceCenti, 0);
+    const basisOf = (l: DraftLine): number => {
+      if (allocationMethod === 'VALUE') return l.qty * l.unitPriceCenti;
+      if (allocationMethod === 'CBM') return l.qty; // volume unknown client-side → qty proxy
+      return l.qty;
+    };
+    let sumBasis = goods.reduce((s, l) => s + basisOf(l), 0);
+    if (sumBasis <= 0) sumBasis = goods.reduce((s, l) => s + l.qty, 0);
+    const allocByRid = new Map<string, number>();
+    let used = 0;
+    goods.forEach((l, i) => {
+      const isLast = i === goods.length - 1;
+      let alloc = 0;
+      if (chargePool > 0 && sumBasis > 0) {
+        alloc = isLast ? chargePool - used : Math.round((chargePool * basisOf(l)) / sumBasis);
+        if (!isLast) used += alloc;
+      }
+      allocByRid.set(l.rid, alloc);
+    });
+    return { chargePool, allocByRid, goodsCount: goods.length };
+  }, [lines, allocationMethod]);
+
   // flow-queries.ts types this as `any`; narrow locally to the fields we
   // actually touch here. Keeps the rest of the page honest without forcing
   // a global refactor of the shared queries file.
@@ -235,7 +281,6 @@ export const PurchaseInvoiceNew = () => {
   const grn      = grnQ.data?.grn as GrnDetail | undefined;
   const supplier = grn?.supplier;
   const po       = grn?.purchase_order;
-  const currency = 'MYR';
 
   // Effective supplier id + display name (from GRN, or the manual <select>).
   const manualSupplierRow = isManual
@@ -281,6 +326,22 @@ export const PurchaseInvoiceNew = () => {
      so the PI header can auto-fill Name + Address + the Contact · Phone · Email ·
      Terms · Currency info bar, mirroring New PO. No warehouse (PI is AP only). */
   const supplierDetail  = supplierDetailQ.data?.supplier ?? null;
+
+  /* Multi-currency AP (Phase 1-A) — the PI's currency defaults to the resolved
+     supplier's currency (e.g. a China supplier billing RMB); MYR when unset. The
+     operator may override it (the invoice stays in that currency; the exchange
+     rate only converts the AP posting to MYR at GL-post time server-side). MYR is
+     a strict no-op — no rate field. */
+  const currency = (currencyOverride ?? supplierDetail?.currency ?? 'MYR').toUpperCase();
+  const isForeign = currency !== 'MYR';
+  /* Auto-fill the rate from the currencies MASTER when the PI settles on a foreign
+     currency (still editable). MYR resets to 1. A manual edit wins. */
+  const currenciesQ = useActiveCurrencies();
+  useEffect(() => {
+    if (!isForeign) { setExchangeRate('1'); setRateTouched(false); return; }
+    if (rateTouched) return;
+    setExchangeRate(String(rateFor(currenciesQ.data, currency)));
+  }, [isForeign, currency, currenciesQ.data, rateTouched]);
 
   // ── Manual product search (gated by min query length, mirrors GrnNew). ───
   const [productQuery, setProductQuery] = useState<string>('');
@@ -374,6 +435,14 @@ export const PurchaseInvoiceNew = () => {
         // DRAFT lifecycle — opt-in. The server skips the GRN consume + GL post
         // for a DRAFT; both run on Confirm (PATCH /:id/post).
         asDraft,
+        // Multi-currency AP (Phase 1-A) — send the resolved currency + rate. MYR
+        // forces 1 (server enforces too); a blank/invalid foreign rate → 1.
+        currency,
+        exchangeRate:       isForeign
+          ? ((Number(exchangeRate) > 0 && Number.isFinite(Number(exchangeRate))) ? Number(exchangeRate) : 1)
+          : 1,
+        // PI-level freight allocation (Phase 1-A) — the freight "平摊" basis.
+        allocationMethod,
         items: realLines.map((l) => ({
           grnItemId:      l.grnItemId,
           materialKind:   l.materialKind,
@@ -533,6 +602,39 @@ export const PurchaseInvoiceNew = () => {
               <span className={styles.fieldLabel}>Notes</span>
               <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Internal notes for AP" className={styles.fieldInput} rows={2} style={{ resize: 'vertical', minHeight: 60 }} />
             </label>
+            {/* PI-level freight allocation (Phase 1-A) — choose how a freight
+                SERVICE line's charge ("平摊") is spread across the goods lines. */}
+            <label className={styles.field}>
+              <span className={styles.fieldLabel}>Charge allocation</span>
+              <span className={styles.selectWrap}>
+                <select
+                  className={styles.fieldSelect}
+                  value={allocationMethod}
+                  onChange={(e) => setAllocationMethod(e.target.value as 'QTY' | 'VALUE' | 'CBM')}
+                >
+                  <option value="QTY">By quantity (default)</option>
+                  <option value="VALUE">By value</option>
+                  <option value="CBM">By volume (CBM)</option>
+                </select>
+                <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
+              </span>
+              {allocPreview.chargePool > 0 && (
+                <span style={{ fontSize: 'var(--fs-11)', color: 'var(--fg-muted)', marginTop: 2 }}>
+                  {fmtRm(allocPreview.chargePool, currency)} freight spread across {allocPreview.goodsCount} goods line(s)
+                </span>
+              )}
+            </label>
+            {/* Multi-currency AP (Phase 1-A). Currency defaults to the supplier's
+                currency (MYR = strict no-op, rate field hidden); a foreign
+                currency reveals the auto-filled, editable exchange rate. */}
+            <CurrencySelect
+              currency={currency}
+              onCurrencyChange={setCurrencyOverride}
+              exchangeRate={exchangeRate}
+              onRateChange={(v) => { setRateTouched(true); setExchangeRate(v); }}
+              rateHint={<>≈ {fmtRm(Math.round(subtotalCenti * (Number(exchangeRate) || 0)), 'MYR')} posted to GL</>}
+              styles={styles}
+            />
           </div>
 
           {/* Read-only supplier-info bar — same markup/classes as New PO. */}
@@ -595,6 +697,12 @@ export const PurchaseInvoiceNew = () => {
             // Commander 2026-05-29 — same muted variant sub-line GrnNew shows,
             // so the PI mirrors what the GRN (and PO upstream) describe.
             const variantSummary = buildVariantSummary(l.itemGroup, l.variants);
+            /* PI-level freight allocation (Phase 1-A) — this goods line's share of
+               the freight pool + landed unit cost, shown only when there's a
+               charge to spread. Service (freight) lines get 0. */
+            const lineIsSvc = isServiceLine({ itemGroup: l.itemGroup, itemCode: l.materialCode });
+            const lineAllocCenti = allocPreview.allocByRid.get(l.rid) ?? 0;
+            const landedUnitCenti = l.unitPriceCenti + (l.qty > 0 ? Math.round(lineAllocCenti / l.qty) : 0);
             // Editable variant section only for MANUAL lines (grnItemId === null)
             // that are bedframe/sofa, once the maintenance pools are loaded.
             // GRN-sourced lines keep their read-only summary.
@@ -628,7 +736,16 @@ export const PurchaseInvoiceNew = () => {
                     {l.itemGroup && <ItemGroupPill group={l.itemGroup} />}
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
-                    <span className={styles.previewPrice}>{fmtRm(lineTotal, currency)}</span>
+                    <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
+                      <span className={styles.previewPrice}>{fmtRm(lineTotal, currency)}</span>
+                      {/* PI-level freight allocation — +freight & landed unit cost,
+                          on goods lines only when there's a charge pool. */}
+                      {allocPreview.chargePool > 0 && !lineIsSvc && (
+                        <span style={{ fontSize: 'var(--fs-11)', color: 'var(--c-accent, #8a6d3b)', marginTop: 2 }}>
+                          +{fmtRm(lineAllocCenti, currency)} freight · landed {fmtRm(landedUnitCenti, currency)}/unit
+                        </span>
+                      )}
+                    </span>
                     <button type="button" onClick={() => dropLine(l.rid)} title="Remove line"
                       style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--c-festive-b, #B8331F)', padding: 4, display: 'inline-flex' }}>
                       <Trash2 {...SM_ICON} />

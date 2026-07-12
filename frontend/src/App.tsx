@@ -57,6 +57,7 @@ const ScmAccountingV2 = lazy(() => import("./pages/scm-v2/Accounting").then((m) 
 const ScmOutstandingV2 = lazy(() => import("./pages/scm-v2/Outstanding").then((m) => ({ default: m.Outstanding })));
 const ScmFabricTrackingV2 = lazy(() => import("./pages/scm-v2/FabricTracking").then((m) => ({ default: m.FabricTracking })));
 const ScmWarehousesV2 = lazy(() => import("./pages/scm-v2/Warehouses").then((m) => ({ default: m.Warehouses })));
+const ScmCurrenciesV2 = lazy(() => import("./pages/scm-v2/Currencies").then((m) => ({ default: m.Currencies })));
 const ScmProductsV2 = lazy(() => import("./pages/scm-v2/Products").then((m) => ({ default: m.Products })));
 const ScmProductModelsV2 = lazy(() => import("./pages/scm-v2/ProductModels").then((m) => ({ default: m.ProductModels })));
 const ScmProductModelDetailV2 = lazy(() => import("./pages/scm-v2/ProductModelDetail").then((m) => ({ default: m.ProductModelDetail })));
@@ -360,6 +361,10 @@ export default function App() {
         <Route path="/scm/mrp" element={<ScmGuard area="scm.procurement.mrp"><Scm2990Shell><ScmMrpV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/accounting" element={<ScmGuard area="scm.finance.accounting"><Scm2990Shell><ScmAccountingV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/outstanding" element={<ScmGuard area="scm.finance.outstanding"><Scm2990Shell><ScmOutstandingV2 /></Scm2990Shell></ScmGuard>} />
+        {/* Currencies master (Phase 1-A FX) — owner-maintained currency + rate
+            table feeding the GRN / PI / PV foreign-currency posting. Gated on the
+            flat scm.currency.manage permission (Owner / IT Admin cover it via *). */}
+        <Route path="/scm/currencies" element={<Guard anyPerm={["*", "scm.currency.manage"]}><Scm2990Shell><ScmCurrenciesV2 /></Scm2990Shell></Guard>} />
         <Route path="/scm/fabric-tracking" element={<ScmGuard area="scm.procurement.products"><Scm2990Shell><ScmFabricTrackingV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/warehouses" element={<ScmGuard area="scm.warehouse.inventory"><Scm2990Shell><ScmWarehousesV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/products" element={<ScmGuard area="scm.procurement.products"><Scm2990Shell><ScmProductsV2 /></Scm2990Shell></ScmGuard>} />

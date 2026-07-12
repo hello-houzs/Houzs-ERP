@@ -56,6 +56,11 @@ type PiHeader = {
   total_centi: number;
   paid_centi?: number;
   currency: string;
+  /* Multi-currency / landed cost (Phase 1-A). exchange_rate = MYR per 1 unit of
+     `currency`; allocation_method = the freight "平摊" basis for the SERVICE-line
+     charge spread into each goods line's landed cost. */
+  exchange_rate?: string | number | null;
+  allocation_method?: string | null;
   notes?: string | null;
   supplier?: {
     id: string;
@@ -82,7 +87,12 @@ type PiItem = {
   qty?: number;
   unit_price_centi?: number;
   line_total_centi?: number;
+  /* Landed-cost allocation (Phase 1-A) — freight (MYR sen) allocated to this line. */
+  allocated_charge_centi?: number | null;
 };
+
+/* Landed-cost allocation (Phase 1-A) — human labels for the freight basis. */
+const ALLOC_LABEL: Record<string, string> = { QTY: 'By quantity', VALUE: 'By value', CBM: 'By volume (CBM)' };
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -246,6 +256,9 @@ function OwedHeroCard({ header }: { header: PiHeader }) {
   const paid = header.paid_centi ?? 0;
   const outstanding = outstandingOf(header);
   const isPaid = outstanding === 0;
+  // Multi-currency (Phase 1-A) — MYR-equivalent for a foreign PI (no-op for MYR).
+  const isForeign = String(header.currency ?? "MYR").toUpperCase() !== "MYR";
+  const rate = Number(header.exchange_rate ?? 1) || 0;
   return (
     <div className="rounded-lg bg-sidebar px-5 py-5 text-sidebar-ink shadow-stone">
       <div className="font-mono text-[10px] font-semibold uppercase tracking-brand text-sidebar-ink-muted">
@@ -271,6 +284,12 @@ function OwedHeroCard({ header }: { header: PiHeader }) {
         <HeroLine k="Invoice total" v={fmtMoney(total, header.currency)} />
         <HeroLine k="Paid" v={fmtMoney(paid, header.currency)} tone={paid > 0 ? "success" : "muted"} />
         <HeroLine k="Owed" v={fmtMoney(outstanding, header.currency)} tone={outstanding > 0 ? "err" : "success"} strong />
+        {isForeign && (
+          <>
+            <HeroLine k={`Rate (MYR / 1 ${header.currency})`} v={String(header.exchange_rate ?? 1)} />
+            <HeroLine k="Posted to GL (MYR)" v={fmtMoney(Math.round(total * rate), "MYR")} />
+          </>
+        )}
       </div>
     </div>
   );
@@ -406,11 +425,20 @@ export function PurchaseInvoiceDetailV2() {
       width: "132px",
       align: "right",
       getValue: (l) => l.line_total_centi ?? 0,
-      render: (l) => (
-        <span className="font-money text-[13px] font-semibold text-ink">
-          {fmtMoney(l.line_total_centi ?? 0, purchaseInvoice?.currency)}
-        </span>
-      ),
+      render: (l) => {
+        const freight = Number(l.allocated_charge_centi ?? 0);
+        return (
+          <span className="inline-flex flex-col items-end">
+            <span className="font-money text-[13px] font-semibold text-ink">
+              {fmtMoney(l.line_total_centi ?? 0, purchaseInvoice?.currency)}
+            </span>
+            {/* Landed-cost allocation (Phase 1-A) — per-line freight (MYR sen). */}
+            {freight > 0 && (
+              <span className="font-money text-[10.5px] text-accent-ink">+freight {fmtMoney(freight, "MYR")}</span>
+            )}
+          </span>
+        );
+      },
     },
   ];
 
@@ -613,6 +641,12 @@ export function PurchaseInvoiceDetailV2() {
                   muted={sourceOf(purchaseInvoice) === "—"}
                 />
                 <Field label="Currency" value={purchaseInvoice.currency} />
+                {/* Multi-currency / landed cost (Phase 1-A) — shown only for a
+                    foreign PI; an MYR invoice is byte-for-byte the old layout. */}
+                {String(purchaseInvoice.currency ?? "MYR").toUpperCase() !== "MYR" && (
+                  <Field label={`Exchange rate (MYR / 1 ${purchaseInvoice.currency})`} value={String(purchaseInvoice.exchange_rate ?? 1)} mono />
+                )}
+                <Field label="Charge allocation" value={ALLOC_LABEL[String(purchaseInvoice.allocation_method ?? "QTY")] ?? "By quantity"} />
               </div>
 
               {purchaseInvoice.notes && (
