@@ -20,6 +20,7 @@ import users from "./routes/users";
 import roles from "./routes/roles";
 import positions from "./routes/positions";
 import departments from "./routes/departments";
+import companies from "./routes/companies";
 import notifications from "./routes/notifications";
 import presence from "./routes/presence";
 import events from "./routes/events";
@@ -64,6 +65,7 @@ import announcements from "./routes/announcements";
 import { caseTrack } from "./middleware/caseTrack";
 import { supplierTrack } from "./middleware/supplierTrack";
 import { dbInject, withPgDb } from "./middleware/db";
+import { companyContext } from "./middleware/companyContext";
 import { drainEmailOutbox } from "./services/email";
 import { runSlaEscalation } from "./services/assrEscalation";
 import { runAssrAlerts, runAssrDailyDigest } from "./services/assrAlerts";
@@ -149,6 +151,18 @@ app.use("/api/*", auth);
 // before the routes so it can replay a stored response. Fail-open.
 app.use("/api/*", idempotency);
 
+// Multi-company (Phase 0b): resolve the ACTIVE company + allowed companies per
+// request (X-Company-Id switcher header / hostname default) and stash them on
+// the context, so BOTH the SCM query-scoping helpers (scm/lib/companyScope.ts)
+// AND the native raw-SQL modules (sales / finance) can filter + stamp
+// company_id. Mounted on the whole authenticated /api/* surface: after auth +
+// idempotency, before every route. Reads only request headers + the companies
+// master, so native routes without any company table simply ignore
+// c.get('companyId'), and it DEGRADES SAFELY (leaves companyId undefined) when
+// the companies master isn't resolvable yet — so single-company Houzs keeps
+// serving unchanged and the pre-auth public routes above are untouched.
+app.use("/api/*", companyContext);
+
 // Inbox snapshot self-heal — the /api/inbox GET caches a per-user aggregate of
 // ASSR + Projects + Trips for ~60s. After the acting user makes a successful
 // write to ASSR or Projects, bust THEIR snapshot so their own inbox reflects it
@@ -174,6 +188,7 @@ app.route("/api/users", users);
 app.route("/api/roles", roles);
 app.route("/api/positions", positions);
 app.route("/api/departments", departments);
+app.route("/api/companies", companies);
 app.route("/api/notifications", notifications);
 app.route("/api/presence", presence);
 app.route("/api/events", events);

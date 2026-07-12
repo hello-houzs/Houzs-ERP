@@ -30,6 +30,7 @@ import {
   pgEnum,
   serial,
   integer,
+  bigint,
   text,
   doublePrecision,
   primaryKey,
@@ -77,6 +78,10 @@ export const users = pgTable("users", {
   // The member's outward Mail Center alias (e.g. lim@houzscentury.com). Surfaced
   // in User Management; complements the email_addresses link (mig 0039+).
   email_alias: text("email_alias"),
+  // Per-user opt-out of ASSR service-case digest/escalation emails. The user
+  // keeps service_cases.manage (can still view + manage cases) — this only
+  // mutes the outbound mail. 0 = receives, 1 = muted.
+  assr_email_muted: integer("assr_email_muted").notNull().default(0),
 });
 
 // ── roles ──────────────────────────────────────────────────
@@ -293,6 +298,7 @@ export const events = pgTable("events", {
 
 // ── lorries ────────────────────────────────────────────────
 export const lorries = pgTable("lorries", {
+  company_id: bigint("company_id", { mode: "number" }),
   id: serial("id").primaryKey(),
   plate: text("plate").notNull(),
   size: text("size"),
@@ -307,6 +313,7 @@ export const warehouses = pgTable("warehouses", {
 
 // ── trips ──────────────────────────────────────────────────
 export const trips = pgTable("trips", {
+  company_id: bigint("company_id", { mode: "number" }),
   id: serial("id").primaryKey(),
   driver_user_id: integer("driver_user_id"),
   lorry_id: integer("lorry_id"),
@@ -319,6 +326,7 @@ export const trips = pgTable("trips", {
 
 // ── trip_stops ─────────────────────────────────────────────
 export const trip_stops = pgTable("trip_stops", {
+  company_id: bigint("company_id", { mode: "number" }),
   id: serial("id").primaryKey(),
   trip_id: integer("trip_id").notNull(),
   sequence: integer("sequence").notNull(),
@@ -330,6 +338,7 @@ export const trip_stops = pgTable("trip_stops", {
 
 // ── trip_locations ─────────────────────────────────────────
 export const trip_locations = pgTable("trip_locations", {
+  company_id: bigint("company_id", { mode: "number" }),
   id: serial("id").primaryKey(),
   trip_id: integer("trip_id").notNull(),
   lat: integer("lat").notNull(),
@@ -340,6 +349,7 @@ export const trip_locations = pgTable("trip_locations", {
 
 // ── sales_orders ───────────────────────────────────────────
 export const sales_orders = pgTable("sales_orders", {
+  company_id: bigint("company_id", { mode: "number" }),
   doc_no: text("doc_no").primaryKey(),
   doc_date: text("doc_date"),
   ref: text("ref"),
@@ -369,6 +379,7 @@ export const sales_orders = pgTable("sales_orders", {
 
 // ── order_details ──────────────────────────────────────────
 export const order_details = pgTable("order_details", {
+  company_id: bigint("company_id", { mode: "number" }),
   doc_no: text("doc_no").primaryKey(),
   delivery_date: text("delivery_date"),
   time_range: text("time_range"),
@@ -408,6 +419,7 @@ export const order_details = pgTable("order_details", {
 
 // ── purchase_orders ────────────────────────────────────────
 export const purchase_orders = pgTable("purchase_orders", {
+  company_id: bigint("company_id", { mode: "number" }),
   id: serial("id").primaryKey(),
   doc_no: text("doc_no").notNull(),
   doc_date: text("doc_date"),
@@ -431,6 +443,7 @@ export const purchase_orders = pgTable("purchase_orders", {
 
 // ── creditors ──────────────────────────────────────────────
 export const creditors = pgTable("creditors", {
+  company_id: bigint("company_id", { mode: "number" }),
   creditor_code: text("creditor_code").primaryKey(),
   company_name: text("company_name"),
   desc2: text("desc2"),
@@ -463,6 +476,7 @@ export const overdue_history = pgTable("overdue_history", {
 
 // ── purchase_order_docs ────────────────────────────────────
 export const purchase_order_docs = pgTable("purchase_order_docs", {
+  company_id: bigint("company_id", { mode: "number" }),
   doc_no: text("doc_no").primaryKey(),
   doc_date: text("doc_date"),
   ref: text("ref"),
@@ -579,6 +593,7 @@ export const project_checklist_template_items = pgTable(
 
 // ── sales_entries (mig 041 / 051) ──────────────────────────
 export const sales_entries = pgTable("sales_entries", {
+  company_id: bigint("company_id", { mode: "number" }),
   id: serial("id").primaryKey(),
   doc_no: text("doc_no"),
   project_id: integer("project_id"),
@@ -622,6 +637,7 @@ export const sales_entries = pgTable("sales_entries", {
 
 // ── sales_entry_items ──────────────────────────────────────
 export const sales_entry_items = pgTable("sales_entry_items", {
+  company_id: bigint("company_id", { mode: "number" }),
   id: serial("id").primaryKey(),
   entry_id: integer("entry_id").notNull(),
   line_no: integer("line_no").notNull().default(0),
@@ -637,6 +653,7 @@ export const sales_entry_items = pgTable("sales_entry_items", {
 
 // ── sales_entry_payments ───────────────────────────────────
 export const sales_entry_payments = pgTable("sales_entry_payments", {
+  company_id: bigint("company_id", { mode: "number" }),
   id: serial("id").primaryKey(),
   entry_id: integer("entry_id").notNull(),
   paid_at: text("paid_at").notNull(),
@@ -767,3 +784,12 @@ export const project_sales_attendees = pgTable(
   },
   (t) => ({ pk: primaryKey({ columns: [t.project_id, t.sales_rep_id] }) }),
 );
+
+// ── companies (multi-company master; Phase 0a) ─────────
+export const companies = pgTable("companies", {
+  id: bigint("id", { mode: "number" }).primaryKey().generatedByDefaultAsIdentity(),
+  code: text("code").notNull().unique(),
+  name: text("name").notNull(),
+  is_active: integer("is_active").notNull().default(1),
+  created_at: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});

@@ -114,3 +114,12 @@ export function isIosInstallable(): boolean {
   const isSafari = /safari/i.test(ua) && !/crios|fxios|edgios/i.test(ua);
   return isIos && isSafari && !isStandalone();
 }
+
+/** Android browser that hasn't installed the app. Used by the manual
+ *  "Add to Home screen" guide for the cases where the browser never fires
+ *  beforeinstallprompt (Samsung Internet, MIUI browser, WebViews, or Chrome
+ *  after the native prompt was declined) — when the event IS available,
+ *  PwaBanners' one-tap Install banner takes precedence. */
+export function isAndroidInstallable(): boolean {
+  return /android/i.test(window.navigator.userAgent) && !isStandalone();
+}

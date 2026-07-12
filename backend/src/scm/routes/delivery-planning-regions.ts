@@ -36,6 +36,7 @@ import { z } from 'zod';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { paginateAll } from '../lib/paginate-all';
+import { activeCompanyId, stampCompany, scopeToAllowedCompanies } from '../lib/companyScope';
 
 export const deliveryPlanningRegions = new Hono<{ Bindings: Env; Variables: Variables }>();
 deliveryPlanningRegions.use('*', supabaseAuth);
@@ -63,13 +64,16 @@ function regionOut(r: RegionRow) {
 // ── GET / — list all region buckets (active + inactive), sorted for the tab row.
 deliveryPlanningRegions.get('/', async (c) => {
   const sb = c.get('supabase');
-  const { data, error } = await paginateAll<RegionRow>((from, to) =>
-    sb.from('delivery_planning_regions')
+  const { data, error } = await paginateAll<RegionRow>((from, to) => {
+    // CROSS-COMPANY view: widen to every allowed company (one shared config).
+    let q = sb.from('delivery_planning_regions')
       .select(REGION_COLS)
       .order('sort_order', { ascending: true })
       .order('code', { ascending: true })
-      .range(from, to),
-  );
+      .range(from, to);
+    q = scopeToAllowedCompanies(q, c);
+    return q;
+  });
   if (error) return c.json({ error: 'fetch_failed', reason: error.message }, 500);
   return c.json({ regions: (data ?? []).map(regionOut) });
 });
@@ -91,6 +95,7 @@ deliveryPlanningRegions.post('/', async (c) => {
 
   const sb = c.get('supabase');
   const { data, error } = await sb.from('delivery_planning_regions').insert({
+    company_id: activeCompanyId(c),
     code:       p.code.toUpperCase(),
     name:       p.name,
     sort_order: p.sortOrder ?? 0,
@@ -285,7 +290,7 @@ deliveryPlanningRegions.put('/states/:stateKey', async (c) => {
 
   if (regionIds.length > 0) {
     const rows = regionIds.map((region_id) => ({ state_key: stateKey, country, region_id }));
-    const { error: insErr } = await sb.from('state_delivery_regions').insert(rows);
+    const { error: insErr } = await sb.from('state_delivery_regions').insert(stampCompany(rows, c));
     if (insErr) {
       if (insErr.code === '42501') return c.json({ error: 'forbidden', reason: insErr.message }, 403);
       return c.json({ error: 'replace_failed', reason: insErr.message }, 500);

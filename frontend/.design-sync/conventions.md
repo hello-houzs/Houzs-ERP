@@ -41,21 +41,22 @@ Logo, doc numbers, eyebrow labels, soft brand-tinted backgrounds.
 ### Semantic
 
 `bg-synced` / `bg-synced-bg` (success), `bg-err` / `bg-err-bg` (error),
-`bg-warning-bg` + `text-warning-text` (warning).
+`bg-warning-bg` + `text-warning-text` (warning), `bg-learning` /
+`text-learning` (trend blue — LEARNING announcements & training content).
 
 ### Type
 
-**One typeface across the whole ERP** — `font-display`, `font-body`, `font-mono`
-all resolve to **IBM Plex Sans** (latin) with **Noto Sans SC** for CN glyphs
-via the family stack. Hierarchy comes from `font-weight` + `font-size`, never
+**One typeface for prose & titles** — `font-display` and `font-body` both
+resolve to **IBM Plex Sans** (latin) with **Noto Sans SC** for CN glyphs via
+the family stack. Hierarchy comes from `font-weight` + `font-size`, never
 from switching family. Loaded via `@import url(google fonts)` in styles.css.
 
-**Money cells get `font-money`** — IBM Plex Mono, tabular nums, amounts line
-up by decimal across rows. Reach for it on any column or detail field showing
-currency or quantities (the only place a different family is correct).
+**Codes, IDs, eyebrows get `font-mono`** — real **IBM Plex Mono**. Use it for
+doc numbers, SKUs, timestamps and eyebrow labels (`font-mono uppercase
+tracking-wider`). **Money cells get `font-money`** — same Plex Mono plus
+tabular nums, so amounts line up by decimal across rows; reach for it on any
+column or detail field showing currency or quantities.
 
-Eyebrow / numeric chips use `font-mono uppercase tracking-wider` — `font-mono`
-is the "data / labels" alias (also IBM Plex Sans), not a real monospace face.
 Brand wordmarks use `tracking-brand`.
 
 ### Shape & elevation

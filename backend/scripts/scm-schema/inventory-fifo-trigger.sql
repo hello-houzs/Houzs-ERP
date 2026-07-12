@@ -17,6 +17,14 @@
 -- (inventory_lots.variant_key/batch_no, inventory_lot_consumptions.variant_key)
 -- already exist in scm.
 --
+-- MULTI-COMPANY (2026-07, migration 0061): inventory_lots.company_id and
+-- inventory_lot_consumptions.company_id are now NOT NULL. The trigger creates
+-- those rows, so it MUST carry company_id or every stock IN/OUT (GRN/DO/return)
+-- would violate the constraint and roll the movement back. A lot inherits the
+-- MOVEMENT's company (NEW.company_id — the route stamps it); a consumption
+-- inherits the LOT it draws from (v_lot.company_id). Under per-company isolation
+-- these are the same company. Re-run this whenever 0061 is (re)applied.
+--
 -- Apply into the `scm` schema (search_path = scm, public).
 -- ----------------------------------------------------------------------------
 
@@ -45,7 +53,7 @@ DECLARE
   v_total_cost INTEGER := 0;
 BEGIN
   FOR v_lot IN
-    SELECT id, qty_remaining, unit_cost_sen
+    SELECT id, qty_remaining, unit_cost_sen, company_id
       FROM inventory_lots
      WHERE warehouse_id = p_warehouse_id
        AND product_code = p_product_code
@@ -66,11 +74,13 @@ BEGIN
     INSERT INTO inventory_lot_consumptions (
       lot_id, warehouse_id, product_code, variant_key,
       qty_consumed, unit_cost_sen, total_cost_sen,
-      source_doc_type, source_doc_id, source_doc_no, movement_id, created_by
+      source_doc_type, source_doc_id, source_doc_no, movement_id, created_by,
+      company_id
     ) VALUES (
       v_lot.id, p_warehouse_id, p_product_code, p_variant_key,
       v_take, v_lot.unit_cost_sen, v_take * v_lot.unit_cost_sen,
-      p_source_doc_type, p_source_doc_id, p_source_doc_no, p_movement_id, p_created_by
+      p_source_doc_type, p_source_doc_id, p_source_doc_no, p_movement_id, p_created_by,
+      v_lot.company_id
     );
   END LOOP;
 
@@ -100,7 +110,7 @@ DECLARE
   v_total_cost INTEGER := 0;
 BEGIN
   FOR v_lot IN
-    SELECT id, qty_remaining, unit_cost_sen
+    SELECT id, qty_remaining, unit_cost_sen, company_id
       FROM inventory_lots
      WHERE warehouse_id = p_warehouse_id
        AND product_code = p_product_code
@@ -122,11 +132,13 @@ BEGIN
     INSERT INTO inventory_lot_consumptions (
       lot_id, warehouse_id, product_code, variant_key,
       qty_consumed, unit_cost_sen, total_cost_sen,
-      source_doc_type, source_doc_id, source_doc_no, movement_id, created_by
+      source_doc_type, source_doc_id, source_doc_no, movement_id, created_by,
+      company_id
     ) VALUES (
       v_lot.id, p_warehouse_id, p_product_code, p_variant_key,
       v_take, v_lot.unit_cost_sen, v_take * v_lot.unit_cost_sen,
-      p_source_doc_type, p_source_doc_id, p_source_doc_no, p_movement_id, p_created_by
+      p_source_doc_type, p_source_doc_id, p_source_doc_no, p_movement_id, p_created_by,
+      v_lot.company_id
     );
   END LOOP;
 
@@ -149,13 +161,13 @@ BEGIN
       warehouse_id, product_code, variant_key, product_name,
       qty_received, qty_remaining, unit_cost_sen,
       received_at, source_doc_type, source_doc_id, source_doc_no,
-      movement_id, created_by, batch_no
+      movement_id, created_by, batch_no, company_id
     ) VALUES (
       NEW.warehouse_id, NEW.product_code, NEW.variant_key, NEW.product_name,
       NEW.qty, NEW.qty, COALESCE(NEW.unit_cost_sen, 0),
       NEW.created_at,
       NEW.source_doc_type, NEW.source_doc_id, NEW.source_doc_no,
-      NEW.id, NEW.performed_by, NEW.batch_no
+      NEW.id, NEW.performed_by, NEW.batch_no, NEW.company_id
     );
     UPDATE inventory_movements
        SET total_cost_sen = NEW.qty * COALESCE(NEW.unit_cost_sen, 0)

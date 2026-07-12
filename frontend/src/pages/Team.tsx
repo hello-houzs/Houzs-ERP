@@ -342,6 +342,13 @@ function MembersTab({
   const presence = useQuery<{ active: { id: number }[] }>(() =>
     api.get("/api/presence")
   );
+  // Multi-company (Phase 0e). Gate the per-user Company-access control on there
+  // being a real choice (>1 company). Pre-activation this returns 0/1 companies
+  // so the control stays hidden — single-company Houzs is unchanged.
+  const companiesQ = useQuery<{
+    companies: Array<{ id: number; code: string; name: string }>;
+  }>(() => api.get("/api/companies"), [], freshList);
+  const multiCompany = (companiesQ.data?.companies?.length ?? 0) > 1;
   const onlineIds = useMemo(
     () => new Set((presence.data?.active ?? []).map((a) => a.id)),
     [presence.data],
@@ -381,6 +388,9 @@ function MembersTab({
 
   // Per-user brand picker — opens a small modal scoped to one member.
   const [brandsFor, setBrandsFor] = useState<TeamMember | null>(null);
+  // Per-user company-access picker (Phase 0e). Mirrors the brand picker; only
+  // relevant once multi-company is active (>1 company).
+  const [companiesFor, setCompaniesFor] = useState<TeamMember | null>(null);
   // Member being edited in the side panel (name/email/phone/org + actions).
   const [editing, setEditing] = useState<TeamMember | null>(null);
   // Member whose full-screen detail is open. Stored by id so it re-reads
@@ -925,6 +935,8 @@ function MembersTab({
             setViewingId(null);
           }}
           onEditBrands={() => setBrandsFor(viewing)}
+          multiCompany={multiCompany}
+          onEditCompanies={() => setCompaniesFor(viewing)}
         />
       ) : (
       <>
@@ -1455,6 +1467,11 @@ function MembersTab({
             setEditing(null);
             setBrandsFor(u);
           }}
+          multiCompany={multiCompany}
+          onEditCompanies={(u) => {
+            setEditing(null);
+            setCompaniesFor(u);
+          }}
         />
       )}
 
@@ -1466,6 +1483,18 @@ function MembersTab({
             setBrandsFor(null);
             // No need to reload members — brand list lives in its own
             // endpoint and isn't in /api/users payload.
+          }}
+        />
+      )}
+
+      {companiesFor && (
+        <UserCompaniesPanel
+          user={companiesFor}
+          onClose={() => setCompaniesFor(null)}
+          onSaved={() => {
+            setCompaniesFor(null);
+            // Company grants live in their own endpoint, not the /api/users
+            // payload — no members reload needed.
           }}
         />
       )}
@@ -1531,6 +1560,8 @@ function MemberDetail({
   onToggleStatus,
   onRemove,
   onEditBrands,
+  multiCompany,
+  onEditCompanies,
 }: {
   user: TeamMember;
   members: TeamMember[];
@@ -1545,6 +1576,8 @@ function MemberDetail({
   onToggleStatus: () => void | Promise<void>;
   onRemove: () => void | Promise<void>;
   onEditBrands: () => void;
+  multiCompany: boolean;
+  onEditCompanies: () => void;
 }) {
   const reports = members
     .filter((m) => m.manager_id === user.id)
@@ -1749,6 +1782,15 @@ function MemberDetail({
               <button type="button" onClick={onEditBrands} className={actionCls}>
                 <Tag size={13} /> Brand access…
               </button>
+              {multiCompany && (
+                <button
+                  type="button"
+                  onClick={onEditCompanies}
+                  className={actionCls}
+                >
+                  <Building2 size={13} /> Company access…
+                </button>
+              )}
               {user.status !== "invited" && (
                 <button type="button" onClick={onSendReset} className={actionCls}>
                   <KeyRound size={13} /> Reset password
@@ -2041,6 +2083,8 @@ function EditMemberPanel({
   onToggleStatus,
   onRemove,
   onEditBrands,
+  multiCompany,
+  onEditCompanies,
 }: {
   user: TeamMember;
   departments: Department[];
@@ -2054,6 +2098,8 @@ function EditMemberPanel({
   onToggleStatus: (u: TeamMember) => void | Promise<void>;
   onRemove: (u: TeamMember) => void | Promise<void>;
   onEditBrands: (u: TeamMember) => void;
+  multiCompany: boolean;
+  onEditCompanies: (u: TeamMember) => void;
 }) {
   const toast = useToast();
   const [name, setName] = useState(user.name || "");
@@ -2430,6 +2476,15 @@ function EditMemberPanel({
         <button type="button" onClick={() => onEditBrands(user)} className={actionCls}>
           <Tag size={13} /> Brand access…
         </button>
+        {multiCompany && (
+          <button
+            type="button"
+            onClick={() => onEditCompanies(user)}
+            className={actionCls}
+          >
+            <Building2 size={13} /> Company access…
+          </button>
+        )}
         {user.status !== "invited" && (
           <button type="button" onClick={() => onSendReset(user)} className={actionCls}>
             <KeyRound size={13} /> Send password reset link
@@ -2581,6 +2636,142 @@ function UserBrandsPanel({
           {selected.length === 0
             ? "Empty list — this user sees no projects when sales-scoped."
             : `${selected.length} brand${selected.length === 1 ? "" : "s"} selected.`}
+        </div>
+      </PanelSection>
+    </Panel>
+  );
+}
+
+/**
+ * Per-user COMPANY allow-list editor (Phase 0e). Mirrors UserBrandsPanel: a
+ * chip-toggle set backed by GET/PUT /api/users/:id/companies, with the option
+ * list from GET /api/companies. Only ever mounted when multi-company is active
+ * (>1 company) — see the `multiCompany` gate on the trigger buttons.
+ */
+function UserCompaniesPanel({
+  user,
+  onClose,
+  onSaved,
+}: {
+  user: TeamMember;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const [companyIds, setCompanyIds] = useState<number[] | null>(null);
+
+  // Canonical company list (the multi-company master).
+  const companyOpts = useQuery<{
+    companies: Array<{ id: number; code: string; name: string }>;
+  }>(() => api.get("/api/companies"));
+  // Current grant set for this user.
+  const current = useQuery<{ companies: number[] }>(
+    () => api.get(`/api/users/${user.id}/companies`),
+    [user.id]
+  );
+
+  // Hydrate local state once the fetch lands.
+  if (companyIds === null && current.data) {
+    setCompanyIds(current.data.companies);
+  }
+
+  const allCompanies = companyOpts.data?.companies ?? [];
+  const selected = companyIds ?? [];
+
+  function toggle(id: number) {
+    setCompanyIds((prev) => {
+      const cur = prev ?? [];
+      return cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
+    });
+  }
+
+  async function save() {
+    setBusy(true);
+    try {
+      await api.put(`/api/users/${user.id}/companies`, { companies: selected });
+      toast.success(
+        selected.length === 0
+          ? `Cleared ${user.name || user.email}'s company access`
+          : `Updated ${user.name || user.email}'s company access`
+      );
+      onSaved();
+    } catch (e: any) {
+      toast.error(e?.message || "Save failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Panel
+      open
+      onClose={onClose}
+      title={user.name || user.email}
+      subtitle="Company access"
+      width={420}
+      footer={
+        <div className="flex items-center justify-end gap-2">
+          <button
+            onClick={onClose}
+            className="rounded-md border border-border bg-surface px-3 py-2 text-[12px] text-ink-secondary"
+          >
+            Cancel
+          </button>
+          <Button
+            variant="primary"
+            onClick={save}
+            disabled={busy || current.loading}
+          >
+            {busy ? "Saving…" : "Save"}
+          </Button>
+        </div>
+      }
+    >
+      <PanelSection title="Companies">
+        <div className="text-[11px] leading-snug text-ink-muted">
+          Which companies this user may act in. An empty list means the user
+          falls back to ALL companies (no restriction). Add one or more to
+          restrict them to just those.
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {current.loading && (
+            <div className="flex flex-wrap gap-1.5">
+              {Array.from({ length: 2 }).map((_, i) => (
+                <Skeleton key={i} className="h-5 w-16" />
+              ))}
+            </div>
+          )}
+          {!current.loading && allCompanies.length === 0 && (
+            <div className="text-[11px] text-ink-muted">
+              No companies defined yet.
+            </div>
+          )}
+          {!current.loading &&
+            allCompanies.map((co) => {
+              const on = selected.includes(co.id);
+              return (
+                <button
+                  key={co.id}
+                  type="button"
+                  onClick={() => toggle(co.id)}
+                  className={cn(
+                    "rounded-full border px-2.5 py-1 font-mono text-[10px] font-semibold uppercase tracking-wider transition-colors",
+                    on
+                      ? "border-accent bg-accent text-white"
+                      : "border-border bg-surface text-ink-secondary hover:border-accent/40 hover:text-accent"
+                  )}
+                  title={co.name}
+                >
+                  {co.code}
+                </button>
+              );
+            })}
+        </div>
+        <div className="mt-1 text-[10px] text-ink-muted">
+          {selected.length === 0
+            ? "Empty list — no restriction (user may act in all companies)."
+            : `${selected.length} compan${selected.length === 1 ? "y" : "ies"} selected.`}
         </div>
       </PanelSection>
     </Panel>

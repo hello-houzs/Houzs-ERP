@@ -20,6 +20,7 @@ import {
   Truck,
   PackageCheck,
   ReceiptText,
+  Wallet,
   Undo2,
   Warehouse,
   ArrowLeftRight,
@@ -45,6 +46,7 @@ import {
   BarChart3,
   Map,
   Megaphone,
+  History,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -278,10 +280,12 @@ export const NAV_TABS: NavTab[] = [
         label: "Sales Order",
         icon: ShoppingCart,
         groupId: "scm-sales",
+        to: "/scm/sales-order",
         anyPerm: ["*", "scm.access"],
         anyAccess: ["scm.sales", "scm.sales.orders", "scm.sales.delivery", "scm.sales.invoices", "scm.sales.returns"],
         children: [
           { to: "/scm/sales-orders", label: "Sales Orders", icon: ShoppingCart, anyPerm: ["*", "scm.access"], anyAccess: ["scm.sales.orders"] },
+          { to: "/scm/amendments", label: "Amendments", icon: History, anyPerm: ["*", "scm.access", "scm.amendment.create", "scm.amendment.supplier_confirm", "scm.amendment.approve_so", "scm.amendment.approve_po"], anyAccess: ["scm.sales.orders"] },
           { to: "/scm/delivery-orders", label: "Delivery Orders", icon: Send, anyPerm: ["*", "scm.access"], anyAccess: ["scm.sales.delivery"] },
           { to: "/scm/sales-invoices", label: "Sales Invoices", icon: FileText, anyPerm: ["*", "scm.access"], anyAccess: ["scm.sales.invoices"] },
           { to: "/scm/delivery-returns", label: "Delivery Returns", icon: RotateCcw, anyPerm: ["*", "scm.access"], anyAccess: ["scm.sales.returns"] },
@@ -291,6 +295,7 @@ export const NAV_TABS: NavTab[] = [
         label: "Consignment",
         icon: Handshake,
         groupId: "scm-consignment",
+        to: "/scm/consignment",
         anyPerm: ["*", "scm.access"],
         anyAccess: ["scm.consignment", "scm.consignment.orders", "scm.consignment.notes", "scm.consignment.returns", "scm.consignment.po_orders", "scm.consignment.po_receives", "scm.consignment.po_returns"],
         children: [
@@ -306,6 +311,7 @@ export const NAV_TABS: NavTab[] = [
         label: "Procurement",
         icon: Package,
         groupId: "scm-procurement",
+        to: "/scm/procurement",
         anyPerm: ["*", "scm.access"],
         anyAccess: ["scm.procurement", "scm.procurement.products", "scm.procurement.suppliers", "scm.procurement.mrp", "scm.procurement.po", "scm.procurement.grn", "scm.procurement.pi", "scm.procurement.pr"],
         children: [
@@ -322,6 +328,7 @@ export const NAV_TABS: NavTab[] = [
         label: "Transportation",
         icon: Truck,
         groupId: "scm-transportation",
+        to: "/scm/transportation",
         anyPerm: ["*", "scm.access"],
         anyAccess: ["scm.transportation", "scm.transportation.drivers"],
         children: [
@@ -336,6 +343,7 @@ export const NAV_TABS: NavTab[] = [
         label: "Warehouse",
         icon: Warehouse,
         groupId: "scm-warehouse",
+        to: "/scm/warehouse",
         anyPerm: ["*", "scm.access"],
         anyAccess: ["scm.warehouse", "scm.warehouse.inventory", "scm.warehouse.adjustments", "scm.warehouse.transfers", "scm.warehouse.stock_take"],
         children: [
@@ -352,11 +360,17 @@ export const NAV_TABS: NavTab[] = [
         label: "Finance",
         icon: BookOpen,
         groupId: "scm-finance",
+        to: "/scm/finance",
         anyPerm: ["*", "scm.access"],
         anyAccess: ["scm.finance", "scm.finance.accounting", "scm.finance.outstanding"],
         children: [
           { to: "/scm/accounting", label: "Accounting", icon: BookOpen, anyPerm: ["*", "scm.access"], anyAccess: ["scm.finance.accounting"] },
+          { to: "/scm/payment-vouchers", label: "Payment Vouchers", icon: Wallet, anyPerm: ["*", "scm.access", "scm.payment_voucher.create", "scm.payment_voucher.write", "scm.payment_voucher.post", "scm.payment_voucher.cancel"], anyAccess: ["scm.finance.accounting"] },
           { to: "/scm/outstanding", label: "Outstanding", icon: AlertCircle, anyPerm: ["*", "scm.access"], anyAccess: ["scm.finance.outstanding"] },
+          // Currencies master (Phase 1-A FX) — owner-maintained currency + rate
+          // table for GRN / PI / PV foreign-currency posting. Gated on the flat
+          // scm.currency.manage permission (Owner / IT Admin via *).
+          { to: "/scm/currencies", label: "Currencies", icon: DollarSign, anyPerm: ["*", "scm.currency.manage"] },
         ],
       },
     ],

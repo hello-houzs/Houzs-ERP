@@ -284,7 +284,7 @@
 //   re-added; Warehouse master page + form drawer; PO supplier-revised delivery
 //   dates wired end-to-end. (Promo refinement UI deferred — Houzs has no PWP
 //   editor yet; backend reward_size/compartment columns are live.)
-const VERSION = "houzs-erp-v147";
+const VERSION = "houzs-erp-v149";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 
@@ -355,11 +355,13 @@ self.addEventListener("fetch", (event) => {
   // yet; the page handles failure via toast + manual retry.
   if (req.method !== "GET") return;
 
-  // API requests: network-first w/ short timeout, fall back to cache.
-  if (url.pathname.startsWith("/api/")) {
-    event.respondWith(networkFirst(req));
-    return;
-  }
+  // API requests: passthrough — do NOT intercept. Same-origin /api/* is
+  // proxied to the Worker by the Pages Function (functions/api/[[path]].ts);
+  // the api client has its own 27s timeout + retry ladder, and the SW's 4s
+  // networkFirst cutoff would fail cold-DB requests that would otherwise
+  // succeed. (Before the proxy the API was cross-origin, so the SW never
+  // saw these requests — this keeps that exact behavior.)
+  if (url.pathname.startsWith("/api/")) return;
 
   // HTML / SPA navigation requests must always try the network first so a
   // fresh deploy is picked up on the very next refresh. Falls back to the

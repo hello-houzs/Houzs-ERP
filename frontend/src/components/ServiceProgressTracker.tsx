@@ -25,14 +25,14 @@ import { cn, formatTimestamp } from "../lib/utils";
 // ── Canonical 9-stage order + display labels (mirrors backend mig 074) ──
 
 const STAGES: { value: AssrStage; label: string; short: string; owner: string }[] = [
-  { value: "pending_review",           label: "Pending Review",           short: "Review",         owner: "Service Admin" },
-  { value: "under_verification",       label: "Under Verification",       short: "Verify",         owner: "Service Admin" },
-  { value: "pending_solution",         label: "Pending Solution",         short: "Solution",       owner: "Service Admin" },
-  { value: "pending_inspection",       label: "Pending Inspection",       short: "Inspection",     owner: "Logistic Admin" },
-  { value: "pending_item_pickup",      label: "Pending Item Pickup",      short: "Item Pickup",    owner: "Logistic Admin" },
-  { value: "pending_supplier_pickup",  label: "Pending Supplier Pickup",  short: "Supplier",       owner: "Service Admin" },
-  { value: "pending_item_ready",       label: "Pending Item Ready",       short: "Item Ready",     owner: "Service Admin" },
-  { value: "pending_delivery_service", label: "Pending Delivery / Service", short: "Delivery",     owner: "Logistic Admin" },
+  { value: "pending_review",           label: "Review",                   short: "Review",         owner: "Service Admin" },
+  { value: "under_verification",       label: "Verification",             short: "Verify",         owner: "Service Admin" },
+  { value: "pending_solution",         label: "Solution",                 short: "Solution",       owner: "Service Admin" },
+  { value: "pending_inspection",       label: "Inspection",               short: "Inspection",     owner: "Logistic Admin" },
+  { value: "pending_item_pickup",      label: "Item Pickup",              short: "Item Pickup",    owner: "Logistic Admin" },
+  { value: "pending_supplier_pickup",  label: "Supplier Pickup",          short: "Supplier",       owner: "Service Admin" },
+  { value: "pending_item_ready",       label: "Item Ready",               short: "Item Ready",     owner: "Service Admin" },
+  { value: "pending_delivery_service", label: "Delivery / Service",       short: "Delivery",     owner: "Logistic Admin" },
   { value: "completed",                label: "Completed",                short: "Completed",      owner: "System" },
 ];
 

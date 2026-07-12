@@ -12,9 +12,11 @@ import { validatePasswordStrength } from "../lib/passwordStrength";
  * then submits a new password. On success, bounces back to /login.
  */
 
+// PROD default is same-origin (Pages Function proxies /api/* to the Worker) —
+// reset links open on phones where *.workers.dev can be carrier-blocked.
 const baseUrl =
   (import.meta.env.VITE_API_URL as string) ||
-  "https://autocount-sync-api.houzs-erp.workers.dev";
+  (import.meta.env.PROD ? "" : "https://autocount-sync-api.houzs-erp.workers.dev");
 
 function AuthShell({
   eyebrow,

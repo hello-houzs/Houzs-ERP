@@ -24,6 +24,7 @@
 import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import { escapeForOr } from '../lib/postgrest-search';
+import { activeCompanyId } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 export const fabricTracking = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -112,7 +113,7 @@ fabricTracking.post('/', async (c) => {
   };
 
   const sb = c.get('supabase');
-  const { data, error } = await sb.from('fabric_trackings').insert(row).select('*').single();
+  const { data, error } = await sb.from('fabric_trackings').insert({ ...row, company_id: activeCompanyId(c) }).select('*').single();
   if (error) {
     if (error.code === '23505') return c.json({ error: 'duplicate_code' }, 409);
     if (error.code === '42501') return c.json({ error: 'forbidden', reason: error.message }, 403);
@@ -200,7 +201,10 @@ fabricTracking.post('/bulk-upsert', async (c) => {
   if (dbRows.length === 0) return c.json({ upserted: 0, errors }, errors.length ? 400 : 200);
 
   const sb = c.get('supabase');
-  const { error } = await sb.from('fabric_trackings').upsert(dbRows, { onConflict: 'id' });
+  // Multi-company (mig 0061): stamp the active company on each upserted row.
+  const cid = activeCompanyId(c);
+  const stampedRows = cid != null ? dbRows.map((r) => ({ ...r, company_id: cid })) : dbRows;
+  const { error } = await sb.from('fabric_trackings').upsert(stampedRows, { onConflict: 'id' });
   if (error) {
     if (error.code === '42501') return c.json({ error: 'forbidden', reason: error.message, errors }, 403);
     return c.json({ error: 'bulk_upsert_failed', reason: error.message, errors }, 500);

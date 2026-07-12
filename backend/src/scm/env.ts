@@ -28,4 +28,13 @@ export interface Variables {
     permissions?: string[];
     permissions_set?: Set<string>;
   } | undefined;
+  // Multi-company context (Phase 0b) — resolved by middleware/companyContext.ts
+  // and consumed by scm/lib/companyScope.ts. companyId is the ACTIVE company for
+  // this request; allowedCompanyIds is what the caller may see (Phase 0b = all).
+  // Optional: undefined pre-migration / on DB cold-start, so the scoping helpers
+  // no-op and single-company Houzs keeps working.
+  companyId?: number;
+  companyCode?: string;
+  allowedCompanyIds?: number[];
+  companies?: Array<{ id: number; code: string; name: string }>;
 }

@@ -31,8 +31,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Plus, Save, Trash2, X, ArrowRightLeft, ChevronDown } from 'lucide-react';
 import { Button } from '@2990s/design-system';
-import { activeOptions, buildVariantSummary, fmtDateOrDash, maintPickerValues } from '@2990s/shared';
+import { activeOptions, buildVariantSummary, fmtDateOrDash, isServiceLine, maintPickerValues } from '@2990s/shared';
 import { useCreateGrn, usePostGrn } from '../../vendor/scm/lib/grn-queries';
+import { useActiveCurrencies, rateFor } from '../../vendor/scm/lib/currencies-queries';
+import { CurrencySelect } from '../../vendor/scm/components/CurrencySelect';
 import { usePurchaseOrderDetail, usePurchaseOrders, useSuppliers, useSupplierDetail } from '../../vendor/scm/lib/suppliers-queries';
 import { useMfgProducts, useMaintenanceConfig, useSpecialAddons } from '../../vendor/scm/lib/mfg-products-queries';
 import { useWarehouses } from '../../vendor/scm/lib/inventory-queries';
@@ -123,6 +125,12 @@ type GrnNewDraft = {
   warehouseId?:     string;
   selPoId?:         string;
   manualSupplierId?: string;
+  /* Landed-cost allocation (Phase 1-A) — freight "平摊" basis, survives the
+     From-PO picker round trip. */
+  allocationMethod?: 'QTY' | 'VALUE' | 'CBM';
+  /* Multi-currency (Phase 1-A) — the manually-chosen currency for a GRN whose
+     currency isn't dictated by a source PO. */
+  manualCurrency?:  string;
 };
 
 export const GrnNew = () => {
@@ -178,6 +186,20 @@ export const GrnNew = () => {
   const [receivedAt, setReceivedAt]           = useState<string>(() => todayMyt());
   const [deliveryNoteRef, setDeliveryNoteRef] = useState<string>('');
   const [notes, setNotes]                     = useState<string>('');
+  /* Landed-cost core (Phase 1-A) — MYR per 1 unit of the GRN currency, kept as a
+     string so the numeric input stays editable. Shown only for a foreign
+     currency; MYR receives 1:1. The rate converts the FIFO lot cost to MYR. */
+  const [exchangeRate, setExchangeRate]       = useState<string>('1');
+  /* Track a manual rate edit so the currency-master auto-fill stops overwriting it. */
+  const [rateTouched, setRateTouched]         = useState<boolean>(false);
+  /* Landed-cost allocation (Phase 1-A) — how a SERVICE-line freight charge
+     ("平摊" / transportation) is split across the goods lines into the FIFO lot
+     cost: QTY (default) | VALUE | CBM. Sent on create; the server allocates. */
+  const [allocationMethod, setAllocationMethod] = useState<'QTY' | 'VALUE' | 'CBM'>('QTY');
+  /* Multi-currency (Phase 1-A) — the currency for a GRN NOT dictated by a source
+     PO (manual / from-picks). A PO-linked GRN locks to the PO's currency
+     (resolved below) and the server re-derives it, so this is ignored there. */
+  const [manualCurrency, setManualCurrency]   = useState<string>('MYR');
   const [lines, setLines]                     = useState<DraftLine[]>([]);
   /* Commander 2026-05-29 — New GRN must mirror New PO's header, including a
      "Receive into" Warehouse picker (PO calls it Purchase Location). The chosen
@@ -238,6 +260,8 @@ export const GrnNew = () => {
       if (draft.warehouseId) setWarehouseId(draft.warehouseId);
       if (draft.selPoId) setSelPoId(draft.selPoId);
       if (draft.manualSupplierId) setManualSupplierId(draft.manualSupplierId);
+      if (draft.allocationMethod) setAllocationMethod(draft.allocationMethod);
+      if (draft.manualCurrency) setManualCurrency(draft.manualCurrency);
     }
 
     // Merge: restored draft lines + only the new picks not already drafted.
@@ -337,7 +361,7 @@ export const GrnNew = () => {
   const goToFromPo = () => {
     const draft: GrnNewDraft = {
       lines, picks, receivedAt, deliveryNoteRef, notes, warehouseId,
-      selPoId, manualSupplierId,
+      selPoId, manualSupplierId, allocationMethod, manualCurrency,
     };
     try { sessionStorage.setItem('grnNewDraft', JSON.stringify(draft)); } catch { /* quota */ }
     navigate('/scm/grns/from-po');
@@ -347,6 +371,38 @@ export const GrnNew = () => {
     () => lines.reduce((s, l) => s + l.qtyReceived * l.unitPriceCenti, 0),
     [lines],
   );
+
+  /* Landed-cost allocation preview (Phase 1-A) — mirror the server math so the
+     operator SEES the freight ("平摊") split across goods lines before posting.
+     The charge pool = Σ SERVICE-line values; the per-line allocated freight uses
+     the chosen basis (QTY / VALUE / CBM). All in the GRN currency for display
+     (the server stores MYR via the exchange rate). Keyed by rid. */
+  const allocPreview = useMemo(() => {
+    const isSvc = (l: DraftLine) => isServiceLine({ itemGroup: l.itemGroup, itemCode: l.materialCode });
+    const goods = lines.filter((l) => l.materialCode.trim() && !isSvc(l));
+    const chargePool = lines
+      .filter((l) => l.materialCode.trim() && isSvc(l))
+      .reduce((s, l) => s + l.qtyReceived * l.unitPriceCenti, 0);
+    const basisOf = (l: DraftLine): number => {
+      if (allocationMethod === 'VALUE') return l.qtyReceived * l.unitPriceCenti;
+      if (allocationMethod === 'CBM') return l.qtyReceived; // volume unknown client-side → qty proxy
+      return l.qtyReceived;
+    };
+    let sumBasis = goods.reduce((s, l) => s + basisOf(l), 0);
+    if (sumBasis <= 0) sumBasis = goods.reduce((s, l) => s + l.qtyReceived, 0);
+    const allocByRid = new Map<string, number>();
+    let used = 0;
+    goods.forEach((l, i) => {
+      const isLast = i === goods.length - 1;
+      let alloc = 0;
+      if (chargePool > 0 && sumBasis > 0) {
+        alloc = isLast ? chargePool - used : Math.round((chargePool * basisOf(l)) / sumBasis);
+        if (!isLast) used += alloc;
+      }
+      allocByRid.set(l.rid, alloc);
+    });
+    return { chargePool, allocByRid };
+  }, [lines, allocationMethod]);
 
   // ── Mode + resolved supplier / header PO. ──────────────────────────────
   // Manual mode = no picks AND no single PO chosen. Then the operator picks a
@@ -367,7 +423,25 @@ export const GrnNew = () => {
     : null;
   // Header PO id: picks → first pick's PO; single-PO → that PO; manual → null.
   const headerPoId = hasPicks ? pickPoId : (po?.id ?? null);
-  const currency   = po?.currency ?? 'MYR';
+  /* Multi-currency (Phase 1-A) — a PO-linked GRN inherits (and the server
+     re-derives) the source PO's currency, so the picker is LOCKED to it; a
+     manual / from-picks GRN lets the operator choose (defaults MYR = no-op). */
+  const poCurrency     = (po?.currency as string | undefined) ?? null;
+  const currencyLocked = !!poCurrency;
+  const currency       = poCurrency ?? manualCurrency;
+  /* Landed-cost core (Phase 1-A) — show the Exchange rate field + MYR previews
+     only for a foreign-currency receipt. An MYR GRN posts 1:1 (rate 1), so the
+     lot cost / COGS are unchanged (strict no-op). */
+  const isForeign  = String(currency).toUpperCase() !== 'MYR';
+  const rateNum    = (Number(exchangeRate) > 0 && Number.isFinite(Number(exchangeRate))) ? Number(exchangeRate) : 0;
+  /* Auto-fill the rate from the currencies MASTER when the GRN settles on a
+     foreign currency (still editable). MYR resets to 1; a manual edit wins. */
+  const currenciesQ = useActiveCurrencies();
+  useEffect(() => {
+    if (!isForeign) { setExchangeRate('1'); setRateTouched(false); return; }
+    if (rateTouched) return;
+    setExchangeRate(String(rateFor(currenciesQ.data, String(currency).toUpperCase())));
+  }, [isForeign, currency, currenciesQ.data, rateTouched]);
 
   // Commander 2026-05-29 — make the MANUAL item picker supplier-binding-aware,
   // exactly like New PO. Once a supplier is chosen the per-line Item Code
@@ -508,6 +582,14 @@ export const GrnNew = () => {
         receivedAt,
         deliveryNoteRef: deliveryNoteRef || undefined,
         notes:           notes || undefined,
+        /* Landed-cost core (Phase 1-A) — send the resolved currency + rate. The
+           server re-derives the currency from the source PO when PO-linked; the
+           rate (MYR per 1 unit) converts the FIFO lot cost to MYR. MYR forces 1
+           server-side, so a manual MYR receipt is unaffected (no-op). */
+        currency,
+        exchangeRate:    isForeign ? (rateNum > 0 ? rateNum : 1) : 1,
+        // Landed-cost allocation (Phase 1-A) — the freight "平摊" basis.
+        allocationMethod,
         items: realLines.map((l) => ({
           purchaseOrderItemId: l.purchaseOrderItemId,
           materialKind:        l.materialKind,
@@ -701,6 +783,43 @@ export const GrnNew = () => {
               <span className={styles.fieldLabel}>Notes</span>
               <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Receiving notes — visible on the GRN detail page" className={styles.fieldInput} rows={2} style={{ resize: 'vertical', minHeight: 60 }} />
             </label>
+
+            {/* Multi-currency + landed cost (Phase 1-A). Currency defaults to MYR
+                (a strict no-op — the rate field stays hidden); a foreign currency
+                reveals the auto-filled, editable exchange rate. A PO-linked GRN
+                locks the currency to its source PO. */}
+            <CurrencySelect
+              currency={currency}
+              onCurrencyChange={setManualCurrency}
+              exchangeRate={exchangeRate}
+              onRateChange={(v) => { setRateTouched(true); setExchangeRate(v); }}
+              disabled={currencyLocked}
+              rateHint={<>≈ {fmtRm(Math.round(subtotalCenti * rateNum), 'MYR')} recorded as inventory cost</>}
+              styles={styles}
+            />
+            {/* Landed-cost allocation — choose how a SERVICE-line freight charge
+                ("平摊" / transportation) is spread across the goods lines into
+                their FIFO lot cost. Always selectable so it's set before posting. */}
+            <label className={styles.field}>
+              <span className={styles.fieldLabel}>Charge allocation</span>
+              <span className={styles.selectWrap}>
+                <select
+                  className={styles.fieldSelect}
+                  value={allocationMethod}
+                  onChange={(e) => setAllocationMethod(e.target.value as 'QTY' | 'VALUE' | 'CBM')}
+                >
+                  <option value="QTY">By quantity (default)</option>
+                  <option value="VALUE">By value</option>
+                  <option value="CBM">By volume (CBM)</option>
+                </select>
+                <ChevronDown size={14} strokeWidth={1.75} className={styles.selectChevron} />
+              </span>
+              {allocPreview.chargePool > 0 && (
+                <span style={{ fontSize: 'var(--fs-11)', color: 'var(--fg-muted)', marginTop: 2 }}>
+                  {fmtRm(allocPreview.chargePool, currency)} freight spread across {lines.filter((l) => l.materialCode.trim() && !isServiceLine({ itemGroup: l.itemGroup, itemCode: l.materialCode })).length} goods line(s)
+                </span>
+              )}
+            </label>
           </div>
 
           {/* Read-only supplier-info bar — same markup/classes as New PO. */}
@@ -773,6 +892,12 @@ export const GrnNew = () => {
             lines.map((l, idx) => {
               const lineValueCenti = l.qtyReceived * l.unitPriceCenti;
               const variantSummary = buildVariantSummary(l.itemGroup, l.variants);
+              /* Landed-cost allocation (Phase 1-A) — this goods line's share of the
+                 freight pool + its landed unit cost (base + per-unit freight),
+                 shown only when there's a charge to spread. Service lines get 0. */
+              const lineIsSvc = isServiceLine({ itemGroup: l.itemGroup, itemCode: l.materialCode });
+              const lineAllocCenti = allocPreview.allocByRid.get(l.rid) ?? 0;
+              const landedUnitCenti = l.unitPriceCenti + (l.qtyReceived > 0 ? Math.round(lineAllocCenti / l.qtyReceived) : 0);
               // Manual lines have no outstanding cap — qty inputs go uncapped.
               const cap = l.outstanding;
               const isManualLine = l.purchaseOrderItemId === null;
@@ -825,7 +950,22 @@ export const GrnNew = () => {
                       {l.itemGroup && <ItemGroupPill group={l.itemGroup} />}
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
-                      <span className={styles.previewPrice}>{fmtRm(lineValueCenti, currency)}</span>
+                      <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
+                        <span className={styles.previewPrice}>{fmtRm(lineValueCenti, currency)}</span>
+                        {/* Landed-cost core — MYR cost preview for a foreign GRN. */}
+                        {isForeign && (
+                          <span style={{ fontSize: 'var(--fs-11)', color: 'var(--fg-muted)' }}>
+                            ≈ {fmtRm(Math.round(lineValueCenti * rateNum), 'MYR')}
+                          </span>
+                        )}
+                        {/* Landed-cost allocation — +freight & landed unit cost, on
+                            goods lines only when there's a charge pool. */}
+                        {allocPreview.chargePool > 0 && !lineIsSvc && (
+                          <span style={{ fontSize: 'var(--fs-11)', color: 'var(--c-accent, #8a6d3b)', marginTop: 2 }}>
+                            +{fmtRm(lineAllocCenti, currency)} freight · landed {fmtRm(landedUnitCenti, currency)}/unit
+                          </span>
+                        )}
+                      </span>
                       <button
                         type="button"
                         onClick={() => dropLine(l.rid)}
@@ -1105,6 +1245,13 @@ export const GrnNew = () => {
               <span>Total</span>
               <span style={{ fontFamily: 'var(--font-mono)' }}>{fmtRm(subtotalCenti, currency)}</span>
             </div>
+            {/* Landed-cost core — MYR inventory cost for a foreign GRN. */}
+            {isForeign && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 'var(--fs-13)', color: 'var(--fg-muted)', marginTop: 'var(--space-2)' }}>
+                <span>Inventory cost (MYR)</span>
+                <span style={{ fontFamily: 'var(--font-mono)' }}>{fmtRm(Math.round(subtotalCenti * rateNum), 'MYR')}</span>
+              </div>
+            )}
           </div>
         </section>
       </div>

@@ -24,6 +24,7 @@ import { issueStaffToken, issueSalesToken } from "../services/caseTracking";
 import { sendEmail, publicUrl } from "../services/email";
 import { AutoCountClient } from "../services/autocount";
 import { requirePermission, requireAnyPermission } from "../middleware/auth";
+import { activeCompanyId } from "../scm/lib/companyScope";
 import { hasPermission } from "../services/permissions";
 import { subtreeUserIds } from "../services/orgScope";
 
@@ -1004,6 +1005,10 @@ app.post(
     service_category: trimOrNull(body.service_category),
     assigned_to: assignedTo,
     created_by: userId,
+    // Multi-company (Phase 0b): stamp the request's active company on the new
+    // case. Undefined pre-migration / cold-start -> createAssrCase falls back
+    // to the Houzs default, else omits the column (single-company safe).
+    company_id: activeCompanyId(c),
   });
   return c.json(result, 201);
 });

@@ -89,14 +89,14 @@ type StageFilter = "ALL" | AssrStage;
 // vocabulary; values are the SQL enum.
 const STAGE_OPTIONS: { value: StageFilter; label: string }[] = [
   { value: "ALL", label: "All" },
-  { value: "pending_review", label: "Pending Review" },
-  { value: "under_verification", label: "Under Verification" },
-  { value: "pending_solution", label: "Pending Solution" },
-  { value: "pending_inspection", label: "Pending Inspection" },
-  { value: "pending_item_pickup", label: "Pending Item Pickup" },
-  { value: "pending_supplier_pickup", label: "Pending Supplier Pickup" },
-  { value: "pending_item_ready", label: "Pending Item Ready" },
-  { value: "pending_delivery_service", label: "Pending Delivery / Service" },
+  { value: "pending_review", label: "Review" },
+  { value: "under_verification", label: "Verification" },
+  { value: "pending_solution", label: "Solution" },
+  { value: "pending_inspection", label: "Inspection" },
+  { value: "pending_item_pickup", label: "Item Pickup" },
+  { value: "pending_supplier_pickup", label: "Supplier Pickup" },
+  { value: "pending_item_ready", label: "Item Ready" },
+  { value: "pending_delivery_service", label: "Delivery / Service" },
   { value: "completed", label: "Completed" },
 ];
 
@@ -742,8 +742,8 @@ function CasesView({
               className={cn(
                 "inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold transition-colors",
                 caseView === v
-                  ? "bg-accent text-white"
-                  : "text-ink-muted hover:text-accent"
+                  ? "bg-primary text-white"
+                  : "text-ink-muted hover:text-primary"
               )}
             >
               <Icon size={13} />
@@ -4585,14 +4585,14 @@ const VERIFICATION_OPTIONS = [
 // filtering land in later PRs; this PR only refreshes the header strip.
 
 const DETAIL_STAGES: { id: AssrStage; short: string; long: string }[] = [
-  { id: "pending_review",              short: "Review",       long: "Pending Review" },
-  { id: "under_verification",          short: "Verification", long: "Under Verification" },
-  { id: "pending_solution",            short: "Solution",     long: "Pending Solution" },
-  { id: "pending_inspection",          short: "Inspection",   long: "Pending Inspection" },
-  { id: "pending_item_pickup",         short: "Item Pickup",  long: "Pending Item Pickup" },
-  { id: "pending_supplier_pickup",     short: "Supplier",     long: "Pending Supplier Pickup" },
-  { id: "pending_item_ready",          short: "Item Ready",   long: "Pending Item Ready" },
-  { id: "pending_delivery_service",    short: "Delivery",     long: "Pending Delivery / Service" },
+  { id: "pending_review",              short: "Review",       long: "Review" },
+  { id: "under_verification",          short: "Verification", long: "Verification" },
+  { id: "pending_solution",            short: "Solution",     long: "Solution" },
+  { id: "pending_inspection",          short: "Inspection",   long: "Inspection" },
+  { id: "pending_item_pickup",         short: "Item Pickup",  long: "Item Pickup" },
+  { id: "pending_supplier_pickup",     short: "Supplier",     long: "Supplier Pickup" },
+  { id: "pending_item_ready",          short: "Item Ready",   long: "Item Ready" },
+  { id: "pending_delivery_service",    short: "Delivery",     long: "Delivery / Service" },
   { id: "completed",                   short: "Completed",    long: "Completed" },
 ];
 

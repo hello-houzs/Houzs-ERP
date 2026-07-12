@@ -25,6 +25,7 @@ import {
   sortSoLinesByGroupRank,
 } from '../shared/so-line-display';
 import { recomputePoReceived, resolvePoBatchByItem } from './grns';
+import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 
 export const purchaseReturns = new Hono<{ Bindings: Env; Variables: Variables }>();
 purchaseReturns.use('*', supabaseAuth);
@@ -41,13 +42,14 @@ const ITEM =
      order matches the sales side. */
   'item_group, variants, created_at';
 
-const nextNum = async (sb: any): Promise<string> => {
+const nextNum = async (sb: any, c: any): Promise<string> => {
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
+  const p = companyDocPrefix(c);
   const { data: existing } = await sb.from('purchase_returns')
     .select('return_number')
-    .like('return_number', `PRT-${yymm}-%`);
-  return nextMonthlyDocNo(`PRT-${yymm}`, ((existing ?? []) as Array<{ return_number: string }>).map((r) => r.return_number));
+    .like('return_number', `${p}PRT-${yymm}-%`);
+  return nextMonthlyDocNo(`${p}PRT-${yymm}`, ((existing ?? []) as Array<{ return_number: string }>).map((r) => r.return_number));
 };
 
 /* ── Recompute PR header money rollup (mirror recomputeGrnTotals) ──────────
@@ -116,6 +118,7 @@ purchaseReturns.get('/', async (c) => {
     .limit(300);
   const status = c.req.query('status'); if (status) q = q.eq('status', status);
   const supplierId = c.req.query('supplierId'); if (supplierId) q = q.eq('supplier_id', supplierId);
+  q = scopeToCompany(q, c); // multi-company: isolate to the active company
   const { data, error } = await q;
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
   return c.json({ purchaseReturns: data ?? [] });
@@ -485,8 +488,9 @@ purchaseReturns.post('/', async (c) => {
   /* PR-DRAFT-removal — PR is created POSTED, inventory OUT written inline. */
   const grnId = (body.grnId as string | undefined) ?? null;
   const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; return_number: string }>(
-    () => nextNum(sb),
+    () => nextNum(sb, c),
     (returnNumber) => sb.from('purchase_returns').insert({
+    company_id: activeCompanyId(c), // multi-company: stamp the active company
     return_number: returnNumber,
     purchase_order_id: (body.purchaseOrderId as string | undefined) ?? null,
     grn_id: grnId,
@@ -504,7 +508,7 @@ purchaseReturns.post('/', async (c) => {
   const h = header as unknown as { id: string; return_number: string };
 
   const rowsWithId = itemRows.map((r) => ({ ...r, purchase_return_id: h.id }));
-  const { error: iErr } = await sb.from('purchase_return_items').insert(rowsWithId);
+  const { error: iErr } = await sb.from('purchase_return_items').insert(stampCompany(rowsWithId, c));
   if (iErr) {
     await sb.from('purchase_returns').delete().eq('id', h.id);
     return c.json({ error: 'items_insert_failed', reason: iErr.message }, 500);
@@ -578,9 +582,10 @@ purchaseReturns.post('/from-grns', async (c) => {
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
   // Minted inside insertWithDocNoRetry below so a concurrent-create collision
   // (23505 on return_number) re-derives the next free number instead of 500ing.
+  const p = companyDocPrefix(c);
   const nextPrtNumber = async (): Promise<string> => {
-    const { data: existingPrtNos } = await sb.from('purchase_returns').select('return_number').like('return_number', `PRT-${yymm}-%`);
-    return nextMonthlyDocNo(`PRT-${yymm}`, ((existingPrtNos ?? []) as Array<{ return_number: string }>).map((r) => r.return_number));
+    const { data: existingPrtNos } = await sb.from('purchase_returns').select('return_number').like('return_number', `${p}PRT-${yymm}-%`);
+    return nextMonthlyDocNo(`${p}PRT-${yymm}`, ((existingPrtNos ?? []) as Array<{ return_number: string }>).map((r) => r.return_number));
   };
 
   const grnNumbersJoined = grnList.map((g) => g.grn_number).join(', ');
@@ -590,6 +595,7 @@ purchaseReturns.post('/from-grns', async (c) => {
   const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; return_number: string }>(
     nextPrtNumber,
     (returnNumber) => sb.from('purchase_returns').insert({
+    company_id: activeCompanyId(c), // multi-company: stamp the active company
     return_number: returnNumber,
     purchase_order_id: grnList[0]!.purchase_order_id,
     grn_id: primaryGrnId,                              // primary GRN ref
@@ -623,7 +629,7 @@ purchaseReturns.post('/from-grns', async (c) => {
     description2: it.description2 ?? (buildVariantSummary(String(it.item_group ?? ''), it.variants ?? null) || null),
     uom: it.uom ?? 'UNIT',
   }));
-  const { error: iErr } = await sb.from('purchase_return_items').insert(rows);
+  const { error: iErr } = await sb.from('purchase_return_items').insert(stampCompany(rows, c));
   if (iErr) { await sb.from('purchase_returns').delete().eq('id', h.id); return c.json({ error: 'items_insert_failed', reason: iErr.message }, 500); }
 
   // Consume each GRN line: increment returned_qty by the returned qty (0106).
@@ -677,8 +683,9 @@ purchaseReturns.post('/from-grn', async (c) => {
   const totalRefund = lines.reduce((s, it) => s + (it._remaining * it.unit_price_centi), 0);
 
   const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; return_number: string }>(
-    () => nextNum(sb),
+    () => nextNum(sb, c),
     (returnNumber) => sb.from('purchase_returns').insert({
+    company_id: activeCompanyId(c), // multi-company: stamp the active company
     return_number: returnNumber,
     purchase_order_id: g.purchase_order_id,
     grn_id: g.id,
@@ -711,7 +718,7 @@ purchaseReturns.post('/from-grn', async (c) => {
     description2: it.description2 ?? (buildVariantSummary(String(it.item_group ?? ''), it.variants ?? null) || null),
     uom: it.uom ?? 'UNIT',
   }));
-  const { error: iErr } = await sb.from('purchase_return_items').insert(rows);
+  const { error: iErr } = await sb.from('purchase_return_items').insert(stampCompany(rows, c));
   if (iErr) { await sb.from('purchase_returns').delete().eq('id', h.id); return c.json({ error: 'items_insert_failed', reason: iErr.message }, 500); }
 
   // Consume each GRN line: increment returned_qty by the returned remaining (0106).
@@ -928,7 +935,7 @@ purchaseReturns.post('/:id/items', async (c) => {
     description2: buildVariantSummary(String(it.itemGroup ?? ''), (it.variants as Record<string, unknown> | null) ?? null) || null,
     uom: (it.uom as string) ?? 'UNIT',
   };
-  const { data, error } = await sb.from('purchase_return_items').insert(row).select(ITEM).single();
+  const { data, error } = await sb.from('purchase_return_items').insert({ company_id: activeCompanyId(c), ...row }).select(ITEM).single();
   if (error) return c.json({ error: 'insert_failed', reason: error.message }, 500);
 
   /* Bug #3/#11 — POST-INSERT over-return verification. The pre-check is a

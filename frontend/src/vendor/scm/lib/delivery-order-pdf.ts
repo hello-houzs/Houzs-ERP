@@ -54,6 +54,11 @@ type DoItem = {
      variant line so DO/Consignment Note read like SO/PO/etc. */
   item_group?: string | null;
   variants?: Record<string, unknown> | null;
+  /* Storekeeper picking (resolved server-side on the DO detail): the supplier
+     PO(s) that supplied this line's goods, and the physical rack(s) they are
+     stored on. Both optional / possibly empty → the cell shows a dash. */
+  source_pos?: string[] | null;
+  racks?: string[] | null;
 };
 
 /* Draw ONE delivery order's content into `doc` (letterhead → info block →
@@ -67,8 +72,11 @@ export async function renderDeliveryOrderInto(
   autoTable: any,
   header: DoHeader,
   items: DoItem[],
-  opts?: { docTitle?: string; docNoLabel?: string },
+  opts?: { docTitle?: string; docNoLabel?: string; showPicking?: boolean },
 ): Promise<void> {
+  // Source PO + Rack picking columns are a DELIVERY-ORDER aid; the Consignment
+  // Note reuses this renderer but opts out (showPicking: false).
+  const showPicking = opts?.showPicking !== false;
   const startPage = doc.getNumberOfPages();
   const pageW = doc.internal.pageSize.getWidth();
   const margin = 14;
@@ -130,29 +138,62 @@ export async function renderDeliveryOrderInto(
   // DO is QUANTITY-only (Owner 2026-06-26) — the Unit Price column was removed
   // from the DO PDF; a delivery doc shows quantity / volume, not money. The
   // underlying unit_price_centi still flows to the Sales Invoice.
-  const rows = items.map((it, idx) => [
-    String(idx + 1),
-    it.item_code,
-    [it.description, docVariantLine(it, fabric.ext, fabric.desc)].filter(Boolean).join('\n') || '—',
-    String(it.qty),
-    it.m3_milli != null ? (it.m3_milli / 1000).toFixed(3) : '—',
-  ]);
+  // Source PO + Rack are storekeeper picking aids: which supplier PO supplied the
+  // goods and which physical rack they sit on. Multiple values are listed one per
+  // line; an empty list prints a dash.
+  const listCell = (vals?: string[] | null): string =>
+    vals && vals.length > 0 ? vals.join('\n') : '—';
+  const descOf = (it: DoItem): string =>
+    [it.description, docVariantLine(it, fabric.ext, fabric.desc)].filter(Boolean).join('\n') || '—';
+  const rows = items.map((it, idx) =>
+    showPicking
+      ? [
+          String(idx + 1),
+          it.item_code,
+          descOf(it),
+          listCell(it.source_pos),
+          listCell(it.racks),
+          String(it.qty),
+          it.m3_milli != null ? (it.m3_milli / 1000).toFixed(3) : '—',
+        ]
+      : [
+          String(idx + 1),
+          it.item_code,
+          descOf(it),
+          String(it.qty),
+          it.m3_milli != null ? (it.m3_milli / 1000).toFixed(3) : '—',
+        ],
+  );
 
   autoTable(doc, {
     startY: y,
-    head: [['#', 'Item Code', 'Description', 'Qty', 'm³']],
+    head: [
+      showPicking
+        ? ['#', 'Item Code', 'Description', 'Source PO', 'Rack', 'Qty', 'm³']
+        : ['#', 'Item Code', 'Description', 'Qty', 'm³'],
+    ],
     body: rows,
     theme: 'striped',
     rowPageBreak: 'avoid',
     styles: { fontSize: 8.5, cellPadding: 2, valign: 'top' },
     headStyles: { fillColor: [34, 31, 32], textColor: 250, fontStyle: 'bold' },
-    columnStyles: {
-      0: { cellWidth: 8, halign: 'right', fontSize: 7.5 },
-      1: { cellWidth: 30 },
-      2: { cellWidth: 'auto' },
-      3: { cellWidth: 14, halign: 'right', fontSize: 7.5 },
-      4: { cellWidth: 18, halign: 'right', fontSize: 7.5 },
-    },
+    columnStyles: showPicking
+      ? {
+          0: { cellWidth: 8, halign: 'right', fontSize: 7.5 },
+          1: { cellWidth: 28 },
+          2: { cellWidth: 'auto' },
+          3: { cellWidth: 24, fontSize: 7.5 },      // Source PO
+          4: { cellWidth: 22, fontSize: 7.5 },      // Rack
+          5: { cellWidth: 12, halign: 'right', fontSize: 7.5 },
+          6: { cellWidth: 16, halign: 'right', fontSize: 7.5 },
+        }
+      : {
+          0: { cellWidth: 8, halign: 'right', fontSize: 7.5 },
+          1: { cellWidth: 30 },
+          2: { cellWidth: 'auto' },
+          3: { cellWidth: 14, halign: 'right', fontSize: 7.5 },
+          4: { cellWidth: 18, halign: 'right', fontSize: 7.5 },
+        },
     margin: { left: margin, right: margin },
   });
   const lastY = ((doc as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? y) + 6;
@@ -179,7 +220,7 @@ export async function renderDeliveryOrderInto(
 export async function generateDeliveryOrderPdf(
   header: DoHeader,
   items: DoItem[],
-  opts?: { docTitle?: string; docNoLabel?: string },
+  opts?: { docTitle?: string; docNoLabel?: string; showPicking?: boolean },
 ): Promise<void> {
   const { jsPDF } = await import('jspdf');
   const autoTable = (await import('jspdf-autotable')).default;
@@ -192,7 +233,7 @@ export async function generateDeliveryOrderPdf(
    batch "Export PDF" action (download a customer's DOs in one attachment). */
 export async function generateCombinedDeliveryOrderPdf(
   docs: Array<{ header: DoHeader; items: DoItem[] }>,
-  opts?: { fileName?: string; docTitle?: string; docNoLabel?: string },
+  opts?: { fileName?: string; docTitle?: string; docNoLabel?: string; showPicking?: boolean },
 ): Promise<void> {
   const { jsPDF } = await import('jspdf');
   const autoTable = (await import('jspdf-autotable')).default;

@@ -8,14 +8,21 @@ import {
   currentEpoch,
   invalidatedSince,
 } from "./cache";
+// Multi-company (Phase 0c): stamp the active company on every request. Returns
+// {} when no company is selected (single-company / pre-activation), so the
+// backend falls back to its hostname default and nothing changes.
+import { companyHeader } from "../lib/activeCompany";
 
-// Cloudflare Pages does NOT proxy /api/* (see public/_redirects) — a relative
-// base returns SPA HTML to JSON fetches ("Unexpected token '<'"). Default to the
-// Worker's absolute URL so the app works even if VITE_API_URL is unset at build
-// (the gitignored .env.production went missing, which broke every API call).
+// Production default is SAME-ORIGIN: /api/* is proxied to the Worker by the
+// Pages Function (functions/api/[[path]].ts). Calling the Worker's
+// *.workers.dev origin directly broke for field staff on Malaysian mobile
+// carriers that intermittently block that domain (2026-07-09 driver login
+// timeouts). VITE_API_URL still overrides (the staging Pages build points at
+// the staging Worker); local `vite dev` has no proxy, so dev builds keep the
+// absolute workers.dev fallback.
 const baseUrl =
   (import.meta.env.VITE_API_URL as string) ||
-  "https://autocount-sync-api.houzs-erp.workers.dev";
+  (import.meta.env.PROD ? "" : "https://autocount-sync-api.houzs-erp.workers.dev");
 
 // Token storage — single source of truth for the bearer token. The
 // AuthContext writes here on login/logout; everything else reads.
@@ -237,6 +244,7 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
         headers: {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
           "Content-Type": "application/json",
+          ...companyHeader(),
           ...(opts?.headers || {}),
         },
       });
@@ -328,6 +336,7 @@ export const api = {
       headers: {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
         "Content-Type": contentType,
+        ...companyHeader(),
       },
       body,
     }, UPLOAD_TIMEOUT_MS);
@@ -352,6 +361,7 @@ export const api = {
       headers: {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
         "Content-Type": contentType,
+        ...companyHeader(),
       },
       body,
     }, UPLOAD_TIMEOUT_MS);
@@ -379,7 +389,7 @@ export const api = {
     for (const f of files) form.append(fieldName, f);
     const res = await binaryFetch(`${baseUrl}${path}`, {
       method: "POST",
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...companyHeader() },
       body: form,
     }, UPLOAD_TIMEOUT_MS);
     if (!res.ok) {
@@ -406,7 +416,7 @@ export const api = {
   async fetchBlobUrl(path: string): Promise<string> {
     const token = tokenStore.get();
     const res = await binaryFetch(`${baseUrl}${path}`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...companyHeader() },
     }, BINARY_GET_TIMEOUT_MS);
     if (!res.ok) throw new HttpError(res.status, res.statusText);
     const blob = await res.blob();
@@ -426,7 +436,7 @@ export const api = {
   async downloadFile(path: string, fallbackName = "download"): Promise<void> {
     const token = tokenStore.get();
     const res = await binaryFetch(`${baseUrl}${path}`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...companyHeader() },
     }, BINARY_GET_TIMEOUT_MS);
     if (!res.ok) throw new HttpError(res.status, res.statusText);
     const cd = res.headers.get("Content-Disposition") || "";
@@ -446,7 +456,7 @@ export const api = {
   async openHtml(path: string): Promise<void> {
     const token = tokenStore.get();
     const res = await binaryFetch(`${baseUrl}${path}`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...companyHeader() },
     }, BINARY_GET_TIMEOUT_MS);
     if (!res.ok) throw new HttpError(res.status, res.statusText);
     const html = await res.text();

@@ -55,8 +55,22 @@ export async function recordSoAudit(
       }
     }
 
+    // Multi-company (migration 0061): mfg_so_audit_log.company_id is NOT NULL.
+    // Resolve it from the SO being audited (the audit belongs to that SO's
+    // company). Self-contained so no caller has to thread it. Best-effort —
+    // if the lookup fails the whole audit write is already swallowed below.
+    let companyId: number | null = null;
+    try {
+      const { data: soRow } = await sb.from('mfg_sales_orders')
+        .select('company_id').eq('doc_no', args.docNo).maybeSingle();
+      companyId = (soRow as { company_id?: number | null } | null)?.company_id ?? null;
+    } catch {
+      /* swallow — pre-migration / missing SO leaves company_id off (best-effort). */
+    }
+
     const { error } = await sb.from('mfg_so_audit_log').insert({
       so_doc_no:           args.docNo,
+      ...(companyId != null ? { company_id: companyId } : {}),
       action:              args.action,
       actor_id:            args.actorId ?? null,
       actor_name_snapshot: actorName,

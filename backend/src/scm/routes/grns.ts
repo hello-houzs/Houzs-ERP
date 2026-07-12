@@ -5,12 +5,15 @@ import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { writeMovements, defaultWarehouseId, reconcileDropshipBatches } from '../lib/inventory-movements';
-import { buildVariantSummary, computeVariantKey, effectiveDelivery, type VariantAttrs } from '../shared';
+import { buildVariantSummary, computeVariantKey, effectiveDelivery, isServiceLine, type VariantAttrs } from '../shared';
 import {
   orderSofaModuleRowsWithinBuilds,
   sortSoLinesByGroupRank,
 } from '../shared/so-line-display';
 import { recostFromGrn } from '../lib/recost';
+import { normalizeExchangeRate, toMyrSen, normalizeCurrency, masterRateForCurrency } from '../lib/fx';
+import { allocateLandedCharges, normalizeAllocationMethod } from '../lib/landed-allocation';
+import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { nextMonthlyDocNo } from '../lib/doc-no';
 import { todayMyt } from '../lib/my-time';
 
@@ -46,16 +49,111 @@ export async function resolvePoBatchByItem(
   return out;
 }
 
+/* ── Resolve a GRN's currency + exchange_rate on CREATE (migration 0082) ──────
+   The GRN inherits its currency from the source PO (the receiver knows whether
+   it's an RMB/USD receipt); an explicit body.currency wins; else MYR. The rate
+   auto-fills from the currency MASTER (rate_to_myr) unless the body sends one.
+   normalizeExchangeRate forces MYR → 1 and a foreign rate → finite > 0 (else 1),
+   so an all-MYR GRN is exchange_rate 1 (a strict no-op). */
+async function resolveGrnFx(
+  sb: any,
+  poId: string | null | undefined,
+  bodyCurrency: unknown,
+  bodyRate: unknown,
+): Promise<{ currency: string; exchange_rate: number }> {
+  let currency = normalizeCurrency(bodyCurrency);
+  if (poId && !bodyCurrency) {
+    const { data: poRow } = await sb.from('purchase_orders')
+      .select('currency').eq('id', poId).maybeSingle();
+    const poCur = (poRow as { currency?: string | null } | null)?.currency;
+    if (poCur) currency = normalizeCurrency(poCur);
+  }
+  const rateRaw = bodyRate !== undefined && bodyRate !== null
+    ? bodyRate
+    : await masterRateForCurrency(sb, currency);
+  return { currency, exchange_rate: normalizeExchangeRate(rateRaw, currency) };
+}
+
+/* ── Landed-cost allocation (migration 0082) — "平摊" ────────────────────────
+   Compute each goods line's share of the SERVICE-line (freight) charge pool and
+   PERSIST it onto grn_items.allocated_charge_centi, so the FIFO lot cost and a
+   later PI recost both fold it in deterministically. Returns the allocation
+   result (with per-line landed unit cost) so the caller can stamp the IN
+   movements. Pure-on-empty: chargePool === 0 ⇒ allocation 0 everywhere ⇒ no
+   writes ⇒ byte-for-byte no-op for a GRN with no service lines. */
+type AllocItemRow = {
+  id: string; qty_accepted: number; material_code: string;
+  unit_price_centi: number | null; line_total_centi?: number | null;
+  item_group?: string | null;
+};
+async function computeAndStoreGrnAllocation(
+  sb: any,
+  items: AllocItemRow[],
+  grnRate: unknown,
+  method: ReturnType<typeof normalizeAllocationMethod>,
+) {
+  // CBM basis needs each goods line's product volume (unit_m3_milli). Resolve
+  // per material_code in one round trip; default 0 (the allocator falls back to
+  // QTY when the CBM Σ is 0, so a missing volume never divides by zero).
+  const m3ByCode = new Map<string, number>();
+  const codes = [...new Set(items.map((it) => it.material_code).filter(Boolean))];
+  if (codes.length > 0) {
+    const { data: prods } = await sb.from('mfg_products').select('code, unit_m3_milli').in('code', codes);
+    for (const p of (prods ?? []) as Array<{ code: string; unit_m3_milli: number | null }>) {
+      m3ByCode.set(p.code, Number(p.unit_m3_milli ?? 0));
+    }
+  }
+  const alloc = allocateLandedCharges(
+    items.map((it) => ({
+      id: it.id,
+      itemGroup: it.item_group ?? null,
+      materialCode: it.material_code,
+      qty: Number(it.qty_accepted ?? 0),
+      // Pool by the SERVICE line's line total; allocate ONTO goods unit price.
+      amountCenti: Number(it.line_total_centi ?? 0),
+      unitPriceCenti: Number(it.unit_price_centi ?? 0),
+      unitM3Milli: m3ByCode.get(it.material_code) ?? 0,
+    })),
+    method,
+    grnRate,
+  );
+  // Persist allocated_charge_centi per goods line. ALWAYS write the computed
+  // value (incl. resetting to 0) so a removed charge / re-split method change is
+  // reflected — but only when there's something to reconcile (a non-zero pool
+  // now, OR any line currently carries a non-zero allocation).
+  const anyToReset = items.some((it) => Number((it as { allocated_charge_centi?: number | null }).allocated_charge_centi ?? 0) !== 0);
+  if (alloc.chargePoolMyr > 0 || anyToReset) {
+    await Promise.all(alloc.goods.map((g) =>
+      sb.from('grn_items').update({ allocated_charge_centi: g.allocatedChargeCenti }).eq('id', g.id),
+    ));
+  }
+  return alloc;
+}
+
+/* Recompute + persist a GRN's landed allocation from its CURRENT lines + header
+   (used after the allocation_method / rate is changed on PATCH, before recost).
+   Reads everything off the DB so it's self-contained. Best-effort. */
+async function reallocateGrnCharges(sb: any, grnId: string): Promise<void> {
+  const { data: head } = await sb.from('grns')
+    .select('exchange_rate, allocation_method').eq('id', grnId).maybeSingle();
+  const grnRate = (head as { exchange_rate?: string | number | null } | null)?.exchange_rate ?? 1;
+  const method = normalizeAllocationMethod((head as { allocation_method?: string | null } | null)?.allocation_method);
+  const { data: items } = await sb.from('grn_items')
+    .select('id, qty_accepted, material_code, unit_price_centi, line_total_centi, item_group, allocated_charge_centi')
+    .eq('grn_id', grnId);
+  await computeAndStoreGrnAllocation(sb, (items ?? []) as AllocItemRow[], grnRate, method);
+}
+
 /* ── Shared helper: post a GRN, roll up to PO items, write inventory IN ──
    Pulled out of the PATCH /:id/post handler so both single-doc post and
    the multi-PO `/from-po-items` route can reuse the same logic.
    Best-effort inventory write (matches existing /post behaviour). */
 async function postGrnAndRollup(sb: any, grnId: string, userId: string): Promise<{ ok: true; movementErrors?: string[] } | { ok: false; reason: string; status?: number }> {
   const { data: grnHeader } = await sb.from('grns')
-    .select('grn_number, warehouse_id')
+    .select('grn_number, warehouse_id, company_id, exchange_rate, allocation_method')
     .eq('id', grnId).maybeSingle();
   const { data: items } = await sb.from('grn_items')
-    .select('purchase_order_item_id, qty_accepted, material_code, material_name, unit_price_centi, item_group, variants')
+    .select('id, purchase_order_item_id, qty_accepted, material_code, material_name, unit_price_centi, line_total_centi, item_group, variants')
     .eq('grn_id', grnId);
 
   // Flip to POSTED FIRST, THEN recount. recomputePoReceived excludes DRAFT lines
@@ -80,15 +178,60 @@ async function postGrnAndRollup(sb: any, grnId: string, userId: string): Promise
   // ── Inventory IN per item — best effort, doesn't roll back the post. ─
   const movementErrors: string[] = [];
   const grnNo = (grnHeader as { grn_number: string } | null)?.grn_number ?? grnId;
-  const warehouseId = (grnHeader as { warehouse_id: string | null } | null)?.warehouse_id
+  let warehouseId = (grnHeader as { warehouse_id: string | null } | null)?.warehouse_id
     ?? (await defaultWarehouseId(sb));
+  /* Owner 2026-07-02 — AUTHORITATIVE receiving warehouse = the source PO line's
+     bound warehouse. The warehouse binds at the SO/PO line and must flow into the
+     GRN's stock movements (per-warehouse model, no cross-warehouse pooling). A
+     frontend default once fell back to the FIRST warehouse (CHINA landing) and
+     silently received PO-bound goods into the wrong warehouse, so MRP for the
+     real (MY) warehouse still showed shortage. Guard it at this single post
+     chokepoint: when the GRN's PO-linked lines share ONE warehouse, that is the
+     truth — override a mismatched header + persist it so the movement (and the
+     detail/list) land where the PO expected. Manual (no-PO) or mixed-warehouse
+     GRNs keep the header/default untouched. */
+  const linkedPoItemIds = (items ?? [])
+    .map((it: { purchase_order_item_id: string | null }) => it.purchase_order_item_id)
+    .filter((x: string | null): x is string => !!x);
+  if (linkedPoItemIds.length > 0) {
+    const { data: poWhRows } = await sb.from('purchase_order_items')
+      .select('warehouse_id').in('id', [...new Set(linkedPoItemIds)]);
+    const poWhs = [...new Set(((poWhRows ?? []) as Array<{ warehouse_id: string | null }>)
+      .map((r) => r.warehouse_id).filter((x): x is string => !!x))];
+    if (poWhs.length === 1 && poWhs[0] !== warehouseId) {
+      warehouseId = poWhs[0]!;
+      await sb.from('grns').update({ warehouse_id: warehouseId, updated_at: new Date().toISOString() }).eq('id', grnId);
+    }
+  }
+  /* Landed-cost core (migration 0082) — the GRN line unit_price_centi is in the
+     GRN's OWN currency (RMB / USD / SGD / MYR, copied from the source PO). The
+     FIFO lot must carry MYR, so convert the IN cost at the GRN's rate:
+     unit_cost_sen = round(unit_price_centi × exchange_rate). For an MYR GRN the
+     rate is 1 → toMyrSen is a byte-for-byte no-op (round(int×1) === int), so
+     existing MYR lot costs / COGS / margins are unchanged. A later PI recost
+     OVERWRITES this with the PI line price × the PI's own rate. */
+  const grnRate = (grnHeader as { exchange_rate?: string | number | null } | null)?.exchange_rate ?? 1;
+  /* Landed-cost allocation (migration 0082) — a SERVICE line (item_group='service'
+     — freight, no supplier, just description + amount) is NOT goods: it creates
+     NO inventory movement. Its amount is POOLED and allocated across the goods
+     lines (QTY/VALUE/CBM, header allocation_method) so each goods line's FIFO lot
+     cost = base MYR cost + its per-unit share of the freight, persisted as
+     allocated_charge_centi. chargePool === 0 (no service lines) ⇒ allocation 0
+     everywhere ⇒ byte-for-byte identical to the plain-goods path. */
+  const method = normalizeAllocationMethod((grnHeader as { allocation_method?: string | null } | null)?.allocation_method);
+  const itemRows = (items ?? []) as Array<{ id: string; purchase_order_item_id: string | null; qty_accepted: number; material_code: string; material_name: string | null; unit_price_centi: number | null; line_total_centi?: number | null; item_group?: string | null; variants?: VariantAttrs | null }>;
+  const alloc = await computeAndStoreGrnAllocation(sb, itemRows, grnRate, method);
+  const allocByItemId = new Map(alloc.goods.map((g) => [g.id, g]));
   if (warehouseId && items) {
     // Migration 0120 — stamp each IN with its source PO number as the batch.
     const batchByItem = await resolvePoBatchByItem(
       sb,
-      (items as Array<{ purchase_order_item_id: string | null }>).map((it) => it.purchase_order_item_id),
+      itemRows.map((it) => it.purchase_order_item_id),
     );
-    const movements = (items as Array<{ purchase_order_item_id: string | null; qty_accepted: number; material_code: string; material_name: string | null; unit_price_centi: number | null; item_group?: string | null; variants?: VariantAttrs | null }>)
+    const movements = itemRows
+      // SERVICE lines (freight) never enter inventory — skip them here. Their
+      // amount has already been allocated INTO the goods lines' lot cost above.
+      .filter((it) => !isServiceLine({ itemGroup: it.item_group ?? null, itemCode: it.material_code }))
       .filter((it) => it.qty_accepted > 0)
       .map((it) => ({
         movement_type: 'IN' as const,
@@ -98,7 +241,11 @@ async function postGrnAndRollup(sb: any, grnId: string, userId: string): Promise
         variant_key: computeVariantKey(it.item_group, it.variants ?? null),
         product_name: it.material_name,
         qty: it.qty_accepted,
-        unit_cost_sen: Number(it.unit_price_centi ?? 0),
+        // Landed MYR lot cost = base (rate→MYR) + per-unit allocated freight.
+        // No service lines ⇒ === toMyrSen(unit_price, rate), so existing GRNs
+        // are byte-for-byte unchanged.
+        unit_cost_sen: allocByItemId.get(it.id)?.landedUnitCostMyr
+          ?? toMyrSen(Number(it.unit_price_centi ?? 0), grnRate),
         source_doc_type: 'GRN' as const,
         source_doc_id: grnId,
         source_doc_no: grnNo,
@@ -110,7 +257,7 @@ async function postGrnAndRollup(sb: any, grnId: string, userId: string): Promise
       /* Capture the best-effort write result so the caller can surface a failed
          stock IN (was silently swallowed — GRN flipped POSTED with stock NOT
          booked and the caller never told). No rollback; just make it loud. */
-      const res = await writeMovements(sb, movements);
+      const res = await writeMovements(sb, movements, grnHeader?.company_id ?? null);
       if (!res.ok) movementErrors.push(`IN ${grnNo}: ${res.reason ?? 'unknown'}`);
       /* Drop-ship receipt reconcile (mig 0057) — the IN just created fresh
          batched lots. If a sofa was drop-shipped against this batch before
@@ -161,8 +308,9 @@ async function postGrnAndRollup(sb: any, grnId: string, userId: string): Promise
 
 const HEADER =
   'id, grn_number, purchase_order_id, supplier_id, warehouse_id, received_at, delivery_note_ref, status, notes, ' +
-  /* Migration 0101 — GRN ↔ PO money parity */
-  'currency, subtotal_centi, tax_centi, total_centi, ' +
+  /* Migration 0101 — GRN ↔ PO money parity; 0082 — exchange_rate (FX→MYR cost) +
+     allocation_method (landed-cost "平摊" basis). */
+  'currency, exchange_rate, allocation_method, subtotal_centi, tax_centi, total_centi, ' +
   'posted_at, created_at, created_by, updated_at';
 const ITEM =
   'id, grn_id, purchase_order_item_id, material_kind, material_code, material_name, supplier_sku, ' +
@@ -175,14 +323,17 @@ const ITEM =
   'line_total_centi, delivery_date, unit_cost_centi, ' +
   /* Migration 0106 — GRN line consumption (downstream PI/PR draw) */
   'invoiced_qty, returned_qty, created_at, ' +
+  /* Migration 0082 — landed freight allocated to this goods line (MYR sen) */
+  'allocated_charge_centi, ' +
   /* Migration 0151 — physical rack placement */
   'rack_id';
 
-const nextNumber = async (sb: ReturnType<Variables['supabase']['valueOf']> extends never ? never : any, prefix: string, table: string, col: string): Promise<string> => {
+const nextNumber = async (sb: ReturnType<Variables['supabase']['valueOf']> extends never ? never : any, prefix: string, table: string, col: string, c: any): Promise<string> => {
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
-  const { data: existing } = await sb.from(table).select(col).like(col, `${prefix}-${yymm}-%`);
-  return nextMonthlyDocNo(`${prefix}-${yymm}`, ((existing ?? []) as Array<Record<string, string>>).map((r) => r[col] as string));
+  const p = companyDocPrefix(c);
+  const { data: existing } = await sb.from(table).select(col).like(col, `${p}${prefix}-${yymm}-%`);
+  return nextMonthlyDocNo(`${p}${prefix}-${yymm}`, ((existing ?? []) as Array<Record<string, string>>).map((r) => r[col] as string));
 };
 
 /* ── Recompute GRN header money rollups (migration 0101) ──────────────────
@@ -436,9 +587,12 @@ grns.get('/', async (c) => {
   const sb = c.get('supabase');
   // .limit(500) bounds the result so PostgREST's default 1000-row cap can't
   // silently truncate the GRN list — match the SO/DO/SI list convention.
-  let q = sb.from('grns').select(`${HEADER}, supplier:suppliers(id, code, name), purchase_order:purchase_orders(id, po_number)`).order('received_at', { ascending: false }).limit(500);
+  // warehouse embeds the receiving location's NAME (Owner 2026-07-02 — the GRN
+  // list "Purchase Location" column); warehouse_id is already in HEADER.
+  let q = sb.from('grns').select(`${HEADER}, supplier:suppliers(id, code, name), purchase_order:purchase_orders(id, po_number), warehouse:warehouses!warehouse_id(id, code, name)`).order('received_at', { ascending: false }).limit(500);
   const status = c.req.query('status'); if (status) q = q.eq('status', status);
   const supplierId = c.req.query('supplierId'); if (supplierId) q = q.eq('supplier_id', supplierId);
+  q = scopeToCompany(q, c); // multi-company: isolate to the active company
   const { data, error } = await q;
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
 
@@ -454,22 +608,45 @@ grns.get('/', async (c) => {
   const ids = rows.map((g) => g.id);
   // Migration 0106 — collect each GRN's lines for the lock/convert flags.
   const linesByGrn = new Map<string, Array<{ qty_accepted: number | null; invoiced_qty: number | null; returned_qty: number | null }>>();
+  // Owner 2026-07-02 — "Transfer To" list column: map each grn_item → its GRN so
+  // the per-line downstream (PI/PR) can be rolled up to a per-GRN doc-number set.
+  const grnByItem = new Map<string, string>();
   if (ids.length > 0) {
     const { data: lineRows, error: lineErr } = await sb
       .from('grn_items')
-      .select('grn_id, qty_accepted, invoiced_qty, returned_qty')
+      .select('id, grn_id, qty_accepted, invoiced_qty, returned_qty')
       .in('grn_id', ids);
     if (lineErr) return c.json({ error: 'load_failed', reason: lineErr.message }, 500);
-    for (const li of (lineRows ?? []) as Array<{ grn_id: string; qty_accepted: number | null; invoiced_qty: number | null; returned_qty: number | null }>) {
+    for (const li of (lineRows ?? []) as Array<{ id: string; grn_id: string; qty_accepted: number | null; invoiced_qty: number | null; returned_qty: number | null }>) {
       const arr = linesByGrn.get(li.grn_id) ?? [];
       arr.push({ qty_accepted: li.qty_accepted, invoiced_qty: li.invoiced_qty, returned_qty: li.returned_qty });
       linesByGrn.set(li.grn_id, arr);
+      if (li.id) grnByItem.set(li.id, li.grn_id);
+    }
+  }
+  // Per-GRN downstream: aggregate the per-line PI/PR breakdown into one deduped
+  // doc-number list per GRN (qty summed across lines of the same PI/PR). Reuses
+  // the same helper the detail page uses; cancelled PIs/PRs are already excluded.
+  const downstreamByGrn = new Map<string, Map<string, { docNumber: string; docType: 'PI' | 'PR'; qty: number }>>();
+  if (grnByItem.size > 0) {
+    const perItem = await grnLineDownstream(sb, [...grnByItem.keys()]);
+    for (const [itemId, entries] of perItem.entries()) {
+      const grnId = grnByItem.get(itemId);
+      if (!grnId) continue;
+      const acc = downstreamByGrn.get(grnId) ?? new Map();
+      for (const e of entries) {
+        const prev = acc.get(e.docNumber);
+        if (prev) prev.qty += e.qty;
+        else acc.set(e.docNumber, { docNumber: e.docNumber, docType: e.docType, qty: e.qty });
+      }
+      downstreamByGrn.set(grnId, acc);
     }
   }
   const grns = rows.map((g) => ({
     ...g,
     // Stored header total (= Σ qty*unit − discount). Falls back to 0 if unset.
     total_centi: (g.total_centi as number | null | undefined) ?? 0,
+    downstream: [...(downstreamByGrn.get(g.id)?.values() ?? [])],
     ...computeGrnFlags(linesByGrn.get(g.id) ?? []),
   }));
   return c.json({ grns });
@@ -809,7 +986,7 @@ grns.post('/', async (c) => {
     }
   }
 
-  const grnNumber = await nextNumber(sb, 'GRN', 'grns', 'grn_number');
+  const grnNumber = await nextNumber(sb, 'GRN', 'grns', 'grn_number', c);
 
   /* PR-DRAFT-removal — Commander 2026-05-27: GRN is created as POSTED
      directly. Commander already enters Received/Accepted/Rejected per line
@@ -823,13 +1000,20 @@ grns.post('/', async (c) => {
      fallback — postGrnAndRollup reads `warehouse_id ?? defaultWarehouseId`. */
   const headerWarehouseId =
     (body.warehouseId as string | undefined) ?? (await defaultWarehouseId(sb)) ?? null;
+  /* Migration 0082 — GRN currency + rate inherit from the source PO (MYR default);
+     allocation_method for landed-freight "平摊" (default QTY). MYR ⇒ rate 1, no-op. */
+  const grnFx = await resolveGrnFx(sb, (body.purchaseOrderId as string | undefined) ?? null, body.currency, body.exchangeRate);
   const { data: header, error: hErr } = await sb.from('grns').insert({
+    company_id: activeCompanyId(c), // multi-company: stamp the active company
     grn_number: grnNumber,
     purchase_order_id: (body.purchaseOrderId as string | undefined) ?? null,
     supplier_id: body.supplierId,
     warehouse_id: headerWarehouseId,
     received_at: (body.receivedAt as string) ?? todayMyt(),
     delivery_note_ref: (body.deliveryNoteRef as string) ?? null,
+    currency: grnFx.currency,
+    exchange_rate: grnFx.exchange_rate,
+    allocation_method: normalizeAllocationMethod(body.allocationMethod),
     notes: (body.notes as string) ?? null,
     // Draft/Confirmed — DRAFT commits nothing; the confirm transition (PATCH
     // /:id/post) flips it to POSTED and runs the stock IN + PO rollup there.
@@ -875,7 +1059,7 @@ grns.post('/', async (c) => {
       rack_id: (it.rackId as string | undefined) || null,
     };
   });
-  const { error: iErr } = await sb.from('grn_items').insert(rows);
+  const { error: iErr } = await sb.from('grn_items').insert(stampCompany(rows, c));
   if (iErr) { await sb.from('grns').delete().eq('id', h.id); return c.json({ error: 'items_insert_failed', reason: iErr.message }, 500); }
 
   /* Post-insert over-receipt verification — the pre-check above is a read-then-
@@ -921,10 +1105,10 @@ grns.post('/from-pos', async (c) => {
 
   // Load POs to verify same supplier + grab po_number for traceability.
   const { data: pos, error: poErr } = await sb.from('purchase_orders')
-    .select('id, po_number, supplier_id, status')
+    .select('id, po_number, supplier_id, status, currency')
     .in('id', poIds);
   if (poErr) return c.json({ error: 'load_failed', reason: poErr.message }, 500);
-  const poList = (pos ?? []) as Array<{ id: string; po_number: string; supplier_id: string; status: string }>;
+  const poList = (pos ?? []) as Array<{ id: string; po_number: string; supplier_id: string; status: string; currency?: string | null }>;
   if (poList.length === 0) return c.json({ error: 'pos_not_found' }, 404);
 
   const supplierIds = new Set(poList.map((p) => p.supplier_id));
@@ -960,16 +1144,25 @@ grns.post('/from-pos', async (c) => {
   // Generate GRN number using same pattern as the single-POST endpoint.
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
-  const { data: existingGrnNos } = await sb.from('grns').select('grn_number').like('grn_number', `GRN-${yymm}-%`);
-  const grnNumber = nextMonthlyDocNo(`GRN-${yymm}`, ((existingGrnNos ?? []) as Array<{ grn_number: string }>).map((r) => r.grn_number));
+  const cp = companyDocPrefix(c);
+  const { data: existingGrnNos } = await sb.from('grns').select('grn_number').like('grn_number', `${cp}GRN-${yymm}-%`);
+  const grnNumber = nextMonthlyDocNo(`${cp}GRN-${yymm}`, ((existingGrnNos ?? []) as Array<{ grn_number: string }>).map((r) => r.grn_number));
 
   const poNumbersJoined = poList.map((p) => p.po_number).join(', ');
+  /* Migration 0082 — GRN currency = the source POs' currency (same supplier ⇒
+     assume one currency; take the primary PO's). Rate auto-fills from the master;
+     allocation_method defaults QTY. MYR ⇒ rate 1, no-op. */
+  const batchFx = await resolveGrnFx(sb, poList[0]!.id, poList[0]!.currency ?? undefined, undefined);
   const { data: header, error: hErr } = await sb.from('grns').insert({
+    company_id: activeCompanyId(c), // multi-company: stamp the active company
     grn_number: grnNumber,
     purchase_order_id: poList[0]!.id,                    // primary PO ref (first one)
     supplier_id: supplierId,
     received_at: todayMyt(),
     delivery_note_ref: body.deliveryNoteRef ?? null,
+    currency: batchFx.currency,
+    exchange_rate: batchFx.exchange_rate,
+    allocation_method: normalizeAllocationMethod((body as { allocationMethod?: unknown }).allocationMethod),
     notes: `Batch-converted from ${poList.length} POs: ${poNumbersJoined}${body.notes ? ` · ${body.notes}` : ''}`,
     /* PR-DRAFT-removal — auto-POSTED on create. */
     status: 'POSTED',
@@ -1022,7 +1215,7 @@ grns.post('/from-pos', async (c) => {
       ),
     };
   });
-  const { error: iErr } = await sb.from('grn_items').insert(rows);
+  const { error: iErr } = await sb.from('grn_items').insert(stampCompany(rows, c));
   if (iErr) { await sb.from('grns').delete().eq('id', h.id); return c.json({ error: 'items_insert_failed', reason: iErr.message }, 500); }
 
   /* Post-insert over-receipt verification — the outstanding-qty prefill above is
@@ -1116,7 +1309,7 @@ grns.post('/from-po-items', async (c) => {
       leg_height_inches, leg_price_sen, custom_specials, line_suffix,
       special_order_price_sen, discount_centi, delivery_date,
       supplier_delivery_date_2, supplier_delivery_date_3, supplier_delivery_date_4,
-      po:purchase_orders!inner ( id, po_number, supplier_id, status, purchase_location_id )
+      po:purchase_orders!inner ( id, po_number, supplier_id, status, purchase_location_id, currency )
     `)
     .in('id', ids);
   if (itemsErr) return c.json({ error: 'load_failed', reason: itemsErr.message }, 500);
@@ -1134,7 +1327,7 @@ grns.post('/from-po-items', async (c) => {
     supplier_delivery_date_2: string | null;
     supplier_delivery_date_3: string | null;
     supplier_delivery_date_4: string | null;
-    po: { id: string; po_number: string; supplier_id: string; status: string; purchase_location_id: string | null };
+    po: { id: string; po_number: string; supplier_id: string; status: string; purchase_location_id: string | null; currency?: string | null };
   };
 
   const itemList = (itemsData ?? []) as unknown as ItemRow[];
@@ -1160,14 +1353,14 @@ grns.post('/from-po-items', async (c) => {
   // supplier's lines may span several POs; the GRN header references the first
   // PO (grns.purchase_order_id is single-FK) while each grn_item keeps its own
   // purchase_order_item_id, so received_qty still rolls up to EVERY source PO.
-  type Bucket = { supplierId: string; primaryPoId: string; poNumbers: Set<string>; warehouseId: string | null; lines: Array<{ row: ItemRow; qty: number }> };
+  type Bucket = { supplierId: string; primaryPoId: string; poNumbers: Set<string>; warehouseId: string | null; currency: string | null; lines: Array<{ row: ItemRow; qty: number }> };
   const buckets = new Map<string, Bucket>();
   for (const p of picks) {
     const row = byId.get(p.poItemId)!;
     const key = row.po.supplier_id;
     const cur = buckets.get(key) ?? {
       supplierId: row.po.supplier_id, primaryPoId: row.po.id, poNumbers: new Set<string>(),
-      warehouseId: row.po.purchase_location_id, lines: [],
+      warehouseId: row.po.purchase_location_id, currency: row.po.currency ?? null, lines: [],
     };
     cur.poNumbers.add(row.po.po_number);
     cur.lines.push({ row, qty: p.qty });
@@ -1180,9 +1373,10 @@ grns.post('/from-po-items', async (c) => {
   // Seed from max(suffix), NOT count — count+1 is non-self-healing (a mid-month
   // delete re-mints a surviving number → UNIQUE collision). Derive the next
   // suffix via nextMonthlyDocNo, then counter starts one below it.
-  const { data: existingBatchNos } = await sb.from('grns').select('grn_number').like('grn_number', `GRN-${yymm}-%`);
-  const firstNext = nextMonthlyDocNo(`GRN-${yymm}`, ((existingBatchNos ?? []) as Array<{ grn_number: string }>).map((r) => r.grn_number));
-  let counter = parseInt(firstNext.slice(`GRN-${yymm}-`.length), 10) - 1;
+  const cp = companyDocPrefix(c);
+  const { data: existingBatchNos } = await sb.from('grns').select('grn_number').like('grn_number', `${cp}GRN-${yymm}-%`);
+  const firstNext = nextMonthlyDocNo(`${cp}GRN-${yymm}`, ((existingBatchNos ?? []) as Array<{ grn_number: string }>).map((r) => r.grn_number));
+  let counter = parseInt(firstNext.slice(`${cp}GRN-${yymm}-`.length), 10) - 1;
 
   const receivedAt = body.receivedDate ?? todayMyt();
   const created: Array<{ id: string; grnNumber: string; purchaseOrderId: string; poNumber: string; lineCount: number; posted?: boolean; postError?: string; movementErrors?: string[] }> = [];
@@ -1192,11 +1386,18 @@ grns.post('/from-po-items', async (c) => {
 
   for (const bucket of buckets.values()) {
     counter += 1;
+    /* Migration 0082 — GRN currency = its primary PO's; rate auto-fills from the
+       master; allocation_method defaults QTY. MYR ⇒ rate 1, no-op. */
+    const bucketFx = await resolveGrnFx(sb, bucket.primaryPoId, bucket.currency ?? undefined, undefined);
     const grnPayload = {
+      company_id: activeCompanyId(c), // multi-company: stamp the active company
       purchase_order_id: bucket.primaryPoId,
       supplier_id: bucket.supplierId,
       received_at: receivedAt,
       warehouse_id: bucket.warehouseId,
+      currency: bucketFx.currency,
+      exchange_rate: bucketFx.exchange_rate,
+      allocation_method: normalizeAllocationMethod((body as { allocationMethod?: unknown }).allocationMethod),
       notes: body.notes
         ? `Received from ${[...bucket.poNumbers].join(', ')} · ${body.notes}`
         : `Received from ${[...bucket.poNumbers].join(', ')}`,
@@ -1210,15 +1411,15 @@ grns.post('/from-po-items', async (c) => {
        suffix from a fresh live count + bump. */
     let h: { id: string; grn_number: string } | null = null;
     for (let attempt = 0; attempt < 8 && !h; attempt += 1) {
-      const grnNumber = `GRN-${yymm}-${String(counter).padStart(3, '0')}`;
+      const grnNumber = `${cp}GRN-${yymm}-${String(counter).padStart(3, '0')}`;
       const { data: header, error: hErr } = await sb.from('grns')
         .insert({ grn_number: grnNumber, ...grnPayload })
         .select('id, grn_number').single();
       if (!hErr && header) { h = header as unknown as { id: string; grn_number: string }; break; }
       if (!hErr || (hErr as { code?: string }).code !== '23505') break;
       const { data: live } = await sb.from('grns')
-        .select('grn_number').like('grn_number', `GRN-${yymm}-%`);
-      counter = parseInt(nextMonthlyDocNo(`GRN-${yymm}`, ((live ?? []) as Array<{ grn_number: string }>).map((r) => r.grn_number)).slice(`GRN-${yymm}-`.length), 10);
+        .select('grn_number').like('grn_number', `${cp}GRN-${yymm}-%`);
+      counter = parseInt(nextMonthlyDocNo(`${cp}GRN-${yymm}`, ((live ?? []) as Array<{ grn_number: string }>).map((r) => r.grn_number)).slice(`${cp}GRN-${yymm}-`.length), 10);
     }
     if (!h) continue;
 
@@ -1262,7 +1463,7 @@ grns.post('/from-po-items', async (c) => {
         ),
       };
     });
-    const { error: iErr } = await sb.from('grn_items').insert(rows);
+    const { error: iErr } = await sb.from('grn_items').insert(stampCompany(rows, c));
     if (iErr) {
       await sb.from('grns').delete().eq('id', h.id);
       continue;
@@ -1429,7 +1630,7 @@ grns.patch('/:id/cancel', async (c) => {
           };
         });
       if (movements.length > 0) {
-        await writeMovements(sb, movements);
+        await writeMovements(sb, movements, activeCompanyId(c));
         /* GRN cancel pulled stock back out → other READY SOs that relied on
            this stock may need to regress. Re-walk allocation. Best-effort. */
         try {
@@ -1484,8 +1685,8 @@ grns.patch('/:id', async (c) => {
      warehouse buckets changed. */
   if (body.warehouseId !== undefined) {
     const { data: cur } = await sb.from('grns')
-      .select('id, grn_number, status, warehouse_id').eq('id', id).maybeSingle();
-    const c0 = cur as { grn_number: string; status: string | null; warehouse_id: string | null } | null;
+      .select('id, grn_number, status, warehouse_id, exchange_rate').eq('id', id).maybeSingle();
+    const c0 = cur as { grn_number: string; status: string | null; warehouse_id: string | null; exchange_rate?: string | number | null } | null;
     const oldWh = c0?.warehouse_id ?? null;
     const newWh = (body.warehouseId as string | null) ?? null;
     if (c0 && (c0.status ?? '').toUpperCase() === 'POSTED' && newWh && oldWh && newWh !== oldWh) {
@@ -1513,12 +1714,12 @@ grns.patch('/:id', async (c) => {
           };
           return [
             { ...base, movement_type: 'OUT' as const, warehouse_id: oldWh, notes: 'GRN warehouse changed — out of old warehouse' },
-            { ...base, movement_type: 'IN' as const, warehouse_id: newWh, unit_cost_sen: Number(it.unit_price_centi ?? 0), notes: 'GRN warehouse changed — into new warehouse' },
+            { ...base, movement_type: 'IN' as const, warehouse_id: newWh, unit_cost_sen: toMyrSen(Number(it.unit_price_centi ?? 0), c0?.exchange_rate ?? 1), notes: 'GRN warehouse changed — into new warehouse' },
           ];
         });
       if (movements.length > 0) {
         try {
-          await writeMovements(sb, movements);
+          await writeMovements(sb, movements, activeCompanyId(c));
           try {
             const { recomputeSoStockAllocation } = await import('../lib/so-stock-allocation');
             await recomputeSoStockAllocation(sb);
@@ -1538,8 +1739,45 @@ grns.patch('/:id', async (c) => {
   ] as const) {
     if (body[from] !== undefined) updates[to] = body[from];
   }
+  // currency is stored upper-cased like the create paths.
+  if (updates.currency !== undefined) updates.currency = normalizeCurrency(updates.currency);
+  /* Migration 0082 — landed-cost basis. Normalise the enum on write. */
+  let methodChanged = false;
+  if (body.allocationMethod !== undefined) {
+    updates.allocation_method = normalizeAllocationMethod(body.allocationMethod);
+    methodChanged = true;
+  }
+  /* Migration 0082 — keep exchange_rate consistent with the effective currency
+     (mirrors PI's PATCH). Rate explicitly sent → normalise against the effective
+     currency (finite > 0, else 1); currency flipped to MYR without a rate → reset
+     to 1; neither → leave untouched. */
+  let rateChanged = false;
+  if (body.exchangeRate !== undefined || updates.currency !== undefined) {
+    let effectiveCurrency = updates.currency as string | undefined;
+    if (effectiveCurrency === undefined) {
+      const { data: curRow } = await sb.from('grns').select('currency').eq('id', id).maybeSingle();
+      effectiveCurrency = (curRow as { currency?: string } | null)?.currency ?? 'MYR';
+    }
+    if (body.exchangeRate !== undefined) {
+      updates.exchange_rate = normalizeExchangeRate(body.exchangeRate, effectiveCurrency);
+      rateChanged = true;
+    } else if (String(effectiveCurrency).toUpperCase() === 'MYR') {
+      updates.exchange_rate = 1;
+      rateChanged = true;
+    }
+  }
   const { data, error } = await sb.from('grns').update(updates).eq('id', id).select(HEADER).single();
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
+  /* When the rate or the landed-cost basis moved, the lot was booked at the OLD
+     figures. Re-allocate the freight (allocated_charge_centi) then recost the
+     lots → consumptions → DO/SI so the landed MYR cost reflects the new rate /
+     method. Best-effort; a no-op for an MYR GRN with no service lines. */
+  if (rateChanged || methodChanged) {
+    try {
+      await reallocateGrnCharges(sb, id);
+      await recostFromGrn(sb, id);
+    } catch (e) { /* eslint-disable-next-line no-console */ console.error('[grn-patch] re-alloc/recost failed:', id, e); }
+  }
   return c.json({ grn: data });
 });
 
@@ -1623,7 +1861,7 @@ grns.post('/:id/items', async (c) => {
     uom: (it.uom as string) ?? 'UNIT',
     delivery_date: (it.deliveryDate as string) ?? null,
   };
-  const { data, error } = await sb.from('grn_items').insert(row).select(ITEM).single();
+  const { data, error } = await sb.from('grn_items').insert({ ...row, company_id: activeCompanyId(c) }).select(ITEM).single();
   if (error) return c.json({ error: 'insert_failed', reason: error.message }, 500);
 
   /* Bug #3/#11 — POST-INSERT over-receipt verification. The pre-check above is a
@@ -1677,9 +1915,12 @@ grns.post('/:id/items', async (c) => {
   if (qtyReceived > 0) {
     try {
       const { data: grnHeader } = await sb.from('grns')
-        .select('grn_number, warehouse_id').eq('id', grnId).maybeSingle();
+        .select('grn_number, warehouse_id, exchange_rate').eq('id', grnId).maybeSingle();
       const warehouseId = (grnHeader as { warehouse_id: string | null } | null)?.warehouse_id
         ?? (await defaultWarehouseId(sb));
+      // Migration 0082 — convert the line's own-currency unit price to MYR at the
+      // GRN's rate (no-op for an MYR GRN).
+      const addLineRate = (grnHeader as { exchange_rate?: string | number | null } | null)?.exchange_rate ?? 1;
       if (warehouseId) {
         // Migration 0120 — stamp this added line's IN with its source PO batch.
         const addedPoItemId = (it.purchaseOrderItemId as string) ?? null;
@@ -1691,14 +1932,14 @@ grns.post('/:id/items', async (c) => {
           variant_key: computeVariantKey((it.itemGroup as string) ?? null, (it.variants as VariantAttrs | null) ?? null),
           product_name: String(it.materialName),
           qty: qtyReceived,
-          unit_cost_sen: unitPriceCenti,
+          unit_cost_sen: toMyrSen(unitPriceCenti, addLineRate),
           source_doc_type: 'GRN' as const,
           source_doc_id: grnId,
           source_doc_no: (grnHeader as { grn_number: string } | null)?.grn_number ?? grnId,
           batch_no: addedPoItemId ? (batchByItem.get(addedPoItemId) ?? null) : null,
           performed_by: user.id,
           notes: 'GRN line added — receipt',
-        }]);
+        }], activeCompanyId(c));
         /* New stock landed → re-walk SO allocation. */
         try {
           const { recomputeSoStockAllocation } = await import('../lib/so-stock-allocation');
@@ -1831,11 +2072,14 @@ grns.patch('/:id/items/:itemId', async (c) => {
   // Resolve warehouse once (needed by both the guard and the movement write).
   let editWarehouseId: string | null = null;
   let editGrnNo = grnId;
+  let editRate: string | number | null = 1;
   if (inventoryChange) {
-    const { data: grnHead } = await sb.from('grns').select('grn_number, warehouse_id').eq('id', grnId).maybeSingle();
+    const { data: grnHead } = await sb.from('grns').select('grn_number, warehouse_id, exchange_rate').eq('id', grnId).maybeSingle();
     editWarehouseId = (grnHead as { warehouse_id: string | null } | null)?.warehouse_id
       ?? (await defaultWarehouseId(sb));
     editGrnNo = (grnHead as { grn_number: string } | null)?.grn_number ?? grnId;
+    // Migration 0082 — convert the line unit price to MYR at the GRN's rate.
+    editRate = (grnHead as { exchange_rate?: string | number | null } | null)?.exchange_rate ?? 1;
 
     // GUARD (bug #2) — pre-check any OUT against current on-hand BEFORE writing.
     if (editWarehouseId) {
@@ -1874,7 +2118,7 @@ grns.patch('/:id/items/:itemId', async (c) => {
       });
       if (newAccepted > 0) movements.push({
         movement_type: 'IN', warehouse_id: warehouseId, product_code: matCode,
-        variant_key: newKey, product_name: matName, qty: newAccepted, unit_cost_sen: unit,
+        variant_key: newKey, product_name: matName, qty: newAccepted, unit_cost_sen: toMyrSen(unit, editRate),
         source_doc_type: 'GRN', source_doc_id: grnId, source_doc_no: editGrnNo,
         performed_by: user.id, notes: 'GRN line edited — variant changed, re-adding new bucket', ...batchTag,
       });
@@ -1882,7 +2126,7 @@ grns.patch('/:id/items/:itemId', async (c) => {
       const delta = newAccepted - prevAccepted;
       if (delta > 0) movements.push({
         movement_type: 'IN', warehouse_id: warehouseId, product_code: matCode,
-        variant_key: newKey, product_name: matName, qty: delta, unit_cost_sen: unit,
+        variant_key: newKey, product_name: matName, qty: delta, unit_cost_sen: toMyrSen(unit, editRate),
         source_doc_type: 'GRN', source_doc_id: grnId, source_doc_no: editGrnNo,
         performed_by: user.id, notes: 'GRN line qty edited — receiving delta', ...batchTag,
       });
@@ -1895,7 +2139,7 @@ grns.patch('/:id/items/:itemId', async (c) => {
     }
     if (movements.length > 0) {
       try {
-        await writeMovements(sb, movements);
+        await writeMovements(sb, movements, activeCompanyId(c));
         try {
           const { recomputeSoStockAllocation } = await import('../lib/so-stock-allocation');
           await recomputeSoStockAllocation(sb);
@@ -2028,7 +2272,7 @@ grns.delete('/:id/items/:itemId', async (c) => {
             source_doc_no: (grnHeader as { grn_number: string } | null)?.grn_number ?? grnId,
             performed_by: user.id,
             notes: 'GRN line deleted — reversing receipt',
-          }]);
+          }], activeCompanyId(c));
           /* GRN line delete pulled stock back out → re-walk SO allocation. */
           try {
             const { recomputeSoStockAllocation } = await import('../lib/so-stock-allocation');

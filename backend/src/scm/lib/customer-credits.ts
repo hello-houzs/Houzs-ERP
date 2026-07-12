@@ -31,6 +31,8 @@ export type AddCreditInput = {
   sourceDocId?: string | null;
   notes?: string | null;
   createdBy?: string | null;
+  // Multi-company (mig 0061): the ledger row's company (from the source SI/SO).
+  companyId?: number | null;
 };
 
 /** Insert one ledger row. Idempotency note: callers that need it (cancel /
@@ -40,6 +42,7 @@ export async function addCustomerCredit(sb: any, args: AddCreditInput): Promise<
   if (!args.debtorCode || !args.debtorCode.trim()) return { ok: false, reason: 'debtor_code_required' };
   if (!Number.isFinite(args.amountCenti) || args.amountCenti === 0) return { ok: false, reason: 'amount_zero' };
   const { data, error } = await sb.from('customer_credits').insert({
+    ...(args.companyId != null ? { company_id: args.companyId } : {}),
     debtor_code:   args.debtorCode,
     debtor_name:   args.debtorName ?? null,
     amount_centi:  Math.round(args.amountCenti),
@@ -107,8 +110,13 @@ export async function applyCustomerCreditToSi(
   const apply = Math.min(balance, args.remainingDueCenti);
   if (apply <= 0) return { applied: 0, reason: 'no_due' };
 
+  // Multi-company (mig 0061): the payment + ledger rows inherit the SI's company.
+  const { data: siCo } = await sb.from('sales_invoices').select('company_id').eq('id', args.siId).maybeSingle();
+  const companyId = (siCo as { company_id?: number | null } | null)?.company_id ?? null;
+
   // 1. Payment row on the SI — marks the SI as (partly) paid.
   const { error: payErr } = await sb.from('sales_invoice_payments').insert({
+    ...(companyId != null ? { company_id: companyId } : {}),
     sales_invoice_id: args.siId,
     method: 'credit',
     amount_centi: apply,
@@ -127,6 +135,7 @@ export async function applyCustomerCreditToSi(
     sourceDocId: args.siId,
     notes: `Auto-applied to ${args.siNumber}`,
     createdBy: args.createdBy ?? null,
+    companyId,
   });
 
   // 3. Bump SI's paid_centi — optimistic-concurrency loop (Bug#5 class, ported
@@ -168,11 +177,11 @@ export async function reconcileSiOverpay(
 ): Promise<{ delta: number; reason?: string }> {
   const { data: si } = await sb
     .from('sales_invoices')
-    .select('invoice_number, total_centi, paid_centi, debtor_code, debtor_name, status')
+    .select('invoice_number, total_centi, paid_centi, debtor_code, debtor_name, status, company_id')
     .eq('id', siId)
     .maybeSingle();
   if (!si) return { delta: 0, reason: 'not_found' };
-  const s = si as { invoice_number: string; total_centi: number | null; paid_centi: number | null; debtor_code: string | null; debtor_name: string | null; status: string | null };
+  const s = si as { invoice_number: string; total_centi: number | null; paid_centi: number | null; debtor_code: string | null; debtor_name: string | null; status: string | null; company_id: number | null };
   if (!s.debtor_code) return { delta: 0, reason: 'no_debtor' };
   if ((s.status ?? '').toUpperCase() === 'CANCELLED') return { delta: 0, reason: 'cancelled' };
 
@@ -202,6 +211,7 @@ export async function reconcileSiOverpay(
     notes: delta > 0
       ? `Overpayment recorded on ${s.invoice_number} (received ${paid / 100}, due ${total / 100}).`
       : `Overpayment corrected on ${s.invoice_number} after payment removal.`,
+    companyId: s.company_id,
   });
   return r.ok ? { delta } : { delta: 0, reason: r.reason };
 }
@@ -249,6 +259,10 @@ export async function creditFromCancelledSi(
   const creditCenti = Math.max(0, args.paidCenti - Math.max(0, liveOverpay));
   if (creditCenti <= 0) return { credited: 0, reason: 'covered_by_overpay' };
 
+  // Multi-company (mig 0061): the ledger row inherits the SI's company.
+  const { data: siCo } = await sb.from('sales_invoices').select('company_id').eq('id', args.siId).maybeSingle();
+  const companyId = (siCo as { company_id?: number | null } | null)?.company_id ?? null;
+
   const r = await addCustomerCredit(sb, {
     debtorCode: args.debtorCode,
     debtorName: args.debtorName ?? null,
@@ -258,6 +272,7 @@ export async function creditFromCancelledSi(
     sourceDocId: args.siId,
     notes: `Cancelled invoice ${args.siNumber} carried ${creditCenti / 100} as customer credit.`,
     createdBy: args.createdBy ?? null,
+    companyId,
   });
   return r.ok ? { credited: creditCenti } : { credited: 0, reason: r.reason };
 }
@@ -283,6 +298,10 @@ export async function reverseCancelledSiCredit(
     .reduce((s, r) => s + Number(r.amount_centi ?? 0), 0);
   if (standing <= 0) return { reversed: 0, reason: 'nothing_to_reverse' };
 
+  // Multi-company (mig 0061): the contra row inherits the SI's company.
+  const { data: siCo } = await sb.from('sales_invoices').select('company_id').eq('id', args.siId).maybeSingle();
+  const companyId = (siCo as { company_id?: number | null } | null)?.company_id ?? null;
+
   const r = await addCustomerCredit(sb, {
     debtorCode: args.debtorCode,
     debtorName: args.debtorName ?? null,
@@ -292,6 +311,7 @@ export async function reverseCancelledSiCredit(
     sourceDocId: args.siId,
     notes: `Reopened invoice ${args.siNumber} — cancel-refund credit (${standing / 100}) reversed.`,
     createdBy: args.createdBy ?? null,
+    companyId,
   });
   return r.ok ? { reversed: standing } : { reversed: 0, reason: r.reason };
 }
@@ -323,11 +343,13 @@ export async function creditFromCancelledSo(
   // (mfg_sales_order_payments — migration 0073).
   const { data: pays } = await sb
     .from('mfg_sales_order_payments')
-    .select('amount_centi')
+    .select('amount_centi, company_id')
     .eq('so_doc_no', args.docNo);
-  const total = ((pays ?? []) as Array<{ amount_centi: number }>)
-    .reduce((s, p) => s + Number(p.amount_centi ?? 0), 0);
+  const payRows = (pays ?? []) as Array<{ amount_centi: number; company_id?: number | null }>;
+  const total = payRows.reduce((s, p) => s + Number(p.amount_centi ?? 0), 0);
   if (total <= 0) return { credited: 0, reason: 'no_paid' };
+  // Multi-company (mig 0061): the ledger row inherits the SO's company (via its payments).
+  const companyId = payRows.find((p) => p.company_id != null)?.company_id ?? null;
 
   const r = await addCustomerCredit(sb, {
     debtorCode: args.debtorCode,
@@ -337,6 +359,7 @@ export async function creditFromCancelledSo(
     sourceDocNo: args.docNo,
     notes: `Cancelled Sales Order ${args.docNo} carried deposit ${total / 100} as customer credit.`,
     createdBy: args.createdBy ?? null,
+    companyId,
   });
   return r.ok ? { credited: total } : { credited: 0, reason: r.reason };
 }

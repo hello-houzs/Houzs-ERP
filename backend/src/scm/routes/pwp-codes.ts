@@ -13,6 +13,7 @@ import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { matchComboSubset, passesRefinementColumns } from '../shared';
 import { supabaseAuth } from '../middleware/auth';
+import { activeCompanyId } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 type AppCtx = Context<{ Bindings: Env; Variables: Variables }>;
@@ -205,6 +206,7 @@ pwpCodes.post('/reserve', async (c) => {
       for (let i = 0; i < target - mine.length; i++) {
         for (let attempt = 0; attempt < 5; attempt++) {
           const { error } = await supabase.from('pwp_codes').insert({
+            company_id:                activeCompanyId(c),
             code:                      genCode(),
             rule_id:                   rule.id,
             reward_category:           rule.reward_category,

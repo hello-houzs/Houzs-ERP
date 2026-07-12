@@ -14,6 +14,7 @@ import { BreadcrumbsProvider } from "./hooks/useBreadcrumbs";
 import { PageSkeleton, ChunkReloadBoundary } from "./components/RouteFallback";
 import { NewVersionBanner } from "./components/NewVersionBanner";
 import { IosInstallGuide } from "./components/IosInstallGuide";
+import { AndroidInstallGuide } from "./components/AndroidInstallGuide";
 
 // Route-level code splitting: every page becomes its own chunk, fetched on
 // first visit, so the initial bundle carries only the shell. The .then()
@@ -56,6 +57,7 @@ const ScmAccountingV2 = lazy(() => import("./pages/scm-v2/Accounting").then((m) 
 const ScmOutstandingV2 = lazy(() => import("./pages/scm-v2/Outstanding").then((m) => ({ default: m.Outstanding })));
 const ScmFabricTrackingV2 = lazy(() => import("./pages/scm-v2/FabricTracking").then((m) => ({ default: m.FabricTracking })));
 const ScmWarehousesV2 = lazy(() => import("./pages/scm-v2/Warehouses").then((m) => ({ default: m.Warehouses })));
+const ScmCurrenciesV2 = lazy(() => import("./pages/scm-v2/Currencies").then((m) => ({ default: m.Currencies })));
 const ScmProductsV2 = lazy(() => import("./pages/scm-v2/Products").then((m) => ({ default: m.Products })));
 const ScmProductModelsV2 = lazy(() => import("./pages/scm-v2/ProductModels").then((m) => ({ default: m.ProductModels })));
 const ScmProductModelDetailV2 = lazy(() => import("./pages/scm-v2/ProductModelDetail").then((m) => ({ default: m.ProductModelDetail })));
@@ -67,6 +69,9 @@ const ScmPurchaseInvoicesV2 = lazy(() => import("./pages/scm-v2/PurchaseInvoices
 const ScmPurchaseInvoiceNewV2 = lazy(() => import("./pages/scm-v2/PurchaseInvoiceNew").then((m) => ({ default: m.PurchaseInvoiceNew })));
 const ScmPurchaseInvoiceFromGrnV2 = lazy(() => import("./pages/scm-v2/PurchaseInvoiceFromGrn").then((m) => ({ default: m.PurchaseInvoiceFromGrn })));
 const ScmPurchaseInvoiceDetailV2 = lazy(() => import("./pages/scm-v2/PurchaseInvoiceDetailV2").then((m) => ({ default: m.PurchaseInvoiceDetailV2 })));
+const ScmPaymentVouchersV2 = lazy(() => import("./pages/scm-v2/PaymentVouchers").then((m) => ({ default: m.PaymentVouchers })));
+const ScmPaymentVoucherNewV2 = lazy(() => import("./pages/scm-v2/PaymentVoucherNew").then((m) => ({ default: m.PaymentVoucherNew })));
+const ScmPaymentVoucherDetailV2 = lazy(() => import("./pages/scm-v2/PaymentVoucherDetail").then((m) => ({ default: m.PaymentVoucherDetail })));
 const ScmStockAdjustmentsV2 = lazy(() => import("./pages/scm-v2/StockAdjustments").then((m) => ({ default: m.StockAdjustments })));
 const ScmStockAdjustmentNewV2 = lazy(() => import("./pages/scm-v2/StockAdjustmentNew").then((m) => ({ default: m.StockAdjustmentNew })));
 const ScmStockTransfersV2 = lazy(() => import("./pages/scm-v2/StockTransfersListV2").then((m) => ({ default: m.StockTransfersListV2 })));
@@ -97,6 +102,7 @@ const ScmLorryCapacityV2 = lazy(() => import("./pages/scm-v2/LorryCapacity").the
 const Overview = lazy(() => import("./pages/Overview").then((m) => ({ default: m.Overview })));
 // Supply Chain Hub — section landing page (flattens the 3-level SCM nesting).
 const ScmHub = lazy(() => import("./pages/ScmHub").then((m) => ({ default: m.ScmHub })));
+const ScmSubgroupHub = lazy(() => import("./pages/ScmSubgroupHub").then((m) => ({ default: m.ScmSubgroupHub })));
 const ScmSalesOrdersV2 = lazy(() => import("./pages/scm-v2/MfgSalesOrdersListV2").then((m) => ({ default: m.MfgSalesOrdersListV2 })));
 const ScmSalesOrderMaintenanceV2 = lazy(() => import("./pages/scm-v2/SalesOrderMaintenance").then((m) => ({ default: m.SalesOrderMaintenance })));
 const ScmSalesOrderNewV2 = lazy(() => import("./pages/scm-v2/SalesOrderNew").then((m) => ({ default: m.SalesOrderNew })));
@@ -105,6 +111,7 @@ const ScmSalesOrderNewFromProductsV2 = lazy(() => import("./pages/scm-v2/SalesOr
 const ScmCategoriesV2 = lazy(() => import("./pages/scm-v2/Categories").then((m) => ({ default: m.Categories })));
 const ScmSoFromProductsV2 = lazy(() => import("./pages/scm-v2/SoFromProducts").then((m) => ({ default: m.SoFromProducts })));
 const ScmSalesOrderDetailV2 = lazy(() => import("./pages/scm-v2/SalesOrderDetailV2").then((m) => ({ default: m.SalesOrderDetailV2 })));
+const ScmAmendmentsV2 = lazy(() => import("./pages/scm-v2/Amendments").then((m) => ({ default: m.Amendments })));
 const ScmSoDetailListingV2 = lazy(() => import("./pages/scm-v2/SalesOrderDetailListing").then((m) => ({ default: m.SalesOrderDetailListing })));
 const ScmDoDetailListingV2 = lazy(() => import("./pages/scm-v2/DeliveryOrderDetailListing").then((m) => ({ default: m.DeliveryOrderDetailListing })));
 const ScmSiDetailListingV2 = lazy(() => import("./pages/scm-v2/SalesInvoiceDetailListing").then((m) => ({ default: m.SalesInvoiceDetailListing })));
@@ -210,6 +217,7 @@ export default function App() {
       <BackToTopFAB />
       <NewVersionBanner />
       <IosInstallGuide />
+      <AndroidInstallGuide />
       <Layout>
         <ChunkReloadBoundary>
         <Suspense fallback={<PageSkeleton />}>
@@ -353,6 +361,10 @@ export default function App() {
         <Route path="/scm/mrp" element={<ScmGuard area="scm.procurement.mrp"><Scm2990Shell><ScmMrpV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/accounting" element={<ScmGuard area="scm.finance.accounting"><Scm2990Shell><ScmAccountingV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/outstanding" element={<ScmGuard area="scm.finance.outstanding"><Scm2990Shell><ScmOutstandingV2 /></Scm2990Shell></ScmGuard>} />
+        {/* Currencies master (Phase 1-A FX) — owner-maintained currency + rate
+            table feeding the GRN / PI / PV foreign-currency posting. Gated on the
+            flat scm.currency.manage permission (Owner / IT Admin cover it via *). */}
+        <Route path="/scm/currencies" element={<Guard anyPerm={["*", "scm.currency.manage"]}><Scm2990Shell><ScmCurrenciesV2 /></Scm2990Shell></Guard>} />
         <Route path="/scm/fabric-tracking" element={<ScmGuard area="scm.procurement.products"><Scm2990Shell><ScmFabricTrackingV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/warehouses" element={<ScmGuard area="scm.warehouse.inventory"><Scm2990Shell><ScmWarehousesV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/products" element={<ScmGuard area="scm.procurement.products"><Scm2990Shell><ScmProductsV2 /></Scm2990Shell></ScmGuard>} />
@@ -370,6 +382,11 @@ export default function App() {
         <Route path="/scm/purchase-invoices/new" element={<ScmGuard area="scm.procurement.pi"><Scm2990Shell><ScmPurchaseInvoiceNewV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/purchase-invoices/from-grn" element={<ScmGuard area="scm.procurement.pi"><Scm2990Shell><ScmPurchaseInvoiceFromGrnV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/purchase-invoices/:id" element={<ScmGuard area="scm.procurement.pi"><Scm2990Shell><ScmPurchaseInvoiceDetailV2 /></Scm2990Shell></ScmGuard>} />
+        {/* Payment Vouchers — standalone AP cash-out doc (port of 2990 0189/0202,
+            Phase 1-B MYR). Gated on the finance area; /new precedes /:id. */}
+        <Route path="/scm/payment-vouchers" element={<ScmGuard area="scm.finance.accounting"><Scm2990Shell><ScmPaymentVouchersV2 /></Scm2990Shell></ScmGuard>} />
+        <Route path="/scm/payment-vouchers/new" element={<ScmGuard area="scm.finance.accounting"><Scm2990Shell><ScmPaymentVoucherNewV2 /></Scm2990Shell></ScmGuard>} />
+        <Route path="/scm/payment-vouchers/:id" element={<ScmGuard area="scm.finance.accounting"><Scm2990Shell><ScmPaymentVoucherDetailV2 /></Scm2990Shell></ScmGuard>} />
         {/* TEMP — vendored 2990's stock-movement pages (wave 4: Adjustments /
             Transfers / Takes), parallel to the native /scm/* below. Each wrapped
             in <Scm2990Shell>. Literal /new precedes /:id so it matches first. */}
@@ -399,10 +416,26 @@ export default function App() {
         <Route path="/scm/lorry-capacity"            element={<ScmGuard area="scm.transportation.drivers"><Scm2990Shell><ScmLorryCapacityV2 /></Scm2990Shell></ScmGuard>} />
         {/* Supply Chain Hub — section landing page (main app layout, NOT the 2990 shell). */}
         <Route path="/scm" element={<ScmGuard area="scm"><ScmHub /></ScmGuard>} />
+        {/* Nick 2026-07-09 — Level 2 sub-group hubs (mirror /projects?view=hub).
+            Each renders NAV_TABS children of the corresponding scm sub-group as
+            a card grid. Same ScmGuard as ScmHub — a role with any SCM access
+            passes; per-card visibility inside the hub is filtered against
+            NAV_TABS' own permission fields. */}
+        <Route path="/scm/sales-order"    element={<ScmGuard area="scm"><ScmSubgroupHub groupId="scm-sales"          description="Pick a section — sales orders, delivery orders, invoices or returns." /></ScmGuard>} />
+        <Route path="/scm/consignment"    element={<ScmGuard area="scm"><ScmSubgroupHub groupId="scm-consignment"    description="Consignment flow — orders, notes, returns and their purchase-side counterparts." /></ScmGuard>} />
+        <Route path="/scm/procurement"    element={<ScmGuard area="scm"><ScmSubgroupHub groupId="scm-procurement"    description="Procurement flow — products, suppliers, MRP, POs, receipts, invoices and returns." /></ScmGuard>} />
+        <Route path="/scm/transportation" element={<ScmGuard area="scm"><ScmSubgroupHub groupId="scm-transportation" description="Delivery planning, fleet, lorry capacity, drivers and regions." /></ScmGuard>} />
+        <Route path="/scm/warehouse"      element={<ScmGuard area="scm"><ScmSubgroupHub groupId="scm-warehouse"      description="Warehouses, inventory, adjustments, transfers and stock take." /></ScmGuard>} />
+        <Route path="/scm/finance"        element={<ScmGuard area="scm"><ScmSubgroupHub groupId="scm-finance"        description="Accounting and outstanding receivables." /></ScmGuard>} />
         {/* Sales Orders READ side (vendored). The literal /maintenance route
             MUST precede /:docNo so 'maintenance' isn't caught as a doc number.
             2990 uses :docNo (not :id) for the SO detail. */}
         <Route path="/scm/sales-orders" element={<ScmGuard area="scm.sales.orders"><Scm2990Shell><ScmSalesOrdersV2 /></Scm2990Shell></ScmGuard>} />
+        {/* SO amendment / revision queue (Phase 1-C). Gated on the amendment
+            permission keys (any of create / supplier-confirm / approve-so /
+            approve-po) — OR scm.access / Sales-Orders page access, so a full-
+            access SCM user still reaches it. Belongs to the Sales-Order domain. */}
+        <Route path="/scm/amendments" element={<Guard perm="scm.access" anyPerm={["scm.amendment.create", "scm.amendment.supplier_confirm", "scm.amendment.approve_so", "scm.amendment.approve_po"]} anyAccess={["scm.sales.orders"]}><Scm2990Shell><ScmAmendmentsV2 /></Scm2990Shell></Guard>} />
         <Route path="/scm/sales-orders/maintenance" element={<ScmGuard area="scm.sales.orders"><Scm2990Shell><ScmSalesOrderMaintenanceV2 /></Scm2990Shell></ScmGuard>} />
         {/* Literal /new + /generate MUST precede /:docNo so they match first. */}
         <Route path="/scm/sales-orders/new" element={<ScmGuard area="scm.sales.orders"><Scm2990Shell><ScmSalesOrderNewV2 /></Scm2990Shell></ScmGuard>} />

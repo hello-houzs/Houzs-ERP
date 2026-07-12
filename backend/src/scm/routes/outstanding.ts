@@ -31,6 +31,7 @@ import { Hono } from "hono";
 import { supabaseAuth } from "../middleware/auth";
 import type { Env, Variables } from "../env";
 import { paginateAll } from "../lib/paginate-all";
+import { scopeToCompany } from "../lib/companyScope";
 
 export const outstanding = new Hono<{ Bindings: Env; Variables: Variables }>();
 outstanding.use("*", supabaseAuth);
@@ -57,6 +58,7 @@ for (const [slug, { view, dateCol }] of Object.entries(MODULES)) {
     // outstanding list (an "all"/wide-range view can exceed 1000 docs).
     const { data, error } = await paginateAll((pFrom, pTo) => {
       let q = sb.from(view).select("*").order(dateCol, { ascending: false });
+      q = scopeToCompany(q, c); // multi-company: isolate to the active company (views expose company_id via mig 0062)
       // outstanding filter: default = true (only outstanding rows)
       if (outstandingParam === "true" || outstandingParam == null) {
         q = q.eq("is_outstanding", true);
@@ -103,6 +105,7 @@ outstanding.get("/summary", async (c) => {
     // 1000-row cap would understate both on a large outstanding set.
     const { data } = await paginateAll((pFrom, pTo) => {
       let q = sb.from(view).select("*").eq("is_outstanding", true);
+      q = scopeToCompany(q, c); // multi-company: isolate to the active company
       // LEAK GUARD (DRAFT) — keep DRAFT SIs out of the AR outstanding totals.
       if (slug === "si") q = q.neq("status", "DRAFT");
       if (from) q = q.gte(dateCol, from);

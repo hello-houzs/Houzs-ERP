@@ -47,6 +47,11 @@ type MovementInput = {
     | 'PC_RECEIVE' | 'PC_RETURN';
   source_doc_id?: string;
   source_doc_no?: string;
+  /** Multi-company (migration 0061): inventory_movements.company_id is NOT NULL.
+   *  Callers pass the ACTIVE company (or the source doc's company) via the
+   *  writeMovements `companyId` arg, which stamps this; the FIFO trigger then
+   *  copies it onto the lot / consumption it creates. Row-level value wins. */
+  company_id?: number | null;
   /** Migration 0120 — production batch (source PO number). On IN rows the FIFO
    *  trigger copies this onto the lot it creates, so sofa set components share a
    *  batch and can be shipped as a whole set from one dye lot. Omit for
@@ -68,8 +73,14 @@ type MovementInput = {
 export async function writeMovements(
   sb: any,
   rows: MovementInput[],
+  /** Multi-company: stamp this company_id on every row that doesn't already
+   *  carry one. Undefined (single-company Houzs / unresolved) leaves rows as-is. */
+  companyId?: number | null,
 ): Promise<{ ok: boolean; reason?: string }> {
   if (rows.length === 0) return { ok: true };
+  if (companyId != null) {
+    rows = rows.map((r) => (r.company_id != null ? r : { ...r, company_id: companyId }));
+  }
   try {
     const { error } = await sb.from('inventory_movements').insert(rows);
     if (error) {
@@ -315,13 +326,13 @@ export async function reverseMovements(
        without it and every reversing row stays un-batched (old behaviour). */
     let movsRes = await sb
       .from('inventory_movements')
-      .select('movement_type, warehouse_id, product_code, variant_key, batch_no, product_name, qty, unit_cost_sen, source_doc_no')
+      .select('movement_type, warehouse_id, product_code, variant_key, batch_no, product_name, qty, unit_cost_sen, source_doc_no, company_id')
       .eq('source_doc_type', sourceDocType)
       .eq('source_doc_id', sourceDocId);
     if (movsRes.error && (movsRes.error.message ?? '').includes('batch_no')) {
       movsRes = await sb
         .from('inventory_movements')
-        .select('movement_type, warehouse_id, product_code, variant_key, product_name, qty, unit_cost_sen, source_doc_no')
+        .select('movement_type, warehouse_id, product_code, variant_key, product_name, qty, unit_cost_sen, source_doc_no, company_id')
         .eq('source_doc_type', sourceDocType)
         .eq('source_doc_id', sourceDocId);
     }
@@ -338,6 +349,7 @@ export async function reverseMovements(
       qty: number;
       unit_cost_sen: number | null;
       source_doc_no: string | null;
+      company_id: number | null;
     };
     const rows = (data ?? []) as Row[];
     if (rows.length === 0) return { ok: true, reversed: 0, skipped: 0, failed: 0 };
@@ -382,6 +394,8 @@ export async function reverseMovements(
         source_doc_type: sourceDocType as MovementInput['source_doc_type'],
         source_doc_id: sourceDocId,
         source_doc_no: r.source_doc_no ?? undefined,
+        // Multi-company: a reversal belongs to the same company as the row it undoes.
+        company_id: r.company_id,
         performed_by: performedBy,
         notes: `Reversal of ${sourceDocType} ${r.source_doc_no ?? sourceDocId} (cancel/line-delete)`,
       };

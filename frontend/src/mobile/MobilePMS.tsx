@@ -156,6 +156,10 @@ type ProjectDetail = {
     dismantle_driver_name?: string | null;
     setup_lorry_plate?: string | null;
     dismantle_lorry_plate?: string | null;
+    // Phase crew editor JSON (desktop parsePhaseCrew) — the desktop form
+    // writes crew here, NOT the FK columns above, so mobile must dual-read.
+    setup_crew?: string | null;
+    dismantle_crew?: string | null;
   };
   stock_transfers?: StockTransfer[];
   finance: {
@@ -742,11 +746,12 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                 )}
                 <svg className="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
               </summary>
-              {/* Body — design "Project" card rows VERBATIM: Dates / Venue /
+              {/* Body — design "Project" card rows: Dates / Venue / Booth no. /
                   Organizer / Branding, wired to our real columns. */}
               <div className="pbody">
                 <div className="row" style={{ borderTop: "none" }}><span className="row-l">Dates</span><span className="row-v money">{dm(p.start_date)} – {dm(p.end_date)}</span></div>
                 <div className="row"><span className="row-l">Venue</span><span className="row-v">{p.venue || p.state || "—"}</span></div>
+                <div className="row"><span className="row-l">Booth no.</span><span className="row-v">{p.booth_no || "—"}</span></div>
                 <div className="row"><span className="row-l">Organizer</span><span className="row-v">{p.organizer || "—"}</span></div>
                 <div className="row" style={{ borderBottom: "none" }}><span className="row-l">Branding</span><span className="row-v">{p.brand || "—"}</span></div>
               </div>
@@ -1213,6 +1218,7 @@ function TaskRow({
   reload: () => void;
 }) {
   const fileRef = useRef<HTMLInputElement | null>(null);
+  const { user } = useAuth();
   // Attachment viewer — every user (incl. read-only drivers) can open the
   // task's files fullscreen; MediaLightbox fetches with the bearer token,
   // so this also sidesteps mobile popup-blockers that ate window.open.
@@ -1225,6 +1231,15 @@ function TaskRow({
   // A row the caller can't tick because it needs a specific permission.
   const permBlocked = !!it.required_perm && !can(it.required_perm);
   const canRowTick = canTick && !permBlocked;
+  // Attach button: full-write users get it on every task; tick-only users
+  // (drivers) only on tasks badged for THEIR role — a driver should upload
+  // to "Setup Image · DRIVER", not to BD/PURCHASER/SALES PIC tasks
+  // (owner 2026-07-09).
+  const tickOnly = canTick && !can("projects.write");
+  const roleMatchesUser =
+    !!it.role_label && !!user?.role_name &&
+    it.role_label.trim().toUpperCase() === user.role_name.trim().toUpperCase();
+  const canAttach = canTick && (!tickOnly || roleMatchesUser);
 
   const cycle = async () => {
     if (!canRowTick || busy) return;
@@ -1395,7 +1410,7 @@ function TaskRow({
       <span style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600, color: na ? "#9aa093" : "#11140f", textDecoration: na ? "line-through" : "none" }}>{it.title}</span>
       {it.role_label && c && <span className="rbadge" style={{ background: `${c}1f`, color: c }}>{it.role_label}</span>}
       {it.due_date && <span style={{ fontSize: 9.5, color: "#9aa093", whiteSpace: "nowrap" }}>{dm(it.due_date)}</span>}
-      {canTick && (
+      {canAttach && (
         <>
           <input ref={fileRef} type="file" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void upload(f); }} />
           <button className="tinybtn" disabled={busy} onClick={() => fileRef.current?.click()} title={attachments.length ? `${attachments.length} file(s)` : "Attach"}>
@@ -1420,6 +1435,41 @@ function TaskRow({
     </div>
   );
 }
+
+// The desktop Setup & Dismantle crew editor stores crew as JSON on
+// projects.setup_crew / dismantle_crew ({drivers:[{name,phone}], helpers,
+// lorries:["PLATE"], outsourced:{enabled,entries}}) and leaves the FK
+// columns (setup_driver_user_id / setup_lorry_id) untouched. Mobile shows
+// the FK-joined names when present and falls back to this JSON otherwise.
+type CrewPerson = { name: string; phone?: string | null };
+type PhaseCrew = { drivers: CrewPerson[]; helpers: CrewPerson[]; lorries: string[] };
+const parseCrewJson = (raw: string | null | undefined): PhaseCrew => {
+  const out: PhaseCrew = { drivers: [], helpers: [], lorries: [] };
+  if (!raw || raw === "{}") return out;
+  try {
+    const j = JSON.parse(raw) as Record<string, unknown>;
+    const people = (v: unknown): CrewPerson[] =>
+      (Array.isArray(v) ? v : [])
+        .filter((p): p is { name?: unknown; phone?: unknown } => !!p && typeof p === "object")
+        .filter((p) => typeof p.name === "string" && p.name.trim() !== "")
+        .map((p) => ({ name: String(p.name), phone: typeof p.phone === "string" && p.phone ? p.phone : null }));
+    out.drivers = people(j.drivers);
+    out.helpers = people(j.helpers);
+    out.lorries = (Array.isArray(j.lorries) ? j.lorries : []).filter((l): l is string => typeof l === "string" && l.trim() !== "");
+    const oc = j.outsourced as { enabled?: unknown; entries?: unknown } | undefined;
+    if (oc?.enabled && Array.isArray(oc.entries)) {
+      for (const e of oc.entries as Array<{ name?: unknown; phone?: unknown; plate?: unknown }>) {
+        if (typeof e?.name === "string" && e.name.trim()) out.drivers.push({ name: `${e.name} (outsource)`, phone: typeof e.phone === "string" && e.phone ? e.phone : null });
+        if (typeof e?.plate === "string" && e.plate.trim()) out.lorries.push(e.plate);
+      }
+    }
+  } catch {
+    // Legacy plain-text crew — nothing structured to show.
+  }
+  return out;
+};
+const crewLabel = (p: CrewPerson): string => (p.phone ? `${p.name} (${p.phone})` : p.name);
+const crewIsEmpty = (c: PhaseCrew): boolean => c.drivers.length === 0 && c.helpers.length === 0 && c.lorries.length === 0;
 
 // Best-effort content type from an R2 key's extension — some payloads
 // (finance lines, phase photos) don't carry a stored mime type, and the
@@ -1474,7 +1524,8 @@ function SetupDismantle({
   const anyData =
     project.setup_start_at || project.dismantle_start_at ||
     project.setup_driver_name || project.dismantle_driver_name ||
-    project.setup_lorry_plate || project.dismantle_lorry_plate || photos.length > 0;
+    project.setup_lorry_plate || project.dismantle_lorry_plate || photos.length > 0 ||
+    !crewIsEmpty(parseCrewJson(project.setup_crew)) || !crewIsEmpty(parseCrewJson(project.dismantle_crew));
 
   return (
     <details className="pacc">
@@ -1590,6 +1641,10 @@ function PhaseBlock({
   // included); upload/replace stays gated on canWrite.
   const photoKey = photo?.r2_key ?? null;
   const [photoOpen, setPhotoOpen] = useState(false);
+  // Crew fallback: FK-joined name wins, else the crew-editor JSON.
+  const crew = parseCrewJson(isSetup ? project.setup_crew : project.dismantle_crew);
+  const driverDisplay = driverName || crew.drivers.map(crewLabel).join(", ") || "—";
+  const lorryDisplay = lorryPlate || crew.lorries.join(", ") || "—";
 
   // Compose date + time → the ISO the backend stores. Only PATCHes when a date
   // is present (time-only is meaningless without a day).
@@ -1661,13 +1716,25 @@ function PhaseBlock({
               {lorries.map((l) => <option key={l.id} value={l.id}>{l.plate || `#${l.id}`}{l.is_internal === false ? " (outsource)" : ""}</option>)}
             </select>
           </label>
+          {driverId == null && !crewIsEmpty(crew) && (
+            <div style={{ fontSize: 10.5, color: "#767b6e", margin: "0 0 6px", lineHeight: 1.5 }}>
+              Planned crew: {[
+                crew.drivers.map(crewLabel).join(", "),
+                crew.lorries.join(", "),
+                crew.helpers.length ? `Helpers: ${crew.helpers.map(crewLabel).join(", ")}` : "",
+              ].filter(Boolean).join(" · ")}
+            </div>
+          )}
         </>
       ) : (
         <div className="pgrid2" style={{ marginBottom: 6 }}>
           <div><div className="pkv-l">{kind} date</div><div className="pkv-v">{dOnly(startAt)}</div></div>
           <div><div className="pkv-l">Start time</div><div className="pkv-v">{tOnly(startAt)}</div></div>
-          <div><div className="pkv-l">{kind} driver</div><div className="pkv-v">{driverName || "—"}</div></div>
-          <div><div className="pkv-l">Lorry / vehicle</div><div className="pkv-v">{lorryPlate || "—"}</div></div>
+          <div><div className="pkv-l">{kind} driver</div><div className="pkv-v">{driverDisplay}</div></div>
+          <div><div className="pkv-l">Lorry / vehicle</div><div className="pkv-v">{lorryDisplay}</div></div>
+          {crew.helpers.length > 0 && (
+            <div style={{ gridColumn: "1 / -1" }}><div className="pkv-l">Helpers</div><div className="pkv-v">{crew.helpers.map(crewLabel).join(", ")}</div></div>
+          )}
         </div>
       )}
       <button

@@ -24,6 +24,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { supabaseAuth } from '../middleware/auth';
+import { activeCompanyId } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 export const addons = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -131,6 +132,7 @@ addons.post('/', async (c) => {
   const { data, error } = await supabase
     .from('addons')
     .insert({
+      company_id:       activeCompanyId(c),
       id:               d.id,
       label:            d.label,
       description:      d.description ?? null,

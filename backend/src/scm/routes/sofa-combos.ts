@@ -31,6 +31,7 @@ import { canonicalizeComboModulesForStorage, comboSlotsKey, sofaComboCostSen, pa
 import { loadModelSofaModuleCosts } from '../lib/mfg-pricing-recompute';
 import { hasHouzsPerm } from '../lib/houzs-perms';
 import { todayMyt } from '../lib/my-time';
+import { activeCompanyId } from '../lib/companyScope';
 
 export const sofaCombos = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -140,6 +141,7 @@ async function mirrorAnchoredCombo(
   savedRow: Row,
   anchorSupplierId: string,
   userId: string,
+  companyId?: number | null,
 ): Promise<boolean> {
   let target: string | null;
   if (savedRow.supplier_id == null) {
@@ -152,6 +154,7 @@ async function mirrorAnchoredCombo(
 
   try {
     const { error } = await sb.from('sofa_combo_pricing').insert({
+      company_id: companyId ?? null,
       base_model: savedRow.base_model,
       modules: savedRow.modules,
       tier: savedRow.tier,
@@ -549,6 +552,7 @@ sofaCombos.post('/', async (c) => {
   const { data, error } = await supabase
     .from('sofa_combo_pricing')
     .insert({
+      company_id: activeCompanyId(c),
       base_model: baseModel,
       modules,
       tier,
@@ -583,7 +587,7 @@ sofaCombos.post('/', async (c) => {
   // failure leaves the primary row intact and just reports mirrored:false.
   const savedRow = data as unknown as Row;
   const anchor = await loadComboAnchor(supabase, baseModel);
-  const mirrored = anchor ? await mirrorAnchoredCombo(supabase, savedRow, anchor, user.id) : false;
+  const mirrored = anchor ? await mirrorAnchoredCombo(supabase, savedRow, anchor, user.id, activeCompanyId(c)) : false;
   return c.json({ ...rowToWire(savedRow), mirrored }, 201);
 });
 
@@ -675,6 +679,7 @@ sofaCombos.put('/:id', async (c) => {
   const { data, error } = await supabase
     .from('sofa_combo_pricing')
     .insert({
+      company_id: activeCompanyId(c),
       base_model: (orig as { base_model: string }).base_model,
       modules:    (orig as { modules: ComboSlots }).modules,
       tier:       (orig as { tier: Tier }).tier,
@@ -703,7 +708,7 @@ sofaCombos.put('/:id', async (c) => {
   // base model is anchored (master ⇄ supplier). Same best-effort contract as POST.
   const savedRow = data as unknown as Row;
   const anchor = await loadComboAnchor(supabase, (orig as { base_model: string }).base_model);
-  const mirrored = anchor ? await mirrorAnchoredCombo(supabase, savedRow, anchor, user.id) : false;
+  const mirrored = anchor ? await mirrorAnchoredCombo(supabase, savedRow, anchor, user.id, activeCompanyId(c)) : false;
   return c.json({ ...rowToWire(savedRow), mirrored }, 201);
 });
 

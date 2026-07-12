@@ -17,6 +17,7 @@ import { normalizePhone } from '../shared/phone';
 import { buildVariantSummary } from '../shared';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
+import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { writeMovements, defaultWarehouseId } from '../lib/inventory-movements';
 import { computeVariantKey, type VariantAttrs } from '../shared';
 import { doLineRemaining, resolveCandidateDoIds, custKeyOf, type DoRemainingLine } from '../lib/do-line-remaining';
@@ -52,11 +53,12 @@ const ITEM =
   'uom, qty_returned, condition, unit_price_centi, discount_centi, line_total_centi, ' +
   'unit_cost_centi, line_cost_centi, line_margin_centi, refund_centi, variants, notes, created_at';
 
-const nextNum = async (sb: any): Promise<string> => {
+const nextNum = async (sb: any, c: any): Promise<string> => {
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
-  const { data: existing } = await sb.from('delivery_returns').select('return_number').like('return_number', `DR-${yymm}-%`);
-  return nextMonthlyDocNo(`DR-${yymm}`, ((existing ?? []) as Array<{ return_number: string }>).map((r) => r.return_number));
+  const p = companyDocPrefix(c);
+  const { data: existing } = await sb.from('delivery_returns').select('return_number').like('return_number', `${p}DR-${yymm}-%`);
+  return nextMonthlyDocNo(`${p}DR-${yymm}`, ((existing ?? []) as Array<{ return_number: string }>).map((r) => r.return_number));
 };
 
 /* Re-derive the DR header's per-category revenue/cost totals + grand total from
@@ -244,7 +246,7 @@ async function increaseInventoryForReturn(sb: any, deliveryReturnId: string, per
   if ((existing ?? 0) > 0) return []; // already increased — no-op
 
   const { data: drHeader } = await sb.from('delivery_returns')
-    .select('return_number, warehouse_id')
+    .select('return_number, warehouse_id, company_id')
     .eq('id', deliveryReturnId).maybeSingle();
   const { data: items } = await sb.from('delivery_return_items')
     .select('id, do_item_id, item_code, description, qty_returned, item_group, variants, unit_cost_centi')
@@ -315,7 +317,7 @@ async function increaseInventoryForReturn(sb: any, deliveryReturnId: string, per
     /* Capture the best-effort write result so the caller can surface a failed
        stock IN (was silently swallowed — DR created with goods NOT booked back
        and the caller never told). No rollback; just make it loud. */
-    const res = await writeMovements(sb, movements);
+    const res = await writeMovements(sb, movements, (drHeader as { company_id?: number | null } | null)?.company_id ?? null);
     if (!res.ok) movementErrors.push(`IN ${drNo}: ${res.reason ?? 'unknown'}`);
   }
   return movementErrors;
@@ -351,7 +353,7 @@ async function increaseInventoryForReturn(sb: any, deliveryReturnId: string, per
    a movement failure never blocks the edit/cancel. */
 async function resyncInventoryForReturn(sb: any, deliveryReturnId: string, performedBy: string) {
   const { data: drHeader } = await sb.from('delivery_returns')
-    .select('return_number, status, warehouse_id')
+    .select('return_number, status, warehouse_id, company_id')
     .eq('id', deliveryReturnId).maybeSingle();
   if (!drHeader) return;
   const drStatus = ((drHeader as { status: string | null }).status ?? '').toUpperCase();
@@ -466,7 +468,7 @@ async function resyncInventoryForReturn(sb: any, deliveryReturnId: string, perfo
     }
   }
   if (writes.length > 0) {
-    await writeMovements(sb, writes);
+    await writeMovements(sb, writes, (drHeader as { company_id?: number | null } | null)?.company_id ?? null);
     /* Returned-stock level changed → re-walk SO allocation. Best-effort. */
     try {
       const { recomputeSoStockAllocation } = await import('../lib/so-stock-allocation');
@@ -625,6 +627,7 @@ deliveryReturns.get('/', async (c) => {
   const sb = c.get('supabase');
   let q = sb.from('delivery_returns').select(HEADER).order('return_date', { ascending: false }).limit(500);
   const status = c.req.query('status'); if (status) q = q.eq('status', status);
+  q = scopeToCompany(q, c); // multi-company: isolate to the active company
   const { data, error } = await q;
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
   return c.json({ deliveryReturns: data ?? [] });
@@ -673,11 +676,11 @@ deliveryReturns.get('/:id', async (c) => {
 
 /* Insert the DR header from a client body. Shared by POST / and the
    convert-from-DO endpoint. Returns the inserted header row (HEADER cols). */
-async function insertHeader(sb: any, userId: string, body: Record<string, unknown>) {
+async function insertHeader(sb: any, userId: string, body: Record<string, unknown>, c: any) {
   const phoneRaw = (body.phone as string | undefined) ?? null;
   const emPhoneRaw = (body.emergencyContactPhone as string | undefined) ?? null;
   return insertWithDocNoRetry<{ id: string; return_number: string }>(
-    () => nextNum(sb),
+    () => nextNum(sb, c),
     (returnNumber) => sb.from('delivery_returns').insert({
     return_number: returnNumber,
     do_doc_no: (body.doDocNo as string) ?? null,
@@ -776,7 +779,7 @@ deliveryReturns.post('/', async (c) => {
     if (over) return c.json(over, 409);
   }
 
-  const { data: header, error: hErr } = await insertHeader(sb, user.id, body);
+  const { data: header, error: hErr } = await insertHeader(sb, user.id, body, c);
   if (hErr) return c.json({ error: 'insert_failed', reason: hErr.message }, 500);
   const h = header as unknown as { id: string; return_number: string };
 
@@ -989,7 +992,7 @@ const convertDoLinesToReturn = async (c: any) => {
     reason: distinctDoNumbers.length > 1
       ? `Return from DO ${distinctDoNumbers.join(', ')}`
       : `Return from DO ${String(doh.do_number ?? '')}`,
-  });
+  }, c);
   if (hErr) return c.json({ error: 'insert_failed', reason: hErr.message }, 500);
   const h = header as unknown as { id: string; return_number: string };
 

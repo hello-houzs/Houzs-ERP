@@ -27,8 +27,11 @@
 //     readback → compare → honest result, friendly messages) is verbatim.
 // ---------------------------------------------------------------------------
 
+// PROD fallback is same-origin (Pages Function proxies /api/*); see
+// authed-fetch.ts for the rationale.
 const API_URL =
-  (import.meta.env.VITE_API_URL || 'https://autocount-sync-api.houzs-erp.workers.dev') +
+  (import.meta.env.VITE_API_URL ||
+    (import.meta.env.PROD ? '' : 'https://autocount-sync-api.houzs-erp.workers.dev')) +
   '/api/scm';
 
 export type SaveDiff = { field: string; expected: unknown; actual: unknown };

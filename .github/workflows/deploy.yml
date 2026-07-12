@@ -9,9 +9,34 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  backend:
+  # Detect which side actually changed so a frontend-only push doesn't rebuild +
+  # redeploy the backend Worker (and vice versa). This roughly halves Actions
+  # minutes on the common single-side push AND stops the needless Worker
+  # cold-start every unrelated deploy caused. A change to this workflow, or to
+  # either dir, triggers that side.
+  changes:
     runs-on: ubuntu-latest
-    environment: Production 
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            backend:
+              - 'backend/**'
+              - '.github/workflows/deploy.yml'
+            frontend:
+              - 'frontend/**'
+              - '.github/workflows/deploy.yml'
+
+  backend:
+    needs: changes
+    if: ${{ needs.changes.outputs.backend == 'true' }}
+    runs-on: ubuntu-latest
+    environment: Production
     defaults:
       run:
         working-directory: backend
@@ -58,6 +83,8 @@ jobs:
       # the migration's PR.
 
   frontend:
+    needs: changes
+    if: ${{ needs.changes.outputs.frontend == 'true' }}
     runs-on: ubuntu-latest
     environment: Production
     defaults:

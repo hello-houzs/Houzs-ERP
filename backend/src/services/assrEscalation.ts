@@ -47,6 +47,7 @@ export async function runSlaEscalation(env: Env): Promise<{ escalated: number }>
        JOIN roles r ON r.id = u.role_id
       WHERE u.status = 'active'
         AND u.email IS NOT NULL AND u.email != ''
+        AND COALESCE(u.assr_email_muted, 0) = 0
         AND (r.permissions LIKE '%"*"%' OR r.permissions LIKE '%"service_cases.manage"%')`
   ).all<{ id: number; email: string; name: string | null }>();
   const managerEmails = (managers.results ?? []).map((m) => m.email).filter(Boolean);

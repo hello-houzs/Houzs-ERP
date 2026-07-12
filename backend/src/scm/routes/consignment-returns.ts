@@ -32,6 +32,7 @@ import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item
 import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { todayMyt } from '../lib/my-time';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
+import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 
 export const consignmentReturns = new Hono<{ Bindings: Env; Variables: Variables }>();
 consignmentReturns.use('*', supabaseAuth);
@@ -54,11 +55,12 @@ const ITEM =
   'uom, qty_returned, condition, unit_price_centi, discount_centi, line_total_centi, ' +
   'unit_cost_centi, line_cost_centi, line_margin_centi, refund_centi, variants, notes, created_at';
 
-const nextNum = async (sb: any): Promise<string> => {
+const nextNum = async (sb: any, c: any): Promise<string> => {
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
-  const { data: existing } = await sb.from('consignment_delivery_returns').select('return_number').like('return_number', `CRN-${yymm}-%`);
-  return nextMonthlyDocNo(`CRN-${yymm}`, ((existing ?? []) as Array<{ return_number: string }>).map((r) => r.return_number));
+  const p = companyDocPrefix(c);
+  const { data: existing } = await sb.from('consignment_delivery_returns').select('return_number').like('return_number', `${p}CRN-${yymm}-%`);
+  return nextMonthlyDocNo(`${p}CRN-${yymm}`, ((existing ?? []) as Array<{ return_number: string }>).map((r) => r.return_number));
 };
 
 /* Re-derive the return header's per-category totals + grand total from its line
@@ -336,6 +338,7 @@ consignmentReturns.get('/', async (c) => {
   const sb = c.get('supabase');
   let q = sb.from('consignment_delivery_returns').select(HEADER).order('return_date', { ascending: false }).limit(500);
   const status = c.req.query('status'); if (status) q = q.eq('status', status);
+  q = scopeToCompany(q, c); // multi-company: isolate to the active company
   const { data, error } = await q;
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
   return c.json({ deliveryReturns: data ?? [] });
@@ -436,11 +439,11 @@ consignmentReturns.get('/:id', async (c) => {
 });
 
 /* Insert the return header from a client body. Shared by POST /. */
-async function insertHeader(sb: any, userId: string, body: Record<string, unknown>) {
+async function insertHeader(sb: any, userId: string, body: Record<string, unknown>, c: any) {
   const phoneRaw = (body.phone as string | undefined) ?? null;
   const emPhoneRaw = (body.emergencyContactPhone as string | undefined) ?? null;
   return insertWithDocNoRetry<{ id: string; return_number: string }>(
-    () => nextNum(sb),
+    () => nextNum(sb, c),
     (returnNumber) => sb.from('consignment_delivery_returns').insert({
     return_number: returnNumber,
     do_doc_no: (body.doDocNo as string) ?? (body.cnDocNo as string) ?? null,
@@ -509,7 +512,7 @@ consignmentReturns.post('/', async (c) => {
   /* DROPPED vs DR: the "no DO, no Return" hard requirement and the over-return
      remaining guard. A consignment return may be free-entry or note-linked. */
 
-  const { data: header, error: hErr } = await insertHeader(sb, user.id, body);
+  const { data: header, error: hErr } = await insertHeader(sb, user.id, body, c);
   if (hErr) return c.json({ error: 'insert_failed', reason: hErr.message }, 500);
   const h = header as unknown as { id: string; return_number: string };
 

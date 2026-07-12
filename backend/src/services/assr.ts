@@ -32,6 +32,11 @@ export interface CreateAssrInput {
    *  the admin-configured default assignee. */
   assigned_to?: number | null;
   created_by?: number;
+  /** Multi-company (Phase 0b) — the active company (companies.id) resolved
+   *  from the request via activeCompanyId(c). Left undefined pre-migration /
+   *  cold-start; createAssrCase then falls back to the Houzs default and, if
+   *  that too is unresolvable, omits the column entirely (single-company safe). */
+  company_id?: number;
 }
 
 // v3.1 9-stage workflow. Old enum (registration / triage / action /
@@ -229,6 +234,35 @@ export async function nextAssrNumber(env: Env): Promise<string> {
   return `${prefix}-${String(next).padStart(3, "0")}`;
 }
 
+// ── Company resolution (multi-company Phase 0b) ───────────────
+//
+// Service Cases are a CROSS-COMPANY queue, but each case still carries its
+// owning company_id so the shared list can show + split by company. Resolve
+// order: the request's ACTIVE company (passed from the route via
+// activeCompanyId(c)) → the Houzs default. A case raised from a LOCAL sales
+// order that carries a company_id would take precedence over both, but Houzs
+// ASSR cases are keyed to AutoCount SO doc numbers (external, no local
+// company_id), so active company is authoritative here.
+//
+// Returns null when neither is resolvable (companies master absent
+// pre-migration, or a DB cold-start). The INSERT then omits the column,
+// mirroring stampCompany's no-op so single-company Houzs keeps inserting
+// unchanged.
+async function resolveCaseCompanyId(
+  env: Env,
+  activeCompanyId?: number | null
+): Promise<number | null> {
+  if (activeCompanyId != null) return activeCompanyId;
+  try {
+    const row = await env.DB.prepare(
+      `SELECT id FROM companies WHERE code = 'HOUZS' LIMIT 1`
+    ).first<{ id: number | string }>();
+    return row?.id != null ? Number(row.id) : null;
+  } catch {
+    return null;
+  }
+}
+
 // ── Create case ───────────────────────────────────────────────
 
 export async function createAssrCase(
@@ -302,14 +336,21 @@ export async function createAssrCase(
   const activeProfileId = await getActiveLeadTimeProfileId(env);
   const nowIso = new Date().toISOString();
 
+  // Multi-company (Phase 0b): stamp the owning company. Append the column +
+  // bind ONLY when resolved so the pre-migration / cold-start window (no
+  // companies master, no company_id column yet) inserts unchanged.
+  const companyId = await resolveCaseCompanyId(env, input.company_id);
+  const companyCol = companyId != null ? ", company_id" : "";
+  const companyPlaceholder = companyId != null ? ", ?" : "";
+
   const result = await env.DB.prepare(
     `INSERT INTO assr_cases (
        assr_no, status, stage, doc_no, complained_date, customer_name, phone, location,
        sales_agent, item_code, complaint_issue, issue_category, priority, po_no, addr1, addr2, addr3, addr4, created_by,
        ref_no, customer_email, service_category, delivery_order, do_date,
        assigned_to, assigned_to_2, sla_hours, deadline_at,
-       stage_entered_at, stage_target_days, stage_changed_at, lead_time_profile_id
-     ) VALUES (?, 'Open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       stage_entered_at, stage_target_days, stage_changed_at, lead_time_profile_id${companyCol}
+     ) VALUES (?, 'Open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${companyPlaceholder})`
   )
     .bind(
       assrNo,
@@ -353,7 +394,8 @@ export async function createAssrCase(
       nowIso,
       initialTargetDays,
       nowIso,
-      activeProfileId
+      activeProfileId,
+      ...(companyId != null ? [companyId] : [])
     )
     .run();
 
@@ -1096,6 +1138,11 @@ export async function listAssrCases(env: Env, f: ListAssrFilters) {
            cr.company_name as creditor_name,
            cr.email as creditor_email,
            cr.phone1 as creditor_phone,
+           -- Multi-company (Phase 0b): Service Cases are a CROSS-COMPANY queue —
+           -- c.* already carries c.company_id; join the companies master so each
+           -- row also shows a readable company_code column. Raw SQL via env.DB, so
+           -- this bypasses the supabase-js companyScope helper by necessity.
+           co.code as company_code,
            COALESCE(
              (SELECT MAX(a.created_at)
                 FROM assr_activity a
@@ -1129,6 +1176,7 @@ export async function listAssrCases(env: Env, f: ListAssrFilters) {
       LEFT JOIN users u2 ON u2.id = c.created_by
       LEFT JOIN users ua2 ON ua2.id = c.assigned_to_2
       LEFT JOIN creditors cr ON cr.creditor_code = c.creditor_code
+      LEFT JOIN companies co ON co.id = c.company_id
     ${whereSql}
   `;
 

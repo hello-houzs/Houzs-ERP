@@ -192,6 +192,14 @@ type DoItem = {
   /* Downstream "Transfer To" breakdown (read-only): the Sales Invoice(s) and
      Delivery Return(s) this DO line was carried into, resolved server-side. */
   downstream?: { docNumber: string; docType: 'SI' | 'DR'; qty: number; status: string }[];
+  /* Source PO(s) — the supplier purchase order(s) that supplied the goods this
+     line shipped, resolved server-side from the OUT movements' batch_no (GRN
+     stamps batch_no = source PO number). Empty for plain-FIFO/un-batched stock. */
+  source_pos?: string[];
+  /* Rack(s) — the physical warehouse rack(s) this line's goods are stored on,
+     resolved server-side (warehouse + item_code + variant_key → rack placement).
+     For storekeeper picking. Empty when no placement matches (dash). */
+  racks?: string[];
 };
 
 /* One not-yet-saved add-line. soItemId/maxQty are set when picked from the
@@ -757,6 +765,14 @@ export const DeliveryOrderDetail = () => {
                 <th>Description 2</th>
                 <th>Sales Location</th>
                 <th className={styles.tableRight}>Qty</th>
+                {/* Source PO — which supplier PO supplied the goods this line
+                    shipped (traceability). Recovered from the OUT movements'
+                    batch_no (= source PO number). */}
+                <th>Source PO</th>
+                {/* Rack — the physical warehouse rack(s) the goods sit on, so
+                    the storekeeper knows where to pick/load. Resolved from rack
+                    placements (warehouse + item + variant). */}
+                <th>Rack</th>
                 <th>Transfer To</th>
               </tr>
             </thead>
@@ -783,6 +799,25 @@ export const DeliveryOrderDetail = () => {
                   </td>
                   <td><span className={styles.muted}>{it.warehouse_code ?? '—'}</span></td>
                   <td className={styles.tableRight}>{it.qty}</td>
+                  {/* Source PO — the supplier PO(s) that supplied the shipped
+                      goods. Dash when the stock carried no batch (plain FIFO)
+                      or the line is a non-goods/service line. */}
+                  <td>
+                    {(it.source_pos ?? []).length === 0
+                      ? <span className={styles.muted}>—</span>
+                      : (it.source_pos ?? []).map((po, pi) => (
+                          <div key={pi} style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>{po}</div>
+                        ))}
+                  </td>
+                  {/* Rack — physical location(s) for storekeeper picking. Dash
+                      when no rack placement matches this line. */}
+                  <td>
+                    {(it.racks ?? []).length === 0
+                      ? <span className={styles.muted}>—</span>
+                      : (it.racks ?? []).map((rk, ri) => (
+                          <div key={ri} style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>{rk}</div>
+                        ))}
+                  </td>
                   <td>
                     {(it.downstream ?? []).length === 0
                       ? <span className={styles.muted}>—</span>

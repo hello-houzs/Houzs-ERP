@@ -8,6 +8,7 @@ build/
 
 # Cloudflare / Wrangler
 .wrangler/
+.wrangler-dry/
 .dev.vars
 .dev.vars.*
 wrangler.toml.bak

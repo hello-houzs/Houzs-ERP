@@ -149,7 +149,7 @@
      in IBM Plex (Sans for body/UI, Serif for titles, Mono for amounts), CN
      reads in Noto Sans/Serif SC. Browsers fall through the comma-separated
      stack by glyph coverage, so latin chars get IBM Plex and CJK chars get
-     Noto SC automatically. @import url(…) lives in src/index.css (live app)
+     Noto SC automatically. The font import lives in src/index.css (live app)
      and .design-sync/tailwind-src.css (design-sync bundle). */
   --font-system:  "IBM Plex Sans", "Noto Sans SC", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   /* Body / paragraphs / general UI text */
@@ -159,13 +159,21 @@
      pages; body / buttons / mono stay on Plex Sans so dense data screens
      still read calm. Compact `.title` styles (e.g. SO detail at 15px) get
      the serif family without size change — hierarchy still driven by
-     weight + size, family now signals "hero". */
-  --font-title:   "IBM Plex Serif", "Noto Serif SC", Georgia, serif;
+     weight + size, family now signals "hero".
+     Nick 2026-07-09 "整个系统页面都要 C 字体" — the Ink & Petrol sweep
+     wants an admin-form rhythm, not a marketing hero. Point --font-title
+     at the same IBM Plex Sans stack as body via --font-system so every
+     page's title switches to sans without touching per-page CSS. Serif
+     stack kept in a comment above so we can pivot back if a genuine hero
+     header ever wants the display face again. */
+  --font-title:   var(--font-system);
   /* Buttons, links, navigation, eyebrows */
   --font-button:  var(--font-system);
-  /* Hand-written touches (offers, scribbled accents) */
+  /* Hand-written touches (offers, scribbled accents). Caveat loads via the
+     Google Fonts import in src/index.css / .design-sync/tailwind-src.css. */
   --font-script:  "Caveat", "Mistrully", "Brush Script MT", cursive;
-  /* The 2990 logotype — rounded condensed display, used only on the wordmark */
+  /* The 2990 logotype — rounded condensed display, used only on the wordmark.
+     Archivo loads via the same Google Fonts import as Caveat above. */
   --font-mark:    "Archivo", "Arial Black", system-ui, sans-serif;
   /* Backwards-compat alias — some old components still reference --font-display */
   --font-display: var(--font-mark);

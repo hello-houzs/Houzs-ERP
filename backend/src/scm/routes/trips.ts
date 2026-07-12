@@ -29,12 +29,15 @@ import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { paginateAll } from '../lib/paginate-all';
 import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
+import { scopeToAllowedCompanies, companyCodeMap, withCompanyCode, activeCompanyId } from '../lib/companyScope';
 
 export const trips = new Hono<{ Bindings: Env; Variables: Variables }>();
 trips.use('*', supabaseAuth);
 
 const TRIP_COLS =
-  'id, trip_no, trip_date, lorry_id, driver_id, helper_1_id, helper_2_id, warehouse_id, ' +
+  // company_id — TMS is a CROSS-COMPANY view: the row carries its company so the
+  // UI can show a company column (see companyScope.ts cross-company pattern).
+  'company_id, id, trip_no, trip_date, lorry_id, driver_id, helper_1_id, helper_2_id, warehouse_id, ' +
   'trip_type, status, is_outsourced, clock_in_at, clock_out_at, total_distance_km, notes, ' +
   'created_at, created_by, updated_at';
 
@@ -91,16 +94,22 @@ trips.get('/', async (c) => {
     // resolve a concrete row shape that satisfies paginateAll's generic — the
     // convention used by the paginated reads in delivery-planning.ts.
     let q = sb.from('trips')
-      .select('id, trip_no, trip_date, lorry_id, driver_id, helper_1_id, helper_2_id, warehouse_id, trip_type, status, is_outsourced, clock_in_at, clock_out_at, total_distance_km, notes, created_at, created_by, updated_at')
+      .select('company_id, id, trip_no, trip_date, lorry_id, driver_id, helper_1_id, helper_2_id, warehouse_id, trip_type, status, is_outsourced, clock_in_at, clock_out_at, total_distance_km, notes, created_at, created_by, updated_at')
       .order('trip_date', { ascending: false }).range(lo, hi);
     if (from) q = q.gte('trip_date', from);
     if (to) q = q.lte('trip_date', to);
     if (lorryId) q = q.eq('lorry_id', lorryId);
     if (status && TRIP_STATUSES.has(status.toUpperCase())) q = q.eq('status', status.toUpperCase());
+    // CROSS-COMPANY view: widen to every allowed company (one shared queue) —
+    // NOT isolated to the active company like SO/PO/GRN. No-op when unresolved.
+    q = scopeToAllowedCompanies(q, c);
     return q;
   });
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
-  return c.json({ trips: data ?? [] });
+  // Tag each row with a readable company_code so the list can show a company column.
+  const codes = companyCodeMap(c);
+  const trips = (data ?? []).map((r) => withCompanyCode(r, codes));
+  return c.json({ trips });
 });
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -148,6 +157,9 @@ trips.post('/', async (c) => {
   const { data, error } = await insertWithDocNoRetry(
     () => nextTripNo(sb),
     (tripNo) => sb.from('trips').insert({
+    // CROSS-COMPANY: a trip is created from whichever company you're currently
+    // in (it can still reference the other company's DOs via its stops).
+    company_id:    activeCompanyId(c),
     trip_no:       tripNo,
     trip_date:     p.tripDate,
     lorry_id:      lorryId,
@@ -322,6 +334,9 @@ trips.post('/:id/stops', async (c) => {
   }
 
   const { data, error } = await sb.from('trip_stops').insert({
+    // CROSS-COMPANY: the stop belongs to its trip's company (a trip can still
+    // reference the other company's DO/SO). Stamp the active company like the trip.
+    company_id:    activeCompanyId(c),
     trip_id:       tripId,
     stop_no:       stopNo,
     stop_type:     p.stopType,

@@ -496,7 +496,8 @@ function FilterChip({
    we don't block the table layout. */
 
 const API_URL =
-  ((import.meta.env.VITE_API_URL || 'https://autocount-sync-api.houzs-erp.workers.dev') as string) +
+  ((import.meta.env.VITE_API_URL ||
+    (import.meta.env.PROD ? '' : 'https://autocount-sync-api.houzs-erp.workers.dev')) as string) +
   '/api/scm';
 const PHOTO_MAX_BYTES_CLIENT = 2 * 1024 * 1024;
 
