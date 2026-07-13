@@ -18,7 +18,7 @@ import type { Env } from "../types";
 //     untouched getBranding() caller (and the owner's existing edits) keep
 //     working unchanged.
 //   · Every other company reads/writes 'branding:<companyCode>' (e.g.
-//     'branding:2990', seeded by migration 0093 with the company display
+//     'branding:2990', seeded by migration 0094 with the company display
 //     name and blank placeholders the owner fills in Settings → Branding).
 // Resolution: company row → per-company code default. A non-HOUZS company
 // NEVER falls back to the HOUZS row — a missing 2990 row must render 2990's

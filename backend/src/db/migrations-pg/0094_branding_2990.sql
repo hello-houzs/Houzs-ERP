@@ -1,4 +1,4 @@
--- 0093_branding_2990.sql (Postgres). Per-company branding — seed the 2990
+-- 0094_branding_2990.sql (Postgres). Per-company branding — seed the 2990
 -- company's identity row so documents/PDFs/emails rendered for the 2990
 -- company carry 2990's name instead of Houzs Century's.
 --

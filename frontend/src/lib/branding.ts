@@ -43,7 +43,7 @@ export const DEFAULT_BRANDING: Branding = {
 };
 
 /** 2990 company defaults — mirrors the backend's DEFAULT_BRANDING_2990 and
- *  migration 0093 seed. Blank fields are owner-editable placeholders; they
+ *  migration 0094 seed. Blank fields are owner-editable placeholders; they
  *  must STAY blank (letterheads omit blank lines), never snap to a Houzs
  *  literal. */
 export const DEFAULT_BRANDING_2990: Branding = {
@@ -63,6 +63,35 @@ export function defaultBrandingForCompany(companyCode?: string | null): Branding
   const code = (companyCode ?? "").trim().toUpperCase();
   if (code === "2990") return { ...DEFAULT_BRANDING_2990 };
   return { ...DEFAULT_BRANDING };
+}
+
+export const HOUZS_COMPANY_CODE = "HOUZS";
+
+/** Hostname default company — mirrors the backend companyContext middleware's
+ *  defaultCompanyCodeForHost (erp.2990shome.com → 2990; everything else →
+ *  HOUZS). Used pre-fetch (and pre-auth, where GET /api/branding 401s) so the
+ *  login screen / first paint on a 2990 hostname never flashes Houzs. */
+export function hostDefaultCompanyCode(): string {
+  try {
+    return window.location.hostname.toLowerCase().includes("2990")
+      ? "2990"
+      : HOUZS_COMPANY_CODE;
+  } catch {
+    return HOUZS_COMPANY_CODE;
+  }
+}
+
+/** Human short name for inline copy ("<X> ERP" portal label, "<X> CS Team"):
+ *  the company name minus a trailing legal suffix / registration parens.
+ *  Mirrors the backend's shortCompanyName (services/branding.ts) so PDFs and
+ *  HTML prints render the same label. "Houzs Century Sdn Bhd" → "Houzs
+ *  Century"; "2990's Home" → "2990's Home". */
+export function shortCompanyName(name: string): string {
+  const short = (name || "")
+    .replace(/\s*\([^)]*\)\s*$/, "")
+    .replace(/\s*,?\s*(sdn\.?\s*bhd\.?|berhad|bhd\.?)\s*$/i, "")
+    .trim();
+  return short || name;
 }
 
 /** Normalise a partial/loose server payload into a complete Branding, falling
@@ -94,17 +123,28 @@ export function normalizeBranding(
 }
 
 // ── Module-level cache for the pure (non-React) jspdf libs ────────────────────
-// Pre-seeded with DEFAULT_BRANDING so a PDF generated before any fetch (or with
-// the fetch failed) still carries the correct letterhead. useBranding() calls
+// Pre-seeded with the HOSTNAME company's defaults so a PDF generated before any
+// fetch (or with the fetch failed) still carries the correct letterhead — on a
+// 2990 hostname that means 2990's name, never Houzs's. useBranding() calls
 // setBrandingCache() on every successful fetch to keep this in sync.
-let brandingCache: Branding = DEFAULT_BRANDING;
+let brandingCache: Branding = defaultBrandingForCompany(hostDefaultCompanyCode());
 
-export function setBrandingCache(b: Branding): void {
+// The company code the cache currently holds. Pure consumers that need
+// per-company COPY (pdf-common's portalLabel "Houzs ERP" vs "<X> ERP") read
+// this alongside getBrandingCache(). Kept in sync by useBranding().
+let brandingCompanyCodeCache: string = hostDefaultCompanyCode();
+
+export function setBrandingCache(b: Branding, companyCode?: string): void {
   brandingCache = b;
+  if (companyCode) brandingCompanyCodeCache = companyCode.trim().toUpperCase();
 }
 
 export function getBrandingCache(): Branding {
   return brandingCache;
+}
+
+export function getBrandingCompanyCode(): string {
+  return brandingCompanyCodeCache;
 }
 
 // ── Logo memo for the pure (non-React) jspdf libs ─────────────────────────────
@@ -177,9 +217,16 @@ export async function ensureBrandingLogoLoaded(): Promise<void> {
       // Lazy import avoids a static api/client dependency for the many
       // consumers that only need the text branding.
       const { api, tokenStore } = await import("../api/client");
+      const { companyHeader } = await import("./activeCompany");
       const token = tokenStore.get();
+      // X-Company-Id rides along (like every api/client call) so the backend
+      // serves the ACTIVE company's logo — without it a 2990 session on the
+      // Houzs hostname would cache Houzs's logo under 2990's key.
       const res = await fetch(`${api.baseUrl}/api/branding/logo`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...companyHeader(),
+        },
       });
       if (!res.ok) throw new Error(`logo fetch ${res.status}`);
       const blob = await res.blob();
