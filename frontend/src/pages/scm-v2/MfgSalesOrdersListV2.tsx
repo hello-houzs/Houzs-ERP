@@ -48,6 +48,7 @@ import {
   useUpdateMfgSalesOrderStatus,
   useMfgSalesOrderDetail,
 } from "../../vendor/scm/lib/sales-order-queries";
+import { ScanOrderModal } from "../../vendor/scm/components/ScanOrderModal";
 import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "../../lib/utils";
 
@@ -666,6 +667,10 @@ export function MfgSalesOrdersListV2() {
   const search = params.get("q") ?? "";
 
   const [selected, setSelected] = useState<SoRow | null>(null);
+  // Scan Order — handwritten slip OCR → prefilled New SO (ScanOrderModal).
+  // The modal owns its own extract → sessionStorage → navigate(new?fromScan=1)
+  // flow; we only toggle its visibility (mirrors MfgSalesOrdersList V1).
+  const [showScan, setShowScan] = useState(false);
 
   const { data, isLoading, error } = useMfgSalesOrders(
     status === "all" ? undefined : status
@@ -759,7 +764,7 @@ export function MfgSalesOrdersListV2() {
 
   // ── Actions wired to real routes / mutations ──────────────────────────
   const goNewSo = () => navigate("/scm/sales-orders/new");
-  const goScanOrder = () => navigate("/scm/sales-orders/new/from-products");
+  const goScanOrder = () => setShowScan(true);
   const goSoMaintenance = () => navigate("/scm/sales-orders/maintenance");
   const goFromQuotation = () => navigate("/scm/sales-orders/new/guided");
   const goImport = () => navigate("/scm/sales-orders/maintenance?tab=import");
@@ -1093,6 +1098,8 @@ export function MfgSalesOrdersListV2() {
             : "—"
         }
       />
+
+      {showScan && <ScanOrderModal onClose={() => setShowScan(false)} />}
     </PullToRefresh>
   );
 }
