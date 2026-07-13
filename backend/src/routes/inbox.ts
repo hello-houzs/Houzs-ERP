@@ -1,9 +1,23 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
 import { hasPermission } from "../services/permissions";
+import { allowedCompanyIds } from "../scm/lib/companyScope";
 import { todayMyt } from "../scm/lib/my-time";
 
 const app = new Hono<{ Bindings: Env }>();
+
+// Multi-company: the inbox aggregates PROJECT- and ASSR-derived items, so
+// those loaders filter by the caller's ALLOWED companies (projects.company_id
+// / assr_cases.company_id, mig-pg 0093 / 0083). Trip lanes stay unfiltered —
+// TMS is a cross-company queue by design. The fragment is "" when the company
+// context is unresolved (pre-migration / D1 test mirror), keeping legacy SQL
+// unchanged. NOTE the allow-list is per-USER (user_companies grants), not
+// per-active-company, so the per-user KV snapshot key stays valid.
+function companiesPred(allowedCo: number[], col: string): string {
+  const ids = allowedCo.map(Number).filter((n) => Number.isInteger(n) && n > 0);
+  if (ids.length === 0) return "";
+  return ` AND ${col} IN (${ids.join(",")})`;
+}
 
 /**
  * Inbox — "what do I need to do right now" across every module.
@@ -77,11 +91,12 @@ app.get("/", async (c) => {
     }
   }
 
+  const allowedCo = allowedCompanyIds(c);
   const [myTasks, reviewQueue, blockers, thisWeek] = await Promise.all([
-    safe("my_tasks", () => loadMyTasks(c.env, userId, perms, isStar)),
-    safe("review_queue", () => loadReviewQueue(c.env, userId, perms, isStar)),
-    safe("blockers", () => loadBlockers(c.env, userId, perms, isStar)),
-    safe("this_week", () => loadThisWeek(c.env, userId, perms, isStar)),
+    safe("my_tasks", () => loadMyTasks(c.env, userId, perms, isStar, allowedCo)),
+    safe("review_queue", () => loadReviewQueue(c.env, userId, perms, isStar, allowedCo)),
+    safe("blockers", () => loadBlockers(c.env, userId, perms, isStar, allowedCo)),
+    safe("this_week", () => loadThisWeek(c.env, userId, perms, isStar, allowedCo)),
   ]);
 
   const payload = {
@@ -108,7 +123,7 @@ app.get("/", async (c) => {
 // ── My Tasks ──────────────────────────────────────────────────
 // Things explicitly assigned to the user that need action soon.
 
-async function loadMyTasks(env: Env, userId: number, perms: string[], isStar: boolean) {
+async function loadMyTasks(env: Env, userId: number, perms: string[], isStar: boolean, allowedCo: number[]) {
   if (!userId) return [];
   const items: InboxItem[] = [];
   // Malaysia calendar "today" for the overdue check + the driver's today-trip
@@ -131,7 +146,7 @@ async function loadMyTasks(env: Env, userId: number, perms: string[], isStar: bo
          FROM assr_cases c
         WHERE c.archived_at IS NULL
           AND c.stage != 'completed'
-          AND c.assigned_to = ?
+          AND c.assigned_to = ?${companiesPred(allowedCo, "c.company_id")}
         ORDER BY
           CASE WHEN c.deadline_at IS NULL THEN 1 ELSE 0 END,
           c.deadline_at ASC
@@ -172,7 +187,7 @@ async function loadMyTasks(env: Env, userId: number, perms: string[], isStar: bo
               p.id as project_id, p.code as project_code, p.name as project_name
          FROM project_checklist cl
          JOIN projects p ON p.id = cl.project_id
-        WHERE p.archived_at IS NULL
+        WHERE p.archived_at IS NULL${companiesPred(allowedCo, "p.company_id")}
           AND cl.owner_user_id = ?
           AND cl.status = 'pending'
           AND (cl.due_date IS NULL OR substr(cl.due_date, 1, 10) <= date('now', '+7 days'))
@@ -247,7 +262,7 @@ async function loadMyTasks(env: Env, userId: number, perms: string[], isStar: bo
 // ── Review Queue ──────────────────────────────────────────────
 // Things waiting on *my* approval/decision.
 
-async function loadReviewQueue(env: Env, userId: number, perms: string[], isStar: boolean) {
+async function loadReviewQueue(env: Env, userId: number, perms: string[], isStar: boolean, allowedCo: number[]) {
   if (!userId) return [];
   const items: InboxItem[] = [];
 
@@ -259,7 +274,7 @@ async function loadReviewQueue(env: Env, userId: number, perms: string[], isStar
               p.id as project_id, p.code as project_code, p.name as project_name
          FROM project_checklist cl
          JOIN projects p ON p.id = cl.project_id
-        WHERE p.archived_at IS NULL
+        WHERE p.archived_at IS NULL${companiesPred(allowedCo, "p.company_id")}
           AND cl.review_status IN ('pending_review','amended')
         ORDER BY cl.updated_at DESC
         LIMIT 20`
@@ -305,7 +320,7 @@ async function loadReviewQueue(env: Env, userId: number, perms: string[], isStar
          FROM assr_cases c
         WHERE c.archived_at IS NULL
           AND c.stage = 'pending_delivery_service'
-          AND c.approved_at IS NULL
+          AND c.approved_at IS NULL${companiesPred(allowedCo, "c.company_id")}
         ORDER BY c.updated_at DESC
         LIMIT 10`
     )
@@ -337,7 +352,7 @@ async function loadReviewQueue(env: Env, userId: number, perms: string[], isStar
 // Things actively stuck that need unsticking — SLA breaches, stuck
 // stages, unresolved defects.
 
-async function loadBlockers(env: Env, userId: number, perms: string[], isStar: boolean) {
+async function loadBlockers(env: Env, userId: number, perms: string[], isStar: boolean, allowedCo: number[]) {
   if (!userId) return [];
   const items: InboxItem[] = [];
 
@@ -351,7 +366,7 @@ async function loadBlockers(env: Env, userId: number, perms: string[], isStar: b
           AND c.stage != 'completed'
           AND c.deadline_at IS NOT NULL
           AND datetime('now') > c.deadline_at
-          AND (c.assigned_to = ? OR c.assigned_to IS NULL)
+          AND (c.assigned_to = ? OR c.assigned_to IS NULL)${companiesPred(allowedCo, "c.company_id")}
         ORDER BY c.deadline_at ASC
         LIMIT 10`
     )
@@ -386,7 +401,7 @@ async function loadBlockers(env: Env, userId: number, perms: string[], isStar: b
               p.id as project_id, p.name as project_name
          FROM project_defects d
          JOIN projects p ON p.id = d.project_id
-        WHERE p.archived_at IS NULL
+        WHERE p.archived_at IS NULL${companiesPred(allowedCo, "p.company_id")}
           AND d.archived_at IS NULL
           AND d.resolved = 0
         ORDER BY d.reported_at DESC
@@ -433,7 +448,7 @@ async function loadBlockers(env: Env, userId: number, perms: string[], isStar: b
            FROM assr_cases c
           WHERE c.archived_at IS NULL
             AND c.stage != 'completed'
-            AND c.assigned_to = ?
+            AND c.assigned_to = ?${companiesPred(allowedCo, "c.company_id")}
        )
        WHERE days_in_stage > 3
        ORDER BY days_in_stage DESC
@@ -467,7 +482,7 @@ async function loadBlockers(env: Env, userId: number, perms: string[], isStar: b
 // Things happening in the next 7 days — useful for context even if
 // they aren't on your plate today.
 
-async function loadThisWeek(env: Env, userId: number, perms: string[], isStar: boolean) {
+async function loadThisWeek(env: Env, userId: number, perms: string[], isStar: boolean, allowedCo: number[]) {
   if (!userId) return [];
   const items: InboxItem[] = [];
 
@@ -477,7 +492,7 @@ async function loadThisWeek(env: Env, userId: number, perms: string[], isStar: b
       `SELECT p.id, p.code, p.name, p.brand, p.stage, p.venue,
               p.start_date, p.end_date
          FROM projects p
-        WHERE p.archived_at IS NULL
+        WHERE p.archived_at IS NULL${companiesPred(allowedCo, "p.company_id")}
           AND p.stage NOT IN ('closed','cancelled')
           AND p.start_date IS NOT NULL
           AND substr(p.start_date, 1, 10) BETWEEN date('now') AND date('now','+7 days')

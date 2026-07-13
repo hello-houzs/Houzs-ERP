@@ -40,6 +40,24 @@ export function allowedCompanyIds(c: Context<any>): number[] {
   return (c.get("allowedCompanyIds") as number[] | undefined) ?? [];
 }
 
+/**
+ * CROSS-COMPANY, raw env.DB SQL flavour of scopeToAllowedCompanies. Returns a
+ * ready-to-interpolate ` AND <col> IN (1,2)` fragment limited to the caller's
+ * allowed companies, or "" when the allow-list is unresolved (companies master
+ * absent pre-migration / D1 test mirror / cold-start) so legacy single-company
+ * SQL runs unchanged. The ids come from OUR companies master via the
+ * middleware and are re-validated as positive integers here, so inlining them
+ * (no binds) is safe — which keeps the many stat queries that already
+ * interpolate computed fragments readable.
+ */
+export function allowedCompaniesSql(c: Context<any>, col = "company_id"): string {
+  const ids = allowedCompanyIds(c)
+    .map(Number)
+    .filter((n) => Number.isInteger(n) && n > 0);
+  if (ids.length === 0) return "";
+  return ` AND ${col} IN (${ids.join(",")})`;
+}
+
 /** id -> code map for tagging cross-company rows with a readable company. */
 export function companyCodeMap(c: Context<any>): Map<number, string> {
   const rows = (c.get("companies") as CompanyRow[] | undefined) ?? [];

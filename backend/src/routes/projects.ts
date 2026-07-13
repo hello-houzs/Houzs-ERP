@@ -55,8 +55,20 @@ import {
   projects as projectsTable,
 } from "../db/schema";
 import { and, eq, sql } from "drizzle-orm";
+import { activeCompanyId } from "../scm/lib/companyScope";
 
 const app = new Hono<{ Bindings: Env }>();
+
+// Multi-company (mig-pg 0093): Projects are a PER-COMPANY module — every
+// list/summary/detail/analytics read below adds the ACTIVE company predicate
+// and creates stamp company_id, CONDITIONALLY (skipped when the companies
+// master is unresolved: pre-migration, the D1 test mirror, or a DB
+// cold-start) so single-company Houzs keeps serving unchanged. This is the
+// same raw-SQL idiom as routes/sales.ts. Child tables (checklist / sections /
+// attachments / activity / finance) are always read through their parent
+// project_id, so the project row is the single source of company truth;
+// their own company_id (added by 0093) is a schema-parity backstop filled by
+// the PG DEFAULT.
 
 /**
  * Server-side finance/payment gate (Sales-department visibility, rules 3 & 5).
