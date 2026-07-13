@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
 import { getProjectDetail } from "../services/projects";
+import { activeCompanyId } from "../scm/lib/companyScope";
 import { canSeeProject } from "../services/projectAcl";
 import { getPmsAccess, isFinanceViewer } from "../services/pmsAccess";
 import { scopeSalesReportsForUser } from "../services/orgScope";
@@ -107,7 +108,9 @@ app.get("/:id", async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.text("Invalid ID", 400);
 
-  const detail = await getProjectDetail(c.env, id);
+  // Multi-company: same active-company gate as the detail JSON — a
+  // cross-company id prints "Not found".
+  const detail = await getProjectDetail(c.env, id, activeCompanyId(c));
   if (!detail) return c.text("Not found", 404);
 
   // Row-level ACL — this debrief bypassed canSeeProject before, so any

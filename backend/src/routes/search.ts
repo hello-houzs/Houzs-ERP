@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { Env } from "../types";
 import { getSupabaseService, isSupabaseConfigured } from "../db/supabase";
 import { escapeForOr } from "../scm/lib/postgrest-search";
+import { activeCompanyId, allowedCompaniesSql } from "../scm/lib/companyScope";
 
 /**
  * Global search across the workspace.
@@ -65,6 +66,18 @@ app.get("/", async (c) => {
   const env = c.env;
   const hits: Hit[] = [];
 
+  // Multi-company scoping (both fragments are "" when the company context is
+  // unresolved — pre-migration / D1 test mirror — so legacy SQL runs
+  // unchanged):
+  //   · projects follow the ACTIVE company (per-company module, like the
+  //     Projects page itself);
+  //   · ASSR is a CROSS-COMPANY queue, so its hits widen to the caller's
+  //     ALLOWED companies (same rule as the /api/assr list);
+  //   · users stay global (shared master).
+  const companyId = activeCompanyId(c);
+  const projectCoSql = companyId != null ? " AND company_id = ?2" : "";
+  const assrCoSql = allowedCompaniesSql(c);
+
   // ── Public-schema sources (env.DB) ─────────────────────────
   // Fire all source queries in parallel — they share a Postgres client
   // anyway, so this just avoids serial round-trip latency.
@@ -74,11 +87,11 @@ app.get("/", async (c) => {
          FROM projects
         WHERE archived_at IS NULL
           AND (code LIKE ?1 OR name LIKE ?1 OR venue LIKE ?1 OR organizer LIKE ?1
-               OR brand LIKE ?1)
+               OR brand LIKE ?1)${projectCoSql}
         ORDER BY start_date DESC NULLS LAST, id DESC
         LIMIT ${PER_SOURCE_LIMIT}`
     )
-      .bind(pat)
+      .bind(pat, ...(companyId != null ? [companyId] : []))
       .all<{
         id: number;
         code: string;
@@ -92,7 +105,7 @@ app.get("/", async (c) => {
          FROM assr_cases
         WHERE archived_at IS NULL
           AND (assr_no LIKE ?1 OR customer_name LIKE ?1 OR phone LIKE ?1
-               OR complaint_issue LIKE ?1 OR doc_no LIKE ?1 OR po_no LIKE ?1)
+               OR complaint_issue LIKE ?1 OR doc_no LIKE ?1 OR po_no LIKE ?1)${assrCoSql}
         ORDER BY complained_date DESC NULLS LAST, id DESC
         LIMIT ${PER_SOURCE_LIMIT}`
     )
@@ -166,7 +179,7 @@ app.get("/", async (c) => {
 
   // ── SCM sources (Supabase, scm schema) ─────────────────────
   // Guarded: any failure here degrades gracefully to the public hits above.
-  await appendScmHits(env, raw, hits);
+  await appendScmHits(c, env, raw, hits);
 
   return c.json({ q: raw, hits });
 });
@@ -178,7 +191,12 @@ app.get("/", async (c) => {
  * through escapeForOr() so a term with PostgREST grammar chars (`,(){}`) can't
  * corrupt the filter.
  */
-async function appendScmHits(env: Env, raw: string, hits: Hit[]): Promise<void> {
+async function appendScmHits(
+  c: Parameters<typeof activeCompanyId>[0],
+  env: Env,
+  raw: string,
+  hits: Hit[],
+): Promise<void> {
   if (!isSupabaseConfigured(env)) return;
   const term = escapeForOr(raw);
   if (!term) return;
@@ -190,21 +208,28 @@ async function appendScmHits(env: Env, raw: string, hits: Hit[]): Promise<void> 
     return;
   }
 
+  // Multi-company: SOs + products are PER-COMPANY modules, so their search
+  // hits follow the active company (no-op predicate when unresolved). Matches
+  // the scopeToCompany behaviour of the SO / product list routes.
+  const companyId = activeCompanyId(c);
+  const soQuery = sb
+    .from("mfg_sales_orders")
+    .select("doc_no, debtor_name, phone, ref, so_date, branding")
+    .or(
+      `doc_no.ilike.%${term}%,debtor_name.ilike.%${term}%,` +
+        `ref.ilike.%${term}%,phone.ilike.%${term}%,po_doc_no.ilike.%${term}%`
+    );
+  const prodQuery = sb
+    .from("mfg_products")
+    .select("id, code, name, description, sell_price_sen")
+    .eq("status", "ACTIVE")
+    .or(`code.ilike.%${term}%,name.ilike.%${term}%,description.ilike.%${term}%`);
+
   const [soRes, prodRes] = await Promise.allSettled([
-    sb
-      .from("mfg_sales_orders")
-      .select("doc_no, debtor_name, phone, ref, so_date, branding")
-      .or(
-        `doc_no.ilike.%${term}%,debtor_name.ilike.%${term}%,` +
-          `ref.ilike.%${term}%,phone.ilike.%${term}%,po_doc_no.ilike.%${term}%`
-      )
+    (companyId != null ? soQuery.eq("company_id", companyId) : soQuery)
       .order("so_date", { ascending: false })
       .limit(PER_SOURCE_LIMIT),
-    sb
-      .from("mfg_products")
-      .select("id, code, name, description, sell_price_sen")
-      .eq("status", "ACTIVE")
-      .or(`code.ilike.%${term}%,name.ilike.%${term}%,description.ilike.%${term}%`)
+    (companyId != null ? prodQuery.eq("company_id", companyId) : prodQuery)
       .order("code", { ascending: true })
       .limit(PER_SOURCE_LIMIT),
   ]);
