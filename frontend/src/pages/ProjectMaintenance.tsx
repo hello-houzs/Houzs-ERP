@@ -5,6 +5,7 @@ import { PageHeader } from "../components/Layout";
 import { Button } from "../components/Button";
 import { RowActionsMenu } from "../components/RowActionsMenu";
 import { useQuery } from "../hooks/useQuery";
+import { useAuth } from "../auth/AuthContext";
 import { useToast } from "../hooks/useToast";
 import { useDialog } from "../hooks/useDialog";
 import { Skeleton } from "../components/Skeleton";
@@ -70,6 +71,14 @@ interface ChecklistTemplateSection {
 }
 
 export function ProjectMaintenanceView() {
+  const { user } = useAuth();
+  // Cost Rates is finance data (per-brand transport / merchandise / commission
+  // rate card) — the /api/projects/cost-rates endpoint is denyFinance-guarded
+  // server-side (#345). HARD-GATE it on the DIRECTOR-level finance-viewer flag:
+  // a non-finance-viewer with projects.maintenance access must NOT mount the
+  // section AND must NOT fire the fetch (which would 403). Fail-open when the
+  // flag is absent — the backend still enforces.
+  const canProjectFinance = !!user?.project_finance_viewer;
   return (
     <div>
       <PageHeader
@@ -87,9 +96,11 @@ export function ProjectMaintenanceView() {
         <OrganizerManager />
         <VenueManager />
       </div>
-      <div className="mt-6">
-        <CostRateManager />
-      </div>
+      {canProjectFinance && (
+        <div className="mt-6">
+          <CostRateManager enabled={canProjectFinance} />
+        </div>
+      )}
       <div className="mt-6">
         <ChecklistManager />
       </div>
@@ -1896,10 +1907,15 @@ interface CostRateRow {
   updated_at: string | null;
 }
 
-function CostRateManager() {
+function CostRateManager({ enabled = true }: { enabled?: boolean }) {
   const toast = useToast();
-  const q = useQuery<{ data: CostRateRow[] }>(() =>
-    api.get("/api/projects/cost-rates"),
+  // `enabled` is the finance-viewer hard gate (see ProjectMaintenanceView). The
+  // parent already skips rendering this section when false; the enabled guard
+  // is the belt-and-suspenders so the denyFinance-guarded fetch never fires.
+  const q = useQuery<{ data: CostRateRow[] }>(
+    () => api.get("/api/projects/cost-rates"),
+    [],
+    { enabled },
   );
 
   return (

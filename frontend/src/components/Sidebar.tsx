@@ -15,6 +15,7 @@ import {
   FolderKanban,
   ShieldCheck,
   Activity,
+  Bot,
   Boxes,
   Package,
   Truck,
@@ -423,6 +424,13 @@ export const NAV_TABS: NavTab[] = [
     label: "System Health",
     icon: Activity,
     pageAccess: "system_health",
+  },
+  {
+    section: "system",
+    to: "/agents",
+    label: "Agent Console",
+    icon: Bot,
+    anyPerm: ["*"],
   },
   {
     section: "system",

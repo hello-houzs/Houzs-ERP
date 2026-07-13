@@ -37,6 +37,7 @@ import { useActiveCurrencies, rateFor } from '../../vendor/scm/lib/currencies-qu
 import { CurrencySelect } from '../../vendor/scm/components/CurrencySelect';
 import { usePurchaseOrderDetail, usePurchaseOrders, useSuppliers, useSupplierDetail } from '../../vendor/scm/lib/suppliers-queries';
 import { useMfgProducts, useMaintenanceConfig, useSpecialAddons } from '../../vendor/scm/lib/mfg-products-queries';
+import { useDebouncedValue } from '../../vendor/scm/lib/hooks';
 import { useWarehouses } from '../../vendor/scm/lib/inventory-queries';
 import { useRacks } from '../../vendor/scm/lib/warehouse-queries';
 import { ItemGroupPill } from '../../vendor/scm/lib/category-badges';
@@ -484,9 +485,13 @@ export const GrnNew = () => {
   // query is shared: only one line input is focused at a time, so a single
   // gated query feeds whichever line's datalist is active.
   const [productQuery, setProductQuery] = useState<string>('');
+  /* Perf — debounce the datalist search so a fast typist fires one
+     /mfg-products request per pause, not per keystroke. Native <datalist>
+     renders <option>s directly, so no render cap is needed — only the refetch. */
+  const debouncedProductQuery = useDebouncedValue(productQuery, 250);
   const productsQ = useMfgProducts({
-    search: productQuery,
-    enabled: isManual && productQuery.trim().length >= 2,
+    search: debouncedProductQuery,
+    enabled: isManual && debouncedProductQuery.trim().length >= 2,
   });
 
   // Commander 2026-05-29 — supplier-bound picks carry no category on the

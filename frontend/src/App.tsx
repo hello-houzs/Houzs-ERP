@@ -36,6 +36,7 @@ const Announcements = lazy(() => import("./pages/Announcements").then((m) => ({ 
 const Settings = lazy(() => import("./pages/Settings").then((m) => ({ default: m.Settings })));
 const Team = lazy(() => import("./pages/Team").then((m) => ({ default: m.Team })));
 const SystemHealth = lazy(() => import("./pages/SystemHealth").then((m) => ({ default: m.SystemHealth })));
+const Agents = lazy(() => import("./pages/Agents").then((m) => ({ default: m.Agents })));
 // Mail Center — in-ERP shared inbox (ported from Hookka). Inbox + thread detail;
 // Compose is a modal opened from the inbox (no standalone route).
 const MailInbox = lazy(() => import("./pages/MailCenter/Inbox").then((m) => ({ default: m.MailInbox })));
@@ -291,6 +292,10 @@ export default function App() {
             </PageGuard>
           }
         />
+        {/* Agent console — owner/IT only (wildcard). Runtime governance for the
+            agent fleet: pause/kill, autonomy gates, proposals + findings, the
+            learned-tuning approvals, and the per-agent teaching notebook. */}
+        <Route path="/agents" element={<Guard anyPerm={["*"]}><Agents /></Guard>} />
         <Route
           path="/system-health"
           element={
