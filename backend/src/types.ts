@@ -74,6 +74,10 @@ export type Env = {
   // POST /api/mail-center/inbound route 503s until this is set and >= 16 chars.
   // Set via `wrangler secret put MAIL_INBOUND_SECRET` (owner-gated, MX cutover).
   MAIL_INBOUND_SECRET?: string;
+  // Shared secret guarding POST /api/sync/so-mirror (the 2990 live SO mirror
+  // receiver). The 2990 DB (pg_net) sends it as `x-sync-secret`. Set via
+  // `wrangler secret put SYNC_SECRET`. Unset => the receiver 401s (fail-closed).
+  SYNC_SECRET?: string;
   // System Health observability (phase 2, ported from Hookka). Writes via the
   // binding; reads via the AE SQL API using the two secrets. All optional —
   // absent => health endpoints serve deterministic mock data.
