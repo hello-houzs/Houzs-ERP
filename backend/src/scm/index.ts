@@ -55,6 +55,7 @@ import { documentFlow } from "./routes/document-flow";
 import { drivers } from "./routes/drivers";
 import { soDropdownOptions } from "./routes/so-dropdown-options";
 import { reports } from "./routes/reports";
+import { salesAnalysis } from "./routes/sales-analysis";
 import { scanSo } from "./routes/scan-so";
 import { scanPayment } from "./routes/scan-payment";
 import { slips } from "./routes/slips";
@@ -289,6 +290,12 @@ scm.route("/so-dropdown-options", soDropdownOptions);
 // reports: read-only cross-area detail listings — left on the coarse gate (see
 // SHARED READ HELPERS note above).
 scm.route("/reports", reports);
+// sales-analysis: read-only Sales Analysis dashboard aggregation (company_2
+// scoped). Left on the coarse scm.access gate — the route gates precisely
+// in-handler (GET → scm.so.view_all, PUT /targets → scm.config.write), which an
+// area guard's single view/edit page-key mapping can't express. Ported from
+// 2990 (#388).
+scm.route("/sales-analysis", salesAnalysis);
 // Ported 2026-06-21 — Sales Order ICR: photo of a handwritten order slip →
 // Claude vision extract → review → prefill New SO, with self-evolution
 // (per-salesperson learned rules + few-shot + global aliases). Reads/writes
