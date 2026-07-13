@@ -30,7 +30,9 @@
 //   1. customer-specific row matching (baseModel, slot-set, tier)
 //   2. customer = null row matching the same
 // Within a scope, the row with the LATEST effective_from on/before today
-// wins. Soft-deleted rows (deleted_at != null) never match.
+// wins; equal effective_from falls to newest created_at, then id (both
+// descending) so duplicates resolve identically everywhere.
+// Soft-deleted rows (deleted_at != null) never match.
 //
 // Tier match: row.tier === null matches any input tier (commander rarely
 // uses this — most combos are tier-specific).
@@ -55,6 +57,12 @@ export interface SofaComboRow {
   pwpPricesByHeight?: Record<string, number | null>;
   label?: string | null;
   effectiveFrom: string;        // ISO date 'YYYY-MM-DD'
+  /** Row creation timestamp (ISO). Tie-break when two rows share the same
+   *  scope AND effectiveFrom: the newest row wins — the same rule the admin
+   *  list (GET /sofa-combos) uses to decide which duplicate it displays, so
+   *  the engine always charges the price the admin sees. Optional: legacy
+   *  snapshots without it lose ties to rows that carry one. */
+  createdAt?: string;
   deletedAt?: string | null;
   /** Default Free Gift (migration 0170, D9) — raw jsonb [{giftProductId, qty,
    *  campaignName?}]. When a cart's sofa build matches this combo, the combo is a
@@ -354,7 +362,7 @@ export interface ComboMatch {
  *
  * Ranking (high → low), exactly like HOOKKA's `priorityOf`:
  *   customer+tier > customer+ANY(null) > company+tier > company+ANY(null),
- *   newest effectiveFrom as the tie-break.
+ *   newest effectiveFrom, then newest createdAt, then id as tie-breaks.
  *
  * Returns `null` when no combo's slots can be covered by the built modules or
  * the winner has no price for `height`. Does NOT apply the cheaper-only guard
@@ -404,12 +412,21 @@ export function pickComboMatch(
     if (r.customerId === null && r.tier === null) return 1;
     return 0; // customer-mismatched rows can't win (shouldn't appear post-filter)
   };
+  // Newest-first string compare; '' (unknown createdAt) loses to any value.
+  const desc = (a: string, b: string): number => (a < b ? 1 : a > b ? -1 : 0);
   const ranked = candidates
     .map((c) => ({ ...c, p: priorityOf(c.row) }))
     .filter((c) => c.p > 0)
     .sort((a, b) =>
       b.p - a.p ||
-      (a.row.effectiveFrom < b.row.effectiveFrom ? 1 : a.row.effectiveFrom > b.row.effectiveFrom ? -1 : 0),
+      desc(a.row.effectiveFrom, b.row.effectiveFrom) ||
+      // Same scope + same effectiveFrom (duplicate rows): newest createdAt
+      // wins — identical to the GET /sofa-combos "currently active" reducer,
+      // so the engine and the admin UI agree on which duplicate is live.
+      // Final id compare makes the pick deterministic even for exact twins,
+      // instead of depending on DB/cache row order (the 2026-07-12 drift).
+      desc(a.row.createdAt ?? '', b.row.createdAt ?? '') ||
+      desc(a.row.id, b.row.id),
     );
   const winner = ranked[0];
   if (!winner) return null;
