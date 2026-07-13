@@ -45,20 +45,20 @@ export function statusVariantForAssr(status: string): Variant {
 }
 
 const STAGE_VARIANT: Record<string, Variant> = {
-  // v3.1 9-stage workflow — every open stage is amber and completed is
+  // v3.1 workflow — every open stage is amber and completed is
   // green, matching the Stage funnel's dot semantics. Before this map
   // the new slugs fell through to neutral, so the whole list rendered
   // grey dots.
   pending_review: "open",
   under_verification: "open",
   pending_solution: "open",
-  pending_inspection: "open",
   pending_item_pickup: "open",
   pending_supplier_pickup: "open",
   pending_item_ready: "open",
   pending_delivery_service: "open",
   completed: "closed",
-  // Legacy 5-stage aliases.
+  // Legacy aliases — 5-stage vocabulary + pending_inspection (retired mig 0099).
+  pending_inspection: "open",
   registration: "open",
   triage: "open",
   action: "in-progress",

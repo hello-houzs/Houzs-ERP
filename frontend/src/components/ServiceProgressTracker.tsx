@@ -14,20 +14,19 @@
  *   Future     — empty outline with grey number
  *   Connector  — green / amber / red based on the prior stage's health
  *
- * Mobile (< sm): collapses to a single line showing "Stage 4 of 9 —
- * Pending Inspection · 2.1 / 2 days". Avoids a vertical stepper that
+ * Mobile (< sm): collapses to a single line showing "Stage 4 of 8 —
+ * Item Pickup · 2.1 / 2 days". Avoids a vertical stepper that
  * pushes the actual case content off-screen.
  */
 import { Check, Clock } from "lucide-react";
 import type { AssrStage, AssrStageHistoryRow } from "../types";
 import { cn, formatTimestamp } from "../lib/utils";
 
-// ── Canonical 9-stage order + display labels (mirrors backend mig 074) ──
+// ── Canonical 8-stage order + display labels (mirrors backend mig 074 + 0099) ──
 
 const STAGES: { value: AssrStage; label: string; short: string; owner: string }[] = [
   { value: "pending_review",           label: "Review",                   short: "Review",         owner: "Service Admin" },
   { value: "under_verification",       label: "Verification",             short: "Verify",         owner: "Service Admin" },
-  { value: "pending_inspection",       label: "Inspection",               short: "Inspection",     owner: "Logistic Admin" },
   { value: "pending_solution",         label: "Solution",                 short: "Solution",       owner: "Service Admin" },
   { value: "pending_item_pickup",      label: "Item Pickup",              short: "Item Pickup",    owner: "Logistic Admin" },
   { value: "pending_supplier_pickup",  label: "Supplier Pickup",          short: "Supplier",       owner: "Service Admin" },
@@ -218,7 +217,7 @@ function CompactSummary({
   return (
     <div className={cn("flex items-center gap-2 text-[12px]", className)}>
       <span className="inline-flex items-center gap-1 rounded bg-accent/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-accent">
-        Stage {currentIdx + 1} / 9
+        Stage {currentIdx + 1} / {STAGES.length}
       </span>
       <span className={cn("font-semibold", tone)}>{stage?.label ?? currentStage}</span>
       {isCurrent && node.target_days != null && node.target_days > 0 && (
@@ -289,7 +288,7 @@ function Node({
 }
 
 function ariaLabelForNode(state: NodeState | undefined, idx: number, fullLabel: string): string {
-  const base = `Stage ${idx + 1} of 9: ${fullLabel}`;
+  const base = `Stage ${idx + 1} of ${STAGES.length}: ${fullLabel}`;
   if (!state) return `${base}, not started`;
   if (state.kind === "completed") return `${base}, completed`;
   if (state.kind === "current") {

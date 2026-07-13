@@ -47,8 +47,9 @@ export interface CreateAssrInput {
 export type Stage =
   | "pending_review"            // Stage 1 — Service Admin
   | "under_verification"        // Stage 2 — Service Admin
-  | "pending_inspection"        // Stage 3 — inspect the issue first (own team OR supplier)
-  | "pending_solution"          // Stage 4 — Service Admin / Manager pick the fix
+  | "pending_solution"          // Stage 3 — Service Admin / Manager pick the fix
+  //  (pending_inspection retired 2026-07-14 — inspection folded into
+  //   Under Verification as inspect_by + QC-issue fields; mig 0099)
   | "pending_item_pickup"       // Stage 5 — SA assigns Logistic Admin
   | "pending_supplier_pickup"   // Stage 6 — SA contacts supplier
   | "pending_item_ready"        // Stage 7 — SA updates on supplier return
@@ -88,7 +89,6 @@ function statusForStage(stage: Stage): string {
 export const ALL_STAGES: ReadonlyArray<Stage> = [
   "pending_review",
   "under_verification",
-  "pending_inspection",
   "pending_solution",
   "pending_item_pickup",
   "pending_supplier_pickup",
@@ -104,7 +104,6 @@ const DEFAULT_STAGE_TARGET_DAYS: Record<Stage, number> = {
   pending_review: 1,
   under_verification: 2,
   pending_solution: 2,
-  pending_inspection: 2,
   pending_item_pickup: 2,
   pending_supplier_pickup: 3,
   pending_item_ready: 5,
@@ -720,9 +719,13 @@ const PATCH_FIELDS = [
   // the main case, supplier edits supplier_service_note from the
   // supplier portal.
   "goods_returned_note", "supplier_service_note",
-  // Mig 0073 — who performs the inspection stage: 'own' | 'supplier'.
+  // Mig 0073 — who performs the issue inspection: 'own' | 'supplier'.
   // Own-team inspections link into delivery planning for the visit.
+  // Lives on the Under Verification stage since mig 0099.
   "inspection_by",
+  // Mig 0099 — QC-on-receipt result (pass/fail/na), shown next to
+  // qc_receipt_date in the Verification stage panel.
+  "qc_issue_result",
 ] as const;
 
 export async function patchAssrCase(
