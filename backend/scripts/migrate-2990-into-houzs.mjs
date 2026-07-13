@@ -2,62 +2,55 @@
 // Phase 2 — migrate 2990's live data INTO the merged Houzs system, tagged
 // company_id = 2990. SAFE BY DEFAULT: dry-run (counts only) unless APPLY=1.
 //
-//   SOURCE_DATABASE_URL = 2990 prod (dolvxrchzbnqvahocwsu)   [EXPORT]
-//   DATABASE_URL        = Houzs prod (anogrigyjbduyzclzjgn)  [IMPORT, scm schema]
-//   APPLY=1             = actually write (else dry-run + reconcile only)
+// SOURCE is read via the Supabase REST API + service_role key — NO database
+// password / reset needed (the db password is separate; resetting it would break
+// anything connecting to 2990 directly, so we avoid it entirely).
+//   SOURCE_SUPABASE_URL     = https://dolvxrchzbnqvahocwsu.supabase.co
+//   SOURCE_SERVICE_ROLE_KEY = 2990 service_role key (Supabase -> Settings -> API)
+//   DATABASE_URL            = Houzs prod (import target, scm schema)
+//   APPLY=1                 = actually write (else dry-run + reconcile only)
 //
-// Locked decisions baked in (owner can flip):
-//   · 2990 existing doc numbers get a '2990-' PREFIX on import so they never
-//     collide with Houzs's own SO-2607-001 on the global unique doc_no index
-//     (matches the Phase 0d per-company prefix). See prefixDoc().
-//   · Master data (customers / suppliers / products) is kept SEPARATE per
-//     company (each 2990 row imported with company_id=2990, NOT merged into a
-//     Houzs entity). Cleanest + splittable. Cross-company dedupe is a later,
-//     owner-driven pass, not this migration.
+// Locked decisions (owner can flip): 2990 doc numbers get a '2990-' PREFIX on
+// import (never collide with Houzs's own on the global unique doc_no index);
+// master data (customers/suppliers/products) kept SEPARATE per company.
 //
-// Idempotent: every row carries its ORIGINAL 2990 id (uuid) so re-running
-// upserts by (id) — a second run changes nothing. Reconciles row counts +
-// key money sums (source vs imported-for-2990) at the end.
-//
-// STATUS: framework + the transform rules are final. The per-table column list
-// (COLS below) is derived from code and MUST be validated against the live 2990
-// information_schema on first connect — the script prints any column mismatch
-// per table and SKIPS that table rather than importing wrong data. So a first
-// APPLY run is self-checking: it imports the tables whose columns line up and
-// loudly lists the ones needing a mapping tweak.
+// Idempotent: rows keep their ORIGINAL 2990 id, upsert ON CONFLICT (id) DO
+// NOTHING — re-run changes nothing. Self-checking: per table it drops any
+// source-only columns Houzs's scm doesn't have and logs them, and skips a table
+// entirely if scm has no matching table / no company_id, rather than writing
+// wrong data. So a first DRY-RUN prints exactly what maps + what needs a tweak.
 
 import postgres from "postgres";
+import { createClient } from "@supabase/supabase-js";
 
-const SRC = process.env.SOURCE_DATABASE_URL;
+const SUPA_URL = process.env.SOURCE_SUPABASE_URL;
+const SUPA_KEY = process.env.SOURCE_SERVICE_ROLE_KEY;
 const DST = process.env.DATABASE_URL;
 const APPLY = process.env.APPLY === "1";
-if (!SRC || !DST) { console.error("need SOURCE_DATABASE_URL (2990) + DATABASE_URL (Houzs)"); process.exit(2); }
+if (!SUPA_URL || !SUPA_KEY || !DST) {
+  console.error("need SOURCE_SUPABASE_URL + SOURCE_SERVICE_ROLE_KEY + DATABASE_URL");
+  process.exit(2);
+}
 
-const src = postgres(SRC, { ssl: "require", prepare: false, max: 2 });
+const src = createClient(SUPA_URL, SUPA_KEY, { auth: { persistSession: false } });
 const dst = postgres(DST, { ssl: "require", prepare: false, max: 2 });
 
-// FK-topological order: parents before children. Doc headers before their lines
-// before their payments; masters before documents.
+// FK-topological order: masters -> headers -> lines -> payments.
 const ORDER = [
-  // masters
   "customers", "suppliers", "products", "product_models", "product_fabrics",
   "product_size_variants", "warehouses", "accounts",
-  // sales order-to-cash
   "mfg_sales_orders", "mfg_sales_order_items", "mfg_sales_order_payments",
   "delivery_orders", "delivery_order_items",
   "sales_invoices", "sales_invoice_items", "sales_invoice_payments",
   "delivery_returns", "delivery_return_items",
-  // procure-to-pay
   "purchase_orders", "purchase_order_items",
   "grns", "grn_items",
   "purchase_invoices", "purchase_invoice_items",
   "purchase_returns", "purchase_return_items",
-  // inventory + accounting ledgers
   "inventory_movements", "inventory_lots", "inventory_lot_consumptions",
   "journal_entries", "journal_entry_lines",
 ];
 
-// Doc-number columns per table that must be '2990-' prefixed on import.
 const DOCNO_COL = {
   mfg_sales_orders: "doc_no", delivery_orders: "do_number",
   sales_invoices: "invoice_number", purchase_orders: "po_number",
@@ -68,45 +61,65 @@ const prefixDoc = (v) => (v == null || String(v).startsWith("2990-") ? v : `2990
 
 async function companyId2990() {
   const r = await dst`SELECT id FROM companies WHERE code='2990'`;
-  if (!r.length) throw new Error("companies has no 2990 row — run Phase 0f first");
+  if (!r.length) throw new Error("companies has no 2990 row - run Phase 0f first");
   return Number(r[0].id);
 }
 
-// columns present in BOTH source and dest (intersection) — the safe set to copy.
-async function sharedCols(table) {
-  const s = (await src`SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name=${table}`).map(r => r.column_name);
-  const d = (await dst`SELECT column_name FROM information_schema.columns WHERE table_schema='scm' AND table_name=${table}`).map(r => r.column_name);
-  const sset = new Set(s);
-  return { cols: d.filter(c => sset.has(c)), onlyDest: d.filter(c => !sset.has(c)), onlySrc: s.filter(c => !d.has?.(c)) };
+// full-table read via PostgREST, 1000/page (PostgREST caps at 1000).
+async function fetchAll(table) {
+  const out = [];
+  const PAGE = 1000;
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await src.schema("public").from(table).select("*").range(from, from + PAGE - 1);
+    if (error) throw new Error(error.message);
+    out.push(...(data ?? []));
+    if (!data || data.length < PAGE) break;
+  }
+  return out;
+}
+
+async function destCols(table) {
+  const r = await dst`SELECT column_name FROM information_schema.columns WHERE table_schema='scm' AND table_name=${table}`;
+  return r.map((x) => x.column_name);
 }
 
 async function main() {
   const cid = await companyId2990();
-  console.log(`2990 company_id = ${cid} · mode = ${APPLY ? "APPLY" : "DRY-RUN"}`);
-  let totalSrc = 0, totalIns = 0;
+  console.log(`2990 company_id=${cid} · mode=${APPLY ? "APPLY" : "DRY-RUN"}`);
+  let totalSrc = 0, totalImported = 0;
   for (const table of ORDER) {
-    let map;
-    try { map = await sharedCols(table); }
-    catch (e) { console.log(`SKIP ${table}: ${e.message}`); continue; }
-    if (!map.cols.includes("company_id")) { console.log(`SKIP ${table}: dest has no company_id`); continue; }
-    const rows = await src`SELECT ${src(map.cols.filter(c => c !== "company_id"))} FROM public.${src(table)}`;
+    let rows;
+    try { rows = await fetchAll(table); }
+    catch (e) { console.log(`SKIP ${table}: source read failed (${e.message})`); continue; }
+    if (rows.length === 0) { console.log(`${table}: 0 src rows`); continue; }
+    let dcols;
+    try { dcols = await destCols(table); }
+    catch (e) { console.log(`SKIP ${table}: dest error (${e.message})`); continue; }
+    if (!dcols.includes("company_id")) { console.log(`SKIP ${table}: scm.${table} missing / no company_id`); continue; }
+    const dset = new Set(dcols);
+    const srcCols = Object.keys(rows[0]);
+    const shared = srcCols.filter((c) => dset.has(c) && c !== "company_id");
+    const dropped = srcCols.filter((c) => !dset.has(c));
     totalSrc += rows.length;
     const docCol = DOCNO_COL[table];
-    const shaped = rows.map(r => {
-      const o = { ...r, company_id: cid };
+    const shaped = rows.map((r) => {
+      const o = { company_id: cid };
+      for (const c of shared) o[c] = r[c];
       if (docCol && o[docCol] != null) o[docCol] = prefixDoc(o[docCol]);
       return o;
     });
-    console.log(`${table}: ${rows.length} src rows` + (docCol ? ` (doc '${docCol}' prefixed)` : ""));
-    if (APPLY && shaped.length) {
+    console.log(`${table}: ${rows.length} rows` + (docCol ? ` (doc '${docCol}' -> 2990-)` : "") + (dropped.length ? ` [dropped src-only: ${dropped.join(",")}]` : ""));
+    if (APPLY) {
       const cols = Object.keys(shaped[0]);
-      // upsert by primary key id → idempotent re-run
-      await dst`INSERT INTO scm.${dst(table)} ${dst(shaped, cols)} ON CONFLICT (id) DO NOTHING`;
+      for (let i = 0; i < shaped.length; i += 500) {
+        await dst`INSERT INTO scm.${dst(table)} ${dst(shaped.slice(i, i + 500), cols)} ON CONFLICT (id) DO NOTHING`;
+      }
       const got = await dst`SELECT count(*)::int AS n FROM scm.${dst(table)} WHERE company_id=${cid}`;
-      totalIns += Number(got[0].n);
-      console.log(`  -> scm.${table} now has ${got[0].n} rows for company 2990`);
+      totalImported += Number(got[0].n);
+      console.log(`  -> scm.${table} now ${got[0].n} rows for 2990`);
     }
   }
-  console.log(`\nRECONCILE: source rows=${totalSrc}` + (APPLY ? ` imported-for-2990=${totalIns}` : " (dry-run, nothing written)"));
+  console.log(`\nRECONCILE: source rows=${totalSrc}` + (APPLY ? ` · imported-for-2990=${totalImported}` : " (DRY-RUN, nothing written)"));
 }
-main().then(() => Promise.all([src.end(), dst.end()])).catch(async e => { console.error("MIGRATE_FAIL", e.message); await Promise.all([src.end(), dst.end()]); process.exit(1); });
+
+main().then(() => dst.end()).catch(async (e) => { console.error("MIGRATE_FAIL", e.message); await dst.end(); process.exit(1); });

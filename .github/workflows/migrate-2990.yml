@@ -20,6 +20,7 @@ jobs:
       - run: npm ci
       - run: node scripts/migrate-2990-into-houzs.mjs
         env:
-          SOURCE_DATABASE_URL: ${{ secrets.SOURCE_DATABASE_URL }}
+          SOURCE_SUPABASE_URL: ${{ secrets.SOURCE_SUPABASE_URL }}
+          SOURCE_SERVICE_ROLE_KEY: ${{ secrets.SOURCE_SERVICE_ROLE_KEY }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           APPLY: ${{ github.event.inputs.apply }}
