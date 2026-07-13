@@ -24,6 +24,7 @@ export type SoAuditAction =
   | 'UPDATE_DETAILS'
   | 'UPDATE_STATUS'
   | 'ADD_PAYMENT'
+  | 'UPDATE_PAYMENT'
   | 'DELETE_PAYMENT'
   | 'ADD_LINE'
   | 'UPDATE_LINE'
