@@ -2,6 +2,7 @@ import { lazy, Suspense } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import { Layout } from "./components/Layout";
 import { useAuth } from "./auth/AuthContext";
+import { isSalesNonDirector } from "./auth/salesAccess";
 import { PageGuard } from "./auth/PageGuard";
 import { Forbidden } from "./pages/Forbidden";
 import { GlobalSearchProvider } from "./components/GlobalSearch";
@@ -205,6 +206,19 @@ function ScmGuard({
       {children}
     </Guard>
   );
+}
+
+/**
+ * Delivery Returns route guard — Sales-access model. Denies BEFORE mount for
+ * non-director Sales users (so the page component never mounts and none of its
+ * data hooks fire — OFF, not hidden), then falls through to the normal
+ * scm.sales.returns area guard for everyone else. Backend remains the source of
+ * truth; this is nav-consistent defence-in-depth for a typed URL.
+ */
+function DeliveryReturnsGuard({ children }: { children: React.ReactNode }) {
+  const { user } = useAuth();
+  if (isSalesNonDirector(user)) return <Forbidden page="scm.sales.returns" />;
+  return <ScmGuard area="scm.sales.returns">{children}</ScmGuard>;
 }
 
 export default function App() {
@@ -461,10 +475,10 @@ export default function App() {
         <Route path="/scm/sales-invoices/new" element={<ScmGuard area="scm.sales.invoices"><Scm2990Shell><ScmSalesInvoiceNewV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/sales-invoices/from-do" element={<ScmGuard area="scm.sales.invoices"><Scm2990Shell><ScmSalesInvoiceFromDoV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/sales-invoices/:id" element={<ScmGuard area="scm.sales.invoices"><Scm2990Shell><ScmSalesInvoiceDetailV2 /></Scm2990Shell></ScmGuard>} />
-        <Route path="/scm/delivery-returns" element={<ScmGuard area="scm.sales.returns"><Scm2990Shell><ScmDeliveryReturnsV2 /></Scm2990Shell></ScmGuard>} />
-        <Route path="/scm/delivery-returns/new" element={<ScmGuard area="scm.sales.returns"><Scm2990Shell><ScmDeliveryReturnNewV2 /></Scm2990Shell></ScmGuard>} />
-        <Route path="/scm/delivery-returns/from-do" element={<ScmGuard area="scm.sales.returns"><Scm2990Shell><ScmDeliveryReturnFromDoV2 /></Scm2990Shell></ScmGuard>} />
-        <Route path="/scm/delivery-returns/:id" element={<ScmGuard area="scm.sales.returns"><Scm2990Shell><ScmDeliveryReturnDetailV2 /></Scm2990Shell></ScmGuard>} />
+        <Route path="/scm/delivery-returns" element={<DeliveryReturnsGuard><Scm2990Shell><ScmDeliveryReturnsV2 /></Scm2990Shell></DeliveryReturnsGuard>} />
+        <Route path="/scm/delivery-returns/new" element={<DeliveryReturnsGuard><Scm2990Shell><ScmDeliveryReturnNewV2 /></Scm2990Shell></DeliveryReturnsGuard>} />
+        <Route path="/scm/delivery-returns/from-do" element={<DeliveryReturnsGuard><Scm2990Shell><ScmDeliveryReturnFromDoV2 /></Scm2990Shell></DeliveryReturnsGuard>} />
+        <Route path="/scm/delivery-returns/:id" element={<DeliveryReturnsGuard><Scm2990Shell><ScmDeliveryReturnDetailV2 /></Scm2990Shell></DeliveryReturnsGuard>} />
         <Route path="/scm/consignment-orders" element={<ScmGuard area="scm.consignment.orders"><Scm2990Shell><ScmConsignmentOrdersV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/consignment-orders/new" element={<ScmGuard area="scm.consignment.orders"><Scm2990Shell><ScmConsignmentOrderNewV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/consignment-orders/:docNo" element={<ScmGuard area="scm.consignment.orders"><Scm2990Shell><ScmConsignmentOrderDetailV2 /></Scm2990Shell></ScmGuard>} />

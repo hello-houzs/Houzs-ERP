@@ -461,6 +461,16 @@ export interface AuthUser {
    *  Finance Manager, owner `*`). Gates the Projects "Finances" sub-page
    *  (nav + route). Older backends omit it → treated as false. */
   project_finance_viewer?: boolean;
+  /** Org POSITION name (positions.name) — e.g. "Sales Executive",
+   *  "Super Admin". Sent by /auth/me (services/auth.ts → hydrateAuthUser).
+   *  Drives the code-keyed Sales-access model (director / sales detection in
+   *  auth/salesAccess.ts), NOT the configurable page matrix. */
+  position_name?: string | null;
+  /** Org position id (positions.id). Sent by /auth/me. */
+  position_id?: number | null;
+  /** Primary DEPARTMENT id (users.department_id). Sent by /auth/me. NOTE: the
+   *  department NAME is not yet on the wire — see auth/salesAccess.ts. */
+  department_id?: number | null;
 }
 
 export interface TeamMember {
