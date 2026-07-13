@@ -8279,14 +8279,14 @@ function CrewSlotRow({
 }) {
   const cur = slot ?? { name: "", phone: "" };
   return (
-    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-      <div className="flex min-w-0 items-center gap-1.5">
-        <UserCircle2 size={13} className={cn("shrink-0", color)} />
-        <span className="w-14 shrink-0 text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
+    <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-[1.8fr_1fr] sm:items-center">
+      <div className="flex min-w-0 items-center gap-1">
+        <UserCircle2 size={12} className={cn("shrink-0", color)} />
+        <span className="w-11 shrink-0 text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
           {label}
         </span>
         <select
-          className="min-w-0 flex-1 rounded-md border border-border bg-surface px-2 py-1.5 text-[12px]"
+          className="min-w-0 flex-1 rounded-md border border-border bg-surface px-1.5 py-1 text-[12px]"
           value={cur.name}
           onChange={(e) => {
             const u = options.find((o) => o.name === e.target.value);
@@ -8305,7 +8305,7 @@ function CrewSlotRow({
         </select>
       </div>
       <input
-        className="rounded-md border border-border bg-surface px-2 py-1.5 text-[12px] disabled:bg-bg/40"
+        className="min-w-0 rounded-md border border-border bg-surface px-1.5 py-1 text-[11px] disabled:bg-bg/40"
         placeholder={cur.name ? "Phone…" : "(pick a name first)"}
         value={cur.phone}
         disabled={!cur.name}
@@ -8391,7 +8391,7 @@ function PhaseCrewEditor({
       <div className="text-[10px] font-semibold uppercase tracking-wider text-ink-secondary">{title} — crew per lorry</div>
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         {pc.lorryCrew.map((lorry, li) => (
-          <div key={li} className="space-y-2 rounded-lg border border-border bg-bg/30 p-3">
+          <div key={li} className="space-y-1 rounded-lg border border-border bg-bg/30 p-2.5">
             <div className="flex items-center gap-2">
               <Truck size={13} className="shrink-0 text-ink-secondary" />
               <span className="shrink-0 text-[10px] font-bold uppercase tracking-wider text-ink-secondary">Lorry {li + 1}</span>
