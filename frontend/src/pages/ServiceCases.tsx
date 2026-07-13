@@ -85,13 +85,13 @@ import type {
 
 type StageFilter = "ALL" | AssrStage;
 
-// v3.1 9-stage workflow (mig 074). Labels match the canonical proposal
-// vocabulary; values are the SQL enum.
+// v3.1 workflow — 8 stages since mig 0105 retired Pending Inspection
+// (inspection lives inside Verification now). Labels match the
+// canonical proposal vocabulary; values are the SQL enum.
 const STAGE_OPTIONS: { value: StageFilter; label: string }[] = [
   { value: "ALL", label: "All" },
   { value: "pending_review", label: "Review" },
   { value: "under_verification", label: "Verification" },
-  { value: "pending_inspection", label: "Inspection" },
   { value: "pending_solution", label: "Solution" },
   { value: "pending_item_pickup", label: "Item Pickup" },
   { value: "pending_supplier_pickup", label: "Supplier Pickup" },
@@ -122,15 +122,14 @@ const NCR_OPTIONS = [
 ] as const;
 
 // Default "next" suggestion for the in-form transition button. Skips
-// (Replace Unit → no inspection / supplier pickup / item ready;
+// (Replace Unit → no supplier pickup / item ready;
 // Field-Service Own Team → no supplier pickup / item ready;
 // Return Visit → no item pickup / supplier pickup / item ready) are
 // honored by the service-admin manually picking the correct next
 // stage from the dropdown — this map only seeds the primary button.
 const NEXT_STAGE: Record<string, { stage: AssrStage; label: string }> = {
   pending_review:           { stage: "under_verification",       label: "Start Verification" },
-  under_verification:       { stage: "pending_inspection",       label: "Schedule Inspection" },
-  pending_inspection:       { stage: "pending_solution",         label: "Move to Solution" },
+  under_verification:       { stage: "pending_solution",         label: "Move to Solution" },
   pending_solution:         { stage: "pending_item_pickup",      label: "Arrange Item Pickup" },
   pending_item_pickup:      { stage: "pending_supplier_pickup",  label: "Hand to Supplier" },
   pending_supplier_pickup:  { stage: "pending_item_ready",       label: "Mark Item Ready" },
@@ -3334,103 +3333,6 @@ function DetailContent({
               />
             </StageRow>
 
-            {/* pending_inspection — one stage whoever inspects (Nick
-                2026-07-05). `inspection_by` picks the performer: own
-                team routes the visit into Delivery Planning (setting
-                customer_pickup_at surfaces the case on the board as an
-                unscheduled job — the "trip draft"); supplier handles it
-                on their side via the supplier portal. */}
-            <StageRow
-              c={c}
-              priorityMap={priorityMap}
-              stageId="pending_inspection"
-              title="Inspection · QC Issue Inspection"
-              summary={
-                c.inspection_by === "own"
-                  ? `Own-team inspection${c.customer_pickup_at ? ` · visit ${formatDate(c.customer_pickup_at)}` : " · schedule the visit"}`
-                  : c.inspection_by === "supplier"
-                  ? "Supplier inspection — tracked via supplier portal"
-                  : c.stage === "pending_inspection"
-                  ? "QC issue inspection on receipt · action required now"
-                  : "QC Issue Inspection (on receipt): assess the reported defect from photos & description, then decide whether to accept the case."
-              }
-              currentStage={c.stage}
-              stages={activeStages}
-              openStage={openStage}
-              setOpenStage={setOpenStage}
-            >
-              <div className="space-y-2.5 rounded-md border border-border-subtle bg-surface px-3 py-2.5">
-                <div>
-                  <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
-                    Inspection by
-                  </div>
-                  <div className="flex gap-1.5">
-                    {([
-                      { v: "own", label: "Own team" },
-                      { v: "supplier", label: "Supplier" },
-                    ] as const).map((o) => (
-                      <button
-                        key={o.v}
-                        onClick={() =>
-                          patch({ inspection_by: c.inspection_by === o.v ? null : o.v })
-                        }
-                        disabled={!!c.archived_at}
-                        className={cn(
-                          "rounded-md border px-3 py-1.5 text-[12px] font-semibold transition-colors",
-                          c.inspection_by === o.v
-                            ? "border-primary bg-primary-soft text-primary"
-                            : "border-border bg-surface text-ink-secondary hover:border-primary/40",
-                        )}
-                      >
-                        {o.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                {c.inspection_by === "own" && (
-                  <>
-                    <InlineEdit
-                      label="Inspection Visit Date"
-                      type="date"
-                      value={c.customer_pickup_at}
-                      onSave={(v) => patch({ customer_pickup_at: v || null })}
-                    />
-                    <div className="flex flex-wrap items-center gap-2 rounded-md bg-bg/60 px-3 py-2 text-[11.5px] leading-relaxed text-ink-secondary">
-                      {c.customer_pickup_at ? (
-                        <>
-                          <span>
-                            On the <b>Delivery Planning</b> board as an unscheduled
-                            job — assign a driver / lorry there.
-                          </span>
-                          <a
-                            href="/scm/delivery-planning"
-                            target="_blank"
-                            rel="noreferrer"
-                            className="font-semibold text-primary hover:underline"
-                          >
-                            Open Delivery Planning →
-                          </a>
-                        </>
-                      ) : (
-                        <span>
-                          Set the visit date — the case then appears on the
-                          <b> Delivery Planning</b> board automatically for
-                          driver / lorry assignment.
-                        </span>
-                      )}
-                    </div>
-                  </>
-                )}
-                {c.inspection_by === "supplier" && (
-                  <div className="rounded-md bg-bg/60 px-3 py-2 text-[11.5px] leading-relaxed text-ink-secondary">
-                    Supplier performs the inspection — progress lands in the
-                    supplier portal's service note (see the Supplier Pickup /
-                    Item Ready rows).
-                  </div>
-                )}
-              </div>
-            </StageRow>
-
             {/* pending_solution — pick resolution method + set supplier */}
             <StageRow
               c={c}
@@ -4462,15 +4364,9 @@ function getStageAdvancePredicate(
       };
     case "pending_solution":
       return {
-        next: "pending_inspection",
+        next: "pending_item_pickup",
         satisfied: !!(c.resolution_method && c.po_no && c.action_remark?.trim()),
         label: "Resolution card complete",
-      };
-    case "pending_inspection":
-      return {
-        next: "pending_item_pickup",
-        satisfied: !!c.supplier_pickup_at,
-        label: "Supplier pickup date set",
       };
     case "pending_item_pickup":
       return {
@@ -4612,7 +4508,6 @@ const DETAIL_STAGES: { id: AssrStage; short: string; long: string }[] = [
   { id: "pending_review",              short: "Review",       long: "Review" },
   { id: "under_verification",          short: "Verification", long: "Verification" },
   { id: "pending_solution",            short: "Solution",     long: "Solution" },
-  { id: "pending_inspection",          short: "Inspection",   long: "Inspection" },
   { id: "pending_item_pickup",         short: "Item Pickup",  long: "Item Pickup" },
   { id: "pending_supplier_pickup",     short: "Supplier",     long: "Supplier Pickup" },
   { id: "pending_item_ready",          short: "Item Ready",   long: "Item Ready" },
@@ -4779,7 +4674,7 @@ function WorkflowCard({
 }: {
   currentStage: AssrStage;
   // PR 4 — pass the filtered active-stage list. Internal resolution
-  // methods drop Supplier Pickup + Item Ready → 7 dots instead of 9.
+  // methods drop Supplier Pickup + Item Ready → 6 dots instead of 8.
   stages: typeof DETAIL_STAGES;
   transitioning: boolean;
   onChange: (s: AssrStage) => void;
@@ -4955,11 +4850,10 @@ function StatusSummaryBar({
 // Surfaces the v3.1 `inspection_result` field (pass / fail / na) +
 // an inspection-report attachment slot. Hidden on early-stage cases
 // to keep the page uncluttered; renders once the case has reached
-// pending_inspection or beyond, OR when there's already a result /
+// pending_item_pickup or beyond, OR when there's already a result /
 // report on file.
 
 const INSPECTION_STAGES_OR_LATER: AssrStage[] = [
-  "pending_inspection",
   "pending_item_pickup",
   "pending_supplier_pickup",
   "pending_item_ready",
@@ -5273,12 +5167,116 @@ function VerificationCard({
 
   const inner = (
     <>
+      {/* Folded in from the retired Pending Inspection stage (mig
+          0105) — who inspects the reported issue. Own team routes the
+          visit into Delivery Planning via customer_pickup_at; supplier
+          handles it on their side via the supplier portal. */}
+      <div>
+        <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+          Inspect by
+        </div>
+        <div className="flex gap-1.5">
+          {([
+            { v: "own", label: "Own team" },
+            { v: "supplier", label: "Supplier" },
+          ] as const).map((o) => (
+            <button
+              key={o.v}
+              type="button"
+              onClick={() =>
+                patch({ inspection_by: c.inspection_by === o.v ? null : o.v })
+              }
+              disabled={archived || saving}
+              className={cn(
+                "rounded-md border px-3 py-1.5 text-[12px] font-semibold transition-colors",
+                c.inspection_by === o.v
+                  ? "border-primary bg-primary-soft text-primary"
+                  : "border-border bg-surface text-ink-secondary hover:border-primary/40",
+              )}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      {c.inspection_by === "own" && (
+        <>
+          <InlineEdit
+            label="Inspection Visit Date"
+            type="date"
+            value={c.customer_pickup_at}
+            onSave={(v) => patch({ customer_pickup_at: v || null })}
+          />
+          <div className="flex flex-wrap items-center gap-2 rounded-md bg-bg/60 px-3 py-2 text-[11.5px] leading-relaxed text-ink-secondary">
+            {c.customer_pickup_at ? (
+              <>
+                <span>
+                  On the <b>Delivery Planning</b> board as an unscheduled
+                  job — assign a driver / lorry there.
+                </span>
+                <a
+                  href="/scm/delivery-planning"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-semibold text-primary hover:underline"
+                >
+                  Open Delivery Planning →
+                </a>
+              </>
+            ) : (
+              <span>
+                Set the visit date — the case then appears on the
+                <b> Delivery Planning</b> board automatically for
+                driver / lorry assignment.
+              </span>
+            )}
+          </div>
+        </>
+      )}
+      {c.inspection_by === "supplier" && (
+        <div className="rounded-md bg-bg/60 px-3 py-2 text-[11.5px] leading-relaxed text-ink-secondary">
+          Supplier performs the inspection — progress lands in the
+          supplier portal's service note (see the Supplier Pickup /
+          Item Ready rows).
+        </div>
+      )}
       <InlineEdit
         label="QC Issue Inspection Date"
         type="date"
         value={c.qc_receipt_date}
         onSave={(v) => patch({ qc_receipt_date: v || null })}
       />
+      {/* Mig 0105 — result of the QC-on-receipt inspection, distinct
+          from the post-repair QC in Item Ready (inspection_result). */}
+      <div>
+        <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+          QC Issue Inspection Result
+        </div>
+        <div className="flex gap-1.5">
+          {([
+            { v: "pass", label: "Pass" },
+            { v: "fail", label: "Fail" },
+            { v: "na", label: "N/A" },
+          ] as const).map((o) => (
+            <button
+              key={o.v}
+              type="button"
+              onClick={() =>
+                patch({ qc_issue_result: c.qc_issue_result === o.v ? null : o.v })
+              }
+              disabled={archived || saving}
+              className={cn(
+                "rounded-md border px-3 py-1.5 text-[12px] font-semibold transition-colors",
+                c.qc_issue_result === o.v
+                  ? "border-primary bg-primary-soft text-primary"
+                  : "border-border bg-surface text-ink-secondary hover:border-primary/40",
+              )}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+      </div>
       <div>
         <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
           Outcome
@@ -6492,7 +6490,7 @@ function SupplierPortalLinkRow({
 //
 // Third variant of the per-case portal link: same /portal/case route
 // as the customer link but the token is source='sales', so the portal
-// shows the salesperson view — full 9-stage progress with dates, and
+// shows the salesperson view — full 8-stage progress with dates, and
 // comments/uploads attributed to sales. Idempotent per case.
 
 function SalesPortalLinkRow({

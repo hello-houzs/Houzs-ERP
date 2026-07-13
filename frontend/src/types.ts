@@ -100,12 +100,13 @@ export interface Creditor {
   total_local_ex_tax?: number;
 }
 
-// v3.1 9-stage workflow (backend mig 074). Stage names mirror the SQL
-// enum. The legacy 6-stage vocabulary is no longer accepted by writes.
+// v3.1 workflow (backend mig 074) — 8 stages since mig 0105 retired
+// pending_inspection (inspection folded into Under Verification).
+// Stage names mirror the SQL enum. The legacy 6-stage vocabulary is
+// no longer accepted by writes.
 export type AssrStage =
   | "pending_review"
   | "under_verification"
-  | "pending_inspection"
   | "pending_solution"
   | "pending_item_pickup"
   | "pending_supplier_pickup"
@@ -189,7 +190,8 @@ export interface AssrCase {
   supplier_pickup_at?: string | null;
   // Mig 107 — date we collect the faulty item from the customer's house.
   customer_pickup_at?: string | null;
-  // Mig 0073 — who performs the inspection stage: 'own' | 'supplier'.
+  // Mig 0073 — who performs the issue inspection: 'own' | 'supplier'.
+  // Lives on the Under Verification stage since mig 0105.
   inspection_by?: "own" | "supplier" | null;
   items_ready_at?: string | null;
   stage_changed_at?: string | null;
@@ -205,6 +207,9 @@ export interface AssrCase {
   // Mig 105 — editable QC-on-receipt inspection date, distinct from
   // the auto-stamped verified_at audit timestamp.
   qc_receipt_date?: string | null;
+  // Mig 0105 — result of the QC-on-receipt issue inspection (the
+  // retired Pending Inspection stage folded into Verification).
+  qc_issue_result?: "pass" | "fail" | "na" | null;
   // Mig 106 — paperwork that travels with the item between Houzs and
   // supplier. Ops edits goods_returned_note; supplier edits
   // supplier_service_note from their portal.
