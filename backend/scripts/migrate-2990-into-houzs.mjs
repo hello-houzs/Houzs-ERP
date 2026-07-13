@@ -12,6 +12,8 @@ const dst = postgres(DST, { ssl: "require", prepare: false, max: 1 });
 const ORDER = ["customers","suppliers","series","categories","products","product_models","product_fabrics","product_size_variants","warehouses","venues","mfg_sales_orders","mfg_sales_order_items","mfg_sales_order_payments","delivery_orders","delivery_order_items","sales_invoices","sales_invoice_items","sales_invoice_payments","delivery_returns","delivery_return_items","purchase_orders","purchase_order_items","grns","grn_items","purchase_invoices","purchase_invoice_items","purchase_returns","purchase_return_items","inventory_movements","inventory_lots","inventory_lot_consumptions"];
 const DOCNO_COL = { mfg_sales_orders:"doc_no", delivery_orders:"do_number", sales_invoices:"invoice_number", purchase_orders:"po_number", grns:"grn_number", purchase_invoices:"invoice_number", delivery_returns:"dr_number", purchase_returns:"pr_number" };
 const prefixDoc = (v) => (v == null || String(v).startsWith("2990-") ? v : `2990-${v}`);
+// Houzs-only FK columns to null on import (source values point at masters we don't migrate)
+const NULL_COLS = { mfg_sales_orders: ["venue_id"] };
 async function companyId2990() { const r = await dst`SELECT id FROM companies WHERE code='2990'`; if (!r.length) throw new Error("no 2990 company"); return Number(r[0].id); }
 async function fetchAll(table) { const out=[]; const P=1000; for (let f=0;;f+=P){ const {data,error}=await src.schema("public").from(table).select("*").range(f,f+P-1); if(error) throw new Error(error.message); out.push(...(data??[])); if(!data||data.length<P) break; } return out; }
 async function destCols(table){ const r=await dst`SELECT column_name FROM information_schema.columns WHERE table_schema='scm' AND table_name=${table}`; return r.map(x=>x.column_name); }
@@ -28,7 +30,7 @@ async function main() {
     const dset=new Set(dcols), srcCols=Object.keys(rows[0]);
     const shared=srcCols.filter(c=>dset.has(c)&&c!=="company_id"), dropped=srcCols.filter(c=>!dset.has(c));
     totalSrc+=rows.length; const docCol=DOCNO_COL[table];
-    const shaped=rows.map(r=>{ const o={company_id:cid}; for(const c of shared)o[c]=r[c]; if(docCol&&o[docCol]!=null)o[docCol]=prefixDoc(o[docCol]); return o; });
+    const shaped=rows.map(r=>{ const o={company_id:cid}; for(const c of shared)o[c]=r[c]; if(docCol&&o[docCol]!=null)o[docCol]=prefixDoc(o[docCol]); const nulls=NULL_COLS[table]; if(nulls)for(const nc of nulls)if(nc in o)o[nc]=null; return o; });
     console.log(`${table}: ${rows.length}`+(docCol?` (${docCol}->2990-)`:"")+(dropped.length?` [drop:${dropped.join(",")}]`:""));
     if (APPLY){ const cols=Object.keys(shaped[0]); for(let i=0;i<shaped.length;i+=500){ await dst`INSERT INTO scm.${dst(table)} ${dst(shaped.slice(i,i+500),cols)} ON CONFLICT DO NOTHING`; } const got=await dst`SELECT count(*)::int AS n FROM scm.${dst(table)} WHERE company_id=${cid}`; totalImp+=Number(got[0].n); console.log(`  -> ${got[0].n}`); }
   }
