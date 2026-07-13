@@ -86,7 +86,7 @@ const MOBILE_MENU_GROUPS: { group: string; items: { to: string; label: string; a
     { to: "/scm/sales-orders", label: "Sales Orders" },
     { to: "/scm/delivery-orders", label: "Delivery Orders" },
     { to: "/scm/sales-invoices", label: "Sales Invoices" },
-    { to: "/scm/delivery-returns", label: "Sales Returns" },
+    { to: "/scm/delivery-returns", label: "Delivery Returns" },
   ]},
   { group: "Projects · PMS", items: [
     { to: "/projects", label: "Projects" },

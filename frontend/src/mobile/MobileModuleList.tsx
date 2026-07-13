@@ -1235,7 +1235,7 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
   // Design m-pr (Sales Returns): Return No/Date/Reason/Value + status pill. Real
   // cols: return_number, return_date, reason, refund_centi, status. All present.
   "delivery-returns": {
-    title: "Sales Returns",
+    title: "Delivery Returns",
     eyebrow: "Finance",
     placeholder: "Search return · customer",
     endpoint: "/delivery-returns?limit=500&fields=minimal",
