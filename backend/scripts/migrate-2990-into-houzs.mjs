@@ -49,7 +49,13 @@ const SERIAL_OFFSET = 100000;
 const remapId = (table, v) => {
   if (v == null) return v;
   if (REMAP_TEXT.has(table)) return String(v).startsWith("2990-") ? v : `2990-${v}`;
-  if (REMAP_SERIAL.has(table)) { const n = Number(v); return n >= SERIAL_OFFSET ? n : n + SERIAL_OFFSET; }
+  if (REMAP_SERIAL.has(table)) {
+    // Only numeric ids can collide with dest serials; uuid PKs pass through
+    // (their conflicts, if any, come from UNIQUE constraints, handled per-table).
+    const n = Number(v);
+    if (!Number.isFinite(n)) return v;
+    return n >= SERIAL_OFFSET ? n : n + SERIAL_OFFSET;
+  }
   return v;
 };
 // Load these first (identity/master roots), then everything else alphabetically,
