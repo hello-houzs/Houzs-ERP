@@ -143,16 +143,13 @@ export const NAV_TABS: NavTab[] = [
     anyPerm: ["*", "scm.access"],
     anyAccess: ["scm.sales.orders"],
   },
-  // Sales Entries — rep-entered sales log + Director approval queue.
-  // Restored 2026-07-06 (stripped in the core-slim pass); visibility
-  // follows the per-page matrix key `sales`.
-  {
-    section: "workspace",
-    to: "/sales",
-    label: "Sales Entries",
-    icon: ReceiptText,
-    pageAccess: "sales",
-  },
+  // Sales Entries — Nico 2026-07-09: "sales entries 我不要了". Sidebar
+  // entry removed. The /sales route + Sales.tsx page + backend endpoints
+  // are intentionally left intact so any deep-link / bookmark keeps
+  // resolving until we consciously retire the module. Re-add this block
+  // to restore the sidebar shortcut.
+  //   { section: "workspace", to: "/sales", label: "Sales Entries",
+  //     icon: ReceiptText, pageAccess: "sales" },
 
   // ══ OPERATIONS ═══════════════════════════════════════════════
   // ── Service — quality + ASSR. Header links to the Cases page; the
