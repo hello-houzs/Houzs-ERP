@@ -1309,12 +1309,12 @@ app.get("/analytics/profitability", requirePageAccess("projects.finances"), asyn
 // lack); legacy ?brand= accepted but ignored.
 app.get("/sales-rep-options", requirePermission("projects.write"), async (c) => {
   const rows = await c.env.DB.prepare(
-    `SELECT r.id, r.code, r.name
+    `SELECT r.id, r.code, r.name, r.phone
        FROM sales_reps r
       WHERE r.archived_at IS NULL
         AND r.status = 'active'
       ORDER BY r.code`
-  ).all<{ id: number; code: string; name: string }>();
+  ).all<{ id: number; code: string; name: string; phone: string | null }>();
   return c.json({ data: rows.results ?? [] });
 });
 
