@@ -185,7 +185,7 @@ export function Agents() {
         message:
           "The global kill switch halts all agents, including manual runs, until you turn it off. Continue?",
         tone: "danger",
-        confirmText: "Kill all",
+        confirmLabel: "Kill all",
       });
       if (!ok) return;
     }
@@ -220,7 +220,7 @@ export function Agents() {
         <div className={CARD}>
           <EmptyState
             icon={<Bot size={28} />}
-            title="Couldn't load the agent console"
+            message="Couldn't load the agent console"
             description={status.error}
           />
         </div>
@@ -480,7 +480,7 @@ function ProposalsPanel({ meta }: { meta: FamilyMeta }) {
 
   async function decide(id: string, action: "approve" | "reject") {
     if (action === "reject") {
-      const ok = await dialog.confirm({ message: "Reject this proposal?", tone: "danger", confirmText: "Reject" });
+      const ok = await dialog.confirm({ message: "Reject this proposal?", tone: "danger", confirmLabel: "Reject" });
       if (!ok) return;
     }
     setBusy(id);
@@ -501,7 +501,7 @@ function ProposalsPanel({ meta }: { meta: FamilyMeta }) {
     return (
       <EmptyState
         icon={<Check size={26} />}
-        title="Nothing waiting"
+        message="Nothing waiting"
         description="No pending proposals for this agent right now."
       />
     );
@@ -576,7 +576,7 @@ function FindingsPanel({ meta }: { meta: FamilyMeta }) {
     return (
       <EmptyState
         icon={<Check size={26} />}
-        title="All clear"
+        message="All clear"
         description="No open findings from the last patrol."
       />
     );
