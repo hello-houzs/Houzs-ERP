@@ -22,6 +22,7 @@ import {
 import { runSlaEscalation } from "../services/assrEscalation";
 import { issueStaffToken, issueSalesToken } from "../services/caseTracking";
 import { sendEmail, publicUrl } from "../services/email";
+import { resolveCompanyCode } from "../services/branding";
 import { AutoCountClient } from "../services/autocount";
 import { requirePermission, requireAnyPermission } from "../middleware/auth";
 import { activeCompanyId } from "../scm/lib/companyScope";
@@ -1722,7 +1723,7 @@ app.post("/:id/transition", requirePermission("service_cases.write"), async (c) 
     // separate from notify channel) and fall back to `customer_email`.
     if (body.stage === "completed") {
       const row = await c.env.DB.prepare(
-        `SELECT assr_no, customer_name, customer_email, email_for_survey
+        `SELECT assr_no, customer_name, customer_email, email_for_survey, company_id
            FROM assr_cases WHERE id = ?`
       )
         .bind(id)
@@ -1731,11 +1732,15 @@ app.post("/:id/transition", requirePermission("service_cases.write"), async (c) 
           customer_name: string | null;
           customer_email: string | null;
           email_for_survey: string | null;
+          company_id: number | null;
         }>();
       const surveyTo = row?.email_for_survey || row?.customer_email;
       if (surveyTo) {
+        // Customer-facing: carry the DOCUMENT's company identity (the case
+        // row's company_id), not the operator's active company.
+        const caseCompanyCode = await resolveCompanyCode(c.env, row!.company_id);
         const token = await issueSurveyToken(c.env, id);
-        const link = publicUrl(c.env, `/survey/${token}`);
+        const link = publicUrl(c.env, `/survey/${token}`, caseCompanyCode);
         const name = (row!.customer_name || "").split(" ")[0] || "there";
         await sendEmail(c.env, {
           to: surveyTo,
@@ -1744,6 +1749,7 @@ app.post("/:id/transition", requirePermission("service_cases.write"), async (c) 
           purpose: "assr_survey",
           refType: "assr",
           refId: id,
+          companyCode: caseCompanyCode,
         });
       }
     }

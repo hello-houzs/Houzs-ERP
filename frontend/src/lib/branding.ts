@@ -42,11 +42,38 @@ export const DEFAULT_BRANDING: Branding = {
   logoR2Key: "",
 };
 
+/** 2990 company defaults — mirrors the backend's DEFAULT_BRANDING_2990 and
+ *  migration 0093 seed. Blank fields are owner-editable placeholders; they
+ *  must STAY blank (letterheads omit blank lines), never snap to a Houzs
+ *  literal. */
+export const DEFAULT_BRANDING_2990: Branding = {
+  companyName: "2990's Home",
+  registrationNo: "",
+  address: "",
+  phone: "",
+  email: "",
+  website: "",
+  logoR2Key: "",
+};
+
+/** Defaults for the given company code (GET /api/branding echoes the active
+ *  company's code alongside the branding). Unknown/absent code → HOUZS, the
+ *  pre-multi-company behaviour. */
+export function defaultBrandingForCompany(companyCode?: string | null): Branding {
+  const code = (companyCode ?? "").trim().toUpperCase();
+  if (code === "2990") return { ...DEFAULT_BRANDING_2990 };
+  return { ...DEFAULT_BRANDING };
+}
+
 /** Normalise a partial/loose server payload into a complete Branding, falling
- *  back to the seeded default for any missing/blank field. Dual-reads
+ *  back to the given company's default for any missing/blank field (default:
+ *  the HOUZS seed — untouched callers unchanged). Dual-reads
  *  camelCase ?? snake_case so a snake_cased backend column never reads
  *  undefined (the repo's #1 recurring bug). */
-export function normalizeBranding(raw: unknown): Branding {
+export function normalizeBranding(
+  raw: unknown,
+  defaults: Branding = DEFAULT_BRANDING,
+): Branding {
   const r = (raw ?? {}) as Record<string, unknown>;
   const pick = (camel: string, snake: string, fallback: string): string => {
     const v = (r[camel] ?? r[snake]) as unknown;
@@ -54,11 +81,11 @@ export function normalizeBranding(raw: unknown): Branding {
     return s || fallback;
   };
   return {
-    companyName: pick("companyName", "company_name", DEFAULT_BRANDING.companyName),
-    registrationNo: pick("registrationNo", "registration_no", DEFAULT_BRANDING.registrationNo),
-    address: pick("address", "address", DEFAULT_BRANDING.address),
-    phone: pick("phone", "phone", DEFAULT_BRANDING.phone),
-    email: pick("email", "email", DEFAULT_BRANDING.email),
+    companyName: pick("companyName", "company_name", defaults.companyName),
+    registrationNo: pick("registrationNo", "registration_no", defaults.registrationNo),
+    address: pick("address", "address", defaults.address),
+    phone: pick("phone", "phone", defaults.phone),
+    email: pick("email", "email", defaults.email),
     // website + logoR2Key default to empty (not the seed) — they're genuinely
     // optional, so a blank server value must stay blank, not snap to a literal.
     website: ((r.website ?? r.web_site) as string | undefined)?.toString().trim() ?? "",

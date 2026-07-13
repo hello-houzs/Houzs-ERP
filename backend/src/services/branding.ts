@@ -12,6 +12,17 @@ import type { Env } from "../types";
 // table the email channel toggles live in) under the single key
 // 'branding'. Seeded with the CURRENT hardcoded values by migration
 // 0038 so nothing changes visually on rollout — only centralised.
+//
+// Multi-company (2026-07): each company gets its OWN branding row.
+//   · HOUZS keeps the legacy 'branding' key as its canonical row, so every
+//     untouched getBranding() caller (and the owner's existing edits) keep
+//     working unchanged.
+//   · Every other company reads/writes 'branding:<companyCode>' (e.g.
+//     'branding:2990', seeded by migration 0093 with the company display
+//     name and blank placeholders the owner fills in Settings → Branding).
+// Resolution: company row → per-company code default. A non-HOUZS company
+// NEVER falls back to the HOUZS row — a missing 2990 row must render 2990's
+// name with blank reg/address, not Houzs Century's identity.
 
 export interface Branding {
   companyName: string;
@@ -25,6 +36,17 @@ export interface Branding {
 }
 
 const BRANDING_KEY = "branding";
+
+/** Company code whose canonical branding row is the legacy 'branding' key. */
+export const HOUZS_COMPANY_CODE = "HOUZS";
+
+/** app_settings key for a company's branding row. HOUZS stays on the legacy
+ *  bare 'branding' key (backwards compatible); everyone else gets a
+ *  'branding:<CODE>' row. */
+export function brandingKeyForCompany(companyCode: string): string {
+  const code = (companyCode || HOUZS_COMPANY_CODE).trim().toUpperCase();
+  return code === HOUZS_COMPANY_CODE ? BRANDING_KEY : `branding:${code}`;
+}
 
 // Fallback identical to migration 0038's seed (and the historical
 // hardcodes). Used only if the row is missing (fresh/restored DB before
@@ -40,49 +62,156 @@ export const DEFAULT_BRANDING: Branding = {
   logoR2Key: "",
 };
 
+// Default branding for the 2990 company row. companyName mirrors the
+// public.companies master row seeded by migration 0083 ('2990''s Home').
+// Registration no / address / phone / email are DELIBERATELY blank — they are
+// owner-editable placeholders (Settings → Branding with 2990 active in the
+// top-bar company switcher), and the print/PDF letterheads simply omit blank
+// lines. They must NOT fall back to Houzs Century's identity.
+export const DEFAULT_BRANDING_2990: Branding = {
+  companyName: "2990's Home",
+  registrationNo: "",
+  address: "",
+  phone: "",
+  email: "",
+  website: "",
+  logoR2Key: "",
+};
+
+/** Compile-time defaults per company code. Unknown codes get a name-only
+ *  Branding carrying the code itself so a future third company never renders
+ *  another company's identity before its row is seeded. */
+export function defaultBrandingForCompany(companyCode: string): Branding {
+  const code = (companyCode || HOUZS_COMPANY_CODE).trim().toUpperCase();
+  if (code === HOUZS_COMPANY_CODE) return { ...DEFAULT_BRANDING };
+  if (code === "2990") return { ...DEFAULT_BRANDING_2990 };
+  return { ...DEFAULT_BRANDING_2990, companyName: code };
+}
+
+/** Human short name for inline copy ("<X> CS Team", "<X> Representative"):
+ *  the company name minus a trailing legal suffix / registration parens.
+ *  "Houzs Century Sdn Bhd" → "Houzs Century"; "2990's Home" → "2990's Home". */
+export function shortCompanyName(name: string): string {
+  const short = (name || "")
+    .replace(/\s*\([^)]*\)\s*$/, "")
+    .replace(/\s*,?\s*(sdn\.?\s*bhd\.?|berhad|bhd\.?)\s*$/i, "")
+    .trim();
+  return short || name;
+}
+
+/** Split the single-line branding address into ≤2 print lines on a comma
+ *  boundary — same convention as the frontend PDF letterhead. Blank → []. */
+export function brandingAddressLines(address: string): string[] {
+  const a = (address || "").trim();
+  if (!a) return [];
+  const parts = a.split(",").map((s) => s.trim()).filter(Boolean);
+  if (parts.length <= 1) return [a];
+  const split = Math.max(1, Math.ceil(parts.length / 2));
+  const line1 = parts.slice(0, split).join(", ") + ",";
+  const line2 = parts.slice(split).join(", ") + (a.endsWith(".") ? "." : "");
+  return [line1, line2];
+}
+
 // Coerce a parsed JSON blob into a complete Branding, filling any missing
-// field from the default. Tolerates partial rows written by older code.
-function normalize(raw: unknown): Branding {
+// field from the given company's default. Tolerates partial rows written by
+// older code.
+function normalize(raw: unknown, defaults: Branding = DEFAULT_BRANDING): Branding {
   const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
   const str = (v: unknown, fallback: string): string =>
     typeof v === "string" ? v : fallback;
   return {
-    companyName: str(r.companyName, DEFAULT_BRANDING.companyName),
-    registrationNo: str(r.registrationNo, DEFAULT_BRANDING.registrationNo),
-    address: str(r.address, DEFAULT_BRANDING.address),
-    phone: str(r.phone, DEFAULT_BRANDING.phone),
-    email: str(r.email, DEFAULT_BRANDING.email),
-    website: str(r.website, DEFAULT_BRANDING.website),
-    logoR2Key: str(r.logoR2Key, DEFAULT_BRANDING.logoR2Key),
+    companyName: str(r.companyName, defaults.companyName),
+    registrationNo: str(r.registrationNo, defaults.registrationNo),
+    address: str(r.address, defaults.address),
+    phone: str(r.phone, defaults.phone),
+    email: str(r.email, defaults.email),
+    website: str(r.website, defaults.website),
+    logoR2Key: str(r.logoR2Key, defaults.logoR2Key),
   };
 }
 
-// Read the single branding row. Reuses the app_settings JSON store via the
-// d1-compat shim (env.DB) so it works from both the public-schema routes and
-// the scm routes (same Env.DB binding). Falls back to DEFAULT_BRANDING when
-// the row is missing or unparseable — never throws.
+// Read the legacy single branding row — the HOUZS company identity. Reuses
+// the app_settings JSON store via the d1-compat shim (env.DB) so it works from
+// both the public-schema routes and the scm routes (same Env.DB binding).
+// Falls back to DEFAULT_BRANDING when the row is missing or unparseable —
+// never throws. Untouched callers (OCR prompts, Mail Center, cron emails)
+// keep this signature and keep resolving HOUZS.
 export async function getBranding(env: Env): Promise<Branding> {
+  return getBrandingForCompany(env, HOUZS_COMPANY_CODE);
+}
+
+// ── Company id → code resolution ──────────────────────────────
+// Print routes hold the DOCUMENT's companies.id (assr_cases.company_id);
+// middleware holds the code. Resolve either to a code. The 2-row companies
+// master is cached for the isolate lifetime with a short TTL (mirrors
+// companyContext's cache). Fail-soft to HOUZS — pre-migration DBs have no
+// companies master and must keep rendering single-company Houzs.
+let companyCodeCache: { at: number; byId: Map<number, string> } | null = null;
+const COMPANY_CODE_TTL_MS = 5 * 60 * 1000;
+
+export async function resolveCompanyCode(
+  env: Env,
+  company: number | string | null | undefined,
+): Promise<string> {
+  if (company === null || company === undefined || company === "") {
+    return HOUZS_COMPANY_CODE;
+  }
+  if (typeof company === "string" && !/^\d+$/.test(company.trim())) {
+    return company.trim().toUpperCase();
+  }
+  const id = Number(company);
+  if (!Number.isFinite(id) || id <= 0) return HOUZS_COMPANY_CODE;
+  try {
+    if (!companyCodeCache || Date.now() - companyCodeCache.at > COMPANY_CODE_TTL_MS) {
+      const res = await env.DB.prepare(`SELECT id, code FROM companies`).all<{
+        id: number | string;
+        code: string;
+      }>();
+      const byId = new Map<number, string>();
+      for (const r of res.results ?? []) byId.set(Number(r.id), String(r.code).toUpperCase());
+      companyCodeCache = { at: Date.now(), byId };
+    }
+    return companyCodeCache.byId.get(id) ?? HOUZS_COMPANY_CODE;
+  } catch {
+    return HOUZS_COMPANY_CODE; // companies master absent — single-company Houzs
+  }
+}
+
+/**
+ * Company-aware branding read. `company` may be a companies.id (a document
+ * row's company_id), a company code ('HOUZS' | '2990'), or null/undefined
+ * (→ HOUZS). Resolution: the company's app_settings row → that company's
+ * compile-time default. Never throws.
+ */
+export async function getBrandingForCompany(
+  env: Env,
+  company: number | string | null | undefined,
+): Promise<Branding> {
+  const code = await resolveCompanyCode(env, company);
+  const defaults = defaultBrandingForCompany(code);
   try {
     const row = await env.DB.prepare(
       `SELECT value FROM app_settings WHERE key = ?`,
     )
-      .bind(BRANDING_KEY)
+      .bind(brandingKeyForCompany(code))
       .first<{ value: string }>();
-    if (!row?.value) return { ...DEFAULT_BRANDING };
-    return normalize(JSON.parse(row.value));
+    if (!row?.value) return defaults;
+    return normalize(JSON.parse(row.value), defaults);
   } catch {
-    return { ...DEFAULT_BRANDING };
+    return defaults;
   }
 }
 
-// Upsert the branding row. Mirrors email.ts setSetting (same app_settings
-// upsert + datetime('now') TEXT timestamp via the shim). updatedBy is the
-// editing user's id for the audit columns.
-export async function setBranding(
+// Upsert a company's branding row. Mirrors email.ts setSetting (same
+// app_settings upsert + datetime('now') TEXT timestamp via the shim).
+// updatedBy is the editing user's id for the audit columns.
+export async function setBrandingForCompany(
   env: Env,
+  company: number | string | null | undefined,
   branding: Branding,
   updatedBy: number | null,
 ): Promise<void> {
+  const code = await resolveCompanyCode(env, company);
   const json = JSON.stringify(branding);
   await env.DB.prepare(
     `INSERT INTO app_settings (key, value, updated_at, updated_by)
@@ -92,6 +221,16 @@ export async function setBranding(
        updated_at = datetime('now'),
        updated_by = excluded.updated_by`,
   )
-    .bind(BRANDING_KEY, json, updatedBy ?? null)
+    .bind(brandingKeyForCompany(code), json, updatedBy ?? null)
     .run();
+}
+
+/** Legacy signature — writes the HOUZS row. Kept so untouched callers break
+ *  nothing. */
+export async function setBranding(
+  env: Env,
+  branding: Branding,
+  updatedBy: number | null,
+): Promise<void> {
+  return setBrandingForCompany(env, HOUZS_COMPANY_CODE, branding, updatedBy);
 }
