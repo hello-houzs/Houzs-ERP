@@ -2,6 +2,24 @@ import { Hono } from "hono";
 import type { Env } from "../types";
 import { requirePermission } from "../middleware/auth";
 import { activeCompanyId } from "../scm/lib/companyScope";
+import { financeHiddenForUser } from "../services/pmsAccess";
+
+/**
+ * Server-side finance gate (Sales-department visibility, rules 2/3/7). These
+ * cross-module P&L endpoints aggregate company revenue / cost / gross profit
+ * (incl. project_finance_lines cost). requirePermission("projects.read") alone
+ * would expose them to any positioned Sales user who can read projects, so we
+ * layer the same stable-org gate the project finance/ledger endpoints use
+ * (pmsAccess.financeHiddenForUser — DIRECTOR-level only; un-migrated users
+ * without a position keep legacy access). Keeps the wire consistent with the
+ * denyFinance() checks in routes/projects.ts.
+ */
+function denyFinance(c: any): Response | null {
+  if (financeHiddenForUser(c.get("user"))) {
+    return c.json({ error: "Forbidden — finance is restricted" }, 403);
+  }
+  return null;
+}
 
 /**
  * Cross-module P&L aggregation.
@@ -200,6 +218,7 @@ async function rawPoCost(env: Env, start: string, end: string, companyId?: numbe
 //   • granularity=yearly|monthly|weekly (default: monthly)
 
 app.get("/pnl", requirePermission("projects.read"), async (c) => {
+  const denied = denyFinance(c); if (denied) return denied;
   const scope = (c.req.query("scope") || "all") as Scope;
   if (!["all", "sales", "projects", "service", "po"].includes(scope)) {
     return c.json({ error: "invalid scope" }, 400);
@@ -369,6 +388,7 @@ async function bucketDrilldown(env: Env, start: string, end: string, companyId?:
 }
 
 app.get("/pnl/bucket", requirePermission("projects.read"), async (c) => {
+  const denied = denyFinance(c); if (denied) return denied;
   const start = c.req.query("start");
   const end = c.req.query("end");
   if (!start || !end) return c.json({ error: "start and end required" }, 400);
