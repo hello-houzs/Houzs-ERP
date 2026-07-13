@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
-import { getProjectDetail } from "../services/projects";
+import { getProjectDetail, stripSensitiveChecklist } from "../services/projects";
 import { activeCompanyId } from "../scm/lib/companyScope";
 import {
   getBrandingForCompany,
@@ -132,11 +132,16 @@ app.get("/:id", async (c) => {
   const pmsPrint = getPmsAccess(user, detail.project as any);
   const hideMoney = !!user && user.position_id != null && !pmsPrint.canFinancial;
   const hidePayment = !!user && user.position_id != null && !pmsPrint.canPayment;
+  // Quotation / Agreement (WF_SENSITIVE) are DIRECTOR-only (rule 5) — strip
+  // those checklist rows from the debrief for a non-director position, the
+  // same server-side backstop as the detail JSON.
+  const hideSensitive = !!user && user.position_id != null && !pmsPrint.canSensitive;
+  const scoped = hideSensitive ? stripSensitiveChecklist(detail as any) : detail;
 
   const p = detail.project as any;
   const finance = detail.finance as any;
   const lines = (detail.finance_lines as any[]) ?? [];
-  const checklist = (detail.checklist as any[]) ?? [];
+  const checklist = (scoped.checklist as any[]) ?? [];
   const defects = (detail.defects as any[]) ?? [];
   // Sales-reports row scoping (owner 2026-07) — mirror the detail-GET rule so
   // the printable debrief never leaks another rep's sale amounts. Non-director

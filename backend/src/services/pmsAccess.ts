@@ -126,6 +126,26 @@ export function getPmsAccess(user: AuthUser | null | undefined, project: Project
 }
 
 /**
+ * The project-checklist rows governed by WF_SENSITIVE — quotation /
+ * agreement. Identified by their template title (mig 066). A position
+ * whose PMS role lacks WF_SENSITIVE (getPmsAccess().canSensitive === false)
+ * must not receive these rows in the project-detail payload or the print
+ * debrief; they are stripped server-side, the same way finance / payment
+ * are (rule 5, owner 2026-07). Security Deposit is deliberately NOT
+ * included — the owner rule hides quotation & agreement only.
+ */
+export const SENSITIVE_CHECKLIST_TITLES: ReadonlySet<string> = new Set([
+  "Agreement / Quotation",
+]);
+
+/** True when a checklist row is one of the WF_SENSITIVE (quotation/agreement) items. */
+export function isSensitiveChecklistItem(
+  item: { title?: string | null } | null | undefined,
+): boolean {
+  return !!item && SENSITIVE_CHECKLIST_TITLES.has((item.title ?? "").trim());
+}
+
+/**
  * Project-independent "may this user see money at all?" gate, for the
  * finance ledger / payment / analytics / print endpoints that aren't tied
  * to one project's PIC. True only for DIRECTOR-level positions (Owner/IT

@@ -37,6 +37,7 @@ import {
   unconfirmStockTransfer,
   archiveStockTransfer,
   getUserPhasesOnProject,
+  stripSensitiveChecklist,
 } from "../services/projects";
 import {
   getProjectScope,
@@ -1383,6 +1384,15 @@ app.get("/:id", requirePageAccess("projects.list"), async (c) => {
         payment_updated_by: null,
       },
     };
+  }
+  // Quotation / Agreement (WF_SENSITIVE) are DIRECTOR-only (rule 5). Strip
+  // those checklist rows — plus their comments, attachments, and section
+  // progress — on the wire for a position whose PMS role lacks WF_SENSITIVE,
+  // the same defense-in-depth as finance/payment above. Position-gated so
+  // un-migrated users keep legacy access until positions are assigned.
+  const stripSensitive = user.position_id != null && !pms.canSensitive;
+  if (stripSensitive) {
+    payload = stripSensitiveChecklist(payload);
   }
   // Sales-reports row scoping (owner 2026-07): the `sales_reports` panel is a
   // per-rep sale-amount log. A non-director sales user may see only THEIR OWN

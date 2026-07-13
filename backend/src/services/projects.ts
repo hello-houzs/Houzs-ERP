@@ -1,6 +1,7 @@
 import type { Env } from "../types";
 import { recomputeAutoCostLines } from "./projectCostRates";
 import { scopeNotExpiredSql } from "./projectAcl";
+import { isSensitiveChecklistItem } from "./pmsAccess";
 
 // ── Codes ─────────────────────────────────────────────────────
 // Format: `YYYY-MM-{ORGANIZER}-{STATE}-{VENUE}-{BRAND}` — built from
@@ -950,6 +951,84 @@ export async function getProjectDetail(env: Env, id: number, companyId?: number)
     activity: activity.results ?? [],
     team: team.results ?? [],
     trips: trips.results ?? [],
+  };
+}
+
+/**
+ * Server-side backstop for WF_SENSITIVE (quotation / agreement) visibility.
+ * Returns a shallow copy of a project-detail payload with the sensitive
+ * checklist rows — and their comments, attachments, and section-progress
+ * contribution — removed. Called for a caller whose PMS role lacks
+ * WF_SENSITIVE (pmsAccess `canSensitive` === false), mirroring how the
+ * detail-GET strips finance / payment. Directors are unaffected: pass only
+ * when the gate is closed. No-op (returns the same object) when the payload
+ * carries no sensitive rows.
+ */
+export function stripSensitiveChecklist<
+  T extends {
+    checklist?: any[];
+    checklist_comments?: any[];
+    checklist_attachments?: any[];
+    sections?: any[];
+    section_progress?: any[];
+  }
+>(detail: T): T {
+  const removed = (detail.checklist ?? []).filter((it) =>
+    isSensitiveChecklistItem(it)
+  );
+  if (removed.length === 0) return detail;
+  const removedIds = new Set(removed.map((r: any) => r.id));
+  const checklist = (detail.checklist ?? []).filter(
+    (it: any) => !removedIds.has(it.id)
+  );
+  const checklist_comments = (detail.checklist_comments ?? []).filter(
+    (c: any) => !removedIds.has(c.item_id)
+  );
+  const checklist_attachments = (detail.checklist_attachments ?? []).filter(
+    (a: any) => !removedIds.has(a.item_id)
+  );
+  // A section that held a sensitive item and now has NO remaining items is
+  // dropped entirely — otherwise the gated user sees an empty section header
+  // (e.g. an orphan "CONTRACT" stage) that hints a hidden row exists.
+  // Sections that were already empty, or still hold other items, are kept.
+  const remainingSectionIds = new Set(
+    checklist.map((it: any) => it.section_id).filter((s: any) => s != null)
+  );
+  const emptiedSectionIds = new Set(
+    removed
+      .map((r: any) => r.section_id)
+      .filter((s: any) => s != null && !remainingSectionIds.has(s))
+  );
+  const sections = (detail.sections ?? []).filter(
+    (s: any) => !emptiedSectionIds.has(s.id)
+  );
+  // Recompute the affected section-progress rows so the count doesn't leak
+  // that a hidden item exists; drop the row outright for an emptied section.
+  // Uncategorised tasks (section_id null) roll up to the id-0 bucket.
+  const section_progress = (detail.section_progress ?? [])
+    .filter((sp: any) => !emptiedSectionIds.has(sp.id))
+    .map((sp: any) => {
+      const rm = removed.filter((r: any) => (r.section_id ?? 0) === sp.id);
+      if (rm.length === 0) return sp;
+      const total = Math.max(0, (sp.total ?? 0) - rm.length);
+      const done = Math.max(
+        0,
+        (sp.done ?? 0) - rm.filter((r: any) => r.status === "done").length
+      );
+      const na = Math.max(
+        0,
+        (sp.na ?? 0) - rm.filter((r: any) => r.status === "na").length
+      );
+      const denom = total - na;
+      return { ...sp, total, done, na, complete: denom > 0 && done === denom ? 1 : 0 };
+    });
+  return {
+    ...detail,
+    checklist,
+    checklist_comments,
+    checklist_attachments,
+    sections,
+    section_progress,
   };
 }
 
