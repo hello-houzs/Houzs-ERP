@@ -2097,6 +2097,7 @@ export const SalesOrderNew = () => {
         currency="MYR"
         slipUpload
         collectedByAllowedIds={paymentsCollectedByAllowedIds}
+        defaultCollectedBy={selfStaffMatch?.id ?? ''}
       />
 
     </div>
