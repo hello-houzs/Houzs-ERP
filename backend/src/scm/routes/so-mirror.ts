@@ -14,10 +14,9 @@
 // Mounted at '/so-mirror' in scm/index.ts.
 // ----------------------------------------------------------------------------
 import { Hono } from 'hono';
-import type { HouzsEnv } from '../../types';
+import type { Env } from '../../types';
 
-type Env = HouzsEnv;
-export const soMirror = new Hono<{ Bindings: HouzsEnv }>();
+export const soMirror = new Hono<{ Bindings: Env }>();
 
 const C2990 = 2;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -73,8 +72,8 @@ async function tableMap(DB: Env['DB'], table: string): Promise<TableMap> {
   ).bind(table).first()) != null;
 
   const m: TableMap = {
-    remapCols: new Set((fk.results ?? []).map((r) => r.col)),
-    prefixCols: new Set((dr.results ?? []).map((r) => r.col)),
+    remapCols: new Set((fk.results ?? []).map((r: { col: string }) => r.col)),
+    prefixCols: new Set((dr.results ?? []).map((r: { col: string }) => r.col)),
     selfRemap,
   };
   mapCache.set(table, m);
