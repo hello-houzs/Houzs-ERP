@@ -2,6 +2,11 @@
 // Phase 2 — migrate 2990's live data INTO Houzs, tagged company_id=2990.
 // SOURCE via Supabase REST (service_role). DEST via postgres.js. Dry-run unless APPLY=1.
 //
+// v3 (2026-07-13, after staging audit round 1): adds the ID-REMAP engine —
+// catalog/config tables whose PKs collide with Houzs's seed rows get
+// deterministic new ids (text: 2990- prefix; serial: +100000) and every FK
+// reference follows automatically via the dest pg_constraint graph. Doc-number
+// REFERENCE columns are auto-detected by name pattern instead of a hand list.
 // v2 (2026-07-13, after the 52-table completeness gap): the table list is
 // AUTO-DISCOVERED — every dest scm base table that also exists on the source
 // with >0 rows is imported, so nothing can be silently left behind again.
@@ -21,25 +26,45 @@ if (!SUPA_URL || !SUPA_KEY || !DST) { console.error("need SOURCE_SUPABASE_URL + 
 const src = createClient(SUPA_URL, SUPA_KEY, { auth: { persistSession: false } });
 const dst = postgres(DST, { ssl: "require", prepare: false, max: 1 });
 
-const SKIP = new Set(["accounts"]);
+// accounts: locked decision (shared chart, 2990 has 0 journals).
+// currencies: shared reference by design (reads unscoped, code PK global).
+// app_config: key-PK looked up BY KEY in code — cannot hold per-company rows
+//   without a schema redesign; 2 source rows reported, deferred.
+const SKIP = new Set(["accounts", "currencies", "app_config"]);
 // Shared (no company_id) tables allowed to import as-is. staff: legacy 2990
 // identities (kept inactive). The rest are per-staff or global reference rows.
-const SHARED_OK = new Set(["staff", "my_localities", "currencies", "pos_carts", "sofa_personal_quick_picks"]);
+const SHARED_OK = new Set(["staff", "my_localities", "pos_carts", "sofa_personal_quick_picks"]);
 const FORCE_INACTIVE = new Set(["staff"]);
+
+// ---- ID remap (v3) ----------------------------------------------------------
+// Catalog/config tables whose PK values collide with Houzs's existing rows
+// (same vendored seed / low serials). Their 2990 rows get NEW deterministic ids
+// and every FK reference (discovered from pg_constraint) follows automatically.
+// text PK  -> "2990-<id>"           serial PK -> <id> + 100000
+// Both transforms are idempotent, so re-runs stay ON CONFLICT-safe. Sequences
+// are untouched: these tables hold <100 Houzs rows, serials never reach 100000.
+const REMAP_TEXT = new Set(["series", "categories", "size_library", "compartment_library"]);
+const REMAP_SERIAL = new Set(["addons", "bundle_library", "delivery_planning_regions", "delivery_fee_config", "fabric_tier_addon_config", "maintenance_config_history", "special_addons_history"]);
+const SERIAL_OFFSET = 100000;
+const remapId = (table, v) => {
+  if (v == null) return v;
+  if (REMAP_TEXT.has(table)) return String(v).startsWith("2990-") ? v : `2990-${v}`;
+  if (REMAP_SERIAL.has(table)) { const n = Number(v); return n >= SERIAL_OFFSET ? n : n + SERIAL_OFFSET; }
+  return v;
+};
 // Load these first (identity/master roots), then everything else alphabetically,
 // then documents/movements last. With FK checks off order barely matters; this
 // just keeps logs readable and helps the FK-on fallback converge fast.
 const EARLY = ["staff", "companies", "customers", "suppliers", "series", "categories", "venues", "warehouses", "fabrics", "fabric_library", "fabric_colours", "bedframe_colours", "bedframe_options", "size_library", "compartment_library", "products", "mfg_products", "product_models", "product_fabrics", "product_size_variants", "supplier_material_bindings"];
 const LATE = ["mfg_sales_orders", "mfg_sales_order_items", "mfg_sales_order_payments", "so_amendments", "so_amendment_lines", "so_revisions", "delivery_orders", "delivery_order_items", "sales_invoices", "sales_invoice_items", "sales_invoice_payments", "delivery_returns", "delivery_return_items", "purchase_orders", "purchase_order_items", "grns", "grn_items", "purchase_invoices", "purchase_invoice_items", "purchase_returns", "purchase_return_items", "inventory_movements", "inventory_lots", "inventory_lot_consumptions", "mfg_so_audit_log", "mfg_so_status_changes"];
 
-const DOCNO_COL = { mfg_sales_orders: "doc_no", delivery_orders: "do_number", sales_invoices: "invoice_number", purchase_orders: "po_number", grns: "grn_number", purchase_invoices: "invoice_number", delivery_returns: "dr_number", purchase_returns: "pr_number" };
+const DOCNO_COL = { mfg_sales_orders: "doc_no", delivery_orders: "do_number", sales_invoices: "invoice_number", purchase_orders: "po_number", grns: "grn_number", purchase_invoices: "invoice_number", delivery_returns: "dr_number", purchase_returns: "pr_number", purchase_consignment_orders: "pc_number", purchase_consignment_receives: "receive_number", purchase_consignment_returns: "return_number" };
 const prefixDoc = (v) => (v == null || String(v).startsWith("2990-") ? v : `2990-${v}`);
-// Child tables reference parents by doc-number STRING -> must carry the same 2990- prefix.
-const PREFIX_REF_COLS = {
-  mfg_sales_order_items: ["doc_no"], mfg_sales_order_payments: ["so_doc_no"], delivery_orders: ["so_doc_no"],
-  inventory_lots: ["source_doc_no"], inventory_movements: ["source_doc_no"], inventory_lot_consumptions: ["source_doc_no"],
-  mfg_sales_orders: ["cross_category_source_doc_no"], so_amendments: ["so_doc_no"], mfg_so_audit_log: ["doc_no"], mfg_so_status_changes: ["doc_no"],
-};
+// Doc-number REFERENCE columns are auto-detected by name (any text column named
+// like a doc ref, on any table) and prefixed only when the value looks like an
+// internal doc number. Kills the "forgot a column" class (v2 missed so_doc_no
+// on the audit log, pwp_codes source/redeemed, so_revisions).
+const DOC_REF_NAME = /(^|_)(so_doc_no|doc_no|source_doc_no|redeemed_doc_no|cross_category_source_doc_no)$/;
 const looksLikeDocNo = (v) => typeof v === "string" && /^[A-Z]{2,4}-[0-9]/.test(v);
 
 async function companyId2990() { const r = await dst`SELECT id FROM companies WHERE code='2990'`; if (!r.length) throw new Error("no 2990 company"); return Number(r[0].id); }
@@ -60,11 +85,33 @@ async function discoverTables() {
   return withRows;
 }
 
+// FK graph from the DEST schema: childTable -> [{col, parent}] for single-col
+// FKs whose parent is a remapped table. Used to remap referencing values.
+async function remapRefCols() {
+  const fks = await dst`
+    SELECT cl.relname AS child, a.attname AS col, fcl.relname AS parent
+    FROM pg_constraint c
+    JOIN pg_class cl ON cl.oid=c.conrelid
+    JOIN pg_namespace n ON n.oid=cl.relnamespace
+    JOIN pg_class fcl ON fcl.oid=c.confrelid
+    JOIN pg_namespace fn ON fn.oid=fcl.relnamespace
+    CROSS JOIN LATERAL unnest(c.conkey) k(attnum)
+    JOIN pg_attribute a ON a.attrelid=cl.oid AND a.attnum=k.attnum
+    WHERE c.contype='f' AND n.nspname='scm' AND fn.nspname='scm' AND array_length(c.conkey,1)=1`;
+  const map = {};
+  for (const f of fks) {
+    if (!REMAP_TEXT.has(f.parent) && !REMAP_SERIAL.has(f.parent)) continue;
+    (map[f.child] ??= []).push({ col: f.col, parent: f.parent });
+  }
+  return map;
+}
+
 async function main() {
   const cid = await companyId2990();
   console.log(`2990 company_id=${cid} mode=${APPLY ? "APPLY" : "DRY-RUN"}`);
   const tables = await discoverTables();
-  console.log(`discovered ${tables.length} source tables with rows`);
+  const refMap = await remapRefCols();
+  console.log(`discovered ${tables.length} source tables with rows; remap-following FK cols: ${Object.entries(refMap).map(([t, cs]) => `${t}(${cs.map(x => x.col).join("+")})`).join(", ") || "none"}`);
   let fkOff = false;
   if (APPLY) { try { await dst.unsafe("SET session_replication_role = replica"); fkOff = true; console.log("FK checks OFF for load"); } catch (e) { console.log("WARN no FK-disable: " + e.message); } }
 
@@ -84,16 +131,20 @@ async function main() {
     const dropped = srcCols.filter(c => !dset.has(c));
     totalSrc += rows.length;
     const docCol = DOCNO_COL[table];
-    const refs = PREFIX_REF_COLS[table];
+    const docRefCols = shared.filter(c => DOC_REF_NAME.test(c) && c !== docCol);
+    const fkRemaps = refMap[table] ?? [];
+    const selfRemap = REMAP_TEXT.has(table) || REMAP_SERIAL.has(table);
     const shaped = rows.map(r => {
       const o = scoped ? { company_id: cid } : {};
       for (const c of shared) o[c] = r[c];
+      if (selfRemap && "id" in o) o.id = remapId(table, o.id);
+      for (const { col, parent } of fkRemaps) if (o[col] != null) o[col] = remapId(parent, o[col]);
       if (docCol && o[docCol] != null) o[docCol] = prefixDoc(o[docCol]);
-      if (refs) for (const rc of refs) if (o[rc] != null && looksLikeDocNo(o[rc])) o[rc] = prefixDoc(o[rc]);
+      for (const rc of docRefCols) if (o[rc] != null && looksLikeDocNo(o[rc])) o[rc] = prefixDoc(o[rc]);
       if (FORCE_INACTIVE.has(table) && dset.has("active")) o.active = false;
       return o;
     });
-    console.log(`${table}: ${rows.length}${docCol ? ` (${docCol}->2990-)` : ""}${dropped.length ? ` [drop:${dropped.join(",")}]` : ""}${scoped ? "" : " [shared]"}`);
+    console.log(`${table}: ${rows.length}${docCol ? ` (${docCol}->2990-)` : ""}${selfRemap ? " [id-remap]" : ""}${fkRemaps.length ? ` [fk-remap:${fkRemaps.map(f => f.col).join("+")}]` : ""}${docRefCols.length ? ` [docref:${docRefCols.join("+")}]` : ""}${dropped.length ? ` [drop:${dropped.join(",")}]` : ""}${scoped ? "" : " [shared]"}`);
     if (!APPLY) continue;
     try {
       const cols = Object.keys(shaped[0]);
