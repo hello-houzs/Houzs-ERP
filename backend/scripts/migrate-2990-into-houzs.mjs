@@ -37,7 +37,7 @@ const dst = postgres(DST, { ssl: "require", prepare: false, max: 2 });
 
 // FK-topological order: masters -> headers -> lines -> payments.
 const ORDER = [
-  "customers", "suppliers", "products", "product_models", "product_fabrics",
+  "customers", "suppliers", "series", "categories", "products", "product_models", "product_fabrics",
   "product_size_variants", "warehouses",
   "mfg_sales_orders", "mfg_sales_order_items", "mfg_sales_order_payments",
   "delivery_orders", "delivery_order_items",
