@@ -1,4 +1,19 @@
 import { useEffect, useState } from "react";
+import {
+  HOUZS_COMPANY_CODE,
+  defaultBrandingForCompany,
+  hostDefaultCompanyCode,
+  shortCompanyName,
+} from "../lib/branding";
+
+/** Public page — no auth, no branding fetch. Survey links are minted on the
+ *  case company's hostname (publicUrl(companyCode)), so the hostname default
+ *  IS the case's company. HOUZS keeps its historic literal. */
+function surveyCompanyName(): string {
+  return hostDefaultCompanyCode() === HOUZS_COMPANY_CODE
+    ? "Houzs Century Sdn. Bhd."
+    : defaultBrandingForCompany(hostDefaultCompanyCode()).companyName;
+}
 import { Star, CheckCircle2 } from "lucide-react";
 import { cn, formatDate } from "../lib/utils";
 import { humanHttpMessage } from "../api/client";
@@ -192,7 +207,7 @@ export function SurveyPublic() {
       </button>
 
       <div className="mt-5 text-center text-[10px] text-ink-muted">
-        Houzs Century Sdn. Bhd. — Your feedback helps us improve.
+        {surveyCompanyName()} — Your feedback helps us improve.
       </div>
     </Frame>
   );
@@ -204,7 +219,7 @@ function Frame({ children }: { children: React.ReactNode }) {
       <div className="mx-auto max-w-md rounded-lg border border-border bg-surface p-6 shadow-sm">
         <div className="mb-5 text-center">
           <div className="font-display text-[15px] font-bold leading-tight tracking-tight text-ink">
-            Houzs Century
+            {shortCompanyName(surveyCompanyName())}
           </div>
           <div className="text-[10px] font-semibold uppercase tracking-brand text-accent">
             Customer Feedback

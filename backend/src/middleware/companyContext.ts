@@ -63,7 +63,10 @@ declare module "hono" {
 
 // Login-hostname -> default company code. erp.2990shome.com starts in 2990;
 // everything else (erp.houzscentury.com, staging, localhost) defaults to HOUZS.
-function defaultCompanyCodeForHost(host: string): string {
+// Exported for the PRE-AUTH routes (mounted before this middleware — e.g. the
+// forgot-password email in routes/auth.ts) that need the same hostname default
+// to brand their outbound mail without a company context.
+export function defaultCompanyCodeForHost(host: string): string {
   const h = host.toLowerCase();
   if (h.includes("2990")) return "2990";
   return "HOUZS";

@@ -1,5 +1,9 @@
 import type { Env } from "../types";
-import { getBranding } from "./branding";
+import {
+  getBrandingForCompany,
+  shortCompanyName,
+  HOUZS_COMPANY_CODE,
+} from "./branding";
 
 // ── Email service (Resend-backed) ─────────────────────────────
 //
@@ -56,6 +60,11 @@ export interface SendOptions {
   // Center reply/compose). `content` is base64. NOT persisted to the outbox row
   // (email_outbox has no attachment column), so a drained retry sends body-only.
   attachments?: Array<{ filename: string; content: string }>;
+  // Which company's identity the outbound mail carries ('HOUZS' | '2990').
+  // Drives the From DISPLAY NAME (the address itself stays the verified Resend
+  // sender — see deliverViaResend). Persisted to email_outbox.company_code so
+  // a cron-drained retry renders the same identity. Omitted → HOUZS (legacy).
+  companyCode?: string | null;
 }
 
 export interface SendResult {
@@ -162,17 +171,20 @@ function stripHtml(html: string): string {
 // outbox drain. Returns 'sent' | 'error' (caller pre-checks channel + key).
 async function deliverViaResend(
   env: Env,
-  m: { to: string; subject: string; html: string; text?: string | null; replyTo?: string | null; from?: string | null; attachments?: Array<{ filename: string; content: string }> | null },
+  m: { to: string; subject: string; html: string; text?: string | null; replyTo?: string | null; from?: string | null; attachments?: Array<{ filename: string; content: string }> | null; companyCode?: string | null },
 ): Promise<SendResult> {
   // From-name + fallback sender address come from the central Branding config
-  // (company name + email) so the outbound identity tracks Settings, not a
-  // hardcode. EMAIL_FROM (when set) still wins — it's the verified Resend
-  // sender. The local-part stays no-reply@<branding.email's domain> so the
-  // address remains a deliverable on the verified domain.
+  // (per-company: m.companyCode, default HOUZS) so the outbound identity tracks
+  // Settings, not a hardcode. EMAIL_FROM (when set) still supplies the ADDRESS
+  // — it's the verified Resend sender; a 2990 sender domain is an ops task
+  // (Resend domain verification), so only the DISPLAY NAME follows the company
+  // for now. The no-EMAIL_FROM fallback keeps the local-part
+  // no-reply@<branding.email's domain> so the address stays deliverable on the
+  // verified domain.
   //
   // EXCEPTION: an explicit per-message `from` (Mail Center reply/compose) wins
   // over both — the operator's chosen mailbox becomes the visible sender. We
-  // wrap the bare address with the Branding company display name. The address
+  // wrap the bare address with the company's Branding display name. The address
   // must be on the verified Resend domain (houzscentury.com) to deliver.
   let from: string | undefined;
   const explicitFrom = (m.from ?? "").trim();
@@ -181,14 +193,25 @@ async function deliverViaResend(
     if (explicitFrom.includes("<")) {
       from = explicitFrom;
     } else {
-      const branding = await getBranding(env);
+      const branding = await getBrandingForCompany(env, m.companyCode);
       from = `${branding.companyName} <${explicitFrom}>`;
     }
-  } else {
-    from = env.EMAIL_FROM;
+  } else if (env.EMAIL_FROM) {
+    const configured = env.EMAIL_FROM.trim();
+    if (configured.includes("<")) {
+      // Operator configured a full "Name <addr>" identity — respect it as-is
+      // (it can't be re-branded per company without corrupting the address).
+      from = configured;
+    } else {
+      // Bare verified address — wrap it with the sending company's display
+      // name so 2990 documents arrive as "2990's Home <no-reply@…>" while the
+      // address stays on the verified Resend domain.
+      const branding = await getBrandingForCompany(env, m.companyCode);
+      from = `${branding.companyName} <${configured}>`;
+    }
   }
   if (!from) {
-    const branding = await getBranding(env);
+    const branding = await getBrandingForCompany(env, m.companyCode);
     const domain = (branding.email.split("@")[1] || "houzscentury.com").trim();
     from = `${branding.companyName} <no-reply@${domain}>`;
   }
@@ -248,10 +271,10 @@ export async function sendEmail(env: Env, opts: SendOptions): Promise<SendResult
   try {
     await env.DB.prepare(
       `INSERT INTO email_outbox
-         (id, to_address, subject, body_html, body_text, purpose, ref_type, ref_id, reply_to, status, attempts)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 1)`,
+         (id, to_address, subject, body_html, body_text, purpose, ref_type, ref_id, reply_to, company_code, status, attempts)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 1)`,
     )
-      .bind(id, to, opts.subject, opts.html, opts.text ?? null, opts.purpose, opts.refType ?? null, opts.refId ?? null, opts.replyTo ?? null)
+      .bind(id, to, opts.subject, opts.html, opts.text ?? null, opts.purpose, opts.refType ?? null, opts.refId ?? null, opts.replyTo ?? null, opts.companyCode ?? null)
       .run();
   } catch (e) {
     console.warn("[email] outbox enqueue failed; sending inline only:", e);
@@ -265,6 +288,7 @@ export async function sendEmail(env: Env, opts: SendOptions): Promise<SendResult
     replyTo: opts.replyTo,
     from: opts.from,
     attachments: opts.attachments,
+    companyCode: opts.companyCode,
   });
   try {
     if (result.status === "sent") {
@@ -288,7 +312,7 @@ export async function drainEmailOutbox(
 ): Promise<{ processed: number; sent: number; failed: number }> {
   if (!env.RESEND_API_KEY) return { processed: 0, sent: 0, failed: 0 };
   const rows = await env.DB.prepare(
-    `SELECT id, to_address, subject, body_html, body_text, purpose, ref_type, ref_id, reply_to, attempts
+    `SELECT id, to_address, subject, body_html, body_text, purpose, ref_type, ref_id, reply_to, company_code, attempts
        FROM email_outbox WHERE status = 'pending' ORDER BY created_at LIMIT ?`,
   )
     .bind(limit)
@@ -302,6 +326,7 @@ export async function drainEmailOutbox(
       ref_type: string | null;
       ref_id: number | null;
       reply_to: string | null;
+      company_code: string | null;
       attempts: number;
     }>();
 
@@ -338,6 +363,7 @@ export async function drainEmailOutbox(
       html: r.body_html ?? "",
       text: r.body_text,
       replyTo: r.reply_to,
+      companyCode: r.company_code,
     });
     const attempts = (r.attempts ?? 0) + 1;
     if (result.status === "sent") {
@@ -367,9 +393,24 @@ export async function drainEmailOutbox(
 // ── Convenience: build a public URL for email links ──────────
 // Used by callers to build survey / portal / invite / reset URLs.
 // Falls back to the canonical user-facing domain if PUBLIC_APP_URL is unset.
+//
+// Per-company: links in a 2990-identity email should land on 2990's hostname
+// (companyContext's hostname default then resolves 2990 as the login default).
+// Callers pass the company code where they know it; omitted → the historical
+// PUBLIC_APP_URL / houzscentury.com behaviour, so untouched callers (cron
+// reminders, escalations) are unchanged.
 
-export function publicUrl(env: Env, path: string): string {
-  const base = (env.PUBLIC_APP_URL || "https://erp.houzscentury.com").replace(/\/+$/, "");
+const COMPANY_PUBLIC_URLS: Record<string, string> = {
+  "2990": "https://erp.2990shome.com",
+};
+
+export function publicUrl(env: Env, path: string, companyCode?: string | null): string {
+  const code = (companyCode ?? "").trim().toUpperCase();
+  const base = (
+    (code && code !== HOUZS_COMPANY_CODE && COMPANY_PUBLIC_URLS[code]) ||
+    env.PUBLIC_APP_URL ||
+    "https://erp.houzscentury.com"
+  ).replace(/\/+$/, "");
   const p = path.startsWith("/") ? path : `/${path}`;
   return `${base}${p}`;
 }
@@ -378,16 +419,28 @@ export function publicUrl(env: Env, path: string): string {
 // Kept here (not in route files) so invite + reset mail share one
 // look and both invite paths (issue + resend) render identically.
 
+/** Product name for template copy ("You're invited to <X> ERP"). Derives from
+ *  the company's Branding so 2990 invites read "2990's Home ERP". Callers pass
+ *  the branding they already fetched; no branding → the historical literal. */
+export function erpProductName(branding?: { companyName: string } | null): string {
+  if (!branding?.companyName?.trim()) return "Houzs ERP";
+  return `${shortCompanyName(branding.companyName)} ERP`;
+}
+
 export function inviteEmailHtml(p: {
   link: string;
   roleName: string;
   inviterName: string;
   expiresIn: string;
+  /** Company-branded product name (erpProductName). Default keeps the
+   *  historical copy for untouched callers. */
+  productName?: string;
 }): string {
+  const product = p.productName?.trim() || "Houzs ERP";
   return `
     <div style="font-family:system-ui,Segoe UI,Roboto,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#222">
-      <h2 style="margin:0 0 10px">You're invited to Houzs ERP</h2>
-      <p>${p.inviterName} has invited you to join the Houzs ERP workspace as <strong>${p.roleName}</strong>.</p>
+      <h2 style="margin:0 0 10px">You're invited to ${product}</h2>
+      <p>${p.inviterName} has invited you to join the ${product} workspace as <strong>${p.roleName}</strong>.</p>
       <p style="margin:24px 0">
         <a href="${p.link}"
            style="display:inline-block;padding:12px 22px;background:#a16a2e;color:#fff;border-radius:6px;text-decoration:none;font-weight:600">
@@ -470,10 +523,14 @@ export function resetEmailHtml(p: {
   link: string;
   expiresIn: string;
   requestedBy: string | null;
+  /** Company-branded product name (erpProductName). Default keeps the
+   *  historical copy for untouched callers. */
+  productName?: string;
 }): string {
+  const product = p.productName?.trim() || "Houzs ERP";
   const intro = p.requestedBy
-    ? `${p.requestedBy} has initiated a password reset for your Houzs ERP account.`
-    : `We received a request to reset the password for your Houzs ERP account. If this was you, set a new password below.`;
+    ? `${p.requestedBy} has initiated a password reset for your ${product} account.`
+    : `We received a request to reset the password for your ${product} account. If this was you, set a new password below.`;
   return `
     <div style="font-family:system-ui,Segoe UI,Roboto,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#222">
       <h2 style="margin:0 0 10px">Hi ${p.name},</h2>

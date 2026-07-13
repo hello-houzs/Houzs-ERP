@@ -8,7 +8,14 @@
 // ----------------------------------------------------------------------------
 
 import { fmtDate } from '@2990s/shared';
-import { getBrandingCache, getBrandingLogoCache, type BrandingLogo } from '../../../lib/branding';
+import {
+  getBrandingCache,
+  getBrandingCompanyCode,
+  getBrandingLogoCache,
+  shortCompanyName,
+  HOUZS_COMPANY_CODE,
+  type BrandingLogo,
+} from '../../../lib/branding';
 
 /* HOUZS letterhead — name / reg no / address / phone / email now come from the
    centralised Branding config (one editable record in Settings → Branding),
@@ -56,7 +63,13 @@ export const COMPANY = {
   get website(): string {
     return getBrandingCache().website;
   },
-  portalLabel: 'Houzs ERP',
+  // Footer "portal" label. HOUZS keeps the historic literal byte-identical;
+  // any other active company renders "<short name> ERP" (e.g. "2990's Home
+  // ERP"). Live getter like the fields above, so it flips with the switcher.
+  get portalLabel(): string {
+    if (getBrandingCompanyCode() === HOUZS_COMPANY_CODE) return 'Houzs ERP';
+    return `${shortCompanyName(getBrandingCache().companyName)} ERP`;
+  },
 };
 
 /* ── Amount in words (AutoCount footer convention) ─────────────────────

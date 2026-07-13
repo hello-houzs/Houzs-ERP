@@ -2,6 +2,12 @@ import { useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 import { AmbientSnow } from "../components/AmbientSnow";
+import {
+  HOUZS_COMPANY_CODE,
+  defaultBrandingForCompany,
+  hostDefaultCompanyCode,
+  shortCompanyName,
+} from "../lib/branding";
 import "./mobile.css";
 
 const REMEMBER_KEY = "houzs_remember_email";
@@ -63,6 +69,14 @@ export function MobileLogin() {
   const inputStyle: React.CSSProperties = { width: "100%", background: "rgba(255,255,255,.07)", border: "1px solid rgba(231,234,228,.18)", borderRadius: 12, padding: "13px 14px", color: "#fff", fontFamily: "inherit", fontSize: 16, outline: "none" };
   const delay = (i: number): React.CSSProperties => ({ animationDelay: `${0.05 + i * 0.07}s` });
 
+  // Pre-auth: no branding fetch possible — brand by the hostname default
+  // (erp.2990shome.com → 2990's name; everything else stays Houzs, verbatim).
+  const loginCompanyCode = hostDefaultCompanyCode();
+  const isHouzsHost = loginCompanyCode === HOUZS_COMPANY_CODE;
+  const loginCompanyName = isHouzsHost
+    ? "Houzs Century"
+    : shortCompanyName(defaultBrandingForCompany(loginCompanyCode).companyName);
+
   return (
     <div className="hz-m" style={{ position: "fixed", inset: 0, background: "var(--dark)", overflow: "hidden" }}>
       <div className="hz-glow" style={{ position: "absolute", right: -70, top: -50, width: 260, height: 260, borderRadius: "50%", background: "radial-gradient(circle,rgba(22,105,95,.5),transparent 70%)", pointerEvents: "none" }} />
@@ -75,9 +89,13 @@ export function MobileLogin() {
             desktop AuthShell), "Houzs Century" title, "ERP · MOBILE" gold
             eyebrow. Wrapped in our entrance-animation items. */}
         <div className="appicon hz-lg-item" style={{ ...delay(0), width: 70, height: 70, borderRadius: 20, background: "linear-gradient(160deg,#23242a,#0e0f12)", marginBottom: 22, boxShadow: "inset 0 0 0 1px rgba(216,168,90,.16)" }}>
-          <img src="/logo-hc-mark.png" alt="Houzs Century" style={{ width: 36, height: 36, objectFit: "contain", filter: "brightness(0) invert(1)" }} />
+          {isHouzsHost ? (
+            <img src="/logo-hc-mark.png" alt={loginCompanyName} style={{ width: 36, height: 36, objectFit: "contain", filter: "brightness(0) invert(1)" }} />
+          ) : (
+            <span style={{ fontSize: 20, fontWeight: 800, color: "#fff" }}>{loginCompanyName.slice(0, 2)}</span>
+          )}
         </div>
-        <div className="hz-lg-item" style={{ ...delay(1), fontSize: 26, fontWeight: 800, color: "#fff" }}>Houzs Century</div>
+        <div className="hz-lg-item" style={{ ...delay(1), fontSize: 26, fontWeight: 800, color: "#fff" }}>{loginCompanyName}</div>
         <div className="hz-lg-item" style={{ ...delay(1), fontSize: 8.5, fontWeight: 700, letterSpacing: ".34em", color: "var(--gold)", marginTop: 6 }}>ERP · MOBILE</div>
         <div className="hz-lg-item" style={{ ...delay(2), fontSize: 14.5, color: "rgba(231,234,228,.78)", marginTop: 24, lineHeight: 1.5 }}>
           {challenge ? "Enter your 6-digit code" : "Sign in to your workspace"}
@@ -142,7 +160,7 @@ export function MobileLogin() {
 
         <div className="hz-lg-item" style={{ ...delay(6), display: "flex", alignItems: "center", gap: 9, marginTop: 22 }}>
           <span style={{ flex: 1, height: 1, background: "rgba(231,234,228,.12)" }} />
-          <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: ".14em", textTransform: "uppercase", color: "rgba(231,234,228,.4)" }}>Houzs ERP</span>
+          <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: ".14em", textTransform: "uppercase", color: "rgba(231,234,228,.4)" }}>{isHouzsHost ? "Houzs ERP" : `${loginCompanyName} ERP`}</span>
           <span style={{ flex: 1, height: 1, background: "rgba(231,234,228,.12)" }} />
         </div>
         <div className="hz-lg-item" style={{ ...delay(6), textAlign: "center", fontSize: 11, color: "rgba(231,234,228,.45)", marginTop: 12, lineHeight: 1.5 }}>
