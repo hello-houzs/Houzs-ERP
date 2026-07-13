@@ -9,6 +9,7 @@ import { useBranding } from "../hooks/useBranding";
 import { PasswordStrengthMeter } from "../components/PasswordStrengthMeter";
 import { validatePasswordStrength } from "../lib/passwordStrength";
 import { useIsMobile } from "../mobile/useIsMobile";
+import { AmbientSnow } from "../components/AmbientSnow";
 
 // Code-split the mobile app: desktop users never download it, and it stays out
 // of the initial JS bundle (keeps the bundle-budget CI gate green).
@@ -76,6 +77,8 @@ function AuthShell({
           }}
         />
       </div>
+      {/* Ambient drifting snow — same particle effect as the mobile login */}
+      <AmbientSnow />
       {/* Faint building wordmark watermark, bottom-left */}
       <img
         src={LOGO_WORDMARK_SRC}
