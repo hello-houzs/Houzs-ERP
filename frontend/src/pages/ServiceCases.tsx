@@ -1058,19 +1058,22 @@ function StageStatStrip({
           ].map((s) => {
             const isActive = stage === s.value;
             const empty = ready && s.total === 0;
-            // Dot severity: red = stage holds SLA-breached cases, grey =
-            // empty, green = All/Completed, petrol = open work otherwise.
-            // Nico 2026-07-09 — flipped open from amber (bg-warning-text)
-            // to petrol so functional "in-progress" reads as palette
-            // primary; amber is reserved for SLA warnings.
+            // Dot severity: red = stage holds SLA-breached cases,
+            // dimmed grey = empty, green = All aggregate, solid grey =
+            // Completed (archived), petrol = open work otherwise.
+            // Nico 2026-07-09 — Completed split off from All so the
+            // closed-cases bucket reads as neutral grey (archived), not
+            // healthy green (which stays for the All summary).
             const dot =
               s.breached > 0
                 ? "bg-err"
                 : empty
                   ? "bg-ink-muted/40"
-                  : s.value === "ALL" || s.value === "completed"
-                    ? "bg-synced"
-                    : "bg-primary";
+                  : s.value === "completed"
+                    ? "bg-ink-muted"
+                    : s.value === "ALL"
+                      ? "bg-synced"
+                      : "bg-primary";
             return (
               <button
                 key={s.value}
