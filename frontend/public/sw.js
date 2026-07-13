@@ -291,7 +291,11 @@
 //   fetch was blocked on those devices while the data was already in the
 //   DB (form intake lands in ~15s). Purging the shell forces the next
 //   launch onto the current build, whose API calls ride erp.houzscentury.com.
-const VERSION = "houzs-erp-v168";
+// v169 (2026-07-14) — service-case mobile redesign: tabbed detail
+//   (Overview / Stage / Info / Timeline), Status Cards list, 8-stage
+//   workflow (Pending Inspection retired into Under Verification).
+//   (v168 was taken by the multicompany/cutover release on main.)
+const VERSION = "houzs-erp-v169";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 

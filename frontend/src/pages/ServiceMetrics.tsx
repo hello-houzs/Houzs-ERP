@@ -28,7 +28,6 @@ type AssrSummaryV31 = {
 const STAGE_FUNNEL_ORDER = [
   "pending_review",
   "under_verification",
-  "pending_inspection",
   "pending_solution",
   "pending_item_pickup",
   "pending_supplier_pickup",
@@ -41,7 +40,6 @@ const STAGE_FUNNEL_LABEL: Record<string, string> = {
   pending_review: "Review",
   under_verification: "Verification",
   pending_solution: "Solution",
-  pending_inspection: "Inspection",
   pending_item_pickup: "Item Pickup",
   pending_supplier_pickup: "Supplier Pickup",
   pending_item_ready: "Item Ready",
