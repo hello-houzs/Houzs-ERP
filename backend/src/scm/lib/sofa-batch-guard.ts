@@ -237,10 +237,15 @@ export function sofaIncompleteSetResponse(sets: IncompleteSofaSet[]) {
 export type SofaDropshipOffender = {
   itemCode: string;
   soItemId: string | null;
-  /** = the bound PO's number (= batch_no the GRN will stamp). null = no PO. */
+  /** = the bound PO's number (= batch_no the GRN will stamp). null = no LIVE
+   *  PO, or the batch is ambiguous (see multiPo). */
   poNumber: string | null;
   /** Effective ETA of the bound PO, or null. */
   eta: string | null;
+  /** Audit H3 — the line is bound to MORE THAN ONE live PO, so the expected
+   *  batch is ambiguous and drop-ship is blocked (the GRN could arrive under
+   *  the other PO and strand the drop-ship COGS at 0). */
+  multiPo?: boolean;
 };
 
 /** Standard 409 body for a blocked sofa ship. English-only (operator UI). Keeps
@@ -259,12 +264,20 @@ export function sofaNoCompleteBatchResponse(
   const canDropship = Array.isArray(dropship)
     && dropship.length > 0
     && dropship.every((o) => !!o.poNumber);
+  /* Audit H3 — call out ambiguous lines separately: they DO have supplier POs,
+     but more than one live one, so the expected batch is non-deterministic and
+     drop-ship stays blocked until exactly one PO remains. */
+  const multiPoCodes = [...new Set((dropship ?? []).filter((o) => o.multiPo).map((o) => o.itemCode))];
+  const multiPoNote = multiPoCodes.length > 0
+    ? ` Note: ${multiPoCodes.join(', ')} ${multiPoCodes.length === 1 ? 'is' : 'are'} bound to more than one open supplier PO, ` +
+      `so drop-ship cannot pick the incoming batch — cancel the extra PO first (drop-ship needs exactly one).`
+    : '';
   return {
     error: 'sofa_no_batch',
     message:
       `No single production batch on hand can fulfil this whole sofa set, ` +
       `so it can't ship without splitting a dye lot or leaving an orphan. ` +
-      `Wait until one complete batch is received. Affected: ${codes}.`,
+      `Wait until one complete batch is received. Affected: ${codes}.` + multiPoNote,
     offenders,
     ...(dropship ? { dropship, canDropship } : {}),
   };
