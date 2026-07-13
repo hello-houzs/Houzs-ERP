@@ -333,6 +333,24 @@ export const useAddSalesOrderPayment = () => {
   });
 };
 
+/* Owner 2026-07-13 — SAME-DAY payment edit. PATCH /:docNo/payments/:id with the
+   editable fields (amount / method + sub-fields / date / account sheet /
+   approval code / collected-by). The backend 409s when the payment wasn't
+   created on the current MYT calendar day. */
+export const useEditSalesOrderPayment = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ docNo, id, ...body }: { docNo: string; id: string } & Record<string, unknown>) =>
+      authedFetch<{ payment: SoPayment }>(`/mfg-sales-orders/${docNo}/payments/${id}`, {
+        method: 'PATCH', body: JSON.stringify(body),
+      }),
+    onSuccess: (_, vars) => {
+      qc.invalidateQueries({ queryKey: ['mfg-sales-orders', vars.docNo, 'payments'] });
+      qc.invalidateQueries({ queryKey: ['mfg-sales-orders', vars.docNo] });
+    },
+  });
+};
+
 export const useDeleteSalesOrderPayment = () => {
   const qc = useQueryClient();
   return useMutation({

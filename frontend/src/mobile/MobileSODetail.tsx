@@ -5,6 +5,7 @@ import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { fetchPaymentSlipUrl, fetchScanSlipImageBlobUrl, uploadSlipFull } from "../vendor/scm/lib/slip";
 import { useStaff } from "../vendor/scm/lib/admin-queries";
+import { useAuth as useHouzsAuth } from "../auth/AuthContext";
 import {
   useSalesOrderAuditLog,
   type SoAuditEntry,
@@ -109,9 +110,13 @@ type SoPayment = {
   online_type: string | null;
   approval_code: string | null;
   account_sheet: string | null;
+  collected_by: string | null;
   collected_by_name: string | null;
   amount_centi: number | null;
   slip_key: string | null;
+  /* Row creation instant (UTC) — drives the same-day EDIT affordance (a payment
+     may be corrected only on the MY calendar day it was recorded). */
+  created_at: string | null;
 };
 type DetailResp = { salesOrder: SoHeader; items: SoItem[] };
 type PaymentsResp = { payments: SoPayment[] };
@@ -148,6 +153,17 @@ const phase = (status: string | null): "draft" | "cancelled" | "submitted" => {
   return "submitted";
 };
 const total = (h: SoHeader) => h.local_total_centi ?? h.total_revenue_centi ?? 0;
+/* Today in Malaysia (UTC+8) as YYYY-MM-DD — shift +8h then read the UTC date. */
+const todayMyt = (): string =>
+  new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+/* True when the given instant (UTC ISO) falls on the current MY calendar day —
+   drives the same-day payment EDIT affordance. */
+const isCreatedTodayMyt = (createdAt: string | null | undefined): boolean => {
+  if (!createdAt) return false;
+  const t = new Date(createdAt).getTime();
+  if (Number.isNaN(t)) return false;
+  return new Date(t + 8 * 3600 * 1000).toISOString().slice(0, 10) === todayMyt();
+};
 
 /** Sales Order DETAIL — markup ported VERBATIM from the owner's mobile design
  *  (`#so-detail` + `renderSoDetail`/`openSO`), wired to the real
@@ -171,6 +187,7 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
   });
 
   const staffQ = useStaff();
+  const houzsAuth = useHouzsAuth();
   const h = detail.data?.salesOrder;
   const items = detail.data?.items ?? [];
   const payments = paymentsQ.data?.payments ?? [];
@@ -244,6 +261,21 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
   const paymentLocked = LOCKED.includes(rawStatus) || hasChildren;
   const canAddPayment = ph === "submitted" && !paymentLocked;
   const [payOpen, setPayOpen] = useState(false);
+  /* Same-day EDIT (owner 2026-07-13) — the payment row being edited (null = the
+     Add-Payment sheet is in create mode / closed). */
+  const [editPay, setEditPay] = useState<SoPayment | null>(null);
+
+  /* Collected By default = the logged-in user (owner option B). The detail
+     header has no staff id for the viewer, so resolve it by matching the Houzs
+     session email against the shared /staff list; '' when unmatched (dropdown
+     falls back to "—"). Seeds NEW payment rows only. */
+  const authEmail = houzsAuth.user?.email ?? null;
+  const defaultCollectedBy =
+    (authEmail
+      ? (staffQ.data ?? []).find(
+          (s) => s.email && s.email.toLowerCase() === authEmail.toLowerCase(),
+        )?.id
+      : "") ?? "";
 
   /* Refresh the payments ledger + header KPIs after a payment posts. Reused by
      both the delete action and the standalone Add-Payment sheet's onSaved. */
@@ -492,6 +524,21 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
                     {/* Slip present — dual-read camelCase ?? snake_case. */}
                     {((p as unknown as { slipKey?: string | null }).slipKey ?? p.slip_key) ? <SlipLink docNo={docNo} paymentId={p.id} /> : null}
                     <span className="money-row">RM {rm(p.amount_centi)}</span>
+                    {/* Same-day EDIT (owner 2026-07-13) — pencil shown only for a
+                        payment recorded today; after MYT midnight it locks. Same
+                        cancelled / edit-locked hide as the delete button. */}
+                    {ph !== "cancelled" && !editLocked && isCreatedTodayMyt((p as unknown as { createdAt?: string | null }).createdAt ?? p.created_at) && (
+                      <button
+                        type="button"
+                        onClick={() => setEditPay(p)}
+                        disabled={busy}
+                        title="Edit payment (same-day only)"
+                        aria-label="Edit payment"
+                        style={{ border: "none", background: "transparent", cursor: "pointer", padding: "0 4px", display: "flex", alignItems: "center", opacity: busy ? 0.4 : 1 }}
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2f5d4f" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>
+                      </button>
+                    )}
                     {/* Delete payment — parity with desktop PaymentsTable. Hidden
                         on cancelled / edit-locked (SHIPPED+ / has children) orders,
                         matching the desktop's locked-mode hide. */}
@@ -529,13 +576,16 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
           POST /:docNo/payments body the Edit flow uses (recordSlipBackedPayments).
           Reachable even when the SO is edit-locked, because payment is never
           lock-gated (only status/downstream via canAddPayment). */}
-      {payOpen && h && (
+      {(payOpen || editPay) && h && (
         <AddPaymentSheet
           docNo={docNo}
           staff={staffQ.data ?? []}
-          onClose={() => setPayOpen(false)}
+          defaultCollectedBy={defaultCollectedBy}
+          editPayment={editPay}
+          onClose={() => { setPayOpen(false); setEditPay(null); }}
           onSaved={async () => {
             setPayOpen(false);
+            setEditPay(null);
             await refreshAfterPayment();
           }}
         />
@@ -692,30 +742,55 @@ const planToMonths = (label: string): number | null => {
   const m = /^(\d+)\s*month/i.exec(String(label).trim());
   return m ? Number(m[1]) : null;
 };
+/* Reverse of PAY_METHOD_CODE (backend enum → sheet label) — rehydrates the
+   Method select when editing a persisted payment. */
+const CODE_TO_PAY_METHOD: Record<string, PayMethodLabel> = {
+  cash: "Cash", transfer: "Online", merchant: "Merchant", installment: "Installment",
+};
+/* installment_months (int|null) → the Plan option label to rehydrate the select
+   when editing. null / unmatched → "One Shot". */
+const monthsToPlan = (months: number | null | undefined): string => {
+  if (!months) return PLAN_OPTS[0];
+  return PLAN_OPTS.find((p) => planToMonths(p) === months) ?? `${months} months`;
+};
 const toCenti = (s: string) => Math.round((parseFloat(String(s).replace(/,/g, "")) || 0) * 100);
 
 function AddPaymentSheet({
   docNo,
   staff,
+  defaultCollectedBy = "",
+  editPayment = null,
   onClose,
   onSaved,
 }: {
   docNo: string;
   staff: Array<{ id: string; name: string }>;
+  /* Collected By default for a NEW payment = logged-in user's staff id. */
+  defaultCollectedBy?: string;
+  /* When set, the sheet EDITS this persisted payment (PATCH) instead of adding
+     a new one (POST). Same fields, seeded from the row. */
+  editPayment?: SoPayment | null;
   onClose: () => void;
   onSaved: () => void | Promise<void>;
 }) {
   const notify = useNotify();
+  const isEdit = Boolean(editPayment);
   const fileRef = useRef<HTMLInputElement | null>(null);
-  const [method, setMethod] = useState<PayMethodLabel>("Cash");
-  const [date, setDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
-  const [amount, setAmount] = useState("0.00");
-  const [account, setAccount] = useState("");
-  const [approval, setApproval] = useState("");
-  const [collectedBy, setCollectedBy] = useState("");
-  const [bank, setBank] = useState(BANK_OPTS[0]);
-  const [plan, setPlan] = useState(PLAN_OPTS[0]);
-  const [online, setOnline] = useState(ONLINE_OPTS[0]);
+  const [method, setMethod] = useState<PayMethodLabel>(
+    () => (editPayment ? CODE_TO_PAY_METHOD[editPayment.method ?? "cash"] ?? "Cash" : "Cash"),
+  );
+  const [date, setDate] = useState<string>(
+    () => (editPayment?.paid_at ?? "").slice(0, 10) || new Date().toISOString().slice(0, 10),
+  );
+  const [amount, setAmount] = useState(
+    () => (editPayment ? ((editPayment.amount_centi ?? 0) / 100).toFixed(2) : "0.00"),
+  );
+  const [account, setAccount] = useState(editPayment?.account_sheet ?? "");
+  const [approval, setApproval] = useState(editPayment?.approval_code ?? "");
+  const [collectedBy, setCollectedBy] = useState(editPayment?.collected_by ?? defaultCollectedBy);
+  const [bank, setBank] = useState(editPayment?.merchant_provider || BANK_OPTS[0]);
+  const [plan, setPlan] = useState(() => (editPayment ? monthsToPlan(editPayment.installment_months) : PLAN_OPTS[0]));
+  const [online, setOnline] = useState(editPayment?.online_type || ONLINE_OPTS[0]);
   const [slipName, setSlipName] = useState("");
   const [slipSession, setSlipSession] = useState("");
   const [slipPhase, setSlipPhase] = useState<"" | "uploading" | "done" | "error">("");
@@ -734,15 +809,18 @@ function AddPaymentSheet({
   };
 
   const amtOk = toCenti(amount) > 0;
-  const slipOk = Boolean(slipSession);
-  const canSave = amtOk && slipOk && !busy && slipPhase !== "uploading";
+  /* Owner 2026-07-13 — the slip is OPTIONAL now; recording needs only an
+     amount > 0 (+ method/date). The slip upload stays available for when one IS
+     on hand. */
+  const canSave = amtOk && !busy && slipPhase !== "uploading";
 
   const save = async () => {
     if (!canSave) return;
     setError(null);
     setBusy(true);
     /* Same body MobileNewSO.recordSlipBackedPayments POSTs — do NOT reimplement
-       pricing; the backend recomputes the balance from the amount. */
+       pricing; the backend recomputes the balance from the amount. In EDIT mode
+       the same fields PATCH the existing row (slip untouched). */
     const code = PAY_METHOD_CODE[method] ?? "cash";
     const body: Record<string, unknown> = {
       paidAt: date,
@@ -751,19 +829,26 @@ function AddPaymentSheet({
       accountSheet: account.trim() || null,
       approvalCode: approval.trim() || null,
       collectedBy: collectedBy || null,
-      uploadSessionId: slipSession,
     };
+    // Slip is optional — only send the session when one was actually uploaded.
+    if (!isEdit && slipSession) body.uploadSessionId = slipSession;
     if (code === "merchant") { body.merchantProvider = bank || null; body.installmentMonths = planToMonths(plan); }
     else if (code === "installment") { body.installmentMonths = planToMonths(plan); }
     else if (code === "transfer") { body.onlineType = online || null; }
     try {
-      await authedFetch(`/mfg-sales-orders/${encodeURIComponent(docNo)}/payments`, {
-        method: "POST", body: JSON.stringify(body),
-      });
+      if (isEdit && editPayment) {
+        await authedFetch(`/mfg-sales-orders/${encodeURIComponent(docNo)}/payments/${encodeURIComponent(editPayment.id)}`, {
+          method: "PATCH", body: JSON.stringify(body),
+        });
+      } else {
+        await authedFetch(`/mfg-sales-orders/${encodeURIComponent(docNo)}/payments`, {
+          method: "POST", body: JSON.stringify(body),
+        });
+      }
       await onSaved();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't record the payment. Please try again.");
-      void notify({ title: "Payment not recorded", body: e instanceof Error ? e.message : String(e), tone: "error" });
+      void notify({ title: isEdit ? "Changes not saved" : "Payment not recorded", body: e instanceof Error ? e.message : String(e), tone: "error" });
       setBusy(false);
     }
   };
@@ -774,7 +859,7 @@ function AddPaymentSheet({
         <div className="grab" />
         <div className="sheet-head">
           <div>
-            <div className="card-t" style={{ fontSize: 15 }}>Add payment</div>
+            <div className="card-t" style={{ fontSize: 15 }}>{isEdit ? "Edit payment" : "Add payment"}</div>
             <div style={{ fontSize: 11, color: "var(--mut)", marginTop: 2 }}>{docNo}</div>
           </div>
           <button type="button" className="sheet-x" onClick={() => { if (!busy) onClose(); }} aria-label="Close">{"✕"}</button>
@@ -838,35 +923,39 @@ function AddPaymentSheet({
                 {staff.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
               </select>
             </div>
-            <div className="fld">
-              <span className="fld-l" style={{ color: "#9aa093" }}>Slip</span>
-              <input ref={fileRef} type="file" accept="image/*,application/pdf" style={{ display: "none" }} onChange={(e) => { void onPickSlip(e.target.files?.[0] ?? null); e.target.value = ""; }} />
-              <button
-                type="button"
-                onClick={() => fileRef.current?.click()}
-                disabled={slipPhase === "uploading" || busy}
-                title={slipName || "Attach a payment slip"}
-                style={{
-                  width: "100%", boxSizing: "border-box", height: 40, borderRadius: 9, cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700,
-                  border: slipPhase === "done" ? "1px solid #bcdcd7" : "1px solid #d6d9d2",
-                  background: slipPhase === "done" ? "#e1efed" : "#f4f6f3",
-                  color: slipPhase === "done" ? "#16695f" : "#414539",
-                  display: "flex", alignItems: "center", justifyContent: "center", gap: 6, overflow: "hidden",
-                }}
-              >
-                {slipPhase === "uploading" ? "Uploading…"
-                  : slipPhase === "done" ? "Slip attached ✓"
-                  : slipPhase === "error" ? "Retry upload"
-                  : "Upload slip"}
-              </button>
-              {!slipOk && <div style={{ fontSize: 10, color: "#a16a2e", marginTop: 4 }}>A slip is required to record the payment.</div>}
-            </div>
+            {/* Owner 2026-07-13 — slip is OPTIONAL. Uploader stays available for
+                when a receipt IS on hand; no "required" gate. Hidden in edit
+                mode (the slip isn't changed by an edit). */}
+            {!isEdit && (
+              <div className="fld">
+                <span className="fld-l" style={{ color: "#9aa093" }}>Slip (optional)</span>
+                <input ref={fileRef} type="file" accept="image/*,application/pdf" style={{ display: "none" }} onChange={(e) => { void onPickSlip(e.target.files?.[0] ?? null); e.target.value = ""; }} />
+                <button
+                  type="button"
+                  onClick={() => fileRef.current?.click()}
+                  disabled={slipPhase === "uploading" || busy}
+                  title={slipName || "Attach a payment slip"}
+                  style={{
+                    width: "100%", boxSizing: "border-box", height: 40, borderRadius: 9, cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700,
+                    border: slipPhase === "done" ? "1px solid #bcdcd7" : "1px solid #d6d9d2",
+                    background: slipPhase === "done" ? "#e1efed" : "#f4f6f3",
+                    color: slipPhase === "done" ? "#16695f" : "#414539",
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: 6, overflow: "hidden",
+                  }}
+                >
+                  {slipPhase === "uploading" ? "Uploading…"
+                    : slipPhase === "done" ? "Slip attached ✓"
+                    : slipPhase === "error" ? "Retry upload"
+                    : "Upload slip"}
+                </button>
+              </div>
+            )}
             {error && <div style={{ fontSize: 11.5, color: "var(--red)", textAlign: "center" }}>{error}</div>}
           </div>
         </div>
         <div className="sheet-foot">
           <button type="button" className="btn-ghost" style={{ flex: 1, opacity: busy ? 0.55 : 1 }} disabled={busy} onClick={() => onClose()}>Cancel</button>
-          <button type="button" className="btn" style={{ flex: 1.3, opacity: canSave ? 1 : 0.5 }} disabled={!canSave} onClick={() => void save()}>{busy ? "Recording…" : "Record Payment"}</button>
+          <button type="button" className="btn" style={{ flex: 1.3, opacity: canSave ? 1 : 0.5 }} disabled={!canSave} onClick={() => void save()}>{busy ? (isEdit ? "Saving…" : "Recording…") : (isEdit ? "Save changes" : "Record Payment")}</button>
         </div>
       </div>
     </div>
@@ -1041,6 +1130,10 @@ const histSentence = (e: SoAuditEntry): string => {
     case "ADD_PAYMENT": {
       const a = find("amountCenti");
       return typeof a?.to === "number" ? `added payment RM ${rm(a.to)}` : "added a payment";
+    }
+    case "UPDATE_PAYMENT": {
+      const a = find("amountCenti");
+      return typeof a?.to === "number" ? `edited payment (RM ${rm(a.to)})` : "edited a payment";
     }
     case "DELETE_PAYMENT": {
       const a = find("amountCenti");
