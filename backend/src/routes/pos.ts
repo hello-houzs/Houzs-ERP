@@ -15,12 +15,13 @@
 // PIN store + brute-force RPCs live in migration 0099 (scm.pos_pins /
 // scm.pos_pin_attempts / scm.pin_attempt_*).
 // ----------------------------------------------------------------------------
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import type { Env } from "../types";
 import { auth } from "../middleware/auth";
 import { createSession, verifyPassword, hashPassword } from "../services/auth";
 
-const pos = new Hono<{ Bindings: Env }>();
+type Vars = { user?: { id: number }; companyId?: number };
+const pos = new Hono<{ Bindings: Env; Variables: Vars }>();
 
 const MAX_FAILURES = 5;
 const WINDOW_SECONDS = 60;
@@ -74,8 +75,8 @@ pos.get("/sales-staff", async (c) => {
 });
 
 // helper: resolve the logged-in Houzs user → their scm.staff uuid
-async function callerStaffId(c: any): Promise<string | null> {
-  const uid = (c.get("user") as { id?: number } | undefined)?.id;
+async function callerStaffId(c: Context<{ Bindings: Env; Variables: Vars }>): Promise<string | null> {
+  const uid = c.get("user")?.id;
   if (uid == null) return null;
   const s = await c.env.DB.prepare(`SELECT id FROM scm.staff WHERE user_id = ?`).bind(uid).first<{ id: string }>();
   return s?.id ?? null;
