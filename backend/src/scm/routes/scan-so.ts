@@ -75,6 +75,7 @@ import { getBranding } from '../../services/branding';
 // factored insert+audit core the interactive POST /:docNo/payments route uses.
 import { createDraftSalesOrder, recordSoPaymentRow } from './mfg-sales-orders';
 import { todayMyt } from '../lib/my-time';
+import { activeCompanyId } from '../lib/companyScope';
 import { normalizePhone } from '../shared/phone';
 
 // The scm-scoped service client (getSupabaseService, db:{schema:'scm'}) and the
@@ -3697,6 +3698,9 @@ scanSo.post('/enqueue', async (c) => {
       salesperson_id: user.id,
       houzs_user_id: houzsUserId,
       image_keys: [],
+      // company_id is NOT NULL since 0083; an unstamped insert 500s (prod
+      // incident 2026-07-13). 0091 adds a HOUZS default as the safety net.
+      company_id: activeCompanyId(c),
     })
     .select('id')
     .single();
