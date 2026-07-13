@@ -208,6 +208,27 @@ interface ProjectDetail {
     level: "full" | "limited";
     is_pic: boolean;
     scoped: boolean;
+    /** PMS role-based visibility (sales-department feature). When present it
+     *  refines what the viewer may see/edit; when absent (older cached
+     *  response) callers fall back to `level === "full"`. */
+    pms?: {
+      role:
+        | "DIRECTOR"
+        | "PIC"
+        | "SALES"
+        | "PURCHASING"
+        | "LOGISTIC"
+        | "DRIVER"
+        | "OTHER"
+        | "NONE";
+      canOpen: boolean;
+      canEdit: boolean;
+      canFinancial: boolean;
+      canRental: boolean;
+      canPayment: boolean;
+      canSensitive: boolean;
+      sections: string[];
+    };
   };
   finance: {
     rental: number | null;
@@ -768,10 +789,15 @@ export function Projects() {
   // — view selection lives in the sidebar.
   const [params] = useSearchParams();
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [storedView, setStoredView] = useLocalStorage<ProjectsView>(
     "projects:view",
     "list"
   );
+  // Finances sub-page is DIRECTOR-level only (Super Admin, Sales Director,
+  // Finance Manager, owner). Backed by the finance-viewer flag on /auth/me;
+  // ANDed with the existing projects.finances page-access below.
+  const canProjectFinance = !!user?.project_finance_viewer;
 
   // Per-view access (mig 073 — sub-page split). Each top-level view
   // gates on its own `projects.<view>` access level. The PageGuard at
@@ -787,7 +813,9 @@ export function Projects() {
     maintenance: usePageAccess("projects.maintenance"),
   };
   const allowed: ProjectsView[] = PROJECTS_VIEWS.filter(
-    (v) => access[v as keyof typeof access] !== "none"
+    (v) =>
+      access[v as keyof typeof access] !== "none" &&
+      (v !== "finances" || canProjectFinance)
   );
   const firstAllowed: ProjectsView | null = allowed[0] ?? null;
 
@@ -837,7 +865,9 @@ export function Projects() {
         { key: "finances", label: "Finances", description: "Revenue, spend and margin across projects.", icon: DollarSign, v: "finances" },
         { key: "maintenance", label: "Project Maintenance", description: "Templates, checklists and defaults.", icon: Wrench, v: "maintenance" },
       ] as const
-    ).filter((c) => access[c.v] !== "none");
+    ).filter(
+      (c) => access[c.v] !== "none" && (c.v !== "finances" || canProjectFinance)
+    );
     return (
       <div>
         <PageHeader
@@ -862,7 +892,12 @@ export function Projects() {
     <div>
       {view === "list" && <ProjectsListView />}
       {view === "calendar" && <ProjectsCalendarView />}
-      {view === "finances" && <ProjectsFinancesView />}
+      {view === "finances" &&
+        (canProjectFinance ? (
+          <ProjectsFinancesView />
+        ) : (
+          <Forbidden page="projects.finances" />
+        ))}
       {view === "maintenance" && <ProjectMaintenanceView />}
     </div>
   );
@@ -4557,6 +4592,11 @@ function ProjectDetailContent({
   // _access.level = "limited" in that case and also omits the underlying
   // finance data, so there's nothing to show anyway.
   const fullAccess = !detail.data?._access || detail.data._access.level === "full";
+  // PMS role-based refinement (sales-department visibility). When the backend
+  // supplies `_access.pms`, it decides finance/payment/edit visibility; when
+  // absent (older cached response) we fall back to `fullAccess`.
+  const pms = detail.data?._access?.pms;
+  const canEditDetail = fullAccess && (pms ? pms.canEdit : true);
 
   async function patch(body: Record<string, any>) {
     const res = await api.patch<{ shifted_tasks?: number; delta_days?: number }>(
@@ -4734,7 +4774,7 @@ function ProjectDetailContent({
             project={p}
             brands={brands}
             eventTypes={eventTypes}
-            fullAccess={fullAccess}
+            fullAccess={canEditDetail}
             patch={patch}
             financeLines={detail.data?.finance_lines ?? []}
             onFinanceChange={() => detail.reload()}
@@ -4784,16 +4824,21 @@ function ProjectDetailContent({
                 <>
                   <LogisticsCrewSection project={p} patch={patch} />
                   <PhasePhotosSection projectId={id} />
-                  <FinanceLedgerSection
-                    projectId={id}
-                    sizeSqm={p.size_sqm ?? null}
-                    durationDays={p.duration_days ?? null}
-                    lines={detail.data?.finance_lines ?? []}
-                    lumpSales={detail.data?.finance?.total_sales ?? null}
-                    onChange={() => detail.reload()}
-                    toast={toast}
-                  />
                 </>
+              )}
+              {/* Finance Ledger + Financial Snapshot: DIRECTOR-level only.
+                  The backend NULLs finance data for non-directors, so this
+                  gate keeps a sales PIC from seeing an empty finance shell. */}
+              {(pms ? pms.canFinancial : fullAccess) && (
+                <FinanceLedgerSection
+                  projectId={id}
+                  sizeSqm={p.size_sqm ?? null}
+                  durationDays={p.duration_days ?? null}
+                  lines={detail.data?.finance_lines ?? []}
+                  lumpSales={detail.data?.finance?.total_sales ?? null}
+                  onChange={() => detail.reload()}
+                  toast={toast}
+                />
               )}
             </DetailMain>
 
@@ -4804,7 +4849,7 @@ function ProjectDetailContent({
                 attendees={detail.data?.sales_attendees ?? []}
                 picUsers={picUsers}
                 picUsersLoading={picUsersQ.loading}
-                fullAccess={fullAccess}
+                fullAccess={canEditDetail}
                 patch={patch}
                 onChanged={() => detail.reload()}
                 toast={toast}

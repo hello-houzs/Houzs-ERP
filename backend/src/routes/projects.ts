@@ -43,7 +43,7 @@ import {
   projectAccessLevel,
   canSeeProject,
 } from "../services/projectAcl";
-import { getPmsAccess, getPmsRole } from "../services/pmsAccess";
+import { getPmsAccess, getPmsRole, financeHiddenForUser } from "../services/pmsAccess";
 import { audit } from "../services/audit";
 import { hasPermission } from "../services/permissions";
 import { recomputeAutoCostLines } from "../services/projectCostRates";
@@ -56,6 +56,23 @@ import {
 import { and, eq, sql } from "drizzle-orm";
 
 const app = new Hono<{ Bindings: Env }>();
+
+/**
+ * Server-side finance/payment gate (Sales-department visibility, rules 3 & 5).
+ * Returns a 403 JSON Response when the caller must NOT see project money
+ * (finance snapshot / ledger / payment / rental / quotation / agreement),
+ * else null. Single source of truth = pmsAccess.financeHiddenForUser
+ * (DIRECTOR-level only; un-migrated users without a position keep legacy
+ * access). Apply to every finance/payment endpoint so the data never leaves
+ * the Worker for a non-director sales user — the UI hide is defence-in-depth,
+ * this is the wire-level enforcement.
+ */
+function denyFinance(c: any): Response | null {
+  if (financeHiddenForUser(c.get("user"))) {
+    return c.json({ error: "Forbidden — finance is restricted" }, 403);
+  }
+  return null;
+}
 
 // ── Event types ──────────────────────────────────────────────
 // DB-backed via project_event_types (migrations 021/022). Admins
@@ -484,6 +501,7 @@ function normaliseHex(input: string | undefined | null): string | null {
 // Project Maintenance → Cost Rates. `projects.manage` gates writes.
 
 app.get("/cost-rates", requirePageAccess("projects.finances"), async (c) => {
+  const denied = denyFinance(c); if (denied) return denied;
   const rows = await c.env.DB.prepare(
     `SELECT cr.brand,
             cr.transport_pct, cr.merchandise_pct,
@@ -583,6 +601,7 @@ app.put("/cost-rates/:brand", requirePermission("projects.manage"), async (c) =>
 // Manual trigger — useful from the project detail page to backfill
 // auto lines on historical projects after the migration lands.
 app.post("/:id/finance/recompute-auto", requirePermission("projects.write"), async (c) => {
+  const denied = denyFinance(c); if (denied) return denied;
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const user = c.get("user");
@@ -676,6 +695,17 @@ app.get("/", requirePageAccess("projects.list"), async (c) => {
     pic_scope: scope?.pic_ids,
     brand_scope: scope?.brands,
   });
+  // Server-side finance strip (rule 3): the list SELECTs pf.rental /
+  // total_sales / contractor_cost per row. Blank them for any non-director
+  // sales user so the money never reaches the list view on the wire.
+  if (financeHiddenForUser(user) && Array.isArray((result as any).data)) {
+    (result as any).data = (result as any).data.map((r: any) => ({
+      ...r,
+      rental: null,
+      total_sales: null,
+      contractor_cost: null,
+    }));
+  }
   return c.json(result);
 });
 
@@ -1070,6 +1100,7 @@ app.put(
 // dimension reflects the same scope.
 
 app.get("/analytics/profitability", requirePageAccess("projects.finances"), async (c) => {
+  const denied = denyFinance(c); if (denied) return denied;
   const dateFrom = c.req.query("date_from");
   const dateTo = c.req.query("date_to");
   const brand = c.req.query("brand");
@@ -1281,13 +1312,42 @@ app.get("/:id", requirePageAccess("projects.list"), async (c) => {
     scoped: !!user.scope_to_pic,
     pms,
   };
-  // Defense in depth: hide finance (rental / cost / profit) from a position
-  // whose PMS role doesn't include FINANCIAL — on the wire, not just the UI.
-  // GATED on position_id: un-migrated users (no position assigned yet) keep
-  // legacy access, so the rollout doesn't suddenly hide finances from current
-  // finance/director users before positions are seeded + assigned.
+  // Defense in depth: hide finance (rental / cost / profit / ledger lines /
+  // sales-report amounts) from a position whose PMS role doesn't include
+  // FINANCIAL — on the wire, not just the UI. GATED on position_id: un-migrated
+  // users (no position assigned yet) keep legacy access, so the rollout doesn't
+  // suddenly hide finances from current finance/director users before positions
+  // are seeded + assigned. `finance` alone is not enough — `finance_lines`
+  // carries the raw cost/income ledger (COGS / cost lines), so it must go too.
+  // `sales_reports` is deliberately KEPT: it's the sales rep's own per-entry
+  // log, surfaced in a separate panel gated by sales.* perms, not the Finance
+  // Snapshot. (Owner review flag — see PR body.)
   const stripFinance = user.position_id != null && !pms.canFinancial;
-  const payload = stripFinance ? { ...detail, finance: null } : detail;
+  // Payment status / proof is DIRECTOR-only (rule 5). Blank the payment
+  // columns on the project row when the user can't see payment.
+  const stripPayment = user.position_id != null && !pms.canPayment;
+  let payload: any = detail;
+  if (stripFinance) {
+    payload = {
+      ...payload,
+      finance: null,
+      finance_lines: [],
+    };
+  }
+  if (stripPayment) {
+    payload = {
+      ...payload,
+      project: {
+        ...payload.project,
+        payment_status: null,
+        payment_proof_r2_key: null,
+        payment_proof_file_name: null,
+        payment_notes: null,
+        payment_updated_at: null,
+        payment_updated_by: null,
+      },
+    };
+  }
   return c.json({ ...payload, _access: access });
 });
 
@@ -1565,6 +1625,7 @@ app.post("/:id/unarchive", requirePermission("projects.manage"), async (c) => {
 // ── Finance ───────────────────────────────────────────────────
 
 app.patch("/:id/finance", requirePermission("projects.write"), async (c) => {
+  const denied = denyFinance(c); if (denied) return denied;
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const user = c.get("user");
@@ -1613,6 +1674,7 @@ app.get("/finance/categories", (c) => {
 // the range, OR has its start/end inside the range); brand + search
 // filter the project itself.
 app.get("/finance/by-project", requirePageAccess("projects.finances"), async (c) => {
+  const denied = denyFinance(c); if (denied) return denied;
   const user = c.get("user");
   // Finance tab is PIC-only. Scoped reps (who aren't themselves a PIC
   // on any project) get zero rows — finance is in the "limited view"
@@ -1816,6 +1878,7 @@ app.get("/finance/by-project", requirePageAccess("projects.finances"), async (c)
 // callers that want the raw ledger (audit, exports). Same filter shape
 // as /finance/by-project plus kind + category.
 app.get("/finance/lines", requirePageAccess("projects.finances"), async (c) => {
+  const denied = denyFinance(c); if (denied) return denied;
   const user = c.get("user");
   // PIC-only panel — scoped reps see no finance lines.
   const finPicScope = user?.scope_to_pic ? [user.id].filter(Boolean) : null;
@@ -1928,6 +1991,7 @@ app.get("/finance/lines", requirePageAccess("projects.finances"), async (c) => {
 });
 
 app.post("/:id/finance/lines", requirePermission("projects.write"), async (c) => {
+  const denied = denyFinance(c); if (denied) return denied;
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const user = c.get("user");
@@ -1977,6 +2041,7 @@ app.post("/:id/finance/lines", requirePermission("projects.write"), async (c) =>
 });
 
 app.patch("/finance/lines/:lineId", requirePermission("projects.write"), async (c) => {
+  const denied = denyFinance(c); if (denied) return denied;
   const lineId = parseInt(c.req.param("lineId"), 10);
   if (isNaN(lineId)) return c.json({ error: "Invalid ID" }, 400);
   const user = c.get("user");
@@ -1987,6 +2052,7 @@ app.patch("/finance/lines/:lineId", requirePermission("projects.write"), async (
 });
 
 app.delete("/finance/lines/:lineId", requirePermission("projects.write"), async (c) => {
+  const denied = denyFinance(c); if (denied) return denied;
   const lineId = parseInt(c.req.param("lineId"), 10);
   if (isNaN(lineId)) return c.json({ error: "Invalid ID" }, 400);
   const user = c.get("user");
@@ -1998,6 +2064,7 @@ app.delete("/finance/lines/:lineId", requirePermission("projects.write"), async 
 // Upload evidence (invoice, receipt, sales sheet) for a ledger line.
 // Returns an r2_key the create/patch call then attaches to the line.
 app.put("/:id/finance/upload", requirePermission("projects.write"), async (c) => {
+  const denied = denyFinance(c); if (denied) return denied;
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const ext = (c.req.query("ext") || "jpg").toLowerCase();
@@ -2157,6 +2224,7 @@ app.delete("/phase-photos/:photoId", async (c) => {
 
 // Manual resync endpoint — rebuilds project_finance from the lines.
 app.post("/:id/finance/resync", requirePermission("projects.write"), async (c) => {
+  const denied = denyFinance(c); if (denied) return denied;
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   await syncFinanceRollup(c.env, id);
@@ -2166,6 +2234,7 @@ app.post("/:id/finance/resync", requirePermission("projects.write"), async (c) =
 // ── Payment workflow ─────────────────────────────────────────
 
 app.post("/:id/payment", requirePermission("projects.write"), async (c) => {
+  const denied = denyFinance(c); if (denied) return denied;
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const user = c.get("user");
@@ -2215,6 +2284,7 @@ app.post("/:id/payment", requirePermission("projects.write"), async (c) => {
 // Rental-proof upload. Returns an r2_key that the /payment call
 // then attaches to the project row.
 app.put("/:id/payment/proof", requirePermission("projects.write"), async (c) => {
+  const denied = denyFinance(c); if (denied) return denied;
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const ext = (c.req.query("ext") || "jpg").toLowerCase();
@@ -2597,17 +2667,26 @@ app.put(
     const itemId = parseInt(c.req.param("itemId"), 10);
     if (isNaN(itemId)) return c.json({ error: "Invalid ID" }, 400);
     const user = c.get("user");
+    const granted = user?.permissions_set ?? user?.permissions;
+    const item = await c.env.DB.prepare(
+      `SELECT required_perm, role_label FROM project_checklist WHERE id = ?`
+    )
+      .bind(itemId)
+      .first<{ required_perm: string | null; role_label: string | null }>();
+    if (!item) return c.json({ error: "Not found" }, 404);
+    // Per-item function gate (Sales-department visibility, rule 4): an item
+    // tagged with a required_perm can only be attached to by someone holding
+    // that permission — same rule the status/review routes enforce. This
+    // applies to EVERYONE (incl. projects.write holders) so a sales PIC can
+    // only fill in documents badged for their own function; other-function
+    // documents (DRIVER / PURCHASER / …) stay view+download only for them.
+    if (item.required_perm && !hasPermission(granted, item.required_perm)) {
+      return c.json({ error: `Requires ${item.required_perm}` }, 403);
+    }
     // Tick-only roles (no projects.write — i.e. drivers) may only attach to
     // tasks badged for THEIR role (item.role_label vs the user's role name).
     // Mirrors the mobile UI rule; owner 2026-07-09.
-    const granted = user?.permissions_set ?? user?.permissions;
     if (!hasPermission(granted, "projects.write")) {
-      const item = await c.env.DB.prepare(
-        `SELECT role_label FROM project_checklist WHERE id = ?`
-      )
-        .bind(itemId)
-        .first<{ role_label: string | null }>();
-      if (!item) return c.json({ error: "Not found" }, 404);
       const label = (item.role_label ?? "").trim().toUpperCase();
       const roleName = (user?.role_name ?? "").trim().toUpperCase();
       if (!label || !roleName || label !== roleName) {
