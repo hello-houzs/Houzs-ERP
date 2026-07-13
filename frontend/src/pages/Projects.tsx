@@ -4597,6 +4597,11 @@ function ProjectDetailContent({
   // absent (older cached response) we fall back to `fullAccess`.
   const pms = detail.data?._access?.pms;
   const canEditDetail = fullAccess && (pms ? pms.canEdit : true);
+  // Owner 2026-07-13: the event's own Sales PIC may manage WHO attends their
+  // event, even though the rest of the project stays read-only for them
+  // (pms.canEdit=false). The PIC picker itself stays on canEditDetail.
+  const canEditAttending =
+    fullAccess && (pms ? pms.canEdit || pms.role === "PIC" : true);
 
   async function patch(body: Record<string, any>) {
     const res = await api.patch<{ shifted_tasks?: number; delta_days?: number }>(
@@ -4850,6 +4855,7 @@ function ProjectDetailContent({
                 picUsers={picUsers}
                 picUsersLoading={picUsersQ.loading}
                 fullAccess={canEditDetail}
+                canEditAttending={canEditAttending}
                 patch={patch}
                 onChanged={() => detail.reload()}
                 toast={toast}
@@ -4894,6 +4900,7 @@ function ProjectTeamSection({
   picUsers,
   picUsersLoading,
   fullAccess,
+  canEditAttending,
   patch,
   onChanged,
   toast,
@@ -4904,6 +4911,10 @@ function ProjectTeamSection({
   picUsers: Array<{ id: number; name: string | null; email: string }>;
   picUsersLoading: boolean;
   fullAccess: boolean;
+  /** Owner 2026-07-13: the event's own Sales PIC manages Sales Attending
+   *  even while the rest of the project (incl. the PIC picker) is
+   *  read-only for them. */
+  canEditAttending: boolean;
   patch: (body: Record<string, any>) => Promise<void>;
   onChanged: () => void;
   toast: ReturnType<typeof useToast>;
@@ -5048,7 +5059,7 @@ function ProjectTeamSection({
                     {a.rep_code}
                   </span>
                 )}
-                {fullAccess && (
+                {canEditAttending && (
                   <button
                     onClick={() => removeRep(a)}
                     aria-label={`Remove ${a.rep_name ?? "rep"}`}
@@ -5061,7 +5072,7 @@ function ProjectTeamSection({
             ))}
           </div>
         )}
-        {fullAccess && (
+        {canEditAttending && (
           <div className="mt-2">
             {/* Multi-select (owner 2026-06-25: "直接可以 multiselect 多选,不用
                 一个一个按") — filter + tick several + "Add N" in one go. */}
