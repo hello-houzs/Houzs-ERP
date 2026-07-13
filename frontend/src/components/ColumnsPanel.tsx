@@ -392,22 +392,53 @@ export function ColumnsPanelButton({
   totalCount,
   onClick,
   active,
+  disabled,
 }: {
   visibleCount: number;
   totalCount: number;
   onClick: () => void;
   active?: boolean;
+  disabled?: boolean;
 }) {
   return (
     <button
+      type="button"
       onClick={onClick}
+      disabled={disabled}
+      aria-pressed={active}
+      title={`Columns — ${visibleCount} of ${totalCount} shown`}
       className={cn(
-        "inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-surface px-3 text-[11px] font-semibold uppercase tracking-wider text-ink-secondary transition-colors hover:border-accent/40 hover:bg-accent-soft/50 hover:text-accent",
-        active && "border-accent/50 bg-accent-soft/60 text-accent"
+        "group inline-flex h-[34px] items-center gap-2.5 rounded-lg border bg-surface px-3.5 text-[12.5px] font-medium text-ink-secondary",
+        "shadow-[0_1px_1px_rgba(17,20,15,0.03)] transition-all duration-fast ease-out",
+        "hover:-translate-y-px hover:border-primary/45 hover:shadow-[0_4px_12px_rgba(22,105,95,0.12)]",
+        "active:translate-y-0 disabled:pointer-events-none disabled:opacity-45",
+        active ? "border-primary text-primary" : "border-border"
       )}
     >
-      <Columns3 size={13} />
-      Columns ({visibleCount}/{totalCount})
+      {/* icon tile */}
+      <span
+        className={cn(
+          "-ml-1 grid h-[22px] w-[22px] place-items-center rounded-md transition-colors duration-fast",
+          active
+            ? "bg-primary text-white"
+            : "bg-surface-2 text-ink-muted group-hover:bg-primary/12 group-hover:text-primary"
+        )}
+      >
+        <Columns3 size={13} />
+      </span>
+
+      {/* label — hidden on narrow screens (collapses to compact form C) */}
+      <span className="hidden sm:inline">Columns</span>
+
+      {/* fraction, tabular-nums so it doesn't jitter */}
+      <span
+        className={cn(
+          "font-mono text-[11.5px] font-bold tabular-nums",
+          active ? "text-primary" : "text-ink-muted"
+        )}
+      >
+        {visibleCount}/{totalCount}
+      </span>
     </button>
   );
 }
