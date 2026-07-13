@@ -67,6 +67,7 @@ import { lorries } from "./routes/lorries";
 import { soSettings } from "./routes/so-settings";
 import { freeItemCampaigns } from "./routes/free-item-campaigns";
 import { modelFreeGifts } from "./routes/model-free-gifts";
+import { quotes } from "./routes/quotes";
 
 import { scmAreaGuard } from "./middleware/area-guard";
 
@@ -170,6 +171,13 @@ scm.route("/so-amendments", soAmendments);
 // state-warehouse-mappings: cross-area lookup (SO/DO warehouse routing) — left
 // on the coarse gate, see SHARED READ HELPERS note above.
 scm.route("/state-warehouse-mappings", stateWarehouseMappings);
+// Ported 2026-07-14 (#386) — saved POS quotes (open carts, not yet promoted to
+// an order). Rides the Sales Orders L2 area guard since quotes feed into SOs;
+// writeLevel 'view' because saving/editing/deleting a quote only touches the
+// caller's own saved cart (like scan-so drafts), never an existing SO — so a
+// view-level Sales Executive can still use it. All queries are company_2-scoped.
+scm.use("/quotes/*", scmAreaGuard("scm.sales.orders", { writeLevel: "view" }));
+scm.route("/quotes", quotes);
 scm.use("/delivery-orders-mfg/*", scmAreaGuard("scm.sales.delivery"));
 scm.route("/delivery-orders-mfg", deliveryOrdersMfg);
 // Ported 2026-06-20 — SI backend (skipped in the earlier sync; the vendored SI
