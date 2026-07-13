@@ -71,6 +71,42 @@ const SECTIONS_BY_ROLE: Record<PmsRole, PmsSection[]> = {
 // Directors / finance — the only roles that see money on the project.
 const DIRECTOR_POSITIONS = /^(Super Admin|Sales Director|Finance Manager)$/i;
 
+// Sales staff — a position whose title starts with "Sales " (Sales Executive,
+// Sales Coordinator, …) OR membership of the Sales department. Prod names the
+// department "Sales Department" while the seed is "Sales", so match any dept
+// name containing "sales" (same rule salesTeam.syncSalesRepFromUser uses).
+const SALES_POSITION = /^Sales /i;
+
+/**
+ * True when the user is Sales staff by STABLE ORG FIELDS — position_name
+ * "Sales …" OR their department name contains "sales". Deliberately keyed off
+ * org fields (not the configurable permission matrix) per the owner's
+ * code-keyed Sales access model. Note: "Sales Director" does NOT match
+ * SALES_POSITION (no trailing space in "Director") and is handled by
+ * isDirectorUser instead — directors get the full-visibility tier, not the
+ * scoped Sales tier.
+ */
+export function isSalesUser(user: AuthUser | null | undefined): boolean {
+  if (!user) return false;
+  const pos = (user.position_name ?? "").trim();
+  if (SALES_POSITION.test(pos)) return true;
+  const dept = (user.department_name ?? "").trim().toLowerCase();
+  return dept.includes("sales");
+}
+
+/**
+ * True for the DIRECTOR tier that sees ALL data — Owner / IT Admin (`*`
+ * wildcard) or a director/finance position (Super Admin, Sales Director,
+ * Finance Manager). Same definition getPmsRole() uses for its DIRECTOR role,
+ * exposed standalone so the SO / Service-Case scope gates can share one source
+ * of truth without constructing a ProjectLike.
+ */
+export function isDirectorUser(user: AuthUser | null | undefined): boolean {
+  if (!user) return false;
+  if (user.permissions_set?.has("*")) return true;
+  return DIRECTOR_POSITIONS.test((user.position_name ?? "").trim());
+}
+
 export interface ProjectLike {
   pic_id: number | null;
   created_by?: number | null;
