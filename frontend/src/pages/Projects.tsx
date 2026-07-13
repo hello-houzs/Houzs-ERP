@@ -1909,6 +1909,12 @@ const FINANCE_LIST_FILTER_KEYS = [
 
 function FinanceListView() {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  // The parent (ProjectsFinancesView) only mounts this view when the viewer
+  // has the DIRECTOR-level finance flag, but guard the denyFinance-protected
+  // fetch with `enabled` too so a future refactor can never let it fire (and
+  // 403) for a non-viewer. Fail-open when the flag is absent — backend enforces.
+  const canProjectFinance = !!user?.project_finance_viewer;
   const thisYear = new Date().getFullYear();
   const defaultFrom = `${thisYear}-01-01`;
   const defaultTo = `${thisYear}-12-31`;
@@ -1977,7 +1983,7 @@ function FinanceListView() {
     [dateFrom, dateTo, brand, stage, search, includeArchived, page, perPage, sort?.key, sort?.dir],
     // Paginated + filter-switched list: keep the current rows on screen while
     // the next page/filter loads instead of flashing an empty table.
-    { keepPreviousData: true }
+    { keepPreviousData: true, enabled: canProjectFinance }
   );
 
   const columns: Column<FinanceProjectRow>[] = [
@@ -2457,6 +2463,10 @@ function ProjectsAnalyticsView() {
   // Date range default: current year. User can clear or change.
   const thisYear = new Date().getFullYear();
   const navigate = useNavigate();
+  const { user } = useAuth();
+  // Belt-and-suspenders finance gate (see FinanceListView): the profitability
+  // fetch is denyFinance-guarded server-side; never fire it for a non-viewer.
+  const canProjectFinance = !!user?.project_finance_viewer;
   const [dateFrom, setDateFrom] = useState<string>(`${thisYear}-01-01`);
   const [dateTo, setDateTo] = useState<string>(`${thisYear}-12-31`);
   const [brand, setBrand] = useState<string>("");
@@ -2483,7 +2493,8 @@ function ProjectsAnalyticsView() {
           event_type_id: eventTypeId || undefined,
         })}`
       ),
-    [dateFrom, dateTo, brand, organizer, eventTypeId]
+    [dateFrom, dateTo, brand, organizer, eventTypeId],
+    { enabled: canProjectFinance }
   );
 
   const d = q.data;
@@ -4597,6 +4608,11 @@ function ProjectDetailContent({
   // absent (older cached response) we fall back to `fullAccess`.
   const pms = detail.data?._access?.pms;
   const canEditDetail = fullAccess && (pms ? pms.canEdit : true);
+  // Owner 2026-07-13: the event's own Sales PIC may manage WHO attends their
+  // event, even though the rest of the project stays read-only for them
+  // (pms.canEdit=false). The PIC picker itself stays on canEditDetail.
+  const canEditAttending =
+    fullAccess && (pms ? pms.canEdit || pms.role === "PIC" : true);
 
   async function patch(body: Record<string, any>) {
     const res = await api.patch<{ shifted_tasks?: number; delta_days?: number }>(
@@ -4850,6 +4866,7 @@ function ProjectDetailContent({
                 picUsers={picUsers}
                 picUsersLoading={picUsersQ.loading}
                 fullAccess={canEditDetail}
+                canEditAttending={canEditAttending}
                 patch={patch}
                 onChanged={() => detail.reload()}
                 toast={toast}
@@ -4894,6 +4911,7 @@ function ProjectTeamSection({
   picUsers,
   picUsersLoading,
   fullAccess,
+  canEditAttending,
   patch,
   onChanged,
   toast,
@@ -4904,6 +4922,10 @@ function ProjectTeamSection({
   picUsers: Array<{ id: number; name: string | null; email: string }>;
   picUsersLoading: boolean;
   fullAccess: boolean;
+  /** Owner 2026-07-13: the event's own Sales PIC manages Sales Attending
+   *  even while the rest of the project (incl. the PIC picker) is
+   *  read-only for them. */
+  canEditAttending: boolean;
   patch: (body: Record<string, any>) => Promise<void>;
   onChanged: () => void;
   toast: ReturnType<typeof useToast>;
@@ -5048,7 +5070,7 @@ function ProjectTeamSection({
                     {a.rep_code}
                   </span>
                 )}
-                {fullAccess && (
+                {canEditAttending && (
                   <button
                     onClick={() => removeRep(a)}
                     aria-label={`Remove ${a.rep_name ?? "rep"}`}
@@ -5061,7 +5083,7 @@ function ProjectTeamSection({
             ))}
           </div>
         )}
-        {fullAccess && (
+        {canEditAttending && (
           <div className="mt-2">
             {/* Multi-select (owner 2026-06-25: "直接可以 multiselect 多选,不用
                 一个一个按") — filter + tick several + "Add N" in one go. */}

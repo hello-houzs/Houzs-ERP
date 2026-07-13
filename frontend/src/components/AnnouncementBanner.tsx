@@ -258,17 +258,23 @@ export function AnnouncementBanner() {
   // hide the notice for this session only (no ack recorded, so it re-surfaces
   // on the next visit). Plain location.assign, not useNavigate — the banner
   // also renders router-less in design-sync previews.
+  // Hide the notice for this session only (no ack recorded, so it re-surfaces
+  // next visit). Used by the backdrop click and the GENERAL/LEARNING secondary.
+  function dismissSession(a: Announcement) {
+    setDismissedThisSession((prev) => {
+      const next = new Set(prev);
+      next.add(a.id);
+      return next;
+    });
+  }
+
   function secondary(a: Announcement) {
     const cat = a.category ?? "GENERAL";
     if (cat === "WARNING" || cat === "SOP") {
       window.location.assign("/announcements");
       return;
     }
-    setDismissedThisSession((prev) => {
-      const next = new Set(prev);
-      next.add(a.id);
-      return next;
-    });
+    dismissSession(a);
   }
 
   const category = current.category ?? "GENERAL";
@@ -278,76 +284,85 @@ export function AnnouncementBanner() {
 
   return (
     <div
-      className={cn(
-        "relative overflow-hidden border-b px-3 py-2.5 text-ink",
-        meta.bandCls,
-      )}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
       role="status"
       aria-live="polite"
     >
-      {/* 3px colour rail on the left edge */}
-      <span
-        className={cn("absolute left-0 top-0 h-full w-[3px]", meta.railCls)}
+      {/* Backdrop — click dismisses for this session (re-surfaces next visit),
+          never acks. A dedicated button keeps it keyboard-reachable. */}
+      <button
+        type="button"
+        aria-label="Dismiss notice"
+        onClick={() => dismissSession(current)}
+        className="absolute inset-0 cursor-default bg-ink/25 backdrop-blur-[1px]"
       />
-      <div className="mx-auto flex w-full max-w-6xl items-start gap-2.5">
-        <div
-          className={cn(
-            "mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full",
-            meta.iconCls,
-          )}
-        >
-          <Icon size={14} />
-        </div>
-        <div className="min-w-0 flex-1">
-          {/* category eyebrow · relative time */}
-          <div className="mb-0.5 flex items-center gap-2">
-            <span
+      {/* Centred notice card */}
+      <div
+        className={cn(
+          "relative w-full max-w-md overflow-hidden rounded-2xl border bg-surface shadow-slab",
+          meta.bandCls,
+        )}
+      >
+        {/* colour rail across the top edge */}
+        <span className={cn("absolute left-0 top-0 h-[3px] w-full", meta.railCls)} />
+        <div className="p-5">
+          <div className="mb-2 flex items-center gap-2.5">
+            <div
               className={cn(
-                "text-[10px] font-bold uppercase tracking-wide",
-                meta.labelCls,
+                "grid h-8 w-8 shrink-0 place-items-center rounded-full",
+                meta.iconCls,
               )}
             >
-              {CATEGORY_LABEL[category]}
-            </span>
-            {current.createdAt && (
-              <>
-                <span className="h-[3px] w-[3px] rounded-full bg-border" />
-                <span className="font-mono text-[11px] text-ink-secondary">
-                  {relativeTime(current.createdAt)}
-                </span>
-              </>
-            )}
+              <Icon size={16} />
+            </div>
+            <div className="flex min-w-0 items-center gap-2">
+              <span
+                className={cn(
+                  "text-[10px] font-bold uppercase tracking-wide",
+                  meta.labelCls,
+                )}
+              >
+                {CATEGORY_LABEL[category]}
+              </span>
+              {current.createdAt && (
+                <>
+                  <span className="h-[3px] w-[3px] rounded-full bg-border" />
+                  <span className="font-mono text-[11px] text-ink-secondary">
+                    {relativeTime(current.createdAt)}
+                  </span>
+                </>
+              )}
+            </div>
           </div>
-          <div className="text-[13px] font-semibold leading-tight text-ink">
+          <div className="text-[15px] font-semibold leading-snug text-ink">
             {current.title}
           </div>
           {current.body && (
-            <p className="mt-0.5 whitespace-pre-wrap text-[12px] leading-relaxed text-ink-secondary">
+            <p className="mt-1 whitespace-pre-wrap text-[13px] leading-relaxed text-ink-secondary">
               {current.body}
             </p>
           )}
-        </div>
-        {/* secondary + primary buttons */}
-        <div className="flex shrink-0 items-center gap-1.5">
-          <button
-            type="button"
-            onClick={() => secondary(current)}
-            className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-surface px-2.5 text-[11.5px] font-semibold text-ink-secondary hover:text-ink"
-          >
-            <SecondaryIcon size={12} />
-            {meta.secondaryLabel}
-          </button>
-          <button
-            type="button"
-            onClick={() => void ack(current)}
-            className={cn(
-              "inline-flex h-7 items-center gap-1 rounded-md px-2.5 text-[11.5px] font-semibold",
-              meta.primaryCls,
-            )}
-          >
-            <PrimaryIcon size={12} />
-            {meta.primaryLabel}
-          </button>
+          <div className="mt-4 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => secondary(current)}
+              className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-border bg-surface px-3.5 text-[13px] font-semibold text-ink-secondary hover:bg-surface-dim hover:text-ink"
+            >
+              <SecondaryIcon size={14} />
+              {meta.secondaryLabel}
+            </button>
+            <button
+              type="button"
+              onClick={() => void ack(current)}
+              className={cn(
+                "inline-flex h-9 items-center gap-1.5 rounded-lg px-4 text-[13px] font-semibold",
+                meta.primaryCls,
+              )}
+            >
+              <PrimaryIcon size={14} />
+              {meta.primaryLabel}
+            </button>
+          </div>
         </div>
       </div>
     </div>

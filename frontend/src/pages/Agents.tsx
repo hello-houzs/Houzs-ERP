@@ -147,12 +147,18 @@ function severityTone(sev: string): "error" | "warning" | "neutral" {
   return sev === "CRIT" ? "error" : sev === "WARN" ? "warning" : "neutral";
 }
 
+// The /api/agents routes all return the house `{ success, data }` envelope,
+// and api.get does NOT unwrap it — pull `.data` out so callers get the payload.
+function getData<T>(path: string): Promise<T> {
+  return api.get<{ success: boolean; data: T }>(path).then((r) => r.data);
+}
+
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 export function Agents() {
   const toast = useToast();
   const dialog = useDialog();
-  const status = useQuery<StatusResp>(() => api.get("/api/agents/status"));
+  const status = useQuery<StatusResp>(() => getData("/api/agents/status"));
   const [selected, setSelected] = useState<Family>("DELIVERY");
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -185,7 +191,7 @@ export function Agents() {
         message:
           "The global kill switch halts all agents, including manual runs, until you turn it off. Continue?",
         tone: "danger",
-        confirmText: "Kill all",
+        confirmLabel: "Kill all",
       });
       if (!ok) return;
     }
@@ -220,7 +226,7 @@ export function Agents() {
         <div className={CARD}>
           <EmptyState
             icon={<Bot size={28} />}
-            title="Couldn't load the agent console"
+            message="Couldn't load the agent console"
             description={status.error}
           />
         </div>
@@ -458,7 +464,7 @@ function WorkingSurface({ meta }: { meta: FamilyMeta }) {
 }
 
 function AiFocus({ meta }: { meta: FamilyMeta }) {
-  const brief = useQuery<BriefResp | null>(() => api.get(`/api/agents/${meta.base}/brief`), [meta.base]);
+  const brief = useQuery<BriefResp | null>(() => getData(`/api/agents/${meta.base}/brief`), [meta.base]);
   const focus = brief.data?.aiFocus;
   if (!focus) return null;
   return (
@@ -473,14 +479,14 @@ function ProposalsPanel({ meta }: { meta: FamilyMeta }) {
   const toast = useToast();
   const dialog = useDialog();
   const q = useQuery<EngineProposal[]>(
-    () => api.get(`/api/agents/${meta.base}/proposals?status=PENDING`),
+    () => getData(`/api/agents/${meta.base}/proposals?status=PENDING`),
     [meta.base],
   );
   const [busy, setBusy] = useState<string | null>(null);
 
   async function decide(id: string, action: "approve" | "reject") {
     if (action === "reject") {
-      const ok = await dialog.confirm({ message: "Reject this proposal?", tone: "danger", confirmText: "Reject" });
+      const ok = await dialog.confirm({ message: "Reject this proposal?", tone: "danger", confirmLabel: "Reject" });
       if (!ok) return;
     }
     setBusy(id);
@@ -501,7 +507,7 @@ function ProposalsPanel({ meta }: { meta: FamilyMeta }) {
     return (
       <EmptyState
         icon={<Check size={26} />}
-        title="Nothing waiting"
+        message="Nothing waiting"
         description="No pending proposals for this agent right now."
       />
     );
@@ -552,7 +558,7 @@ function ProposalsPanel({ meta }: { meta: FamilyMeta }) {
 function FindingsPanel({ meta }: { meta: FamilyMeta }) {
   const toast = useToast();
   const q = useQuery<Finding[]>(
-    () => api.get(`/api/agents/${meta.base}/findings?status=OPEN`),
+    () => getData(`/api/agents/${meta.base}/findings?status=OPEN`),
     [meta.base],
   );
   const [busy, setBusy] = useState<string | null>(null);
@@ -576,7 +582,7 @@ function FindingsPanel({ meta }: { meta: FamilyMeta }) {
     return (
       <EmptyState
         icon={<Check size={26} />}
-        title="All clear"
+        message="All clear"
         description="No open findings from the last patrol."
       />
     );
@@ -611,7 +617,7 @@ function FindingsPanel({ meta }: { meta: FamilyMeta }) {
 
 function ConfigPanel({ family }: { family: Family }) {
   const toast = useToast();
-  const q = useQuery<ConfigProposal[]>(() => api.get("/api/agents/config-proposals?status=PENDING"));
+  const q = useQuery<ConfigProposal[]>(() => getData("/api/agents/config-proposals?status=PENDING"));
   const [busy, setBusy] = useState<string | null>(null);
   const prefix = `${family.toLowerCase()}.`;
   const rows = (q.data ?? []).filter((p) => p.paramKey.startsWith(prefix));
@@ -670,7 +676,7 @@ function ConfigPanel({ family }: { family: Family }) {
 function FeedbackPanel({ meta }: { meta: FamilyMeta }) {
   const toast = useToast();
   const q = useQuery<Feedback[]>(
-    () => api.get(`/api/agents/feedback?agent=${meta.id}&status=ACTIVE`),
+    () => getData(`/api/agents/feedback?agent=${meta.id}&status=ACTIVE`),
     [meta.id],
   );
   const [text, setText] = useState("");

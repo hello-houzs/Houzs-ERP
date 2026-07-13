@@ -254,7 +254,21 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
      processing lock. Drafts + cancelled orders still take NO payment (owner:
      "no payments on drafts"), matching desktop hiding Add Payment off-status. */
   const paymentLocked = LOCKED.includes(rawStatus) || hasChildren;
-  const canAddPayment = ph === "submitted" && !paymentLocked;
+
+  /* No-naked-payment-edits (owner 2026-07-13) — Add / Delete / Edit must NOT
+     show in the read-only detail without the operator opting in. The rule
+     (desktop parity, SalesOrderDetail.tsx): payments are editable when the SO is
+     a DRAFT (never confirmed — always adjustable) OR the operator has entered
+     the payments Edit mode on this card. `payEditing` is that in-card toggle,
+     offered only on a submitted, non-terminal / non-downstream-locked SO (the
+     SHIPPED+/has-children lock still fully view-onlys the section, matching the
+     desktop Edit button being disabled when isLocked). The processing lock does
+     NOT gate payments (owner rule 2026-07-05), same as before. */
+  const isDraftSo = ph === "draft";
+  const [payEditing, setPayEditing] = useState(false);
+  const canOfferPayEdit = ph === "submitted" && !paymentLocked;
+  const canEditPayments = isDraftSo || (canOfferPayEdit && payEditing);
+  const canAddPayment = canEditPayments;
   const [payOpen, setPayOpen] = useState(false);
   /* Same-day EDIT (owner 2026-07-13) — the payment row being edited (null = the
      Add-Payment sheet is in create mode / closed). */
@@ -479,6 +493,19 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
             <div className="card"><div className="card-h"><span className="card-t">Payments</span>
               <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 {!!payments.length && <span className="card-sub">{payments.length}</span>}
+                {/* No-naked-edits toggle (owner 2026-07-13) — on a submitted SO the
+                    payments stay view-only until the operator taps Edit here; a
+                    DRAFT skips the toggle (always editable). Mirrors the desktop
+                    Detail's Edit-mode gate on the PaymentsTable. */}
+                {canOfferPayEdit && (
+                  <button
+                    type="button"
+                    onClick={() => setPayEditing((v) => !v)}
+                    style={{ border: "1px solid var(--line2)", background: payEditing ? "#eef1ec" : "#fff", color: "var(--mut)", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, borderRadius: 8, padding: "4px 10px", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 }}
+                  >
+                    {payEditing ? "Done" : "Edit"}
+                  </button>
+                )}
                 {canAddPayment && (
                   <button
                     type="button"
@@ -502,10 +529,11 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
                     {/* Slip present — dual-read camelCase ?? snake_case. */}
                     {((p as unknown as { slipKey?: string | null }).slipKey ?? p.slip_key) ? <SlipLink docNo={docNo} paymentId={p.id} /> : null}
                     <span className="money-row">RM {rm(p.amount_centi)}</span>
-                    {/* Same-day EDIT (owner 2026-07-13) — pencil shown only for a
-                        payment recorded today; after MYT midnight it locks. Same
-                        cancelled / edit-locked hide as the delete button. */}
-                    {ph !== "cancelled" && !editLocked && isCreatedTodayMyt((p as unknown as { createdAt?: string | null }).createdAt ?? p.created_at) && (
+                    {/* Same-day EDIT (owner 2026-07-13) — pencil requires the
+                        payments Edit mode (or a DRAFT SO) AND, for a submitted SO,
+                        that the row was recorded today (after MYT midnight it
+                        locks). A DRAFT's rows are never same-day-locked. */}
+                    {canEditPayments && (isDraftSo || isCreatedTodayMyt((p as unknown as { createdAt?: string | null }).createdAt ?? p.created_at)) && (
                       <button
                         type="button"
                         onClick={() => setEditPay(p)}
@@ -517,10 +545,10 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2f5d4f" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>
                       </button>
                     )}
-                    {/* Delete payment — parity with desktop PaymentsTable. Hidden
-                        on cancelled / edit-locked (SHIPPED+ / has children) orders,
-                        matching the desktop's locked-mode hide. */}
-                    {ph !== "cancelled" && !editLocked && (
+                    {/* Delete payment — parity with desktop PaymentsTable. Shown
+                        only in the payments Edit mode (or on a DRAFT SO); the
+                        read-only view exposes no delete control. */}
+                    {canEditPayments && (
                       <button
                         type="button"
                         onClick={() => void deletePayment(p.id)}
@@ -686,6 +714,62 @@ function SlipLink({ docNo, paymentId }: { docNo: string; paymentId: string }) {
     >
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#16695f" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3Z" /><circle cx="12" cy="13" r="3" /></svg>
     </button>
+  );
+}
+
+/* Existing-slip preview for the Edit Payment sheet — blob-fetches the persisted
+   payment's slip (same GET /:docNo/payments/:id/slip-url the read-view SlipLink
+   uses) and shows it as a thumbnail the operator taps to open full-size, so they
+   SEE which slip is attached while editing. PDFs (no <img> render) fall back to a
+   "View slip" link. The slip itself is never changed by an edit. */
+function PaymentSlipPreview({ docNo, paymentId }: { docNo: string; paymentId: string }) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [contentType, setContentType] = useState<string>("");
+  const [state, setState] = useState<"loading" | "ready" | "error">("loading");
+  useEffect(() => {
+    let live = true;
+    let objUrl: string | null = null;
+    (async () => {
+      try {
+        const res = await fetchPaymentSlipUrl(docNo, paymentId);
+        if (!live) { URL.revokeObjectURL(res.url); return; }
+        objUrl = res.url;
+        setUrl(res.url);
+        setContentType(res.contentType);
+        setState("ready");
+      } catch {
+        if (live) setState("error");
+      }
+    })();
+    return () => { live = false; if (objUrl) URL.revokeObjectURL(objUrl); };
+  }, [docNo, paymentId]);
+  const isPdf = contentType.includes("pdf");
+  return (
+    <div className="fld">
+      <span className="fld-l">Attached slip</span>
+      {state === "loading" ? (
+        <div style={{ fontSize: 11.5, color: "var(--mut)", padding: "6px 0" }}>Loading slip…</div>
+      ) : state === "error" || !url ? (
+        <div style={{ fontSize: 11.5, color: "var(--mut)", padding: "6px 0" }}>Couldn't load the attached slip.</div>
+      ) : isPdf ? (
+        <button
+          type="button"
+          onClick={() => window.open(url, "_blank", "noopener")}
+          style={{ width: "100%", boxSizing: "border-box", height: 40, borderRadius: 9, cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, border: "1px solid #bcdcd7", background: "#e1efed", color: "#16695f" }}
+        >
+          View attached slip (PDF)
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={() => window.open(url, "_blank", "noopener")}
+          title="Open slip full-size"
+          style={{ padding: 0, border: "1px solid #d6d9d2", borderRadius: 9, background: "#f4f6f3", cursor: "pointer", overflow: "hidden", display: "block", width: "fit-content" }}
+        >
+          <img src={url} alt="Payment slip" style={{ display: "block", maxHeight: 120, maxWidth: "100%", objectFit: "contain" }} />
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -895,6 +979,12 @@ function AddPaymentSheet({
                 {staff.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
               </select>
             </div>
+            {/* Edit mode — show the EXISTING attached slip so the operator can
+                see what's on the row while editing (owner request). The slip is
+                not changed by an edit; this is view-only. */}
+            {isEdit && editPayment?.slip_key && (
+              <PaymentSlipPreview docNo={docNo} paymentId={editPayment.id} />
+            )}
             {/* Owner 2026-07-13 — slip is OPTIONAL. Uploader stays available for
                 when a receipt IS on hand; no "required" gate. Hidden in edit
                 mode (the slip isn't changed by an edit). */}

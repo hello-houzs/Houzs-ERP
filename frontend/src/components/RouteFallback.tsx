@@ -1,4 +1,5 @@
 import React from "react";
+import { useLocation } from "react-router-dom";
 import { Skeleton } from "./Skeleton";
 
 /**
@@ -74,17 +75,21 @@ interface BoundaryState {
   error: Error | null;
 }
 
-export class ChunkReloadBoundary extends React.Component<
-  { children: React.ReactNode },
-  BoundaryState
-> {
+interface BoundaryProps {
+  children: React.ReactNode;
+  /** Changes when the route changes — a crash is cleared on navigation so one
+   *  page's render error never bricks the whole shell. */
+  resetKey?: string;
+}
+
+export class ChunkReloadBoundary extends React.Component<BoundaryProps, BoundaryState> {
   state: BoundaryState = { error: null };
 
   static getDerivedStateFromError(error: Error): BoundaryState {
     return { error };
   }
 
-  componentDidCatch(error: Error): void {
+  componentDidCatch(error: Error, info: React.ErrorInfo): void {
     if (isStaleChunkError(error)) {
       try {
         if (!sessionStorage.getItem(RELOAD_FLAG)) {
@@ -97,11 +102,24 @@ export class ChunkReloadBoundary extends React.Component<
       } catch {
         window.location.reload();
       }
+      return;
     }
+    // A real render error (bad data shape, unguarded access, ...). Log it so
+    // IT can find and fix the underlying page bug instead of it recurring
+    // invisibly behind the generic panel.
+    console.error("[route-crash]", error?.message ?? error, info?.componentStack ?? "");
   }
 
-  componentDidUpdate(): void {
-    // A successful render after navigation clears the one-shot guard.
+  componentDidUpdate(prevProps: BoundaryProps): void {
+    // Recover on navigation: when the route changes while a crash is showing,
+    // clear it so the destination page renders. A single boundary wraps every
+    // route, so without this a crash on one page persists app-wide until a
+    // full reload (owner 2026-07-13: "整个 system 都崩溃掉了").
+    if (this.state.error && prevProps.resetKey !== this.props.resetKey) {
+      this.setState({ error: null });
+      return;
+    }
+    // A successful render after navigation clears the one-shot chunk guard.
     if (!this.state.error) {
       try {
         sessionStorage.removeItem(RELOAD_FLAG);
@@ -117,19 +135,38 @@ export class ChunkReloadBoundary extends React.Component<
           <p className="max-w-md text-xs text-ink-muted">
             Please reload to try again. If it keeps happening, let IT know.
           </p>
-          <button
-            onClick={() => {
-              // Full recovery, not a plain reload: a plain reload kept failing
-              // for the owner because the old SW re-served the stale shell.
-              void hardRecover();
-            }}
-            className="rounded-lg border border-border-subtle px-4 py-2 text-sm font-medium text-ink hover:bg-surface-dim"
-          >
-            Reload
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => {
+                // Full recovery, not a plain reload: a plain reload kept failing
+                // for the owner because the old SW re-served the stale shell.
+                void hardRecover();
+              }}
+              className="rounded-lg border border-border-subtle px-4 py-2 text-sm font-medium text-ink hover:bg-surface-dim"
+            >
+              Reload
+            </button>
+            <a
+              href="/"
+              className="rounded-lg px-4 py-2 text-sm font-medium text-ink-secondary hover:text-ink hover:bg-surface-dim"
+            >
+              Go to overview
+            </a>
+          </div>
         </div>
       );
     }
     return this.props.children;
   }
+}
+
+/**
+ * Location-aware wrapper for ChunkReloadBoundary. Feeds the current pathname as
+ * the reset key so a page crash is cleared the moment the user navigates
+ * elsewhere (in-app nav via the sidebar recovers without a reload). Use this at
+ * the app shell instead of ChunkReloadBoundary directly.
+ */
+export function RouteCrashBoundary({ children }: { children: React.ReactNode }) {
+  const location = useLocation();
+  return <ChunkReloadBoundary resetKey={location.pathname}>{children}</ChunkReloadBoundary>;
 }
