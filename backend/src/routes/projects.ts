@@ -665,20 +665,36 @@ app.get("/", requirePageAccess("projects.list"), async (c) => {
   let pendingLabel: string | undefined;
   let pendingTitle: string | undefined;
   let pendingLogistic = false;
+  let pendingApprove: string[] | undefined;
   if (c.req.query("my_pending") === "1" && user) {
-    const r = (user.role_name || "").toLowerCase();
-    if (r === "manager") pendingTitle = "Agreement / Quotation";
-    else if (r === "purchaser") pendingLabel = "PURCHASER";
-    else if (r === "logistic") pendingLogistic = true; // setup not arranged
-    else if (r === "driver" || r === "helper" || r === "storekeeper") pendingLabel = "DRIVER";
-    else if (r.includes("bd")) pendingLabel = "BD";
-    else if (r.includes("sales")) pendingLabel = "SALES PIC";
-    // owner / it admin / anything else -> leave undefined (see all)
+    // Owner 2026-07-13 — staged "My Pending". Approvers (anyone holding a
+    // checklist approval permission, or `*`) see ONLY the items awaiting
+    // their approval (Peter=stock, Kingsley=stock+agreement, Lim/owner=all).
+    // Everyone else is mapped to their role's task scope. listProjects then
+    // time-gates every lane (a task only surfaces once its due date is
+    // reached) and applies the stage prerequisites.
+    const granted = user.permissions_set ?? user.permissions;
+    const APPROVE_PERMS = ["agreement.approve", "stock_transfer.approve", "projects.approve"];
+    // hasPermission handles the `*` wildcard, so admins/owner match every one.
+    const held = APPROVE_PERMS.filter((p) => hasPermission(granted, p));
+    if (held.length > 0) {
+      pendingApprove = held;
+    } else {
+      const r = (user.role_name || "").toLowerCase();
+      if (r === "purchaser") pendingLabel = "PURCHASER";
+      else if (r === "logistic") pendingLogistic = true; // setup not arranged
+      else if (r === "driver" || r === "helper" || r === "storekeeper") pendingLabel = "DRIVER";
+      else if (r.includes("bd")) pendingLabel = "BD";
+      else if (r.includes("sales")) pendingLabel = "SALES PIC";
+      else if (r === "manager") pendingTitle = "Agreement / Quotation";
+      // unmapped roles -> no pending filter (see all)
+    }
   }
   const result = await listProjects(c.env, {
     pending_label: pendingLabel,
     pending_title: pendingTitle,
     pending_logistic: pendingLogistic,
+    pending_approve: pendingApprove,
     stage: c.req.query("stage"),
     brand: c.req.query("brand"),
     state: c.req.query("state") || undefined,

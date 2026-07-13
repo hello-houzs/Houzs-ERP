@@ -985,6 +985,10 @@ export interface ListProjectsFilters {
    *  arranged yet (no setup time scheduled). LOGISTIC isn't a checklist
    *  item, so it gets its own predicate. */
   pending_logistic?: boolean;
+  /** Approver "pending" = the project has a due checklist item whose
+   *  required_perm is one of these (e.g. Stock Approver → stock_transfer.approve).
+   *  Used for directors/admins who only chase what they must approve. */
+  pending_approve?: string[];
 }
 
 // Allow-listed sort columns for the project list. The default (when
@@ -1047,12 +1051,32 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
   // "My pending tasks" — project has >=1 pending checklist item that
   // belongs to the caller's role (matched by chip label or, for
   // document-specific roles, by item title).
-  if (f.pending_label) {
+  // Time-gate shared by every "my pending" lane (owner 2026-07-13): a task
+  // only surfaces once its scheduled date has arrived, so far-future events
+  // stay hidden. Falls back to the project start when a task has no due date.
+  const DUE_GATE = `substr(COALESCE(pc.due_date, p.start_date), 1, 10) <= date('now')`;
+  if (f.pending_label === "PURCHASER") {
+    // Purchaser: the Stock Out Transfer Record only unlocks once the Display
+    // Floor Plan is done; their other tasks surface on their own due date.
     where.push(
       `EXISTS (SELECT 1 FROM project_checklist pc
                 WHERE pc.project_id = p.id
                   AND pc.status = 'pending'
-                  AND pc.role_label = ?)`
+                  AND pc.role_label = 'PURCHASER'
+                  AND ${DUE_GATE}
+                  AND (pc.title <> 'Stock Out Transfer Record'
+                       OR EXISTS (SELECT 1 FROM project_checklist fp
+                                   WHERE fp.project_id = p.id
+                                     AND fp.title = 'Display Floor Plan'
+                                     AND (fp.status = 'done' OR fp.review_status = 'approved'))))`
+    );
+  } else if (f.pending_label) {
+    where.push(
+      `EXISTS (SELECT 1 FROM project_checklist pc
+                WHERE pc.project_id = p.id
+                  AND pc.status = 'pending'
+                  AND pc.role_label = ?
+                  AND ${DUE_GATE})`
     );
     binds.push(f.pending_label);
   }
@@ -1061,9 +1085,23 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
       `EXISTS (SELECT 1 FROM project_checklist pc
                 WHERE pc.project_id = p.id
                   AND pc.status = 'pending'
-                  AND pc.title = ?)`
+                  AND pc.title = ?
+                  AND ${DUE_GATE})`
     );
     binds.push(f.pending_title);
+  }
+  if (f.pending_approve && f.pending_approve.length) {
+    // Approver lane: projects with a DUE, still-pending item whose required_perm
+    // is one the caller holds — i.e. things they must approve, once due.
+    const ph = f.pending_approve.map(() => "?").join(",");
+    where.push(
+      `EXISTS (SELECT 1 FROM project_checklist pc
+                WHERE pc.project_id = p.id
+                  AND pc.status = 'pending'
+                  AND pc.required_perm IN (${ph})
+                  AND ${DUE_GATE})`
+    );
+    binds.push(...f.pending_approve);
   }
   if (f.pending_logistic) {
     // Logistic work is staged:
