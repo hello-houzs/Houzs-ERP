@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { Env } from "../types";
 import { requirePermission } from "../middleware/auth";
 import { hasPermission } from "../services/permissions";
+import { activeCompanyId } from "../scm/lib/companyScope";
 import { getDb } from "../db/client";
 import { events, lorries, projects, users } from "../db/schema";
 import { alias } from "drizzle-orm/pg-core";
@@ -35,8 +36,15 @@ app.get("/", async (c) => {
 
   const db = getDb(c.env);
 
+  // Multi-company: the calendar is PER-COMPANY — both the manual events table
+  // and the project-derived synthetic rows carry company_id (mig-pg 0093).
+  // Predicates are added ONLY when the company context resolves, so the
+  // pre-migration window / D1 test mirror keeps the legacy unscoped queries.
+  const companyId = activeCompanyId(c);
+
   // ── Manual events ───────────────────────────────────────
   const manualConds: any[] = [];
+  if (companyId != null) manualConds.push(eq(events.company_id, companyId));
   if (dateFrom) manualConds.push(gte(events.event_date, dateFrom));
   if (dateTo) manualConds.push(lte(events.event_date, dateTo));
   if (type) manualConds.push(eq(events.type, type));
@@ -132,6 +140,7 @@ app.get("/", async (c) => {
       .where(
         and(
           isNull(projects.archived_at),
+          ...(companyId != null ? [eq(projects.company_id, companyId)] : []),
           ...inRangeConds(projects.setup_start_at)
         )
       )
@@ -191,6 +200,7 @@ app.get("/", async (c) => {
       .where(
         and(
           isNull(projects.archived_at),
+          ...(companyId != null ? [eq(projects.company_id, companyId)] : []),
           ...inRangeConds(projects.dismantle_start_at)
         )
       )
@@ -251,6 +261,9 @@ app.post("/", requirePermission("trips.manage"), async (c) => {
     return c.json({ error: "type must be setup or dismantle" }, 400);
   }
   const db = getDb(c.env);
+  // Multi-company: stamp the active company; omitted (PG DEFAULT applies)
+  // when the company context is unresolved.
+  const companyId = activeCompanyId(c);
   const inserted = await db
     .insert(events)
     .values({
@@ -261,6 +274,7 @@ app.post("/", requirePermission("trips.manage"), async (c) => {
       status: body.status ?? null,
       notes: body.notes ?? null,
       created_by: user.id,
+      ...(companyId != null ? { company_id: companyId } : {}),
     })
     .returning({ id: events.id });
   return c.json({ id: inserted[0]?.id });
@@ -283,7 +297,17 @@ app.patch("/:id", requirePermission("trips.manage"), async (c) => {
   set.updated_at = sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')`;
 
   const db = getDb(c.env);
-  const result = await db.update(events).set(set).where(eq(events.id, id));
+  // Multi-company: an edit can only land on the active company's row.
+  const companyId = activeCompanyId(c);
+  const result = await db
+    .update(events)
+    .set(set)
+    .where(
+      and(
+        eq(events.id, id),
+        ...(companyId != null ? [eq(events.company_id, companyId)] : []),
+      ),
+    );
   return c.json({ ok: (result.count ?? 0) > 0 });
 });
 
@@ -291,7 +315,15 @@ app.delete("/:id", requirePermission("trips.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (Number.isNaN(id)) return c.json({ error: "Invalid ID." }, 400);
   const db = getDb(c.env);
-  await db.delete(events).where(eq(events.id, id));
+  const companyId = activeCompanyId(c);
+  await db
+    .delete(events)
+    .where(
+      and(
+        eq(events.id, id),
+        ...(companyId != null ? [eq(events.company_id, companyId)] : []),
+      ),
+    );
   return c.json({ ok: true });
 });
 
