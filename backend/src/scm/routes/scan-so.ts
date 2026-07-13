@@ -3240,10 +3240,17 @@ function buildDraftSoBodyFromSlip(
   for (const l of parsed.lines ?? []) {
     const code = l.skuMatch?.code ?? '';
     const sku = code ? skuByCode.get(code.toUpperCase()) : undefined;
-    // Matched SKU name, else the raw slip text (same seed the client used) —
-    // a line counts once it has a name or a matched code (drops blank rows).
-    const name = (sku?.name ?? l.rawText ?? '').trim();
-    if (!name && !sku) continue;
+    const rawText = (l.rawText ?? '').trim();
+    // A line counts once it has a matched SKU or some raw slip text (drops blank
+    // rows). Owner 2026-07-13: an UNMATCHED line must NOT borrow the raw slip
+    // transcription as its product name/itemCode — it lands as a CLEAN empty
+    // general-item line (no product, blank description) so the editor shows
+    // "Pick a product…" for the operator to resolve against the slip photo. A
+    // MATCHED line keeps its resolved SKU name + variants (scan-parity). The raw
+    // text is intentionally NOT carried onto the line (standing clean-remark
+    // rule); the slip photo on the SO detail is the operator's reference.
+    if (!sku && !rawText) continue;
+    const name = sku ? (sku.name ?? '').trim() : '';
     // Owner (said many times): the line REMARK must stay CLEAN -- do NOT stuff
     // the raw slip text / fabric code / specials / OCR notes into it. The
     // operator reviews the draft against the order-slip photo (shown on the SO
@@ -3251,10 +3258,14 @@ function buildDraftSoBodyFromSlip(
     const variants: Record<string, unknown> = {};
     // Bedframe numbers (reparseSpec-overruled) -> the same inch-string variant
     // keys the New SO form writes, so the draft's line editor seeds correctly.
-    if (l.divanHeightInches != null) variants.divanHeight = `${l.divanHeightInches}"`;
-    if (l.noLeg) variants.legHeight = '0"';
-    else if (l.legHeightInches != null) variants.legHeight = `${l.legHeightInches}"`;
-    if (l.gapInches != null) variants.gap = `${l.gapInches}"`;
+    // Only seeded for a MATCHED line — an unmatched line stays a CLEAN empty
+    // general item (no product, no attributes) for the operator to fill in.
+    if (sku) {
+      if (l.divanHeightInches != null) variants.divanHeight = `${l.divanHeightInches}"`;
+      if (l.noLeg) variants.legHeight = '0"';
+      else if (l.legHeightInches != null) variants.legHeight = `${l.legHeightInches}"`;
+      if (l.gapInches != null) variants.gap = `${l.gapInches}"`;
+    }
     // Owner 2026-07-04: a scan line must equal a DESKTOP manual line — itemGroup =
     // the SKU's REAL category (not 'others'), and bedframe/sofa carry the fabric
     // COLOUR + special-order add-ons the OCR read, keyed exactly as the New SO form
