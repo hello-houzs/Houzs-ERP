@@ -1599,6 +1599,10 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
   const [complaint, setComplaint] = useState("");
   const [category, setCategory] = useState("");
   const [priority, setPriority] = useState("normal");
+  // Optional "Issue number" (handoff §5) — the customer's own complaint /
+  // ticket ref. Maps to assr_cases.ref_no; when left blank the create
+  // endpoint falls back to the SO's pre-printed Ref (input.ref_no ?? ctx.Ref).
+  const [issueNo, setIssueNo] = useState("");
   // Complaint date (assr_cases.complained_date) — defaults to today (MYT).
   // Stored/sent as YYYY-MM-DD (the native date input's value format, which
   // is also what the backend's todayMyt() default produces).
@@ -1671,6 +1675,9 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
         complaint_issue: complaint.trim(),
         issue_category: category.trim() || null,
         priority,
+        // Empty string must NOT reach the server — it would beat the
+        // `?? context.Ref` SO-reference fallback.
+        ref_no: issueNo.trim() || null,
         // Complaint date — the backend defaults this to today (MYT) when
         // omitted; we always send the (defaulted-to-today, user-editable)
         // value so the intake date is honoured. Sent as YYYY-MM-DD.
@@ -1897,6 +1904,15 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
                     <option key={o} value={o}>{cap(o)}</option>
                   ))}
                 </select>
+              </label>
+              <label className="fld">
+                <span className="fld-l">Issue number</span>
+                <input
+                  value={issueNo}
+                  onChange={(e) => setIssueNo(e.target.value)}
+                  placeholder="Customer complaint / ticket ref"
+                  className="fld-i money"
+                />
               </label>
               {/* Complaint date — assr_cases.complained_date. Native date input
                   (value = YYYY-MM-DD), defaulted to today (MYT). */}
