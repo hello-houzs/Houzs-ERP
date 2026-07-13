@@ -79,6 +79,7 @@ import { useStaff } from '../../vendor/scm/lib/admin-queries';
 import { sortByText, sortByNumeric } from '../../vendor/scm/lib/sort-options';
 import { soStatusDisplay, type DeliveryState, type SoLifecycle } from '../../vendor/scm/lib/so-status';
 import { useAuth as useHouzsAuth } from '../../auth/AuthContext';
+import { useAuth } from '../../vendor/scm/lib/auth';
 import { useVenues } from '../../vendor/scm/lib/venues-queries';
 import { useStateWarehouseMappings } from '../../vendor/scm/lib/state-warehouse-queries';
 import { useDebouncedValue } from '../../vendor/scm/lib/hooks';
@@ -412,7 +413,37 @@ export const SalesOrderDetail = () => {
      amendment instead of writing the lines directly. The pending banner hosts
      the supplier-confirm + approve-so gates, and the Revisions tab lists prior
      SO snapshots. Buttons are gated on the Houzs scm.amendment.* permissions. */
-  const { can } = useHouzsAuth();
+  const { user: currentUser, can } = useHouzsAuth();
+  /* The 2990 bridge's staff row — null/role-only on Houzs for a user without a
+     scm.staff row (e.g. the owner). Used only as the first (id) match key + a
+     name fallback in selfStaffMatch below. */
+  const { staff: currentStaff } = useAuth();
+  /* Owner 2026-07-13 — mirror SalesOrderNew's `selfStaffMatch`: resolve the
+     logged-in Houzs user against the loaded staff roster (id → email → name) so
+     the Add-Payment "Collected By" defaults to the person recording it. The
+     2990 auth bridge reports id:null for the owner, so PaymentsTable's internal
+     `auth.staff?.id` fallback left "Collected By" as "—" on the SO detail. No
+     roster match ⇒ undefined ⇒ PaymentsTable keeps "—" (non-regressive). */
+  const staffQ = useStaff();
+  const staffList = useMemo(
+    () => (staffQ.data ?? []).filter((s) => s.active),
+    [staffQ.data],
+  );
+  const selfStaffMatch = useMemo(() => {
+    const byId = currentStaff?.id
+      ? staffList.find((s) => s.id === currentStaff.id)
+      : undefined;
+    if (byId) return byId;
+    const email = (currentUser?.email ?? '').trim().toLowerCase();
+    const byEmail = email
+      ? staffList.find((s) => (s.email ?? '').trim().toLowerCase() === email)
+      : undefined;
+    if (byEmail) return byEmail;
+    const name = (currentUser?.name ?? currentStaff?.name ?? '').trim().toLowerCase();
+    return name
+      ? staffList.find((s) => (s.name ?? '').trim().toLowerCase() === name)
+      : undefined;
+  }, [staffList, currentStaff?.id, currentStaff?.name, currentUser?.email, currentUser?.name]);
   const createAmendment = useCreateAmendment();
   const supplierConfirm = useSupplierConfirm();
   const approveSo = useApproveSo();
@@ -1730,6 +1761,7 @@ export const SalesOrderDetail = () => {
         currency={header.currency}
         locked={isLocked || !isEditing}
         slip={{ slipKey: header.slip_key, fetcher: fetchSoSlipUrl }}
+        defaultCollectedBy={selfStaffMatch?.id ?? ''}
       />
 
       {/* ── CUSTOMER SIGNATURE — moved directly below Payments (Wei Siang
