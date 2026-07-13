@@ -172,17 +172,42 @@ app.get("/status", async (c) => {
 
 // ── GET /review — the agents' scorecard ──────────────────────────────────────
 // Reviewing an agent = reviewing an employee: not re-doing their arithmetic,
-// but checking whether what they SAID came TRUE, plus the owner's own
-// decision record on their proposals. SKELETON: families + zeroed metrics
-// until the Delivery/Document engines register and fill their sections in.
+// but checking the record of what they raised and how it was decided, over a
+// 30-day window. Real per-family outcome metrics computed from the same tables
+// the console already reads: agent_runs (activity + errors + last run), each
+// family's *_agent_proposals decision columns (DOCUMENT works findings), plus
+// the config-tuning decision tally. READ-ONLY — never touches a business
+// document (AGENTS-BLUEPRINT red line).
+
+/** Per-family proposal/findings table wiring. DOCUMENT keeps a findings
+ *  worklist (OPEN/RESOLVED) rather than approve/reject proposals. */
+const REVIEW_FAMILY_SOURCES: Record<
+  AgentFamily,
+  { task: string; proposalTable?: string; findingsTable?: string }
+> = {
+  DELIVERY: { task: "delivery-run", proposalTable: "delivery_agent_proposals" },
+  DOCUMENT: { task: "document-run", findingsTable: "document_agent_findings" },
+  COLLECTION: { task: "collection-run", proposalTable: "collection_agent_proposals" },
+  CS: { task: "cs-run", proposalTable: "cs_agent_proposals" },
+  PROCUREMENT: { task: "procurement-run", proposalTable: "procurement_agent_proposals" },
+  PMS: { task: "pms-run", proposalTable: "pms_agent_proposals" },
+};
 
 export interface AgentReviewFamily {
   family: AgentFamily;
-  /** Owner decision tally on this family's config proposals (30d). */
+  task: string;
+  /** Newest agent_runs.started_at for this family's task (ISO), or null. */
+  lastRunAt: string | null;
+  /** agent_runs activity over the window. */
+  runs: number;
+  errors: number;
+  /** Proposal outcomes (30d window on decided_at for approved/rejected;
+   *  pending is the current open backlog). Null for findings-only families. */
+  proposals: { raised: number; pending: number; approved: number; rejected: number } | null;
+  /** Findings worklist outcomes (DOCUMENT only), else null. */
+  findings: { open: number; resolvedRecently: number } | null;
+  /** Owner decision tally on this family's config-tuning proposals (30d). */
   decisions: { approved: number; rejected: number };
-  /** Engine-specific outcome metrics — filled in by each engine's slice. */
-  metrics: Record<string, number | null>;
-  note: string;
 }
 
 app.get("/review", async (c) => {
@@ -197,11 +222,21 @@ app.get("/review", async (c) => {
       return 0;
     }
   };
+  const scalarSafe = async (sql: string, ...binds: unknown[]): Promise<string | null> => {
+    try {
+      const r = await db.prepare(sql).bind(...binds).first<{ v: string | null }>();
+      return r?.v == null ? null : String(r.v);
+    } catch {
+      return null;
+    }
+  };
 
   const families: AgentReviewFamily[] = [];
   for (const fam of AGENT_FAMILIES) {
+    const src = REVIEW_FAMILY_SOURCES[fam];
     const prefix = familyParamPrefix(fam);
-    const [approved, rejected] = await Promise.all([
+
+    const [approvedCfg, rejectedCfg, lastRunAt, runs, errors] = await Promise.all([
       countSafe(
         "SELECT COUNT(*) AS n FROM config_proposals WHERE status = 'APPROVED' AND decided_at >= ? AND param_key LIKE ?",
         cutoff30,
@@ -212,16 +247,91 @@ app.get("/review", async (c) => {
         cutoff30,
         `${prefix}%`,
       ),
+      scalarSafe(
+        "SELECT MAX(started_at) AS v FROM agent_runs WHERE agent = ?",
+        src.task,
+      ),
+      countSafe(
+        "SELECT COUNT(*) AS n FROM agent_runs WHERE agent = ? AND started_at >= ?",
+        src.task,
+        cutoff30,
+      ),
+      countSafe(
+        "SELECT COUNT(*) AS n FROM agent_runs WHERE agent = ? AND status = 'error' AND started_at >= ?",
+        src.task,
+        cutoff30,
+      ),
     ]);
+
+    let proposals: AgentReviewFamily["proposals"] = null;
+    let findings: AgentReviewFamily["findings"] = null;
+
+    if (src.proposalTable) {
+      const [pending, approved, rejected] = await Promise.all([
+        countSafe(`SELECT COUNT(*) AS n FROM ${src.proposalTable} WHERE status = 'PENDING'`),
+        countSafe(
+          `SELECT COUNT(*) AS n FROM ${src.proposalTable} WHERE status = 'APPROVED' AND decided_at >= ?`,
+          cutoff30,
+        ),
+        countSafe(
+          `SELECT COUNT(*) AS n FROM ${src.proposalTable} WHERE status = 'REJECTED' AND decided_at >= ?`,
+          cutoff30,
+        ),
+      ]);
+      proposals = { raised: pending + approved + rejected, pending, approved, rejected };
+    }
+
+    if (src.findingsTable) {
+      const [open, resolvedRecently] = await Promise.all([
+        countSafe(`SELECT COUNT(*) AS n FROM ${src.findingsTable} WHERE status = 'OPEN'`),
+        countSafe(
+          `SELECT COUNT(*) AS n FROM ${src.findingsTable} WHERE status = 'RESOLVED' AND resolved_at >= ?`,
+          cutoff30,
+        ),
+      ]);
+      findings = { open, resolvedRecently };
+    }
+
     families.push({
       family: fam,
-      decisions: { approved, rejected },
-      metrics: {},
-      note: "engines pending",
+      task: src.task,
+      lastRunAt,
+      runs,
+      errors,
+      proposals,
+      findings,
+      decisions: { approved: approvedCfg, rejected: rejectedCfg },
     });
   }
 
   return c.json({ success: true, data: { windowDays: 30, families } });
+});
+
+// ── GET /history ?family= ─────────────────────────────────────────────────────
+// Read-only per-family run log from agent_runs — the console's history drawer.
+// Resolves the family's registered task(s), so an unregistered family returns
+// an empty list rather than an error.
+
+app.get("/history", async (c) => {
+  const family = String(c.req.query("family") ?? "").toUpperCase();
+  const limit = Math.min(50, Math.max(1, Number(c.req.query("limit")) || 20));
+  if (!AGENT_FAMILIES.includes(family as AgentFamily)) {
+    return c.json({ success: false, error: "unknown family" }, 400);
+  }
+  const tasks = registeredAgents()
+    .filter((r) => r.family === family)
+    .map((r) => r.task);
+  if (tasks.length === 0) {
+    return c.json({ success: true, data: [] });
+  }
+  const placeholders = tasks.map(() => "?").join(",");
+  const res = await c.env.DB.prepare(
+    `SELECT * FROM agent_runs WHERE agent IN (${placeholders})
+      ORDER BY started_at DESC LIMIT ${limit}`,
+  )
+    .bind(...tasks)
+    .all<RunRow>();
+  return c.json({ success: true, data: (res.results ?? []).map(projectRun) });
 });
 
 // ── POST /run-now {task} ─────────────────────────────────────────────────────
@@ -712,6 +822,8 @@ app.get("/document/brief", async (c) => {
   ).first<{
     id: string;
     brief?: unknown;
+    ai_focus?: string | null;
+    aiFocus?: string | null;
     generated_at?: string;
     generatedAt?: string;
   }>();
@@ -721,6 +833,7 @@ app.get("/document/brief", async (c) => {
     data: {
       id: r.id,
       brief: asJson(r.brief),
+      aiFocus: (r.aiFocus ?? r.ai_focus) ?? null,
       generatedAt: (r.generatedAt ?? r.generated_at) ?? null,
     },
   });
