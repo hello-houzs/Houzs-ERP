@@ -8201,38 +8201,67 @@ function roleChipClass(role: string | null | undefined): string {
 
 // ── Setup & Dismantle crew editor (JSON: setup_crew / dismantle_crew) ──
 type CrewSlot = { name: string; phone: string };
+// Per-lorry crew (owner 2026-07-13): each lorry carries its OWN drivers + helpers.
+type LorryCrew = { plate: string; drivers: CrewSlot[]; helpers: CrewSlot[] };
 interface PhaseCrew {
+  /** The editable per-lorry structure. */
+  lorryCrew: LorryCrew[];
+  /** Flat mirrors DERIVED from lorryCrew on save — kept so the mobile view,
+   *  the stage stepper, and any other legacy reader of {drivers,helpers,lorries}
+   *  keep working unchanged. Never edited directly. */
   drivers: CrewSlot[];
   helpers: CrewSlot[];
   lorries: string[];
   outsourced: { enabled: boolean; entries: { name: string; phone: string; plate: string }[] };
 }
-function parsePhaseCrew(s: string | null | undefined): PhaseCrew {
-  const empty: PhaseCrew = {
-    drivers: [],
-    helpers: [],
-    lorries: [],
-    outsourced: { enabled: false, entries: [] },
+function deriveFlatCrew(lorryCrew: LorryCrew[]): { drivers: CrewSlot[]; helpers: CrewSlot[]; lorries: string[] } {
+  const named = (a: CrewSlot[]) => (Array.isArray(a) ? a : []).filter((x) => x && x.name && x.name.trim());
+  return {
+    drivers: lorryCrew.flatMap((l) => named(l.drivers)),
+    helpers: lorryCrew.flatMap((l) => named(l.helpers)),
+    lorries: lorryCrew.map((l) => l.plate).filter((pl) => pl && pl.trim()),
   };
+}
+function parsePhaseCrew(s: string | null | undefined): PhaseCrew {
+  const empty: PhaseCrew = { lorryCrew: [], drivers: [], helpers: [], lorries: [], outsourced: { enabled: false, entries: [] } };
   if (!s) return empty;
   try {
     const p = JSON.parse(s) || {};
-    return {
-      drivers: Array.isArray(p.drivers) ? p.drivers : [],
-      helpers: Array.isArray(p.helpers) ? p.helpers : [],
-      lorries: Array.isArray(p.lorries) ? p.lorries : [],
-      outsourced: {
-        enabled: !!(p.outsourced && p.outsourced.enabled),
-        entries: Array.isArray(p.outsourced?.entries)
-          ? p.outsourced.entries
-          : p.outsourced?.name
-            ? [{ name: p.outsourced.name, phone: p.outsourced.phone ?? "", plate: p.outsourced.plate ?? "" }]
-            : [],
-      },
+    const outsourced = {
+      enabled: !!(p.outsourced && p.outsourced.enabled),
+      entries: Array.isArray(p.outsourced?.entries)
+        ? p.outsourced.entries
+        : p.outsourced?.name
+          ? [{ name: p.outsourced.name, phone: p.outsourced.phone ?? "", plate: p.outsourced.plate ?? "" }]
+          : [],
     };
+    let lorryCrew: LorryCrew[];
+    if (Array.isArray(p.lorry_crew) && p.lorry_crew.length) {
+      lorryCrew = p.lorry_crew.map((l: any) => ({
+        plate: typeof l?.plate === "string" ? l.plate : "",
+        drivers: Array.isArray(l?.drivers) ? l.drivers : [],
+        helpers: Array.isArray(l?.helpers) ? l.helpers : [],
+      }));
+    } else {
+      // Legacy flat crew → fold into one lorry per plate, crew on the first.
+      const oldDrivers: CrewSlot[] = Array.isArray(p.drivers) ? p.drivers : [];
+      const oldHelpers: CrewSlot[] = Array.isArray(p.helpers) ? p.helpers : [];
+      const oldPlates: string[] = Array.isArray(p.lorries) ? p.lorries.filter((x: any) => typeof x === "string" && x.trim()) : [];
+      if (oldPlates.length) {
+        lorryCrew = oldPlates.map((plate, i) => (i === 0 ? { plate, drivers: oldDrivers, helpers: oldHelpers } : { plate, drivers: [], helpers: [] }));
+      } else if (oldDrivers.length || oldHelpers.length) {
+        lorryCrew = [{ plate: "", drivers: oldDrivers, helpers: oldHelpers }];
+      } else {
+        lorryCrew = [];
+      }
+    }
+    return { lorryCrew, ...deriveFlatCrew(lorryCrew), outsourced };
   } catch {
     return empty;
   }
+}
+function serializePhaseCrew(pc: PhaseCrew): string {
+  return JSON.stringify({ lorry_crew: pc.lorryCrew, ...deriveFlatCrew(pc.lorryCrew), outsourced: pc.outsourced });
 }
 
 function CrewSlotRow({
@@ -8337,67 +8366,63 @@ function PhaseCrewEditor({
   useEffect(() => {
     setPc(parsePhaseCrew(value));
   }, [value]);
-  const [newPlate, setNewPlate] = useState("");
   function save(next: PhaseCrew) {
     setPc(next);
-    patch({ [field]: JSON.stringify(next) });
+    patch({ [field]: serializePhaseCrew(next) });
   }
-  const setSlot = (kind: "drivers" | "helpers", i: number, s: CrewSlot) => {
-    const arr = [...pc[kind]];
-    while (arr.length <= i) arr.push({ name: "", phone: "" });
-    arr[i] = s;
-    save({ ...pc, [kind]: arr });
+  const setLorrySlot = (li: number, kind: "drivers" | "helpers", si: number, s: CrewSlot) => {
+    const arr = pc.lorryCrew.map((l, i) => {
+      if (i !== li) return l;
+      const slots = [...l[kind]];
+      while (slots.length <= si) slots.push({ name: "", phone: "" });
+      slots[si] = s;
+      return { ...l, [kind]: slots };
+    });
+    save({ ...pc, lorryCrew: arr });
   };
+  const updateLorry = (li: number, p: Partial<LorryCrew>) =>
+    save({ ...pc, lorryCrew: pc.lorryCrew.map((l, i) => (i === li ? { ...l, ...p } : l)) });
+  const addLorry = () => save({ ...pc, lorryCrew: [...pc.lorryCrew, { plate: "", drivers: [], helpers: [] }] });
+  const removeLorry = (li: number) => save({ ...pc, lorryCrew: pc.lorryCrew.filter((_, i) => i !== li) });
   return (
     <div className="mt-3 space-y-2">
       {emptyHint && <div className="text-[9px] italic text-ink-muted">{emptyHint}</div>}
       {headerExtra}
-      <div className="text-[10px] font-semibold uppercase tracking-wider text-ink-secondary">{title} Drivers</div>
-      <CrewSlotRow label="Driver 1" color="text-synced" options={drivers} slot={pc.drivers[0]} onChange={(s) => setSlot("drivers", 0, s)} />
-      <CrewSlotRow label="Driver 2" color="text-synced" options={drivers} slot={pc.drivers[1]} onChange={(s) => setSlot("drivers", 1, s)} />
-      <div className="pt-1 text-[10px] font-semibold uppercase tracking-wider text-ink-secondary">{title} Helpers</div>
-      <CrewSlotRow label="Helper 1" color="text-warning-text" options={helpers} slot={pc.helpers[0]} onChange={(s) => setSlot("helpers", 0, s)} />
-      <CrewSlotRow label="Helper 2" color="text-warning-text" options={helpers} slot={pc.helpers[1]} onChange={(s) => setSlot("helpers", 1, s)} />
-      <div className="pt-1 text-[10px] font-semibold uppercase tracking-wider text-ink-secondary">{title} Lorry / Vehicle</div>
-      {pc.lorries.length > 0 && (
-        <div className="flex flex-wrap gap-1.5">
-          {pc.lorries.map((pl, i) => (
-            <span key={i} className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-0.5 text-[11px]">
-              <Truck size={11} /> {pl}
-              <button onClick={() => save({ ...pc, lorries: pc.lorries.filter((_, j) => j !== i) })} className="text-ink-muted hover:text-err">
-                <X size={11} />
+      <div className="text-[10px] font-semibold uppercase tracking-wider text-ink-secondary">{title} — crew per lorry</div>
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+        {pc.lorryCrew.map((lorry, li) => (
+          <div key={li} className="space-y-2 rounded-lg border border-border bg-bg/30 p-3">
+            <div className="flex items-center gap-2">
+              <Truck size={13} className="shrink-0 text-ink-secondary" />
+              <span className="shrink-0 text-[10px] font-bold uppercase tracking-wider text-ink-secondary">Lorry {li + 1}</span>
+              <select
+                value={lorry.plate}
+                onChange={(e) => updateLorry(li, { plate: e.target.value })}
+                className="min-w-0 flex-1 rounded-md border border-border bg-surface px-2 py-1 text-[12px]"
+              >
+                <option value="">Select plate…</option>
+                {lorry.plate && !lorryOptions.includes(lorry.plate) && <option value={lorry.plate}>{lorry.plate}</option>}
+                {lorryOptions.map((pl) => (
+                  <option key={pl} value={pl}>{pl}</option>
+                ))}
+              </select>
+              <button onClick={() => removeLorry(li)} className="shrink-0 text-ink-muted hover:text-err" title="Remove lorry">
+                <X size={13} />
               </button>
-            </span>
-          ))}
-        </div>
-      )}
-      <div className="flex gap-2">
-        <select
-          value={newPlate}
-          onChange={(e) => setNewPlate(e.target.value)}
-          className="flex-1 rounded-md border border-border bg-surface px-2 py-1.5 text-[12px]"
-        >
-          <option value="">Select lorry plate…</option>
-          {lorryOptions
-            .filter((pl) => !pc.lorries.includes(pl))
-            .map((pl) => (
-              <option key={pl} value={pl}>
-                {pl}
-              </option>
-            ))}
-        </select>
-        <button
-          onClick={() => {
-            const p = newPlate.trim();
-            if (!p) return;
-            save({ ...pc, lorries: [...pc.lorries, p] });
-            setNewPlate("");
-          }}
-          className="rounded-md bg-synced/90 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-synced"
-        >
-          + Add
-        </button>
+            </div>
+            <CrewSlotRow label="Driver 1" color="text-synced" options={drivers} slot={lorry.drivers[0]} onChange={(s) => setLorrySlot(li, "drivers", 0, s)} />
+            <CrewSlotRow label="Driver 2" color="text-synced" options={drivers} slot={lorry.drivers[1]} onChange={(s) => setLorrySlot(li, "drivers", 1, s)} />
+            <CrewSlotRow label="Helper 1" color="text-warning-text" options={helpers} slot={lorry.helpers[0]} onChange={(s) => setLorrySlot(li, "helpers", 0, s)} />
+            <CrewSlotRow label="Helper 2" color="text-warning-text" options={helpers} slot={lorry.helpers[1]} onChange={(s) => setLorrySlot(li, "helpers", 1, s)} />
+          </div>
+        ))}
       </div>
+      <button
+        onClick={addLorry}
+        className="rounded-md border border-dashed border-border bg-surface px-3 py-1.5 text-[11px] font-semibold text-ink-secondary hover:border-accent/40 hover:text-accent"
+      >
+        + Add lorry
+      </button>
       <label className="mt-1 flex items-center gap-2 text-[11px] font-semibold text-ink-secondary">
         <input
           type="checkbox"
