@@ -808,43 +808,69 @@ function MembersTab({
     }
   }
 
-  // Re-send invitation emails to every SELECTED member that is still pending
-  // (status === "invited"). Active/disabled rows are skipped — resend only
-  // applies before first sign-in — and reported so the count is honest.
-  const selectedPending = selectableFiltered.filter(
+  // "Send login email" — one bulk action that does the RIGHT thing per member
+  // so an admin can rescue everyone who can't get in with one click:
+  //   • pending  (status "invited") → re-send the invitation email
+  //   • active   (already onboarded, e.g. forgot password) → password-reset link
+  //   • disabled → skipped (re-enable first)
+  const selectedInvited = selectableFiltered.filter(
     (u) => selectedIds.has(u.id) && u.status === "invited",
   );
-  async function bulkResendInvites() {
-    const targets = selectedPending;
-    if (targets.length === 0) {
-      toast.error("None of the selected members are pending — resend only works before first sign-in.");
+  const selectedActive = selectableFiltered.filter(
+    (u) => selectedIds.has(u.id) && u.status === "active",
+  );
+  const bulkEmailTargets = selectedInvited.length + selectedActive.length;
+  async function bulkSendLoginEmails() {
+    if (bulkEmailTargets === 0) {
+      toast.error("None of the selected members can be emailed — enable disabled accounts first.");
       return;
     }
-    const skipped = selectedIds.size - targets.length;
-    try {
-      const results = await Promise.allSettled(
-        targets.map((u) =>
-          api.post<{ ok: boolean; email_sent?: boolean }>(
-            `/api/users/${u.id}/resend-invite`,
-          ),
-        ),
+    const disabledSkip = selectedIds.size - bulkEmailTargets;
+    // Resets log out active sessions, so confirm when any active member is in scope.
+    if (selectedActive.length > 0) {
+      const ok = await dialog.confirm(
+        `Send login emails to ${bulkEmailTargets} member${bulkEmailTargets === 1 ? "" : "s"}?\n\n` +
+          `• ${selectedInvited.length} pending → invitation re-sent\n` +
+          `• ${selectedActive.length} active → password-reset link (their active sessions will be logged out; current password keeps working until they reset)` +
+          (disabledSkip > 0 ? `\n• ${disabledSkip} disabled → skipped` : ""),
       );
-      const sent = results.filter(
-        (r) => r.status === "fulfilled" && r.value?.email_sent,
-      ).length;
-      const failed = targets.length - sent;
-      const skipNote = skipped > 0 ? `, skipped ${skipped} already active` : "";
+      if (!ok) return;
+    }
+    type Outcome = { kind: "invite" | "reset"; sent: boolean };
+    try {
+      const results = await Promise.allSettled<Outcome>([
+        ...selectedInvited.map((u) =>
+          api
+            .post<{ email_sent?: boolean }>(`/api/users/${u.id}/resend-invite`)
+            .then((r): Outcome => ({ kind: "invite", sent: !!r?.email_sent })),
+        ),
+        ...selectedActive.map((u) =>
+          api
+            .post<{ email_sent?: boolean }>(`/api/users/${u.id}/reset-password`)
+            .then((r): Outcome => ({ kind: "reset", sent: !!r?.email_sent })),
+        ),
+      ]);
+      const ok = results.filter(
+        (r): r is PromiseFulfilledResult<Outcome> => r.status === "fulfilled",
+      );
+      const invitesSent = ok.filter((r) => r.value.kind === "invite" && r.value.sent).length;
+      const resetsSent = ok.filter((r) => r.value.kind === "reset" && r.value.sent).length;
+      const failed = bulkEmailTargets - invitesSent - resetsSent;
+      const parts: string[] = [];
+      if (invitesSent) parts.push(`${invitesSent} invite${invitesSent === 1 ? "" : "s"}`);
+      if (resetsSent) parts.push(`${resetsSent} reset${resetsSent === 1 ? "" : "s"}`);
+      const skipNote = disabledSkip > 0 ? `, skipped ${disabledSkip} disabled` : "";
       if (failed === 0) {
-        toast.success(`Resent ${sent} invitation${sent === 1 ? "" : "s"}${skipNote}`);
+        toast.success(`Sent ${parts.join(" + ") || "0 emails"}${skipNote}`);
       } else {
         toast.error(
-          `Resent ${sent}, ${failed} email${failed === 1 ? "" : "s"} not sent${skipNote} — use Copy Link on those`,
+          `Sent ${parts.join(" + ") || "0"}, ${failed} not emailed${skipNote} — use Copy Link on those`,
         );
       }
       clearSelect();
       members.reload();
     } catch (e: any) {
-      toast.error(e?.message || "Failed to resend invitations");
+      toast.error(e?.message || "Failed to send login emails");
     }
   }
 
@@ -1398,14 +1424,14 @@ function MembersTab({
             >
               <UserX size={12} /> Disable
             </button>
-            {selectedPending.length > 0 && (
+            {bulkEmailTargets > 0 && (
               <button
                 type="button"
-                onClick={bulkResendInvites}
+                onClick={bulkSendLoginEmails}
                 className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-[11px] font-semibold text-ink-secondary transition-colors hover:border-accent/40 hover:bg-accent-soft/50 hover:text-accent"
-                title="Re-send invitation email to the pending members in your selection"
+                title="Email a way in to the selected members — pending get their invite re-sent, active get a password-reset link"
               >
-                <Mail size={12} /> Resend {selectedPending.length} invite{selectedPending.length === 1 ? "" : "s"}
+                <Mail size={12} /> Send {bulkEmailTargets} login email{bulkEmailTargets === 1 ? "" : "s"}
               </button>
             )}
             <select
