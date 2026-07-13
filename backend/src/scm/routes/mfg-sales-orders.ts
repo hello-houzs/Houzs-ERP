@@ -1826,17 +1826,23 @@ const SO_DROPDOWN_FIELDS: Array<{ bodyKey: string; category: string }> = [
 async function validateSoDropdownFields(
   sb: any,
   body: Record<string, unknown>,
+  /* Multi-company (mig 0089): validate against the ACTIVE company's vocabulary
+     only. Callers pass activeCompanyId(c) / c.get('companyId'); null/undefined
+     (unresolved) keeps the read global — companyScope's no-op rule. */
+  companyId?: number | null,
 ): Promise<{ error: string; reason: string; offenders: Array<{ field: string; value: string }> } | null> {
   const present = SO_DROPDOWN_FIELDS
     .map(({ bodyKey, category }) => ({ bodyKey, category, value: body[bodyKey] }))
     .filter((f): f is { bodyKey: string; category: string; value: string } =>
       typeof f.value === 'string' && f.value.trim().length > 0);
   if (present.length === 0) return null;
-  const { data, error } = await sb
+  let vocabQ = sb
     .from('so_dropdown_options')
     .select('category, value')
     .eq('active', true)
     .in('category', present.map((f) => f.category));
+  if (companyId != null) vocabQ = vocabQ.eq('company_id', companyId);
+  const { data, error } = await vocabQ;
   if (error || !data || data.length === 0) return null;  // fail-open
   const allowed = new Set(
     (data as Array<{ category: string; value: string }>).map((r) => `${r.category}:${r.value}`),
@@ -2271,7 +2277,7 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
   /* Loo 2026-06-05 — maintained-dropdown 409 gate. Runs BEFORE any side
      effect (customer upsert, PWP claims) so a rejected request leaves
      nothing behind. */
-  const dropdownErr = await validateSoDropdownFields(sb, body);
+  const dropdownErr = await validateSoDropdownFields(sb, body, companyId);
   if (dropdownErr) return c.json(dropdownErr, 409);
 
   // Subrequest diet (Loo 2026-06-06) — one `in()` query for every line's
@@ -4507,7 +4513,7 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
 
   /* Loo 2026-06-05 — maintained-dropdown 409 gate on edit too, or the create
      gate is bypassable by PATCHing a dirty value in afterwards. */
-  const dropdownErr = await validateSoDropdownFields(sb, body);
+  const dropdownErr = await validateSoDropdownFields(sb, body, activeCompanyId(c));
   if (dropdownErr) return c.json(dropdownErr, 409);
 
   const map: Array<[string, string]> = [

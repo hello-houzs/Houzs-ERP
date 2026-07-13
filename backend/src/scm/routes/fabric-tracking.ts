@@ -63,17 +63,22 @@ async function syncFabricToSellingLibrary(
   sb: any,
   fabricCode: string,
   description: string | null,
+  /* Multi-company (mig 0089): stamp the active company on the mirrored selling
+     rows. null/undefined (unresolved) inserts without the column — same no-op
+     rule as companyScope. */
+  companyId?: number | null,
 ): Promise<string | null> {
   const code = fabricCode.trim();
   if (!code) return null;
   const series = seriesOf(code);
+  const companyCol = companyId != null ? { company_id: companyId } : {};
   const { error: serErr } = await sb.from('fabric_library').upsert(
-    { id: series, label: series, tier: 'standard', default_surcharge: 0, active: true, sort_order: 0 },
+    { ...companyCol, id: series, label: series, tier: 'standard', default_surcharge: 0, active: true, sort_order: 0 },
     { onConflict: 'id', ignoreDuplicates: true },
   );
   if (serErr) return `fabric_library: ${serErr.message}`;
   const { error: colErr } = await sb.from('fabric_colours').upsert(
-    { fabric_id: series, colour_id: code, label: colourLabelOf(code, description), swatch_hex: null, active: true, sort_order: 0 },
+    { ...companyCol, fabric_id: series, colour_id: code, label: colourLabelOf(code, description), swatch_hex: null, active: true, sort_order: 0 },
     { onConflict: 'fabric_id,colour_id', ignoreDuplicates: true },
   );
   if (colErr) return `fabric_colours: ${colErr.message}`;
@@ -123,7 +128,7 @@ fabricTracking.post('/', async (c) => {
   // new fabric is immediately pickable on POS. The procurement row above is
   // already saved; surface any library failure as a warning so the operator can
   // retry without losing the fabric.
-  const libraryWarning = await syncFabricToSellingLibrary(sb, fabricCode, (body.fabricDescription as string) ?? null);
+  const libraryWarning = await syncFabricToSellingLibrary(sb, fabricCode, (body.fabricDescription as string) ?? null, activeCompanyId(c));
 
   return c.json({ fabric: data, fabricSeries: seriesOf(fabricCode), libraryWarning }, 201);
 });
@@ -214,11 +219,15 @@ fabricTracking.post('/bulk-upsert', async (c) => {
   // batched + INSERT-only (RLS-safe, never clobbers a Master-Admin tier edit).
   // Best-effort: the procurement upsert already succeeded, so a library hiccup
   // must not fail the import.
+  // Multi-company (mig 0089): mirror rows carry the same active company as the
+  // procurement upsert above (cid from stampedRows).
+  const mirrorCompanyCol = cid != null ? { company_id: cid } : {};
   const seriesRows = [...new Set(dbRows.map((r) => seriesOf(String(r.fabric_code))))]
-    .map((s, i) => ({ id: s, label: s, tier: 'standard', default_surcharge: 0, active: true, sort_order: (i + 1) * 10 }));
+    .map((s, i) => ({ ...mirrorCompanyCol, id: s, label: s, tier: 'standard', default_surcharge: 0, active: true, sort_order: (i + 1) * 10 }));
   const colourRows = dbRows.map((r) => {
     const code = String(r.fabric_code);
     return {
+      ...mirrorCompanyCol,
       fabric_id: seriesOf(code), colour_id: code,
       label: colourLabelOf(code, typeof r.fabric_description === 'string' ? r.fabric_description : null),
       swatch_hex: null, active: true, sort_order: 0,

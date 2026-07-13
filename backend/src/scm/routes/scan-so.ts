@@ -387,6 +387,13 @@ async function loadCatalog(sb: SupabaseClient): Promise<Catalog> {
       .maybeSingle(),
     // SO Maintenance vocab — ACTIVE rows only (the maintenance page's
     // soft-deleted options must never re-enter via OCR).
+    // Multi-company note (mig 0089): deliberately NOT company-scoped. This
+    // catalog feeds buildCachedPrefix, which must stay BYTE-IDENTICAL across
+    // the request path, /warm and the headless cron/scan-job (no request scope
+    // there) — scoping only the request path would bust the prompt cache on
+    // every scan. Same treatment as this loader's other 0083-stamped tables
+    // (mfg_products / fabric_trackings / special_addons). Per-company OCR
+    // catalogs need their own cached-prefix design first.
     paginateAll((from, to) => sb
       .from('so_dropdown_options')
       .select('category, value, label')
