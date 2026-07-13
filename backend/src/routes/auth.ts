@@ -12,7 +12,9 @@ import {
 } from "../services/auth";
 import { bustUserSessions } from "../services/sessionCache";
 import { isFinanceViewer } from "../services/pmsAccess";
-import { sendEmail, publicUrl, resetEmailHtml, inviteEmailHtml } from "../services/email";
+import { sendEmail, publicUrl, resetEmailHtml, inviteEmailHtml, erpProductName } from "../services/email";
+import { getBrandingForCompany } from "../services/branding";
+import { defaultCompanyCodeForHost } from "../middleware/companyContext";
 import { validatePasswordStrength } from "../services/passwordStrength";
 import { verifyTotp, consumeBackupCode } from "../services/totp";
 import { checkRateLimit, clearRateLimit, clientIp } from "../middleware/rateLimit";
@@ -295,18 +297,26 @@ app.post("/forgot-password", async (c) => {
         user.manager_id ?? null
       )
       .run();
+    // PRE-AUTH: no companyContext here — brand by the request hostname, the
+    // same default the middleware would resolve (erp.2990shome.com → 2990).
+    const inviteCompanyCode = defaultCompanyCodeForHost(c.req.header("host") ?? "");
+    const inviteProduct = erpProductName(
+      await getBrandingForCompany(c.env, inviteCompanyCode),
+    );
     await sendEmail(c.env, {
       to: user.email,
-      subject: "You're invited to Houzs ERP",
+      subject: `You're invited to ${inviteProduct}`,
       html: inviteEmailHtml({
-        link: publicUrl(c.env, `/invite/${inviteToken}`),
+        link: publicUrl(c.env, `/invite/${inviteToken}`, inviteCompanyCode),
         roleName: user.role_name || "a team member",
-        inviterName: "Houzs ERP",
+        inviterName: inviteProduct,
         expiresIn: "14 days",
+        productName: inviteProduct,
       }),
       purpose: "member_invite",
       refType: "user",
       refId: user.id,
+      companyCode: inviteCompanyCode,
     });
     return done();
   }
@@ -346,18 +356,25 @@ app.post("/forgot-password", async (c) => {
     .run();
 
   const name = (user.name || user.email.split("@")[0]).split(" ")[0];
+  // PRE-AUTH: brand by request hostname (same default companyContext uses).
+  const resetCompanyCode = defaultCompanyCodeForHost(c.req.header("host") ?? "");
+  const resetProduct = erpProductName(
+    await getBrandingForCompany(c.env, resetCompanyCode),
+  );
   await sendEmail(c.env, {
     to: user.email,
-    subject: "Reset your Houzs ERP password",
+    subject: `Reset your ${resetProduct} password`,
     html: resetEmailHtml({
       name,
-      link: publicUrl(c.env, `/reset/${token}`),
+      link: publicUrl(c.env, `/reset/${token}`, resetCompanyCode),
       expiresIn: "1 hour",
       requestedBy: null,
+      productName: resetProduct,
     }),
     purpose: "password_reset",
     refType: "user",
     refId: user.id,
+    companyCode: resetCompanyCode,
   });
   return done();
 });

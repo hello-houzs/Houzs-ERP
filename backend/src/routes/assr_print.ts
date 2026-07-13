@@ -2,6 +2,13 @@ import { Hono } from "hono";
 import type { Env } from "../types";
 import { requirePermission } from "../middleware/auth";
 import { getAssrDetail } from "../services/assr";
+import {
+  getBrandingForCompany,
+  resolveCompanyCode,
+  shortCompanyName,
+  brandingAddressLines,
+  HOUZS_COMPANY_CODE,
+} from "../services/branding";
 
 // Formal service-case document modeled on a standard Malaysian business
 // invoice/service report:
@@ -140,7 +147,31 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
 
   const { case: cs, items, attachments, activity, logistics } = detail;
 
-  const logoUri = await fetchAsDataUri(c.env, "static/logo-wordmark.png");
+  // ── Company identity (per-company branding) ─────────────────
+  // Letterhead / footer / inline labels come from the DOCUMENT's company —
+  // the case row's company_id (a 2990 case must print 2990's identity no
+  // matter which company the operator has active). Fallback: the request's
+  // active company, then HOUZS.
+  const companyCode = await resolveCompanyCode(
+    c.env,
+    (cs as any).company_id ?? c.get("companyCode"),
+  );
+  const branding = await getBrandingForCompany(c.env, companyCode);
+  const coShort = shortCompanyName(branding.companyName);
+  const coAddressLines = brandingAddressLines(branding.address);
+  // Warehouse/CS contact line: the historical HOUZS CS number is not part of
+  // the Branding config, so HOUZS keeps its literal (unchanged output); other
+  // companies show their branding phone (blank → line renders without one).
+  const csPhone = companyCode === HOUZS_COMPANY_CODE ? "011-6155 6133" : branding.phone;
+
+  // Uploaded per-company letterhead logo wins; the bundled Houzs wordmark is
+  // HOUZS-only (it must never head another company's paper); otherwise the
+  // text fallback renders the company name.
+  const logoUri = branding.logoR2Key
+    ? await fetchAsDataUri(c.env, branding.logoR2Key)
+    : companyCode === HOUZS_COMPANY_CODE
+      ? await fetchAsDataUri(c.env, "static/logo-wordmark.png")
+      : null;
 
   const imageAttachments = attachments.filter((a: any) =>
     (a.content_type || "").startsWith("image/")
@@ -555,14 +586,13 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
       <div class="letterhead">
         <div>
           ${logoUri
-            ? `<img src="${logoUri}" alt="Houzs Century" class="logo" />`
-            : `<div class="logo-fallback">Houzs&nbsp;Century</div>`}
+            ? `<img src="${logoUri}" alt="${esc(coShort)}" class="logo" />`
+            : `<div class="logo-fallback">${esc(coShort)}</div>`}
         </div>
         <div class="company">
-          <div class="co-name">HOUZS CENTURY SDN. BHD.</div>
-          <div class="reg-no">202201031135 (1476832-W)</div>
-          <div>1831-B, Jalan KPB 1, Kawasan Perindustrian Balakong,</div>
-          <div>43300 Seri Kembangan, Selangor.</div>
+          <div class="co-name">${esc(branding.companyName)}</div>
+          ${branding.registrationNo ? `<div class="reg-no">${esc(branding.registrationNo)}</div>` : ""}
+          ${coAddressLines.map((l) => `<div>${esc(l)}</div>`).join("")}
         </div>
       </div>
     </td></tr></thead>
@@ -667,7 +697,7 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
 
     <div class="doc-footer">
       <span>Computer-generated document · valid without signature until countersigned above.</span>
-      <span class="contact"><b>Warehouse Contact</b> · Houzs CS Team &nbsp;<b class="mono">011-6155 6133</b></span>
+      <span class="contact"><b>Warehouse Contact</b> · ${esc(coShort)} CS Team &nbsp;<b class="mono">${esc(csPhone)}</b></span>
     </div>`;
     })() : ""}
 
@@ -705,7 +735,7 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
     <div class="mgrid cols-4">
       <div class="lc">Customer</div><div class="vc">${esc(cs.customer_name || "—")}</div>
       <div class="lc">Delivery Area</div><div class="vc">${esc(cs.location || (cs as any).addr4 || "—")}</div>
-      <div class="lc">Coordinator</div><div class="vc">${esc((cs as any).assigned_to_name ? `Houzs Ops · ${(cs as any).assigned_to_name}` : "Houzs CS Team")}</div>
+      <div class="lc">Coordinator</div><div class="vc">${esc((cs as any).assigned_to_name ? `${coShort} Ops · ${(cs as any).assigned_to_name}` : `${coShort} CS Team`)}</div>
       <div class="lc">Warehouse</div><div class="vc">${esc((cs as any).delivery_order || "—")}</div>
       <div class="lc">Note</div><div class="vc span3" style="font-weight: 400; color: #6a6a6a; font-size: 8.2pt;">Customer's direct phone &amp; full address are shared after dispatch is confirmed.</div>
     </div>
@@ -742,7 +772,7 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
     <div class="signoff boxed-grid">
       <div class="panel">
         <h3>Supplier</h3>
-        <div class="check"><span class="box"></span><span>Goods received from Houzs in good condition.</span></div>
+        <div class="check"><span class="box"></span><span>Goods received from ${esc(coShort)} in good condition.</span></div>
         <div class="check"><span class="box"></span><span>Service / repair completed per the plan above.</span></div>
         <div class="sig-rule"><span class="cap">Signature</span></div>
         <div class="name-date">
@@ -751,7 +781,7 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
         </div>
       </div>
       <div class="panel">
-        <h3>Houzs Century Representative</h3>
+        <h3>${esc(coShort)} Representative</h3>
         <div style="font-size: 8.6pt; color: #6a6a6a; line-height: 1.5; margin-bottom: 9mm;">Verified the returned item and confirmed the service against the resolution plan.</div>
         <div class="sig-rule"><span class="cap">Signature</span></div>
         <div class="name-date">
@@ -763,7 +793,7 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
 
     <div class="doc-footer">
       <span>Computer-generated document · valid without signature until countersigned above.</span>
-      <span class="contact"><b>Houzs Contact</b> · CS Team &nbsp;<b class="mono">011-6155 6133</b></span>
+      <span class="contact"><b>${esc(coShort)} Contact</b> · CS Team &nbsp;<b class="mono">${esc(csPhone)}</b></span>
     </div>`;
     })() : ""}
 

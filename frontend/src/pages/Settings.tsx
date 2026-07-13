@@ -20,6 +20,8 @@ import {
   type Branding,
   DEFAULT_BRANDING,
   clearBrandingLogoCache,
+  defaultBrandingForCompany,
+  hostDefaultCompanyCode,
   normalizeBranding,
   setBrandingCache,
 } from "../lib/branding";
@@ -423,6 +425,10 @@ function EmailTab() {
 
 interface BrandingResponse {
   branding?: unknown;
+  /** Active company this branding row belongs to ('HOUZS' | '2990') — the
+   *  top-bar switcher IS the company selector for this tab. Absent on a
+   *  pre-multi-company backend. */
+  companyCode?: string | null;
 }
 
 const BRANDING_FIELDS: {
@@ -470,9 +476,17 @@ function BrandingTab() {
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
   const [logoBusy, setLogoBusy] = useState(false);
 
+  // Active company for this tab (echoed by GET /api/branding). Drives the
+  // default set — a blank 2990 field must stay blank, never snap to a Houzs
+  // literal — and the "editing <company>" hint in the header.
+  const companyCode = (
+    q.data?.companyCode?.trim() || hostDefaultCompanyCode()
+  ).toUpperCase();
+  const companyDefaults = defaultBrandingForCompany(companyCode);
+
   // Hydrate the editable form once the fetch lands (and on reloads).
   useEffect(() => {
-    if (q.data) setForm(normalizeBranding(q.data.branding));
+    if (q.data) setForm(normalizeBranding(q.data.branding, defaultBrandingForCompany((q.data.companyCode?.trim() || hostDefaultCompanyCode()).toUpperCase())));
   }, [q.data]);
 
   // Load / refresh the logo preview whenever the stored key changes. Keys carry
@@ -509,9 +523,9 @@ function BrandingTab() {
   /** Apply the server-confirmed branding after a logo change: form + module
    *  cache + PDF logo memo, so the next generated PDF is immediately right. */
   function applyBranding(raw: unknown) {
-    const next = normalizeBranding(raw);
+    const next = normalizeBranding(raw, companyDefaults);
     setForm(next);
-    setBrandingCache(next);
+    setBrandingCache(next, companyCode);
     clearBrandingLogoCache();
     // postBinary (unlike api.put/del) doesn't auto-invalidate the SWR family —
     // drop /api/branding explicitly so the reload below fetches fresh.
@@ -581,11 +595,11 @@ function BrandingTab() {
     setSaving(true);
     try {
       const res = await api.put<BrandingResponse>("/api/branding", form);
-      const next = normalizeBranding(res?.branding ?? form);
+      const next = normalizeBranding(res?.branding ?? form, companyDefaults);
       setForm(next);
       // Push to the module cache so PDFs generated this session use the new
       // values immediately, without waiting for a refetch.
-      setBrandingCache(next);
+      setBrandingCache(next, companyCode);
       q.reload();
       toast.success("Branding saved");
     } catch (e: any) {
@@ -599,6 +613,11 @@ function BrandingTab() {
     <section className="relative overflow-hidden rounded-md border border-border bg-surface p-6 shadow-stone">
       <h2 className="mb-4 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-brand text-accent">
         <Building2 size={12} /> Company Identity
+        {/* Which company's row this tab edits — switch companies in the top
+            bar to edit the other one. */}
+        <span className="rounded border border-border px-1.5 py-0.5 text-[9px] font-semibold text-ink-muted">
+          {companyCode}
+        </span>
       </h2>
 
       {q.loading && !form && <ListSkeleton rows={4} />}

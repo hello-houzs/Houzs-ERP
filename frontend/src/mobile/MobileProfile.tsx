@@ -1,4 +1,17 @@
 import { useMemo, useState } from "react";
+import {
+  HOUZS_COMPANY_CODE,
+  getBrandingCache,
+  getBrandingCompanyCode,
+  shortCompanyName,
+} from "../lib/branding";
+
+/** Footer product label — HOUZS keeps the historic literal. */
+function appFooterLabel(): string {
+  return getBrandingCompanyCode() === HOUZS_COMPANY_CODE
+    ? "Houzs ERP"
+    : `${shortCompanyName(getBrandingCache().companyName)} ERP`;
+}
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
@@ -336,7 +349,7 @@ export function MobileProfile({ onLogout, orgItems, onOpenOrg }: {
         </div>
 
         <button type="button" className="btn-danger" style={{ marginTop: 16 }} onClick={doLogout}>Log out</button>
-        <div className="money" style={{ textAlign: "center", fontSize: 10, color: "#a4a99c", marginTop: 12 }}>Houzs ERP · Mobile v1.0</div>
+        <div className="money" style={{ textAlign: "center", fontSize: 10, color: "#a4a99c", marginTop: 12 }}>{appFooterLabel()} · Mobile v1.0</div>
       </div>
     </div>
   );
@@ -678,7 +691,7 @@ function HelpScreen({ onBack }: { onBack: () => void }) {
           </div>
         ))}
       </div>
-      <div className="money" style={{ textAlign: "center", fontSize: 10, color: "#a4a99c", marginTop: 14 }}>Houzs ERP · Mobile</div>
+      <div className="money" style={{ textAlign: "center", fontSize: 10, color: "#a4a99c", marginTop: 14 }}>{appFooterLabel()} · Mobile</div>
     </SubScreen>
   );
 }

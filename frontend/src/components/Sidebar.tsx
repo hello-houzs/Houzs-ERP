@@ -52,7 +52,7 @@ import {
 import { cn } from "../lib/utils";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useAuth } from "../auth/AuthContext";
-import { useBranding } from "../hooks/useBranding";
+import { CompanyMark } from "./CompanyMark";
 import { PresencePanel } from "./PresencePanel";
 import { GlobalSearchTrigger } from "./GlobalSearch";
 import { NotificationBell } from "./NotificationBell";
@@ -459,16 +459,8 @@ const SECTION_LABELS: Record<NonNullable<NavTab["section"]>, string> = {
 };
 const SECTION_ORDER = ["workspace", "operations", "system"] as const;
 
-// Brand assets — drop the source files into frontend/public/. The paths
-// below resolve to those files at runtime. If your files are .png instead
-// of .svg, just rename them to match — these constants are the only place
-// the extension is referenced.
-const LOGO_MARK_SRC = "/logo-mark.png"; // 1:1 square — collapsed sidebar
-const LOGO_WORDMARK_SRC = "/logo-wordmark.png"; // 1:4 horizontal — expanded sidebar
-
 export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Props) {
   const { user, can, pageAccess, logout } = useAuth();
-  const branding = useBranding();
   const location = useLocation();
   // On mobile the drawer is always full-width — collapsed state is
   // a desktop-only concept.
@@ -739,21 +731,24 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
         )}
       >
         {collapsed ? (
-          // Collapsed: just the square mark
-          <img
-            src={LOGO_MARK_SRC}
-            alt={branding.companyName}
-            className="h-9 w-9 object-contain brightness-0 invert"
-            draggable={false}
+          // Collapsed: just the square mark. HOUZS keeps the bundled asset
+          // (whitewashed by brightness-0 invert, as before); another company's
+          // UPLOADED logo skips the whitewash (it would blank a colour logo),
+          // and the no-logo fallback is a two-letter glyph.
+          <CompanyMark
+            variant="mark"
+            imgClassName="h-9 w-9 object-contain brightness-0 invert"
+            uploadedImgClassName="h-9 w-9 object-contain"
+            textClassName="text-[15px] font-bold tracking-wide text-sidebar-ink"
           />
         ) : (
           // Expanded: the horizontal wordmark fills the available width.
           // The 1:4 aspect ratio + h-10 yields a comfortable ~40×160 box.
-          <img
-            src={LOGO_WORDMARK_SRC}
-            alt={branding.companyName}
-            className="h-10 w-auto max-w-[160px] object-contain brightness-0 invert"
-            draggable={false}
+          <CompanyMark
+            variant="wordmark"
+            imgClassName="h-10 w-auto max-w-[160px] object-contain brightness-0 invert"
+            uploadedImgClassName="h-10 w-auto max-w-[160px] object-contain"
+            textClassName="truncate text-[15px] font-bold tracking-tight text-sidebar-ink"
           />
         )}
         {!collapsed && (
