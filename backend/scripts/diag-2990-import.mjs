@@ -82,5 +82,28 @@ async function main() {
     try { const [r] = await dst.unsafe(q); if (r.n > 0) { leaks += r.n; console.log(`XLEAK ${f.child}.${f.col} -> ${f.pns}.${f.parent}: ${r.n} rows cross-company`); } } catch (e) { console.log(`ERR xleak ${f.child}.${f.col}: ${e.message}`); }
   }
   console.log(leaks === 0 ? "XCOMPANY_CLEAN" : `XCOMPANY_TOTAL=${leaks} (known exception: products.series_id -> shared seeded series)`);
+
+  // Completeness matrix: for EVERY dest scm table, ask the 2990 SOURCE for its row
+  // count and compare with what we hold under company_id=2. Surfaces tables that
+  // were never in the migration ORDER list (e.g. mfg_products).
+  if (SUPA_URL && SUPA_KEY) {
+    console.log("=== source-vs-dest completeness (src rows | dest c2 rows) ===");
+    const src = createClient(SUPA_URL, SUPA_KEY, { auth: { persistSession: false } });
+    const allTabs = await dst`SELECT t.table_name FROM information_schema.tables t WHERE t.table_schema='scm' AND t.table_type='BASE TABLE' ORDER BY t.table_name`;
+    let missing = 0;
+    for (const { table_name: t } of allTabs) {
+      const { count, error } = await src.schema("public").from(t).select("*", { count: "exact", head: true });
+      if (error) continue; // table doesn't exist on source
+      const srcN = count ?? 0;
+      if (srcN === 0) continue;
+      const hasCid = await dst`SELECT 1 FROM information_schema.columns WHERE table_schema='scm' AND table_name=${t} AND column_name='company_id'`;
+      const q = hasCid.length ? `SELECT count(*)::int AS n FROM scm."${t}" WHERE company_id=2` : `SELECT count(*)::int AS n FROM scm."${t}"`;
+      const [r] = await dst.unsafe(q);
+      const mark = r.n >= srcN ? "ok" : "MISSING";
+      if (mark === "MISSING") missing++;
+      console.log(`${mark} ${t}: ${srcN} | ${r.n}${hasCid.length ? "" : " (shared, total)"}`);
+    }
+    console.log(missing === 0 ? "COMPLETENESS_CLEAN" : `COMPLETENESS_GAPS=${missing} tables`);
+  }
 }
 main().then(() => dst.end()).catch(async e => { console.error("DIAG_FAIL", e.message); await dst.end(); process.exit(1); });
