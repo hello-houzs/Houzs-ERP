@@ -28,8 +28,8 @@ type AssrSummaryV31 = {
 const STAGE_FUNNEL_ORDER = [
   "pending_review",
   "under_verification",
-  "pending_solution",
   "pending_inspection",
+  "pending_solution",
   "pending_item_pickup",
   "pending_supplier_pickup",
   "pending_item_ready",
