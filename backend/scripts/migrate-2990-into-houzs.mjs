@@ -15,7 +15,7 @@ const prefixDoc = (v) => (v == null || String(v).startsWith("2990-") ? v : `2990
 // Houzs-only FK columns to null on import (source values point at masters we don't migrate)
 const NULL_COLS = { mfg_sales_orders: ["venue_id"], delivery_orders: ["venue_id"] };
 // Child tables reference parents by doc-number STRING -> must carry the same 2990- prefix
-const PREFIX_REF_COLS = { mfg_sales_order_items: ["doc_no"], mfg_sales_order_payments: ["so_doc_no"], delivery_orders: ["so_doc_no"] };
+const PREFIX_REF_COLS = { mfg_sales_order_items: ["doc_no"], mfg_sales_order_payments: ["so_doc_no"], delivery_orders: ["so_doc_no"], inventory_lots: ["source_doc_no"], inventory_movements: ["source_doc_no"], inventory_lot_consumptions: ["source_doc_no"], mfg_sales_orders: ["cross_category_source_doc_no"] };
 // Shared masters WITHOUT company_id: import so historical FK refs (salesperson/created_by)
 // resolve; forced inactive so they never appear in Houzs pickers.
 const NO_CID = { staff: { forceInactive: true } };
@@ -47,8 +47,9 @@ async function main() {
   // earlier runs imported child rows with UNPREFIXED doc-no refs + venue_id set.
   if (APPLY) {
     console.log("=== repair pass ===");
-    for (const [t,c] of [["mfg_sales_order_items","doc_no"],["mfg_sales_order_payments","so_doc_no"],["delivery_orders","so_doc_no"]]) {
-      const r=await dst.unsafe(`UPDATE scm."${t}" SET "${c}"='2990-'||"${c}" WHERE company_id=${cid} AND "${c}" IS NOT NULL AND "${c}" NOT LIKE '2990-%'`);
+    for (const [t,c] of [["mfg_sales_order_items","doc_no"],["mfg_sales_order_payments","so_doc_no"],["delivery_orders","so_doc_no"],["inventory_lots","source_doc_no"],["inventory_movements","source_doc_no"],["inventory_lot_consumptions","source_doc_no"],["mfg_sales_orders","cross_category_source_doc_no"]]) {
+      // regex guard: only prefix values that look like internal doc numbers (SO-/DO-/GRN-/...)
+      const r=await dst.unsafe(`UPDATE scm."${t}" SET "${c}"='2990-'||"${c}" WHERE company_id=${cid} AND "${c}" IS NOT NULL AND "${c}" NOT LIKE '2990-%' AND "${c}" ~ '^[A-Z]{2,4}-[0-9]'`);
       console.log(`prefix ${t}.${c}: ${r.count} rows`);
     }
     for (const [t,c] of [["mfg_sales_orders","venue_id"],["delivery_orders","venue_id"]]) {
