@@ -58,6 +58,20 @@ export function allowedCompaniesSql(c: Context<any>, col = "company_id"): string
   return ` AND ${col} IN (${ids.join(",")})`;
 }
 
+/**
+ * PER-COMPANY, raw env.DB SQL flavour of scopeToCompany. Returns a
+ * ready-to-interpolate ` AND <col> = <active>` fragment, or "" when the active
+ * company is unresolved (pre-migration / D1 test mirror / cold-start) so
+ * legacy single-company SQL runs unchanged. Same inline-not-bind rationale as
+ * allowedCompaniesSql above: the id comes from OUR companies master and is
+ * re-validated as a positive integer here.
+ */
+export function activeCompanySql(c: Context<any>, col = "company_id"): string {
+  const id = Number(activeCompanyId(c));
+  if (!Number.isInteger(id) || id <= 0) return "";
+  return ` AND ${col} = ${id}`;
+}
+
 /** id -> code map for tagging cross-company rows with a readable company. */
 export function companyCodeMap(c: Context<any>): Map<number, string> {
   const rows = (c.get("companies") as CompanyRow[] | undefined) ?? [];
