@@ -19,12 +19,20 @@ import { Hono } from "hono";
 import type { Env } from "../types";
 import { requirePermission } from "../middleware/auth";
 import { hasPermission } from "../services/permissions";
+import { activeCompanyId } from "../scm/lib/companyScope";
 import {
   translateAnnouncement,
   type AnnouncementTranslations,
 } from "../lib/translate-announcement";
 
 const app = new Hono<{ Bindings: Env }>();
+
+// Multi-company: announcements are PER-COMPANY (a 2990 user must not see
+// Houzs office notices and vice versa). Every read below adds the active
+// company predicate CONDITIONALLY — when the companies master is unresolved
+// (pre-migration 0093, the D1 test mirror, or a DB cold-start) the predicate
+// is skipped entirely so single-company Houzs keeps serving unchanged. This
+// mirrors the raw-SQL idiom in routes/sales.ts.
 
 // The four announcement categories. GENERAL is the back-compat default.
 type AnnouncementCategory = "GENERAL" | "WARNING" | "SOP" | "LEARNING";
@@ -76,6 +84,8 @@ type AnnouncementRow = {
   targetUserIds?: string | number[] | null;
   category?: string | null;
   source?: string | null;
+  company_id?: number | null;
+  companyId?: number | null;
 };
 
 function readCategory(v: unknown): AnnouncementCategory {
@@ -235,6 +245,37 @@ function genId(): string {
   return `ann-${crypto.randomUUID().slice(0, 12).replace(/-/g, "")}`;
 }
 
+// Fetch one announcement scoped to the active company. A cross-company id
+// resolves to null (callers answer 404, indistinguishable from a nonexistent
+// id). Predicate skipped when the company context is unresolved.
+async function getScopedAnnouncement(
+  c: { env: Env; get: (k: string) => unknown },
+  id: string,
+): Promise<AnnouncementRow | null> {
+  const companyId = activeCompanyId(c as never);
+  const row = await c.env.DB.prepare(
+    `SELECT * FROM announcements WHERE id = ?${companyId != null ? " AND company_id = ?" : ""}`,
+  )
+    .bind(id, ...(companyId != null ? [companyId] : []))
+    .first<AnnouncementRow>();
+  return row ?? null;
+}
+
+/**
+ * Company filter for the active-user roster (read-receipts + reminders).
+ * users has no company column — per-company access lives in `user_companies`
+ * (mig 0085) with the same FAIL-OPEN rule as companyContext: a user with NO
+ * grant rows belongs to every company; a user WITH grants belongs only to
+ * those. Returns "" (no filter) when the company context is unresolved.
+ */
+function rosterCompanySql(companyId: number | undefined, alias = "users"): string {
+  if (companyId == null) return "";
+  const cid = Number(companyId);
+  if (!Number.isInteger(cid) || cid <= 0) return "";
+  return ` AND (NOT EXISTS (SELECT 1 FROM user_companies uc WHERE uc.user_id = ${alias}.id)
+             OR EXISTS (SELECT 1 FROM user_companies uc WHERE uc.user_id = ${alias}.id AND uc.company_id = ${cid}))`;
+}
+
 // True when a user with (id, deptId, positionId) is in the announcement's
 // audience. Used by the banner GET so we never surface a notice the user
 // shouldn't see.
@@ -270,9 +311,13 @@ app.get("/", requirePermission("announcements.read"), async (c) => {
   // System per-user notices (source='scan') are delivered only through the
   // /banner + mobile Announcements screen — they must NOT clutter this office
   // composer list. Human-authored posts have source NULL.
-  const res = await c.env.DB.prepare(
-    "SELECT * FROM announcements WHERE source IS NULL OR source <> 'scan' ORDER BY created_at DESC",
-  ).all<AnnouncementRow>();
+  const companyId = activeCompanyId(c);
+  const stmt = c.env.DB.prepare(
+    `SELECT * FROM announcements WHERE (source IS NULL OR source <> 'scan')${
+      companyId != null ? " AND company_id = ?" : ""
+    } ORDER BY created_at DESC`,
+  );
+  const res = await (companyId != null ? stmt.bind(companyId) : stmt).all<AnnouncementRow>();
   const user = c.get("user");
   const granted = user?.permissions_set ?? user?.permissions ?? [];
   const isManager =
@@ -304,9 +349,13 @@ app.get("/banner", async (c) => {
     return c.json({ success: false, error: "Unauthorized" }, 401);
   }
 
-  const res = await c.env.DB.prepare(
-    "SELECT * FROM announcements ORDER BY created_at DESC",
-  ).all<AnnouncementRow>();
+  const companyId = activeCompanyId(c);
+  const bannerStmt = c.env.DB.prepare(
+    `SELECT * FROM announcements${
+      companyId != null ? " WHERE company_id = ?" : ""
+    } ORDER BY created_at DESC`,
+  );
+  const res = await (companyId != null ? bannerStmt.bind(companyId) : bannerStmt).all<AnnouncementRow>();
   const active = (res.results ?? []).filter(
     (r) =>
       isActiveFlag(r.isActive ?? r.is_active ?? null) &&
@@ -363,19 +412,18 @@ app.get("/banner", async (c) => {
 // ============================================================
 app.get("/:id/acks", requirePermission("announcements.write"), async (c) => {
   const id = c.req.param("id");
-  const ann = await c.env.DB.prepare(
-    "SELECT * FROM announcements WHERE id = ?",
-  )
-    .bind(id)
-    .first<AnnouncementRow>();
+  const ann = await getScopedAnnouncement(c, id);
   if (!ann) {
     return c.json({ success: false, error: "Announcement not found" }, 404);
   }
 
   // Only the active users this notice actually targets (userCanSee respects
-  // ALL_USERS / DEPARTMENT_IDS / POSITION_IDS / USER_IDS / MIXED).
+  // ALL_USERS / DEPARTMENT_IDS / POSITION_IDS / USER_IDS / MIXED), narrowed to
+  // the notice's company (user_companies grants, fail-open — see helper).
   const rosterRes = await c.env.DB.prepare(
-    "SELECT id, email, name, department_id, position_id FROM users WHERE status = 'active' ORDER BY name ASC",
+    `SELECT id, email, name, department_id, position_id FROM users
+      WHERE status = 'active'${rosterCompanySql(activeCompanyId(c))}
+      ORDER BY name ASC`,
   ).all<{
     id: number;
     email?: string | null;
@@ -483,6 +531,11 @@ app.post("/", requirePermission("announcements.write"), async (c) => {
 
   const id = genId();
   const nowIso = new Date().toISOString();
+  // Multi-company: stamp the composing company. Column + bind appended ONLY
+  // when the company context is resolved (sales.ts idiom) so the pre-migration
+  // window / D1 test mirror inserts unchanged; the PG DEFAULT covers the rest.
+  const companyId = activeCompanyId(c);
+  const stampCo = companyId != null;
   // Best-effort translate. apiKey missing -> returns null and we store null;
   // FE falls back to original text. Awaiting is fine (rare + short).
   const translations = await translateAnnouncement({
@@ -495,8 +548,8 @@ app.post("/", requirePermission("announcements.write"), async (c) => {
     `INSERT INTO announcements
        (id, title, body, is_active, expires_at, created_by, created_at,
         translations, attachments, target_type,
-        target_dept_ids, target_position_ids, target_user_ids, category)
-     VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        target_dept_ids, target_position_ids, target_user_ids, category${stampCo ? ", company_id" : ""})
+     VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${stampCo ? ", ?" : ""})`,
   )
     .bind(
       id,
@@ -512,6 +565,7 @@ app.post("/", requirePermission("announcements.write"), async (c) => {
       reqPositionIds.length ? JSON.stringify(reqPositionIds) : null,
       reqUserIds.length ? JSON.stringify(reqUserIds) : null,
       category,
+      ...(stampCo ? [companyId] : []),
     )
     .run();
 
@@ -533,11 +587,7 @@ app.post("/", requirePermission("announcements.write"), async (c) => {
 // ============================================================
 app.patch("/:id", requirePermission("announcements.write"), async (c) => {
   const id = c.req.param("id");
-  const existing = await c.env.DB.prepare(
-    "SELECT * FROM announcements WHERE id = ?",
-  )
-    .bind(id)
-    .first<AnnouncementRow>();
+  const existing = await getScopedAnnouncement(c, id);
   if (!existing) {
     return c.json({ success: false, error: "Announcement not found" }, 404);
   }
@@ -668,11 +718,7 @@ app.patch("/:id", requirePermission("announcements.write"), async (c) => {
 // ============================================================
 app.post("/:id/remind", requirePermission("announcements.write"), async (c) => {
   const id = c.req.param("id");
-  const ann = await c.env.DB.prepare(
-    "SELECT id FROM announcements WHERE id = ?",
-  )
-    .bind(id)
-    .first<{ id: string }>();
+  const ann = await getScopedAnnouncement(c, id);
   if (!ann) {
     return c.json({ success: false, error: "Announcement not found" }, 404);
   }
@@ -687,7 +733,7 @@ app.post("/:id/remind", requirePermission("announcements.write"), async (c) => {
   }
 
   const rosterRes = await c.env.DB.prepare(
-    "SELECT id FROM users WHERE status = 'active'",
+    `SELECT id FROM users WHERE status = 'active'${rosterCompanySql(activeCompanyId(c))}`,
   ).all<{ id: number }>();
   const rosterIds = (rosterRes.results ?? []).map((u) => u.id);
   const ackRes = await c.env.DB.prepare(
@@ -724,6 +770,12 @@ app.post("/:id/remind", requirePermission("announcements.write"), async (c) => {
 // ============================================================
 app.delete("/:id", requirePermission("announcements.write"), async (c) => {
   const id = c.req.param("id");
+  // Cross-company guard: verify the notice belongs to the active company
+  // before touching it (or its ack rows).
+  const existing = await getScopedAnnouncement(c, id);
+  if (!existing) {
+    return c.json({ success: false, error: "Announcement not found" }, 404);
+  }
   await c.env.DB.prepare("DELETE FROM announcements WHERE id = ?")
     .bind(id)
     .run();
@@ -746,11 +798,7 @@ app.post("/:id/ack", async (c) => {
     return c.json({ success: false, error: "Unauthorized" }, 401);
   }
   const id = c.req.param("id");
-  const row = await c.env.DB.prepare(
-    "SELECT * FROM announcements WHERE id = ?",
-  )
-    .bind(id)
-    .first<AnnouncementRow>();
+  const row = await getScopedAnnouncement(c, id);
   if (
     !row ||
     !isActiveFlag(row.isActive ?? row.is_active ?? null) ||
@@ -758,12 +806,17 @@ app.post("/:id/ack", async (c) => {
   ) {
     return c.json({ success: true, acked: false });
   }
+  // Stamp the ack with the NOTICE's company (dual-read: the pg driver
+  // camelCases result columns) — conditional so the pre-migration window /
+  // D1 test mirror inserts unchanged.
+  const annCompanyId = row.companyId ?? row.company_id ?? null;
+  const stampCo = annCompanyId != null;
   await c.env.DB.prepare(
-    `INSERT INTO announcement_acks (announcement_id, user_id, acked_at)
-     VALUES (?, ?, ?)
+    `INSERT INTO announcement_acks (announcement_id, user_id, acked_at${stampCo ? ", company_id" : ""})
+     VALUES (?, ?, ?${stampCo ? ", ?" : ""})
      ON CONFLICT (announcement_id, user_id) DO NOTHING`,
   )
-    .bind(id, user.id, new Date().toISOString())
+    .bind(id, user.id, new Date().toISOString(), ...(stampCo ? [annCompanyId] : []))
     .run();
   return c.json({ success: true, acked: true });
 });

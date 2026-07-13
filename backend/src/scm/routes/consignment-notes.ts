@@ -192,7 +192,7 @@ async function warehouseCodeMap(
    Only runs once the note has shipped (or is being cancelled). */
 async function resyncNoteInventory(sb: any, noteId: string, performedBy: string | null): Promise<string[]> {
   const { data: header } = await sb.from('consignment_delivery_orders')
-    .select('do_number, status, warehouse_id').eq('id', noteId).maybeSingle();
+    .select('do_number, status, warehouse_id, company_id').eq('id', noteId).maybeSingle();
   if (!header) return [];
   const status = ((header as { status: string | null }).status ?? '').toUpperCase();
   const noteNo = (header as { do_number: string }).do_number ?? noteId;
@@ -285,7 +285,8 @@ async function resyncNoteInventory(sb: any, noteId: string, performedBy: string 
   }
 
   if (writes.length === 0) return [];
-  const res = await writeMovements(sb, writes);
+  // Multi-company: resync movements inherit the note's company.
+  const res = await writeMovements(sb, writes, (header as { company_id?: number | null }).company_id ?? null);
   try {
     const { recomputeSoStockAllocation } = await import('../lib/so-stock-allocation');
     await recomputeSoStockAllocation(sb);

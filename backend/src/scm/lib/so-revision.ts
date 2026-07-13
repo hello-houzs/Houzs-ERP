@@ -162,6 +162,13 @@ export async function applySoAmendment(
   //     revision to stamp once the diffs land.
   const nextRevision = await snapshotSo(sb, docNo, amendmentId, userId, c);
 
+  // Multi-company: an ADD-line diff inserts a new mfg_sales_order_items row —
+  // it inherits the SO header's company (NOT the request's active company: an
+  // amendment may be approved while another company is active).
+  const { data: soHdrCo } = await sb.from('mfg_sales_orders')
+    .select('company_id').eq('doc_no', docNo).maybeSingle();
+  const soCompanyId = (soHdrCo as { company_id?: number | null } | null)?.company_id ?? null;
+
   // Config loaded ONCE and threaded into every per-line recompute (the create
   // path's `cachedConfig` — one maintenance_config read for the whole apply).
   const cachedConfig = await loadMaintenanceConfig(sb);
@@ -209,10 +216,11 @@ export async function applySoAmendment(
       const unitCost = rec.unit_cost_sen;
       const lineCost = unitCost * qty;
 
-      // company_id is intentionally omitted — multi-company scoping on Houzs is a
-      // verified NO-OP (all rows null) and scm.mfg_sales_order_items.company_id is
-      // nullable; mirrors the 2990 verbatim insert.
+      // Multi-company (mig 0083/0091): company_id is NOT NULL with a HOUZS
+      // DEFAULT — an unstamped insert silently books the line to HOUZS, so the
+      // ADD line explicitly inherits the SO header's company.
       const { error: insErr } = await sb.from('mfg_sales_order_items').insert({
+        ...(soCompanyId != null ? { company_id: soCompanyId } : {}),
         doc_no:                  docNo,
         line_date:              new Date().toISOString().slice(0, 10),
         item_group:             itemGroup,

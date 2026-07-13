@@ -1,4 +1,9 @@
 import { useEffect, useState, type ReactNode } from "react";
+import {
+  defaultBrandingForCompany,
+  hostDefaultCompanyCode,
+  shortCompanyName,
+} from "../lib/branding";
 import { useNavigate, useParams } from "react-router-dom";
 import { Button } from "../components/Button";
 import { cn } from "../lib/utils";
@@ -45,7 +50,7 @@ function AuthShell({
         <p className="mt-1.5 text-[12.5px] text-ink-secondary">{subtitle}</p>
         <div className="mt-6">{children}</div>
         <div className="mt-8 border-t border-border-subtle pt-4 text-[10px] uppercase tracking-brand text-ink-muted">
-          Houzs Century · Operations
+          {shortCompanyName(defaultBrandingForCompany(hostDefaultCompanyCode()).companyName)} · Operations
         </div>
       </div>
     </div>

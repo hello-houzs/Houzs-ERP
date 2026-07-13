@@ -53,6 +53,7 @@ import {
   type BedframePriceMatrix,
 } from '../../vendor/scm/lib/suppliers-queries';
 import { useMfgProducts, useMaintenanceConfig, type MfgCategory, type MfgProductRow } from '../../vendor/scm/lib/mfg-products-queries';
+import { useDebouncedValue } from '../../vendor/scm/lib/hooks';
 import { useProductModels, type ProductModelRow } from '../../vendor/scm/lib/product-models-queries';
 import {
   useLocalities,
@@ -3707,6 +3708,12 @@ const CATEGORY_CHIPS: { value: 'all' | MfgCategory; label: string }[] = [
   { value: 'SERVICE', label: 'Service' },
 ];
 
+/* Perf cap (parity with MobileSkuPicker / SalesOrderNewFromProducts #342) —
+   never paint more than this many catalogue rows at once; the full active
+   catalogue (~1141 SKUs) as clickable <tr> froze the modal on open + per
+   keystroke. A hint below tells the operator to narrow when rows are hidden. */
+const MULTI_PICKER_RENDER_CAP = 60;
+
 const MultiSkuPickerDialog = ({
   supplierId,
   existingBindings,
@@ -3721,9 +3728,13 @@ const MultiSkuPickerDialog = ({
   const [step, setStep] = useState<1 | 2>(1);
   const [category, setCategory] = useState<'all' | MfgCategory>('all');
   const [search, setSearch] = useState('');
+  /* Perf (parity with MobileSkuPicker / #342) — DEBOUNCE the search before it
+     drives the server query, so a fast typist doesn't fire one
+     /mfg-products?search=… request + full re-render per keystroke. */
+  const debouncedSearch = useDebouncedValue(search, 250);
   const products = useMfgProducts({
     category: category === 'all' ? undefined : category,
-    search: search.trim() || undefined,
+    search: debouncedSearch.trim() || undefined,
   });
 
   const alreadyBound = useMemo(
@@ -3863,7 +3874,7 @@ const MultiSkuPickerDialog = ({
                     {!products.isLoading && (products.data ?? []).length === 0 && (
                       <tr><td colSpan={6} className={styles.emptyRow}>No products match.</td></tr>
                     )}
-                    {!products.isLoading && (products.data ?? []).map((p) => {
+                    {!products.isLoading && (products.data ?? []).slice(0, MULTI_PICKER_RENDER_CAP).map((p) => {
                       const bound = alreadyBound.has(`mfg_product|${p.code}`);
                       const isPicked = Boolean(picked[p.id]);
                       return (
@@ -3894,6 +3905,13 @@ const MultiSkuPickerDialog = ({
                         </tr>
                       );
                     })}
+                    {!products.isLoading && (products.data ?? []).length > MULTI_PICKER_RENDER_CAP && (
+                      <tr>
+                        <td colSpan={6} className={styles.emptyRow}>
+                          Showing the first {MULTI_PICKER_RENDER_CAP} of {(products.data ?? []).length} — narrow by search or category.
+                        </td>
+                      </tr>
+                    )}
                   </tbody>
                 </table>
               </div>

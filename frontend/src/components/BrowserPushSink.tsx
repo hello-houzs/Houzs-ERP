@@ -1,5 +1,11 @@
 import { useEffect, useRef } from "react";
 import { useNotifications, type NotificationItem } from "../hooks/useNotifications";
+import {
+  HOUZS_COMPANY_CODE,
+  getBrandingCache,
+  getBrandingCompanyCode,
+  shortCompanyName,
+} from "../lib/branding";
 
 const PUSH_PREF_KEY = "notifications:browserPush";
 
@@ -63,7 +69,13 @@ export function BrowserPushSink() {
 
 function fireNotification(a: NotificationItem) {
   try {
-    const title = a.project_name || "Houzs ERP";
+    // Per-company fallback title: HOUZS keeps the historic literal; another
+    // active company reads "<short name> ERP" from the branding cache.
+    const title =
+      a.project_name ||
+      (getBrandingCompanyCode() === HOUZS_COMPANY_CODE
+        ? "Houzs ERP"
+        : `${shortCompanyName(getBrandingCache().companyName)} ERP`);
     const body = summarise(a);
     const tag = `houzs-${a.project_id}-${a.id}`;
     const n = new Notification(title, {

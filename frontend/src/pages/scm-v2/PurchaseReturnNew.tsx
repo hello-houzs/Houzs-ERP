@@ -37,6 +37,7 @@ import {
 import { useGrnDetail } from '../../vendor/scm/lib/grn-queries';
 import { usePurchaseOrderDetail, useSuppliers } from '../../vendor/scm/lib/suppliers-queries';
 import { useMfgProducts, useMaintenanceConfig, useSpecialAddons } from '../../vendor/scm/lib/mfg-products-queries';
+import { useDebouncedValue } from '../../vendor/scm/lib/hooks';
 import { sortByText, sortByNumeric } from '../../vendor/scm/lib/sort-options';
 import { ItemGroupPill } from '../../vendor/scm/lib/category-badges';
 import { MoneyInput } from '../../vendor/scm/components/MoneyInput';
@@ -225,9 +226,13 @@ export const PurchaseReturnNew = () => {
   // is shared (only one input is focused at a time, so a single gated query
   // feeds whichever line's datalist is active).
   const [productQuery, setProductQuery] = useState<string>('');
+  /* Perf — debounce the datalist search so a fast typist fires one
+     /mfg-products request per pause, not per keystroke. Native <datalist>
+     renders <option>s directly, so no render cap is needed — only the refetch. */
+  const debouncedProductQuery = useDebouncedValue(productQuery, 250);
   const productsQ = useMfgProducts({
-    search: productQuery,
-    enabled: isManual && productQuery.trim().length >= 2,
+    search: debouncedProductQuery,
+    enabled: isManual && debouncedProductQuery.trim().length >= 2,
   });
 
   // Pick / type an internal SKU on a manual line → fill code + name + itemGroup

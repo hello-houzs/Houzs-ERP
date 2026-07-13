@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { Env } from "../types";
 import { requirePermission } from "../middleware/auth";
 import { getProjectScope } from "../services/projectAcl";
+import { allowedCompanyIds } from "../scm/lib/companyScope";
 import { getDb } from "../db/client";
 import {
   project_activity,
@@ -66,6 +67,13 @@ app.get("/", requirePermission("projects.read"), async (c) => {
   // per-project unread counts. COALESCE(pic_id, created_by) keeps
   // legacy projects (pre-039) attached to their creator's team.
   const scopeConds = [];
+  // Multi-company: the activity feed is PROJECT-derived, so it follows the
+  // caller's ALLOWED companies via projects.company_id (mig-pg 0093). No-op
+  // when the company context is unresolved (pre-migration / D1 test mirror).
+  const allowedCo = allowedCompanyIds(c);
+  if (allowedCo.length > 0) {
+    scopeConds.push(inArray(projects.company_id, allowedCo));
+  }
   if (scope) {
     scopeConds.push(
       inArray(

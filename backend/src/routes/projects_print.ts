@@ -1,6 +1,14 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
 import { getProjectDetail } from "../services/projects";
+import { activeCompanyId } from "../scm/lib/companyScope";
+import {
+  getBrandingForCompany,
+  resolveCompanyCode,
+  shortCompanyName,
+  brandingAddressLines,
+  HOUZS_COMPANY_CODE,
+} from "../services/branding";
 import { canSeeProject } from "../services/projectAcl";
 import { getPmsAccess, isFinanceViewer } from "../services/pmsAccess";
 import { scopeSalesReportsForUser } from "../services/orgScope";
@@ -107,7 +115,9 @@ app.get("/:id", async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.text("Invalid ID", 400);
 
-  const detail = await getProjectDetail(c.env, id);
+  // Multi-company: same active-company gate as the detail JSON — a
+  // cross-company id prints "Not found".
+  const detail = await getProjectDetail(c.env, id, activeCompanyId(c));
   if (!detail) return c.text("Not found", 404);
 
   // Row-level ACL — this debrief bypassed canSeeProject before, so any
@@ -144,7 +154,25 @@ app.get("/:id", async (c) => {
   const stockTransfers = (detail.stock_transfers as any[]) ?? [];
   const activity = (detail.activity as any[]) ?? [];
 
-  const logoUri = await fetchAsDataUri(c.env, "static/logo-wordmark.png");
+  // ── Company identity (per-company branding) ─────────────────
+  // Letterhead / footer come from the DOCUMENT's company. `projects` has no
+  // company_id column yet (PMS is Houzs-only today) — read it if the row ever
+  // grows one, else fall back to the request's active company, then HOUZS.
+  const companyCode = await resolveCompanyCode(
+    c.env,
+    p.company_id ?? c.get("companyCode"),
+  );
+  const branding = await getBrandingForCompany(c.env, companyCode);
+  const coShort = shortCompanyName(branding.companyName);
+  const coAddressLines = brandingAddressLines(branding.address);
+
+  // Uploaded per-company letterhead logo wins; the bundled Houzs wordmark is
+  // HOUZS-only; otherwise the text fallback renders the company name.
+  const logoUri = branding.logoR2Key
+    ? await fetchAsDataUri(c.env, branding.logoR2Key)
+    : companyCode === HOUZS_COMPANY_CODE
+      ? await fetchAsDataUri(c.env, "static/logo-wordmark.png")
+      : null;
 
   // ── Finance rollups from the ledger ─────────────────────
   const incomeLines = lines.filter((l) => l.kind === "income");
@@ -349,14 +377,13 @@ app.get("/:id", async (c) => {
           <div class="letterhead">
             ${
               logoUri
-                ? `<img class="logo" src="${logoUri}" alt="Houzs Century">`
-                : `<div class="logo-fallback">HOUZS<br>CENTURY</div>`
+                ? `<img class="logo" src="${logoUri}" alt="${esc(coShort)}">`
+                : `<div class="logo-fallback">${esc(coShort)}</div>`
             }
             <div class="company">
-              <div class="co-name">HOUZS CENTURY SDN. BHD.</div>
-              <div class="reg-no">202201031135 (1476832-W)</div>
-              <div>1831-B, Jalan KPB 1, Kawasan Perindustrian Balakong,</div>
-              <div>43300 Seri Kembangan, Selangor.</div>
+              <div class="co-name">${esc(branding.companyName)}</div>
+              ${branding.registrationNo ? `<div class="reg-no">${esc(branding.registrationNo)}</div>` : ""}
+              ${coAddressLines.map((l) => `<div>${esc(l)}</div>`).join("")}
             </div>
           </div>
           <div class="doc-title">
@@ -650,7 +677,7 @@ app.get("/:id", async (c) => {
       <tr>
         <td>
           <div class="footer-line">
-            <span>Houzs Century Sdn. Bhd. · This is a computer-generated document; no signature is required.</span>
+            <span>${esc(branding.companyName)} · This is a computer-generated document; no signature is required.</span>
             <span>${esc(p.code)}</span>
           </div>
         </td>

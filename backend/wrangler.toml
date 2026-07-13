@@ -183,6 +183,9 @@ AUTOCOUNT_SYNC_DISABLED = "true"
 PUBLIC_APP_URL = "https://houzs-erp-staging.pages.dev"
 EMAIL_FROM = "Houzs ERP Staging <no-reply@houzscentury.com>"
 EMAIL_REPLY_TO = "Houzs Century <hello@houzscentury.com>"
+# Admin "login as member" on the Team page (routes/users.ts). Staging-only:
+# the flag must never be added to the prod vars block.
+IMPERSONATION_ENABLED = "true"
 
 [[env.staging.hyperdrive]]
 binding = "HYPERDRIVE"
