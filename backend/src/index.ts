@@ -62,6 +62,10 @@ import mailInbound from "./routes/mail-inbound";
 // Announcements — office posts every logged-in user sees as a top banner with
 // a "Got it" ack. Ported from Hookka (single-tenant + office-only here).
 import announcements from "./routes/announcements";
+// Agent Console — owner-only fleet console for the HOOKKA-ported agents
+// (Delivery/Document/CS). Skeleton: controls + runs + config proposals +
+// feedback; the engines register themselves in services/agent-scheduler.ts.
+import agentConsole from "./routes/agent-console";
 import { caseTrack } from "./middleware/caseTrack";
 import { supplierTrack } from "./middleware/supplierTrack";
 import { dbInject, withPgDb } from "./middleware/db";
@@ -75,6 +79,7 @@ import { runProjectDueReminders } from "./services/projectReminders";
 // slot gated to Sundays — no new cron trigger. getSupabaseService is the same
 // service client scan-so.ts uses internally (serviceClient(env)).
 import { distillAllSalespersonRules, warmCatalogCacheForCron, processScanQueueMessage } from "./scm/routes/scan-so";
+import { runAgentHeartbeat } from "./services/agent-scheduler";
 import { getSupabaseService } from "./db/supabase";
 import { getBranding } from "./services/branding";
 
@@ -209,6 +214,10 @@ app.route("/api/mail-center", mailCenter);
 // (the route handles it internally); list/CRUD/remind/acks-readout are
 // announcements.read / announcements.write gated.
 app.route("/api/announcements", announcements);
+// Agent Console — owner-only (requirePermission("*") inside the router).
+// Deliberately in the public /api tree, NOT /api/scm (the scm subtree swaps
+// c.get('user') to scm.staff UUIDs — the known staff-UUID bigint trap).
+app.route("/api/agents", agentConsole);
 app.route("/api/projects-print", projectsPrint);
 app.route("/api/search", search);
 app.route("/api/assr-print", assrPrint);
@@ -306,6 +315,20 @@ export default {
             if (r.fired > 0) console.log(`[cron lead-time-schedule] fired=${r.fired}`);
           })
           .catch((e) => console.error("[cron lead-time-schedule]", e))
+      );
+      // Agent heartbeat — the agents decide their own cadence (scheduler's
+      // >=1h min-gap makes this an effective hourly beat). No-op until an
+      // engine registers; kill switch / pause honoured inside. Best-effort:
+      // a heartbeat failure can never break the other crons.
+      ctx.waitUntil(
+        runAgentHeartbeat(env)
+          .then((r) => {
+            if (r.ran.length)
+              console.log(
+                `[cron agent-heartbeat] ran=${r.ran.map((x) => x.task).join(",")} skipped=${r.skipped.length}`
+              );
+          })
+          .catch((e) => console.error("[cron agent-heartbeat]", e))
       );
       // Keep-warm the scan-SO catalog prompt-cache during Malaysia business
       // hours (UTC+8 ~08:00–22:00 → UTC hour 0–13) so the shared Anthropic
