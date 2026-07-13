@@ -179,7 +179,7 @@ type ProjectDetail = {
   attachments?: ProjectAttachment[];
   _access?: {
     level?: string;
-    pms?: { canFinancial?: boolean; canEdit?: boolean };
+    pms?: { canFinancial?: boolean; canEdit?: boolean; role?: string };
   };
 };
 
@@ -643,6 +643,10 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
   // ProjectTeamSection/ProjectSpecStrip gate. Falls back to canWrite when the
   // backend omitted pms.
   const canEditTeam = canWrite && (pms ? pms.canEdit !== false : true);
+  // Owner 2026-07-13: the event's own Sales PIC manages Sales Attending even
+  // while the rest of the Team card (PIC picker) stays read-only for them.
+  const canEditAttending =
+    canWrite && (pms ? pms.canEdit !== false || pms.role === "PIC" : true);
 
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
@@ -800,7 +804,7 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                   projectId={id}
                   attendees={data.sales_attendees ?? []}
                   options={salesReps}
-                  canWrite={canEditTeam && !archived}
+                  canWrite={canEditAttending && !archived}
                   busy={busy}
                   setBusy={setBusy}
                   notify={notify}
