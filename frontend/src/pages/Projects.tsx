@@ -93,6 +93,7 @@ import { usePageAccess } from "../auth/PageGuard";
 import { Forbidden } from "./Forbidden";
 import { useNotifications } from "../hooks/useNotifications";
 import { api, buildQuery, humanHttpMessage } from "../api/client";
+import { companyHeader } from "../lib/activeCompany";
 import { MediaLightbox } from "../components/MediaLightbox";
 import { ResetFiltersButton } from "../components/ResetFiltersButton";
 import { formatDate, formatDateTime, formatTimestamp, formatCurrency, cn, relativeTime } from "../lib/utils";
@@ -11803,6 +11804,10 @@ function ImportCsvPanel({
           headers: {
             Authorization: `Bearer ${token}`,
             "Content-Type": "text/csv",
+            // Without X-Company-Id the backend stamps the hostname-default company
+            // (HOUZS), so importing while "2990" is active would write to the wrong
+            // company. Mirror lib/branding.ts.
+            ...companyHeader(),
           },
           body: text,
           signal,
