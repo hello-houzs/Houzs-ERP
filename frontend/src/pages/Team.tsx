@@ -808,6 +808,46 @@ function MembersTab({
     }
   }
 
+  // Re-send invitation emails to every SELECTED member that is still pending
+  // (status === "invited"). Active/disabled rows are skipped — resend only
+  // applies before first sign-in — and reported so the count is honest.
+  const selectedPending = selectableFiltered.filter(
+    (u) => selectedIds.has(u.id) && u.status === "invited",
+  );
+  async function bulkResendInvites() {
+    const targets = selectedPending;
+    if (targets.length === 0) {
+      toast.error("None of the selected members are pending — resend only works before first sign-in.");
+      return;
+    }
+    const skipped = selectedIds.size - targets.length;
+    try {
+      const results = await Promise.allSettled(
+        targets.map((u) =>
+          api.post<{ ok: boolean; email_sent?: boolean }>(
+            `/api/users/${u.id}/resend-invite`,
+          ),
+        ),
+      );
+      const sent = results.filter(
+        (r) => r.status === "fulfilled" && r.value?.email_sent,
+      ).length;
+      const failed = targets.length - sent;
+      const skipNote = skipped > 0 ? `, skipped ${skipped} already active` : "";
+      if (failed === 0) {
+        toast.success(`Resent ${sent} invitation${sent === 1 ? "" : "s"}${skipNote}`);
+      } else {
+        toast.error(
+          `Resent ${sent}, ${failed} email${failed === 1 ? "" : "s"} not sent${skipNote} — use Copy Link on those`,
+        );
+      }
+      clearSelect();
+      members.reload();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to resend invitations");
+    }
+  }
+
   const memberColumns: Column<TeamMember>[] = [
     ...(canManage
       ? [
@@ -1358,6 +1398,16 @@ function MembersTab({
             >
               <UserX size={12} /> Disable
             </button>
+            {selectedPending.length > 0 && (
+              <button
+                type="button"
+                onClick={bulkResendInvites}
+                className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-[11px] font-semibold text-ink-secondary transition-colors hover:border-accent/40 hover:bg-accent-soft/50 hover:text-accent"
+                title="Re-send invitation email to the pending members in your selection"
+              >
+                <Mail size={12} /> Resend {selectedPending.length} invite{selectedPending.length === 1 ? "" : "s"}
+              </button>
+            )}
             <select
               defaultValue=""
               onChange={(e) => {
