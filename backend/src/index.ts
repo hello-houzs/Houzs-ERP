@@ -59,6 +59,9 @@ import supplierPortal from "./routes/supplierPortal";
 // read/reply/compose/label/address/access/scope router.
 import mailCenter from "./routes/mail-center";
 import mailInbound from "./routes/mail-inbound";
+// 2990 → Houzs LIVE SO mirror receiver. PRE-AUTH (secret-guarded, called by the
+// 2990 DB via pg_net, no user JWT) — mounted at the top level, outside /api/scm.
+import { soMirror } from "./scm/routes/so-mirror";
 // Announcements — office posts every logged-in user sees as a top banner with
 // a "Got it" ack. Ported from Hookka (single-tenant + office-only here).
 import announcements from "./routes/announcements";
@@ -139,6 +142,8 @@ app.route("/api/supplier-portal", supplierPortal);
 // is set. Mounted at the exact sub-path so the authed mail-center router below
 // never shadows it.
 app.route("/api/mail-center/inbound", mailInbound);
+// 2990 live SO mirror — pre-auth, secret-guarded (x-sync-secret == SYNC_SECRET).
+app.route("/api/sync/so-mirror", soMirror);
 
 // Google Form intake webhook — PRE-AUTH like mail-inbound: called by
 // Google Apps Script (no staff session), self-guarded by the
