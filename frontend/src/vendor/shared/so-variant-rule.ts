@@ -36,6 +36,13 @@ export type VariantAxis = {
   label: string;
   /** Every variant key that satisfies this axis (canonical first). */
   aliases: readonly string[];
+  /** Whether an empty value BLOCKS confirmation. Defaults to true. An axis with
+   *  `required: false` still participates in alias canonicalization (so the edit
+   *  form maps POS-vocabulary keys onto the canonical key) but never appears in
+   *  `missingVariantAxes` — used for the sofa Leg Height, which carries a
+   *  standing "Default" option (RM 0.00) so it is always pre-filled and must
+   *  never gate Confirm (owner 2026-07-13). */
+  required?: boolean;
 };
 
 export const REQUIRED_VARIANT_AXES_BY_CATEGORY: Record<string, readonly VariantAxis[]> = {
@@ -52,7 +59,11 @@ export const REQUIRED_VARIANT_AXES_BY_CATEGORY: Record<string, readonly VariantA
     // same physical pick as `depth` (always set — Configurator activeDepth).
     { key: 'seatHeight',  label: 'Seat Height',  aliases: ['seatHeight', 'depth'] },
     // Backend fills legHeight; POS sends sofaLegHeight (PR #473 leg picker).
-    { key: 'legHeight',   label: 'Leg Height',   aliases: ['legHeight', 'sofaLegHeight'] },
+    // NOT required: the sofa Leg Height always defaults to the "Default" option
+    // (RM 0.00) at create/edit time, so it is never empty and must never block
+    // Confirm. Kept in the list so canonicalizeVariants still maps sofaLegHeight
+    // → legHeight for POS-created lines (owner 2026-07-13).
+    { key: 'legHeight',   label: 'Leg Height',   aliases: ['legHeight', 'sofaLegHeight'], required: false },
     { key: 'fabricCode',  label: 'Fabrics',      aliases: ['fabricCode', 'colorCode', 'colourCode', 'fabricColor'] },
   ],
 };
@@ -70,7 +81,9 @@ export function missingVariantAxes(
   const axes = REQUIRED_VARIANT_AXES_BY_CATEGORY[(itemGroup ?? '').toLowerCase()];
   if (!axes) return [];
   const v = variants ?? {};
-  return axes.filter((axis) => axis.aliases.every((k) => isEmpty(v[k])));
+  return axes.filter(
+    (axis) => axis.required !== false && axis.aliases.every((k) => isEmpty(v[k])),
+  );
 }
 
 /** Rewrite POS-vocabulary alias keys to their canonical axis key for the given

@@ -40,6 +40,7 @@ import {
   useMaintenanceConfig,
   useSpecialAddons,
   useModelAllowedOptionsByCode,
+  useSkuCategoryByCode,
   type MfgProductRow,
   type SpecialAddonRow,
 } from '../lib/mfg-products-queries';
@@ -64,6 +65,24 @@ const fmtRm = (centi: number, currency = 'MYR'): string =>
   `${currency} ${(centi / 100).toLocaleString('en-MY', {
     minimumFractionDigits: 2, maximumFractionDigits: 2,
   })}`;
+
+const isBlankVariant = (v: unknown): boolean =>
+  v === undefined || v === null || String(v).trim() === '';
+
+/* The sofa Leg Height carries a standing "Default" option (RM 0.00) in the
+   maintenance sofaLegHeights pool (owner 2026-07-13). Resolve its value,
+   matched case-insensitively by name, so a sofa line's Leg Height auto-fills to
+   it instead of an empty required field. null when the pool has no such option. */
+const DEFAULT_SOFA_LEG_RE = /^\s*default\s*$/i;
+const defaultSofaLegValue = (
+  maint: { sofaLegHeights?: readonly unknown[] } | null | undefined,
+): string | null => {
+  for (const e of (maint?.sofaLegHeights ?? [])) {
+    const v = typeof e === 'string' ? e : String((e as { value?: unknown })?.value ?? '');
+    if (DEFAULT_SOFA_LEG_RE.test(v)) return v;
+  }
+  return null;
+};
 
 /** PR #114/#125 — Draft payload for one SO line. Matches the shape POST
  *  /mfg-sales-orders and PATCH /mfg-sales-orders/:docNo/items both expect.
@@ -241,6 +260,42 @@ const SoLineCardInner = ({
   });
   const candidates = productsQuery.data ?? [];
 
+  /* Effective category (owner 2026-07-13) — draft/backdoor lines (scan-OCR,
+     hatch) can persist a sofa/bedframe SKU under a GENERIC itemGroup ('others'),
+     which used to render as a "General item" with no configurator and let the
+     line confirm without the mandatory fabric/seat variants. Drive the whole
+     configurator off the line's REAL category instead: a freshly-picked
+     product's category, else the SKU's category resolved by its item code, else
+     the persisted itemGroup. This makes an already-malformed draft show the
+     right configurator the moment it's opened — not only future lines. */
+  const skuCategoryQ = useSkuCategoryByCode(draft.itemCode || undefined);
+  const resolvedCategory = String(picked?.category ?? skuCategoryQ.data ?? '').toLowerCase();
+  const category = resolvedCategory || draft.itemGroup.toLowerCase();
+
+  /* Heal the persisted line + seed the sofa Leg default (owner 2026-07-13).
+     When the SKU's real category is sofa/bedframe but the saved itemGroup is
+     generic, rewrite itemGroup so the committed line equals a manually-picked
+     one. For sofa, also default Leg Height to the "Default" maintenance option
+     (RM 0.00) when unset, so it is never an empty required field and never
+     blocks Confirm. Edit-mode only — a read-only view still RENDERS the
+     configurator (driven by `category` above) but must not mutate. */
+  useEffect(() => {
+    if (!isEditing || !draft.itemCode) return;
+    const patch: Partial<SoLineDraft> = {};
+    if ((category === 'sofa' || category === 'bedframe')
+        && draft.itemGroup.toLowerCase() !== category) {
+      patch.itemGroup = category;
+    }
+    if (category === 'sofa' && maint
+        && isBlankVariant(draft.variants.legHeight)
+        && isBlankVariant(draft.variants.sofaLegHeight)) {
+      const def = defaultSofaLegValue(maint);
+      if (def) patch.variants = { ...draft.variants, ...(patch.variants ?? {}), legHeight: def };
+    }
+    if (Object.keys(patch).length > 0) onChange(patch);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEditing, category, draft.itemCode, maint]);
+
   /* PR-F (Task #79) — Per-line photo state.
      Line-card-redesign (Commander 2026-05-27): also support DRAFT mode
      where the line hasn't been saved yet. In draft mode we stage File
@@ -333,21 +388,21 @@ const SoLineCardInner = ({
     return m && m[1] ? Number(m[1]) : 0;
   };
   const computedTotalHeight = useMemo(() => {
-    if (draft.itemGroup !== 'bedframe') return '';
+    if (category !== 'bedframe') return '';
     const d = parseInches(draft.variants.divanHeight);
     const l = parseInches(draft.variants.legHeight);
     const g = parseInches(draft.variants.gap);
     if (d === 0 && l === 0 && g === 0) return '';
     return `${d + l + g}"`;
-  }, [draft.itemGroup, draft.variants.divanHeight, draft.variants.legHeight, draft.variants.gap]);
+  }, [category, draft.variants.divanHeight, draft.variants.legHeight, draft.variants.gap]);
 
   useEffect(() => {
-    if (draft.itemGroup !== 'bedframe') return;
+    if (category !== 'bedframe') return;
     if (!computedTotalHeight) return;
     if (String(draft.variants.totalHeight ?? '') === computedTotalHeight) return;
     onChange({ variants: { ...draft.variants, totalHeight: computedTotalHeight } });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [computedTotalHeight, draft.itemGroup]);
+  }, [computedTotalHeight, category]);
 
   /* PR #147 — Variant edits add the key to overriddenKeys so cascade
      leaves this line alone when LINE 1 changes.
@@ -383,11 +438,11 @@ const SoLineCardInner = ({
 
   const pricingBreakdown = useMemo(() => {
     if (!picked) return null;
-    const category = draft.itemGroup.toUpperCase() as MfgPricingProduct['category'];
+    const catU = category.toUpperCase() as MfgPricingProduct['category'];
     const tier: MfgFabricTier | null = pickedFabric
-      ? (category === 'SOFA'
+      ? (catU === 'SOFA'
           ? pickedFabric.sofa_price_tier ?? pickedFabric.price_tier ?? null
-          : category === 'BEDFRAME'
+          : catU === 'BEDFRAME'
             ? pickedFabric.bedframe_price_tier ?? pickedFabric.price_tier ?? null
             : null)
       : null;
@@ -423,7 +478,7 @@ const SoLineCardInner = ({
       effMaint,
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [picked, pickedFabric, draft.variants, draft.itemGroup, draft.qty, maint, specialDefs]);
+  }, [picked, pickedFabric, draft.variants, category, draft.qty, maint, specialDefs]);
 
   /* Commander 2026-05-29 — the SELLING unit price is operator-authored. It
      defaults to 0 on product pick (see pickProduct) and is typed manually;
@@ -504,7 +559,7 @@ const SoLineCardInner = ({
      line's category ∩ the Model's allowed_options.specials ticks. POS
      semantics — no ticks = nothing offered (Modular is the ON/OFF authority),
      unlike the height pools where empty = unrestricted. */
-  const catUpper = draft.itemGroup.toUpperCase();
+  const catUpper = category.toUpperCase();
   const specialOptions = useMemo(() => {
     const allowed = new Set(allowOpts?.specials ?? []);
     return specialDefs.filter(
@@ -564,8 +619,12 @@ const SoLineCardInner = ({
     [draft.qty, draft.unitPriceCenti, draft.discountCenti],
   );
 
-  const category = draft.itemGroup.toLowerCase();
   const badge = CATEGORY_BADGE[category] ?? CATEGORY_BADGE.others!;
+  /* Drive the configurator off the EFFECTIVE category (resolved above), NOT the
+     raw persisted itemGroup — so a scan/backdoor sofa/bedframe draft whose
+     itemGroup came in generic still renders its fabric/seat/leg configurator and
+     requires those variants, exactly like a manually-picked line (owner
+     2026-07-13). */
   const hasVariants = Boolean(draft.itemCode) && Boolean(maint) && (category === 'bedframe' || category === 'sofa');
   const specials = specialsList(draft.variants.specials ?? draft.variants.special);
   const posRemarkSpecial = posRemarkSpecialOf(draft.variants);
@@ -891,8 +950,11 @@ const SoLineCardInner = ({
               }))}
               onChange={(v) => setVariant('seatHeight', v)}
             />
+            {/* Owner 2026-07-13 — the sofa Leg Height carries a standing
+                "Default" option (RM 0.00) and is auto-seeded (see heal effect),
+                so it is NOT a required-empty field and never blocks Confirm. */}
             <VariantSelect
-              label="Leg Heights" required
+              label="Leg Heights"
               value={String(draft.variants.legHeight ?? '')}
               disabled={!isEditing}
               options={sortByNumeric(restrictP(activeOptions(maint!.sofaLegHeights, String(draft.variants.legHeight ?? '')), allowOpts?.leg_heights))}

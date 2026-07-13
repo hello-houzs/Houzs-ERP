@@ -205,19 +205,26 @@ productModels.get('/by-code/:code', async (c) => {
   // service client may camelCase / array-wrap inconsistently).
   const { data: sku, error: skuErr } = await supabase
     .from('mfg_products')
-    .select('model_id')
+    .select('model_id, category')
     .eq('code', code)
     .limit(1)
     .maybeSingle();
   if (skuErr) {
-    if (/relation .* does not exist/i.test(skuErr.message)) return c.json({ allowedOptions: null });
+    if (/relation .* does not exist/i.test(skuErr.message)) return c.json({ allowedOptions: null, category: null });
     return c.json({ error: 'load_failed', reason: skuErr.message }, 500);
   }
+  // The SKU's REAL category (SOFA / BEDFRAME / …) so the SO line editor can
+  // recognise a sofa/bedframe line whose persisted itemGroup came in generic
+  // (scan/backdoor drafts) and render the right configurator + require its
+  // variants (owner 2026-07-13). Null for legacy/unknown codes.
+  const category = (sku as Record<string, unknown> | null)?.category != null
+    ? String((sku as Record<string, unknown>).category)
+    : null;
   // Dual-read camelCase ?? snake_case for the FK column.
   const modelId = (sku as Record<string, unknown> | null)?.modelId
     ?? (sku as Record<string, unknown> | null)?.model_id
     ?? null;
-  if (!modelId) return c.json({ allowedOptions: null });
+  if (!modelId) return c.json({ allowedOptions: null, category });
 
   const { data: model, error: modelErr } = await supabase
     .from('product_models')
@@ -229,7 +236,7 @@ productModels.get('/by-code/:code', async (c) => {
     (model as Record<string, unknown> | null)?.allowedOptions
     ?? (model as Record<string, unknown> | null)?.allowed_options
     ?? null;
-  return c.json({ allowedOptions });
+  return c.json({ allowedOptions, category });
 });
 
 // ── GET /:id ───────────────────────────────────────────────────────────────
