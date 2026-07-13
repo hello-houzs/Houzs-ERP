@@ -66,6 +66,9 @@ export type Env = {
   // Public origin for building email links (portal survey URLs etc.).
   // Falls back to the worker URL if unset.
   PUBLIC_APP_URL?: string;
+  // "true" enables admin login-as-member (routes/users.ts impersonation).
+  // Set ONLY in [env.staging.vars] — must never be set on prod.
+  IMPERSONATION_ENABLED?: string;
   // Mail Center inbound ingest secret (shared with the standalone
   // houzs-mail-inbound CF Email Worker / IMAP bridge). The pre-auth
   // POST /api/mail-center/inbound route 503s until this is set and >= 16 chars.
