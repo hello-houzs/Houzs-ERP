@@ -101,7 +101,7 @@ function norm(v: unknown): string {
 async function loadActiveSofaCombos(sb: any): Promise<SofaComboRow[]> {
   const { data } = await sb
     .from('sofa_combo_pricing')
-    .select('id, base_model, modules, tier, customer_id, prices_by_height, selling_prices_by_height, pwp_prices_by_height, label, effective_from, deleted_at')
+    .select('id, base_model, modules, tier, customer_id, prices_by_height, selling_prices_by_height, pwp_prices_by_height, label, effective_from, created_at, deleted_at')
     .is('deleted_at', null)
     .is('customer_id', null)
     .is('supplier_id', null);
@@ -110,13 +110,13 @@ async function loadActiveSofaCombos(sb: any): Promise<SofaComboRow[]> {
     customer_id: string | null; prices_by_height: Record<string, number | null>;
     selling_prices_by_height: Record<string, number | null>;
     pwp_prices_by_height: Record<string, number | null> | null;
-    label: string | null; effective_from: string; deleted_at: string | null;
+    label: string | null; effective_from: string; created_at: string; deleted_at: string | null;
   }>).map((r) => ({
     id: r.id, baseModel: r.base_model, modules: r.modules ?? [],
     tier: r.tier, customerId: r.customer_id,
     pricesByHeight: comboChargedPrices(r.selling_prices_by_height, r.prices_by_height),
     pwpPricesByHeight: r.pwp_prices_by_height ?? {},
-    label: r.label, effectiveFrom: r.effective_from, deletedAt: r.deleted_at,
+    label: r.label, effectiveFrom: r.effective_from, createdAt: r.created_at, deletedAt: r.deleted_at,
   }));
 }
 

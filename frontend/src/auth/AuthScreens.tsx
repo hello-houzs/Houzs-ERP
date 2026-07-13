@@ -6,6 +6,13 @@ import { Button } from "../components/Button";
 import { cn } from "../lib/utils";
 import { api } from "../api/client";
 import { useBranding } from "../hooks/useBranding";
+import { CompanyMark } from "../components/CompanyMark";
+import {
+  HOUZS_COMPANY_CODE,
+  defaultBrandingForCompany,
+  hostDefaultCompanyCode,
+  shortCompanyName,
+} from "../lib/branding";
 import { PasswordStrengthMeter } from "../components/PasswordStrengthMeter";
 import { validatePasswordStrength } from "../lib/passwordStrength";
 import { useIsMobile } from "../mobile/useIsMobile";
@@ -79,15 +86,18 @@ function AuthShell({
       </div>
       {/* Ambient drifting snow — same particle effect as the mobile login */}
       <AmbientSnow />
-      {/* Faint building wordmark watermark, bottom-left */}
-      <img
-        src={LOGO_WORDMARK_SRC}
-        alt=""
-        aria-hidden
-        draggable={false}
-        style={INVERT_TO_CREAM}
-        className="pointer-events-none absolute -bottom-12 -left-10 w-[520px] max-w-[64vw] object-contain opacity-[0.045]"
-      />
+      {/* Faint building wordmark watermark, bottom-left — the bundled Houzs
+          asset, so HOUZS-only (another company's canvas stays clean). */}
+      {branding.companyCode === HOUZS_COMPANY_CODE && (
+        <img
+          src={LOGO_WORDMARK_SRC}
+          alt=""
+          aria-hidden
+          draggable={false}
+          style={INVERT_TO_CREAM}
+          className="pointer-events-none absolute -bottom-12 -left-10 w-[520px] max-w-[64vw] object-contain opacity-[0.045]"
+        />
+      )}
 
       <div className="relative z-10 mx-auto flex min-h-screen max-w-6xl flex-col items-center justify-center gap-14 px-6 py-12 lg:flex-row lg:justify-between lg:gap-10 lg:px-16">
         {/* Brand lockup — children rise in sequence */}
@@ -109,12 +119,12 @@ function AuthShell({
             style={{ animationDelay: "120ms" }}
           >
             <div className="auth-float relative inline-block overflow-hidden">
-              <img
-                src={LOGO_WORDMARK_SRC}
-                alt={branding.companyName}
-                draggable={false}
-                style={INVERT_TO_CREAM}
-                className="block h-24 w-auto max-w-[560px] object-contain drop-shadow-[0_10px_36px_rgba(0,0,0,0.5)] sm:h-28 xl:h-36"
+              <CompanyMark
+                variant="wordmark"
+                imgClassName="block h-24 w-auto max-w-[560px] object-contain drop-shadow-[0_10px_36px_rgba(0,0,0,0.5)] sm:h-28 xl:h-36"
+                imgStyle={INVERT_TO_CREAM}
+                uploadedImgClassName="block h-24 w-auto max-w-[560px] object-contain drop-shadow-[0_10px_36px_rgba(0,0,0,0.5)] sm:h-28 xl:h-36"
+                textClassName="font-display block text-5xl font-bold tracking-tight text-sidebar-ink drop-shadow-[0_10px_36px_rgba(0,0,0,0.5)] sm:text-6xl xl:text-7xl"
               />
               {/* wide, blurred light band sweeping across — soft feathered
                   edges (no hard rectangle) */}
@@ -125,8 +135,8 @@ function AuthShell({
             className="animate-rise mx-auto mt-9 max-w-lg text-[15.5px] leading-relaxed text-sidebar-ink-soft lg:mx-0"
             style={{ animationDelay: "240ms" }}
           >
-            The operations workspace for the Houzs Century team — projects,
-            logistics, and people in one place.
+            The operations workspace for the {shortCompanyName(branding.companyName)}{" "}
+            team — projects, logistics, and people in one place.
           </p>
         </div>
 
@@ -684,7 +694,12 @@ export function AuthGate({ children }: { children: ReactNode }) {
     return (
       <div className="paper-grain flex min-h-screen items-center justify-center">
         <div className="font-display text-[12px] uppercase tracking-brand text-ink-muted">
-          Houzs Century · Loading
+          {hostDefaultCompanyCode() === HOUZS_COMPANY_CODE
+            ? "Houzs Century"
+            : shortCompanyName(
+                defaultBrandingForCompany(hostDefaultCompanyCode()).companyName,
+              )}{" "}
+          · Loading
         </div>
       </div>
     );

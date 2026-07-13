@@ -91,7 +91,7 @@ async function postPcReceiveAndRollup(sb: any, receiveId: string): Promise<{ ok:
    Best-effort. */
 async function resyncReceiveInventory(sb: any, receiveId: string, performedBy: string | null): Promise<string[]> {
   const { data: header } = await sb.from('purchase_consignment_receives')
-    .select('receive_number, status, warehouse_id, pc_order_no').eq('id', receiveId).maybeSingle();
+    .select('receive_number, status, warehouse_id, pc_order_no, company_id').eq('id', receiveId).maybeSingle();
   if (!header) return [];
   const status = ((header as { status: string | null }).status ?? '').toUpperCase();
   const receiveNo = (header as { receive_number: string }).receive_number ?? receiveId;
@@ -188,7 +188,8 @@ async function resyncReceiveInventory(sb: any, receiveId: string, performedBy: s
   }
 
   if (writes.length === 0) return [];
-  const res = await writeMovements(sb, writes);
+  // Multi-company: resync movements inherit the receive's company.
+  const res = await writeMovements(sb, writes, (header as { company_id?: number | null }).company_id ?? null);
   try {
     const { recomputeSoStockAllocation } = await import('../lib/so-stock-allocation');
     await recomputeSoStockAllocation(sb);

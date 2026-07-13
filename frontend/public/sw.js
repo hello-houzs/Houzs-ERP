@@ -284,7 +284,14 @@
 //   re-added; Warehouse master page + form drawer; PO supplier-revised delivery
 //   dates wired end-to-end. (Promo refinement UI deferred — Houzs has no PWP
 //   editor yet; backend reward_size/compartment columns are live.)
-const VERSION = "houzs-erp-v160";
+// v160 (2026-07-13) — one-shot purge to move every staff device onto the
+//   same-origin /api proxy bundle. Old cached bundles still call the
+//   *.workers.dev origin directly, which some MY mobile carriers
+//   intermittently block — cases "appeared hours late" because the LIST
+//   fetch was blocked on those devices while the data was already in the
+//   DB (form intake lands in ~15s). Purging the shell forces the next
+//   launch onto the current build, whose API calls ride erp.houzscentury.com.
+const VERSION = "houzs-erp-v162";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 

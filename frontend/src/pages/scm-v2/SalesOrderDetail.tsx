@@ -599,7 +599,23 @@ export const SalesOrderDetail = () => {
     // (Loo 2026-06-28). New lines have no pristine snapshot -> always committed.
     const lineEntries = Object.entries(editingDrafts).filter(([id, d]) => {
       const orig = originalDraftsRef.current[id];
-      return !orig || lineCommitSig(d) !== lineCommitSig(orig);
+      if (!orig) return true;
+      if (lineCommitSig(d) === lineCommitSig(orig)) return false;
+      /* Remove-Processing-Date follow-up (2990 PR #718) — a line that is
+         dirty ONLY because the header Delivery Date cascade rewrote its
+         (non-overridden) lineDeliveryDate needs NO line PATCH: the header
+         PATCH's server-side master-follower cascade stamps every line's date
+         authoritatively. Skipping it spares untouched lines the server
+         recompute (PWP grant-price clobber) AND keeps the processing-locked
+         item route out of a pure header-date save — otherwise a super_admin
+         clearing the dates 409s on the LINE call before the header (which
+         carries the super-admin exemption) ever runs. A manually-overridden
+         line date (either side) still commits — the cascade never wrote it. */
+      if (!d.lineDeliveryDateOverridden && !orig.lineDeliveryDateOverridden) {
+        return lineCommitSig({ ...d, lineDeliveryDate: null })
+            !== lineCommitSig({ ...orig, lineDeliveryDate: null });
+      }
+      return true;
     });
     const pendingAdd = addingDraft;
 
@@ -1096,6 +1112,11 @@ export const SalesOrderDetail = () => {
   // back to CONFIRMED. Cancel is offered only on in-flight statuses (not once
   // it has SHIPPED / been INVOICED / CLOSED — those have downstream docs).
   const isCancelled = header.status === 'CANCELLED';
+  /* Owner 2026-07-13 (no-naked-payment-edits) — a DRAFT SO isn't confirmed yet,
+     so its payments must ALWAYS be editable (the user is still adjusting), even
+     while the detail is in its read-only view. For every other status the
+     Payments section stays view-only until the operator clicks Edit. */
+  const isDraftSo = (header.status as string) === 'DRAFT';
   const cancellableStatuses: SoStatus[] = ['CONFIRMED', 'IN_PRODUCTION', 'READY_TO_SHIP'];
   const canCancel = cancellableStatuses.includes(header.status);
 
@@ -1755,11 +1776,16 @@ export const SalesOrderDetail = () => {
           (transactions + Deposit Paid + Balance) only.
           Task #105 — PaymentCard was extracted into <PaymentsTable> so
           New SO and Edit SO render the same ledger from one source. */}
+      {/* No-naked-payment-edits (owner 2026-07-13): Add / Delete / Edit are only
+          exposed when (SO is DRAFT) OR (the detail is in Edit mode). A DRAFT SO
+          is never confirmed, so its payments stay editable in the read-only view
+          too (draftUnlocked also lifts the per-row same-day EDIT lock). */}
       <PaymentsTable
         docNo={header.doc_no}
         grandTotalCenti={header.local_total_centi}
         currency={header.currency}
-        locked={isLocked || !isEditing}
+        locked={!isDraftSo && (isLocked || !isEditing)}
+        draftUnlocked={isDraftSo}
         slip={{ slipKey: header.slip_key, fetcher: fetchSoSlipUrl }}
         defaultCollectedBy={selfStaffMatch?.id ?? ''}
       />

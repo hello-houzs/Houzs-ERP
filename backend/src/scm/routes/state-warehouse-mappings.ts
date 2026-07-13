@@ -14,6 +14,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
+import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
 
 export const stateWarehouseMappings = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -27,10 +28,12 @@ const upsertSchema = z.object({
 // GET — every authenticated staff can read.
 stateWarehouseMappings.get('/', async (c) => {
   const sb = c.get('supabase');
-  const { data, error } = await sb
-    .from('state_warehouse_mappings')
-    .select('id, state, warehouse_id, notes, updated_at, warehouses(id, code, name)')
-    .order('state', { ascending: true });
+  const { data, error } = await scopeToCompany(
+    sb
+      .from('state_warehouse_mappings')
+      .select('id, state, warehouse_id, notes, updated_at, warehouses(id, code, name)'),
+    c,
+  ).order('state', { ascending: true });
   if (error) return c.json({ error: 'fetch_failed', reason: error.message }, 500);
   return c.json({
     mappings: (data ?? []).map((r: unknown) => {
@@ -66,8 +69,10 @@ stateWarehouseMappings.put('/:state', async (c) => {
         warehouse_id: parsed.data.warehouseId ?? null,
         notes:        parsed.data.notes ?? null,
         updated_at:   new Date().toISOString(),
+        // 0092: state is unique PER COMPANY now
+        company_id:   activeCompanyId(c),
       },
-      { onConflict: 'state' },
+      { onConflict: 'company_id,state' },
     )
     .select('id, state, warehouse_id, notes')
     .single();
@@ -80,7 +85,10 @@ stateWarehouseMappings.delete('/:state', async (c) => {
   const state = c.req.param('state');
   if (!state) return c.json({ error: 'state_required' }, 400);
   const sb = c.get('supabase');
-  const { error } = await sb.from('state_warehouse_mappings').delete().eq('state', state);
+  const { error } = await scopeToCompany(
+    sb.from('state_warehouse_mappings').delete().eq('state', state),
+    c,
+  );
   if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
   return c.json({ ok: true });
 });

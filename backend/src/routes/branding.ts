@@ -1,16 +1,29 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
 import { requirePermission } from "../middleware/auth";
-import { getBranding, setBranding, type Branding } from "../services/branding";
+import {
+  getBrandingForCompany,
+  setBrandingForCompany,
+  brandingKeyForCompany,
+  resolveCompanyCode,
+  type Branding,
+} from "../services/branding";
 import { audit } from "../services/audit";
 
 // ── Branding (company identity) ───────────────────────────────
+//
+// Multi-company: every route here operates on the ACTIVE company's branding
+// row (companyContext — the top-bar switcher's X-Company-Id header, falling
+// back to the hostname default, falling back to HOUZS). Switching company in
+// the top bar therefore IS the "company selector" for Settings → Branding:
+// the same UI edits whichever company is active. Single-company installs
+// resolve HOUZS and are byte-identical to the pre-multi-company behaviour.
 //
 // GET  /api/branding — any authenticated user (the global auth middleware
 //   already gates /api/*). The frontend reads this for PDF letterheads + the
 //   shell chrome, so it must be available to every signed-in user.
 // PUT  /api/branding — admin-gated (settings.manage, same as the email
-//   settings route). The owner edits the single config here.
+//   settings route). The owner edits the active company's config here.
 //
 // Logo (2026-07 — owner batch):
 // POST   /api/branding/logo — admin-gated raw-binary upload (png/jpg, ≤1 MB).
@@ -26,8 +39,14 @@ import { audit } from "../services/audit";
 const app = new Hono<{ Bindings: Env }>();
 
 app.get("/", async (c) => {
-  const branding = await getBranding(c.env);
-  return c.json({ branding });
+  // Active company for this request — companyContext's resolution, or HOUZS
+  // on a pre-migration / single-company install where the middleware left it
+  // unset. Same per-route pattern below.
+  const companyCode = await resolveCompanyCode(c.env, c.get("companyCode"));
+  const branding = await getBrandingForCompany(c.env, companyCode);
+  // companyCode rides along so the frontend can pick the matching default set
+  // (a blank 2990 field must stay blank, never snap to a Houzs literal).
+  return c.json({ branding, companyCode });
 });
 
 app.put("/", requirePermission("settings.manage"), async (c) => {
@@ -42,7 +61,8 @@ app.put("/", requirePermission("settings.manage"), async (c) => {
   // Company name is the one load-bearing field (it anchors the OCR prompt +
   // every letterhead) — reject a blank/whitespace-only name. Merge the rest
   // over the current row so a partial PUT only updates the fields it sends.
-  const current = await getBranding(c.env);
+  const companyCode = await resolveCompanyCode(c.env, c.get("companyCode"));
+  const current = await getBrandingForCompany(c.env, companyCode);
   const str = (v: unknown, fallback: string): string =>
     typeof v === "string" ? v.trim() : fallback;
   const next: Branding = {
@@ -58,15 +78,15 @@ app.put("/", requirePermission("settings.manage"), async (c) => {
     return c.json({ error: "companyName is required" }, 400);
   }
 
-  await setBranding(c.env, next, user?.id ?? null);
+  await setBrandingForCompany(c.env, companyCode, next, user?.id ?? null);
   await audit(c, {
     action: "settings.branding",
     entityType: "app_setting",
-    entityId: "branding",
-    summary: "Company branding updated",
-    meta: { companyName: next.companyName },
+    entityId: brandingKeyForCompany(companyCode),
+    summary: `Company branding updated (${companyCode})`,
+    meta: { companyName: next.companyName, companyCode },
   });
-  return c.json({ branding: next });
+  return c.json({ branding: next, companyCode });
 });
 
 // ── Logo upload / serve / remove ──────────────────────────────
@@ -100,15 +120,17 @@ app.post("/logo", requirePermission("settings.manage"), async (c) => {
     return c.json({ error: "Logo must be under 1 MB" }, 413);
   }
 
-  const key = `branding/logo-${Date.now()}.${ext}`;
+  const companyCode = await resolveCompanyCode(c.env, c.get("companyCode"));
+  const key = `branding/${companyCode.toLowerCase()}-logo-${Date.now()}.${ext}`;
   await c.env.POD_BUCKET.put(key, buf, { httpMetadata: { contentType } });
 
-  // Point the single branding row at the new object; best-effort clean up the
-  // previous one (orphans are cheap; a failed delete never fails the upload).
-  const current = await getBranding(c.env);
+  // Point the active company's branding row at the new object; best-effort
+  // clean up the previous one (orphans are cheap; a failed delete never fails
+  // the upload).
+  const current = await getBrandingForCompany(c.env, companyCode);
   const prevKey = current.logoR2Key;
   const next: Branding = { ...current, logoR2Key: key };
-  await setBranding(c.env, next, user?.id ?? null);
+  await setBrandingForCompany(c.env, companyCode, next, user?.id ?? null);
   if (prevKey && prevKey !== key) {
     try { await c.env.POD_BUCKET.delete(prevKey); } catch { /* orphan is fine */ }
   }
@@ -116,11 +138,11 @@ app.post("/logo", requirePermission("settings.manage"), async (c) => {
   await audit(c, {
     action: "settings.branding",
     entityType: "app_setting",
-    entityId: "branding",
-    summary: "Company logo uploaded",
-    meta: { logoR2Key: key, bytes: buf.byteLength },
+    entityId: brandingKeyForCompany(companyCode),
+    summary: `Company logo uploaded (${companyCode})`,
+    meta: { logoR2Key: key, bytes: buf.byteLength, companyCode },
   });
-  return c.json({ ok: true, branding: next });
+  return c.json({ ok: true, branding: next, companyCode });
 });
 
 /**
@@ -129,7 +151,7 @@ app.post("/logo", requirePermission("settings.manage"), async (c) => {
  * drawn client-side by every signed-in user. 404 when no logo is set.
  */
 app.get("/logo", async (c) => {
-  const branding = await getBranding(c.env);
+  const branding = await getBrandingForCompany(c.env, await resolveCompanyCode(c.env, c.get("companyCode")));
   if (!branding.logoR2Key) return c.json({ error: "No logo uploaded" }, 404);
   const obj = await c.env.POD_BUCKET.get(branding.logoR2Key);
   if (!obj) return c.json({ error: "Logo missing" }, 404);
@@ -146,21 +168,22 @@ app.get("/logo", async (c) => {
  */
 app.delete("/logo", requirePermission("settings.manage"), async (c) => {
   const user = c.get("user");
-  const current = await getBranding(c.env);
+  const companyCode = await resolveCompanyCode(c.env, c.get("companyCode"));
+  const current = await getBrandingForCompany(c.env, companyCode);
   const prevKey = current.logoR2Key;
   if (prevKey) {
     const next: Branding = { ...current, logoR2Key: "" };
-    await setBranding(c.env, next, user?.id ?? null);
+    await setBrandingForCompany(c.env, companyCode, next, user?.id ?? null);
     try { await c.env.POD_BUCKET.delete(prevKey); } catch { /* orphan is fine */ }
   }
   await audit(c, {
     action: "settings.branding",
     entityType: "app_setting",
-    entityId: "branding",
-    summary: "Company logo removed",
-    meta: { logoR2Key: prevKey },
+    entityId: brandingKeyForCompany(companyCode),
+    summary: `Company logo removed (${companyCode})`,
+    meta: { logoR2Key: prevKey, companyCode },
   });
-  return c.json({ ok: true, branding: { ...current, logoR2Key: "" } });
+  return c.json({ ok: true, branding: { ...current, logoR2Key: "" }, companyCode });
 });
 
 export default app;

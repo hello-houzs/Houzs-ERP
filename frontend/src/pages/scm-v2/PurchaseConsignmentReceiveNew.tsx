@@ -36,6 +36,7 @@ import {
 } from '../../vendor/scm/lib/purchase-consignment-order-queries';
 import { useSuppliers, useSupplierDetail } from '../../vendor/scm/lib/suppliers-queries';
 import { useMfgProducts, useMaintenanceConfig } from '../../vendor/scm/lib/mfg-products-queries';
+import { useDebouncedValue } from '../../vendor/scm/lib/hooks';
 import { useFabricTrackings } from '../../vendor/scm/lib/fabric-queries';
 import { PcVariantEditor } from '../../vendor/scm/components/PcVariantEditor';
 import { useWarehouses } from '../../vendor/scm/lib/inventory-queries';
@@ -264,9 +265,13 @@ export const PurchaseConsignmentReceiveNew = () => {
   }, [warehouseId, po, warehousesQ.data]);
 
   const [productQuery, setProductQuery] = useState<string>('');
+  /* Perf — debounce the datalist search so a fast typist fires one
+     /mfg-products request per pause, not per keystroke. Native <datalist>
+     renders <option>s directly, so no render cap is needed — only the refetch. */
+  const debouncedProductQuery = useDebouncedValue(productQuery, 250);
   const productsQ = useMfgProducts({
-    search: productQuery,
-    enabled: isManual && productQuery.trim().length >= 2,
+    search: debouncedProductQuery,
+    enabled: isManual && debouncedProductQuery.trim().length >= 2,
   });
 
   const allSkusQ = useMfgProducts({ enabled: isManual && !!supplierId });

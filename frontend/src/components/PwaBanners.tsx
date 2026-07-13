@@ -1,4 +1,7 @@
 import { useEffect, useState } from "react";
+import { CompanyMark } from "./CompanyMark";
+import { shortCompanyName } from "../lib/branding";
+import { useBranding } from "../hooks/useBranding";
 import { Download, WifiOff, X } from "lucide-react";
 import {
   onInstallAvailability,
@@ -22,6 +25,7 @@ const DISMISS_KEY = "pwa:install:dismissed-at";
 const NAG_AFTER_DAYS = 7;
 
 export function PwaBanners() {
+  const installBranding = useBranding();
   const [canInstall, setCanInstall] = useState(false);
   const [online, setOnline] = useState(true);
   const [showInstall, setShowInstall] = useState(false);
@@ -77,15 +81,16 @@ export function PwaBanners() {
                 pure-white silhouette, matching the sidebar's logo treatment
                 (see Sidebar.tsx LOGO_MARK_SRC usage). */}
             <div className="flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-xl bg-ink p-2">
-              <img
-                src="/logo-hc-mark.png"
-                alt="Houzs Century"
-                className="h-full w-full object-contain brightness-0 invert"
+              <CompanyMark
+                variant="mark"
+                imgClassName="h-full w-full object-contain brightness-0 invert"
+                uploadedImgClassName="h-full w-full object-contain"
+                textClassName="text-[13px] font-bold text-white"
               />
             </div>
             <div className="flex-1">
               <div className="text-[13.5px] font-bold text-ink">
-                Install Houzs Century · ERP
+                Install {shortCompanyName(installBranding.companyName)} · ERP
               </div>
               <div className="mt-0.5 text-[11.5px] leading-relaxed text-ink-secondary">
                 Add it to your home screen — opens in one tap, runs like a native app, and works even on a weak connection.
