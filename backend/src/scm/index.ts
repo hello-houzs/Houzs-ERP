@@ -67,6 +67,7 @@ import { lorries } from "./routes/lorries";
 import { soSettings } from "./routes/so-settings";
 import { freeItemCampaigns } from "./routes/free-item-campaigns";
 import { modelFreeGifts } from "./routes/model-free-gifts";
+import { posCart } from "./routes/pos-cart";
 
 import { scmAreaGuard } from "./middleware/area-guard";
 
@@ -329,5 +330,11 @@ scm.route("/scan-payment", scanPayment);
 // slip row — a view-level sales rep can attach slips to their own draft.
 scm.use("/slips/*", scmAreaGuard("scm.sales.orders", { writeLevel: "view" }));
 scm.route("/slips", slips);
+
+// pos-cart: the caller's OWN live in-progress POS cart (ported from 2990's,
+// #385). Self-owned per-caller resource keyed by user.id — no area WRITE gate
+// (like state-warehouse-mappings, it stays on the coarse scm.access umbrella;
+// a rep saving their own working cart must not be blocked by an L2 edit gate).
+scm.route("/pos-cart", posCart);
 
 export default scm;
