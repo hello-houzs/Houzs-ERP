@@ -243,6 +243,56 @@ async function recomputeTotals(sb: any, deliveryOrderId: string) {
 
    EXPORTED (Costing B, 2026-06-01) so the recost engine (apps/api/src/lib/
    recost.ts) can re-run it after a PI/GR price correction re-costs the lots. */
+/* ── resolveDoSofaBatchMap (Audit fix C1, 2026-07-13) ─────────────────────────
+   SHARED sofa-batch resolution for every inventory seam of a DO — the single
+   "which batch_no does each SO line's movement carry?" answer. Two sources:
+     1. mfg_sales_order_items.allocated_batch_no — the allocator's lock, set
+        once a covering batch is PHYSICALLY received (normal ship).
+     2. Drop-ship (mig 0057) — a drop-ship sofa line ships BEFORE receipt, so
+        the allocator never locked a batch. Resolve the EXPECTED batch (= the
+        bound live PO number) for SOFA lines still missing one, exactly like
+        the first-ship deduction does.
+   Previously deductInventoryForDo / restampDoActualCost each had their own
+   copy of this logic while resyncInventoryForDo only knew source 1 — so the
+   add-line / qty-increase PATCH paths wrote a drop-ship OUT UN-BATCHED (plain
+   FIFO ate other lots, the receipt-time reconcile never matched it, COGS stayed
+   0 forever). One helper, three callers, no drift. Best-effort throughout:
+   absent columns → fewer batches → un-batched movement (never throws). */
+async function resolveDoSofaBatchMap(
+  sb: any,
+  items: Array<{ so_item_id?: string | null; item_code: string; item_group?: string | null }>,
+  isDropship: boolean,
+): Promise<Map<string, string>> {
+  const batchBySoItem = new Map<string, string>();
+  const soItemIds = [...new Set(items.map((it) => it.so_item_id ?? null).filter((x): x is string => !!x))];
+  if (soItemIds.length === 0) return batchBySoItem;
+  try {
+    const { data: bRows, error } = await sb.from('mfg_sales_order_items')
+      .select('id, allocated_batch_no').in('id', soItemIds);
+    if (!error) for (const r of (bRows ?? []) as Array<{ id: string; allocated_batch_no: string | null }>) {
+      if (r.allocated_batch_no) batchBySoItem.set(r.id, r.allocated_batch_no);
+    }
+  } catch { /* column absent pre-0121 — no allocator batches */ }
+  if (isDropship) {
+    const missing = new Set(soItemIds.filter((sid) => !batchBySoItem.has(sid)));
+    if (missing.size > 0) {
+      const sofaRows = items
+        .filter((it) => it.so_item_id && missing.has(it.so_item_id))
+        .map((it) => ({ itemCode: it.item_code, itemGroup: it.item_group ?? null, soItemId: it.so_item_id ?? null }));
+      const sofaSoIds = await detectSofaSoItemIds(sb, sofaRows);
+      if (sofaSoIds.size > 0) {
+        /* 'latest' (default) — movement paths must stay deterministic even in
+           the rare multi-PO window so a resync delta lands in the SAME bucket
+           the original OUT was stamped with. New drop-ship APPROVALS block on
+           multi-PO separately (buildDropshipOffenders, audit H3). */
+        const expected = await resolveExpectedBatchBySoItem(sb, [...sofaSoIds]);
+        for (const [sid, eb] of expected) if (eb.poNumber) batchBySoItem.set(sid, eb.poNumber);
+      }
+    }
+  }
+  return batchBySoItem;
+}
+
 export async function restampDoActualCost(sb: any, deliveryOrderId: string) {
   try {
     /* Forward-compat (mig 0057): is_dropship column may not exist yet — retry without it. */
@@ -267,37 +317,15 @@ export async function restampDoActualCost(sb: any, deliveryOrderId: string) {
     const lineWh = await resolveDoLineWarehouses(
       sb, items as Array<{ id: string; so_item_id?: string | null }>, headerWarehouseId);
 
-    // Sofa batch per so_item — same source the ship used (allocated_batch_no).
-    const batchBySoItem = new Map<string, string>();
-    const soItemIds = [...new Set((items as Array<{ so_item_id?: string | null }>)
-      .map((it) => it.so_item_id).filter((x): x is string => !!x))];
-    if (soItemIds.length > 0) {
-      try {
-        const { data: bRows, error } = await sb.from('mfg_sales_order_items')
-          .select('id, allocated_batch_no').in('id', soItemIds);
-        if (!error) for (const r of (bRows ?? []) as Array<{ id: string; allocated_batch_no: string | null }>) {
-          if (r.allocated_batch_no) batchBySoItem.set(r.id, r.allocated_batch_no);
-        }
-      } catch { /* column absent pre-0121 — no batches */ }
-    }
-    /* Drop-ship (mig 0057) — a drop-ship sofa line's OUT was stamped with the
-       EXPECTED (bound PO) batch, not allocated_batch_no. Resolve the SAME
-       expected batch here so the bucket key matches the OUT movement and the
-       line picks up the arriving lot's real cost after the receipt-time
-       reconcile. Sofa lines only. */
-    if (isDropship && soItemIds.length > 0) {
-      const missing = new Set(soItemIds.filter((sid) => !batchBySoItem.has(sid)));
-      if (missing.size > 0) {
-        const sofaRows = (items as Array<{ so_item_id?: string | null; item_code: string; item_group?: string | null }>)
-          .filter((it) => it.so_item_id && missing.has(it.so_item_id))
-          .map((it) => ({ itemCode: it.item_code, itemGroup: it.item_group ?? null, soItemId: it.so_item_id ?? null }));
-        const sofaSoIds = await detectSofaSoItemIds(sb, sofaRows);
-        if (sofaSoIds.size > 0) {
-          const expected = await resolveExpectedBatchBySoItem(sb, [...sofaSoIds]);
-          for (const [sid, eb] of expected) if (eb.poNumber) batchBySoItem.set(sid, eb.poNumber);
-        }
-      }
-    }
+    /* Sofa batch per so_item — same shared resolution the ship used
+       (allocated_batch_no + drop-ship expected batch), so the bucket key here
+       always matches the OUT movement and a drop-ship line picks up the
+       arriving lot's real cost after the receipt-time reconcile (C1 helper). */
+    const batchBySoItem = await resolveDoSofaBatchMap(
+      sb,
+      items as Array<{ so_item_id?: string | null; item_code: string; item_group?: string | null }>,
+      isDropship,
+    );
     const batchAware = batchBySoItem.size > 0;
 
     // Net actual cost per (warehouse, product, variant, batch) bucket.
@@ -551,44 +579,18 @@ async function deductInventoryForDo(sb: any, deliveryOrderId: string, performedB
      line as allocated_batch_no; carry it onto the OUT movement so the FIFO
      trigger consumes strictly from that batch (fn_consume_fifo_batch, 0121).
      Only sofa lines carry a batch — non-sofa lines stay NULL → plain FIFO.
-     Forward-compat: read best-effort; absent column → every line un-batched. */
-  const batchBySoItem = new Map<string, string>();
-  const soItemIds = [...new Set((items as Array<{ so_item_id?: string | null }>).map((it) => it.so_item_id ?? null).filter((x): x is string => !!x))];
-  if (soItemIds.length > 0) {
-    try {
-      const { data: bRows, error: bErr } = await sb
-        .from('mfg_sales_order_items')
-        .select('id, allocated_batch_no')
-        .in('id', soItemIds);
-      if (!bErr) {
-        for (const r of (bRows ?? []) as Array<{ id: string; allocated_batch_no: string | null }>) {
-          if (r.allocated_batch_no) batchBySoItem.set(r.id, r.allocated_batch_no);
-        }
-      }
-    } catch { /* column absent pre-0121 — no batches, plain FIFO */ }
-  }
-
-  /* Drop-ship (mig 0057) — a drop-ship sofa line ships BEFORE receipt, so the
+     Drop-ship (mig 0057) — a drop-ship sofa line ships BEFORE receipt, so the
      allocator never locked allocated_batch_no. Stamp the OUT with the EXPECTED
-     batch (= bound PO number) so it (a) nets against the GRN's IN in
+     batch (= bound live PO number) so it (a) nets against the GRN's IN in
      inventory_balances and (b) routes through fn_consume_fifo_batch under the
-     same batch the receipt-time reconcile keys on. Resolve ONLY for SOFA lines
-     missing a batch — a non-sofa line must stay un-batched (plain FIFO). */
-  if (isDropship && soItemIds.length > 0) {
-    const missing = new Set(soItemIds.filter((sid) => !batchBySoItem.has(sid)));
-    if (missing.size > 0) {
-      const sofaRows = (items as Array<{ so_item_id?: string | null; item_code: string; item_group?: string | null }>)
-        .filter((it) => it.so_item_id && missing.has(it.so_item_id))
-        .map((it) => ({ itemCode: it.item_code, itemGroup: it.item_group ?? null, soItemId: it.so_item_id ?? null }));
-      const sofaSoIds = await detectSofaSoItemIds(sb, sofaRows);
-      if (sofaSoIds.size > 0) {
-        const expected = await resolveExpectedBatchBySoItem(sb, [...sofaSoIds]);
-        for (const [sid, eb] of expected) {
-          if (eb.poNumber) batchBySoItem.set(sid, eb.poNumber);
-        }
-      }
-    }
-  }
+     same batch the receipt-time reconcile keys on. Both sources resolve via
+     the SHARED helper (audit C1) so this path can never drift from resync /
+     restamp. Forward-compat: absent columns → un-batched, plain FIFO. */
+  const batchBySoItem = await resolveDoSofaBatchMap(
+    sb,
+    items as Array<{ so_item_id?: string | null; item_code: string; item_group?: string | null }>,
+    isDropship,
+  );
 
   /* Collapse identical (warehouse_id, product_code, variant_key, batch_no) lines
      into one OUT row. A DO can legitimately list the same product across two
@@ -666,15 +668,23 @@ async function deductInventoryForDo(sb: any, deliveryOrderId: string, performedB
    writes. Cancel-reversal still works via reverseMovements (it nets per
    bucket). Non-shipped DOs skip — deductInventoryForDo handles the first ship. */
 async function resyncInventoryForDo(sb: any, deliveryOrderId: string, performedBy: string) {
-  // Header — need warehouse_id, do_number, status.
-  const { data: doHeader } = await sb.from('delivery_orders')
-    .select('do_number, status, warehouse_id')
+  // Header — need warehouse_id, do_number, status, is_dropship (audit C1).
+  /* Forward-compat (mig 0057): is_dropship column may not exist yet — retry without it. */
+  let hdrRes = await sb.from('delivery_orders')
+    .select('do_number, status, warehouse_id, is_dropship')
     .eq('id', deliveryOrderId).maybeSingle();
+  if (hdrRes.error && (hdrRes.error.message ?? '').includes('is_dropship')) {
+    hdrRes = await sb.from('delivery_orders')
+      .select('do_number, status, warehouse_id')
+      .eq('id', deliveryOrderId).maybeSingle();
+  }
+  const doHeader = hdrRes.data;
   if (!doHeader) return;
   const status = ((doHeader as { status: string | null }).status ?? '').toUpperCase();
   if (!SHIPPED_STATES.includes(status)) return; // not yet shipped → no OUT yet → nothing to sync
   const headerWarehouseId = (doHeader as { warehouse_id: string | null }).warehouse_id ?? null;
   const doNo = (doHeader as { do_number: string }).do_number;
+  const isDropship = (doHeader as { is_dropship?: boolean }).is_dropship === true;
 
   // 1. Target qty per (warehouse_id, product_code, variant_key) bucket — sum of
   //    current active DO lines (mirror of deductInventoryForDo's collapsing).
@@ -685,22 +695,21 @@ async function resyncInventoryForDo(sb: any, deliveryOrderId: string, performedB
     .eq('delivery_order_id', deliveryOrderId);
   const lineWh = await resolveDoLineWarehouses(sb, (items ?? []) as Array<{ id: string; so_item_id?: string | null }>, headerWarehouseId);
 
-  /* Sofa batch per so_item — same source the first ship used (allocated_batch_no).
-     batch_no JOINS the bucket key so a resync delta consumes/returns the SAME
-     dye-lot batch the original OUT drew from, not a random FIFO lot. Best-effort:
-     absent column (pre-0121) / non-sofa → empty map → plain non-batched resync,
-     identical to the old behaviour. */
-  const batchBySoItem = new Map<string, string>();
-  const soItemIds = [...new Set(((items ?? []) as Array<{ so_item_id?: string | null }>).map((it) => it.so_item_id).filter((x): x is string => !!x))];
-  if (soItemIds.length > 0) {
-    try {
-      const { data: bRows, error } = await sb.from('mfg_sales_order_items')
-        .select('id, allocated_batch_no').in('id', soItemIds);
-      if (!error) for (const r of (bRows ?? []) as Array<{ id: string; allocated_batch_no: string | null }>) {
-        if (r.allocated_batch_no) batchBySoItem.set(r.id, r.allocated_batch_no);
-      }
-    } catch { /* column absent pre-0121 — no batches, plain FIFO resync */ }
-  }
+  /* Sofa batch per so_item — same SHARED resolution the first ship used
+     (allocated_batch_no + drop-ship expected batch, audit C1). batch_no JOINS
+     the bucket key so a resync delta consumes/returns the SAME dye-lot batch
+     the original OUT drew from, not a random FIFO lot. Before C1 this only
+     read allocated_batch_no, so an add-line / qty-increase on a DROP-SHIP DO
+     (whose lines have no allocated batch) wrote its delta OUT UN-BATCHED —
+     plain FIFO ate other lots and the receipt-time reconcile (keyed on
+     batch_no) never costed it. Best-effort: absent columns (pre-0121) /
+     non-sofa → empty map → plain non-batched resync, identical to the old
+     behaviour. */
+  const batchBySoItem = await resolveDoSofaBatchMap(
+    sb,
+    (items ?? []) as Array<{ so_item_id?: string | null; item_code: string; item_group?: string | null }>,
+    isDropship,
+  );
   const batchAware = batchBySoItem.size > 0;
 
   type Bucket = { warehouse_id: string; product_code: string; variant_key: string; product_name: string | null; qty: number; batch_no: string | null };
@@ -858,10 +867,54 @@ async function reverseInventoryForDo(sb: any, deliveryOrderId: string, performed
     .eq('source_doc_id', deliveryOrderId);
   if ((existing ?? 0) > 0) return; // already reversed — no-op
 
-  const { data: doHeader } = await sb.from('delivery_orders')
-    .select('do_number, warehouse_id')
+  /* Forward-compat (mig 0057): is_dropship column may not exist yet — retry without it. */
+  let hdrRes = await sb.from('delivery_orders')
+    .select('do_number, warehouse_id, is_dropship')
     .eq('id', deliveryOrderId).maybeSingle();
+  if (hdrRes.error && (hdrRes.error.message ?? '').includes('is_dropship')) {
+    hdrRes = await sb.from('delivery_orders')
+      .select('do_number, warehouse_id')
+      .eq('id', deliveryOrderId).maybeSingle();
+  }
+  const doHeader = hdrRes.data;
   const doNo = (doHeader as { do_number: string } | null)?.do_number ?? deliveryOrderId;
+  const isDropship = (doHeader as { is_dropship?: boolean } | null)?.is_dropship === true;
+
+  /* ── Drop-ship DO (audit C2 + H4, migration 0088) ──────────────────────────
+     A drop-ship DO's BATCHED buckets must NOT be reversed with a batched IN:
+       C2 — cancel BEFORE receive: the OUT consumed no lot (0 cost), so a
+            batched IN makes the FIFO trigger mint a PHANTOM open lot (qty N,
+            batch = the bound PO number) for stock that was never received —
+            sofa coverage then sees shippable stock that doesn't exist.
+       H4 — cancel AFTER receive: the receipt-time reconcile's
+            inventory_lot_consumptions stay attributed to the now-cancelled DO
+            (overstated COGS) and the restored unit sits in a synthetic lot
+            that recost.ts never re-costs.
+     fn_reverse_dropship_do_out instead restores + deletes the DO's lot
+     consumptions (original lots come back at original cost), zeroes the OUT
+     cost stamps, and writes a balance-only add-back per batched bucket (its
+     trigger-minted lot is closed inside the fn). Unbatched buckets fall
+     through to the plain ADJUSTMENT path below, unchanged. If the fn is
+     missing (pre-0088) or errors, we fall back to the legacy batched-IN
+     reversal so a cancel NEVER leaves stock permanently deducted. */
+  let dropshipBatchedHandled = false;
+  if (isDropship) {
+    try {
+      const { error: dsErr } = await sb.rpc('fn_reverse_dropship_do_out', {
+        p_do_id: deliveryOrderId,
+        p_performed_by: performedBy ?? null,
+      });
+      if (!dsErr) {
+        dropshipBatchedHandled = true;
+      } else if (!(dsErr.message ?? '').includes('fn_reverse_dropship_do_out')) {
+        /* eslint-disable-next-line no-console */
+        console.error('[dropship] cancel reversal fn failed (falling back to batched IN):', dsErr.message);
+      }
+    } catch (e) {
+      /* eslint-disable-next-line no-console */
+      console.error('[dropship] cancel reversal fn exception (falling back to batched IN):', e);
+    }
+  }
 
   // Net OUT per (warehouse, product_code, variant_key, batch_no) bucket from THIS
   // DO's own IN/OUT movements. batch_no is read from the OUT rows themselves (the
@@ -909,6 +962,10 @@ async function reverseInventoryForDo(sb: any, deliveryOrderId: string, performed
      index (ix_inv_mov_do_source is scoped WHERE source_doc_type='DO'). */
   const movements = [...byBucket.values()]
     .filter((b) => b.net_out > 0)
+    /* Batched buckets of a drop-ship DO were already reversed inside
+       fn_reverse_dropship_do_out (consumption restore + balance-only add-back,
+       audit C2 + H4) — only the plain (unbatched) buckets still need rows. */
+    .filter((b) => !(dropshipBatchedHandled && b.batch_no))
     .map((b) => {
       const unit_cost_sen = b.out_qty > 0 ? Math.round(b.out_total_cost / b.out_qty) : 0;
       const base = {
