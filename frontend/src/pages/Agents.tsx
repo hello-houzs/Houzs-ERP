@@ -123,6 +123,22 @@ interface BriefResp {
   generatedAt?: string | null;
 }
 
+interface ReviewFamily {
+  family: Family;
+  task: string;
+  lastRunAt: string | null;
+  runs: number;
+  errors: number;
+  proposals: { raised: number; pending: number; approved: number; rejected: number } | null;
+  findings: { open: number; resolvedRecently: number } | null;
+  decisions: { approved: number; rejected: number };
+}
+
+interface ReviewResp {
+  windowDays: number;
+  families: ReviewFamily[];
+}
+
 interface FamilyMeta {
   id: Family;
   label: string;
@@ -160,6 +176,7 @@ export function Agents() {
   const dialog = useDialog();
   const status = useQuery<StatusResp>(() => getData("/api/agents/status"));
   const [selected, setSelected] = useState<Family>("DELIVERY");
+  const [view, setView] = useState<"console" | "scorecard">("console");
   const [busy, setBusy] = useState<string | null>(null);
 
   const meta = FAMILIES.find((f) => f.id === selected)!;
@@ -239,6 +256,20 @@ export function Agents() {
             </div>
           )}
 
+          {/* View tabs */}
+          <div className="flex gap-1 border-b border-border">
+            <TabBtn active={view === "console"} onClick={() => setView("console")}>
+              Console
+            </TabBtn>
+            <TabBtn active={view === "scorecard"} onClick={() => setView("scorecard")}>
+              Scorecard
+            </TabBtn>
+          </div>
+
+          {view === "scorecard" ? (
+            <Scorecard />
+          ) : (
+          <>
           {/* Metrics */}
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <StatCard label="Families live" value={`${liveCount} / ${FAMILIES.length}`} />
@@ -297,10 +328,39 @@ export function Agents() {
           </div>
 
           {/* Working surface for the selected family */}
-          <WorkingSurface meta={meta} />
+          <WorkingSurface meta={meta} card={data.agents.find((a) => a.id === selected)} />
+          </>
+          )}
         </div>
       )}
     </div>
+  );
+}
+
+// ── View tab button ──────────────────────────────────────────────────────────
+
+function TabBtn({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "-mb-px border-b-2 px-3 py-2 text-[13px] font-medium transition-colors",
+        active
+          ? "border-primary text-ink"
+          : "border-transparent text-ink-secondary hover:text-ink",
+      )}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -439,7 +499,7 @@ function MiniBtn({
 
 // ── Working surface (proposals / findings + brief + config + notebook) ───────
 
-function WorkingSurface({ meta }: { meta: FamilyMeta }) {
+function WorkingSurface({ meta, card }: { meta: FamilyMeta; card: AgentCard | undefined }) {
   const Icon = meta.icon;
   return (
     <div className={CARD}>
@@ -453,12 +513,90 @@ function WorkingSurface({ meta }: { meta: FamilyMeta }) {
 
       <AiFocus meta={meta} />
 
+      <RecentErrors errors={card?.recentErrors ?? []} />
+
       <div className="mt-4">
         {meta.findings ? <FindingsPanel meta={meta} /> : <ProposalsPanel meta={meta} />}
       </div>
 
       <ConfigPanel family={meta.id} />
+      <RunHistory meta={meta} />
       <FeedbackPanel meta={meta} />
+    </div>
+  );
+}
+
+// ── Recent errors (from /status → card.recentErrors) ─────────────────────────
+
+function RecentErrors({ errors }: { errors: RunRow[] }) {
+  if (errors.length === 0) return null;
+  return (
+    <div className="mt-3 rounded-md border border-err/40 bg-err/5 px-3 py-2.5">
+      <div className="mb-1.5 flex items-center gap-1.5 text-[12px] font-semibold text-err">
+        <X size={14} />
+        Recent errors ({errors.length})
+      </div>
+      <ul className="flex flex-col gap-1">
+        {errors.map((e) => (
+          <li key={e.id} className="text-[12px] leading-snug text-ink-secondary">
+            <span className="text-ink-muted">
+              {e.startedAt ? relativeTime(e.startedAt) : "—"}
+            </span>{" "}
+            {e.error ?? e.summary ?? "Run failed"}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+// ── Run history drawer (read-only, from /history?family=) ────────────────────
+
+function RunHistory({ meta }: { meta: FamilyMeta }) {
+  const [open, setOpen] = useState(false);
+  const q = useQuery<RunRow[]>(
+    () => (open ? getData(`/api/agents/history?family=${meta.id}&limit=20`) : Promise.resolve([])),
+    [meta.id, open],
+  );
+  const rows = q.data ?? [];
+
+  return (
+    <div className="mt-5 border-t border-border pt-4">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="mb-2 flex items-center gap-1.5 text-[12px] font-semibold uppercase tracking-wide text-ink-muted transition-colors hover:text-ink"
+      >
+        <RefreshCw size={13} />
+        Run history
+        <span className="text-ink-muted/70">{open ? "(hide)" : "(show)"}</span>
+      </button>
+      {open &&
+        (q.loading && !q.data ? (
+          <ListSkeleton />
+        ) : rows.length === 0 ? (
+          <p className="text-[13px] text-ink-secondary">No runs recorded yet.</p>
+        ) : (
+          <div className="divide-y divide-border">
+            {rows.map((r) => (
+              <div key={r.id} className="flex items-start justify-between gap-3 py-2.5">
+                <div className="min-w-0">
+                  <div className="mb-0.5 flex flex-wrap items-center gap-2">
+                    <Badge tone={r.status === "error" ? "error" : "neutral"} caseless>
+                      {r.status}
+                    </Badge>
+                    {r.startedAt && (
+                      <span className="text-[11px] text-ink-muted">{relativeTime(r.startedAt)}</span>
+                    )}
+                  </div>
+                  <p className="text-[13px] leading-snug text-ink">
+                    {r.error ?? r.summary ?? "—"}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        ))}
     </div>
   );
 }
@@ -748,6 +886,102 @@ function FeedbackPanel({ meta }: { meta: FamilyMeta }) {
           Add
         </Button>
       </div>
+    </div>
+  );
+}
+
+// ── Scorecard (read-only per-family performance, from /review) ───────────────
+
+function pct(part: number, whole: number): number | null {
+  return whole > 0 ? Math.round((part / whole) * 100) : null;
+}
+
+function Scorecard() {
+  const q = useQuery<ReviewResp>(() => getData("/api/agents/review"));
+
+  if (q.loading && !q.data) return <ListSkeleton />;
+  if (q.error) {
+    return (
+      <div className={CARD}>
+        <EmptyState icon={<BarChart3 size={26} />} message="Couldn't load the scorecard" description={q.error} />
+      </div>
+    );
+  }
+  const data = q.data;
+  if (!data) return null;
+
+  return (
+    <div className={CARD}>
+      <div className="mb-4 flex items-center gap-2">
+        <BarChart3 size={18} className="text-primary" />
+        <h2 className="text-[15px] font-semibold text-ink">Fleet scorecard</h2>
+        <span className="ml-auto text-[11px] text-ink-secondary">
+          Last {data.windowDays} days · outcomes only, read-only
+        </span>
+      </div>
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {data.families.map((f) => {
+          const fm = FAMILIES.find((x) => x.id === f.family);
+          const Icon = fm?.icon ?? Bot;
+          const approvalRate = f.proposals ? pct(f.proposals.approved, f.proposals.approved + f.proposals.rejected) : null;
+          return (
+            <div key={f.family} className="rounded-lg border border-border bg-surface p-4 shadow-stone">
+              <div className="mb-2 flex items-center gap-2">
+                <Icon size={16} className="text-ink-secondary" />
+                <span className="text-[13px] font-semibold text-ink">{fm?.label ?? f.family}</span>
+                {f.errors > 0 && (
+                  <Badge tone="error" className="ml-auto">
+                    {f.errors} err
+                  </Badge>
+                )}
+              </div>
+
+              <div className="mb-3 text-[11px] text-ink-secondary">
+                {f.runs} run{f.runs === 1 ? "" : "s"}
+                {f.lastRunAt ? ` · last ${relativeTime(f.lastRunAt)}` : " · never run"}
+              </div>
+
+              <dl className="flex flex-col gap-1.5 text-[12px]">
+                {f.proposals ? (
+                  <>
+                    <ScoreRow label="Proposals raised" value={String(f.proposals.raised)} />
+                    <ScoreRow
+                      label="Approved / rejected"
+                      value={`${f.proposals.approved} / ${f.proposals.rejected}`}
+                    />
+                    <ScoreRow
+                      label="Approval rate"
+                      value={approvalRate == null ? "—" : `${approvalRate}%`}
+                    />
+                    <ScoreRow label="Pending" value={String(f.proposals.pending)} />
+                  </>
+                ) : f.findings ? (
+                  <>
+                    <ScoreRow label="Open findings" value={String(f.findings.open)} />
+                    <ScoreRow label="Resolved (window)" value={String(f.findings.resolvedRecently)} />
+                  </>
+                ) : (
+                  <ScoreRow label="Proposals" value="—" />
+                )}
+                <ScoreRow
+                  label="Tuning approved / rejected"
+                  value={`${f.decisions.approved} / ${f.decisions.rejected}`}
+                />
+              </dl>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ScoreRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <dt className="text-ink-secondary">{label}</dt>
+      <dd className="font-medium text-ink">{value}</dd>
     </div>
   );
 }

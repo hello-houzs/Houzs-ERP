@@ -44,8 +44,9 @@
 // ---------------------------------------------------------------------------
 
 import type { Env } from "../../types";
-import { readAgentSetting } from "../agent-console";
+import { activeInstructions, readAgentSetting } from "../agent-console";
 import { registerAgent } from "../agent-scheduler";
+import { askAgentBrain, type AgentBrainUsageSink } from "../agent-brain";
 
 // ── Tunables (module-constant defaults; per-key overrides may live in
 //    app_settings['agents.document'] as whole-day numbers) ───────────────────
@@ -1022,6 +1023,45 @@ export async function documentAgentStatus(env: Env): Promise<DocumentAgentStatus
 // over the brief is the console lead's wiring, on top of, never inside, the
 // deterministic engine.
 
+// The Document Agent's brain voice — one paragraph of judgment over the
+// deterministic patrol brief, mirroring the other families' maybeAiFocus pass.
+const DOCUMENT_FOCUS_SYSTEM = [
+  "You are the Document Agent of Houzs, a Malaysian B2C furniture retailer. You",
+  "run a daily document-flow patrol over the SO->DO->SI->payment and",
+  "SO->PO->GRN->PI chains and keep a living worklist of findings (all money in",
+  "sen, RM x100). Write ONE short paragraph (3-5 sentences, plain English, no",
+  "markdown, no emoji) telling the owner what to chase first today: the most",
+  "critical open findings (delivered DOs missing an invoice, stuck SOs, payment",
+  "mismatches) and how much collection money is aging. Judgment and",
+  "prioritisation only — never invent numbers not in the payload. Honour",
+  "ownerInstructions when present.",
+].join(" ");
+
+/** Pre-compact the brief for the brain — counts and top rows, never tables. */
+function compactDocumentBrief(b: DocumentBrief) {
+  return {
+    generatedAt: b.generatedAt,
+    open: b.open,
+    topUrgent: b.topUrgent.slice(0, 5),
+    collection: {
+      invoices: b.collection.invoices,
+      totalOutstandingSen: b.collection.totalOutstandingSen,
+      buckets: b.collection.buckets,
+    },
+  };
+}
+
+/** Write the brain paragraph onto the newest brief snapshot (generated_at
+ *  ordered — the Document brief table's timestamp column). */
+async function writeDocumentAiFocus(env: Env, focus: string): Promise<void> {
+  await env.DB.prepare(
+    `UPDATE document_agent_briefs SET ai_focus = ?
+      WHERE id = (SELECT id FROM document_agent_briefs ORDER BY generated_at DESC LIMIT 1)`,
+  )
+    .bind(focus)
+    .run();
+}
+
 registerAgent({
   family: "DOCUMENT",
   task: "document-run",
@@ -1042,8 +1082,29 @@ registerAgent({
       ? { fire: true, reason: `${n} deliver${n === 1 ? "y" : "ies"} since last run — re-checking invoice coverage` }
       : { fire: false, reason: "no new deliveries since last run" };
   },
-  run: async (env, _ctx) => {
+  run: async (env, ctx) => {
     const r = await runDocumentAgent(env);
+
+    // AI focus — first run of the day only. ctx.llmKey is already budget-gated
+    // (llmKeyIfBudgetAllows) and undefined otherwise. Fails open to NULL: a
+    // brain failure never sinks the deterministic patrol.
+    if (ctx.llmKey) {
+      const sink: AgentBrainUsageSink = { tokensIn: 0, tokensOut: 0 };
+      const ownerInstructions = await activeInstructions(env.DB, "DOCUMENT");
+      const focus = await askAgentBrain(ctx.llmKey, {
+        system: DOCUMENT_FOCUS_SYSTEM,
+        payload: { brief: compactDocumentBrief(r.brief), ownerInstructions },
+        maxTokens: 400,
+        usageSink: sink,
+      });
+      ctx.addTokens(sink.tokensIn, sink.tokensOut);
+      if (focus) {
+        await writeDocumentAiFocus(env, focus).catch((e) =>
+          console.warn("[document-agent] ai_focus write failed:", e),
+        );
+      }
+    }
+
     return r.summary;
   },
 });
