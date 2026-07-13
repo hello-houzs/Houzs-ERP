@@ -3015,6 +3015,7 @@ const ACTION_LABEL: Record<string, string> = {
   UPDATE_LINE:    'Updated line',
   DELETE_LINE:    'Removed line',
   ADD_PAYMENT:    'Added payment',
+  UPDATE_PAYMENT: 'Edited payment',
   DELETE_PAYMENT: 'Removed payment',
 };
 

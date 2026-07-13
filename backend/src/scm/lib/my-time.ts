@@ -32,6 +32,20 @@ export function todayMyt(offsetDays = 0): string {
     .slice(0, 10);
 }
 
+/**
+ * The Malaysia (UTC+8) calendar date of a given instant, as `YYYY-MM-DD`.
+ *
+ * A UTC timestamp (e.g. a row's `created_at`) shifted +8h then read as a UTC
+ * date IS the Malaysian wall-clock day it happened on. Use this — not the raw
+ * UTC date slice — whenever a "same MY calendar day" comparison is needed
+ * (e.g. `mytDateOf(row.created_at) === todayMyt()`), so a row created at
+ * 23:30 UTC (07:30 MYT next day) isn't mis-bucketed a day behind.
+ */
+export function mytDateOf(instant: string | number | Date): string {
+  const t = instant instanceof Date ? instant.getTime() : new Date(instant).getTime();
+  return new Date(t + MY_OFFSET_MS).toISOString().slice(0, 10);
+}
+
 export interface PeriodBounds {
   /** Inclusive lower bound as a UTC ISO instant, or null = open (no lower bound). */
   startUtc: string | null;

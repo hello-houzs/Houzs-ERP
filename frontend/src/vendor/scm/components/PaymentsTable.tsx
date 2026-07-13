@@ -25,7 +25,7 @@ import { memo, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   DollarSign, Plus, Trash2, Save, FileText, Image as ImageIcon,
-  Calendar as CalIcon, User as UserIcon, Tag,
+  Calendar as CalIcon, User as UserIcon, Tag, Pencil,
 } from 'lucide-react';
 import { sortByText } from '../lib/sort-options';
 import { fetchPaymentSlipUrl, scanPaymentReceipt, type SlipUrlResponse } from '../lib/slip';
@@ -46,6 +46,7 @@ import { useStaff } from '../lib/admin-queries';
 import {
   useSalesOrderPayments,
   useAddSalesOrderPayment,
+  useEditSalesOrderPayment,
   useDeleteSalesOrderPayment,
   type SoPayment,
 } from '../lib/sales-order-queries';
@@ -174,6 +175,11 @@ export type PaymentDraft = {
      create deposit fields (which reuse the order-level proof) instead of the
      strict per-payment slip route. '' / undefined for a manually-added row. */
   receiptImageKey?:         string;
+  /* Same-day EDIT (owner 2026-07-13) — when set, this draft is an in-place edit
+     of the persisted payment with this id; commit PATCHes that row instead of
+     POSTing a new one, and the persisted row is hidden while the draft edits it.
+     Undefined for a normal new-payment draft. SAVED mode only. */
+  editingPersistedId?:      string;
 };
 
 export const newPaymentDraft = (defaultStaffId = ''): PaymentDraft => ({
@@ -360,6 +366,7 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
   const isSaved = props.docNo !== null;
   const paymentsQ     = useSalesOrderPayments(isSaved ? props.docNo : null);
   const addPayment    = useAddSalesOrderPayment();
+  const editPayment   = useEditSalesOrderPayment();
   const deletePayment = useDeleteSalesOrderPayment();
 
   /* SAVED-mode local drafts (pre-commit rows). DRAFT mode uses parent's
@@ -498,14 +505,91 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
     if (Object.keys(patch).length > 0) patchDraft(uid, patch);
   };
 
+  /* Same-day EDIT (owner 2026-07-13) — a persisted payment created on the
+     current MY calendar day may be corrected; after MYT midnight it locks. The
+     row's created_at (UTC) is bucketed to its MY day (shift +8h, read the date)
+     and compared to todayMyt(), so a receipt logged at 07:30 MYT (23:30 UTC the
+     day before) still reads as "today". */
+  const isCreatedTodayMyt = (createdAt: string | null | undefined): boolean => {
+    if (!createdAt) return false;
+    const t = new Date(createdAt).getTime();
+    if (Number.isNaN(t)) return false;
+    return new Date(t + 8 * 3600 * 1000).toISOString().slice(0, 10) === todayMyt();
+  };
+
+  /* installment_months (int|null) → the maintenance plan LABEL/value to rehydrate
+     the Plan <select> when editing a persisted row. Matches on parsed months;
+     null → One Shot; an unlisted term falls back to "N months". */
+  const installmentLabelForMonths = (months: number | null): string => {
+    if (!months) return ONE_SHOT_PLAN;
+    return installmentOpts.find((o) => parseInstallmentMonths(o.value) === months)?.value
+      ?? `${months} months`;
+  };
+
+  const isEditingPersisted = (id: string): boolean =>
+    savedDrafts.some((d) => d.editingPersistedId === id);
+
+  /* Seed an in-place edit draft from a persisted row and hide that row while the
+     draft edits it. Reuses the exact same inline fields as Add Payment. */
+  const beginEditPersisted = (p: SoPayment) => {
+    if (!isSaved || isEditingPersisted(p.id)) return;
+    setSavedDrafts((prev) => [...prev, {
+      uid: Math.random().toString(36).slice(2, 10),
+      paidAt: (p.paid_at ?? '').slice(0, 10) || todayMyt(),
+      methodLabel: apiToValue(p),
+      merchantProvider: p.merchant_provider ?? '',
+      installmentMonthsLabel:
+        (p.method === 'merchant' || p.method === 'installment')
+          ? installmentLabelForMonths(p.installment_months) : '',
+      onlineType: p.online_type ?? '',
+      amountCenti: p.amount_centi,
+      accountSheet: p.account_sheet ?? '',
+      approvalCode: p.approval_code ?? '',
+      collectedBy: p.collected_by ?? '',
+      slipUploadSessionId: null,
+      editingPersistedId: p.id,
+    }]);
+  };
+
+  /* Commit an edit draft → PATCH /:docNo/payments/:id. Same payload derivation
+     as commitDraft's POST (method-scoped sub-fields via draftMethodFields);
+     slip is untouched by an edit. On success the draft is dropped and the
+     (freshly refetched) persisted row reappears. */
+  const commitEdit = (d: PaymentDraft) => {
+    if (!isSaved || !d.editingPersistedId) return;
+    const { method } = labelToApi(d.methodLabel);
+    const body = {
+      docNo:        (props as SavedModeProps).docNo,
+      id:           d.editingPersistedId,
+      paidAt:       d.paidAt,
+      method,
+      amountCenti:  d.amountCenti,
+      accountSheet: d.accountSheet || null,
+      approvalCode: d.approvalCode || null,
+      collectedBy:  d.collectedBy  || null,
+      ...draftMethodFields(method, d),
+    };
+    editPayment.mutate(body as { docNo: string; id: string } & Record<string, unknown>, {
+      onSuccess: () => removeDraft(d.uid),
+      onError: (e) => {
+        // eslint-disable-next-line no-console
+        console.error('[payment] edit failed:', e);
+        notify({ title: 'Failed to save changes', body: e instanceof Error ? e.message : String(e), tone: 'error' });
+      },
+    });
+  };
+
   /* SAVED mode commit — fire POST /:docNo/payments. DRAFT mode has no
      commit affordance; the parent batches them at SO-create time. */
   const commitDraft = (d: PaymentDraft) => {
     if (!isSaved) return;
-    /* Spec D4 — a SAVED-mode (SO route) payment is rejected by the API
-       without a slip; gate the commit on both the amount and a confirmed
-       slip upload session so the user never round-trips a 400. */
-    if (d.amountCenti <= 0 || !d.slipUploadSessionId) return;
+    /* Owner 2026-07-13 — the slip is OPTIONAL now (a receipt isn't always on
+       hand). Gate only on an amount > 0; the SO route accepts a slip-less
+       payment. The slip uploader stays available for when one IS attached. */
+    if (d.amountCenti <= 0) return;
+    /* Same-day EDIT (owner 2026-07-13) — an edit draft carries the id of the
+       persisted row it amends. Route it through PATCH instead of POST. */
+    if (d.editingPersistedId) { commitEdit(d); return; }
     /* Cascade guard (spec 1) — block the commit when the chosen method is
        missing a required sub-field (Merchant → Bank + Plan; Online → Sub-Type)
        and tell the operator which one. */
@@ -685,8 +769,9 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
               </span>
             )}
 
-            {/* Persisted payment rows (SAVED mode only) */}
-            {persistedPayments.map((p) => (
+            {/* Persisted payment rows (SAVED mode only). A row currently being
+                edited in place is hidden — its editable draft renders below. */}
+            {persistedPayments.filter((p) => !isEditingPersisted(p.id)).map((p) => (
               <div className={paymentsStyles.row} key={p.id}>
                 <span className={paymentsStyles.cell} data-label="Date" style={{ fontVariantNumeric: 'tabular-nums' }}>
                   {p.paid_at}
@@ -753,23 +838,41 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
                 </span>
                 <span className={paymentsStyles.cell}>
                   {!locked && (
-                    <button
-                      type="button"
-                      className={paymentsStyles.trashBtn}
-                      disabled={deletePayment.isPending}
-                      onClick={async () => {
-                        if (await askConfirm({
-                          title: `Delete this ${methodDisplay(p)} payment of ${fmtRm(p.amount_centi, currency)}?`,
-                          confirmLabel: 'Delete',
-                          danger: true,
-                        })) {
-                          deletePayment.mutate({ docNo: (props as SavedModeProps).docNo, id: p.id });
-                        }
-                      }}
-                      title="Remove payment"
-                    >
-                      <Trash2 size={14} strokeWidth={1.75} />
-                    </button>
+                    <div style={{ display: 'flex', gap: 2, justifyContent: 'flex-end', alignItems: 'center' }}>
+                      {/* Same-day EDIT (owner 2026-07-13) — only for a payment
+                          recorded today; after MYT midnight it locks (no pencil). */}
+                      {isCreatedTodayMyt(p.created_at) && (
+                        <button
+                          type="button"
+                          disabled={editPayment.isPending}
+                          onClick={() => beginEditPersisted(p)}
+                          title="Edit payment (same-day only)"
+                          style={{
+                            background: 'transparent', border: 'none', padding: 4,
+                            cursor: 'pointer', color: 'var(--fg-muted)',
+                          }}
+                        >
+                          <Pencil size={14} strokeWidth={1.75} />
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className={paymentsStyles.trashBtn}
+                        disabled={deletePayment.isPending}
+                        onClick={async () => {
+                          if (await askConfirm({
+                            title: `Delete this ${methodDisplay(p)} payment of ${fmtRm(p.amount_centi, currency)}?`,
+                            confirmLabel: 'Delete',
+                            danger: true,
+                          })) {
+                            deletePayment.mutate({ docNo: (props as SavedModeProps).docNo, id: p.id });
+                          }
+                        }}
+                        title="Remove payment"
+                      >
+                        <Trash2 size={14} strokeWidth={1.75} />
+                      </button>
+                    </div>
                   )}
                 </span>
               </div>
@@ -928,11 +1031,11 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
                 </span>
                 {showSlip && (
                   <span className={paymentsStyles.cell} data-label="Slip">
-                    {/* Spec D4 — per-payment slip uploader. SAVED mode (SO
-                        route) REQUIRES it; the commit button stays disabled
-                        until a slip is confirmed. */}
+                    {/* Owner 2026-07-13 — per-payment slip uploader is OPTIONAL
+                        now (a receipt isn't always available); commit no longer
+                        waits on it. Still offered for when one IS on hand. */}
                     <SlipUploadField
-                      required={isSaved}
+                      required={false}
                       disabled={locked}
                       onConfirmed={(sid) => patchDraft(d.uid, { slipUploadSessionId: sid })}
                       onCleared={() => patchDraft(d.uid, { slipUploadSessionId: null })}
@@ -985,20 +1088,17 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
                         all drafts on SO-create. We still show Discard so the
                         user can drop a half-typed row. */}
                     {isSaved && (() => {
-                      /* Spec D4 — commit needs an amount AND a confirmed slip
-                         (the SO route 400s without one). Spec 1 — a chosen
-                         method also needs its required sub-field(s). */
+                      /* Owner 2026-07-13 — commit needs an amount > 0 (slip is
+                         optional now). Spec 1 — a chosen method also needs its
+                         required sub-field(s). */
                       const noAmount = d.amountCenti <= 0;
-                      const noSlip   = !d.slipUploadSessionId;
                       const missing  = missingMethodSubField(d);
-                      const blocked  = noAmount || noSlip || missing !== null;
+                      const blocked  = noAmount || missing !== null;
                       const title = noAmount
                         ? 'Enter an amount > 0 first'
-                        : noSlip
-                          ? 'Upload the payment slip first'
-                          : missing
-                            ? `Pick the ${missing} for this ${d.methodLabel} payment first`
-                            : 'Save payment';
+                        : missing
+                          ? `Pick the ${missing} for this ${d.methodLabel} payment first`
+                          : d.editingPersistedId ? 'Save changes' : 'Save payment';
                       return (
                         <button
                           type="button"

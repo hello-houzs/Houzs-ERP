@@ -59,7 +59,7 @@ import { buildOneShotMints, type OneShotMintReq } from '../lib/one-shot-mint';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { supabaseAuth } from '../middleware/auth';
 import { escapeForOr } from '../lib/postgrest-search';
-import { monthBoundsMy, rangeBoundsMy, todayMyt } from '../lib/my-time';
+import { monthBoundsMy, rangeBoundsMy, todayMyt, mytDateOf } from '../lib/my-time';
 // (canViewAllSales / isSelfScopedSales removed — replaced by flat permission
 // gates `scm.so.view_all` / `scm.so.attribute_other` against the REAL Houzs
 // caller; see lib/houzs-perms.ts.)
@@ -7810,9 +7810,12 @@ const paymentCreateSchema = z.object({
   accountSheet:       z.string().optional().nullable(),
   collectedBy:        z.string().uuid().optional().nullable(),
   note:               z.string().optional().nullable(),
-  /* Spec D4 (2026-06-06) — every payment carries its own slip. The client
-     uploads via /slips/init + confirm and sends the session id here. */
-  uploadSessionId:    z.string().min(1),
+  /* Owner 2026-07-13 — a payment slip is NOT always available (cash / walk-in
+     receipts), so the slip is OPTIONAL. When the client DID upload one it still
+     sends the session id and the row links it; when absent the payment records
+     slip-less (slip_key NULL, same as a scan-job first receipt). Previously
+     `.min(1)` (required). */
+  uploadSessionId:    z.string().min(1).optional().nullable(),
 });
 
 /* ── recordSoPaymentRow — the factored insert+audit core of
@@ -7955,20 +7958,25 @@ mfgSalesOrders.post('/:docNo/payments', async (c) => {
     }, 400);
   }
 
-  /* Spec D4 — resolve the slip upload session → committed R2 key. Required:
-     a payment without a slip is rejected (same vocabulary as the order-level
-     slip_required guard). Mirrors the SO-create resolve. */
-  const { data: slipRow, error: slipErr } = await sb
-    .from('pending_slip_uploads')
-    .select('r2_key, status')
-    .eq('upload_session_id', p.uploadSessionId)
-    .maybeSingle();
-  if (slipErr) return c.json({ error: 'lookup_failed', reason: slipErr.message }, 500);
-  const slipRowT = slipRow as { r2_key: string | null; status: string } | null;
-  if (!slipRowT || slipRowT.status !== 'uploaded' || !slipRowT.r2_key) {
-    return c.json({ error: 'slip_required', reason: 'Upload the payment slip first.' }, 400);
+  /* Owner 2026-07-13 — the slip is OPTIONAL now. Only when the client attached
+     one (uploadSessionId present) do we resolve the upload session → committed
+     R2 key; an unresolved / not-yet-uploaded session is still rejected so a
+     dangling id never books a slip-less payment silently. Absent session →
+     paymentSlipKey stays null (records slip-less). */
+  let paymentSlipKey: string | null = null;
+  if (p.uploadSessionId) {
+    const { data: slipRow, error: slipErr } = await sb
+      .from('pending_slip_uploads')
+      .select('r2_key, status')
+      .eq('upload_session_id', p.uploadSessionId)
+      .maybeSingle();
+    if (slipErr) return c.json({ error: 'lookup_failed', reason: slipErr.message }, 500);
+    const slipRowT = slipRow as { r2_key: string | null; status: string } | null;
+    if (!slipRowT || slipRowT.status !== 'uploaded' || !slipRowT.r2_key) {
+      return c.json({ error: 'slip_required', reason: 'Upload the payment slip first.' }, 400);
+    }
+    paymentSlipKey = slipRowT.r2_key;
   }
-  const paymentSlipKey = slipRowT.r2_key;
 
   /* Insert + ADD_PAYMENT audit — the factored recordSoPaymentRow core (shared
      with the background scan job). Same derivation, same insert, same audit
@@ -7999,22 +8007,165 @@ mfgSalesOrders.post('/:docNo/payments', async (c) => {
      object after TTL and the same session would be replayable — so a
      no-op promote is logged LOUDLY instead of swallowed. Best-effort: the
      payment itself stands either way (slip_key already persisted). */
-  const { data: promoted, error: promoteErr } = await sb
-    .from('pending_slip_uploads')
-    .update({ status: 'promoted', promoted_at: new Date().toISOString() })
-    .eq('upload_session_id', p.uploadSessionId)
-    .select('upload_session_id');
-  if (promoteErr || !promoted || promoted.length === 0) {
-    // eslint-disable-next-line no-console
-    console.error(
-      `[payments] slip promote FAILED for session ${p.uploadSessionId} on ${docNo}: `
-      + (promoteErr?.message ?? 'no row matched (RLS uploader mismatch?)')
-      + ' — slip will be reaped after TTL; replay window open until then.',
-    );
+  if (p.uploadSessionId) {
+    const { data: promoted, error: promoteErr } = await sb
+      .from('pending_slip_uploads')
+      .update({ status: 'promoted', promoted_at: new Date().toISOString() })
+      .eq('upload_session_id', p.uploadSessionId)
+      .select('upload_session_id');
+    if (promoteErr || !promoted || promoted.length === 0) {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[payments] slip promote FAILED for session ${p.uploadSessionId} on ${docNo}: `
+        + (promoteErr?.message ?? 'no row matched (RLS uploader mismatch?)')
+        + ' — slip will be reaped after TTL; replay window open until then.',
+      );
+    }
   }
 
   /* ADD_PAYMENT audit already appended inside recordSoPaymentRow. */
   return c.json({ payment }, 201);
+});
+
+/* Owner 2026-07-13 — SAME-DAY payment EDIT. A payment recorded TODAY can be
+   corrected within the same Malaysia (UTC+8) calendar day; after MYT midnight it
+   LOCKS (the day's cash-up is settled). Editable fields: amount, method (+ its
+   method-scoped bank / plan / online sub-fields), paid date, account sheet,
+   approval code, collected-by. The whole editable set is rewritten each call so
+   a method change can't leave a stale sub-field behind. Paid / balance / status
+   are DERIVED live from the payments ledger (the list/detail rollup + the
+   payment view sum amount_centi) — exactly as the DELETE path relies on — so no
+   header recompute is needed here; the amended amount flows straight through. */
+const paymentPatchSchema = z.object({
+  paidAt:            z.string().min(1).optional(),
+  method:            z.enum(['merchant', 'transfer', 'cash', 'installment']).optional(),
+  merchantProvider:  z.string().trim().min(1).optional().nullable(),
+  installmentMonths: z.number().int().min(0).max(60).optional().nullable(),
+  onlineType:        z.string().trim().min(1).optional().nullable(),
+  approvalCode:      z.string().optional().nullable(),
+  amountCenti:       z.number().int().nonnegative().optional(),
+  accountSheet:      z.string().optional().nullable(),
+  collectedBy:       z.string().uuid().optional().nullable(),
+});
+
+mfgSalesOrders.patch('/:docNo/payments/:id', async (c) => {
+  const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const id = c.req.param('id');
+  const user = c.get('user');
+  // Same self-scope gate as POST / DELETE payments.
+  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+
+  // Load the row (need every method-scoped column + created_at for the lock).
+  const { data: row } = await sb.from('mfg_sales_order_payments').select('*').eq('id', id).maybeSingle();
+  if (!row) return c.json({ error: 'not_found' }, 404);
+  const before = row as {
+    so_doc_no: string; created_at: string; paid_at: string;
+    method: 'merchant' | 'transfer' | 'cash' | 'installment';
+    merchant_provider: string | null; installment_months: number | null;
+    online_type: string | null; approval_code: string | null;
+    amount_centi: number; account_sheet: string | null; collected_by: string | null;
+  };
+  if (before.so_doc_no !== docNo) return c.json({ error: 'payment_doc_mismatch' }, 400);
+
+  /* Same-day lock — compare the row's created_at (UTC) to now, both as MYT
+     calendar days via the shared helper (never raw new Date()). Different day →
+     locked. */
+  if (mytDateOf(before.created_at) !== todayMyt()) {
+    return c.json({
+      error: 'payment_edit_locked',
+      reason: 'This payment can only be edited on the day it was recorded.',
+    }, 409);
+  }
+
+  let body: unknown;
+  try { body = await c.req.json(); } catch { return c.json({ error: 'invalid_json' }, 400); }
+  const parsed = paymentPatchSchema.safeParse(body);
+  if (!parsed.success) return c.json({ error: 'invalid_body', issues: parsed.error.issues }, 400);
+  const p = parsed.data;
+
+  // Effective (post-edit) method + its scoped sub-fields — mirror recordSoPaymentRow.
+  const nextMethod = p.method ?? before.method;
+  const merchantLike = nextMethod === 'merchant' || nextMethod === 'installment';
+  const rawProvider = p.merchantProvider !== undefined ? p.merchantProvider : before.merchant_provider;
+  const nextMerchantProvider = merchantLike ? (rawProvider ?? null) : null;
+  const rawInstallment = p.installmentMonths !== undefined ? p.installmentMonths : before.installment_months;
+  const nextInstallment = merchantLike
+    ? (typeof rawInstallment === 'number' && rawInstallment > 0 ? rawInstallment : null)
+    : null;
+  const rawOnline = p.onlineType !== undefined ? p.onlineType : before.online_type;
+  const nextOnline = nextMethod === 'transfer' ? (rawOnline ?? null) : null;
+  const nextAmount = p.amountCenti ?? before.amount_centi;
+  const nextPaidAt = p.paidAt ?? before.paid_at;
+  const nextApproval = p.approvalCode !== undefined ? (p.approvalCode ?? null) : before.approval_code;
+  const nextCollectedBy = p.collectedBy !== undefined ? (p.collectedBy ?? null) : before.collected_by;
+  // Account Sheet: a hand-typed value wins; an explicit blank falls back to the
+  // method-derived default. Untouched when the field wasn't sent.
+  const nextAccountSheet = p.accountSheet !== undefined
+    ? (p.accountSheet?.trim() || deriveAccountSheet(nextMethod, nextMerchantProvider, nextOnline))
+    : before.account_sheet;
+
+  /* Overpayment guard (mirror POST) — Σ(other rows) + this row's new amount may
+     not exceed the SO total. Excludes THIS payment from the prior sum. */
+  if (p.amountCenti !== undefined) {
+    const { data: soTotalRow, error: totalErr } = await sb
+      .from('mfg_sales_orders').select('total_revenue_centi').eq('doc_no', docNo).maybeSingle();
+    if (totalErr) return c.json({ error: 'lookup_failed', reason: totalErr.message }, 500);
+    const totalCenti = Number((soTotalRow as { total_revenue_centi: number | null } | null)?.total_revenue_centi ?? 0);
+    const { data: paidRows, error: paidErr } = await sb
+      .from('mfg_sales_order_payments').select('id, amount_centi').eq('so_doc_no', docNo);
+    if (paidErr) return c.json({ error: 'lookup_failed', reason: paidErr.message }, 500);
+    const othersCenti = (paidRows ?? []).reduce(
+      (s, r) => s + (String((r as { id: string }).id) === String(id) ? 0 : Number((r as { amount_centi: number }).amount_centi ?? 0)),
+      0,
+    );
+    if (totalCenti > 0 && othersCenti + nextAmount > totalCenti) {
+      return c.json({
+        error: 'over_payment',
+        reason: `Payment exceeds the order total. Balance: ${((totalCenti - othersCenti) / 100).toFixed(2)}`,
+        balanceCenti: Math.max(0, totalCenti - othersCenti),
+      }, 400);
+    }
+  }
+
+  const { data: updated, error: updErr } = await sb
+    .from('mfg_sales_order_payments')
+    .update({
+      paid_at:            nextPaidAt,
+      method:             nextMethod,
+      merchant_provider:  nextMerchantProvider,
+      installment_months: nextInstallment,
+      online_type:        nextOnline,
+      approval_code:      nextApproval,
+      amount_centi:       nextAmount,
+      account_sheet:      nextAccountSheet,
+      collected_by:       nextCollectedBy,
+    })
+    .eq('id', id)
+    .select(`${PAYMENT_COLS}, staff:collected_by ( name )`)
+    .single();
+  if (updErr) return c.json({ error: 'update_failed', reason: updErr.message }, 500);
+
+  /* UPDATE_PAYMENT audit — same ledger + shape as ADD/DELETE, listing only the
+     fields that actually changed (from → to). Best-effort inside recordSoAudit. */
+  const changes: FieldChange[] = [];
+  if (nextPaidAt !== before.paid_at) changes.push({ field: 'paidAt', from: before.paid_at, to: nextPaidAt });
+  if (nextMethod !== before.method) changes.push({ field: 'method', from: before.method, to: nextMethod });
+  if (nextAmount !== before.amount_centi) changes.push({ field: 'amountCenti', from: before.amount_centi, to: nextAmount });
+  if ((nextMerchantProvider ?? null) !== (before.merchant_provider ?? null)) changes.push({ field: 'merchantProvider', from: before.merchant_provider, to: nextMerchantProvider });
+  if ((nextInstallment ?? null) !== (before.installment_months ?? null)) changes.push({ field: 'installmentMonths', from: before.installment_months, to: nextInstallment });
+  if ((nextOnline ?? null) !== (before.online_type ?? null)) changes.push({ field: 'onlineType', from: before.online_type, to: nextOnline });
+  if ((nextApproval ?? null) !== (before.approval_code ?? null)) changes.push({ field: 'approvalCode', from: before.approval_code, to: nextApproval });
+  if ((nextAccountSheet ?? null) !== (before.account_sheet ?? null)) changes.push({ field: 'accountSheet', from: before.account_sheet, to: nextAccountSheet });
+  if ((nextCollectedBy ?? null) !== (before.collected_by ?? null)) changes.push({ field: 'collectedBy', from: before.collected_by, to: nextCollectedBy });
+  await recordSoAudit(sb, {
+    docNo,
+    action: 'UPDATE_PAYMENT',
+    actorId: user.id,
+    actorName: (user.user_metadata as { name?: string } | undefined)?.name ?? null,
+    fieldChanges: changes,
+  });
+
+  const { staff, ...rest } = updated as unknown as Record<string, unknown> & { staff: { name: string } | null };
+  return c.json({ payment: { ...rest, collected_by_name: staff?.name ?? null } });
 });
 
 mfgSalesOrders.delete('/:docNo/payments/:id', async (c) => {
