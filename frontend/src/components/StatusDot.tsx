@@ -5,10 +5,13 @@ type Variant = "synced" | "error" | "open" | "in-progress" | "closed" | "neutral
 const COLORS: Record<Variant, string> = {
   synced: "bg-synced",
   error: "bg-err",
-  // Same amber token the Stage funnel dots use, so list rows and the
-  // funnel read as one system (Nick 2026-07-07).
-  open: "bg-warning-text",
-  "in-progress": "bg-accent",
+  // Nico 2026-07-09 — every "open work" stage (Verification, Solution,
+  // Inspection, Item Pickup, etc.) shows a petrol dot instead of amber.
+  // Amber is reserved for SLA warnings ("Due soon"); functional progress
+  // markers use the palette primary. Kept in lockstep with the Stage
+  // funnel dot logic in ServiceCases.tsx.
+  open: "bg-primary",
+  "in-progress": "bg-primary",
   closed: "bg-synced",
   neutral: "bg-ink-muted",
 };

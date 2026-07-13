@@ -1059,7 +1059,10 @@ function StageStatStrip({
             const isActive = stage === s.value;
             const empty = ready && s.total === 0;
             // Dot severity: red = stage holds SLA-breached cases, grey =
-            // empty, green = All/Completed, amber = open work otherwise.
+            // empty, green = All/Completed, petrol = open work otherwise.
+            // Nico 2026-07-09 — flipped open from amber (bg-warning-text)
+            // to petrol so functional "in-progress" reads as palette
+            // primary; amber is reserved for SLA warnings.
             const dot =
               s.breached > 0
                 ? "bg-err"
@@ -1067,7 +1070,7 @@ function StageStatStrip({
                   ? "bg-ink-muted/40"
                   : s.value === "ALL" || s.value === "completed"
                     ? "bg-synced"
-                    : "bg-warning-text";
+                    : "bg-primary";
             return (
               <button
                 key={s.value}
@@ -4666,7 +4669,11 @@ function StageRow({
     <div
       className={cn(
         "border-b border-border-subtle last:border-b-0",
-        state === "current" && "bg-amber-50/40 shadow-[inset_3px_0_0_0_theme(colors.accent.DEFAULT)]",
+        // Nico 2026-07-09 — CURRENT stage highlight swapped from amber
+        // (bg-amber-50 + accent shadow + accent text) to petrol; matches
+        // the Stage funnel dot flip below and the "amber = SLA warning
+        // only" convention.
+        state === "current" && "bg-primary/5 shadow-[inset_3px_0_0_0_theme(colors.primary.DEFAULT)]",
       )}
     >
       <button
@@ -4678,7 +4685,7 @@ function StageRow({
           className={cn(
             "flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[12px] font-bold",
             state === "done" && "bg-primary text-white",
-            state === "current" && "bg-accent text-white",
+            state === "current" && "bg-primary text-white",
             state === "future" && "border-[1.5px] border-border bg-surface text-ink-muted",
           )}
         >
@@ -4689,7 +4696,7 @@ function StageRow({
             <span
               className={cn(
                 "text-[13.5px] font-bold",
-                state === "current" ? "text-accent" : state === "done" ? "text-ink" : "text-ink-muted",
+                state === "current" ? "text-primary" : state === "done" ? "text-ink" : "text-ink-muted",
               )}
             >
               {title}
@@ -4698,7 +4705,7 @@ function StageRow({
               className={cn(
                 "rounded px-1.5 py-[1px] text-[9px] font-bold uppercase tracking-wider",
                 state === "done" && "bg-synced/15 text-synced",
-                state === "current" && "bg-accent/15 text-accent",
+                state === "current" && "bg-primary/15 text-primary",
                 state === "future" && "bg-bg text-ink-muted",
               )}
             >
