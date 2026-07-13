@@ -36,15 +36,7 @@ CREATE TABLE IF NOT EXISTS scm.personal_quick_picks (
 
 -- FK to the companies master (guarded: skip if the master is absent, e.g. a
 -- single-company / pre-0061 environment — mirrors 0061's defensiveness).
-DO $$ BEGIN
-  IF to_regclass('public.companies') IS NOT NULL THEN
-    ALTER TABLE scm.personal_quick_picks
-      DROP CONSTRAINT IF EXISTS personal_quick_picks_company_id_fkey;
-    ALTER TABLE scm.personal_quick_picks
-      ADD CONSTRAINT personal_quick_picks_company_id_fkey
-      FOREIGN KEY (company_id) REFERENCES public.companies(id);
-  END IF;
-END $$;
+DO $$ BEGIN IF to_regclass('public.companies') IS NOT NULL THEN ALTER TABLE scm.personal_quick_picks DROP CONSTRAINT IF EXISTS personal_quick_picks_company_id_fkey; ALTER TABLE scm.personal_quick_picks ADD CONSTRAINT personal_quick_picks_company_id_fkey FOREIGN KEY (company_id) REFERENCES public.companies(id); END IF; END $$;
 
 -- Common lookup: a salesperson's active picks for one base model, in order,
 -- within the active company.
