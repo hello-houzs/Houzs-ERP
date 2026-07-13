@@ -104,6 +104,12 @@ async function main() {
       console.log(`${mark} ${t}: ${srcN} | ${r.n}${hasCid.length ? "" : " (shared, total)"}`);
     }
     console.log(missing === 0 ? "COMPLETENESS_CLEAN" : `COMPLETENESS_GAPS=${missing} tables`);
+
+    console.log("=== unique/PK index defs on remaining gap tables ===");
+    for (const t of ["addons", "bundle_library", "maintenance_config_history", "special_addons_history"]) {
+      const idx = await dst`SELECT indexdef FROM pg_indexes WHERE schemaname='scm' AND tablename=${t}`;
+      for (const r of idx) console.log(`${t}: ${r.indexdef}`);
+    }
   }
 }
 main().then(() => dst.end()).catch(async e => { console.error("DIAG_FAIL", e.message); await dst.end(); process.exit(1); });
