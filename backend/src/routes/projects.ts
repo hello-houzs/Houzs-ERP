@@ -1620,6 +1620,7 @@ app.post("/:id/notes", requireAnyPermission(["projects.write", "projects.chat"])
 app.get("/:id/activity", requirePageAccess("projects.list"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+  const user = c.get("user");
   const since = c.req.query("since") || "";
   const sinceClause = since ? " AND act.created_at > ?" : "";
   const sinceBinds = since ? [since] : [];
@@ -1644,7 +1645,23 @@ app.get("/:id/activity", requirePageAccess("projects.list"), async (c) => {
   )
     .bind(id, ...sinceBinds)
     .all();
-  return c.json({ data: rows.results ?? [] });
+  // Finance/payment strip (Sales-department visibility, rules 3/5/7): the
+  // timeline replays payment_status transitions (to_value = 'paid'/'deposit',
+  // note = payment remarks) and finance-edit markers. The detail GET already
+  // blanks these fields on the wire for a non-director; the activity feed must
+  // not re-leak them. Drop the money-bearing rows for any user finance is
+  // hidden from — same gate (financeHiddenForUser: positioned non-directors).
+  let activity = (rows.results ?? []) as any[];
+  if (financeHiddenForUser(user)) {
+    const HIDDEN_ACTIONS = new Set([
+      "payment_status",
+      "finance_edit",
+      "finance_line_edit",
+      "finance_line_remove",
+    ]);
+    activity = activity.filter((r) => !HIDDEN_ACTIONS.has(r.action));
+  }
+  return c.json({ data: activity });
 });
 
 // ── Mark as read ─────────────────────────────────────────────
@@ -2553,16 +2570,33 @@ app.post("/checklist/:itemId/status", requireAnyPermission(["projects.write", "p
     return c.json({ error: "invalid status" }, 400);
   }
   const item = await c.env.DB.prepare(
-    `SELECT required_perm FROM project_checklist WHERE id = ?`
+    `SELECT required_perm, role_label FROM project_checklist WHERE id = ?`
   )
     .bind(itemId)
-    .first<{ required_perm: string | null }>();
+    .first<{ required_perm: string | null; role_label: string | null }>();
   if (!item) return c.json({ error: "Not found" }, 404);
   if (item.required_perm) {
     const has =
       user.permissions.includes("*") || user.permissions.includes(item.required_perm);
     if (!has) {
       return c.json({ error: `Requires ${item.required_perm}` }, 403);
+    }
+  }
+  // Per-function gate for tick-only roles (Sales-department visibility, rules
+  // 4 & 6) — parity with the /attachments route. A user without projects.write
+  // (drivers/helpers, and a Sales PIC granted only projects.checklist.tick) may
+  // only change the status of a task badged for THEIR role (item.role_label vs
+  // their role_name). Items badged for another function (DRIVER / PURCHASER / …)
+  // stay view+download only for them. projects.write holders / directors are
+  // unaffected (they manage the whole checklist).
+  {
+    const granted = user?.permissions_set ?? user?.permissions;
+    if (!hasPermission(granted, "projects.write")) {
+      const label = (item.role_label ?? "").trim().toUpperCase();
+      const roleName = (user?.role_name ?? "").trim().toUpperCase();
+      if (!label || !roleName || label !== roleName) {
+        return c.json({ error: "You can only update tasks assigned to your role" }, 403);
+      }
     }
   }
   const ok = await setChecklistStatus(c.env, itemId, status, user?.id ?? 0);
@@ -2579,10 +2613,10 @@ app.post("/checklist/:itemId/review", requireAnyPermission(["projects.write", "p
   const body = await c.req.json<{ action?: string; reason?: string; note?: string }>();
   const action = body.action as "submit" | "reject" | "amend" | "approve" | "comment";
   const item = await c.env.DB.prepare(
-    `SELECT required_perm FROM project_checklist WHERE id = ?`
+    `SELECT required_perm, role_label FROM project_checklist WHERE id = ?`
   )
     .bind(itemId)
-    .first<{ required_perm: string | null }>();
+    .first<{ required_perm: string | null; role_label: string | null }>();
   if (!item) return c.json({ error: "Not found" }, 404);
 
   // Approval / rejection gates on required_perm (same rule as
@@ -2592,6 +2626,22 @@ app.post("/checklist/:itemId/review", requireAnyPermission(["projects.write", "p
     const has =
       user.permissions.includes("*") || user.permissions.includes(item.required_perm);
     if (!has) return c.json({ error: `Requires ${item.required_perm}` }, 403);
+  }
+  // Per-function gate for tick-only roles (Sales-department visibility, rules
+  // 4 & 6) — parity with the status / attachments routes, so the review loop
+  // can't be used to progress another function's task. A user without
+  // projects.write may only submit/amend a task badged for THEIR role.
+  // `comment` stays open (collaboration); approve/reject are already
+  // required_perm-gated above.
+  if (action !== "comment") {
+    const granted = user?.permissions_set ?? user?.permissions;
+    if (!hasPermission(granted, "projects.write")) {
+      const label = (item.role_label ?? "").trim().toUpperCase();
+      const roleName = (user?.role_name ?? "").trim().toUpperCase();
+      if (!label || !roleName || label !== roleName) {
+        return c.json({ error: "You can only update tasks assigned to your role" }, 403);
+      }
+    }
   }
 
   try {
