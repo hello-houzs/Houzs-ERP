@@ -8,6 +8,7 @@ import { parseDefaultFreeGifts, targetRefinementSchema } from '../shared';
 import { supabaseAuth } from '../middleware/auth';
 import { hasHouzsPerm } from '../lib/houzs-perms';
 import type { Env, Variables } from '../env';
+import { activeCompanyId } from '../lib/companyScope';
 
 type AppContext = Context<{ Bindings: Env; Variables: Variables }>;
 
@@ -79,7 +80,7 @@ modelFreeGifts.put('/', async (c) => {
   const gifts = parseDefaultFreeGifts(parsed.data.gifts);
   const { data: updated, error } = await gate.supabase
     .from('model_default_free_gifts')
-    .upsert({ model_id: parsed.data.modelId, gifts, updated_at: new Date().toISOString(), updated_by: gate.userId }, { onConflict: 'model_id' })
+    .upsert({ company_id: activeCompanyId(c), model_id: parsed.data.modelId, gifts, updated_at: new Date().toISOString(), updated_by: gate.userId }, { onConflict: 'model_id' }) // multi-company: stamp the active company
     .select('model_id');
   if (error) return c.json({ error: 'upsert_failed', reason: error.message }, 500);
   if (!updated || updated.length === 0) return c.json({ error: 'upsert_failed', reason: 'rls_blocked_zero_rows' }, 403);

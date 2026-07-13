@@ -357,7 +357,7 @@ async function soMainMixIntroduced(sb: any, docNo: string, excludeItemId: string
 async function loadActiveSofaCombos(sb: any): Promise<SofaComboRow[]> {
   const { data } = await sb
     .from('sofa_combo_pricing')
-    .select('id, base_model, modules, tier, customer_id, prices_by_height, selling_prices_by_height, pwp_prices_by_height, label, effective_from, deleted_at, default_free_gifts')
+    .select('id, base_model, modules, tier, customer_id, prices_by_height, selling_prices_by_height, pwp_prices_by_height, label, effective_from, created_at, deleted_at, default_free_gifts')
     .is('deleted_at', null)
     .is('customer_id', null)   // 2990 B2C — default-scope rows only
     .is('supplier_id', null);  // sales-side only — never auto-price a SO from a supplier's purchasing combos
@@ -366,7 +366,7 @@ async function loadActiveSofaCombos(sb: any): Promise<SofaComboRow[]> {
     customer_id: string | null; prices_by_height: Record<string, number | null>;
     selling_prices_by_height: Record<string, number | null>;
     pwp_prices_by_height: Record<string, number | null> | null;
-    label: string | null; effective_from: string; deleted_at: string | null;
+    label: string | null; effective_from: string; created_at: string; deleted_at: string | null;
     default_free_gifts: unknown;
   }>).map((r) => ({
     id: r.id, baseModel: r.base_model, modules: r.modules ?? [],
@@ -376,7 +376,9 @@ async function loadActiveSofaCombos(sb: any): Promise<SofaComboRow[]> {
     // PWP (换购) selling price per height (Phase 2) — used INSTEAD of the above
     // only when a sofa-reward line redeems a valid PWP code (see recompute).
     pwpPricesByHeight: r.pwp_prices_by_height ?? {},
-    label: r.label, effectiveFrom: r.effective_from, deletedAt: r.deleted_at,
+    // created_at feeds the picker's duplicate tie-break (equal effective_from
+    // → newest row wins, matching the GET /sofa-combos admin list).
+    label: r.label, effectiveFrom: r.effective_from, createdAt: r.created_at, deletedAt: r.deleted_at,
     // Default Free Gift (migration 0170, D9) — passthrough jsonb; the SO-create
     // handler parses it to build the per-combo free-gift trigger.
     defaultFreeGifts: r.default_free_gifts ?? [],
@@ -3970,15 +3972,20 @@ export async function createDraftSalesOrder(
     salespersonId: string;
     salespersonName?: string | null;
     houzsUserId?: number | null;
+    /** Multi-company: the ACTIVE company captured at enqueue time (the
+     *  scan_jobs row's company_id). Undefined = legacy row / pre-0083 —
+     *  falls back to the 0091 HOUZS default. */
+    companyId?: number | null;
     body: Record<string, unknown>;
   },
 ): Promise<SoCreateOutcome> {
   const svc = getSupabaseService(env);
   const syntheticGet = (key: 'supabase' | 'user' | 'houzsUser' | 'companyId'): unknown => {
     if (key === 'supabase') return svc;
-    // Headless scan job has no request-scoped active company — leave unstamped
-    // (single-company no-op). mig 0061 backfill / DB default carries the column.
-    if (key === 'companyId') return undefined;
+    // Headless scan job — replay the company captured on the scan_jobs row at
+    // enqueue time so the draft (header + lines + payments + audit) lands under
+    // the uploader's company, not the 0091 HOUZS default.
+    if (key === 'companyId') return opts.companyId ?? undefined;
     if (key === 'user') {
       return {
         id: opts.salespersonId,
@@ -4422,7 +4429,9 @@ async function recomputeDeliveryFeeCore(
       venue: h.venue ?? null,
       stock_status: 'READY',
     }));
-    const { error: insErr } = await sb.from('mfg_sales_order_items').insert(rows);
+    // Multi-company: the rebuilt delivery-fee lines inherit the SO's company.
+    const coRows = h.company_id != null ? rows.map((r) => ({ company_id: h.company_id, ...r })) : rows;
+    const { error: insErr } = await sb.from('mfg_sales_order_items').insert(coRows);
     if (insErr) { /* eslint-disable-next-line no-console */ console.error('[so-redetect] delivery line insert failed:', insErr.message); }
   }
 

@@ -682,6 +682,7 @@ async function insertHeader(sb: any, userId: string, body: Record<string, unknow
   return insertWithDocNoRetry<{ id: string; return_number: string }>(
     () => nextNum(sb, c),
     (returnNumber) => sb.from('delivery_returns').insert({
+    company_id: activeCompanyId(c), // multi-company: stamp the active company
     return_number: returnNumber,
     do_doc_no: (body.doDocNo as string) ?? null,
     delivery_order_id: (body.deliveryOrderId as string) ?? null,
@@ -784,7 +785,7 @@ deliveryReturns.post('/', async (c) => {
   const h = header as unknown as { id: string; return_number: string };
 
   const rows = items.map((it) => buildItemRow(h.id, it));
-  const { error: iErr } = await sb.from('delivery_return_items').insert(rows);
+  const { error: iErr } = await sb.from('delivery_return_items').insert(stampCompany(rows, c));
   if (iErr) { await sb.from('delivery_returns').delete().eq('id', h.id); return c.json({ error: 'items_insert_failed', reason: iErr.message }, 500); }
   await recomputeTotals(sb, h.id);
 
@@ -1013,7 +1014,7 @@ const convertDoLinesToReturn = async (c: any) => {
     unitCostCenti: line.unitCostCenti,
     variants: line.variants,
   }));
-  const { error: iErr } = await sb.from('delivery_return_items').insert(rows);
+  const { error: iErr } = await sb.from('delivery_return_items').insert(stampCompany(rows, c));
   if (iErr) { await sb.from('delivery_returns').delete().eq('id', h.id); return c.json({ error: 'items_insert_failed', reason: iErr.message }, 500); }
   await recomputeTotals(sb, h.id);
 
@@ -1133,7 +1134,7 @@ deliveryReturns.post('/:id/items', async (c) => {
   }
 
   const row = buildItemRow(id, it);
-  const { data, error } = await sb.from('delivery_return_items').insert(row).select(ITEM).single();
+  const { data, error } = await sb.from('delivery_return_items').insert({ ...row, company_id: activeCompanyId(c) }).select(ITEM).single();
   if (error) return c.json({ error: 'insert_failed', reason: error.message }, 500);
   await recomputeTotals(sb, id);
   /* Adding a return line must put its goods back into stock, same as the line
