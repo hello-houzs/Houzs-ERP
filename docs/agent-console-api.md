@@ -190,11 +190,13 @@ idempotent and self-contained. No manual apply step.
 
 ## 6. Where the next phases plug in (do NOT rebuild the skeleton)
 
-- **Frontend `/agents` page:** consume §1–3 above. Follow the HOOKKA layout
-  (`src/pages/agents/index.tsx` in the hookka repo) as the reference — status
-  lights, LLM-spend bars, per-agent card with Run-now / Pause / Auto-approve,
-  proposals/findings tables with Approve/Reject/Resolve. **UI needs owner
-  mockup approval before coding** (standing rule).
+- **Frontend `/agents` page:** SHIPPED — `frontend/src/pages/Agents.tsx`,
+  route `/agents` in `App.tsx` (owner-only `<Guard anyPerm={["*"]}>`), nav item
+  in `Sidebar.tsx` (System section, `Bot` icon). Consumes §1–3b: family control
+  grid (pause / auto-approve / run-now / kill-all), LLM-spend bars per family,
+  per-family working surface (proposals approve/reject, Document findings
+  resolve), the learned-tuning approvals (§1 config proposals) and the
+  per-agent teaching notebook (§1 feedback). Built to the owner-approved mockup.
 - **New agent engine (CS / PMS / Procurement):** create
   `backend/src/services/agents/<name>-agent.ts`, keep it a pure deterministic
   engine, then in `backend/src/services/agents/index.ts` add ONE `registerAgent({
