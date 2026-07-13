@@ -1719,7 +1719,7 @@ mfgSalesOrders.get('/:docNo', async (c) => {
      the allocation fails the page still loads, lines just fall back to Pending. */
   let coverageMap = new Map<string, { source: string; po: string | null; eta: string | null }>();
   try {
-    const mrpResult = await computeMrp(sb, { catFilter: null, whFilter: null, includeUndated: true });
+    const mrpResult = await computeMrp(sb, { catFilter: null, whFilter: null, includeUndated: true, companyId: activeCompanyId(c) });
     coverageMap = mrpLineCoverage(mrpResult);
   } catch {
     coverageMap = new Map();
@@ -1844,7 +1844,7 @@ mfgSalesOrders.get('/:docNo/items', async (c) => {
   // Best-effort: a failed allocation just drops lines to Pending.
   let coverageMap = new Map<string, { source: string; po: string | null; eta: string | null }>();
   try {
-    const mrpResult = await computeMrp(sb, { catFilter: null, whFilter: null, includeUndated: true });
+    const mrpResult = await computeMrp(sb, { catFilter: null, whFilter: null, includeUndated: true, companyId: activeCompanyId(c) });
     coverageMap = mrpLineCoverage(mrpResult);
   } catch {
     coverageMap = new Map();

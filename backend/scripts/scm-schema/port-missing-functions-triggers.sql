@@ -90,7 +90,13 @@ $$;
 -- NOTE: 2990 declares this SECURITY INVOKER + search_path=public; under Houzs's
 -- service-role REST it runs as the service role anyway. Pinned to scm so the
 -- inserts + the `pricing_kind` enum cast resolve to scm, not public.
-CREATE OR REPLACE FUNCTION create_product_with_pricing(p jsonb)
+-- MULTI-COMPANY (mig 0104): takes p_company_id and stamps it on the product +
+-- every pricing child (products.company_id etc. are NOT NULL — mig 0083/0089 —
+-- but only carry a HOUZS DEFAULT, so without an explicit stamp a product created
+-- in 2990 context was silently labelled HOUZS). NULL → COALESCE to the HOUZS base
+-- so single-company Houzs is unchanged. The old 1-arg overload is dropped in the
+-- migration to avoid PostgREST ambiguity.
+CREATE OR REPLACE FUNCTION create_product_with_pricing(p jsonb, p_company_id bigint DEFAULT NULL)
 RETURNS uuid
 LANGUAGE plpgsql
 SET search_path = scm, pg_temp
@@ -98,10 +104,11 @@ AS $$
 DECLARE
   v_product_id uuid;
   v_kind text := p->>'pricingKind';
+  v_company_id bigint := COALESCE(p_company_id, (SELECT id FROM public.companies WHERE code = 'HOUZS'));
 BEGIN
   INSERT INTO products (
     sku, category_id, series_id, pricing_kind, name, detail, size_display,
-    img_key, thumb_key, stock, low_at, visible, flat_price, recliner_upgrade_price
+    img_key, thumb_key, stock, low_at, visible, flat_price, recliner_upgrade_price, company_id
   ) VALUES (
     p->>'sku',
     p->>'categoryId',
@@ -116,25 +123,26 @@ BEGIN
     COALESCE((p->>'lowAt')::int, 5),
     COALESCE((p->>'visible')::boolean, true),
     CASE WHEN v_kind = 'flat'       THEN (p->>'flatPrice')::int            ELSE NULL END,
-    CASE WHEN v_kind = 'sofa_build' THEN (p->>'reclinerUpgradePrice')::int ELSE NULL END
+    CASE WHEN v_kind = 'sofa_build' THEN (p->>'reclinerUpgradePrice')::int ELSE NULL END,
+    v_company_id
   )
   RETURNING id INTO v_product_id;
 
   IF v_kind = 'sofa_build' THEN
-    INSERT INTO product_compartments (product_id, compartment_id, active, price)
-    SELECT v_product_id, (r->>'compartmentId')::text, (r->>'active')::boolean, (r->>'price')::int
+    INSERT INTO product_compartments (product_id, compartment_id, active, price, company_id)
+    SELECT v_product_id, (r->>'compartmentId')::text, (r->>'active')::boolean, (r->>'price')::int, v_company_id
     FROM jsonb_array_elements(p->'compartments') r;
 
-    INSERT INTO product_bundles (product_id, bundle_id, active, price)
-    SELECT v_product_id, (r->>'bundleId')::text, (r->>'active')::boolean, (r->>'price')::int
+    INSERT INTO product_bundles (product_id, bundle_id, active, price, company_id)
+    SELECT v_product_id, (r->>'bundleId')::text, (r->>'active')::boolean, (r->>'price')::int, v_company_id
     FROM jsonb_array_elements(p->'bundles') r;
 
-    INSERT INTO product_fabrics (product_id, fabric_id, active, surcharge)
-    SELECT v_product_id, (r->>'fabricId')::text, (r->>'active')::boolean, (r->>'surcharge')::int
+    INSERT INTO product_fabrics (product_id, fabric_id, active, surcharge, company_id)
+    SELECT v_product_id, (r->>'fabricId')::text, (r->>'active')::boolean, (r->>'surcharge')::int, v_company_id
     FROM jsonb_array_elements(COALESCE(p->'fabrics', '[]'::jsonb)) r;
   ELSIF v_kind = 'size_variants' THEN
-    INSERT INTO product_size_variants (product_id, size_id, active, price)
-    SELECT v_product_id, (r->>'sizeId')::text, (r->>'active')::boolean, (r->>'price')::int
+    INSERT INTO product_size_variants (product_id, size_id, active, price, company_id)
+    SELECT v_product_id, (r->>'sizeId')::text, (r->>'active')::boolean, (r->>'price')::int, v_company_id
     FROM jsonb_array_elements(p->'sizes') r;
   END IF;
 

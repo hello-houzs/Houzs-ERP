@@ -18,6 +18,7 @@
 import { Hono, type Context } from "hono";
 import type { Env } from "../types";
 import { auth } from "../middleware/auth";
+import { companyContext } from "../middleware/companyContext";
 import { createSession, verifyPassword, hashPassword } from "../services/auth";
 
 type Vars = { user?: { id: number }; companyId?: number };
@@ -111,7 +112,11 @@ pos.post("/verify-pin", auth, async (c) => {
 });
 
 // ── AUTHED: caller's month-to-date KPI tiles ────────────────────────────────
-pos.get("/sales-stats", auth, async (c) => {
+// companyContext runs here explicitly: /api/pos is mounted BEFORE the global
+// /api/* companyContext (it must stay pre-auth for pin-login), so without this
+// the c.get("companyId") scope below would always be undefined and the MTD
+// tiles would pool BOTH companies' orders. Applied only on this authed route.
+pos.get("/sales-stats", auth, companyContext, async (c) => {
   const staffId = await callerStaffId(c);
   if (!staffId) return c.json({ ordersMtd: 0, revenueMtdSen: 0 });
   const companyId = (c.get("companyId") as number | undefined) ?? null;

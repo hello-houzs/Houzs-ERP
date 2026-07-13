@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { productSchema } from '../shared/schemas';
 import { supabaseAuth } from '../middleware/auth';
+import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 export const products = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -12,17 +13,23 @@ products.use('*', supabaseAuth);
 // authenticated staff see active products.
 products.get('/', async (c) => {
   const supabase = c.get('supabase');
-  const { data, error } = await supabase
-    .from('products')
-    .select(
-      `
-      id, sku, name, detail, size_display, img_key, thumb_key,
-      pricing_kind, flat_price, recliner_upgrade_price, stock, low_at, visible,
-      category:categories ( id, label, icon, tbc ),
-      series:series ( id, label, active )
-    `,
-    )
-    .eq('visible', true)
+  // Multi-company: isolate the catalog to the active company (products.company_id
+  // is NOT NULL — mig 0083). scopeToCompany no-ops when the active company is
+  // unresolved (pre-migration / cold-start), keeping single-company Houzs intact.
+  const { data, error } = await scopeToCompany(
+    supabase
+      .from('products')
+      .select(
+        `
+        id, sku, name, detail, size_display, img_key, thumb_key,
+        pricing_kind, flat_price, recliner_upgrade_price, stock, low_at, visible,
+        category:categories ( id, label, icon, tbc ),
+        series:series ( id, label, active )
+      `,
+      )
+      .eq('visible', true),
+    c,
+  )
     .order('updated_at', { ascending: false });
 
   if (error) return c.json({ error: error.message }, 500);
@@ -51,7 +58,13 @@ products.post('/', async (c) => {
   }
 
   const supabase = c.get('supabase');
-  const { data, error } = await supabase.rpc('create_product_with_pricing', { p: parsed.data });
+  // Multi-company: stamp the active company on the product + its pricing children
+  // (mig 0104 added the p_company_id param). NULL when unresolved → the function
+  // COALESCEs to the HOUZS base (safety net), so single-company Houzs is unchanged.
+  const { data, error } = await supabase.rpc('create_product_with_pricing', {
+    p: parsed.data,
+    p_company_id: activeCompanyId(c) ?? null,
+  });
 
   if (error) {
     // Permission denied → 403; everything else → 500.

@@ -44,6 +44,7 @@ import { Hono } from 'hono';
 import { computeVariantKey, buildVariantSummary, isServiceLine, splitSofaCode, effectiveDelivery, type VariantAttrs } from '../shared';
 import { supabaseAuth } from '../middleware/auth';
 import { soDeliverableRemaining } from './delivery-orders-mfg';
+import { activeCompanyId } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 export const mrp = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -245,9 +246,17 @@ export type SoLineCoverage = { source: AllocSource; po: string | null; eta: stri
    the Stock column and the MRP page can never disagree. */
 export async function computeMrp(
   sb: any,
-  opts: { catFilter: string | null; whFilter: string | null; includeUndated: boolean },
+  opts: { catFilter: string | null; whFilter: string | null; includeUndated: boolean; companyId?: number | null },
 ): Promise<MrpResult> {
-  const { catFilter, whFilter, includeUndated } = opts;
+  const { catFilter, whFilter, includeUndated, companyId } = opts;
+
+  /* Multi-company isolation: every per-company read (demand SO lines, PO supply,
+     inventory balances, warehouses, suppliers, bindings, product master) is
+     filtered to the ACTIVE company. Mirrors scopeToCompany's semantics — a NO-OP
+     when companyId is null/undefined (unresolved / agent callers / single-company
+     Houzs), so existing behaviour is unchanged where no company is passed. */
+  const scoped = <Q>(q: Q): Q =>
+    companyId != null ? (q as unknown as { eq(c: string, v: unknown): Q }).eq('company_id', companyId) : q;
 
   // ── 0. Per-category lead times (Commander 2026-05-29), now per-WAREHOUSE
   //       (Commander 2026-06-22, migration 0184 / SCM mig 0036) ────────────
@@ -285,13 +294,13 @@ export async function computeMrp(
   };
 
   // ── 1. Demand — outstanding SO lines ──────────────────────────────────
-  const { data: demandRaw, error: demandErr } = await sb
+  const { data: demandRaw, error: demandErr } = await scoped(sb
     .from('mfg_sales_order_items')
     .select(`
       id, doc_no, item_code, description, item_group, variants, qty, warehouse_id, line_delivery_date, line_no, created_at, cancelled,
       so:mfg_sales_orders!inner ( debtor_name, status, so_date, customer_delivery_date, internal_expected_dd, customer_state )
     `)
-    .eq('cancelled', false)
+    .eq('cancelled', false))
     .limit(5000);
   if (demandErr) throw new Error(`mrp_load_failed: ${demandErr.message}`);
 
@@ -332,10 +341,10 @@ export async function computeMrp(
   for (let i = 0; i < demandCodes.length; i += 300) {
     const chunk = demandCodes.slice(i, i + 300);
     if (chunk.length === 0) continue;
-    const { data: prods } = await sb
+    const { data: prods } = await scoped(sb
       .from('mfg_products')
       .select('code, name, category')
-      .in('code', chunk);
+      .in('code', chunk));
     for (const p of (prods ?? []) as ProductRow[]) prodByCode.set(p.code, p);
   }
 
@@ -343,15 +352,15 @@ export async function computeMrp(
   // values), independent of current demand — derive it from a lightweight
   // category-only fetch (the few distinct values all surface within the cap).
   const categorySet = new Set<string>();
-  const { data: catRows } = await sb.from('mfg_products').select('category');
+  const { data: catRows } = await scoped(sb.from('mfg_products').select('category'));
   for (const c of (catRows ?? []) as Array<{ category: string | null }>) {
     if (c.category) categorySet.add(c.category);
   }
 
-  const { data: warehouses } = await sb
+  const { data: warehouses } = await scoped(sb
     .from('warehouses')
     .select('id, code, name')
-    .eq('is_active', true)
+    .eq('is_active', true))
     .order('code');
   const whById = new Map<string, { code: string; name: string }>();
   for (const w of (warehouses ?? []) as Array<{ id: string; code: string; name: string }>) {
@@ -362,7 +371,7 @@ export async function computeMrp(
   // Commander 2026-05-31 — warehouse is part of the bucket identity (no cross-WH
   // pooling). whFilter scopes the query to one warehouse; otherwise every
   // warehouse's balance lands in its own bucket.
-  let balQ = sb.from('inventory_balances').select('product_code, warehouse_id, variant_key, qty');
+  let balQ = scoped(sb.from('inventory_balances').select('product_code, warehouse_id, variant_key, qty'));
   if (whFilter) balQ = balQ.eq('warehouse_id', whFilter);
   const { data: balances } = await balQ;
   const stockByKey = new Map<string, number>();
@@ -374,14 +383,14 @@ export async function computeMrp(
   // ── 4. Outstanding PO supply — open PO lines with ETA, keyed by (warehouse, code, variant) ──
   // Each PO line's ship-to warehouse = line warehouse_id, falling back to the PO
   // header's purchase_location_id. No SO↔PO linkage — supply is a pure pool.
-  const { data: poRaw } = await sb
+  const { data: poRaw } = await scoped(sb
     .from('purchase_order_items')
     .select(`
       material_code, item_group, variants, qty, received_qty, delivery_date,
       supplier_delivery_date_2, supplier_delivery_date_3, supplier_delivery_date_4,
       warehouse_id, so_item_id,
       po:purchase_orders!inner ( po_number, status, expected_at, supplier_delivery_date_2, supplier_delivery_date_3, supplier_delivery_date_4, purchase_location_id, supplier_id )
-    `)
+    `))
     .limit(5000);
   // Commander 2026-05-31 — carry the covering PO's supplier so a covered line
   // can display it read-only (a raised PO's supplier is fixed). Name resolved
@@ -425,10 +434,10 @@ export async function computeMrp(
   // Resolve PO supplier ids → names for the read-only covered-line display.
   const supplierNameById = new Map<string, string>();
   if (poSupplierIds.size > 0) {
-    const { data: poSups } = await sb
+    const { data: poSups } = await scoped(sb
       .from('suppliers')
       .select('id, name')
-      .in('id', [...poSupplierIds]);
+      .in('id', [...poSupplierIds]));
     for (const s of (poSups ?? []) as Array<{ id: string; name: string }>) {
       supplierNameById.set(s.id, s.name);
     }
@@ -442,11 +451,11 @@ export async function computeMrp(
   const mainByCode = new Map<string, { code: string; name: string }>();
   const suppliersByCode = new Map<string, SupplierOpt[]>();
   if (codes.length > 0) {
-    const { data: binds } = await sb
+    const { data: binds } = await scoped(sb
       .from('supplier_material_bindings')
       .select('material_code, is_main_supplier, supplier_id, supplier:suppliers(code, name)')
       .eq('material_kind', 'mfg_product')
-      .in('material_code', codes)
+      .in('material_code', codes))
       .order('is_main_supplier', { ascending: false });
     for (const b of (binds ?? []) as Array<{ material_code: string; is_main_supplier: boolean; supplier_id: string; supplier: { code: string; name: string } | Array<{ code: string; name: string }> | null }>) {
       const s = Array.isArray(b.supplier) ? b.supplier[0] : b.supplier;
@@ -790,7 +799,7 @@ mrp.get('/', async (c) => {
   // demand by default; ?includeUndated=true brings it back for a full view.
   const includeUndated = c.req.query('includeUndated') === 'true';
   try {
-    const result = await computeMrp(sb, { catFilter, whFilter, includeUndated });
+    const result = await computeMrp(sb, { catFilter, whFilter, includeUndated, companyId: activeCompanyId(c) });
     return c.json(result);
   } catch (e) {
     return c.json({ error: 'load_failed', reason: e instanceof Error ? e.message : String(e) }, 500);

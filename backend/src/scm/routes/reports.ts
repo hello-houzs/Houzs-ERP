@@ -25,6 +25,7 @@ import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
+import { scopeToCompany } from '../lib/companyScope';
 
 export const reports = new Hono<{ Bindings: Env; Variables: Variables }>();
 reports.use('*', supabaseAuth);
@@ -73,6 +74,7 @@ reports.get('/sales-order-detail-listing', async (c) => {
     if (docNo)      q = q.ilike('doc_no', `%${docNo}%`);
     if (itemCode)   q = q.ilike('item_code', `%${itemCode}%`);
     if (debtorCode) q = q.eq('debtor_code', debtorCode);
+    q = scopeToCompany(q, c); // multi-company: isolate to the active company
     // Sort: line-level for item_code, header-level (joined) for date/doc_no.
     if (sortBy === 'item_code') {
       q = q.order('item_code', { ascending: true });
@@ -119,10 +121,10 @@ reports.get('/sales-order-detail-listing', async (c) => {
     // chunkIn — docNos can exceed 1000 (un-truncated listing) and a doc can have
     // many instalment payments; batch the .in() and page each batch so the
     // paid totals are never UNDERSTATED (which would overstate outstanding).
-    const { data: paymentTotals, error: payErr } = await chunkIn(docNos, (batch, pFrom, pTo) => sb
+    const { data: paymentTotals, error: payErr } = await chunkIn(docNos, (batch, pFrom, pTo) => scopeToCompany(sb
       .from('mfg_sales_order_payments')
       .select('so_doc_no, amount_centi, paid_at, account_sheet, approval_code, collected_by')
-      .in('so_doc_no', batch)
+      .in('so_doc_no', batch), c)
       .range(pFrom, pTo));
     if (payErr) return c.json({ error: 'load_failed', reason: payErr.message }, 500);
     for (const p of paymentTotals ?? []) {
@@ -313,6 +315,7 @@ reports.get('/delivery-order-detail-listing', async (c) => {
     if (docNo)      q = q.ilike('delivery_orders.do_number', `%${docNo}%`);
     if (itemCode)   q = q.ilike('item_code', `%${itemCode}%`);
     if (debtorCode) q = q.eq('delivery_orders.debtor_code', debtorCode);
+    q = scopeToCompany(q, c); // multi-company: isolate to the active company
     return q.range(pFrom, pTo);
   });
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
@@ -363,6 +366,7 @@ reports.get('/sales-invoice-detail-listing', async (c) => {
     if (docNo)      q = q.ilike('sales_invoices.invoice_number', `%${docNo}%`);
     if (itemCode)   q = q.ilike('item_code', `%${itemCode}%`);
     if (debtorCode) q = q.eq('sales_invoices.debtor_code', debtorCode);
+    q = scopeToCompany(q, c); // multi-company: isolate to the active company
     return q.range(pFrom, pTo);
   });
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
@@ -429,6 +433,7 @@ reports.get('/delivery-return-detail-listing', async (c) => {
     if (docNo)      q = q.ilike('delivery_returns.return_number', `%${docNo}%`);
     if (itemCode)   q = q.ilike('item_code', `%${itemCode}%`);
     if (debtorCode) q = q.eq('delivery_returns.debtor_code', debtorCode);
+    q = scopeToCompany(q, c); // multi-company: isolate to the active company
     return q.range(pFrom, pTo);
   });
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);

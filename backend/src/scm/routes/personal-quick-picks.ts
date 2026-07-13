@@ -111,6 +111,14 @@ personalQuickPicks.post('/', async (c) => {
   const uid = ownerId(c);
   if (uid == null) return c.json({ error: 'unauthorized' }, 401);
 
+  // scm.personal_quick_picks.company_id is NOT NULL with NO default (mig 0102,
+  // created after the 0091 default backfill), so an insert with an unresolved
+  // company_id (Hyperdrive cold-start negative-cache, up to 30s) would 500 on the
+  // NOT NULL constraint. Guard up front with a clean 409 — mirrors sales-analysis.
+  if (activeCompanyId(c) == null) {
+    return c.json({ error: 'company_unresolved' }, 409);
+  }
+
   let body: {
     baseModel?: string;
     modules?: unknown;

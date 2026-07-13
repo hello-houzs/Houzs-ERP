@@ -58,6 +58,14 @@ quotes.post('/', async (c) => {
   const supabase = c.get('supabase');
   const userId = c.get('user').id;
 
+  // scm.quotes.company_id is NOT NULL with NO default (mig 0101, created after the
+  // 0091 default backfill), so an insert with an unresolved company_id (Hyperdrive
+  // cold-start negative-cache, up to 30s) would 500 on the NOT NULL constraint.
+  // Guard up front with a clean 409 — mirrors sales-analysis.ts PUT /targets.
+  if (activeCompanyId(c) == null) {
+    return c.json({ error: 'company_unresolved' }, 409);
+  }
+
   let body: any;
   try {
     body = await c.req.json();
