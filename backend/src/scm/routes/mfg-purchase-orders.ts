@@ -102,6 +102,54 @@ async function poHasDownstream(sb: any, poId: string): Promise<{ error: string; 
   return null;
 }
 
+/* ── Drop-ship OUT guard (audit C3, 2026-07-13) ──────────────────────────────
+   A drop-ship DO ships BEFORE receipt with its OUT movement stamped
+   batch_no = this PO's po_number (the EXPECTED batch). Cancelling the PO while
+   such an OUT is outstanding orphans it forever: no GRN will ever post an IN
+   under that batch, so the negative stock never nets out and the drop-ship
+   COGS stays 0 permanently. Mirror of the "cancel the GRN first" pattern:
+   block the PO cancel until the drop-ship DO is cancelled (or delivered goods
+   are handled via a Delivery Return + new paperwork).
+
+   NOTE: poHasDownstream already blocks cancel once ANY non-cancelled GRN
+   exists, so when this guard runs nothing has been received under this PO —
+   any OUT movement carrying its po_number as batch_no can only be a drop-ship
+   OUT (a normal batched ship needs a received lot, which needs a GRN).
+   Best-effort forward-compat: absent batch_no column (pre-0120) → no
+   drop-ship OUTs can exist → guard passes. */
+async function poHasOutstandingDropshipOut(
+  sb: any,
+  poNumber: string | null | undefined,
+): Promise<{ error: string; message: string } | null> {
+  if (!poNumber) return null;
+  try {
+    const { data: outs, error } = await sb.from('inventory_movements')
+      .select('source_doc_id')
+      .eq('movement_type', 'OUT')
+      .eq('source_doc_type', 'DO')
+      .eq('batch_no', poNumber);
+    if (error) return null; // batch_no column absent (pre-0120) — nothing to guard
+    const doIds = [...new Set(((outs ?? []) as Array<{ source_doc_id: string | null }>)
+      .map((m) => m.source_doc_id).filter((x): x is string => !!x))];
+    if (doIds.length === 0) return null;
+    const { data: dos } = await sb.from('delivery_orders')
+      .select('id, do_number, status').in('id', doIds);
+    const live = ((dos ?? []) as Array<{ id: string; do_number: string | null; status: string | null }>)
+      .filter((d) => (d.status ?? '').toUpperCase() !== 'CANCELLED');
+    if (live.length === 0) return null;
+    const doNos = [...new Set(live.map((d) => d.do_number).filter(Boolean))].join(', ');
+    return {
+      error: 'po_has_dropship_out',
+      message:
+        `A drop-ship Delivery Order (${doNos || 'unknown'}) has already shipped against this PO's expected batch. ` +
+        `Cancelling the PO would strand that shipment with no incoming batch to net it out — ` +
+        `cancel that Delivery Order first (or receive the goods, then handle the return).`,
+    };
+  } catch {
+    return null; // best-effort — never block a cancel on a read hiccup
+  }
+}
+
 const VALID_STATUSES = new Set(['DRAFT', 'SUBMITTED', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CANCELLED']);
 const VALID_CURRENCIES = new Set(['MYR', 'RMB', 'USD', 'SGD']);
 const VALID_KINDS = new Set(['mfg_product', 'fabric', 'raw']);
@@ -2208,7 +2256,7 @@ mfgPurchaseOrders.patch('/:id/cancel', async (c) => {
      into read → guard → update → re-read so the cancel can't 500 on that. */
   const { data: cur, error: readErr } = await supabase
     .from('purchase_orders')
-    .select('id, status')
+    .select('id, status, po_number')
     .eq('id', id)
     .maybeSingle();
   if (readErr) return c.json({ error: 'load_failed', reason: readErr.message }, 500);
@@ -2224,6 +2272,13 @@ mfgPurchaseOrders.patch('/:id/cancel', async (c) => {
      GRN must be cancelled/deleted first (mirrors grnHasDownstream cancel guard). */
   const childLock = await poHasDownstream(supabase, id);
   if (childLock) return c.json(childLock, 409);
+
+  /* Audit C3 — a drop-ship DO may have shipped against this PO's number as its
+     EXPECTED batch (no GRN yet, so poHasDownstream can't see it). Cancelling
+     would orphan that OUT forever (permanent negative + 0 COGS). */
+  const dropshipLock = await poHasOutstandingDropshipOut(
+    supabase, (cur as { po_number?: string | null }).po_number);
+  if (dropshipLock) return c.json(dropshipLock, 409);
 
   const { error: updErr } = await supabase
     .from('purchase_orders')
