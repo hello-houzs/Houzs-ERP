@@ -1909,6 +1909,12 @@ const FINANCE_LIST_FILTER_KEYS = [
 
 function FinanceListView() {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  // The parent (ProjectsFinancesView) only mounts this view when the viewer
+  // has the DIRECTOR-level finance flag, but guard the denyFinance-protected
+  // fetch with `enabled` too so a future refactor can never let it fire (and
+  // 403) for a non-viewer. Fail-open when the flag is absent — backend enforces.
+  const canProjectFinance = !!user?.project_finance_viewer;
   const thisYear = new Date().getFullYear();
   const defaultFrom = `${thisYear}-01-01`;
   const defaultTo = `${thisYear}-12-31`;
@@ -1977,7 +1983,7 @@ function FinanceListView() {
     [dateFrom, dateTo, brand, stage, search, includeArchived, page, perPage, sort?.key, sort?.dir],
     // Paginated + filter-switched list: keep the current rows on screen while
     // the next page/filter loads instead of flashing an empty table.
-    { keepPreviousData: true }
+    { keepPreviousData: true, enabled: canProjectFinance }
   );
 
   const columns: Column<FinanceProjectRow>[] = [
@@ -2457,6 +2463,10 @@ function ProjectsAnalyticsView() {
   // Date range default: current year. User can clear or change.
   const thisYear = new Date().getFullYear();
   const navigate = useNavigate();
+  const { user } = useAuth();
+  // Belt-and-suspenders finance gate (see FinanceListView): the profitability
+  // fetch is denyFinance-guarded server-side; never fire it for a non-viewer.
+  const canProjectFinance = !!user?.project_finance_viewer;
   const [dateFrom, setDateFrom] = useState<string>(`${thisYear}-01-01`);
   const [dateTo, setDateTo] = useState<string>(`${thisYear}-12-31`);
   const [brand, setBrand] = useState<string>("");
@@ -2483,7 +2493,8 @@ function ProjectsAnalyticsView() {
           event_type_id: eventTypeId || undefined,
         })}`
       ),
-    [dateFrom, dateTo, brand, organizer, eventTypeId]
+    [dateFrom, dateTo, brand, organizer, eventTypeId],
+    { enabled: canProjectFinance }
   );
 
   const d = q.data;
