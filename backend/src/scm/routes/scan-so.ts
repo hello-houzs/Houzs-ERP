@@ -3196,6 +3196,15 @@ async function postScanNotice(
   }
 }
 
+/* The sofa Leg Height "Default" option (RM 0.00) from the maintenance
+   sofaLegHeights pool, matched case-insensitively by name (owner 2026-07-13).
+   Used to seed a drafted sofa line's Leg Height when the slip named no specific
+   leg, so it is never an empty required field. null when the pool has none. */
+const DEFAULT_SOFA_LEG_RE = /^\s*default\s*$/i;
+function resolveDefaultSofaLeg(catalog: Catalog): string | null {
+  return catalog.sofaLegHeights.find((v) => DEFAULT_SOFA_LEG_RE.test(v)) ?? null;
+}
+
 function buildDraftSoBodyFromSlip(
   parsed: ExtractedSlip,
   catalog: Catalog,
@@ -3262,6 +3271,15 @@ function buildDraftSoBodyFromSlip(
     // line (seat height dropped there), so an imperfect read never loses the row.
     if (cat === 'sofa' && l.seatHeightInches != null) {
       variants.seatHeight = `${l.seatHeightInches}"`;
+    }
+    // SOFA leg height — owner 2026-07-13: the sofa Leg Height carries a standing
+    // "Default" option (RM 0.00). When the slip didn't spell out a specific leg
+    // (No Leg / 4" / 6" …), seed the "Default" option so the drafted sofa line
+    // comes out pre-filled (never an empty leg field) and never blocks Confirm.
+    // A scanned specific leg (set above via noLeg / legHeightInches) is kept.
+    if (cat === 'sofa' && variants.legHeight == null) {
+      const defLeg = resolveDefaultSofaLeg(catalog);
+      if (defLeg) variants.legHeight = defLeg;
     }
     items.push({
       itemCode: sku?.code ?? '',

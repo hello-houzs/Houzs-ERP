@@ -284,18 +284,45 @@ export function useUpdateMfgProductStatus() {
    — so the SO variant dropdowns render UNRESTRICTED for those lines (the exact
    verbatim fallback the source already takes). Freshly-picked products still
    carry allowed_options inline off useMfgProducts, so that path is unaffected. */
+/* The raw by-code payload — allowed_options pools + the SKU's REAL category.
+   `category` (owner 2026-07-13) lets the SO line editor recognise a sofa/
+   bedframe line whose persisted itemGroup came in generic (scan / backdoor
+   drafts) and render the right configurator. Null for legacy/unknown codes. */
+type ModelByCodeResult = {
+  allowedOptions: ModelAllowedOptions | null;
+  category: MfgCategory | null;
+};
+
+const modelByCodeQueryOptions = (itemCode: string | undefined) => ({
+  enabled: Boolean(itemCode),
+  queryKey: ['model-allowed-options-by-code', itemCode] as const,
+  staleTime: 60_000,
+  queryFn: async (): Promise<ModelByCodeResult> => {
+    if (!itemCode) return { allowedOptions: null, category: null };
+    const res = await authedFetch<{ allowedOptions: ModelAllowedOptions | null; category?: string | null }>(
+      `/product-models/by-code/${encodeURIComponent(itemCode)}`,
+    );
+    const cat = res.category ? (res.category.toUpperCase() as MfgCategory) : null;
+    return { allowedOptions: res.allowedOptions ?? null, category: cat };
+  },
+});
+
 export const useModelAllowedOptionsByCode = (itemCode: string | undefined) =>
   useQuery({
-    enabled: Boolean(itemCode),
-    queryKey: ['model-allowed-options-by-code', itemCode],
-    staleTime: 60_000,
-    queryFn: async (): Promise<ModelAllowedOptions | null> => {
-      if (!itemCode) return null;
-      const res = await authedFetch<{ allowedOptions: ModelAllowedOptions | null }>(
-        `/product-models/by-code/${encodeURIComponent(itemCode)}`,
-      );
-      return res.allowedOptions ?? null;
-    },
+    ...modelByCodeQueryOptions(itemCode),
+    // Same query (one fetch, shared cache) as useSkuCategoryByCode; select the
+    // allowed_options slice so existing callers keep their ModelAllowedOptions.
+    select: (r: ModelByCodeResult) => r.allowedOptions,
+  });
+
+/* The SKU's REAL category resolved from its item code (via the SAME by-code
+   query as useModelAllowedOptionsByCode — one network round-trip serves both).
+   The SO line editor uses this to drive the variant configurator off the SKU's
+   true category when a saved line's itemGroup is generic (owner 2026-07-13). */
+export const useSkuCategoryByCode = (itemCode: string | undefined) =>
+  useQuery({
+    ...modelByCodeQueryOptions(itemCode),
+    select: (r: ModelByCodeResult) => r.category,
   });
 
 /* ════════════════════════════════════════════════════════════════════════════

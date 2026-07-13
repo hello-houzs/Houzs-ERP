@@ -12,6 +12,7 @@ import {
   type SoAuditFieldChange,
 } from "../vendor/scm/lib/sales-order-queries";
 import { buildVariantSummary } from "../vendor/shared/variant-summary";
+import { PaymentInfoBlock, type RecordedPaymentLike } from "./PaymentInfoBlock";
 import "./mobile.css";
 
 /* Shapes are the subset of the /mfg-sales-orders/:docNo + /:docNo/payments
@@ -123,12 +124,6 @@ type PaymentsResp = { payments: SoPayment[] };
 
 const rm = (centi: number | null | undefined) =>
   ((centi ?? 0) / 100).toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const dm = (d: string | null | undefined) => {
-  if (!d) return "—";
-  const dt = new Date(d);
-  if (isNaN(+dt)) return "—";
-  return dt.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
-};
 /* Full date for the locked read-only fields (design renders e.g. "14 Jun 2026").
    Empty / unparseable → em-dash so the .fld-ro cell never shows a raw string. */
 const dl = (d: string | null | undefined) => {
@@ -499,27 +494,10 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
               {paymentsQ.isLoading && <div style={{ padding: "11px 13px", borderTop: "1px solid var(--line2)", fontSize: 11.5, color: "var(--mut2)" }}>Loading{"…"}</div>}
               {!paymentsQ.isLoading && (payments.length ? payments.map((p, i) => (
                 <div key={p.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "11px 13px", borderTop: i ? "1px solid var(--line2)" : "none", alignItems: "center" }}>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--ink)" }}>{methodLabel(p.method)}</div>
-                    <div className="money" style={{ fontSize: 10.5, color: "var(--mut)", marginTop: 2 }}>{[dm(p.paid_at), p.account_sheet, p.collected_by_name].filter((x) => x && String(x).trim()).join(" · ")}</div>
-                    {/* Bank + tenure (Merchant) / online type (Transfer) — parity
-                        with desktop PaymentsTable. Dual-read camelCase ?? snake_case. */}
-                    {(() => {
-                      const pc = p as unknown as { merchantProvider?: string | null; installmentMonths?: number | null; onlineType?: string | null };
-                      const bank = pc.merchantProvider ?? p.merchant_provider;
-                      const months = pc.installmentMonths ?? p.installment_months;
-                      const online = pc.onlineType ?? p.online_type;
-                      if (p.method === "merchant") {
-                        const tenure = typeof months === "number" ? `${months} month${months === 1 ? "" : "s"}` : "One shot";
-                        return <div className="money" style={{ fontSize: 10, color: "var(--mut2)" }}>{[bank, tenure].filter((x) => x && String(x).trim()).join(" · ")}</div>;
-                      }
-                      if (p.method === "transfer" && online) {
-                        return <div className="money" style={{ fontSize: 10, color: "var(--mut2)" }}>{online}</div>;
-                      }
-                      return null;
-                    })()}
-                    {p.approval_code ? <div className="money" style={{ fontSize: 10, color: "var(--mut2)" }}>Approval {p.approval_code}</div> : null}
-                  </div>
+                  {/* Owner 2026-07-13 — recorded-payment info now renders through
+                      the shared PaymentInfoBlock so the draft SO edit view
+                      (MobileNewSO) presents it identically. */}
+                  <PaymentInfoBlock payment={p as RecordedPaymentLike} />
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     {/* Slip present — dual-read camelCase ?? snake_case. */}
                     {((p as unknown as { slipKey?: string | null }).slipKey ?? p.slip_key) ? <SlipLink docNo={docNo} paymentId={p.id} /> : null}
@@ -629,12 +607,6 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
     </div>
   );
 }
-
-/* Method code → human label for the read-only payments list. Backend stores the
-   locked enum (cash|transfer|merchant|installment); render the SO-form value the
-   operator recognises (transfer surfaces as "Online" per the shared map). */
-const METHOD_LABELS: Record<string, string> = { cash: "Cash", transfer: "Online", merchant: "Merchant", installment: "Installment" };
-const methodLabel = (m: string | null): string => (m ? METHOD_LABELS[m] ?? m : "—");
 
 /* KPI stat card — one third of the Total / Paid / Balance strip. Sized to fit
    three-up at 375px: flex 1 1 0 (equal thirds regardless of content width) +

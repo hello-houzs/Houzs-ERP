@@ -27,11 +27,13 @@ import {
   useMaintenanceConfig,
   useSpecialAddons,
   useModelAllowedOptionsByCode,
+  useSkuCategoryByCode,
   type MaintenanceConfig,
   type ModelAllowedOptions,
   type SpecialAddonRow,
 } from "../vendor/scm/lib/mfg-products-queries";
 import { useFabricColoursActive, type FabricColourRow } from "../vendor/scm/lib/fabric-queries";
+import { PaymentInfoBlock } from "./PaymentInfoBlock";
 import { useFabricLibrary } from "../vendor/scm/lib/queries";
 import { activeOptions, maintPickerValues } from "../vendor/shared/maintenance-pools";
 import { missingVariantAxes } from "../vendor/shared/so-variant-rule";
@@ -184,6 +186,17 @@ type SoPayment = {
   approval_code: string | null;
   account_sheet: string | null;
   collected_by_name: string | null;
+  /* Owner 2026-07-13 — the recorded-payment row now renders through the shared
+     PaymentInfoBlock (parity with the confirmed SO detail), which surfaces the
+     merchant bank / installment tenure / online type. GET /:docNo/payments
+     already returns these; carry them so the draft-edit view shows them too.
+     Dual-read camelCase ?? snake_case (postgres.js / PostgREST casing drift). */
+  merchant_provider?: string | null;
+  installment_months?: number | null;
+  online_type?: string | null;
+  merchantProvider?: string | null;
+  installmentMonths?: number | null;
+  onlineType?: string | null;
 };
 type PaymentsResp = { payments: SoPayment[] };
 
@@ -244,6 +257,22 @@ function newLine(): LineItem {
 function catForGroup(group: string | null | undefined): LineCat {
   const g = (group ?? "").toLowerCase();
   return g === "sofa" ? "sofa" : g === "bedframe" ? "bedframe" : g === "mattress" ? "mattress" : "";
+}
+
+const isBlankVar = (v: unknown): boolean =>
+  v === undefined || v === null || String(v).trim() === "";
+
+/* The sofa Leg Height "Default" option (RM 0.00) from the maintenance
+   sofaLegHeights pool, matched case-insensitively by name (owner 2026-07-13).
+   Seeds a sofa line's Leg Height so it is never an empty required field and
+   never blocks Confirm. null when the pool has no such option. */
+const DEFAULT_SOFA_LEG_RE = /^\s*default\s*$/i;
+function defaultSofaLegValue(maint: MaintenanceConfig | null | undefined): string | null {
+  for (const e of (maint?.sofaLegHeights ?? [])) {
+    const val = typeof e === "string" ? e : String((e as { value?: unknown })?.value ?? "");
+    if (DEFAULT_SOFA_LEG_RE.test(val)) return val;
+  }
+  return null;
 }
 
 /* Build a line's outgoing `variants` blob for the create/edit body. We fold in
@@ -1190,7 +1219,13 @@ export function MobileNewSO({
       setError(`Pick a product from the catalog for every line (${unpickedLines.length} line${unpickedLines.length === 1 ? "" : "s"} still ha${unpickedLines.length === 1 ? "s" : "ve"} no product selected).`);
       return;
     }
-    if (linesMissingVariants.length > 0) {
+    /* Owner 2026-07-13 — a partially-configured sofa/bedframe line may stay a
+       DRAFT (it prices to 0 until completed); the mandatory variants are only
+       enforced when CONFIRMING (asDraft === false), matching the desktop
+       SalesOrderDetail gate + the server "Processing Date requires variants"
+       rule. So a scanned sofa the operator hasn't finished still saves as a
+       draft instead of blocking. */
+    if (!asDraft && linesMissingVariants.length > 0) {
       const l = linesMissingVariants[0];
       const miss = missingVariantAxes(l.itemGroup, l.variants).map((a) => a.label).join(", ");
       setError(`Complete the required options (${miss}) on "${l.name || l.itemCode}".`);
@@ -1694,10 +1729,16 @@ export function MobileNewSO({
                 {isEdit && existingPays.length > 0 && (
                   <>
                     <div className="fld-l" style={{ marginBottom: 2 }}>Recorded</div>
+                    {/* Owner 2026-07-13 — render recorded payments through the
+                        SAME PaymentInfoBlock the confirmed SO detail uses, so a
+                        "Recorded" payment looks identical in both views (method
+                        label + account + collected-by + bank/tenure + online +
+                        approval). Read-only here: slip + delete live on the SO
+                        detail screen. */}
                     {existingPays.map((p) => (
                       <div key={p.id} style={roItemBox}>
-                        <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                          <span style={{ fontSize: 12, color: "#414539" }}>{(p.paid_at ?? "").slice(0, 10) || "—"} {"·"} {p.method || "—"}</span>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
+                          <PaymentInfoBlock payment={p} />
                           <span className="money" style={{ fontSize: 12.5, fontWeight: 700, color: "#0c3f39" }}>RM {fromCenti(p.amount_centi)}</span>
                         </div>
                       </div>
@@ -1982,6 +2023,35 @@ function LineCard({
   };
 
   const maint = pools.maint;
+
+  /* Recognise a generic-typed draft + seed the sofa Leg default (owner
+     2026-07-13) — parity with the desktop SoLineCard heal. A scan/backdoor
+     draft can persist a sofa/bedframe SKU under a generic item_group ('others'),
+     which renders as a "General item" with no configurator. Resolve the SKU's
+     REAL category by code and, when it disagrees with the line's cat, rewrite
+     cat + itemGroup so the right panel shows and its variants become required.
+     For sofa, also default Leg Height to the "Default" option (RM 0.00) when
+     unset, so it is never an empty required field. */
+  const skuCategoryQ = useSkuCategoryByCode(line.itemCode || undefined);
+  useEffect(() => {
+    if (!picked) return;
+    const resolved = String(skuCategoryQ.data ?? "").toLowerCase();
+    const patch: Partial<LineItem> = {};
+    if ((resolved === "sofa" || resolved === "bedframe" || resolved === "mattress")
+        && line.cat !== resolved) {
+      patch.cat = resolved as LineCat;
+      patch.itemGroup = resolved;
+    }
+    const effCat = patch.cat ?? line.cat;
+    if (effCat === "sofa" && maint
+        && isBlankVar(v.legHeight) && isBlankVar(v.sofaLegHeight)) {
+      const def = defaultSofaLegValue(maint);
+      if (def) patch.variants = { ...line.variants, ...(patch.variants ?? {}), legHeight: def };
+    }
+    if (Object.keys(patch).length > 0) onChange(patch);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [picked, skuCategoryQ.data, maint, line.cat, line.itemCode]);
+
   const fabVal = String(v.fabricCode ?? "");
   const fabColourLabel = String(v.colourLabel ?? "");
   const fabOptsCount = fabricOptions(pools, allow, fabVal).length;
@@ -2124,7 +2194,9 @@ function LineCard({
             <div style={{ display: "flex", gap: 9 }}>
               <SpecSel label="Seat height" required invalid={showErrors && missing.has("seatHeight")}
                 value={String(v.seatHeight ?? "")} opts={sofaSeatOpts} onChange={(x) => setVar({ seatHeight: x })} />
-              <SpecSel label="Leg height" required invalid={showErrors && missing.has("legHeight")}
+              {/* Owner 2026-07-13 — sofa Leg Height carries a standing "Default"
+                  option and auto-seeds, so it is not a required-empty field. */}
+              <SpecSel label="Leg height" invalid={showErrors && missing.has("legHeight")}
                 value={String(v.legHeight ?? "")} opts={sofaLegOpts} onChange={(x) => setVar({ legHeight: x })} />
             </div>
           </>
