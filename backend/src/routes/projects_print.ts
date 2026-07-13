@@ -1,6 +1,8 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
 import { getProjectDetail } from "../services/projects";
+import { canSeeProject } from "../services/projectAcl";
+import { getPmsAccess } from "../services/pmsAccess";
 
 /**
  * Post-event summary — A4 printable sheet.
@@ -105,6 +107,19 @@ app.get("/:id", async (c) => {
 
   const detail = await getProjectDetail(c.env, id);
   if (!detail) return c.text("Not found", 404);
+
+  // Row-level ACL — this debrief bypassed canSeeProject before, so any
+  // authenticated user could print any project id. Enforce the same gate the
+  // detail JSON uses.
+  const user = (c as any).get("user");
+  if (user && !canSeeProject(user, detail.project as any)) return c.text("Not found", 404);
+  // Section-level finance/payment gate (Sales-department visibility, rules 3 &
+  // 5). Non-director positions must not see money in the printable debrief
+  // either — the JSON endpoint strips it, so must this. Gated on position_id
+  // to match the detail-GET rollout rule (un-migrated users keep legacy access).
+  const pmsPrint = getPmsAccess(user, detail.project as any);
+  const hideMoney = !!user && user.position_id != null && !pmsPrint.canFinancial;
+  const hidePayment = !!user && user.position_id != null && !pmsPrint.canPayment;
 
   const p = detail.project as any;
   const finance = detail.finance as any;
@@ -368,7 +383,7 @@ app.get("/:id", async (c) => {
               <span class="val">${progressPct}%</span>
             </span>
             — ${checklistDone} done / ${checklistPending} pending / ${checklistBlocked} blocked / ${checklistNa} n/a
-            &nbsp;·&nbsp; Payment: <span class="chip">${esc(PAYMENT_LABEL[p.payment_status || "not_started"])}</span>
+            ${hidePayment ? "" : `&nbsp;·&nbsp; Payment: <span class="chip">${esc(PAYMENT_LABEL[p.payment_status || "not_started"])}</span>`}
           </div>
         </section>
 
@@ -392,6 +407,7 @@ app.get("/:id", async (c) => {
         }
 
         <!-- ── 3. Finance ─────────────────────────────────── -->
+        ${hideMoney ? "" : `
         <section>
           <h2>3. Finance</h2>
           <table class="data">
@@ -436,11 +452,11 @@ app.get("/:id", async (c) => {
             ${rentalPerSqm != null ? `&nbsp;·&nbsp; <strong>Rental / m²:</strong> ${fmtMoney(rentalPerSqm)}` : ""}
             ${rentalPerDay != null ? `&nbsp;·&nbsp; <strong>Rental / day:</strong> ${fmtMoney(rentalPerDay)}` : ""}
           </div>
-        </section>
+        </section>`}
 
         <!-- ── 4. Sales reports ──────────────────────────── -->
         ${
-          salesReports.length
+          !hideMoney && salesReports.length
             ? `<section>
                 <h2>4. Sales Reports</h2>
                 <table class="data">

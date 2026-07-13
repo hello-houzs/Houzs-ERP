@@ -452,6 +452,29 @@ function MembersTab({
     }
   }
 
+  // Re-send the invite email to a member who hasn't joined yet, keyed by
+  // user id (the member row). Reuses the existing invite token — only the
+  // email is fired again.
+  async function resendInviteForUser(u: TeamMember) {
+    try {
+      const res = await api.post<{
+        ok: boolean;
+        invite_url: string;
+        email_sent?: boolean;
+        email_status?: string;
+      }>(`/api/users/${u.id}/resend-invite`);
+      if (res.email_sent) {
+        toast.success(`Invitation emailed to ${u.email}`);
+      } else {
+        toast.error(
+          `Email not sent (${res.email_status || "check Settings, Email"}) — use Copy Link on the pending invite instead`
+        );
+      }
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to resend invitation");
+    }
+  }
+
   async function toggleStatus(u: TeamMember) {
     const next = u.status === "active" ? "disabled" : "active";
     const body: Record<string, unknown> = { status: next };
@@ -927,6 +950,7 @@ function MembersTab({
           onOpenMember={(id) => setViewingId(id)}
           onEdit={() => setEditing(viewing)}
           onSendReset={() => sendReset(viewing)}
+          onResendInvite={() => resendInviteForUser(viewing)}
           onToggleStatus={async () => {
             await toggleStatus(viewing);
           }}
@@ -1455,6 +1479,7 @@ function MembersTab({
           }}
           onChanged={() => members.reload()}
           onSendReset={(u) => sendReset(u)}
+          onResendInvite={(u) => resendInviteForUser(u)}
           onToggleStatus={async (u) => {
             await toggleStatus(u);
             setEditing(null);
@@ -1557,6 +1582,7 @@ function MemberDetail({
   onOpenMember,
   onEdit,
   onSendReset,
+  onResendInvite,
   onToggleStatus,
   onRemove,
   onEditBrands,
@@ -1573,6 +1599,7 @@ function MemberDetail({
   onOpenMember: (id: number) => void;
   onEdit: () => void;
   onSendReset: () => void;
+  onResendInvite: () => void;
   onToggleStatus: () => void | Promise<void>;
   onRemove: () => void | Promise<void>;
   onEditBrands: () => void;
@@ -1794,6 +1821,11 @@ function MemberDetail({
               {user.status !== "invited" && (
                 <button type="button" onClick={onSendReset} className={actionCls}>
                   <KeyRound size={13} /> Reset password
+                </button>
+              )}
+              {user.status === "invited" && (
+                <button type="button" onClick={onResendInvite} className={actionCls}>
+                  <Mail size={13} /> Resend invitation
                 </button>
               )}
               <button type="button" onClick={onToggleStatus} className={actionCls}>
@@ -2080,6 +2112,7 @@ function EditMemberPanel({
   onSaved,
   onChanged,
   onSendReset,
+  onResendInvite,
   onToggleStatus,
   onRemove,
   onEditBrands,
@@ -2095,6 +2128,7 @@ function EditMemberPanel({
   /** Reload the list without closing the panel (e.g. after a photo change). */
   onChanged: () => void;
   onSendReset: (u: TeamMember) => void;
+  onResendInvite: (u: TeamMember) => void;
   onToggleStatus: (u: TeamMember) => void | Promise<void>;
   onRemove: (u: TeamMember) => void | Promise<void>;
   onEditBrands: (u: TeamMember) => void;
@@ -2488,6 +2522,11 @@ function EditMemberPanel({
         {user.status !== "invited" && (
           <button type="button" onClick={() => onSendReset(user)} className={actionCls}>
             <KeyRound size={13} /> Send password reset link
+          </button>
+        )}
+        {user.status === "invited" && (
+          <button type="button" onClick={() => onResendInvite(user)} className={actionCls}>
+            <Mail size={13} /> Resend invitation
           </button>
         )}
         <button type="button" onClick={() => onToggleStatus(user)} className={actionCls}>
