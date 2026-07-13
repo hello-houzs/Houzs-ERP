@@ -18,9 +18,22 @@
 // ---------------------------------------------------------------------------
 
 /** Agent family ids used by agent_controls (plus the 'ALL' kill-switch row). */
-export type AgentFamily = "DELIVERY" | "DOCUMENT" | "CS";
+export type AgentFamily =
+  | "DELIVERY"
+  | "DOCUMENT"
+  | "CS"
+  | "COLLECTION"
+  | "PROCUREMENT"
+  | "PMS";
 
-export const AGENT_FAMILIES: AgentFamily[] = ["DELIVERY", "DOCUMENT", "CS"];
+export const AGENT_FAMILIES: AgentFamily[] = [
+  "DELIVERY",
+  "DOCUMENT",
+  "CS",
+  "COLLECTION",
+  "PROCUREMENT",
+  "PMS",
+];
 
 // ── Run logging ──────────────────────────────────────────────────────────────
 
@@ -255,6 +268,9 @@ export function taskFamily(task: string): AgentFamily | "OTHER" {
   const t = task.toLowerCase();
   if (t.startsWith("delivery")) return "DELIVERY";
   if (t.startsWith("document")) return "DOCUMENT";
+  if (t.startsWith("collection")) return "COLLECTION";
+  if (t.startsWith("procurement")) return "PROCUREMENT";
+  if (t.startsWith("pms")) return "PMS";
   if (t.startsWith("cs")) return "CS";
   return "OTHER";
 }

@@ -13,7 +13,7 @@ build against, without reading the source.
   Mutations also write ONE `audit_events` row.
 - **Money:** always integer **sen** (RM × 100). Format on the client.
 - **Timestamps:** ISO 8601 text.
-- **Families this phase:** `DELIVERY`, `DOCUMENT`. (`CS` reserved — see Phase 2.)
+- **Families:** `DELIVERY`, `DOCUMENT`, `CS`, `COLLECTION`, `PROCUREMENT`, `PMS`.
 
 ---
 
@@ -81,6 +81,78 @@ the next patrol re-opens it if the condition still holds.
 
 ---
 
+## 3b. Phase-2 engines — shared surface
+
+The four Phase-2 families (`collection`, `cs`, `procurement`, `pms`) all expose
+the SAME four-route surface as Delivery, over their own proposal + brief tables
+(one route factory, `mountEngineRoutes`, registers them — they can't drift):
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| GET | `/api/agents/<base>/status` | — | family-specific counters (see below) |
+| GET | `/api/agents/<base>/proposals` | `?status=PENDING&kind=` | proposal rows `{id, kind, key, status, payload, summary, createdAt, decidedAt, decidedBy}`, newest first, `payload` parsed |
+| POST | `/api/agents/<base>/proposals/decide` | `{ids[], action}` | `approve`→APPROVED / `reject`→REJECTED (PENDING only, max 100). Returns `{decided, status}` |
+| GET | `/api/agents/<base>/brief` | — | latest brief `{id, brief, aiFocus, createdAt}` |
+
+`<base>` ∈ `collection` \| `cs` \| `procurement` \| `pms`. Approval marks a
+proposal ready for the office — PROPOSAL-ONLY holds for every family (no engine
+creates or edits a business document). All four never create/edit `scm.*` rows.
+
+### Collection (`collection`)
+- **Proposal kind:** `DEBTOR_CHASE` — one per debtor with unpaid AR past the
+  chase threshold; `payload` groups that debtor's invoices with buckets +
+  outstanding sen, severity, worst bucket. `key` = `DEBTOR_CHASE:<debtorName>`.
+- **status:** `{openProposals, lastBriefAt, totalOutstandingSen}`.
+- **brief:** total outstanding, aging buckets (0-30/31-60/61-90/90+), top-10
+  worst debtors, oldest-invoice age.
+- **Tunable:** `app_settings['agents.collection'].chaseThresholdDays` (0-90, default 1).
+
+### CS (`cs`) — never invents a date
+- **Proposal kinds:** `PROMISE_DATE` (an SO whose realistic promise date — stock-ready
+  date from PO ETAs + per-state transit — differs from what the customer was told;
+  SOs with any uncovered shortage are reported as *cannotPromise*, never dated) and
+  `ASSR_SLA` (after-sales case breaching / near its SLA). Reuses `computeMrp` for
+  per-line ETAs and the Delivery agent's learned `transitDaysByState`.
+- **status:** `{openProposals, openByKind, lastBriefAt}`.
+- **brief:** `promise {promisable, cannotPromise, upcoming[]}`, `assr {openCases, breached, atRisk, byPriority}`.
+- **Tunable:** `app_settings['agents.cs'].assrWarnHours` (1-168, default 24).
+
+### Procurement (`procurement`) — readiness-gate-first, PROPOSAL-ONLY
+- **Proposal kind:** `REORDER` — one per supplier, aggregating shortage SKUs
+  (qty + order-by date; no cost invented). Proposals live in
+  `procurement_agent_proposals`, NOT `scm.purchase_orders`, so MRP never
+  double-counts them as supply. On approval the office raises the PO via the
+  existing SO→PO converter.
+- **Readiness gate:** no `REORDER` proposals until supplier-binding coverage of
+  shortage SKUs ≥ `minCoveragePct` (default 90). While gated, the brief lists
+  the SKUs missing a supplier binding instead.
+- **status:** `{openProposals, lastBriefAt, shortageSkuCount}`.
+- **brief:** `{gated, coveragePct, minCoveragePct, shortage{}, reorderBySupplier[], unsuppliedSkus[], topShortages[]}`.
+- **Not built here (documented follow-up):** auto-send of the approved PO to the
+  supplier by **email** (add a `purchase_order` channel to `services/email.ts` —
+  4 edits + one D1 toggle migration, default-OFF fail-closed) and **WhatsApp**
+  (greenfield — needs Meta Cloud API business verification + template approval;
+  nothing exists in either ERP). `renderPoPrintHtml` (`scm/lib/po.ts`) is the
+  ready-but-unwired PO document renderer.
+
+### PMS / Roadshow (`pms`)
+- **Analytics brief (read-only):** sales by category (5 SO-header buckets), brand,
+  state, salesperson, venue — each row `{label, soCount, revenueSen, costSen, marginSen, marginPct}`
+  — plus `salespersonByState` (top cross cells: who sells especially well where).
+  All from the `mfg_sales_orders` header (no cross-DB join).
+- **Per-dimension readiness gate:** each of {salesperson, venue, brand, state}
+  carries `{fillRatePct, gated}` — a dimension whose populated-fill-rate is below
+  `minCoveragePct` (default 90) is flagged *gated* (rows kept, not dropped). This
+  is the owner-flagged data-readiness gate: salesperson/venue stay gated until the
+  owner assigns Sales Attending + the 22 venues.
+- **Proposal kind:** `PROJECT_CHASE` — a project whose `end_date` has passed but
+  is not yet at stage teardown/closed/cancelled. `key` = `PROJECT_CHASE:<code|name>`.
+- **status:** `{openProposals, lastBriefAt}`.
+- **Tunables:** `app_settings['agents.pms'].analyticsWindowDays` (30-1095, default
+  365), `.minCoveragePct` (0-100, default 90).
+
+---
+
 ## 4. How the agents run (for the FE status page + ops)
 
 - **Heartbeat:** the existing `*/30 * * * *` Worker cron calls `runAgentHeartbeat`
@@ -106,6 +178,10 @@ the next patrol re-opens it if the condition still holds.
 - `delivery_agent_proposals`, `delivery_agent_briefs` — 0092.
 - `document_agent_findings` (partial-unique `(kind,doc_type,doc_id) WHERE status='OPEN'`),
   `document_agent_briefs` — 0093.
+- `collection_agent_proposals`, `collection_agent_briefs` — 0094.
+- `cs_agent_proposals`, `cs_agent_briefs` — 0095.
+- `procurement_agent_proposals`, `procurement_agent_briefs` — 0096.
+- `pms_agent_proposals`, `pms_agent_briefs` — 0097.
 
 Houzs CI **auto-applies `migrations-pg` on every deploy** — all three are
 idempotent and self-contained. No manual apply step.

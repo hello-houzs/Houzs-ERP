@@ -63,6 +63,10 @@ import {
 import "../services/agents";
 import { deliveryAgentStatus } from "../services/agents/delivery-agent";
 import { documentAgentStatus } from "../services/agents/document-agent";
+import { collectionAgentStatus } from "../services/agents/collection-agent";
+import { csAgentStatus } from "../services/agents/cs-agent";
+import { procurementAgentStatus } from "../services/agents/procurement-agent";
+import { pmsAgentStatus } from "../services/agents/pms-agent";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -720,6 +724,138 @@ app.get("/document/brief", async (c) => {
       generatedAt: (r.generatedAt ?? r.generated_at) ?? null,
     },
   });
+});
+
+// ═══ Engine endpoints — Phase-2 engines (Collection / CS / Procurement / PMS) ══
+// Every Phase-2 engine exposes the SAME four-route surface as Delivery
+// (status / proposals list / proposals decide / latest brief) over its own
+// proposal + brief tables (migrations 0094-0097, all created_at-ordered). One
+// factory registers them so the four families can never drift apart. Approving
+// a proposal only marks it decided for the office to act on — the PROPOSAL-ONLY
+// red line holds for every family (no engine creates/edits a business document).
+
+function mountEngineRoutes(opts: {
+  base: string; // URL segment + audit/action slug, e.g. 'collection'
+  proposalTable: string;
+  briefTable: string;
+  auditEntity: string;
+  status: (env: Env) => Promise<unknown>;
+}) {
+  const { base, proposalTable, briefTable, auditEntity, status } = opts;
+
+  app.get(`/${base}/status`, async (c) => {
+    return c.json({ success: true, data: await status(c.env) });
+  });
+
+  app.get(`/${base}/proposals`, async (c) => {
+    const st = (c.req.query("status") ?? "PENDING").toUpperCase();
+    const kind = (c.req.query("kind") ?? "").toUpperCase();
+    const params: string[] = [st];
+    let where = "status = ?";
+    if (kind) {
+      where += " AND kind = ?";
+      params.push(kind);
+    }
+    const res = await c.env.DB.prepare(
+      `SELECT * FROM ${proposalTable} WHERE ${where} ORDER BY created_at DESC LIMIT 200`,
+    )
+      .bind(...params)
+      .all<EngineProposalRow>();
+    return c.json({ success: true, data: (res.results ?? []).map(projectProposal) });
+  });
+
+  app.post(`/${base}/proposals/decide`, async (c) => {
+    let body: { ids?: unknown; action?: string } = {};
+    try {
+      body = (await c.req.json()) as typeof body;
+    } catch {
+      body = {};
+    }
+    const action = String(body.action ?? "").toLowerCase();
+    const ids = Array.isArray(body.ids)
+      ? body.ids.filter((x): x is string => typeof x === "string" && x.length > 0).slice(0, 100)
+      : [];
+    if (ids.length === 0 || !["approve", "reject"].includes(action)) {
+      return c.json({ success: false, error: "ids[] and action=approve|reject required" }, 400);
+    }
+    const nowIso = new Date().toISOString();
+    const decidedBy = c.get("userId") != null ? String(c.get("userId")) : null;
+    const next = action === "approve" ? "APPROVED" : "REJECTED";
+    let decided = 0;
+    for (const id of ids) {
+      const r = await c.env.DB.prepare(
+        `UPDATE ${proposalTable}
+            SET status = ?, decided_at = ?, decided_by = ?
+          WHERE id = ? AND status = 'PENDING'`,
+      )
+        .bind(next, nowIso, decidedBy, id)
+        .run();
+      decided += Number(r.meta?.changes ?? r.meta?.rows_written ?? 0) > 0 ? 1 : 0;
+    }
+    await audit(c, {
+      action: `agents.${base}_proposal_${action}`,
+      entityType: auditEntity,
+      entityId: ids.join(","),
+      summary: `${next} ${decided}/${ids.length} ${base} proposal(s)`,
+      meta: { ids, action },
+    });
+    return c.json({ success: true, data: { decided, status: next } });
+  });
+
+  app.get(`/${base}/brief`, async (c) => {
+    const r = await c.env.DB.prepare(
+      `SELECT * FROM ${briefTable} ORDER BY created_at DESC LIMIT 1`,
+    ).first<{
+      id: string;
+      brief?: unknown;
+      ai_focus?: string | null;
+      aiFocus?: string | null;
+      created_at?: string;
+      createdAt?: string;
+    }>();
+    if (!r) return c.json({ success: true, data: null });
+    return c.json({
+      success: true,
+      data: {
+        id: r.id,
+        brief: asJson(r.brief),
+        aiFocus: (r.aiFocus ?? r.ai_focus) ?? null,
+        createdAt: (r.createdAt ?? r.created_at) ?? null,
+      },
+    });
+  });
+}
+
+mountEngineRoutes({
+  base: "collection",
+  proposalTable: "collection_agent_proposals",
+  briefTable: "collection_agent_briefs",
+  auditEntity: "collection_agent_proposal",
+  status: collectionAgentStatus,
+});
+
+mountEngineRoutes({
+  base: "cs",
+  proposalTable: "cs_agent_proposals",
+  briefTable: "cs_agent_briefs",
+  auditEntity: "cs_agent_proposal",
+  status: csAgentStatus,
+});
+
+mountEngineRoutes({
+  base: "procurement",
+  proposalTable: "procurement_agent_proposals",
+  briefTable: "procurement_agent_briefs",
+  auditEntity: "procurement_agent_proposal",
+  status: procurementAgentStatus,
+});
+
+mountEngineRoutes({
+  base: "pms",
+  proposalTable: "pms_agent_proposals",
+  briefTable: "pms_agent_briefs",
+  auditEntity: "pms_agent_proposal",
+  status: pmsAgentStatus,
 });
 
 export default app;

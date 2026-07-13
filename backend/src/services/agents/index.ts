@@ -9,7 +9,7 @@
 // config_proposals, and the once-a-day AI focus paragraph over the brief.
 // ---------------------------------------------------------------------------
 import type { Env } from "../../types";
-import { registerAgent } from "../agent-scheduler";
+import { registerAgent, type AgentRunContext } from "../agent-scheduler";
 import {
   CONFIG_PROPOSAL_RULES,
   activeInstructions,
@@ -18,6 +18,10 @@ import {
 import { askAgentBrain, type AgentBrainUsageSink } from "../agent-brain";
 import { DELIVERY_TRANSIT_RULE, runDeliveryAgent } from "./delivery-agent";
 import type { DeliveryBriefData } from "./delivery-agent";
+import { runCollectionAgent } from "./collection-agent";
+import { runCsAgent } from "./cs-agent";
+import { runProcurementAgent } from "./procurement-agent";
+import { runPmsAgent } from "./pms-agent";
 
 // Document Agent self-registers at module load (family DOCUMENT, 9:00 MYT).
 import "./document-agent";
@@ -126,5 +130,154 @@ registerAgent({
     }
 
     return proposed > 0 ? `${r.summary} · ${proposed} transit proposal(s)` : r.summary;
+  },
+});
+
+// ── Phase-2 engines: Collection / CS / Procurement / PMS ─────────────────────
+// Each engine ships a bounded, already-compact brief (top-N rows, not tables),
+// so the whole brief is handed to the shared brain (Delivery pre-compacts only
+// because its brief is larger). The AI-focus pass is best-effort and budget-
+// gated: no key / over budget / brain failure leaves ai_focus NULL and every
+// deterministic number still ships. The brief tables (migrations 0094-0097)
+// are all created_at-ordered.
+
+/** Write the brain paragraph onto the newest snapshot of a created_at-ordered
+ *  brief table. Table name is a module constant (never user input). */
+async function writeLatestAiFocus(env: Env, table: string, focus: string): Promise<void> {
+  await env.DB.prepare(
+    `UPDATE ${table} SET ai_focus = ?
+      WHERE id = (SELECT id FROM ${table} ORDER BY created_at DESC LIMIT 1)`,
+  )
+    .bind(focus)
+    .run();
+}
+
+/** First-run-of-day AI focus over an engine's brief (shared by the four
+ *  Phase-2 engines). Honours the owner-feedback notebook; never sinks the run. */
+async function maybeAiFocus(
+  env: Env,
+  ctx: AgentRunContext,
+  family: string,
+  system: string,
+  briefTable: string,
+  brief: unknown,
+): Promise<void> {
+  if (!ctx.llmKey) return;
+  const sink: AgentBrainUsageSink = { tokensIn: 0, tokensOut: 0 };
+  const ownerInstructions = await activeInstructions(env.DB, family);
+  const focus = await askAgentBrain(ctx.llmKey, {
+    system,
+    payload: { brief, ownerInstructions },
+    maxTokens: 400,
+    usageSink: sink,
+  });
+  ctx.addTokens(sink.tokensIn, sink.tokensOut);
+  if (focus) {
+    await writeLatestAiFocus(env, briefTable, focus).catch((e) =>
+      console.warn(`[${family.toLowerCase()}-agent] ai_focus write failed:`, e),
+    );
+  }
+}
+
+const COLLECTION_FOCUS_SYSTEM = [
+  "You are the Collection Agent of Houzs, a Malaysian B2C furniture retailer.",
+  "You are given today's deterministic accounts-receivable brief (all money in",
+  "sen, RM x100). Write ONE short paragraph (3-5 sentences, plain English, no",
+  "markdown, no emoji) telling the owner which debtors to chase first and why:",
+  "the biggest and oldest balances, anything tipping into the 90+ bucket.",
+  "Judgment and prioritisation only — never invent numbers not in the payload.",
+  "Honour ownerInstructions when present.",
+].join(" ");
+
+registerAgent({
+  family: "COLLECTION",
+  task: "collection-run",
+  cadence: { firstRunHour: 9.5, minGapHours: 6, maxRunsPerDay: 2 },
+  run: async (env, ctx) => {
+    const r = await runCollectionAgent(env);
+    await maybeAiFocus(
+      env,
+      ctx,
+      "COLLECTION",
+      COLLECTION_FOCUS_SYSTEM,
+      "collection_agent_briefs",
+      r.brief,
+    );
+    return r.summary;
+  },
+});
+
+const CS_FOCUS_SYSTEM = [
+  "You are the Customer Service Agent of Houzs, a Malaysian B2C furniture",
+  "retailer selling at roadshows and delivering with its own fleet. You are",
+  "given today's deterministic CS brief: honest delivery-promise readiness (how",
+  "many orders can be given a realistic date vs cannot yet) and after-sales SLA",
+  "breaches. Write ONE short paragraph (3-5 sentences, plain English, no",
+  "markdown, no emoji) on what needs a customer-facing decision today — orders",
+  "whose promised date the supply chain cannot hit, and service cases past SLA.",
+  "Never invent a delivery date; only speak to what the payload already computed.",
+  "Honour ownerInstructions when present.",
+].join(" ");
+
+registerAgent({
+  family: "CS",
+  task: "cs-run",
+  cadence: { firstRunHour: 8.5, minGapHours: 4, maxRunsPerDay: 3 },
+  run: async (env, ctx) => {
+    const r = await runCsAgent(env);
+    await maybeAiFocus(env, ctx, "CS", CS_FOCUS_SYSTEM, "cs_agent_briefs", r.brief);
+    return r.summary;
+  },
+});
+
+const PROCUREMENT_FOCUS_SYSTEM = [
+  "You are the Procurement Agent of Houzs, a Malaysian B2C furniture retailer",
+  "that buys finished goods from suppliers to cover roadshow sales orders. You",
+  "are given today's deterministic MRP brief (all money in sen, RM x100),",
+  "including a supplier-coverage readiness gate. Write ONE short paragraph (3-5",
+  "sentences, plain English, no markdown, no emoji): if the gate is closed, say",
+  "so and point at the SKUs missing a supplier binding; otherwise call out the",
+  "most urgent reorders by order-by date. Never invent costs or quantities not",
+  "in the payload. Honour ownerInstructions when present.",
+].join(" ");
+
+registerAgent({
+  family: "PROCUREMENT",
+  task: "procurement-run",
+  cadence: { firstRunHour: 8, minGapHours: 6, maxRunsPerDay: 2 },
+  run: async (env, ctx) => {
+    const r = await runProcurementAgent(env);
+    await maybeAiFocus(
+      env,
+      ctx,
+      "PROCUREMENT",
+      PROCUREMENT_FOCUS_SYSTEM,
+      "procurement_agent_briefs",
+      r.brief,
+    );
+    return r.summary;
+  },
+});
+
+const PMS_FOCUS_SYSTEM = [
+  "You are the Roadshow/Project (PMS) Agent of Houzs, a Malaysian B2C furniture",
+  "retailer selling at exhibitions. You are given today's deterministic sales",
+  "analytics brief (all money in sen, RM x100), broken down by category, brand,",
+  "state, salesperson and venue, plus a per-dimension data-readiness gate. Write",
+  "ONE short paragraph (3-5 sentences, plain English, no markdown, no emoji)",
+  "surfacing the real signal — which category/brand/state leads on margin, which",
+  "salesperson does especially well in which state — but explicitly discount any",
+  "dimension whose readiness gate is closed (coverage too low to trust). Never",
+  "invent numbers not in the payload. Honour ownerInstructions when present.",
+].join(" ");
+
+registerAgent({
+  family: "PMS",
+  task: "pms-run",
+  cadence: { firstRunHour: 7, minGapHours: 12, maxRunsPerDay: 1 },
+  run: async (env, ctx) => {
+    const r = await runPmsAgent(env);
+    await maybeAiFocus(env, ctx, "PMS", PMS_FOCUS_SYSTEM, "pms_agent_briefs", r.brief);
+    return r.summary;
   },
 });
