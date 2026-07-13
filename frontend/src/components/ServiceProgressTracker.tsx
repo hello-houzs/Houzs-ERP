@@ -27,8 +27,8 @@ import { cn, formatTimestamp } from "../lib/utils";
 const STAGES: { value: AssrStage; label: string; short: string; owner: string }[] = [
   { value: "pending_review",           label: "Review",                   short: "Review",         owner: "Service Admin" },
   { value: "under_verification",       label: "Verification",             short: "Verify",         owner: "Service Admin" },
-  { value: "pending_solution",         label: "Solution",                 short: "Solution",       owner: "Service Admin" },
   { value: "pending_inspection",       label: "Inspection",               short: "Inspection",     owner: "Logistic Admin" },
+  { value: "pending_solution",         label: "Solution",                 short: "Solution",       owner: "Service Admin" },
   { value: "pending_item_pickup",      label: "Item Pickup",              short: "Item Pickup",    owner: "Logistic Admin" },
   { value: "pending_supplier_pickup",  label: "Supplier Pickup",          short: "Supplier",       owner: "Service Admin" },
   { value: "pending_item_ready",       label: "Item Ready",               short: "Item Ready",     owner: "Service Admin" },

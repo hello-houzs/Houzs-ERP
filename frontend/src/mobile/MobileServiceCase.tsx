@@ -44,8 +44,8 @@ const FIELD_BG = "#f4f6f3";
 const STAGES: { key: string; label: string }[] = [
   { key: "pending_review", label: "Review" },
   { key: "under_verification", label: "Verify" },
-  { key: "pending_solution", label: "Solution" },
   { key: "pending_inspection", label: "Inspection" },
+  { key: "pending_solution", label: "Solution" },
   { key: "pending_item_pickup", label: "Item Pickup" },
   { key: "pending_supplier_pickup", label: "Supplier" },
   { key: "pending_item_ready", label: "Item Ready" },

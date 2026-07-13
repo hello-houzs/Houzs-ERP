@@ -91,8 +91,8 @@ const STAGE_OPTIONS: { value: StageFilter; label: string }[] = [
   { value: "ALL", label: "All" },
   { value: "pending_review", label: "Review" },
   { value: "under_verification", label: "Verification" },
-  { value: "pending_solution", label: "Solution" },
   { value: "pending_inspection", label: "Inspection" },
+  { value: "pending_solution", label: "Solution" },
   { value: "pending_item_pickup", label: "Item Pickup" },
   { value: "pending_supplier_pickup", label: "Supplier Pickup" },
   { value: "pending_item_ready", label: "Item Ready" },
@@ -129,9 +129,9 @@ const NCR_OPTIONS = [
 // stage from the dropdown — this map only seeds the primary button.
 const NEXT_STAGE: Record<string, { stage: AssrStage; label: string }> = {
   pending_review:           { stage: "under_verification",       label: "Start Verification" },
-  under_verification:       { stage: "pending_solution",         label: "Move to Solution" },
-  pending_solution:         { stage: "pending_inspection",       label: "Schedule Inspection" },
-  pending_inspection:       { stage: "pending_item_pickup",      label: "Arrange Item Pickup" },
+  under_verification:       { stage: "pending_inspection",       label: "Schedule Inspection" },
+  pending_inspection:       { stage: "pending_solution",         label: "Move to Solution" },
+  pending_solution:         { stage: "pending_item_pickup",      label: "Arrange Item Pickup" },
   pending_item_pickup:      { stage: "pending_supplier_pickup",  label: "Hand to Supplier" },
   pending_supplier_pickup:  { stage: "pending_item_ready",       label: "Mark Item Ready" },
   pending_item_ready:       { stage: "pending_delivery_service", label: "Arrange Delivery" },
@@ -3334,6 +3334,103 @@ function DetailContent({
               />
             </StageRow>
 
+            {/* pending_inspection — one stage whoever inspects (Nick
+                2026-07-05). `inspection_by` picks the performer: own
+                team routes the visit into Delivery Planning (setting
+                customer_pickup_at surfaces the case on the board as an
+                unscheduled job — the "trip draft"); supplier handles it
+                on their side via the supplier portal. */}
+            <StageRow
+              c={c}
+              priorityMap={priorityMap}
+              stageId="pending_inspection"
+              title="Inspection · QC Issue Inspection"
+              summary={
+                c.inspection_by === "own"
+                  ? `Own-team inspection${c.customer_pickup_at ? ` · visit ${formatDate(c.customer_pickup_at)}` : " · schedule the visit"}`
+                  : c.inspection_by === "supplier"
+                  ? "Supplier inspection — tracked via supplier portal"
+                  : c.stage === "pending_inspection"
+                  ? "QC issue inspection on receipt · action required now"
+                  : "QC Issue Inspection (on receipt): assess the reported defect from photos & description, then decide whether to accept the case."
+              }
+              currentStage={c.stage}
+              stages={activeStages}
+              openStage={openStage}
+              setOpenStage={setOpenStage}
+            >
+              <div className="space-y-2.5 rounded-md border border-border-subtle bg-surface px-3 py-2.5">
+                <div>
+                  <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+                    Inspection by
+                  </div>
+                  <div className="flex gap-1.5">
+                    {([
+                      { v: "own", label: "Own team" },
+                      { v: "supplier", label: "Supplier" },
+                    ] as const).map((o) => (
+                      <button
+                        key={o.v}
+                        onClick={() =>
+                          patch({ inspection_by: c.inspection_by === o.v ? null : o.v })
+                        }
+                        disabled={!!c.archived_at}
+                        className={cn(
+                          "rounded-md border px-3 py-1.5 text-[12px] font-semibold transition-colors",
+                          c.inspection_by === o.v
+                            ? "border-primary bg-primary-soft text-primary"
+                            : "border-border bg-surface text-ink-secondary hover:border-primary/40",
+                        )}
+                      >
+                        {o.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {c.inspection_by === "own" && (
+                  <>
+                    <InlineEdit
+                      label="Inspection Visit Date"
+                      type="date"
+                      value={c.customer_pickup_at}
+                      onSave={(v) => patch({ customer_pickup_at: v || null })}
+                    />
+                    <div className="flex flex-wrap items-center gap-2 rounded-md bg-bg/60 px-3 py-2 text-[11.5px] leading-relaxed text-ink-secondary">
+                      {c.customer_pickup_at ? (
+                        <>
+                          <span>
+                            On the <b>Delivery Planning</b> board as an unscheduled
+                            job — assign a driver / lorry there.
+                          </span>
+                          <a
+                            href="/scm/delivery-planning"
+                            target="_blank"
+                            rel="noreferrer"
+                            className="font-semibold text-primary hover:underline"
+                          >
+                            Open Delivery Planning →
+                          </a>
+                        </>
+                      ) : (
+                        <span>
+                          Set the visit date — the case then appears on the
+                          <b> Delivery Planning</b> board automatically for
+                          driver / lorry assignment.
+                        </span>
+                      )}
+                    </div>
+                  </>
+                )}
+                {c.inspection_by === "supplier" && (
+                  <div className="rounded-md bg-bg/60 px-3 py-2 text-[11.5px] leading-relaxed text-ink-secondary">
+                    Supplier performs the inspection — progress lands in the
+                    supplier portal's service note (see the Supplier Pickup /
+                    Item Ready rows).
+                  </div>
+                )}
+              </div>
+            </StageRow>
+
             {/* pending_solution — pick resolution method + set supplier */}
             <StageRow
               c={c}
@@ -3484,103 +3581,6 @@ function DetailContent({
               />
             )}
           </PanelSection>
-            </StageRow>
-
-            {/* pending_inspection — one stage whoever inspects (Nick
-                2026-07-05). `inspection_by` picks the performer: own
-                team routes the visit into Delivery Planning (setting
-                customer_pickup_at surfaces the case on the board as an
-                unscheduled job — the "trip draft"); supplier handles it
-                on their side via the supplier portal. */}
-            <StageRow
-              c={c}
-              priorityMap={priorityMap}
-              stageId="pending_inspection"
-              title="Inspection · QC Issue Inspection"
-              summary={
-                c.inspection_by === "own"
-                  ? `Own-team inspection${c.customer_pickup_at ? ` · visit ${formatDate(c.customer_pickup_at)}` : " · schedule the visit"}`
-                  : c.inspection_by === "supplier"
-                  ? "Supplier inspection — tracked via supplier portal"
-                  : c.stage === "pending_inspection"
-                  ? "QC issue inspection on receipt · action required now"
-                  : "QC Issue Inspection (on receipt): assess the reported defect from photos & description, then decide whether to accept the case."
-              }
-              currentStage={c.stage}
-              stages={activeStages}
-              openStage={openStage}
-              setOpenStage={setOpenStage}
-            >
-              <div className="space-y-2.5 rounded-md border border-border-subtle bg-surface px-3 py-2.5">
-                <div>
-                  <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
-                    Inspection by
-                  </div>
-                  <div className="flex gap-1.5">
-                    {([
-                      { v: "own", label: "Own team" },
-                      { v: "supplier", label: "Supplier" },
-                    ] as const).map((o) => (
-                      <button
-                        key={o.v}
-                        onClick={() =>
-                          patch({ inspection_by: c.inspection_by === o.v ? null : o.v })
-                        }
-                        disabled={!!c.archived_at}
-                        className={cn(
-                          "rounded-md border px-3 py-1.5 text-[12px] font-semibold transition-colors",
-                          c.inspection_by === o.v
-                            ? "border-primary bg-primary-soft text-primary"
-                            : "border-border bg-surface text-ink-secondary hover:border-primary/40",
-                        )}
-                      >
-                        {o.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                {c.inspection_by === "own" && (
-                  <>
-                    <InlineEdit
-                      label="Inspection Visit Date"
-                      type="date"
-                      value={c.customer_pickup_at}
-                      onSave={(v) => patch({ customer_pickup_at: v || null })}
-                    />
-                    <div className="flex flex-wrap items-center gap-2 rounded-md bg-bg/60 px-3 py-2 text-[11.5px] leading-relaxed text-ink-secondary">
-                      {c.customer_pickup_at ? (
-                        <>
-                          <span>
-                            On the <b>Delivery Planning</b> board as an unscheduled
-                            job — assign a driver / lorry there.
-                          </span>
-                          <a
-                            href="/scm/delivery-planning"
-                            target="_blank"
-                            rel="noreferrer"
-                            className="font-semibold text-primary hover:underline"
-                          >
-                            Open Delivery Planning →
-                          </a>
-                        </>
-                      ) : (
-                        <span>
-                          Set the visit date — the case then appears on the
-                          <b> Delivery Planning</b> board automatically for
-                          driver / lorry assignment.
-                        </span>
-                      )}
-                    </div>
-                  </>
-                )}
-                {c.inspection_by === "supplier" && (
-                  <div className="rounded-md bg-bg/60 px-3 py-2 text-[11.5px] leading-relaxed text-ink-secondary">
-                    Supplier performs the inspection — progress lands in the
-                    supplier portal's service note (see the Supplier Pickup /
-                    Item Ready rows).
-                  </div>
-                )}
-              </div>
             </StageRow>
 
             {/* pending_item_pickup — customer-side pickup */}

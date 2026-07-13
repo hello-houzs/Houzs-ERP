@@ -47,8 +47,8 @@ export interface CreateAssrInput {
 export type Stage =
   | "pending_review"            // Stage 1 — Service Admin
   | "under_verification"        // Stage 2 — Service Admin
-  | "pending_solution"          // Stage 3 — Service Admin / Manager
-  | "pending_inspection"        // Stage 4 — inspection (own team OR supplier)
+  | "pending_inspection"        // Stage 3 — inspect the issue first (own team OR supplier)
+  | "pending_solution"          // Stage 4 — Service Admin / Manager pick the fix
   | "pending_item_pickup"       // Stage 5 — SA assigns Logistic Admin
   | "pending_supplier_pickup"   // Stage 6 — SA contacts supplier
   | "pending_item_ready"        // Stage 7 — SA updates on supplier return
@@ -88,8 +88,8 @@ function statusForStage(stage: Stage): string {
 export const ALL_STAGES: ReadonlyArray<Stage> = [
   "pending_review",
   "under_verification",
-  "pending_solution",
   "pending_inspection",
+  "pending_solution",
   "pending_item_pickup",
   "pending_supplier_pickup",
   "pending_item_ready",
