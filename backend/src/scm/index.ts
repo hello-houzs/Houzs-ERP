@@ -54,6 +54,7 @@ import { addons } from "./routes/addons";
 import { documentFlow } from "./routes/document-flow";
 import { drivers } from "./routes/drivers";
 import { soDropdownOptions } from "./routes/so-dropdown-options";
+import { venues } from "./routes/venues";
 import { reports } from "./routes/reports";
 import { scanSo } from "./routes/scan-so";
 import { scanPayment } from "./routes/scan-payment";
@@ -289,6 +290,14 @@ scm.route("/lorries", lorries);
 // edit-gated on scm.procurement.products.
 scm.use("/so-dropdown-options/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
 scm.route("/so-dropdown-options", soDropdownOptions);
+// Cutover P3 (#389) — venue master for the 2990 POS's direct /api/scm/venues
+// calls. Thin adapter over public.project_venues (the Houzs venue master the FE
+// venue picker + SO auto-fill already use — genuine ONE source of truth), NOT
+// scm.so_dropdown_options. openRead: read by every salesperson building an SO
+// (like the other SO-flow picklists); venue writes stay edit-gated on
+// scm.procurement.products.
+scm.use("/venues/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
+scm.route("/venues", venues);
 // Ported 2026-06-21 — AutoCount-style Detail Listing reports. The vendored
 // report pages (reports-queries.ts) call GET /reports/{sales-order,delivery-order,
 // sales-invoice,delivery-return}-detail-listing; never mounted before, so all
