@@ -3267,6 +3267,8 @@ function DetailContent({
                 summary; nothing to edit here beyond the initial
                 complaint (captured in the Issue card above). */}
             <StageRow
+              c={c}
+              priorityMap={priorityMap}
               stageId="pending_review"
               title="Review"
               summary={
@@ -3295,6 +3297,8 @@ function DetailContent({
 
             {/* under_verification — QC Issue Inspection on receipt */}
             <StageRow
+              c={c}
+              priorityMap={priorityMap}
               stageId="under_verification"
               title="Verification"
               summary={
@@ -3329,6 +3333,8 @@ function DetailContent({
 
             {/* pending_solution — pick resolution method + set supplier */}
             <StageRow
+              c={c}
+              priorityMap={priorityMap}
               stageId="pending_solution"
               title="Solution"
               summary={
@@ -3484,6 +3490,8 @@ function DetailContent({
                 unscheduled job — the "trip draft"); supplier handles it
                 on their side via the supplier portal. */}
             <StageRow
+              c={c}
+              priorityMap={priorityMap}
               stageId="pending_inspection"
               title="Inspection · QC Issue Inspection"
               summary={
@@ -3574,6 +3582,8 @@ function DetailContent({
 
             {/* pending_item_pickup — customer-side pickup */}
             <StageRow
+              c={c}
+              priorityMap={priorityMap}
               stageId="pending_item_pickup"
               title="Item Pickup"
               summary={
@@ -3603,6 +3613,8 @@ function DetailContent({
 
             {/* pending_supplier_pickup — supplier collects from us */}
             <StageRow
+              c={c}
+              priorityMap={priorityMap}
               stageId="pending_supplier_pickup"
               title="Supplier Pickup"
               summary={
@@ -3660,6 +3672,8 @@ function DetailContent({
 
             {/* pending_item_ready — QC Inspection after supplier return */}
             <StageRow
+              c={c}
+              priorityMap={priorityMap}
               stageId="pending_item_ready"
               title="Item Ready"
               summary={
@@ -3687,6 +3701,8 @@ function DetailContent({
 
             {/* pending_delivery_service — logistics rows + related POs */}
             <StageRow
+              c={c}
+              priorityMap={priorityMap}
               stageId="pending_delivery_service"
               title="Delivery"
               summary={
@@ -3796,6 +3812,8 @@ function DetailContent({
 
             {/* completed — closed case summary */}
             <StageRow
+              c={c}
+              priorityMap={priorityMap}
               stageId="completed"
               title="Completed"
               summary={
@@ -4642,6 +4660,8 @@ function StageRow({
   stages,
   openStage,
   setOpenStage,
+  c,
+  priorityMap,
 }: {
   stageId: AssrStage;
   title: string;
@@ -4656,6 +4676,15 @@ function StageRow({
   stages: typeof DETAIL_STAGES;
   openStage: AssrStage | null;
   setOpenStage: (s: AssrStage | null) => void;
+  /* Nico 2026-07-09 — surface per-stage SLA on the CURRENT row so ops
+     can spot an over-budget stage from the Detail. Uses the same
+     stage_target_days snapshot LeadTimePill was already computed for
+     (mig 082) — target is set at stage entry, elapsed is now vs
+     stage_entered_at. Compact pill: green ≤50%, amber 50–100%, red
+     >100%. DONE / FUTURE stages don't have this data on the case row
+     (would need the audit log) — showing only on CURRENT for now. */
+  c?: AssrCase;
+  priorityMap?: Record<string, string>;
 }) {
   const myIdx = stages.findIndex((s) => s.id === stageId);
   if (myIdx < 0) return null;
@@ -4711,6 +4740,12 @@ function StageRow({
             >
               {chip}
             </span>
+            {/* Per-stage SLA pill — only on the CURRENT row. Reuses
+                LeadTimePill's elapsed-vs-target computation so the
+                Detail matches the case list's SLA lens. */}
+            {state === "current" && c && priorityMap && (
+              <LeadTimePill c={c} priorityMap={priorityMap} />
+            )}
           </div>
           <div className="mt-0.5 truncate text-[11.5px] text-ink-muted">{summary}</div>
         </div>
