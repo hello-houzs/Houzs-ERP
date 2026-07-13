@@ -211,17 +211,20 @@ BEGIN
 
       v_unit_cost := COALESCE(NULLIF(NEW.unit_cost_sen, 0), v_avg_cost, 0);
 
+      -- company_id fix (migration 0088): inventory_lots.company_id is NOT NULL
+      -- since 0083 — without it every positive ADJUSTMENT (DO-cancel add-backs)
+      -- would violate the constraint and roll the movement back.
       INSERT INTO inventory_lots (
         warehouse_id, product_code, variant_key, product_name,
         qty_received, qty_remaining, unit_cost_sen,
         received_at, source_doc_type, source_doc_id, source_doc_no,
-        movement_id, created_by, batch_no
+        movement_id, created_by, batch_no, company_id
       ) VALUES (
         NEW.warehouse_id, NEW.product_code, NEW.variant_key, NEW.product_name,
         NEW.qty, NEW.qty, v_unit_cost,
         NEW.created_at,
         NEW.source_doc_type, NEW.source_doc_id, NEW.source_doc_no,
-        NEW.id, NEW.performed_by, NEW.batch_no
+        NEW.id, NEW.performed_by, NEW.batch_no, NEW.company_id
       );
       UPDATE inventory_movements
          SET total_cost_sen = NEW.qty * v_unit_cost,
