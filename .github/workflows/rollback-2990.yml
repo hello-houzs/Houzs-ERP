@@ -1,17 +1,17 @@
-name: Migrate 2990 data into Houzs (Phase 2)
+name: Rollback 2990 import (remove company-2990 rows)
 
-# target=staging (DEFAULT) writes to STAGING_DATABASE_URL (Staging environment
-# secret — cannot reach prod). target=prod must be picked explicitly and only
-# after the staging run is verified complete (owner's staging-first rule).
+# Removes every imported 2990 row (company_id=2990 + legacy staff). Houzs data
+# untouched. target=staging default; target=prod explicit only. Dry-run unless
+# apply=1.
 on:
   workflow_dispatch:
     inputs:
       apply:
-        description: "Set to 1 to WRITE (else dry-run + reconcile only)"
+        description: "Set to 1 to DELETE (else dry-run counts only)"
         required: false
         default: "0"
       target:
-        description: "Destination DB"
+        description: "Which DB"
         required: true
         default: "staging"
         type: choice
@@ -20,7 +20,7 @@ on:
           - prod
 
 jobs:
-  migrate-staging:
+  rollback-staging:
     if: ${{ inputs.target == 'staging' }}
     runs-on: ubuntu-latest
     environment: Staging
@@ -33,14 +33,14 @@ jobs:
         with:
           node-version: 22
       - run: npm ci
-      - run: node scripts/migrate-2990-into-houzs.mjs
+      - run: node scripts/rollback-2990-from-houzs.mjs
         env:
           SOURCE_SUPABASE_URL: ${{ secrets.SOURCE_SUPABASE_URL }}
           SOURCE_SERVICE_ROLE_KEY: ${{ secrets.SOURCE_SERVICE_ROLE_KEY }}
           DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
           APPLY: ${{ github.event.inputs.apply }}
 
-  migrate-prod:
+  rollback-prod:
     if: ${{ inputs.target == 'prod' }}
     runs-on: ubuntu-latest
     defaults:
@@ -52,7 +52,7 @@ jobs:
         with:
           node-version: 22
       - run: npm ci
-      - run: node scripts/migrate-2990-into-houzs.mjs
+      - run: node scripts/rollback-2990-from-houzs.mjs
         env:
           SOURCE_SUPABASE_URL: ${{ secrets.SOURCE_SUPABASE_URL }}
           SOURCE_SERVICE_ROLE_KEY: ${{ secrets.SOURCE_SERVICE_ROLE_KEY }}

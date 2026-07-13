@@ -62,5 +62,48 @@ async function main() {
     }
   }
   console.log(hits === 0 ? "DOCREF_SCAN_CLEAN" : `DOCREF_SCAN_HITS=${hits} (judge each: internal doc refs need prefix, external/supplier numbers do not)`);
+
+  console.log("=== company separation: per-table row counts (c1 | c2 | NULL) ===");
+  const scoped = await dst`SELECT t.table_name FROM information_schema.tables t WHERE t.table_schema='scm' AND t.table_type='BASE TABLE' AND EXISTS (SELECT 1 FROM information_schema.columns c WHERE c.table_schema='scm' AND c.table_name=t.table_name AND c.column_name='company_id') ORDER BY t.table_name`;
+  let nullTagged = 0;
+  for (const { table_name: t } of scoped) {
+    const [r] = await dst.unsafe(`SELECT count(*) FILTER (WHERE company_id=1)::int AS c1, count(*) FILTER (WHERE company_id=2)::int AS c2, count(*) FILTER (WHERE company_id IS NULL)::int AS cn FROM scm."${t}"`);
+    if (r.c1 + r.c2 + r.cn > 0) console.log(`${t}: ${r.c1} | ${r.c2} | ${r.cn}`);
+    if (r.cn > 0) { nullTagged += r.cn; console.log(`NULL_COMPANY ${t}: ${r.cn} rows untagged`); }
+  }
+  console.log(nullTagged === 0 ? "NULL_TAG_CLEAN" : `NULL_TAG_TOTAL=${nullTagged}`);
+
+  console.log("=== cross-company FK leak scan (child company_id <> parent company_id) ===");
+  let leaks = 0;
+  for (const f of fks) {
+    const bothScoped = await dst`SELECT (SELECT count(*) FROM information_schema.columns WHERE table_schema='scm' AND table_name=${f.child} AND column_name='company_id')::int + (SELECT count(*) FROM information_schema.columns WHERE table_schema=${f.pns} AND table_name=${f.parent} AND column_name='company_id')::int AS n`;
+    if (Number(bothScoped[0].n) !== 2) continue;
+    const q = `SELECT count(*)::int AS n FROM scm."${f.child}" t JOIN "${f.pns}"."${f.parent}" p ON p."${f.pcol}" = t."${f.col}" WHERE t."${f.col}" IS NOT NULL AND t.company_id IS DISTINCT FROM p.company_id`;
+    try { const [r] = await dst.unsafe(q); if (r.n > 0) { leaks += r.n; console.log(`XLEAK ${f.child}.${f.col} -> ${f.pns}.${f.parent}: ${r.n} rows cross-company`); } } catch (e) { console.log(`ERR xleak ${f.child}.${f.col}: ${e.message}`); }
+  }
+  console.log(leaks === 0 ? "XCOMPANY_CLEAN" : `XCOMPANY_TOTAL=${leaks} (known exception: products.series_id -> shared seeded series)`);
+
+  // Completeness matrix: for EVERY dest scm table, ask the 2990 SOURCE for its row
+  // count and compare with what we hold under company_id=2. Surfaces tables that
+  // were never in the migration ORDER list (e.g. mfg_products).
+  if (SUPA_URL && SUPA_KEY) {
+    console.log("=== source-vs-dest completeness (src rows | dest c2 rows) ===");
+    const src = createClient(SUPA_URL, SUPA_KEY, { auth: { persistSession: false } });
+    const allTabs = await dst`SELECT t.table_name FROM information_schema.tables t WHERE t.table_schema='scm' AND t.table_type='BASE TABLE' ORDER BY t.table_name`;
+    let missing = 0;
+    for (const { table_name: t } of allTabs) {
+      const { count, error } = await src.schema("public").from(t).select("*", { count: "exact", head: true });
+      if (error) continue; // table doesn't exist on source
+      const srcN = count ?? 0;
+      if (srcN === 0) continue;
+      const hasCid = await dst`SELECT 1 FROM information_schema.columns WHERE table_schema='scm' AND table_name=${t} AND column_name='company_id'`;
+      const q = hasCid.length ? `SELECT count(*)::int AS n FROM scm."${t}" WHERE company_id=2` : `SELECT count(*)::int AS n FROM scm."${t}"`;
+      const [r] = await dst.unsafe(q);
+      const mark = r.n >= srcN ? "ok" : "MISSING";
+      if (mark === "MISSING") missing++;
+      console.log(`${mark} ${t}: ${srcN} | ${r.n}${hasCid.length ? "" : " (shared, total)"}`);
+    }
+    console.log(missing === 0 ? "COMPLETENESS_CLEAN" : `COMPLETENESS_GAPS=${missing} tables`);
+  }
 }
 main().then(() => dst.end()).catch(async e => { console.error("DIAG_FAIL", e.message); await dst.end(); process.exit(1); });
