@@ -806,7 +806,11 @@ export function MobileScan({
       if (keyMissing) {
         setUnavailable(true);
       } else {
-        setError("Couldn't read the slip — try again.");
+        // Surface the server's OWN plain-language reason (authedFetch already
+        // ran it through humanApiError, so err.message is a clean sentence —
+        // "File too large…", "Unsupported file type…", "The photos could not be
+        // uploaded…") instead of a blanket line that hides WHY it failed.
+        setError(err.message || "Couldn't read the slip — try again.");
       }
     } finally {
       setSubmitting(false);
