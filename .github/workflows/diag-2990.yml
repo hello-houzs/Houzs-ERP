@@ -1,0 +1,24 @@
+name: Diag 2990 import (read-only)
+
+# Manual, read-only. Explains series import gap + audits dangling FKs on
+# company_id=2990 rows (Phase 2 load ran with FK checks disabled). No writes.
+on:
+  workflow_dispatch:
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: node scripts/diag-2990-import.mjs
+        env:
+          SOURCE_SUPABASE_URL: ${{ secrets.SOURCE_SUPABASE_URL }}
+          SOURCE_SERVICE_ROLE_KEY: ${{ secrets.SOURCE_SERVICE_ROLE_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
