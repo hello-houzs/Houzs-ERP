@@ -25,6 +25,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { isCorePaymentMethodRow } from "../shared/payment-methods";
 import { supabaseAuth } from "../middleware/auth";
+import { scopeToCompany, activeCompanyId } from "../lib/companyScope";
 import type { Env, Variables } from "../env";
 
 export const soDropdownOptions = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -111,6 +112,7 @@ soDropdownOptions.get("/", async (c) => {
       .order("sort_order", { ascending: true })
       .order("label", { ascending: true });
     if (!includeInactive) q = q.eq("active", true);
+    q = scopeToCompany(q, c); // multi-company: isolate to the active company
     const { data, error } = await q;
     if (error) {
       if (/relation .* does not exist/i.test(error.message)) return c.json({ options: [] });
@@ -121,12 +123,14 @@ soDropdownOptions.get("/", async (c) => {
 
   // All categories grouped — maintenance page wants every row, including
   // inactive ones, so the user can flip `active` back on.
-  const { data, error } = await sb
+  let allQ = sb
     .from("so_dropdown_options")
     .select("id, category, value, label, sort_order, active")
     .order("category", { ascending: true })
     .order("sort_order", { ascending: true })
     .order("label", { ascending: true });
+  allQ = scopeToCompany(allQ, c); // multi-company: isolate to the active company
+  const { data, error } = await allQ;
 
   const grouped: Record<Category, ReturnType<typeof toApi>[]> = {
     customer_type: [],
@@ -170,6 +174,7 @@ soDropdownOptions.post("/", async (c) => {
   const { data, error } = await sb
     .from("so_dropdown_options")
     .insert({
+      company_id: activeCompanyId(c), // multi-company: stamp the active company
       category: parsed.data.category,
       value: parsed.data.value,
       label: parsed.data.label,

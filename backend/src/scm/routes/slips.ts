@@ -38,7 +38,7 @@
 import { Hono } from 'hono';
 import type { User } from '@supabase/supabase-js';
 import { supabaseAuth } from '../middleware/auth';
-import { activeCompanyId } from '../lib/companyScope';
+import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 import { slipBindings, expiresInOneHour, hashesMatch, isExpired } from '../lib/slip';
 import { buildSlipKey, r2Head, type SlipMime } from '../lib/r2';
@@ -84,13 +84,15 @@ slips.post('/init', async (c) => {
   // has no showroom concept and the system staff carries none, so stamp the
   // first active showroom (by sort_order). 2990 did the same fallback for
   // elevated roles. No showroom seeded → a clear error rather than a FK 500.
-  const { data: defaultRoom, error: roomErr } = await sb
+  // Multi-company (mig 0089): pick the ACTIVE company's showroom.
+  let roomQ = sb
     .from('showrooms')
     .select('id')
     .eq('active', true)
     .order('sort_order', { ascending: true })
-    .limit(1)
-    .maybeSingle();
+    .limit(1);
+  roomQ = scopeToCompany(roomQ, c);
+  const { data: defaultRoom, error: roomErr } = await roomQ.maybeSingle();
   if (roomErr) return c.json({ error: 'showroom_lookup_failed', reason: roomErr.message }, 500);
   const showroomId = (defaultRoom as { id?: string } | null)?.id ?? null;
   if (!showroomId) return c.json({ error: 'no_active_showroom' }, 400);

@@ -124,18 +124,23 @@ const emptyOptions = (): CatalogOptions => ({
   installment_plan: [],
 });
 
-async function loadOptions(sb: SupabaseClient): Promise<CatalogOptions> {
+async function loadOptions(sb: SupabaseClient, companyId?: number | null): Promise<CatalogOptions> {
   const options = emptyOptions();
   // Page through so PostgREST's 1000-row cap can't drop option rows.
-  const { data } = await paginateAll((from, to) => sb
-    .from('so_dropdown_options')
-    .select('category, value, label')
-    .eq('active', true)
-    .in('category', OPTION_CATEGORIES as unknown as string[])
-    .order('category', { ascending: true })
-    .order('sort_order', { ascending: true })
-    .order('label', { ascending: true })
-    .range(from, to));
+  // Multi-company (mig 0089): the payment vocabulary is per-company — scope to
+  // the caller's active company; null/undefined (unresolved) stays global.
+  const { data } = await paginateAll((from, to) => {
+    let q = sb
+      .from('so_dropdown_options')
+      .select('category, value, label')
+      .eq('active', true)
+      .in('category', OPTION_CATEGORIES as unknown as string[])
+      .order('category', { ascending: true })
+      .order('sort_order', { ascending: true })
+      .order('label', { ascending: true });
+    if (companyId != null) q = q.eq('company_id', companyId);
+    return q.range(from, to);
+  });
   for (const row of (data as Array<{ category: string; value: string; label: string }> | null) ?? []) {
     if ((OPTION_CATEGORIES as readonly string[]).includes(row.category)) {
       options[row.category as OptionCategory].push({ value: row.value, label: row.label });
@@ -348,13 +353,15 @@ async function persistReceiptAsSlip(
   // pending_slip_uploads.showroom_id is NOT NULL (FK → scm.showrooms). Houzs
   // has no showroom concept, so stamp the first active showroom (same fallback
   // as /slips/init). No showroom seeded → skip the slip (OCR still returns).
-  const { data: defaultRoom } = await sb
+  // Multi-company (mig 0089): pick the ACTIVE company's showroom.
+  let roomQ = sb
     .from('showrooms')
     .select('id')
     .eq('active', true)
     .order('sort_order', { ascending: true })
-    .limit(1)
-    .maybeSingle();
+    .limit(1);
+  if (companyId != null) roomQ = roomQ.eq('company_id', companyId);
+  const { data: defaultRoom } = await roomQ.maybeSingle();
   const showroomId = (defaultRoom as { id?: string } | null)?.id ?? null;
   if (!showroomId) return null;
 
@@ -479,7 +486,7 @@ scanPayment.post('/extract', async (c) => {
 
   // Live active payment vocabularies via the user-scoped client (RLS applies).
   const sb = c.get('supabase');
-  const options = await loadOptions(sb);
+  const options = await loadOptions(sb, activeCompanyId(c));
   const optionsText = formatOptions(options);
 
   // Company name from the central Branding config (anchors the prompt).
