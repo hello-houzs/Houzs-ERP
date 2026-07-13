@@ -27,6 +27,7 @@ const pos = new Hono<{ Bindings: Env; Variables: Vars }>();
 const MAX_FAILURES = 5;
 const WINDOW_SECONDS = 60;
 const isPin = (v: unknown): v is string => typeof v === "string" && /^\d{6}$/.test(v);
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // ── PRE-AUTH: PIN login → Houzs session ─────────────────────────────────────
 pos.post("/pin-login", async (c) => {
@@ -35,6 +36,9 @@ pos.post("/pin-login", async (c) => {
   const staffId = String(body.staffId ?? "").trim();
   const pin = body.pin;
   if (!staffId) return c.json({ error: "staff_required" }, 400);
+  // staff_id is a uuid column — a malformed value would 500 on the DB (22P02).
+  // Treat a non-uuid like a bad login (401), not a crash, and skip the DB hit.
+  if (!UUID_RE.test(staffId)) return c.json({ error: "bad_pin" }, 401);
   if (!isPin(pin)) return c.json({ error: "pin_invalid" }, 400);
   const DB = c.env.DB;
 
