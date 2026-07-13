@@ -59,19 +59,19 @@ async function loadSupplierSofaCombos(
   if (supplierIds.length === 0) return out;
   const { data } = await sb
     .from('sofa_combo_pricing')
-    .select('id, base_model, modules, tier, customer_id, supplier_id, prices_by_height, label, effective_from, deleted_at')
+    .select('id, base_model, modules, tier, customer_id, supplier_id, prices_by_height, label, effective_from, created_at, deleted_at')
     .is('deleted_at', null)
     .in('supplier_id', supplierIds);
   for (const r of (data ?? []) as Array<{
     id: string; base_model: string; modules: string[][]; tier: SofaPriceTier | null;
     customer_id: string | null; supplier_id: string; prices_by_height: Record<string, number | null>;
-    label: string | null; effective_from: string; deleted_at: string | null;
+    label: string | null; effective_from: string; created_at: string; deleted_at: string | null;
   }>) {
     const row: SofaComboRow = {
       id: r.id, baseModel: r.base_model, modules: r.modules ?? [],
       tier: r.tier, customerId: r.customer_id,
       pricesByHeight: r.prices_by_height ?? {},
-      label: r.label, effectiveFrom: r.effective_from, deletedAt: r.deleted_at,
+      label: r.label, effectiveFrom: r.effective_from, createdAt: r.created_at, deletedAt: r.deleted_at,
     };
     const arr = out.get(r.supplier_id) ?? [];
     arr.push(row);
@@ -2158,7 +2158,7 @@ mfgPurchaseOrders.post('/:id/convert-from-so', async (c) => {
 
   const { data: inserted, error: insErr } = await sb
     .from('purchase_order_items')
-    .insert(rows)
+    .insert(stampCompany(rows, c))
     .select(ITEM_COLS);
   if (insErr) return c.json({ error: 'insert_failed', reason: insErr.message }, 500);
 

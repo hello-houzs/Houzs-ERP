@@ -25,7 +25,7 @@ import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
-import { activeCompanyId } from '../lib/companyScope';
+import { scopeToCompany, activeCompanyId } from '../lib/companyScope';
 import { todayMyt } from '../lib/my-time';
 
 export const warehouse = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -94,6 +94,7 @@ warehouse.get('/', async (c) => {
   const { data: racks, error: rackErr } = await paginateAll<{ id: string; warehouse_id: string; rack: string; position: string | null; reserved: boolean; notes: string | null }>((from, to) => {
     let rackQ = sb.from('warehouse_racks').select(RACK_COLS).order('rack');
     if (warehouseId) rackQ = rackQ.eq('warehouse_id', warehouseId);
+    rackQ = scopeToCompany(rackQ, c); // multi-company: isolate to the active company
     return rackQ.range(from, to);
   });
   if (rackErr) {
@@ -180,7 +181,8 @@ warehouse.post('/racks', async (c) => {
     const rows = [];
     for (let i = 1; i <= Math.min(count, 200); i++) {
       const label = `${prefix} ${i}`;
-      if (!taken.has(label)) rows.push({ warehouse_id: warehouseId, rack: label, status: 'EMPTY' });
+      // multi-company: stamp the active company on every seeded rack
+      if (!taken.has(label)) rows.push({ company_id: activeCompanyId(c), warehouse_id: warehouseId, rack: label, status: 'EMPTY' });
     }
     if (rows.length === 0) return c.json({ racks: [], created: 0 });
     const { data, error } = await sb.from('warehouse_racks').insert(rows).select(RACK_COLS);
@@ -192,6 +194,7 @@ warehouse.post('/racks', async (c) => {
   const rack = String(body.rack ?? '').trim();
   if (!rack) return c.json({ error: 'rack_required' }, 400);
   const { data, error } = await sb.from('warehouse_racks').insert({
+    company_id: activeCompanyId(c), // multi-company: stamp the active company
     warehouse_id: warehouseId,
     rack,
     position: (body.position as string) ?? null,

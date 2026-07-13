@@ -22,13 +22,26 @@ import {
 import { runSlaEscalation } from "../services/assrEscalation";
 import { issueStaffToken, issueSalesToken } from "../services/caseTracking";
 import { sendEmail, publicUrl } from "../services/email";
+import { resolveCompanyCode } from "../services/branding";
 import { AutoCountClient } from "../services/autocount";
 import { requirePermission, requireAnyPermission } from "../middleware/auth";
-import { activeCompanyId } from "../scm/lib/companyScope";
+import {
+  activeCompanyId,
+  allowedCompanyIds,
+  allowedCompaniesSql,
+} from "../scm/lib/companyScope";
 import { hasPermission } from "../services/permissions";
 import { subtreeUserIds } from "../services/orgScope";
 
 const app = new Hono<{ Bindings: Env }>();
+
+// ── Multi-company (CROSS-COMPANY module) ──────────────────────
+// Service Cases are ONE shared queue across companies: list/stat reads widen
+// to the caller's ALLOWED companies (`company_id IN (...)` — not just the
+// active pick) and each row is tagged with its company (listAssrCases already
+// selects c.company_id + companies.code). All fragments returned by
+// allowedCompaniesSql are "" when the company context is unresolved
+// (pre-migration / D1 test mirror / cold-start) so legacy SQL runs unchanged.
 
 // ── Row-level visibility (owner spec 2026-07) ─────────────────
 // Full view = `*` wildcard (Owner / IT Admin) or `service_cases.manage`
@@ -351,9 +364,13 @@ app.get("/summary", requirePermission("service_cases.read"), async (c) => {
   const sinceDays = Math.min(730, Math.max(1, parseInt(c.req.query("since_days") || "90", 10) || 90));
   const periodAnd =
     `AND COALESCE(c.complained_date, c.created_at) >= date('now', '-${sinceDays} days')`;
+  // Allowed-companies predicates ("" when unresolved) — one per table alias
+  // used below.
+  const coC = allowedCompaniesSql(c, "c.company_id");
+  const coBare = allowedCompaniesSql(c);
 
   const totals = await c.env.DB.prepare(
-    `SELECT COUNT(*) as total FROM assr_cases`
+    `SELECT COUNT(*) as total FROM assr_cases WHERE 1=1${coBare}`
   ).first<{ total: number }>();
 
   // Active backlog: cases still in progress (not completed) and not
@@ -363,20 +380,20 @@ app.get("/summary", requirePermission("service_cases.read"), async (c) => {
   // definition the breach / aging queries use).
   const active = await c.env.DB.prepare(
     `SELECT COUNT(*) as count FROM assr_cases
-      WHERE stage != 'completed' AND archived_at IS NULL`
+      WHERE stage != 'completed' AND archived_at IS NULL${coBare}`
   ).first<{ count: number }>();
 
   const byStage = await c.env.DB.prepare(
-    `SELECT stage, COUNT(*) as count FROM assr_cases GROUP BY stage`
+    `SELECT stage, COUNT(*) as count FROM assr_cases WHERE 1=1${coBare} GROUP BY stage`
   ).all();
 
   const byStatus = await c.env.DB.prepare(
-    `SELECT status, COUNT(*) as count FROM assr_cases GROUP BY status`
+    `SELECT status, COUNT(*) as count FROM assr_cases WHERE 1=1${coBare} GROUP BY status`
   ).all();
 
   const byLocation = await c.env.DB.prepare(
     `SELECT location, COUNT(*) as count FROM assr_cases
-     WHERE location IS NOT NULL
+     WHERE location IS NOT NULL${coBare}
      GROUP BY location ORDER BY count DESC LIMIT 5`
   ).all();
 
@@ -385,14 +402,14 @@ app.get("/summary", requirePermission("service_cases.read"), async (c) => {
   // so this gives dispatchers a live view of what's coming in.
   const byCategory = await c.env.DB.prepare(
     `SELECT issue_category as name, COUNT(*) as count FROM assr_cases
-     WHERE issue_category IS NOT NULL
+     WHERE issue_category IS NOT NULL${coBare}
      GROUP BY issue_category ORDER BY count DESC LIMIT 5`
   ).all();
 
   const recent = await c.env.DB.prepare(
     `SELECT COUNT(*) as count FROM assr_cases
      WHERE complained_date IS NOT NULL
-       AND complained_date >= date('now', '-30 days')`
+       AND complained_date >= date('now', '-30 days')${coBare}`
   ).first<{ count: number }>();
 
   // Aging: cases still open that have been in their current stage >3 days
@@ -400,7 +417,7 @@ app.get("/summary", requirePermission("service_cases.read"), async (c) => {
     `SELECT COUNT(*) as count
        FROM assr_cases c
       WHERE c.stage != 'completed'
-        ${periodAnd}
+        ${periodAnd}${coC}
         AND julianday('now') - julianday(
               COALESCE(
                 (SELECT MAX(a.created_at)
@@ -426,7 +443,7 @@ app.get("/summary", requirePermission("service_cases.read"), async (c) => {
               ON h.assr_id = c.id AND h.exited_at IS NULL
       WHERE c.stage != 'completed'
         AND c.archived_at IS NULL
-        ${periodAnd}
+        ${periodAnd}${coC}
         AND h.target_days IS NOT NULL AND h.target_days > 0
         AND (julianday('now') - julianday(h.entered_at)) / h.target_days >= 1`
   ).first<{ count: number }>();
@@ -435,7 +452,7 @@ app.get("/summary", requirePermission("service_cases.read"), async (c) => {
   const pendingReview = await c.env.DB.prepare(
     `SELECT COUNT(*) as count FROM assr_cases c
       WHERE c.stage = 'pending_review' AND c.archived_at IS NULL
-        ${periodAnd}`
+        ${periodAnd}${coC}`
   ).first<{ count: number }>();
 
   // v3.1 — Avg end-to-end lead time (days), completed cases only.
@@ -451,7 +468,7 @@ app.get("/summary", requirePermission("service_cases.read"), async (c) => {
         AND closed_at IS NOT NULL
         AND julianday(closed_at) > julianday(created_at)
         AND (julianday(closed_at) - julianday(created_at)) < 365
-        AND closed_at >= date('now', '-${sinceDays} days')`
+        AND closed_at >= date('now', '-${sinceDays} days')${coBare}`
   ).first<{ avg_days: number | null }>();
 
   // v3.1 — Stage funnel: count by 9-stage enum, in canonical order,
@@ -468,7 +485,7 @@ app.get("/summary", requirePermission("service_cases.read"), async (c) => {
        LEFT JOIN assr_stage_history h
               ON h.assr_id = c.id AND h.exited_at IS NULL
       WHERE c.archived_at IS NULL
-        ${periodAnd}
+        ${periodAnd}${coC}
       GROUP BY c.stage`
   ).all<{ stage: string; total: number; breached: number }>();
 
@@ -480,7 +497,7 @@ app.get("/summary", requirePermission("service_cases.read"), async (c) => {
        FROM assr_cases
       WHERE stage = 'completed'
         AND satisfaction_rating IS NOT NULL
-        AND closed_at >= date('now', '-91 days')
+        AND closed_at >= date('now', '-91 days')${coBare}
       GROUP BY week
       ORDER BY week`
   ).all<{ week: string; avg_rating: number; n: number }>();
@@ -509,6 +526,7 @@ app.get("/", requirePermission("service_cases.read"), async (c) => {
   const assignedToParam = c.req.query("assigned_to");
   const result = await listAssrCases(c.env, {
     visible_to_user_ids: await assrVisibleUserIds(c),
+    allowed_company_ids: allowedCompanyIds(c),
     stage: c.req.query("stage"),
     status: c.req.query("status"),
     search: c.req.query("search"),
@@ -565,6 +583,7 @@ app.post("/:id/resolve-creditor", requirePermission("service_cases.manage"), asy
 app.get("/by-creditor", requirePermission("service_cases.read"), async (c) => {
   const search = (c.req.query("search") || "").trim();
   const like = search ? `%${search}%` : null;
+  const coC = allowedCompaniesSql(c, "c.company_id");
 
   const rowsQ = c.env.DB.prepare(
     `SELECT c.creditor_code,
@@ -581,7 +600,7 @@ app.get("/by-creditor", requirePermission("service_cases.read"), async (c) => {
        FROM assr_cases c
        LEFT JOIN creditors cr ON cr.creditor_code = c.creditor_code
       WHERE c.archived_at IS NULL
-        AND c.creditor_code IS NOT NULL
+        AND c.creditor_code IS NOT NULL${coC}
         ${like ? "AND (cr.company_name LIKE ? OR c.creditor_code LIKE ?)" : ""}
       GROUP BY c.creditor_code
       ORDER BY total DESC, creditor_name ASC`
@@ -594,7 +613,7 @@ app.get("/by-creditor", requirePermission("service_cases.read"), async (c) => {
     `SELECT COUNT(*) AS total,
             SUM(CASE WHEN stage != 'completed' THEN 1 ELSE 0 END) AS open
        FROM assr_cases
-      WHERE archived_at IS NULL AND (creditor_code IS NULL OR creditor_code = '')`
+      WHERE archived_at IS NULL AND (creditor_code IS NULL OR creditor_code = '')${allowedCompaniesSql(c)}`
   ).first<{ total: number; open: number }>();
 
   return c.json({
@@ -693,6 +712,7 @@ app.post("/bulk/assign", requirePermission("service_cases.manage"), async (c) =>
 app.get("/export.csv", requirePermission("service_cases.read"), async (c) => {
   const rows = await exportAssrCases(c.env, {
     visible_to_user_ids: await assrVisibleUserIds(c),
+    allowed_company_ids: allowedCompanyIds(c),
     stage: c.req.query("stage"),
     status: c.req.query("status"),
     search: c.req.query("search"),
@@ -790,7 +810,7 @@ app.get("/my-cases", requirePermission("service_cases.read"), async (c) => {
             complaint_issue, item_code, sales_agent
        FROM assr_cases
       WHERE LOWER(COALESCE(sales_agent, '')) LIKE ?
-        AND archived_at IS NULL
+        AND archived_at IS NULL${allowedCompaniesSql(c)}
       ORDER BY complained_date DESC, id DESC
       LIMIT 200`
   )
@@ -868,6 +888,20 @@ app.get("/:id{[0-9]+}", requirePermission("service_cases.read"), async (c) => {
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const detail = await getAssrDetail(c.env, id);
   if (!detail) return c.json({ error: "Not found" }, 404);
+  /* Multi-company: the case must belong to one of the caller's ALLOWED
+     companies (same widen-not-isolate rule as the list). Skipped when either
+     side is unresolved (pre-migration / D1 test mirror). Out-of-scope answers
+     404, indistinguishable from a nonexistent id. */
+  const allowedCo = allowedCompanyIds(c);
+  if (allowedCo.length > 0) {
+    const caseRow = (detail as { case?: Record<string, unknown> }).case ?? {};
+    const caseCo = Number(
+      (caseRow as any).companyId ?? (caseRow as any).company_id ?? NaN,
+    );
+    if (Number.isFinite(caseCo) && !allowedCo.includes(caseCo)) {
+      return c.json({ error: "Not found" }, 404);
+    }
+  }
   /* Row-level visibility — same rule as the list: a scoped caller may open
      only cases created by / assigned to them or their downline. Out-of-scope
      answers 404, indistinguishable from a nonexistent id (mirrors the SCM SO
@@ -927,7 +961,7 @@ app.get("/:id/customer-history", requirePermission("service_cases.read"), async 
             c.complaint_issue, c.complained_date, c.created_at, c.item_code,
             c.resolution_method
        FROM assr_cases c
-      WHERE ${where.join(" AND ")}
+      WHERE ${where.join(" AND ")}${allowedCompaniesSql(c, "c.company_id")}
       ORDER BY c.id DESC
       LIMIT 25`
   )
@@ -1263,6 +1297,10 @@ app.get("/metrics", requirePermission("service_cases.read"), async (c) => {
   const sinceFor = (prefix = "") =>
     `AND COALESCE(${prefix}complained_date, ${prefix}created_at) >= date('now', '-${sinceDays} days')`;
   const sinceClause = sinceFor();
+  // Allowed-companies predicates per table alias ("" when unresolved).
+  const coBare = allowedCompaniesSql(c);
+  const coC = allowedCompaniesSql(c, "c.company_id");
+  const coA = allowedCompaniesSql(c, "a.company_id");
 
   // Headline numbers. avg_resolution_hours filters out legacy rows
   // where julianday(closed_at) <= julianday(created_at) (corrupt
@@ -1284,7 +1322,7 @@ app.get("/metrics", requirePermission("service_cases.read"), async (c) => {
                   END) as avg_resolution_hours,
         AVG(CASE WHEN satisfaction_rating IS NOT NULL THEN satisfaction_rating END) as avg_satisfaction
       FROM assr_cases
-     WHERE 1=1 ${sinceClause}`
+     WHERE 1=1 ${sinceClause}${coBare}`
   ).first();
 
   // NCR category breakdown — engineering taxonomy (material_defect /
@@ -1294,7 +1332,7 @@ app.get("/metrics", requirePermission("service_cases.read"), async (c) => {
   const ncr = await c.env.DB.prepare(
     `SELECT COALESCE(ncr_category, 'unclassified') as category, COUNT(*) as count
        FROM assr_cases
-      WHERE 1=1 ${sinceClause}
+      WHERE 1=1 ${sinceClause}${coBare}
       GROUP BY ncr_category
       ORDER BY count DESC`
   ).all();
@@ -1306,7 +1344,7 @@ app.get("/metrics", requirePermission("service_cases.read"), async (c) => {
   const issueCategories = await c.env.DB.prepare(
     `SELECT COALESCE(issue_category, 'Other') as category, COUNT(*) as count
        FROM assr_cases
-      WHERE 1=1 ${sinceClause}
+      WHERE 1=1 ${sinceClause}${coBare}
       GROUP BY issue_category
       ORDER BY count DESC`
   ).all();
@@ -1335,7 +1373,8 @@ app.get("/metrics", requirePermission("service_cases.read"), async (c) => {
                   AND julianday('now') - julianday(complained_date) >= 14
                   AND julianday('now') - julianday(complained_date) < 21
                  THEN 1 ELSE 0 END) AS over_2_weeks
-       FROM assr_cases`
+       FROM assr_cases
+      WHERE 1=1${coBare}`
   ).first<{
     opening_count: number;
     over_1_month: number;
@@ -1346,14 +1385,14 @@ app.get("/metrics", requirePermission("service_cases.read"), async (c) => {
   const avgPerMonth = await c.env.DB.prepare(
     `SELECT CAST(COUNT(*) AS REAL) / 4.0 AS avg_per_month
        FROM assr_cases
-      WHERE COALESCE(complained_date, created_at) >= date('now', '-4 months')`
+      WHERE COALESCE(complained_date, created_at) >= date('now', '-4 months')${coBare}`
   ).first<{ avg_per_month: number | null }>();
 
   // Resolution method mix
   const resolutions = await c.env.DB.prepare(
     `SELECT COALESCE(resolution_method, 'unset') as method, COUNT(*) as count
        FROM assr_cases
-      WHERE 1=1 ${sinceClause}
+      WHERE 1=1 ${sinceClause}${coBare}
       GROUP BY resolution_method
       ORDER BY count DESC`
   ).all();
@@ -1365,7 +1404,7 @@ app.get("/metrics", requirePermission("service_cases.read"), async (c) => {
             MAX(c.complained_date) as latest
        FROM assr_items i
        JOIN assr_cases c ON c.id = i.assr_id
-      WHERE 1=1 ${sinceFor("c.")}
+      WHERE 1=1 ${sinceFor("c.")}${coC}
       GROUP BY i.item_code
       HAVING COUNT(DISTINCT i.assr_id) >= 2
       ORDER BY cases DESC, latest DESC
@@ -1379,7 +1418,7 @@ app.get("/metrics", requirePermission("service_cases.read"), async (c) => {
             MAX(complained_date) as latest
        FROM assr_cases
       WHERE customer_name IS NOT NULL
-        ${sinceClause}
+        ${sinceClause}${coBare}
       GROUP BY customer_name, phone
       HAVING COUNT(*) >= 2
       ORDER BY cases DESC, latest DESC
@@ -1406,7 +1445,7 @@ app.get("/metrics", requirePermission("service_cases.read"), async (c) => {
        FROM assr_cases a
        LEFT JOIN creditors cr ON cr.creditor_code = a.creditor_code
       WHERE a.creditor_code IS NOT NULL
-        ${sinceFor("a.")}
+        ${sinceFor("a.")}${coA}
       GROUP BY a.creditor_code, cr.company_name
       ORDER BY total_cases DESC
       LIMIT 15`
@@ -1423,7 +1462,7 @@ app.get("/metrics", requirePermission("service_cases.read"), async (c) => {
             COUNT(*) as opened,
             SUM(CASE WHEN stage = 'completed' THEN 1 ELSE 0 END) as closed
        FROM assr_cases
-      WHERE COALESCE(complained_date, created_at) >= date('now', '-12 months')
+      WHERE COALESCE(complained_date, created_at) >= date('now', '-12 months')${coBare}
       GROUP BY month
       HAVING strftime('%Y-%m', COALESCE(complained_date, created_at)) IS NOT NULL
       ORDER BY month`
@@ -1591,7 +1630,7 @@ app.get("/metrics/drill", requirePermission("service_cases.read"), async (c) => 
     ? "FROM assr_cases c LEFT JOIN creditors cr ON cr.creditor_code = c.creditor_code JOIN assr_items i ON i.assr_id = c.id"
     : "FROM assr_cases c LEFT JOIN creditors cr ON cr.creditor_code = c.creditor_code";
   const distinct = joinItems ? "DISTINCT" : "";
-  const where = conds.join(" AND ");
+  const where = conds.join(" AND ") + allowedCompaniesSql(c, "c.company_id");
 
   const rows = await c.env.DB.prepare(
     `SELECT ${distinct} c.id, c.assr_no, c.customer_name, c.stage, c.priority,
@@ -1722,7 +1761,7 @@ app.post("/:id/transition", requirePermission("service_cases.write"), async (c) 
     // separate from notify channel) and fall back to `customer_email`.
     if (body.stage === "completed") {
       const row = await c.env.DB.prepare(
-        `SELECT assr_no, customer_name, customer_email, email_for_survey
+        `SELECT assr_no, customer_name, customer_email, email_for_survey, company_id
            FROM assr_cases WHERE id = ?`
       )
         .bind(id)
@@ -1731,11 +1770,15 @@ app.post("/:id/transition", requirePermission("service_cases.write"), async (c) 
           customer_name: string | null;
           customer_email: string | null;
           email_for_survey: string | null;
+          company_id: number | null;
         }>();
       const surveyTo = row?.email_for_survey || row?.customer_email;
       if (surveyTo) {
+        // Customer-facing: carry the DOCUMENT's company identity (the case
+        // row's company_id), not the operator's active company.
+        const caseCompanyCode = await resolveCompanyCode(c.env, row!.company_id);
         const token = await issueSurveyToken(c.env, id);
-        const link = publicUrl(c.env, `/survey/${token}`);
+        const link = publicUrl(c.env, `/survey/${token}`, caseCompanyCode);
         const name = (row!.customer_name || "").split(" ")[0] || "there";
         await sendEmail(c.env, {
           to: surveyTo,
@@ -1744,6 +1787,7 @@ app.post("/:id/transition", requirePermission("service_cases.write"), async (c) 
           purpose: "assr_survey",
           refType: "assr",
           refId: id,
+          companyCode: caseCompanyCode,
         });
       }
     }

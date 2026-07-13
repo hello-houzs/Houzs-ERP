@@ -55,8 +55,20 @@ import {
   projects as projectsTable,
 } from "../db/schema";
 import { and, eq, sql } from "drizzle-orm";
+import { activeCompanyId, activeCompanySql } from "../scm/lib/companyScope";
 
 const app = new Hono<{ Bindings: Env }>();
+
+// Multi-company (mig-pg 0093): Projects are a PER-COMPANY module — every
+// list/summary/detail/analytics read below adds the ACTIVE company predicate
+// and creates stamp company_id, CONDITIONALLY (skipped when the companies
+// master is unresolved: pre-migration, the D1 test mirror, or a DB
+// cold-start) so single-company Houzs keeps serving unchanged. This is the
+// same raw-SQL idiom as routes/sales.ts. Child tables (checklist / sections /
+// attachments / activity / finance) are always read through their parent
+// project_id, so the project row is the single source of company truth;
+// their own company_id (added by 0093) is a schema-parity backstop filled by
+// the PG DEFAULT.
 
 /**
  * Server-side finance/payment gate (Sales-department visibility, rules 3 & 5).
@@ -613,15 +625,17 @@ app.post("/:id/finance/recompute-auto", requirePermission("projects.write"), asy
 // ── Summary (dashboard tiles) ─────────────────────────────────
 
 app.get("/summary", requirePageAccess("projects.list"), async (c) => {
+  // Multi-company: active-company predicate ("" when unresolved).
+  const coSql = activeCompanySql(c);
   const byStage = await c.env.DB.prepare(
     `SELECT stage, COUNT(*) as count
-       FROM projects WHERE archived_at IS NULL
+       FROM projects WHERE archived_at IS NULL${coSql}
       GROUP BY stage`
   ).all();
 
   const upcoming = await c.env.DB.prepare(
     `SELECT COUNT(*) as count FROM projects
-      WHERE archived_at IS NULL
+      WHERE archived_at IS NULL${coSql}
         AND stage NOT IN ('closed','cancelled')
         AND start_date IS NOT NULL
         AND substr(start_date, 1, 10) >= date('now')
@@ -630,7 +644,7 @@ app.get("/summary", requirePageAccess("projects.list"), async (c) => {
 
   const live = await c.env.DB.prepare(
     `SELECT COUNT(*) as count FROM projects
-      WHERE archived_at IS NULL AND stage = 'live'`
+      WHERE archived_at IS NULL${coSql} AND stage = 'live'`
   ).first<{ count: number }>();
 
   // Overdue checklist items across all open projects
@@ -638,7 +652,7 @@ app.get("/summary", requirePageAccess("projects.list"), async (c) => {
     `SELECT COUNT(*) as count
        FROM project_checklist c
        JOIN projects p ON p.id = c.project_id
-      WHERE p.archived_at IS NULL
+      WHERE p.archived_at IS NULL${activeCompanySql(c, "p.company_id")}
         AND c.status = 'pending'
         AND c.due_date IS NOT NULL
         AND substr(c.due_date, 1, 10) < date('now')`
@@ -665,20 +679,37 @@ app.get("/", requirePageAccess("projects.list"), async (c) => {
   let pendingLabel: string | undefined;
   let pendingTitle: string | undefined;
   let pendingLogistic = false;
+  let pendingApprove: string[] | undefined;
   if (c.req.query("my_pending") === "1" && user) {
-    const r = (user.role_name || "").toLowerCase();
-    if (r === "manager") pendingTitle = "Agreement / Quotation";
-    else if (r === "purchaser") pendingLabel = "PURCHASER";
-    else if (r === "logistic") pendingLogistic = true; // setup not arranged
-    else if (r === "driver" || r === "helper" || r === "storekeeper") pendingLabel = "DRIVER";
-    else if (r.includes("bd")) pendingLabel = "BD";
-    else if (r.includes("sales")) pendingLabel = "SALES PIC";
-    // owner / it admin / anything else -> leave undefined (see all)
+    // Owner 2026-07-13 — staged "My Pending". Approvers (anyone holding a
+    // checklist approval permission, or `*`) see ONLY the items awaiting
+    // their approval (Peter=stock, Kingsley=stock+agreement, Lim/owner=all).
+    // Everyone else is mapped to their role's task scope. listProjects then
+    // time-gates every lane (a task only surfaces once its due date is
+    // reached) and applies the stage prerequisites.
+    const granted = user.permissions_set ?? user.permissions;
+    const APPROVE_PERMS = ["agreement.approve", "stock_transfer.approve", "projects.approve"];
+    // hasPermission handles the `*` wildcard, so admins/owner match every one.
+    const held = APPROVE_PERMS.filter((p) => hasPermission(granted, p));
+    if (held.length > 0) {
+      pendingApprove = held;
+    } else {
+      const r = (user.role_name || "").toLowerCase();
+      if (r === "purchaser") pendingLabel = "PURCHASER";
+      else if (r === "logistic") pendingLogistic = true; // setup not arranged
+      else if (r === "driver" || r === "helper" || r === "storekeeper") pendingLabel = "DRIVER";
+      else if (r.includes("bd")) pendingLabel = "BD";
+      else if (r.includes("sales")) pendingLabel = "SALES PIC";
+      else if (r === "manager") pendingTitle = "Agreement / Quotation";
+      // unmapped roles -> no pending filter (see all)
+    }
   }
   const result = await listProjects(c.env, {
+    company_id: activeCompanyId(c),
     pending_label: pendingLabel,
     pending_title: pendingTitle,
     pending_logistic: pendingLogistic,
+    pending_approve: pendingApprove,
     stage: c.req.query("stage"),
     brand: c.req.query("brand"),
     state: c.req.query("state") || undefined,
@@ -1110,6 +1141,9 @@ app.get("/analytics/profitability", requirePageAccess("projects.finances"), asyn
 
   const where: string[] = ["p.archived_at IS NULL"];
   const binds: any[] = [];
+  // Multi-company: active-company predicate ("" when unresolved). Inlined
+  // fragment (validated integer), appended after the joined WHERE below.
+  const coSql = activeCompanySql(c, "p.company_id");
   // Date filter applies to start_date — overlapping window is harder
   // to reason about across by-month grouping, so keep it strict.
   if (dateFrom) {
@@ -1156,7 +1190,7 @@ app.get("/analytics/profitability", requirePageAccess("projects.finances"), asyn
        FROM projects p
        LEFT JOIN project_finance pf ON pf.project_id = p.id
        LEFT JOIN project_event_types et ON et.id = p.event_type_id
-      WHERE ${whereSql}`
+      WHERE ${whereSql}${coSql}`
   )
     .bind(...binds)
     .all<{
@@ -1263,8 +1297,10 @@ app.get("/analytics/profitability", requirePageAccess("projects.finances"), asyn
   });
 });
 
-// Project-scoped sales-attending picker source — active 'sales_person' reps,
-// brand-relaxed (owner: Option A). MUST be registered BEFORE the "/:id" detail
+// Project-scoped sales-attending picker source — every active sales-team
+// member regardless of sales position (owner 2026-07-13: managers and
+// directors also do booth duty, so all of them must be assignable).
+// Brand-relaxed (owner: Option A). MUST be registered BEFORE the "/:id" detail
 // route below: it's a single-segment static path, so if "/:id" is matched
 // first Hono treats "sales-rep-options" as a project id -> parseInt NaN -> 400
 // "Invalid ID", which surfaced as the empty "No Sales Persons available"
@@ -1274,11 +1310,8 @@ app.get("/sales-rep-options", requirePermission("projects.write"), async (c) => 
   const rows = await c.env.DB.prepare(
     `SELECT r.id, r.code, r.name
        FROM sales_reps r
-       JOIN sales_positions p ON p.id = r.position_id
       WHERE r.archived_at IS NULL
         AND r.status = 'active'
-        AND p.slug = 'sales_person'
-      GROUP BY r.id
       ORDER BY r.code`
   ).all<{ id: number; code: string; name: string }>();
   return c.json({ data: rows.results ?? [] });
@@ -1290,7 +1323,9 @@ app.get("/:id", requirePageAccess("projects.list"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const user = c.get("user");
-  const detail = await getProjectDetail(c.env, id);
+  // Multi-company: a cross-company id resolves null -> 404 (indistinguishable
+  // from a nonexistent id). Predicate skipped when the context is unresolved.
+  const detail = await getProjectDetail(c.env, id, activeCompanyId(c));
   if (!detail) return c.json({ error: "Not found" }, 404);
   if (!canSeeProject(user, detail.project)) {
     return c.json({ error: "Not found" }, 404);
@@ -1474,6 +1509,9 @@ app.post("/", requirePermission("projects.write"), async (c) => {
       notion_url: body.notion_url ?? null,
       pic_id: picId,
       created_by: user?.id ?? 0,
+      // Multi-company: stamp the active company (omitted when unresolved —
+      // the PG DEFAULT covers it).
+      company_id: activeCompanyId(c),
     });
     return c.json(result, 201);
   } catch (e: any) {
@@ -1495,8 +1533,10 @@ app.patch("/:id", requirePermission("projects.write"), async (c) => {
 
   // Always need brand + pic_id + created_by for the brand gate below
   // (and for the scoped-user can-see check).
+  // Multi-company: the pre-patch fetch is company-scoped, so a cross-company
+  // id 404s before any write.
   const existing = await c.env.DB.prepare(
-    `SELECT pic_id, created_by, brand FROM projects WHERE id = ?`
+    `SELECT pic_id, created_by, brand FROM projects WHERE id = ?${activeCompanySql(c)}`
   )
     .bind(id)
     .first<{
@@ -1574,6 +1614,12 @@ app.get("/:id/activity", requirePageAccess("projects.list"), async (c) => {
   const sinceClause = since ? " AND act.created_at > ?" : "";
   const sinceBinds = since ? [since] : [];
 
+  // Multi-company: the timeline is reachable by raw project id, so verify the
+  // parent project belongs to the active company ("" guard when unresolved).
+  const coSql = activeCompanySql(c, "p.company_id");
+  const coGuard = coSql
+    ? ` AND EXISTS (SELECT 1 FROM projects p WHERE p.id = act.project_id${coSql})`
+    : "";
   const rows = await c.env.DB.prepare(
     `SELECT act.id, act.action, act.from_value, act.to_value, act.note,
             act.user_id, u.name AS user_name,
@@ -1583,7 +1629,7 @@ app.get("/:id/activity", requirePageAccess("projects.list"), async (c) => {
        FROM project_activity act
        LEFT JOIN users u ON u.id = act.user_id
       WHERE act.project_id = ?
-        AND act.archived_at IS NULL${sinceClause}
+        AND act.archived_at IS NULL${sinceClause}${coGuard}
       ORDER BY act.created_at ASC, act.id ASC`
   )
     .bind(id, ...sinceBinds)
@@ -1621,7 +1667,7 @@ app.post("/:id/archive", requirePermission("projects.manage"), async (c) => {
   await c.env.DB.prepare(
     `UPDATE projects
         SET archived_at = datetime('now'), archived_by = ?, updated_at = datetime('now')
-      WHERE id = ? AND archived_at IS NULL`
+      WHERE id = ? AND archived_at IS NULL${activeCompanySql(c)}`
   )
     .bind(user?.id ?? null, id)
     .run();
@@ -1636,7 +1682,7 @@ app.post("/:id/unarchive", requirePermission("projects.manage"), async (c) => {
   await c.env.DB.prepare(
     `UPDATE projects
         SET archived_at = NULL, archived_by = NULL, updated_at = datetime('now')
-      WHERE id = ?`
+      WHERE id = ?${activeCompanySql(c)}`
   )
     .bind(id)
     .run();
@@ -1735,6 +1781,10 @@ app.get("/finance/by-project", requirePageAccess("projects.finances"), async (c)
 
   // Project-level WHERE.
   const projConds: any[] = [];
+  // Multi-company: rollups follow the active company (no predicate when the
+  // context is unresolved).
+  const rollupCompanyId = activeCompanyId(c);
+  if (rollupCompanyId != null) projConds.push(sql`p.company_id = ${rollupCompanyId}`);
   if (!includeArchived) projConds.push(sql`p.archived_at IS NULL`);
   if (brand) projConds.push(sql`p.brand = ${brand}`);
   if (stage) projConds.push(sql`p.stage = ${stage}`);
@@ -1924,6 +1974,9 @@ app.get("/finance/lines", requirePageAccess("projects.finances"), async (c) => {
   const db = getDb(c.env);
 
   const conds: any[] = [sql`l.archived_at IS NULL`];
+  // Multi-company: lines follow their project's company (active pick).
+  const linesCompanyId = activeCompanyId(c);
+  if (linesCompanyId != null) conds.push(sql`p.company_id = ${linesCompanyId}`);
   if (dateFrom) {
     conds.push(sql`COALESCE(l.occurred_at, l.created_at) >= ${dateFrom}`);
   }
@@ -3509,6 +3562,10 @@ app.get("/calendar/events", requirePageAccess("projects.calendar"), async (c) =>
     : assignArms.length
       ? ` AND (${assignArms.join(" OR ")})`
       : ` AND 1 = 0`;
+  // Multi-company: the calendar follows the active company ("" when the
+  // context is unresolved). Inlined fragment so the positional binds above
+  // stay untouched.
+  const coSql = activeCompanySql(c, "p.company_id");
 
   // Projects whose [start_date, end_date] overlaps [from, to]. The
   // active_section_name subquery returns the project's current
@@ -3534,7 +3591,7 @@ app.get("/calendar/events", requirePageAccess("projects.calendar"), async (c) =>
       WHERE p.archived_at IS NULL
         AND p.start_date IS NOT NULL
         AND substr(p.start_date, 1, 10) <= substr(?, 1, 10)
-        AND substr(COALESCE(p.end_date, p.start_date), 1, 10) >= substr(?, 1, 10)${scopeWhere}`
+        AND substr(COALESCE(p.end_date, p.start_date), 1, 10) >= substr(?, 1, 10)${scopeWhere}${coSql}`
   )
     .bind(to, from, ...scopeBinds)
     .all();
@@ -3553,7 +3610,7 @@ app.get("/calendar/events", requirePageAccess("projects.calendar"), async (c) =>
         AND c.status != 'done'
         AND c.status != 'na'
         AND c.due_date IS NOT NULL
-        AND substr(c.due_date, 1, 10) BETWEEN substr(?, 1, 10) AND substr(?, 1, 10)${scopeWhere}
+        AND substr(c.due_date, 1, 10) BETWEEN substr(?, 1, 10) AND substr(?, 1, 10)${scopeWhere}${coSql}
       ORDER BY c.due_date, p.brand, c.id`
   )
     .bind(from, to, ...scopeBinds)
@@ -3621,6 +3678,8 @@ app.post("/import/csv", requirePermission("projects.manage"), async (c) => {
         organizer: row.organizer || null,
         notion_url: row.notion_url || null,
         created_by: user?.id ?? 0,
+        // Multi-company: stamp the active company (PG DEFAULT when unresolved).
+        company_id: activeCompanyId(c),
       });
       const numeric = (s: string | undefined): number | null => {
         if (!s) return null;

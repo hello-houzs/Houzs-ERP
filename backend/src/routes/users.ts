@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
-import { generateToken, hashPassword, isoIn } from "../services/auth";
+import { createSession, generateToken, hashPassword, isoIn } from "../services/auth";
 import { bustUserSessions } from "../services/sessionCache";
 import { validatePasswordStrength } from "../services/passwordStrength";
 import { requirePermission } from "../middleware/auth";
@@ -9,10 +9,27 @@ import {
   publicUrl,
   inviteEmailHtml,
   resetEmailHtml,
+  erpProductName,
 } from "../services/email";
 import { syncSalesRepFromUser } from "../services/salesTeam";
 import { audit } from "../services/audit";
-import { getBranding } from "../services/branding";
+import {
+  getBranding,
+  getBrandingForCompany,
+  resolveCompanyCode,
+} from "../services/branding";
+
+// Invite/reset emails carry the ACTIVE company's identity (the admin's top-bar
+// pick): product name in the copy, From display name, and link hostname.
+// Pre-multi-company (companyContext unset) this resolves HOUZS — unchanged.
+async function activeCompanyEmailIdentity(
+  env: Env,
+  companyCodeVar: string | undefined,
+): Promise<{ companyCode: string; productName: string }> {
+  const companyCode = await resolveCompanyCode(env, companyCodeVar);
+  const branding = await getBrandingForCompany(env, companyCode);
+  return { companyCode, productName: erpProductName(branding) };
+}
 import { getDb } from "../db/client";
 import {
   departments,
@@ -678,19 +695,22 @@ app.post("/invite", requirePermission("users.manage"), async (c) => {
   // which origin the admin's browser is on. sendEmail() never throws —
   // when the channel/key is off we still hand back the link for
   // copy-paste, and the UI shows the delivery status.
-  const invite_url = publicUrl(c.env, `/invite/${token}`);
+  const identity = await activeCompanyEmailIdentity(c.env, c.get("companyCode"));
+  const invite_url = publicUrl(c.env, `/invite/${token}`, identity.companyCode);
   const sendResult = await sendEmail(c.env, {
     to: email,
-    subject: "You're invited to Houzs ERP",
+    subject: `You're invited to ${identity.productName}`,
     html: inviteEmailHtml({
       link: invite_url,
       roleName: role[0].name,
       inviterName: me?.name || me?.email || "Your admin",
       expiresIn: "14 days",
+      productName: identity.productName,
     }),
     purpose: "member_invite",
     refType: "invitation",
     refId: invitationId,
+    companyCode: identity.companyCode,
   });
 
   await audit(c, {
@@ -758,19 +778,22 @@ app.post(
       );
     }
 
-    const invite_url = publicUrl(c.env, `/invite/${inv.token}`);
+    const identity = await activeCompanyEmailIdentity(c.env, c.get("companyCode"));
+    const invite_url = publicUrl(c.env, `/invite/${inv.token}`, identity.companyCode);
     const sendResult = await sendEmail(c.env, {
       to: inv.email,
-      subject: "You're invited to Houzs ERP",
+      subject: `You're invited to ${identity.productName}`,
       html: inviteEmailHtml({
         link: invite_url,
         roleName: inv.role_name,
         inviterName: me?.name || me?.email || "Your admin",
         expiresIn: "14 days",
+        productName: identity.productName,
       }),
       purpose: "member_invite",
       refType: "invitation",
       refId: inv.id,
+      companyCode: identity.companyCode,
     });
 
     return c.json({
@@ -833,19 +856,22 @@ app.post("/:id/resend-invite", requirePermission("users.manage"), async (c) => {
     );
   }
 
-  const invite_url = publicUrl(c.env, `/invite/${inv.token}`);
+  const identity = await activeCompanyEmailIdentity(c.env, c.get("companyCode"));
+  const invite_url = publicUrl(c.env, `/invite/${inv.token}`, identity.companyCode);
   const sendResult = await sendEmail(c.env, {
     to: inv.email,
-    subject: "You're invited to Houzs ERP",
+    subject: `You're invited to ${identity.productName}`,
     html: inviteEmailHtml({
       link: invite_url,
       roleName: inv.role_name,
       inviterName: me?.name || me?.email || "Your admin",
       expiresIn: "14 days",
+      productName: identity.productName,
     }),
     purpose: "member_invite",
     refType: "invitation",
     refId: inv.id,
+    companyCode: identity.companyCode,
   });
 
   return c.json({
@@ -1415,20 +1441,23 @@ app.post("/:id/reset-password", requirePermission("users.manage"), async (c) => 
   // "recipient missing" — we still return the token so copy-paste works,
   // and surface the delivery status so the UI can stop claiming "sent"
   // when the channel/key is off.
-  const link = publicUrl(c.env, `/reset/${token}`);
+  const identity = await activeCompanyEmailIdentity(c.env, c.get("companyCode"));
+  const link = publicUrl(c.env, `/reset/${token}`, identity.companyCode);
   const name = (target.name || target.email.split("@")[0]).split(" ")[0];
   const sendResult = await sendEmail(c.env, {
     to: target.email,
-    subject: "Reset your Houzs ERP password",
+    subject: `Reset your ${identity.productName} password`,
     html: resetEmailHtml({
       name,
       link,
       expiresIn: "1 hour",
       requestedBy: me?.name || me?.email || "Your admin",
+      productName: identity.productName,
     }),
     purpose: "password_reset",
     refType: "user",
     refId: id,
+    companyCode: identity.companyCode,
   });
 
   await audit(c, {
@@ -1486,6 +1515,49 @@ app.post("/:id/totp/disable", requirePermission("users.manage"), async (c) => {
   });
 
   return c.json({ ok: true });
+});
+
+// ── Impersonation (staging-only) ─────────────────────────────────────────────
+// Gated on IMPERSONATION_ENABLED, which is set ONLY in wrangler.toml's
+// [env.staging.vars] — on prod the flag is absent, the probe reports
+// disabled, and the mint endpoint 404s. Lets an admin walk the permission
+// matrix as any member without juggling test-account passwords. Mints a
+// REGULAR session for the target (2FA is bypassed by design — the admin
+// already proved users.manage), so "exit" is just logging out.
+
+app.get("/impersonation-enabled", requirePermission("users.manage"), (c) =>
+  c.json({ enabled: c.env.IMPERSONATION_ENABLED === "true" }),
+);
+
+app.post("/:id/impersonate", requirePermission("users.manage"), async (c) => {
+  if (c.env.IMPERSONATION_ENABLED !== "true") {
+    return c.json({ error: "Not found" }, 404);
+  }
+  const id = Number(c.req.param("id"));
+  const me = c.get("user");
+  if (!Number.isInteger(id) || id <= 0) return c.json({ error: "Invalid user id" }, 400);
+  if (me && me.id === id) return c.json({ error: "You are already this user" }, 400);
+
+  const db = getDb(c.env);
+  const row = await db
+    .select({ id: users.id, email: users.email, status: users.status })
+    .from(users)
+    .where(eq(users.id, id))
+    .limit(1);
+  if (!row.length) return c.json({ error: "User not found" }, 404);
+  if (row[0].status !== "active") return c.json({ error: "Account is disabled" }, 403);
+
+  const token = await createSession(c.env, id);
+
+  await audit(c, {
+    action: "user.impersonate",
+    entityType: "user",
+    entityId: id,
+    summary: `Impersonation session minted for ${row[0].email} (#${id})`,
+    meta: { email: row[0].email },
+  });
+
+  return c.json({ token, user_id: id });
 });
 
 export default app;

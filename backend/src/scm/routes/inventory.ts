@@ -62,6 +62,7 @@ inventory.post('/warehouses', async (c) => {
   if (!name) return c.json({ error: 'name_required' }, 400);
 
   const { data, error } = await sb.from('warehouses').insert({
+    company_id: activeCompanyId(c), // multi-company: stamp the active company (mig 0086)
     code, name,
     location: (body.location as string) ?? null,
     is_active: body.isActive === false ? false : true,

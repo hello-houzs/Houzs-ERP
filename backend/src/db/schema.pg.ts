@@ -120,6 +120,10 @@ export const departments = pgTable("departments", {
 
 // ── projects ───────────────────────────────────────────────
 export const projects = pgTable("projects", {
+  // Multi-company (mig-pg 0093). Declared for the Drizzle-based readers
+  // (events / notifications / finance rollups); raw-SQL paths reference the
+  // column by name. Nullable in the model — the PG DEFAULT backfills.
+  company_id: bigint("company_id", { mode: "number" }),
   id: serial("id").primaryKey(),
   code: text("code").unique(),
   name: text("name").notNull(),
@@ -284,6 +288,8 @@ export const password_resets = pgTable("password_resets", {
 
 // ── events ─────────────────────────────────────────────────
 export const events = pgTable("events", {
+  // Multi-company (mig-pg 0093) — see projects.company_id above.
+  company_id: bigint("company_id", { mode: "number" }),
   id: serial("id").primaryKey(),
   type: text("type").notNull(),
   title: text("title").notNull(),

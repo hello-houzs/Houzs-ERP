@@ -14,6 +14,7 @@
 
 import { Hono } from "hono";
 import { supabaseAuth } from "../middleware/auth";
+import { scopeToCompany } from "../lib/companyScope";
 import type { Env, Variables } from "../env";
 
 export const fabricColours = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -24,11 +25,13 @@ fabricColours.use("*", supabaseAuth);
 // useFabricColoursActive: .eq('active', true).order('sort_order')).
 fabricColours.get("/", async (c) => {
   const supabase = c.get("supabase");
-  const { data, error } = await supabase
+  let q = supabase
     .from("fabric_colours")
     .select("fabric_id, colour_id, label, swatch_hex, active, sort_order")
     .eq("active", true)
     .order("sort_order", { ascending: true });
+  q = scopeToCompany(q, c); // multi-company: isolate to the active company
+  const { data, error } = await q;
   if (error) {
     if (/relation .* does not exist/i.test(error.message)) return c.json({ colours: [] });
     return c.json({ error: "load_failed", reason: error.message }, 500);

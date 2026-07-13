@@ -75,6 +75,7 @@ import { getBranding } from '../../services/branding';
 // factored insert+audit core the interactive POST /:docNo/payments route uses.
 import { createDraftSalesOrder, recordSoPaymentRow } from './mfg-sales-orders';
 import { todayMyt } from '../lib/my-time';
+import { activeCompanyId } from '../lib/companyScope';
 import { normalizePhone } from '../shared/phone';
 
 // The scm-scoped service client (getSupabaseService, db:{schema:'scm'}) and the
@@ -387,6 +388,13 @@ async function loadCatalog(sb: SupabaseClient): Promise<Catalog> {
       .maybeSingle(),
     // SO Maintenance vocab — ACTIVE rows only (the maintenance page's
     // soft-deleted options must never re-enter via OCR).
+    // Multi-company note (mig 0089): deliberately NOT company-scoped. This
+    // catalog feeds buildCachedPrefix, which must stay BYTE-IDENTICAL across
+    // the request path, /warm and the headless cron/scan-job (no request scope
+    // there) — scoping only the request path would bust the prompt cache on
+    // every scan. Same treatment as this loader's other 0083-stamped tables
+    // (mfg_products / fabric_trackings / special_addons). Per-company OCR
+    // catalogs need their own cached-prefix design first.
     paginateAll((from, to) => sb
       .from('so_dropdown_options')
       .select('category, value, label')
@@ -3385,6 +3393,9 @@ async function runScanJob(
     salespersonId: string;
     salespersonName: string | null;
     houzsUserId: number | null;
+    /** Multi-company: the ACTIVE company captured on the scan_jobs row at
+     *  enqueue time — replayed onto the draft SO create. null = legacy row. */
+    companyId: number | null;
     fileBlocks: ContentBlock[];
     uploadedImages: UploadedImage[];
     firstBuffer: ArrayBuffer | null;
@@ -3502,6 +3513,7 @@ async function runScanJob(
       salespersonId: job.salespersonId,
       salespersonName: job.salespersonName,
       houzsUserId: job.houzsUserId,
+      companyId: job.companyId,
       body,
     });
     // Belt-and-suspenders TIER 1: if the create rejects AND we set slip dates,
@@ -3514,6 +3526,7 @@ async function runScanJob(
       salespersonId: job.salespersonId,
       salespersonName: job.salespersonName,
       houzsUserId: job.houzsUserId,
+      companyId: job.companyId,
       body: b,
     });
     if (
@@ -3690,6 +3703,9 @@ scanSo.post('/enqueue', async (c) => {
       salesperson_id: user.id,
       houzs_user_id: houzsUserId,
       image_keys: [],
+      // company_id is NOT NULL since 0083; an unstamped insert 500s (prod
+      // incident 2026-07-13). 0091 adds a HOUZS default as the safety net.
+      company_id: activeCompanyId(c),
     })
     .select('id')
     .single();
@@ -3751,6 +3767,7 @@ scanSo.post('/enqueue', async (c) => {
       salespersonId: user.id,
       salespersonName,
       houzsUserId,
+      companyId: activeCompanyId(c) ?? null,
       fileBlocks,
       uploadedImages,
       firstBuffer,
@@ -3859,7 +3876,7 @@ export async function processScanQueueMessage(env: Env, jobId: string): Promise<
 
   const { data: row, error } = await svc
     .from('scan_jobs')
-    .select('id, status, salesperson, salesperson_id, houzs_user_id, image_keys')
+    .select('id, status, salesperson, salesperson_id, houzs_user_id, image_keys, company_id')
     .eq('id', id)
     .single();
   if (error) {
@@ -3888,6 +3905,8 @@ export async function processScanQueueMessage(env: Env, jobId: string): Promise<
   const salespersonId = String(r.salespersonId ?? r.salesperson_id ?? '');
   const huRaw = r.houzsUserId ?? r.houzs_user_id;
   const houzsUserId = huRaw != null && Number.isFinite(Number(huRaw)) ? Number(huRaw) : null;
+  const coRaw = r.companyId ?? r.company_id;
+  const companyId = coRaw != null && Number.isFinite(Number(coRaw)) ? Number(coRaw) : null;
 
   const files = salespersonId ? await loadScanJobFilesFromR2(env.SO_ITEM_PHOTOS, imageKeys) : null;
   if (!files) {
@@ -3910,6 +3929,7 @@ export async function processScanQueueMessage(env: Env, jobId: string): Promise<
     salespersonName: salesperson || null,
     salespersonId,
     houzsUserId,
+    companyId,
     fileBlocks: files.fileBlocks,
     uploadedImages: files.uploadedImages,
     firstBuffer: files.firstBuffer,
@@ -3934,7 +3954,7 @@ async function reapStaleScanJobs(
     //    next poll (the screen polls every 4s while jobs are active).
     const { data: retryRows, error: retryErr } = await svc
       .from('scan_jobs')
-      .select('id, salesperson, salesperson_id, houzs_user_id, image_keys, retry_count')
+      .select('id, salesperson, salesperson_id, houzs_user_id, image_keys, retry_count, company_id')
       .in('status', ['queued', 'running'])
       .lt('updated_at', cutoff)
       .eq('retry_count', 0)
@@ -3973,6 +3993,8 @@ async function reapStaleScanJobs(
       const salespersonId = String(r.salespersonId ?? r.salesperson_id ?? '');
       const huRaw = r.houzsUserId ?? r.houzs_user_id;
       const houzsUserId = huRaw != null && Number.isFinite(Number(huRaw)) ? Number(huRaw) : null;
+      const coRaw = r.companyId ?? r.company_id;
+      const companyId = coRaw != null && Number.isFinite(Number(coRaw)) ? Number(coRaw) : null;
 
       // Heavy part (R2 reads + the whole pipeline) runs AFTER the poll
       // responds — never inline in the GET.
@@ -3997,6 +4019,7 @@ async function reapStaleScanJobs(
           // normalized rep display name is the closest replay identity.
           salespersonName: salesperson || null,
           houzsUserId,
+          companyId,
           fileBlocks: files.fileBlocks,
           uploadedImages: files.uploadedImages,
           firstBuffer: files.firstBuffer,

@@ -599,7 +599,23 @@ export const SalesOrderDetail = () => {
     // (Loo 2026-06-28). New lines have no pristine snapshot -> always committed.
     const lineEntries = Object.entries(editingDrafts).filter(([id, d]) => {
       const orig = originalDraftsRef.current[id];
-      return !orig || lineCommitSig(d) !== lineCommitSig(orig);
+      if (!orig) return true;
+      if (lineCommitSig(d) === lineCommitSig(orig)) return false;
+      /* Remove-Processing-Date follow-up (2990 PR #718) — a line that is
+         dirty ONLY because the header Delivery Date cascade rewrote its
+         (non-overridden) lineDeliveryDate needs NO line PATCH: the header
+         PATCH's server-side master-follower cascade stamps every line's date
+         authoritatively. Skipping it spares untouched lines the server
+         recompute (PWP grant-price clobber) AND keeps the processing-locked
+         item route out of a pure header-date save — otherwise a super_admin
+         clearing the dates 409s on the LINE call before the header (which
+         carries the super-admin exemption) ever runs. A manually-overridden
+         line date (either side) still commits — the cascade never wrote it. */
+      if (!d.lineDeliveryDateOverridden && !orig.lineDeliveryDateOverridden) {
+        return lineCommitSig({ ...d, lineDeliveryDate: null })
+            !== lineCommitSig({ ...orig, lineDeliveryDate: null });
+      }
+      return true;
     });
     const pendingAdd = addingDraft;
 

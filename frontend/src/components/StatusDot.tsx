@@ -12,7 +12,12 @@ const COLORS: Record<Variant, string> = {
   // funnel dot logic in ServiceCases.tsx.
   open: "bg-primary",
   "in-progress": "bg-primary",
-  closed: "bg-synced",
+  // Nico 2026-07-09 — Completed cases wear a neutral grey dot so
+  // "archived / no longer in-flight" reads distinct from "in-progress
+  // (petrol)" and the "green = healthy running" tone that stays on
+  // synced/All. Everywhere StatusDot with variant="closed" is used
+  // (list row Stage column when stage='completed') picks this up.
+  closed: "bg-ink-muted",
   neutral: "bg-ink-muted",
 };
 
@@ -63,9 +68,9 @@ const STAGE_VARIANT: Record<string, Variant> = {
 };
 
 const STAGE_LABEL: Record<string, string> = {
-  registration: "Pending Review",
-  triage: "Under Verification",
-  action: "Pending Solution",
+  registration: "Review",
+  triage: "Verification",
+  action: "Solution",
   logistics: "Pending Logistics",
   resolution: "Pending Completion",
   closed: "Completed",

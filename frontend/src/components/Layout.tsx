@@ -8,15 +8,13 @@ import { PullToRefresh, PullToRefreshGuardProvider } from "./PullToRefresh";
 import { RowActionsMenu, type MenuItem } from "./RowActionsMenu";
 import { useQuery } from "../hooks/useQuery";
 import { useBranding } from "../hooks/useBranding";
+import { CompanyMark } from "./CompanyMark";
 import { api } from "../api/client";
 import type { SyncStatusResponse } from "../types";
 
 interface Props {
   children: ReactNode;
 }
-
-const LOGO_MARK_SRC = "/logo-mark.png";
-const LOGO_WORDMARK_SRC = "/logo-wordmark.png";
 
 export function Layout({ children }: Props) {
   // Desktop collapse — only used at lg+. Mobile no longer has a
@@ -83,17 +81,17 @@ export function Layout({ children }: Props) {
  * by the bottom rail's centre Menu disc — no hamburger here.
  */
 function MobileTopBar() {
-  const branding = useBranding();
   return (
     <div className="sticky top-0 z-20 flex h-14 items-center gap-3 border-b border-border bg-surface/95 px-4 backdrop-blur-sm lg:hidden">
-      <img
-        src={LOGO_WORDMARK_SRC}
-        alt={branding.companyName}
-        // Phone: shrink the wordmark so the top bar reads as chrome, not a
-        // brochure header (owner: logo too big on phone). Steps back up to the
-        // original size at sm+ (tablet). h-5≈20px → h-7≈28px.
-        className="h-5 w-auto max-w-[104px] object-contain sm:h-7 sm:max-w-[140px]"
-        draggable={false}
+      {/* Phone: shrink the wordmark so the top bar reads as chrome, not a
+          brochure header (owner: logo too big on phone). Steps back up to the
+          original size at sm+ (tablet). h-5≈20px → h-7≈28px. CompanyMark:
+          HOUZS keeps the bundled wordmark; other companies get their uploaded
+          logo or a text lockup. */}
+      <CompanyMark
+        variant="wordmark"
+        imgClassName="h-5 w-auto max-w-[104px] object-contain sm:h-7 sm:max-w-[140px]"
+        textClassName="truncate text-[13px] font-bold tracking-tight text-ink sm:text-[15px]"
       />
       <div className="ml-auto flex min-w-0 items-center gap-1.5">
         <GlobalSearchTrigger collapsed />

@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import { hasHouzsPerm } from '../lib/houzs-perms';
+import { scopeToCompany, activeCompanyId } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 // TODO(Task 18): add categories.test.ts when R2 mocking is set up.
@@ -167,11 +168,13 @@ publicCategoriesApi.use('*', supabaseAuth);
 // above, so the Categories grid + drawer don't need to know about R2 keys.
 publicCategoriesApi.get('/', async (c) => {
   const supabase = c.get('supabase');
-  const { data, error } = await supabase
+  let listQ = supabase
     .from('categories')
     .select('id, label, icon, sort_order, hero_image_key, hero_focal_x, hero_focal_y, hero_alt')
     .order('sort_order', { ascending: true })
     .order('label', { ascending: true });
+  listQ = scopeToCompany(listQ, c); // multi-company: isolate to the active company
+  const { data, error } = await listQ;
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
 
   const categories = (data ?? []).map((r) => {
@@ -275,18 +278,19 @@ publicCategoriesApi.post('/', async (c) => {
   // sort_order defaults to (max + 1) so a new category lands at the bottom.
   let finalSort = sortOrder;
   if (finalSort === null) {
-    const { data: top } = await supabase
+    let topQ = supabase
       .from('categories')
       .select('sort_order')
       .order('sort_order', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+      .limit(1);
+    topQ = scopeToCompany(topQ, c); // multi-company: max within the active company
+    const { data: top } = await topQ.maybeSingle();
     finalSort = ((top as { sort_order: number } | null)?.sort_order ?? -1) + 1;
   }
 
   const { data, error } = await supabase
     .from('categories')
-    .insert({ id, label, icon, sort_order: finalSort, tbc: false })
+    .insert({ company_id: activeCompanyId(c), id, label, icon, sort_order: finalSort, tbc: false })
     .select('id, label, icon, sort_order, hero_image_key')
     .single();
   if (error) return c.json({ error: 'insert_failed', reason: error.message }, 500);

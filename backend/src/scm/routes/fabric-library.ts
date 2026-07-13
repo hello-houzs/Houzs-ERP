@@ -4,6 +4,7 @@
 import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import { hasHouzsPerm } from '../lib/houzs-perms';
+import { scopeToCompany } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 export const fabricLibrary = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -29,10 +30,12 @@ const TIER_FIELD_TO_COL: Record<string, string> = { sofaTier: 'sofa_tier', bedfr
 // expects (queries.ts).
 fabricLibrary.get('/', async (c) => {
   const supabase = c.get('supabase');
-  const { data, error } = await supabase
+  let q = supabase
     .from('fabric_library')
     .select('id, label, tier, default_surcharge, active, sort_order')
     .order('sort_order', { ascending: true });
+  q = scopeToCompany(q, c); // multi-company: isolate to the active company
+  const { data, error } = await q;
   if (error) {
     // Table missing entirely → degrade to empty so the picker still renders.
     if (/relation .* does not exist/i.test(error.message)) return c.json({ fabrics: [] });

@@ -83,16 +83,16 @@ export async function recomputeSoStockAllocation(
             b) created_at ASC  — tiebreaker so order is deterministic */
     // Page through — PostgREST's default 1000-row cap would truncate the active
     // SO set, silently DROPPING orders from allocation (their lines never flip).
-    const { data: orderRows } = await paginateAll<{ doc_no: string; status: string; created_at: string; customer_delivery_date: string | null }>((from, to) => sb
+    const { data: orderRows } = await paginateAll<{ doc_no: string; status: string; created_at: string; customer_delivery_date: string | null; company_id: number | null }>((from, to) => sb
       .from('mfg_sales_orders')
-      .select('doc_no, status, created_at, customer_delivery_date')
+      .select('doc_no, status, created_at, customer_delivery_date, company_id')
       .not('status', 'in', '(CANCELLED,CLOSED,SHIPPED,DELIVERED,INVOICED,DRAFT)')
       .order('customer_delivery_date',  { ascending: true, nullsFirst: false })
       .order('created_at',              { ascending: true })
       .range(from, to));
     const orders = (orderRows ?? []) as Array<{
       doc_no: string; status: string; created_at: string;
-      customer_delivery_date: string | null;
+      customer_delivery_date: string | null; company_id: number | null;
     }>;
     if (orders.length === 0) return { ok: true, linesFlipped: 0, ordersAdvanced: 0, ordersRegressed: 0 };
     const orderByDoc = new Map(orders.map((o) => [o.doc_no, o]));
@@ -534,6 +534,8 @@ export async function recomputeSoStockAllocation(
       const auditAutoStatus = async (from: string, to: string, note: string) => {
         try {
           await sb.from('mfg_so_status_changes').insert({
+            // Multi-company: the automated status-change row inherits the SO's company.
+            ...(order.company_id != null ? { company_id: order.company_id } : {}),
             doc_no: docNo, from_status: from, to_status: to, changed_by: null, notes: note,
           });
         } catch { /* best-effort */ }
