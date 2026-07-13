@@ -46,6 +46,7 @@ import {
 } from '../../vendor/scm/lib/sales-order-queries';
 import { authedFetch, humanApiError } from '../../vendor/scm/lib/authed-fetch';
 import { useStaff } from '../../vendor/scm/lib/admin-queries';
+import { todayMyt } from '../../vendor/scm/lib/dates';
 import { sortByText, sortByNumeric } from '../../vendor/scm/lib/sort-options';
 import { useAuth } from '../../vendor/scm/lib/auth';
 /* Houzs auth — the REAL logged-in user (name + id). The vendored 2990 auth
@@ -114,7 +115,7 @@ const fmtRm = (centi: number, currency = 'MYR'): string =>
    stay empty (the order is un-proceeded). */
 const PROCESSING_LEAD_DAYS = 42;
 const deriveProcessingDate = (deliveryDate: string): string => {
-  const today = new Date().toLocaleDateString('en-CA');
+  const today = todayMyt();
   const d = new Date(`${deliveryDate}T00:00:00`);
   if (Number.isNaN(d.getTime())) return today;
   d.setDate(d.getDate() - PROCESSING_LEAD_DAYS);
@@ -1012,8 +1013,10 @@ export const SalesOrderNew = () => {
      must both be filled in or both empty. */
   const datesXor = (processingDate.trim() !== '') !== (deliveryDate.trim() !== '');
   /* Commander 2026-05-28 — Processing/Delivery dates may only be today or a
-     future date (input min + Save guard). en-CA = local YYYY-MM-DD. */
-  const today = new Date().toLocaleDateString('en-CA');
+     future date (input min + Save guard). todayMyt() = Malaysia (UTC+8)
+     calendar date, so the floor is right regardless of the browser's own
+     timezone (a browser set off-GMT+8 could otherwise let yesterday through). */
+  const today = todayMyt();
 
   /* Task #105 — After POST /mfg-sales-orders succeeds, replay every payment
      draft through POST /:docNo/payments in parallel via the existing mutation

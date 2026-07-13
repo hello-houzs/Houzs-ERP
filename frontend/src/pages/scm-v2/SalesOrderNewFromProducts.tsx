@@ -115,10 +115,32 @@ export function SalesOrderNewFromProducts() {
     setSearchParams(sp, { replace: true });
   };
   const clearFilters = () => {
+    setQInput("");
     const sp = new URLSearchParams(searchParams);
     sp.delete("q");
     sp.delete("cat");
     setSearchParams(sp, { replace: true });
+  };
+
+  /* Perf (go-live 2026-07-13) — the search field is DEBOUNCED. `qInput` is the
+     live text box; only after a 250ms idle does it commit to the URL `q`, which
+     is the value that drives the server query (useMfgProducts). Without this,
+     every keystroke refetched the ~2000-SKU catalogue and re-rendered the whole
+     list, which froze the page while typing. Clearing (X / Clear filters) writes
+     both immediately so the reset is instant. */
+  const [qInput, setQInput] = useState(q);
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      if (qInput !== q) setQ(qInput);
+    }, 250);
+    return () => window.clearTimeout(t);
+    // setQ is stable-by-behaviour (writes the URL); q re-runs the timer to a
+    // no-op once the committed value catches up. qInput drives the debounce.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qInput, q]);
+  const clearSearch = () => {
+    setQInput("");
+    setQ("");
   };
 
   // Catalogue — server-side filter on category + search via useMfgProducts.
@@ -264,7 +286,9 @@ export function SalesOrderNewFromProducts() {
       <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
         <Catalogue
           q={q}
-          setQ={setQ}
+          qInput={qInput}
+          setQInput={setQInput}
+          onClearSearch={clearSearch}
           cat={cat}
           setCat={setCat}
           products={productsQ.data ?? []}
@@ -318,9 +342,16 @@ export function SalesOrderNewFromProducts() {
 
 // ── Catalogue (left) ────────────────────────────────────────────────────────
 
+// Perf cap — the catalogue never renders more than this many rows at once, so
+// a 2000-SKU "All / no search" set can't freeze the page. Beyond the cap a
+// hint tells the operator to narrow by category or search.
+const RENDER_CAP = 60;
+
 function Catalogue({
   q,
-  setQ,
+  qInput,
+  setQInput,
+  onClearSearch,
   cat,
   setCat,
   products,
@@ -333,7 +364,9 @@ function Catalogue({
   onManualAdd,
 }: {
   q: string;
-  setQ: (s: string) => void;
+  qInput: string;
+  setQInput: (s: string) => void;
+  onClearSearch: () => void;
   cat: Category;
   setCat: (c: Category) => void;
   products: MfgProductRow[];
@@ -349,6 +382,12 @@ function Catalogue({
     () => products.filter((p) => p.status === "ACTIVE"),
     [products],
   );
+  // Cap the DOM to RENDER_CAP rows — see RENDER_CAP note above.
+  const shown = useMemo(
+    () => filteredActive.slice(0, RENDER_CAP),
+    [filteredActive],
+  );
+  const hiddenCount = filteredActive.length - shown.length;
   const hasFilters = q.trim() !== "" || cat !== "ALL";
   const isEmptyAfterFilters =
     !loading && !error && hasFilters && filteredActive.length === 0;
@@ -364,15 +403,15 @@ function Catalogue({
         />
         <input
           type="search"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
+          value={qInput}
+          onChange={(e) => setQInput(e.target.value)}
           placeholder="Search products, SKU, name…"
           className="block w-full rounded-md border border-border bg-surface-2 py-2 pl-9 pr-9 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
         />
-        {q && (
+        {qInput && (
           <button
             type="button"
-            onClick={() => setQ("")}
+            onClick={onClearSearch}
             aria-label="Clear search"
             className="absolute right-2 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-ink-muted hover:bg-surface-dim hover:text-ink"
           >
@@ -473,10 +512,10 @@ function Catalogue({
         </div>
       )}
 
-      {/* Product rows */}
+      {/* Product rows (capped at RENDER_CAP to keep the page responsive) */}
       {!loading && !error && filteredActive.length > 0 && (
         <ul className="mt-3 divide-y divide-border-subtle">
-          {filteredActive.map((p) => {
+          {shown.map((p) => {
             const qty = cartQty[p.code] ?? 0;
             const inCart = qty > 0;
             const priceSen = p.sell_price_sen ?? p.base_price_sen ?? 0;
@@ -541,6 +580,14 @@ function Catalogue({
             );
           })}
         </ul>
+      )}
+
+      {/* Cap hint — more matches exist than we render; narrow to reach them. */}
+      {!loading && !error && hiddenCount > 0 && (
+        <div className="mt-3 rounded-md border border-border bg-surface-2 px-3 py-2.5 text-center text-[11.5px] text-ink-muted">
+          Showing the first {RENDER_CAP} of {filteredActive.length} products.
+          Search or pick a category to narrow the list.
+        </div>
       )}
     </div>
   );
