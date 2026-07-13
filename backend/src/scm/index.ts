@@ -67,6 +67,11 @@ import { lorries } from "./routes/lorries";
 import { soSettings } from "./routes/so-settings";
 import { freeItemCampaigns } from "./routes/free-item-campaigns";
 import { modelFreeGifts } from "./routes/model-free-gifts";
+// POS endpoints ported from 2990 apps/api (cutover P2), company_2 scoped.
+import { posCart } from "./routes/pos-cart";
+import { quotes } from "./routes/quotes";
+import { personalQuickPicks } from "./routes/personal-quick-picks";
+import { salesAnalysis } from "./routes/sales-analysis";
 
 import { scmAreaGuard } from "./middleware/area-guard";
 
@@ -149,6 +154,12 @@ scm.use("/free-item-campaigns/*", scmAreaGuard("scm.procurement.products", { ope
 scm.route("/free-item-campaigns", freeItemCampaigns);
 scm.use("/model-free-gifts/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
 scm.route("/model-free-gifts", modelFreeGifts);
+// ── POS endpoints ported from 2990 (cutover P2), company_2 scoped ────────────
+scm.route("/pos-cart", posCart);
+scm.route("/personal-quick-picks", personalQuickPicks);
+scm.route("/sales-analysis", salesAnalysis);
+scm.use("/quotes/*", scmAreaGuard("scm.sales.orders", { writeLevel: "view" }));
+scm.route("/quotes", quotes);
 // ── Suppliers (scm.procurement.suppliers) ───────────────────────────────────
 scm.use("/suppliers/*", scmAreaGuard("scm.procurement.suppliers"));
 scm.route("/suppliers", suppliers);
