@@ -11,7 +11,7 @@ import { AnnouncementBanner } from "./components/AnnouncementBanner";
 import { QuickActionsFAB } from "./components/QuickActionsFAB";
 import { BackToTopFAB } from "./components/BackToTopFAB";
 import { BreadcrumbsProvider } from "./hooks/useBreadcrumbs";
-import { PageSkeleton, ChunkReloadBoundary } from "./components/RouteFallback";
+import { PageSkeleton, RouteCrashBoundary } from "./components/RouteFallback";
 import { NewVersionBanner } from "./components/NewVersionBanner";
 import { IosInstallGuide } from "./components/IosInstallGuide";
 import { AndroidInstallGuide } from "./components/AndroidInstallGuide";
@@ -220,7 +220,7 @@ export default function App() {
       <IosInstallGuide />
       <AndroidInstallGuide />
       <Layout>
-        <ChunkReloadBoundary>
+        <RouteCrashBoundary>
         <Suspense fallback={<PageSkeleton />}>
         <Routes>
         {/* Landing → Overview workspace home (P1). */}
@@ -514,7 +514,7 @@ export default function App() {
         <Route path="*" element={<Forbidden kind="not-found" />} />
         </Routes>
         </Suspense>
-        </ChunkReloadBoundary>
+        </RouteCrashBoundary>
       </Layout>
       </BreadcrumbsProvider>
       </NotificationsProvider>
