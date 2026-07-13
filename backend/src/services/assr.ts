@@ -1002,6 +1002,23 @@ export interface ListAssrFilters {
    *  undefined = unrestricted (admin `*` / service_cases.manage). An empty
    *  array matches NOTHING (fail closed). */
   visible_to_user_ids?: number[];
+  /** Multi-company (CROSS-COMPANY module): the caller's ALLOWED company ids
+   *  from companyContext (allowedCompanyIds(c)). When non-empty the list is
+   *  widened to `c.company_id IN (...)` — never narrowed to the active pick.
+   *  Empty / undefined = company context unresolved (pre-migration, D1 test
+   *  mirror, cold-start) → no predicate, single-company behaviour. */
+  allowed_company_ids?: number[];
+}
+
+/** Shared allowed-companies WHERE fragment for the raw-SQL ASSR readers.
+ *  The ids come from OUR companies master (validated integers), so inlining
+ *  is safe. No-op on an unresolved ([]) allow-list. */
+function pushAllowedCompanies(where: string[], ids: number[] | undefined): void {
+  const clean = (ids ?? [])
+    .map(Number)
+    .filter((n) => Number.isInteger(n) && n > 0);
+  if (clean.length === 0) return;
+  where.push(`c.company_id IN (${clean.join(",")})`);
 }
 
 /** Shared WHERE fragment for the visibility scope — used by both the
@@ -1107,6 +1124,7 @@ export async function listAssrCases(env: Env, f: ListAssrFilters) {
     binds.push(like, like, like, like);
   }
   pushVisibilityScope(where, binds, f.visible_to_user_ids);
+  pushAllowedCompanies(where, f.allowed_company_ids);
 
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
   const page = f.page && f.page > 0 ? f.page : 1;
@@ -1245,6 +1263,7 @@ export async function exportAssrCases(
     binds.push(like, like, like, like);
   }
   pushVisibilityScope(where, binds, f.visible_to_user_ids);
+  pushAllowedCompanies(where, f.allowed_company_ids);
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
   const rows = await env.DB.prepare(
     `SELECT c.assr_no, c.doc_no, c.stage, c.status, c.priority,

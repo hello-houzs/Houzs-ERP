@@ -175,6 +175,11 @@ export interface CreateProjectInput {
   notion_url?: string | null;
   pic_id?: number | null;
   created_by: number;
+  /** Multi-company (mig-pg 0093) — the ACTIVE company from the request
+   *  (activeCompanyId(c)). Column + bind are appended ONLY when resolved so
+   *  the pre-migration window / D1 test mirror inserts unchanged; the PG
+   *  DEFAULT (base company) covers unstamped inserts. */
+  company_id?: number;
 }
 
 export async function createProject(env: Env, input: CreateProjectInput) {
@@ -227,13 +232,18 @@ export async function createProject(env: Env, input: CreateProjectInput) {
       venue: input.venue,
       event_type_slug: eventTypeSlug,
     });
+  // Multi-company: stamp the active company (sales.ts idiom — column + bind
+  // appended only when resolved). Child rows (finance / cloned checklist)
+  // inherit the PG DEFAULT and are always read through project_id, so the
+  // project row is the single source of company truth.
+  const stampCo = input.company_id != null;
   const r = await env.DB.prepare(
     `INSERT INTO projects (
       code, name, stage,
       event_type_id, brand,
       start_date, end_date, venue, state, organizer, notion_url,
-      pic_id, created_by
-    ) VALUES (?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      pic_id, created_by${stampCo ? ", company_id" : ""}
+    ) VALUES (?, ?, 'draft', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${stampCo ? ", ?" : ""})`
   )
     .bind(
       code,
@@ -247,7 +257,8 @@ export async function createProject(env: Env, input: CreateProjectInput) {
       input.organizer ?? null,
       input.notion_url ?? null,
       picId,
-      input.created_by
+      input.created_by,
+      ...(stampCo ? [input.company_id] : [])
     )
     .run();
   const projectId = r.meta.last_row_id as number;
@@ -585,7 +596,11 @@ async function redateChecklistFromOffsets(
 
 // ── Detail ────────────────────────────────────────────────────
 
-export async function getProjectDetail(env: Env, id: number) {
+export async function getProjectDetail(env: Env, id: number, companyId?: number) {
+  // Multi-company: a detail fetch can only resolve within the active company —
+  // a cross-company id answers null (the route 404s). Predicate skipped when
+  // the company context is unresolved (pre-migration / D1 test mirror).
+  const coSql = companyId != null ? " AND p.company_id = ?" : "";
   const project = await env.DB.prepare(
     `SELECT p.*,
             et.slug  as event_type_slug,
@@ -613,9 +628,9 @@ export async function getProjectDetail(env: Env, id: number) {
        LEFT JOIN users uhd2 ON uhd2.id = p.dismantle_helper_2_id
        LEFT JOIN lorries l1 ON l1.id = p.setup_lorry_id
        LEFT JOIN lorries l2 ON l2.id = p.dismantle_lorry_id
-      WHERE p.id = ?`
+      WHERE p.id = ?${coSql}`
   )
-    .bind(id)
+    .bind(id, ...(companyId != null ? [companyId] : []))
     .first<any>();
   if (!project) return null;
 
@@ -989,6 +1004,10 @@ export interface ListProjectsFilters {
    *  required_perm is one of these (e.g. Stock Approver → stock_transfer.approve).
    *  Used for directors/admins who only chase what they must approve. */
   pending_approve?: string[];
+  /** Multi-company (mig-pg 0093): the ACTIVE company (activeCompanyId(c)).
+   *  When set the list is isolated to that company; undefined (company
+   *  context unresolved — pre-migration / D1 test mirror) = no predicate. */
+  company_id?: number;
 }
 
 // Allow-listed sort columns for the project list. The default (when
@@ -1018,6 +1037,11 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
   const where: string[] = [];
   const binds: any[] = [];
   if (!f.include_archived) where.push("p.archived_at IS NULL");
+  // Multi-company: PER-COMPANY isolation on the active company.
+  if (f.company_id != null) {
+    where.push("p.company_id = ?");
+    binds.push(f.company_id);
+  }
   if (f.stage) {
     const stages = f.stage.split(",").map((s) => s.trim()).filter(Boolean);
     if (stages.length === 1) {
