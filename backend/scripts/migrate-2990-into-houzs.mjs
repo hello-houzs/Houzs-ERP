@@ -37,8 +37,8 @@ const dst = postgres(DST, { ssl: "require", prepare: false, max: 2 });
 
 // FK-topological order: masters -> headers -> lines -> payments.
 const ORDER = [
-  "customers", "suppliers", "products", "product_models", "product_fabrics",
-  "product_size_variants", "warehouses", "accounts",
+  "customers", "suppliers", "series", "categories", "products", "product_models", "product_fabrics",
+  "product_size_variants", "warehouses",
   "mfg_sales_orders", "mfg_sales_order_items", "mfg_sales_order_payments",
   "delivery_orders", "delivery_order_items",
   "sales_invoices", "sales_invoice_items", "sales_invoice_payments",
@@ -112,7 +112,7 @@ async function main() {
     if (APPLY) {
       const cols = Object.keys(shaped[0]);
       for (let i = 0; i < shaped.length; i += 500) {
-        await dst`INSERT INTO scm.${dst(table)} ${dst(shaped.slice(i, i + 500), cols)} ON CONFLICT (id) DO NOTHING`;
+        await dst`INSERT INTO scm.${dst(table)} ${dst(shaped.slice(i, i + 500), cols)} ON CONFLICT DO NOTHING`;
       }
       const got = await dst`SELECT count(*)::int AS n FROM scm.${dst(table)} WHERE company_id=${cid}`;
       totalImported += Number(got[0].n);

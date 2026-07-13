@@ -783,6 +783,80 @@ app.post(
 );
 
 /**
+ * POST /api/users/:id/resend-invite
+ * Re-send the pending invitation email for a member who hasn't joined
+ * yet, keyed by the member's USER id (the Members grid works with user
+ * ids, not invitation ids). Resolves the member's still-pending
+ * invitation by email and reuses the same token + email path as
+ * /invitations/:id/resend — no new token, no new email system.
+ */
+app.post("/:id/resend-invite", requirePermission("users.manage"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
+  const me = c.get("user");
+
+  const db = getDb(c.env);
+  const urows = await db
+    .select({ email: users.email, status: users.status })
+    .from(users)
+    .where(eq(users.id, id))
+    .limit(1);
+  if (urows.length === 0) return c.json({ error: "Member not found" }, 404);
+  const member = urows[0];
+  if (member.status === "active") {
+    return c.json({ error: "This member has already joined" }, 409);
+  }
+
+  // Newest still-pending invitation for this member's email (same token
+  // stays valid — we only re-fire the email).
+  const rows = await db
+    .select({
+      id: invitations.id,
+      email: invitations.email,
+      token: invitations.token,
+      expires_at: invitations.expires_at,
+      role_name: roles.name,
+    })
+    .from(invitations)
+    .innerJoin(roles, eq(roles.id, invitations.role_id))
+    .where(and(eq(invitations.email, member.email), isNull(invitations.accepted_at)))
+    .orderBy(desc(invitations.id))
+    .limit(1);
+  if (rows.length === 0) {
+    return c.json({ error: "No pending invitation for this member" }, 404);
+  }
+  const inv = rows[0];
+  if (inv.expires_at < new Date().toISOString()) {
+    return c.json(
+      { error: "Invitation has expired — issue a new one instead" },
+      410
+    );
+  }
+
+  const invite_url = publicUrl(c.env, `/invite/${inv.token}`);
+  const sendResult = await sendEmail(c.env, {
+    to: inv.email,
+    subject: "You're invited to Houzs ERP",
+    html: inviteEmailHtml({
+      link: invite_url,
+      roleName: inv.role_name,
+      inviterName: me?.name || me?.email || "Your admin",
+      expiresIn: "14 days",
+    }),
+    purpose: "member_invite",
+    refType: "invitation",
+    refId: inv.id,
+  });
+
+  return c.json({
+    ok: true,
+    invite_url,
+    email_sent: sendResult.status === "sent",
+    email_status: sendResult.status,
+  });
+});
+
+/**
  * PATCH /api/users/:id
  * Body: { role_id?, status?, manager_id?, department_id? }
  * Update a team member's role, enable/disable, reassign manager or
