@@ -179,11 +179,7 @@ type ProjectDetail = {
   attachments?: ProjectAttachment[];
   _access?: {
     level?: string;
-<<<<<<< HEAD
-    pms?: { canFinancial?: boolean; canEdit?: boolean; canPayment?: boolean };
-=======
-    pms?: { canFinancial?: boolean; canEdit?: boolean; role?: string };
->>>>>>> origin/main
+    pms?: { canFinancial?: boolean; canEdit?: boolean; canPayment?: boolean; role?: string };
   };
 };
 
