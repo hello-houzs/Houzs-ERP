@@ -40,23 +40,26 @@ const FORCE_INACTIVE = new Set(["staff"]);
 // Catalog/config tables whose PK values collide with Houzs's existing rows
 // (same vendored seed / low serials). Their 2990 rows get NEW deterministic ids
 // and every FK reference (discovered from pg_constraint) follows automatically.
-// text PK  -> "2990-<id>"           serial PK -> <id> + 100000
-// Both transforms are idempotent, so re-runs stay ON CONFLICT-safe. Sequences
-// are untouched: these tables hold <100 Houzs rows, serials never reach 100000.
-const REMAP_TEXT = new Set(["series", "categories", "size_library", "compartment_library"]);
-const REMAP_SERIAL = new Set(["addons", "bundle_library", "delivery_planning_regions", "delivery_fee_config", "fabric_tier_addon_config", "maintenance_config_history", "special_addons_history"]);
+// The transform is VALUE-driven (staging round 3 lesson: the "serial" config
+// tables actually hold seed rows with FIXED text/uuid ids identical in both
+// DBs — Houzs's scm was seeded from 2990's seeds — so PKs collide regardless
+// of type):
+//   integer id -> <id> + 100000
+//   uuid id    -> first 4 hex chars overwritten with "2990" (deterministic;
+//                 collision odds among <100 rows are negligible)
+//   text id    -> "2990-<id>"
+// All idempotent, so re-runs stay ON CONFLICT-safe. Sequences untouched:
+// these tables hold <100 Houzs rows, serials never reach 100000.
+const REMAP_TABLES = new Set(["series", "categories", "size_library", "compartment_library", "addons", "bundle_library", "delivery_planning_regions", "delivery_fee_config", "fabric_tier_addon_config", "maintenance_config_history", "special_addons_history"]);
+const REMAP_TEXT = REMAP_TABLES, REMAP_SERIAL = REMAP_TABLES; // back-compat aliases for refMap
 const SERIAL_OFFSET = 100000;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const remapId = (table, v) => {
-  if (v == null) return v;
-  if (REMAP_TEXT.has(table)) return String(v).startsWith("2990-") ? v : `2990-${v}`;
-  if (REMAP_SERIAL.has(table)) {
-    // Only numeric ids can collide with dest serials; uuid PKs pass through
-    // (their conflicts, if any, come from UNIQUE constraints, handled per-table).
-    const n = Number(v);
-    if (!Number.isFinite(n)) return v;
-    return n >= SERIAL_OFFSET ? n : n + SERIAL_OFFSET;
-  }
-  return v;
+  if (v == null || !REMAP_TABLES.has(table)) return v;
+  const s = String(v);
+  if (/^[0-9]+$/.test(s)) { const n = Number(s); return n >= SERIAL_OFFSET ? n : n + SERIAL_OFFSET; }
+  if (UUID_RE.test(s)) return s.slice(0, 4).toLowerCase() === "2990" ? s : "2990" + s.slice(4);
+  return s.startsWith("2990-") ? s : `2990-${s}`;
 };
 // Load these first (identity/master roots), then everything else alphabetically,
 // then documents/movements last. With FK checks off order barely matters; this
