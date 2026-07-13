@@ -77,6 +77,7 @@ import { createDraftSalesOrder, recordSoPaymentRow } from './mfg-sales-orders';
 import { todayMyt } from '../lib/my-time';
 import { activeCompanyId } from '../lib/companyScope';
 import { normalizePhone } from '../shared/phone';
+import { resolveCallerStaffId } from '../lib/salesScope';
 
 // The scm-scoped service client (getSupabaseService, db:{schema:'scm'}) and the
 // middleware-attached c.get('supabase') are both schema-parameterised clients.
@@ -3510,12 +3511,12 @@ async function runScanJob(
       if (body._scanShell === true) {
         shellNote = `The scan could not read the ${draft.missing.join(' and ')} on this slip. Please open this draft and complete it from the photo.`;
       }
-      if (dupDocNo) {
-        const existingNote = typeof body.note === 'string' && body.note.trim() !== ''
-          ? ` | ${body.note}`
-          : '';
-        body.note = `POSSIBLE DUPLICATE of ${dupDocNo}${existingNote}`;
-      }
+      // Owner (standing rule): the SO NOTE holds ONLY the customer's genuine
+      // handwritten remark — never the "possible duplicate" warning. The
+      // duplicate signal already rides its OWN channels: the scan_jobs
+      // duplicate_of flag (touched above → the mobile Scan card's "Duplicate of
+      // <doc>" pill) AND the private scan Announcement posted below. So do NOT
+      // prefix body.note here; dupDocNo is carried into that notice instead.
     }
 
     // PRICING-CRITICAL create — the factored mfg-sales-orders core, replayed
@@ -3650,6 +3651,39 @@ async function runScanJob(
 }
 
 // ---------------------------------------------------------------------------
+// Resolve the UPLOADER's own scm.staff id so the scanned draft's salesperson
+// defaults to whoever scanned it (standing rule: salesperson default-by-
+// uploader). The SCM auth bridge pins c.get('user').id to ONE shared SYSTEM
+// staff row (middleware/auth.ts), so that id can't attribute the SO — the real
+// person is the Houzs user behind houzsUser. Resolve their scm.staff row the
+// same way the interactive create does (mig 0066 user_id link), then fall back
+// to matching by email for a staff row that was never linked by user_id. When
+// nothing resolves we return null and the caller keeps the system id (today's
+// behaviour) — no regression, just correct attribution whenever it's knowable.
+// ---------------------------------------------------------------------------
+async function resolveScanUploaderStaffId(
+  svc: SupabaseClient,
+  houzsUserId: number | null,
+  email: string | null | undefined,
+): Promise<string | null> {
+  const byUserId = await resolveCallerStaffId(svc, houzsUserId);
+  if (byUserId) return byUserId;
+  const e = (email ?? '').trim();
+  if (!e) return null;
+  try {
+    const { data } = await svc
+      .from('staff')
+      .select('id')
+      .ilike('email', e)
+      .limit(1)
+      .maybeSingle();
+    return ((data as { id?: string } | null)?.id as string | undefined) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // POST /scan-so/enqueue — persist photos + job row, respond FAST, run the
 // pipeline in waitUntil. Same multipart contract as /extract.
 // ---------------------------------------------------------------------------
@@ -3658,7 +3692,14 @@ scanSo.post('/enqueue', async (c) => {
   try {
     formData = await c.req.formData();
   } catch (e) {
-    return c.json({ error: 'bad_request', reason: `Invalid multipart body: ${(e as Error).message}` }, 400);
+    // Plain-language rule: the raw parser exception goes to the log, the
+    // operator sees one plain sentence naming the likely cause (a bad/partial
+    // upload) so they know to retake and retry rather than read internals.
+    console.error('[scan-so enqueue] multipart parse failed:', (e as Error).message);
+    return c.json(
+      { error: 'bad_request', reason: 'The photos could not be uploaded — please retake them and try again.' },
+      400,
+    );
   }
   const filesRes = await parseScanFiles(formData);
   if (!filesRes.ok) {
@@ -3679,6 +3720,13 @@ scanSo.post('/enqueue', async (c) => {
     ((user.user_metadata as { name?: string } | undefined)?.name ?? '').trim() || repGiven || null;
 
   const svc = serviceClient(c.env);
+
+  // Salesperson default-by-uploader: attribute the draft SO to the scanning
+  // user's OWN scm.staff row (resolved here while the request is still authed),
+  // NOT the shared SYSTEM bridge id. Falls back to user.id (system) only when
+  // the uploader has no resolvable staff row — same as before.
+  const uploaderStaffId =
+    (await resolveScanUploaderStaffId(svc, houzsUserId, houzsUser?.email)) ?? user.id;
 
   // 0) HARD REJECT on an exact re-upload (owner 2026-07-04 policy change:
   //    image-hash duplicate = refuse AT UPLOAD, nothing queued). sha256 the
@@ -3711,7 +3759,10 @@ scanSo.post('/enqueue', async (c) => {
     .insert({
       status: 'queued',
       salesperson: repGiven || null,
-      salesperson_id: user.id,
+      // The uploader's own staff id (see resolveScanUploaderStaffId) so the
+      // headless create attributes the SO to whoever scanned it. The queue
+      // consumer + reaper both replay this column as the create identity.
+      salesperson_id: uploaderStaffId,
       houzs_user_id: houzsUserId,
       image_keys: [],
       // company_id is NOT NULL since 0083; an unstamped insert 500s (prod
@@ -3723,7 +3774,13 @@ scanSo.post('/enqueue', async (c) => {
   const jobId = (jobRow as { id?: string } | null)?.id ?? null;
   if (jobErr || !jobId) {
     if (jobErr && isMissingTable(jobErr)) {
-      return c.json({ error: 'table_missing', reason: SCAN_JOBS_MISSING_MSG }, 503);
+      // Plain-language rule: the migration instruction (SCAN_JOBS_MISSING_MSG)
+      // is internal — log it, tell the operator scanning isn't set up here.
+      console.error('[scan-so enqueue]', SCAN_JOBS_MISSING_MSG);
+      return c.json(
+        { error: 'table_missing', reason: 'Scanning is not set up on the server yet. Please enter this order manually.' },
+        503,
+      );
     }
     console.error('[scan-so enqueue] job insert failed:', jobErr?.message);
     return c.json({ error: 'enqueue_failed', reason: 'Could not queue the scan. Please try again.' }, 500);
@@ -3775,7 +3832,7 @@ scanSo.post('/enqueue', async (c) => {
     const pipeline = runScanJob(c.env, {
       id: jobId,
       salesperson: repGiven,
-      salespersonId: user.id,
+      salespersonId: uploaderStaffId,
       salespersonName,
       houzsUserId,
       companyId: activeCompanyId(c) ?? null,

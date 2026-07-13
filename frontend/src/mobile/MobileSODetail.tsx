@@ -254,7 +254,21 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
      processing lock. Drafts + cancelled orders still take NO payment (owner:
      "no payments on drafts"), matching desktop hiding Add Payment off-status. */
   const paymentLocked = LOCKED.includes(rawStatus) || hasChildren;
-  const canAddPayment = ph === "submitted" && !paymentLocked;
+
+  /* No-naked-payment-edits (owner 2026-07-13) — Add / Delete / Edit must NOT
+     show in the read-only detail without the operator opting in. The rule
+     (desktop parity, SalesOrderDetail.tsx): payments are editable when the SO is
+     a DRAFT (never confirmed — always adjustable) OR the operator has entered
+     the payments Edit mode on this card. `payEditing` is that in-card toggle,
+     offered only on a submitted, non-terminal / non-downstream-locked SO (the
+     SHIPPED+/has-children lock still fully view-onlys the section, matching the
+     desktop Edit button being disabled when isLocked). The processing lock does
+     NOT gate payments (owner rule 2026-07-05), same as before. */
+  const isDraftSo = ph === "draft";
+  const [payEditing, setPayEditing] = useState(false);
+  const canOfferPayEdit = ph === "submitted" && !paymentLocked;
+  const canEditPayments = isDraftSo || (canOfferPayEdit && payEditing);
+  const canAddPayment = canEditPayments;
   const [payOpen, setPayOpen] = useState(false);
   /* Same-day EDIT (owner 2026-07-13) — the payment row being edited (null = the
      Add-Payment sheet is in create mode / closed). */
@@ -479,6 +493,19 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
             <div className="card"><div className="card-h"><span className="card-t">Payments</span>
               <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 {!!payments.length && <span className="card-sub">{payments.length}</span>}
+                {/* No-naked-edits toggle (owner 2026-07-13) — on a submitted SO the
+                    payments stay view-only until the operator taps Edit here; a
+                    DRAFT skips the toggle (always editable). Mirrors the desktop
+                    Detail's Edit-mode gate on the PaymentsTable. */}
+                {canOfferPayEdit && (
+                  <button
+                    type="button"
+                    onClick={() => setPayEditing((v) => !v)}
+                    style={{ border: "1px solid var(--line2)", background: payEditing ? "#eef1ec" : "#fff", color: "var(--mut)", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, borderRadius: 8, padding: "4px 10px", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 }}
+                  >
+                    {payEditing ? "Done" : "Edit"}
+                  </button>
+                )}
                 {canAddPayment && (
                   <button
                     type="button"
@@ -502,10 +529,11 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
                     {/* Slip present — dual-read camelCase ?? snake_case. */}
                     {((p as unknown as { slipKey?: string | null }).slipKey ?? p.slip_key) ? <SlipLink docNo={docNo} paymentId={p.id} /> : null}
                     <span className="money-row">RM {rm(p.amount_centi)}</span>
-                    {/* Same-day EDIT (owner 2026-07-13) — pencil shown only for a
-                        payment recorded today; after MYT midnight it locks. Same
-                        cancelled / edit-locked hide as the delete button. */}
-                    {ph !== "cancelled" && !editLocked && isCreatedTodayMyt((p as unknown as { createdAt?: string | null }).createdAt ?? p.created_at) && (
+                    {/* Same-day EDIT (owner 2026-07-13) — pencil requires the
+                        payments Edit mode (or a DRAFT SO) AND, for a submitted SO,
+                        that the row was recorded today (after MYT midnight it
+                        locks). A DRAFT's rows are never same-day-locked. */}
+                    {canEditPayments && (isDraftSo || isCreatedTodayMyt((p as unknown as { createdAt?: string | null }).createdAt ?? p.created_at)) && (
                       <button
                         type="button"
                         onClick={() => setEditPay(p)}
@@ -517,10 +545,10 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2f5d4f" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>
                       </button>
                     )}
-                    {/* Delete payment — parity with desktop PaymentsTable. Hidden
-                        on cancelled / edit-locked (SHIPPED+ / has children) orders,
-                        matching the desktop's locked-mode hide. */}
-                    {ph !== "cancelled" && !editLocked && (
+                    {/* Delete payment — parity with desktop PaymentsTable. Shown
+                        only in the payments Edit mode (or on a DRAFT SO); the
+                        read-only view exposes no delete control. */}
+                    {canEditPayments && (
                       <button
                         type="button"
                         onClick={() => void deletePayment(p.id)}

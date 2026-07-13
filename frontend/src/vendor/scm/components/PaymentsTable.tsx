@@ -266,6 +266,11 @@ type SavedModeProps = {
   currency?: string;
   /** When true, hides Add Payment + per-row trash/save controls. */
   locked?: boolean;
+  /** Owner 2026-07-13 (no-naked-payment-edits) — set when the parent SO is a
+   *  DRAFT. A draft's payments are never locked by the same-day rule, so the
+   *  per-row Edit (pencil) shows on EVERY persisted row (not just today's).
+   *  Independent of `locked`, which the DRAFT caller already leaves false. */
+  draftUnlocked?: boolean;
   /** Optional payment-slip column (Wei Siang 2026-06-06). When provided, a
    *  "Slip" column is rendered immediately LEFT of "Collected By", showing the
    *  order's POS-handover payment slip thumbnail (one slip per order — the same
@@ -292,6 +297,9 @@ type DraftModeProps = {
   grandTotalCenti: number;
   currency?: string;
   locked?: boolean;
+  /** Unused in DRAFT mode (no persisted rows to same-day-lock); declared so the
+   *  discriminated-union prop stays accessible without a cast. */
+  draftUnlocked?: boolean;
   /** Render the per-draft slip uploader (SO-route batching only — the SO payments
    *  endpoint requires a slip per payment; DO/SI endpoints don't accept one). */
   slipUpload?: boolean;
@@ -348,6 +356,9 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
   const currency = props.currency ?? 'MYR';
   const grandTotal = props.grandTotalCenti ?? 0;
   const locked = props.locked ?? false;
+  /* Owner 2026-07-13 — DRAFT SO: lift the per-row same-day EDIT lock so every
+     persisted payment on an unconfirmed order can still be corrected. */
+  const draftUnlocked = props.draftUnlocked ?? false;
 
   const staffQ = useStaff();
   const staff  = staffQ.data ?? [];
@@ -854,8 +865,10 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
                   {!locked && (
                     <div style={{ display: 'flex', gap: 2, justifyContent: 'flex-end', alignItems: 'center' }}>
                       {/* Same-day EDIT (owner 2026-07-13) — only for a payment
-                          recorded today; after MYT midnight it locks (no pencil). */}
-                      {isCreatedTodayMyt(p.created_at) && (
+                          recorded today; after MYT midnight it locks (no pencil).
+                          A DRAFT SO (draftUnlocked) is never same-day-locked, so
+                          every persisted row keeps its pencil while unconfirmed. */}
+                      {(draftUnlocked || isCreatedTodayMyt(p.created_at)) && (
                         <button
                           type="button"
                           disabled={editPayment.isPending}
