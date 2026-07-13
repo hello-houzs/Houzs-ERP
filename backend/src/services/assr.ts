@@ -49,7 +49,7 @@ export type Stage =
   | "under_verification"        // Stage 2 — Service Admin
   | "pending_solution"          // Stage 3 — Service Admin / Manager pick the fix
   //  (pending_inspection retired 2026-07-14 — inspection folded into
-  //   Under Verification as inspect_by + QC-issue fields; mig 0099)
+  //   Under Verification as inspect_by + QC-issue fields; mig 0105)
   | "pending_item_pickup"       // Stage 5 — SA assigns Logistic Admin
   | "pending_supplier_pickup"   // Stage 6 — SA contacts supplier
   | "pending_item_ready"        // Stage 7 — SA updates on supplier return
@@ -721,9 +721,9 @@ const PATCH_FIELDS = [
   "goods_returned_note", "supplier_service_note",
   // Mig 0073 — who performs the issue inspection: 'own' | 'supplier'.
   // Own-team inspections link into delivery planning for the visit.
-  // Lives on the Under Verification stage since mig 0099.
+  // Lives on the Under Verification stage since mig 0105.
   "inspection_by",
-  // Mig 0099 — QC-on-receipt result (pass/fail/na), shown next to
+  // Mig 0105 — QC-on-receipt result (pass/fail/na), shown next to
   // qc_receipt_date in the Verification stage panel.
   "qc_issue_result",
 ] as const;

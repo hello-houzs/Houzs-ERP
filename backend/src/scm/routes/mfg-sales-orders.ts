@@ -1800,6 +1800,87 @@ mfgSalesOrders.get('/:docNo', async (c) => {
   return c.json({ salesOrder, items, pwpCodes });
 });
 
+/* GET /:docNo/items — cutover P3 (#389): the 2990 POS (apps/pos queries.ts)
+   calls this dedicated items endpoint directly. Houzs only served items inside
+   the /:docNo detail (alongside salesOrder + pwpCodes); the bare /:docNo/items
+   GET 404'd. This mirrors the detail handler's items path EXACTLY — same
+   company scope + self-scoped-sales 404, same line_no ordering, same rule
+   re-order (sortSoLinesByGroupRank + orderSofaModuleRowsWithinBuilds), and the
+   same per-line enrichment (deliveries / delivered_qty / remaining_qty /
+   stock_state / coverage_po / coverage_eta / shipped_source_pos) — so the item
+   shape is identical to what the detail returns. Returns { items }. */
+mfgSalesOrders.get('/:docNo/items', async (c) => {
+  const sb = c.get('supabase'); const docNo = c.req.param('docNo');
+  const [h, i] = await Promise.all([
+    // Header read is company-scoped + minimal — we only need it to exist +
+    // resolve salesperson_id for the same self-scoped-sales gate the detail uses.
+    scopeToCompany(sb.from('mfg_sales_orders').select('doc_no, salesperson_id').eq('doc_no', docNo), c).maybeSingle(),
+    // Same ITEM select + line_no ordering as the detail (nulls last → pre-0165
+    // fallback to created_at, then the rule re-order below).
+    sb.from('mfg_sales_order_items').select(ITEM).eq('doc_no', docNo)
+      .order('line_no', { ascending: true, nullsFirst: false })
+      .order('created_at'),
+  ]);
+  if (h.error) return c.json({ error: 'load_failed', reason: h.error.message }, 500);
+  if (!h.data) return c.json({ error: 'not_found' }, 404);
+  /* Same tiering as the detail (lib/salesScope.ts): view-all roles pass; POS
+     sellers pass only their own; other reps are held to their subtree. An
+     out-of-scope doc_no answers 404 — indistinguishable from a missing one. */
+  {
+    const sp = (h.data as { salesperson_id?: number | string | null }).salesperson_id;
+    if (await salesDocOutOfScope(sb, c.env, c.get('houzsUser')?.id, hasHouzsPerm(c, 'scm.so.view_all'), sp)) {
+      return c.json({ error: 'not_found' }, 404);
+    }
+  }
+  // Rule-order the rows at READ — identical to the detail (mains → accessories
+  // → services, each build walked left-to-right; see the detail's note).
+  const itemRows = orderSofaModuleRowsWithinBuilds(
+    sortSoLinesByGroupRank(
+      (i.data ?? []) as unknown as Array<Record<string, unknown> & { id: string; item_code: string; qty?: number | null }>,
+      (r) => r.item_group as string | null | undefined,
+    ),
+  );
+  // Coverage from the SAME MRP allocation engine the detail + MRP page use.
+  // Best-effort: a failed allocation just drops lines to Pending.
+  let coverageMap = new Map<string, { source: string; po: string | null; eta: string | null }>();
+  try {
+    const mrpResult = await computeMrp(sb, { catFilter: null, whFilter: null, includeUndated: true });
+    coverageMap = mrpLineCoverage(mrpResult);
+  } catch {
+    coverageMap = new Map();
+  }
+  const [remainingMap, deliveriesMap, shippedPosMap] = await Promise.all([
+    soDeliverableRemaining(sb, [docNo]),
+    soLineDeliveries(sb, itemRows.map((it) => it.id)),
+    soLineShippedSourcePos(sb, itemRows.map((it) => it.id)),
+  ]);
+  const items = itemRows.map((it) => {
+    const rem = remainingMap.get(it.id);
+    const deliveries = deliveriesMap.get(it.id) ?? [];
+    const deliveredQty = deliveries.reduce((s, d) => s + d.qty, 0);
+    const cov = coverageMap.get(it.id);
+    const covered = cov?.source === 'po';
+    const shippedPos = shippedPosMap.get(it.id) ?? [];
+    // SOFA stock-coverage trusts the batch-aware stock_status; non-sofa trusts
+    // the MRP SKU-pool source (identical to the detail's rule).
+    const isSofaLine = String((it as { item_group?: string | null }).item_group ?? '').toUpperCase().includes('SOFA');
+    const stockState = isSofaLine
+      ? (it.stock_status === 'READY' ? 'stock' : (cov?.source === 'po' ? 'po' : 'shortage'))
+      : (cov?.source ?? null);
+    return {
+      ...it,
+      deliveries,
+      delivered_qty: rem?.delivered ?? deliveredQty,
+      remaining_qty: rem?.remaining ?? Number(it.qty ?? 0),
+      stock_state: stockState,
+      coverage_po: covered ? cov?.po ?? null : null,
+      coverage_eta: covered ? cov?.eta ?? null : null,
+      shipped_source_pos: shippedPos,
+    };
+  });
+  return c.json({ items });
+});
+
 /* Customer credit balance lookup — used by the New Sales Order form to flash
    "Customer has RM X credit available" once the operator picks the customer.
    Returns 0 (not 404) when there's no history yet. */
@@ -8081,14 +8162,23 @@ mfgSalesOrders.patch('/:docNo/payments/:id', async (c) => {
   };
   if (before.so_doc_no !== docNo) return c.json({ error: 'payment_doc_mismatch' }, 400);
 
-  /* Same-day lock — compare the row's created_at (UTC) to now, both as MYT
-     calendar days via the shared helper (never raw new Date()). Different day →
-     locked. */
+  /* Same-day lock — a payment recorded TODAY (MYT) can be corrected; after
+     midnight the day's cash-up is settled and it LOCKS. EXEMPT DRAFT SOs: a
+     draft isn't confirmed/settled yet (e.g. an OCR-scanned draft whose payment
+     was mis-read), so its payments must stay freely editable — mirrors the
+     frontend's draftUnlocked (2026-07-13), which was never matched here. */
   if (mytDateOf(before.created_at) !== todayMyt()) {
-    return c.json({
-      error: 'payment_edit_locked',
-      reason: 'This payment can only be edited on the day it was recorded.',
-    }, 409);
+    const { data: soRow } = await sb
+      .from('mfg_sales_orders')
+      .select('status')
+      .eq('doc_no', docNo)
+      .maybeSingle();
+    if ((soRow?.status as string | undefined) !== 'DRAFT') {
+      return c.json({
+        error: 'payment_edit_locked',
+        reason: 'This payment can only be edited on the day it was recorded.',
+      }, 409);
+    }
   }
 
   let body: unknown;

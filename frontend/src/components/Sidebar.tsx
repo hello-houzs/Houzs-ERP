@@ -53,6 +53,7 @@ import {
 import { cn } from "../lib/utils";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useAuth } from "../auth/AuthContext";
+import { isSalesStaff, isSalesNonDirector } from "../auth/salesAccess";
 import { CompanyMark } from "./CompanyMark";
 import { PresencePanel } from "./PresencePanel";
 import { GlobalSearchTrigger } from "./GlobalSearch";
@@ -111,6 +112,16 @@ export interface NavTab {
    *  (`user.project_finance_viewer`). ANDed with any `pageAccess` gate —
    *  used to hide the Projects "Finances" sub-page from sales staff. */
   requireFinanceViewer?: boolean;
+  /** Sales-access model (code-keyed off org fields — auth/salesAccess.ts):
+   *  hide this entry from NON-director Sales-department users. Directors and
+   *  non-sales staff are unaffected. Used to remove Delivery Returns from the
+   *  Sales cohort. */
+  hideForSalesNonDirector?: boolean;
+  /** Sales-access model: ADDITIVELY show this entry to Sales-department users
+   *  even when they lack the usual `perm` / `anyPerm` / `pageAccess` gate —
+   *  keyed off department, NOT the permission matrix. Used so "My Cases"
+   *  appears for Sales staff without granting them `service_cases.read`. */
+  showForSales?: boolean;
   /** Optional sub-entries. When present, this tab renders as an
    *  expandable group header instead of a click target. */
   children?: NavTab[];
@@ -162,6 +173,11 @@ export const NAV_TABS: NavTab[] = [
     groupId: "service",
     to: "/assr?view=hub",
     anyPerm: ["service_cases.read"],
+    // Sales-access model: Sales staff see this group (for My Cases) even
+    // without service_cases.read. The child gates below still hide the
+    // permission-only sub-tabs (Cases / Metrics / Maintenance) from them, so
+    // only the sales-visible My Cases leaf survives.
+    showForSales: true,
     children: [
       {
         to: "/assr?view=cases",
@@ -196,6 +212,8 @@ export const NAV_TABS: NavTab[] = [
         label: "My Cases",
         icon: ClipboardCheck,
         perm: "service_cases.read",
+        // Sales staff get My Cases without the service_cases.read permission.
+        showForSales: true,
       },
     ],
   },
@@ -291,7 +309,7 @@ export const NAV_TABS: NavTab[] = [
           { to: "/scm/amendments", label: "Amendments", icon: History, anyPerm: ["*", "scm.access", "scm.amendment.create", "scm.amendment.supplier_confirm", "scm.amendment.approve_so", "scm.amendment.approve_po"], anyAccess: ["scm.sales.orders"] },
           { to: "/scm/delivery-orders", label: "Delivery Orders", icon: Send, anyPerm: ["*", "scm.access"], anyAccess: ["scm.sales.delivery"] },
           { to: "/scm/sales-invoices", label: "Sales Invoices", icon: FileText, anyPerm: ["*", "scm.access"], anyAccess: ["scm.sales.invoices"] },
-          { to: "/scm/delivery-returns", label: "Delivery Returns", icon: RotateCcw, anyPerm: ["*", "scm.access"], anyAccess: ["scm.sales.returns"] },
+          { to: "/scm/delivery-returns", label: "Delivery Returns", icon: RotateCcw, anyPerm: ["*", "scm.access"], anyAccess: ["scm.sales.returns"], hideForSalesNonDirector: true },
         ],
       },
       {
@@ -529,32 +547,43 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
   // richer replacement is available). Recursive — a group with no
   // visible children is itself hidden.
   function filterTab(t: NavTab): NavTab | null {
-    if (t.perm && !can(t.perm)) return null;
-    // `anyPerm` + `anyAccess` are ORed: when both are present the tab shows
-    // if EITHER a listed permission OR a listed page-access key passes. This
-    // keeps the SCM nav ADDITIVE — `scm.access`/`*` still grant everything,
-    // and a per-position SCM page-access grant ALSO unlocks its area.
-    if (t.anyPerm || t.anyAccess) {
-      // For users with an explicit SCM L2 config, `scm.access` no longer
-      // auto-shows every SCM nav item — visibility falls to the granular
-      // page_access (anyAccess), mirroring the backend area-guard. `*` still
-      // shows everything; scm.access-only users (no L2) are unaffected.
-      const navPerms =
-        user?.scm_l2_configured && t.anyPerm
-          ? t.anyPerm.filter((p) => p !== "scm.access")
-          : t.anyPerm;
-      const permOk = navPerms ? navPerms.some((p) => can(p)) : false;
-      const accessOk = t.anyAccess
-        ? t.anyAccess.some((k) => pageAccess(k) !== "none")
-        : false;
-      if (!permOk && !accessOk) return null;
+    // Sales-access model HIDE gate — cut entirely for non-director Sales users
+    // (checked first so it wins over any show-gate below). Directors and
+    // non-sales staff pass through unchanged.
+    if (t.hideForSalesNonDirector && isSalesNonDirector(user)) return null;
+    // Sales-access model SHOW bypass — Sales staff see `showForSales` entries
+    // even without the usual permission / page-access gate (keyed off the org
+    // department, NOT the config matrix). HIDE gates (above + hidePerm /
+    // requireFinanceViewer below) still apply.
+    const salesBypass = !!t.showForSales && isSalesStaff(user);
+    if (!salesBypass) {
+      if (t.perm && !can(t.perm)) return null;
+      // `anyPerm` + `anyAccess` are ORed: when both are present the tab shows
+      // if EITHER a listed permission OR a listed page-access key passes. This
+      // keeps the SCM nav ADDITIVE — `scm.access`/`*` still grant everything,
+      // and a per-position SCM page-access grant ALSO unlocks its area.
+      if (t.anyPerm || t.anyAccess) {
+        // For users with an explicit SCM L2 config, `scm.access` no longer
+        // auto-shows every SCM nav item — visibility falls to the granular
+        // page_access (anyAccess), mirroring the backend area-guard. `*` still
+        // shows everything; scm.access-only users (no L2) are unaffected.
+        const navPerms =
+          user?.scm_l2_configured && t.anyPerm
+            ? t.anyPerm.filter((p) => p !== "scm.access")
+            : t.anyPerm;
+        const permOk = navPerms ? navPerms.some((p) => can(p)) : false;
+        const accessOk = t.anyAccess
+          ? t.anyAccess.some((k) => pageAccess(k) !== "none")
+          : false;
+        if (!permOk && !accessOk) return null;
+      }
+      // Page-access (mig 073) — `pageAccess` requires ≥ partial; the
+      // -Full variant requires "full". Wildcard short-circuits to full
+      // inside `pageAccess(...)`.
+      if (t.pageAccess && pageAccess(t.pageAccess) === "none") return null;
+      if (t.pageAccessFull && pageAccess(t.pageAccessFull) !== "full") return null;
     }
     if (t.hidePerm && can(t.hidePerm)) return null;
-    // Page-access (mig 073) — `pageAccess` requires ≥ partial; the
-    // -Full variant requires "full". Wildcard short-circuits to full
-    // inside `pageAccess(...)`.
-    if (t.pageAccess && pageAccess(t.pageAccess) === "none") return null;
-    if (t.pageAccessFull && pageAccess(t.pageAccessFull) !== "full") return null;
     if (t.requireFinanceViewer && !user?.project_finance_viewer) return null;
     if (t.children) {
       const kids = t.children

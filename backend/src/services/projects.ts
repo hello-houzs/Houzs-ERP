@@ -608,6 +608,7 @@ export async function getProjectDetail(env: Env, id: number, companyId?: number)
             et.name  as event_type_name,
             u1.name  as created_by_name,
             pic.name as pic_name,
+            pic.phone as pic_phone,
             pic.email as pic_email,
             ud1.name as setup_driver_name,
             ud2.name as dismantle_driver_name,
@@ -923,6 +924,7 @@ export async function getProjectDetail(env: Env, id: number, companyId?: number)
     `SELECT a.sales_rep_id, a.created_at,
             r.code      as rep_code,
             r.name      as rep_name,
+            r.phone     as rep_phone,
             r.user_id   as rep_user_id,
             u.name      as user_name
        FROM project_sales_attendees a

@@ -11,6 +11,7 @@ import { cn } from "../lib/utils";
 import { api } from "../api/client";
 import { useQuery } from "../hooks/useQuery";
 import { queryClient } from "../lib/queryClient";
+import { clearAll } from "../api/cache";
 import {
   getActiveCompanySnapshot,
   setActiveCompanyId,
@@ -182,7 +183,9 @@ function CompanySwitcher() {
     setOpen(false);
     if (id === activeId) return;
     setActiveCompanyId(id);
-    // Refetch the whole app against the newly-active company.
+    // Clear the path-only SWR store FIRST (else it serves the previous company's
+    // cached payload for up to TTL_MS), then refetch the whole app react-query side.
+    clearAll();
     void queryClient.invalidateQueries();
   }
 

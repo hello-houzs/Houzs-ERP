@@ -24,7 +24,7 @@ import { issueStaffToken, issueSalesToken } from "../services/caseTracking";
 import { sendEmail, publicUrl } from "../services/email";
 import { resolveCompanyCode } from "../services/branding";
 import { AutoCountClient } from "../services/autocount";
-import { requirePermission, requireAnyPermission } from "../middleware/auth";
+import { requirePermission } from "../middleware/auth";
 import {
   activeCompanyId,
   allowedCompanyIds,
@@ -32,8 +32,49 @@ import {
 } from "../scm/lib/companyScope";
 import { hasPermission } from "../services/permissions";
 import { subtreeUserIds } from "../services/orgScope";
+import { isSalesUser, isDirectorUser } from "../services/pmsAccess";
+import type { AuthUser } from "../services/auth";
+import type { MiddlewareHandler } from "hono";
 
 const app = new Hono<{ Bindings: Env }>();
+
+// ── Sales access to Service Cases (owner rule 8, 2026-07) ─────
+// Service Cases + My Case are granted to Sales WITHOUT relying on the
+// configurable permission matrix: a Sales-department / Sales-position user may
+// VIEW their own cases, CREATE cases, and see the status of cases they handled.
+// Their DATA stays scoped to self + downline (assrVisibleUserIds → rule 9);
+// this gate only decides who gets THROUGH the route, not which rows they see.
+//
+// `canAccessServiceCases` passes when the caller holds ANY of the given
+// permissions (the legacy path — unchanged for existing ASSR staff), OR is
+// Sales staff, OR is a director (Owner/IT `*`, Super Admin, Sales Director,
+// Finance Manager). It is applied ONLY to the read + create endpoints Sales
+// needs — NOT to write / manage / approve / delete, which keep their original
+// `requirePermission` gate so this never widens mutation access.
+function canAccessServiceCases(
+  user: AuthUser | null | undefined,
+  perms: string[],
+): boolean {
+  if (!user) return false;
+  const granted = user.permissions_set ?? user.permissions ?? [];
+  if (perms.some((p) => hasPermission(granted, p))) return true;
+  return isSalesUser(user) || isDirectorUser(user);
+}
+
+/** Route gate that admits the service_cases permission holder OR Sales / director
+ *  (see canAccessServiceCases). `perms` defaults to the read key. */
+function requireServiceCaseAccess(
+  perms: string[] = ["service_cases.read"],
+): MiddlewareHandler<{ Bindings: Env }> {
+  return async (c, next) => {
+    const user = c.get("user");
+    if (!user) return c.json({ error: "Unauthorized" }, 401);
+    if (!canAccessServiceCases(user, perms)) {
+      return c.json({ error: "Forbidden: service cases" }, 403);
+    }
+    await next();
+  };
+}
 
 // ── Multi-company (CROSS-COMPANY module) ──────────────────────
 // Service Cases are ONE shared queue across companies: list/stat reads widen
@@ -54,11 +95,17 @@ async function assrVisibleUserIds(c: {
   get(key: "user"): unknown;
   env: Env;
 }): Promise<number[] | undefined> {
-  const user = c.get("user") as
-    | { id?: number; permissions?: string[]; permissions_set?: Set<string> }
-    | undefined;
+  const user = c.get("user") as AuthUser | undefined;
   const granted = user?.permissions_set ?? user?.permissions ?? [];
-  if (hasPermission(granted, "*") || hasPermission(granted, "service_cases.manage")) {
+  // Full-view tier: `*` / service_cases.manage (existing admin key), OR a
+  // director by STABLE ORG FIELD (Owner/IT `*`, Super Admin, Sales Director,
+  // Finance Manager) — owner rule "Director sees ALL". Additive: this only ever
+  // GRANTS the unrestricted tier, never removes an existing pass condition.
+  if (
+    hasPermission(granted, "*") ||
+    hasPermission(granted, "service_cases.manage") ||
+    isDirectorUser(user)
+  ) {
     return undefined; // unrestricted
   }
   if (user?.id == null) return []; // fail closed, never open
@@ -148,7 +195,7 @@ function lookupTable(kind: string): string | null {
   return (LOOKUP_TABLES as Record<string, string>)[kind] ?? null;
 }
 
-app.get("/lookups/:kind", requirePermission("service_cases.read"), async (c) => {
+app.get("/lookups/:kind", requireServiceCaseAccess(), async (c) => {
   const kind = c.req.param("kind");
   const table = lookupTable(kind);
   if (!table) return c.json({ error: "Unknown lookup kind" }, 400);
@@ -522,7 +569,7 @@ app.get("/summary", requirePermission("service_cases.read"), async (c) => {
 
 // ── List ──────────────────────────────────────────────────────
 
-app.get("/", requirePermission("service_cases.read"), async (c) => {
+app.get("/", requireServiceCaseAccess(), async (c) => {
   const assignedToParam = c.req.query("assigned_to");
   const result = await listAssrCases(c.env, {
     visible_to_user_ids: await assrVisibleUserIds(c),
@@ -709,7 +756,7 @@ app.post("/bulk/assign", requirePermission("service_cases.manage"), async (c) =>
 // Honors the same filters as the list endpoint so "what you see is
 // what you export" matches the table.
 
-app.get("/export.csv", requirePermission("service_cases.read"), async (c) => {
+app.get("/export.csv", requireServiceCaseAccess(), async (c) => {
   const rows = await exportAssrCases(c.env, {
     visible_to_user_ids: await assrVisibleUserIds(c),
     allowed_company_ids: allowedCompanyIds(c),
@@ -760,7 +807,7 @@ app.get("/export.csv", requirePermission("service_cases.read"), async (c) => {
 
 // ── SO item lookup ────────────────────────────────────────────
 
-app.get("/lookup-items/:docNo", requirePermission("service_cases.read"), async (c) => {
+app.get("/lookup-items/:docNo", requireServiceCaseAccess(), async (c) => {
   const docNo = c.req.param("docNo");
   const items = await lookupSOItems(c.env, docNo);
   return c.json({ items });
@@ -771,7 +818,7 @@ app.get("/lookup-items/:docNo", requirePermission("service_cases.read"), async (
 // reference number, or customer name (case-insensitive). Reads
 // the local mirror so the create form can suggest matches
 // without hitting AutoCount on every keystroke.
-app.get("/search-so", requirePermission("service_cases.read"), async (c) => {
+app.get("/search-so", requireServiceCaseAccess(), async (c) => {
   const q = (c.req.query("q") ?? "").trim();
   if (q.length < 2) return c.json({ results: [] });
   const pattern = `%${q.toLowerCase()}%`;
@@ -794,7 +841,7 @@ app.get("/search-so", requirePermission("service_cases.read"), async (c) => {
 // assr_cases.sales_agent. sales_agent is a free text field
 // mirrored from AutoCount (mig 010), typically the rep's name;
 // this endpoint bridges it to our user account.
-app.get("/my-cases", requirePermission("service_cases.read"), async (c) => {
+app.get("/my-cases", requireServiceCaseAccess(), async (c) => {
   const userId = (c as any).get?.("userId") ?? 0;
   if (!userId) return c.json({ cases: [] });
   const userRow = await c.env.DB.prepare(
@@ -824,7 +871,7 @@ app.get("/my-cases", requirePermission("service_cases.read"), async (c) => {
 // sales_agent). Lands in assr_activity with source_channel=
 // 'sales_portal' so the timeline distinguishes it from staff /
 // customer / supplier notes.
-app.post("/:id{[0-9]+}/sales-comment", requirePermission("service_cases.read"), async (c) => {
+app.post("/:id{[0-9]+}/sales-comment", requireServiceCaseAccess(), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const userId = (c as any).get?.("userId") ?? 0;
@@ -846,7 +893,7 @@ app.post("/:id{[0-9]+}/sales-comment", requirePermission("service_cases.read"), 
 // dispatch or reassign but they can flag that the customer is on
 // their case, so ops treats the row as fresh. Rate-limited to one
 // nudge per hour per case so it stays useful (spam ≠ signal).
-app.post("/:id{[0-9]+}/sales-nudge", requirePermission("service_cases.read"), async (c) => {
+app.post("/:id{[0-9]+}/sales-nudge", requireServiceCaseAccess(), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const userId = (c as any).get?.("userId") ?? 0;
@@ -883,7 +930,7 @@ app.post("/:id{[0-9]+}/sales-nudge", requirePermission("service_cases.read"), as
 // "metrics" matches the param. The `{[0-9]+}` constraint scopes the
 // param to digits so /metrics + any future literal route under
 // /api/assr falls through to its dedicated handler.
-app.get("/:id{[0-9]+}", requirePermission("service_cases.read"), async (c) => {
+app.get("/:id{[0-9]+}", requireServiceCaseAccess(), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const detail = await getAssrDetail(c.env, id);
@@ -974,7 +1021,11 @@ app.get("/:id/customer-history", requirePermission("service_cases.read"), async 
 
 app.post(
   "/",
-  requireAnyPermission([
+  // Owner rule 8: Sales may CREATE cases too. Widen the existing create/write/
+  // manage gate to also admit Sales / director (canAccessServiceCases). The new
+  // case is stamped created_by = caller, so the creator owns it and the
+  // self+downline data scope (rule 9) lets them see it afterwards.
+  requireServiceCaseAccess([
     "service_cases.create",
     "service_cases.write",
     "service_cases.manage",

@@ -22,7 +22,7 @@ import "./mobile.css";
 // detail is TABBED — Overview / Stage / Info / Timeline. "Stage" shows
 // the 8-stage workflow grouped into Intake / Repair / Return phases;
 // tapping a stage chip jumps to Info with that stage's accordion open.
-// Inspection is no longer a stage (mig 0099): Inspect by + the QC-issue
+// Inspection is no longer a stage (mig 0105): Inspect by + the QC-issue
 // fields live inside Under Verification.
 
 type Any = Record<string, any>;
@@ -48,7 +48,7 @@ const LINE_SOFT = "rgba(34,31,32,0.10)";
 const DIM = "#e3e6e0";
 const FIELD_BG = "#f4f6f3";
 
-// Ordered stage pipeline (backend ALL_STAGES) — 8 stages since mig 0099
+// Ordered stage pipeline (backend ALL_STAGES) — 8 stages since mig 0105
 // retired Pending Inspection. `label` is the chip-short form, `long` the
 // card/badge form; `owner` mirrors ServiceProgressTracker's owner map.
 const STAGES: { key: string; label: string; long: string; owner: string }[] = [
@@ -93,7 +93,7 @@ const VERIFICATION_OPTIONS = [
   { value: "needs_more_info", label: "Needs more info" },
   { value: "rejected", label: "Rejected" },
 ] as const;
-// QC result values shared by qc_issue_result (on receipt, mig 0099) and
+// QC result values shared by qc_issue_result (on receipt, mig 0105) and
 // inspection_result (after repair, v3.1).
 const QC_RESULT_OPTIONS = [
   { value: "pass", label: "Pass" },
@@ -804,7 +804,7 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
               busy={busy}
               onSave={(v) => patchCase({ verified_root_cause: v || null }, "Couldn't save verification")}
             />
-            {/* QC issue inspection — on receipt (mig 0099: folded in from the
+            {/* QC issue inspection — on receipt (mig 0105: folded in from the
                 retired Pending Inspection stage). */}
             <div className="fld-l" style={{ marginTop: 10 }}>QC issue inspection result</div>
             <div style={{ display: "flex", gap: 7, margin: "6px 0 4px" }}>

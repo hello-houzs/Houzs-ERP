@@ -179,7 +179,7 @@ export function customerStatusFor(stage: string | null | undefined): {
     case "pending_review":            return { label: "Pending Review", color: "grey" };
     case "under_verification":        return { label: "Under Verification", color: "blue" };
     case "pending_solution":          return { label: "Pending Solution", color: "amber" };
-    // Retired stage (mig 0099) — legacy alias for anything mid-flight.
+    // Retired stage (mig 0105) — legacy alias for anything mid-flight.
     case "pending_inspection":        return { label: "Under Verification", color: "blue" };
     case "pending_item_pickup":       return { label: "Pending Item Pickup", color: "violet" };
     case "pending_supplier_pickup":   return { label: "Pending Supplier Pickup", color: "violet" };

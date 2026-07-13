@@ -85,7 +85,7 @@ import type {
 
 type StageFilter = "ALL" | AssrStage;
 
-// v3.1 workflow — 8 stages since mig 0099 retired Pending Inspection
+// v3.1 workflow — 8 stages since mig 0105 retired Pending Inspection
 // (inspection lives inside Verification now). Labels match the
 // canonical proposal vocabulary; values are the SQL enum.
 const STAGE_OPTIONS: { value: StageFilter; label: string }[] = [
@@ -5168,7 +5168,7 @@ function VerificationCard({
   const inner = (
     <>
       {/* Folded in from the retired Pending Inspection stage (mig
-          0099) — who inspects the reported issue. Own team routes the
+          0105) — who inspects the reported issue. Own team routes the
           visit into Delivery Planning via customer_pickup_at; supplier
           handles it on their side via the supplier portal. */}
       <div>
@@ -5246,7 +5246,7 @@ function VerificationCard({
         value={c.qc_receipt_date}
         onSave={(v) => patch({ qc_receipt_date: v || null })}
       />
-      {/* Mig 0099 — result of the QC-on-receipt inspection, distinct
+      {/* Mig 0105 — result of the QC-on-receipt inspection, distinct
           from the post-repair QC in Item Ready (inspection_result). */}
       <div>
         <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">

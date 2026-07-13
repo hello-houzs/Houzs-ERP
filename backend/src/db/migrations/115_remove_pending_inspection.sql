@@ -1,5 +1,5 @@
 -- 115_remove_pending_inspection.sql
--- D1 test mirror of migrations-pg/0099 — Pending Inspection retired,
+-- D1 test mirror of migrations-pg/0105 — Pending Inspection retired,
 -- inspection folded into Under Verification (inspection_by +
 -- qc_receipt_date + new qc_issue_result). The assr_cases stage CHECK
 -- (mig 074) still lists pending_inspection; that superset is harmless

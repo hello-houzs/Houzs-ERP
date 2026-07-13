@@ -22,7 +22,7 @@ import { Check, Clock } from "lucide-react";
 import type { AssrStage, AssrStageHistoryRow } from "../types";
 import { cn, formatTimestamp } from "../lib/utils";
 
-// ── Canonical 8-stage order + display labels (mirrors backend mig 074 + 0099) ──
+// ── Canonical 8-stage order + display labels (mirrors backend mig 074 + 0105) ──
 
 const STAGES: { value: AssrStage; label: string; short: string; owner: string }[] = [
   { value: "pending_review",           label: "Review",                   short: "Review",         owner: "Service Admin" },
