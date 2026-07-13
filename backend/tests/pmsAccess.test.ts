@@ -1,5 +1,9 @@
 import { describe, expect, test } from "vitest";
-import { getPmsAccess } from "../src/services/pmsAccess";
+import {
+  getPmsAccess,
+  isFinanceViewer,
+  financeHiddenForUser,
+} from "../src/services/pmsAccess";
 import type { AuthUser } from "../src/services/auth";
 
 // Pure-function tests for the project-detail (PMS) section gating — the
@@ -28,12 +32,42 @@ function user(over: { id?: number; position_name?: string | null; perms?: string
 }
 
 describe("pmsAccess — project-detail section gating", () => {
-  test("Sales Director sees financials + rental + delete", () => {
+  test("Sales Director sees financials + rental + payment + sensitive + delete", () => {
     const a = getPmsAccess(user({ position_name: "Sales Director" }), { pic_id: 99 });
     expect(a.role).toBe("DIRECTOR");
     expect(a.canFinancial).toBe(true);
     expect(a.canRental).toBe(true);
+    expect(a.canPayment).toBe(true);
+    expect(a.canSensitive).toBe(true);
+    expect(a.canEdit).toBe(true);
     expect(a.sections).toContain("ACTIONS");
+  });
+
+  test("Sales PIC is READ-ONLY on the project (no broad EDIT) and no payment/sensitive", () => {
+    const a = getPmsAccess(user({ id: 7, position_name: "Sales Executive" }), { pic_id: 7 });
+    expect(a.role).toBe("PIC");
+    expect(a.canEdit).toBe(false);
+    expect(a.canPayment).toBe(false);
+    expect(a.canSensitive).toBe(false);
+    expect(a.sections).not.toContain("EDIT");
+    expect(a.sections).not.toContain("PAYMENT");
+    expect(a.sections).not.toContain("WF_SENSITIVE");
+    // Still opens + views the project.
+    expect(a.canOpen).toBe(true);
+    expect(a.sections).toContain("SETUP_DISMANTLE");
+  });
+
+  test("isFinanceViewer / financeHiddenForUser gate money for non-directors only", () => {
+    const director = user({ position_name: "Sales Director" });
+    const salesPic = user({ id: 7, position_name: "Sales Executive" });
+    const unmigrated = { ...user({ position_name: "Sales Executive" }), position_id: null } as AuthUser;
+    expect(isFinanceViewer(director)).toBe(true);
+    expect(isFinanceViewer(salesPic)).toBe(false);
+    // Director never hidden; sales hidden; un-migrated (no position) keeps legacy access.
+    expect(financeHiddenForUser(director)).toBe(false);
+    expect(financeHiddenForUser(salesPic)).toBe(true);
+    expect(financeHiddenForUser(unmigrated)).toBe(false);
+    expect(financeHiddenForUser(null)).toBe(false);
   });
 
   test("Finance Manager is also a director (sees money)", () => {

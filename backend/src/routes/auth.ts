@@ -11,6 +11,7 @@ import {
   isoIn,
 } from "../services/auth";
 import { bustUserSessions } from "../services/sessionCache";
+import { isFinanceViewer } from "../services/pmsAccess";
 import { sendEmail, publicUrl, resetEmailHtml, inviteEmailHtml } from "../services/email";
 import { validatePasswordStrength } from "../services/passwordStrength";
 import { verifyTotp, consumeBackupCode } from "../services/totp";
@@ -513,7 +514,11 @@ app.get("/me", async (c) => {
   // Cheap opportunistic prune — keeps the sessions table small.
   await pruneExpiredSessions(c.env);
 
-  return c.json({ user });
+  // project_finance_viewer: single source of truth (pmsAccess) surfaced to the
+  // FE so the Projects "Finances" nav item + view (not tied to one project)
+  // hide for every non-director sales user. Detail-level sections use the
+  // per-project _access.pms flags instead.
+  return c.json({ user: { ...user, project_finance_viewer: isFinanceViewer(user) } });
 });
 
 /**

@@ -179,7 +179,7 @@ type ProjectDetail = {
   attachments?: ProjectAttachment[];
   _access?: {
     level?: string;
-    pms?: { canFinancial?: boolean };
+    pms?: { canFinancial?: boolean; canEdit?: boolean };
   };
 };
 
@@ -629,11 +629,20 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
 
   const p = data?.project;
   const archived = !!p?.archived_at;
+  // PMS role refinement (sales-department visibility). When present it decides
+  // finance/edit visibility; when absent (older cached response) fall back to
+  // the page-access gate (finance) / canWrite (edit).
+  const pms = data?._access?.pms;
   // Show finance only when the user has the page-access AND the backend
   // actually returned the finance block (it strips it server-side for a
   // role whose PMS position lacks FINANCIAL). Gating follows the real
   // backend permission — no in-screen view-as switcher (removed to match v4).
-  const financeVisible = canSeeFinance && !!data?.finance;
+  const financeVisible =
+    (pms ? !!pms.canFinancial : canSeeFinance) && !!data?.finance;
+  // A sales PIC (canEdit=false) sees Team as read-only, matching the desktop
+  // ProjectTeamSection/ProjectSpecStrip gate. Falls back to canWrite when the
+  // backend omitted pms.
+  const canEditTeam = canWrite && (pms ? pms.canEdit !== false : true);
 
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
@@ -764,7 +773,7 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                 <svg className="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
               </summary>
               <div className="pbody">
-                {canWrite && !archived ? (
+                {canEditTeam && !archived ? (
                   <label className="fld" style={{ marginBottom: 10 }}>
                     <span className="fld-l">PIC</span>
                     <select
@@ -791,7 +800,7 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                   projectId={id}
                   attendees={data.sales_attendees ?? []}
                   options={salesReps}
-                  canWrite={canWrite && !archived}
+                  canWrite={canEditTeam && !archived}
                   busy={busy}
                   setBusy={setBusy}
                   notify={notify}

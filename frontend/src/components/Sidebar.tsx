@@ -106,6 +106,10 @@ export interface NavTab {
   /** Same as `pageAccess` but requires `full` access — for admin-only
    *  tabs (e.g. Project Maintenance). */
   pageAccessFull?: string;
+  /** Additionally require the DIRECTOR-level finance-viewer flag
+   *  (`user.project_finance_viewer`). ANDed with any `pageAccess` gate —
+   *  used to hide the Projects "Finances" sub-page from sales staff. */
+  requireFinanceViewer?: boolean;
   /** Optional sub-entries. When present, this tab renders as an
    *  expandable group header instead of a click target. */
   children?: NavTab[];
@@ -226,6 +230,7 @@ export const NAV_TABS: NavTab[] = [
         label: "Finances",
         icon: DollarSign,
         pageAccess: "projects.finances",
+        requireFinanceViewer: true,
       },
       {
         to: "/projects?view=maintenance",
@@ -553,6 +558,7 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
     // inside `pageAccess(...)`.
     if (t.pageAccess && pageAccess(t.pageAccess) === "none") return null;
     if (t.pageAccessFull && pageAccess(t.pageAccessFull) !== "full") return null;
+    if (t.requireFinanceViewer && !user?.project_finance_viewer) return null;
     if (t.children) {
       const kids = t.children
         .map(filterTab)

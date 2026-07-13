@@ -457,6 +457,10 @@ export interface AuthUser {
    *  nav then requires the specific area key (not the bare scm.access). Optional
    *  — older backends omit it, so consumers treat undefined as "not configured". */
   scm_l2_configured?: boolean;
+  /** True ONLY for DIRECTOR-level users (Super Admin, Sales Director,
+   *  Finance Manager, owner `*`). Gates the Projects "Finances" sub-page
+   *  (nav + route). Older backends omit it → treated as false. */
+  project_finance_viewer?: boolean;
 }
 
 export interface TeamMember {
