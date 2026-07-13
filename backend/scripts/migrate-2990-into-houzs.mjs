@@ -112,7 +112,7 @@ async function main() {
     if (APPLY) {
       const cols = Object.keys(shaped[0]);
       for (let i = 0; i < shaped.length; i += 500) {
-        await dst`INSERT INTO scm.${dst(table)} ${dst(shaped.slice(i, i + 500), cols)} ON CONFLICT (id) DO NOTHING`;
+        await dst`INSERT INTO scm.${dst(table)} ${dst(shaped.slice(i, i + 500), cols)} ON CONFLICT DO NOTHING`;
       }
       const got = await dst`SELECT count(*)::int AS n FROM scm.${dst(table)} WHERE company_id=${cid}`;
       totalImported += Number(got[0].n);
