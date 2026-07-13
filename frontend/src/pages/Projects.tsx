@@ -8419,8 +8419,11 @@ function PhaseCrewEditor({
     setPc(next);
     patch({ [field]: serializePhaseCrew(next) });
   }
+  // Always show at least one lorry card so an empty project isn't blank —
+  // the card is only persisted once the user actually fills something in.
+  const lorries = pc.lorryCrew.length ? pc.lorryCrew : [{ plate: "", drivers: [], helpers: [] }];
   const setLorrySlot = (li: number, kind: "drivers" | "helpers", si: number, s: CrewSlot) => {
-    const arr = pc.lorryCrew.map((l, i) => {
+    const arr = lorries.map((l, i) => {
       if (i !== li) return l;
       const slots = [...l[kind]];
       while (slots.length <= si) slots.push({ name: "", phone: "" });
@@ -8430,16 +8433,16 @@ function PhaseCrewEditor({
     save({ ...pc, lorryCrew: arr });
   };
   const updateLorry = (li: number, p: Partial<LorryCrew>) =>
-    save({ ...pc, lorryCrew: pc.lorryCrew.map((l, i) => (i === li ? { ...l, ...p } : l)) });
-  const addLorry = () => save({ ...pc, lorryCrew: [...pc.lorryCrew, { plate: "", drivers: [], helpers: [] }] });
-  const removeLorry = (li: number) => save({ ...pc, lorryCrew: pc.lorryCrew.filter((_, i) => i !== li) });
+    save({ ...pc, lorryCrew: lorries.map((l, i) => (i === li ? { ...l, ...p } : l)) });
+  const addLorry = () => save({ ...pc, lorryCrew: [...lorries, { plate: "", drivers: [], helpers: [] }] });
+  const removeLorry = (li: number) => save({ ...pc, lorryCrew: lorries.filter((_, i) => i !== li) });
   return (
     <div className="mt-3 space-y-2">
       {emptyHint && <div className="text-[9px] italic text-ink-muted">{emptyHint}</div>}
       {headerExtra}
       <div className="text-[10px] font-semibold uppercase tracking-wider text-ink-secondary">{title} — crew per lorry</div>
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-        {pc.lorryCrew.map((lorry, li) => (
+        {lorries.map((lorry, li) => (
           <div key={li} className="space-y-1 rounded-lg border border-border bg-bg/30 p-2.5">
             <div className="flex items-center gap-2">
               <Truck size={13} className="shrink-0 text-ink-secondary" />
