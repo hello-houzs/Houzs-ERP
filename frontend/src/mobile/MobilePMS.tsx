@@ -179,7 +179,7 @@ type ProjectDetail = {
   attachments?: ProjectAttachment[];
   _access?: {
     level?: string;
-    pms?: { canFinancial?: boolean; canEdit?: boolean; role?: string };
+    pms?: { canFinancial?: boolean; canEdit?: boolean; canPayment?: boolean; role?: string };
   };
 };
 
@@ -639,6 +639,12 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
   // backend permission — no in-screen view-as switcher (removed to match v4).
   const financeVisible =
     (pms ? !!pms.canFinancial : canSeeFinance) && !!data?.finance;
+  // Rental & payment section: gate on the PMS PAYMENT flag. The backend blanks
+  // payment_* cols for a role without it (#345), so a non-payment sales user
+  // would otherwise see an empty "N/A" section — hide it outright. Fail-open
+  // when pms/canPayment is absent (older cached response); backend enforces
+  // the POST /:id/payment either way.
+  const paymentVisible = pms ? pms.canPayment ?? true : true;
   // A sales PIC (canEdit=false) sees Team as read-only, matching the desktop
   // ProjectTeamSection/ProjectSpecStrip gate. Falls back to canWrite when the
   // backend omitted pms.
@@ -857,15 +863,17 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
               reload={reload}
             />
 
-            {/* rental & payment */}
-            <RentalPayment
-              status={p.payment_status ?? null}
-              canWrite={canWrite && !archived}
-              busy={busy}
-              setBusy={setBusy}
-              notify={notify}
-              onSet={(status) => patchPayment(id, status, setBusy, notify, reload)}
-            />
+            {/* rental & payment (PMS PAYMENT-gated) */}
+            {paymentVisible && (
+              <RentalPayment
+                status={p.payment_status ?? null}
+                canWrite={canWrite && !archived}
+                busy={busy}
+                setBusy={setBusy}
+                notify={notify}
+                onSet={(status) => patchPayment(id, status, setBusy, notify, reload)}
+              />
+            )}
 
             {/* financial snapshot (finance-gated) — design v7 places P&L as the
                 FINAL card, after the logistics + money sections. */}

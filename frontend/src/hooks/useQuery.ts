@@ -19,6 +19,12 @@ export interface UseQueryOptions {
   // empty table + spinner (TanStack v5's keepPreviousData behaviour). Purely
   // presentational — does not touch the query key or caching.
   keepPreviousData?: boolean;
+  // When false the fetch never fires (TanStack `enabled`). Use to HARD-GATE a
+  // permission-restricted query: pair it with NOT rendering the consuming
+  // section so a user who lacks the permission neither renders nor fetches —
+  // no 403, no fetch-then-hide flicker. Defaults to true. While disabled the
+  // hook reports loading=false so the gated branch renders without a spinner.
+  enabled?: boolean;
 }
 
 // Backed by TanStack Query (see lib/queryClient.ts). The public API is
@@ -33,9 +39,11 @@ export function useQuery<T>(
   deps: ReadonlyArray<unknown> = [],
   options: UseQueryOptions = {},
 ): QueryState<T> {
+  const enabled = options.enabled ?? true;
   const q = useTanstackQuery<T>({
     queryKey: ["uq", fetcher.toString(), ...deps],
     queryFn: () => fetcher(),
+    enabled,
     ...(options.refetchOnMount !== undefined && {
       refetchOnMount: options.refetchOnMount,
     }),
@@ -46,7 +54,10 @@ export function useQuery<T>(
   });
   return {
     data: q.data ?? null,
-    loading: q.isPending,
+    // A disabled query stays `isPending` in TanStack v5 (status pending,
+    // fetchStatus idle). Report loading=false so a hard-gated consumer renders
+    // its hidden/empty branch instead of a permanent spinner.
+    loading: enabled ? q.isPending : false,
     error: q.error ? (q.error as Error).message || String(q.error) : null,
     reload: () => {
       void q.refetch();
