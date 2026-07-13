@@ -50,5 +50,17 @@ async function main() {
     if (n > 0) { bad += n; console.log(`DANGLING ${f.child}.${f.col} -> ${f.parent}.${f.pcol}: ${n} rows`); }
   }
   console.log(bad === 0 ? "FK_AUDIT_CLEAN" : `FK_AUDIT_TOTAL_DANGLING=${bad}`);
+
+  console.log("=== unprefixed doc-ref scan (text cols named like doc refs, company=2990 rows) ===");
+  const tabs = await dst`SELECT DISTINCT table_name FROM information_schema.columns WHERE table_schema='scm' AND column_name='company_id'`;
+  let hits = 0;
+  for (const { table_name: t } of tabs) {
+    const cols = await dst`SELECT column_name FROM information_schema.columns WHERE table_schema='scm' AND table_name=${t} AND data_type IN ('text','character varying') AND (column_name LIKE '%doc_no%' OR column_name LIKE '%\\_number%' OR column_name LIKE '%reference%')`;
+    for (const { column_name: c } of cols) {
+      const q = `SELECT count(*)::int AS n, min("${c}") AS sample FROM scm."${t}" WHERE company_id=${cid} AND "${c}" IS NOT NULL AND "${c}" NOT LIKE '2990-%'`;
+      try { const [r] = await dst.unsafe(q); if (r.n > 0) { hits += r.n; console.log(`UNPREFIXED ${t}.${c}: ${r.n} (e.g. ${r.sample})`); } } catch {}
+    }
+  }
+  console.log(hits === 0 ? "DOCREF_SCAN_CLEAN" : `DOCREF_SCAN_HITS=${hits} (judge each: internal doc refs need prefix, external/supplier numbers do not)`);
 }
 main().then(() => dst.end()).catch(async e => { console.error("DIAG_FAIL", e.message); await dst.end(); process.exit(1); });
