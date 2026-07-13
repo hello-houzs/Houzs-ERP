@@ -12,7 +12,7 @@
 import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
-import { activeCompanyId, scopeToAllowedCompanies } from '../lib/companyScope';
+import { activeCompanyId } from '../lib/companyScope';
 
 export const lorries = new Hono<{ Bindings: Env; Variables: Variables }>();
 lorries.use('*', supabaseAuth);
@@ -40,8 +40,8 @@ lorries.get('/', async (c) => {
   if (onlyActive) q = q.eq('active', true);
   if (fleet === 'internal') q = q.eq('is_internal', true);
   if (fleet === 'outsourced') q = q.eq('is_internal', false);
-  // CROSS-COMPANY view: widen to every allowed company (one shared fleet).
-  q = scopeToAllowedCompanies(q, c);
+  // UNIFIED FLEET: one shared lorry fleet across ALL companies (see drivers.ts).
+  // Not scoped by company — every company's TMS page shows the same lorries.
   const { data, error } = await q;
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
   return c.json({ lorries: data ?? [] });
