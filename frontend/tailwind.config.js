@@ -95,6 +95,18 @@ export default {
         brand: "0.18em",
         wider: "0.06em",
       },
+      // Nico 2026-07-09 (ColumnsPanelButton handoff) — expose the semantic
+      // motion tokens from vendor/design-system/tokens.css as Tailwind
+      // classes. Values mirror --duration-* there so `duration-fast` inside
+      // a className resolves to the same 120 ms every raw CSS `.foo {
+      // transition-duration: var(--duration-fast) }` gets. `duration-{75,
+      // 150, 200, 300}` stay available from Tailwind defaults.
+      transitionDuration: {
+        quick: "80ms",
+        fast: "120ms",
+        base: "200ms",
+        slow: "320ms",
+      },
       boxShadow: {
         // Soft "stone" shadow — matches the cream canvas without
         // looking like a generic Material drop shadow.
