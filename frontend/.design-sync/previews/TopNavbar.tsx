@@ -3,6 +3,8 @@ import {
   NotificationsProvider,
   BreadcrumbsProvider,
   GlobalSearchProvider,
+  QueryClientProvider,
+  queryClient,
   MemoryRouter,
   TopNavbar,
 } from "autocount-sync-frontend";
@@ -73,6 +75,12 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
       unread_by_project: { 118: 1 },
       total_unread: 4,
     });
+  if (url.includes("/api/companies"))
+    return json({
+      companies: [{ id: 1, code: "HOUZS", name: "Houzs Century Sdn Bhd" }],
+      activeCompanyId: 1,
+      activeCompanyCode: "HOUZS",
+    });
   if (url.includes("/api/presence/heartbeat")) return json({ ok: true });
   if (url.includes("/api/presence"))
     return json({
@@ -85,24 +93,34 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
       count: 4,
       window_seconds: 120,
     });
+  // Unstubbed API paths must NOT fall through: the DS bundle's baseUrl points
+  // at the real workers.dev API, and a genuine 401 there fires the global
+  // logout listener — wiping the preview auth token mid-render.
+  if (url.includes("/api/"))
+    return new Response(JSON.stringify({ error: "not stubbed in preview" }), {
+      status: 404,
+      headers: { "Content-Type": "application/json" },
+    });
   return realFetch(input as RequestInfo, init);
 };
 
 function Bar({ route }: { route: string }) {
   return (
-    <MemoryRouter initialEntries={[route]}>
-      <AuthProvider>
-        <NotificationsProvider>
-          <BreadcrumbsProvider>
-            <GlobalSearchProvider>
-              <div className="w-[960px] bg-bg pb-10">
-                <TopNavbar />
-              </div>
-            </GlobalSearchProvider>
-          </BreadcrumbsProvider>
-        </NotificationsProvider>
-      </AuthProvider>
-    </MemoryRouter>
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={[route]}>
+        <AuthProvider>
+          <NotificationsProvider>
+            <BreadcrumbsProvider>
+              <GlobalSearchProvider>
+                <div className="w-[960px] bg-bg pb-10">
+                  <TopNavbar />
+                </div>
+              </GlobalSearchProvider>
+            </BreadcrumbsProvider>
+          </NotificationsProvider>
+        </AuthProvider>
+      </MemoryRouter>
+    </QueryClientProvider>
   );
 }
 

@@ -69,6 +69,14 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
       count: 3,
       window_seconds: 120,
     });
+  // Unstubbed API paths must NOT fall through: the DS bundle's baseUrl points
+  // at the real workers.dev API, and a genuine 401 there fires the global
+  // logout listener — wiping the preview auth token mid-render.
+  if (url.includes("/api/"))
+    return new Response(JSON.stringify({ error: "not stubbed in preview" }), {
+      status: 404,
+      headers: { "Content-Type": "application/json" },
+    });
   return realFetch(input as RequestInfo, init);
 };
 
