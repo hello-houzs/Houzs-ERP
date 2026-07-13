@@ -8279,7 +8279,7 @@ function CrewSlotRow({
 }) {
   const cur = slot ?? { name: "", phone: "" };
   return (
-    <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-[1.8fr_1fr] sm:items-center">
+    <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-[minmax(0,1fr)_6.75rem] sm:items-center">
       <div className="flex min-w-0 items-center gap-1">
         <UserCircle2 size={12} className={cn("shrink-0", color)} />
         <span className="w-11 shrink-0 text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
