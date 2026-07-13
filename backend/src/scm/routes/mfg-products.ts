@@ -609,6 +609,85 @@ mfgProducts.patch('/:id', async (c) => {
     return c.json({ ok: true, changed: 0 });
   }
 
+  /* SKU-code rename cascade (2990 PR #720, Owner 2026-07-13 MAKOTA→MAKOTO
+     typo). The code is snapshotted as TEXT (no FK) across the whole ERP — doc
+     lines, supplier bindings and, critically, FIFO stock (inventory_lots keys
+     stock ON HAND by product_code). PR #89's plain-column rename silently
+     stranded all of those under the old code: the renamed SKU showed zero
+     stock, its supplier binding died, and PO/GRN conversion lookups missed.
+     So a code change now renames every snapshot in the same request.
+
+     Ordering: referencing tables FIRST, mfg_products LAST — if a cascade step
+     fails midway the product still carries the OLD code, so re-submitting the
+     same rename is a clean retry (already-renamed tables match 0 rows). The
+     duplicate check runs before anything is touched. Not transactional
+     (supabase-js), but idempotent + retryable is enough here.
+
+     Houzs adaptation: every cascade table carries company_id (migrations
+     0083/0089), so both the duplicate precheck and each UPDATE are scoped to
+     the active company via scopeToCompany — company A's rename must never
+     rewrite company B's snapshots. */
+  const cascadeCounts: Record<string, number> = {};
+  {
+    const oldCode = current.code as string;
+    const newCode = typeof updates.code === 'string' ? (updates.code as string) : null;
+    if (newCode && newCode !== oldCode) {
+      const { data: dup } = await scopeToCompany(
+        supabase.from('mfg_products').select('id').eq('code', newCode).neq('id', id),
+        c,
+      ).limit(1);
+      if (dup && dup.length > 0) {
+        return c.json({ error: 'duplicate_code', reason: 'Another SKU already uses that code.' }, 409);
+      }
+      /* material_code tables carry material_kind (mfg_product | fabric | raw) —
+         scope those so a fabric that happens to share the string is untouched. */
+      const CASCADE: Array<{ table: string; col: string; kind?: true }> = [
+        { table: 'supplier_material_bindings', col: 'material_code', kind: true },
+        { table: 'purchase_order_items',       col: 'material_code', kind: true },
+        { table: 'grn_items',                  col: 'material_code', kind: true },
+        { table: 'purchase_invoice_items',     col: 'material_code', kind: true },
+        { table: 'purchase_return_items',      col: 'material_code', kind: true },
+        { table: 'mfg_sales_order_items',      col: 'item_code' },
+        { table: 'mfg_so_price_overrides',     col: 'item_code' },
+        { table: 'delivery_order_items',       col: 'item_code' },
+        { table: 'sales_invoice_items',        col: 'item_code' },
+        { table: 'delivery_return_items',      col: 'item_code' },
+        { table: 'pwp_codes',                  col: 'trigger_item_code' },
+        { table: 'pwp_codes',                  col: 'redeemed_item_code' },
+        { table: 'hr_item_kpi',                col: 'ref' },
+        { table: 'product_dept_configs',       col: 'product_code' },
+        { table: 'master_price_history',       col: 'product_code' },
+        { table: 'inventory_movements',        col: 'product_code' },
+        { table: 'inventory_lots',             col: 'product_code' },
+        { table: 'inventory_lot_consumptions', col: 'product_code' },
+        { table: 'stock_transfer_lines',       col: 'product_code' },
+        { table: 'stock_take_lines',           col: 'product_code' },
+        { table: 'warehouse_rack_items',       col: 'product_code' },
+        { table: 'warehouse_rack_movements',   col: 'product_code' },
+      ];
+      for (const t of CASCADE) {
+        let q = scopeToCompany(
+          supabase.from(t.table)
+            .update({ [t.col]: newCode }, { count: 'exact' })
+            .eq(t.col, oldCode),
+          c,
+        );
+        if (t.kind) q = q.eq('material_kind', 'mfg_product');
+        const { error: cErr, count } = await q;
+        if (cErr) {
+          // Missing table on a fresh DB is fine; anything else aborts BEFORE the
+          // product row flips, so the same rename can simply be retried.
+          if (/does not exist/i.test(cErr.message)) continue;
+          return c.json({
+            error: 'rename_cascade_failed',
+            reason: `${t.table}.${t.col}: ${cErr.message}. Nothing is lost — the SKU still has its old code; retry the rename.`,
+          }, 500);
+        }
+        if (count) cascadeCounts[`${t.table}.${t.col}`] = count;
+      }
+    }
+  }
+
   const { error: updErr } = await supabase.from('mfg_products').update(updates).eq('id', id);
   if (updErr) {
     if (updErr.code === '42501' || /permission denied/i.test(updErr.message)) {
@@ -630,10 +709,13 @@ mfgProducts.patch('/:id', async (c) => {
   const costFieldChanged = priceChanges.some(
     (ch) => ch.field === 'base_price_sen' || ch.field === 'price1_sen',
   );
+  /* Rename-aware: bindings + price history were cascade-renamed above, so all
+     post-write side effects must address the SKU by its FINAL code. */
+  const finalCode = typeof updates.code === 'string' ? (updates.code as string) : (current.code as string);
   if (costFieldChanged) {
     // Use the FINAL values. `'key' in updates` (not ??) so an explicit clear to
     // null is honoured rather than falling back to the old value.
-    await syncAnchorBindingFromProduct(supabase, current.code, {
+    await syncAnchorBindingFromProduct(supabase, finalCode, {
       base_price_sen: 'base_price_sen' in updates
         ? (updates.base_price_sen as number | null)
         : current.base_price_sen,
@@ -653,7 +735,7 @@ mfgProducts.patch('/:id', async (c) => {
     if (!PRICE_FIELDS.has(ch.field) && !ch.field.startsWith('seat_height')) continue;
     await supabase.from('master_price_history').insert({
       company_id: activeCompanyId(c),
-      product_code: current.code,
+      product_code: finalCode,
       field: ch.field,
       old_value_sen: ch.oldValueSen,
       new_value_sen: ch.newValueSen,
@@ -662,7 +744,12 @@ mfgProducts.patch('/:id', async (c) => {
     });
   }
 
-  return c.json({ ok: true, changed: priceChanges.length });
+  return c.json({
+    ok: true,
+    changed: priceChanges.length,
+    // Rename cascade — rows re-pointed per table.column (absent on non-rename patches).
+    ...(Object.keys(cascadeCounts).length > 0 ? { renamed: cascadeCounts } : {}),
+  });
 });
 
 // ── POST /:id/activate-one-shot ───────────────────────────────────────────────
