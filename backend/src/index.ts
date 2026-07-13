@@ -62,6 +62,9 @@ import mailInbound from "./routes/mail-inbound";
 // 2990 → Houzs LIVE SO mirror receiver. PRE-AUTH (secret-guarded, called by the
 // 2990 DB via pg_net, no user JWT) — mounted at the top level, outside /api/scm.
 import { soMirror } from "./scm/routes/so-mirror";
+// POS auth (Phase 1 of the 2990-backend replacement): PIN/session login for the
+// 2990 POS. Mounted PRE-AUTH; its two write endpoints re-apply `auth` per-route.
+import pos from "./routes/pos";
 // Announcements — office posts every logged-in user sees as a top banner with
 // a "Got it" ack. Ported from Hookka (single-tenant + office-only here).
 import announcements from "./routes/announcements";
@@ -144,6 +147,9 @@ app.route("/api/supplier-portal", supplierPortal);
 app.route("/api/mail-center/inbound", mailInbound);
 // 2990 live SO mirror — pre-auth, secret-guarded (x-sync-secret == SYNC_SECRET).
 app.route("/api/sync/so-mirror", soMirror);
+// POS auth — pin-login + sales-staff are PRE-AUTH (before the /api/* gate);
+// set-pin/verify-pin/sales-stats re-apply `auth` inside the router.
+app.route("/api/pos", pos);
 
 // Google Form intake webhook — PRE-AUTH like mail-inbound: called by
 // Google Apps Script (no staff session), self-guarded by the
