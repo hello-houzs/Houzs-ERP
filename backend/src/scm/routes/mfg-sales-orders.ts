@@ -3970,15 +3970,20 @@ export async function createDraftSalesOrder(
     salespersonId: string;
     salespersonName?: string | null;
     houzsUserId?: number | null;
+    /** Multi-company: the ACTIVE company captured at enqueue time (the
+     *  scan_jobs row's company_id). Undefined = legacy row / pre-0083 —
+     *  falls back to the 0091 HOUZS default. */
+    companyId?: number | null;
     body: Record<string, unknown>;
   },
 ): Promise<SoCreateOutcome> {
   const svc = getSupabaseService(env);
   const syntheticGet = (key: 'supabase' | 'user' | 'houzsUser' | 'companyId'): unknown => {
     if (key === 'supabase') return svc;
-    // Headless scan job has no request-scoped active company — leave unstamped
-    // (single-company no-op). mig 0061 backfill / DB default carries the column.
-    if (key === 'companyId') return undefined;
+    // Headless scan job — replay the company captured on the scan_jobs row at
+    // enqueue time so the draft (header + lines + payments + audit) lands under
+    // the uploader's company, not the 0091 HOUZS default.
+    if (key === 'companyId') return opts.companyId ?? undefined;
     if (key === 'user') {
       return {
         id: opts.salespersonId,
@@ -4422,7 +4427,9 @@ async function recomputeDeliveryFeeCore(
       venue: h.venue ?? null,
       stock_status: 'READY',
     }));
-    const { error: insErr } = await sb.from('mfg_sales_order_items').insert(rows);
+    // Multi-company: the rebuilt delivery-fee lines inherit the SO's company.
+    const coRows = h.company_id != null ? rows.map((r) => ({ company_id: h.company_id, ...r })) : rows;
+    const { error: insErr } = await sb.from('mfg_sales_order_items').insert(coRows);
     if (insErr) { /* eslint-disable-next-line no-console */ console.error('[so-redetect] delivery line insert failed:', insErr.message); }
   }
 

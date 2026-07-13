@@ -671,11 +671,11 @@ async function resyncInventoryForDo(sb: any, deliveryOrderId: string, performedB
   // Header — need warehouse_id, do_number, status, is_dropship (audit C1).
   /* Forward-compat (mig 0057): is_dropship column may not exist yet — retry without it. */
   let hdrRes = await sb.from('delivery_orders')
-    .select('do_number, status, warehouse_id, is_dropship')
+    .select('do_number, status, warehouse_id, is_dropship, company_id')
     .eq('id', deliveryOrderId).maybeSingle();
   if (hdrRes.error && (hdrRes.error.message ?? '').includes('is_dropship')) {
     hdrRes = await sb.from('delivery_orders')
-      .select('do_number, status, warehouse_id')
+      .select('do_number, status, warehouse_id, company_id')
       .eq('id', deliveryOrderId).maybeSingle();
   }
   const doHeader = hdrRes.data;
@@ -817,7 +817,8 @@ async function resyncInventoryForDo(sb: any, deliveryOrderId: string, performedB
     }
   }
   if (writes.length > 0) {
-    await writeMovements(sb, writes);
+    // Multi-company: resync movements inherit the DO's company.
+    await writeMovements(sb, writes, (doHeader as { company_id?: number | null }).company_id ?? null);
     /* Costing C — line set changed → re-derive each line's actual FIFO cost
        from the now-current movements (ship OUT + these resync deltas). */
     await restampDoActualCost(sb, deliveryOrderId);
@@ -869,11 +870,11 @@ async function reverseInventoryForDo(sb: any, deliveryOrderId: string, performed
 
   /* Forward-compat (mig 0057): is_dropship column may not exist yet — retry without it. */
   let hdrRes = await sb.from('delivery_orders')
-    .select('do_number, warehouse_id, is_dropship')
+    .select('do_number, warehouse_id, is_dropship, company_id')
     .eq('id', deliveryOrderId).maybeSingle();
   if (hdrRes.error && (hdrRes.error.message ?? '').includes('is_dropship')) {
     hdrRes = await sb.from('delivery_orders')
-      .select('do_number, warehouse_id')
+      .select('do_number, warehouse_id, company_id')
       .eq('id', deliveryOrderId).maybeSingle();
   }
   const doHeader = hdrRes.data;
@@ -985,7 +986,8 @@ async function reverseInventoryForDo(sb: any, deliveryOrderId: string, performed
         ? { ...base, movement_type: 'IN' as const, batch_no: b.batch_no }
         : { ...base, movement_type: 'ADJUSTMENT' as const };
     });
-  if (movements.length > 0) await writeMovements(sb, movements);
+  // Multi-company: reversal movements inherit the DO's company.
+  if (movements.length > 0) await writeMovements(sb, movements, (doHeader as { company_id?: number | null } | null)?.company_id ?? null);
 }
 
 /* ── doLineConsumedQty (Commander 2026-05-30, TASK #24) ───────────────────────
@@ -1898,6 +1900,7 @@ deliveryOrdersMfg.post('/', async (c) => {
   const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; do_number: string }>(
     () => nextNum(sb, c),
     (doNumber) => sb.from('delivery_orders').insert({
+    company_id: activeCompanyId(c), // multi-company: stamp the active company
     do_number: doNumber,
     so_doc_no: (body.soDocNo as string) ?? null,
     debtor_code: (body.debtorCode as string) ?? null,
@@ -1953,7 +1956,7 @@ deliveryOrdersMfg.post('/', async (c) => {
 
   if (items.length > 0) {
     const rows = items.map((it, lineNo) => buildItemRow(h.id, it, lineNo));
-    const { error: iErr } = await sb.from('delivery_order_items').insert(rows);
+    const { error: iErr } = await sb.from('delivery_order_items').insert(stampCompany(rows, c));
     if (iErr) { await sb.from('delivery_orders').delete().eq('id', h.id); return c.json({ error: 'items_insert_failed', reason: iErr.message }, 500); }
     await recomputeTotals(sb, h.id);
   }
@@ -2238,6 +2241,7 @@ deliveryOrdersMfg.post('/from-sos', async (c) => {
   const { data: doHeader, error: hErr } = await insertWithDocNoRetry<{ id: string; do_number: string }>(
     () => nextNum(sb, c),
     (doNumber) => sb.from('delivery_orders').insert({
+    company_id: activeCompanyId(c), // multi-company: stamp the active company
     do_number: doNumber,
     /* so_doc_no has a FK to mfg_sales_orders(doc_no) → one valid doc. The full
        set of source SOs is recorded in `ref` below when the picks span >1 SO. */
@@ -2328,7 +2332,7 @@ deliveryOrdersMfg.post('/from-sos', async (c) => {
       special_order_price_sen: line.specialOrderPriceSen ?? 0,
     };
   });
-  const { error: iErr } = await sb.from('delivery_order_items').insert(doRows);
+  const { error: iErr } = await sb.from('delivery_order_items').insert(stampCompany(doRows, c));
   if (iErr) {
     // Roll the header back so we don't leave a headerless DO.
     await sb.from('delivery_orders').delete().eq('id', dh.id);
@@ -2389,7 +2393,7 @@ deliveryOrdersMfg.put('/:id/crew', async (c) => {
   try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
 
   // The DO must exist (FK target + so the header sync below has a row to update).
-  const { data: doRow, error: doErr } = await sb.from('delivery_orders').select('id').eq('id', id).maybeSingle();
+  const { data: doRow, error: doErr } = await sb.from('delivery_orders').select('id, company_id').eq('id', id).maybeSingle();
   if (doErr) return c.json({ error: 'load_failed', reason: doErr.message }, 500);
   if (!doRow) return c.json({ error: 'not_found' }, 404);
 
@@ -2437,7 +2441,11 @@ deliveryOrdersMfg.put('/:id/crew', async (c) => {
   const h2 = helper2Id ? helperById.get(helper2Id) ?? null : null;
 
   const now = new Date().toISOString();
+  const doCompanyId = (doRow as { company_id?: number | null }).company_id ?? activeCompanyId(c);
   const crewRow = {
+    // Multi-company: the crew row inherits its DO's company (a cross-company
+    // planner may assign crew while a different company is active).
+    ...(doCompanyId != null ? { company_id: doCompanyId } : {}),
     do_id: id,
     driver_1_id: driver1Id, driver_2_id: driver2Id,
     helper_1_id: helper1Id, helper_2_id: helper2Id,
@@ -2739,7 +2747,7 @@ deliveryOrdersMfg.post('/:id/items', async (c) => {
     ? (maxNoRow as { line_no: number }).line_no + 1
     : null;
   const row = buildItemRow(id, it, nextLineNo);
-  const { data, error } = await sb.from('delivery_order_items').insert(row).select(ITEM).single();
+  const { data, error } = await sb.from('delivery_order_items').insert({ ...row, company_id: activeCompanyId(c) }).select(ITEM).single();
   if (error) return c.json({ error: 'insert_failed', reason: error.message }, 500);
   /* Drop-ship (mig 0057) — once a drop-shipped line is added, stamp the DO so
      the "batch not received" badge shows. Best-effort (never blocks the add). */
