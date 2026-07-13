@@ -63,9 +63,9 @@ const STAGE_VARIANT: Record<string, Variant> = {
 };
 
 const STAGE_LABEL: Record<string, string> = {
-  registration: "Pending Review",
-  triage: "Under Verification",
-  action: "Pending Solution",
+  registration: "Review",
+  triage: "Verification",
+  action: "Solution",
   logistics: "Pending Logistics",
   resolution: "Pending Completion",
   closed: "Completed",

@@ -89,14 +89,14 @@ type StageFilter = "ALL" | AssrStage;
 // vocabulary; values are the SQL enum.
 const STAGE_OPTIONS: { value: StageFilter; label: string }[] = [
   { value: "ALL", label: "All" },
-  { value: "pending_review", label: "Pending Review" },
-  { value: "under_verification", label: "Under Verification" },
-  { value: "pending_solution", label: "Pending Solution" },
-  { value: "pending_inspection", label: "Pending Inspection" },
-  { value: "pending_item_pickup", label: "Pending Item Pickup" },
-  { value: "pending_supplier_pickup", label: "Pending Supplier Pickup" },
-  { value: "pending_item_ready", label: "Pending Item Ready" },
-  { value: "pending_delivery_service", label: "Pending Delivery / Service" },
+  { value: "pending_review", label: "Review" },
+  { value: "under_verification", label: "Verification" },
+  { value: "pending_solution", label: "Solution" },
+  { value: "pending_inspection", label: "Inspection" },
+  { value: "pending_item_pickup", label: "Item Pickup" },
+  { value: "pending_supplier_pickup", label: "Supplier Pickup" },
+  { value: "pending_item_ready", label: "Item Ready" },
+  { value: "pending_delivery_service", label: "Delivery / Service" },
   { value: "completed", label: "Completed" },
 ];
 
@@ -1043,7 +1043,7 @@ function StageStatStrip({
           the list/board/calendar, click again (or All) to clear. */}
       <div className="rounded-xl border border-border bg-surface p-4 shadow-stone">
         <div className="mb-3 flex items-center justify-between">
-          <div className="text-[13px] font-bold text-ink">Case stages</div>
+          <div className="text-[13px] font-bold text-ink">Stage funnel</div>
           <span className="font-mono text-[10px] text-ink-muted">click to filter</span>
         </div>
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
@@ -3270,7 +3270,7 @@ function DetailContent({
               c={c}
               priorityMap={priorityMap}
               stageId="pending_review"
-              title="Pending Review"
+              title="Review"
               summary={
                 c.stage === "pending_review"
                   ? "Case received & logged — awaiting Service Admin"
@@ -3300,7 +3300,7 @@ function DetailContent({
               c={c}
               priorityMap={priorityMap}
               stageId="under_verification"
-              title="Under Verification"
+              title="Verification"
               summary={
                 c.verification_outcome === "accepted"
                   ? "Office confirms the reported issue is valid"
@@ -3336,7 +3336,7 @@ function DetailContent({
               c={c}
               priorityMap={priorityMap}
               stageId="pending_solution"
-              title="Pending Solution"
+              title="Solution"
               summary={
                 c.resolution_method
                   ? `Selected: ${c.resolution_method}`
@@ -3493,7 +3493,7 @@ function DetailContent({
               c={c}
               priorityMap={priorityMap}
               stageId="pending_inspection"
-              title="Pending Inspection · QC Issue Inspection"
+              title="Inspection · QC Issue Inspection"
               summary={
                 c.inspection_by === "own"
                   ? `Own-team inspection${c.customer_pickup_at ? ` · visit ${formatDate(c.customer_pickup_at)}` : " · schedule the visit"}`
@@ -3585,7 +3585,7 @@ function DetailContent({
               c={c}
               priorityMap={priorityMap}
               stageId="pending_item_pickup"
-              title="Pending Item Pickup"
+              title="Item Pickup"
               summary={
                 c.customer_pickup_at
                   ? `Collected ${formatDate(c.customer_pickup_at)}`
@@ -3616,7 +3616,7 @@ function DetailContent({
               c={c}
               priorityMap={priorityMap}
               stageId="pending_supplier_pickup"
-              title="Pending Supplier Pickup"
+              title="Supplier Pickup"
               summary={
                 c.supplier_pickup_at
                   ? `Supplier collected ${formatDate(c.supplier_pickup_at)}`
@@ -3675,7 +3675,7 @@ function DetailContent({
               c={c}
               priorityMap={priorityMap}
               stageId="pending_item_ready"
-              title="Pending Item Ready"
+              title="Item Ready"
               summary={
                 c.inspection_result
                   ? `QC: ${c.inspection_result}${c.items_ready_at ? ` · ready ${formatDate(c.items_ready_at)}` : ""}`
@@ -3704,7 +3704,7 @@ function DetailContent({
               c={c}
               priorityMap={priorityMap}
               stageId="pending_delivery_service"
-              title="Pending Delivery / Service"
+              title="Delivery"
               summary={
                 logistics.length
                   ? `${logistics.length} logistics ${logistics.length === 1 ? "trip" : "trips"}`
@@ -4606,14 +4606,14 @@ const VERIFICATION_OPTIONS = [
 // filtering land in later PRs; this PR only refreshes the header strip.
 
 const DETAIL_STAGES: { id: AssrStage; short: string; long: string }[] = [
-  { id: "pending_review",              short: "Review",       long: "Pending Review" },
-  { id: "under_verification",          short: "Verification", long: "Under Verification" },
-  { id: "pending_solution",            short: "Solution",     long: "Pending Solution" },
-  { id: "pending_inspection",          short: "Inspection",   long: "Pending Inspection" },
-  { id: "pending_item_pickup",         short: "Item Pickup",  long: "Pending Item Pickup" },
-  { id: "pending_supplier_pickup",     short: "Supplier",     long: "Pending Supplier Pickup" },
-  { id: "pending_item_ready",          short: "Item Ready",   long: "Pending Item Ready" },
-  { id: "pending_delivery_service",    short: "Delivery",     long: "Pending Delivery / Service" },
+  { id: "pending_review",              short: "Review",       long: "Review" },
+  { id: "under_verification",          short: "Verification", long: "Verification" },
+  { id: "pending_solution",            short: "Solution",     long: "Solution" },
+  { id: "pending_inspection",          short: "Inspection",   long: "Inspection" },
+  { id: "pending_item_pickup",         short: "Item Pickup",  long: "Item Pickup" },
+  { id: "pending_supplier_pickup",     short: "Supplier",     long: "Supplier Pickup" },
+  { id: "pending_item_ready",          short: "Item Ready",   long: "Item Ready" },
+  { id: "pending_delivery_service",    short: "Delivery",     long: "Delivery / Service" },
   { id: "completed",                   short: "Completed",    long: "Completed" },
 ];
 
