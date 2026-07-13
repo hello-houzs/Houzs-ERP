@@ -277,6 +277,12 @@ type SavedModeProps = {
    *  always grandfathered in so the <select> value stays valid. Undefined =
    *  no restriction (show every active staff). */
   collectedByAllowedIds?: Set<string> | null;
+  /** Owner 2026-07-13 — page-supplied default Collected By (scm.staff id) for
+   *  NEW payment rows. On Houzs the vendored auth bridge has no staff id
+   *  (auth.staff.id === null), so the page resolves the logged-in user's staff
+   *  row by email and passes it here. Falls back to the auth bridge when unset
+   *  (HOOKKA / 2990, where the bridge does carry the id). '' / null = leave "—". */
+  defaultCollectedBy?: string | null;
 };
 
 type DraftModeProps = {
@@ -291,6 +297,8 @@ type DraftModeProps = {
   slipUpload?: boolean;
   /** See SavedModeProps.collectedByAllowedIds. */
   collectedByAllowedIds?: Set<string> | null;
+  /** See SavedModeProps.defaultCollectedBy. */
+  defaultCollectedBy?: string | null;
 };
 
 export type PaymentsTableProps = SavedModeProps | DraftModeProps;
@@ -393,8 +401,14 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
      time — but the common case (owner / staff clicking Add Payment on
      their own account) now defaults reliably.
      Existing persisted payments still show their stored `collected_by`
-     name — this default only seeds NEW draft rows. */
-  const defaultStaffId = auth.staff?.id ?? '';
+     name — this default only seeds NEW draft rows.
+
+     Owner 2026-07-13 — prefer the page-supplied `defaultCollectedBy` when
+     given: on Houzs the auth bridge's staff id is null, so the page resolves
+     the logged-in user's scm.staff row by email and passes it here. Fall back
+     to the bridge id (HOOKKA / 2990, where it's populated) when the prop is
+     unset. */
+  const defaultStaffId = (props.defaultCollectedBy || '') || (auth.staff?.id ?? '');
 
   const addDraft = () => {
     /* Loo 2026-06-09 — seed the new row's amount with the OUTSTANDING balance

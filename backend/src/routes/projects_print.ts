@@ -2,7 +2,9 @@ import { Hono } from "hono";
 import type { Env } from "../types";
 import { getProjectDetail } from "../services/projects";
 import { canSeeProject } from "../services/projectAcl";
-import { getPmsAccess } from "../services/pmsAccess";
+import { getPmsAccess, isFinanceViewer } from "../services/pmsAccess";
+import { scopeSalesReportsForUser } from "../services/orgScope";
+import { hasPermission } from "../services/permissions";
 
 /**
  * Post-event summary — A4 printable sheet.
@@ -126,7 +128,19 @@ app.get("/:id", async (c) => {
   const lines = (detail.finance_lines as any[]) ?? [];
   const checklist = (detail.checklist as any[]) ?? [];
   const defects = (detail.defects as any[]) ?? [];
-  const salesReports = (detail.sales_reports as any[]) ?? [];
+  // Sales-reports row scoping (owner 2026-07) — mirror the detail-GET rule so
+  // the printable debrief never leaks another rep's sale amounts. Non-director
+  // sales users see only their own + downline rows (rep identity = uploaded_by);
+  // directors + service-case managers see all. Fail closed on unresolved reps.
+  const printGranted = user?.permissions_set ?? user?.permissions ?? [];
+  const canSeeAllSalesReports =
+    isFinanceViewer(user) || hasPermission(printGranted, "service_cases.manage");
+  const salesReports = await scopeSalesReportsForUser(
+    c.env,
+    user?.id,
+    (detail.sales_reports as any[]) ?? [],
+    canSeeAllSalesReports,
+  );
   const stockTransfers = (detail.stock_transfers as any[]) ?? [];
   const activity = (detail.activity as any[]) ?? [];
 

@@ -43,7 +43,8 @@ import {
   projectAccessLevel,
   canSeeProject,
 } from "../services/projectAcl";
-import { getPmsAccess, getPmsRole, financeHiddenForUser } from "../services/pmsAccess";
+import { getPmsAccess, getPmsRole, financeHiddenForUser, isFinanceViewer } from "../services/pmsAccess";
+import { scopeSalesReportsForUser } from "../services/orgScope";
 import { audit } from "../services/audit";
 import { hasPermission } from "../services/permissions";
 import { recomputeAutoCostLines } from "../services/projectCostRates";
@@ -1346,6 +1347,27 @@ app.get("/:id", requirePageAccess("projects.list"), async (c) => {
         payment_updated_at: null,
         payment_updated_by: null,
       },
+    };
+  }
+  // Sales-reports row scoping (owner 2026-07): the `sales_reports` panel is a
+  // per-rep sale-amount log. A non-director sales user may see only THEIR OWN
+  // rows plus their downline's (users.manager_id subtree). Directors
+  // (isFinanceViewer — `*` / Super Admin / Sales Director / Finance Manager)
+  // and service-case managers (`service_cases.manage`) see every row. Rep
+  // identity on a row is `uploaded_by`; unresolved reps are dropped for
+  // non-directors (fail closed).
+  const granted = user?.permissions_set ?? user?.permissions ?? [];
+  const canSeeAllSalesReports =
+    isFinanceViewer(user) || hasPermission(granted, "service_cases.manage");
+  if (!canSeeAllSalesReports && Array.isArray(payload.sales_reports)) {
+    payload = {
+      ...payload,
+      sales_reports: await scopeSalesReportsForUser(
+        c.env,
+        user?.id,
+        payload.sales_reports,
+        false,
+      ),
     };
   }
   return c.json({ ...payload, _access: access });

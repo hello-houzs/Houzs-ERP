@@ -53,3 +53,33 @@ export async function subtreeUserIds(
   }
   return [...seen];
 }
+
+/**
+ * Restrict `project_sales_reports` rows to the ones a non-director sales user
+ * may see: their OWN sale-amount entries plus their downline's (owner spec
+ * 2026-07). Rep identity on a sales-report row is `uploaded_by` — the users.id
+ * of the rep who logged the sale (see createSalesReport) — which maps directly
+ * onto the users.manager_id subtree that subtreeUserIds() returns, so no extra
+ * join is needed.
+ *
+ * `canSeeAll` short-circuits for directors / service-case managers (`*`,
+ * Super Admin / Sales Director / Finance Manager, or service_cases.manage) —
+ * they keep the full list unchanged. For everyone else, rows whose rep can't
+ * be resolved (null uploaded_by) are dropped: fail closed on financial data.
+ * Reuses subtreeUserIds — the same downline resolver SO / Service Cases use.
+ */
+export async function scopeSalesReportsForUser<
+  T extends { uploaded_by?: number | null },
+>(
+  env: Env,
+  userId: number | null | undefined,
+  rows: T[],
+  canSeeAll: boolean,
+): Promise<T[]> {
+  if (canSeeAll) return rows;
+  if (userId == null) return []; // fail closed, never open
+  const visible = new Set(await subtreeUserIds(env, Number(userId)));
+  return rows.filter(
+    (r) => r.uploaded_by != null && visible.has(Number(r.uploaded_by)),
+  );
+}
