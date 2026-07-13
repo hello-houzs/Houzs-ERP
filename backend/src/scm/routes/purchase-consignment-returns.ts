@@ -64,7 +64,7 @@ purchaseConsignmentReturns.use('*', supabaseAuth);
    Idempotent: a re-run finds delta 0 everywhere and writes nothing. Best-effort. */
 async function resyncPcReturnInventory(sb: any, returnId: string, performedBy: string | null): Promise<string[]> {
   const { data: header } = await sb.from('purchase_consignment_returns')
-    .select('return_number, status, pc_receive_id').eq('id', returnId).maybeSingle();
+    .select('return_number, status, pc_receive_id, company_id').eq('id', returnId).maybeSingle();
   if (!header) return [];
   const status = ((header as { status: string | null }).status ?? '').toUpperCase();
   const returnNo = (header as { return_number: string }).return_number ?? returnId;
@@ -183,7 +183,8 @@ async function resyncPcReturnInventory(sb: any, returnId: string, performedBy: s
   }
 
   if (writes.length === 0) return [];
-  const res = await writeMovements(sb, writes);
+  // Multi-company: resync movements inherit the return's company.
+  const res = await writeMovements(sb, writes, (header as { company_id?: number | null }).company_id ?? null);
   try {
     const { recomputeSoStockAllocation } = await import('../lib/so-stock-allocation');
     await recomputeSoStockAllocation(sb);

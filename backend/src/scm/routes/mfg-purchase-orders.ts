@@ -2158,7 +2158,7 @@ mfgPurchaseOrders.post('/:id/convert-from-so', async (c) => {
 
   const { data: inserted, error: insErr } = await sb
     .from('purchase_order_items')
-    .insert(rows)
+    .insert(stampCompany(rows, c))
     .select(ITEM_COLS);
   if (insErr) return c.json({ error: 'insert_failed', reason: insErr.message }, 500);
 
