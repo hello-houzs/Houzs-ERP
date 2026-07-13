@@ -335,7 +335,7 @@ mfgPurchaseOrders.get('/outstanding-so-items', async (c) => {
   const shortageBySoItem = new Map<string, number>();
   let pooledOk = true;
   try {
-    const mrpRes = await computeMrp(supabase, { catFilter: null, whFilter: null, includeUndated: true });
+    const mrpRes = await computeMrp(supabase, { catFilter: null, whFilter: null, includeUndated: true, companyId: activeCompanyId(c) });
     for (const sku of mrpRes.skus) {
       for (const l of sku.lines) shortageBySoItem.set(l.soItemId, l.shortageQty);
     }

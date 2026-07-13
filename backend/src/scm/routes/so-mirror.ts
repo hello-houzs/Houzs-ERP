@@ -19,72 +19,70 @@ import type { Env } from '../../types';
 export const soMirror = new Hono<{ Bindings: Env }>();
 
 const C2990 = 2;
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-// --- transform primitives — byte-for-byte the import script's rules ----------
-function remapId(v: unknown): unknown {
-  if (v == null) return v;
-  const s = String(v);
-  if (/^-?\d+$/.test(s)) return Number(s) + 100000;                 // serial id
-  if (UUID_RE.test(s)) return s.slice(0, 4).toLowerCase() === '2990' ? s : '2990' + s.slice(4);
-  return s.startsWith('2990-') ? s : `2990-${s}`;                   // text key
-}
+// --- transform primitives — byte-for-byte the batch import's rules -----------
+// (scripts/migrate-2990-into-houzs.mjs). CRITICAL: the batch import copies every
+// master/self id AS-IS (original 2990 uuid/serial) — it does NOT remap them; it
+// only (a) stamps company_id=2, (b) prefixes doc-NUMBER columns with `2990-`,
+// (c) nulls venue_id (points at a master not migrated), (d) drops source columns
+// absent in the Houzs dest table. The old mirror remapped FK/self ids (uuid ->
+// '2990'+slice, serial +100000), which matched NO imported row → FK violation →
+// 500. This transform now mirrors the import EXACTLY so mirrored rows and batch-
+// imported rows are interchangeable.
 function prefixDoc(v: unknown): unknown {
   return v == null || String(v).startsWith('2990-') ? v : `2990-${v}`;
 }
 
-// --- remap map, discovered from the live FK graph, cached per isolate --------
-type TableMap = { remapCols: Set<string>; prefixCols: Set<string>; selfRemap: boolean };
+// Explicit per-table column rules, matching migrate-2990-into-houzs.mjs's
+// DOCNO_COL + PREFIX_REF_COLS + NULL_COLS. so-mirror only handles the SO trio.
+const PREFIX_COLS: Record<string, string[]> = {
+  // header doc_no (PK) + the cross-category source doc ref
+  mfg_sales_orders: ['doc_no', 'cross_category_source_doc_no'],
+  mfg_sales_order_items: ['doc_no'],
+  mfg_sales_order_payments: ['so_doc_no'],
+};
+const NULL_COLS: Record<string, string[]> = {
+  // venue_id points at scm.venues, which the import nulls on load (source value
+  // references a master row that isn't reconciled across companies).
+  mfg_sales_orders: ['venue_id'],
+};
+
+// --- dest-column map, cached per isolate -------------------------------------
+type TableMap = { prefixCols: Set<string>; nullCols: Set<string>; destCols: Set<string> };
 const mapCache = new Map<string, TableMap>();
 
 async function tableMap(DB: Env['DB'], table: string): Promise<TableMap> {
   const cached = mapCache.get(table);
   if (cached) return cached;
 
-  // FK columns of `table` whose PARENT table is company-scoped (has company_id)
-  // → those references were id-remapped by the import, so we remap them too.
-  // Parents WITHOUT company_id (staff, my_localities, …) are shared → skip.
-  const fk = await DB.prepare(
-    `SELECT a.attname AS col
-       FROM pg_constraint c
-       JOIN pg_class cl   ON cl.oid = c.conrelid
-       JOIN pg_namespace n ON n.oid = cl.relnamespace
-       JOIN pg_class fcl  ON fcl.oid = c.confrelid
-       JOIN pg_namespace fn ON fn.oid = fcl.relnamespace
-       CROSS JOIN LATERAL unnest(c.conkey) k(attnum)
-       JOIN pg_attribute a ON a.attrelid = cl.oid AND a.attnum = k.attnum
-      WHERE c.contype = 'f' AND n.nspname = 'scm' AND cl.relname = ?
-        AND array_length(c.conkey,1) = 1
-        AND EXISTS (SELECT 1 FROM information_schema.columns ic
-                     WHERE ic.table_schema = fn.nspname AND ic.table_name = fcl.relname
-                       AND ic.column_name = 'company_id')`,
-  ).bind(table).all<{ col: string }>();
-
-  // text doc-ref columns → prefix (same name heuristic the import uses)
-  const dr = await DB.prepare(
+  // Destination columns — used to DROP any 2990-only source column so an INSERT
+  // can't 500 on an unknown column (schema drift between the two ERPs).
+  const dc = await DB.prepare(
     `SELECT column_name AS col FROM information_schema.columns
-      WHERE table_schema='scm' AND table_name=? AND data_type IN ('text','character varying')
-        AND (column_name LIKE '%doc_no%' OR column_name LIKE '%\\_number%' OR column_name LIKE '%reference%' OR column_name IN ('ref','po_doc_no'))`,
+      WHERE table_schema='scm' AND table_name=?`,
   ).bind(table).all<{ col: string }>();
-
-  const selfRemap = (await DB.prepare(
-    `SELECT 1 FROM information_schema.columns WHERE table_schema='scm' AND table_name=? AND column_name='id'`,
-  ).bind(table).first()) != null;
 
   const m: TableMap = {
-    remapCols: new Set((fk.results ?? []).map((r: { col: string }) => r.col)),
-    prefixCols: new Set((dr.results ?? []).map((r: { col: string }) => r.col)),
-    selfRemap,
+    prefixCols: new Set(PREFIX_COLS[table] ?? []),
+    nullCols: new Set(NULL_COLS[table] ?? []),
+    destCols: new Set((dc.results ?? []).map((r: { col: string }) => r.col)),
   };
   mapCache.set(table, m);
   return m;
 }
 
 function applyMap(row: Record<string, unknown>, m: TableMap): Record<string, unknown> {
-  const out: Record<string, unknown> = { ...row, company_id: C2990 };
-  if (m.selfRemap && 'id' in out) out.id = remapId(out.id);
-  for (const col of m.remapCols) if (out[col] != null) out[col] = remapId(out[col]);
+  const out: Record<string, unknown> = {};
+  // Keep only columns that exist in the Houzs dest table (drop 2990-only cols).
+  for (const [k, v] of Object.entries(row)) {
+    if (m.destCols.has(k)) out[k] = v;
+  }
+  // Stamp the 2990 company (dest always carries company_id for these tables).
+  out.company_id = C2990;
+  // Prefix doc-number columns; ids/FKs pass through UNCHANGED (match the import).
   for (const col of m.prefixCols) if (out[col] != null) out[col] = prefixDoc(out[col]);
+  // Null columns the import nulls (e.g. venue_id) when present in dest.
+  for (const col of m.nullCols) if (col in out) out[col] = null;
   return out;
 }
 

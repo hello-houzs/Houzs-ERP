@@ -31,6 +31,7 @@
 
 import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
+import { activeCompanyId } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 export const documentFlow = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -140,7 +141,7 @@ async function soDocNosFromDoItems(sb: any, doItemIds: string[]): Promise<string
      purchase_consignment_returns.pc_order_id / .pc_receive_id
      purchase_consignment_return_items.pc_receive_item_id                       */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function buildConsignmentFlow(sb: any, type: NodeType, id: string) {
+async function buildConsignmentFlow(sb: any, type: NodeType, id: string, cid: number | null) {
   const anchorKey = keyOf(type, id);
   const nodes = new Map<string, FlowNode>();
   const edges: FlowEdge[] = [];
@@ -167,6 +168,13 @@ async function buildConsignmentFlow(sb: any, type: NodeType, id: string) {
       }
     }
     if (!rootDoc) return orphan([]);
+
+    // Multi-company: only trace this consignment family if the ACTIVE company
+    // owns the root order — otherwise collapse to the orphan anchor.
+    if (cid != null) {
+      const { data: own } = await sb.from('consignment_sales_orders').select('company_id').eq('doc_no', rootDoc).maybeSingle();
+      if (!own || Number(own.company_id) !== cid) return orphan([]);
+    }
 
     const { data: so } = await sb.from('consignment_sales_orders').select('doc_no, status').eq('doc_no', rootDoc).maybeSingle();
     if (so) {
@@ -246,6 +254,13 @@ async function buildConsignmentFlow(sb: any, type: NodeType, id: string) {
   }
   if (!rootPco) return orphan([]);
 
+  // Multi-company: only trace this PC family if the ACTIVE company owns the root
+  // PC order — otherwise collapse to the orphan anchor.
+  if (cid != null) {
+    const { data: own } = await sb.from('purchase_consignment_orders').select('company_id').eq('id', rootPco).maybeSingle();
+    if (!own || Number(own.company_id) !== cid) return orphan([]);
+  }
+
   const { data: po } = await sb.from('purchase_consignment_orders').select('id, pc_number, status').eq('id', rootPco).maybeSingle();
   if (po) {
     const k = keyOf('pco', po.id);
@@ -323,12 +338,33 @@ documentFlow.get('/:type/:id', async (c) => {
     return c.json({ error: 'bad_type' }, 400);
   }
 
+  // Multi-company: the graph is isolated to the ACTIVE company. Resolved once
+  // here and threaded into both the consignment builder and the SO-root filter.
+  const cid = activeCompanyId(c);
+
   // Consignment docs form their own self-contained family graph.
   if (CONSIGNMENT_TYPES.includes(type)) {
-    return c.json(await buildConsignmentFlow(sb, type, id));
+    return c.json(await buildConsignmentFlow(sb, type, id, cid ?? null));
   }
 
-  const rootSos = await resolveRootSos(sb, type, id);
+  let rootSos = await resolveRootSos(sb, type, id);
+
+  // The ENTIRE relationship graph descends from these root SOs (every downstream
+  // read is bounded by `.in('doc_no', rootSos)` or by SO-item ids derived from
+  // them). Filter the roots to the SOs the active company owns, so a caller in
+  // company A can never trace / leak company B's document family. If none of the
+  // roots belong to the active company, the graph collapses to the orphan branch
+  // below (just the anchor the caller already named). No-op when the active
+  // company is unresolved (pre-migration / cold-start).
+  if (cid != null && rootSos.length > 0) {
+    const { data: owned } = await sb
+      .from('mfg_sales_orders')
+      .select('doc_no')
+      .in('doc_no', rootSos)
+      .eq('company_id', cid);
+    rootSos = uniq((owned ?? []).map((r: any) => r.doc_no));
+  }
+
   const anchorKey = keyOf(type, id);
   const nodes = new Map<string, FlowNode>();
   const edges: FlowEdge[] = [];
