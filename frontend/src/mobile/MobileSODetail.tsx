@@ -689,6 +689,62 @@ function SlipLink({ docNo, paymentId }: { docNo: string; paymentId: string }) {
   );
 }
 
+/* Existing-slip preview for the Edit Payment sheet — blob-fetches the persisted
+   payment's slip (same GET /:docNo/payments/:id/slip-url the read-view SlipLink
+   uses) and shows it as a thumbnail the operator taps to open full-size, so they
+   SEE which slip is attached while editing. PDFs (no <img> render) fall back to a
+   "View slip" link. The slip itself is never changed by an edit. */
+function PaymentSlipPreview({ docNo, paymentId }: { docNo: string; paymentId: string }) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [contentType, setContentType] = useState<string>("");
+  const [state, setState] = useState<"loading" | "ready" | "error">("loading");
+  useEffect(() => {
+    let live = true;
+    let objUrl: string | null = null;
+    (async () => {
+      try {
+        const res = await fetchPaymentSlipUrl(docNo, paymentId);
+        if (!live) { URL.revokeObjectURL(res.url); return; }
+        objUrl = res.url;
+        setUrl(res.url);
+        setContentType(res.contentType);
+        setState("ready");
+      } catch {
+        if (live) setState("error");
+      }
+    })();
+    return () => { live = false; if (objUrl) URL.revokeObjectURL(objUrl); };
+  }, [docNo, paymentId]);
+  const isPdf = contentType.includes("pdf");
+  return (
+    <div className="fld">
+      <span className="fld-l">Attached slip</span>
+      {state === "loading" ? (
+        <div style={{ fontSize: 11.5, color: "var(--mut)", padding: "6px 0" }}>Loading slip…</div>
+      ) : state === "error" || !url ? (
+        <div style={{ fontSize: 11.5, color: "var(--mut)", padding: "6px 0" }}>Couldn't load the attached slip.</div>
+      ) : isPdf ? (
+        <button
+          type="button"
+          onClick={() => window.open(url, "_blank", "noopener")}
+          style={{ width: "100%", boxSizing: "border-box", height: 40, borderRadius: 9, cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, border: "1px solid #bcdcd7", background: "#e1efed", color: "#16695f" }}
+        >
+          View attached slip (PDF)
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={() => window.open(url, "_blank", "noopener")}
+          title="Open slip full-size"
+          style={{ padding: 0, border: "1px solid #d6d9d2", borderRadius: 9, background: "#f4f6f3", cursor: "pointer", overflow: "hidden", display: "block", width: "fit-content" }}
+        >
+          <img src={url} alt="Payment slip" style={{ display: "block", maxHeight: 120, maxWidth: "100%", objectFit: "contain" }} />
+        </button>
+      )}
+    </div>
+  );
+}
+
 /* ── Add Payment sheet ───────────────────────────────────────────────────────
    Standalone payment-recording flow for a LOCKED (or unlocked) submitted SO.
    Records ONE slip-backed payment through POST /:docNo/payments — the SAME
@@ -895,6 +951,12 @@ function AddPaymentSheet({
                 {staff.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
               </select>
             </div>
+            {/* Edit mode — show the EXISTING attached slip so the operator can
+                see what's on the row while editing (owner request). The slip is
+                not changed by an edit; this is view-only. */}
+            {isEdit && editPayment?.slip_key && (
+              <PaymentSlipPreview docNo={docNo} paymentId={editPayment.id} />
+            )}
             {/* Owner 2026-07-13 — slip is OPTIONAL. Uploader stays available for
                 when a receipt IS on hand; no "required" gate. Hidden in edit
                 mode (the slip isn't changed by an edit). */}

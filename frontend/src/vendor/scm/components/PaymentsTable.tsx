@@ -1045,6 +1045,26 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
                 </span>
                 {showSlip && (
                   <span className={paymentsStyles.cell} data-label="Slip">
+                    {/* Edit mode — show the EXISTING attached slip (the persisted
+                        row is hidden while its edit draft is open, so its Slip
+                        thumbnail would otherwise disappear). Reuses the same
+                        PaymentSlipThumb the read-view row renders. View-only; an
+                        edit never changes the slip. */}
+                    {(() => {
+                      const editedRow = d.editingPersistedId
+                        ? persistedPayments.find((p) => p.id === d.editingPersistedId)
+                        : undefined;
+                      return editedRow ? (
+                        <div style={{ marginBottom: 4 }}>
+                          <PaymentSlipThumb
+                            docNo={(props as SavedModeProps).docNo}
+                            payment={editedRow}
+                            orderSlipUrl={slipUrl}
+                            orderSlipType={slipType}
+                          />
+                        </div>
+                      ) : null;
+                    })()}
                     {/* Owner 2026-07-13 — per-payment slip uploader is OPTIONAL
                         now (a receipt isn't always available); commit no longer
                         waits on it. Still offered for when one IS on hand. */}
