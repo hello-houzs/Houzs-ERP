@@ -40,6 +40,7 @@ import {
   Play,
   UserCircle2,
   Users,
+  Phone,
   ClipboardList,
   DollarSign,
   Wrench,
@@ -164,6 +165,7 @@ interface ProjectDetail {
     pic_id: number | null;
     pic_name: string | null;
     pic_email: string | null;
+    pic_phone: string | null;
     // Logistics schedule (Notion parity)
     setup_start_at: string | null;
     setup_end_at: string | null;
@@ -263,6 +265,7 @@ interface SalesAttendee {
   sales_rep_id: number;
   rep_code: string | null;
   rep_name: string | null;
+  rep_phone: string | null;
   rep_user_id: number | null;
   user_name: string | null;
   created_at: string | null;
@@ -4588,7 +4591,7 @@ function ProjectDetailContent({
   // brand (owner: Option A). The backend ?department= filter matches the
   // dept name case-insensitively/by-substring (prod = "Sales Department"),
   // and the PIC-save brand gate is brand-relaxed for Sales-dept members.
-  const picUsersQ = useQuery<{ users: Array<{ id: number; name: string | null; email: string }> }>(
+  const picUsersQ = useQuery<{ users: Array<{ id: number; name: string | null; email: string; phone?: string | null }> }>(
     () => api.get(`/api/users?department=${encodeURIComponent("Sales")}`),
     []
   );
@@ -4900,6 +4903,7 @@ interface SalesRepBrief {
   id: number;
   code: string;
   name: string;
+  phone?: string | null;
   brands?: string[];
   brands_csv?: string | null;
 }
@@ -5033,6 +5037,11 @@ function ProjectTeamSection({
                 </option>
               ))}
             </select>
+            {p.pic_phone && (
+              <div className="mt-1 flex items-center gap-1 text-[11px] text-ink-secondary">
+                <Phone size={11} /> {p.pic_phone}
+              </div>
+            )}
             {picUsers.length === 0 && !picUsersLoading && (
               <div className="mt-1 text-[9.5px] leading-snug text-warning-text">
                 No Sales-department members found.
@@ -5040,9 +5049,16 @@ function ProjectTeamSection({
             )}
           </>
         ) : (
-          <div className="text-[12.5px] font-medium text-ink">
-            {p.pic_name || "—"}
-          </div>
+          <>
+            <div className="text-[12.5px] font-medium text-ink">
+              {p.pic_name || "—"}
+            </div>
+            {p.pic_phone && (
+              <div className="mt-0.5 flex items-center gap-1 text-[11px] text-ink-secondary">
+                <Phone size={11} /> {p.pic_phone}
+              </div>
+            )}
+          </>
         )}
       </div>
 
@@ -5065,6 +5081,11 @@ function ProjectTeamSection({
                 <span className="font-medium text-ink">
                   {a.rep_name || a.user_name || `#${a.sales_rep_id}`}
                 </span>
+                {a.rep_phone && (
+                  <span className="font-mono text-[9px] text-ink-muted">
+                    {a.rep_phone}
+                  </span>
+                )}
                 {a.rep_code && (
                   <span className="font-mono text-[9px] text-ink-muted">
                     {a.rep_code}
@@ -5126,6 +5147,11 @@ function ProjectTeamSection({
                           {r.code}
                         </span>
                         <span className="truncate text-ink">{r.name}</span>
+                        {r.phone && (
+                          <span className="ml-auto shrink-0 font-mono text-[9.5px] text-ink-muted">
+                            {r.phone}
+                          </span>
+                        )}
                       </label>
                     ))
                   )}

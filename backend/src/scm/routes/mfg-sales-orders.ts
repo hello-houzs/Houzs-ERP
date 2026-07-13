@@ -8081,14 +8081,23 @@ mfgSalesOrders.patch('/:docNo/payments/:id', async (c) => {
   };
   if (before.so_doc_no !== docNo) return c.json({ error: 'payment_doc_mismatch' }, 400);
 
-  /* Same-day lock — compare the row's created_at (UTC) to now, both as MYT
-     calendar days via the shared helper (never raw new Date()). Different day →
-     locked. */
+  /* Same-day lock — a payment recorded TODAY (MYT) can be corrected; after
+     midnight the day's cash-up is settled and it LOCKS. EXEMPT DRAFT SOs: a
+     draft isn't confirmed/settled yet (e.g. an OCR-scanned draft whose payment
+     was mis-read), so its payments must stay freely editable — mirrors the
+     frontend's draftUnlocked (2026-07-13), which was never matched here. */
   if (mytDateOf(before.created_at) !== todayMyt()) {
-    return c.json({
-      error: 'payment_edit_locked',
-      reason: 'This payment can only be edited on the day it was recorded.',
-    }, 409);
+    const { data: soRow } = await sb
+      .from('mfg_sales_orders')
+      .select('status')
+      .eq('doc_no', docNo)
+      .maybeSingle();
+    if ((soRow?.status as string | undefined) !== 'DRAFT') {
+      return c.json({
+        error: 'payment_edit_locked',
+        reason: 'This payment can only be edited on the day it was recorded.',
+      }, 409);
+    }
   }
 
   let body: unknown;
