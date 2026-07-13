@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Plus, Copy, Trash2, UserX, UserCheck, X, KeyRound, Pencil, Check, Tag, RefreshCw, Search, ArrowUp, ArrowDown, ChevronsUpDown, Printer, LayoutGrid, List, Phone, Mail, AtSign, ArrowLeft, SlidersHorizontal, Eye, EyeOff, Users, ShieldCheck, Network, Building2, type LucideIcon } from "lucide-react";
+import { Plus, Copy, Trash2, UserX, UserCheck, X, KeyRound, Pencil, Check, Tag, RefreshCw, Search, ArrowUp, ArrowDown, ChevronsUpDown, Printer, LayoutGrid, List, Phone, Mail, AtSign, ArrowLeft, SlidersHorizontal, Eye, EyeOff, Users, ShieldCheck, Network, Building2, LogIn, type LucideIcon } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { TabStrip, type TabOption } from "../components/TabStrip";
 import { Button } from "../components/Button";
@@ -18,7 +18,7 @@ import { Badge } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
 import { useStickyFilters } from "../hooks/useStickyFilters";
 import { useLocalStorage } from "../hooks/useLocalStorage";
-import { api } from "../api/client";
+import { api, tokenStore } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { relativeTime, cn } from "../lib/utils";
 import type { TeamMember, Invitation, Role, Department, Position } from "../types";
@@ -400,6 +400,43 @@ function MembersTab({
   const [resendingId, setResendingId] = useState<number | null>(null);
 
   const canManage = can("users.manage");
+
+  // Staging-only "login as member": the backend probe reports enabled only
+  // when the worker runs with IMPERSONATION_ENABLED (staging vars block), so
+  // the button never appears on prod even though it's the same bundle.
+  const [canImpersonate, setCanImpersonate] = useState(false);
+  useEffect(() => {
+    if (!canManage) return;
+    let alive = true;
+    api
+      .get<{ enabled: boolean }>("/api/users/impersonation-enabled")
+      .then((r) => {
+        if (alive) setCanImpersonate(!!r.enabled);
+      })
+      .catch(() => {
+        /* disabled or unreachable — keep the button hidden */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [canManage]);
+
+  async function loginAs(u: TeamMember) {
+    if (
+      !(await dialog.confirm(
+        `Log in as ${u.name || u.email}?\n\nYour current session will be replaced — to come back, log out and sign in with your own account again.`
+      ))
+    )
+      return;
+    try {
+      const res = await api.post<{ token: string }>(`/api/users/${u.id}/impersonate`, {});
+      tokenStore.set(res.token, true);
+      // Full reload so the app re-bootstraps as the target user everywhere.
+      window.location.assign("/");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Could not log in as this member");
+    }
+  }
 
   function reload() {
     members.reload();
@@ -915,20 +952,32 @@ function MembersTab({
     {
       key: "actions",
       label: "",
-      width: "72px",
+      width: "168px",
       align: "right",
       render: (u) => {
         const manageable = canManage && u.id !== me?.id;
         if (!manageable) return <span className="text-[11px] text-ink-muted">—</span>;
         return (
-          <button
-            onClick={() => setEditing(u)}
-            title="Edit member"
-            aria-label="Edit member"
-            className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-[11px] font-semibold text-ink-secondary transition-colors hover:border-accent/40 hover:bg-accent-soft/50 hover:text-accent"
-          >
-            <Pencil size={12} /> Edit
-          </button>
+          <span className="inline-flex items-center gap-1">
+            {canImpersonate && u.status === "active" && (
+              <button
+                onClick={() => loginAs(u)}
+                title="Log in as this member (staging)"
+                aria-label="Log in as this member"
+                className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-[11px] font-semibold text-ink-secondary transition-colors hover:border-accent/40 hover:bg-accent-soft/50 hover:text-accent"
+              >
+                <LogIn size={12} /> Login as
+              </button>
+            )}
+            <button
+              onClick={() => setEditing(u)}
+              title="Edit member"
+              aria-label="Edit member"
+              className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2 py-1 text-[11px] font-semibold text-ink-secondary transition-colors hover:border-accent/40 hover:bg-accent-soft/50 hover:text-accent"
+            >
+              <Pencil size={12} /> Edit
+            </button>
+          </span>
         );
       },
     },
