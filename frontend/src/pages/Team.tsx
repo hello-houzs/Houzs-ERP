@@ -836,22 +836,22 @@ function MembersTab({
       );
       if (!ok) return;
     }
+    type Outcome = { kind: "invite" | "reset"; sent: boolean };
     try {
-      const results = await Promise.allSettled([
+      const results = await Promise.allSettled<Outcome>([
         ...selectedInvited.map((u) =>
           api
             .post<{ email_sent?: boolean }>(`/api/users/${u.id}/resend-invite`)
-            .then((r) => ({ kind: "invite" as const, sent: !!r?.email_sent })),
+            .then((r): Outcome => ({ kind: "invite", sent: !!r?.email_sent })),
         ),
         ...selectedActive.map((u) =>
           api
             .post<{ email_sent?: boolean }>(`/api/users/${u.id}/reset-password`)
-            .then((r) => ({ kind: "reset" as const, sent: !!r?.email_sent })),
+            .then((r): Outcome => ({ kind: "reset", sent: !!r?.email_sent })),
         ),
       ]);
       const ok = results.filter(
-        (r): r is PromiseFulfilledResult<{ kind: string; sent: boolean }> =>
-          r.status === "fulfilled",
+        (r): r is PromiseFulfilledResult<Outcome> => r.status === "fulfilled",
       );
       const invitesSent = ok.filter((r) => r.value.kind === "invite" && r.value.sent).length;
       const resetsSent = ok.filter((r) => r.value.kind === "reset" && r.value.sent).length;
