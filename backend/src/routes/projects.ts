@@ -1291,8 +1291,10 @@ app.get("/analytics/profitability", requirePageAccess("projects.finances"), asyn
   });
 });
 
-// Project-scoped sales-attending picker source — active 'sales_person' reps,
-// brand-relaxed (owner: Option A). MUST be registered BEFORE the "/:id" detail
+// Project-scoped sales-attending picker source — every active sales-team
+// member regardless of sales position (owner 2026-07-13: managers and
+// directors also do booth duty, so all of them must be assignable).
+// Brand-relaxed (owner: Option A). MUST be registered BEFORE the "/:id" detail
 // route below: it's a single-segment static path, so if "/:id" is matched
 // first Hono treats "sales-rep-options" as a project id -> parseInt NaN -> 400
 // "Invalid ID", which surfaced as the empty "No Sales Persons available"
@@ -1302,11 +1304,8 @@ app.get("/sales-rep-options", requirePermission("projects.write"), async (c) => 
   const rows = await c.env.DB.prepare(
     `SELECT r.id, r.code, r.name
        FROM sales_reps r
-       JOIN sales_positions p ON p.id = r.position_id
       WHERE r.archived_at IS NULL
         AND r.status = 'active'
-        AND p.slug = 'sales_person'
-      GROUP BY r.id
       ORDER BY r.code`
   ).all<{ id: number; code: string; name: string }>();
   return c.json({ data: rows.results ?? [] });

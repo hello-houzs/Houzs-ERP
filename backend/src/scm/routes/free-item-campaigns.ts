@@ -7,6 +7,7 @@ import { parseFreeItemEligible, ruleTargetSchema } from '../shared';
 import { supabaseAuth } from '../middleware/auth';
 import { hasHouzsPerm } from '../lib/houzs-perms';
 import type { Env, Variables } from '../env';
+import { activeCompanyId } from '../lib/companyScope';
 
 type AppContext = Context<{ Bindings: Env; Variables: Variables }>;
 
@@ -68,7 +69,7 @@ freeItemCampaigns.post('/', async (c) => {
   const eligible = parseFreeItemEligible(parsed.data.eligible);
   const { data, error } = await gate.supabase
     .from('free_item_campaigns')
-    .insert({ name: parsed.data.name, active: parsed.data.active, max_free_qty: parsed.data.maxFreeQty, eligible, created_by: gate.userId })
+    .insert({ company_id: activeCompanyId(c), name: parsed.data.name, active: parsed.data.active, max_free_qty: parsed.data.maxFreeQty, eligible, created_by: gate.userId }) // multi-company: stamp the active company
     .select('id');
   if (error) return c.json({ error: 'create_failed', reason: error.message }, 500);
   if (!data || data.length === 0) return c.json({ error: 'create_failed', reason: 'rls_blocked_zero_rows' }, 403);

@@ -195,7 +195,7 @@ async function warehouseCodeMap(
    delta 0 everywhere and writes nothing. Best-effort. */
 async function resyncReturnInventory(sb: any, returnId: string, performedBy: string | null): Promise<string[]> {
   const { data: header } = await sb.from('consignment_delivery_returns')
-    .select('return_number, status, warehouse_id').eq('id', returnId).maybeSingle();
+    .select('return_number, status, warehouse_id, company_id').eq('id', returnId).maybeSingle();
   if (!header) return [];
   const status = ((header as { status: string | null }).status ?? '').toUpperCase();
   const returnNo = (header as { return_number: string }).return_number ?? returnId;
@@ -291,7 +291,8 @@ async function resyncReturnInventory(sb: any, returnId: string, performedBy: str
   }
 
   if (writes.length === 0) return [];
-  const res = await writeMovements(sb, writes);
+  // Multi-company: resync movements inherit the return's company.
+  const res = await writeMovements(sb, writes, (header as { company_id?: number | null }).company_id ?? null);
   try {
     const { recomputeSoStockAllocation } = await import('../lib/so-stock-allocation');
     await recomputeSoStockAllocation(sb);
@@ -445,6 +446,7 @@ async function insertHeader(sb: any, userId: string, body: Record<string, unknow
   return insertWithDocNoRetry<{ id: string; return_number: string }>(
     () => nextNum(sb, c),
     (returnNumber) => sb.from('consignment_delivery_returns').insert({
+    company_id: activeCompanyId(c), // multi-company: stamp the active company
     return_number: returnNumber,
     do_doc_no: (body.doDocNo as string) ?? (body.cnDocNo as string) ?? null,
     consignment_do_id: (body.consignmentDoId as string) ?? (body.deliveryOrderId as string) ?? null,
@@ -517,7 +519,7 @@ consignmentReturns.post('/', async (c) => {
   const h = header as unknown as { id: string; return_number: string };
 
   const rows = items.map((it) => buildItemRow(h.id, it));
-  const { error: iErr } = await sb.from('consignment_delivery_return_items').insert(rows);
+  const { error: iErr } = await sb.from('consignment_delivery_return_items').insert(stampCompany(rows, c));
   if (iErr) { await sb.from('consignment_delivery_returns').delete().eq('id', h.id); return c.json({ error: 'items_insert_failed', reason: iErr.message }, 500); }
   await recomputeTotals(sb, h.id);
 
@@ -602,7 +604,7 @@ consignmentReturns.post('/:id/items', async (c) => {
   if (!header) return c.json({ error: 'not_found' }, 404);
 
   const row = buildItemRow(id, it);
-  const { data, error } = await sb.from('consignment_delivery_return_items').insert(row).select(ITEM).single();
+  const { data, error } = await sb.from('consignment_delivery_return_items').insert({ ...row, company_id: activeCompanyId(c) }).select(ITEM).single();
   if (error) return c.json({ error: 'insert_failed', reason: error.message }, 500);
   await recomputeTotals(sb, id);
   /* Adding a return line books its IN too (self-healing resync). Best-effort. */

@@ -1116,6 +1116,7 @@ productModels.post('/:id/photos', async (c) => {
     ((maxRow as { sort_order: number } | null)?.sort_order ?? -1) + 1;
 
   const insertRow = {
+    company_id: activeCompanyId(c), // multi-company: stamp the active company
     model_id: id,
     r2_key: r2Key,
     sort_order: nextOrder,

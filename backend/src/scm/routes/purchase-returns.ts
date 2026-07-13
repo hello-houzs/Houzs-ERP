@@ -263,6 +263,10 @@ async function warehouseCodeMap(
 }
 
 async function writePurchaseReturnMovements(sb: any, prId: string, returnNumber: string, grnId: string | null, userId: string): Promise<string[]> {
+  // Multi-company: the PR's movements inherit the PR header's company.
+  const { data: prHeader } = await sb.from('purchase_returns')
+    .select('company_id').eq('id', prId).maybeSingle();
+  const prCompanyId = (prHeader as { company_id?: number | null } | null)?.company_id ?? null;
   const { data: items } = await sb.from('purchase_return_items')
     .select('id, grn_item_id, material_code, material_name, qty_returned, item_group, variants')
     .eq('purchase_return_id', prId);
@@ -341,7 +345,7 @@ async function writePurchaseReturnMovements(sb: any, prId: string, returnNumber:
     /* Capture the best-effort write result so the caller can surface a failed
        stock OUT (was silently swallowed — PR created with stock NOT returned to
        the supplier and the caller never told). No rollback; just make it loud. */
-    const res = await writeMovements(sb, movements);
+    const res = await writeMovements(sb, movements, prCompanyId);
     if (!res.ok) movementErrors.push(`OUT ${returnNumber}: ${res.reason ?? 'unknown'}`);
     /* PR post = stock OUT to supplier → other READY SOs that needed it may
        regress. Re-walk SO allocation. Best-effort. */
@@ -405,6 +409,9 @@ async function writePrLineDeltaMovement(
       const row = ((inRes.data ?? []) as Array<{ unit_cost_sen?: number | null }>)[0];
       unitCostSen = Number(row?.unit_cost_sen ?? 0);
     }
+    // Multi-company: the delta movement inherits the PR header's company.
+    const { data: prHeader } = await sb.from('purchase_returns')
+      .select('company_id').eq('id', args.prId).maybeSingle();
     await writeMovements(sb, [{
       movement_type: isOut ? 'OUT' : 'IN',
       warehouse_id: warehouseId,
@@ -419,7 +426,7 @@ async function writePrLineDeltaMovement(
       source_doc_no: args.returnNumber,
       performed_by: args.userId,
       notes: isOut ? 'PR line added/increased' : 'PR line reduced/removed — reversing return',
-    }]);
+    }], (prHeader as { company_id?: number | null } | null)?.company_id ?? null);
     try {
       const { recomputeSoStockAllocation } = await import('../lib/so-stock-allocation');
       await recomputeSoStockAllocation(sb);
