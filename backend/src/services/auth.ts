@@ -130,6 +130,14 @@ export interface AuthUser {
   scope_to_pic: boolean;
   /** Department membership — drives the brand allow-list below. */
   department_id: number | null;
+  /** Department NAME (departments.name via u.department_id). STABLE ORG FIELD
+   *  used by the code-keyed Sales access model (see services/pmsAccess.ts
+   *  isSalesUser) — matched case-insensitively on "sales" because prod names
+   *  the dept "Sales Department" while the seed is "Sales" (same rule as
+   *  salesTeam.syncSalesRepFromUser). Hydrated once per session alongside
+   *  position_name; null when the user has no department assigned. Optional so
+   *  hand-built AuthUser literals (tests, SERVICE_USER) don't need to set it. */
+  department_name?: string | null;
   /**
    * Brand allow-list for scoped users — null when the role isn't
    * scope_to_pic (admins, ops, finance). Empty array when the user is
@@ -242,6 +250,7 @@ async function hydrateAuthUser(env: Env, row: any): Promise<AuthUser> {
     manager_id: managerId,
     scope_to_pic: scoped,
     department_id: row.department_id ?? null,
+    department_name: row.department_name ?? null,
     brand_scope: brandScope,
     page_access: pageAccess,
     scm_l2_configured: scmMeta.explicitScm,
@@ -268,11 +277,13 @@ export async function getUserBySession(env: Env, token: string): Promise<AuthUse
             r.name as role_name, r.permissions as role_permissions,
             r.scope_to_pic,
             p.name as position_name,
+            d.name as department_name,
             s.expires_at
      FROM sessions s
      JOIN users u ON u.id = s.user_id
      JOIN roles r ON r.id = u.role_id
      LEFT JOIN positions p ON p.id = u.position_id
+     LEFT JOIN departments d ON d.id = u.department_id
      WHERE s.token = ?`
   )
     .bind(token)
@@ -299,10 +310,12 @@ export async function getUserById(env: Env, id: number): Promise<AuthUser | null
             u.profile_pic_r2_key,
             r.name as role_name, r.permissions as role_permissions,
             r.scope_to_pic,
-            p.name as position_name
+            p.name as position_name,
+            d.name as department_name
      FROM users u
      JOIN roles r ON r.id = u.role_id
      LEFT JOIN positions p ON p.id = u.position_id
+     LEFT JOIN departments d ON d.id = u.department_id
      WHERE u.id = ?`
   )
     .bind(id)

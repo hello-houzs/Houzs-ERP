@@ -4,6 +4,8 @@ import {
   isFinanceViewer,
   financeHiddenForUser,
   isSensitiveChecklistItem,
+  isSalesUser,
+  isDirectorUser,
 } from "../src/services/pmsAccess";
 import { stripSensitiveChecklist } from "../src/services/projects";
 import type { AuthUser } from "../src/services/auth";
@@ -12,7 +14,12 @@ import type { AuthUser } from "../src/services/auth";
 // security boundary that hides financial/rental from non-finance positions.
 // PIC is per-project (project.pic_id === user.id), not a job title.
 
-function user(over: { id?: number; position_name?: string | null; perms?: string[] }): AuthUser {
+function user(over: {
+  id?: number;
+  position_name?: string | null;
+  department_name?: string | null;
+  perms?: string[];
+}): AuthUser {
   const perms = over.perms ?? [];
   return {
     id: over.id ?? 1,
@@ -28,6 +35,7 @@ function user(over: { id?: number; position_name?: string | null; perms?: string
     manager_id: null,
     scope_to_pic: false,
     department_id: null,
+    department_name: over.department_name ?? null,
     brand_scope: null,
     page_access: {},
   } as AuthUser;
@@ -130,6 +138,51 @@ describe("pmsAccess — project-detail section gating", () => {
     expect(a.role).toBe("OTHER");
     expect(a.canFinancial).toBe(false);
     expect(a.sections).not.toContain("FINANCIAL");
+  });
+});
+
+// Org-field Sales / director helpers — the code-keyed gate the Service-Case
+// access model (rule 8) and the SO/SC data scope (rule 9 director bypass) share.
+describe("isSalesUser / isDirectorUser — stable org-field access model", () => {
+  test("Sales by position title (starts with 'Sales ')", () => {
+    expect(isSalesUser(user({ position_name: "Sales Executive" }))).toBe(true);
+    expect(isSalesUser(user({ position_name: "Sales Coordinator" }))).toBe(true);
+  });
+
+  test("Sales by department name (contains 'sales', case-insensitive)", () => {
+    // No sales position, but the department carries it — prod names it
+    // "Sales Department"; the seed is "Sales".
+    expect(isSalesUser(user({ position_name: "Coordinator", department_name: "Sales Department" }))).toBe(true);
+    expect(isSalesUser(user({ position_name: null, department_name: "sales" }))).toBe(true);
+  });
+
+  test("non-sales users are not Sales", () => {
+    expect(isSalesUser(user({ position_name: "Ops Manager", department_name: "Operations" }))).toBe(false);
+    expect(isSalesUser(user({ position_name: null, department_name: null }))).toBe(false);
+    expect(isSalesUser(null)).toBe(false);
+  });
+
+  test("director = wildcard OR director/finance position", () => {
+    expect(isDirectorUser(user({ perms: ["*"], position_name: null }))).toBe(true);
+    expect(isDirectorUser(user({ position_name: "Super Admin" }))).toBe(true);
+    expect(isDirectorUser(user({ position_name: "Sales Director" }))).toBe(true);
+    expect(isDirectorUser(user({ position_name: "Finance Manager" }))).toBe(true);
+  });
+
+  test("Sales Director is a director (director tier governs the data scope)", () => {
+    // "Sales Director" matches BOTH helpers (/^Sales / also matches the "Sales "
+    // prefix). That's harmless for the gate — both admit the caller — and the
+    // data-scope bypass (assrVisibleUserIds) keys off isDirectorUser, so a Sales
+    // Director gets the unrestricted "sees ALL" tier, not the scoped Sales tier.
+    const sd = user({ position_name: "Sales Director" });
+    expect(isDirectorUser(sd)).toBe(true);
+    expect(isSalesUser(sd)).toBe(true);
+  });
+
+  test("Sales Executive is Sales, not a director", () => {
+    const se = user({ position_name: "Sales Executive" });
+    expect(isSalesUser(se)).toBe(true);
+    expect(isDirectorUser(se)).toBe(false);
   });
 });
 

@@ -25,6 +25,7 @@ const SERVICE_USER: AuthUser = {
   manager_id: null,
   scope_to_pic: false,
   department_id: null,
+  department_name: null,
   brand_scope: null,
   page_access: fullAccessMap(),
   // Service user holds `*`, so scmAreaGuard bypasses it via the wildcard
