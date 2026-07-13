@@ -145,7 +145,11 @@ export function withCompanyCode<T extends Record<string, unknown>>(
  * shared docs (trips / delivery-planning) — those keep one shared sequence.
  */
 export function companyDocPrefix(c: Context<any>): string {
-  const code = c.get("companyCode") as string | undefined;
-  if (!code || code === "HOUZS") return "";
+  const code = c.get("companyCode");
+  // Only prefix with a real, non-base company code. A non-string (e.g. a whole
+  // company object leaking in from a reconstructed context — as the scan
+  // background job did, minting "[object Object]-SO-2607-001") falls back to
+  // BARE numbering instead of stringifying to "[object Object]-".
+  if (typeof code !== "string" || !code || code === "HOUZS") return "";
   return `${code}-`;
 }
