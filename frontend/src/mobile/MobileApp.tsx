@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../auth/AuthContext";
+import { isSalesStaff, isSalesNonDirector } from "../auth/salesAccess";
 import { NAV_TABS, type NavTab } from "../components/Sidebar";
 import { NotifyProvider, useNotify } from "../vendor/scm/components/NotifyDialog";
 import { ConfirmProvider, useConfirm } from "../vendor/scm/components/ConfirmDialog";
@@ -230,6 +231,11 @@ function MobileAppInner() {
   };
 
   const visible = (t: NavTab): boolean => {
+    // Sales-access model — mirror the desktop Sidebar filterTab so mobile stays
+    // consistent (OFF, not hidden). HIDE first, then the Sales show-bypass.
+    if (t.hideForSalesNonDirector && isSalesNonDirector(user)) return false;
+    const salesBypass = !!t.showForSales && isSalesStaff(user);
+    if (salesBypass) return true;
     if (t.perm && !can(t.perm)) return false;
     if (t.anyPerm || t.anyAccess) {
       const navPerms = user?.scm_l2_configured && t.anyPerm ? t.anyPerm.filter((p) => p !== "scm.access") : t.anyPerm;
