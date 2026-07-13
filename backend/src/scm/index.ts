@@ -19,6 +19,7 @@ import { sofaCompartmentPhotos } from "./routes/sofa-compartment-photos";
 import { maintenanceConfig } from "./routes/maintenance-config";
 import { sofaCombos } from "./routes/sofa-combos";
 import { sofaQuickPicks } from "./routes/sofa-quick-picks";
+import { personalQuickPicks } from "./routes/personal-quick-picks";
 import { fabricTracking } from "./routes/fabric-tracking";
 import { suppliers } from "./routes/suppliers";
 import { mfgPurchaseOrders } from "./routes/mfg-purchase-orders";
@@ -135,6 +136,12 @@ scm.use("/sofa-combos/*", scmAreaGuard("scm.procurement.products"));
 scm.route("/sofa-combos", sofaCombos);
 scm.use("/sofa-quick-picks/*", scmAreaGuard("scm.procurement.products"));
 scm.route("/sofa-quick-picks", sofaQuickPicks);
+// Personal Quick Picks — per-salesperson saved sofa layouts (WS1 port from 2990,
+// #387). NO area guard: unlike the admin-curated /sofa-quick-picks, every SCM
+// user manages their OWN picks (rows scoped to the real caller via
+// owner_user_id + active company). Gating on the products config area would 403
+// regular salespeople; it falls through to the coarse scm.access umbrella.
+scm.route("/personal-quick-picks", personalQuickPicks);
 scm.use("/fabric-tracking/*", scmAreaGuard("scm.procurement.products"));
 scm.route("/fabric-tracking", fabricTracking);
 // Ported 2026-07-11 — three SO/pricing admin-config CRUD surfaces (backing
