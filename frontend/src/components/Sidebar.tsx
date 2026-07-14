@@ -53,7 +53,7 @@ import {
 import { cn } from "../lib/utils";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useAuth } from "../auth/AuthContext";
-import { isSalesStaff } from "../auth/salesAccess";
+import { isSalesStaff, isSalesDirectorUser } from "../auth/salesAccess";
 import { CompanyMark } from "./CompanyMark";
 import { PresencePanel } from "./PresencePanel";
 import { GlobalSearchTrigger } from "./GlobalSearch";
@@ -124,6 +124,12 @@ export interface NavTab {
    *  keyed off department, NOT the permission matrix. Used so "My Cases"
    *  appears for Sales staff without granting them `service_cases.read`. */
   showForSales?: boolean;
+  /** Sales-access model: ADDITIVELY show this entry to a Sales Director
+   *  (auth/salesAccess.isSalesDirectorUser) even without the usual
+   *  `perm`/`pageAccess` gate — keyed off the exact "Sales Director" position.
+   *  Used for the scoped Team entries (Members / Org Chart / Departments); the
+   *  Positions leaf deliberately OMITS this so it stays hidden from him. */
+  showForSalesDirector?: boolean;
   /** Optional sub-entries. When present, this tab renders as an
    *  expandable group header instead of a click target. */
   children?: NavTab[];
@@ -430,11 +436,16 @@ export const NAV_TABS: NavTab[] = [
     to: "/team?tab=hub",
     anyPerm: ["users.read", "roles.read"],
     pageAccess: "team",
+    // Sales Director → scoped Team (own-dept Members / Org Chart / Departments +
+    // Invite). Bypasses the perm/pageAccess gate on the group header + those
+    // three leaves ONLY; Positions + Mailboxes deliberately omit the flag so
+    // they stay hidden. Backend scopes every leaf to his department.
+    showForSalesDirector: true,
     children: [
-      { to: "/team?tab=members", label: "Members", icon: Users, perm: "users.read", pageAccess: "team" },
+      { to: "/team?tab=members", label: "Members", icon: Users, perm: "users.read", pageAccess: "team", showForSalesDirector: true },
       { to: "/team?tab=positions", label: "Positions", icon: ShieldCheck, perm: "users.manage", pageAccess: "team" },
-      { to: "/team?tab=orgchart", label: "Org Chart", icon: Network, perm: "users.read", pageAccess: "team" },
-      { to: "/team?tab=departments", label: "Departments", icon: Building2, perm: "users.read", pageAccess: "team" },
+      { to: "/team?tab=orgchart", label: "Org Chart", icon: Network, perm: "users.read", pageAccess: "team", showForSalesDirector: true },
+      { to: "/team?tab=departments", label: "Departments", icon: Building2, perm: "users.read", pageAccess: "team", showForSalesDirector: true },
       { to: "/team?tab=mail", label: "Mailboxes", icon: Mail, perm: "mail_center.manage", pageAccess: "team" },
     ],
   },
@@ -557,7 +568,9 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
     // even without the usual permission / page-access gate (keyed off the org
     // department, NOT the config matrix). HIDE gates (above + hidePerm /
     // requireFinanceViewer below) still apply.
-    const salesBypass = !!t.showForSales && isSalesStaff(user);
+    const salesBypass =
+      (!!t.showForSales && isSalesStaff(user)) ||
+      (!!t.showForSalesDirector && isSalesDirectorUser(user));
     if (!salesBypass) {
       if (t.perm && !can(t.perm)) return null;
       // `anyPerm` + `anyAccess` are ORed: when both are present the tab shows

@@ -2,6 +2,7 @@ import type { MiddlewareHandler } from "hono";
 import type { Env } from "../types";
 import { getUserBySession, type AuthUser } from "../services/auth";
 import { hasPermission } from "../services/permissions";
+import { isSalesDirectorUser } from "../services/pmsAccess";
 import {
   fullAccessMap,
   meetsLevel,
@@ -126,6 +127,34 @@ export function requirePermission(perm: string): MiddlewareHandler<{ Bindings: E
       return c.json({ error: `Forbidden: missing ${perm}` }, 403);
     }
     await next();
+  };
+}
+
+/**
+ * ADDITIVE gate: admit the caller if they hold `perm` OR they are a
+ * "Sales Director" (STABLE ORG FIELD position_name, see
+ * services/pmsAccess.isSalesDirectorUser). Used on the Team endpoints
+ * (members list, invite, departments list) so a Sales Director gains a
+ * DEPARTMENT-SCOPED admittance WITHOUT holding the full users.manage /
+ * users.read permission.
+ *
+ * This middleware only OPENS the door — it never widens scope. The handler
+ * MUST still call `salesDirectorScope(...)` (routes/users.ts) to restrict a
+ * caller admitted purely as a Sales Director to their own department. A caller
+ * who already holds `perm` keeps their existing full-admin behaviour unchanged.
+ */
+export function requirePermissionOrSalesDirector(
+  perm: string,
+): MiddlewareHandler<{ Bindings: Env }> {
+  return async (c, next) => {
+    const user = c.get("user");
+    if (!user) return c.json({ error: "Unauthorized" }, 401);
+    const granted = user.permissions_set ?? user.permissions;
+    if (hasPermission(granted, perm) || isSalesDirectorUser(user)) {
+      await next();
+      return;
+    }
+    return c.json({ error: `Forbidden: missing ${perm}` }, 403);
   };
 }
 
