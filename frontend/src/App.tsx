@@ -2,7 +2,7 @@ import { lazy, Suspense } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import { Layout } from "./components/Layout";
 import { useAuth } from "./auth/AuthContext";
-import { isSalesStaff } from "./auth/salesAccess";
+import { isSalesStaff, isDirectorUser } from "./auth/salesAccess";
 import { PageGuard } from "./auth/PageGuard";
 import { Forbidden } from "./pages/Forbidden";
 import { GlobalSearchProvider } from "./components/GlobalSearch";
@@ -203,14 +203,21 @@ function Guard({
 function ScmGuard({
   area,
   allowSales = false,
+  allowDirector = false,
   children,
 }: {
   area: string;
   allowSales?: boolean;
+  /* allowDirector (owner 2026-07-15) — a director (Sales Director / Super Admin /
+   * Finance Manager) is let through even without the flat scm matrix row. Set on
+   * the /scm HUB so the landing grid opens for directors, matching the sub-pages
+   * that already carry allowSales; each card still enforces its own area key. */
+  allowDirector?: boolean;
   children: React.ReactNode;
 }) {
   const { user } = useAuth();
   if (allowSales && isSalesStaff(user)) return <>{children}</>;
+  if (allowDirector && isDirectorUser(user)) return <>{children}</>;
   return (
     <Guard perm="scm.access" anyAccess={[area]}>
       {children}
@@ -447,7 +454,7 @@ export default function App() {
         <Route path="/scm/fleet"                     element={<ScmGuard area="scm.transportation.drivers"><Scm2990Shell><ScmFleetV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/lorry-capacity"            element={<ScmGuard area="scm.transportation.drivers"><Scm2990Shell><ScmLorryCapacityV2 /></Scm2990Shell></ScmGuard>} />
         {/* Supply Chain Hub — section landing page (main app layout, NOT the 2990 shell). */}
-        <Route path="/scm" element={<ScmGuard area="scm"><ScmHub /></ScmGuard>} />
+        <Route path="/scm" element={<ScmGuard area="scm" allowDirector><ScmHub /></ScmGuard>} />
         {/* Nick 2026-07-09 — Level 2 sub-group hubs (mirror /projects?view=hub).
             Each renders NAV_TABS children of the corresponding scm sub-group as
             a card grid. Same ScmGuard as ScmHub — a role with any SCM access

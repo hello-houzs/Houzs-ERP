@@ -69,7 +69,10 @@ const SECTIONS_BY_ROLE: Record<PmsRole, PmsSection[]> = {
 };
 
 // Directors / finance — the only roles that see money on the project.
-const DIRECTOR_POSITIONS = /^(Super Admin|Sales Director|Finance Manager)$/i;
+// Owner 2026-07-15: real positions carry prefixes/variants (e.g. "Test Sales
+// Director"), so match the director title as a word anywhere in the name rather
+// than requiring an exact string. Keep FE auth/salesAccess.ts in lockstep.
+const DIRECTOR_POSITIONS = /\b(Super Admin|Sales Director|Finance Manager)\b/i;
 
 // The EXACT "Sales Director" position — the signal for the department-scoped
 // Team admin grant (owner 2026-07: a Sales Director manages ONLY his own
@@ -80,7 +83,7 @@ const DIRECTOR_POSITIONS = /^(Super Admin|Sales Director|Finance Manager)$/i;
 // isDirectorUser (which also admits Super Admin / Finance Manager, both of whom
 // already hold full admin). This is the single source of truth the users /
 // departments / mail-center routes share for the scoped-admin admittance.
-const SALES_DIRECTOR_POSITION = /^Sales Director$/i;
+const SALES_DIRECTOR_POSITION = /\bSales Director\b/i;
 
 /**
  * True ONLY for the "Sales Director" position (exact, case-insensitive).

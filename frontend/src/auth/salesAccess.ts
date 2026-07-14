@@ -14,7 +14,10 @@ import type { AuthUser, AccessLevel } from "../types";
  */
 
 /** Owner/IT `*` or a director-level position — sees everything. */
-const DIRECTOR_POSITIONS = /^(Super Admin|Sales Director|Finance Manager)$/i;
+// Owner 2026-07-15: real positions carry prefixes/variants (e.g. "Test Sales
+// Director"), so match the director title as a word anywhere in the name rather
+// than requiring an exact string. Mirror of backend services/pmsAccess.ts.
+const DIRECTOR_POSITIONS = /\b(Super Admin|Sales Director|Finance Manager)\b/i;
 
 /** A sales position name — matches "Sales Executive", "Sales Coordinator",
  *  "Sales Director", but ALSO the no-space / punctuated variants that the old
@@ -69,7 +72,7 @@ export function isSalesNonDirector(user: AuthUser | null | undefined): boolean {
  *  "Sales Executive"/"Sales Coordinator". Mirrors the backend
  *  services/pmsAccess.isSalesDirectorUser; the backend stays the authority —
  *  this drives nav visibility + in-page scoping (defence-in-depth / UX only). */
-const SALES_DIRECTOR_POSITION = /^Sales Director$/i;
+const SALES_DIRECTOR_POSITION = /\bSales Director\b/i;
 
 /**
  * True ONLY for the "Sales Director" position. A Sales Director gets a scoped
