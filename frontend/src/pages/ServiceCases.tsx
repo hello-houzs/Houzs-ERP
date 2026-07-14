@@ -93,7 +93,6 @@ const STAGE_OPTIONS: { value: StageFilter; label: string }[] = [
   { value: "pending_review", label: "Review" },
   { value: "under_verification", label: "Verification" },
   { value: "pending_solution", label: "Solution" },
-  { value: "pending_item_pickup", label: "Item Pickup" },
   { value: "pending_supplier_pickup", label: "Supplier Pickup" },
   { value: "pending_item_ready", label: "Item Ready" },
   { value: "pending_delivery_service", label: "Delivery / Service" },
@@ -130,8 +129,7 @@ const NCR_OPTIONS = [
 const NEXT_STAGE: Record<string, { stage: AssrStage; label: string }> = {
   pending_review:           { stage: "under_verification",       label: "Start Verification" },
   under_verification:       { stage: "pending_solution",         label: "Move to Solution" },
-  pending_solution:         { stage: "pending_item_pickup",      label: "Arrange Item Pickup" },
-  pending_item_pickup:      { stage: "pending_supplier_pickup",  label: "Hand to Supplier" },
+  pending_solution:         { stage: "pending_supplier_pickup",  label: "Hand to Supplier" },
   pending_supplier_pickup:  { stage: "pending_item_ready",       label: "Mark Item Ready" },
   pending_item_ready:       { stage: "pending_delivery_service", label: "Arrange Delivery" },
   pending_delivery_service: { stage: "completed",                label: "Close Case" },
@@ -3507,43 +3505,14 @@ function DetailContent({
           </PanelSection>
             </StageRow>
 
-            {/* pending_item_pickup — customer-side pickup */}
-            <StageRow
-              c={c}
-              priorityMap={priorityMap}
-              stageId="pending_item_pickup"
-              title="Item Pickup"
-              summary={
-                c.customer_pickup_at
-                  ? `Collected ${formatDate(c.customer_pickup_at)}`
-                  : "Awaiting customer collection date"
-              }
-              currentStage={c.stage}
-              stages={activeStages}
-              openStage={openStage}
-              setOpenStage={setOpenStage}
-            >
-              <div className="space-y-2.5 rounded-md border border-border-subtle bg-surface px-3 py-2.5">
-                <InlineEdit
-                  label="Customer Pickup Date"
-                  type="date"
-                  value={c.customer_pickup_at}
-                  onSave={(v) => patch({ customer_pickup_at: v || null })}
-                />
-                <div className="text-[11px] text-ink-muted">
-                  This is the date logistics collects the faulty item
-                  from the customer's house — precedes any supplier
-                  handover.
-                </div>
-              </div>
-            </StageRow>
-
-            {/* pending_supplier_pickup — supplier collects from us */}
+            {/* pending_supplier_pickup — the whole supplier leg since mig
+                0110: we collect from the customer, the supplier collects
+                from us, and the supplier brings it back. */}
             <StageRow
               c={c}
               priorityMap={priorityMap}
               stageId="pending_supplier_pickup"
-              title="Supplier Pickup"
+              title="Supplier Pickup / Return"
               summary={
                 c.supplier_pickup_at
                   ? `Supplier collected ${formatDate(c.supplier_pickup_at)}`
@@ -3555,6 +3524,15 @@ function DetailContent({
               setOpenStage={setOpenStage}
             >
               <div className="space-y-2.5 rounded-md border border-border-subtle bg-surface px-3 py-2.5">
+                {/* Folded in from the retired Item Pickup stage (mig 0110):
+                    the date logistics collects the faulty item from the
+                    customer's house — precedes the supplier handover. */}
+                <InlineEdit
+                  label="Customer Pickup Date"
+                  type="date"
+                  value={c.customer_pickup_at}
+                  onSave={(v) => patch({ customer_pickup_at: v || null })}
+                />
                 <InlineEdit
                   label="Supplier Pickup Date"
                   type="date"
@@ -3660,7 +3638,7 @@ function DetailContent({
             </div>
 
           {/* Logistics */}
-          {(c.stage === "pending_item_pickup" || c.stage === "pending_supplier_pickup" || c.stage === "pending_item_ready" || c.stage === "pending_delivery_service" || c.stage === "completed" || logistics.length > 0) && (
+          {(c.stage === "pending_supplier_pickup" || c.stage === "pending_item_ready" || c.stage === "pending_delivery_service" || c.stage === "completed" || logistics.length > 0) && (
             <PanelSection title={`Logistics (${logistics.length})`}>
               {logistics.map((l) => (
                 <LogisticsRow
@@ -4417,11 +4395,11 @@ function getStageAdvancePredicate(
       };
     case "pending_solution":
       return {
-        next: "pending_item_pickup",
+        next: "pending_supplier_pickup",
         satisfied: !!(c.resolution_method && c.po_no && c.action_remark?.trim()),
         label: "Resolution card complete",
       };
-    case "pending_item_pickup":
+    case "pending_supplier_pickup":
       return {
         next: "pending_item_ready",
         satisfied: !!c.items_ready_at,
@@ -4561,8 +4539,7 @@ const DETAIL_STAGES: { id: AssrStage; short: string; long: string }[] = [
   { id: "pending_review",              short: "Review",       long: "Review" },
   { id: "under_verification",          short: "Verification", long: "Verification" },
   { id: "pending_solution",            short: "Solution",     long: "Solution" },
-  { id: "pending_item_pickup",         short: "Item Pickup",  long: "Item Pickup" },
-  { id: "pending_supplier_pickup",     short: "Supplier",     long: "Supplier Pickup" },
+  { id: "pending_supplier_pickup",     short: "Supplier",     long: "Supplier Pickup / Return" },
   { id: "pending_item_ready",          short: "Item Ready",   long: "Item Ready" },
   { id: "pending_delivery_service",    short: "Delivery",     long: "Delivery / Service" },
   { id: "completed",                   short: "Completed",    long: "Completed" },
@@ -4727,7 +4704,7 @@ function WorkflowCard({
 }: {
   currentStage: AssrStage;
   // PR 4 — pass the filtered active-stage list. Internal resolution
-  // methods drop Supplier Pickup + Item Ready → 6 dots instead of 8.
+  // methods drop Supplier Pickup + Item Ready → 5 dots instead of 7.
   stages: typeof DETAIL_STAGES;
   transitioning: boolean;
   onChange: (s: AssrStage) => void;
@@ -4903,11 +4880,10 @@ function StatusSummaryBar({
 // Surfaces the v3.1 `inspection_result` field (pass / fail / na) +
 // an inspection-report attachment slot. Hidden on early-stage cases
 // to keep the page uncluttered; renders once the case has reached
-// pending_item_pickup or beyond, OR when there's already a result /
+// pending_supplier_pickup or beyond, OR when there's already a result /
 // report on file.
 
 const INSPECTION_STAGES_OR_LATER: AssrStage[] = [
-  "pending_item_pickup",
   "pending_supplier_pickup",
   "pending_item_ready",
   "pending_delivery_service",
@@ -6515,7 +6491,7 @@ function SupplierPortalLinkRow({
 //
 // Third variant of the per-case portal link: same /portal/case route
 // as the customer link but the token is source='sales', so the portal
-// shows the salesperson view — full 8-stage progress with dates, and
+// shows the salesperson view — full 7-stage progress with dates, and
 // comments/uploads attributed to sales. Idempotent per case.
 
 function SalesPortalLinkRow({

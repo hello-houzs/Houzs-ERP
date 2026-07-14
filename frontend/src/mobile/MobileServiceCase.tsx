@@ -50,15 +50,16 @@ const LINE_SOFT = "rgba(34,31,32,0.10)";
 const DIM = "#e3e6e0";
 const FIELD_BG = "#f4f6f3";
 
-// Ordered stage pipeline (backend ALL_STAGES) — 8 stages since mig 0105
-// retired Pending Inspection. `label` is the chip-short form, `long` the
-// card/badge form; `owner` mirrors ServiceProgressTracker's owner map.
+// Ordered stage pipeline (backend ALL_STAGES) — 7 stages since mig 0110
+// retired Item Pickup (the customer-side collection lives inside the
+// Supplier stage; Pending Inspection went the same way in mig 0105).
+// `label` is the chip-short form, `long` the card/badge form; `owner`
+// mirrors ServiceProgressTracker's owner map.
 const STAGES: { key: string; label: string; long: string; owner: string }[] = [
   { key: "pending_review",           label: "Review",      long: "Pending Review",              owner: "Service Admin" },
   { key: "under_verification",       label: "Verify",      long: "Under Verification",          owner: "Service Admin" },
   { key: "pending_solution",         label: "Solution",    long: "Pending Solution",            owner: "Service Admin" },
-  { key: "pending_item_pickup",      label: "Item Pickup", long: "Pending Item Pickup",         owner: "Logistic Admin" },
-  { key: "pending_supplier_pickup",  label: "Supplier",    long: "Pending Supplier Pickup",     owner: "Service Admin" },
+  { key: "pending_supplier_pickup",  label: "Supplier",    long: "Supplier Pickup / Return",    owner: "Service Admin" },
   { key: "pending_item_ready",       label: "Item Ready",  long: "Pending Item Ready",          owner: "Service Admin" },
   { key: "pending_delivery_service", label: "Delivery",    long: "Pending Delivery / Service",  owner: "Logistic Admin" },
   { key: "completed",                label: "Completed",   long: "Completed",                   owner: "System" },
@@ -67,8 +68,8 @@ const STAGE_INDEX: Record<string, number> = Object.fromEntries(STAGES.map((s, i)
 // Stage-tab grouping (design StagePhases): Intake / Repair / Return.
 const PHASES: { name: string; idx: number[] }[] = [
   { name: "Intake", idx: [0, 1, 2] },
-  { name: "Repair", idx: [3, 4, 5] },
-  { name: "Return", idx: [6, 7] },
+  { name: "Repair", idx: [3, 4] },
+  { name: "Return", idx: [5, 6] },
 ];
 
 // ── Enum option lists (mirrors desktop ServiceCases.tsx) ──────────
@@ -894,16 +895,15 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
             )}
           </>
         );
-      case "pending_item_pickup":
-        return (
-          <EditRow label="Customer pickup date" type="date" value={get(c, "customerPickupAt", "customer_pickup_at")} busy={busy} disabled={dis} onSave={(v) => patchCase({ customer_pickup_at: v }, "Couldn't save pickup date")} />
-        );
       case "pending_supplier_pickup":
         return (
           <>
             <KV label="Supplier" value={String(get(c, "creditorName", "creditor_name") ?? creditorCode ?? "—")} />
             <KV label="Supplier code" value={creditorCode ? String(creditorCode) : "—"} mono />
+            {/* Folded in from the retired Item Pickup stage (mig 0110). */}
+            <EditRow label="Customer pickup date" type="date" value={get(c, "customerPickupAt", "customer_pickup_at")} busy={busy} disabled={dis} onSave={(v) => patchCase({ customer_pickup_at: v }, "Couldn't save pickup date")} />
             <EditRow label="Supplier pickup date" type="date" value={get(c, "supplierPickupAt", "supplier_pickup_at")} busy={busy} disabled={dis} onSave={(v) => patchCase({ supplier_pickup_at: v }, "Couldn't save pickup date")} />
+            <EditRow label="Supplier return date" type="date" value={get(c, "itemsReadyAt", "items_ready_at")} busy={busy} disabled={dis} onSave={(v) => patchCase({ items_ready_at: v }, "Couldn't save return date")} />
             <EditRow label="Supplier status update" type="textarea" value={get(c, "actionRemark", "action_remark")} busy={busy} disabled={dis} onSave={(v) => patchCase({ action_remark: v }, "Couldn't save status update")} />
           </>
         );

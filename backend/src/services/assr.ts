@@ -49,12 +49,13 @@ export type Stage =
   | "under_verification"        // Stage 2 — Service Admin
   | "pending_solution"          // Stage 3 — Service Admin / Manager pick the fix
   //  (pending_inspection retired 2026-07-14 — inspection folded into
-  //   Under Verification as inspect_by + QC-issue fields; mig 0105)
-  | "pending_item_pickup"       // Stage 5 — SA assigns Logistic Admin
-  | "pending_supplier_pickup"   // Stage 6 — SA contacts supplier
-  | "pending_item_ready"        // Stage 7 — SA updates on supplier return
-  | "pending_delivery_service"  // Stage 8 — SA assigns Logistic Admin
-  | "completed";                // Stage 9 — system
+  //   Under Verification as inspect_by + QC-issue fields; mig 0105.
+  //   pending_item_pickup retired 2026-07-14 too — the customer-side
+  //   collection lives inside the Supplier stage now; mig 0110)
+  | "pending_supplier_pickup"   // Stage 4 — supplier pickup AND return leg
+  | "pending_item_ready"        // Stage 5 — QC after the supplier returns it
+  | "pending_delivery_service"  // Stage 6 — SA assigns Logistic Admin
+  | "completed";                // Stage 7 — system
 
 type Priority = "low" | "normal" | "high" | "urgent";
 
@@ -90,7 +91,6 @@ export const ALL_STAGES: ReadonlyArray<Stage> = [
   "pending_review",
   "under_verification",
   "pending_solution",
-  "pending_item_pickup",
   "pending_supplier_pickup",
   "pending_item_ready",
   "pending_delivery_service",
@@ -104,7 +104,6 @@ const DEFAULT_STAGE_TARGET_DAYS: Record<Stage, number> = {
   pending_review: 1,
   under_verification: 2,
   pending_solution: 2,
-  pending_item_pickup: 2,
   pending_supplier_pickup: 3,
   pending_item_ready: 5,
   pending_delivery_service: 4,
