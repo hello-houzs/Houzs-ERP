@@ -304,10 +304,17 @@ function ThreadList({
   }
 
   const compact = density === "compact";
+  // DOM windowing: the full (client-filtered) thread array is kept intact — only
+  // the rows scrolled into view are mounted, so a fully-loaded inbox (LIMIT 300
+  // from the server) keeps ~30 <li> nodes in the DOM instead of all 300. No-op
+  // below WINDOW threshold, so short lists render byte-identically to before.
   return (
-    <ul className="divide-y divide-border">
-      {threads.map((t) =>
-        compact ? (
+    <WindowedThreadUl
+      count={threads.length}
+      estimateHeight={compact ? 36 : 76}
+      renderRow={(i) => {
+        const t = threads[i];
+        return compact ? (
           <CompactRow
             key={t.id}
             t={t}
@@ -331,7 +338,87 @@ function ThreadList({
             onOpen={onOpen}
             onRowAction={onRowAction}
           />
-        ),
+        );
+      }}
+    />
+  );
+}
+
+// ── Windowed <ul> for the thread list ─────────────────────────────────────────
+// Mirrors MobileVirtualList / DataTable's proven window-scroll virtualization,
+// adapted to a `<ul className="divide-y">` of `<li>` rows: a CAPTURING window
+// scroll listener catches scroll from any ancestor, the visible slice is
+// measured against the viewport, and two spacer <li>s reserve the off-screen
+// height so the page scrollbar + divide-y borders behave exactly as before.
+// Row height is measured from the FIRST rendered real row (`li[data-vrow]`) so
+// the spacers track the actual row height. Caveat: thread rows are variable
+// height (comfortable rows grow with label chips; compact rows are shorter), so
+// the single measured height is an approximation — with many chip-heavy rows the
+// spacer math can drift slightly, but overscan + re-measure on every scroll keep
+// the visible window correct.
+const THREAD_WINDOW_THRESHOLD = 40;
+const THREAD_WINDOW_OVERSCAN = 8;
+function WindowedThreadUl({
+  count,
+  renderRow,
+  estimateHeight = 64,
+  threshold = THREAD_WINDOW_THRESHOLD,
+  overscan = THREAD_WINDOW_OVERSCAN,
+}: {
+  count: number;
+  renderRow: (index: number) => React.ReactNode;
+  estimateHeight?: number;
+  threshold?: number;
+  overscan?: number;
+}) {
+  const on = count > threshold;
+  const ref = useRef<HTMLUListElement>(null);
+  const rowH = useRef(estimateHeight);
+  const [range, setRange] = useState({ start: 0, end: threshold * 2 });
+
+  useEffect(() => {
+    if (!on) return;
+    let raf = 0;
+    const measure = () => {
+      raf = 0;
+      const el = ref.current;
+      if (!el) return;
+      const row = el.querySelector<HTMLElement>("li[data-vrow]");
+      if (row && row.offsetHeight > 0) rowH.current = row.offsetHeight;
+      const rh = rowH.current || estimateHeight;
+      const top = el.getBoundingClientRect().top; // list top relative to viewport
+      const first = Math.max(0, Math.floor(-top / rh) - overscan);
+      const cnt = Math.ceil(window.innerHeight / rh) + overscan * 2;
+      const last = Math.min(count, first + cnt);
+      setRange((p) => (p.start === first && p.end === last ? p : { start: first, end: last }));
+    };
+    const onScroll = () => {
+      if (!raf) raf = requestAnimationFrame(measure);
+    };
+    measure();
+    window.addEventListener("scroll", onScroll, { capture: true, passive: true });
+    window.addEventListener("resize", onScroll);
+    return () => {
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onScroll);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [on, count, overscan, estimateHeight]);
+
+  const start = on ? range.start : 0;
+  const end = on ? Math.min(count, range.end) : count;
+  const rh = rowH.current;
+  const rows: React.ReactNode[] = [];
+  for (let i = start; i < end; i++) rows.push(renderRow(i));
+
+  return (
+    <ul ref={ref} className="divide-y divide-border">
+      {on && start > 0 && (
+        <li aria-hidden style={{ height: start * rh, borderTopWidth: 0 }} />
+      )}
+      {rows}
+      {on && end < count && (
+        <li aria-hidden style={{ height: (count - end) * rh, borderTopWidth: 0 }} />
       )}
     </ul>
   );
@@ -436,6 +523,7 @@ function CompactRow({
   const chips = t.labels;
   return (
     <li
+      data-vrow=""
       className={cn(
         "group relative flex items-center border-l-2 transition",
         active
@@ -510,6 +598,7 @@ function ComfortableRow({
   const chips = t.labels;
   return (
     <li
+      data-vrow=""
       className={cn(
         "group relative flex items-stretch border-l-2 transition",
         active
@@ -753,6 +842,10 @@ export function MailInbox() {
   if (filter.kind === "mailbox") params.set("mailbox", filter.value);
   const listUrl = `/api/mail-center/threads${params.toString() ? `?${params.toString()}` : ""}`;
 
+  // NOTE: the server returns up to LIMIT 300 threads (newest first); all
+  // Starred/Sent/label/search narrowing below is client-side over that array.
+  // Pushing these filters server-side is a separate follow-up — this task only
+  // DOM-windows the rendered list (see WindowedThreadUl), leaving the fetch as-is.
   const {
     data: threads,
     loading,
@@ -1467,6 +1560,12 @@ function fmtMailTime(iso: string | null): string {
   return new Date(t).toLocaleString();
 }
 
+// One outbox page. The backend caps at 200/page and returns `hasMore` when a
+// full page came back; the "Load more" button pulls the next offset so entries
+// past the first page are reachable (previously the response's `hasMore` was
+// ignored, so only the first 60 were ever visible).
+const OUTBOX_PAGE = 60;
+
 function OutboxPanel({ q }: { q: string }) {
   const [items, setItems] = useState<OutboxRow[]>([]);
   const [counts, setCounts] = useState<OutboxCounts>({
@@ -1475,6 +1574,8 @@ function OutboxPanel({ q }: { q: string }) {
     pending: 0,
   });
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>("");
   const [reloadKey, setReloadKey] = useState(0);
@@ -1485,22 +1586,25 @@ function OutboxPanel({ q }: { q: string }) {
   useEffect(() => {
     // No synchronous setState in the effect body — `loading` starts true for
     // the first load; reloads flip it true in the trigger handlers (filter
-    // chip / refresh button).
+    // chip / refresh button). Each filter/search/refresh resets to page 1.
     let alive = true;
     (async () => {
       try {
         const data = await fetchOutbox({
           status: statusFilter || undefined,
           q: needle || undefined,
+          limit: OUTBOX_PAGE,
         });
         if (!alive) return;
         setErr(null);
         setItems(Array.isArray(data.rows) ? data.rows : []);
         if (data.counts) setCounts(data.counts);
+        setHasMore(!!data.hasMore);
       } catch {
         if (alive) {
           setErr("Couldn't load sent emails.");
           setItems([]);
+          setHasMore(false);
         }
       } finally {
         if (alive) setLoading(false);
@@ -1510,6 +1614,30 @@ function OutboxPanel({ q }: { q: string }) {
       alive = false;
     };
   }, [statusFilter, needle, reloadKey]);
+
+  async function loadMore() {
+    if (loadingMore || !hasMore) return;
+    setLoadingMore(true);
+    try {
+      const data = await fetchOutbox({
+        status: statusFilter || undefined,
+        q: needle || undefined,
+        limit: OUTBOX_PAGE,
+        offset: items.length,
+      });
+      setItems((prev) => [
+        ...prev,
+        ...(Array.isArray(data.rows) ? data.rows : []),
+      ]);
+      if (data.counts) setCounts(data.counts);
+      setHasMore(!!data.hasMore);
+      setErr(null);
+    } catch {
+      setErr("Couldn't load more sent emails.");
+    } finally {
+      setLoadingMore(false);
+    }
+  }
 
   const filters: { v: string; l: string }[] = [
     { v: "", l: "All" },
@@ -1650,6 +1778,19 @@ function OutboxPanel({ q }: { q: string }) {
             </li>
           ))}
         </ul>
+      )}
+      {hasMore && items.length > 0 && (
+        <div className="border-t border-border px-3 py-2 text-center">
+          <button
+            type="button"
+            onClick={loadMore}
+            disabled={loadingMore}
+            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-3 py-1.5 text-[12px] font-semibold text-ink-secondary transition hover:text-ink disabled:opacity-50"
+          >
+            {loadingMore && <RefreshCw className="h-3.5 w-3.5 animate-spin" />}
+            {loadingMore ? "Loading…" : "Load more"}
+          </button>
+        </div>
       )}
       {openId && (
         <OutboxReaderModal id={openId} onClose={() => setOpenId(null)} />
