@@ -265,9 +265,11 @@ export async function computeMrp(
   // lowercase on lookup. warehouse_id NULL = the GLOBAL DEFAULT. Cascade:
   // (warehouse, category) → (NULL, category) → 0. Two maps: per-warehouse rows
   // keyed `${warehouseId}|${cat}`, and the NULL-warehouse globals keyed `cat`.
-  const { data: leadRows, error: leadErr } = await sb
-    .from('mrp_category_lead_times')
-    .select('warehouse_id, category, lead_days');
+  const { data: leadRows, error: leadErr } = await scoped(
+    sb
+      .from('mrp_category_lead_times')
+      .select('warehouse_id, category, lead_days'),
+  );
   /* A query error here used to be swallowed (only `data` was destructured), so a
      transient PostgREST failure silently zeroed EVERY lead time → order-by date =
      production date = delivery date for the whole plan. Surface it instead so the

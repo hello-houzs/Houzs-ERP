@@ -708,7 +708,7 @@ consignmentOrders.post('/', async (c) => {
     }
   }
   const cachedCombos = await loadActiveSofaCombos(sb);
-  const cachedFabricAddonConfig = await loadFabricTierAddonConfig(sb);
+  const cachedFabricAddonConfig = await loadFabricTierAddonConfig(sb, activeCompanyId(c));
   const cachedModelOverrides = await loadModelFabricTierOverrides(sb);  // migration 0172 — per-Model Δ
   const cachedCompartmentOverrides = await loadCompartmentFabricTierOverrides(sb);  // migration 0025 — per-compartment Δ
 
@@ -1408,7 +1408,7 @@ consignmentOrders.post('/:docNo/items', async (c) => {
     loadFabricByCode(sb, variantsObj?.fabricCode ?? null),
     loadActiveSofaCombos(sb),
     loadFabricSellingTiers(sb, (variantsObj as { fabricId?: string } | null)?.fabricId ?? null),
-    loadFabricTierAddonConfig(sb),
+    loadFabricTierAddonConfig(sb, activeCompanyId(c)),
     loadSpecialAddons(sb),
     loadModelFabricTierOverrides(sb),
     loadCompartmentFabricTierOverrides(sb),
@@ -1560,7 +1560,7 @@ consignmentOrders.patch('/:docNo/items/:itemId', async (c) => {
       loadFabricByCode(sb, variantsAfter?.fabricCode ?? null),
       loadActiveSofaCombos(sb),
       loadFabricSellingTiers(sb, (variantsAfter as { fabricId?: string } | null)?.fabricId ?? null),
-      loadFabricTierAddonConfig(sb),
+      loadFabricTierAddonConfig(sb, activeCompanyId(c)),
       loadSpecialAddons(sb),
       loadModelFabricTierOverrides(sb),
       loadCompartmentFabricTierOverrides(sb),

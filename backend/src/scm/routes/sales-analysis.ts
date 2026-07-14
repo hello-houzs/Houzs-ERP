@@ -305,7 +305,7 @@ salesAnalysis.get('/', async (c) => {
     const fabricIds = [...new Set(rawLines.map((r) => ((r.variants ?? {}) as Record<string, unknown>).fabricId).filter(Boolean).map(String))];
     const [fabricTiersById, addonConfig, modelOverrides, compartmentOverrides] = await Promise.all([
       loadFabricSellingTiersByIds(sb, fabricIds),
-      loadFabricTierAddonConfig(sb),
+      loadFabricTierAddonConfig(sb, activeCompanyId(c)),
       loadModelFabricTierOverrides(sb),
       loadCompartmentFabricTierOverrides(sb),
     ]);

@@ -1056,9 +1056,12 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
   // warehouse_id NULL = the GLOBAL DEFAULT. Cascade: (warehouse, category) →
   // (NULL, category) → 0. Two maps: per-warehouse rows keyed `${warehouseId}|${cat}`,
   // NULL-warehouse globals keyed `cat`.
-  const { data: leadRows } = await supabase
-    .from('mrp_category_lead_times')
-    .select('warehouse_id, category, lead_days');
+  const { data: leadRows } = await scopeToCompany(
+    supabase
+      .from('mrp_category_lead_times')
+      .select('warehouse_id, category, lead_days'),
+    c,
+  );
   const leadDaysByWhCat = new Map<string, number>();
   const leadDaysByCat = new Map<string, number>();
   for (const lr of (leadRows ?? []) as Array<{ warehouse_id: string | null; category: string; lead_days: number }>) {
