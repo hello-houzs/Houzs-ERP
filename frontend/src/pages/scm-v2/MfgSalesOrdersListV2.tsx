@@ -329,13 +329,19 @@ function DetailDrawer({
   salespersonName: string;
 }) {
   const detailQ = useMfgSalesOrderDetail(row?.doc_no ?? null);
-  const items: Array<{ product_code?: string; product_name?: string; qty?: number; unit_price_centi?: number; amount_centi?: number }> =
+  // API (GET /mfg-sales-orders/:docNo) returns raw item columns: description,
+  // item_code, qty, unit_price_centi, discount_centi, total_centi. Read those
+  // exact names (matches SalesOrderDetailV2). The old product_name/product_code/
+  // amount_centi names never existed → "—" for every SO, and for mirrored 2990
+  // POS lines (money in total_centi, unit_price_centi≈0) the qty×unit fallback
+  // rendered RM 0.00. Prefer the authoritative total_centi.
+  const items: Array<{ item_code?: string; description?: string; qty?: number; unit_price_centi?: number; total_centi?: number }> =
     (detailQ.data as { items?: unknown[] } | undefined)?.items as Array<{
-      product_code?: string;
-      product_name?: string;
+      item_code?: string;
+      description?: string;
       qty?: number;
       unit_price_centi?: number;
-      amount_centi?: number;
+      total_centi?: number;
     }> ?? [];
 
   const open = !!row;
@@ -349,7 +355,7 @@ function DetailDrawer({
   // against the aside on the detail page. Total is now just subtotal.
   const subtotalCenti =
     items.length > 0
-      ? items.reduce((sum, l) => sum + (l.amount_centi ?? (l.qty ?? 0) * (l.unit_price_centi ?? 0)), 0)
+      ? items.reduce((sum, l) => sum + (l.total_centi ?? (l.qty ?? 0) * (l.unit_price_centi ?? 0)), 0)
       : row?.local_total_centi ?? 0;
   const totalCenti = subtotalCenti;
   const paidCenti = row?.paid_centi ?? 0;
@@ -486,7 +492,7 @@ function DetailDrawer({
                   </div>
                 )}
                 {items.map((l, i) => {
-                  const amt = l.amount_centi ?? (l.qty ?? 0) * (l.unit_price_centi ?? 0);
+                  const amt = l.total_centi ?? (l.qty ?? 0) * (l.unit_price_centi ?? 0);
                   return (
                     <div
                       key={i}
@@ -494,11 +500,11 @@ function DetailDrawer({
                     >
                       <div>
                         <div className="text-[13px] font-semibold text-ink">
-                          {l.product_name || "—"}
+                          {l.description || l.item_code || "—"}
                         </div>
-                        {l.product_code && (
+                        {l.item_code && (
                           <div className="mt-0.5 font-mono text-[11px] text-ink-muted">
-                            {l.product_code}
+                            {l.item_code}
                           </div>
                         )}
                       </div>

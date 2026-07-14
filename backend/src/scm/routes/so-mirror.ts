@@ -46,9 +46,26 @@ const NULL_COLS: Record<string, string[]> = {
   // references a master row that isn't reconciled across companies).
   mfg_sales_orders: ['venue_id'],
 };
+// Status normalization guard (insurance). The canonical STORED SO status set is
+// {DRAFT, CONFIRMED, CANCELLED}; every richer state (Ready/Delivered/Invoiced…)
+// is DERIVED server-side from shared code. 2990 is the progenitor of this same
+// schema so its statuses should already match — but if the legacy system ever
+// emits a lowercase or alien value, a raw pass-through would make mirrored rows
+// invisible to the status-count/filter buckets and render an empty progress bar.
+// Coerce any non-canonical inbound status to the nearest canonical value so a
+// company-2 row can never carry a vocabulary Houzs code doesn't understand.
+const NORMALIZE_STATUS_COLS: Record<string, string[]> = {
+  mfg_sales_orders: ['status'],
+};
+const CANON_SO_STATUS = new Set(['DRAFT', 'CONFIRMED', 'CANCELLED']);
+function normalizeStatus(v: unknown): unknown {
+  if (v == null) return v;
+  const s = String(v).trim().toUpperCase();
+  return CANON_SO_STATUS.has(s) ? s : 'CONFIRMED';
+}
 
 // --- dest-column map, cached per isolate -------------------------------------
-type TableMap = { prefixCols: Set<string>; nullCols: Set<string>; destCols: Set<string>; arrayCols: Set<string> };
+type TableMap = { prefixCols: Set<string>; nullCols: Set<string>; destCols: Set<string>; arrayCols: Set<string>; statusCols: Set<string> };
 const mapCache = new Map<string, TableMap>();
 
 async function tableMap(DB: Env['DB'], table: string): Promise<TableMap> {
@@ -67,6 +84,7 @@ async function tableMap(DB: Env['DB'], table: string): Promise<TableMap> {
   const m: TableMap = {
     prefixCols: new Set(PREFIX_COLS[table] ?? []),
     nullCols: new Set(NULL_COLS[table] ?? []),
+    statusCols: new Set(NORMALIZE_STATUS_COLS[table] ?? []),
     destCols: new Set(rows.map((r: { col: string }) => r.col)),
     // Postgres array-typed dest columns (e.g. mfg_sales_order_items.photo_urls
     // text[]). The D1-shim coerces a bound JS array by stringification, turning an
@@ -101,6 +119,8 @@ function applyMap(row: Record<string, unknown>, m: TableMap): Record<string, unk
   for (const col of m.prefixCols) if (out[col] != null) out[col] = prefixDoc(out[col]);
   // Null columns the import nulls (e.g. venue_id) when present in dest.
   for (const col of m.nullCols) if (col in out) out[col] = null;
+  // Coerce status columns to the canonical {DRAFT,CONFIRMED,CANCELLED} set.
+  for (const col of m.statusCols) if (col in out) out[col] = normalizeStatus(out[col]);
   return out;
 }
 

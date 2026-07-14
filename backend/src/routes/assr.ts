@@ -22,7 +22,7 @@ import {
 import { runSlaEscalation } from "../services/assrEscalation";
 import { issueStaffToken, issueSalesToken } from "../services/caseTracking";
 import { sendEmail, publicUrl } from "../services/email";
-import { resolveCompanyCode } from "../services/branding";
+import { resolveCompanyCode, getBrandingForCompany } from "../services/branding";
 import { AutoCountClient, routeRegion, isAutoCountSyncDisabled } from "../services/autocount";
 import { upsertSalesOrder } from "../services/pull";
 import { requirePermission } from "../middleware/auth";
@@ -866,15 +866,27 @@ app.get("/lookup-items/:docNo", requireServiceCaseAccess(), async (c) => {
 
 // ── SO search (typeahead for create-case intake) ──────────────
 // Returns up to 20 SO candidates matched by partial DocNo,
-// reference number, or customer name (case-insensitive). Reads
-// the local mirror so the create form can suggest matches
-// without hitting AutoCount on every keystroke.
+// reference number, or customer name (case-insensitive).
+//
+// Service is a SHARED cross-company module (assr_cases carry company_id and
+// list/detail widen via allowedCompaniesSql), so the SO lookup must find BOTH
+// companies' orders — otherwise a 2990 order can never be attached to a case.
+// Two sources, merged:
+//   (1) public.sales_orders — the Houzs AutoCount mirror (no company_id; Houzs
+//       only). Unchanged legacy behaviour.
+//   (2) scm.mfg_sales_orders — the SCM-native SO table carrying Houzs (company
+//       1) AND mirrored 2990 (company 2) orders, widened to the caller's
+//       allowed companies. This is what adds 2990 findability.
+// Deduped by doc_no (prefer the SCM row — it carries a company tag), newest
+// first, capped at 20.
 app.get("/search-so", requireServiceCaseAccess(), async (c) => {
   const q = (c.req.query("q") ?? "").trim();
   if (q.length < 2) return c.json({ results: [] });
   const pattern = `%${q.toLowerCase()}%`;
-  const rows = await c.env.DB.prepare(
-    `SELECT doc_no, ref, debtor_name, phone, doc_date, sales_agent
+
+  // (1) Houzs AutoCount mirror — legacy source, unchanged.
+  const acRows = await c.env.DB.prepare(
+    `SELECT doc_no, ref, debtor_name, phone, doc_date, sales_agent, 'HOUZS' AS company_code
        FROM sales_orders
       WHERE LOWER(doc_no) LIKE ?
          OR LOWER(COALESCE(ref, '')) LIKE ?
@@ -884,7 +896,43 @@ app.get("/search-so", requireServiceCaseAccess(), async (c) => {
   )
     .bind(pattern, pattern, pattern)
     .all();
-  return c.json({ results: rows.results ?? [] });
+
+  // (2) SCM-native SOs (Houzs company 1 + mirrored 2990 company 2), widened to
+  // allowed companies. allowedCompaniesSql inlines validated int ids (safe) or
+  // "" when unresolved (then this degrades to all rows, same as legacy).
+  const coFilter = allowedCompaniesSql(c, "so.company_id");
+  const scmRows = await c.env.DB.prepare(
+    `SELECT so.doc_no, so.ref, so.debtor_name, so.phone,
+            so.so_date AS doc_date, so.agent AS sales_agent, co.code AS company_code
+       FROM scm."mfg_sales_orders" so
+       LEFT JOIN companies co ON co.id = so.company_id
+      WHERE (LOWER(so.doc_no) LIKE ?
+          OR LOWER(COALESCE(so.ref, '')) LIKE ?
+          OR LOWER(COALESCE(so.debtor_name, '')) LIKE ?)
+        AND so.status <> 'DRAFT' AND so.status <> 'CANCELLED'${coFilter}
+      ORDER BY so.so_date DESC
+      LIMIT 20`
+  )
+    .bind(pattern, pattern, pattern)
+    .all();
+
+  // Merge: SCM rows first so a doc_no present in both keeps the company-tagged
+  // SCM row; dedupe by doc_no; newest doc_date first; cap 20.
+  const seen = new Set<string>();
+  const merged = [
+    ...((scmRows.results ?? []) as Array<Record<string, unknown>>),
+    ...((acRows.results ?? []) as Array<Record<string, unknown>>),
+  ]
+    .filter((r) => {
+      const k = String(r.doc_no ?? "");
+      if (!k || seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    })
+    .sort((a, b) => String(b.doc_date ?? "").localeCompare(String(a.doc_date ?? "")))
+    .slice(0, 20);
+
+  return c.json({ results: merged });
 });
 
 // ── Manual single-SO backfill into the local mirror ───────────
@@ -1948,10 +1996,13 @@ app.post("/:id/transition", requirePermission("service_cases.write"), async (c) 
         const token = await issueSurveyToken(c.env, id);
         const link = publicUrl(c.env, `/survey/${token}`, caseCompanyCode);
         const name = (row!.customer_name || "").split(" ")[0] || "there";
+        // Footer must carry the CASE's company (2990 cases must not sign off as
+        // Houzs) — derive it from the document's branding, not a hardcode.
+        const caseBranding = await getBrandingForCompany(c.env, caseCompanyCode);
         await sendEmail(c.env, {
           to: surveyTo,
           subject: `How was your experience with case ${row!.assr_no}?`,
-          html: surveyEmailHtml(name, row!.assr_no, link),
+          html: surveyEmailHtml(name, row!.assr_no, link, caseBranding.companyName),
           purpose: "assr_survey",
           refType: "assr",
           refId: id,
@@ -1965,7 +2016,7 @@ app.post("/:id/transition", requirePermission("service_cases.write"), async (c) 
   }
 });
 
-function surveyEmailHtml(name: string, assrNo: string, link: string): string {
+function surveyEmailHtml(name: string, assrNo: string, link: string, companyName: string): string {
   return `
     <div style="font-family:system-ui,Segoe UI,Roboto,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#222">
       <h2 style="margin:0 0 12px">Thanks for your patience, ${name}.</h2>
@@ -1978,7 +2029,7 @@ function surveyEmailHtml(name: string, assrNo: string, link: string): string {
       </p>
       <p style="color:#777;font-size:13px">Takes about 30 seconds — one rating + an optional note.</p>
       <p style="color:#aaa;font-size:12px;border-top:1px solid #eee;padding-top:14px;margin-top:28px">
-        Houzs Century Sdn. Bhd.
+        ${companyName}
       </p>
     </div>`;
 }
