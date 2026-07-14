@@ -92,3 +92,36 @@ Severity tags: 🔴 critical/high · 🟠 medium · 🟢 low.
 - 🟠 **Processing-date payment gate used 50% (2990 rule) on Houzs** — Houzs requires 30%. Fix: new `PROCESSING_DATE_PAID_THRESHOLD=0.30` (kept `PROCEED_PAID_THRESHOLD=0.5` for the other gate). (PR #441)
 - 🟢 **Raw 400s** for `so_sofa_no_other_main` + `processing_date_unpaid` → curated one-sentence messages via `humanApiError`. (PR #441)
 - 🟢 **Agent Console** `/review` scorecard was a stub, Document agent had no AI-focus, `recentErrors`/run-history were computed but never rendered → completed (advisory-only, no red-line). (PR #406)
+
+---
+
+## Earlier (2026-06 → 07, backfilled 2026-07-14 from memory / COE docs / git)
+
+*Historical entries reconstructed after the fact — dates approximate, refs to the COE docs where a full write-up exists.*
+
+### Infrastructure / deploy / DB
+- 🔴 **App-wide intermittent 500 "Something went wrong"** — `middleware/db.ts` attached the per-request DB client by **mutating the shared isolate-level `c.env`** (`c.env.DB = …`); under concurrent requests one request ran queries on another's socket → `Cannot perform I/O on behalf of a different request`, which matched no error classifier and fell through to a generic 500. Worse under load. Fix: stop mutating shared env; per-request client via `c.set`. Full write-up: `docs/system-foundation-coe.md`.
+- 🔴 **"Failed to fetch" storms** — Hyperdrive **cold-start (~12s)** + a 15-connection cap; bursts exhausted the pool. Fix: `pool_size` 40 + GET retry/backoff. See `docs/api-fetch-hardening-coe.md`.
+- 🔴 **App-wide 500s after D1→Postgres migration** — the D1→PG move **dropped column DEFAULTs** (e.g. `active DEFAULT 1`) on ~10 tables, so inserts that relied on them 500'd. Fix: `ALTER … SET DEFAULT` per table.
+- 🔴 **Mass 500s / "Usage limit exceeded"** — Cloudflare **FREE Workers plan** daily caps hit under real load. Fix: upgrade to Workers Paid. (Also: GitHub Actions budget block on a private repo → made repo public = free/unlimited.)
+- 🟠 **Post-deploy "database briefly unavailable" 503** — Hyperdrive cold-start after each deploy; self-heals, but **burst-deploying multiplies it**. Standing rule: don't burst-deploy. (`pg.ts` is frozen.)
+- 🟠 **App-wide 503 + deploys fail `pg-migrate` "password auth failed" while project Healthy** — Supabase **Shared Pooler (Supavisor) outage**; fix = Restart project.
+- 🟠 **"Version 跑回 old" after deploy** — manual `wrangler` deploy colliding with CI deploy. Fix: let CI own deploys; scoped-diff on isolated worktrees.
+- 🟠 **PWA "开不进去" after rapid deploys** — service-worker cache churn. Recover by bumping `sw.js` VERSION; don't burst-deploy the PWA.
+- 🟠 **Schema change deployed but broke prod** — Houzs keeps TWO migration trees (`migrations/` D1 + `migrations-pg/` prod); a change in only one slips through until deploy runs `pg-migrate`. Rule: update BOTH.
+
+### Data / postgres.js quirks (the #1 recurring class)
+- 🔴 **Rows read as `undefined` / features silently empty** — `postgres.js` **camelCases** returned columns while PostgREST/raw SQL uses snake_case; code reading one shape got null. Fix: dual-read `r.camelCase ?? r.snake_case`. This is the single most common Houzs bug — check it first when data "isn't there".
+- 🔴 **SCM stock never moved after the 2990 SCM port** — the port **dropped all PL/pgSQL functions + triggers**, so ledger/FIFO movement logic was gone. Fix: restored 12 functions + 2 triggers (pin `search_path=scm`).
+- 🟠 **PG `timestamp` columns rejected `datetime('now')`** — SQLite idiom carried over; must be a text/ISO timestamp on PG.
+- 🟠 **Variant columns dropped on SO→DO / DO→SI conversion** — carry-over logic omitted variant cols; downstream docs lost fabric/seat. Fix + backfill.
+
+### Frontend
+- 🔴 **Whole-page "Something went wrong" (route crash)** — the #1 cause is a component reading `{success,data}` **without unwrapping `.data`** (`api.get` does NOT unwrap). Route `ErrorBoundary` (`RouteFallback.tsx`) now resets on nav (PR #371).
+- 🟠 **CI "tsc false-clean" in worktrees** — a frontend worktree without `node_modules` reports a false-clean local `tsc`; only CI's `tsc -b && vite build` is authoritative. Verify via CI, not local.
+- 🟠 **Vendored SCM fetch hit the wrong base URL** — `VITE_API_URL` inlined empty at build; `?? worker` kept the empty string. Fix: use `|| worker`.
+- 🟠 **Cloudflare Pages `_headers` over-broad** — Pages MERGES rules; keep only `/index.html` + `/assets/*` or headers leak to all routes.
+
+### SCM correctness (mostly caught pre-Houzs on 2990, verified on Houzs)
+- 🟠 **GRN defaulted warehouse to CHINA-transit** → false MRP alarms. Fix + GRN 防呆.
+- 🟠 **Sofa drop-ship DO missing the 7 corner-holes line** → under-built. Fixed Houzs (PR #349).
