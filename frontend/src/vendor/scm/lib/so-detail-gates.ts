@@ -1,0 +1,90 @@
+// ----------------------------------------------------------------------------
+// so-detail-gates — PURE status / date / amount gate logic for the Sales-Order
+// DETAIL flow. NO React, no query client, no I/O. The desktop SalesOrderDetail
+// page and the MobileSODetail screen both consume these so a gating fix lands
+// ONCE instead of drifting between two hand-rolled copies.
+//
+// Everything here is derived from the header the /mfg-sales-orders/:docNo GET
+// returns (+ the payments ledger for the balance). Status comparisons are
+// case-insensitive (the column stores UPPERCASE; some call sites already
+// upper-cased, some did not).
+// ----------------------------------------------------------------------------
+
+import { todayMyt } from './dates';
+
+/* Terminal / downstream-carrying statuses — once the SO reaches one of these
+   its header + line items are no longer ours to edit (SHIPPED onward once goods
+   leave, plus CANCELLED). Mirrors the desktop `lockedStatuses`. */
+export const LOCKED_STATUSES: readonly string[] = [
+  'SHIPPED', 'DELIVERED', 'INVOICED', 'CLOSED', 'CANCELLED',
+];
+
+/* In-flight statuses a Cancel is still offered on — never once SHIPPED+ /
+   INVOICED / CLOSED (those carry downstream docs). Mirrors the desktop
+   `cancellableStatuses`. */
+export const CANCELLABLE_STATUSES: readonly string[] = [
+  'CONFIRMED', 'IN_PRODUCTION', 'READY_TO_SHIP',
+];
+
+/* Minimal structural header the gates read — every field optional/nullable so
+   both the desktop and mobile SoHeader types satisfy it without coupling. */
+export type SoDetailGateHeader = {
+  status?: string | null;
+  has_children?: boolean | null;
+  proceeded_at?: string | null;
+  internal_expected_dd?: string | null;
+  amendment_eligible?: boolean | null;
+  balance_centi?: number | null;
+  paid_centi_total?: number | null;
+  local_total_centi?: number | null;
+  total_revenue_centi?: number | null;
+};
+
+const upper = (s: string | null | undefined): string => (s ?? '').toUpperCase();
+
+/* isLocked — the SO header/lines are frozen when the status is terminal
+   (SHIPPED+/CANCELLED, unless an explicit unlock override is active) OR a
+   non-cancelled DO/SI references this SO (hasChildren; never overridable — the
+   child must be cancelled first). Mirrors the desktop `isLocked`. */
+export function isLocked(
+  status: string | null | undefined,
+  hasChildren: boolean,
+  unlockOverride = false,
+): boolean {
+  return (LOCKED_STATUSES.includes(upper(status)) && !unlockOverride) || hasChildren;
+}
+
+/* procLockActive — the SO PROCESS lock (owner 2026-07-05): once the SO has been
+   PROCEEDED (proceeded_at stamped) AND its processing day has passed, we have
+   PO'd to the supplier, so the LINE ITEMS + the customer State/Postcode freeze.
+   Uses todayMyt() (Malaysia calendar day) — NOT the browser-local date — so the
+   lock flips at MYT midnight regardless of the device timezone. */
+export function procLockActive(header: SoDetailGateHeader): boolean {
+  const orig = (header.internal_expected_dd ?? '').slice(0, 10);
+  return Boolean(header.proceeded_at) && orig !== '' && orig < todayMyt();
+}
+
+/* amendmentEligible — the SO is processing-locked (already PO'd) but still
+   editable via the amendment flow, so a line change must go out as an amendment
+   request rather than a direct edit. Only meaningful while the SO is NOT
+   hard-locked (terminal status / downstream child) — a SHIPPED/terminal SO is
+   never amendment-eligible. Mirrors the desktop
+   `Boolean(header.amendment_eligible) && !isLocked`. */
+export function amendmentEligible(header: SoDetailGateHeader, locked: boolean): boolean {
+  return Boolean(header.amendment_eligible) && !locked;
+}
+
+/* deriveBalance — outstanding balance in centi. Prefers the server-stamped
+   balance_centi; otherwise total (local_total ?? total_revenue) minus paid
+   (paid_centi_total, falling back to the sum of the payments ledger), floored
+   at 0. */
+export function deriveBalance(
+  header: SoDetailGateHeader,
+  payments?: ReadonlyArray<{ amount_centi?: number | null }>,
+): number {
+  if (header.balance_centi != null) return header.balance_centi;
+  const total = header.local_total_centi ?? header.total_revenue_centi ?? 0;
+  const paid = header.paid_centi_total
+    ?? (payments ? payments.reduce((s, p) => s + (p.amount_centi ?? 0), 0) : 0);
+  return Math.max(0, total - paid);
+}

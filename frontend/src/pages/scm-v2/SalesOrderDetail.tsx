@@ -47,6 +47,13 @@ import {
   type SoAuditEntry,
   type SoAuditFieldChange,
 } from '../../vendor/scm/lib/sales-order-queries';
+import {
+  LOCKED_STATUSES,
+  CANCELLABLE_STATUSES,
+  isLocked as isSoLocked,
+  procLockActive as soProcLockActive,
+  amendmentEligible as soAmendmentEligible,
+} from '../../vendor/scm/lib/so-detail-gates';
 import { SoLineCard, emptySoLine, missingRequiredVariants, type SoLineDraft } from '../../vendor/scm/components/SoLineCard';
 import { PaymentsTable } from '../../vendor/scm/components/PaymentsTable';
 import { DocumentRelationshipMapModal, type ChainNode } from '../../components/scm-v2/DocumentRelationshipMapModal';
@@ -1032,12 +1039,10 @@ export const SalesOrderDetail = () => {
     }
   };
 
-  // Lock mechanism — CANCELLED + CLOSED + INVOICED are locked (terminal-ish
-  // states). PR #145 + #146 — IN_PRODUCTION + READY_TO_SHIP removed from
-  // forward flow (trading company). SHIPPED is now the earliest locked
-  // state — once goods leave our hands, the SO header is no longer editable.
-  // PR-DRAFT-removal — CONFIRMED is the initial editable state (no DRAFT).
-  const lockedStatuses: SoStatus[] = ['SHIPPED', 'DELIVERED', 'INVOICED', 'CLOSED', 'CANCELLED'];
+  // Lock mechanism — terminal statuses live in the shared LOCKED_STATUSES
+  // (vendor/scm/lib/so-detail-gates) so desktop + mobile agree. CANCELLED +
+  // CLOSED + INVOICED are terminal; SHIPPED is the earliest locked state (once
+  // goods leave our hands the header is no longer editable).
 
   if (detail.isLoading) {
     return <SkeletonDetailPage />;
@@ -1062,19 +1067,16 @@ export const SalesOrderDetail = () => {
      the child must be cancelled/deleted to edit. Convert-to-DO stays available
      (partial delivery) via the list's right-click. */
   const hasChildren = Boolean((header as { has_children?: boolean }).has_children);
-  const isLocked = (lockedStatuses.includes(header.status) && !unlockOverride) || hasChildren;
+  const isLocked = isSoLocked(header.status, hasChildren, unlockOverride);
 
   /* Owner 2026-07-05 — SO PROCESS lock: once the SO has been PROCEEDED
      (proceeded_at stamped) AND its processing day has passed, we PO to the
      supplier, so the LINE ITEMS freeze (State + Postcode freeze in the customer
      card below). Payment + the rest of the customer data stay editable. This is
      independent of `isLocked` (status/downstream) — it applies while the SO is
-     still in an otherwise-editable status. */
-  const todayMY = new Date().toLocaleDateString('en-CA');
-  const procOrig = (header as { internal_expected_dd?: string | null }).internal_expected_dd ?? '';
-  const procLockActive =
-    Boolean((header as { proceeded_at?: string | null }).proceeded_at)
-    && procOrig !== '' && procOrig < todayMY;
+     still in an otherwise-editable status. Shared gate uses todayMyt() (Malaysia
+     calendar day) so the lock flips at MYT midnight, not the device's midnight. */
+  const procLockActive = soProcLockActive(header);
   /* Line editing is locked by EITHER the status/downstream lock OR the process
      lock — both mean the lines are no longer ours to change. */
   const linesLocked = isLocked || procLockActive;
@@ -1086,7 +1088,7 @@ export const SalesOrderDetail = () => {
      also suppresses the immediate line-delete path (removals become REMOVE
      amendment lines instead of live deletes). has_open_amendment gates the
      pending banner + its supplier-confirm / approve actions. */
-  const amendmentEligible = Boolean(header.amendment_eligible) && !isLocked;
+  const amendmentEligible = soAmendmentEligible(header, isLocked);
   const openAmendment = header.open_amendment ?? null;
   const hasOpenAmendment = Boolean(header.has_open_amendment) && openAmendment != null;
   // While an amendment is already open, a second one can't be raised — the edit
@@ -1130,8 +1132,7 @@ export const SalesOrderDetail = () => {
      while the detail is in its read-only view. For every other status the
      Payments section stays view-only until the operator clicks Edit. */
   const isDraftSo = (header.status as string) === 'DRAFT';
-  const cancellableStatuses: SoStatus[] = ['CONFIRMED', 'IN_PRODUCTION', 'READY_TO_SHIP'];
-  const canCancel = cancellableStatuses.includes(header.status);
+  const canCancel = CANCELLABLE_STATUSES.includes(header.status);
 
   const handleCancelSo = async () => {
     if (!(await askConfirm({
@@ -1363,7 +1364,7 @@ export const SalesOrderDetail = () => {
       )}
 
       {/* ── Lock banner ─────────────────────────────────────────── */}
-      {!isCancelled && lockedStatuses.includes(header.status) && (
+      {!isCancelled && LOCKED_STATUSES.includes(header.status) && (
         <div style={{
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           padding: 'var(--space-3) var(--space-4)',
@@ -2272,9 +2273,10 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
      customer STATE + POSTCODE (which drive the line warehouse + the PO delivery
      location) freeze. PAYMENT and every other customer field stay editable.
      This is stricter than `processingLocked` (which grandfather-locks the past
-     Processing-Date input alone, proceeded or not) — keep the two separate. */
-  const procLockActive =
-    Boolean(header.proceeded_at) && originalProcessing !== '' && originalProcessing < today;
+     Processing-Date input alone, proceeded or not) — keep the two separate.
+     Shared gate (vendor/scm/lib/so-detail-gates) uses todayMyt() so the lock is
+     computed against the Malaysia calendar day, not the device's local day. */
+  const procLockActive = soProcLockActive(header);
 
   /* Returns the first blocking date error, or null when the dates are valid.
      Shared by the imperative validate() (page-level Save runs this BEFORE

@@ -13,6 +13,13 @@ import {
 } from "../vendor/scm/lib/sales-order-queries";
 import { buildVariantSummary } from "../vendor/shared/variant-summary";
 import { todayMyt, isCreatedTodayMyt } from "../vendor/scm/lib/dates";
+import {
+  CANCELLABLE_STATUSES,
+  isLocked as isSoLocked,
+  procLockActive as soProcLockActive,
+  amendmentEligible as soAmendmentEligible,
+  deriveBalance,
+} from "../vendor/scm/lib/so-detail-gates";
 import { useSoDropdownOptions, optionsOrFallback, FALLBACK_OPTIONS } from "../vendor/scm/lib/so-dropdown-options-queries";
 import {
   useAmendmentDetail,
@@ -241,47 +248,46 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
   };
 
   const ph = h ? phase(h.status) : "submitted";
-  const bal = h ? (h.balance_centi ?? Math.max(0, total(h) - (h.paid_centi_total ?? 0))) : 0;
+  const bal = h ? deriveBalance(h, payments) : 0;
 
-  /* Parity with desktop SO Detail / list gating (all statuses UPPER-cased).
+  /* Parity with desktop SO Detail / list gating — the primitives now come from
+     the SHARED vendor/scm/lib/so-detail-gates module so a fix lands once for
+     both platforms (statuses are upper-cased inside the gate).
      - Cancel is offered only on in-flight statuses (CONFIRMED / IN_PRODUCTION /
        READY_TO_SHIP), never once SHIPPED+ / INVOICED / CLOSED — those carry
-       downstream docs. Mirrors SalesOrderDetail.cancellableStatuses.
-     - Edit is locked once the SO is SHIPPED+ or any non-cancelled DO/SI
-       references it (has_children). Mirrors SalesOrderDetail.lockedStatuses. */
+       downstream docs (CANCELLABLE_STATUSES).
+     - isLocked = SHIPPED+ terminal status OR a non-cancelled DO/SI references it
+       (has_children). Mirrors SalesOrderDetail.isLocked. */
   const rawStatus = (h?.status ?? "").toUpperCase();
   const hasChildren = Boolean(h?.has_children);
-  const CANCELLABLE = ["CONFIRMED", "IN_PRODUCTION", "READY_TO_SHIP"];
-  const LOCKED = ["SHIPPED", "DELIVERED", "INVOICED", "CLOSED", "CANCELLED"];
-  const canCancel = CANCELLABLE.includes(rawStatus);
+  const canCancel = CANCELLABLE_STATUSES.includes(rawStatus);
+  const isLocked = isSoLocked(h?.status, hasChildren);
 
-  /* Processing-date LOCK — mirrors the desktop SO Detail form's
-     `processingLocked` (SalesOrderDetail.tsx): the Processing Date is the day
-     production started, so once MYT today is AFTER internal_expected_dd AND the
-     order has been proceeded, that date (and the production spec built off it)
-     is a historical record. Desktop keeps the field read-only; here we surface
-     a banner and treat the SO as edit-locked so the detail never offers
-     line-item edits on a proceeded, past-processing order. `today` is the local
-     (MYT on the operator's device) YYYY-MM-DD, string-compared like desktop. */
-  const today = new Date().toLocaleDateString("en-CA");
-  const originalProcessing = (h?.internal_expected_dd ?? "").slice(0, 10);
-  const processingLocked = originalProcessing !== "" && originalProcessing < today && Boolean(h?.proceeded_at);
+  /* Processing LOCK — the shared procLockActive: once the SO has been PROCEEDED
+     (proceeded_at stamped) AND its processing day has passed (compared against
+     todayMyt() — the Malaysia calendar day, NOT the device's local day) the
+     line items are historical. Here we surface a banner and treat the SO as
+     edit-locked so the detail never offers line-item edits on a proceeded,
+     past-processing order. */
+  const processingLocked = h ? soProcLockActive(h) : false;
 
   /* Amendment gate (server-derived, desktop SalesOrderDetail parity) — when
-     amendment_eligible the SO is processing-locked but still editable via the
-     amendment flow, so Edit stays ENABLED (tapping it routes into MobileNewSO's
-     amendment-raise mode) rather than being hard-locked by the processing date.
+     amendment_eligible AND not hard-locked the SO is processing-locked but still
+     editable via the amendment flow, so Edit stays ENABLED (tapping it routes
+     into MobileNewSO's amendment-raise mode) rather than being hard-locked by
+     the processing date. A SHIPPED/terminal SO is never amendment-eligible.
      open_amendment / has_open_amendment drive the pending banner + its gate
      actions below. */
-  const amendmentEligible = Boolean(h?.amendment_eligible);
+  const amendmentEligible = h ? soAmendmentEligible(h, isLocked) : false;
   const openAmendment = h?.open_amendment ?? null;
   const hasOpenAmendment = Boolean(h?.has_open_amendment) && openAmendment != null;
 
-  /* editLocked (disables the footer Edit button) = terminal status OR downstream
-     DO/SI OR a proceeded past-processing order that is NOT amendment-eligible. An
-     amendment-eligible SO keeps Edit live so the salesperson can raise an
-     amendment from mobile instead of reopening it on desktop. */
-  const editLocked = LOCKED.includes(rawStatus) || hasChildren || (processingLocked && !amendmentEligible);
+  /* editLocked (disables the footer Edit button) = hard-locked (terminal status
+     OR downstream DO/SI) OR a proceeded past-processing order that is NOT
+     amendment-eligible. An amendment-eligible SO keeps Edit live so the
+     salesperson can raise an amendment from mobile instead of reopening it on
+     desktop. */
+  const editLocked = isLocked || (processingLocked && !amendmentEligible);
 
   /* Houzs perm gates (mirror the server-side scm.amendment.* keys, desktop
      parity) — the server 403 stays the real gate (its plain-language message is
@@ -332,7 +338,7 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
      lock-gated only by the terminal / downstream statuses, never by the
      processing lock. Drafts + cancelled orders still take NO payment (owner:
      "no payments on drafts"), matching desktop hiding Add Payment off-status. */
-  const paymentLocked = LOCKED.includes(rawStatus) || hasChildren;
+  const paymentLocked = isLocked;
 
   /* No-naked-payment-edits (owner 2026-07-13) — Add / Delete / Edit must NOT
      show in the read-only detail without the operator opting in. The rule
