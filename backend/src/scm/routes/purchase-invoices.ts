@@ -12,6 +12,7 @@ import { postPiAccounting, reversePiAccounting, resyncPiAccounting } from './acc
 import { recostForPi, recostFromGrn } from '../lib/recost';
 import { normalizeCurrency, normalizeExchangeRate, masterRateForCurrency } from '../lib/fx';
 import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
+import { escapeForOr } from '../lib/postgrest-search';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { todayMyt } from '../lib/my-time';
 
@@ -180,17 +181,83 @@ async function piLocked(sb: any, piId: string): Promise<{ error: string; message
 
 purchaseInvoices.get('/', async (c) => {
   const sb = c.get('supabase');
-  let q = sb.from('purchase_invoices')
-    .select(`${HEADER}, supplier:suppliers(id, code, name), purchase_order:purchase_orders(id, po_number), grn:grns(id, grn_number)`)
-    .order('invoice_date', { ascending: false })
-    // Bound the result so PostgREST's default 1000-row cap can't silently
-    // truncate the PI list — match the SO/DO/SI list convention.
-    .limit(500);
+  const SELECT = `${HEADER}, supplier:suppliers(id, code, name), purchase_order:purchase_orders(id, po_number), grn:grns(id, grn_number)`;
+
+  /* Opt-in server-side pagination + search + sort + status-counts (mirrors the
+     SO list in mfg-sales-orders.ts). The PRESENCE of `page` switches paging on;
+     when it is absent/empty the query below is BYTE-IDENTICAL to the historical
+     behavior (order invoice_date desc, limit 500, status param, company scope,
+     `{ purchaseInvoices }` shape). */
+  const pageRaw = c.req.query('page');
+  const paginate = pageRaw !== undefined && pageRaw !== '';
+
+  if (!paginate) {
+    /* --- LEGACY PATH (unchanged) --- */
+    let q = sb.from('purchase_invoices')
+      .select(SELECT)
+      .order('invoice_date', { ascending: false })
+      // Bound the result so PostgREST's default 1000-row cap can't silently
+      // truncate the PI list — match the SO/DO/SI list convention.
+      .limit(500);
+    const status = c.req.query('status'); if (status) q = q.eq('status', status);
+    q = scopeToCompany(q, c); // multi-company: isolate to the active company
+    const { data, error } = await q;
+    if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
+    return c.json({ purchaseInvoices: data ?? [] });
+  }
+
+  /* --- PAGINATED PATH (opt-in via `page`) --- */
+  const page = Math.max(0, Math.trunc(Number(pageRaw)) || 0);
+  const psRaw = Number(c.req.query('pageSize'));
+  const pageSize = Number.isFinite(psRaw) && psRaw > 0 ? Math.min(100, Math.max(1, Math.trunc(psRaw))) : 50;
+
+  const SORT_COLS = new Set(['invoice_date', 'invoice_number', 'status', 'total_centi']);
+  const [rawCol, rawDir] = (c.req.query('sort') ?? 'invoice_date:desc').split(':');
+  const sortCol = SORT_COLS.has(rawCol) ? rawCol : 'invoice_date';
+  const sortAsc = rawDir === 'asc';
+
+  let q = sb.from('purchase_invoices').select(SELECT, { count: 'exact' }).order(sortCol, { ascending: sortAsc });
+  /* unique tiebreaker so range paging can't skip/repeat rows sharing the sort key */
+  if (sortCol !== 'invoice_number') q = q.order('invoice_number', { ascending: sortAsc });
   const status = c.req.query('status'); if (status) q = q.eq('status', status);
   q = scopeToCompany(q, c); // multi-company: isolate to the active company
-  const { data, error } = await q;
+  /* free-text search over the base-table text columns the FE searches
+     (PurchaseInvoicesListV2 hay). Supplier name / PO / GRN source are embedded
+     resources, not base purchase_invoices columns, so they can't be ilike'd here. */
+  const search = c.req.query('q');
+  if (search) {
+    const s = escapeForOr(search);
+    if (s) q = q.or(`invoice_number.ilike.%${s}%,supplier_invoice_ref.ilike.%${s}%,notes.ilike.%${s}%`);
+  }
+  const from = c.req.query('from'); if (from) q = q.gte('invoice_date', from);
+  const to = c.req.query('to'); if (to) q = q.lte('invoice_date', to);
+  q = q.range(page * pageSize, page * pageSize + pageSize - 1);
+  const { data, error, count } = await q;
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
-  return c.json({ purchaseInvoices: data ?? [] });
+  const total = count ?? (data?.length ?? 0);
+
+  /* Status counts mirror the FE filter-pill buckets (draft / posted / partial /
+     paid / cancelled) over the SAME company filter but WITHOUT status / search /
+     pagination. */
+  const countBase = () => scopeToCompany(sb.from('purchase_invoices').select('*', { count: 'exact', head: true }), c);
+  const [allC, draftC, postedC, partialC, paidC, cancelledC] = await Promise.all([
+    countBase(),
+    countBase().eq('status', 'DRAFT'),
+    countBase().eq('status', 'POSTED'),
+    countBase().eq('status', 'PARTIALLY_PAID'),
+    countBase().eq('status', 'PAID'),
+    countBase().eq('status', 'CANCELLED'),
+  ]);
+  const statusCounts = {
+    all: allC.count ?? 0,
+    draft: draftC.count ?? 0,
+    posted: postedC.count ?? 0,
+    partial: partialC.count ?? 0,
+    paid: paidC.count ?? 0,
+    cancelled: cancelledC.count ?? 0,
+  };
+
+  return c.json({ purchaseInvoices: data ?? [], total, page, pageSize, statusCounts });
 });
 
 /* ── GET /outstanding-grn-items ─────────────────────────────────────────
