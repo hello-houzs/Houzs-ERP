@@ -199,13 +199,26 @@ export type ModelAllowedOptions = {
   specials?: string[] | null;
 };
 
+// Company-scope the cache key so a company switch can never serve another
+// company's SKU catalog from an in-memory cache. The switcher already full-
+// reloads (TopNavbar) which empties the cache, but keying by company removes
+// the reliance on that — matches how authed-fetch reads the same localStorage
+// key to stamp X-Company-Id. (Multi-company merge QA, 2026-07.)
+function activeCompanyKey(): string {
+  try {
+    return localStorage.getItem('houzs.activeCompanyId') ?? 'default';
+  } catch {
+    return 'default';
+  }
+}
+
 export function useMfgProducts(opts?: {
   category?: MfgCategory;
   search?: string;
   enabled?: boolean;
 }) {
   return useQuery({
-    queryKey: ['mfg-products', opts?.category ?? 'all', opts?.search ?? ''],
+    queryKey: ['mfg-products', activeCompanyKey(), opts?.category ?? 'all', opts?.search ?? ''],
     queryFn: async () => {
       const params = new URLSearchParams();
       if (opts?.category) params.set('category', opts.category);
