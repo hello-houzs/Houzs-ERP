@@ -3,7 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { uploadSlipFull } from "../vendor/scm/lib/slip";
 import { useStaff } from "../vendor/scm/lib/admin-queries";
-import { useAuth } from "../vendor/scm/lib/auth";
+import { useAuth, isAdminLevel } from "../vendor/scm/lib/auth";
 import { useAuth as useHouzsAuth } from "../auth/AuthContext";
 import { useVenues } from "../vendor/scm/lib/venues-queries";
 import { useStateWarehouseMappings } from "../vendor/scm/lib/state-warehouse-queries";
@@ -465,6 +465,11 @@ export function MobileNewSO({
      SalesOrderNew (which reads `can` + `user` from the same context). */
   const { user: currentUser, can } = useHouzsAuth();
   const canChangeSalesperson = can("scm.so.attribute_other");
+  /* Unified special-order price gate (owner-approved) — reuses the SAME
+     isAdminLevel gate the desktop SoLineCard uses (lib/auth). A non-admin sales
+     role only DESCRIBES the special order; all RM surcharges + the custom
+     Extra-charge field are hidden for them. */
+  const showSpecialPrices = isAdminLevel(authStaff?.role);
   const isEdit = mode === "edit" || mode === "edit-draft";
 
   /* FIX A — real DB-backed SO dropdowns (was hardcoded arrays). Same hooks +
@@ -586,6 +591,8 @@ export function MobileNewSO({
   const [pickerFor, setPickerFor] = useState<string | null>(null);
   // Fabric picker sheet — the line key it was opened for, or null when closed.
   const [fabricPickerFor, setFabricPickerFor] = useState<string | null>(null);
+  // Special-order picker sheet — the line key it was opened for, or null.
+  const [specialPickerFor, setSpecialPickerFor] = useState<string | null>(null);
 
   const [loading, setLoading] = useState(isEdit);
   const [submitting, setSubmitting] = useState(false);
@@ -1709,6 +1716,8 @@ export function MobileNewSO({
                           showErrors={touched && Boolean(procDate)}
                           onOpenPicker={() => setPickerFor(l.key)}
                           onOpenFabricPicker={() => setFabricPickerFor(l.key)}
+                          onOpenSpecialPicker={() => setSpecialPickerFor(l.key)}
+                          showPrices={showSpecialPrices}
                           onChange={(patch) => patchLine(l.key, patch)}
                           onDdateChange={(v) => setLineDdateManual(l.key, v)}
                           onRemove={async () => {
@@ -1921,6 +1930,20 @@ export function MobileNewSO({
           />
         );
       })()}
+
+      {specialPickerFor && (() => {
+        const line = lines.find((l) => l.key === specialPickerFor);
+        if (!line) return null;
+        return (
+          <SpecialOrderSheet
+            line={line}
+            pools={pools}
+            showPrices={showSpecialPrices}
+            onClose={() => setSpecialPickerFor(null)}
+            onChange={(patch) => patchLine(specialPickerFor, patch)}
+          />
+        );
+      })()}
     </div>
   );
 }
@@ -1999,6 +2022,8 @@ function LineCard({
   showErrors,
   onOpenPicker,
   onOpenFabricPicker,
+  onOpenSpecialPicker,
+  showPrices,
   onChange,
   onDdateChange,
   onRemove,
@@ -2010,6 +2035,11 @@ function LineCard({
   showErrors: boolean;
   onOpenPicker: () => void;
   onOpenFabricPicker: () => void;
+  /* Unified special-order entry — opens the bottom sheet (presets + Custom /
+     other). Replaces the old inline Specials accordion. */
+  onOpenSpecialPicker: () => void;
+  /* Owner-approved role gate — false for non-admin sales (hide RM amounts). */
+  showPrices: boolean;
   onChange: (patch: Partial<LineItem>) => void;
   /* FIX D1(b) — a manual Item Delivery Date edit routes through here so the
      parent can flag the line as an override the header cascade won't touch. */
@@ -2087,55 +2117,21 @@ function LineCard({
 
   const missing = new Set(missingVariantAxes(line.itemGroup, line.variants).map((a) => a.key));
 
-  /* ── Special Add-ons (owner 2026-07-04, mirrors SoLineCard verbatim) ──
-     Pool = active special_addons rows for this line's category ∩ the Model's
-     allowed_options.specials ticks (POS semantics: no ticks = nothing offered,
-     Modular is the ON/OFF authority). Ticking writes variants.specials (codes)
-     + specialChoices (required groups default to their first choice, like the
-     POS picker) + specialLabels (display snapshot) — the SAME vocabulary the
-     desktop + server honest-pricing recompute read. The +RM shown is the
-     addon's sellingPriceSen, display-only; the server prices the line. */
+  /* ── Special orders (unified entry) — the editing UI moved to the
+     SpecialOrderSheet bottom sheet (owner-approved). Here we only derive a
+     one-line summary for the tappable "Special order" row. Presets live on
+     variants.specials; the "Custom / other" free-text order on the UNCHANGED
+     variants.extraAddonNote + extraAddonAmountRM. */
   const specialsList = (val: unknown): string[] => {
     if (Array.isArray(val)) return val.map(String).filter(Boolean);
     if (typeof val === "string" && val) return [val];
     return [];
   };
-  const catUpper = line.itemGroup.toUpperCase();
-  const specialOptions = useMemo(() => {
-    // Owner 2026-07-14 — opt-out pool (mirrors SoLineCard): empty/absent
-    // allowed_options.specials ⇒ offer ALL active specials for the category;
-    // a non-empty pool restricts to the ticked codes.
-    const pool = allow?.specials;
-    const restricted = Array.isArray(pool) && pool.length > 0;
-    const allowed = new Set(pool ?? []);
-    return pools.specialAddons.filter(
-      (a) => a.active && a.categories.includes(catUpper) && (!restricted || allowed.has(a.code)),
-    );
-  }, [pools.specialAddons, catUpper, allow]);
   const pickedSpecials = specialsList(v.specials ?? v.special);
-  const [specialsOpen, setSpecialsOpen] = useState(() => pickedSpecials.length > 0);
-  const specialChoicesMap: Record<string, string[]> =
-    v.specialChoices && typeof v.specialChoices === "object"
-      ? (v.specialChoices as Record<string, string[]>)
-      : {};
-  const toggleSpecial = (code: string) => {
-    const has = pickedSpecials.includes(code);
-    const nextPicked = has ? pickedSpecials.filter((c) => c !== code) : [...pickedSpecials, code];
-    const nextChoices: Record<string, string[]> = { ...specialChoicesMap };
-    if (has) {
-      delete nextChoices[code];
-    } else {
-      const def = pools.specialAddons.find((d) => d.code === code);
-      if (def && def.optionGroups.length > 0) {
-        nextChoices[code] = def.optionGroups.map((g) => (g.required && g.choices[0] ? g.choices[0].label : ""));
-      }
-    }
-    setVar({
-      specials: nextPicked,
-      specialChoices: nextChoices,
-      specialLabels: nextPicked.map((c) => pools.specialAddons.find((d) => d.code === c)?.label ?? c),
-    });
-  };
+  const extraNote = String(v.extraAddonNote ?? "");
+  const extraAmountRM = Number(v.extraAddonAmountRM ?? 0);
+  const hasCustom = Boolean(extraNote.trim()) || extraAmountRM > 0;
+  const specialCount = pickedSpecials.length + (hasCustom ? 1 : 0);
 
   const addPhotos = (files: File[]) => {
     if (files.length === 0) return;
@@ -2240,52 +2236,27 @@ function LineCard({
           </>
         )}
 
-        {/* Special orders accordion (owner-approved 2026-07-04) — bedframe +
-            sofa. Hidden when the Model offers no specials and none are picked
-            (POS semantics). Collapsed by default; auto-open when the line
-            already carries specials (edit mode). */}
-        {picked && pools.ready && (line.cat === "sofa" || line.cat === "bedframe") && (specialOptions.length > 0 || pickedSpecials.length > 0) && (
-          <div style={{ border: "1px solid #eceee9", borderRadius: 10, overflow: "hidden" }}>
-            <button
-              type="button"
-              onClick={() => setSpecialsOpen((o) => !o)}
-              style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "8px 10px", background: "#f4f6f3", border: "none", fontFamily: "inherit", cursor: "pointer" }}
-            >
-              <span style={{ fontSize: 12, fontWeight: 700, color: "#11140f" }}>Special orders</span>
-              <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 700, color: "#16695f" }}>
-                {pickedSpecials.length > 0 ? `${pickedSpecials.length} selected` : ""}
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" style={{ transform: specialsOpen ? "rotate(180deg)" : "none", transition: "transform .15s" }}><polyline points="6 9 12 15 18 9" /></svg>
-              </span>
-            </button>
-            {specialsOpen && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 7, padding: "8px 10px" }}>
-                {specialOptions.map((a) => {
-                  const on = pickedSpecials.includes(a.code);
-                  return (
-                    <label key={a.code} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, cursor: "pointer" }}>
-                      <input type="checkbox" checked={on} onChange={() => toggleSpecial(a.code)} style={{ width: 16, height: 16, flex: "none", accentColor: "#16695f" }} />
-                      <span style={{ flex: 1, minWidth: 0, color: "#11140f" }}>{a.label}</span>
-                      {/* Owner 2026-07-04 — config prices are hand-entered and mostly
-                          0; a wall of "+RM 0.00" is noise. Only price non-zero addons. */}
-                      {a.sellingPriceSen !== 0 && (
-                        <span className="money" style={{ fontSize: 11.5, color: "#767b6e", flex: "none" }}>+RM {(a.sellingPriceSen / 100).toFixed(2)}</span>
-                      )}
-                    </label>
-                  );
-                })}
-                {/* A previously-saved special whose code the Model no longer
-                    offers still shows (untickable ghost) so edit never hides
-                    what the order carries. */}
-                {pickedSpecials.filter((c) => !specialOptions.some((a) => a.code === c)).map((c) => (
-                  <label key={c} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, cursor: "pointer" }}>
-                    <input type="checkbox" checked onChange={() => toggleSpecial(c)} style={{ width: 16, height: 16, flex: "none", accentColor: "#16695f" }} />
-                    <span style={{ flex: 1, minWidth: 0, color: "#11140f" }}>{String((v.specialLabels as string[] | undefined)?.[pickedSpecials.indexOf(c)] ?? c)}</span>
-                    <span style={{ fontSize: 10.5, color: "#9aa093", flex: "none" }}>not in model</span>
-                  </label>
-                ))}
-              </div>
-            )}
-          </div>
+        {/* Special order — unified entry (owner-approved). A full-width row that
+            opens the bottom sheet (presets + Custom / other). Replaces the old
+            inline accordion + the standalone Extra input; the data path is
+            unchanged (variants.specials + extraAddonNote/extraAddonAmountRM).
+            Shown for sofa + bedframe (where specials apply). */}
+        {picked && pools.ready && (line.cat === "sofa" || line.cat === "bedframe") && (
+          <button
+            type="button"
+            onClick={onOpenSpecialPicker}
+            style={{
+              width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+              padding: "9px 11px", background: "#fff", border: "1px solid #eceee9", borderRadius: 10,
+              fontFamily: "inherit", cursor: "pointer",
+            }}
+          >
+            <span style={{ fontSize: 12.5, fontWeight: 700, color: "#11140f" }}>Special order</span>
+            <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 700, color: specialCount > 0 ? "#16695f" : "#9aa093" }}>
+              {specialCount > 0 ? `${specialCount} added` : "None"}
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ flex: "none" }}><polyline points="9 6 15 12 9 18" /></svg>
+            </span>
+          </button>
         )}
 
         {picked && pools.ready && line.cat === "mattress" && (
@@ -2481,6 +2452,201 @@ function FabricPicker({ pools, current, onPick, onClose }: {
             )}
             </>
           )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* SpecialOrderSheet — unified special-order entry as a bottom sheet
+   (owner-approved). Lists the active special_addons presets for this line's
+   category ∩ the Model's allowed_options.specials, PLUS a "Custom / other"
+   free-text order. Mirrors the FabricPicker sheet chrome.
+
+   DATA MODEL UNCHANGED: presets write variants.specials + specialChoices +
+   specialLabels; Custom / other writes variants.extraAddonNote +
+   extraAddonAmountRM — the SAME fields the desktop SoLineCard writes and the
+   server honest-pricing recompute reads. No migration, no backend change.
+
+   ROLE GATE (owner): showPrices=false (non-admin sales) hides every RM amount —
+   presets show the NAME ONLY, and the Custom flow shows the description but NO
+   Extra-charge field. Sales just describes what the customer needs. */
+function SpecialOrderSheet({ line, pools, showPrices, onChange, onClose }: {
+  line: LineItem;
+  pools: VariantPools;
+  showPrices: boolean;
+  onChange: (patch: Partial<LineItem>) => void;
+  onClose: () => void;
+}) {
+  const allowQ = useModelAllowedOptionsByCode(line.itemCode || undefined);
+  const allow = allowQ.data ?? null;
+  const v = line.variants;
+
+  /* setVar — merge one or more variant keys + track overriddenKeys so the
+     sofa-compartment follower cascade leaves a manual pick alone (mirrors
+     LineCard.setVar). */
+  const setVar = (patch: Record<string, unknown>) => {
+    const overrides = Array.from(new Set([...line.overriddenKeys, ...Object.keys(patch)]));
+    onChange({ variants: { ...line.variants, ...patch }, overriddenKeys: overrides });
+  };
+
+  const specialsList = (val: unknown): string[] => {
+    if (Array.isArray(val)) return val.map(String).filter(Boolean);
+    if (typeof val === "string" && val) return [val];
+    return [];
+  };
+  const catUpper = line.itemGroup.toUpperCase();
+  const specialOptions: SpecialAddonRow[] = useMemo(() => {
+    // Owner 2026-07-14 — opt-out pool (mirrors SoLineCard/main): empty/absent
+    // allowed_options.specials ⇒ offer ALL active specials for the category;
+    // a non-empty pool restricts to the ticked codes.
+    const pool = allow?.specials;
+    const restricted = Array.isArray(pool) && pool.length > 0;
+    const allowed = new Set(pool ?? []);
+    return pools.specialAddons.filter(
+      (a) => a.active && a.categories.includes(catUpper) && (!restricted || allowed.has(a.code)),
+    );
+  }, [pools.specialAddons, catUpper, allow]);
+  const pickedSpecials = specialsList(v.specials ?? v.special);
+  const specialChoicesMap: Record<string, string[]> =
+    v.specialChoices && typeof v.specialChoices === "object"
+      ? (v.specialChoices as Record<string, string[]>)
+      : {};
+  const toggleSpecial = (code: string) => {
+    const has = pickedSpecials.includes(code);
+    const nextPicked = has ? pickedSpecials.filter((c) => c !== code) : [...pickedSpecials, code];
+    const nextChoices: Record<string, string[]> = { ...specialChoicesMap };
+    if (has) {
+      delete nextChoices[code];
+    } else {
+      const def = pools.specialAddons.find((d) => d.code === code);
+      if (def && def.optionGroups.length > 0) {
+        nextChoices[code] = def.optionGroups.map((g) => (g.required && g.choices[0] ? g.choices[0].label : ""));
+      }
+    }
+    setVar({
+      specials: nextPicked,
+      specialChoices: nextChoices,
+      specialLabels: nextPicked.map((c) => pools.specialAddons.find((d) => d.code === c)?.label ?? c),
+    });
+  };
+
+  const extraNote = String(v.extraAddonNote ?? "");
+  const extraAmountRM = Number(v.extraAddonAmountRM ?? 0);
+  const hasCustom = Boolean(extraNote.trim()) || extraAmountRM > 0;
+  const [customOpen, setCustomOpen] = useState(hasCustom);
+  const ghostPicks = pickedSpecials.filter((c) => !specialOptions.some((a) => a.code === c));
+
+  return (
+    <div className="sheet-bd" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="sheet" onClick={(e) => e.stopPropagation()}>
+        <div className="grab" />
+        <div className="sheet-head">
+          <div>
+            <div className="ey" style={{ color: "#a16a2e" }}>Special order</div>
+            <div style={{ fontSize: 16, fontWeight: 800, color: "#11140f", marginTop: 2 }}>Add special orders</div>
+          </div>
+          <button className="sheet-x" onClick={onClose}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M6 6l12 12M18 6 6 18" /></svg>
+          </button>
+        </div>
+
+        <div className="sheet-scroll" style={{ gap: 9 }}>
+          {specialOptions.length === 0 && ghostPicks.length === 0 && (
+            <div style={{ fontSize: 12, color: "#767b6e" }}>
+              No preset special orders for this model — use “Custom / other” below.
+            </div>
+          )}
+          {specialOptions.map((a) => {
+            const on = pickedSpecials.includes(a.code);
+            return (
+              <label
+                key={a.code}
+                style={{
+                  display: "flex", alignItems: "center", gap: 10, fontSize: 13, cursor: "pointer",
+                  border: on ? "1px solid #16695f" : "1px solid rgba(34,31,32,.12)",
+                  background: on ? "#e1efed" : "#fff", borderRadius: 11, padding: "11px 12px",
+                }}
+              >
+                <input type="checkbox" checked={on} onChange={() => toggleSpecial(a.code)} style={{ width: 18, height: 18, flex: "none", accentColor: "#16695f" }} />
+                <span style={{ flex: 1, minWidth: 0, color: "#11140f", fontWeight: 600 }}>{a.label}</span>
+                {/* Role gate — non-admin sales sees the NAME only (owner). */}
+                {showPrices && a.sellingPriceSen !== 0 && (
+                  <span className="money" style={{ fontSize: 12, color: "#767b6e", flex: "none" }}>+RM {(a.sellingPriceSen / 100).toFixed(2)}</span>
+                )}
+              </label>
+            );
+          })}
+          {/* A previously-saved special the Model no longer offers — kept
+              visible + untickable so edit never hides what the order carries. */}
+          {ghostPicks.map((c) => (
+            <label key={c} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13, cursor: "pointer", border: "1px solid rgba(34,31,32,.12)", background: "#fff", borderRadius: 11, padding: "11px 12px" }}>
+              <input type="checkbox" checked onChange={() => toggleSpecial(c)} style={{ width: 18, height: 18, flex: "none", accentColor: "#16695f" }} />
+              <span style={{ flex: 1, minWidth: 0, color: "#11140f" }}>{String((v.specialLabels as string[] | undefined)?.[pickedSpecials.indexOf(c)] ?? c)}</span>
+              <span style={{ fontSize: 11, color: "#9aa093", flex: "none" }}>not in model</span>
+            </label>
+          ))}
+
+          {/* ── Custom / other ── */}
+          <div style={{ borderTop: "1px dashed #d6d9d2", paddingTop: 11, marginTop: 2 }}>
+            <button
+              type="button"
+              onClick={() => setCustomOpen((o) => !o)}
+              style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "4px 2px", background: "transparent", border: "none", fontFamily: "inherit", cursor: "pointer" }}
+            >
+              <span style={{ fontSize: 13, fontWeight: 700, color: "#11140f" }}>Custom / other</span>
+              <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, fontWeight: 700, color: hasCustom ? "#16695f" : "#9aa093" }}>
+                {hasCustom ? "1 added" : ""}
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" style={{ transform: (customOpen || hasCustom) ? "rotate(180deg)" : "none", transition: "transform .15s" }}><polyline points="6 9 12 15 18 9" /></svg>
+              </span>
+            </button>
+            {(customOpen || hasCustom) && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 9, marginTop: 8 }}>
+                <Field label="Description">
+                  <textarea
+                    className="fld-i"
+                    rows={3}
+                    style={{ resize: "vertical", minHeight: 64 }}
+                    placeholder="Describe the special order the customer needs…"
+                    value={extraNote}
+                    onChange={(e) => setVar({ extraAddonNote: e.target.value })}
+                  />
+                </Field>
+                {showPrices && (
+                  <Field label="Extra charge (RM)" style={{ maxWidth: 160 }}>
+                    <input
+                      className="fld-i money"
+                      inputMode="numeric"
+                      placeholder="0"
+                      value={extraAmountRM ? String(extraAmountRM) : ""}
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        const n = raw === "" ? 0 : Math.max(0, Math.round(Number(raw)) || 0);
+                        setVar({ extraAddonAmountRM: n });
+                      }}
+                    />
+                  </Field>
+                )}
+                {/* Clear hidden from non-admin sales when a price they can't see
+                    is set — they must not silently wipe an admin-priced order. */}
+                {hasCustom && (showPrices || extraAmountRM <= 0) && (
+                  <button
+                    type="button"
+                    onClick={() => setVar({ extraAddonNote: "", extraAddonAmountRM: 0 })}
+                    style={{ alignSelf: "flex-start", fontSize: 12, fontWeight: 600, color: "#b23a3a", background: "transparent", border: "1px solid #e3d2cf", borderRadius: 9, padding: "6px 12px", cursor: "pointer", fontFamily: "inherit" }}
+                  >
+                    Clear custom order
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="sheet-foot">
+          <button type="button" className="btn" onClick={onClose} style={{ flex: 1, padding: "11px 16px" }}>
+            Done
+          </button>
         </div>
       </div>
     </div>

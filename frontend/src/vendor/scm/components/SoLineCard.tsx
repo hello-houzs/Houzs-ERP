@@ -227,6 +227,13 @@ const SoLineCardInner = ({
      (isHatchSales in lib/auth.tsx — remove with the hatch). */
   const { staff } = useAuth();
   const canEditPrice = isAdminLevel(staff?.role) || isHatchSales(staff?.role);
+  /* Unified special-order price-visibility gate (owner-approved, PR "unified
+     special-order entry"). REUSES the SAME isAdminLevel gate the Unit Price
+     locks on (lib/auth.ts: "price stays locked unless isAdminLevel"). A
+     non-admin sales role only DESCRIBES the special order — every RM surcharge
+     on the presets AND the "Custom / other" price field are hidden for them;
+     office/admin see + edit the amounts as before. */
+  const showPrices = isAdminLevel(staff?.role);
 
   const [search, setSearch] = useState(draft.description || draft.itemCode || '');
   const [picked, setPicked]         = useState<MfgProductRow | null>(null);
@@ -425,6 +432,15 @@ const SoLineCardInner = ({
     });
   };
   const setVariant = (k: string, v: string | number | string[]) => setVariants({ [k]: v });
+
+  /* Unified "Custom / other" special-order writer — feeds the free-text channel
+     (variants.extraAddonNote + extraAddonAmountRM), the SAME fields POS folds
+     and the server honest-pricing recompute reads (mfg-pricing-recompute.ts).
+     DATA MODEL UNCHANGED: we only write these two existing keys — no migration,
+     no new field. setVariants keeps overriddenKeys in sync so the follower
+     cascade leaves a manually-entered custom order alone. */
+  const setExtraAddon = (patch: { extraAddonNote?: string; extraAddonAmountRM?: number }) =>
+    setVariants(patch);
 
   /* PR #127 — HOOKKA multi-select Special Orders. */
   const specialsList = (v: unknown): string[] => {
@@ -931,7 +947,10 @@ const SoLineCardInner = ({
             choices={specialChoicesMap}
             options={specialOptions}
             disabled={!isEditing}
-            posRemark={posRemarkSpecial}
+            showPrices={showPrices}
+            extraNote={String(draft.variants.extraAddonNote ?? '')}
+            extraAmountRM={Number(draft.variants.extraAddonAmountRM ?? 0)}
+            onExtraChange={setExtraAddon}
             onToggleCode={toggleSpecial}
             onChoice={changeSpecialChoice}
           />
@@ -982,7 +1001,10 @@ const SoLineCardInner = ({
             choices={specialChoicesMap}
             options={specialOptions}
             disabled={!isEditing}
-            posRemark={posRemarkSpecial}
+            showPrices={showPrices}
+            extraNote={String(draft.variants.extraAddonNote ?? '')}
+            extraAmountRM={Number(draft.variants.extraAddonAmountRM ?? 0)}
+            onExtraChange={setExtraAddon}
             onToggleCode={toggleSpecial}
             onChoice={changeSpecialChoice}
           />
@@ -999,7 +1021,10 @@ const SoLineCardInner = ({
             choices={specialChoicesMap}
             options={specialOptions}
             disabled={!isEditing}
-            posRemark={posRemarkSpecial}
+            showPrices={showPrices}
+            extraNote={String(draft.variants.extraAddonNote ?? '')}
+            extraAmountRM={Number(draft.variants.extraAddonAmountRM ?? 0)}
+            onExtraChange={setExtraAddon}
             onToggleCode={toggleSpecial}
             onChoice={changeSpecialChoice}
           />
@@ -1279,7 +1304,8 @@ export function missingRequiredVariants(
    ────────────────────────────────────────────────────────────────────── */
 
 const SpecialsAccordion = ({
-  open, onToggle, picked, choices, options, onToggleCode, onChoice, disabled = false, posRemark = null,
+  open, onToggle, picked, choices, options, onToggleCode, onChoice, disabled = false,
+  showPrices, extraNote, extraAmountRM, onExtraChange,
 }: {
   open:     boolean;
   onToggle: () => void;
@@ -1295,10 +1321,18 @@ const SpecialsAccordion = ({
      charges via buildSpecialsPoolFromAddons. */
   options:  SpecialAddonRow[];
   disabled?: boolean;
-  /** Loo 2026-06-12 — the POS product-page remark + extra charge, shown as a
-      checked, read-only special row. The amount is already folded into the
-      line's unit price, so it renders "incl." and can't be unticked here. */
-  posRemark?: { label: string; amountSen: number } | null;
+  /* Owner-approved role gate — non-admin sales only DESCRIBES specials, so all
+     RM surcharges + the "Custom / other" price field are hidden (see
+     SoLineCard.showPrices, which reuses lib/auth isAdminLevel). */
+  showPrices: boolean;
+  /* Unified "Custom / other" channel — free-text description + manual RM,
+     stored on the UNCHANGED variants.extraAddonNote + extraAddonAmountRM. This
+     replaces the old standalone "Extra" input AND the read-only POS-remark row:
+     both now flow through this one control, and the server honest-pricing
+     recompute prices it exactly as before. */
+  extraNote: string;
+  extraAmountRM: number;
+  onExtraChange: (patch: { extraAddonNote?: string; extraAddonAmountRM?: number }) => void;
   onToggleCode: (code: string) => void;
   onChoice: (code: string, groupIdx: number, label: string) => void;
 }) => {
@@ -1316,6 +1350,11 @@ const SpecialsAccordion = ({
      removable rows — invisible-but-stuck picks were how the old editor leaked
      RM 0 specials onto orders. */
   const retired = picked.filter((c) => !options.some((o) => o.code === c));
+  /* "Custom / other" carries data whenever the free-text note or a manual RM
+     is present. Old orders whose Extra was entered through the legacy channel
+     (or POS) still render here with their description + amount intact. */
+  const hasCustom = Boolean(extraNote.trim()) || extraAmountRM > 0;
+  const [customOpen, setCustomOpen] = useState(hasCustom);
   return (
     <div className={styles.specials}>
       <div
@@ -1327,39 +1366,10 @@ const SpecialsAccordion = ({
       >
         {open ? <ChevronDown {...SM_ICON} /> : <ChevronRight {...SM_ICON} />}
         <span>Special Orders</span>
-        <span className={styles.specialsCount}>({picked.length + (posRemark ? 1 : 0)} selected)</span>
+        <span className={styles.specialsCount}>({picked.length + (hasCustom ? 1 : 0)} selected)</span>
       </div>
       {open && (
         <div className={styles.specialsBody}>
-          {options.length === 0 && retired.length === 0 && !posRemark && (
-            <span style={{ fontSize: 'var(--fs-12)', color: 'var(--fg-muted)' }}>
-              No specials configured.
-            </span>
-          )}
-          {/* POS special add-on (note + extra charge) keyed on the POS product
-              page (variants.extraAddonNote). Always checked + locked: the amount
-              is already inside the unit price (POS fold + server recompute), so
-              unticking here would misstate the line total. This is separate from
-              the line's Remarks field, which is the item remark. */}
-          {posRemark && (
-            <label
-              className={styles.specialsItem}
-              title="From the POS product page — amount already included in the unit price"
-            >
-              <input
-                type="checkbox"
-                className={styles.specialsCheckbox}
-                checked
-                disabled
-              />
-              <div>
-                <div className={styles.specialsLabel}>{posRemark.label}</div>
-                <div className={styles.specialsSurcharge}>
-                  {posRemark.amountSen > 0 ? `+${fmtRm(posRemark.amountSen)} incl.` : 'RM 0'}
-                </div>
-              </div>
-            </label>
-          )}
           {options.map((o) => {
             const on = picked.includes(o.code);
             const sen = on ? effectiveSen(o) : o.sellingPriceSen;
@@ -1374,9 +1384,12 @@ const SpecialsAccordion = ({
                 />
                 <div>
                   <div className={styles.specialsLabel}>{o.label}</div>
-                  <div className={styles.specialsSurcharge}>
-                    {sen > 0 ? `+${fmtRm(sen)}` : sen < 0 ? `−${fmtRm(Math.abs(sen))}` : 'RM 0'}
-                  </div>
+                  {/* Role gate — non-admin sales sees the NAME only (owner). */}
+                  {showPrices && (
+                    <div className={styles.specialsSurcharge}>
+                      {sen > 0 ? `+${fmtRm(sen)}` : sen < 0 ? `−${fmtRm(Math.abs(sen))}` : 'RM 0'}
+                    </div>
+                  )}
                 </div>
               </label>
             );
@@ -1393,7 +1406,7 @@ const SpecialsAccordion = ({
               <div>
                 <div className={styles.specialsLabel}>{code}</div>
                 <div className={styles.specialsSurcharge} style={{ color: 'var(--c-festive-b, #B8331F)' }}>
-                  retired — prices RM 0, untick to remove
+                  {showPrices ? 'retired — prices RM 0, untick to remove' : 'retired — untick to remove'}
                 </div>
               </div>
             </label>
@@ -1416,13 +1429,78 @@ const SpecialsAccordion = ({
                   {g.required && <option value="" disabled>Select…</option>}
                   {g.choices.map((c) => (
                     <option key={c.label} value={c.label}>
-                      {c.label}{c.extraSen !== 0 ? ` (${c.extraSen > 0 ? '+' : '−'}${fmtRm(Math.abs(c.extraSen))})` : ''}
+                      {c.label}{showPrices && c.extraSen !== 0 ? ` (${c.extraSen > 0 ? '+' : '−'}${fmtRm(Math.abs(c.extraSen))})` : ''}
                     </option>
                   ))}
                 </select>
               </label>
             )),
           )}
+
+          {/* ── Custom / other (unified free-text special order) ─────────────
+              Replaces the old standalone "Extra" input + the read-only POS
+              remark row. Picking it reveals a description (→ extraAddonNote)
+              and, for admin/office only, an Extra-charge field (→
+              extraAddonAmountRM). Sales just describes what the customer
+              needs. Spans the full grid width, always offered last. */}
+          <div className={styles.customSpecial}>
+            <div
+              className={styles.customHead}
+              role="button"
+              tabIndex={0}
+              onClick={() => { if (!disabled) setCustomOpen((o) => !o); }}
+              onKeyDown={(e) => { if (!disabled && (e.key === 'Enter' || e.key === ' ')) setCustomOpen((o) => !o); }}
+            >
+              {(customOpen || hasCustom) ? <ChevronDown {...SM_ICON} /> : <ChevronRight {...SM_ICON} />}
+              <span className={styles.specialsLabel} style={{ fontWeight: 600 }}>Custom / other</span>
+              {hasCustom && <span className={styles.specialsCount}>1 added</span>}
+            </div>
+            {(customOpen || hasCustom) && (
+              <div className={styles.customFields}>
+                <label className={styles.variantField}>
+                  <span className={styles.variantLabel}>Description</span>
+                  <input
+                    className={styles.select}
+                    placeholder="Describe the special order…"
+                    value={extraNote}
+                    disabled={disabled}
+                    onChange={(e) => onExtraChange({ extraAddonNote: e.target.value })}
+                  />
+                </label>
+                {showPrices && (
+                  <label className={styles.variantField} style={{ maxWidth: 140 }}>
+                    <span className={styles.variantLabel}>Extra charge (RM)</span>
+                    <input
+                      type="number"
+                      min={0}
+                      step={1}
+                      className={styles.select}
+                      style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}
+                      placeholder="0"
+                      value={extraAmountRM ? String(extraAmountRM) : ''}
+                      disabled={disabled}
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        const n = raw === '' ? 0 : Math.max(0, Math.round(Number(raw)) || 0);
+                        onExtraChange({ extraAddonAmountRM: n });
+                      }}
+                    />
+                  </label>
+                )}
+                {/* Clear hidden from non-admin sales when a price they can't see
+                    is set — they must not silently wipe an admin-priced order. */}
+                {hasCustom && !disabled && (showPrices || extraAmountRM <= 0) && (
+                  <button
+                    type="button"
+                    className={styles.customClear}
+                    onClick={() => onExtraChange({ extraAddonNote: '', extraAddonAmountRM: 0 })}
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>
