@@ -13,7 +13,7 @@ import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { matchComboSubset, passesRefinementColumns } from '../shared';
 import { supabaseAuth } from '../middleware/auth';
-import { activeCompanyId } from '../lib/companyScope';
+import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 type AppCtx = Context<{ Bindings: Env; Variables: Variables }>;
@@ -136,10 +136,12 @@ pwpCodes.post('/reserve', async (c) => {
   const triggerSizeCode = prod.size_code ? String(prod.size_code).toUpperCase() : null;
 
   // 2. Active rules.
-  const { data: ruleRows } = await supabase
-    .from('pwp_rules')
-    .select('id, trigger_category, trigger_eligible_model_ids, trigger_combo_ids, reward_category, eligible_reward_model_ids, reward_combo_ids, trigger_size_codes, trigger_compartments, reward_size_codes, reward_compartments, qty_per_trigger, type')
-    .eq('active', true);
+  const { data: ruleRows } = await scopeToCompany(
+    supabase
+      .from('pwp_rules')
+      .select('id, trigger_category, trigger_eligible_model_ids, trigger_combo_ids, reward_category, eligible_reward_model_ids, reward_combo_ids, trigger_size_codes, trigger_compartments, reward_size_codes, reward_compartments, qty_per_trigger, type'),
+    c,
+  ).eq('active', true);
   const rules = (ruleRows ?? []) as Array<{
     id: string; trigger_category: string; trigger_eligible_model_ids: string[] | null;
     trigger_combo_ids: string[] | null; reward_category: string;
