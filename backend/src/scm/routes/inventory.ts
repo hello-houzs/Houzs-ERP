@@ -195,6 +195,7 @@ inventory.get('/products', async (c) => {
   const s = search ? escapeForOr(search) : '';
   const { data, error } = await paginateAll((from, to) => {
     let q = sb.from('v_inventory_product_totals').select('*');
+    q = scopeToCompany(q, c); // multi-company: isolate product totals to the active company (view exposes company_id, mig 0106)
     if (s) q = q.or(`product_code.ilike.%${s}%,product_name.ilike.%${s}%`);
     if (category && category !== 'all') q = q.eq('category', category);
     return q.order('product_code').range(from, to);
@@ -261,9 +262,10 @@ inventory.get('/products', async (c) => {
       if (left > 0) incoming.set(r.material_code, (incoming.get(r.material_code) ?? 0) + left);
     }
 
-    const { data: lots } = await chunkIn(codes, (batch, from, to) => sb
+    const { data: lots } = await chunkIn(codes, (batch, from, to) => scopeToCompany(sb
       .from('v_inventory_lots_open')
-      .select('product_code, received_at').in('product_code', batch).range(from, to));
+      .select('product_code, received_at'), c) // multi-company: isolate open lots to the active company (view exposes company_id, mig 0106)
+      .in('product_code', batch).range(from, to));
     for (const r of (lots ?? []) as Array<{ product_code: string; received_at: string | null }>) {
       if (!r.received_at) continue;
       const cur = oldestLot.get(r.product_code);
@@ -305,9 +307,9 @@ inventory.get('/breakdown/:productCode', async (c) => {
     }
     return c.json({ error: 'load_failed', reason: balErr.message }, 500);
   }
-  const { data: val } = await sb.from('v_inventory_value')
+  const { data: val } = await scopeToCompany(sb.from('v_inventory_value')
     .select('warehouse_id, variant_key, value_sen')
-    .eq('product_code', productCode);
+    .eq('product_code', productCode), c); // multi-company: isolate valuation to the active company (view exposes company_id, mig 0106)
   const { data: whs } = await sb.from('warehouses').select('id, code, name');
 
   const whMap = new Map((whs ?? []).map((w: { id: string; code: string; name: string }) => [w.id, w]));
@@ -396,6 +398,7 @@ inventory.get('/batches', async (c) => {
     .select('warehouse_id, batch_no, product_code, variant_key, product_name, qty_remaining, unit_cost_sen, received_at')
     .not('batch_no', 'is', null)
     .gt('qty_remaining', 0);
+  q = scopeToCompany(q, c); // multi-company: isolate batches to the active company (view exposes company_id, mig 0106)
   if (warehouseId) q = q.eq('warehouse_id', warehouseId);
   const { data: lots, error } = await q.order('received_at', { ascending: true });
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
@@ -491,6 +494,7 @@ inventory.get('/cogs', async (c) => {
   // so a long date range exports every consumption row, not just the first 1000.
   const { data, error } = await paginateAll((pFrom, pTo) => {
     let q = sb.from('v_cogs_entries').select('*');
+    q = scopeToCompany(q, c); // multi-company: isolate COGS stream to the active company (view exposes company_id, mig 0106)
     if (warehouseId) q = q.eq('warehouse_id', warehouseId);
     if (productCode) q = q.eq('product_code', productCode);
     if (from) q = q.gte('consumed_at', from);
@@ -510,6 +514,7 @@ inventory.get('/value', async (c) => {
   // warehouse filter stays inside the page query.
   const { data, error } = await paginateAll((from, to) => {
     let q = sb.from('v_inventory_value').select('*');
+    q = scopeToCompany(q, c); // multi-company: isolate valuation to the active company (view exposes company_id, mig 0106)
     if (warehouseId) q = q.eq('warehouse_id', warehouseId);
     return q.order('product_code').range(from, to);
   });
@@ -536,6 +541,7 @@ inventory.get('/analytics', async (c) => {
   const { data: lots, error: lotsErr } = await paginateAll((from, to) => {
     let lotsQ = sb.from('v_inventory_lots_open')
       .select('product_code, product_name, qty_remaining, remaining_value_sen, received_at, warehouse_id');
+    lotsQ = scopeToCompany(lotsQ, c); // multi-company: isolate open lots to the active company (view exposes company_id, mig 0106)
     if (warehouseId) lotsQ = lotsQ.eq('warehouse_id', warehouseId);
     return lotsQ.range(from, to);
   });
@@ -547,6 +553,7 @@ inventory.get('/analytics', async (c) => {
   const { data: cogs, error: cogsErr } = await paginateAll((from, to) => {
     let cogsQ = sb.from('v_cogs_entries')
       .select('product_code, total_cost_sen, consumed_at, warehouse_id');
+    cogsQ = scopeToCompany(cogsQ, c); // multi-company: isolate COGS stream to the active company (view exposes company_id, mig 0106)
     if (warehouseId) cogsQ = cogsQ.eq('warehouse_id', warehouseId);
     return cogsQ.range(from, to);
   });
@@ -706,6 +713,7 @@ inventory.post('/adjustments', async (c) => {
       .eq('warehouse_id', warehouseId)
       .eq('product_code', productCode)
       .eq('variant_key', variantKey);
+    avQ = scopeToCompany(avQ, c); // multi-company: isolate available-stock check to the active company (view exposes company_id, mig 0106)
     avQ = batchNo == null ? avQ.is('batch_no', null) : avQ.eq('batch_no', batchNo);
     const { data: openLots } = await avQ;
     const available = ((openLots ?? []) as Array<{ qty_remaining: number | null }>)
@@ -759,6 +767,7 @@ inventory.get('/buckets/:productCode', async (c) => {
   let q = sb.from('v_inventory_lots_open')
     .select('warehouse_id, variant_key, batch_no, product_name, qty_remaining')
     .eq('product_code', productCode);
+  q = scopeToCompany(q, c); // multi-company: isolate stock buckets to the active company (view exposes company_id, mig 0106)
   if (warehouseId) q = q.eq('warehouse_id', warehouseId);
   const { data, error } = await q;
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
