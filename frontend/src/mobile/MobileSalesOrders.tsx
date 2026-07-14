@@ -169,6 +169,7 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
   /* Scroll container — the infinite-scroll trigger listens on this element (the
      mobile screens scroll an inner overflow div, not the window). */
   const scrollRef = useRef<HTMLDivElement>(null);
+  const sentinelRef = useRef<HTMLDivElement>(null);
 
   /* Server-side search + status + period + infinite scroll. Each filter is a
      query param; changing status/range/debouncedQ swaps the query key so the
@@ -220,28 +221,29 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
     return { rev, out };
   }, [rows]);
 
-  /* Infinite-scroll trigger — a scroll listener on the overflow container fetches
-     the next page when the operator nears the bottom, guarded by
-     hasNextPage && !isFetchingNextPage so it can't double-fire, and rAF-debounced
-     so it fires once per frame. The MobileVirtualList reserves the full loaded
-     height via spacers, so scrollHeight always reflects every loaded row (the
-     "near bottom" test is honest even while windowed). Re-runs when hasNextPage /
-     isFetchingNextPage flip so a first page that doesn't fill the viewport still
-     pulls the next one. */
+  /* Infinite-scroll trigger — an IntersectionObserver watches a 1px sentinel at
+     the bottom of the list and fetches the next page when it nears the viewport
+     (rootMargin 600px pre-load). Observer callbacks run on the event loop, NOT
+     rAF, so this fires reliably even when the tab throttles rAF (a scroll+rAF
+     version silently stopped loading under throttling). Guarded by hasNextPage
+     && !isFetchingNextPage so it can't double-fire; re-observing when those flip
+     re-fires the initial-state callback, so a first page shorter than the
+     viewport (sentinel already visible) still pulls the next until the sentinel
+     scrolls out or there are no more pages. */
   useEffect(() => {
-    const el = scrollRef.current;
-    if (!el || !hasNextPage) return;
-    let raf = 0;
-    const check = () => {
-      raf = 0;
-      if (!hasNextPage || isFetchingNextPage) return;
-      if (el.scrollHeight - el.scrollTop - el.clientHeight < 600) void fetchNextPage();
-    };
-    const onScroll = () => { if (!raf) raf = requestAnimationFrame(check); };
-    el.addEventListener("scroll", onScroll, { passive: true });
-    check(); // first page shorter than the viewport → pull the next immediately
-    return () => { el.removeEventListener("scroll", onScroll); if (raf) cancelAnimationFrame(raf); };
-  }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
+    const target = sentinelRef.current;
+    if (!target || !hasNextPage) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting) && hasNextPage && !isFetchingNextPage) {
+          void fetchNextPage();
+        }
+      },
+      { root: scrollRef.current, rootMargin: "0px 0px 600px 0px" },
+    );
+    io.observe(target);
+    return () => io.disconnect();
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage, rows.length]);
 
   const filterActive = status !== "all" || range !== "all";
 
@@ -541,6 +543,12 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
               );
                 }}
               />
+            )}
+            {/* Infinite-scroll sentinel — the IntersectionObserver watches this
+                1px marker at the list's bottom; it enters view (+600px) near the
+                end and pulls the next page. Only present while more pages exist. */}
+            {rows.length > 0 && hasNextPage && (
+              <div ref={sentinelRef} aria-hidden style={{ height: 1 }} />
             )}
             {/* Infinite-scroll footer — "Loading more…" while the next page is in
                 flight; nothing once every page is loaded (hasNextPage false). */}
