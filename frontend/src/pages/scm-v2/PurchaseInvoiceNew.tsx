@@ -589,12 +589,12 @@ export const PurchaseInvoiceNew = () => {
             </label>
 
             <label className={styles.field}>
-              <span className={styles.fieldLabel}>Supplier Invoice # *</span>
-              <input type="text" value={supplierInvoiceRef} onChange={(e) => setSupplierInvoiceRef(e.target.value)} placeholder="From the supplier's printed invoice" className={styles.fieldInput} required />
+              <span className={styles.fieldLabel}>Supplier Invoice #</span>
+              <input type="text" value={supplierInvoiceRef} onChange={(e) => setSupplierInvoiceRef(e.target.value)} placeholder="From the supplier's printed invoice" className={styles.fieldInput} />
             </label>
             <label className={styles.field}>
-              <span className={styles.fieldLabel}>Invoice Date *</span>
-              <input type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} className={styles.fieldInput} required />
+              <span className={styles.fieldLabel}>Invoice Date</span>
+              <input type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} className={styles.fieldInput} />
             </label>
 
             <label className={styles.field}>

@@ -21,7 +21,7 @@
 import { todayMyt } from '../../vendor/scm/lib/dates';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowRightLeft, ArrowLeft, ChevronDown, Plus, Save, X } from 'lucide-react';
+import { ArrowRightLeft, ArrowLeft, ChevronDown, Save, X } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { PhoneInput } from '../../vendor/scm/components/PhoneInput';
 import { DateField } from '../../vendor/scm/components/DateField';
@@ -43,11 +43,6 @@ import styles from './SalesOrderDetail.module.css';
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
 type DraftLine = SoLineDraft & { rid: string; doItemId?: string; condition?: string };
-
-const newLine = (): DraftLine => ({
-  ...emptySoLine(),
-  rid: `l${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-});
 
 const fmtRm = (centi: number, currency = 'MYR'): string =>
   `${currency} ${(centi / 100).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -108,7 +103,11 @@ export const DeliveryReturnNew = () => {
   const [doDocNo, setDoDocNo] = useState('');
 
   // ── Items ──
-  const [lines, setLines] = useState<DraftLine[]>(() => [newLine()]);
+  // A Delivery Return line MUST come from a delivered Delivery Order line (the
+  // server rejects free-entry lines with 409 do_link_required). So there is no
+  // blank starter line and no free "Add Line Item" affordance — lines are only
+  // ever seeded from a DO (via ?fromDo prefill or the From-DO picker).
+  const [lines, setLines] = useState<DraftLine[]>(() => []);
 
   /* Prefill from the DO once its detail loads. Guarded so we only seed once
      (when the form is still pristine) — re-fetches don't clobber edits. */
@@ -208,7 +207,6 @@ export const DeliveryReturnNew = () => {
 
   const updateLine = (rid: string, patch: Partial<SoLineDraft>) =>
     setLines((prev) => prev.map((l) => (l.rid === rid ? { ...l, ...patch } : l)));
-  const addLine = () => setLines((prev) => [...prev, newLine()]);
   const dropLine = (rid: string) => setLines((prev) => prev.filter((l) => l.rid !== rid));
 
   const subtotalCenti = useMemo(
@@ -223,7 +221,14 @@ export const DeliveryReturnNew = () => {
     if (!canSave) { notify({ title: 'Customer name is required.', tone: 'error' }); return; }
     const validLines = lines.filter((l) => l.itemCode.trim() && l.qty > 0);
     if (validLines.length === 0) {
-      notify({ title: 'Add at least one item via "+ Add Line Item".', tone: 'error' });
+      notify({ title: 'Pick the returned items from a delivered Delivery Order.', tone: 'error' });
+      return;
+    }
+    // Server rule (delivery-returns.ts → 409 do_link_required): every return line
+    // MUST reference a delivered DO line. Block here so free/edited lines that
+    // lost their doItemId can never reach the server as an unsaveable request.
+    if (validLines.some((l) => !l.doItemId)) {
+      notify({ title: 'Every return line must be picked from a delivered Delivery Order — start from a DO.', tone: 'error' });
       return;
     }
 
@@ -328,7 +333,7 @@ export const DeliveryReturnNew = () => {
                 placeholder="Their PO / SO number" onChange={(e) => setCustomerSoNo(e.target.value)} />
             </label>
             <label className={styles.field}>
-              <span className={styles.fieldLabel}>Phone *</span>
+              <span className={styles.fieldLabel}>Phone</span>
               <PhoneInput className={styles.fieldInput} value={phone} onChange={setPhone} />
             </label>
             <label className={styles.field}>
@@ -498,15 +503,20 @@ export const DeliveryReturnNew = () => {
               canRemove={lines.length > 1}
             />
           ))}
-          <button type="button" onClick={addLine}
-            style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, width: '100%',
-              padding: '12px 14px', background: 'transparent', border: '1px dashed var(--c-orange)',
-              borderRadius: 'var(--radius-md)', color: 'var(--c-orange)', fontFamily: 'var(--font-sans)',
-              fontSize: 'var(--fs-13)', fontWeight: 600, cursor: 'pointer',
+          {/* No free "Add Line Item": a return line must come from a delivered DO
+              (server 409 do_link_required). When empty, steer to the From-DO picker. */}
+          {lines.length === 0 && (
+            <div style={{
+              display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--space-3)',
+              padding: '24px 14px', border: '1px dashed var(--line)', borderRadius: 'var(--radius-md)',
+              color: 'var(--fg-muted)', fontFamily: 'var(--font-sans)', fontSize: 'var(--fs-13)', textAlign: 'center',
             }}>
-            <Plus {...ICON} /> Add Line Item
-          </button>
+              <span>Every return line must be picked from a delivered Delivery Order — start from a DO.</span>
+              <Button variant="primary" size="md" onClick={() => navigate('/scm/delivery-returns/from-do')}>
+                <ArrowRightLeft {...ICON} /> Pick from a Delivery Order
+              </Button>
+            </div>
+          )}
           <div style={{
             display: 'flex', justifyContent: 'flex-end', marginTop: 'var(--space-2)', paddingTop: 'var(--space-3)',
             borderTop: '1px solid var(--line)', fontFamily: 'var(--font-mark)', fontSize: 'var(--fs-20)',
