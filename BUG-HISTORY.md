@@ -8,6 +8,12 @@ Severity tags: 🔴 critical/high · 🟠 medium · 🟢 low.
 
 ## 2026-07-14 — Multi-company + performance campaign
 
+### 🟢 Mail Center empty-state copy claimed a mechanism that doesn't exist (misleading)
+- **Symptom:** Owner opened Mail Center under the 2990 company, saw an empty inbox with "No mailbox assigned yet" + "Incoming mail will appear here once the domain MX is switched to Cloudflare and the inbound Worker is live", and thought receiving had broken ("之前有 email 进来了 为什么又没有了").
+- **Cause:** TWO things. (1) The empty-state copy was hand-carried from Hookka and describes an MX-cutover inbound path Houzs never used — Houzs inbound is a Gmail IMAP pull (`mail-sync` GitHub Action, every 5 min; MX stays on Google Workspace). The claim was simply false and alarming. (2) No actual data loss: since migration 0107 the mail tables carry `company_id` and `getMailScope` / threads are scoped to the ACTIVE company; the owner's `hello@` mailbox + history belong to HOUZS (company 1), so viewing under 2990 (company 2) correctly shows nothing.
+- **Fix:** Replaced the copy with the truth — mail syncs automatically every few minutes, and it is scoped to the active company so an empty mailbox usually means the company selector is on the wrong company. (No backend change; the scoping is working as designed.)
+- **Ref:** `fix/mail-empty-copy`, 2026-07-14.
+
 ### 🟠 Mobile Menu listed nav items the user can't open (render-then-Forbidden)
 - **Symptom:** At tablet / narrow widths (`<lg`) and on non-HOUZS mobile, the bottom-bar centre "Menu" sheet listed destinations the user has no access to (Projects, System Health for everyone; Delivery Returns for Sales staff); tapping bounced them to the Forbidden page. The desktop Sidebar and the HOUZS-phone menu hid the same items correctly.
 - **Cause:** `MobileTabBar.MenuModal.filterTab` was a hand-copied SUBSET of `Sidebar.filterTab`: it checked only `perm` / `anyPerm` / `hidePerm` and ignored `pageAccess`, `pageAccessFull`, `requireFinanceViewer` and every sales gate (`hideForSales` / `showForSales` / rep gates). A comment claimed the two "stay in lockstep" — they had silently drifted. No data leaked (route guards still render `<Forbidden>` instead of the page), but a denied entry was shown then rejected — the "render-then-deny" that the "off, not hide" rule forbids at the nav layer.
