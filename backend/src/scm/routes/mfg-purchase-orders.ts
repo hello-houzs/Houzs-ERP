@@ -34,6 +34,7 @@ import {
 } from '../shared/so-line-display';
 import { resolveMaintenanceConfigForSupplier } from '../lib/po-pricing';
 import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
+import { escapeForOr } from '../lib/postgrest-search';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { supabaseAuth } from '../middleware/auth';
 import { computeMrp } from './mrp';
@@ -191,31 +192,106 @@ mfgPurchaseOrders.get('/', async (c) => {
   const supplierId = c.req.query('supplierId');
   const supabase = c.get('supabase');
 
-  let q = supabase
-    .from('purchase_orders')
-    .select(
-      // PR — Commander 2026-05-27: PO list rows now surface a per-row items
-      // summary (AutoCount-style) so the buyer can see at a glance what's
-      // inside each PO without drilling in. Nested select keeps it to one
-      // query — Postgres / Supabase joins purchase_order_items on
-      // purchase_order_id for every row.
-      // purchase_location embeds the warehouse the PO ships to (PR #77 — the
-      // column is an FK → warehouses.id); the list needs its NAME, not just the
-      // id, for the "Purchase Location" column (Owner 2026-07-02).
-      `${HEADER_COLS}, supplier:suppliers(id, code, name), items:purchase_order_items(material_code, material_name, qty), purchase_location:warehouses!purchase_location_id(id, code, name)`,
-    )
-    .order('po_date', { ascending: false })
-    .order('created_at', { ascending: false })
-    // Bound the result so PostgREST's default 1000-row cap can't silently
-    // truncate the PO list — match the SO/DO/SI list convention.
-    .limit(500);
+  // PR — Commander 2026-05-27: PO list rows now surface a per-row items
+  // summary (AutoCount-style) so the buyer can see at a glance what's
+  // inside each PO without drilling in. Nested select keeps it to one
+  // query — Postgres / Supabase joins purchase_order_items on
+  // purchase_order_id for every row.
+  // purchase_location embeds the warehouse the PO ships to (PR #77 — the
+  // column is an FK → warehouses.id); the list needs its NAME, not just the
+  // id, for the "Purchase Location" column (Owner 2026-07-02).
+  const SELECT = `${HEADER_COLS}, supplier:suppliers(id, code, name), items:purchase_order_items(material_code, material_name, qty), purchase_location:warehouses!purchase_location_id(id, code, name)`;
 
-  if (status && VALID_STATUSES.has(status)) q = q.eq('status', status);
-  if (supplierId) q = q.eq('supplier_id', supplierId);
+  /* Opt-in server-side pagination + search + sort + status-counts (mirrors the
+     SO list in mfg-sales-orders.ts). The PRESENCE of `page` switches paging on;
+     when it is absent/empty the query below is BYTE-IDENTICAL to the historical
+     behavior (order po_date desc, created_at desc, limit 500, status + supplierId
+     params, company scope, `{ purchaseOrders }` shape). */
+  const pageRaw = c.req.query('page');
+  const paginate = pageRaw !== undefined && pageRaw !== '';
 
-  q = scopeToCompany(q, c); // multi-company: isolate to the active company
+  let data: unknown = null;
+  let error: { message: string } | null = null;
+  let total = 0;
+  let page = 0;
+  let pageSize = 50;
+  let statusCounts: { all: number; draft: number; open: number; partial: number; received: number; cancelled: number } | undefined;
 
-  const { data, error } = await q;
+  if (!paginate) {
+    /* --- LEGACY PATH (unchanged) --- */
+    let q = supabase
+      .from('purchase_orders')
+      .select(SELECT)
+      .order('po_date', { ascending: false })
+      .order('created_at', { ascending: false })
+      // Bound the result so PostgREST's default 1000-row cap can't silently
+      // truncate the PO list — match the SO/DO/SI list convention.
+      .limit(500);
+    if (status && VALID_STATUSES.has(status)) q = q.eq('status', status);
+    if (supplierId) q = q.eq('supplier_id', supplierId);
+    q = scopeToCompany(q, c); // multi-company: isolate to the active company
+    const res = await q;
+    data = res.data;
+    error = res.error;
+  } else {
+    /* --- PAGINATED PATH (opt-in via `page`) --- */
+    page = Math.max(0, Math.trunc(Number(pageRaw)) || 0);
+    const psRaw = Number(c.req.query('pageSize'));
+    pageSize = Number.isFinite(psRaw) && psRaw > 0 ? Math.min(100, Math.max(1, Math.trunc(psRaw))) : 50;
+
+    const SORT_COLS = new Set(['po_date', 'po_number', 'status', 'total_centi']);
+    const [rawCol, rawDir] = (c.req.query('sort') ?? 'po_date:desc').split(':');
+    const sortCol = SORT_COLS.has(rawCol) ? rawCol : 'po_date';
+    const sortAsc = rawDir === 'asc';
+
+    let q = supabase.from('purchase_orders').select(SELECT, { count: 'exact' }).order(sortCol, { ascending: sortAsc });
+    /* unique tiebreaker so range paging can't skip/repeat rows sharing the sort key */
+    if (sortCol !== 'po_number') q = q.order('po_number', { ascending: sortAsc });
+    if (status && VALID_STATUSES.has(status)) q = q.eq('status', status);
+    if (supplierId) q = q.eq('supplier_id', supplierId);
+    q = scopeToCompany(q, c); // multi-company: isolate to the active company
+    /* free-text search over the base-table text columns the FE searches
+       (PurchaseOrdersListV2 hay). Supplier name / code are embedded resources,
+       not base purchase_orders columns, so they can't be ilike'd here. */
+    const search = c.req.query('q');
+    if (search) {
+      const s = escapeForOr(search);
+      if (s) q = q.or(`po_number.ilike.%${s}%,notes.ilike.%${s}%`);
+    }
+    const from = c.req.query('from'); if (from) q = q.gte('po_date', from);
+    const to = c.req.query('to'); if (to) q = q.lte('po_date', to);
+    q = q.range(page * pageSize, page * pageSize + pageSize - 1);
+    const res = await q;
+    data = res.data;
+    error = res.error;
+    total = res.count ?? (res.data?.length ?? 0);
+
+    /* Status counts mirror the FE filter-pill buckets (draft / open / partial /
+       received / cancelled) over the SAME company + supplier filters but WITHOUT
+       status / search / pagination. */
+    const countBase = () => {
+      let cq = supabase.from('purchase_orders').select('*', { count: 'exact', head: true });
+      if (supplierId) cq = cq.eq('supplier_id', supplierId);
+      cq = scopeToCompany(cq, c);
+      return cq;
+    };
+    const [allC, draftC, openC, partialC, receivedC, cancelledC] = await Promise.all([
+      countBase(),
+      countBase().eq('status', 'DRAFT'),
+      countBase().eq('status', 'SUBMITTED'),
+      countBase().eq('status', 'PARTIALLY_RECEIVED'),
+      countBase().eq('status', 'RECEIVED'),
+      countBase().eq('status', 'CANCELLED'),
+    ]);
+    statusCounts = {
+      all: allC.count ?? 0,
+      draft: draftC.count ?? 0,
+      open: openC.count ?? 0,
+      partial: partialC.count ?? 0,
+      received: receivedC.count ?? 0,
+      cancelled: cancelledC.count ?? 0,
+    };
+  }
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
 
   /* Tier 2 downstream-lock (mirror computeGrnFlags in routes/grns.ts) — one
@@ -250,6 +326,7 @@ mfgPurchaseOrders.get('/', async (c) => {
     has_children: childIds.has(r.id),
     transfer_to_grns: grnNumbersByPo.get(r.id) ?? [],
   }));
+  if (paginate) return c.json({ purchaseOrders, total, page, pageSize, statusCounts });
   return c.json({ purchaseOrders });
 });
 
