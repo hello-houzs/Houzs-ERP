@@ -53,7 +53,7 @@ import {
 import { cn } from "../lib/utils";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useAuth } from "../auth/AuthContext";
-import { isSalesStaff, isSalesDirectorUser } from "../auth/salesAccess";
+import { isSalesStaff, isSalesDirectorUser, isSalesNonDirector } from "../auth/salesAccess";
 import { CompanyMark } from "./CompanyMark";
 import { PresencePanel } from "./PresencePanel";
 import { GlobalSearchTrigger } from "./GlobalSearch";
@@ -130,6 +130,32 @@ export interface NavTab {
    *  Used for the scoped Team entries (Members / Org Chart / Departments); the
    *  Positions leaf deliberately OMITS this so it stays hidden from him. */
   showForSalesDirector?: boolean;
+  /** Sales-access model (owner rule 2026-07): HIDE this entry from a
+   *  NON-director Sales user (auth/salesAccess.isSalesNonDirector). Keyed off
+   *  the org chart in code, NOT the config matrix — so a rep sees exactly the
+   *  owner-approved cut regardless of their page-access grants. Used to trim the
+   *  Supply Chain nav down to Sales-Orders-only and to drop the Service-Cases
+   *  board / metrics / maintenance leaves for reps. Sales Directors + office are
+   *  UNAFFECTED (they keep the broad view). Checked before the show-bypasses. */
+  hideForSalesRep?: boolean;
+  /** Sales-access model: ADDITIVELY show this entry to a NON-director Sales user
+   *  even without the usual `perm`/`anyPerm`/`anyAccess`/`pageAccess` gate —
+   *  keyed off org fields, NOT the matrix. Used so the Supply Chain GROUP header
+   *  survives for a rep (its only surviving child is the rep Sales-Orders leaf)
+   *  no matter what SCM page-access the rep's position happens to hold. */
+  showForSalesRep?: boolean;
+  /** Sales-access model: show this entry ONLY to a NON-director Sales user and
+   *  hide it from everyone else (office/director). Bypasses the permission
+   *  gates. Used for the single rep-facing "Sales Orders" leaf mounted directly
+   *  under Supply Chain so a rep's SCM tree is exactly one item deep. */
+  salesRepOnly?: boolean;
+  /** Sales-access model: for a NON-director Sales user, override this group
+   *  header's click target with `salesRepTo` (the plain `to` still applies to
+   *  everyone else). Used so a rep clicking "Supply Chain" lands on the
+   *  reachable /scm/sales-orders list instead of the /scm Hub (which 403s on
+   *  `scm` area) and "Service Cases" lands on /my-cases instead of the board
+   *  hub. Non-Sales / director behaviour is unchanged. */
+  salesRepTo?: string;
   /** Optional sub-entries. When present, this tab renders as an
    *  expandable group header instead of a click target. */
   children?: NavTab[];
@@ -162,6 +188,10 @@ export const NAV_TABS: NavTab[] = [
     icon: ShoppingCart,
     anyPerm: ["*", "scm.access"],
     anyAccess: ["scm.sales.orders"],
+    // A rep always keeps this top-level shortcut even if their position lacks
+    // the scm.sales.orders page-access (the route itself allows Sales — see
+    // App.tsx ScmGuard allowSales).
+    showForSalesRep: true,
   },
   // Sales Entries — Nico 2026-07-09: "sales entries 我不要了". Sidebar
   // entry removed. The /sales route + Sales.tsx page + backend endpoints
@@ -186,6 +216,11 @@ export const NAV_TABS: NavTab[] = [
     // permission-only sub-tabs (Cases / Metrics / Maintenance) from them, so
     // only the sales-visible My Cases leaf survives.
     showForSales: true,
+    // Owner rule 2026-07: a NON-director Sales rep gets ONLY "My Cases" here —
+    // never the full board hub. Retarget the group header to /my-cases (the
+    // /assr?view=hub board stays for office/director) and hide the board /
+    // metrics / maintenance leaves for reps (below).
+    salesRepTo: "/my-cases",
     children: [
       {
         to: "/assr?view=cases",
@@ -193,6 +228,7 @@ export const NAV_TABS: NavTab[] = [
         icon: ClipboardList,
         perm: "service_cases.read",
         pageAccess: "service_cases.cases",
+        hideForSalesRep: true,
       },
       {
         to: "/assr?view=metrics",
@@ -200,6 +236,7 @@ export const NAV_TABS: NavTab[] = [
         icon: ShieldCheck,
         perm: "service_cases.read",
         pageAccess: "service_cases.metrics",
+        hideForSalesRep: true,
       },
       {
         // Lead Time Portal merged into Service Maintenance as a tab.
@@ -210,6 +247,7 @@ export const NAV_TABS: NavTab[] = [
         label: "Service Maintenance",
         icon: Wrench,
         perm: "service_cases.manage",
+        hideForSalesRep: true,
       },
       {
         // Sales-side view of the cases the current user raised.
@@ -289,7 +327,27 @@ export const NAV_TABS: NavTab[] = [
       "scm.warehouse",
       "scm.finance",
     ],
+    // Owner rule 2026-07: a NON-director Sales rep's Supply Chain nav is trimmed
+    // to ONLY "Sales Orders". showForSalesRep keeps this group header visible
+    // for the rep (its only surviving child is the rep Sales-Orders leaf below),
+    // and salesRepTo sends the header straight to the reachable /scm/sales-orders
+    // list instead of the /scm Hub (which 403s on the `scm` area for a rep).
+    // Every OTHER SCM subgroup below carries hideForSalesRep. Office / director
+    // are unaffected.
+    showForSalesRep: true,
+    salesRepTo: "/scm/sales-orders",
     children: [
+      // Rep-only Sales-Orders leaf — the single SCM entry a non-director Sales
+      // rep sees under Supply Chain (salesRepOnly hides it from office/director,
+      // who reach Sales Orders via the Sales Order subgroup below). Bypasses the
+      // page-access gate; the route itself allows Sales (App.tsx ScmGuard
+      // allowSales).
+      {
+        to: "/scm/sales-orders",
+        label: "Sales Orders",
+        icon: ShoppingCart,
+        salesRepOnly: true,
+      },
       // 1:1 with 2990's backend Sidebar sectioning + order: Sales Order ->
       // Consignment -> Procurement -> Transportation -> Warehouse (then Finance,
       // which 2990 keeps top-level; Houzs nests it under Supply Chain). MRP +
@@ -306,6 +364,9 @@ export const NAV_TABS: NavTab[] = [
       // full → all four sales leaves show (inherit); override scm.sales.delivery
       // = none → just Delivery Orders disappears while the rest stay.
       {
+        // A rep never sees this subgroup (they get the flat rep Sales-Orders
+        // leaf above instead); office/director keep the full Sales-Order flow.
+        hideForSalesRep: true,
         label: "Sales Order",
         icon: ShoppingCart,
         groupId: "scm-sales",
@@ -314,13 +375,14 @@ export const NAV_TABS: NavTab[] = [
         anyAccess: ["scm.sales", "scm.sales.orders", "scm.sales.delivery", "scm.sales.invoices", "scm.sales.returns"],
         children: [
           { to: "/scm/sales-orders", label: "Sales Orders", icon: ShoppingCart, anyPerm: ["*", "scm.access"], anyAccess: ["scm.sales.orders"] },
-          { to: "/scm/amendments", label: "Amendments", icon: History, anyPerm: ["*", "scm.access", "scm.amendment.create", "scm.amendment.supplier_confirm", "scm.amendment.approve_so", "scm.amendment.approve_po"], anyAccess: ["scm.sales.orders"] },
-          { to: "/scm/delivery-orders", label: "Delivery Orders", icon: Send, anyPerm: ["*", "scm.access"], anyAccess: ["scm.sales.delivery"] },
-          { to: "/scm/sales-invoices", label: "Sales Invoices", icon: FileText, anyPerm: ["*", "scm.access"], anyAccess: ["scm.sales.invoices"] },
+          { to: "/scm/amendments", label: "Amendments", icon: History, anyPerm: ["*", "scm.access", "scm.amendment.create", "scm.amendment.supplier_confirm", "scm.amendment.approve_so", "scm.amendment.approve_po"], anyAccess: ["scm.sales.orders"], hideForSalesRep: true },
+          { to: "/scm/delivery-orders", label: "Delivery Orders", icon: Send, anyPerm: ["*", "scm.access"], anyAccess: ["scm.sales.delivery"], hideForSalesRep: true },
+          { to: "/scm/sales-invoices", label: "Sales Invoices", icon: FileText, anyPerm: ["*", "scm.access"], anyAccess: ["scm.sales.invoices"], hideForSalesRep: true },
           { to: "/scm/delivery-returns", label: "Delivery Returns", icon: RotateCcw, anyPerm: ["*", "scm.access"], anyAccess: ["scm.sales.returns"], hideForSales: true },
         ],
       },
       {
+        hideForSalesRep: true,
         label: "Consignment",
         icon: Handshake,
         groupId: "scm-consignment",
@@ -337,6 +399,7 @@ export const NAV_TABS: NavTab[] = [
         ],
       },
       {
+        hideForSalesRep: true,
         label: "Procurement",
         icon: Package,
         groupId: "scm-procurement",
@@ -344,16 +407,17 @@ export const NAV_TABS: NavTab[] = [
         anyPerm: ["*", "scm.access"],
         anyAccess: ["scm.procurement", "scm.procurement.products", "scm.procurement.suppliers", "scm.procurement.mrp", "scm.procurement.po", "scm.procurement.grn", "scm.procurement.pi", "scm.procurement.pr"],
         children: [
-          { to: "/scm/products", label: "Products & Maintenance", icon: Sofa, anyPerm: ["*", "scm.access"], anyAccess: ["scm.procurement.products"] },
-          { to: "/scm/suppliers", label: "Suppliers", icon: Truck, anyPerm: ["*", "scm.access"], anyAccess: ["scm.procurement.suppliers"] },
-          { to: "/scm/mrp", label: "MRP · Stock Status", icon: Calculator, anyPerm: ["*", "scm.access"], anyAccess: ["scm.procurement.mrp"] },
-          { to: "/scm/purchase-orders", label: "Purchase Orders", icon: ClipboardList, anyPerm: ["*", "scm.access"], anyAccess: ["scm.procurement.po"] },
-          { to: "/scm/grns", label: "Goods Receipt", icon: PackageCheck, anyPerm: ["*", "scm.access"], anyAccess: ["scm.procurement.grn"] },
-          { to: "/scm/purchase-invoices", label: "Purchase Invoices", icon: ReceiptText, anyPerm: ["*", "scm.access"], anyAccess: ["scm.procurement.pi"] },
-          { to: "/scm/purchase-returns", label: "Purchase Returns", icon: Undo2, anyPerm: ["*", "scm.access"], anyAccess: ["scm.procurement.pr"] },
+          { to: "/scm/products", label: "Products & Maintenance", icon: Sofa, anyPerm: ["*", "scm.access"], anyAccess: ["scm.procurement.products"], hideForSalesRep: true },
+          { to: "/scm/suppliers", label: "Suppliers", icon: Truck, anyPerm: ["*", "scm.access"], anyAccess: ["scm.procurement.suppliers"], hideForSalesRep: true },
+          { to: "/scm/mrp", label: "MRP · Stock Status", icon: Calculator, anyPerm: ["*", "scm.access"], anyAccess: ["scm.procurement.mrp"], hideForSalesRep: true },
+          { to: "/scm/purchase-orders", label: "Purchase Orders", icon: ClipboardList, anyPerm: ["*", "scm.access"], anyAccess: ["scm.procurement.po"], hideForSalesRep: true },
+          { to: "/scm/grns", label: "Goods Receipt", icon: PackageCheck, anyPerm: ["*", "scm.access"], anyAccess: ["scm.procurement.grn"], hideForSalesRep: true },
+          { to: "/scm/purchase-invoices", label: "Purchase Invoices", icon: ReceiptText, anyPerm: ["*", "scm.access"], anyAccess: ["scm.procurement.pi"], hideForSalesRep: true },
+          { to: "/scm/purchase-returns", label: "Purchase Returns", icon: Undo2, anyPerm: ["*", "scm.access"], anyAccess: ["scm.procurement.pr"], hideForSalesRep: true },
         ],
       },
       {
+        hideForSalesRep: true,
         label: "Transportation",
         icon: Truck,
         groupId: "scm-transportation",
@@ -361,14 +425,15 @@ export const NAV_TABS: NavTab[] = [
         anyPerm: ["*", "scm.access"],
         anyAccess: ["scm.transportation", "scm.transportation.drivers"],
         children: [
-          { to: "/scm/delivery-planning", label: "Delivery Planning", icon: Send, anyPerm: ["*", "scm.access"], anyAccess: ["scm.transportation.drivers"] },
-          { to: "/scm/fleet", label: "Fleet", icon: Truck, anyPerm: ["*", "scm.access"], anyAccess: ["scm.transportation.drivers"] },
-          { to: "/scm/lorry-capacity", label: "Lorry Capacity", icon: BarChart3, anyPerm: ["*", "scm.access"], anyAccess: ["scm.transportation.drivers"] },
-          { to: "/scm/drivers", label: "Drivers", icon: Truck, anyPerm: ["*", "scm.access"], anyAccess: ["scm.transportation.drivers"] },
-          { to: "/scm/delivery-planning-regions", label: "Regions", icon: Map, anyPerm: ["*", "scm.access"], anyAccess: ["scm.transportation.drivers"] },
+          { to: "/scm/delivery-planning", label: "Delivery Planning", icon: Send, anyPerm: ["*", "scm.access"], anyAccess: ["scm.transportation.drivers"], hideForSalesRep: true },
+          { to: "/scm/fleet", label: "Fleet", icon: Truck, anyPerm: ["*", "scm.access"], anyAccess: ["scm.transportation.drivers"], hideForSalesRep: true },
+          { to: "/scm/lorry-capacity", label: "Lorry Capacity", icon: BarChart3, anyPerm: ["*", "scm.access"], anyAccess: ["scm.transportation.drivers"], hideForSalesRep: true },
+          { to: "/scm/drivers", label: "Drivers", icon: Truck, anyPerm: ["*", "scm.access"], anyAccess: ["scm.transportation.drivers"], hideForSalesRep: true },
+          { to: "/scm/delivery-planning-regions", label: "Regions", icon: Map, anyPerm: ["*", "scm.access"], anyAccess: ["scm.transportation.drivers"], hideForSalesRep: true },
         ],
       },
       {
+        hideForSalesRep: true,
         label: "Warehouse",
         icon: Warehouse,
         groupId: "scm-warehouse",
@@ -378,14 +443,15 @@ export const NAV_TABS: NavTab[] = [
         children: [
           // Warehouses master sits at the TOP of the group (2990 parity) — it's
           // the location registry every other warehouse doc binds against.
-          { to: "/scm/warehouses", label: "Warehouses", icon: Warehouse, anyPerm: ["*", "scm.access"], anyAccess: ["scm.warehouse.inventory"] },
-          { to: "/scm/inventory", label: "Inventory", icon: Package, anyPerm: ["*", "scm.access"], anyAccess: ["scm.warehouse.inventory"] },
-          { to: "/scm/stock-adjustments", label: "Adjustments", icon: SlidersHorizontal, anyPerm: ["*", "scm.access"], anyAccess: ["scm.warehouse.adjustments"] },
-          { to: "/scm/stock-transfers", label: "Transfers", icon: ArrowLeftRight, anyPerm: ["*", "scm.access"], anyAccess: ["scm.warehouse.transfers"] },
-          { to: "/scm/stock-takes", label: "Stock Take", icon: ClipboardCheck, anyPerm: ["*", "scm.access"], anyAccess: ["scm.warehouse.stock_take"] },
+          { to: "/scm/warehouses", label: "Warehouses", icon: Warehouse, anyPerm: ["*", "scm.access"], anyAccess: ["scm.warehouse.inventory"], hideForSalesRep: true },
+          { to: "/scm/inventory", label: "Inventory", icon: Package, anyPerm: ["*", "scm.access"], anyAccess: ["scm.warehouse.inventory"], hideForSalesRep: true },
+          { to: "/scm/stock-adjustments", label: "Adjustments", icon: SlidersHorizontal, anyPerm: ["*", "scm.access"], anyAccess: ["scm.warehouse.adjustments"], hideForSalesRep: true },
+          { to: "/scm/stock-transfers", label: "Transfers", icon: ArrowLeftRight, anyPerm: ["*", "scm.access"], anyAccess: ["scm.warehouse.transfers"], hideForSalesRep: true },
+          { to: "/scm/stock-takes", label: "Stock Take", icon: ClipboardCheck, anyPerm: ["*", "scm.access"], anyAccess: ["scm.warehouse.stock_take"], hideForSalesRep: true },
         ],
       },
       {
+        hideForSalesRep: true,
         label: "Finance",
         icon: BookOpen,
         groupId: "scm-finance",
@@ -564,13 +630,21 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
     // (director included; checked first so it wins over any show-gate below).
     // Non-sales staff pass through unchanged.
     if (t.hideForSales && isSalesStaff(user)) return null;
+    // Rep HIDE gate — cut from a NON-director Sales rep only (SCM trim +
+    // Service-Cases board/metrics). Director/office pass through.
+    if (t.hideForSalesRep && isSalesNonDirector(user)) return null;
+    // Rep-only entry — visible ONLY to a non-director Sales rep; everyone else
+    // (office/director) never sees it.
+    if (t.salesRepOnly && !isSalesNonDirector(user)) return null;
     // Sales-access model SHOW bypass — Sales staff see `showForSales` entries
     // even without the usual permission / page-access gate (keyed off the org
     // department, NOT the config matrix). HIDE gates (above + hidePerm /
     // requireFinanceViewer below) still apply.
     const salesBypass =
       (!!t.showForSales && isSalesStaff(user)) ||
-      (!!t.showForSalesDirector && isSalesDirectorUser(user));
+      (!!t.showForSalesDirector && isSalesDirectorUser(user)) ||
+      (!!t.showForSalesRep && isSalesNonDirector(user)) ||
+      (!!t.salesRepOnly && isSalesNonDirector(user));
     if (!salesBypass) {
       if (t.perm && !can(t.perm)) return null;
       // `anyPerm` + `anyAccess` are ORed: when both are present the tab shows
@@ -600,14 +674,19 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
     }
     if (t.hidePerm && can(t.hidePerm)) return null;
     if (t.requireFinanceViewer && !user?.project_finance_viewer) return null;
+    // Rep click-target override — a non-director Sales rep's group headers point
+    // at a reachable leaf (Supply Chain → /scm/sales-orders, Service Cases →
+    // /my-cases) instead of the /scm or board hub that would 403 them.
+    const to =
+      t.salesRepTo && isSalesNonDirector(user) ? t.salesRepTo : t.to;
     if (t.children) {
       const kids = t.children
         .map(filterTab)
         .filter((x): x is NavTab => x !== null);
       if (kids.length === 0) return null;
-      return { ...t, children: kids };
+      return { ...t, to, children: kids };
     }
-    return t;
+    return to === t.to ? t : { ...t, to };
   }
 
   const visibleTabs = NAV_TABS.map(filterTab).filter(

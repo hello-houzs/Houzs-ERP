@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { useAuth } from "../auth/AuthContext";
+import { isSalesStaff } from "../auth/salesAccess";
 import { normalizeJobs, type ScanJobsResp } from "./MobileScan";
 import "./mobile.css";
 
@@ -118,11 +119,18 @@ function inRange(r: SoRow, range: Range): boolean {
 /** Sales Orders list — 1:1 with the owner's mobile prototype (`#so-list`), wired
  *  to the same /api/scm/mfg-sales-orders the desktop uses (row-scoped +
  *  permission-gated by the backend). Summary bar + period chips + card + FAB. */
-export function MobileSalesOrders({ onScan, onOpen, onNew }: { onScan: () => void; onOpen: (docNo: string) => void; onNew: () => void }) {
+export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan: () => void; onOpen: (docNo: string) => void; onNew: () => void; onNewCase?: () => void }) {
   const qc = useQueryClient();
   const notify = useNotify();
-  const { user } = useAuth();
+  const { user, can, pageAccess } = useAuth();
   const [q, setQ] = useState("");
+  // FAB "+" speed-dial — offers New Sales Order + New Service Case (parity with
+  // the desktop QuickActionsFAB two-choice). A Sales user always gets the case
+  // option (owner rule 2026-07); others get it only if their matrix grants it.
+  const [fabOpen, setFabOpen] = useState(false);
+  const canNewCase =
+    !!onNewCase &&
+    (isSalesStaff(user) || can("service_cases.write") || pageAccess("service_cases") !== "none");
   const [status, setStatus] = useState<StatusFilter>("all");
   const [range, setRange] = useState<Range>("all");
   const [filterOpen, setFilterOpen] = useState(false);
@@ -506,10 +514,53 @@ export function MobileSalesOrders({ onScan, onOpen, onNew }: { onScan: () => voi
         </div>
       )}
 
-      {/* Floating green "+" FAB — create a new sales order. */}
-      <button onClick={onNew} aria-label="New sales order" className="fab">
+      {/* Floating green "+" FAB. When a Service Case can also be created it opens
+          a two-choice sheet (New Sales Order / New Service Case), matching the
+          desktop QuickActionsFAB; otherwise it opens New Sales Order directly. */}
+      <button
+        onClick={() => { if (canNewCase) setFabOpen(true); else onNew(); }}
+        aria-label={canNewCase ? "Create" : "New sales order"}
+        className="fab"
+      >
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.6" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
       </button>
+
+      {/* FAB "+" action sheet — New Sales Order / New Service Case. Reuses the
+          same bottom-sheet chrome as the status filter above. */}
+      {fabOpen && (
+        <div className="sheet-bd" onClick={() => setFabOpen(false)}>
+          <div className="sheet" onClick={(e) => e.stopPropagation()} style={{ maxHeight: "60%" }}>
+            <div className="grab" />
+            <div className="sheet-head">
+              <div>
+                <div className="eyebrow">Create</div>
+                <div className="scr-title" style={{ fontSize: 17 }}>What would you like to add?</div>
+              </div>
+              <button className="sheet-x" onClick={() => setFabOpen(false)} aria-label="Close">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
+              </button>
+            </div>
+            <div className="sheet-scroll" style={{ gap: 8 }}>
+              <button
+                className="mcard"
+                onClick={() => { setFabOpen(false); onNew(); }}
+                style={{ justifyContent: "flex-start", gap: 10 }}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#16695f" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flex: "none" }}><circle cx="9" cy="21" r="1" /><circle cx="20" cy="21" r="1" /><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6" /></svg>
+                <span className="ml">New Sales Order</span>
+              </button>
+              <button
+                className="mcard"
+                onClick={() => { setFabOpen(false); onNewCase?.(); }}
+                style={{ justifyContent: "flex-start", gap: 10 }}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#a16a2e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flex: "none" }}><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76Z" /></svg>
+                <span className="ml">New Service Case</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

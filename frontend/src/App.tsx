@@ -193,14 +193,24 @@ function Guard({
  * position granted the mapped SCM page-access area ALSO passes (additive).
  * `area` is one of the scm.<area> page keys. Thin wrapper over <Guard> so the
  * ~75 /scm/* routes stay a one-line change each.
+ *
+ * `allowSales` (owner rule 2026-07) — mirrors PageGuard's allowSales: a
+ * Sales-department user (auth/salesAccess.isSalesStaff) is let through even
+ * without the matrix page-access. ONLY set on the Sales-Orders-area routes
+ * (list + create + SO detail): the backend already scopes a rep's Sales Orders
+ * to own + downline (#400/#410), so this is safe and opens NO other SCM area.
  */
 function ScmGuard({
   area,
+  allowSales = false,
   children,
 }: {
   area: string;
+  allowSales?: boolean;
   children: React.ReactNode;
 }) {
+  const { user } = useAuth();
+  if (allowSales && isSalesStaff(user)) return <>{children}</>;
   return (
     <Guard perm="scm.access" anyAccess={[area]}>
       {children}
@@ -452,19 +462,21 @@ export default function App() {
         {/* Sales Orders READ side (vendored). The literal /maintenance route
             MUST precede /:docNo so 'maintenance' isn't caught as a doc number.
             2990 uses :docNo (not :id) for the SO detail. */}
-        <Route path="/scm/sales-orders" element={<ScmGuard area="scm.sales.orders"><Scm2990Shell><ScmSalesOrdersV2 /></Scm2990Shell></ScmGuard>} />
+        <Route path="/scm/sales-orders" element={<ScmGuard area="scm.sales.orders" allowSales><Scm2990Shell><ScmSalesOrdersV2 /></Scm2990Shell></ScmGuard>} />
         {/* SO amendment / revision queue (Phase 1-C). Gated on the amendment
             permission keys (any of create / supplier-confirm / approve-so /
             approve-po) — OR scm.access / Sales-Orders page access, so a full-
             access SCM user still reaches it. Belongs to the Sales-Order domain. */}
         <Route path="/scm/amendments" element={<Guard perm="scm.access" anyPerm={["scm.amendment.create", "scm.amendment.supplier_confirm", "scm.amendment.approve_so", "scm.amendment.approve_po"]} anyAccess={["scm.sales.orders"]}><Scm2990Shell><ScmAmendmentsV2 /></Scm2990Shell></Guard>} />
         <Route path="/scm/sales-orders/maintenance" element={<ScmGuard area="scm.sales.orders"><Scm2990Shell><ScmSalesOrderMaintenanceV2 /></Scm2990Shell></ScmGuard>} />
-        {/* Literal /new + /generate MUST precede /:docNo so they match first. */}
-        <Route path="/scm/sales-orders/new" element={<ScmGuard area="scm.sales.orders"><Scm2990Shell><ScmSalesOrderNewV2 /></Scm2990Shell></ScmGuard>} />
-        <Route path="/scm/sales-orders/new/guided" element={<ScmGuard area="scm.sales.orders"><Scm2990Shell><ScmSalesOrderNewGuidedV2 /></Scm2990Shell></ScmGuard>} />
-        <Route path="/scm/sales-orders/new/from-products" element={<ScmGuard area="scm.sales.orders"><Scm2990Shell><ScmSalesOrderNewFromProductsV2 /></Scm2990Shell></ScmGuard>} />
-        <Route path="/scm/sales-orders/generate" element={<ScmGuard area="scm.sales.orders"><Scm2990Shell><ScmSoFromProductsV2 /></Scm2990Shell></ScmGuard>} />
-        <Route path="/scm/sales-orders/:docNo" element={<ScmGuard area="scm.sales.orders"><Scm2990Shell><ScmSalesOrderDetailV2 /></Scm2990Shell></ScmGuard>} />
+        {/* Literal /new + /generate MUST precede /:docNo so they match first.
+            All Sales-Orders-area routes carry allowSales so a rep reaches their
+            own SO list / create / detail without the matrix page-access. */}
+        <Route path="/scm/sales-orders/new" element={<ScmGuard area="scm.sales.orders" allowSales><Scm2990Shell><ScmSalesOrderNewV2 /></Scm2990Shell></ScmGuard>} />
+        <Route path="/scm/sales-orders/new/guided" element={<ScmGuard area="scm.sales.orders" allowSales><Scm2990Shell><ScmSalesOrderNewGuidedV2 /></Scm2990Shell></ScmGuard>} />
+        <Route path="/scm/sales-orders/new/from-products" element={<ScmGuard area="scm.sales.orders" allowSales><Scm2990Shell><ScmSalesOrderNewFromProductsV2 /></Scm2990Shell></ScmGuard>} />
+        <Route path="/scm/sales-orders/generate" element={<ScmGuard area="scm.sales.orders" allowSales><Scm2990Shell><ScmSoFromProductsV2 /></Scm2990Shell></ScmGuard>} />
+        <Route path="/scm/sales-orders/:docNo" element={<ScmGuard area="scm.sales.orders" allowSales><Scm2990Shell><ScmSalesOrderDetailV2 /></Scm2990Shell></ScmGuard>} />
         {/* SCM Reports v2 — AutoCount-style detail listings. Each wrapped in <Scm2990Shell>. */}
         <Route path="/scm/reports/sales-order-detail-listing" element={<ScmGuard area="scm.sales.orders"><Scm2990Shell><ScmSoDetailListingV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/reports/delivery-order-detail-listing" element={<ScmGuard area="scm.sales.delivery"><Scm2990Shell><ScmDoDetailListingV2 /></Scm2990Shell></ScmGuard>} />
