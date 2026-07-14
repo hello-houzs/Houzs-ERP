@@ -1708,6 +1708,18 @@ async function soRemainingByItemId(
   return out;
 }
 
+/* Filter-pill bucket → the raw delivery_orders.status values it covers. Single
+   source of truth for BOTH the status-count queries and the list `status`
+   filter. open / in_transit / delivered are MULTI-status buckets; cancelled is
+   1:1. The FE sends the BUCKET NAME as `status`; a raw DB status still works
+   (backward-compatible fallback). */
+const DO_STATUS_BUCKETS: Record<string, string[]> = {
+  open: ['DRAFT', 'LOADED'],
+  in_transit: ['DISPATCHED', 'IN_TRANSIT'],
+  delivered: ['SIGNED', 'DELIVERED', 'INVOICED', 'COMPLETED'],
+  cancelled: ['CANCELLED'],
+};
+
 // ── List ────────────────────────────────────────────────────────────────
 deliveryOrdersMfg.get('/', async (c) => {
   const sb = c.get('supabase');
@@ -1764,7 +1776,13 @@ deliveryOrdersMfg.get('/', async (c) => {
     /* unique tiebreaker so range paging can't skip/repeat rows sharing the sort key */
     if (sortCol !== 'do_number') q = q.order('do_number', { ascending: sortAsc });
     if (scopeIds) q = q.in('salesperson_id', scopeIds);
-    const status = c.req.query('status'); if (status) q = q.eq('status', status);
+    /* Resolve the incoming `status`: a known bucket key → all its raw statuses;
+       'all'/empty → no filter; otherwise treat it as a raw DB status. */
+    const status = c.req.query('status');
+    if (status && status !== 'all') {
+      if (DO_STATUS_BUCKETS[status]) q = q.in('status', DO_STATUS_BUCKETS[status]);
+      else q = q.eq('status', status);
+    }
     /* free-text search over the columns the FE list's client-side search matches
        (MfgDeliveryOrdersListV2 hay) that live on this base table. */
     const search = c.req.query('q');
@@ -1791,10 +1809,10 @@ deliveryOrdersMfg.get('/', async (c) => {
     };
     const [allC, openC, transitC, deliveredC, cancelledC] = await Promise.all([
       countBase(),
-      countBase().in('status', ['DRAFT', 'LOADED']),
-      countBase().in('status', ['DISPATCHED', 'IN_TRANSIT']),
-      countBase().in('status', ['SIGNED', 'DELIVERED', 'INVOICED', 'COMPLETED']),
-      countBase().in('status', ['CANCELLED']),
+      countBase().in('status', DO_STATUS_BUCKETS.open),
+      countBase().in('status', DO_STATUS_BUCKETS.in_transit),
+      countBase().in('status', DO_STATUS_BUCKETS.delivered),
+      countBase().in('status', DO_STATUS_BUCKETS.cancelled),
     ]);
     statusCounts = {
       all: allC.count ?? 0,

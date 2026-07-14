@@ -691,16 +691,6 @@ const SORT_COL_MAP: Record<string, string> = {
   amount: "total_centi",
 };
 
-// Filter-pill bucket → single sales_invoices.status DB value. Only `cancelled`
-// is a single DB status; sent / partial / paid are MULTI-status buckets (sent =
-// DRAFT+SENT+ISSUED, partial = PARTIALLY_PAID+PARTIAL, paid = PAID+COMPLETED)
-// that the backend's single `.eq('status', …)` can't express — those send NO
-// status (list shows all rows, still paginated; pill COUNTS stay correct from
-// statusCounts). Flagged limitation, per "never return wrong rows".
-const SI_BUCKET_STATUS: Partial<Record<StatusTab, string>> = {
-  cancelled: "CANCELLED",
-};
-
 // ─── Main page ──────────────────────────────────────────────────────────────
 
 export function SalesInvoicesListV2() {
@@ -723,10 +713,11 @@ export function SalesInvoicesListV2() {
     return () => clearTimeout(t);
   }, [search]);
 
-  // sent / partial / paid are multi-status buckets the backend's single
-  // `.eq('status', …)` can't express, so send NO status for them (all rows,
-  // still paginated + counted) rather than an incomplete/empty page.
-  const apiStatus = status === "all" ? undefined : SI_BUCKET_STATUS[status];
+  // Send the active tab's BUCKET NAME as `status`; the backend resolves each
+  // bucket to the raw statuses it covers (sent = DRAFT+SENT+ISSUED, partial =
+  // PARTIALLY_PAID+PARTIAL, paid = PAID+COMPLETED, cancelled = CANCELLED).
+  // `all` omits the filter.
+  const apiStatus = status === "all" ? undefined : status;
 
   const { data, isLoading, error } = useSalesInvoicesPaged({
     page,

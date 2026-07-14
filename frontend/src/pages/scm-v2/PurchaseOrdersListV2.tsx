@@ -553,16 +553,6 @@ const SORT_COL_MAP: Record<string, string> = {
   total: "total_centi",
 };
 
-// Filter-pill bucket → single purchase_orders.status DB value. Every PO bucket
-// maps 1:1 to a DB status, so server-side status filtering is exact.
-const PO_BUCKET_STATUS: Partial<Record<StatusTab, string>> = {
-  draft: "DRAFT",
-  open: "SUBMITTED",
-  partial: "PARTIALLY_RECEIVED",
-  received: "RECEIVED",
-  cancelled: "CANCELLED",
-};
-
 // ─── Main page ──────────────────────────────────────────────────────────────
 
 export function PurchaseOrdersListV2() {
@@ -584,7 +574,10 @@ export function PurchaseOrdersListV2() {
     return () => clearTimeout(t);
   }, [search]);
 
-  const apiStatus = status === "all" ? undefined : PO_BUCKET_STATUS[status];
+  // Send the active tab's BUCKET NAME as `status`; the backend resolves each
+  // bucket to the raw status it covers (open→SUBMITTED, partial→PARTIALLY_RECEIVED,
+  // received→RECEIVED, draft/cancelled 1:1). `all` omits the filter.
+  const apiStatus = status === "all" ? undefined : status;
 
   const { data, isLoading, error } = usePurchaseOrdersPaged({
     page,

@@ -539,16 +539,6 @@ const SORT_COL_MAP: Record<string, string> = {
   total: "total_centi",
 };
 
-// Filter-pill bucket → single purchase_invoices.status DB value. Every PI bucket
-// maps 1:1 to a DB status, so server-side status filtering is exact.
-const PI_BUCKET_STATUS: Partial<Record<StatusTab, string>> = {
-  draft: "DRAFT",
-  posted: "POSTED",
-  partial: "PARTIALLY_PAID",
-  paid: "PAID",
-  cancelled: "CANCELLED",
-};
-
 // ─── Main page ──────────────────────────────────────────────────────────────
 
 export function PurchaseInvoicesListV2() {
@@ -570,7 +560,10 @@ export function PurchaseInvoicesListV2() {
     return () => clearTimeout(t);
   }, [search]);
 
-  const apiStatus = status === "all" ? undefined : PI_BUCKET_STATUS[status];
+  // Send the active tab's BUCKET NAME as `status`; the backend resolves it to
+  // the raw status it covers (draft/posted/partial/paid/cancelled are 1:1).
+  // `all` omits the filter.
+  const apiStatus = status === "all" ? undefined : status;
 
   const { data, isLoading, error } = usePurchaseInvoicesPaged({
     page,

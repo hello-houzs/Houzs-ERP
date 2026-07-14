@@ -433,14 +433,6 @@ const SORT_COL_MAP: Record<string, string> = {
   total: "total_centi",
 };
 
-// Filter-pill bucket → single grns.status DB value. Every GRN bucket maps 1:1
-// to a DB status, so server-side status filtering is exact (no bucket dropped).
-const GRN_BUCKET_STATUS: Partial<Record<StatusTab, string>> = {
-  draft: "DRAFT",
-  posted: "POSTED",
-  cancelled: "CANCELLED",
-};
-
 export function GoodsReceivedListV2() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
@@ -460,7 +452,9 @@ export function GoodsReceivedListV2() {
     return () => clearTimeout(t);
   }, [search]);
 
-  const apiStatus = status === "all" ? undefined : GRN_BUCKET_STATUS[status];
+  // Send the active tab's BUCKET NAME as `status`; the backend resolves it to
+  // the raw statuses it covers (draft/posted/cancelled are 1:1). `all` omits it.
+  const apiStatus = status === "all" ? undefined : status;
 
   const { data, isLoading, error } = useGrnsPaged({
     page,

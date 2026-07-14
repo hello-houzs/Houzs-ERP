@@ -179,6 +179,18 @@ async function piLocked(sb: any, piId: string): Promise<{ error: string; message
   return null;
 }
 
+/* Filter-pill bucket → the raw purchase_invoices.status values it covers. Single
+   source of truth for BOTH the status-count queries and the list `status`
+   filter. All five buckets are 1:1 today, but the FE sends the BUCKET NAME as
+   `status`; a raw DB status still works (backward-compatible fallback). */
+const PI_STATUS_BUCKETS: Record<string, string[]> = {
+  draft: ['DRAFT'],
+  posted: ['POSTED'],
+  partial: ['PARTIALLY_PAID'],
+  paid: ['PAID'],
+  cancelled: ['CANCELLED'],
+};
+
 purchaseInvoices.get('/', async (c) => {
   const sb = c.get('supabase');
   const SELECT = `${HEADER}, supplier:suppliers(id, code, name), purchase_order:purchase_orders(id, po_number), grn:grns(id, grn_number)`;
@@ -219,7 +231,13 @@ purchaseInvoices.get('/', async (c) => {
   let q = sb.from('purchase_invoices').select(SELECT, { count: 'exact' }).order(sortCol, { ascending: sortAsc });
   /* unique tiebreaker so range paging can't skip/repeat rows sharing the sort key */
   if (sortCol !== 'invoice_number') q = q.order('invoice_number', { ascending: sortAsc });
-  const status = c.req.query('status'); if (status) q = q.eq('status', status);
+  /* Resolve the incoming `status`: a known bucket key → all its raw statuses;
+     'all'/empty → no filter; otherwise treat it as a raw DB status. */
+  const status = c.req.query('status');
+  if (status && status !== 'all') {
+    if (PI_STATUS_BUCKETS[status]) q = q.in('status', PI_STATUS_BUCKETS[status]);
+    else q = q.eq('status', status);
+  }
   q = scopeToCompany(q, c); // multi-company: isolate to the active company
   /* free-text search over the base-table text columns the FE searches
      (PurchaseInvoicesListV2 hay). Supplier name / PO / GRN source are embedded
@@ -242,11 +260,11 @@ purchaseInvoices.get('/', async (c) => {
   const countBase = () => scopeToCompany(sb.from('purchase_invoices').select('*', { count: 'exact', head: true }), c);
   const [allC, draftC, postedC, partialC, paidC, cancelledC] = await Promise.all([
     countBase(),
-    countBase().eq('status', 'DRAFT'),
-    countBase().eq('status', 'POSTED'),
-    countBase().eq('status', 'PARTIALLY_PAID'),
-    countBase().eq('status', 'PAID'),
-    countBase().eq('status', 'CANCELLED'),
+    countBase().in('status', PI_STATUS_BUCKETS.draft),
+    countBase().in('status', PI_STATUS_BUCKETS.posted),
+    countBase().in('status', PI_STATUS_BUCKETS.partial),
+    countBase().in('status', PI_STATUS_BUCKETS.paid),
+    countBase().in('status', PI_STATUS_BUCKETS.cancelled),
   ]);
   const statusCounts = {
     all: allC.count ?? 0,
