@@ -223,6 +223,10 @@ const LOOKUP_TABLES = {
   "resolution-methods": "assr_resolution_methods",
   "priorities": "assr_priorities",
   "ncr-categories": "assr_ncr_categories",
+  // Mig 0112 — mirrors AutoCount's item groups; seeded with the common
+  // furniture groups, admin-maintained until the AutoCount reconnect
+  // back-fills the authoritative list.
+  "product-categories": "assr_product_categories",
 } as const;
 type LookupKind = keyof typeof LOOKUP_TABLES;
 

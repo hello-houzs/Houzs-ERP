@@ -1892,10 +1892,6 @@ function CreatePanel({
   // any other string → either a canonical category or a custom label.
   const [issueCategory, setIssueCategory] = useState<string>("");
   const [customCategory, setCustomCategory] = useState("");
-  // Mig 082 — priority drives the per-stage SLA targets via
-  // assr_priority_stage_targets. Default "normal" matches the column
-  // default; picking Urgent at intake compresses every internal stage.
-  const [priority, setPriority] = useState<string>("normal");
   const [lookingUp, setLookingUp] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [customerInfo, setCustomerInfo] = useState<{ name?: string; phone?: string; location?: string } | null>(null);
@@ -1905,7 +1901,6 @@ function CreatePanel({
   const [refNo, setRefNo] = useState("");
   const [customerEmail, setCustomerEmail] = useState("");
   const [serviceCategory, setServiceCategory] = useState("");
-  const [assignedTo, setAssignedTo] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [dragActive, setDragActive] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
@@ -1919,28 +1914,16 @@ function CreatePanel({
   );
   const issueCatOptions =
     issueCategoriesQ.data?.data.map((r) => r.name) ?? [];
-
-  // PIC picker — same source + Operations filter as the detail view's
-  // "Assigned to" select. Optional at intake; left blank falls back to
-  // the admin-configured default assignee on the backend.
-  //
-  // OFF-NOT-HIDE: `/api/users` is gated behind `users.read`. A non-director
-  // Sales user can create a case (their submission defaults the assignee to
-  // null → the office sets the PIC later), but lacks that permission, so
-  // firing this would 403 → "Forbidden" toast. Gate the fetch so it never
-  // fires for them; the Assign-To block below is hidden and the create
-  // proceeds with a null assignee (see submit: `assignedTo ? … : null`).
-  const canPickAssignee = can("users.read");
-  const usersQ = useQuery<{ id: number; name: string; department_name?: string }[]>(
-    () => api.get<any>("/api/users").then((r: any) => r.users ?? r.data ?? r ?? []),
+  // Product Category options mirror AutoCount's item groups (Nick
+  // 2026-07-14) — admin-maintained in Service Maintenance until the
+  // AutoCount reconnect back-fills the authoritative list.
+  const productCategoriesQ = useQuery<{ data: { slug: string; name: string }[] }>(
+    () => api.get("/api/assr/lookups/product-categories"),
     [],
-    { enabled: canPickAssignee },
   );
-  const opsUserOptions = Array.isArray(usersQ.data)
-    ? usersQ.data
-        .filter((u: any) => /operation/i.test(u.department_name || ""))
-        .map((u) => ({ id: u.id, name: u.name }))
-    : [];
+  const productCategoryOptions =
+    productCategoriesQ.data?.data.map((r) => r.name) ?? [];
+
 
   const MAX_FILES = 5;
   const MAX_SIZE = 5 * 1024 * 1024; // 5 MB
@@ -2132,13 +2115,15 @@ function CreatePanel({
         items,
         complaint_issue: issue.trim(),
         issue_category: resolvedCategory,
-        priority,
+        // Priority + assignee are no longer picked at intake (Nick
+        // 2026-07-14): the backend defaults priority to "normal" and
+        // assigns the admin-configured default PIC; both are adjusted
+        // on the detail page when needed.
         // Intake extras — sent trimmed-or-null so the case is created
         // complete. The backend also trims/whitelists these defensively.
         ref_no: refNo.trim() || null,
         customer_email: customerEmail.trim() || null,
         service_category: serviceCategory.trim() || null,
-        assigned_to: assignedTo ? parseInt(assignedTo, 10) : null,
       });
 
       // Upload any staged defect photos/videos as "complaint" attachments.
@@ -2201,7 +2186,7 @@ function CreatePanel({
   }
 
   return (
-    <Panel open onClose={onClose} title="New Service Case" width={480}>
+    <Panel open onClose={onClose} title="New Service Case" width={560} centered>
       <PanelSection title="Sales Order">
         <div className="relative flex gap-2">
           <input
@@ -2391,24 +2376,6 @@ function CreatePanel({
             />
           )}
         </div>
-        {/* Mig 082 — picking the priority here drives both the e2e SLA
-            window AND the per-stage target snapshot at create time. */}
-        <div className="mt-3">
-          <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
-            Priority
-          </div>
-          <select
-            value={priority}
-            onChange={(e) => setPriority(e.target.value)}
-            className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
-          >
-            {[...PRIORITY_OPTIONS].map((p) => (
-              <option key={p} value={p}>
-                {p.charAt(0).toUpperCase() + p.slice(1)}
-              </option>
-            ))}
-          </select>
-        </div>
       </PanelSection>
 
       {/* Customer & Assignment — intake extras that the redesigned
@@ -2445,32 +2412,24 @@ function CreatePanel({
             <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
               Product Category
             </div>
-            <input
+            <select
               value={serviceCategory}
               onChange={(e) => setServiceCategory(e.target.value)}
-              placeholder="e.g. Mattress / Bed frame"
-              className="w-full rounded-md border border-border bg-bg px-3 py-2 text-[13px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
-            />
+              className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+            >
+              <option value="">— select —</option>
+              {/* Keep a legacy/unknown value selectable so reopening the
+                  form never silently drops it. */}
+              {serviceCategory && !productCategoryOptions.includes(serviceCategory) && (
+                <option value={serviceCategory}>{serviceCategory}</option>
+              )}
+              {productCategoryOptions.map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
           </div>
-          {canPickAssignee && (
-            <div>
-              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
-                Assign To (Operations PIC)
-              </div>
-              <select
-                value={assignedTo}
-                onChange={(e) => setAssignedTo(e.target.value)}
-                className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
-              >
-                <option value="">Use default assignee</option>
-                {opsUserOptions.map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
         </div>
       </PanelSection>
 

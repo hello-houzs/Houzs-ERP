@@ -1623,7 +1623,6 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
   // Issue categories render by NAME; priority by SLUG. Fall back to the
   // hardcoded constants until the call returns so the form stays usable.
   const issueCatOptions = useLookupNames("issue-categories", ISSUE_CATEGORY_OPTIONS as readonly string[]);
-  const priorityOptions = useLookupSlugs("priorities", PRIORITY_OPTIONS as readonly string[]);
   const [docNo, setDocNo] = useState("");
   // SO picker (real search-so lookup, replacing free-text). `soQuery` is
   // what the user types; once they pick a hit we lock `docNo` and show the
@@ -1641,7 +1640,6 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
   const [manualCode, setManualCode] = useState("");
   const [complaint, setComplaint] = useState("");
   const [category, setCategory] = useState("");
-  const [priority, setPriority] = useState("normal");
   // Optional "Issue number" (handoff §5) — the customer's own complaint /
   // ticket ref. Maps to assr_cases.ref_no; when left blank the create
   // endpoint falls back to the SO's pre-printed Ref (input.ref_no ?? ctx.Ref).
@@ -1717,7 +1715,8 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
         })),
         complaint_issue: complaint.trim(),
         issue_category: category.trim() || null,
-        priority,
+        // Priority is no longer picked at intake (Nick 2026-07-14) —
+        // the backend defaults to "normal"; adjust on the case page.
         // Empty string must NOT reach the server — it would beat the
         // `?? context.Ref` SO-reference fallback.
         ref_no: issueNo.trim() || null,
@@ -1937,14 +1936,6 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
                   <option value="">— select —</option>
                   {issueCatOptions.map((o) => (
                     <option key={o} value={o}>{o}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="fld">
-                <span className="fld-l">Priority *</span>
-                <select value={priority} onChange={(e) => setPriority(e.target.value)} className="fld-i">
-                  {priorityOptions.map((o) => (
-                    <option key={o} value={o}>{cap(o)}</option>
                   ))}
                 </select>
               </label>

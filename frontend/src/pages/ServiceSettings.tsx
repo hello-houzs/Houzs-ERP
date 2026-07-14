@@ -101,6 +101,11 @@ function GeneralTab() {
           extra={{ key: "sla_hours", addLabel: "SLA hrs", rowTitle: "SLA window in hours; blank = use module default", placeholder: "—" }}
         />
         <LookupManager
+          apiPath="/api/assr/lookups/product-categories"
+          title="Product Categories"
+          description="Mirrors AutoCount's item groups — the create-case form's Product Category dropdown. Maintained here until the AutoCount reconnect back-fills the authoritative list."
+        />
+        <LookupManager
           apiPath="/api/assr/lookups/ncr-categories"
           title="Root-Cause Classifications"
           description="Quality root-cause tags used on closed cases for Pareto reporting (material defect, transit damage, installation, etc.)."
