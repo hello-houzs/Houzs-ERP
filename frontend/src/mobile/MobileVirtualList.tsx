@@ -1,8 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
-// Vertical gap between mobile cards (matches the lists' `gap: 11`).
-const GAP = 11;
-
 /**
  * Windowed vertical card list for the mobile screens. Renders only the cards
  * scrolled into view (plus overscan), so a 1,000-row list keeps ~30 nodes in
@@ -15,6 +12,10 @@ const GAP = 11;
  * off-screen height so the scrollbar behaves normally. Card height is measured
  * from a real rendered card so the spacers can't drift.
  *
+ * `gap` matches the caller's inter-card gap (default 11) so a short list looks
+ * byte-identical to the plain `.map` container it replaces — it feeds both the
+ * flex gap and the spacer math.
+ *
  * No-op below `threshold` — short lists render exactly as before, so wiring this
  * into a list that's usually small (most modules) costs nothing until it grows.
  */
@@ -25,6 +26,7 @@ export function MobileVirtualList<T>({
   estimateHeight = 88,
   threshold = 40,
   overscan = 8,
+  gap = 11,
 }: {
   items: T[];
   renderItem: (item: T, index: number) => ReactNode;
@@ -32,10 +34,11 @@ export function MobileVirtualList<T>({
   estimateHeight?: number;
   threshold?: number;
   overscan?: number;
+  gap?: number;
 }) {
   const on = items.length > threshold;
   const ref = useRef<HTMLDivElement>(null);
-  const rowH = useRef(estimateHeight + GAP);
+  const rowH = useRef(estimateHeight + gap);
   const [range, setRange] = useState({ start: 0, end: threshold * 2 });
 
   useEffect(() => {
@@ -46,8 +49,8 @@ export function MobileVirtualList<T>({
       const el = ref.current;
       if (!el) return;
       const card = el.querySelector<HTMLElement>("[data-vcard]");
-      if (card && card.offsetHeight > 0) rowH.current = card.offsetHeight + GAP;
-      const rh = rowH.current || estimateHeight + GAP;
+      if (card && card.offsetHeight > 0) rowH.current = card.offsetHeight + gap;
+      const rh = rowH.current || estimateHeight + gap;
       const top = el.getBoundingClientRect().top; // list top relative to viewport
       const first = Math.max(0, Math.floor(-top / rh) - overscan);
       const count = Math.ceil(window.innerHeight / rh) + overscan * 2;
@@ -65,22 +68,22 @@ export function MobileVirtualList<T>({
       window.removeEventListener("resize", onScroll);
       if (raf) cancelAnimationFrame(raf);
     };
-  }, [on, items.length, overscan, estimateHeight]);
+  }, [on, items.length, overscan, estimateHeight, gap]);
 
   const start = on ? range.start : 0;
   const end = on ? Math.min(items.length, range.end) : items.length;
   const rh = rowH.current;
 
   return (
-    <div ref={ref} style={{ display: "flex", flexDirection: "column", gap: GAP }}>
-      {on && start > 0 && <div aria-hidden style={{ height: Math.max(0, start * rh - GAP) }} />}
+    <div ref={ref} style={{ display: "flex", flexDirection: "column", gap }}>
+      {on && start > 0 && <div aria-hidden style={{ height: Math.max(0, start * rh - gap) }} />}
       {items.slice(start, end).map((item, i) => (
         <div data-vcard="" key={getKey(item, start + i)}>
           {renderItem(item, start + i)}
         </div>
       ))}
       {on && end < items.length && (
-        <div aria-hidden style={{ height: Math.max(0, (items.length - end) * rh - GAP) }} />
+        <div aria-hidden style={{ height: Math.max(0, (items.length - end) * rh - gap) }} />
       )}
     </div>
   );

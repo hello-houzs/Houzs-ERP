@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
+import { MobileVirtualList } from "./MobileVirtualList";
 import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
@@ -332,12 +333,16 @@ export function MobileMailCenter({ onBack }: { onBack?: () => void }) {
             <div className="empty-s">{folder === "trash" ? "Trash is empty." : `Nothing in ${folder}.`}</div>
           </div>
         )}
-        {!loading && !error && folder !== "drafts" && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {threads.map((t) => (
+        {!loading && !error && folder !== "drafts" && threads.length > 0 && (
+          <MobileVirtualList
+            items={threads}
+            getKey={(t) => t.id}
+            estimateHeight={74}
+            gap={8}
+            renderItem={(t) => (
               <ThreadRow key={t.id} t={t} colorMap={colorMap} onOpen={() => setOpenId(t.id)} />
-            ))}
-          </div>
+            )}
+          />
         )}
       </div>
     </div>

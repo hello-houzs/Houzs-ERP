@@ -8,6 +8,12 @@ Severity tags: 🔴 critical/high · 🟠 medium · 🟢 low.
 
 ## 2026-07-14 — Multi-company + performance campaign
 
+### 🟢 Mobile Delivery Planning board didn't refresh the POD / SO screens after a mutation
+- **Symptom:** A driver who converts SO→DO, or marks a stop IN_TRANSIT / DELIVERED, on the mobile Delivery Planning board, then opens the mobile POD screen or SO list within ~15-30s, saw the PRE-mutation status/list. Self-healed after the staleTime window.
+- **Cause:** The board's shared `invalidate()` helper (`MobileDeliveryPlanning.tsx`) invalidated only its own `["mobile-delivery-planning"]` key. The sibling mobile queries that render the same DO/SO state — `["mobile-do-list-for-pod"]`, `["mobile-pod-detail", id]`, `["mobile-so-list"]` — were never invalidated in the writing tab (BroadcastChannel doesn't deliver to the tab that wrote), so they stayed stale until their own staleTime expired. Same class as HOOKKA's bulk-deliver/POD stale-list bug (desktop was already fully disciplined — it invalidates every sibling key).
+- **Fix:** Broaden the shared `invalidate()` to also invalidate `mobile-do-list-for-pod`, `mobile-pod-detail` (prefix-matched, all open details), and `mobile-so-list`. All four board mutations (convert / start / complete / +1) get it uniformly.
+- **Ref:** `perf/mobile-virt-systemwide`, 2026-07-14. (Found by a system-wide delivery-cache audit; the two other HOOKKA-flagged risks — CHECK-constraint 500s and silent RM0 3PL rate — were verified NOT present in Houzs.)
+
 ### 🟠 Mobile Menu listed nav items the user can't open (render-then-Forbidden)
 - **Symptom:** At tablet / narrow widths (`<lg`) and on non-HOUZS mobile, the bottom-bar centre "Menu" sheet listed destinations the user has no access to (Projects, System Health for everyone; Delivery Returns for Sales staff); tapping bounced them to the Forbidden page. The desktop Sidebar and the HOUZS-phone menu hid the same items correctly.
 - **Cause:** `MobileTabBar.MenuModal.filterTab` was a hand-copied SUBSET of `Sidebar.filterTab`: it checked only `perm` / `anyPerm` / `hidePerm` and ignored `pageAccess`, `pageAccessFull`, `requireFinanceViewer` and every sales gate (`hideForSales` / `showForSales` / rep gates). A comment claimed the two "stay in lockstep" — they had silently drifted. No data leaked (route guards still render `<Forbidden>` instead of the page), but a denied entry was shown then rejected — the "render-then-deny" that the "off, not hide" rule forbids at the nav layer.
