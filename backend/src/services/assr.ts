@@ -1045,6 +1045,18 @@ export interface ListAssrFilters {
    *  completed" toggle to drop finished cases from the working list
    *  without dropping them from the dataset. */
   exclude_stage?: string;
+  /** Calendar date-window bound (inclusive, `yyyy-mm-dd`) applied to the
+   *  column named by `date_field`. Lets the Cases Calendar fetch ONLY the
+   *  viewed month grid instead of fetch-all (perf: no freeze at scale).
+   *  Backward-compatible — omit both and no predicate is added, so the
+   *  List view and every other caller are unaffected. */
+  from?: string;
+  to?: string;
+  /** Which date column `from`/`to` bound. `reported` → complained_date;
+   *  `deadline` → COALESCE(deadline_at, complained_date), mirroring the
+   *  calendar's own day-bucketing so no in-window case is ever lost.
+   *  Defaults to `reported`. Only consulted when `from`/`to` is set. */
+  date_field?: "reported" | "deadline";
   sort_by?: string;
   sort_dir?: "asc" | "desc";
   /** Row-level visibility scope (owner spec 2026-07): when set, only cases
@@ -1181,6 +1193,28 @@ export async function listAssrCases(env: Env, f: ListAssrFilters) {
     );
     const like = `%${f.search.toLowerCase()}%`;
     binds.push(like, like, like, like, like, like, like, like);
+  }
+  // Calendar date-window bound (perf/servicecase-board-calendar-bound):
+  // the Cases Calendar passes the viewed month grid as from/to so it pulls
+  // only that window instead of the whole active backlog. We compare on the
+  // yyyy-mm-dd prefix (substr 1..10) so the predicate lines up EXACTLY with
+  // the client-side day bucketing (raw.slice(0,10)) and is immune to the
+  // stored time-of-day. `deadline` basis coalesces to complained_date to
+  // match the calendar's own fallback, so no in-window case is dropped.
+  // Additive — no from/to means no predicate (List view unaffected).
+  if (f.from || f.to) {
+    const dateCol =
+      f.date_field === "deadline"
+        ? "COALESCE(c.deadline_at, c.complained_date)"
+        : "c.complained_date";
+    if (f.from) {
+      where.push(`substr(${dateCol}, 1, 10) >= ?`);
+      binds.push(f.from);
+    }
+    if (f.to) {
+      where.push(`substr(${dateCol}, 1, 10) <= ?`);
+      binds.push(f.to);
+    }
   }
   pushVisibilityScope(where, binds, f.visible_to_user_ids);
   pushAllowedCompanies(where, f.allowed_company_ids);
