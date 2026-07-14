@@ -368,8 +368,19 @@ const SHEET_STATUS: Record<string, string> = {
 };
 
 app.get("/status-export", async (c) => {
-  const bad = await badIntakeKey(c);
-  if (bad) return bad;
+  // Accepts EITHER shared secret: FORM_INTAKE_KEY (the form-intake
+  // script's key) or SHEET_SYNC_KEY (issued for the HC Delivery
+  // sheet's own Apps Script, which lives in a different Google account
+  // and never held the intake key).
+  const provided = c.req.header("X-Intake-Key") || "";
+  const keys = [c.env.FORM_INTAKE_KEY, c.env.SHEET_SYNC_KEY];
+  const ok = keys.some((k) => k && timingSafeEqualStr(provided, k));
+  if (!ok) {
+    const limited = await checkRateLimit(c, "intake_badkey", clientIp(c), 10, 900);
+    await new Promise((r) => setTimeout(r, 250));
+    if (limited) return limited;
+    return c.json({ error: "unauthorized" }, 401);
+  }
 
   const rows = await c.env.DB.prepare(
     `SELECT assr_no, doc_no, ref_no, stage, completion_date, closed_at
