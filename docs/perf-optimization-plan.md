@@ -82,11 +82,13 @@ no `limit`**. Fixing the shared pieces cascades across many pages.
 - [ ] **W2 (P0) — Stop building the hidden mobile CardsGrid on desktop.**
   ListV2 pages keep the `md:hidden` `CardsGrid` mounted (CSS-hidden) on desktop →
   ~2× row nodes. Gate by viewport so only one branch mounts.
-- [ ] **W3 (P1) — Mobile card lists** (hand-rolled `.map`, no windowing):
-  `MobileSalesOrders.tsx:411` (≤500 cards), `MobileModuleList.tsx:302-318` (≤500),
-  `MobileMailCenter.tsx:337`, `MobileServiceCase.tsx:405` (200, nested steppers),
-  `MobilePMS.tsx:476` (200), `MobileDeliveryPlanning.tsx:614` (today+tomorrow+**full
-  history**). Virtualize each.
+- [~] **W3 (P1) — Mobile card lists.** Reusable `mobile/MobileVirtualList.tsx`
+  built (window-scroll, spacer divs, measured card height, gated >40 items).
+  - [x] `MobileModuleList` (PR #433) — VERIFIED: products list 1326 records →
+    **28 cards in DOM** + 105k px spacer. Covers products/inventory + all doc modules.
+  - [ ] Remaining, adopt the same component: `MobileSalesOrders.tsx:411`,
+    `MobileMailCenter.tsx:337`, `MobileServiceCase.tsx:405` (200, nested steppers),
+    `MobilePMS.tsx:476` (200), `MobileDeliveryPlanning.tsx:614` (full history).
 - [ ] **W4 (P1) — `StockTakeDetail.tsx:490`** — ~1141 rows of **live controlled
   inputs**; heaviest per-row. Window, keep edited row realized.
 - [ ] **W5 (P1) — `MailCenter/Inbox.tsx:308`** + **`Team.tsx:1381/1366`** —
