@@ -33,7 +33,7 @@ import {
   sortSoLinesByGroupRank,
 } from '../shared/so-line-display';
 import { resolveMaintenanceConfigForSupplier } from '../lib/po-pricing';
-import { nextMonthlyDocNo } from '../lib/doc-no';
+import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { supabaseAuth } from '../middleware/auth';
 import { computeMrp } from './mrp';
@@ -693,7 +693,7 @@ mfgPurchaseOrders.post('/', async (c) => {
     .from('purchase_orders')
     .select('po_number')
     .like('po_number', `${p}PO-${yymm}-%`);
-  const poNumber = nextMonthlyDocNo(`${p}PO-${yymm}`, ((existingPoNos ?? []) as Array<{ po_number: string }>).map((r) => r.po_number));
+  let poNumber = nextMonthlyDocNo(`${p}PO-${yymm}`, ((existingPoNos ?? []) as Array<{ po_number: string }>).map((r) => r.po_number));
 
   // Compute totals
   let subtotal = 0;
@@ -787,11 +787,25 @@ mfgPurchaseOrders.post('/', async (c) => {
   // Optional poDate — if absent, the column default (now()) wins.
   if (body.poDate) headerInsert.po_date = body.poDate;
 
-  const { data: headerData, error: hErr } = await supabase
-    .from('purchase_orders')
-    .insert(headerInsert)
-    .select(HEADER_COLS)
-    .single();
+  /* Doc-no collision retry (2026-07-14): two buyers cutting a PO in the same
+     company + YYMM both read the same max and mint the same po_number; without a
+     retry the loser hits the UNIQUE po_number (23505) and the PO 500s. Items key
+     off the returned header.id (not po_number), so a re-mint needs no child
+     re-stamp. Non-23505 errors (e.g. 42501) fall straight through unchanged. */
+  let firstMint = true;
+  const { data: headerData, error: hErr } = await insertWithDocNoRetry(
+    async () => {
+      if (firstMint) { firstMint = false; return poNumber; }
+      const { data: live } = await supabase
+        .from('purchase_orders').select('po_number').like('po_number', `${p}PO-${yymm}-%`);
+      poNumber = nextMonthlyDocNo(`${p}PO-${yymm}`, ((live ?? []) as Array<{ po_number: string }>).map((r) => r.po_number));
+      return poNumber;
+    },
+    (dn) => {
+      headerInsert.po_number = dn;
+      return supabase.from('purchase_orders').insert(headerInsert).select(HEADER_COLS).single();
+    },
+  );
 
   if (hErr) {
     if (hErr.code === '42501') return c.json({ error: 'forbidden', reason: hErr.message }, 403);
