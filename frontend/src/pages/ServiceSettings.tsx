@@ -122,7 +122,6 @@ function DefaultAssigneeSection() {
   const settings = useQuery<ServiceSettingsResponse>(() =>
     api.get("/api/assr/settings")
   );
-  const users = useQuery<{ users: UserOption[] }>(() => api.get("/api/users"));
   const [saving, setSaving] = useState(false);
 
   // One picker, two slots: first pick = primary assignee, second =
@@ -148,6 +147,26 @@ function DefaultAssigneeSection() {
     settings.data?.default_assignee2_id,
   ].filter((n): n is number => n != null);
 
+  // Resolve the selected chips from the settings payload itself (it carries the
+  // assignee names/emails), so the picker no longer needs the full users list —
+  // it self-fetches its dropdown via server typeahead.
+  const selectedItems: UserOption[] = [
+    settings.data?.default_assignee_id != null
+      ? {
+          id: settings.data.default_assignee_id,
+          name: settings.data.default_assignee_name,
+          email: settings.data.default_assignee_email ?? "",
+        }
+      : null,
+    settings.data?.default_assignee2_id != null
+      ? {
+          id: settings.data.default_assignee2_id,
+          name: settings.data.default_assignee2_name,
+          email: settings.data.default_assignee2_email ?? "",
+        }
+      : null,
+  ].filter((u): u is UserOption => u != null);
+
   return (
     <section className="relative overflow-visible rounded-md border border-border bg-surface p-6 shadow-stone">
       <h2 className="mb-4 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-brand text-accent">
@@ -165,12 +184,12 @@ function DefaultAssigneeSection() {
       {settings.data && (
         <div className="max-w-xl">
           <UserMultiSelect
-            options={users.data?.users ?? []}
             value={selectedIds}
+            selectedItems={selectedItems}
             onChange={setDefaults}
             max={2}
             placeholder="Search people — no default means cases stay unassigned"
-            disabled={saving || users.loading}
+            disabled={saving}
           />
         </div>
       )}

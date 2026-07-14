@@ -2,44 +2,84 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { X, Search, Check } from "lucide-react";
 import { cn } from "../lib/utils";
+import { useQuery } from "../hooks/useQuery";
+import { api } from "../api/client";
 
 export interface UserOptionItem {
   id: number;
   name: string | null;
   email?: string | null;
+  department_name?: string | null;
 }
 
-/* Perf cap — bound the rendered option DOM so a large people directory can't
-   freeze the dropdown open. All options stay reachable: typing narrows the
-   client filter, so any person surfaces within the cap. Pure render bounding,
-   no data/selection change. (parity with FabricPicker / MobileSkuPicker.) */
+/* Perf cap — bound the rendered option DOM. The server already caps the
+   typeahead result set (limit 50); this is a belt-and-braces client bound so
+   the dropdown can never balloon. (parity with FabricPicker / MobileSkuPicker.) */
 const RENDER_CAP = 60;
+
+// Minimum characters before the server typeahead fires. Below this we show a
+// "type to search" prompt instead of hammering the endpoint on every keystroke.
+const MIN_QUERY = 2;
+
+/**
+ * Server-side typeahead over /api/users?q=… Keyed on the TRIMMED query so
+ * "ali", "ali " and " ali" share one cache entry, and hard-gated below
+ * MIN_QUERY chars (enabled:false) so no fetch fires until the user commits to
+ * a search. keepPreviousData holds the last matches on screen while the next
+ * keystroke's slice loads, avoiding a flash of "No matches".
+ */
+export function useUsersSearch(
+  q: string,
+  opts?: { enabled?: boolean },
+) {
+  const term = q.trim();
+  const enabled = (opts?.enabled ?? true) && term.length >= MIN_QUERY;
+  return useQuery<{ users: UserOptionItem[] }>(
+    () => api.get(`/api/users?q=${encodeURIComponent(term)}`),
+    [term],
+    { enabled, keepPreviousData: true },
+  );
+}
 
 /**
  * Searchable, A→Z sorted, multi-select people picker (Nick 2026-07-06:
  * "选人的做成 sort A to Z + 搜索 + multi-select"). Selected people render
- * as removable chips; the dropdown filters as you type. `max` caps the
- * selection (e.g. 2 for primary + co-assignee) — at the cap, picking
- * another person is ignored until one chip is removed.
+ * as removable chips; the dropdown is driven by a SERVER typeahead so a large
+ * people directory is never fetched or rendered whole. `max` caps the
+ * selection (e.g. 2 for primary + co-assignee) — at the cap, picking another
+ * person is ignored until one chip is removed.
  *
- * Selection ORDER is meaningful to callers (first = primary), so chips
- * keep insertion order while the dropdown stays alphabetical.
+ * Selection ORDER is meaningful to callers (first = primary), so chips keep
+ * insertion order while the dropdown stays alphabetical.
  *
- * The dropdown renders through a PORTAL with fixed positioning so it
- * escapes any card/panel overflow clipping (Nick's follow-up: options
- * must never be trapped inside the card, on every page).
+ * SELECTED DISPLAY: the chips render from `selectedItems` (the caller's
+ * resolved objects for the current `value`) UNION every option ever surfaced
+ * through search/pick — never from the live typeahead results alone. A
+ * selected person outside the current search results is therefore never
+ * dropped. The onChange payload stays a plain `number[]` of ids, unchanged.
+ *
+ * `filterOption` optionally narrows which typeahead RESULTS are pickable
+ * (e.g. Operations-only PIC picking). It never hides an already-selected
+ * chip — those always display and stay removable.
+ *
+ * The dropdown renders through a PORTAL with fixed positioning so it escapes
+ * any card/panel overflow clipping.
  */
 export function UserMultiSelect({
-  options,
   value,
   onChange,
+  selectedItems,
+  filterOption,
   max,
   placeholder = "Search people…",
   disabled,
 }: {
-  options: UserOptionItem[];
   value: number[];
   onChange: (ids: number[]) => void;
+  /** Resolved objects for the currently-selected ids (for chip display). */
+  selectedItems?: UserOptionItem[];
+  /** Narrows pickable typeahead results; does not affect selected chips. */
+  filterOption?: (u: UserOptionItem) => boolean;
   max?: number;
   placeholder?: string;
   disabled?: boolean;
@@ -50,6 +90,46 @@ export function UserMultiSelect({
   const controlRef = useRef<HTMLDivElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const trimmed = query.trim();
+  const searchActive = trimmed.length >= MIN_QUERY;
+  const search = useUsersSearch(query, { enabled: open });
+
+  // Remember every user object we have ever seen for an id — seeded from the
+  // caller's `selectedItems` and topped up from each search result — so a
+  // selected chip always has a label even after the typeahead moves on.
+  const [known, setKnown] = useState<Record<number, UserOptionItem>>({});
+  // Value-idempotent merge: callers rebuild `selectedItems` (and the typeahead
+  // rebuilds its rows) on every render, so a reference-only merge would loop.
+  // Bail out returning `prev` when nothing actually changed by value.
+  const mergeKnown = (rows: readonly UserOptionItem[] | undefined) => {
+    if (!rows?.length) return;
+    setKnown((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const it of rows) {
+        const cur = prev[it.id];
+        if (
+          !cur ||
+          cur.name !== it.name ||
+          (cur.email ?? null) !== (it.email ?? null) ||
+          (cur.department_name ?? null) !== (it.department_name ?? null)
+        ) {
+          next[it.id] = it;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  };
+  useEffect(() => {
+    mergeKnown(selectedItems);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedItems]);
+  useEffect(() => {
+    mergeKnown(search.data?.users);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search.data]);
 
   // Track the control's viewport position while open so the portalled
   // menu follows it through scrolling panels and window resizes.
@@ -86,31 +166,36 @@ export function UserMultiSelect({
 
   const labelOf = (o: UserOptionItem) => o.name || o.email || `user #${o.id}`;
 
-  const sorted = useMemo(
-    () => [...options].sort((a, b) => labelOf(a).localeCompare(labelOf(b), undefined, { sensitivity: "base" })),
-    [options]
-  );
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return sorted;
-    return sorted.filter(
-      (o) => labelOf(o).toLowerCase().includes(q) || (o.email || "").toLowerCase().includes(q)
+  // Dropdown options: the server typeahead results, optionally narrowed by
+  // filterOption, then A→Z sorted and capped.
+  const options = useMemo(() => {
+    if (!searchActive) return [];
+    let rows = search.data?.users ?? [];
+    if (filterOption) rows = rows.filter(filterOption);
+    return [...rows].sort((a, b) =>
+      labelOf(a).localeCompare(labelOf(b), undefined, { sensitivity: "base" }),
     );
-  }, [sorted, query]);
+  }, [search.data, searchActive, filterOption]);
 
-  const selected = value
-    .map((id) => options.find((o) => o.id === id))
-    .filter((o): o is UserOptionItem => !!o);
+  // Selected chips — resolved from `known` (never from the live results), so a
+  // selected person absent from the current search is still shown & removable.
+  const selected = value.map((id) => known[id] ?? { id, name: null });
   const atMax = max != null && value.length >= max;
 
-  function toggle(id: number) {
-    if (value.includes(id)) {
-      onChange(value.filter((v) => v !== id));
+  function pick(o: UserOptionItem) {
+    setKnown((prev) => ({ ...prev, [o.id]: o }));
+    if (value.includes(o.id)) {
+      onChange(value.filter((v) => v !== o.id));
     } else {
       if (atMax) return;
-      onChange([...value, id]);
+      onChange([...value, o.id]);
     }
     setQuery("");
+    inputRef.current?.focus();
+  }
+
+  function removeId(id: number) {
+    onChange(value.filter((v) => v !== id));
     inputRef.current?.focus();
   }
 
@@ -128,16 +213,24 @@ export function UserMultiSelect({
                 {atMax ? " — remove one to change" : ""}
               </div>
             )}
-            {filtered.length === 0 && (
+            {!searchActive && (
+              <div className="px-3 py-2 text-[12px] text-ink-muted">
+                Type at least {MIN_QUERY} letters to search people…
+              </div>
+            )}
+            {searchActive && search.loading && (
+              <div className="px-3 py-2 text-[12px] text-ink-muted">Searching…</div>
+            )}
+            {searchActive && !search.loading && options.length === 0 && (
               <div className="px-3 py-2 text-[12px] text-ink-muted">No matches</div>
             )}
-            {filtered.slice(0, RENDER_CAP).map((o) => {
+            {options.slice(0, RENDER_CAP).map((o) => {
               const isSel = value.includes(o.id);
               return (
                 <button
                   key={o.id}
                   type="button"
-                  onClick={() => toggle(o.id)}
+                  onClick={() => pick(o)}
                   disabled={!isSel && atMax}
                   className={cn(
                     "flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-[13px] hover:bg-bg",
@@ -150,9 +243,9 @@ export function UserMultiSelect({
                 </button>
               );
             })}
-            {filtered.length > RENDER_CAP && (
+            {options.length > RENDER_CAP && (
               <div className="px-3 py-1.5 text-[11px] text-ink-muted">
-                Showing first {RENDER_CAP} of {filtered.length} — keep typing to narrow.
+                Showing first {RENDER_CAP} of {options.length} — keep typing to narrow.
               </div>
             )}
           </div>,
@@ -185,7 +278,7 @@ export function UserMultiSelect({
               aria-label={`Remove ${labelOf(o)}`}
               onClick={(e) => {
                 e.stopPropagation();
-                toggle(o.id);
+                removeId(o.id);
               }}
               className="rounded-full p-0.5 hover:bg-primary/15"
             >
