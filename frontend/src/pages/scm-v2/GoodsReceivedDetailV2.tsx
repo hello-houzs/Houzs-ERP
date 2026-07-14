@@ -2,7 +2,7 @@
 // doc: goods land at a warehouse, PO's received_qty rolls up. Aside hero =
 // Received value + qty landed, tinted green once posted.
 
-import { useMemo, type ReactNode } from "react";
+import { lazy, Suspense, useMemo, type ReactNode } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -70,6 +70,8 @@ type GrnItem = {
   item_code?: string | null;
   description?: string | null;
   description2?: string | null;
+  item_group?: string | null;
+  variants?: Record<string, unknown> | null;
   uom?: string;
   qty?: number;
   received_qty?: number;
@@ -93,6 +95,32 @@ const fmtDate = (iso: string | null | undefined): string => {
   if (!m) return s;
   return `${m[3]}/${m[2]}/${m[1]}`;
 };
+
+// ─── Line item variant chip helper (copied from DeliveryOrderDetailV2) ──────
+function VariantChip({ k, v }: { k: string; v: string }) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-border-subtle bg-surface-2 px-2 py-0.5">
+      <span className="font-mono text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
+        {k}
+      </span>
+      <span className="text-[11px] font-semibold text-ink-secondary">{v}</span>
+    </span>
+  );
+}
+
+// Best-effort extraction of variant chips from the item's variants JSON blob.
+function variantsOf(item: GrnItem): Array<{ k: string; v: string }> {
+  const raw = item.variants;
+  if (!raw || typeof raw !== "object") return [];
+  const out: Array<{ k: string; v: string }> = [];
+  for (const [k, val] of Object.entries(raw)) {
+    if (val == null || val === "") continue;
+    if (typeof val === "string" || typeof val === "number") {
+      out.push({ k, v: String(val) });
+    }
+  }
+  return out;
+}
 
 const supplierNameOf = (h: GrnHeader): string => h.supplier?.name || "—";
 const supplierCodeOf = (h: GrnHeader): string => h.supplier?.code || "—";
@@ -228,7 +256,35 @@ function HeroLine({ k, v, strong }: { k: string; v: string; strong?: boolean }) 
   );
 }
 
+// ─── Legacy inline editor (lazy) ───────────────────────────────────────────
+// V2 is READ-ONLY by design. The variant-capable draft editor (editable
+// Description + per-category BEDFRAME/SOFA variant editor) lives in the legacy
+// ./GoodsReceivedDetail page — we forward to it whenever ?edit=1 lands on this
+// route so the Edit button actually opens editable fields. Mirrors how
+// SalesOrderDetailV2 forwards ?edit=1 to ./SalesOrderDetail. Lazy-loaded so the
+// editor bundle only ships when someone actually clicks Edit.
+const GoodsReceivedDetailInlineEditor = lazy(() =>
+  import("./GoodsReceivedDetail").then((m) => ({ default: m.GoodsReceivedDetail })),
+);
+
+/* Thin router — the only hook it calls is useSearchParams, so Rules of Hooks
+   are respected when the ?edit=1 flip swaps between the read-only body and the
+   lazy inline editor (the two children have different hook counts). */
 export function GoodsReceivedDetailV2() {
+  const [params] = useSearchParams();
+  if (params.get("edit") === "1") {
+    return (
+      <Suspense
+        fallback={<div className="p-8 text-[13px] text-ink-muted">Loading editor…</div>}
+      >
+        <GoodsReceivedDetailInlineEditor />
+      </Suspense>
+    );
+  }
+  return <GoodsReceivedDetailV2ReadOnly />;
+}
+
+function GoodsReceivedDetailV2ReadOnly() {
   const { id } = useParams<{ id: string }>();
   const [params] = useSearchParams();
   const navigate = useNavigate();
@@ -280,17 +336,30 @@ export function GoodsReceivedDetailV2() {
       label: "Item",
       alwaysVisible: true,
       getValue: (l) => l.material_code || l.item_code || "",
-      render: (l) => (
-        <div className="min-w-0">
-          <div className="truncate text-[13px] font-semibold text-ink">
-            {l.description || l.material_code || l.item_code || "—"}
+      render: (l) => {
+        const vs = variantsOf(l);
+        return (
+          <div className="min-w-0">
+            <div className="truncate text-[13px] font-semibold text-ink">
+              {l.description || l.material_code || l.item_code || "—"}
+            </div>
+            <div className="mt-0.5 flex flex-wrap items-center gap-2 font-mono text-[11px] text-ink-muted">
+              <span>{l.material_code || l.item_code}</span>
+              {l.warehouse_code && <span className="inline-flex items-center gap-0.5 rounded bg-primary-soft px-1.5 py-0 text-[10px] font-semibold text-primary-ink">{l.warehouse_code}</span>}
+              {l.description2 && (
+                <span className="truncate text-ink-secondary">· {l.description2}</span>
+              )}
+            </div>
+            {vs.length > 0 && (
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                {vs.map((c) => (
+                  <VariantChip key={c.k} k={c.k} v={c.v} />
+                ))}
+              </div>
+            )}
           </div>
-          <div className="mt-0.5 flex items-center gap-2 font-mono text-[11px] text-ink-muted">
-            <span>{l.material_code || l.item_code}</span>
-            {l.warehouse_code && <span className="inline-flex items-center gap-0.5 rounded bg-primary-soft px-1.5 py-0 text-[10px] font-semibold text-primary-ink">{l.warehouse_code}</span>}
-          </div>
-        </div>
-      ),
+        );
+      },
     },
     {
       key: "qty_po",
