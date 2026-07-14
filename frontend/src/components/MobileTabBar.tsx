@@ -13,6 +13,7 @@ import {
 import { useAuth } from "../auth/AuthContext";
 import { useNotifications } from "../hooks/useNotifications";
 import { NAV_TABS, type NavTab } from "./Sidebar";
+import { makeNavFilter } from "./navFilter";
 import { Avatar } from "./Avatar";
 import { cn } from "../lib/utils";
 
@@ -201,32 +202,17 @@ function BottomTab({ tab }: { tab: Tab }) {
 // dismiss.
 
 function MenuModal({ onClose }: { onClose: () => void }) {
-  const { can, pageAccess } = useAuth();
+  const { can, pageAccess, user } = useAuth();
   const navigate = useNavigate();
   const notifs = useNotifications();
 
-  // Recursive permission filter — same shape as Sidebar.tsx's so the
-  // two stay in lockstep. `anyPerm` + `anyAccess` are ORed (additive
-  // SCM page-access gating); a tab with both shows if EITHER passes.
-  function filterTab(t: NavTab): NavTab | null {
-    if (t.perm && !can(t.perm)) return null;
-    if (t.anyPerm || t.anyAccess) {
-      const permOk = t.anyPerm ? t.anyPerm.some((p) => can(p)) : false;
-      const accessOk = t.anyAccess
-        ? t.anyAccess.some((k) => pageAccess(k) !== "none")
-        : false;
-      if (!permOk && !accessOk) return null;
-    }
-    if (t.hidePerm && can(t.hidePerm)) return null;
-    if (t.children) {
-      const kids = t.children
-        .map(filterTab)
-        .filter((x): x is NavTab => x !== null);
-      if (kids.length === 0) return null;
-      return { ...t, children: kids };
-    }
-    return t;
-  }
+  // Identical gate logic to the desktop Sidebar (shared ./navFilter). This
+  // used to be a hand-copied subset that ignored pageAccess / pageAccessFull /
+  // requireFinanceViewer and the sales gates, so pageAccess-only items
+  // (Projects, System Health) and hideForSales items leaked into this menu and
+  // bounced the user to <Forbidden> on tap — the "render-then-deny" the
+  // "off, not hide" rule forbids. Sharing the filter makes drift impossible.
+  const filterTab = makeNavFilter({ user, can, pageAccess });
 
   const visibleTabs = NAV_TABS.map(filterTab).filter(
     (t): t is NavTab => t !== null,
