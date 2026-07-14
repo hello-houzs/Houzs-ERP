@@ -47,7 +47,11 @@ export type BrandingWithCompany = Branding & { companyCode: string };
  * letterhead.
  */
 export function useBranding(): BrandingWithCompany {
-  const q = useQuery<BrandingResponse>(() => api.get("/api/branding"));
+  // Company identity is effectively static — cache it for the session so it's
+  // fetched once, not re-requested on every navigation (default 30s staleTime).
+  const q = useQuery<BrandingResponse>(() => api.get("/api/branding"), [], {
+    staleTime: Infinity,
+  });
 
   const companyCode = (
     (q.data?.companyCode ?? q.data?.company_code)?.trim() ||
