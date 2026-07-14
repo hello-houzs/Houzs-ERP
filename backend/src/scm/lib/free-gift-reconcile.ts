@@ -50,7 +50,7 @@ interface SoItemRow {
  * Reconcile a placed SO's accessory free-gift lines against its current
  * triggers. ALWAYS finishes by recomputing the header totals — even on error.
  */
-export async function reconcileFreeGiftLinesForSo(sb: any, docNo: string): Promise<void> {
+export async function reconcileFreeGiftLinesForSo(sb: any, docNo: string, c: any): Promise<void> {
   try {
     // 1. Load the SO's non-cancelled lines.
     const { data: itemsRaw } = await sb
@@ -241,5 +241,5 @@ export async function reconcileFreeGiftLinesForSo(sb: any, docNo: string): Promi
   // 9 + 10. ALWAYS recompute the header totals (the route's authoritative
   // roll-up) — even if the reconcile pass above threw. This REPLACES the final
   // recomputeTotals each edit endpoint used to call directly.
-  await recomputeTotals(sb, docNo);
+  await recomputeTotals(sb, docNo, c);
 }

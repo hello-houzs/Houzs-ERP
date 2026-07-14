@@ -7,7 +7,7 @@ import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { supabaseAuth } from '../middleware/auth';
 import { hasHouzsPerm } from '../lib/houzs-perms';
-import { activeCompanyId } from '../lib/companyScope';
+import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 type AppCtx = Context<{ Bindings: Env; Variables: Variables }>;
@@ -97,10 +97,10 @@ async function requireWrite(c: AppCtx) {
 // GET — every authenticated staff role can read (POS configurator needs it).
 pwpRules.get('/', async (c) => {
   const supabase = c.get('supabase');
-  const { data, error } = await supabase
-    .from('pwp_rules')
-    .select(SELECT)
-    .order('created_at', { ascending: true });
+  const { data, error } = await scopeToCompany(
+    supabase.from('pwp_rules').select(SELECT),
+    c,
+  ).order('created_at', { ascending: true });
   if (error) return c.json({ error: 'fetch_failed', reason: error.message }, 500);
   return c.json({ rules: (data as RuleRow[]).map(toApi) });
 });

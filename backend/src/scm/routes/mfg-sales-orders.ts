@@ -354,10 +354,13 @@ async function soMainMixIntroduced(sb: any, docNo: string, excludeItemId: string
    before the line is persisted; if a sofa line's variants.cells match a
    combo's modules at the line's seat-height tier, the combo price OVERRIDES
    the client-submitted unit_price (anti-tamper). */
-async function loadActiveSofaCombos(sb: any): Promise<SofaComboRow[]> {
-  const { data } = await sb
-    .from('sofa_combo_pricing')
-    .select('id, base_model, modules, tier, customer_id, prices_by_height, selling_prices_by_height, pwp_prices_by_height, label, effective_from, created_at, deleted_at, default_free_gifts')
+async function loadActiveSofaCombos(sb: any, c: any): Promise<SofaComboRow[]> {
+  const { data } = await scopeToCompany(
+    sb
+      .from('sofa_combo_pricing')
+      .select('id, base_model, modules, tier, customer_id, prices_by_height, selling_prices_by_height, pwp_prices_by_height, label, effective_from, created_at, deleted_at, default_free_gifts'),
+    c,
+  )
     .is('deleted_at', null)
     .is('customer_id', null)   // 2990 B2C — default-scope rows only
     .is('supplier_id', null);  // sales-side only — never auto-price a SO from a supplier's purchasing combos
@@ -494,16 +497,19 @@ const deriveCountryFromState = async (
 const deriveSalesLocationFromState = async (
   sb: any,
   state: string | null | undefined,
+  c: any,
 ): Promise<string | null> => {
   if (!state) return null;
   // state_warehouse_mappings keys on the canonical state name; map the common
   // WP-KL alias the locality table doesn't carry under the WP prefix.
   const key = state === 'Wilayah Persekutuan Kuala Lumpur' ? 'Kuala Lumpur' : state;
-  const { data: m } = await sb
-    .from('state_warehouse_mappings')
-    .select('warehouse_id')
-    .eq('state', key)
-    .maybeSingle();
+  const { data: m } = await scopeToCompany(
+    sb
+      .from('state_warehouse_mappings')
+      .select('warehouse_id')
+      .eq('state', key),
+    c,
+  ).maybeSingle();
   const whId = (m as { warehouse_id?: string } | null)?.warehouse_id;
   if (!whId) return null;
   const { data: w } = await sb
@@ -523,6 +529,7 @@ const deriveSalesLocationFromState = async (
 const deriveWarehouseIdFromState = async (
   sb: any,
   state: string | null | undefined,
+  c: any,
 ): Promise<string | null> => {
   if (!state) return null;
   /* Match the state against state_warehouse_mappings tolerantly: trim +
@@ -542,9 +549,12 @@ const deriveWarehouseIdFromState = async (
     return aliases[t] ?? t;
   };
   const want = canon(state);
-  const { data: rows } = await sb
-    .from('state_warehouse_mappings')
-    .select('state, warehouse_id');
+  const { data: rows } = await scopeToCompany(
+    sb
+      .from('state_warehouse_mappings')
+      .select('state, warehouse_id'),
+    c,
+  );
   for (const m of (rows ?? []) as Array<{ state: string; warehouse_id: string | null }>) {
     if (m.warehouse_id && canon(m.state) === want) return m.warehouse_id;
   }
@@ -585,14 +595,17 @@ const snapshotUnitCostSen = async (
   sb: any,
   itemCode: string,
   explicit: number,
+  c: any,
 ): Promise<number> => {
   if (explicit > 0) return explicit;
   if (!itemCode) return 0;
-  const { data } = await sb
-    .from('mfg_products')
-    .select('cost_price_sen')
-    .eq('code', itemCode)
-    .maybeSingle();
+  const { data } = await scopeToCompany(
+    sb
+      .from('mfg_products')
+      .select('cost_price_sen')
+      .eq('code', itemCode),
+    c,
+  ).maybeSingle();
   return Number((data as { cost_price_sen?: number } | null)?.cost_price_sen ?? 0);
 };
 
@@ -750,10 +763,13 @@ mfgSalesOrders.get('/', async (c) => {
     for (let i = 0; i < codeList.length; i += 300) {
       const chunk = codeList.slice(i, i + 300);
       if (chunk.length === 0) continue;
-      const { data: prodRows } = await sb
-        .from('mfg_products')
-        .select('code, category, branding')
-        .in('code', chunk);
+      const { data: prodRows } = await scopeToCompany(
+        sb
+          .from('mfg_products')
+          .select('code, category, branding')
+          .in('code', chunk),
+        c,
+      );
       for (const p of (prodRows ?? []) as Array<{ code: string; category: string | null; branding: string | null }>) {
         if (p.category) productCategory.set(p.code, normCategory(p.category));
         if (p.branding && p.branding.trim()) productBranding.set(p.code, p.branding);
@@ -1318,11 +1334,14 @@ mfgSalesOrders.get('/cross-category-match', async (c) => {
 
   // Candidate earlier SOs for this phone, newest first. Name is matched in the
   // pure helper with the same lower(trim) rule as the customers unique index.
-  const { data: rows } = await sb
-    .from('mfg_sales_orders')
-    .select('doc_no, debtor_name, created_at')
-    .eq('phone', normPhone)
-    .not('status', 'in', '("CANCELLED","DRAFT")')
+  const { data: rows } = await scopeToCompany(
+    sb
+      .from('mfg_sales_orders')
+      .select('doc_no, debtor_name, created_at')
+      .eq('phone', normPhone)
+      .not('status', 'in', '("CANCELLED","DRAFT")'),
+    c,
+  )
     .order('created_at', { ascending: false })
     .limit(50);
   const candidates: AutoMatchCandidate[] = ((rows ?? []) as Array<{ doc_no: string; debtor_name: string | null }>)
@@ -1330,10 +1349,13 @@ mfgSalesOrders.get('/cross-category-match', async (c) => {
   if (candidates.length === 0) return c.json({ found: false });
 
   // Which of those candidate SOs are already linked-from by another order.
-  const { data: usedRows } = await sb
-    .from('mfg_sales_orders')
-    .select('cross_category_source_doc_no')
-    .in('cross_category_source_doc_no', candidates.map((c2) => c2.docNo));
+  const { data: usedRows } = await scopeToCompany(
+    sb
+      .from('mfg_sales_orders')
+      .select('cross_category_source_doc_no')
+      .in('cross_category_source_doc_no', candidates.map((c2) => c2.docNo)),
+    c,
+  );
   const used = ((usedRows ?? []) as Array<{ cross_category_source_doc_no: string | null }>)
     .map((r) => r.cross_category_source_doc_no)
     .filter((v): v is string => !!v);
@@ -1362,11 +1384,14 @@ mfgSalesOrders.get('/customer-search', async (c) => {
   if (q.length < 2) return c.json({ customers: [] });
   // Escape LIKE metacharacters so a literal "%" in a name can't widen the scan.
   const esc = q.replace(/[\\%_]/g, (m) => `\\${m}`);
-  const { data, error } = await sb
-    .from('mfg_sales_orders')
-    .select('doc_no, debtor_name, phone, email, customer_type, address1, address2, city, postcode, customer_state, building_type, emergency_contact_name, emergency_contact_phone, emergency_contact_relationship, created_at')
-    .ilike('debtor_name', `%${esc}%`)
-    .not('status', 'in', '("CANCELLED","DRAFT")')
+  const { data, error } = await scopeToCompany(
+    sb
+      .from('mfg_sales_orders')
+      .select('doc_no, debtor_name, phone, email, customer_type, address1, address2, city, postcode, customer_state, building_type, emergency_contact_name, emergency_contact_phone, emergency_contact_relationship, created_at')
+      .ilike('debtor_name', `%${esc}%`)
+      .not('status', 'in', '("CANCELLED","DRAFT")'),
+    c,
+  )
     .order('created_at', { ascending: false })
     .limit(60);
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
@@ -1955,11 +1980,14 @@ mfgSalesOrders.post('/backfill-warehouses', async (c) => {
   const sb = c.get('supabase');
   if (!(await isPriceOverrideCaller(c))) return c.json({ error: 'forbidden' }, 403);
 
-  const { data: nullLines } = await sb
-    .from('mfg_sales_order_items')
-    .select('doc_no')
-    .is('warehouse_id', null)
-    .eq('cancelled', false);
+  const { data: nullLines } = await scopeToCompany(
+    sb
+      .from('mfg_sales_order_items')
+      .select('doc_no')
+      .is('warehouse_id', null)
+      .eq('cancelled', false),
+    c,
+  );
   const docNos = [...new Set(
     ((nullLines ?? []) as Array<{ doc_no: string | null }>).map((r) => r.doc_no).filter((x): x is string => !!x),
   )];
@@ -1968,10 +1996,13 @@ mfgSalesOrders.post('/backfill-warehouses', async (c) => {
   // States for those SOs (chunk the .in to dodge the PostgREST row cap).
   const stateByDoc = new Map<string, string | null>();
   for (let i = 0; i < docNos.length; i += 200) {
-    const { data: sos } = await sb
-      .from('mfg_sales_orders')
-      .select('doc_no, customer_state')
-      .in('doc_no', docNos.slice(i, i + 200));
+    const { data: sos } = await scopeToCompany(
+      sb
+        .from('mfg_sales_orders')
+        .select('doc_no, customer_state')
+        .in('doc_no', docNos.slice(i, i + 200)),
+      c,
+    );
     for (const s of (sos ?? []) as Array<{ doc_no: string; customer_state: string | null }>) {
       stateByDoc.set(s.doc_no, s.customer_state);
     }
@@ -1979,14 +2010,17 @@ mfgSalesOrders.post('/backfill-warehouses', async (c) => {
 
   let filled = 0; let skipped = 0;
   for (const docNo of docNos) {
-    const wh = await deriveWarehouseIdFromState(sb, stateByDoc.get(docNo) ?? null);
+    const wh = await deriveWarehouseIdFromState(sb, stateByDoc.get(docNo) ?? null, c);
     if (!wh) { skipped += 1; continue; }
-    await sb
-      .from('mfg_sales_order_items')
-      .update({ warehouse_id: wh })
-      .eq('doc_no', docNo)
-      .is('warehouse_id', null)
-      .eq('cancelled', false);
+    await scopeToCompany(
+      sb
+        .from('mfg_sales_order_items')
+        .update({ warehouse_id: wh })
+        .eq('doc_no', docNo)
+        .is('warehouse_id', null)
+        .eq('cancelled', false),
+      c,
+    );
     filled += 1;
   }
   return c.json({ filled, skipped, orders: docNos.length });
@@ -2142,10 +2176,12 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
       const lineCodes = items.map((it) => String(it.itemCode ?? '')).filter(Boolean);
       const metaByCode = new Map<string, { category: string }>();
       if (lineCodes.length > 0) {
-        const { data: meta } = await sb
-          .from('mfg_products')
-          .select('code, category')
-          .in('code', lineCodes);
+        // SoCreateContext is not a Hono Context, so scopeToCompany can't type-
+        // check here; add the company predicate directly from the local companyId
+        // (mfg_products is per-company; shared `code` collides across companies).
+        let metaQ = sb.from('mfg_products').select('code, category').in('code', lineCodes);
+        if (companyId != null) metaQ = metaQ.eq('company_id', companyId);
+        const { data: meta } = await metaQ;
         for (const m of (meta ?? []) as Array<{ code: string; category: string }>) {
           metaByCode.set(m.code, { category: m.category });
         }
@@ -2354,7 +2390,7 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
       return c.json({ ...err, lineIdx: i, itemCode: code }, 400);
     }
   }
-  const cachedCombos = await loadActiveSofaCombos(sb);  // Phase 4b — sofa selling recompute
+  const cachedCombos = await loadActiveSofaCombos(sb, c);  // Phase 4b — sofa selling recompute
   const cachedFabricAddonConfig = await loadFabricTierAddonConfig(sb);  // migration 0124 — fabric-tier Δ
   const cachedModelOverrides = await loadModelFabricTierOverrides(sb);  // migration 0172 — per-Model Δ
   const cachedCompartmentOverrides = await loadCompartmentFabricTierOverrides(sb);  // migration 0025 — per-compartment Δ
@@ -2902,6 +2938,7 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
   const defaultWarehouseId = await deriveWarehouseIdFromState(
     sb,
     (body.customerState as string | null | undefined) ?? null,
+    c,
   );
 
   /* Task 5 — one-shot SKU mint accumulator. When pos_remark_extra_auto_sku is
@@ -2952,7 +2989,7 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
     const itemCode = String(it.itemCode ?? '');
     const unitCost = recomputed && recomputed.unit_cost_sen > 0
       ? recomputed.unit_cost_sen
-      : await snapshotUnitCostSen(sb, itemCode, Number(it.unitCostCenti ?? 0));
+      : await snapshotUnitCostSen(sb, itemCode, Number(it.unitCostCenti ?? 0), c);
     const lineCost = unitCost * qty;
     const group = String(it.itemGroup ?? '').toLowerCase();
     total += lineTotal;
@@ -3216,11 +3253,12 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
   let deliveryFee: SoDeliveryFeeResult | null = null;
   let crossCategorySourceDocNo: string | null = null;
   if (body.applyDeliveryFee) {
-    const { data: dcfg } = await sb
-      .from('delivery_fee_config')
-      .select('base_fee, cross_category_fee')
-      .eq('id', 1)
-      .single();
+    // SoCreateContext is not a Hono Context (see metaQ note above) — add the
+    // company predicate from the local companyId so the non-owning company
+    // reads its own delivery_fee_config, not the base company's row.
+    let dcfgQ = sb.from('delivery_fee_config').select('base_fee, cross_category_fee').eq('id', 1);
+    if (companyId != null) dcfgQ = dcfgQ.eq('company_id', companyId);
+    const { data: dcfg } = await dcfgQ.single();
     const DELIVERABLE = new Set(['sofa', 'mattress', 'bedframe']);
     const categoryIds = items
       .map((it) => String((it as { itemGroup?: string }).itemGroup ?? '').toLowerCase())
@@ -3423,6 +3461,7 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
     (await deriveSalesLocationFromState(
       sb,
       (body.customerState as string | null | undefined) ?? null,
+      c,
     ));
 
   /* P1 (Owner 2026-06-03, migration 0143) — resolve the POS handover payment
@@ -3906,7 +3945,7 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
        matched sofa SET picks up its MASTER combo cost (spread across the lines).
        The inline rollup above set per-module costs; this corrects them + the
        header totals to the combo. No-op for non-sofa / non-matching SOs. */
-    await recomputeTotals(sb, docNo);
+    await recomputeTotals(sb, docNo, c);
   }
 
   /* PWP Code Voucher (migration 0130) — carry forward the un-applied reserved
@@ -4337,7 +4376,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/override', async (c) => {
   /* Task #114 — also refresh the header totals after the override so
      total_cost_centi / total_margin_centi / category cost columns stay
      consistent with the new line revenue + margin. */
-  await recomputeTotals(sb, docNo);
+  await recomputeTotals(sb, docNo, c);
 
   // PR-D — also emit a unified audit-log entry so the History drawer
   // shows this price override alongside other UPDATE_LINE actions.
@@ -4386,7 +4425,7 @@ async function repointMintedVouchers(sb: any, docNo: string, newCustomerId: stri
    recomputeTotals — the caller is responsible for any totals refresh).
    Best-effort: logs DB errors, never throws. */
 async function recomputeDeliveryFeeCore(
-  sb: any, docNo: string, sourceDocNo: string | null,
+  sb: any, docNo: string, sourceDocNo: string | null, c: any,
 ): Promise<{ isFollowup: boolean; sourceDocNo: string | null; total: number } | null> {
   const { data: lineRows } = await sb.from('mfg_sales_order_items')
     .select('item_code, item_group, total_centi, line_no, variants')
@@ -4425,8 +4464,10 @@ async function recomputeDeliveryFeeCore(
      result is matched by the SAME shared matcher the create path runs. */
   let specialModels: { standaloneFee: number; crossCategoryFollowupFee: number }[] = [];
   if (goodsCodes.length > 0) {
-    const { data: prodRows } = await sb.from('mfg_products')
-      .select('code, category, model_id, size_code').in('code', goodsCodes);
+    const { data: prodRows } = await scopeToCompany(
+      sb.from('mfg_products').select('code, category, model_id, size_code').in('code', goodsCodes),
+      c,
+    );
     const prodByCode = new Map(
       ((prodRows ?? []) as Array<{ code: string; category: string | null; model_id: string | null; size_code: string | null }>)
         .map((p) => [p.code, p]),
@@ -4443,7 +4484,10 @@ async function recomputeDeliveryFeeCore(
         };
       }),
     );
-    const { data: comboRows } = await sb.from('sofa_combo_pricing').select('id, modules');
+    const { data: comboRows } = await scopeToCompany(
+      sb.from('sofa_combo_pricing').select('id, modules'),
+      c,
+    );
     const comboModulesById = new Map<string, string[][]>(
       ((comboRows ?? []) as Array<{ id: string; modules: string[][] | null }>)
         .map((cb) => [cb.id, cb.modules ?? []]),
@@ -4451,7 +4495,10 @@ async function recomputeDeliveryFeeCore(
     specialModels = await specialDeliveryFeesForLines(sb, deliveryRuleLines, comboModulesById);
   }
 
-  const { data: dcfg } = await sb.from('delivery_fee_config').select('base_fee, cross_category_fee').eq('id', 1).single();
+  const { data: dcfg } = await scopeToCompany(
+    sb.from('delivery_fee_config').select('base_fee, cross_category_fee').eq('id', 1),
+    c,
+  ).single();
   const cfgSen = {
     baseFee: Number((dcfg as { base_fee?: number } | null)?.base_fee ?? 0) * 100,
     crossCategoryFee: Number((dcfg as { cross_category_fee?: number } | null)?.cross_category_fee ?? 0) * 100,
@@ -4523,7 +4570,7 @@ async function recomputeDeliveryFeeCore(
     delivery_fee_centi: fee.total,
     updated_at: new Date().toISOString(),
   }).eq('doc_no', docNo);
-  await recomputeTotals(sb, docNo);
+  await recomputeTotals(sb, docNo, c);
   return { isFollowup, sourceDocNo, total: fee.total };
 }
 
@@ -4536,30 +4583,36 @@ async function recomputeDeliveryFeeCore(
    computeSoDeliveryFee. Only runs when the SO already carries a delivery fee.
    Best-effort. */
 async function redetectCrossCategoryDelivery(
-  sb: any, docNo: string, newName: string, newPhone: string | null,
+  sb: any, docNo: string, newName: string, newPhone: string | null, c: any,
 ): Promise<{ isFollowup: boolean; sourceDocNo: string | null; total: number } | null> {
   // Auto-match the new customer for an eligible cross-category source SO.
   let sourceDocNo: string | null = null;
   const normPhone = newPhone ? (normalizePhone(newPhone) ?? newPhone) : null;
   if (newName && normPhone) {
-    const { data: candRows } = await sb.from('mfg_sales_orders')
-      .select('doc_no, debtor_name, created_at')
-      .eq('phone', normPhone).not('status', 'in', '("CANCELLED","DRAFT")').neq('doc_no', docNo)
+    const { data: candRows } = await scopeToCompany(
+      sb.from('mfg_sales_orders')
+        .select('doc_no, debtor_name, created_at')
+        .eq('phone', normPhone).not('status', 'in', '("CANCELLED","DRAFT")').neq('doc_no', docNo),
+      c,
+    )
       .order('created_at', { ascending: false }).limit(50);
     const candidates: AutoMatchCandidate[] = ((candRows ?? []) as Array<{ doc_no: string; debtor_name: string | null }>)
       .map((r) => ({ docNo: r.doc_no, debtorName: r.debtor_name }));
     if (candidates.length > 0) {
-      const { data: usedRows } = await sb.from('mfg_sales_orders')
-        .select('cross_category_source_doc_no')
-        .in('cross_category_source_doc_no', candidates.map((x) => x.docNo))
-        .neq('doc_no', docNo); // self-excluded: this SO's own link must not burn its own source
+      const { data: usedRows } = await scopeToCompany(
+        sb.from('mfg_sales_orders')
+          .select('cross_category_source_doc_no')
+          .in('cross_category_source_doc_no', candidates.map((x) => x.docNo))
+          .neq('doc_no', docNo), // self-excluded: this SO's own link must not burn its own source
+        c,
+      );
       const used = ((usedRows ?? []) as Array<{ cross_category_source_doc_no: string | null }>)
         .map((r) => r.cross_category_source_doc_no).filter((v): v is string => !!v);
       const match = pickCrossCategoryMatch(candidates, newName, used);
       if (match) sourceDocNo = match.docNo;
     }
   }
-  return recomputeDeliveryFeeCore(sb, docNo, sourceDocNo);
+  return recomputeDeliveryFeeCore(sb, docNo, sourceDocNo, c);
 }
 
 /* Re-derive the delivery fee from the SO's CURRENT items — the ITEM-EDIT path.
@@ -4571,13 +4624,13 @@ async function redetectCrossCategoryDelivery(
    the SO carries no delivery fee, the core early-bails (null) before
    recomputeTotals, so we still refresh the header totals for the edit.
    Best-effort. */
-export async function rederiveDeliveryFee(sb: any, docNo: string): Promise<void> {
+export async function rederiveDeliveryFee(sb: any, docNo: string, c: any): Promise<void> {
   let storedSource: string | null = null;
   const { data: hdr } = await sb.from('mfg_sales_orders')
     .select('cross_category_source_doc_no').eq('doc_no', docNo).maybeSingle();
   storedSource = (hdr as { cross_category_source_doc_no?: string | null } | null)?.cross_category_source_doc_no ?? null;
-  const res = await recomputeDeliveryFeeCore(sb, docNo, storedSource);
-  if (res === null) await recomputeTotals(sb, docNo);
+  const res = await recomputeDeliveryFeeCore(sb, docNo, storedSource, c);
+  if (res === null) await recomputeTotals(sb, docNo, c);
 }
 
 mfgSalesOrders.patch('/:docNo', async (c) => {
@@ -4689,6 +4742,7 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
       const derived = await deriveSalesLocationFromState(
         sb,
         body['customerState'] as string | null,
+        c,
       );
       if (derived) updates['sales_location'] = derived;
     }
@@ -4697,7 +4751,7 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
        warehouse_id NULL → "—" in MRP. Backfill the warehouse onto lines that
        don't have one yet (NULL only — explicit per-line overrides untouched).
        Wei Siang 2026-06-16. */
-    const reboundWh = await deriveWarehouseIdFromState(sb, body['customerState'] as string | null);
+    const reboundWh = await deriveWarehouseIdFromState(sb, body['customerState'] as string | null, c);
     if (reboundWh) {
       await sb
         .from('mfg_sales_order_items')
@@ -4967,7 +5021,7 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
       if (resolvedNewCustomerId && resolvedNewCustomerId !== oldCustomerId) {
         await repointMintedVouchers(sb, docNo, resolvedNewCustomerId);
       }
-      crossCategoryRedetect = await redetectCrossCategoryDelivery(sb, docNo, reNewName, reNewPhone);
+      crossCategoryRedetect = await redetectCrossCategoryDelivery(sb, docNo, reNewName, reNewPhone, c);
     } catch (e) {
       /* eslint-disable-next-line no-console */
       console.error('[mfg-so] customer-change re-detect failed:', e);
@@ -5035,7 +5089,7 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
 // Exported so the free-gift reconciler (lib/free-gift-reconcile.ts) can finish
 // with the SAME authoritative roll-up the edit endpoints used to call directly.
 // route<->lib function cycle is safe (not invoked at module-eval time).
-export async function recomputeTotals(sb: any, docNo: string) {
+export async function recomputeTotals(sb: any, docNo: string, c: any) {
   const { data: items } = await sb.from('mfg_sales_order_items')
     .select('id, item_code, item_group, variants, qty, total_centi, line_cost_centi')
     .eq('doc_no', docNo).eq('cancelled', false);
@@ -5051,12 +5105,15 @@ export async function recomputeTotals(sb: any, docNo: string) {
      spreadComboTotal re-normalises an already-spread group to the same total. */
   const sofaRows = rows.filter((r) => (r.item_group ?? '').toLowerCase() === 'sofa');
   if (sofaRows.length > 0) {
-    const combos = await loadActiveSofaCombos(sb); // master scope only
+    const combos = await loadActiveSofaCombos(sb, c); // master scope only
     if (combos.length > 0) {
       const fabricCodes = [...new Set(sofaRows.map((r) => String((r.variants ?? {} as Record<string, unknown>).fabricCode ?? '')).filter(Boolean))];
       const tierByFabric = new Map<string, SofaPriceTier>();
       if (fabricCodes.length > 0) {
-        const { data: fabs } = await sb.from('fabric_trackings').select('fabric_code, price_tier, sofa_price_tier').in('fabric_code', fabricCodes);
+        const { data: fabs } = await scopeToCompany(
+          sb.from('fabric_trackings').select('fabric_code, price_tier, sofa_price_tier').in('fabric_code', fabricCodes),
+          c,
+        );
         for (const f of (fabs ?? []) as Array<{ fabric_code: string; price_tier: SofaPriceTier | null; sofa_price_tier: SofaPriceTier | null }>) {
           tierByFabric.set(f.fabric_code, (f.sofa_price_tier ?? f.price_tier ?? 'PRICE_2'));
         }
@@ -5243,7 +5300,7 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
   /* Commander 2026-05-31 — a line added later inherits the SO state's warehouse
      by default (migration 0118). Explicit it.warehouseId override wins. */
   const addLineWarehouseId = (it.warehouseId as string | null | undefined)
-    ?? await deriveWarehouseIdFromState(sb, (header.customer_state as string | null) ?? null);
+    ?? await deriveWarehouseIdFromState(sb, (header.customer_state as string | null) ?? null, c);
 
   /* POS line quantity (Loo 2026-06-12) — same 422 gate as POST / (review
      found the create-only gate left qty 0 free-line inserts open here). */
@@ -5270,7 +5327,7 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
     loadMaintenanceConfig(sb),
     loadProductByCode(sb, itemCodeStr),
     loadFabricByCode(sb, variantsObj?.fabricCode ?? null),
-    loadActiveSofaCombos(sb),
+    loadActiveSofaCombos(sb, c),
     loadFabricSellingTiers(sb, (variantsObj as { fabricId?: string } | null)?.fabricId ?? null),
     loadFabricTierAddonConfig(sb),
     loadSpecialAddons(sb),
@@ -5448,7 +5505,7 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
   // client cost only when the recompute produced no cost.
   const unitCost = recomputed.unit_cost_sen > 0
     ? recomputed.unit_cost_sen
-    : await snapshotUnitCostSen(sb, itemCodeStr, Number(it.unitCostCenti ?? 0));
+    : await snapshotUnitCostSen(sb, itemCodeStr, Number(it.unitCostCenti ?? 0), c);
   const lineCost = unitCost * qty;
   /* PR-E — same inheritance rule as POST /. Explicit per-line value wins
      (and flips overridden=true unless the client says otherwise);
@@ -5620,10 +5677,10 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
       const firstRow = (moduleData ?? [])[0] ?? moduleRows[0];
 
       // Default Free Gift — adding a sofa trigger may grant a gift.
-      await reconcileFreeGiftLinesForSo(sb, docNo);
+      await reconcileFreeGiftLinesForSo(sb, docNo, c);
       // Re-derive the delivery fee — a new sofa can introduce a cross-category
       // mix or a special-delivery trigger. Stored cross-category source kept.
-      await rederiveDeliveryFee(sb, docNo);
+      await rederiveDeliveryFee(sb, docNo, c);
 
       await recordSoAudit(sb, {
         docNo,
@@ -5660,10 +5717,10 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
   }
   // Default Free Gift (0170) — adding a trigger line may grant a new accessory
   // gift; reconcile auto-inserts/deletes gift lines, then recomputes totals.
-  await reconcileFreeGiftLinesForSo(sb, docNo);
+  await reconcileFreeGiftLinesForSo(sb, docNo, c);
   // Re-derive the delivery fee — a new goods line can introduce a cross-category
   // mix or a special-delivery trigger. Stored cross-category source kept.
-  await rederiveDeliveryFee(sb, docNo);
+  await rederiveDeliveryFee(sb, docNo, c);
 
   // PR-D — emit ADD_LINE audit row. Capture item code + qty + unit price
   // so the timeline shows the meaningful what-was-added without an explosion
@@ -5810,7 +5867,7 @@ mfgSalesOrders.patch('/:docNo/items/:itemId', async (c) => {
       loadMaintenanceConfig(sb),
       loadProductByCode(sb, itemCodeAfter),
       loadFabricByCode(sb, variantsAfter?.fabricCode ?? null),
-      loadActiveSofaCombos(sb),
+      loadActiveSofaCombos(sb, c),
       loadFabricSellingTiers(sb, (variantsAfter as { fabricId?: string } | null)?.fabricId ?? null),
       loadFabricTierAddonConfig(sb),
       loadSpecialAddons(sb),
@@ -5932,7 +5989,7 @@ mfgSalesOrders.patch('/:docNo/items/:itemId', async (c) => {
   } else if (recomputedPatch && recomputedPatch.unit_cost_sen > 0) {
     unitCost = recomputedPatch.unit_cost_sen;
   } else if (itemCodeChanged) {
-    unitCost = await snapshotUnitCostSen(sb, String(it.itemCode ?? ''), 0);
+    unitCost = await snapshotUnitCostSen(sb, String(it.itemCode ?? ''), 0, c);
   } else {
     unitCost = prev.unit_cost_centi;
   }
@@ -6018,10 +6075,10 @@ mfgSalesOrders.patch('/:docNo/items/:itemId', async (c) => {
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
   // Default Free Gift (0170) — editing a line (code/qty) may add or drop a
   // trigger; reconcile auto-syncs the gift lines, then recomputes totals.
-  await reconcileFreeGiftLinesForSo(sb, docNo);
+  await reconcileFreeGiftLinesForSo(sb, docNo, c);
   // Re-derive the delivery fee — a line code/qty change can flip a cross-category
   // mix or a special-delivery trigger. Stored cross-category source kept.
-  await rederiveDeliveryFee(sb, docNo);
+  await rederiveDeliveryFee(sb, docNo, c);
 
   // PR-D — diff old vs new and emit one UPDATE_LINE row only if any field
   // moved. Compare across both the derived columns (qty/price/discount)
@@ -6108,10 +6165,10 @@ mfgSalesOrders.delete('/:docNo/items/:itemId', async (c) => {
   if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
   // Default Free Gift (0170) — removing a trigger line (e.g. a mattress) must
   // auto-delete its free gift; reconcile drops orphaned gifts, then recomputes.
-  await reconcileFreeGiftLinesForSo(sb, docNo);
+  await reconcileFreeGiftLinesForSo(sb, docNo, c);
   // Re-derive the delivery fee — removing a goods line can drop a cross-category
   // mix or a special-delivery trigger. Stored cross-category source kept.
-  await rederiveDeliveryFee(sb, docNo);
+  await rederiveDeliveryFee(sb, docNo, c);
 
   // Task #93 — orphan cleanup. Loop over the photo keys and best-effort
   // delete each from R2. Failures are swallowed (logged) so a flaky R2
@@ -6376,10 +6433,10 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-update', async (c) => {
 
   // Default Free Gift (0170) — a sofa/variant build change may newly match (or
   // stop matching) a gifting combo; reconcile syncs the gift lines, then totals.
-  await reconcileFreeGiftLinesForSo(sb, docNo);
+  await reconcileFreeGiftLinesForSo(sb, docNo, c);
   // Re-derive the delivery fee — a TBC variant fill-in can resolve a special-
   // delivery trigger (model/variant/combo). Stored cross-category source kept.
-  await rederiveDeliveryFee(sb, docNo);
+  await rederiveDeliveryFee(sb, docNo, c);
   await recordSoAudit(sb, {
     docNo,
     action: 'UPDATE_LINE',
@@ -6430,9 +6487,12 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap', async (c) => {
     return c.json({ error: 'sofa_swap_not_supported', reason: 'A sofa build is exchanged by rebuilding the order, not by swapping one line.' }, 400);
   }
 
-  const { data: prodRow } = await sb.from('mfg_products')
-    .select('code, name, category, status, pos_active, sell_price_sen, cost_price_sen, pwp_price_sen, model_id, size_code')
-    .eq('code', newCode).maybeSingle();
+  const { data: prodRow } = await scopeToCompany(
+    sb.from('mfg_products')
+      .select('code, name, category, status, pos_active, sell_price_sen, cost_price_sen, pwp_price_sen, model_id, size_code')
+      .eq('code', newCode),
+    c,
+  ).maybeSingle();
   const prod = prodRow as { code: string; name: string; category: string; status: string; pos_active: boolean; sell_price_sen: number | null; cost_price_sen: number | null; pwp_price_sen: number | null; model_id: string | null; size_code: string | null } | null;
   if (!prod) return c.json(unknownItemCodeResponse([newCode]), 409);
   if (String(prod.category).toUpperCase() === 'SOFA') {
@@ -6528,9 +6588,11 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap', async (c) => {
       .eq('source_doc_no', docNo);
     const anchors = (soCodes ?? []) as Array<{ code: string; rule_id: string | null; status: string; trigger_item_code: string | null; redeemed_doc_no: string | null }>;
     {
-      const { data: ruleRows } = await sb.from('pwp_rules')
-        .select('id, trigger_category, trigger_eligible_model_ids, trigger_combo_ids, reward_category, eligible_reward_model_ids, reward_combo_ids, trigger_size_codes, trigger_compartments, reward_size_codes, reward_compartments, qty_per_trigger, type')
-        .eq('active', true);
+      const { data: ruleRows } = await scopeToCompany(
+        sb.from('pwp_rules')
+          .select('id, trigger_category, trigger_eligible_model_ids, trigger_combo_ids, reward_category, eligible_reward_model_ids, reward_combo_ids, trigger_size_codes, trigger_compartments, reward_size_codes, reward_compartments, qty_per_trigger, type'),
+        c,
+      ).eq('active', true);
       const rules = (ruleRows ?? []) as SwapPwpRule[];
       const ruleById = new Map(rules.map((r) => [r.id, r]));
       const fitsTrigger = (r: SwapPwpRule | undefined,
@@ -6594,7 +6656,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap', async (c) => {
             .map((l) => String(((l.variants ?? {}) as Record<string, unknown>).pwpCode ?? ''))
             .filter(Boolean))];
           for (const cdx of sofaRevertCodes) {
-            const plan = await planSofaRewardRevert(sb, docNo, cdx);
+            const plan = await planSofaRewardRevert(sb, docNo, cdx, c);
             if (!plan.ok) {
               return c.json({
                 error: 'pwp_reward_sofa_revert_unsupported',
@@ -6781,10 +6843,10 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap', async (c) => {
   // Default Free Gift (0170) — runs AFTER the PWP re-evaluation above, in place
   // of the final recomputeTotals: a product swap can add/drop a trigger, so
   // reconcile syncs the accessory gift lines and then recomputes header totals.
-  await reconcileFreeGiftLinesForSo(sb, docNo);
+  await reconcileFreeGiftLinesForSo(sb, docNo, c);
   // Re-derive the delivery fee — a product swap can flip a cross-category mix or
   // a special-delivery trigger. Stored cross-category source kept.
-  await rederiveDeliveryFee(sb, docNo);
+  await rederiveDeliveryFee(sb, docNo, c);
   await recordSoAudit(sb, {
     docNo,
     action: 'UPDATE_LINE',
@@ -6847,6 +6909,7 @@ async function planSofaRewardRevert(
   sb: any,
   docNo: string,
   pwpCode: string,
+  c: any,
 ): Promise<{ ok: true; updates: SofaRewardRevertUpdate[] } | { ok: false }> {
   const { data } = await sb.from('mfg_sales_order_items')
     .select('id, item_code, item_group, qty, unit_price_centi, discount_centi, unit_cost_centi, line_cost_centi, variants')
@@ -6886,7 +6949,7 @@ async function planSofaRewardRevert(
     loadMaintenanceConfig(sb),
     loadProductByCode(sb, lead.item_code),
     loadFabricByCode(sb, (leadV.fabricCode as string | undefined) ?? null),
-    loadActiveSofaCombos(sb),
+    loadActiveSofaCombos(sb, c),
     loadFabricSellingTiers(sb, (leadV.fabricId as string | undefined) ?? null),
     loadFabricTierAddonConfig(sb),
     loadSpecialAddons(sb),
@@ -7059,7 +7122,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
   const [cfg, fabLite, combos, sellingTiers, fabricAddonCfg, specialDefs, modulePrices, moduleCostRows, modelOverridesSwap] = await Promise.all([
     loadMaintenanceConfig(sb),
     loadFabricByCode(sb, (newVariants.fabricCode as string | undefined) ?? null),
-    loadActiveSofaCombos(sb),
+    loadActiveSofaCombos(sb, c),
     loadFabricSellingTiers(sb, (newVariants.fabricId as string | undefined) ?? null),
     loadFabricTierAddonConfig(sb),
     loadSpecialAddons(sb),
@@ -7108,7 +7171,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
   const unit = recomputed.unit_price_sen;
   const unitCost = recomputed.unit_cost_sen > 0
     ? recomputed.unit_cost_sen
-    : await snapshotUnitCostSen(sb, newCode, 0);
+    : await snapshotUnitCostSen(sb, newCode, 0, c);
   const discount = Number(prev.discount_centi ?? 0);
   const newBuildTotal = (qty * unit) - discount;
   const oldBuildTotal = oldLines.reduce((s, l) => s + Number(l.total_centi ?? 0), 0);
@@ -7185,9 +7248,11 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
   let pwpNewlyTriggered: PwpRuleRow[] = [];
   let rewardLinesToRevert: RewardRevertLine[] = [];
   {
-    const { data: ruleRows } = await sb.from('pwp_rules')
-      .select('id, trigger_category, trigger_eligible_model_ids, trigger_combo_ids, reward_category, eligible_reward_model_ids, reward_combo_ids, trigger_size_codes, trigger_compartments, reward_size_codes, reward_compartments, qty_per_trigger, type, active')
-      .eq('active', true);
+    const { data: ruleRows } = await scopeToCompany(
+      sb.from('pwp_rules')
+        .select('id, trigger_category, trigger_eligible_model_ids, trigger_combo_ids, reward_category, eligible_reward_model_ids, reward_combo_ids, trigger_size_codes, trigger_compartments, reward_size_codes, reward_compartments, qty_per_trigger, type, active'),
+      c,
+    ).eq('active', true);
     pwpRules = ((ruleRows ?? []) as PwpRuleRow[]);
     const comboById = new Map((combos ?? []).map((cb) => [cb.id, cb]));
     const newModuleIds = (newCells as Array<{ moduleId?: unknown }>)
@@ -7263,7 +7328,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
         .map((l) => String(((l.variants ?? {}) as Record<string, unknown>).pwpCode ?? ''))
         .filter(Boolean))];
       for (const cdx of sofaRevertCodes) {
-        const plan = await planSofaRewardRevert(sb, docNo, cdx);
+        const plan = await planSofaRewardRevert(sb, docNo, cdx, c);
         if (!plan.ok) {
           return c.json({
             error: 'pwp_reward_sofa_revert_unsupported',
@@ -7508,10 +7573,10 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
   // place of the final recomputeTotals: a sofa build swap can newly match (or
   // stop matching) a gifting combo, so reconcile syncs the accessory gift lines
   // and then recomputes header totals.
-  await reconcileFreeGiftLinesForSo(sb, docNo);
+  await reconcileFreeGiftLinesForSo(sb, docNo, c);
   // Re-derive the delivery fee — a sofa build swap can flip a cross-category mix
   // or a special-delivery trigger (model/combo/compartment). Source kept.
-  await rederiveDeliveryFee(sb, docNo);
+  await rederiveDeliveryFee(sb, docNo, c);
   await recordSoAudit(sb, {
     docNo,
     action: 'UPDATE_LINE',
@@ -8341,7 +8406,7 @@ mfgSalesOrders.get('/:docNo/payments/:id/slip-url', async (c) => {
 // ── Debtor lookup — autocomplete from prior SOs ───────────────────────
 mfgSalesOrders.get('/debtors/search', async (c) => {
   const sb = c.get('supabase'); const q = c.req.query('q') ?? '';
-  let query = sb.from('mfg_sales_orders').select('debtor_code, debtor_name, phone, address1, address2, address3, address4').order('updated_at', { ascending: false }).limit(200);
+  let query = scopeToCompany(sb.from('mfg_sales_orders').select('debtor_code, debtor_name, phone, address1, address2, address3, address4'), c).order('updated_at', { ascending: false }).limit(200);
   { const s = escapeForOr(q); if (s) query = query.or(`debtor_name.ilike.%${s}%,debtor_code.ilike.%${s}%`); }
   const { data, error } = await query;
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
