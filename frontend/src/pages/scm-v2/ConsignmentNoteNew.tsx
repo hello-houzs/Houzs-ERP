@@ -376,7 +376,7 @@ export const ConsignmentNoteNew = () => {
                 placeholder="Their PO / order number" onChange={(e) => setCustomerSoNo(e.target.value)} />
             </label>
             <label className={styles.field}>
-              <span className={styles.fieldLabel}>Phone *</span>
+              <span className={styles.fieldLabel}>Phone</span>
               <PhoneInput className={styles.fieldInput} value={phone} onChange={setPhone} />
             </label>
             <label className={styles.field}>

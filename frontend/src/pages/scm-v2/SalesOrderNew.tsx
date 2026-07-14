@@ -1647,7 +1647,7 @@ export const SalesOrderNew = () => {
               />
             </label>
             <label className={styles.field}>
-              <span className={styles.fieldLabel}>Email *</span>
+              <span className={styles.fieldLabel}>Email</span>
               <input
                 type="email"
                 className={styles.fieldInput}

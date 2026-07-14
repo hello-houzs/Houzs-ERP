@@ -757,13 +757,12 @@ export const GrnNew = () => {
             {/* Receive into — Warehouse picker (PO's Purchase Location equivalent).
                 Threads into the create payload → inventory-IN lands here. */}
             <label className={styles.field}>
-              <span className={styles.fieldLabel}>Receive into *</span>
+              <span className={styles.fieldLabel}>Receive into</span>
               <select
                 value={warehouseId}
                 onChange={(e) => setWarehouseId(e.target.value)}
                 className={styles.fieldInput}
                 disabled={warehousesQ.isLoading}
-                required
               >
                 <option value="">{warehousesQ.isLoading ? 'Loading warehouses…' : '— Pick a warehouse —'}</option>
                 {sortByText(warehousesQ.data ?? []).map((w) => (
@@ -776,8 +775,8 @@ export const GrnNew = () => {
             </label>
 
             <label className={styles.field}>
-              <span className={styles.fieldLabel}>Received Date *</span>
-              <input type="date" value={receivedAt} onChange={(e) => setReceivedAt(e.target.value)} className={styles.fieldInput} required />
+              <span className={styles.fieldLabel}>Received Date</span>
+              <input type="date" value={receivedAt} onChange={(e) => setReceivedAt(e.target.value)} className={styles.fieldInput} />
             </label>
 
             <label className={styles.field}>
