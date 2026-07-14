@@ -28,6 +28,7 @@ _None — all screens delivered._
 - `MobilePMS` (project detail; tasklist has a **List / Gantt** toggle) · `MobileGantt` (timeline: section swim-lanes, week axis, due-date diamonds, holiday bands, today line; ports desktop `ProjectGantt`, no backend) · `MobileServiceCase` + `MobileServiceCaseNew`
 - `MobileMailCenter` (list/thread/compose) · `MobileAnnouncements` (list/detail) · `MobileInbox` · `MobileCalendar`
 - `MobileProfile` (+ settings sub-pages via `onOpen`)
+- `MobileStockCard` (per-SKU on-hand + per-warehouse split + movement ledger with running balance; opened from an Inventory row; reuses inventory-queries hooks) · `MobileStockTransferNew` (From≠To + date + notes + SKU-picker lines with live avail-at-source guard; reuses `useCreateStockTransfer`)
 - `MobileList` / `MobileDetail` — generic engine for every read-only module
 - `MobileShell` — role-based bottom tabs (Orders · Service · Menu · Calendar · Profile) + menu sheet
 - `ConfirmDialog` / `useConfirm` · `types.ts` · `mobile.css` (all `.hz-m`-scoped classes)
