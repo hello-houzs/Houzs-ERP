@@ -1859,6 +1859,80 @@ function BulkActionsBar({
 // typeahead against /search-so (the local SO mirror); picking a hit
 // saves it — the backend then re-matches customer info. Typing a value
 // the mirror doesn't know (post-disconnect SOs) still saves on blur.
+// ── "Pull from AutoCount" affordance ──────────────────────────
+// The service-case SO search reads ONLY the local `sales_orders` mirror,
+// which the incremental AutoCount pull (getSince) can miss — a valid SO can
+// simply be absent (sync-gap docs; see backend POST /assr/resync-so). When a
+// search yields no hit but the typed value looks like a full SO doc number,
+// this offers a one-click backfill: pull that doc on demand (getSingle →
+// upsert) and hand the resolved doc_no back so the caller selects it and
+// triggers the customer re-match. Only renders for the SO-doc shape so partial
+// / name queries (which getSingle can't resolve) never show it.
+const SO_DOC_RE = /^SO-\d{4,6}$/i;
+
+function PullFromAutoCount({
+  query,
+  onPulled,
+}: {
+  query: string;
+  onPulled: (docNo: string) => void | Promise<void>;
+}) {
+  const doc = query.trim().toUpperCase();
+  const [state, setState] = useState<"idle" | "pulling" | "error">("idle");
+  const [msg, setMsg] = useState<string | null>(null);
+  if (!SO_DOC_RE.test(doc)) return null;
+
+  async function pull() {
+    setState("pulling");
+    setMsg(null);
+    try {
+      const res = await api.post<{ ok: boolean; region: string; mirrored: { doc_no: string } | null }>(
+        `/api/assr/resync-so/${encodeURIComponent(doc)}`
+      );
+      await onPulled(res.mirrored?.doc_no || doc);
+      setState("idle");
+    } catch (e) {
+      const status = (e as { status?: number } | null)?.status;
+      setMsg(
+        status === 404
+          ? `${doc} isn't in AutoCount.`
+          : status === 422
+            ? `${doc} isn't a West/East-Malaysia/SG sales order.`
+            : status === 503
+              ? "AutoCount sync is currently off — try again later."
+              : "Couldn't reach AutoCount — try again."
+      );
+      setState("error");
+    }
+  }
+
+  return (
+    <div className="mt-1.5 flex flex-col gap-1">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[10.5px] text-ink-muted">Not in the SO list yet.</span>
+        <button
+          type="button"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={pull}
+          disabled={state === "pulling"}
+          className={cn(
+            "inline-flex items-center gap-1 rounded border border-border bg-surface px-2 py-1",
+            "text-[10.5px] font-medium text-ink transition-colors hover:bg-accent-soft/20 disabled:opacity-60"
+          )}
+        >
+          {state === "pulling" ? (
+            <RefreshCw size={11} className="animate-spin" />
+          ) : (
+            <Download size={11} />
+          )}
+          {state === "pulling" ? "Pulling…" : `Pull ${doc} from AutoCount`}
+        </button>
+      </div>
+      {msg && <span className="text-[10.5px] text-err">{msg}</span>}
+    </div>
+  );
+}
+
 function SoNoSearchEdit({
   value,
   onSave,
@@ -1969,6 +2043,18 @@ function SoNoSearchEdit({
           ? "Searching…"
           : "Pick a result to re-match customer info from the SO."}
       </div>
+      {!searching &&
+        draft.trim().length >= 2 &&
+        draft.trim() !== current &&
+        suggestions.length === 0 && (
+          <PullFromAutoCount
+            query={draft}
+            onPulled={(d) => {
+              setDraft(d);
+              return commit(d);
+            }}
+          />
+        )}
       {rect &&
         createPortal(
           <div
@@ -2415,6 +2501,38 @@ function CreatePanel({
             ) : null}
           </div>
         )}
+        {!searchingSO &&
+          !customerInfo &&
+          pickedDocNo !== docNo.trim() &&
+          soSuggestions.length === 0 &&
+          docNo.trim().length >= 2 && (
+            <PullFromAutoCount
+              query={docNo}
+              onPulled={async (d) => {
+                // Now mirrored — re-run the same search so we can select it and
+                // seed customer info exactly as picking a suggestion would.
+                try {
+                  const r = await api.get<{
+                    results: {
+                      doc_no: string;
+                      ref: string | null;
+                      debtor_name: string | null;
+                      phone: string | null;
+                      doc_date: string | null;
+                      sales_agent: string | null;
+                    }[];
+                  }>(`/api/assr/search-so?q=${encodeURIComponent(d)}`);
+                  const hit =
+                    r.results.find((x) => x.doc_no.toUpperCase() === d.toUpperCase()) ??
+                    r.results[0];
+                  if (hit) pickSuggestion(hit);
+                  else setDocNo(d);
+                } catch {
+                  setDocNo(d);
+                }
+              }}
+            />
+          )}
       </PanelSection>
 
       {lookupItems !== null && (
