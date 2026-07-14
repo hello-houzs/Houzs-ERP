@@ -676,6 +676,36 @@ mfgSalesOrders.get('/', async (c) => {
   const rows = (data ?? []) as Array<{ doc_no?: string } & Record<string, unknown>>;
   const docNos = rows.map((r) => r.doc_no).filter((x): x is string => !!x);
   if (docNos.length > 0) {
+    /* PERF: every per-doc_no enrichment read below only needs `docNos`, so they
+       are independent of one another AND of the item/catalog chain. Launch them
+       all up-front so they run as ONE concurrent wave instead of ~6 serial
+       round-trips. supabase-js builders are lazy (the request fires on await/
+       then), so each is wrapped in an immediately-invoked async thunk to kick it
+       off now; each is awaited at its original use-site below, so results and
+       error propagation are unchanged. This was the SO list's dominant cost
+       (~390ms desktop / ~650ms mobile, almost all serial DB latency). */
+    const payRowsProm = (async () =>
+      (await sb
+        .from('mfg_sales_order_payments')
+        .select('so_doc_no, method, online_type')
+        .in('so_doc_no', docNos)).data ?? [])();
+    const downstreamProm = Promise.all([
+      sb.from('delivery_orders').select('so_doc_no').in('so_doc_no', docNos).neq('status', 'CANCELLED'),
+      sb.from('sales_invoices').select('so_doc_no').in('so_doc_no', docNos).neq('status', 'CANCELLED'),
+    ]);
+    const deliverableProm = soDeliverableRemaining(sb, docNos);
+    const lifecycleProm = Promise.all([
+      computeSoLifecycle(sb, docNos),
+      soCurrentDocNo(sb, docNos),
+    ]);
+    const whRowsProm = (async () =>
+      (await sb.from('warehouses').select('id, code, name')).data ?? [])();
+    const baseRowsProm = (async () =>
+      (await sb
+        .from('mfg_sales_orders')
+        .select('doc_no, delivery_state, amended_delivery_date')
+        .in('doc_no', docNos)).data ?? [])();
+
     /* Order deterministically so the FIRST line per doc_no is the earliest
        one created (matches the detail endpoint's `.order('created_at')`). We
        add `branding`, `item_code` and `created_at` to the select: branding is
@@ -806,10 +836,7 @@ mfgSalesOrders.get('/', async (c) => {
        One cheap batched read over the same doc_no set already in play. */
     const paymentMethods = new Map<string, Set<string>>();
     {
-      const { data: payRows } = await sb
-        .from('mfg_sales_order_payments')
-        .select('so_doc_no, method, online_type')
-        .in('so_doc_no', docNos);
+      const payRows = await payRowsProm;
       for (const p of (payRows ?? []) as Array<{ so_doc_no: string; method: string | null; online_type: string | null }>) {
         const m = (p.method ?? '').trim().toLowerCase();
         let label: string;
@@ -829,16 +856,7 @@ mfgSalesOrders.get('/', async (c) => {
        on the row. The list grid uses this to hide Edit / Cancel from SOs that
        are downstream-locked (mirrors computeGrnFlags in routes/grns.ts). */
     const downstreamDocNos = new Set<string>();
-    const [doRowsRes, siRowsRes] = await Promise.all([
-      sb.from('delivery_orders')
-        .select('so_doc_no')
-        .in('so_doc_no', docNos)
-        .neq('status', 'CANCELLED'),
-      sb.from('sales_invoices')
-        .select('so_doc_no')
-        .in('so_doc_no', docNos)
-        .neq('status', 'CANCELLED'),
-    ]);
+    const [doRowsRes, siRowsRes] = await downstreamProm;
     for (const d of ((doRowsRes.data ?? []) as Array<{ so_doc_no: string | null }>)) {
       if (d.so_doc_no) downstreamDocNos.add(d.so_doc_no);
     }
@@ -877,7 +895,7 @@ mfgSalesOrders.get('/', async (c) => {
     const deliveredTotal = new Map<string, number>();
     const remainingTotal = new Map<string, number>();
     {
-      const deliverableMap = await soDeliverableRemaining(sb, docNos);
+      const deliverableMap = await deliverableProm;
       for (const line of deliverableMap.values()) {
         if (line.remaining > 0) hasUndelivered.add(line.docNo);
         deliveredTotal.set(line.docNo, (deliveredTotal.get(line.docNo) ?? 0) + line.delivered);
@@ -887,17 +905,14 @@ mfgSalesOrders.get('/', async (c) => {
 
     /* Per-SO status badge driver — "latest event wins" across DO / SI / DR
        (Wei Siang 2026-05-31). 'none' falls back to the stored status. */
-    const [lifecycleByDoc, currentByDoc] = await Promise.all([
-      computeSoLifecycle(sb, docNos),
-      soCurrentDocNo(sb, docNos),
-    ]);
+    const [lifecycleByDoc, currentByDoc] = await lifecycleProm;
 
     /* Warehouse label map (id → name) for the mobile Orders-list card's
        warehouse_name. Mirrors the Delivery Planning board's read-only master
        lookup (delivery-planning.ts step 1). Small master, unpaginated like there. */
     const whName = new Map<string, string>();
     {
-      const { data: whRows } = await sb.from('warehouses').select('id, code, name');
+      const whRows = await whRowsProm;
       for (const w of (whRows ?? []) as Array<{ id: string; code: string | null; name: string | null }>) {
         const label = (w.name ?? w.code ?? '').trim();
         if (label) whName.set(w.id, label);
@@ -913,10 +928,7 @@ mfgSalesOrders.get('/', async (c) => {
     const overrideByDoc = new Map<string, string | null>();
     const amendedDDByDoc = new Map<string, string | null>();
     {
-      const { data: baseRows } = await sb
-        .from('mfg_sales_orders')
-        .select('doc_no, delivery_state, amended_delivery_date')
-        .in('doc_no', docNos);
+      const baseRows = await baseRowsProm;
       for (const b of (baseRows ?? []) as Array<{ doc_no: string | null; delivery_state?: string | null; deliveryState?: string | null; amended_delivery_date?: string | null; amendedDeliveryDate?: string | null }>) {
         if (!b.doc_no) continue;
         overrideByDoc.set(b.doc_no, b.deliveryState ?? b.delivery_state ?? null);
