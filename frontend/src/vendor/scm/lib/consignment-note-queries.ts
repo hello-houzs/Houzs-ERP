@@ -41,6 +41,9 @@ export const useConsignmentNotes = (status?: string) => useQuery({
    select). `sort` is 'col:dir' over
    { do_date, do_number, debtor_name, status, local_total_centi } (default
    do_date:desc). placeholderData keepPrevious so paging doesn't flash empty. */
+/* Full-set money KPIs returned by the paginated CN list (mirrors the SO list
+   `aggregates` contract) — summed over the SAME filters as the page. */
+export type ConsignmentNoteAggregates = { revenueCenti: number; costCenti: number; marginCenti: number };
 export const useConsignmentNotesPaged = (params: {
   page: number;
   pageSize: number;
@@ -58,8 +61,8 @@ export const useConsignmentNotesPaged = (params: {
   return useQuery({
     queryKey: ['consignment-note', 'list-paged', page, pageSize, status ?? '', q ?? '', sort ?? ''],
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    queryFn: () => authedFetch<{ deliveryOrders: any[]; total: number; page: number; pageSize: number }>(`/consignment-notes?${usp.toString()}`),
-    placeholderData: (prev: unknown) => prev as { deliveryOrders: unknown[]; total: number; page: number; pageSize: number } | undefined,
+    queryFn: () => authedFetch<{ deliveryOrders: any[]; total: number; page: number; pageSize: number; aggregates?: ConsignmentNoteAggregates }>(`/consignment-notes?${usp.toString()}`),
+    placeholderData: (prev: unknown) => prev as { deliveryOrders: unknown[]; total: number; page: number; pageSize: number; aggregates?: ConsignmentNoteAggregates } | undefined,
     staleTime: 30_000,
     retry: 1,
     retryDelay: 800,

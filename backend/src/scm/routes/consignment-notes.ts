@@ -348,6 +348,11 @@ consignmentNotes.get('/', async (c) => {
 
   let data: unknown[] | null;
   let count: number | null = null;
+  /* Full-set money KPIs (Revenue / Cost / Margin). Pre-pagination the FE summed
+     these columns over the whole filtered array; paging broke that. Recomputed
+     server-side here over the identical filters. Only present on the paginated
+     path. */
+  let aggregates: { revenueCenti: number; costCenti: number; marginCenti: number } | undefined;
   if (!paginate) {
     /* --- LEGACY PATH (unchanged) --- */
     let q = sb.from('consignment_delivery_orders').select(HEADER).order('do_date', { ascending: false }).limit(500);
@@ -377,6 +382,26 @@ consignmentNotes.get('/', async (c) => {
     if (res.error) return c.json({ error: 'load_failed', reason: res.error.message }, 500);
     data = res.data ?? [];
     count = res.count ?? (res.data?.length ?? 0);
+
+    /* Full-set money KPIs — sum local_total_centi (Revenue) / total_cost_centi
+       (Cost) / total_margin_centi (Margin) over the SAME status + search filters
+       as the page query, WITHOUT .range(). Mirrors the pre-pagination client KPI.
+       paginateAll pages past the 1000-row cap. All three columns are in HEADER. */
+    const moneyRes = await paginateAll<{ local_total_centi: number | null; total_cost_centi: number | null; total_margin_centi: number | null }>((mfrom, mto) => {
+      let mq = sb.from('consignment_delivery_orders').select('local_total_centi, total_cost_centi, total_margin_centi');
+      if (status) mq = mq.eq('status', status);
+      if (qText) { const s = escapeForOr(qText); if (s) mq = mq.or(`do_number.ilike.%${s}%,debtor_name.ilike.%${s}%`); }
+      mq = scopeToCompany(mq, c);
+      return mq.range(mfrom, mto);
+    });
+    if (moneyRes.error) return c.json({ error: 'load_failed', reason: moneyRes.error.message }, 500);
+    let revenueCenti = 0, costCenti = 0, marginCenti = 0;
+    for (const m of (moneyRes.data ?? [])) {
+      revenueCenti += m.local_total_centi ?? 0;
+      costCenti += m.total_cost_centi ?? 0;
+      marginCenti += m.total_margin_centi ?? 0;
+    }
+    aggregates = { revenueCenti, costCenti, marginCenti };
   }
 
   /* Downstream-lock — stamp has_children when a non-cancelled Consignment Return
@@ -395,7 +420,7 @@ consignmentNotes.get('/', async (c) => {
     }
   }
   const consignmentNotesOut = rows.map((r) => ({ ...r, has_children: childIds.has(r.id) }));
-  if (paginate) return c.json({ deliveryOrders: consignmentNotesOut, total: count ?? consignmentNotesOut.length, page, pageSize });
+  if (paginate) return c.json({ deliveryOrders: consignmentNotesOut, total: count ?? consignmentNotesOut.length, page, pageSize, aggregates });
   return c.json({ deliveryOrders: consignmentNotesOut });
 });
 

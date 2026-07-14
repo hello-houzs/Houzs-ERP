@@ -25,11 +25,11 @@
 // Action buttons (Issue DO / Issue SI / Cancel / Delete) appear in the
 // per-row context menu gated by current status.
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { JSX } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Plus, X } from 'lucide-react';
+import { Plus, X, Search } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
 import { ListingPickerDialog, type ListingChoice } from '../../vendor/scm/components/ListingPickerDialog';
@@ -38,9 +38,10 @@ import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { formatPhone } from '@2990s/shared/phone';
 import { buildVariantSummary, fmtDateOrDash, fmtQty } from '@2990s/shared';
 import {
-  useConsignmentOrders, useUpdateConsignmentOrderStatus,
+  useConsignmentOrdersPaged, useUpdateConsignmentOrderStatus,
   useConsignmentOrderDetail,
 } from '../../vendor/scm/lib/consignment-order-queries';
+import { useDebouncedValue } from '../../vendor/scm/lib/hooks';
 import { useStaff } from '../../vendor/scm/lib/admin-queries';
 import { generateSalesOrderPdf } from '../../vendor/scm/lib/sales-order-pdf';
 import { authedFetch } from '../../vendor/scm/lib/authed-fetch';
@@ -669,25 +670,42 @@ export const ConsignmentOrders = () => {
   const askConfirm = useConfirm();
   const notify = useNotify();
   const [searchParams, setSearchParams] = useSearchParams();
-  /* Task #120 — Outstanding filter overlay. `?outstanding=1` narrows the
-     list to rows with live balance > 0; clear-chip restores. Same param
-     name used on every SO-family L1 and on the L2 listings. */
+  /* Task #120 — Outstanding filter overlay. `?outstanding=1` narrows the list
+     to rows with live balance > 0; now applied SERVER-SIDE (so it stays correct
+     across pages, and the total + aggregate agree). Clear-chip restores. */
   const outstandingOnly = searchParams.get('outstanding') === '1';
-  const { data, isLoading, error } = useConsignmentOrders(undefined);
-  const allRows = useMemo<SoRow[]>(() => (data?.salesOrders ?? []) as SoRow[], [data]);
 
-  /* The outstanding-only toggle (?outstanding=1) narrows the rows; the
-     DataGrid's own per-column funnel filters do the rest on top. */
-  const baseRows = useMemo<SoRow[]>(
-    () => (outstandingOnly ? allRows.filter((r) => liveBalance(r) > 0) : allRows),
-    [allRows, outstandingOnly],
-  );
-  // DataGrid filters internally now; capture its on-screen rows so the KPI
-  // strip reflects the active funnel filters (was the ColumnFilterBar output).
-  const [visibleRows, setVisibleRows] = useState<SoRow[]>(baseRows);
+  const PAGE_SIZE = 50;
+  const [page, setPage] = useState(0);
+  const [search, setSearch] = useState('');
+  // Debounce the search box so each keystroke doesn't fire a server round-trip.
+  const debouncedSearch = useDebouncedValue(search, 300);
+
+  /* Server-side pagination + search + outstanding overlay (mirrors Suppliers.tsx).
+     Reset to page 0 whenever a server-query input changes so we never strand the
+     operator on an out-of-range page. */
+  useEffect(() => { setPage(0); }, [outstandingOnly, debouncedSearch]);
+
+  const { data, isLoading, error } = useConsignmentOrdersPaged({
+    page,
+    pageSize: PAGE_SIZE,
+    q: debouncedSearch.trim() || undefined,
+    outstanding: outstandingOnly || undefined,
+  });
+
+  /* Server page rows + grand total. The outstanding overlay + free-text search
+     are resolved server-side; the DataGrid's own per-column funnel filters +
+     grouping now operate on the LOADED PAGE only (documented reduction). The KPI
+     tiles below stay FULL-SET via `aggregates`, so page-scoped funnels never
+     distort the headline money. */
+  const baseRows = useMemo<SoRow[]>(() => (data?.salesOrders ?? []) as SoRow[], [data]);
+  const total = data?.total ?? 0;
   // Row-click multi-select (mirrors the SO / DO / GRN lists) — ticks the row;
   // the ▸ chevron still drills down via its own stopPropagation handler.
   const [sel, setSel] = useState<Set<string>>(new Set());
+  /* Clear the selection whenever the visible row set shifts (page / overlay /
+     search) — a lingering selection would act on rows no longer on screen. */
+  useEffect(() => { setSel(new Set()); }, [page, outstandingOnly, debouncedSearch]);
 
   const clearOutstanding = () => {
     const next = new URLSearchParams(searchParams);
@@ -695,18 +713,22 @@ export const ConsignmentOrders = () => {
     setSearchParams(next, { replace: true });
   };
 
-  /* 4 KPI tiles — scoped to the currently visible rows so narrowing the
-     filter re-scopes the headline numbers (matches Houzs interactive feel). */
+  /* 4 KPI tiles — FULL-SET via the server `aggregates` (Revenue / Outstanding /
+     Paid summed over the same search + outstanding filters as the page).
+     Defensive fallback: if aggregates is absent (old backend / mid-deploy) sum
+     the loaded page — labelled the same, the money is just page-scoped then. */
   const kpis = useMemo(() => {
+    const agg = data?.aggregates;
+    if (agg) return { revenue: agg.revenueCenti, outstanding: agg.outstandingCenti, paid: agg.paidCenti };
     let revenue = 0, outstanding = 0, paid = 0;
-    for (const r of visibleRows) {
+    for (const r of baseRows) {
       revenue += r.local_total_centi ?? 0;
       paid    += r.paid_total_centi ?? r.paid_centi ?? 0;
       const bal = liveBalance(r);
       if (bal > 0) outstanding += bal;
     }
-    return { totalOrders: visibleRows.length, revenue, outstanding, paid };
-  }, [visibleRows]);
+    return { revenue, outstanding, paid };
+  }, [data?.aggregates, baseRows]);
 
   /* The Listing picker dialog (Listing / Outstanding-only / Detail Listing /
      Outstanding Detail Listing) is no longer surfaced in the chrome — the
@@ -914,10 +936,28 @@ export const ConsignmentOrders = () => {
         gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
         gap: 'var(--space-2)',
       }}>
-        {kpiTile('Total Orders', fmtQty(kpis.totalOrders))}
+        {kpiTile('Total Orders', fmtQty(total))}
         {kpiTile('Revenue (RM)', fmtRm(kpis.revenue))}
         {kpiTile('Outstanding (RM)', fmtRm(kpis.outstanding), kpis.outstanding > 0 ? 'bad' : undefined)}
         {kpiTile('Paid (RM)', fmtRm(kpis.paid), kpis.paid > 0 ? 'good' : undefined)}
+      </div>
+
+      {/* Page-level search — drives the SERVER query (the DataGrid's own search
+          is hidden via `hideSearch` so it can't silently filter just the loaded
+          page). Searches CO no + customer name server-side. */}
+      <div style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', width: 'fit-content' }}>
+        <Search size={14} strokeWidth={1.75} style={{ position: 'absolute', left: 10, color: 'var(--fg-muted)' }} />
+        <input
+          type="search"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search CO no / customer…"
+          style={{
+            height: 30, padding: '0 12px 0 30px', minWidth: 260,
+            borderRadius: 999, border: '1px solid var(--line)',
+            background: 'var(--c-paper)', color: 'var(--c-ink)', fontSize: 12,
+          }}
+        />
       </div>
 
       <ListingPickerDialog
@@ -930,7 +970,6 @@ export const ConsignmentOrders = () => {
 
       <DataGrid<SoRow>
         rows={baseRows}
-        onFilteredRowsChange={setVisibleRows}
         columns={COLUMNS}
         storageKey={STORAGE_KEY}
         exportName="Consignment Orders"
@@ -944,7 +983,9 @@ export const ConsignmentOrders = () => {
             return n;
           }),
         }}
-        searchPlaceholder="Search SOs…"
+        /* Search is driven server-side from the page-level input above; hide the
+           grid's own box so it can't filter just the loaded page. */
+        hideSearch
         /* Houzs chrome — kill the "drag column header here to group by
            that column" banner; the page-level filter row replaces it. */
         groupBanner={false}
@@ -1028,6 +1069,43 @@ export const ConsignmentOrders = () => {
           return items;
         }}
       />
+
+      <PaginationFooter
+        page={page}
+        pageSize={PAGE_SIZE}
+        total={total}
+        noun="consignment orders"
+        onPrev={() => setPage((p) => Math.max(0, p - 1))}
+        onNext={() => setPage((p) => p + 1)}
+      />
+    </div>
+  );
+};
+
+/* Pagination footer — "Showing X–Y of N" + Prev/Next, mirroring Suppliers.tsx /
+   the other scm-v2 list pages. Server-side paging, so N is the grand total. */
+const PaginationFooter = ({
+  page, pageSize, total, noun, onPrev, onNext,
+}: {
+  page: number; pageSize: number; total: number; noun: string;
+  onPrev: () => void; onNext: () => void;
+}) => {
+  const from = total === 0 ? 0 : page * pageSize + 1;
+  const to = Math.min((page + 1) * pageSize, total);
+  const atStart = page === 0;
+  const atEnd = (page + 1) * pageSize >= total;
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+      gap: 'var(--space-3)', marginTop: 'var(--space-3)',
+    }}>
+      <span style={{ color: 'var(--fg-muted)', fontSize: 'var(--fs-12)' }}>
+        {total === 0 ? `No ${noun}` : `Showing ${from}${to > from ? `–${to}` : ''} of ${total}`}
+      </span>
+      <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+        <Button variant="secondary" size="md" onClick={onPrev} disabled={atStart}>Prev</Button>
+        <Button variant="secondary" size="md" onClick={onNext} disabled={atEnd}>Next</Button>
+      </div>
     </div>
   );
 };

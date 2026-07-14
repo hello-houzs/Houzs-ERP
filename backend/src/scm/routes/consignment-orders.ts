@@ -50,7 +50,7 @@ import {
 } from '../lib/allowed-options-check';
 import { findIncompleteVariantLines } from '../lib/so-variant-check';
 import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item-codes';
-import { chunkIn } from '../lib/paginate-all';
+import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
@@ -241,6 +241,11 @@ consignmentOrders.get('/', async (c) => {
 
   let data: unknown[] | null;
   let count: number | null = null;
+  /* Full-set money KPIs (Revenue / Outstanding / Paid). Pre-pagination the FE
+     summed these columns over the whole filtered array; paging broke that (the
+     client could only sum the current page). Recomputed server-side here over
+     the identical filters. Only present on the paginated path. */
+  let aggregates: { revenueCenti: number; outstandingCenti: number; paidCenti: number } | undefined;
   if (!paginate) {
     /* --- LEGACY PATH (unchanged) --- */
     let q = sb.from('consignment_sales_orders').select(HEADER).order('so_date', { ascending: false }).limit(500);
@@ -269,12 +274,44 @@ consignmentOrders.get('/', async (c) => {
        that already live in the HEADER select: doc_no + debtor_name. */
     const qText = c.req.query('q');
     if (qText) { const s = escapeForOr(qText); if (s) q = q.or(`doc_no.ilike.%${s}%,debtor_name.ilike.%${s}%`); }
+    /* Outstanding-only overlay (?outstanding=1) — the FE's "Outstanding only"
+       view (live balance > 0). Applied SERVER-SIDE here so it stays correct
+       across pages + so the total/aggregate agree. balance_centi is in HEADER
+       (schema-drift safe). Legacy path is untouched (it filtered client-side). */
+    const outstanding = c.req.query('outstanding') === '1';
+    if (outstanding) q = q.gt('balance_centi', 0);
     q = scopeToCompany(q, c); // multi-company: isolate to the active company
     q = q.range(page * pageSize, page * pageSize + pageSize - 1);
     const res = await q;
     if (res.error) return c.json({ error: 'load_failed', reason: res.error.message }, 500);
     data = res.data ?? [];
     count = res.count ?? (res.data?.length ?? 0);
+
+    /* Full-set money KPIs — sum local_total_centi (Revenue) / balance_centi
+       (Outstanding, only when > 0) / paid_centi (Paid) over the SAME scope +
+       status + debtor + search + outstanding filters as the page query, WITHOUT
+       .range(). Mirrors the pre-pagination client KPI (liveBalance = balance_centi
+       fallback local_total − paid). paginateAll pages past the 1000-row cap.
+       All three columns are already in HEADER (schema-drift safe). */
+    const moneyRes = await paginateAll<{ local_total_centi: number | null; balance_centi: number | null; paid_centi: number | null }>((mfrom, mto) => {
+      let mq = sb.from('consignment_sales_orders').select('local_total_centi, balance_centi, paid_centi');
+      if (scopeIds) mq = mq.in('salesperson_id', scopeIds);
+      if (status) mq = mq.eq('status', status);
+      if (debtor) mq = mq.ilike('debtor_name', `%${debtor}%`);
+      if (qText) { const s = escapeForOr(qText); if (s) mq = mq.or(`doc_no.ilike.%${s}%,debtor_name.ilike.%${s}%`); }
+      if (outstanding) mq = mq.gt('balance_centi', 0);
+      mq = scopeToCompany(mq, c);
+      return mq.range(mfrom, mto);
+    });
+    if (moneyRes.error) return c.json({ error: 'load_failed', reason: moneyRes.error.message }, 500);
+    let revenueCenti = 0, outstandingCenti = 0, paidCenti = 0;
+    for (const m of (moneyRes.data ?? [])) {
+      revenueCenti += m.local_total_centi ?? 0;
+      paidCenti += m.paid_centi ?? 0;
+      const bal = m.balance_centi ?? ((m.local_total_centi ?? 0) - (m.paid_centi ?? 0));
+      if (bal > 0) outstandingCenti += bal;
+    }
+    aggregates = { revenueCenti, outstandingCenti, paidCenti };
   }
 
   const rows = (data ?? []) as unknown as Array<{ doc_no?: string } & Record<string, unknown>>;
@@ -385,7 +422,7 @@ consignmentOrders.get('/', async (c) => {
     }
   }
 
-  if (paginate) return c.json({ salesOrders: rows, total: count ?? rows.length, page, pageSize });
+  if (paginate) return c.json({ salesOrders: rows, total: count ?? rows.length, page, pageSize, aggregates });
   return c.json({ salesOrders: rows });
 });
 

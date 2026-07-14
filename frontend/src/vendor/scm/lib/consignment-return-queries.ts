@@ -55,6 +55,9 @@ export const useConsignmentReturns = (status?: string) => useQuery({
    { return_date, return_number, debtor_name, status, local_total_centi }
    (default return_date:desc). placeholderData keepPrevious so paging doesn't
    flash empty. */
+/* Full-set money KPIs returned by the paginated CRN list (mirrors the SO list
+   `aggregates` contract) — summed over the SAME filters as the page. */
+export type ConsignmentReturnAggregates = { revenueCenti: number; costCenti: number; marginCenti: number };
 export const useConsignmentReturnsPaged = (params: {
   page: number;
   pageSize: number;
@@ -72,8 +75,8 @@ export const useConsignmentReturnsPaged = (params: {
   return useQuery({
     queryKey: ['consignment-return', 'list-paged', page, pageSize, status ?? '', q ?? '', sort ?? ''],
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    queryFn: () => authedFetch<{ deliveryReturns: any[]; total: number; page: number; pageSize: number }>(`/consignment-returns?${usp.toString()}`),
-    placeholderData: (prev: unknown) => prev as { deliveryReturns: unknown[]; total: number; page: number; pageSize: number } | undefined,
+    queryFn: () => authedFetch<{ deliveryReturns: any[]; total: number; page: number; pageSize: number; aggregates?: ConsignmentReturnAggregates }>(`/consignment-returns?${usp.toString()}`),
+    placeholderData: (prev: unknown) => prev as { deliveryReturns: unknown[]; total: number; page: number; pageSize: number; aggregates?: ConsignmentReturnAggregates } | undefined,
     staleTime: 30_000,
     retry: 1,
     retryDelay: 800,

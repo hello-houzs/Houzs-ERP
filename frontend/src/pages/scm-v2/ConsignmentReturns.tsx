@@ -11,10 +11,10 @@
 //
 // UNIQUE localStorage key ('pr-g.crn-list.layout.v1') — never reuse the DR/DO/SO keys.
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { JSX } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Plus } from 'lucide-react';
+import { Plus, Search } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
@@ -22,8 +22,9 @@ import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { formatPhone } from '@2990s/shared/phone';
 import { buildVariantSummary, fmtQty } from '@2990s/shared';
 import {
-  useConsignmentReturns, useUpdateConsignmentReturnStatus, useConsignmentReturnDetail,
+  useConsignmentReturnsPaged, useUpdateConsignmentReturnStatus, useConsignmentReturnDetail,
 } from '../../vendor/scm/lib/consignment-return-queries';
+import { useDebouncedValue } from '../../vendor/scm/lib/hooks';
 import { useStaff } from '../../vendor/scm/lib/admin-queries';
 import { BrandingPill, badgeFor } from '../../vendor/scm/lib/category-badges';
 import styles from './MfgSalesOrdersList.module.css';
@@ -288,8 +289,30 @@ export const ConsignmentReturns = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const statusChip = searchParams.get('status') ?? 'all';
 
-  const { data, isLoading, error } = useConsignmentReturns(undefined);
-  const allRows = useMemo<CrnRow[]>(() => (data?.deliveryReturns ?? []) as CrnRow[], [data]);
+  const PAGE_SIZE = 50;
+  const [page, setPage] = useState(0);
+  const [search, setSearch] = useState('');
+  // Debounce the search box so each keystroke doesn't fire a server round-trip.
+  const debouncedSearch = useDebouncedValue(search, 300);
+
+  /* Server-side pagination + search (mirrors Suppliers.tsx). Status chip +
+     free-text search drive the SERVER query; reset to page 0 whenever either
+     changes so we never strand the operator on an out-of-range page. */
+  useEffect(() => { setPage(0); }, [statusChip, debouncedSearch]);
+
+  const { data, isLoading, error } = useConsignmentReturnsPaged({
+    page,
+    pageSize: PAGE_SIZE,
+    status: statusChip === 'all' ? undefined : statusChip,
+    q: debouncedSearch.trim() || undefined,
+  });
+
+  /* Server page rows + grand total. Status + search are resolved server-side;
+     the DataGrid's own per-column funnel filters + grouping now operate on the
+     LOADED PAGE only (documented reduction). The KPI tiles below stay FULL-SET
+     via `aggregates`, so page-scoped funnels never distort the headline money. */
+  const rows = useMemo<CrnRow[]>(() => (data?.deliveryReturns ?? []) as CrnRow[], [data]);
+  const total = data?.total ?? 0;
 
   const setStatusChip = (s: string) => {
     const next = new URLSearchParams(searchParams);
@@ -297,28 +320,27 @@ export const ConsignmentReturns = () => {
     setSearchParams(next, { replace: true });
   };
 
-  /* The status-chip pre-filter (?status=…) narrows the rows; the DataGrid's
-     own per-column funnel filters do the rest on top. */
-  const baseRows = useMemo<CrnRow[]>(
-    () => (statusChip === 'all' ? allRows : allRows.filter((r) => r.status === statusChip)),
-    [allRows, statusChip],
-  );
-  // DataGrid filters internally now; capture its on-screen rows so the KPI
-  // strip reflects the active funnel filters (was the ColumnFilterBar output).
-  const [visibleRows, setVisibleRows] = useState<CrnRow[]>(baseRows);
   // Row-click multi-select (mirrors the DR / GRN lists) — ticks the row; the
   // ▸ chevron still drills down via its own stopPropagation handler.
   const [sel, setSel] = useState<Set<string>>(new Set());
+  /* Clear the selection whenever the visible row set shifts (page / status /
+     search) — a lingering selection would act on rows no longer on screen. */
+  useEffect(() => { setSel(new Set()); }, [page, statusChip, debouncedSearch]);
 
+  /* KPI tiles — FULL-SET via the server `aggregates` (summed over the same
+     status + search filters as the page). Defensive fallback: if aggregates is
+     absent (old backend / mid-deploy) sum the loaded page and flag it. */
   const kpis = useMemo(() => {
+    const agg = data?.aggregates;
+    if (agg) return { revenue: agg.revenueCenti, cost: agg.costCenti, margin: agg.marginCenti, fullSet: true };
     let revenue = 0, cost = 0, margin = 0;
-    for (const r of visibleRows) {
+    for (const r of rows) {
       revenue += r.local_total_centi ?? 0;
       cost += r.total_cost_centi ?? 0;
       margin += r.total_margin_centi ?? 0;
     }
-    return { totalReturns: visibleRows.length, revenue, cost, margin };
-  }, [visibleRows]);
+    return { revenue, cost, margin, fullSet: false };
+  }, [data?.aggregates, rows]);
 
   const staffQ = useStaff();
   const staffById = useMemo(() => {
@@ -380,31 +402,48 @@ export const ConsignmentReturns = () => {
       )}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 'var(--space-2)' }}>
-        {kpiTile('Total Returns', fmtQty(kpis.totalReturns))}
+        {kpiTile('Total Returns', fmtQty(total))}
         {kpiTile('Returned Value (RM)', fmtRm(kpis.revenue))}
         {kpiTile('Cost (RM)', fmtRm(kpis.cost))}
         {kpiTile('Margin (RM)', fmtRm(kpis.margin), kpis.margin > 0 ? 'good' : kpis.margin < 0 ? 'bad' : undefined)}
       </div>
 
-      {/* Status chips. */}
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-        {STATUS_CHIPS.map((s) => (
-          <button key={s} type="button" onClick={() => setStatusChip(s)}
+      {/* Status chips + page-level search. Both drive the SERVER query (the
+          DataGrid's own search is hidden via `hideSearch` so it can't silently
+          filter just the loaded page). */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {STATUS_CHIPS.map((s) => (
+            <button key={s} type="button" onClick={() => setStatusChip(s)}
+              style={{
+                height: 28, padding: '0 12px', borderRadius: 999, cursor: 'pointer',
+                fontSize: 11, fontWeight: 600,
+                border: '1px solid ' + (statusChip === s ? 'var(--c-burnt)' : '#DDE5E5'),
+                background: statusChip === s ? 'rgba(232, 107, 58, 0.10)' : '#FFFFFF',
+                color: statusChip === s ? 'var(--c-burnt)' : 'var(--fg-muted)',
+              }}>
+              {s === 'all' ? 'All' : STATUS_LABEL[s] ?? s}
+            </button>
+          ))}
+        </div>
+        <div style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}>
+          <Search size={14} strokeWidth={1.75} style={{ position: 'absolute', left: 10, color: 'var(--fg-muted)' }} />
+          <input
+            type="search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search return no / customer…"
             style={{
-              height: 28, padding: '0 12px', borderRadius: 999, cursor: 'pointer',
-              fontSize: 11, fontWeight: 600,
-              border: '1px solid ' + (statusChip === s ? 'var(--c-burnt)' : '#DDE5E5'),
-              background: statusChip === s ? 'rgba(232, 107, 58, 0.10)' : '#FFFFFF',
-              color: statusChip === s ? 'var(--c-burnt)' : 'var(--fg-muted)',
-            }}>
-            {s === 'all' ? 'All' : STATUS_LABEL[s] ?? s}
-          </button>
-        ))}
+              height: 30, padding: '0 12px 0 30px', minWidth: 220,
+              borderRadius: 999, border: '1px solid var(--line)',
+              background: 'var(--c-paper)', color: 'var(--c-ink)', fontSize: 12,
+            }}
+          />
+        </div>
       </div>
 
       <DataGrid<CrnRow>
-        rows={baseRows}
-        onFilteredRowsChange={setVisibleRows}
+        rows={rows}
         columns={COLUMNS}
         storageKey={STORAGE_KEY}
         exportName="Consignment Returns"
@@ -418,7 +457,7 @@ export const ConsignmentReturns = () => {
             return n;
           }),
         }}
-        searchPlaceholder="Search returns…"
+        hideSearch
         groupBanner={false}
         onRowDoubleClick={(r) => openDetail(r)}
         rowStyle={(r) => ['CANCELLED', 'REJECTED'].includes(r.status) ? { opacity: 0.55, filter: 'grayscale(0.6)' } : undefined}
@@ -453,6 +492,43 @@ export const ConsignmentReturns = () => {
           return items;
         }}
       />
+
+      <PaginationFooter
+        page={page}
+        pageSize={PAGE_SIZE}
+        total={total}
+        noun="returns"
+        onPrev={() => setPage((p) => Math.max(0, p - 1))}
+        onNext={() => setPage((p) => p + 1)}
+      />
+    </div>
+  );
+};
+
+/* Pagination footer — "Showing X–Y of N" + Prev/Next, mirroring Suppliers.tsx /
+   the other scm-v2 list pages. Server-side paging, so N is the grand total. */
+const PaginationFooter = ({
+  page, pageSize, total, noun, onPrev, onNext,
+}: {
+  page: number; pageSize: number; total: number; noun: string;
+  onPrev: () => void; onNext: () => void;
+}) => {
+  const from = total === 0 ? 0 : page * pageSize + 1;
+  const to = Math.min((page + 1) * pageSize, total);
+  const atStart = page === 0;
+  const atEnd = (page + 1) * pageSize >= total;
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+      gap: 'var(--space-3)', marginTop: 'var(--space-3)',
+    }}>
+      <span style={{ color: 'var(--fg-muted)', fontSize: 'var(--fs-12)' }}>
+        {total === 0 ? `No ${noun}` : `Showing ${from}${to > from ? `–${to}` : ''} of ${total}`}
+      </span>
+      <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+        <Button variant="secondary" size="md" onClick={onPrev} disabled={atStart}>Prev</Button>
+        <Button variant="secondary" size="md" onClick={onNext} disabled={atEnd}>Next</Button>
+      </div>
     </div>
   );
 };
