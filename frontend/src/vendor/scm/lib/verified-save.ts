@@ -34,6 +34,23 @@ const API_URL =
     (import.meta.env.PROD ? '' : 'https://autocount-sync-api.houzs-erp.workers.dev')) +
   '/api/scm';
 
+// Multi-company (Phase 0c): stamp the active company on every SCM request so
+// the backend's companyContext resolves it. The id is written by the top-bar
+// switcher (src/lib/activeCompany.ts) under 'houzs.activeCompanyId'; read the
+// localStorage key DIRECTLY here to keep this vendored file self-contained
+// (same style as the auth:token read below). Absent → NO header → backend falls
+// back to its hostname default, so single-company Houzs is unchanged. Read it
+// FRESH per request so switching company mid-session is picked up immediately.
+function companyHeader(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem('houzs.activeCompanyId');
+    const n = raw ? Number(raw) : NaN;
+    return Number.isFinite(n) && n > 0 ? { 'X-Company-Id': String(n) } : {};
+  } catch {
+    return {};
+  }
+}
+
 export type SaveDiff = { field: string; expected: unknown; actual: unknown };
 
 export type SaveResult<T> =
@@ -93,6 +110,7 @@ const authedFetcher: Fetcher = async (path, init) => {
     headers: {
       ...(init.headers ?? {}),
       authorization: `Bearer ${token}`,
+      ...companyHeader(),
       ...(init.body ? { 'content-type': 'application/json' } : {}),
     },
   });
@@ -105,7 +123,7 @@ export async function readbackGet<T>(path: string): Promise<T | null> {
   const sep = path.includes('?') ? '&' : '?';
   const res = await fetch(`${API_URL}${path}${sep}_t=${Date.now()}`, {
     cache: 'no-store',
-    headers: { authorization: `Bearer ${token}` },
+    headers: { authorization: `Bearer ${token}`, ...companyHeader() },
   });
   if (!res.ok) return null;
   return (await res.json()) as T;

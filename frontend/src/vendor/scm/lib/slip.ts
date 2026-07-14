@@ -36,6 +36,23 @@ const token = (): string => {
   return t;
 };
 
+// Multi-company (Phase 0c): stamp the active company on every slip request so
+// the backend's companyContext resolves it. The id is written by the top-bar
+// switcher (src/lib/activeCompany.ts) under 'houzs.activeCompanyId'; read the
+// localStorage key DIRECTLY here to keep this vendored file self-contained
+// (same style as the auth:token read above). Absent → NO header → backend falls
+// back to its hostname default, so single-company Houzs is unchanged. Read it
+// FRESH per request so a mid-session company switch is picked up immediately.
+const companyHeader = (): Record<string, string> => {
+  try {
+    const raw = localStorage.getItem('houzs.activeCompanyId');
+    const n = raw ? Number(raw) : NaN;
+    return Number.isFinite(n) && n > 0 ? { 'X-Company-Id': String(n) } : {};
+  } catch {
+    return {};
+  }
+};
+
 /* These slip fetches go straight to fetch(), bypassing authedFetch's deadline,
    so a stalled cold-start / slow upload hangs the upload UI forever. Cap each
    one — generous for the image OCR + binary uploads, tighter for the slip
@@ -81,7 +98,7 @@ export const MAX_SLIP_SIZE_BYTES = 5 * 1024 * 1024;
    fetchScanSlipImageBlobUrl's callers that view-then-navigate. */
 async function fetchSlipAsObjectUrl(path: string): Promise<SlipUrlResponse> {
   const res = await slipFetch(`${API_URL}${path}`, {
-    headers: { authorization: `Bearer ${token()}` },
+    headers: { authorization: `Bearer ${token()}`, ...companyHeader() },
   }, SLIP_TIMEOUT_MS);
   if (!res.ok) {
     const text = await res.text().catch(() => '<no body>');
@@ -113,7 +130,7 @@ export async function fetchPaymentSlipUrl(
  *  for URL.revokeObjectURL() when the image is unmounted. */
 export async function fetchScanSlipImageBlobUrl(key: string): Promise<string> {
   const res = await slipFetch(`${API_URL}/scan-so/slip-image?key=${encodeURIComponent(key)}`, {
-    headers: { authorization: `Bearer ${token()}` },
+    headers: { authorization: `Bearer ${token()}`, ...companyHeader() },
   }, SLIP_TIMEOUT_MS);
   if (!res.ok) {
     const text = await res.text().catch(() => '<no body>');
@@ -149,7 +166,7 @@ export async function scanPaymentReceipt(file: File): Promise<ScanPaymentReceipt
   form.append('file', file);
   const res = await slipFetch(`${API_URL}/scan-payment/extract`, {
     method: 'POST',
-    headers: { authorization: `Bearer ${token()}` },
+    headers: { authorization: `Bearer ${token()}`, ...companyHeader() },
     body: form,
   }, SLIP_UPLOAD_TIMEOUT_MS);
   if (!res.ok) {
@@ -182,6 +199,7 @@ async function initSlipUpload(file: File): Promise<SlipInitResponse> {
     headers: {
       authorization: `Bearer ${token()}`,
       'content-type': 'application/json',
+      ...companyHeader(),
     },
     body: JSON.stringify(body),
   }, SLIP_TIMEOUT_MS);
@@ -201,6 +219,7 @@ async function uploadSlipBytes(sessionId: string, file: File): Promise<void> {
     headers: {
       authorization: `Bearer ${token()}`,
       'content-type': file.type,
+      ...companyHeader(),
     },
     body: file,
   }, SLIP_UPLOAD_TIMEOUT_MS);
@@ -213,7 +232,7 @@ async function uploadSlipBytes(sessionId: string, file: File): Promise<void> {
 async function confirmUpload(sessionId: string): Promise<SlipConfirmResponse> {
   const res = await slipFetch(`${API_URL}/slips/${sessionId}/confirm`, {
     method: 'POST',
-    headers: { authorization: `Bearer ${token()}` },
+    headers: { authorization: `Bearer ${token()}`, ...companyHeader() },
   }, SLIP_TIMEOUT_MS);
   if (!res.ok) {
     const text = await res.text().catch(() => '<no body>');

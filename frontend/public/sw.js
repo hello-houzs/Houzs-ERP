@@ -295,7 +295,10 @@
 //   (Overview / Stage / Info / Timeline), Status Cards list, 8-stage
 //   workflow (Pending Inspection retired into Under Verification).
 //   (v168 was taken by the multicompany/cutover release on main.)
-const VERSION = "houzs-erp-v176";
+// v177 (2026-07-14) — batch cache-bust: unified special-order entry (#439),
+//   mobile company-aware brand (#456), company-switch hard-reset cleanup (#463),
+//   and wrong-company-write X-Company-Id headers on slip + verified-save.
+const VERSION = "houzs-erp-v177";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 
