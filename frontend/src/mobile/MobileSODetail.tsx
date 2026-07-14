@@ -27,6 +27,7 @@ import {
   deriveBalance,
 } from "../vendor/scm/lib/so-detail-gates";
 import { useSoDropdownOptions, optionsOrFallback, FALLBACK_OPTIONS } from "../vendor/scm/lib/so-dropdown-options-queries";
+import { paymentMethodCodeForValue } from "../vendor/scm/lib/payment-methods";
 import {
   useAmendmentDetail,
   useSupplierConfirm,
@@ -934,11 +935,9 @@ function PaymentSlipPreview({ docNo, paymentId }: { docNo: string; paymentId: st
 
 const PAY_METHODS = ["Cash", "Merchant", "Online", "Installment"] as const;
 type PayMethodLabel = (typeof PAY_METHODS)[number];
-/* Payment-row method label → backend enum (transfer surfaces as "Online") —
-   the SAME map MobileNewSO uses (PAY_METHOD_CODE). */
-const PAY_METHOD_CODE: Record<string, "cash" | "transfer" | "merchant" | "installment"> = {
-  Cash: "cash", Online: "transfer", Merchant: "merchant", Installment: "installment",
-};
+/* Payment-row method label → backend enum: SHARED map
+   (paymentMethodCodeForValue, payment-methods.ts) — same source MobileNewSO +
+   desktop use, so the method codes can't drift. "Online" → "transfer" code. */
 // Offline fallback + parsing seed only; the rendered dropdowns below read the
 // LIVE maintenance catalog via useSoDropdownOptions. Single-sourced from
 // FALLBACK_OPTIONS so it can't drift ("Maybank" -> "MBB", "One Shot" -> "One-off").
@@ -950,8 +949,9 @@ const planToMonths = (label: string): number | null => {
   const m = /^(\d+)\s*month/i.exec(String(label).trim());
   return m ? Number(m[1]) : null;
 };
-/* Reverse of PAY_METHOD_CODE (backend enum → sheet label) — rehydrates the
-   Method select when editing a persisted payment. */
+/* Reverse of the shared method map (backend enum → sheet label) — rehydrates
+   the Method select when editing a persisted payment. Kept local because it is
+   typed to the mobile PayMethodLabel union. */
 const CODE_TO_PAY_METHOD: Record<string, PayMethodLabel> = {
   cash: "Cash", transfer: "Online", merchant: "Merchant", installment: "Installment",
 };
@@ -1036,7 +1036,7 @@ function AddPaymentSheet({
     /* Same body MobileNewSO.recordSlipBackedPayments POSTs — do NOT reimplement
        pricing; the backend recomputes the balance from the amount. In EDIT mode
        the same fields PATCH the existing row (slip untouched). */
-    const code = PAY_METHOD_CODE[method] ?? "cash";
+    const code = paymentMethodCodeForValue(method) ?? "cash";
     const body: Record<string, unknown> = {
       paidAt: date,
       method: code,
