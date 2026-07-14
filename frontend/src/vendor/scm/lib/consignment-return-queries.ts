@@ -46,6 +46,40 @@ export const useConsignmentReturns = (status?: string) => useQuery({
   retry: 1,
 });
 
+/* ── List (opt-in server-side pagination) ────────────────────────────────
+   Sending `page` switches /consignment-returns into its paginated contract
+   ({ deliveryReturns, total, page, pageSize }); the legacy useConsignmentReturns
+   above (no page) still returns the historical unpaginated array. `q` searches
+   return_number + debtor_name (columns the CRN list already searches + in the
+   header select). `sort` is 'col:dir' over
+   { return_date, return_number, debtor_name, status, local_total_centi }
+   (default return_date:desc). placeholderData keepPrevious so paging doesn't
+   flash empty. */
+export const useConsignmentReturnsPaged = (params: {
+  page: number;
+  pageSize: number;
+  status?: string;
+  q?: string;
+  sort?: string;
+}) => {
+  const { page, pageSize, status, q, sort } = params;
+  const usp = new URLSearchParams();
+  usp.set('page', String(page));
+  usp.set('pageSize', String(pageSize));
+  if (status) usp.set('status', status);
+  if (q && q.trim()) usp.set('q', q.trim());
+  if (sort) usp.set('sort', sort);
+  return useQuery({
+    queryKey: ['consignment-return', 'list-paged', page, pageSize, status ?? '', q ?? '', sort ?? ''],
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    queryFn: () => authedFetch<{ deliveryReturns: any[]; total: number; page: number; pageSize: number }>(`/consignment-returns?${usp.toString()}`),
+    placeholderData: (prev: unknown) => prev as { deliveryReturns: unknown[]; total: number; page: number; pageSize: number } | undefined,
+    staleTime: 30_000,
+    retry: 1,
+    retryDelay: 800,
+  });
+};
+
 /* ── Returnable Consignment Note lines (From-Note multi-picker) ────────── */
 export type ReturnableNoteLine = {
   noteItemId: string;

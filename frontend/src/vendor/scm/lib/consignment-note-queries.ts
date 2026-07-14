@@ -33,6 +33,39 @@ export const useConsignmentNotes = (status?: string) => useQuery({
   retry: 1,
 });
 
+/* ── List (opt-in server-side pagination) ────────────────────────────────
+   Sending `page` switches /consignment-notes into its paginated contract
+   ({ deliveryOrders, total, page, pageSize }); the legacy useConsignmentNotes
+   above (no page) still returns the historical unpaginated array. `q` searches
+   do_number + debtor_name (columns the CN list already searches + in the header
+   select). `sort` is 'col:dir' over
+   { do_date, do_number, debtor_name, status, local_total_centi } (default
+   do_date:desc). placeholderData keepPrevious so paging doesn't flash empty. */
+export const useConsignmentNotesPaged = (params: {
+  page: number;
+  pageSize: number;
+  status?: string;
+  q?: string;
+  sort?: string;
+}) => {
+  const { page, pageSize, status, q, sort } = params;
+  const usp = new URLSearchParams();
+  usp.set('page', String(page));
+  usp.set('pageSize', String(pageSize));
+  if (status) usp.set('status', status);
+  if (q && q.trim()) usp.set('q', q.trim());
+  if (sort) usp.set('sort', sort);
+  return useQuery({
+    queryKey: ['consignment-note', 'list-paged', page, pageSize, status ?? '', q ?? '', sort ?? ''],
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    queryFn: () => authedFetch<{ deliveryOrders: any[]; total: number; page: number; pageSize: number }>(`/consignment-notes?${usp.toString()}`),
+    placeholderData: (prev: unknown) => prev as { deliveryOrders: unknown[]; total: number; page: number; pageSize: number } | undefined,
+    staleTime: 30_000,
+    retry: 1,
+    retryDelay: 800,
+  });
+};
+
 /* ── Detail ──────────────────────────────────────────────────────────── */
 export const useConsignmentNoteDetail = (id: string | null) => useQuery({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

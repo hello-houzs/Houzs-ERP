@@ -37,6 +37,39 @@ export const useConsignmentOrders = (status?: string) => useQuery({
   retry: 1,
 });
 
+/* ── List (opt-in server-side pagination) ────────────────────────────────
+   Sending `page` switches /consignment-orders into its paginated contract
+   ({ salesOrders, total, page, pageSize }); the legacy useConsignmentOrders
+   above (no page) still returns the historical unpaginated array. `q` searches
+   doc_no + debtor_name (the columns the CO list already searches + that are in
+   the header select). `sort` is 'col:dir' over
+   { so_date, doc_no, debtor_name, status, local_total_centi } (default
+   so_date:desc). placeholderData keepPrevious so paging doesn't flash empty. */
+export const useConsignmentOrdersPaged = (params: {
+  page: number;
+  pageSize: number;
+  status?: string;
+  q?: string;
+  sort?: string;
+}) => {
+  const { page, pageSize, status, q, sort } = params;
+  const usp = new URLSearchParams();
+  usp.set('page', String(page));
+  usp.set('pageSize', String(pageSize));
+  if (status) usp.set('status', status);
+  if (q && q.trim()) usp.set('q', q.trim());
+  if (sort) usp.set('sort', sort);
+  return useQuery({
+    queryKey: ['consignment-order', 'list-paged', page, pageSize, status ?? '', q ?? '', sort ?? ''],
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    queryFn: () => authedFetch<{ salesOrders: any[]; total: number; page: number; pageSize: number }>(`/consignment-orders?${usp.toString()}`),
+    placeholderData: (prev: unknown) => prev as { salesOrders: unknown[]; total: number; page: number; pageSize: number } | undefined,
+    staleTime: 30_000,
+    retry: 1,
+    retryDelay: 800,
+  });
+};
+
 /* ── Detail ──────────────────────────────────────────────────────────── */
 export const useConsignmentOrderDetail = (docNo: string | null) => useQuery({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
