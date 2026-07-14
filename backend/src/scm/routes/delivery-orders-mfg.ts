@@ -1166,56 +1166,53 @@ export async function soDeliverableRemaining(
   const soItemIds = lines.map((l) => l.id);
 
   // 2. Σ delivered — DO lines linked by so_item_id whose parent DO is NOT
-  //    cancelled. Two-step: pull the candidate DO lines, then drop those whose
-  //    parent DO is cancelled.
-  const { data: doLines } = await paginateAll<{ id: string; so_item_id: string | null; qty: number; delivery_order_id: string }>((from, to) => sb
+  //    cancelled (nor DRAFT — a draft hasn't shipped). PERF: collapsed from a
+  //    two-step "pull DO lines, then re-fetch their parent DOs to read status"
+  //    into ONE round-trip by embedding the parent status (PostgREST to-one
+  //    embed → row count unchanged, so paginateAll stays exact). The
+  //    CANCELLED/DRAFT decision is still made HERE in JS with the same
+  //    .toUpperCase() compare, and a missing parent (orphan) is excluded exactly
+  //    as before (its id used to be absent from the delivery_orders lookup, so
+  //    it never entered activeDoIds) — the delivered sum is byte-identical.
+  const { data: doLines } = await paginateAll<{ id: string; so_item_id: string | null; qty: number; parent: { status: string | null } | null }>((from, to) => sb
     .from('delivery_order_items')
-    .select('id, so_item_id, qty, delivery_order_id')
+    .select('id, so_item_id, qty, parent:delivery_orders(status)')
     .in('so_item_id', soItemIds)
     .order('id')
     .range(from, to));
-  const doLineRows = (doLines ?? []) as Array<{ id: string; so_item_id: string | null; qty: number; delivery_order_id: string }>;
-  const doIds = [...new Set(doLineRows.map((l) => l.delivery_order_id).filter(Boolean))];
-  const activeDoIds = new Set<string>();
-  if (doIds.length > 0) {
-    const { data: dos } = await sb.from('delivery_orders').select('id, status').in('id', doIds);
-    for (const d of (dos ?? []) as Array<{ id: string; status: string | null }>) {
-      /* LEAK GUARD (DRAFT): a DRAFT DO hasn't shipped — it must NOT consume the
-         SO line's deliverable remaining (else the real DO can't be raised and
-         the picker shows phantom-delivered qty). Treated like CANCELLED here. */
-      const st = (d.status ?? '').toUpperCase();
-      if (st !== 'CANCELLED' && st !== 'DRAFT') activeDoIds.add(d.id);
-    }
-  }
+  const doLineRows = (doLines ?? []) as Array<{ id: string; so_item_id: string | null; qty: number; parent: { status: string | null } | null }>;
   // DO line id → SO item id (only for active DOs), used to trace returns below.
   const doLineToSoItem = new Map<string, string>();
   const deliveredBySoItem = new Map<string, number>();
   for (const l of doLineRows) {
-    if (!l.so_item_id || !activeDoIds.has(l.delivery_order_id)) continue;
+    if (!l.so_item_id || !l.parent) continue;
+    /* LEAK GUARD (DRAFT): a DRAFT DO hasn't shipped — it must NOT consume the
+       SO line's deliverable remaining (else the real DO can't be raised and
+       the picker shows phantom-delivered qty). Treated like CANCELLED here. */
+    const st = (l.parent.status ?? '').toUpperCase();
+    if (st === 'CANCELLED' || st === 'DRAFT') continue;
     doLineToSoItem.set(l.id, l.so_item_id);
     deliveredBySoItem.set(l.so_item_id, (deliveredBySoItem.get(l.so_item_id) ?? 0) + Number(l.qty ?? 0));
   }
 
   // 3. Σ returned — DR lines whose do_item_id traces (via the active DO line)
   //    back to one of our SO items, and whose parent DR is NOT cancelled.
+  //    PERF: same collapse as the delivered hop — the parent DR status is
+  //    embedded so the "pull DR lines, then re-fetch parent DRs" two-step becomes
+  //    ONE round-trip. The non-cancelled decision stays in JS (.toUpperCase()),
+  //    and an orphan DR line (no parent) is excluded exactly as before (its id
+  //    was never in activeDrIds), so the returned sum is byte-identical.
   const returnedBySoItem = new Map<string, number>();
   const activeDoLineIds = [...doLineToSoItem.keys()];
   if (activeDoLineIds.length > 0) {
     const { data: drLines } = await sb
       .from('delivery_return_items')
-      .select('do_item_id, qty_returned, delivery_return_id')
+      .select('do_item_id, qty_returned, parent:delivery_returns(status)')
       .in('do_item_id', activeDoLineIds);
-    const drLineRows = (drLines ?? []) as Array<{ do_item_id: string | null; qty_returned: number; delivery_return_id: string }>;
-    const drIds = [...new Set(drLineRows.map((l) => l.delivery_return_id).filter(Boolean))];
-    const activeDrIds = new Set<string>();
-    if (drIds.length > 0) {
-      const { data: drs } = await sb.from('delivery_returns').select('id, status').in('id', drIds);
-      for (const d of (drs ?? []) as Array<{ id: string; status: string | null }>) {
-        if ((d.status ?? '').toUpperCase() !== 'CANCELLED') activeDrIds.add(d.id);
-      }
-    }
+    const drLineRows = (drLines ?? []) as Array<{ do_item_id: string | null; qty_returned: number; parent: { status: string | null } | null }>;
     for (const l of drLineRows) {
-      if (!l.do_item_id || !activeDrIds.has(l.delivery_return_id)) continue;
+      if (!l.do_item_id || !l.parent) continue;
+      if ((l.parent.status ?? '').toUpperCase() === 'CANCELLED') continue;
       const soItemId = doLineToSoItem.get(l.do_item_id);
       if (!soItemId) continue;
       returnedBySoItem.set(soItemId, (returnedBySoItem.get(soItemId) ?? 0) + Number(l.qty_returned ?? 0));
