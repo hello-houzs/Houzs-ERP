@@ -28,7 +28,7 @@ import {
 } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { formatPhone } from '@2990s/shared/phone';
-import { buildVariantSummary, canonicalizeVariants, fmtCenti, fmtDate, fmtDateOrDash, fmtDateTime, missingVariantAxes } from '@2990s/shared'; // Commander 2026-05-28
+import { buildVariantSummary, canonicalizeVariants, fmtCenti, fmtDate, fmtDateOrDash, fmtDateTime, missingVariantAxes, hasSofaMixConflict, SOFA_MIX_MESSAGE } from '@2990s/shared'; // Commander 2026-05-28
 import { PhoneInput } from '../../vendor/scm/components/PhoneInput';
 import { SkeletonDetailPage } from '../../vendor/scm/components/Skeleton';
 import {
@@ -560,6 +560,19 @@ export const SalesOrderDetail = () => {
     const blankLine = Object.values(editingDrafts).find((d) => !d.itemCode.trim());
     if (blankLine) {
       setSaveError('Every line must have a product selected before saving.');
+      return;
+    }
+    // Sofa is exclusive among main products — the server 400s
+    // `so_sofa_no_other_main` when a sofa line rides with a bedframe/mattress.
+    // Block + warn here so the operator gets one plain sentence, not a raw 400.
+    // In edit mode every existing line is seeded into editingDrafts, so this
+    // (+ the pending add-draft) covers the whole order.
+    const editedGroups = [
+      ...Object.values(editingDrafts),
+      ...(addingDraft ? [addingDraft] : []),
+    ].filter((d) => d.itemCode.trim()).map((d) => d.itemGroup);
+    if (hasSofaMixConflict(editedGroups)) {
+      setSaveError(SOFA_MIX_MESSAGE);
       return;
     }
     // Variants are only mandatory once a processing date is set: with a date
@@ -1568,6 +1581,11 @@ export const SalesOrderDetail = () => {
                     docNo={header.doc_no}
                     itemId={it.id}
                     isEditing={!linesLocked}
+                    /* Variants are mandatory only once a Processing Date is set
+                       (matches this page's Save gate + the backend), so the ` *`
+                       marker + red ring stay off on a no-date draft (owner
+                       2026-07-14). */
+                    variantsRequired={requireVariants}
                   />
                 </div>
               );
@@ -1582,6 +1600,7 @@ export const SalesOrderDetail = () => {
                 onChange={patchAddingDraft}
                 onRemove={cancelAddLine}
                 canRemove={true}
+                variantsRequired={requireVariants}
               />
             )}
 

@@ -36,7 +36,7 @@ import { useFabricColoursActive, type FabricColourRow } from "../vendor/scm/lib/
 import { PaymentInfoBlock } from "./PaymentInfoBlock";
 import { useFabricLibrary } from "../vendor/scm/lib/queries";
 import { activeOptions, maintPickerValues } from "../vendor/shared/maintenance-pools";
-import { missingVariantAxes } from "../vendor/shared/so-variant-rule";
+import { missingVariantAxes, hasSofaMixConflict, SOFA_MIX_MESSAGE } from "../vendor/shared/so-variant-rule";
 import "./mobile.css";
 
 /* ---------------------------------------------------------------------------
@@ -1219,13 +1219,20 @@ export function MobileNewSO({
       setError(`Pick a product from the catalog for every line (${unpickedLines.length} line${unpickedLines.length === 1 ? "" : "s"} still ha${unpickedLines.length === 1 ? "s" : "ve"} no product selected).`);
       return;
     }
-    /* Owner 2026-07-13 — a partially-configured sofa/bedframe line may stay a
-       DRAFT (it prices to 0 until completed); the mandatory variants are only
-       enforced when CONFIRMING (asDraft === false), matching the desktop
-       SalesOrderDetail gate + the server "Processing Date requires variants"
-       rule. So a scanned sofa the operator hasn't finished still saves as a
-       draft instead of blocking. */
-    if (!asDraft && linesMissingVariants.length > 0) {
+    // Sofa is exclusive among main products — the server 400s
+    // `so_sofa_no_other_main` when a sofa line rides with a bedframe/mattress.
+    // Block + warn here so the operator gets one plain sentence, not a raw 400.
+    if (hasSofaMixConflict(namedLines.map((l) => l.itemGroup))) {
+      setError(SOFA_MIX_MESSAGE);
+      return;
+    }
+    /* Owner 2026-07-14 — the mandatory variants are enforced ONLY when a
+       Processing Date is being set (Boolean(procOut) === !asDraft && procDate),
+       matching the backend gate (mfg-sales-orders requires them `if procDate`)
+       + the desktop Save gates. A no-date confirm, or a draft (procDate stripped
+       to procOut ""), still saves with variant gaps — a scanned sofa the
+       operator hasn't finished isn't blocked. */
+    if (!asDraft && Boolean(procDate) && linesMissingVariants.length > 0) {
       const l = linesMissingVariants[0];
       const miss = missingVariantAxes(l.itemGroup, l.variants).map((a) => a.label).join(", ");
       setError(`Complete the required options (${miss}) on "${l.name || l.itemCode}".`);
@@ -1696,7 +1703,10 @@ export function MobileNewSO({
                           index={i}
                           pools={pools}
                           removable={lines.length > 1}
-                          showErrors={touched}
+                          /* Red "missing axis" ring only once a Processing Date
+                             is set — matches the backend variants gate + the
+                             save block above (owner 2026-07-14). */
+                          showErrors={touched && Boolean(procDate)}
                           onOpenPicker={() => setPickerFor(l.key)}
                           onOpenFabricPicker={() => setFabricPickerFor(l.key)}
                           onChange={(patch) => patchLine(l.key, patch)}
@@ -2092,9 +2102,14 @@ function LineCard({
   };
   const catUpper = line.itemGroup.toUpperCase();
   const specialOptions = useMemo(() => {
-    const allowed = new Set(allow?.specials ?? []);
+    // Owner 2026-07-14 — opt-out pool (mirrors SoLineCard): empty/absent
+    // allowed_options.specials ⇒ offer ALL active specials for the category;
+    // a non-empty pool restricts to the ticked codes.
+    const pool = allow?.specials;
+    const restricted = Array.isArray(pool) && pool.length > 0;
+    const allowed = new Set(pool ?? []);
     return pools.specialAddons.filter(
-      (a) => a.active && a.categories.includes(catUpper) && allowed.has(a.code),
+      (a) => a.active && a.categories.includes(catUpper) && (!restricted || allowed.has(a.code)),
     );
   }, [pools.specialAddons, catUpper, allow]);
   const pickedSpecials = specialsList(v.specials ?? v.special);

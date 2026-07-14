@@ -3600,7 +3600,7 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
     if (procDateOnCreate && !meetsProcessingDatePaymentGate(depositTotalCenti, grandTotal)) {
       return c.json({
         error: 'processing_date_unpaid',
-        reason: 'A Processing Date can only be set once at least 50% of the order total is paid.',
+        reason: 'A Processing Date can only be set once at least 30% of the order total is paid.',
       }, 400);
     }
   }
