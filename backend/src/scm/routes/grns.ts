@@ -17,6 +17,7 @@ import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from 
 import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { todayMyt } from '../lib/my-time';
 import { paginateAll } from '../lib/paginate-all';
+import { escapeForOr } from '../lib/postgrest-search';
 
 export const grns = new Hono<{ Bindings: Env; Variables: Variables }>();
 grns.use('*', supabaseAuth);
@@ -590,11 +591,85 @@ grns.get('/', async (c) => {
   // silently truncate the GRN list — match the SO/DO/SI list convention.
   // warehouse embeds the receiving location's NAME (Owner 2026-07-02 — the GRN
   // list "Purchase Location" column); warehouse_id is already in HEADER.
-  let q = sb.from('grns').select(`${HEADER}, supplier:suppliers(id, code, name), purchase_order:purchase_orders(id, po_number), warehouse:warehouses!warehouse_id(id, code, name)`).order('received_at', { ascending: false }).limit(500);
-  const status = c.req.query('status'); if (status) q = q.eq('status', status);
-  const supplierId = c.req.query('supplierId'); if (supplierId) q = q.eq('supplier_id', supplierId);
-  q = scopeToCompany(q, c); // multi-company: isolate to the active company
-  const { data, error } = await q;
+  /* Opt-in server-side pagination + search + sort + status-counts (mirrors the
+     SO list in mfg-sales-orders.ts). The PRESENCE of `page` switches paging on;
+     when it is absent/empty the query below is BYTE-IDENTICAL to the historical
+     behavior (order received_at desc, limit 500, status + supplierId params,
+     `{ grns }` shape). */
+  const pageRaw = c.req.query('page');
+  const paginate = pageRaw !== undefined && pageRaw !== '';
+
+  let data: unknown = null;
+  let error: { message: string } | null = null;
+  let total = 0;
+  let page = 0;
+  let pageSize = 50;
+  let statusCounts: { all: number; draft: number; posted: number; cancelled: number } | undefined;
+
+  if (!paginate) {
+    /* --- LEGACY PATH (unchanged) --- */
+    let q = sb.from('grns').select(`${HEADER}, supplier:suppliers(id, code, name), purchase_order:purchase_orders(id, po_number), warehouse:warehouses!warehouse_id(id, code, name)`).order('received_at', { ascending: false }).limit(500);
+    const status = c.req.query('status'); if (status) q = q.eq('status', status);
+    const supplierId = c.req.query('supplierId'); if (supplierId) q = q.eq('supplier_id', supplierId);
+    q = scopeToCompany(q, c); // multi-company: isolate to the active company
+    const res = await q;
+    data = res.data;
+    error = res.error;
+  } else {
+    /* --- PAGINATED PATH (opt-in via `page`) --- */
+    page = Math.max(0, Math.trunc(Number(pageRaw)) || 0);
+    const psRaw = Number(c.req.query('pageSize'));
+    pageSize = Number.isFinite(psRaw) && psRaw > 0 ? Math.min(100, Math.max(1, Math.trunc(psRaw))) : 50;
+
+    const SORT_COLS = new Set(['received_at', 'grn_number', 'status', 'total_centi']);
+    const [rawCol, rawDir] = (c.req.query('sort') ?? 'received_at:desc').split(':');
+    const sortCol = SORT_COLS.has(rawCol) ? rawCol : 'received_at';
+    const sortAsc = rawDir === 'asc';
+
+    let q = sb.from('grns').select(`${HEADER}, supplier:suppliers(id, code, name), purchase_order:purchase_orders(id, po_number), warehouse:warehouses!warehouse_id(id, code, name)`, { count: 'exact' }).order(sortCol, { ascending: sortAsc });
+    /* unique tiebreaker so range paging can't skip/repeat rows sharing the sort key */
+    if (sortCol !== 'grn_number') q = q.order('grn_number', { ascending: sortAsc });
+    const status = c.req.query('status'); if (status) q = q.eq('status', status);
+    const supplierId = c.req.query('supplierId'); if (supplierId) q = q.eq('supplier_id', supplierId);
+    q = scopeToCompany(q, c); // multi-company: isolate to the active company
+    /* free-text search over the base-table text columns the FE searches
+       (GoodsReceivedListV2 hay). Supplier name / PO number are embedded resources,
+       not base grns columns, so they can't be ilike'd here. */
+    const search = c.req.query('q');
+    if (search) {
+      const s = escapeForOr(search);
+      if (s) q = q.or(`grn_number.ilike.%${s}%,delivery_note_ref.ilike.%${s}%,notes.ilike.%${s}%`);
+    }
+    const from = c.req.query('from'); if (from) q = q.gte('received_at', from);
+    const to = c.req.query('to'); if (to) q = q.lte('received_at', to);
+    q = q.range(page * pageSize, page * pageSize + pageSize - 1);
+    const res = await q;
+    data = res.data;
+    error = res.error;
+    total = res.count ?? (res.data?.length ?? 0);
+
+    /* Status counts mirror the FE filter-pill buckets (draft / posted /
+       cancelled) over the SAME company + supplier filters but WITHOUT status /
+       search / pagination. */
+    const countBase = () => {
+      let cq = sb.from('grns').select('*', { count: 'exact', head: true });
+      cq = scopeToCompany(cq, c);
+      if (supplierId) cq = cq.eq('supplier_id', supplierId);
+      return cq;
+    };
+    const [allC, draftC, postedC, cancelledC] = await Promise.all([
+      countBase(),
+      countBase().eq('status', 'DRAFT'),
+      countBase().eq('status', 'POSTED'),
+      countBase().eq('status', 'CANCELLED'),
+    ]);
+    statusCounts = {
+      all: allC.count ?? 0,
+      draft: draftC.count ?? 0,
+      posted: postedC.count ?? 0,
+      cancelled: cancelledC.count ?? 0,
+    };
+  }
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
 
   // Commander 2026-05-29 — the GRN list grid needs a money column (AutoCount's
@@ -652,6 +727,7 @@ grns.get('/', async (c) => {
     downstream: [...(downstreamByGrn.get(g.id)?.values() ?? [])],
     ...computeGrnFlags(linesByGrn.get(g.id) ?? []),
   }));
+  if (paginate) return c.json({ grns, total, page, pageSize, statusCounts });
   return c.json({ grns });
 });
 
