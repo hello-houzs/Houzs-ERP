@@ -12,6 +12,7 @@ import {
   type SoAuditFieldChange,
 } from "../vendor/scm/lib/sales-order-queries";
 import { buildVariantSummary } from "../vendor/shared/variant-summary";
+import { todayMyt, isCreatedTodayMyt } from "../vendor/scm/lib/dates";
 import { useSoDropdownOptions, optionsOrFallback, FALLBACK_OPTIONS } from "../vendor/scm/lib/so-dropdown-options-queries";
 import {
   useAmendmentDetail,
@@ -164,17 +165,6 @@ const phase = (status: string | null): "draft" | "cancelled" | "submitted" => {
   return "submitted";
 };
 const total = (h: SoHeader) => h.local_total_centi ?? h.total_revenue_centi ?? 0;
-/* Today in Malaysia (UTC+8) as YYYY-MM-DD — shift +8h then read the UTC date. */
-const todayMyt = (): string =>
-  new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
-/* True when the given instant (UTC ISO) falls on the current MY calendar day —
-   drives the same-day payment EDIT affordance. */
-const isCreatedTodayMyt = (createdAt: string | null | undefined): boolean => {
-  if (!createdAt) return false;
-  const t = new Date(createdAt).getTime();
-  if (Number.isNaN(t)) return false;
-  return new Date(t + 8 * 3600 * 1000).toISOString().slice(0, 10) === todayMyt();
-};
 
 /** Sales Order DETAIL — markup ported VERBATIM from the owner's mobile design
  *  (`#so-detail` + `renderSoDetail`/`openSO`), wired to the real

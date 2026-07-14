@@ -14,3 +14,13 @@
 export const todayMyt = (offsetDays = 0): string =>
   new Date(Date.now() + 8 * 3600 * 1000 + offsetDays * 86400 * 1000)
     .toISOString().slice(0, 10);
+
+/** True when the given instant (UTC ISO string) falls on the current Malaysian
+ *  calendar day — drives the same-day payment EDIT affordance. Uses the same
+ *  +8h shift as `todayMyt()` so both sides agree regardless of the browser zone. */
+export const isCreatedTodayMyt = (createdAt: string | null | undefined): boolean => {
+  if (!createdAt) return false;
+  const t = new Date(createdAt).getTime();
+  if (Number.isNaN(t)) return false;
+  return new Date(t + 8 * 3600 * 1000).toISOString().slice(0, 10) === todayMyt();
+};
