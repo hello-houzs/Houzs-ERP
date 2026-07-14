@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { Upload, Send, Package, Star, X, ChevronLeft, ChevronRight, Trash2, Clock, MessageSquare, ShieldCheck, Check } from "lucide-react";
+import { Upload, Send, Package, Star, X, ChevronLeft, ChevronRight, Trash2, Clock, MessageSquare, ShieldCheck, Check, Play } from "lucide-react";
 import { createPortal } from "react-dom";
 import { portalApi } from "../portalApi";
 import { PortalFrame } from "../components/PortalFrame";
@@ -506,6 +506,7 @@ export function PortalCaseDetailPage() {
                   token={token}
                   attId={a.id}
                   label={a.category}
+                  contentType={a.content_type}
                   mine={a.source === selfSource}
                   onClick={() => setLightboxIndex(i)}
                   onRemove={
@@ -639,23 +640,27 @@ export function PortalCaseDetailPage() {
   );
 }
 
-function PortalPhoto({ token, attId, label, mine, onClick, onRemove }: {
+function PortalPhoto({ token, attId, label, contentType, mine, onClick, onRemove }: {
   token: string;
   attId: number;
   label: string;
+  contentType?: string | null;
   mine: boolean;
   onClick?: () => void;
   onRemove?: () => void;
 }) {
+  const isVideo = (contentType || "").startsWith("video/");
   const [url, setUrl] = useState<string | null>(null);
   useEffect(() => {
+    if (isVideo) return; // the tile shows a play badge — no bytes needed
     let revoked = false;
     portalApi
       .fetchBlobUrl(`/api/portal/case/attachments/${attId}`, token)
       .then((u) => { if (!revoked) setUrl(u); })
       .catch(() => {});
     return () => { revoked = true; if (url) URL.revokeObjectURL(url); };
-  }, [attId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [attId, isVideo]);
 
   return (
     <div className="group relative">
@@ -663,9 +668,16 @@ function PortalPhoto({ token, attId, label, mine, onClick, onRemove }: {
         type="button"
         onClick={onClick}
         className="block w-full overflow-hidden rounded-md border border-border bg-bg text-left transition-all hover:border-accent/50 hover:shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-2"
-        aria-label={`View ${label} photo full-size`}
+        aria-label={isVideo ? `Play ${label} video` : `View ${label} photo full-size`}
       >
-        {url ? (
+        {isVideo ? (
+          <div className="flex h-24 w-full flex-col items-center justify-center gap-1 bg-ink/80 text-white">
+            <span className="flex h-7 w-7 items-center justify-center rounded-full bg-white/20">
+              <Play size={13} className="ml-0.5" />
+            </span>
+            <span className="text-[9px] font-semibold uppercase tracking-wider">Video</span>
+          </div>
+        ) : url ? (
           <img
             src={url}
             alt={label}
@@ -813,18 +825,28 @@ function Lightbox({
         </>
       )}
 
-      {/* Image */}
+      {/* Media */}
       <div
         className="relative flex max-h-[90vh] max-w-[92vw] items-center justify-center"
         onClick={(e) => e.stopPropagation()}
       >
         {url ? (
-          <img
-            src={url}
-            alt={att.file_name || att.category}
-            className="max-h-[88vh] max-w-[92vw] select-none object-contain shadow-2xl"
-            draggable={false}
-          />
+          (att.content_type || "").startsWith("video/") ? (
+            <video
+              src={url}
+              controls
+              autoPlay
+              playsInline
+              className="max-h-[88vh] max-w-[92vw] rounded shadow-2xl"
+            />
+          ) : (
+            <img
+              src={url}
+              alt={att.file_name || att.category}
+              className="max-h-[88vh] max-w-[92vw] select-none object-contain shadow-2xl"
+              draggable={false}
+            />
+          )
         ) : (
           <div className="flex h-64 w-64 items-center justify-center rounded bg-white/5 text-white/60">
             Loading…

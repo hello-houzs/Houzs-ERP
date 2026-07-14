@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
@@ -121,8 +122,8 @@ const PRINT_VARIANTS = [
   { value: "office", label: "Office copy" },
 ] as const;
 // Upload constraints mirror the PUT /:id/attachments backend guard.
-const ATTACH_EXTS = new Set(["jpg", "jpeg", "png", "webp", "mp4", "pdf"]);
-const ATTACH_ACCEPT = "image/jpeg,image/png,image/webp,video/mp4,application/pdf";
+const ATTACH_EXTS = new Set(["jpg", "jpeg", "png", "webp", "mp4", "mov", "webm", "pdf"]);
+const ATTACH_ACCEPT = "image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm,application/pdf";
 
 // Priority meta — design SC_PRIORITY (Theme C hues).
 const PRIORITY_META: Record<string, { label: string; color: string }> = {
@@ -2546,7 +2547,7 @@ function PhotoGrid({
     const rejected = files.filter((f) => !ATTACH_EXTS.has((f.name.split(".").pop() || "").toLowerCase()));
     const accepted = files.filter((f) => ATTACH_EXTS.has((f.name.split(".").pop() || "").toLowerCase()));
     if (!accepted.length) {
-      await notify({ title: "Unsupported file", body: "Allowed: JPG, PNG, WEBP, MP4, PDF.", tone: "error" });
+      await notify({ title: "Unsupported file", body: "Allowed: JPG, PNG, WEBP, MP4, MOV, WEBM, PDF.", tone: "error" });
       return;
     }
     setUploading({ done: 0, total: accepted.length });
@@ -2619,25 +2620,34 @@ function PhotoGrid({
 }
 
 // Auth-fetched attachment thumbnail (blob URL) with a remove affordance.
+// Tapping an image or video opens the fullscreen viewer; videos defer
+// the blob fetch until then so lists don't pull whole files.
 function AttachThumb({ att, onArchive }: { att: Any; onArchive: () => void }) {
   const key = get(att, "r2Key", "r2_key");
   const contentType = String(get(att, "contentType", "content_type") ?? "");
   const isVideo = contentType.startsWith("video");
   const isPdf = contentType.includes("pdf");
   const [url, setUrl] = useState<string | null>(null);
+  const [viewing, setViewing] = useState(false);
 
   const { data } = useQuery({
     queryKey: ["mobile-assr-att", key],
-    enabled: !!key && !isVideo && !isPdf,
+    enabled: !!key && !isPdf && (!isVideo || viewing),
     staleTime: 5 * 60_000,
     queryFn: () => api.fetchBlobUrl(`/api/assr/attachments/${key}`),
   });
   if (data && data !== url) setUrl(data);
 
   return (
-    <div style={{ position: "relative", aspectRatio: "1", borderRadius: 9, overflow: "hidden", background: FIELD_BG, border: `1px solid ${DIM}` }}>
+    <div
+      onClick={() => { if (!isPdf) setViewing(true); }}
+      style={{ position: "relative", aspectRatio: "1", borderRadius: 9, overflow: "hidden", background: FIELD_BG, border: `1px solid ${DIM}`, cursor: isPdf ? "default" : "pointer" }}
+    >
       {isVideo || isPdf ? (
         <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 3 }}>
+          {isVideo && (
+            <span style={{ width: 24, height: 24, borderRadius: "50%", background: "rgba(17,20,15,.12)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, color: INK, paddingLeft: 2 }}>▶</span>
+          )}
           <span style={{ fontSize: 9, fontWeight: 700, color: MUTED }}>{isVideo ? "VIDEO" : "PDF"}</span>
         </div>
       ) : url ? (
@@ -2648,12 +2658,48 @@ function AttachThumb({ att, onArchive }: { att: Any; onArchive: () => void }) {
         </div>
       )}
       <button
-        onClick={onArchive}
+        onClick={(e) => { e.stopPropagation(); onArchive(); }}
         aria-label="Remove file"
         style={{ position: "absolute", top: 3, right: 3, width: 20, height: 20, borderRadius: "50%", border: "none", background: "rgba(17,20,15,.55)", color: "#fff", fontSize: 13, lineHeight: 1, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
       >
         ×
       </button>
+      {viewing && !isPdf && (
+        <AttachViewer
+          url={url}
+          isVideo={isVideo}
+          name={String(get(att, "fileName", "file_name") ?? "")}
+          onClose={() => setViewing(false)}
+        />
+      )}
     </div>
+  );
+}
+
+// Fullscreen media viewer (single attachment). Blob URLs carry the
+// auth, so <img>/<video> render directly; backdrop tap or × closes.
+function AttachViewer({ url, isVideo, name, onClose }: { url: string | null; isVideo: boolean; name: string; onClose: () => void }) {
+  return createPortal(
+    <div
+      onClick={(e) => { e.stopPropagation(); onClose(); }}
+      style={{ position: "fixed", inset: 0, zIndex: 400, background: "rgba(10,12,9,.92)", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 10, padding: 14 }}
+    >
+      <button
+        onClick={(e) => { e.stopPropagation(); onClose(); }}
+        aria-label="Close"
+        style={{ position: "absolute", top: 12, right: 12, width: 34, height: 34, borderRadius: "50%", border: "none", background: "rgba(255,255,255,.14)", color: "#fff", fontSize: 17, lineHeight: 1, cursor: "pointer" }}
+      >
+        ×
+      </button>
+      {!url ? (
+        <span style={{ color: "rgba(255,255,255,.75)", fontSize: 12 }}>Loading…</span>
+      ) : isVideo ? (
+        <video src={url} controls autoPlay playsInline onClick={(e) => e.stopPropagation()} style={{ maxWidth: "100%", maxHeight: "82vh", borderRadius: 10 }} />
+      ) : (
+        <img src={url} alt="" onClick={(e) => e.stopPropagation()} style={{ maxWidth: "100%", maxHeight: "82vh", objectFit: "contain", borderRadius: 10 }} />
+      )}
+      {name ? <span style={{ color: "rgba(255,255,255,.6)", fontSize: 10.5, maxWidth: "90%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</span> : null}
+    </div>,
+    document.body,
   );
 }

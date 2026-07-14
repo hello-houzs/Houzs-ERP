@@ -2152,7 +2152,7 @@ app.delete("/:id/items/:itemId", requirePermission("service_cases.write"), async
 
 // ── Attachments ───────────────────────────────────────────────
 
-const ALLOWED_EXTENSIONS = new Set(["jpg", "jpeg", "png", "webp", "mp4", "pdf"]);
+const ALLOWED_EXTENSIONS = new Set(["jpg", "jpeg", "png", "webp", "mp4", "mov", "webm", "pdf"]);
 const MAX_SIZE = 25 * 1024 * 1024; // 25 MB
 
 app.put("/:id/attachments", requirePermission("service_cases.write"), async (c) => {
@@ -2175,6 +2175,8 @@ app.put("/:id/attachments", requirePermission("service_cases.write"), async (c) 
 
   const contentType =
     ext === "mp4" ? "video/mp4" :
+    ext === "mov" ? "video/quicktime" :
+    ext === "webm" ? "video/webm" :
     ext === "pdf" ? "application/pdf" :
     `image/${ext === "jpg" ? "jpeg" : ext}`;
 
