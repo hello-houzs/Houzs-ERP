@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { api } from "../api/client";
 import type { FormSchema } from "./MobileModuleForm";
+import { MobileVirtualList } from "./MobileVirtualList";
 import "./mobile.css";
 
 // ---------------------------------------------------------------------------
@@ -411,23 +412,18 @@ export function MobileModuleList({
           </div>
         )}
 
-        {!isLoading && !error && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
-            {rows.map((r, i) => (
-              <ListCard
-                key={(r.id as string) ?? (r.doc_no as string) ?? i}
-                config={config}
-                row={r}
-                onOpen={onOpen}
-              />
-            ))}
-            {/* EMPTY state (spec § Foundations — empty block). */}
-            {!rows.length && (
-              <div className="empty">
-                <div className="empty-t">No {config.title.toLowerCase()}</div>
-                <div className="empty-s">{q.trim() ? "Try a different search." : "Nothing to show yet."}</div>
-              </div>
-            )}
+        {!isLoading && !error && rows.length > 0 && (
+          <MobileVirtualList
+            items={rows}
+            getKey={(r, i) => (r.id as string) ?? (r.doc_no as string) ?? i}
+            renderItem={(r) => <ListCard config={config} row={r} onOpen={onOpen} />}
+          />
+        )}
+        {/* EMPTY state (spec § Foundations — empty block). */}
+        {!isLoading && !error && !rows.length && (
+          <div className="empty">
+            <div className="empty-t">No {config.title.toLowerCase()}</div>
+            <div className="empty-s">{q.trim() ? "Try a different search." : "Nothing to show yet."}</div>
           </div>
         )}
       </div>
