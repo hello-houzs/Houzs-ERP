@@ -30,8 +30,9 @@
 // the `scm` schema. Read-only: this route never writes. Mounted at '/document-flow'.
 
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
-import { activeCompanyId } from '../lib/companyScope';
+import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 export const documentFlow = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -63,68 +64,74 @@ const cover = (childQty: number, parentQty: number): EdgeKind =>
 const uniq = (xs: Array<string | null | undefined>) =>
   [...new Set(xs.filter((x): x is string => !!x))];
 
-/* Resolve the set of Sales Order doc_nos the anchor document descends from. */
-async function resolveRootSos(sb: any, type: NodeType, id: string): Promise<string[]> {
+/* Resolve the set of Sales Order doc_nos the anchor document descends from.
+   Every by-id / by-anchor read is scoped to the ACTIVE company via
+   scopeToCompany (same idiom the sibling SCM routes use), so a caller in
+   company A can never resolve a root SO from company B's document by feeding an
+   enumerated id — the anchor read simply returns nothing for a foreign id.
+   All tables touched here carry company_id (migration 0083). scopeToCompany
+   no-ops when the active company is unresolved (pre-migration / cold-start). */
+async function resolveRootSos(sb: any, c: Context<any>, type: NodeType, id: string): Promise<string[]> {
   switch (type) {
     case 'so':
       return [id];
     case 'do': {
-      const { data } = await sb.from('delivery_orders').select('so_doc_no').eq('id', id).maybeSingle();
+      const { data } = await scopeToCompany(sb.from('delivery_orders').select('so_doc_no').eq('id', id), c).maybeSingle();
       if (data?.so_doc_no) return [data.so_doc_no];
-      const { data: lines } = await sb.from('delivery_order_items').select('so_item_id').eq('delivery_order_id', id);
-      return soDocNosFromSoItems(sb, uniq((lines ?? []).map((l: any) => l.so_item_id)));
+      const { data: lines } = await scopeToCompany(sb.from('delivery_order_items').select('so_item_id').eq('delivery_order_id', id), c);
+      return soDocNosFromSoItems(sb, c, uniq((lines ?? []).map((l: any) => l.so_item_id)));
     }
     case 'si': {
-      const { data } = await sb.from('sales_invoices').select('so_doc_no, delivery_order_id').eq('id', id).maybeSingle();
+      const { data } = await scopeToCompany(sb.from('sales_invoices').select('so_doc_no, delivery_order_id').eq('id', id), c).maybeSingle();
       if (data?.so_doc_no) return [data.so_doc_no];
-      if (data?.delivery_order_id) return resolveRootSos(sb, 'do', data.delivery_order_id);
-      const { data: lines } = await sb.from('sales_invoice_items').select('so_item_id, do_item_id').eq('sales_invoice_id', id);
+      if (data?.delivery_order_id) return resolveRootSos(sb, c, 'do', data.delivery_order_id);
+      const { data: lines } = await scopeToCompany(sb.from('sales_invoice_items').select('so_item_id, do_item_id').eq('sales_invoice_id', id), c);
       const soItems = uniq((lines ?? []).map((l: any) => l.so_item_id));
-      if (soItems.length) return soDocNosFromSoItems(sb, soItems);
+      if (soItems.length) return soDocNosFromSoItems(sb, c, soItems);
       const doItems = uniq((lines ?? []).map((l: any) => l.do_item_id));
-      return soDocNosFromDoItems(sb, doItems);
+      return soDocNosFromDoItems(sb, c, doItems);
     }
     case 'payment': {
-      const { data } = await sb.from('sales_invoice_payments').select('sales_invoice_id').eq('id', id).maybeSingle();
-      return data?.sales_invoice_id ? resolveRootSos(sb, 'si', data.sales_invoice_id) : [];
+      const { data } = await scopeToCompany(sb.from('sales_invoice_payments').select('sales_invoice_id').eq('id', id), c).maybeSingle();
+      return data?.sales_invoice_id ? resolveRootSos(sb, c, 'si', data.sales_invoice_id) : [];
     }
     case 'po': {
-      const { data: lines } = await sb.from('purchase_order_items').select('so_item_id').eq('purchase_order_id', id);
-      return soDocNosFromSoItems(sb, uniq((lines ?? []).map((l: any) => l.so_item_id)));
+      const { data: lines } = await scopeToCompany(sb.from('purchase_order_items').select('so_item_id').eq('purchase_order_id', id), c);
+      return soDocNosFromSoItems(sb, c, uniq((lines ?? []).map((l: any) => l.so_item_id)));
     }
     case 'grn': {
-      const { data } = await sb.from('grns').select('purchase_order_id').eq('id', id).maybeSingle();
-      return data?.purchase_order_id ? resolveRootSos(sb, 'po', data.purchase_order_id) : [];
+      const { data } = await scopeToCompany(sb.from('grns').select('purchase_order_id').eq('id', id), c).maybeSingle();
+      return data?.purchase_order_id ? resolveRootSos(sb, c, 'po', data.purchase_order_id) : [];
     }
     case 'pi': {
-      const { data } = await sb.from('purchase_invoices').select('grn_id').eq('id', id).maybeSingle();
-      return data?.grn_id ? resolveRootSos(sb, 'grn', data.grn_id) : [];
+      const { data } = await scopeToCompany(sb.from('purchase_invoices').select('grn_id').eq('id', id), c).maybeSingle();
+      return data?.grn_id ? resolveRootSos(sb, c, 'grn', data.grn_id) : [];
     }
     case 'dr': {
       // Delivery Return hangs off its Delivery Order — resolve through the DO.
-      const { data } = await sb.from('delivery_returns').select('delivery_order_id').eq('id', id).maybeSingle();
-      return data?.delivery_order_id ? resolveRootSos(sb, 'do', data.delivery_order_id) : [];
+      const { data } = await scopeToCompany(sb.from('delivery_returns').select('delivery_order_id').eq('id', id), c).maybeSingle();
+      return data?.delivery_order_id ? resolveRootSos(sb, c, 'do', data.delivery_order_id) : [];
     }
     case 'pr': {
       // Purchase Return hangs off its Goods Receipt (or, failing that, its PO).
-      const { data } = await sb.from('purchase_returns').select('grn_id, purchase_order_id').eq('id', id).maybeSingle();
-      if (data?.grn_id) return resolveRootSos(sb, 'grn', data.grn_id);
-      return data?.purchase_order_id ? resolveRootSos(sb, 'po', data.purchase_order_id) : [];
+      const { data } = await scopeToCompany(sb.from('purchase_returns').select('grn_id, purchase_order_id').eq('id', id), c).maybeSingle();
+      if (data?.grn_id) return resolveRootSos(sb, c, 'grn', data.grn_id);
+      return data?.purchase_order_id ? resolveRootSos(sb, c, 'po', data.purchase_order_id) : [];
     }
     default:
       return [];
   }
 }
 
-async function soDocNosFromSoItems(sb: any, soItemIds: string[]): Promise<string[]> {
+async function soDocNosFromSoItems(sb: any, c: Context<any>, soItemIds: string[]): Promise<string[]> {
   if (soItemIds.length === 0) return [];
-  const { data } = await sb.from('mfg_sales_order_items').select('doc_no').in('id', soItemIds);
+  const { data } = await scopeToCompany(sb.from('mfg_sales_order_items').select('doc_no').in('id', soItemIds), c);
   return uniq((data ?? []).map((r: any) => r.doc_no));
 }
-async function soDocNosFromDoItems(sb: any, doItemIds: string[]): Promise<string[]> {
+async function soDocNosFromDoItems(sb: any, c: Context<any>, doItemIds: string[]): Promise<string[]> {
   if (doItemIds.length === 0) return [];
-  const { data } = await sb.from('delivery_order_items').select('so_item_id').in('id', doItemIds);
-  return soDocNosFromSoItems(sb, uniq((data ?? []).map((r: any) => r.so_item_id)));
+  const { data } = await scopeToCompany(sb.from('delivery_order_items').select('so_item_id').in('id', doItemIds), c);
+  return soDocNosFromSoItems(sb, c, uniq((data ?? []).map((r: any) => r.so_item_id)));
 }
 
 /* Self-contained graph for the consignment family. The consignment chains are
@@ -141,7 +148,7 @@ async function soDocNosFromDoItems(sb: any, doItemIds: string[]): Promise<string
      purchase_consignment_returns.pc_order_id / .pc_receive_id
      purchase_consignment_return_items.pc_receive_item_id                       */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function buildConsignmentFlow(sb: any, type: NodeType, id: string, cid: number | null) {
+async function buildConsignmentFlow(sb: any, c: Context<any>, type: NodeType, id: string, cid: number | null) {
   const anchorKey = keyOf(type, id);
   const nodes = new Map<string, FlowNode>();
   const edges: FlowEdge[] = [];
@@ -158,10 +165,12 @@ async function buildConsignmentFlow(sb: any, type: NodeType, id: string, cid: nu
     let rootDoc: string | null = null;
     if (type === 'cso') rootDoc = id;
     else if (type === 'cdo') {
-      const { data } = await sb.from('consignment_delivery_orders').select('consignment_so_doc_no').eq('id', id).maybeSingle();
+      // Scope the anchor read to the active company so a foreign id resolves to
+      // no root (defence-in-depth on top of the root-ownership gate below).
+      const { data } = await scopeToCompany(sb.from('consignment_delivery_orders').select('consignment_so_doc_no').eq('id', id), c).maybeSingle();
       rootDoc = data?.consignment_so_doc_no ?? null;
     } else {
-      const { data } = await sb.from('consignment_delivery_returns').select('consignment_do_id').eq('id', id).maybeSingle();
+      const { data } = await scopeToCompany(sb.from('consignment_delivery_returns').select('consignment_do_id').eq('id', id), c).maybeSingle();
       if (data?.consignment_do_id) {
         const { data: doRow } = await sb.from('consignment_delivery_orders').select('consignment_so_doc_no').eq('id', data.consignment_do_id).maybeSingle();
         rootDoc = doRow?.consignment_so_doc_no ?? null;
@@ -242,10 +251,12 @@ async function buildConsignmentFlow(sb: any, type: NodeType, id: string, cid: nu
   let rootPco: string | null = null;
   if (type === 'pco') rootPco = id;
   else if (type === 'pcr') {
-    const { data } = await sb.from('purchase_consignment_receives').select('purchase_consignment_order_id').eq('id', id).maybeSingle();
+    // Scope the anchor read to the active company (defence-in-depth on top of
+    // the root-ownership gate below).
+    const { data } = await scopeToCompany(sb.from('purchase_consignment_receives').select('purchase_consignment_order_id').eq('id', id), c).maybeSingle();
     rootPco = data?.purchase_consignment_order_id ?? null;
   } else {
-    const { data } = await sb.from('purchase_consignment_returns').select('pc_order_id, pc_receive_id').eq('id', id).maybeSingle();
+    const { data } = await scopeToCompany(sb.from('purchase_consignment_returns').select('pc_order_id, pc_receive_id').eq('id', id), c).maybeSingle();
     if (data?.pc_order_id) rootPco = data.pc_order_id;
     else if (data?.pc_receive_id) {
       const { data: rec } = await sb.from('purchase_consignment_receives').select('purchase_consignment_order_id').eq('id', data.pc_receive_id).maybeSingle();
@@ -344,10 +355,10 @@ documentFlow.get('/:type/:id', async (c) => {
 
   // Consignment docs form their own self-contained family graph.
   if (CONSIGNMENT_TYPES.includes(type)) {
-    return c.json(await buildConsignmentFlow(sb, type, id, cid ?? null));
+    return c.json(await buildConsignmentFlow(sb, c, type, id, cid ?? null));
   }
 
-  let rootSos = await resolveRootSos(sb, type, id);
+  let rootSos = await resolveRootSos(sb, c, type, id);
 
   // The ENTIRE relationship graph descends from these root SOs (every downstream
   // read is bounded by `.in('doc_no', rootSos)` or by SO-item ids derived from

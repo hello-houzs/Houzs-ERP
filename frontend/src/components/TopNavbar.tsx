@@ -10,6 +10,7 @@ import { Avatar } from "./Avatar";
 import { cn } from "../lib/utils";
 import { api } from "../api/client";
 import { useQuery } from "../hooks/useQuery";
+import { useDialog } from "../hooks/useDialog";
 import {
   getActiveCompanySnapshot,
   setActiveCompanyId,
@@ -134,6 +135,7 @@ interface CompaniesResponse {
 function CompanySwitcher() {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
+  const dialog = useDialog();
 
   // Persisted switcher pick (null = follow the backend hostname default).
   const stored = useSyncExternalStore(
@@ -177,9 +179,22 @@ function CompanySwitcher() {
     null;
   const active = companies.find((co) => co.id === activeId) ?? companies[0];
 
-  function pick(id: number) {
+  async function pick(id: number) {
     setOpen(false);
     if (id === activeId) return;
+    // The switch below hard-reloads the whole app (see the block comment) to
+    // guarantee zero cross-company staleness — but a reload silently discards
+    // any unsaved edits: the app registers no beforeunload guard, so nothing
+    // else warns the user. Confirm first so a mid-edit switch can't lose work.
+    // Only reached when the target company actually differs (same-company
+    // re-selects already returned above), so we never nag on a no-op pick.
+    const ok = await dialog.confirm({
+      title: "Switch company?",
+      message:
+        "Switching company reloads the page — any unsaved changes will be lost. Continue?",
+      confirmLabel: "Switch company",
+    });
+    if (!ok) return;
     // A company switch is a fundamental tenant-context change. Backend scoping
     // already isolates each company's data (companyContext + X-Company-Id); the
     // frontend must never leave the previous company's rows on screen for even
