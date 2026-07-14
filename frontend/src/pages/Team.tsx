@@ -101,6 +101,84 @@ function ExtraDeptCount({
   );
 }
 
+// ──────────────────────────────────────────────────────────
+// Company assignment (Phase 0e) — shared helpers + segmented control
+// ──────────────────────────────────────────────────────────
+
+type CompanyOpt = { id: number; code: string; name: string };
+
+// Friendly short name for a company code (HOUZS → "Houzs"; else the code).
+function companyShortName(code: string): string {
+  return code === "HOUZS" ? "Houzs" : code;
+}
+
+// One-word label for a member's grant set, for the Company column:
+//   all companies granted → "Both"; a single company → its short name;
+//   empty (no grant row) → "All" (fail-open — user may act in every company).
+function companyLabelFor(ids: number[], companies: CompanyOpt[]): string {
+  if (!companies.length) return "—";
+  if (ids.length === 0) return "All";
+  if (ids.length >= companies.length && companies.every((co) => ids.includes(co.id)))
+    return "Both";
+  const single = companies.find((co) => co.id === ids[0]);
+  return single ? companyShortName(single.code) : "—";
+}
+
+// Segmented picker: one button per company plus a "Both" (all companies) when
+// there is more than one. Value/onChange work on the raw company-id array so
+// the caller sends `company_ids` straight to the backend. Both = every id;
+// a single company = [id]. Mirrors the existing option-pill styling.
+function CompanySelect({
+  companies,
+  value,
+  onChange,
+}: {
+  companies: CompanyOpt[];
+  value: number[];
+  onChange: (ids: number[]) => void;
+}) {
+  const allIds = companies.map((co) => co.id);
+  const isBoth =
+    companies.length > 1 &&
+    value.length >= companies.length &&
+    companies.every((co) => value.includes(co.id));
+  const segCls = (on: boolean) =>
+    cn(
+      "flex-1 rounded-md border px-2.5 py-1.5 text-[12px] font-semibold transition-colors",
+      on
+        ? "border-accent bg-accent text-white"
+        : "border-border bg-surface text-ink-secondary hover:border-accent/40 hover:text-accent",
+    );
+  return (
+    <div className="flex gap-1.5">
+      {companies.map((co) => {
+        const on = !isBoth && value.length === 1 && value[0] === co.id;
+        return (
+          <button
+            key={co.id}
+            type="button"
+            onClick={() => onChange([co.id])}
+            className={segCls(on)}
+            title={co.name}
+          >
+            {companyShortName(co.code)}
+          </button>
+        );
+      })}
+      {companies.length > 1 && (
+        <button
+          type="button"
+          onClick={() => onChange(allIds)}
+          className={segCls(isBoth)}
+          title="Both companies"
+        >
+          Both
+        </button>
+      )}
+    </div>
+  );
+}
+
 /**
  * Unified Team page — two tabs (Members, Roles) sharing a single header.
  * Members lists users + pending invitations and lets admins invite /
@@ -365,7 +443,8 @@ function MembersTab({
   const companiesQ = useQuery<{
     companies: Array<{ id: number; code: string; name: string }>;
   }>(() => api.get("/api/companies"), [], freshList);
-  const multiCompany = (companiesQ.data?.companies?.length ?? 0) > 1;
+  const companyOpts: CompanyOpt[] = companiesQ.data?.companies ?? [];
+  const multiCompany = companyOpts.length > 1;
   const onlineIds = useMemo(
     () => new Set((presence.data?.active ?? []).map((a) => a.id)),
     [presence.data],
@@ -405,9 +484,6 @@ function MembersTab({
 
   // Per-user brand picker — opens a small modal scoped to one member.
   const [brandsFor, setBrandsFor] = useState<TeamMember | null>(null);
-  // Per-user company-access picker (Phase 0e). Mirrors the brand picker; only
-  // relevant once multi-company is active (>1 company).
-  const [companiesFor, setCompaniesFor] = useState<TeamMember | null>(null);
   // Member being edited in the side panel (name/email/phone/org + actions).
   const [editing, setEditing] = useState<TeamMember | null>(null);
   // Member whose full-screen detail is open. Stored by id so it re-reads
@@ -1011,6 +1087,32 @@ function MembersTab({
         </span>
       ),
     },
+    ...(multiCompany
+      ? [
+          {
+            key: "company",
+            label: "Company",
+            width: "110px",
+            getValue: (u: TeamMember) =>
+              companyLabelFor(u.company_ids ?? [], companyOpts),
+            render: (u: TeamMember) => {
+              const label = companyLabelFor(u.company_ids ?? [], companyOpts);
+              return (
+                <span
+                  className={cn(
+                    "inline-flex items-center rounded-full border px-2 py-px text-[11px] font-semibold",
+                    label === "Both"
+                      ? "border-accent/40 bg-accent-soft text-accent-ink"
+                      : "border-border bg-surface-dim text-ink-secondary",
+                  )}
+                >
+                  {label}
+                </span>
+              );
+            },
+          } as Column<TeamMember>,
+        ]
+      : []),
     {
       key: "last_seen",
       label: "Last Seen",
@@ -1093,8 +1195,6 @@ function MembersTab({
             setViewingId(null);
           }}
           onEditBrands={() => setBrandsFor(viewing)}
-          multiCompany={multiCompany}
-          onEditCompanies={() => setCompaniesFor(viewing)}
         />
       ) : (
       <>
@@ -1614,6 +1714,8 @@ function MembersTab({
         departments={depts.data?.departments ?? []}
         positions={positions.data?.positions ?? []}
         members={members.data?.users ?? []}
+        companies={companyOpts}
+        multiCompany={multiCompany}
         lockDeptId={salesDirScoped ? me?.department_id ?? null : undefined}
         onInvited={() => {
           onCloseInvite();
@@ -1648,10 +1750,7 @@ function MembersTab({
             setBrandsFor(u);
           }}
           multiCompany={multiCompany}
-          onEditCompanies={(u) => {
-            setEditing(null);
-            setCompaniesFor(u);
-          }}
+          companies={companyOpts}
         />
       )}
 
@@ -1667,17 +1766,6 @@ function MembersTab({
         />
       )}
 
-      {companiesFor && (
-        <UserCompaniesPanel
-          user={companiesFor}
-          onClose={() => setCompaniesFor(null)}
-          onSaved={() => {
-            setCompaniesFor(null);
-            // Company grants live in their own endpoint, not the /api/users
-            // payload — no members reload needed.
-          }}
-        />
-      )}
     </div>
   );
 }
@@ -1742,8 +1830,6 @@ function MemberDetail({
   onToggleStatus,
   onRemove,
   onEditBrands,
-  multiCompany,
-  onEditCompanies,
 }: {
   user: TeamMember;
   members: TeamMember[];
@@ -1760,8 +1846,6 @@ function MemberDetail({
   onToggleStatus: () => void | Promise<void>;
   onRemove: () => void | Promise<void>;
   onEditBrands: () => void;
-  multiCompany: boolean;
-  onEditCompanies: () => void;
 }) {
   const reports = members
     .filter((m) => m.manager_id === user.id)
@@ -1968,15 +2052,6 @@ function MemberDetail({
               {canManage && (
                 <button type="button" onClick={onEditBrands} className={actionCls}>
                   <Tag size={13} /> Brand access…
-                </button>
-              )}
-              {canManage && multiCompany && (
-                <button
-                  type="button"
-                  onClick={onEditCompanies}
-                  className={actionCls}
-                >
-                  <Building2 size={13} /> Company access…
                 </button>
               )}
               {canManage && user.status !== "invited" && (
@@ -2280,7 +2355,7 @@ function EditMemberPanel({
   onRemove,
   onEditBrands,
   multiCompany,
-  onEditCompanies,
+  companies,
 }: {
   user: TeamMember;
   departments: Department[];
@@ -2296,7 +2371,7 @@ function EditMemberPanel({
   onRemove: (u: TeamMember) => void | Promise<void>;
   onEditBrands: (u: TeamMember) => void;
   multiCompany: boolean;
-  onEditCompanies: (u: TeamMember) => void;
+  companies: CompanyOpt[];
 }) {
   const toast = useToast();
   const [name, setName] = useState(user.name || "");
@@ -2310,6 +2385,10 @@ function EditMemberPanel({
   const [positionId, setPositionId] = useState<number | "">(user.position_id ?? "");
   const [managerId, setManagerId] = useState<number | "">(user.manager_id ?? "");
   const [division, setDivision] = useState(user.division || "");
+  // Company grants (Phase 0e). Seeded from the member's current grant set; an
+  // empty set (legacy no-grant → fail-open ALL) shows no segment selected and,
+  // if left untouched, is preserved unchanged.
+  const [companyIds, setCompanyIds] = useState<number[]>(() => user.company_ids ?? []);
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -2379,6 +2458,15 @@ function EditMemberPanel({
     if ((managerId || null) !== (user.manager_id ?? null)) patch.manager_id = managerId || null;
     if ((division.trim() || null) !== (user.division ?? null))
       patch.division = division.trim() || null;
+    // Company grants — send only when changed (and multi-company is active).
+    if (multiCompany) {
+      const initialCompany = (user.company_ids ?? []).slice().sort((a, b) => a - b);
+      const nextCompany = companyIds.slice().sort((a, b) => a - b);
+      const sameCompany =
+        nextCompany.length === initialCompany.length &&
+        nextCompany.every((x, i) => x === initialCompany[i]);
+      if (!sameCompany) patch.company_ids = companyIds;
+    }
     if (password.trim()) {
       if (password.trim().length < 12) {
         toast.error("Password must be at least 12 characters");
@@ -2616,6 +2704,20 @@ function EditMemberPanel({
             Sub-group within the department — becomes a column in the org chart.
           </div>
         </div>
+        {multiCompany && (
+          <div>
+            <label className={labelCls}>Company</label>
+            <CompanySelect
+              companies={companies}
+              value={companyIds}
+              onChange={setCompanyIds}
+            />
+            <div className="mt-1 text-[10px] text-ink-muted">
+              Which company this member works in. "Both" grants access to all
+              companies.
+            </div>
+          </div>
+        )}
         <div>
           <label className={labelCls}>Reports to</label>
           <select
@@ -2673,15 +2775,6 @@ function EditMemberPanel({
         <button type="button" onClick={() => onEditBrands(user)} className={actionCls}>
           <Tag size={13} /> Brand access…
         </button>
-        {multiCompany && (
-          <button
-            type="button"
-            onClick={() => onEditCompanies(user)}
-            className={actionCls}
-          >
-            <Building2 size={13} /> Company access…
-          </button>
-        )}
         {user.status !== "invited" && (
           <button type="button" onClick={() => onSendReset(user)} className={actionCls}>
             <KeyRound size={13} /> Send password reset link
@@ -2838,142 +2931,6 @@ function UserBrandsPanel({
           {selected.length === 0
             ? "Empty list — this user sees no projects when sales-scoped."
             : `${selected.length} brand${selected.length === 1 ? "" : "s"} selected.`}
-        </div>
-      </PanelSection>
-    </Panel>
-  );
-}
-
-/**
- * Per-user COMPANY allow-list editor (Phase 0e). Mirrors UserBrandsPanel: a
- * chip-toggle set backed by GET/PUT /api/users/:id/companies, with the option
- * list from GET /api/companies. Only ever mounted when multi-company is active
- * (>1 company) — see the `multiCompany` gate on the trigger buttons.
- */
-function UserCompaniesPanel({
-  user,
-  onClose,
-  onSaved,
-}: {
-  user: TeamMember;
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const toast = useToast();
-  const [busy, setBusy] = useState(false);
-  const [companyIds, setCompanyIds] = useState<number[] | null>(null);
-
-  // Canonical company list (the multi-company master).
-  const companyOpts = useQuery<{
-    companies: Array<{ id: number; code: string; name: string }>;
-  }>(() => api.get("/api/companies"));
-  // Current grant set for this user.
-  const current = useQuery<{ companies: number[] }>(
-    () => api.get(`/api/users/${user.id}/companies`),
-    [user.id]
-  );
-
-  // Hydrate local state once the fetch lands.
-  if (companyIds === null && current.data) {
-    setCompanyIds(current.data.companies);
-  }
-
-  const allCompanies = companyOpts.data?.companies ?? [];
-  const selected = companyIds ?? [];
-
-  function toggle(id: number) {
-    setCompanyIds((prev) => {
-      const cur = prev ?? [];
-      return cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
-    });
-  }
-
-  async function save() {
-    setBusy(true);
-    try {
-      await api.put(`/api/users/${user.id}/companies`, { companies: selected });
-      toast.success(
-        selected.length === 0
-          ? `Cleared ${user.name || user.email}'s company access`
-          : `Updated ${user.name || user.email}'s company access`
-      );
-      onSaved();
-    } catch (e: any) {
-      toast.error(e?.message || "Save failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <Panel
-      open
-      onClose={onClose}
-      title={user.name || user.email}
-      subtitle="Company access"
-      width={420}
-      footer={
-        <div className="flex items-center justify-end gap-2">
-          <button
-            onClick={onClose}
-            className="rounded-md border border-border bg-surface px-3 py-2 text-[12px] text-ink-secondary"
-          >
-            Cancel
-          </button>
-          <Button
-            variant="primary"
-            onClick={save}
-            disabled={busy || current.loading}
-          >
-            {busy ? "Saving…" : "Save"}
-          </Button>
-        </div>
-      }
-    >
-      <PanelSection title="Companies">
-        <div className="text-[11px] leading-snug text-ink-muted">
-          Which companies this user may act in. An empty list means the user
-          falls back to ALL companies (no restriction). Add one or more to
-          restrict them to just those.
-        </div>
-        <div className="flex flex-wrap gap-1.5">
-          {current.loading && (
-            <div className="flex flex-wrap gap-1.5">
-              {Array.from({ length: 2 }).map((_, i) => (
-                <Skeleton key={i} className="h-5 w-16" />
-              ))}
-            </div>
-          )}
-          {!current.loading && allCompanies.length === 0 && (
-            <div className="text-[11px] text-ink-muted">
-              No companies defined yet.
-            </div>
-          )}
-          {!current.loading &&
-            allCompanies.map((co) => {
-              const on = selected.includes(co.id);
-              return (
-                <button
-                  key={co.id}
-                  type="button"
-                  onClick={() => toggle(co.id)}
-                  className={cn(
-                    "rounded-full border px-2.5 py-1 font-mono text-[10px] font-semibold uppercase tracking-wider transition-colors",
-                    on
-                      ? "border-accent bg-accent text-white"
-                      : "border-border bg-surface text-ink-secondary hover:border-accent/40 hover:text-accent"
-                  )}
-                  title={co.name}
-                >
-                  {co.code}
-                </button>
-              );
-            })}
-        </div>
-        <div className="mt-1 text-[10px] text-ink-muted">
-          {selected.length === 0
-            ? "Empty list — no restriction (user may act in all companies)."
-            : `${selected.length} compan${selected.length === 1 ? "y" : "ies"} selected.`}
         </div>
       </PanelSection>
     </Panel>
@@ -4277,6 +4234,8 @@ export function InvitePanel({
   departments,
   positions,
   members,
+  companies,
+  multiCompany,
   lockDeptId,
   onInvited,
 }: {
@@ -4286,6 +4245,8 @@ export function InvitePanel({
   departments: Department[];
   positions: Position[];
   members: TeamMember[];
+  companies: CompanyOpt[];
+  multiCompany: boolean;
   /** Sales Director (scoped) — when provided (number or null), the new member
    *  is FORCED into this department and the Department/Position/Role pickers are
    *  hidden. `undefined` = normal full-admin invite (all pickers shown). */
@@ -4299,6 +4260,10 @@ export function InvitePanel({
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [roleId, setRoleId] = useState<number | "">("");
+  // Company grants for the new member (Phase 0e). Defaults to Houzs (id 1) so a
+  // new user is never created with zero grants. Scoped Sales-Director invites
+  // don't show the picker — they are forced to Houzs server-side.
+  const [companyIds, setCompanyIds] = useState<number[]>([1]);
   const [deptId, setDeptId] = useState<number | "">(
     scoped ? lockDeptId ?? "" : "",
   );
@@ -4388,6 +4353,9 @@ export function InvitePanel({
         position_id: scoped ? undefined : positionId || undefined,
         manager_id: managerId || undefined,
         phone: phone.trim() || undefined,
+        // Company grants (Phase 0e). Omitted for scoped invites (forced to
+        // Houzs server-side). Backend defaults to [1] (Houzs) if absent.
+        company_ids: scoped ? undefined : companyIds,
         password: pw || undefined,
       });
       setIssued(res);
@@ -4414,6 +4382,7 @@ export function InvitePanel({
     setPositionId("");
     setManagerId("");
     setManagerQuery("");
+    setCompanyIds([1]);
     setPassword("");
     setShowPassword(false);
     setIssued(null);
@@ -4593,6 +4562,22 @@ export function InvitePanel({
                 </div>
               </div>
             </>
+          )}
+          {!scoped && multiCompany && (
+            <div>
+              <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+                Company
+              </label>
+              <CompanySelect
+                companies={companies}
+                value={companyIds}
+                onChange={setCompanyIds}
+              />
+              <div className="mt-1 text-[10px] text-ink-muted">
+                Which company this member works in. "Both" grants access to all
+                companies. Defaults to Houzs.
+              </div>
+            </div>
           )}
           <div>
             <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
