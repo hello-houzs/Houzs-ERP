@@ -5299,37 +5299,9 @@ function VerificationCard({
         value={c.qc_receipt_date}
         onSave={(v) => patch({ qc_receipt_date: v || null })}
       />
-      {/* Mig 0105 — result of the QC-on-receipt inspection, distinct
-          from the post-repair QC in Item Ready (inspection_result). */}
-      <div>
-        <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
-          QC Issue Inspection Result
-        </div>
-        <div className="flex gap-1.5">
-          {([
-            { v: "pass", label: "Pass" },
-            { v: "fail", label: "Fail" },
-            { v: "na", label: "N/A" },
-          ] as const).map((o) => (
-            <button
-              key={o.v}
-              type="button"
-              onClick={() =>
-                patch({ qc_issue_result: c.qc_issue_result === o.v ? null : o.v })
-              }
-              disabled={archived || saving}
-              className={cn(
-                "rounded-md border px-3 py-1.5 text-[12px] font-semibold transition-colors",
-                c.qc_issue_result === o.v
-                  ? "border-primary bg-primary-soft text-primary"
-                  : "border-border bg-surface text-ink-secondary hover:border-primary/40",
-              )}
-            >
-              {o.label}
-            </button>
-          ))}
-        </div>
-      </div>
+      {/* qc_issue_result column exists (mig 0105) but has no UI — Nick
+          2026-07-14: the on-receipt check only needs the date + photos;
+          the pass/fail verdict lives in Outcome below. */}
       <div>
         <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
           Outcome

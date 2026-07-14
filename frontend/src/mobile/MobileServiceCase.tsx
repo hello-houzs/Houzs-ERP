@@ -819,25 +819,10 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
               busy={busy}
               onSave={(v) => patchCase({ verified_root_cause: v || null }, "Couldn't save verification")}
             />
-            {/* QC issue inspection — on receipt (mig 0105: folded in from the
-                retired Pending Inspection stage). */}
-            <div className="fld-l" style={{ marginTop: 10 }}>QC issue inspection result</div>
-            <div style={{ display: "flex", gap: 7, margin: "6px 0 4px" }}>
-              {QC_RESULT_OPTIONS.map((o) => {
-                const active = String(get(c, "qcIssueResult", "qc_issue_result") ?? "") === o.value;
-                return (
-                  <button
-                    key={o.value}
-                    onClick={() => { if (!dis) patchCase({ qc_issue_result: active ? null : o.value }, "Couldn't save QC issue result"); }}
-                    disabled={dis}
-                    className="tinybtn"
-                    style={active ? { background: BROWN, borderColor: BROWN, color: "#fff" } : undefined}
-                  >
-                    {o.label}
-                  </button>
-                );
-              })}
-            </div>
+            {/* QC issue inspection — on receipt (mig 0105: folded in from
+                the retired Pending Inspection stage). The qc_issue_result
+                column exists but ships no UI — Nick 2026-07-14: date +
+                photos suffice; the verdict is the Outcome above. */}
             <EditRow label="QC issue date" type="date" value={get(c, "qcReceiptDate", "qc_receipt_date")} busy={busy} disabled={dis} onSave={(v) => patchCase({ qc_receipt_date: v }, "Couldn't save QC issue date")} />
             {/* Inspect by — own team or supplier (inspection_by, mig 0073). */}
             <div className="fld-l" style={{ marginTop: 10, marginBottom: 8 }}>Inspect by</div>
