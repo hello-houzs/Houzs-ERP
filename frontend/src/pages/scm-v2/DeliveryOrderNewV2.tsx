@@ -5,8 +5,15 @@
 // same colour tokens) but every section is an editable form group. A DO is
 // created by CONVERTING a Sales Order: when the user opens the page with
 // ?fromSo=<SO-doc-no>, the SO detail hook prefills the customer, address,
-// emergency contact, and line items. Editing an existing DO with ?edit=<id>
-// prefills from the DO itself and switches the primary CTA to "Save changes".
+// emergency contact, and — when it arrived from the line-level SO→DO picker
+// (?fromPicks=1) — the picked LINES, variants and all, from the
+// `doFromSoPicks` sessionStorage stash. Editing an existing DO with ?edit=<id>
+// prefills from the DO itself and SAVES IN PLACE (header PATCH + per-line
+// add/update/delete diff) instead of minting a duplicate.
+//
+// Line items use the SHARED SoLineCard (the same component SO New / Edit
+// mount) so bedframe (Fabrics / Gaps / Divan / Leg) + sofa (Fabrics / Seat /
+// Leg) + Special Orders carry the correct taxonomy — no hand-rolled picker.
 //
 // Section order (matches the prototype):
 //   1. Document flow — inline node card (5-node chain, current DO is brass)
@@ -16,22 +23,16 @@
 //   4. Emergency contact — name / relationship / phone
 //   5. Delivery info     — DO date / driver / vehicle / building type + venue /
 //                          expected / customer delivery / note
-//   6. Line items        — Item & variant · Remarks · Qty · Delivery · delete
-//                          with a per-line + Variant picker modal
-//
-// Header right actions (no-wrap, flex-shrink:0):
-//   From Sales Order (ghost) · Cancel (ghost) · Save as Draft (secondary) ·
-//   Create Delivery Order (primary)
+//   6. Line items        — shared SoLineCard list
 //
 // Route: /scm/delivery-orders/new (App.tsx flips ScmDeliveryOrderNewV2 here).
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
   ArrowRight as ArrowRightIcon,
-  Trash2,
   Plus,
   X as XIcon,
   Save,
@@ -40,29 +41,31 @@ import {
   ShoppingCart,
 } from "lucide-react";
 import { Button } from "../../components/Button";
-import { Badge } from "../../components/Badge";
 import {
   useCreateMfgDeliveryOrder,
   useMfgDeliveryOrderDetail,
+  useUpdateMfgDeliveryOrderHeader,
+  useAddMfgDeliveryOrderItem,
+  useUpdateMfgDeliveryOrderItem,
+  useDeleteMfgDeliveryOrderItem,
 } from "../../vendor/scm/lib/delivery-order-queries";
 import { useMfgSalesOrderDetail } from "../../vendor/scm/lib/sales-order-queries";
 import { useSoDropdownOptions, optionsOrFallback } from "../../vendor/scm/lib/so-dropdown-options-queries";
+import {
+  SoLineCard,
+  emptySoLine,
+  type SoLineDraft,
+} from "../../vendor/scm/components/SoLineCard";
+import type { MfgProductRow } from "../../vendor/scm/lib/mfg-products-queries";
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
 import { cn } from "../../lib/utils";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
-type LineDraft = {
-  id: number;
-  itemCode: string;
-  description: string;
-  remark: string;
-  qty: string;
-  deliveryDate: string;
-  uom: string;
-  variants: Array<{ k: string; v: string }>;
-  branding: string;
-};
+/* One DO line draft = the SHARED SoLineDraft (same variant taxonomy the SO
+   uses) plus a stable React id and, in edit mode, the persisted item id used
+   to diff add / update / delete against the loaded DO. */
+type DoDraftLine = SoLineDraft & { rid: string; itemId?: string };
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -81,50 +84,14 @@ const isoToDmy = (iso: string): string => {
   return `${m[3]}/${m[2]}/${m[1]}`;
 };
 
-const emptyLine = (id: number): LineDraft => ({
-  id,
-  itemCode: "",
-  description: "",
-  remark: "",
-  qty: "1",
-  deliveryDate: "",
-  uom: "UNIT",
-  variants: [],
-  branding: "",
+/* Fresh empty DO line — the shared empty SO line + a stable rid so the local
+   list can add / edit / diff inline (mirrors SalesOrderNew.newLine). */
+const newDoLine = (deliveryDate: string | null = null): DoDraftLine => ({
+  ...emptySoLine(),
+  lineDeliveryDate: deliveryDate,
+  lineDeliveryDateOverridden: false,
+  rid: `dl${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
 });
-
-// Per-product variant options for the picker modal. In real life this comes
-// from a mfg-products/models attribute service — for now the options are
-// derived from the item's category, with sensible fallbacks.
-const VARIANT_MENU: Record<string, Array<[string, string[]]>> = {
-  AKEMI: [
-    ["Size", ["Single", "Super-single", "Queen", "King"]],
-    ["Firmness", ["Plush", "Medium", "Medium-firm", "Firm"]],
-    ["Top", ["Standard", "Pillow-top", "Euro-top"]],
-  ],
-  SOFA: [
-    ["Fabric", ["Charcoal linen", "Sand weave", "Forest velvet"]],
-    ["Config", ["Straight", "L-shape", "U-shape"]],
-    ["Legs", ["Walnut", "Black steel"]],
-  ],
-  BEDFRAME: [
-    ["Size", ["Single", "Super-single", "Queen", "King"]],
-    ["Style", ["Solid", "Divan", "Storage"]],
-  ],
-  _DEFAULT: [
-    ["Size", ["S", "M", "L", "XL"]],
-    ["Colour", ["Natural", "Charcoal", "White"]],
-    ["Material", ["Fabric", "Leather", "PU"]],
-  ],
-};
-
-const variantMenuFor = (line: LineDraft): Array<[string, string[]]> => {
-  const s = `${line.branding} ${line.itemCode} ${line.description}`.toUpperCase();
-  if (s.includes("AKEMI") || s.includes("MATTRESS")) return VARIANT_MENU.AKEMI!;
-  if (s.includes("SOFA")) return VARIANT_MENU.SOFA!;
-  if (s.includes("BED") || s.includes("BEDFRAME")) return VARIANT_MENU.BEDFRAME!;
-  return VARIANT_MENU._DEFAULT!;
-};
 
 // ─── Section card shell ────────────────────────────────────────────────────
 
@@ -407,96 +374,6 @@ function DocumentFlowStrip({ soDocNo }: { soDocNo: string | null }) {
   );
 }
 
-// ─── Variant picker modal ──────────────────────────────────────────────────
-
-function VariantPickerModal({
-  line,
-  onClose,
-  onPick,
-}: {
-  line: LineDraft | null;
-  onClose: () => void;
-  onPick: (attr: string, val: string) => void;
-}) {
-  const menu = line ? variantMenuFor(line) : [];
-  const open = !!line;
-  // Portal to <body> so `fixed` positioning latches to the viewport instead
-  // of getting trapped inside an ancestor with `transform` / `filter` /
-  // `will-change` (the Layout's overflow-hidden main pane triggers this on
-  // mobile browsers). Without the portal the modal renders at the bottom of
-  // its containing block — see 2026-07-08 bug report from Nick.
-  return createPortal(
-    <>
-      <div
-        onClick={onClose}
-        aria-hidden
-        className={cn(
-          "fixed inset-0 z-[80] bg-ink/45 backdrop-blur-[1px] transition-opacity duration-200",
-          open ? "opacity-100" : "pointer-events-none opacity-0"
-        )}
-      />
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="Add variant"
-        className={cn(
-          "fixed left-1/2 top-[8vh] z-[81] flex max-h-[84vh] w-[calc(100%-32px)] max-w-[460px] -translate-x-1/2 flex-col overflow-hidden rounded-2xl bg-surface shadow-slab transition-all duration-200",
-          open ? "scale-100 opacity-100" : "pointer-events-none scale-[.97] opacity-0"
-        )}
-      >
-        <div className="flex items-start justify-between gap-3 border-b border-border-subtle px-5 py-4">
-          <div>
-            <div className="text-[15px] font-bold text-ink">Add variant</div>
-            <div className="mt-0.5 text-[12px] text-ink-muted">
-              {line?.itemCode || line?.description || "New line"}
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-ink-muted hover:text-ink"
-            aria-label="Close"
-          >
-            <XIcon size={18} />
-          </button>
-        </div>
-        <div className="thin-scroll flex-1 overflow-y-auto p-5">
-          {menu.map(([attr, values]) => (
-            <div key={attr} className="mb-4 last:mb-0">
-              <div className="mb-2 px-1 font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
-                {attr}
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {values.map((val) => {
-                  const active =
-                    line?.variants.some((v) => v.k === attr && v.v === val) ??
-                    false;
-                  return (
-                    <button
-                      key={val}
-                      type="button"
-                      onClick={() => onPick(attr, val)}
-                      className={cn(
-                        "inline-flex h-8 items-center rounded-full px-3.5 text-[12.5px] font-semibold transition-colors",
-                        active
-                          ? "border border-primary bg-primary text-white"
-                          : "border border-border bg-surface text-ink hover:border-primary/40 hover:bg-primary-soft"
-                      )}
-                    >
-                      {val}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </>,
-    document.body
-  );
-}
-
 // ─── From SO picker modal ──────────────────────────────────────────────────
 
 function FromSoPickerModal({
@@ -515,7 +392,10 @@ function FromSoPickerModal({
     if (open) setValue(currentValue ?? "");
   }, [open, currentValue]);
 
-  // Portal to <body> — see the VariantPickerModal note above; same fix.
+  // Portal to <body> so `fixed` positioning latches to the viewport instead of
+  // getting trapped inside an ancestor with `transform` / `filter` /
+  // `will-change` (the Layout's overflow-hidden main pane triggers this on
+  // mobile browsers).
   return createPortal(
     <>
       <div
@@ -589,12 +469,17 @@ export function DeliveryOrderNewV2() {
   ]);
 
   const fromSoParam = params.get("fromSo") ?? params.get("so") ?? "";
+  const fromPicks = params.get("fromPicks") === "1";
   const editId = params.get("edit") ?? "";
 
   const [soDocNo, setSoDocNo] = useState<string>(fromSoParam);
   const soDetail = useMfgSalesOrderDetail(soDocNo || null);
   const doDetail = useMfgDeliveryOrderDetail(editId || null);
   const createDo = useCreateMfgDeliveryOrder();
+  const updateHeader = useUpdateMfgDeliveryOrderHeader();
+  const addItem = useAddMfgDeliveryOrderItem();
+  const updateItem = useUpdateMfgDeliveryOrderItem();
+  const deleteItem = useDeleteMfgDeliveryOrderItem();
 
   // ── Form state ─────────────────────────────────────────────────────
   const [customerName, setCustomerName] = useState("");
@@ -622,14 +507,16 @@ export function DeliveryOrderNewV2() {
   const [expectedDate, setExpectedDate] = useState("");
   const [customerDelDate, setCustomerDelDate] = useState("");
   const [note, setNote] = useState("");
-  const [lines, setLines] = useState<LineDraft[]>([emptyLine(1)]);
-  const [nextLineId, setNextLineId] = useState(2);
-  const [variantPickerLine, setVariantPickerLine] = useState<LineDraft | null>(
-    null
-  );
+  const [lines, setLines] = useState<DoDraftLine[]>(() => [newDoLine()]);
   const [soPickerOpen, setSoPickerOpen] = useState(false);
   const [flash, setFlash] = useState<string | null>(null);
   const [asDraft, setAsDraft] = useState(false);
+  const [savingEdit, setSavingEdit] = useState(false);
+
+  // One-shot seed guards + the original-line signatures used to diff an edit.
+  const [stashSeeded, setStashSeeded] = useState(false);
+  const [editSeeded, setEditSeeded] = useState(false);
+  const originalLinesRef = useRef<Map<string, string>>(new Map());
 
   // Flash toast
   useEffect(() => {
@@ -638,8 +525,65 @@ export function DeliveryOrderNewV2() {
     return () => clearTimeout(t);
   }, [flash]);
 
-  // Prefill from SO detail (when converting)
+  // ── Item body — the shared shape create-items + add/update-item all send.
+  const toDoItemBody = (l: DoDraftLine) => ({
+    itemCode: l.itemCode,
+    itemGroup: l.itemGroup,
+    description: l.description,
+    uom: l.uom,
+    qty: l.qty,
+    unitPriceCenti: l.unitPriceCenti,
+    discountCenti: l.discountCenti,
+    unitCostCenti: l.unitCostCenti,
+    variants: l.variants,
+    remark: l.remark,
+    deliveryDate: l.lineDeliveryDate ?? "",
+  });
+
+  // ── SO→DO line stash (from the line-level picker) ──────────────────
+  // DeliveryOrderFromSo stashes the picked SO lines — variants and all — under
+  // `doFromSoPicks` and navigates here with ?fromPicks=1. Seed the line editors
+  // from that stash so fabric / gaps / divan / leg / seat / specials survive the
+  // hand-off (the old code re-prefilled variants:[] from the raw SO items and
+  // dropped them). One-shot + consumed so a refresh starts clean.
   useEffect(() => {
+    if (!fromPicks || stashSeeded) return;
+    setStashSeeded(true);
+    let stash: Array<Record<string, unknown>> = [];
+    try {
+      stash = JSON.parse(sessionStorage.getItem("doFromSoPicks") ?? "[]");
+    } catch {
+      stash = [];
+    }
+    sessionStorage.removeItem("doFromSoPicks");
+    if (Array.isArray(stash) && stash.length > 0) {
+      setLines(
+        stash.map((s) => ({
+          ...newDoLine(null),
+          itemCode: String(s.itemCode ?? ""),
+          itemGroup: String(s.itemGroup ?? "others"),
+          description: String(s.description ?? ""),
+          uom: String(s.uom ?? "UNIT"),
+          qty: Number(s.qty ?? 1),
+          unitPriceCenti: Number(s.unitPriceCenti ?? 0),
+          discountCenti: Number(s.discountCenti ?? 0),
+          unitCostCenti: Number(s.unitCostCenti ?? 0),
+          variants:
+            s.variants && typeof s.variants === "object"
+              ? (s.variants as Record<string, unknown>)
+              : {},
+          remark: "",
+        }))
+      );
+    }
+  }, [fromPicks, stashSeeded]);
+
+  // ── Prefill from SO detail (when converting) ───────────────────────
+  // Header/customer fields only. Lines come from the stash above (fromPicks);
+  // a bare ?fromSo= without picks falls back to the SO's items. Skipped in edit
+  // mode — an existing DO prefills from itself, not from its parent SO.
+  useEffect(() => {
+    if (editId) return;
     const so = (soDetail.data as { salesOrder?: Record<string, unknown> } | undefined)?.salesOrder;
     if (!so || !soDocNo) return;
     setCustomerName(String(so.debtor_name ?? ""));
@@ -656,94 +600,152 @@ export function DeliveryOrderNewV2() {
     setSalesLocation(String(so.sales_location ?? ""));
     setBuildingType(String(so.building_type ?? ""));
     setVenue(String(so.venue ?? ""));
-    // Lines
-    const items = (soDetail.data as { items?: Array<Record<string, unknown>> } | undefined)?.items ?? [];
-    if (items.length > 0) {
-      let nid = 1;
-      const newLines: LineDraft[] = items.map((it) => ({
-        id: nid++,
-        itemCode: String(it.item_code ?? ""),
-        description: String(it.description ?? ""),
-        remark: "",
-        qty: String(it.qty ?? 1),
-        deliveryDate: "",
-        uom: String(it.uom ?? "UNIT"),
-        variants: [],
-        branding: String(it.item_group ?? ""),
-      }));
-      setLines(newLines);
-      setNextLineId(nid);
+    // Lines fallback — only when the line-level picker didn't hand a stash over.
+    if (!fromPicks) {
+      const items = (soDetail.data as { items?: Array<Record<string, unknown>> } | undefined)?.items ?? [];
+      if (items.length > 0) {
+        setLines(
+          items.map((it) => ({
+            ...newDoLine(null),
+            itemCode: String(it.item_code ?? ""),
+            itemGroup: String(it.item_group ?? "others"),
+            description: String(it.description ?? ""),
+            uom: String(it.uom ?? "UNIT"),
+            qty: Number(it.qty ?? 1),
+            unitPriceCenti: Number(it.unit_price_centi ?? 0),
+            discountCenti: Number(it.discount_centi ?? 0),
+            unitCostCenti: Number(it.unit_cost_centi ?? 0),
+            variants:
+              it.variants && typeof it.variants === "object"
+                ? (it.variants as Record<string, unknown>)
+                : {},
+            remark: String(it.remark ?? ""),
+          }))
+        );
+      }
     }
     setFlash(`Prefilled from ${soDocNo}`);
-  }, [soDetail.data, soDocNo]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [soDetail.data, soDocNo, editId, fromPicks]);
 
-  // Prefill from DO detail (when editing)
+  // ── Prefill from DO detail (when editing) ──────────────────────────
+  // Seeds header + lines (with their persisted item id) once, and snapshots
+  // each line's signature so the Save can diff add / update / delete.
   useEffect(() => {
+    if (!editId || editSeeded) return;
     const doo = (doDetail.data as { deliveryOrder?: Record<string, unknown> } | undefined)?.deliveryOrder;
-    if (!doo || !editId) return;
+    if (!doo) return;
+    setEditSeeded(true);
     setCustomerName(String(doo.debtor_name ?? ""));
+    setCustomerSoRef(String((doo.customer_so_no ?? doo.po_doc_no ?? doo.ref ?? "") as string));
     setPhone(String(doo.phone ?? ""));
     setEmail(String(doo.email ?? ""));
+    setCustomerType(String((doo.customer_type ?? "") as string));
+    setSalesperson(String((doo.agent ?? doo.salesperson_id ?? "") as string));
     setAddr1(String(doo.address1 ?? ""));
     setAddr2(String(doo.address2 ?? ""));
     setState(String(doo.customer_state ?? ""));
     setCity(String(doo.city ?? ""));
     setPostcode(String(doo.postcode ?? ""));
     setSalesLocation(String(doo.sales_location ?? ""));
+    setEcName(String((doo.emergency_contact_name ?? "") as string));
+    setEcRelationship(String((doo.emergency_contact_relationship ?? "") as string));
+    setEcPhone(String((doo.emergency_contact_phone ?? "") as string));
     setDoDate(String(doo.do_date ?? todayIso()).slice(0, 10));
     setDriver(String((doo.driver_name ?? "") as string));
     setVehicle(String(doo.vehicle ?? ""));
     setBuildingType(String(doo.building_type ?? ""));
     setVenue(String(doo.venue ?? ""));
+    setExpectedDate(String((doo.expected_delivery_at ?? "") as string).slice(0, 10));
+    setCustomerDelDate(String((doo.customer_delivery_date ?? "") as string).slice(0, 10));
     setNote(String((doo.note ?? doo.notes ?? "") as string));
     setSoDocNo(String((doo.so_doc_no ?? "") as string));
-  }, [doDetail.data, editId]);
+
+    const items = (doDetail.data as { items?: Array<Record<string, unknown>> } | undefined)?.items ?? [];
+    const seeded: DoDraftLine[] = items.map((it) => {
+      const line: DoDraftLine = {
+        ...newDoLine(
+          String((it.delivery_date ?? it.line_delivery_date ?? "") as string).slice(0, 10) || null
+        ),
+        itemId: String(it.id ?? ""),
+        itemCode: String(it.item_code ?? ""),
+        itemGroup: String(it.item_group ?? "others"),
+        description: String(it.description ?? ""),
+        uom: String(it.uom ?? "UNIT"),
+        qty: Number(it.qty ?? 1),
+        unitPriceCenti: Number(it.unit_price_centi ?? 0),
+        discountCenti: Number(it.discount_centi ?? 0),
+        unitCostCenti: Number(it.unit_cost_centi ?? 0),
+        variants:
+          it.variants && typeof it.variants === "object"
+            ? (it.variants as Record<string, unknown>)
+            : {},
+        remark: String(it.remark ?? ""),
+      };
+      return line;
+    });
+    if (seeded.length > 0) {
+      setLines(seeded);
+      const sigs = new Map<string, string>();
+      for (const l of seeded) {
+        if (l.itemId) sigs.set(l.itemId, JSON.stringify(toDoItemBody(l)));
+      }
+      originalLinesRef.current = sigs;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doDetail.data, editId, editSeeded]);
 
   // ── Totals ─────────────────────────────────────────────────────────
   const totalQty = useMemo(
-    () =>
-      lines.reduce((sum, l) => {
-        const n = parseInt(l.qty, 10);
-        return sum + (Number.isFinite(n) ? n : 0);
-      }, 0),
+    () => lines.reduce((sum, l) => sum + (Number.isFinite(l.qty) ? l.qty : 0), 0),
     [lines]
   );
 
+  // ── Sofa-set inherit — first line per category seeds followers on pick
+  //    (same memo SalesOrderNew feeds SoLineCard). ───────────────────
+  const inheritVariantsByCategory = useMemo(() => {
+    const out: Record<string, Record<string, unknown>> = {};
+    for (const l of lines) {
+      const cat = l.itemGroup;
+      if (!cat || out[cat]) continue;
+      if (l.variants && Object.keys(l.variants).length > 0) out[cat] = l.variants;
+    }
+    return out;
+  }, [lines]);
+
   // ── Line ops ───────────────────────────────────────────────────────
   const addLine = () => {
-    setLines((prev) => [...prev, emptyLine(nextLineId)]);
-    setNextLineId((n) => n + 1);
+    setLines((prev) => [...prev, newDoLine(customerDelDate || null)]);
   };
-  const removeLine = (id: number) => {
-    setLines((prev) => prev.filter((l) => l.id !== id));
+  const removeLine = (rid: string) => {
+    setLines((prev) => prev.filter((l) => l.rid !== rid));
   };
-  const updateLine = (id: number, patch: Partial<LineDraft>) => {
-    setLines((prev) => prev.map((l) => (l.id === id ? { ...l, ...patch } : l)));
+  const updateLine = (rid: string, patch: Partial<SoLineDraft>) => {
+    setLines((prev) => prev.map((l) => (l.rid === rid ? { ...l, ...patch } : l)));
   };
-  const removeVariant = (lineId: number, k: string) => {
-    setLines((prev) =>
-      prev.map((l) =>
-        l.id === lineId ? { ...l, variants: l.variants.filter((v) => v.k !== k) } : l
-      )
-    );
-  };
-  const pickVariant = (attr: string, val: string) => {
-    if (!variantPickerLine) return;
-    setLines((prev) =>
-      prev.map((l) => {
-        if (l.id !== variantPickerLine.id) return l;
-        const vs = l.variants.filter((v) => v.k !== attr);
-        vs.push({ k: attr, v: val });
-        return { ...l, variants: vs };
-      })
-    );
-    setFlash(`${attr}: ${val} added`);
-    setVariantPickerLine(null);
+  // Desktop multi-add parity — SoLineCard commits the first pick to its own
+  // line and hands the rest here as fresh lines (same as SalesOrderNew).
+  const addProducts = (rows: MfgProductRow[]) => {
+    if (rows.length === 0) return;
+    setLines((prev) => [
+      ...prev,
+      ...rows.map((p) => {
+        const category = p.category.toLowerCase();
+        const inherited = inheritVariantsByCategory[category];
+        return {
+          ...newDoLine(customerDelDate || null),
+          itemCode: p.code,
+          itemGroup: category,
+          description: p.name,
+          unitPriceCenti: p.sell_price_sen ?? 0,
+          variants: inherited ? { ...inherited } : {},
+        };
+      }),
+    ]);
   };
 
-  // ── Submit ─────────────────────────────────────────────────────────
-  const buildBody = () => ({
-    soDocNo: soDocNo || undefined,
+  // ── Submit — create ────────────────────────────────────────────────
+  const buildHeaderBody = () => ({
     debtorName: customerName,
     phone,
     email,
@@ -767,17 +769,14 @@ export function DeliveryOrderNewV2() {
     customerDeliveryDate: customerDelDate,
     note,
     customerSoNo: customerSoRef,
-    items: lines
-      .filter((l) => l.itemCode.trim() || l.description.trim())
-      .map((l) => ({
-        itemCode: l.itemCode,
-        description: l.description,
-        uom: l.uom,
-        qty: parseInt(l.qty, 10) || 0,
-        variants: Object.fromEntries(l.variants.map((v) => [v.k, v.v])),
-        remark: l.remark,
-        deliveryDate: l.deliveryDate,
-      })),
+  });
+
+  const validLines = () => lines.filter((l) => l.itemCode.trim() || l.description.trim());
+
+  const buildBody = () => ({
+    soDocNo: soDocNo || undefined,
+    ...buildHeaderBody(),
+    items: validLines().map(toDoItemBody),
   });
 
   const goCancel = () => {
@@ -792,7 +791,7 @@ export function DeliveryOrderNewV2() {
       window.alert("Customer name is required.");
       return;
     }
-    if (buildBody().items.length === 0) {
+    if (validLines().length === 0) {
       window.alert("Add at least one line item.");
       return;
     }
@@ -819,7 +818,62 @@ export function DeliveryOrderNewV2() {
     );
   };
 
-  const submitting = createDo.isPending;
+  // ── Submit — in-place edit (header PATCH + per-line add/update/delete) ─
+  const doSaveEdit = async () => {
+    if (!editId) return;
+    if (!customerName.trim()) {
+      window.alert("Customer name is required.");
+      return;
+    }
+    const current = validLines();
+    if (current.length === 0) {
+      window.alert("Add at least one line item.");
+      return;
+    }
+    setSavingEdit(true);
+    try {
+      // Diff the loaded DO's lines against the current editor state.
+      const currentIds = new Set(
+        lines.filter((l) => l.itemId).map((l) => l.itemId as string)
+      );
+      const removed = [...originalLinesRef.current.keys()].filter(
+        (id) => !currentIds.has(id)
+      );
+
+      const ops: Array<Promise<unknown>> = [];
+      for (const itemId of removed) {
+        ops.push(deleteItem.mutateAsync({ id: editId, itemId }));
+      }
+      for (const l of current) {
+        const body = toDoItemBody(l);
+        if (l.itemId) {
+          const orig = originalLinesRef.current.get(l.itemId);
+          if (orig !== JSON.stringify(body)) {
+            ops.push(updateItem.mutateAsync({ id: editId, itemId: l.itemId, ...body }));
+          }
+        } else {
+          ops.push(addItem.mutateAsync({ id: editId, ...body }));
+        }
+      }
+      // Lines first, then the header — mirrors SalesOrderDetail.saveEdit so a
+      // header guard that reads the live line rows sees the fresh variants.
+      await Promise.all(ops);
+      await updateHeader.mutateAsync({ id: editId, ...buildHeaderBody() });
+      setFlash("Delivery order updated");
+      navigate(`/scm/delivery-orders/${editId}`);
+    } catch (err) {
+      window.alert(
+        "Save failed: " + (err instanceof Error ? err.message : String(err))
+      );
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
+  const primarySubmit = () => (editId ? doSaveEdit() : doCreate(false));
+  const secondarySubmit = () => (editId ? doSaveEdit() : doCreate(true));
+
+  const submitting = createDo.isPending || savingEdit;
 
   return (
     <div className="pb-20">
@@ -840,7 +894,7 @@ export function DeliveryOrderNewV2() {
                 {editId ? "Edit Delivery Order" : "New Delivery Order"}
               </h1>
               <div className="mt-1 flex flex-wrap items-center gap-2 text-[12.5px] text-ink-secondary">
-                <span>Draft · not yet saved</span>
+                <span>{editId ? "Editing · changes save in place" : "Draft · not yet saved"}</span>
                 {soDocNo && (
                   <>
                     <span className="text-border-strong">·</span>
@@ -874,23 +928,31 @@ export function DeliveryOrderNewV2() {
             <Button
               variant="secondary"
               icon={<Save size={14} />}
-              onClick={() => doCreate(true)}
+              onClick={secondarySubmit}
               disabled={submitting}
               className="whitespace-nowrap"
             >
-              {asDraft && submitting ? "Saving…" : "Save as Draft"}
+              {editId
+                ? savingEdit
+                  ? "Saving…"
+                  : "Save changes"
+                : asDraft && submitting
+                  ? "Saving…"
+                  : "Save as Draft"}
             </Button>
             <Button
               variant="primary"
               icon={<CheckCircle2 size={14} />}
-              onClick={() => doCreate(false)}
+              onClick={primarySubmit}
               disabled={submitting}
               className="whitespace-nowrap"
             >
-              {!asDraft && submitting
-                ? "Creating…"
-                : editId
-                  ? "Save changes"
+              {editId
+                ? savingEdit
+                  ? "Saving…"
+                  : "Save changes"
+                : !asDraft && submitting
+                  ? "Creating…"
                   : "Create Delivery Order"}
             </Button>
           </div>
@@ -1129,112 +1191,29 @@ export function DeliveryOrderNewV2() {
           </div>
         </SectionCard>
 
-        {/* Line items */}
+        {/* Line items — shared SoLineCard (bedframe / sofa / specials taxonomy) */}
         <SectionCard
           title={`Line items · ${lines.length}`}
           actions={<span>Pick a product, then set its variant</span>}
         >
-          <div className="grid grid-cols-[26px_1.5fr_1fr_70px_130px_34px] gap-2 border-b border-border-subtle pb-2 font-mono text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
-            <span>#</span>
-            <span>Item &amp; variant</span>
-            <span>Remarks</span>
-            <span className="text-right">Qty</span>
-            <span>Delivery</span>
-            <span></span>
+          <div className="flex flex-col gap-3">
+            {lines.map((line, idx) => (
+              <SoLineCard
+                key={line.rid}
+                index={idx}
+                draft={line}
+                onChange={(patch) => updateLine(line.rid, patch)}
+                onRemove={() => removeLine(line.rid)}
+                canRemove={lines.length > 1}
+                inheritVariantsByCategory={inheritVariantsByCategory}
+                onAddProducts={addProducts}
+                /* A DO delivers items already specified on the SO, so the
+                   category-mandatory variants are NOT re-required here (they
+                   ride in from the SO stash / DO detail). */
+                variantsRequired={false}
+              />
+            ))}
           </div>
-
-          {lines.map((line, i) => (
-            <div
-              key={line.id}
-              className="border-b border-border-subtle py-3.5 last:border-b-0"
-            >
-              <div className="grid grid-cols-[26px_1.5fr_1fr_70px_130px_34px] items-center gap-2">
-                <span className="font-mono text-[12px] font-semibold text-ink-muted">
-                  {i + 1}
-                </span>
-                <TextInput
-                  value={line.itemCode || line.description}
-                  onChange={(v) => updateLine(line.id, { itemCode: v, description: v })}
-                  placeholder="Click to pick or type to filter…"
-                />
-                <TextInput
-                  value={line.remark}
-                  onChange={(v) => updateLine(line.id, { remark: v })}
-                  placeholder="Type remarks…"
-                />
-                <TextInput
-                  value={line.qty}
-                  onChange={(v) => updateLine(line.id, { qty: v })}
-                  className="text-right font-money"
-                />
-                <TextInput
-                  value={line.deliveryDate}
-                  onChange={(v) => updateLine(line.id, { deliveryDate: v })}
-                  placeholder="dd/mm/yyyy"
-                  type="date"
-                />
-                <button
-                  type="button"
-                  onClick={() => removeLine(line.id)}
-                  aria-label="Delete line"
-                  className="inline-flex h-9 w-9 items-center justify-center rounded-md text-ink-muted hover:bg-err-soft hover:text-err"
-                >
-                  <Trash2 size={15} />
-                </button>
-              </div>
-              {/* Variant row */}
-              <div className="mt-2.5 flex flex-wrap items-center gap-2 pl-[36px]">
-                <span className="mr-1 font-mono text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
-                  Variant
-                </span>
-                {line.variants.map((v) => (
-                  <span
-                    key={v.k}
-                    className="inline-flex h-7 items-center gap-1.5 rounded-full border border-border-subtle bg-surface-2 px-2.5"
-                  >
-                    <span className="font-mono text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
-                      {v.k}
-                    </span>
-                    <span className="text-[12px] font-semibold text-primary-ink">
-                      {v.v}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => removeVariant(line.id, v.k)}
-                      className="text-[11px] text-ink-muted hover:text-err"
-                      aria-label={`Remove ${v.k}`}
-                    >
-                      ✕
-                    </button>
-                  </span>
-                ))}
-                <button
-                  type="button"
-                  onClick={() => setVariantPickerLine(line)}
-                  className="inline-flex h-7 items-center gap-1 rounded-full border border-dashed border-border-strong px-3 text-[12px] font-semibold text-ink-secondary hover:border-primary/60 hover:bg-primary-soft hover:text-primary"
-                >
-                  + Variant
-                </button>
-                {line.branding && (
-                  <span className="ml-auto">
-                    <Badge
-                      tone={
-                        line.branding.toUpperCase().includes("SOFA") ||
-                        line.branding.toUpperCase().includes("2990")
-                          ? "success"
-                          : line.branding.toUpperCase().includes("AKEMI")
-                            ? "neutral"
-                            : "warning"
-                      }
-                      size="xs"
-                    >
-                      {line.branding}
-                    </Badge>
-                  </span>
-                )}
-              </div>
-            </div>
-          ))}
 
           <div className="mt-4 flex items-center justify-between">
             <button
@@ -1265,15 +1244,15 @@ export function DeliveryOrderNewV2() {
             <Button
               variant="secondary"
               icon={<Save size={14} />}
-              onClick={() => doCreate(true)}
+              onClick={secondarySubmit}
               disabled={submitting}
             >
-              Save as Draft
+              {editId ? "Save changes" : "Save as Draft"}
             </Button>
             <Button
               variant="primary"
               icon={<CheckCircle2 size={14} />}
-              onClick={() => doCreate(false)}
+              onClick={primarySubmit}
               disabled={submitting}
             >
               {editId ? "Save changes" : "Create Delivery Order"}
@@ -1281,13 +1260,6 @@ export function DeliveryOrderNewV2() {
           </div>
         </div>
       </div>
-
-      {/* Variant picker modal */}
-      <VariantPickerModal
-        line={variantPickerLine}
-        onClose={() => setVariantPickerLine(null)}
-        onPick={pickVariant}
-      />
 
       {/* From SO picker modal */}
       <FromSoPickerModal
@@ -1311,9 +1283,9 @@ export function DeliveryOrderNewV2() {
 }
 
 // Unused imports guard — reference the icons that may not appear in every code
-// path so tree-shaking doesn't turn them into TS "declared but not used"
-// warnings if the code drifts.
+// path so a future drift doesn't leave them dangling.
 void ArrowRightIcon;
 void ShoppingCart;
+void isoToDmy;
 
 export default DeliveryOrderNewV2;
