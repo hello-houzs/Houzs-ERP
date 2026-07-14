@@ -180,11 +180,12 @@ inventory.get('/', async (c) => {
   return c.json({ balances: data ?? [], warehouses: whs ?? [] });
 });
 
-/* Σ delivered / Σ returned per SO line id — mirrors so-stock-allocation
-   (net-of-delivered): only non-cancelled DOs count as delivered, only
-   non-cancelled DRs traced back through the active DO line count as returned.
-   Used to net gross open SO-line qty down to the still-open claim for the
-   Reserved / Available KPIs so a partially-shipped SO isn't double-counted. */
+/* Σ delivered / Σ returned per SO line id (net-of-delivered). Only
+   non-cancelled AND non-draft DOs count as delivered (a DRAFT DO hasn't
+   shipped); only non-cancelled DRs traced back through the active DO line count
+   as returned. Used to net gross open SO-line qty down to the still-open claim
+   for the Reserved / Available KPIs so a partially-shipped SO isn't
+   double-counted. Mirrors so-readiness's soDeliverableRemaining leak guard. */
 async function deliveredReturnedBySoItem(
   sb: any,
   soItemIds: string[],
@@ -206,7 +207,11 @@ async function deliveredReturnedBySoItem(
     const { data: dos } = await chunkIn<{ id: string; status: string | null }>(doIds, (batch, from, to) =>
       sb.from('delivery_orders').select('id, status').in('id', batch).range(from, to));
     for (const d of (dos ?? []) as Array<{ id: string; status: string | null }>) {
-      if ((d.status ?? '').toUpperCase() !== 'CANCELLED') activeDoIds.add(d.id);
+      // DRAFT DO hasn't shipped and hasn't moved stock — excluding it (like
+      // soDeliverableRemaining's LEAK GUARD) keeps its units in Reserved so a
+      // free-to-sell KPI can't be inflated into over-sell. (DRs have no DRAFT.)
+      const st = (d.status ?? '').toUpperCase();
+      if (st !== 'CANCELLED' && st !== 'DRAFT') activeDoIds.add(d.id);
     }
   }
   for (const l of doLineRows) {
