@@ -183,10 +183,16 @@ function CompanySwitcher() {
     setOpen(false);
     if (id === activeId) return;
     setActiveCompanyId(id);
-    // Clear the path-only SWR store FIRST (else it serves the previous company's
-    // cached payload for up to TTL_MS), then refetch the whole app react-query side.
+    // Company scope is NOT in the react-query keys, so company A's and B's data
+    // share cache entries. invalidateQueries only marks stale + refetches — and
+    // keepPreviousData keeps showing A's rows while an in-flight A response can
+    // repopulate the shared entry, so the list sometimes still shows the previous
+    // company after a switch (the race the owner hit). clear() REMOVES every
+    // cached query so nothing from the old company can survive or be shown;
+    // mounted views refetch fresh with the new X-Company-Id header. Also drop the
+    // path-only SWR store (api/cache.ts) which is likewise company-agnostic.
     clearAll();
-    void queryClient.invalidateQueries();
+    queryClient.clear();
   }
 
   return (
