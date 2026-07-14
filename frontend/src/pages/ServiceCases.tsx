@@ -3837,22 +3837,36 @@ function DetailContent({
                 </a>
               )}
             </div>
-            {(c.addr1 || c.addr2 || c.addr3 || c.addr4) && (
-              <div className="border-t border-border-subtle pt-2.5">
-                <div className="font-mono text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
-                  Customer address
-                </div>
-                <div className="mt-1 text-[13px] font-medium leading-relaxed text-ink">
-                  {[c.addr1, c.addr2, c.addr3, c.addr4].filter(Boolean).join(", ")}
-                </div>
-                {c.location && (
-                  <span className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-primary-soft px-2.5 py-1 text-[11.5px] font-semibold text-primary-ink">
-                    <MapPin size={11} />
-                    {c.location}
-                  </span>
-                )}
-              </div>
-            )}
+            {/* Address is always shown AND editable (Nick 2026-07-14:
+                cases created while AutoCount is disconnected carry no
+                SO-derived address, so staff fill it by hand). One
+                textarea maps line-by-line onto addr1-4. */}
+            <div className="border-t border-border-subtle pt-2.5">
+              <InlineEdit
+                label="Customer address"
+                textarea
+                value={[c.addr1, c.addr2, c.addr3, c.addr4].filter(Boolean).join("\n")}
+                onSave={(v) => {
+                  const lines = (v || "")
+                    .split(/\r?\n/)
+                    .map((t) => t.trim())
+                    .filter(Boolean);
+                  return patch({
+                    addr1: lines[0] ?? null,
+                    addr2: lines[1] ?? null,
+                    addr3: lines[2] ?? null,
+                    addr4: lines.slice(3).join(", ") || null,
+                  });
+                }}
+                placeholder={"Street / unit\nCity - postcode\nState"}
+              />
+              {c.location && (
+                <span className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-primary-soft px-2.5 py-1 text-[11.5px] font-semibold text-primary-ink">
+                  <MapPin size={11} />
+                  {c.location}
+                </span>
+              )}
+            </div>
             <div className="space-y-2 border-t border-border-subtle pt-2.5">
               <InlineEdit
                 label="Location"
