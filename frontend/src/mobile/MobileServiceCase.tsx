@@ -260,9 +260,11 @@ const slaText = (h: number | null): { label: string; overdue: boolean } | null =
 /** Mobile Service Case (ASSR) — Status Cards list + tabbed detail
  *  (Overview / Stage / Info / Timeline) + new-case sheet, all wired to
  *  the core /api/assr backend. */
-export function MobileServiceCase({ onBack }: { onBack?: () => void }) {
+export function MobileServiceCase({ onBack, startNew = false }: { onBack?: () => void; startNew?: boolean }) {
   const [openId, setOpenId] = useState<number | null>(null);
-  const [showNew, setShowNew] = useState(false);
+  // `startNew` (from the Orders FAB "+ New Service Case") opens the create sheet
+  // straight away.
+  const [showNew, setShowNew] = useState(startNew);
 
   if (openId != null) {
     return <CaseDetail id={openId} onBack={() => setOpenId(null)} />;
