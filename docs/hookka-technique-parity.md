@@ -63,20 +63,28 @@ actually gets slow under real data — not before.
 ## Bucket C — GAP (always-worth-it, NOT done yet → backlog)
 
 These are cheap at any scale and are HOOKKA's incident-hardening. Ranked.
+NOTE (verified 2026-07-14): several items I first listed here turned out to be
+ALREADY DONE or intentional non-gaps in Houzs — corrected below. Verify before
+building.
 
 1. **SW cache keyed to build id (auto), not a manual constant.** Ours is
-   `VERSION = "houzs-erp-v170"` bumped by hand — a deploy that forgets to bump
-   serves a stale shell. HOOKKA derives it from the build `?v`. **P1.** (= plan D-SW)
-2. **`purgeServiceWorkerAndCaches` on chunk-load error.** On a stale-chunk /
-   `vite:preloadError`, unregister SW + clear caches BEFORE reloading (a plain
-   reload re-serves the same dead shell → white screen). We only do a plain reload
-   today — I hit exactly this while verifying (had to purge by hand). **P1.**
+   `VERSION = "houzs-erp-v174"` bumped by hand — a deploy that forgets to bump
+   serves a stale shell. HOOKKA derives it from the build `?v`. **P1 (real gap).**
+   Risk: PWA-churn sensitive — do carefully.
+2. ~~purgeServiceWorkerAndCaches on chunk-load error~~ **ALREADY DONE** —
+   `components/RouteFallback.tsx:ChunkReloadBoundary` unregisters every SW + deletes
+   every cache before reloading, with a one-shot loop-guard. Only small belt-and-
+   braces left: a WINDOW-level `vite:preloadError` + capture-phase `/assets/*` 404
+   handler for a failure BEFORE React mounts (the boundary can't catch that). **P2.**
 3. **Degraded-response guard** — never overwrite populated cache with an empty /
-   `{success:false}` / non-2xx body (blank-page prevention; HOOKKA bug 1b). Add to
-   the api/cache + snapshot layers. **P1.**
-4. **Atomic doc-number counter** (`INSERT … ON CONFLICT DO UPDATE … RETURNING`).
-   Ours is `MAX(no)+1`, which can race two concurrent creates to the same number.
-   HOOKKA's atomic counter can't. **P1 (correctness, not just speed).**
+   `{success:false}` body. LOW value for us: `api/client.ts` non-2xx already throws
+   (never caches), and our endpoints return raw data not `{success}` envelopes, so a
+   "degraded 200" is rare. Add a light guard at `client.ts:303` if desired. **P3.**
+4. ~~Atomic doc-number counter~~ **NOT A GAP — intentional.** `scm/lib/doc-no.ts`
+   uses `max+1` on purpose: it self-heals a deleted-mid-month gap (reuses the freed
+   number), which an ever-incrementing atomic counter cannot. The concurrent-create
+   race is handled by a unique constraint + `mint()` retry (re-reads the live max).
+   Considered tradeoff with an advantage over HOOKKA's counter. **No action.**
 5. **Background pre-cache of build assets on SW install** (weak-wifi: pre-fetch
    the JS/CSS chunks so a flaky connection doesn't stall first paint; respect
    Data-Saver). Relevant for phones on-site. **P2.**
