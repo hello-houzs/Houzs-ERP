@@ -146,7 +146,7 @@ export async function getBranding(env: Env): Promise<Branding> {
 // master is cached for the isolate lifetime with a short TTL (mirrors
 // companyContext's cache). Fail-soft to HOUZS — pre-migration DBs have no
 // companies master and must keep rendering single-company Houzs.
-let companyCodeCache: { at: number; byId: Map<number, string> } | null = null;
+let companyCodeCache: { at: number; byId: Map<number, string>; codes: Set<string> } | null = null;
 const COMPANY_CODE_TTL_MS = 5 * 60 * 1000;
 
 export async function resolveCompanyCode(
@@ -156,11 +156,9 @@ export async function resolveCompanyCode(
   if (company === null || company === undefined || company === "") {
     return HOUZS_COMPANY_CODE;
   }
-  if (typeof company === "string" && !/^\d+$/.test(company.trim())) {
-    return company.trim().toUpperCase();
-  }
-  const id = Number(company);
-  if (!Number.isFinite(id) || id <= 0) return HOUZS_COMPANY_CODE;
+  const raw = String(company).trim();
+  if (raw === "") return HOUZS_COMPANY_CODE;
+  const upper = raw.toUpperCase();
   try {
     if (!companyCodeCache || Date.now() - companyCodeCache.at > COMPANY_CODE_TTL_MS) {
       const res = await env.DB.prepare(`SELECT id, code FROM companies`).all<{
@@ -168,12 +166,30 @@ export async function resolveCompanyCode(
         code: string;
       }>();
       const byId = new Map<number, string>();
-      for (const r of res.results ?? []) byId.set(Number(r.id), String(r.code).toUpperCase());
-      companyCodeCache = { at: Date.now(), byId };
+      const codes = new Set<string>();
+      for (const r of res.results ?? []) {
+        const code = String(r.code).toUpperCase();
+        byId.set(Number(r.id), code);
+        codes.add(code);
+      }
+      companyCodeCache = { at: Date.now(), byId, codes };
     }
-    return companyCodeCache.byId.get(id) ?? HOUZS_COMPANY_CODE;
+    // A known company CODE wins — even a numeric one like '2990', which the old
+    // "all-digits => it's an id" heuristic misread as companies.id 2990 (real id
+    // is 2), so /api/branding fell back to HOUZS and the 2990 chrome/logo showed
+    // Houzs. Check the code set FIRST.
+    if (companyCodeCache.codes.has(upper)) return upper;
+    // Otherwise a numeric value is a companies.id.
+    const id = Number(raw);
+    if (Number.isFinite(id) && id > 0) {
+      return companyCodeCache.byId.get(id) ?? HOUZS_COMPANY_CODE;
+    }
+    // Non-numeric unknown code — pass it through (compile-time default handles it).
+    return /^\d+$/.test(raw) ? HOUZS_COMPANY_CODE : upper;
   } catch {
-    return HOUZS_COMPANY_CODE; // companies master absent — single-company Houzs
+    // companies master absent — single-company Houzs. A non-numeric code still
+    // passes through so a hardcoded caller isn't silently rebranded.
+    return /^\d+$/.test(raw) ? HOUZS_COMPANY_CODE : upper;
   }
 }
 
