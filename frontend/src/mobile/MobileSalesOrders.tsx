@@ -5,6 +5,7 @@ import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { useAuth } from "../auth/AuthContext";
 import { isSalesStaff } from "../auth/salesAccess";
 import { normalizeJobs, type ScanJobsResp } from "./MobileScan";
+import { MobileVirtualList } from "./MobileVirtualList";
 import "./mobile.css";
 
 type SoRow = {
@@ -415,8 +416,13 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
           </div>
         )}
         {!isLoading && !error && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
-            {rows.map((r) => {
+          <>
+            {rows.length > 0 && (
+              <MobileVirtualList
+                items={rows}
+                getKey={(r) => r.doc_no}
+                estimateHeight={140}
+                renderItem={(r) => {
               const cancelled = isCancelled(r);
               const warehouse = r.warehouse_name || r.sales_location;
               return (
@@ -464,7 +470,9 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
                   </div>
                 </div>
               );
-            })}
+                }}
+              />
+            )}
             {!rows.length && (
               <div className="empty">
                 <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#c2c6bd" strokeWidth="1.6"><path d="M4 4h16v4H4zM4 10h16v10H4z" /></svg>
@@ -472,7 +480,7 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
                 <div className="empty-s">No orders in this range. Tap + to create one.</div>
               </div>
             )}
-          </div>
+          </>
         )}
       </div>
 

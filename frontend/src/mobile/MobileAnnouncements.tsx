@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
+import { MobileVirtualList } from "./MobileVirtualList";
 import { useAuth } from "../auth/AuthContext";
 import { formatDate } from "../lib/utils";
 import "./mobile.css";
@@ -426,8 +427,14 @@ export function MobileAnnouncements({ onBack }: { onBack?: () => void }) {
         {isLoading && <div style={{ textAlign: "center", color: "var(--mut2)", fontSize: 12, padding: "26px 0" }}>Loading…</div>}
         {error && <div style={{ textAlign: "center", color: "var(--red)", fontSize: 12, padding: "26px 0" }}>Couldn't load announcements. Pull to retry.</div>}
         {!isLoading && !error && (
-          <div id="ann-list" style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-            {list.map((a) => {
+          <>
+            {list.length > 0 && (
+              <MobileVirtualList
+                items={list}
+                getKey={(a) => a.id}
+                estimateHeight={72}
+                gap={9}
+                renderItem={(a) => {
               const unread = !ackedIds.has(a.id);
               const na = (a.attachments ?? []).length;
               const col = catColor(a);
@@ -461,14 +468,16 @@ export function MobileAnnouncements({ onBack }: { onBack?: () => void }) {
                   </span>
                 </button>
               );
-            })}
+                }}
+              />
+            )}
             {!list.length && (
               <div className="empty">
                 <div className="empty-t">No announcements yet</div>
                 <div className="empty-s">Notices from HQ will appear here.</div>
               </div>
             )}
-          </div>
+          </>
         )}
       </div>
     </div>
