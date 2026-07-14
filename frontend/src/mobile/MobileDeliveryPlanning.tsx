@@ -1,5 +1,6 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { invalidateDoShared, invalidateInventoryShared, invalidateSoShared } from "./sharedInvalidate";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { MobileVirtualList } from "./MobileVirtualList";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
@@ -1136,13 +1137,19 @@ function StopDetail({
   // mobile POD screen or SO list showing pre-mutation status inside their 15-30s
   // staleTime window (the desktop board already invalidates all sibling keys).
   // `mobile-pod-detail` is prefix-matched so every open detail refreshes.
-  const invalidate = () =>
-    Promise.all([
+  const invalidate = () => {
+    // Shared/desktop DO, delivery-planning, inventory and SO caches too, so a
+    // desktop board/list doesn't read stale after a mobile convert/status/deliver.
+    invalidateDoShared(qc);
+    invalidateInventoryShared(qc);
+    invalidateSoShared(qc);
+    return Promise.all([
       qc.invalidateQueries({ queryKey: ["mobile-delivery-planning"] }),
       qc.invalidateQueries({ queryKey: ["mobile-do-list-for-pod"] }),
       qc.invalidateQueries({ queryKey: ["mobile-pod-detail"] }),
       qc.invalidateQueries({ queryKey: ["mobile-so-list-paged"] }),
     ]);
+  };
 
   // ── Convert this Sales Order → a Delivery Order (identical endpoint to the
   // desktop board's Convert-to-DO: resolve the SO's still-deliverable lines via
