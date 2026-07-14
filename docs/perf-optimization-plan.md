@@ -56,8 +56,16 @@ no `limit`**. Fixing the shared pieces cascades across many pages.
 
 ### 1A. Windowing (render-only-what's-scrolled)
 
-- [ ] **W1 (P0, NEEDS A UX DECISION — do not blind-ship)** — Window
-  `components/DataTable.tsx` (`:751`, `:1121`). BLOCKER found while scoping:
+- [x] **W1 (P0) — DONE (PR #430, owner chose option b: keep page-scroll).**
+  DataTable now window-scrolls past 30 flat rows: capturing window scroll listener
+  (catches any ancestor's scroll), spacer `<tr>`s reserving off-screen height,
+  row-height measured from a real row (no getTotalSize drift). Gated so grouped/
+  expandable/short tables are byte-identical (no UX change anywhere). VERIFIED on
+  /team (86 members): 46 rendered + 1800px spacer, real distinct rows, no-op safe.
+  Caveat: live scroll-recycle couldn't be exercised (the CDP test tab is background-
+  throttled → rAF starved), but the measure() logic produced a correct window and
+  rAF fires normally in any foreground tab. Original scoping notes kept below.
+  ~~NEEDS A UX DECISION~~ — resolved: option b.
   `DataGrid` virtualizes because it has its OWN fixed-height inner scroll container;
   `DataTable` is PAGE-scrolled (no inner scroll pane). To window it we must either
   (a) give every DataTable page an inner fixed-height scroll pane — a visible
