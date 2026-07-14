@@ -3195,7 +3195,7 @@ deliveryOrdersMfg.delete('/:id/payments/:paymentId', async (c) => {
 // ── Status transition + inventory deduction / reversal ────────────────────
 deliveryOrdersMfg.patch('/:id/status', async (c) => {
   const sb = c.get('supabase'); const id = c.req.param('id'); const user = c.get('user');
-  let body: { status?: string }; try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid_json' }, 400); }
+  let body: { status?: string; signatureData?: string; podKey?: string }; try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid_json' }, 400); }
   if (!body.status) return c.json({ error: 'status_required' }, 400);
 
   // Read current status so the CANCELLED reversal is idempotent.
@@ -3231,6 +3231,13 @@ deliveryOrdersMfg.patch('/:id/status', async (c) => {
   if (body.status === 'DISPATCHED') ts.dispatched_at = now;
   if (body.status === 'SIGNED')     ts.signed_at = now;
   if (body.status === 'DELIVERED')  ts.delivered_at = now;
+  /* POD capture — the mobile app posts the proof-of-delivery signature +
+     photo alongside the status flip. Persist them to the existing columns
+     (signature_data, pod_r2_key) so a DELIVERED DO keeps its signature +
+     photo. Only write when present so a plain status change never blanks
+     an existing POD. */
+  if (typeof body.signatureData === 'string' && body.signatureData) ts.signature_data = body.signatureData;
+  if (typeof body.podKey === 'string' && body.podKey) ts.pod_r2_key = body.podKey;
 
   /* Bug #3/#11 — ATOMIC cancel guard. The read-then-write above has a TOCTOU
      window: two concurrent cancels can both read a non-cancelled status and both
