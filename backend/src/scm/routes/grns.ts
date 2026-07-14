@@ -16,6 +16,7 @@ import { allocateLandedCharges, normalizeAllocationMethod } from '../lib/landed-
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { todayMyt } from '../lib/my-time';
+import { paginateAll } from '../lib/paginate-all';
 
 export const grns = new Hono<{ Bindings: Env; Variables: Variables }>();
 grns.use('*', supabaseAuth);
@@ -612,10 +613,12 @@ grns.get('/', async (c) => {
   // the per-line downstream (PI/PR) can be rolled up to a per-GRN doc-number set.
   const grnByItem = new Map<string, string>();
   if (ids.length > 0) {
-    const { data: lineRows, error: lineErr } = await sb
+    const { data: lineRows, error: lineErr } = await paginateAll<{ id: string; grn_id: string; qty_accepted: number | null; invoiced_qty: number | null; returned_qty: number | null }>((from, to) => sb
       .from('grn_items')
       .select('id, grn_id, qty_accepted, invoiced_qty, returned_qty')
-      .in('grn_id', ids);
+      .in('grn_id', ids)
+      .order('id')
+      .range(from, to));
     if (lineErr) return c.json({ error: 'load_failed', reason: lineErr.message }, 500);
     for (const li of (lineRows ?? []) as Array<{ id: string; grn_id: string; qty_accepted: number | null; invoiced_qty: number | null; returned_qty: number | null }>) {
       const arr = linesByGrn.get(li.grn_id) ?? [];

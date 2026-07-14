@@ -59,6 +59,7 @@ import { buildOneShotMints, type OneShotMintReq } from '../lib/one-shot-mint';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { supabaseAuth } from '../middleware/auth';
 import { escapeForOr } from '../lib/postgrest-search';
+import { paginateAll } from '../lib/paginate-all';
 import { monthBoundsMy, rangeBoundsMy, todayMyt, mytDateOf } from '../lib/my-time';
 // (canViewAllSales / isSelfScopedSales removed — replaced by flat permission
 // gates `scm.so.view_all` / `scm.so.attribute_other` against the REAL Houzs
@@ -728,14 +729,15 @@ mfgSalesOrders.get('/', async (c) => {
        the mattress brand source for the first-item rule below; item_code lets
        us fall back to mfg_products.branding when a mattress line's own branding
        is blank; created_at drives the first-line pick. */
-    const { data: itemRows } = await sb
+    const { data: itemRows } = await paginateAll<{ doc_no: string; item_group: string | null; stock_status: string | null; cancelled: boolean; branding: string | null; item_code: string | null; warehouse_id: string | null; created_at: string }>((from, to) => sb
       .from('mfg_sales_order_items')
       .select('doc_no, item_group, stock_status, cancelled, branding, item_code, warehouse_id, created_at')
       .in('doc_no', docNos)
       .eq('cancelled', false)
       .order('doc_no')
       .order('line_no', { ascending: true, nullsFirst: false })
-      .order('created_at', { ascending: true });
+      .order('created_at', { ascending: true })
+      .range(from, to));
     const agg = new Map<string, Map<string, { total: number; ready: number }>>();
     /* Branding auto-derive (Commander 2026-05-28, refined PR #266): the SO list
        grid derives its Branding pill from the SO's FIRST line item — no longer
