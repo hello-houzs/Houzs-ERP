@@ -2685,6 +2685,13 @@ function SpecSel({ label, value, opts, onChange, required = false, invalid = fal
 
 function PayCard({ pay, staff, onChange, onRemove }: { pay: Payment; staff: Array<{ id: string; name: string }>; onChange: (patch: Partial<Payment>) => void; onRemove: () => void }) {
   const fileRef = useRef<HTMLInputElement | null>(null);
+  /* Live payment dropdowns from the maintenance catalog (same API the desktop
+     SalesOrderNew uses); FALLBACK_OPTIONS only backs an offline load. Was
+     hardcoded ("Maybank"/"One Shot") and never hit the API — that was the drift. */
+  const methodOpts = optionsOrFallback("payment_method", useSoDropdownOptions("payment_method").data);
+  const bankOpts = optionsOrFallback("payment_merchant", useSoDropdownOptions("payment_merchant").data);
+  const planOpts = optionsOrFallback("installment_plan", useSoDropdownOptions("installment_plan").data);
+  const onlineOpts = optionsOrFallback("online_type", useSoDropdownOptions("online_type").data);
   const onPickSlip = async (f: File | null) => {
     if (!f) return;
     onChange({ slipName: f.name, slipSession: "", slipPhase: "uploading" });
@@ -2701,7 +2708,7 @@ function PayCard({ pay, staff, onChange, onRemove }: { pay: Payment; staff: Arra
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: "#f4f6f3", borderBottom: "1px solid #eceee9" }}>
         <span style={{ fontSize: 9, fontWeight: 700, color: "#767b6e", textTransform: "uppercase", letterSpacing: ".06em" }}>Method</span>
         <select className="fld-i" style={{ flex: 1, fontWeight: 600 }} value={pay.method} onChange={(e) => onChange({ method: e.target.value })}>
-          {PAY_METHODS.map((m) => <option key={m} value={m}>{m}</option>)}
+          {methodOpts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
         <span onClick={onRemove} style={{ fontSize: 14, color: "#9aa093", cursor: "pointer", padding: "0 2px" }}>{"✕"}</span>
       </div>
@@ -2716,15 +2723,15 @@ function PayCard({ pay, staff, onChange, onRemove }: { pay: Payment; staff: Arra
         </div>
         {pay.method === "Merchant" && (
           <div style={{ display: "flex", gap: 9 }}>
-            <SpecSel label="Bank" value={pay.bank} opts={BANK_OPTS.map((o) => ({ value: o, label: o }))} onChange={(vv) => onChange({ bank: vv })} />
-            <SpecSel label="Plan" value={pay.plan} opts={PLAN_OPTS.map((o) => ({ value: o, label: o }))} onChange={(vv) => onChange({ plan: vv })} />
+            <SpecSel label="Bank" value={pay.bank} opts={bankOpts} onChange={(vv) => onChange({ bank: vv })} />
+            <SpecSel label="Plan" value={pay.plan} opts={planOpts} onChange={(vv) => onChange({ plan: vv })} />
           </div>
         )}
         {pay.method === "Installment" && (
-          <SpecSel label="Installment plan" value={pay.plan} opts={PLAN_OPTS.map((o) => ({ value: o, label: o }))} onChange={(vv) => onChange({ plan: vv })} />
+          <SpecSel label="Installment plan" value={pay.plan} opts={planOpts} onChange={(vv) => onChange({ plan: vv })} />
         )}
         {pay.method === "Online" && (
-          <SpecSel label="Sub-type" value={pay.online} opts={ONLINE_OPTS.map((o) => ({ value: o, label: o }))} onChange={(vv) => onChange({ online: vv })} />
+          <SpecSel label="Sub-type" value={pay.online} opts={onlineOpts} onChange={(vv) => onChange({ online: vv })} />
         )}
         <div style={{ display: "flex", gap: 9 }}>
           <Field label="Account Sheet" style={{ flex: 1 }}>
