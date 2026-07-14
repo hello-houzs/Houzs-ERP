@@ -1,18 +1,31 @@
 import { useEffect, useRef, useState } from "react";
 import { formatDate } from "../lib/utils";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { authedFetch } from "../vendor/scm/lib/authed-fetch";
+import { useQueryClient } from "@tanstack/react-query";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { fetchPaymentSlipUrl, fetchScanSlipImageBlobUrl, uploadSlipFull } from "../vendor/scm/lib/slip";
 import { useStaff } from "../vendor/scm/lib/admin-queries";
 import { useAuth as useHouzsAuth } from "../auth/AuthContext";
 import {
+  useMfgSalesOrderDetail,
+  useSalesOrderPayments,
+  useUpdateMfgSalesOrderStatus,
+  useAddSalesOrderPayment,
+  useEditSalesOrderPayment,
+  useDeleteSalesOrderPayment,
   useSalesOrderAuditLog,
   type SoAuditEntry,
   type SoAuditFieldChange,
 } from "../vendor/scm/lib/sales-order-queries";
 import { buildVariantSummary } from "../vendor/shared/variant-summary";
+import { todayMyt, isCreatedTodayMyt } from "../vendor/scm/lib/dates";
+import {
+  CANCELLABLE_STATUSES,
+  isLocked as isSoLocked,
+  procLockActive as soProcLockActive,
+  amendmentEligible as soAmendmentEligible,
+  deriveBalance,
+} from "../vendor/scm/lib/so-detail-gates";
 import { useSoDropdownOptions, optionsOrFallback, FALLBACK_OPTIONS } from "../vendor/scm/lib/so-dropdown-options-queries";
 import {
   useAmendmentDetail,
@@ -136,8 +149,6 @@ type SoPayment = {
      may be corrected only on the MY calendar day it was recorded). */
   created_at: string | null;
 };
-type DetailResp = { salesOrder: SoHeader; items: SoItem[] };
-type PaymentsResp = { payments: SoPayment[] };
 
 const rm = (centi: number | null | undefined) =>
   ((centi ?? 0) / 100).toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -160,17 +171,6 @@ const phase = (status: string | null): "draft" | "cancelled" | "submitted" => {
   return "submitted";
 };
 const total = (h: SoHeader) => h.local_total_centi ?? h.total_revenue_centi ?? 0;
-/* Today in Malaysia (UTC+8) as YYYY-MM-DD — shift +8h then read the UTC date. */
-const todayMyt = (): string =>
-  new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
-/* True when the given instant (UTC ISO) falls on the current MY calendar day —
-   drives the same-day payment EDIT affordance. */
-const isCreatedTodayMyt = (createdAt: string | null | undefined): boolean => {
-  if (!createdAt) return false;
-  const t = new Date(createdAt).getTime();
-  if (Number.isNaN(t)) return false;
-  return new Date(t + 8 * 3600 * 1000).toISOString().slice(0, 10) === todayMyt();
-};
 
 /** Sales Order DETAIL — markup ported VERBATIM from the owner's mobile design
  *  (`#so-detail` + `renderSoDetail`/`openSO`), wired to the real
@@ -189,23 +189,22 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
   const [viewingAmendmentId, setViewingAmendmentId] = useState<string | null>(null);
   const [supplierConfirmOpen, setSupplierConfirmOpen] = useState(false);
   const approveSo = useApproveSo();
+  const updateStatus = useUpdateMfgSalesOrderStatus();
+  const deletePaymentMut = useDeleteSalesOrderPayment();
 
-  const detail = useQuery({
-    queryKey: ["mobile-so-detail", docNo],
-    queryFn: () => authedFetch<DetailResp>(`/mfg-sales-orders/${encodeURIComponent(docNo)}`),
-    staleTime: 15_000,
-  });
-  const paymentsQ = useQuery({
-    queryKey: ["mobile-so-payments", docNo],
-    queryFn: () => authedFetch<PaymentsResp>(`/mfg-sales-orders/${encodeURIComponent(docNo)}/payments`),
-    staleTime: 15_000,
-  });
+  /* Reads route through the SHARED vendored hooks (vendor/scm/lib/
+     sales-order-queries) so mobile lives in the SAME query-key namespace as the
+     desktop SalesOrderDetail — shared mutations (status / payments / amendments)
+     invalidate ['mfg-sales-order-detail'] + ['mfg-sales-orders', docNo,
+     'payments'] and those invalidations now reach this screen too. */
+  const detail = useMfgSalesOrderDetail(docNo);
+  const paymentsQ = useSalesOrderPayments(docNo);
 
   const staffQ = useStaff();
   const houzsAuth = useHouzsAuth();
-  const h = detail.data?.salesOrder;
-  const items = detail.data?.items ?? [];
-  const payments = paymentsQ.data?.payments ?? [];
+  const h = detail.data?.salesOrder as SoHeader | undefined;
+  const items = (detail.data?.items ?? []) as SoItem[];
+  const payments = (paymentsQ.data ?? []) as SoPayment[];
   /* Download the SO PDF — reuses the SAME desktop generator (per-brand letterhead)
      so the phone produces byte-identical output. 'save' = normal download. */
   const onPdf = async () => {
@@ -225,20 +224,16 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
     ? (staffQ.data ?? []).find((s) => String(s.id) === String(h.salesperson_id))?.name ?? null
     : null;
 
+  /* Status change routes through the SHARED useUpdateMfgSalesOrderStatus so
+     mobile gets the same optimistic update + audit-log / status-changes
+     invalidation desktop has (the raw inline PATCH skipped both). */
   const setStatus = async (status: string, confirmMsg?: string) => {
     if (busy) return;
     if (confirmMsg && !(await confirm({ title: confirmMsg, confirmLabel: "Confirm", danger: true }))) return;
     setActionError(null);
     setBusy(true);
     try {
-      await authedFetch(`/mfg-sales-orders/${encodeURIComponent(docNo)}/status`, {
-        method: "PATCH",
-        body: JSON.stringify({ status }),
-      });
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: ["mobile-so-detail", docNo] }),
-        qc.invalidateQueries({ queryKey: ["mobile-so-list"] }),
-      ]);
+      await updateStatus.mutateAsync({ docNo, status });
     } catch (e) {
       setActionError(e instanceof Error ? e.message : "Something went wrong. Please try again.");
     } finally {
@@ -247,47 +242,46 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
   };
 
   const ph = h ? phase(h.status) : "submitted";
-  const bal = h ? (h.balance_centi ?? Math.max(0, total(h) - (h.paid_centi_total ?? 0))) : 0;
+  const bal = h ? deriveBalance(h, payments) : 0;
 
-  /* Parity with desktop SO Detail / list gating (all statuses UPPER-cased).
+  /* Parity with desktop SO Detail / list gating — the primitives now come from
+     the SHARED vendor/scm/lib/so-detail-gates module so a fix lands once for
+     both platforms (statuses are upper-cased inside the gate).
      - Cancel is offered only on in-flight statuses (CONFIRMED / IN_PRODUCTION /
        READY_TO_SHIP), never once SHIPPED+ / INVOICED / CLOSED — those carry
-       downstream docs. Mirrors SalesOrderDetail.cancellableStatuses.
-     - Edit is locked once the SO is SHIPPED+ or any non-cancelled DO/SI
-       references it (has_children). Mirrors SalesOrderDetail.lockedStatuses. */
+       downstream docs (CANCELLABLE_STATUSES).
+     - isLocked = SHIPPED+ terminal status OR a non-cancelled DO/SI references it
+       (has_children). Mirrors SalesOrderDetail.isLocked. */
   const rawStatus = (h?.status ?? "").toUpperCase();
   const hasChildren = Boolean(h?.has_children);
-  const CANCELLABLE = ["CONFIRMED", "IN_PRODUCTION", "READY_TO_SHIP"];
-  const LOCKED = ["SHIPPED", "DELIVERED", "INVOICED", "CLOSED", "CANCELLED"];
-  const canCancel = CANCELLABLE.includes(rawStatus);
+  const canCancel = CANCELLABLE_STATUSES.includes(rawStatus);
+  const isLocked = isSoLocked(h?.status, hasChildren);
 
-  /* Processing-date LOCK — mirrors the desktop SO Detail form's
-     `processingLocked` (SalesOrderDetail.tsx): the Processing Date is the day
-     production started, so once MYT today is AFTER internal_expected_dd AND the
-     order has been proceeded, that date (and the production spec built off it)
-     is a historical record. Desktop keeps the field read-only; here we surface
-     a banner and treat the SO as edit-locked so the detail never offers
-     line-item edits on a proceeded, past-processing order. `today` is the local
-     (MYT on the operator's device) YYYY-MM-DD, string-compared like desktop. */
-  const today = new Date().toLocaleDateString("en-CA");
-  const originalProcessing = (h?.internal_expected_dd ?? "").slice(0, 10);
-  const processingLocked = originalProcessing !== "" && originalProcessing < today && Boolean(h?.proceeded_at);
+  /* Processing LOCK — the shared procLockActive: once the SO has been PROCEEDED
+     (proceeded_at stamped) AND its processing day has passed (compared against
+     todayMyt() — the Malaysia calendar day, NOT the device's local day) the
+     line items are historical. Here we surface a banner and treat the SO as
+     edit-locked so the detail never offers line-item edits on a proceeded,
+     past-processing order. */
+  const processingLocked = h ? soProcLockActive(h) : false;
 
   /* Amendment gate (server-derived, desktop SalesOrderDetail parity) — when
-     amendment_eligible the SO is processing-locked but still editable via the
-     amendment flow, so Edit stays ENABLED (tapping it routes into MobileNewSO's
-     amendment-raise mode) rather than being hard-locked by the processing date.
+     amendment_eligible AND not hard-locked the SO is processing-locked but still
+     editable via the amendment flow, so Edit stays ENABLED (tapping it routes
+     into MobileNewSO's amendment-raise mode) rather than being hard-locked by
+     the processing date. A SHIPPED/terminal SO is never amendment-eligible.
      open_amendment / has_open_amendment drive the pending banner + its gate
      actions below. */
-  const amendmentEligible = Boolean(h?.amendment_eligible);
+  const amendmentEligible = h ? soAmendmentEligible(h, isLocked) : false;
   const openAmendment = h?.open_amendment ?? null;
   const hasOpenAmendment = Boolean(h?.has_open_amendment) && openAmendment != null;
 
-  /* editLocked (disables the footer Edit button) = terminal status OR downstream
-     DO/SI OR a proceeded past-processing order that is NOT amendment-eligible. An
-     amendment-eligible SO keeps Edit live so the salesperson can raise an
-     amendment from mobile instead of reopening it on desktop. */
-  const editLocked = LOCKED.includes(rawStatus) || hasChildren || (processingLocked && !amendmentEligible);
+  /* editLocked (disables the footer Edit button) = hard-locked (terminal status
+     OR downstream DO/SI) OR a proceeded past-processing order that is NOT
+     amendment-eligible. An amendment-eligible SO keeps Edit live so the
+     salesperson can raise an amendment from mobile instead of reopening it on
+     desktop. */
+  const editLocked = isLocked || (processingLocked && !amendmentEligible);
 
   /* Houzs perm gates (mirror the server-side scm.amendment.* keys, desktop
      parity) — the server 403 stays the real gate (its plain-language message is
@@ -297,8 +291,9 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
   const canApproveSo = houzsAuth.can("scm.amendment.approve_so");
 
   /* Approve-SO gate (SUPPLIER_PENDING → SO_APPROVED). Confirms, then re-derives
-     the SO server-side; the mutation invalidates the shared SO/amendment queries
-     and we additionally refresh the mobile-scoped keys so this screen updates. */
+     the SO server-side; the vendored useApproveSo mutation already invalidates
+     the shared SO detail + amendment queries this screen now reads, so no
+     mobile-scoped refresh is needed. */
   const handleApproveSo = async () => {
     if (!openAmendment || busy) return;
     if (!(await confirm({
@@ -309,10 +304,6 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
     setBusy(true);
     try {
       await approveSo.mutateAsync({ id: openAmendment.id });
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: ["mobile-so-detail", docNo] }),
-        qc.invalidateQueries({ queryKey: ["mobile-so-list"] }),
-      ]);
       void notifyTop({ title: "SO revision approved" });
     } catch (e) {
       void notifyTop({ title: "Could not approve the revision", body: e instanceof Error ? e.message : String(e), tone: "error" });
@@ -320,14 +311,6 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
       setBusy(false);
     }
   };
-  /* Refresh the mobile-scoped SO detail + list after any amendment gate action
-     (the vendored mutations already invalidate the shared ['mfg-sales-order-*']
-     + ['amendments'] keys; these cover the mobile query keys this screen reads). */
-  const refreshAfterAmendment = () =>
-    Promise.all([
-      qc.invalidateQueries({ queryKey: ["mobile-so-detail", docNo] }),
-      qc.invalidateQueries({ queryKey: ["mobile-so-list"] }),
-    ]);
 
   /* Owner rule 2026-07-05 (desktop parity, SalesOrderDetail.tsx): a PROCEEDED
      order that's past its processing date freezes its LINE ITEMS + State /
@@ -338,7 +321,7 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
      lock-gated only by the terminal / downstream statuses, never by the
      processing lock. Drafts + cancelled orders still take NO payment (owner:
      "no payments on drafts"), matching desktop hiding Add Payment off-status. */
-  const paymentLocked = LOCKED.includes(rawStatus) || hasChildren;
+  const paymentLocked = isLocked;
 
   /* No-naked-payment-edits (owner 2026-07-13) — Add / Delete / Edit must NOT
      show in the read-only detail without the operator opting in. The rule
@@ -371,25 +354,27 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
         )?.id
       : "") ?? "";
 
-  /* Refresh the payments ledger + header KPIs after a payment posts. Reused by
-     both the delete action and the standalone Add-Payment sheet's onSaved. */
+  /* Refresh the header KPIs after a payment posts. Reused by both the delete
+     action and the standalone Add-Payment sheet's onSaved.
+     After a payment add/edit/delete the shared mutation already invalidates the
+     payments ledger (['mfg-sales-orders', docNo, 'payments']) — the same key
+     useSalesOrderPayments reads. The header KPIs (Paid / Balance) come from the
+     DETAIL header, which the payment mutation does NOT touch, so refresh that
+     one key here so the KPIs update live. */
   const refreshAfterPayment = () =>
-    Promise.all([
-      qc.invalidateQueries({ queryKey: ["mobile-so-payments", docNo] }),
-      qc.invalidateQueries({ queryKey: ["mobile-so-detail", docNo] }),
-      qc.invalidateQueries({ queryKey: ["mobile-so-list"] }),
-    ]);
+    qc.invalidateQueries({ queryKey: ["mfg-sales-order-detail", docNo] });
 
   /* Delete a persisted payment — parity with the desktop PaymentsTable trash
-     action. In-app confirm, then DELETE /:docNo/payments/:id; on success the
-     payments + header (balance) queries invalidate so the KPIs update live. */
+     action. In-app confirm, then the shared useDeleteSalesOrderPayment mutation
+     (invalidates the payments ledger); refreshAfterPayment then refreshes the
+     header KPIs. */
   const deletePayment = async (paymentId: string) => {
     if (busy) return;
     if (!(await confirm({ title: "Delete this payment?", body: "This removes the recorded payment and re-opens the balance.", confirmLabel: "Delete", danger: true }))) return;
     setActionError(null);
     setBusy(true);
     try {
-      await authedFetch(`/mfg-sales-orders/${encodeURIComponent(docNo)}/payments/${encodeURIComponent(paymentId)}`, { method: "DELETE" });
+      await deletePaymentMut.mutateAsync({ docNo, id: paymentId });
       await refreshAfterPayment();
     } catch (e) {
       setActionError(e instanceof Error ? e.message : "Couldn't delete the payment. Please try again.");
@@ -747,7 +732,7 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
         <SupplierConfirmSheet
           amendmentId={openAmendment.id}
           onClose={() => setSupplierConfirmOpen(false)}
-          onDone={async () => { setSupplierConfirmOpen(false); await refreshAfterAmendment(); }}
+          onDone={() => setSupplierConfirmOpen(false)}
         />
       )}
 
@@ -997,6 +982,8 @@ function AddPaymentSheet({
   onSaved: () => void | Promise<void>;
 }) {
   const notify = useNotify();
+  const addPaymentMut = useAddSalesOrderPayment();
+  const editPaymentMut = useEditSalesOrderPayment();
   const isEdit = Boolean(editPayment);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [method, setMethod] = useState<PayMethodLabel>(
@@ -1064,14 +1051,13 @@ function AddPaymentSheet({
     else if (code === "installment") { body.installmentMonths = planToMonths(plan); }
     else if (code === "transfer") { body.onlineType = online || null; }
     try {
+      /* Same body shape as before — just swap the raw transport for the shared
+         vendored mutations so mobile shares the desktop payment write path (they
+         invalidate the payments ledger key useSalesOrderPayments reads). */
       if (isEdit && editPayment) {
-        await authedFetch(`/mfg-sales-orders/${encodeURIComponent(docNo)}/payments/${encodeURIComponent(editPayment.id)}`, {
-          method: "PATCH", body: JSON.stringify(body),
-        });
+        await editPaymentMut.mutateAsync({ docNo, id: editPayment.id, ...body });
       } else {
-        await authedFetch(`/mfg-sales-orders/${encodeURIComponent(docNo)}/payments`, {
-          method: "POST", body: JSON.stringify(body),
-        });
+        await addPaymentMut.mutateAsync({ docNo, ...body });
       }
       await onSaved();
     } catch (e) {
