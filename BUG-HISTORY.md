@@ -8,6 +8,18 @@ Severity tags: 🔴 critical/high · 🟠 medium · 🟢 low.
 
 ## 2026-07-15
 
+### 🔴 GRN detail (V2) showed NO product variants and its Edit button was a dead-link — goods received "blind"
+- **Symptom:** On the GRN detail page, bedframe/sofa line items showed only the item code + description — none of the variant taxonomy (fabric / gaps / divan+leg height / specials; sofa seat+leg) that the backend already carries. Clicking Edit changed the URL to `?edit=1` but nothing happened (still read-only), so a received GRN could never be corrected.
+- **Root cause:** `GoodsReceivedDetailV2.tsx` declared `description2` on its line type but never rendered it, had no variant chips, and ignored `?edit=1` entirely. The variant-capable draft editor (`GoodsReceivedDetail.tsx`, with the T12 per-category BEDFRAME/SOFA variant editor) existed but was orphaned/unrouted — nothing forwarded to it. Pure frontend gap; the GRN query already returns `description2` + `variants` + `item_group`.
+- **Fix:** (1) Display — the item column now renders `line.description2` plus variant chips (`variantsOf` + `VariantChip` copied from `DeliveryOrderDetailV2`). (2) Edit — `GoodsReceivedDetailV2` is now a thin router that forwards `?edit=1` to a lazy-loaded `GoodsReceivedDetail` (the legacy variant editor), mirroring how `SalesOrderDetailV2` forwards `?edit=1` to `SalesOrderDetail`.
+- **Ref:** `fix/variant-display-edit-grn-do`, 2026-07-15.
+
+### 🔴 Create/Edit Delivery Order used a fake variant taxonomy and dropped SO→DO variants
+- **Symptom:** The New/Edit Delivery Order form offered a generic hardcoded variant picker (AKEMI/SOFA/BEDFRAME made-up options, no specials) that didn't match the real bedframe/sofa taxonomy, and converting a Sales Order to a DO lost every line's variants (lines came back "Standard").
+- **Root cause:** The routed `/scm/delivery-orders/new` pointed at `DeliveryOrderNewV2.tsx`, which hand-rolled a `VARIANT_MENU` picker (violating the single-logic-layer rule) and, on SO→DO, re-prefilled `variants:[]` from the SO items while ignoring the `doFromSoPicks` sessionStorage stash written by `DeliveryOrderFromSo`. The variant-capable `DeliveryOrderNew.tsx` (shared `SoLineCard` + specials + stash consume via `?fromPicks=1`, `canonicalizeVariants`) existed but was orphaned.
+- **Fix:** Re-pointed the DO create/edit route in `App.tsx` from `DeliveryOrderNewV2` to the variant-capable `DeliveryOrderNew`, so DO lines use the same `SoLineCard` editor as New Sales Order and the SO→DO picker carry-over keeps its variants. (Known follow-up: DO edit-via-`/new?edit=` has no true update path in either page — pre-existing, out of this pass's scope.)
+- **Ref:** `fix/variant-display-edit-grn-do`, 2026-07-15.
+
 ### 🟠 Desktop tab read stale DO / board / inventory / SO after a mobile deliver or convert
 - **Symptom:** After a mobile POD deliver, a mobile convert (SO→DO / DO→SI / PO→GRN / SO→PO), or a mobile delivery-planning status/convert, an open DESKTOP tab kept showing the old DO list, delivery board, stock levels or SO readiness until manually refreshed.
 - **Cause:** `MobileConvertWizard` / `MobilePOD` / `MobileDeliveryPlanning` mutate via raw `authedFetch` and invalidate only their private `["mobile-*"]` query keys — never the shared/desktop roots (`['mfg-delivery-orders*']`, `['delivery-planning']`, `['inventory']`, `['mfg-sales-orders*']`, `['sales-invoices*']`, `['grns*']`, `['mfg-purchase-orders']`). React Query never marked the desktop cache stale. (The SO-detail / New-SO screens were already converged onto the vendored shared hooks upstream — the `#540` / `so-detail-shared-hooks` series — so they were deliberately left alone.)
