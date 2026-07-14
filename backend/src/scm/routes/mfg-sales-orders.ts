@@ -63,7 +63,7 @@ import { monthBoundsMy, rangeBoundsMy, todayMyt, mytDateOf } from '../lib/my-tim
 // (canViewAllSales / isSelfScopedSales removed — replaced by flat permission
 // gates `scm.so.view_all` / `scm.so.attribute_other` against the REAL Houzs
 // caller; see lib/houzs-perms.ts.)
-import { hasHouzsPerm, canViewAllSales } from '../lib/houzs-perms';
+import { hasHouzsPerm, canViewAllSales, isSalesCaller } from '../lib/houzs-perms';
 import { resolveSalesScopeIds, salesDocOutOfScope, resolveCallerStaffId } from '../lib/salesScope';
 import { recordSoAudit, diffFields, type FieldChange } from '../lib/so-audit';
 /* TBC sofa exchange PWP re-evaluation (Loo 2026-06-12) — reuse the voucher
@@ -8560,11 +8560,21 @@ mfgSalesOrders.patch('/:docNo/items/:itemId/stock-status', async (c) => {
 
    Houzs gate: scm.amendment.create against the REAL caller (hasHouzsPerm) — the
    2990 scm.staff.role check is dead here (the SCM bridge pins to one super_admin
-   row). Owner + IT Admin pass via `*`. */
+   row). Owner + IT Admin pass via `*`. ADDITIVELY, any salesperson (isSalesCaller,
+   keyed off STABLE ORG FIELDS) may submit an amendment on their OWN locked SO:
+   the gate below OR-s in isSalesCaller, and the ownership check further down
+   (salesDocOutOfScope) confines a rep to their own + downline Sales Orders while
+   view-all roles (directors / office) stay unrestricted. The approve-so /
+   approve-po / supplier-confirm gates are UNCHANGED — those remain office-only
+   (scm.amendment.approve_so / approve_po). */
 mfgSalesOrders.post('/:docNo/amendments', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const user = c.get('user');
 
-  if (!hasHouzsPerm(c, 'scm.amendment.create')) {
+  // Submit gate — the flat `scm.amendment.create` grant (Owner / IT Admin via
+  // `*`, office positions via the matrix) OR any salesperson by STABLE ORG
+  // FIELD (isSalesCaller). Ownership is enforced after the SO row loads, so a
+  // rep passing here can still only amend a Sales Order within their own scope.
+  if (!hasHouzsPerm(c, 'scm.amendment.create') && !isSalesCaller(c)) {
     return c.json({
       error: 'amendment_create_forbidden',
       message: 'You do not have permission to raise a Sales Order amendment.',
@@ -8585,11 +8595,24 @@ mfgSalesOrders.post('/:docNo/amendments', async (c) => {
   };
   try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid_json' }, 400); }
 
-  // Guard 1 — SO exists. Pull the lock columns (processing-date + proceeded_at).
+  // Guard 1 — SO exists. Pull the lock columns (processing-date + proceeded_at)
+  // plus salesperson_id for the ownership scope check below.
   const { data: soRow } = await scopeToCompany(sb.from('mfg_sales_orders')
-    .select('doc_no, status, revision, internal_expected_dd, processing_date, proceeded_at')
+    .select('doc_no, status, revision, internal_expected_dd, processing_date, proceeded_at, salesperson_id')
     .eq('doc_no', docNo), c).maybeSingle();
   if (!soRow) return c.json({ error: 'not_found' }, 404);
+
+  // Ownership scope — same tiering as the SO detail/list reads (lib/salesScope):
+  // view-all roles (directors / office, canViewAllSales) may amend ANY SO; a
+  // scoped salesperson may amend only a Sales Order whose salesperson_id is in
+  // their own + downline subtree. An out-of-scope doc_no answers 404 —
+  // indistinguishable from a nonexistent one, exactly like the detail route.
+  {
+    const sp = (soRow as { salesperson_id?: number | string | null }).salesperson_id;
+    if (await salesDocOutOfScope(sb, c.env, c.get('houzsUser')?.id, canViewAllSales(c), sp)) {
+      return c.json({ error: 'not_found' }, 404);
+    }
+  }
 
   // Self-scope stub (no-op in Houzs — the SCM bridge has no POS-self-scoped
   // sellers); kept for call-site parity with 2990.
