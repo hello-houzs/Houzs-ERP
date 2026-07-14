@@ -468,6 +468,34 @@ export function usePurchaseOrders(opts?: { status?: PoStatus; supplierId?: strin
   });
 }
 
+// Opt-in server-side pagination + search + sort + status-counts (mirrors
+// useMfgSalesOrdersPaged). Sending `page` switches /mfg-purchase-orders into
+// its paginated contract ({ purchaseOrders, total, page, pageSize,
+// statusCounts }); the legacy usePurchaseOrders above (no page) still returns
+// the historical unpaginated array. `status` is the RESOLVED
+// purchase_orders.status DB value (UPPERCASE) — the caller maps its filter-pill
+// bucket (draft/open/partial/received/cancelled) to a single DB status first;
+// every PO bucket maps 1:1 so none needs dropping. Unlike the legacy hook this
+// returns the FULL object so the page can read .purchaseOrders + .statusCounts.
+export function usePurchaseOrdersPaged(params: { page: number; pageSize: number; status?: string; supplierId?: string; q?: string; sort?: string }) {
+  const { page, pageSize, status, supplierId, q, sort } = params;
+  const usp = new URLSearchParams();
+  usp.set('page', String(page));
+  usp.set('pageSize', String(pageSize));
+  if (status) usp.set('status', status);
+  if (supplierId) usp.set('supplierId', supplierId);
+  if (q && q.trim()) usp.set('q', q.trim());
+  if (sort) usp.set('sort', sort);
+  return useQuery({
+    queryKey: ['mfg-purchase-orders-paged', page, pageSize, status ?? '', supplierId ?? '', q ?? '', sort ?? ''],
+    queryFn: () => authedFetch<{ purchaseOrders: PoHeaderRow[]; total: number; page: number; pageSize: number; statusCounts: { all: number; draft: number; open: number; partial: number; received: number; cancelled: number } }>(`/mfg-purchase-orders?${usp.toString()}`),
+    placeholderData: (prev: any) => prev,
+    staleTime: 30_000,
+    retry: 1,
+    retryDelay: 800,
+  });
+}
+
 export function usePurchaseOrderDetail(id: string | null) {
   return useQuery({
     queryKey: ['mfg-purchase-order-detail', id],

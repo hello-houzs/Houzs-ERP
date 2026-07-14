@@ -3,7 +3,7 @@
 // framing, but the money flows OUT to the supplier instead of in from the
 // customer. Outstanding here is what WE owe, not what customers owe us.
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Plus,
@@ -27,7 +27,7 @@ import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
 import { PullToRefresh } from "../../components/PullToRefresh";
 import {
-  usePurchaseInvoices,
+  usePurchaseInvoicesPaged,
   usePurchaseInvoiceDetail,
   useCancelPurchaseInvoice,
   useRecordPiPayment,
@@ -495,6 +495,60 @@ function TotalRow({
   );
 }
 
+// ─── Pagination footer ──────────────────────────────────────────────────────
+
+function PaginationFooter({
+  page,
+  pageSize,
+  total,
+  onPrev,
+  onNext,
+}: {
+  page: number;
+  pageSize: number;
+  total: number;
+  onPrev: () => void;
+  onNext: () => void;
+}) {
+  const from = total === 0 ? 0 : page * pageSize + 1;
+  const to = Math.min((page + 1) * pageSize, total);
+  const atStart = page === 0;
+  const atEnd = (page + 1) * pageSize >= total;
+  return (
+    <div className="mt-4 flex items-center justify-between gap-3">
+      <span className="text-[12px] text-ink-muted">
+        Showing {from}
+        {to > from ? `–${to}` : ""} of {total}
+      </span>
+      <div className="flex items-center gap-2">
+        <Button variant="secondary" onClick={onPrev} disabled={atStart}>
+          Prev
+        </Button>
+        <Button variant="secondary" onClick={onNext} disabled={atEnd}>
+          Next
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// Table column key → backend sort-whitelist column. PI backend whitelist is
+// { invoice_date, invoice_number, status, total_centi }; only `total` differs
+// from its backend name. Non-whitelisted columns carry `disableSort`.
+const SORT_COL_MAP: Record<string, string> = {
+  total: "total_centi",
+};
+
+// Filter-pill bucket → single purchase_invoices.status DB value. Every PI bucket
+// maps 1:1 to a DB status, so server-side status filtering is exact.
+const PI_BUCKET_STATUS: Partial<Record<StatusTab, string>> = {
+  draft: "DRAFT",
+  posted: "POSTED",
+  partial: "PARTIALLY_PAID",
+  paid: "PAID",
+  cancelled: "CANCELLED",
+};
+
 // ─── Main page ──────────────────────────────────────────────────────────────
 
 export function PurchaseInvoicesListV2() {
@@ -505,75 +559,66 @@ export function PurchaseInvoicesListV2() {
   const status = (params.get("status") ?? "all") as StatusTab;
   const view = (params.get("view") ?? "table") as "table" | "cards";
   const search = params.get("q") ?? "";
+  const page = Math.max(0, parseInt(params.get("page") ?? "0", 10) || 0);
+  const pageSize = 50;
 
   const [selected, setSelected] = useState<PiRow | null>(null);
+  const [sort, setSort] = useState<string | undefined>(undefined);
+  const [debouncedSearch, setDebouncedSearch] = useState(search);
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(t);
+  }, [search]);
 
-  const { data, isLoading, error } = usePurchaseInvoices();
+  const apiStatus = status === "all" ? undefined : PI_BUCKET_STATUS[status];
+
+  const { data, isLoading, error } = usePurchaseInvoicesPaged({
+    page,
+    pageSize,
+    status: apiStatus,
+    q: debouncedSearch,
+    sort,
+  });
   const cancelPi = useCancelPurchaseInvoice();
   const recordPayment = useRecordPiPayment();
 
-  const allRows = useMemo<PiRow[]>(
-    () => ((data?.purchaseInvoices ?? []) as PiRow[]),
-    [data]
-  );
+  // Server already filtered + sorted this page — render verbatim.
+  const rows = (data?.purchaseInvoices ?? []) as PiRow[];
+  const total = data?.total ?? 0;
+  const counts = data?.statusCounts ?? {
+    all: 0,
+    draft: 0,
+    posted: 0,
+    partial: 0,
+    paid: 0,
+    cancelled: 0,
+  };
 
-  const scopedByBucket = useMemo(() => {
-    if (status === "all") return allRows;
-    return allRows.filter((r) => statusFor(r.status).bucket === status);
-  }, [allRows, status]);
-
-  const filtered = useMemo(() => {
-    if (!search.trim()) return scopedByBucket;
-    const q = search.toLowerCase();
-    return scopedByBucket.filter((r) => {
-      const hay = [
-        r.invoice_number,
-        supplierNameOf(r),
-        supplierCodeOf(r),
-        sourceOf(r),
-        r.notes,
-      ]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
-      return hay.includes(q);
-    });
-  }, [scopedByBucket, search]);
-
-  const counts = useMemo(() => {
-    const acc = { all: allRows.length, draft: 0, posted: 0, partial: 0, paid: 0, cancelled: 0 };
-    for (const r of allRows) {
-      const b = statusFor(r.status).bucket;
-      if (b === "draft") acc.draft += 1;
-      else if (b === "posted") acc.posted += 1;
-      else if (b === "partial") acc.partial += 1;
-      else if (b === "paid") acc.paid += 1;
-      else if (b === "cancelled") acc.cancelled += 1;
-    }
-    return acc;
-  }, [allRows]);
-
-  const stats = useMemo(() => {
+  // Money KPIs are summed over the CURRENT page only (paginated contract has no
+  // full-set money sums), so their cards are labelled "on this page".
+  const money = useMemo(() => {
     let billed = 0;
     let owed = 0;
     let paid = 0;
-    for (const r of filtered) {
+    for (const r of rows) {
       billed += totalOf(r);
       owed += outstandingOf(r);
       paid += paidOf(r);
     }
-    return {
-      total: filtered.length,
-      billed,
-      owed,
-      paid,
-    };
-  }, [filtered]);
+    return { billed, owed, paid };
+  }, [rows]);
 
+  const setPageParam = (p: number) => {
+    const next = new URLSearchParams(params);
+    if (p <= 0) next.delete("page");
+    else next.set("page", String(p));
+    setParams(next, { replace: true });
+  };
   const setStatusChip = (s: StatusTab) => {
     const next = new URLSearchParams(params);
     if (s === "all") next.delete("status");
     else next.set("status", s);
+    next.delete("page");
     setParams(next, { replace: true });
   };
   const setView = (v: "table" | "cards") => {
@@ -586,9 +631,22 @@ export function PurchaseInvoicesListV2() {
     const next = new URLSearchParams(params);
     if (!q.trim()) next.delete("q");
     else next.set("q", q);
+    next.delete("page");
     setParams(next, { replace: true });
   };
-  const resetLayout = () => setParams(new URLSearchParams(), { replace: true });
+  const sortSyncedRef = useRef(false);
+  const setSortAndReset = (s: { key: string; dir: "asc" | "desc" } | null) => {
+    setSort(s ? `${SORT_COL_MAP[s.key] ?? s.key}:${s.dir}` : undefined);
+    if (!sortSyncedRef.current) {
+      sortSyncedRef.current = true;
+      return;
+    }
+    setPageParam(0);
+  };
+  const resetLayout = () => {
+    setSort(undefined);
+    setParams(new URLSearchParams(), { replace: true });
+  };
   const filtersActive =
     status !== "all" || view !== "table" || search.trim().length > 0;
 
@@ -635,6 +693,7 @@ export function PurchaseInvoicesListV2() {
       key: "due_date",
       label: "Due",
       width: "108px",
+      disableSort: true,
       getValue: (r) => r.due_date ?? "",
       render: (r) => <span className="text-[12.5px] text-ink-secondary">{fmtDate(r.due_date)}</span>,
     },
@@ -642,6 +701,7 @@ export function PurchaseInvoicesListV2() {
       key: "source",
       label: "Source",
       width: "132px",
+      disableSort: true,
       getValue: (r) => sourceOf(r),
       render: (r) => (
         <span className="font-mono text-[12px] text-ink-secondary">{sourceOf(r)}</span>
@@ -650,6 +710,7 @@ export function PurchaseInvoicesListV2() {
     {
       key: "supplier",
       label: "Supplier",
+      disableSort: true,
       getValue: (r) => supplierNameOf(r),
       render: (r) => (
         <div className="min-w-0">
@@ -673,6 +734,8 @@ export function PurchaseInvoicesListV2() {
       label: "Owed",
       width: "128px",
       align: "right",
+      // Derived (Total − Paid) — not a backend-sortable column.
+      disableSort: true,
       getValue: (r) => outstandingOf(r),
       render: (r) => {
         const o = outstandingOf(r);
@@ -717,8 +780,8 @@ export function PurchaseInvoicesListV2() {
               Purchase Invoices
             </h1>
             <div className="mt-0.5 text-[12.5px] text-ink-muted">
-              {stats.total} PI{stats.total === 1 ? "" : "s"} ·{" "}
-              <span className="font-money text-err">{fmtRm(stats.owed)}</span> owed
+              {total} PI{total === 1 ? "" : "s"} ·{" "}
+              <span className="font-money text-err">{fmtRm(money.owed)}</span> owed
             </div>
           </div>
         </div>
@@ -746,28 +809,28 @@ export function PurchaseInvoicesListV2() {
         <div className="mb-5 hidden grid-cols-2 gap-3 md:grid lg:grid-cols-4">
           <StatCard
             label="Total PIs"
-            value={stats.total.toLocaleString("en-MY")}
-            subtitle="Scoped to current filter"
+            value={total.toLocaleString("en-MY")}
+            subtitle="All matching PIs"
             rail="bg-primary"
             active
           />
           <StatCard
             label="Billed"
-            value={fmtRm(stats.billed)}
-            subtitle="Sum of invoice totals"
+            value={fmtRm(money.billed)}
+            subtitle="Sum on this page"
             rail="bg-accent"
           />
           <StatCard
             label="Owed"
-            value={fmtRm(stats.owed)}
-            subtitle="Balance owed to suppliers"
+            value={fmtRm(money.owed)}
+            subtitle="Balance owed · on this page"
             tone="error"
             rail="bg-err"
           />
           <StatCard
             label="Paid"
-            value={fmtRm(stats.paid)}
-            subtitle="Cash out to suppliers"
+            value={fmtRm(money.paid)}
+            subtitle="Cash out · on this page"
             tone="success"
             rail="bg-synced"
           />
@@ -796,41 +859,56 @@ export function PurchaseInvoicesListV2() {
         </div>
 
         <div className="md:hidden">
-          <CardsGrid rows={filtered} onOpen={(r) => setSelected(r)} />
-          {filtered.length > 0 && (
-            <div className="mt-4 pb-24 text-center text-[11.5px] text-ink-muted">
-              {filtered.length} PI{filtered.length === 1 ? "" : "s"}
-            </div>
-          )}
+          <CardsGrid rows={rows} onOpen={(r) => setSelected(r)} />
+          <div className="pb-24">
+            <PaginationFooter
+              page={page}
+              pageSize={pageSize}
+              total={total}
+              onPrev={() => setPageParam(page - 1)}
+              onNext={() => setPageParam(page + 1)}
+            />
+          </div>
         </div>
 
         <div className="hidden md:block">
           {view === "table" ? (
-            <DataTable<PiRow>
-              tableId="purchase-invoices-v2"
-              rows={filtered}
-              loading={isLoading}
-              error={error ? (error as Error).message ?? "Failed to load" : null}
-              columns={columns}
-              getRowKey={(r) => r.id}
-              onRowClick={(r) => setSelected(r)}
-              exportName="purchase-invoices"
-              emptyLabel={
-                filtersActive
-                  ? "No purchase invoices match — try Reset layout to clear filters."
-                  : "No purchase invoices yet."
-              }
-              search={{
-                value: search,
-                onChange: setSearch,
-                placeholder: "Search PI no, supplier, source…",
-              }}
-              resetFilters={{
-                active: filtersActive,
-                onReset: resetLayout,
-                label: "Reset layout",
-              }}
-            />
+            <>
+              <DataTable<PiRow>
+                tableId="purchase-invoices-v2"
+                rows={rows}
+                loading={isLoading}
+                error={error ? (error as Error).message ?? "Failed to load" : null}
+                columns={columns}
+                getRowKey={(r) => r.id}
+                onRowClick={(r) => setSelected(r)}
+                exportName="purchase-invoices"
+                serverSort
+                onSortChange={setSortAndReset}
+                emptyLabel={
+                  filtersActive
+                    ? "No purchase invoices match — try Reset layout to clear filters."
+                    : "No purchase invoices yet."
+                }
+                search={{
+                  value: search,
+                  onChange: setSearch,
+                  placeholder: "Search PI no, supplier, source…",
+                }}
+                resetFilters={{
+                  active: filtersActive,
+                  onReset: resetLayout,
+                  label: "Reset layout",
+                }}
+              />
+              <PaginationFooter
+                page={page}
+                pageSize={pageSize}
+                total={total}
+                onPrev={() => setPageParam(page - 1)}
+                onNext={() => setPageParam(page + 1)}
+              />
+            </>
           ) : (
             <>
               <div className="mb-3 flex items-center justify-between">
@@ -848,11 +926,15 @@ export function PurchaseInvoicesListV2() {
                     </button>
                   )}
                 </div>
-                <span className="text-[12px] text-ink-muted">
-                  {filtered.length} PI{filtered.length === 1 ? "" : "s"}
-                </span>
               </div>
-              <CardsGrid rows={filtered} onOpen={(r) => setSelected(r)} />
+              <CardsGrid rows={rows} onOpen={(r) => setSelected(r)} />
+              <PaginationFooter
+                page={page}
+                pageSize={pageSize}
+                total={total}
+                onPrev={() => setPageParam(page - 1)}
+                onNext={() => setPageParam(page + 1)}
+              />
             </>
           )}
         </div>
