@@ -1068,6 +1068,12 @@ export interface ListProjectsFilters {
    *  (migration 048). Empty array means the scoped user has no brand
    *  coverage → zero results. Undefined means no brand ACL applies. */
   brand_scope?: string[];
+  /** Scoped rep's own user id. When set (only for scope_to_pic reps,
+   *  paired with pic_scope), OR-in the sales-attendee arm so a rep on a
+   *  project's Sales Attending list sees it even when they aren't the PIC
+   *  — mirrors the /calendar/events attendee arm (mig 087). Undefined for
+   *  admins / directors / unscoped roles (they never carry pic_scope). */
+  attendee_user_id?: number;
   /** "My pending tasks" filter (role-based). When set, only return
    *  projects that have at least one PENDING checklist item with this
    *  role_label (e.g. "BD", "PURCHASER", "DRIVER", "SALES PIC",
@@ -1281,35 +1287,47 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
     const like = `%${f.search}%`;
     binds.push(like, like, like, like);
   }
+  // Row-level ACL for a scoped rep (pic_scope present ⇒ getProjectScope was
+  // non-null, i.e. a scope_to_pic sales/CS rep). Mirrors BOTH the
+  // /calendar/events assignment scoping AND services/projectAcl.canSeeProject
+  // so the list, the calendar, and the detail all agree on what a scoped rep
+  // may see (no row that 404s on open; no openable row missing from the list):
+  //   · PIC arm      — the project's PIC (COALESCE(pic_id, created_by) for
+  //                    legacy pre-039 rows) is in their [self, manager] line
+  //                    AND the project's brand is in their department allow-list
+  //                    AND the project is still inside the PIC grace window.
+  //                    This is exactly canSeeProject's inPicLine + brand + grace.
+  //   · Attendee arm — they are on the project's Sales Attending list
+  //                    (project_sales_attendees → sales_reps.user_id, mig 087) —
+  //                    the same linkage the calendar's attendee arm uses.
+  //                    Unconditional (no brand / grace gate), exactly like the
+  //                    calendar: being an attendee is itself an assignment.
+  // Fail-closed: a scoped rep with neither a PIC line nor an attendee record
+  // yields an empty OR set → `1 = 0` → an empty list, never the full list.
   if (f.pic_scope) {
-    if (f.pic_scope.length === 0) {
-      // Scoped user with no valid PIC line — return no rows.
-      where.push("1 = 0");
-    } else {
+    const scopeArms: string[] = [];
+    if (f.pic_scope.length > 0 && f.brand_scope && f.brand_scope.length > 0) {
       // Fall back to created_by when pic_id is NULL so legacy projects
-      // (pre-migration 039) still attach to their creator's team.
-      where.push(
-        `COALESCE(p.pic_id, p.created_by) IN (${f.pic_scope.map(() => "?").join(",")})`
+      // (pre-migration 039) still attach to their creator's team. Brand-less
+      // projects are intentionally invisible to scoped users — admins fix by
+      // setting the brand. Grace: PIC visibility expires PIC_GRACE_DAYS after
+      // the project ends (owner: "完了的四天之后").
+      scopeArms.push(
+        `(COALESCE(p.pic_id, p.created_by) IN (${f.pic_scope.map(() => "?").join(",")})` +
+        ` AND ${scopeNotExpiredSql}` +
+        ` AND p.brand IS NOT NULL AND p.brand IN (${f.brand_scope.map(() => "?").join(",")}))`
       );
-      binds.push(...f.pic_scope);
-      // PIC visibility expires PIC_GRACE_DAYS after the project ends (owner:
-      // "完了的四天之后"). Only scoped users (pic_scope set) get this filter.
-      where.push(scopeNotExpiredSql);
+      binds.push(...f.pic_scope, ...f.brand_scope);
     }
-  }
-  if (f.brand_scope) {
-    if (f.brand_scope.length === 0) {
-      // Scoped user with no brand coverage — return no rows.
-      where.push("1 = 0");
-    } else {
-      // Project must have a brand AND it must be in the user's
-      // department's allow-list. Brand-less projects are intentionally
-      // invisible to scoped users — admins fix by setting the brand.
-      where.push(
-        `(p.brand IS NOT NULL AND p.brand IN (${f.brand_scope.map(() => "?").join(",")}))`
+    if (f.attendee_user_id != null) {
+      scopeArms.push(
+        `EXISTS (SELECT 1 FROM project_sales_attendees psa` +
+        ` JOIN sales_reps sr ON sr.id = psa.sales_rep_id` +
+        ` WHERE psa.project_id = p.id AND sr.user_id = ?)`
       );
-      binds.push(...f.brand_scope);
+      binds.push(f.attendee_user_id);
     }
+    where.push(scopeArms.length ? `(${scopeArms.join(" OR ")})` : "1 = 0");
   }
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
