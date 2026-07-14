@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Plus, Copy, Trash2, UserX, UserCheck, X, KeyRound, Pencil, Check, Tag, RefreshCw, Search, ArrowUp, ArrowDown, ChevronsUpDown, Printer, LayoutGrid, List, Phone, Mail, AtSign, ArrowLeft, SlidersHorizontal, Eye, EyeOff, Users, ShieldCheck, Network, Building2, LogIn, type LucideIcon } from "lucide-react";
+import { Plus, Copy, Trash2, UserX, UserCheck, X, KeyRound, Pencil, Check, Tag, RefreshCw, Search, ArrowUp, ArrowDown, ChevronsUpDown, ChevronRight, ChevronDown, Printer, LayoutGrid, List, Phone, Mail, AtSign, ArrowLeft, SlidersHorizontal, Eye, EyeOff, Users, ShieldCheck, Network, Building2, LogIn, type LucideIcon } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { TabStrip, type TabOption } from "../components/TabStrip";
 import { Button } from "../components/Button";
@@ -3092,6 +3092,47 @@ function isDescendantOf(
   return false;
 }
 
+// One departmental box in the org chart (a dept with non-root members, or the
+// "Unassigned" catch-all). Shared between OrgChartTab (which owns per-box
+// expand/collapse state) and OrgDeptChart (which renders them).
+type OrgGroup = {
+  key: string;
+  deptId: number | null;
+  name: string;
+  color: string | null;
+  members: TeamMember[];
+};
+
+// Build the departmental boxes: one per department that has non-root members
+// (matching ANY of a member's departments, mig 0020), then a catch-all for the
+// unassigned. Root people are pulled into a separate top row by the caller.
+function buildDeptGroups(
+  users: TeamMember[],
+  roots: TeamMember[],
+  departments: Department[],
+): OrgGroup[] {
+  const rootIds = new Set(roots.map((r) => r.id));
+  const rest = users.filter((u) => !rootIds.has(u.id));
+  const groups: OrgGroup[] = [];
+  for (const d of departments) {
+    const ms = rest.filter((u) => inDept(u, d.id));
+    if (ms.length)
+      groups.push({ key: `d${d.id}`, deptId: d.id, name: d.name, color: d.color, members: ms });
+  }
+  const placed = new Set(groups.flatMap((g) => g.members.map((m) => m.id)));
+  const noDept = rest.filter((u) => !placed.has(u.id));
+  if (noDept.length)
+    groups.push({ key: "none", deptId: null, name: "Unassigned", color: null, members: noDept });
+  return groups;
+}
+
+// Initial-render card budget: department boxes are expanded (their member cards
+// mounted) greedily in order until this many cards are on screen; the rest stay
+// collapsed to a header + count, mounting zero cards until the user expands
+// them. This bounds the initial DOM so the chart doesn't freeze at scale — a
+// collapsed box contributes 0 card nodes. Roots/leadership always render.
+const ORG_INITIAL_CARD_BUDGET = 60;
+
 // ──────────────────────────────────────────────────────────
 // Org Chart tab — top-down visual tree with drag-to-assign
 // ──────────────────────────────────────────────────────────
@@ -3160,6 +3201,44 @@ function OrgChartTab() {
   const [draggingId, setDraggingId] = useState<number | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [zoom, setZoom] = useState(1);
+
+  // Department boxes, and which are expanded. Lazy-mount: a collapsed box shows
+  // only its header (name + count + chevron) and mounts none of its member
+  // cards, so deep/large departments contribute 0 DOM nodes until opened.
+  const groups = useMemo(
+    () => buildDeptGroups(users, roots, depts.data?.departments ?? []),
+    [users, roots, depts.data?.departments],
+  );
+  // null = "use the budget-based default". Once the user toggles anything we
+  // hold their explicit set instead.
+  const [expandedGroups, setExpandedGroups] = useState<Set<string> | null>(null);
+  const defaultExpandedGroups = useMemo(() => {
+    const s = new Set<string>();
+    let budget = ORG_INITIAL_CARD_BUDGET;
+    for (const g of groups) {
+      if (g.members.length <= budget) {
+        s.add(g.key);
+        budget -= g.members.length;
+      }
+    }
+    return s;
+  }, [groups]);
+  const expandedKeys = expandedGroups ?? defaultExpandedGroups;
+  function toggleGroup(key: string) {
+    const base = expandedGroups ?? defaultExpandedGroups;
+    const next = new Set(base);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    setExpandedGroups(next);
+  }
+  function expandAllGroups() {
+    setExpandedGroups(new Set(groups.map((g) => g.key)));
+  }
+  function collapseAllGroups() {
+    setExpandedGroups(new Set());
+  }
+  const allGroupsExpanded =
+    groups.length > 0 && groups.every((g) => expandedKeys.has(g.key));
 
   async function reassign(userId: number, managerId: number | null) {
     if (userId === managerId) return;
@@ -3362,20 +3441,47 @@ function OrgChartTab() {
         </div>
       ) : (
         <>
-          {/* Controls: export · zoom */}
+          {/* Controls: expand · export · zoom */}
           <div className="flex flex-wrap items-center justify-end gap-1.5">
+            {groups.length > 1 && (
+              <button
+                type="button"
+                onClick={allGroupsExpanded ? collapseAllGroups : expandAllGroups}
+                className="mr-1 inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-surface px-2.5 text-[11px] font-semibold text-ink-secondary transition-colors hover:border-accent/40 hover:text-accent"
+                title={
+                  allGroupsExpanded
+                    ? "Collapse every department"
+                    : "Expand every department (mounts all cards)"
+                }
+              >
+                {allGroupsExpanded ? (
+                  <ChevronRight size={13} strokeWidth={2} />
+                ) : (
+                  <ChevronDown size={13} strokeWidth={2} />
+                )}
+                {allGroupsExpanded ? "Collapse all" : "Expand all"}
+              </button>
+            )}
             <button
               type="button"
               onClick={() => {
-                // Shrink the chart to fit one landscape page so it isn't
-                // clipped (see the @media print rule in index.css).
-                const el = document.querySelector(".org-print-scale") as HTMLElement | null;
-                if (el)
-                  el.style.setProperty(
-                    "--print-zoom",
-                    String(Math.min(1, 1000 / (el.scrollWidth || 1))),
-                  );
-                window.print();
+                // Expand every box first so the printout has the full chart —
+                // collapsed boxes mount none of their cards. Wait two frames for
+                // the newly-mounted cards before measuring + printing.
+                expandAllGroups();
+                requestAnimationFrame(() =>
+                  requestAnimationFrame(() => {
+                    // Shrink the chart to fit one landscape page so it isn't
+                    // clipped (see the @media print rule in index.css).
+                    const el = document.querySelector(".org-print-scale") as HTMLElement | null;
+                    if (el)
+                      el.style.setProperty(
+                        "--print-zoom",
+                        String(Math.min(1, 1000 / (el.scrollWidth || 1))),
+                      );
+                    window.print();
+                  }),
+                );
               }}
               className="mr-1 inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-surface px-2.5 text-[11px] font-semibold text-ink-secondary transition-colors hover:border-accent/40 hover:text-accent"
               title="Export as PDF or print"
@@ -3419,6 +3525,9 @@ function OrgChartTab() {
               <OrgDeptChart
                 users={users}
                 roots={roots}
+                groups={groups}
+                expandedKeys={expandedKeys}
+                onToggleGroup={toggleGroup}
                 departments={deptList}
                 divisionOptions={divisionOptions}
                 canManage={canManage}
@@ -3536,6 +3645,9 @@ function clusterByPosition(
 function OrgDeptChart({
   users,
   roots,
+  groups,
+  expandedKeys,
+  onToggleGroup,
   departments,
   divisionOptions,
   canManage,
@@ -3551,6 +3663,12 @@ function OrgDeptChart({
 }: {
   users: TeamMember[];
   roots: TeamMember[];
+  /** Prebuilt department boxes (see buildDeptGroups) — the caller owns them so
+   *  it can also own the expand/collapse state. */
+  groups: OrgGroup[];
+  /** Keys of the boxes that are expanded; collapsed boxes mount no cards. */
+  expandedKeys: Set<string>;
+  onToggleGroup: (key: string) => void;
   departments: Department[];
   divisionOptions: string[];
   canManage: boolean;
@@ -3587,28 +3705,9 @@ function OrgDeptChart({
     />
   );
 
-  // One titled box per department (in department order), matching ANY of a
-  // member's departments (mig 0020), then a catch-all for the unassigned.
-  // Root people are pulled into the top row.
-  const rootIds = new Set(roots.map((r) => r.id));
-  const rest = users.filter((u) => !rootIds.has(u.id));
-  const groups: {
-    key: string;
-    deptId: number | null;
-    name: string;
-    color: string | null;
-    members: TeamMember[];
-  }[] = [];
-  for (const d of departments) {
-    const ms = rest.filter((u) => inDept(u, d.id));
-    if (ms.length)
-      groups.push({ key: `d${d.id}`, deptId: d.id, name: d.name, color: d.color, members: ms });
-  }
-  const placed = new Set(groups.flatMap((g) => g.members.map((m) => m.id)));
-  const noDept = rest.filter((u) => !placed.has(u.id));
-  if (noDept.length)
-    groups.push({ key: "none", deptId: null, name: "Unassigned", color: null, members: noDept });
-
+  // Department boxes are prebuilt and owned by the caller (which also owns the
+  // expand/collapse state); see buildDeptGroups. Root people render in the top
+  // row below.
   const hasRoots = roots.length > 0;
 
   return (
@@ -3646,6 +3745,8 @@ function OrgDeptChart({
             {hasRoots && <div className="h-5 w-px bg-border" />}
             <DeptGroupBox
               group={g}
+              collapsed={!expandedKeys.has(g.key)}
+              onToggle={() => onToggleGroup(g.key)}
               renderCard={renderCard}
               canManage={canManage}
               draggingId={draggingId}
@@ -3660,6 +3761,8 @@ function OrgDeptChart({
 
 function DeptGroupBox({
   group,
+  collapsed,
+  onToggle,
   renderCard,
   canManage,
   draggingId,
@@ -3671,6 +3774,10 @@ function DeptGroupBox({
     color: string | null;
     members: TeamMember[];
   };
+  /** When collapsed the box mounts only its header — none of its member cards.
+   *  This is what bounds the chart's DOM at scale. */
+  collapsed: boolean;
+  onToggle: () => void;
   renderCard: (u: TeamMember) => ReactNode;
   canManage: boolean;
   draggingId: number | null;
@@ -3678,12 +3785,15 @@ function DeptGroupBox({
 }) {
   // Columns = divisions within the department. Members with no division fall
   // into a leading default column ("" key); named divisions sort alpha after.
+  // Only computed when expanded, since a collapsed box renders no columns.
   const byDiv = new Map<string, TeamMember[]>();
-  for (const m of group.members) {
-    const key = m.division?.trim() || "";
-    const arr = byDiv.get(key) ?? [];
-    arr.push(m);
-    byDiv.set(key, arr);
+  if (!collapsed) {
+    for (const m of group.members) {
+      const key = m.division?.trim() || "";
+      const arr = byDiv.get(key) ?? [];
+      arr.push(m);
+      byDiv.set(key, arr);
+    }
   }
   const columns = [...byDiv.entries()].sort((a, b) => {
     if (a[0] === "") return -1;
@@ -3694,31 +3804,42 @@ function DeptGroupBox({
 
   return (
     <div className="overflow-hidden rounded-lg border border-border bg-surface shadow-stone">
-      <div
-        className="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-white/95"
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={!collapsed}
+        title={collapsed ? `Expand ${group.name}` : `Collapse ${group.name}`}
+        className="flex w-full items-center gap-1.5 px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide text-white/95 transition-colors hover:brightness-110"
         style={{
           backgroundColor: "#33404e",
           borderLeft: group.color ? `4px solid #${group.color}` : undefined,
         }}
       >
-        {group.name}
-        <span className="ml-1.5 font-normal text-white/55">{group.members.length}</span>
-      </div>
-      <div className="flex items-start gap-2 p-2.5">
-        {columns.map(([div, ms]) => (
-          <DivisionColumn
-            key={div || "_default"}
-            deptId={group.deptId}
-            division={div || null}
-            members={ms}
-            showLabel={multiCol || div !== ""}
-            renderCard={renderCard}
-            canManage={canManage}
-            draggingId={draggingId}
-            onMoveMember={onMoveMember}
-          />
-        ))}
-      </div>
+        {collapsed ? (
+          <ChevronRight size={13} strokeWidth={2.5} className="shrink-0 text-white/70" />
+        ) : (
+          <ChevronDown size={13} strokeWidth={2.5} className="shrink-0 text-white/70" />
+        )}
+        <span className="truncate">{group.name}</span>
+        <span className="ml-auto pl-1.5 font-normal text-white/55">{group.members.length}</span>
+      </button>
+      {!collapsed && (
+        <div className="flex items-start gap-2 p-2.5">
+          {columns.map(([div, ms]) => (
+            <DivisionColumn
+              key={div || "_default"}
+              deptId={group.deptId}
+              division={div || null}
+              members={ms}
+              showLabel={multiCol || div !== ""}
+              renderCard={renderCard}
+              canManage={canManage}
+              draggingId={draggingId}
+              onMoveMember={onMoveMember}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
