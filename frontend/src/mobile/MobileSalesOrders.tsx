@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { useAuth } from "../auth/AuthContext";
-import { isSalesStaff } from "../auth/salesAccess";
+import { quickActionAccess } from "../auth/salesAccess";
 import { normalizeJobs, type ScanJobsResp } from "./MobileScan";
 import { MobileVirtualList } from "./MobileVirtualList";
 import "./mobile.css";
@@ -129,9 +129,9 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
   // the desktop QuickActionsFAB two-choice). A Sales user always gets the case
   // option (owner rule 2026-07); others get it only if their matrix grants it.
   const [fabOpen, setFabOpen] = useState(false);
-  const canNewCase =
-    !!onNewCase &&
-    (isSalesStaff(user) || can("service_cases.write") || pageAccess("service_cases") !== "none");
+  // Shared rule with the desktop QuickActionsFAB (auth/salesAccess) — a Sales
+  // user always gets the case option; others only with the matrix grant.
+  const canNewCase = !!onNewCase && quickActionAccess(user, can, pageAccess).canNewCase;
   const [status, setStatus] = useState<StatusFilter>("all");
   const [range, setRange] = useState<Range>("all");
   const [filterOpen, setFilterOpen] = useState(false);
