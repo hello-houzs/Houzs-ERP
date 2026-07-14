@@ -10,6 +10,12 @@ import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { useChoice } from "../vendor/scm/components/ChoiceDialog";
 import { todayMyt } from "../vendor/scm/lib/dates";
+import {
+  ASSR_STAGES,
+  ASSR_STAGE_INDEX,
+  activeAssrStages,
+  type AssrStageDef,
+} from "../vendor/scm/lib/assr/stages";
 import "./mobile.css";
 
 // The core /api/assr route (NOT scm). The list returns
@@ -53,26 +59,27 @@ const LINE_SOFT = "rgba(34,31,32,0.10)";
 const DIM = "#e3e6e0";
 const FIELD_BG = "#f4f6f3";
 
-// Ordered stage pipeline (backend ALL_STAGES) — 7 stages since mig 0110
-// retired Item Pickup (the customer-side collection lives inside the
-// Supplier stage; Pending Inspection went the same way in mig 0105).
-// `label` is the chip-short form, `long` the card/badge form; `owner`
-// mirrors ServiceProgressTracker's owner map.
-const STAGES: { key: string; label: string; long: string; owner: string }[] = [
-  { key: "pending_review",           label: "Review",      long: "Pending Review",              owner: "Service Admin" },
-  { key: "under_verification",       label: "Verify",      long: "Under Verification",          owner: "Service Admin" },
-  { key: "pending_solution",         label: "Solution",    long: "Pending Solution",            owner: "Service Admin" },
-  { key: "pending_supplier_pickup",  label: "Supplier",    long: "Supplier Pickup / Return",    owner: "Service Admin" },
-  { key: "pending_item_ready",       label: "Item Ready",  long: "Pending Item Ready",          owner: "Service Admin" },
-  { key: "pending_delivery_service", label: "Delivery",    long: "Pending Delivery / Service",  owner: "Logistic Admin" },
-  { key: "completed",                label: "Completed",   long: "Completed",                   owner: "System" },
-];
-const STAGE_INDEX: Record<string, number> = Object.fromEntries(STAGES.map((s, i) => [s.key, i]));
-// Stage-tab grouping (design StagePhases): Intake / Repair / Return.
-const PHASES: { name: string; idx: number[] }[] = [
-  { name: "Intake", idx: [0, 1, 2] },
-  { name: "Repair", idx: [3, 4] },
-  { name: "Return", idx: [5, 6] },
+// Ordered stage pipeline + the resolution-routing rule now live in the SHARED
+// vendor/scm/lib/assr/stages module so desktop + mobile can't drift on them
+// (previously mobile ignored the internal-resolution skip and mis-routed cases
+// into the two supplier-only stages). `MStage` is the mobile view-model shape;
+// `label` is the chip-short form the mobile UI reads. `toMStage` adapts a
+// canonical AssrStageDef (which uses `short`) to it.
+type MStage = { key: string; label: string; long: string; owner: string };
+const toMStage = (s: AssrStageDef): MStage => ({ key: s.key, label: s.short, long: s.long, owner: s.owner });
+const STAGES: MStage[] = ASSR_STAGES.map(toMStage);
+const STAGE_INDEX: Record<string, number> = ASSR_STAGE_INDEX;
+// Active (resolution-filtered) canonical stages for a case, in the mobile
+// view-model shape. Internal resolution → Supplier Pickup + Item Ready drop.
+const activeMStages = (method: string | null | undefined, currentStage: string): MStage[] =>
+  activeAssrStages(method, currentStage).map(toMStage);
+// Stage-tab grouping (design StagePhases): Intake / Repair / Return — keyed by
+// stage so it survives the resolution filter (a phase whose stages all drop is
+// simply not rendered for that case).
+const PHASE_DEFS: { name: string; keys: string[] }[] = [
+  { name: "Intake", keys: ["pending_review", "under_verification", "pending_solution"] },
+  { name: "Repair", keys: ["pending_supplier_pickup", "pending_item_ready"] },
+  { name: "Return", keys: ["pending_delivery_service", "completed"] },
 ];
 
 // ── Enum option lists (mirrors desktop ServiceCases.tsx) ──────────
@@ -487,7 +494,10 @@ function CaseList({
               const sla = slaStateOf(r);
               const tone = SLA_TONE[sla.tone];
               const item = get(r, "itemDescription", "item_description", "itemCode", "item_code");
-              const idx = STAGE_INDEX[stageOf(r)] ?? -1;
+              // Resolution-filtered pipeline for THIS row so an internal case
+              // shows N/5 (not N/7) and skips the supplier-only bars.
+              const rowStages = activeMStages(get(r, "resolutionMethod", "resolution_method"), stageOf(r));
+              const idx = rowStages.findIndex((s) => s.key === stageOf(r));
               return (
                 <div
                   key={id}
@@ -522,11 +532,11 @@ function CaseList({
                     <div style={{ marginTop: 12 }}>
                       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
                         <span style={{ fontSize: 11.5, fontWeight: 600, color: TEAL_DK }}>{prettyStage(stageOf(r))}</span>
-                        <span style={{ fontSize: 11, color: GREY }}>{Math.max(idx, 0) + 1}/{STAGES.length}</span>
+                        <span style={{ fontSize: 11, color: GREY }}>{Math.max(idx, 0) + 1}/{rowStages.length}</span>
                       </div>
-                      {/* mini 8-step progress bars */}
+                      {/* mini progress bars (active pipeline for this case) */}
                       <div style={{ display: "flex", gap: 3, alignItems: "center" }}>
-                        {STAGES.map((s, i) => {
+                        {rowStages.map((s, i) => {
                           const done = idx >= 0 && i < idx;
                           const cur = i === idx;
                           return (
@@ -622,7 +632,9 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
     try {
       await fn();
       refetch();
-      qc.invalidateQueries({ queryKey: ["mobile-assr-list"] });
+      // Prefix key MUST match the list query (["mobile-assr-list-paged", …]);
+      // "mobile-assr-list" is not a prefix of it, so it never invalidated.
+      qc.invalidateQueries({ queryKey: ["mobile-assr-list-paged"] });
     } catch (e: any) {
       await notify({ title: failTitle, body: e?.message || "Please try again.", tone: "error" });
     } finally {
@@ -656,8 +668,13 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
   const sla = slaText(hoursToDeadline(c));
   const leadDays = get(c, "stageTargetDays", "stage_target_days");
   const resolutionMethod = get(c, "resolutionMethod", "resolution_method");
-  const curStageIdx = STAGE_INDEX[stageOf(c)] ?? -1;
-  const nextStage = curStageIdx >= 0 ? STAGES[curStageIdx + 1] : undefined;
+  // Resolution-filtered pipeline (shared rule): internal-resolution cases drop
+  // the two supplier-only stages, so the progress bar, phase tiles, Change-to
+  // select, Info accordion and Advance button all walk the SHORT pipeline —
+  // no more mis-routing an own-team case into Supplier Pickup / Item Ready.
+  const activeStages = activeMStages(resolutionMethod, stageOf(c));
+  const curStageIdx = activeStages.findIndex((s) => s.key === stageOf(c));
+  const nextStage = curStageIdx >= 0 ? activeStages[curStageIdx + 1] : undefined;
   const isCompleted = stageOf(c) === "completed";
 
   // Latest history row per stage (drives done-times in the Info accordion).
@@ -852,7 +869,7 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
     setTab("info");
   };
 
-  const openStageEffective = openStage ?? (curStageIdx >= 0 ? STAGES[curStageIdx].key : null);
+  const openStageEffective = openStage ?? (curStageIdx >= 0 ? activeStages[curStageIdx].key : null);
 
   const TABS: { k: DetailTab; label: string }[] = [
     { k: "overview", label: "Overview" },
@@ -1200,17 +1217,24 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
               <div style={{ background: "#fff", borderRadius: 14, border: `1px solid ${LINE_SOFT}`, padding: 14 }}>
                 <div className="fld-l">Stage</div>
                 <div style={{ marginTop: 12 }}>
-                  {/* progress bar + n/8 */}
+                  {/* progress bar + n/N (N = active-pipeline length) */}
                   <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
                     <div style={{ flex: 1, height: 6, borderRadius: 999, background: DIM, overflow: "hidden" }}>
-                      <div style={{ width: `${Math.round((Math.max(curStageIdx, 0) / (STAGES.length - 1)) * 100)}%`, height: "100%", background: `linear-gradient(90deg, ${GREEN}, ${BROWN})`, borderRadius: 999 }} />
+                      <div style={{ width: `${Math.round((Math.max(curStageIdx, 0) / Math.max(activeStages.length - 1, 1)) * 100)}%`, height: "100%", background: `linear-gradient(90deg, ${GREEN}, ${BROWN})`, borderRadius: 999 }} />
                     </div>
-                    <span className="money" style={{ fontSize: 11.5, fontWeight: 700, color: INK_SEC }}>{Math.max(curStageIdx, 0) + 1}/{STAGES.length}</span>
+                    <span className="money" style={{ fontSize: 11.5, fontWeight: 700, color: INK_SEC }}>{Math.max(curStageIdx, 0) + 1}/{activeStages.length}</span>
                   </div>
-                  {PHASES.map((p) => {
-                    const allDone = p.idx.every((i) => i < curStageIdx);
-                    const active = p.idx.some((i) => i === curStageIdx);
-                    const d = p.idx.filter((i) => i < curStageIdx).length;
+                  {PHASE_DEFS.map((p) => {
+                    // A phase's members are its stages that survive the
+                    // resolution filter (Repair drops out entirely for an
+                    // internal-resolution case). Indices are into activeStages.
+                    const members = p.keys
+                      .map((k) => activeStages.findIndex((s) => s.key === k))
+                      .filter((ai) => ai >= 0);
+                    if (members.length === 0) return null;
+                    const allDone = members.every((ai) => ai < curStageIdx);
+                    const active = members.some((ai) => ai === curStageIdx);
+                    const d = members.filter((ai) => ai < curStageIdx).length;
                     return (
                       <div key={p.name} style={{
                         border: `1px solid ${active ? BROWN : allDone ? "transparent" : LINE_SOFT}`,
@@ -1220,16 +1244,16 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
                         <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
                           <span style={{ width: 9, height: 9, borderRadius: "50%", flex: "none", background: allDone ? GREEN : active ? BROWN : DIM }} />
                           <span style={{ flex: 1, fontSize: 12.5, fontWeight: 700, color: allDone ? GREEN : active ? BROWN_FG : INK }}>{p.name}</span>
-                          <span className="money" style={{ fontSize: 10.5, color: MUTED }}>{allDone ? "Done" : `${d}/${p.idx.length}`}</span>
+                          <span className="money" style={{ fontSize: 10.5, color: MUTED }}>{allDone ? "Done" : `${d}/${members.length}`}</span>
                         </div>
                         <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 9 }}>
-                          {p.idx.map((i) => {
-                            const on = i < curStageIdx;
-                            const isc = i === curStageIdx;
+                          {members.map((ai) => {
+                            const on = ai < curStageIdx;
+                            const isc = ai === curStageIdx;
                             return (
                               <button
-                                key={STAGES[i].key}
-                                onClick={() => jumpToStage(STAGES[i].key)}
+                                key={activeStages[ai].key}
+                                onClick={() => jumpToStage(activeStages[ai].key)}
                                 style={{
                                   fontSize: 10, fontWeight: 600, padding: "4px 9px", borderRadius: 999, fontFamily: "inherit",
                                   border: "none", cursor: "pointer",
@@ -1237,7 +1261,7 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
                                   color: on ? GREEN : isc ? "#fff" : GREY,
                                 }}
                               >
-                                {STAGES[i].label}
+                                {activeStages[ai].label}
                               </button>
                             );
                           })}
@@ -1247,8 +1271,9 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
                   })}
                   <div style={{ fontSize: 11, color: GREY, marginTop: 10, textAlign: "center" }}>Tap a stage to see its details</div>
 
-                  {/* Change to — arbitrary (incl. backward) transition, kept
-                      from the previous design so ops can correct mistakes. */}
+                  {/* Change to — any active stage (incl. backward) so ops can
+                      correct mistakes; supplier-only stages are hidden for
+                      internal-resolution cases. */}
                   <label className="fld" style={{ marginTop: 12, marginBottom: 0 }}>
                     <span className="fld-l">Change stage to</span>
                     <select
@@ -1257,7 +1282,7 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
                       onChange={(e) => transitionTo(e.target.value)}
                       className="fld-i"
                     >
-                      {STAGES.map((s) => (
+                      {activeStages.map((s) => (
                         <option key={s.key} value={s.key}>{s.long}</option>
                       ))}
                     </select>
@@ -1270,7 +1295,7 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
             {tab === "info" && (
               <>
                 <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.3, textTransform: "uppercase", color: MUTED, margin: "2px 2px 10px" }}>Stage details</div>
-                {STAGES.map((s, si) => {
+                {activeStages.map((s, si) => {
                   const st: "done" | "current" | "future" = si < curStageIdx ? "done" : si === curStageIdx ? "current" : "future";
                   const h = historyByStage[s.key];
                   const open = openStageEffective === s.key;
@@ -1834,7 +1859,7 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
       // `refetchType: "all"` forces even the (about-to-unmount) list query
       // to refetch, so a fresh row is present whether the user lands on the
       // detail page and taps back, or returns to the list directly.
-      qc.invalidateQueries({ queryKey: ["mobile-assr-list"], refetchType: "all" });
+      qc.invalidateQueries({ queryKey: ["mobile-assr-list-paged"], refetchType: "all" });
       const id = Number(get(res ?? {}, "id"));
       onClose();
       if (id) onOpen(id);

@@ -78,6 +78,7 @@ import { ServiceMetrics } from "./ServiceMetrics";
 import { ServiceSettingsView } from "./ServiceSettings";
 import { ServiceLeadTimePortal } from "./ServiceLeadTimePortal";
 import { ServiceProgressTracker } from "../components/ServiceProgressTracker";
+import { resolutionRoute, isStageActive } from "../vendor/scm/lib/assr/stages";
 import type {
   Paginated,
   AssrCase,
@@ -4916,32 +4917,23 @@ const DETAIL_STAGES: { id: AssrStage; short: string; long: string }[] = [
   { id: "completed",                   short: "Completed",    long: "Completed" },
 ];
 
-// Which side of the flow a resolution method routes to. Drives dot
-// colour + subtitle in the Resolution cell of the summary bar and,
-// via `getActiveStages` below, whether the two supplier-only workflow
-// stages appear at all.
-function resolutionRoute(m: string | null | undefined): "supplier" | "internal" | null {
-  if (!m) return null;
-  if (m === "field_service_own" || m === "return_visit") return "internal";
-  return "supplier";
-}
+// `resolutionRoute` — which side of the flow a resolution method routes to —
+// now lives in the shared vendor/scm/lib/assr/stages module (imported above)
+// so desktop + mobile can't drift on it. It drives the dot colour + subtitle
+// in the Resolution cell of the summary bar and, via `getActiveStages` below,
+// whether the two supplier-only workflow stages appear at all.
 
 // PR 4 — filtered stage list. When the case's resolution method is
 // on-site (own team) / return to store, the two supplier-only stages
-// (Supplier Pickup + Item Ready) drop out and the workflow shrinks
-// from 9 to 7. We keep the current stage in the list unconditionally
-// as a safety net so a case parked on a filtered-out stage still
-// renders (unlikely, but ops can happen).
+// (Supplier Pickup + Item Ready) drop out. We keep the current stage in
+// the list unconditionally as a safety net so a case parked on a
+// filtered-out stage still renders (unlikely, but ops can happen). The
+// per-stage rule (isStageActive) is shared with mobile.
 function getActiveStages(
   method: string | null | undefined,
   currentStage: AssrStage,
 ): typeof DETAIL_STAGES {
-  const route = resolutionRoute(method);
-  if (route !== "internal") return DETAIL_STAGES;
-  const SKIP: AssrStage[] = ["pending_supplier_pickup", "pending_item_ready"];
-  return DETAIL_STAGES.filter(
-    (s) => !SKIP.includes(s.id) || s.id === currentStage,
-  );
+  return DETAIL_STAGES.filter((s) => isStageActive(method, s.id, currentStage));
 }
 
 // Design PR 3 — accordion row for a single workflow stage. Shows a
