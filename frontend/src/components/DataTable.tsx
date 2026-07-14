@@ -202,6 +202,14 @@ interface SortState {
 const MIN_COL_WIDTH = 64;
 const DEFAULT_COL_WIDTH = 160;
 
+// Row windowing: past this many FLAT rows, render only the slice scrolled into
+// view (see the effect in the component). Kept a no-op for grouped/expandable
+// tables and short lists, so existing pages render byte-identically. Threshold
+// mirrors the SCM DataGrid's (25) with a little headroom.
+const VIRTUAL_ROW_THRESHOLD = 30;
+const VIRTUAL_OVERSCAN = 12;
+const ROW_HEIGHT_ESTIMATE = 33; // px; corrected at runtime by measuring a real row
+
 export function DataTable<T>({
   tableId,
   columns,
@@ -808,6 +816,53 @@ export function DataTable<T>({
   const rowCount = sortedRows?.length ?? 0;
   const visibleCount = chooserOptions.filter((o) => !effectiveHidden.has(o.key)).length;
 
+  // ── Row windowing (page-scroll-preserving) ─────────────────────────────────
+  // Only the common flat case: grouped / expandable tables and short lists render
+  // in full (unchanged). The tbody is measured against the viewport on scroll
+  // (from ANY ancestor — a capturing window listener catches non-bubbling scroll
+  // events) and on resize; only the visible slice of rows is rendered, bracketed
+  // by two spacer <tr>s that reserve the off-screen height so the page scrollbar
+  // and sticky header behave exactly as before. Row height is measured from a
+  // real row so the spacers can't drift (avoids the HOOKKA getTotalSize lag).
+  const canVirtualize =
+    !loading && !error && !groupBy && !expandable &&
+    renderList.length > VIRTUAL_ROW_THRESHOLD;
+  const tbodyRef = useRef<HTMLTableSectionElement>(null);
+  const rowHeightRef = useRef(ROW_HEIGHT_ESTIMATE);
+  const [winRange, setWinRange] = useState<{ start: number; end: number }>({
+    start: 0,
+    end: VIRTUAL_ROW_THRESHOLD * 2,
+  });
+  useEffect(() => {
+    if (!canVirtualize) return;
+    let raf = 0;
+    const measure = () => {
+      raf = 0;
+      const el = tbodyRef.current;
+      if (!el) return;
+      const firstRow = el.querySelector<HTMLElement>("tr[data-vrow]");
+      if (firstRow && firstRow.offsetHeight > 0) rowHeightRef.current = firstRow.offsetHeight;
+      const rh = rowHeightRef.current || ROW_HEIGHT_ESTIMATE;
+      const top = el.getBoundingClientRect().top; // tbody top relative to viewport
+      const vh = window.innerHeight;
+      const first = Math.max(0, Math.floor(-top / rh) - VIRTUAL_OVERSCAN);
+      const count = Math.ceil(vh / rh) + VIRTUAL_OVERSCAN * 2;
+      const last = Math.min(renderList.length, first + count);
+      setWinRange((prev) => (prev.start === first && prev.end === last ? prev : { start: first, end: last }));
+    };
+    const onScroll = () => { if (!raf) raf = requestAnimationFrame(measure); };
+    measure();
+    window.addEventListener("scroll", onScroll, { capture: true, passive: true });
+    window.addEventListener("resize", onScroll);
+    return () => {
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onScroll);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [canVirtualize, renderList.length]);
+  const vStart = canVirtualize ? winRange.start : 0;
+  const vEnd = canVirtualize ? Math.min(renderList.length, winRange.end) : renderList.length;
+
   return (
     <div>
       {/* ── Toolbar (always rendered) ──────────────────────── */}
@@ -1092,7 +1147,7 @@ export function DataTable<T>({
                 })}
               </tr>
             </thead>
-            <tbody>
+            <tbody ref={tbodyRef}>
               {loading && <TableSkeleton rows={8} cols={totalColSpan} />}
               {!loading && error && (
                 <tr>
@@ -1115,10 +1170,15 @@ export function DataTable<T>({
                   </td>
                 </tr>
               )}
+              {canVirtualize && vStart > 0 && (
+                <tr aria-hidden>
+                  <td colSpan={totalColSpan} style={{ height: vStart * rowHeightRef.current, padding: 0, border: 0 }} />
+                </tr>
+              )}
               {!loading &&
                 !error &&
                 sortedRows &&
-                renderList.map((item) => {
+                renderList.slice(vStart, vEnd).map((item) => {
                   // ── Group header row (opt-in `groupBy`) ──
                   if (item.kind === "group") {
                     return (
@@ -1169,6 +1229,7 @@ export function DataTable<T>({
                   return (
                     <Fragment key={getRowKey(row)}>
                       <tr
+                        data-vrow=""
                         onClick={onRowClick ? () => onRowClick(row) : undefined}
                         onContextMenu={
                           contextMenu
@@ -1289,6 +1350,11 @@ export function DataTable<T>({
                     </Fragment>
                   );
                 })}
+              {canVirtualize && vEnd < renderList.length && (
+                <tr aria-hidden>
+                  <td colSpan={totalColSpan} style={{ height: (renderList.length - vEnd) * rowHeightRef.current, padding: 0, border: 0 }} />
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
