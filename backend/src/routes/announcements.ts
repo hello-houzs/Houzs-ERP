@@ -863,25 +863,56 @@ app.put(
 );
 
 // ============================================================
-// GET /:id/attachments/:key{.+} — stream the attachment. Permission-gated
-// (announcements.read covers every user with banner access; non-readers can't
-// hit this). The key includes slashes, hence the {.+} matcher.
+// GET /:id/attachments/:key{.+} — stream the attachment. Gated by the SAME
+// audience-targeting check as the list/banner (userCanSee), NOT by the
+// announcements.read matrix permission: a broadcast to ALL_USERS (or to this
+// user's dept/position/id) must render its image/PDF even for a member who
+// lacks announcements.read (e.g. Sales) — otherwise they get a grey
+// placeholder. Managers (`*` / announcements.write) stay unaffected. The key
+// must belong to THIS announcement's attachment set, so a targeted user can't
+// pull an attachment of an announcement they aren't targeted by. The key
+// includes slashes, hence the {.+} matcher.
 // ============================================================
-app.get(
-  "/:id/attachments/:key{.+}",
-  requirePermission("announcements.read"),
-  async (c) => {
-    const key = c.req.param("key");
-    if (!key.startsWith("announcements/")) {
-      return c.json({ error: "forbidden key" }, 403);
-    }
-    const obj = await c.env.POD_BUCKET.get(key);
-    if (!obj) return c.json({ error: "Not found" }, 404);
-    const headers = new Headers();
-    obj.writeHttpMetadata(headers);
-    headers.set("Cache-Control", "private, max-age=300");
-    return new Response(obj.body, { headers });
-  },
-);
+app.get("/:id/attachments/:key{.+}", async (c) => {
+  const user = c.get("user");
+  if (!user || !user.id) return c.json({ error: "Unauthorized" }, 401);
+
+  const id = c.req.param("id");
+  const key = c.req.param("key");
+  if (!key.startsWith("announcements/")) {
+    return c.json({ error: "forbidden key" }, 403);
+  }
+
+  // The announcement must exist within the caller's active company. Unknown /
+  // cross-company id → 404 (indistinguishable from a nonexistent id).
+  const ann = await getScopedAnnouncement(c, id);
+  if (!ann) return c.json({ error: "Not found" }, 404);
+
+  // Audience gate — managers see everything; everyone else only announcements
+  // whose targeting includes them (same userCanSee used by list/banner).
+  const granted = user.permissions_set ?? user.permissions ?? [];
+  const isManager =
+    hasPermission(granted, "*") || hasPermission(granted, "announcements.write");
+  if (
+    !isManager &&
+    !userCanSee(ann, user.id, user.department_id ?? null, user.position_id ?? null)
+  ) {
+    return c.json({ error: "Not found" }, 404);
+  }
+
+  // The key must be one of THIS announcement's attachments — prevents using a
+  // visible announcement's id to stream an unrelated object.
+  const belongs = normalizeAttachments(ann.attachments ?? null).some(
+    (a) => a.r2Key === key,
+  );
+  if (!belongs) return c.json({ error: "Not found" }, 404);
+
+  const obj = await c.env.POD_BUCKET.get(key);
+  if (!obj) return c.json({ error: "Not found" }, 404);
+  const headers = new Headers();
+  obj.writeHttpMetadata(headers);
+  headers.set("Cache-Control", "private, max-age=300");
+  return new Response(obj.body, { headers });
+});
 
 export default app;

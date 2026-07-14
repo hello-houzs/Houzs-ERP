@@ -29,7 +29,7 @@ import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
-import { hasHouzsPerm } from '../lib/houzs-perms';
+import { hasHouzsPerm, canViewAllSales } from '../lib/houzs-perms';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 import {
   summarizeOverview, monthlyTrend, collapseToPurchases,
@@ -87,8 +87,10 @@ salesAnalysis.get('/', async (c) => {
   const sb = c.get('supabase');
 
   // Gate: viewing aggregate sales/margin across EVERY salesperson requires the
-  // "view all SOs" permission (the analytics dashboard is a superset read).
-  if (!hasHouzsPerm(c, 'scm.so.view_all')) {
+  // "view all SOs" permission OR a director position (Sales Director / Super
+  // Admin / Finance Manager) — a Director sees all Orders / the Financial
+  // Report. canViewAllSales OR-s the two (additive; permission path unchanged).
+  if (!canViewAllSales(c)) {
     return c.json({ error: 'forbidden', reason: 'sales_analysis_requires_scm.so.view_all' }, 403);
   }
 

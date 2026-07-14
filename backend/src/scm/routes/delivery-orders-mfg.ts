@@ -24,7 +24,7 @@ import { todayMyt } from '../lib/my-time';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { resolveSalesScopeIds } from '../lib/salesScope';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
-import { hasHouzsPerm } from '../lib/houzs-perms';
+import { canViewAllSales } from '../lib/houzs-perms';
 import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item-codes';
 import { checkStockAvailability, shortStockResponse } from '../lib/check-stock-availability';
 import { findSofaLinesWithoutCompleteBatch, sofaNoCompleteBatchResponse, findIncompleteSofaSets, sofaIncompleteSetResponse, detectSofaSoItemIds } from '../lib/sofa-batch-guard';
@@ -1708,7 +1708,9 @@ deliveryOrdersMfg.get('/', async (c) => {
   const sb = c.get('supabase');
   // Row-level "own / downline chain" scope (scm.staff uuids) — see lib/salesScope.ts.
   // Pass the REAL Houzs user id, NOT user.id (bridge-pinned staff uuid — was the non-admin 500).
-  const canViewAll = hasHouzsPerm(c, 'scm.so.view_all');
+  // view-all = scm.so.view_all permission OR a director position (Sales
+  // Director / Super Admin / Finance Manager) via canViewAllSales.
+  const canViewAll = canViewAllSales(c);
   const houzsUserId = c.get('houzsUser')?.id;
   if (!canViewAll && houzsUserId == null) {
     // No Houzs identity to scope by — say so plainly instead of silently
