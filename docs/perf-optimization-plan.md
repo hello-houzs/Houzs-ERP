@@ -1,145 +1,211 @@
 # Houzs ERP — Performance & Rendering Optimization Plan
 
-Status doc / work checklist. Compiled from (a) live Chrome measurements against
-erp.houzscentury.com, (b) a full mining of HOOKKA's `docs/BUG-HISTORY.md` for
-caching/perf pitfalls, and (c) a codebase audit of every long-list page.
+System-wide status doc / work checklist. Built from: (a) live Chrome
+Performance traces on prod (long-task / main-thread profiling, not just network),
+(b) a full mining of HOOKKA's `docs/BUG-HISTORY.md` for caching/version/render
+pitfalls, and (c) an exhaustive per-module codebase audit (every SCM page, every
+non-SCM page, the whole mobile tree, and the shared shell).
 
-Purpose: list every remaining work item, scoped with file paths + priority, so
-sections can be handed to different people. Check items off as they land.
+Purpose: every remaining work item, scoped by file + line + priority, so sections
+can be handed out. Check items off as they land.
 
 ---
 
 ## 摘要 (owner TL;DR)
 
-- 交易核心已经优化好了:SO 列表接口从 388ms 降到约 40ms;全局外壳的重复请求清掉了。
-- 「更新了却卡在旧版本」这个你最担心的问题:系统本来就大部分防住了(HTML 网络优先、
-  版本横幅、深链接不缓存)。唯一脆弱点是 SW 版本号靠手动改(现在 v170),建议改成自动。
-- 最大一块没做的:**长列表虚拟滚动**。桌面单据列表(SO/DO/SI/GRN/PO 等)和手机列表
-  目前一次性渲染全部行,数据一多就卡。改 `DataTable` 一个文件就能覆盖 8+ 个页面。
-- 下面 P0/P1 就是可以分给别人做的 section。每条都写清了文件和验收标准。
+- 我用 trace 把「卡」的真凶抓出来了:**不是热身、不是缓存,是加载瞬间的主线程长任务**(JS 解析执行 + 每页数据加工)。热的时候 TTFB 才 31ms,大列表也已经虚拟化(1141 行 DOM 里只有 58 行,滚动零长任务)。
+- 全系统审计后,几乎所有性能问题都归到**两个根因**:①很多列表**没有虚拟滚动**(渲染全部行);②很多列表 fetch **没有 limit**(或用 500/1000 一次拉全量再前端过滤)。
+- 手机层还有一个大头:**整个手机层没有代码分包**,22 个页面一次性打包 → 首次进手机要下载+解析一个巨大 chunk = 我 trace 到的那个长任务。
+- 「没权限就砍掉、连 load 都不 load」这条 —— **全系统审计结果:已经做对了**。没有发现「先加载再隐藏」的违规,gated 导航都是直接 return null、gated 请求都用 enabled:false。只有 3 个极小的可优化点。
+- 下面按根因 + 按模块列了每一条(带文件行号),分好了 A–G 段可以派人做。
+
+---
+
+## Trace-based jank classification (what "卡" actually is)
+
+Measured live on `/scm/products` (the ~1141-SKU list), warm:
+
+| Cause | Measurement | Verdict |
+|-------|-------------|---------|
+| Warmup (cold-start) | warm TTFB **31ms**; cold ~400ms post-deploy only, keep-warm cron self-heals in 5min | "等" not "卡"; only right after a deploy |
+| Cache | invalidation beats staleTime + epoch read-after-write guard; the one `Infinity` risk fixed (#419) | not a jank source |
+| **Render (the real "卡")** | big lists ARE virtualized (58 DOM rows, **scroll long-tasks = 0**). Jank = **2× ~110ms long tasks at load, 147ms total blocking** | **JS eval + per-page data processing blocking the main thread** |
+
+So the fixes that actually kill lag are: **row windowing**, **capping list fetches**,
+**mobile code-splitting**, and a few **O(n²) render hotspots** — NOT chasing warmup
+or cache (already handled). Measurement caveat: a CDP-driven tab is background-
+throttled (timers clamp to 1s, rAF stops), so per-frame scroll numbers need the tab
+foregrounded; buffered long-task capture at load is unaffected and is what's cited.
 
 ---
 
 ## 0. Shipped this campaign (verified live)
 
-- [x] **mig 0104** — pg_trgm GIN + partial indexes on `scm.mfg_products`
-  (description/barcode/category) + `fabric_colours` + `fabric_trackings`.
-  Scales substring search + category/fabric filters. (non-concurrent; small tables)
-- [x] **SO-list read parallelization** (PR #416) — `GET /api/scm/mfg-sales-orders`
-  ran ~6 independent enrichment reads serially; now one concurrent wave.
-  Measured **388ms → ~40ms warm**. Backs desktop Orders grid + mobile Orders board.
-- [x] **Presence dedupe** (PR #415) — `usePresence` was mounted twice → 2× poll +
-  heartbeat per page; now one shared singleton poll.
-- [x] **Branding cache, bounded** (PR #414 + #419) — was refetched every 30s/nav;
-  now 10-min staleTime (NOT Infinity — keeps a self-healing net, see Guardrail G1).
-- [x] **Mobile FabricPicker render cap** — renders first 60 of the *filtered* rows
-  (search still narrows the full list first). Interim; superseded by V1 below.
+- [x] **mig 0104** — pg_trgm GIN + partial indexes on `scm.mfg_products` + fabric tables.
+- [x] **SO-list read parallelization** (#416) — 6 serial enrichment reads → one wave. **388ms → ~40ms warm.** Backs desktop + mobile Orders.
+- [x] **Presence dedupe** (#415) — 2× poll+heartbeat per page → one shared singleton.
+- [x] **Branding cache, bounded** (#414 + #419) — 30s/nav refetch → 10-min self-healing (NOT Infinity, see G1).
+- [x] **Mobile FabricPicker render cap** (interim; superseded by W4 windowing).
 
 ---
 
-## 1. Guardrails — HOOKKA pitfalls, with Houzs status
+## 1. The two root causes + full per-module work list
 
-These are the traps HOOKKA documented and fixed. For each, Houzs' current status.
-"SAFE" = verified we don't have it. "AUDIT" = needs a check. "TODO" = known gap.
+Almost every HIGH item is one of: **(A) no row windowing** or **(B) list fetch with
+no `limit`**. Fixing the shared pieces cascades across many pages.
 
-| # | Pitfall (HOOKKA SHA) | Houzs status |
-|---|----------------------|--------------|
-| G1 | `staleTime` gating refetch → stale data after a server-side change (`d8f71d23`) | **SAFE-ish**: global 30s staleTime + invalidation-beats-staleTime + epoch read-after-write guard (`api/cache.ts`). Fixed the one `Infinity` we introduced (#419). Rule: never set `staleTime: Infinity`. |
-| G2 | Client cache serving stale *shape*; `ids ?? []` collapses absent→empty and filters everything out (BUG-2026-06-23-002) | **AUDIT** — grep consumers that do `?? []` / `new Set(x ?? [])` on cached payloads; treat absent as "not loaded → refetch", not empty. |
-| G3 | Mutation didn't broadcast invalidation → other tabs stale (`fbc68dcc`) | **MOSTLY SAFE**: `MutationCache.onSuccess → broadcastDataChanged`, `invalidateForMutation`. `postBinary` does NOT auto-invalidate (Settings compensates manually). TODO: recurring "which write paths skip invalidate" sweep. |
-| G4 | URL-keyed cache: a control changes a param but not the key → frozen data (BUG-2026-06-21-004) | **AUDIT** — multi-tab date/filter controls that persist to localStorage but don't lift state. |
-| G5 | SW shell cache name not build-id-keyed → white screen after redeploy (`d03f79f3`) | **TODO (P1)**: `VERSION` is a manual constant (`sw.js:298` = `houzs-erp-v170`). Derive from Vite build hash so a deploy can't forget to bump. Mitigated today by network-first HTML. |
-| G6 | `respondWith(undefined)` → white screen (BUG-2026-06-30-004) | **SAFE** — both SW handlers always return a `Response` (`sw.js:412,441`). |
-| G7 | Version-check hook only in one layout → other entries never auto-refresh (BUG-2026-06-18-008) | **AUDIT (P2)**: `NewVersionBanner` mounted at `App.tsx:236`. Verify the mobile (`.hz-m`) surface renders under it / reaches it. |
-| G8 | `_headers` no-cache scoped to `/` not `/*` → SPA-route HTML cached, chunks 404 after deploy (BUG-2026-05-28-005) | **SAFE** — verified `curl -I` on `/scm/sales-orders` returns `max-age=0, must-revalidate`. `/assets/*` immutable. |
-| G9 | Snapshot freshness: `Date >= string` compares as NaN → serves days-stale (`5f2b1b73`); mark-stale loses the race (`df0804ba`); serialize drops undeclared fields (BUG-2026-06-24) | **GUARDRAIL for future** — applies IF we add server snapshots (see C2). Rules: normalize both timestamp sides to `getTime()`; fail toward recompute; DELETE the snapshot on write (don't mark-stale); single-flight; declare every cached field. |
-| G10 | pg_trgm applied in a txn migration fails (`CONCURRENTLY` can't run in tx); extension dropped on staging clone (BUG-2026-06-07-013) | **NOTE** — 0104 used non-concurrent on small tables (OK). For large tables apply `CONCURRENTLY` out-of-band. Staging-clone must `CREATE EXTENSION IF NOT EXISTS` before restore. |
-| G11 | Client-side search/filter over a server-paginated list only sees the current page → wrong results + wrong tab counts (`d628c8ee`) | **AUDIT (P1)** — Houzs non-SCM lists paginate server-side (`per_page`). Verify filters/tab-counts aren't computed client-side over one page. |
-| G12 | Background refetch re-seeds a form and wipes in-progress edits (`96ed60fb`) | **AUDIT (P1)** — now that caching + refetch-on-mount are on, every edit form that hydrates from a fetched response must seed once per record id + guard re-seed with `!dirty` + nav-guard. |
-| G13 | Debounce search inputs; don't over-debounce saves (`087a7040`) | **AUDIT (P2)** — confirm search boxes debounce (esp. mobile). |
+### 1A. Windowing (render-only-what's-scrolled)
 
----
+- [ ] **W1 (P0) — Window `components/DataTable.tsx` once** (`:751`, `:1121`).
+  Shared desktop table renders EVERY row (`sortedRows.map` / `renderList.map`) — no
+  windowing. Fixing it once blunts ~6 HIGH list findings (Projects, Sales,
+  ServiceCases, Team, Mail, SystemHealth). Reuse `vendor/scm/lib/react-virtual-shim`.
+  Derive total height from `rows.length × ROW_HEIGHT` (NOT the virtualizer's async
+  `getTotalSize()` — HOOKKA bug 4a); clip virtual items to `< rows.length`; portal
+  any row dropdown (a scroll wrapper clips `absolute` menus — HOOKKA 4b).
+  Note: `DataGrid` (SCM master data) already windows >25 rows — confirmed 58 DOM
+  rows over 1141 SKUs. This is the DataTable-side gap.
+- [ ] **W2 (P0) — Stop building the hidden mobile CardsGrid on desktop.**
+  ListV2 pages keep the `md:hidden` `CardsGrid` mounted (CSS-hidden) on desktop →
+  ~2× row nodes. Gate by viewport so only one branch mounts.
+- [ ] **W3 (P1) — Mobile card lists** (hand-rolled `.map`, no windowing):
+  `MobileSalesOrders.tsx:411` (≤500 cards), `MobileModuleList.tsx:302-318` (≤500),
+  `MobileMailCenter.tsx:337`, `MobileServiceCase.tsx:405` (200, nested steppers),
+  `MobilePMS.tsx:476` (200), `MobileDeliveryPlanning.tsx:614` (today+tomorrow+**full
+  history**). Virtualize each.
+- [ ] **W4 (P1) — `StockTakeDetail.tsx:490`** — ~1141 rows of **live controlled
+  inputs**; heaviest per-row. Window, keep edited row realized.
+- [ ] **W5 (P1) — `MailCenter/Inbox.tsx:308`** + **`Team.tsx:1381/1366`** —
+  thread list + member grid/table unwindowed.
 
-## 2. Virtualization — "render only what's scrolled into view"  (biggest gap)
+### 1B. Cap the unbounded list fetches
 
-Audit finding: the codebase has ONE windowing mechanism — a `react-virtual-shim`
-used only by the SCM **`DataGrid`** (virtualizes flat lists >25 rows; master-data
-pages are already safe). The main **`DataTable`** used by the routed document
-lists does NOT window — it maps every row into `<tbody>` AND separately builds a
-full mobile card list in the same tree (~2× nodes).
+- [ ] **B1 (P0) — `Projects.tsx:999`** — status pill fetches **`per_page:1000`** to
+  filter client-side (status has no server param). Add server-side `status` filter.
+  Worst hot-path scaling in the app.
+- [ ] **B2 (P0) — `ServiceCases.tsx:1135` + `:1352`** — Board and Calendar each
+  fetch **`per_page:500`** full rows, **not shared** (same data pulled twice on the
+  hot triage tab). Share one query / lower cap / select card columns only.
+- [ ] **B3 (P0) — `Sales.tsx:200`** — `/api/sales/entries` sends **no limit**;
+  refetches full slice on every filter/tab change → non-virtual table (`:565`).
+  Add `per_page` + pagination.
+- [ ] **B4 (P1) — `Team.tsx:315`** — `/api/users` no limit **+ 7 queries on mount**
+  (users/invitations/roles/departments/positions/presence/companies) all block first
+  paint. Cap users; lazy-load roles/companies/presence.
+- [ ] **B5 (P1) — `MailCenter/Inbox.tsx:760` + `MobileMailCenter.tsx:199`** — thread
+  list unbounded (desktop + mobile). Paginate.
+- [ ] **B6 (P1) — `MyCases.tsx:79`** — `/api/assr/my-cases` no limit, all cards
+  unwindowed. Server limit + "load more".
+- [ ] **B7 (P1) — `Projects.tsx:4581/4595`** — every ProjectDetail open fires **two**
+  unbounded `/api/users` fetches. Fetch one scoped list, derive PIC client-side.
+- [ ] **B8 (P1) — `ProjectChat.tsx:95`** — self-fetch + post-send refetch pull the
+  project's **entire** activity history (no `?limit`). Add limit + scroll-up paging.
+- [ ] **B9 (P1) — mobile no-limit fetches**: `MobileDeliveryPlanning.tsx:283`
+  (`region=ALL&state=ALL`, all past stops), `MobilePOD.tsx:72` (`/delivery-orders-mfg`
+  full list to pick one DO — add `limit`+`fields=minimal`).
 
-- [ ] **V1 (P0) — Window `components/DataTable.tsx` once.**
-  Mirror `DataGrid`'s `VIRTUAL_THRESHOLD` approach, reuse `vendor/scm/lib/react-virtual-shim.ts`.
-  Derive total height from `rows.length × ROW_HEIGHT` (do NOT trust the virtualizer's
-  async `getTotalSize()` — HOOKKA bug 4a) and clip virtual items to `< rows.length`.
-  **Covers in one change:** Sales Orders, Delivery Orders, Sales Invoices, GRNs,
-  Purchase Orders, Purchase Invoices, Delivery/Purchase Returns, Stock Transfers/
-  Takes/Adjustments (`pages/scm-v2/*ListV2.tsx`).
-  Portal any row dropdown/popover — a scroll wrapper clips `absolute` menus (bug 4b).
-- [ ] **V2 (P0) — Stop building the hidden mobile CardsGrid on desktop.**
-  The ListV2 pages keep the `md:hidden` `CardsGrid` mounted (CSS-hidden) even on
-  desktop → double the row nodes. Gate by viewport so only one branch mounts
-  (aligns with the standing "off, not hide" rule).
-- [ ] **V3 (P1) — `pages/scm-v2/StockTakeDetail.tsx:490`** — line rows are
-  *controlled inputs*; ~1141-row catalog = ~1141 live inputs. Heaviest per-row;
-  window it (keep the edited row realized).
-- [ ] **V4 (P1) — Mobile card lists.** `mobile/MobileModuleList.tsx:416` and
-  `mobile/MobileSalesOrders.tsx:411` render all cards. Two mobile endpoints are
-  UNCAPPED — `/inventory?showAll=true` and `/mfg-products` (~1141). Add windowing
-  (preferred) or a cap. This replaces the interim FabricPicker cap with the real fix.
-- [x] Already virtualized/safe: all DataGrid master lists (Products/SKU, Inventory,
-  Fabrics, Suppliers, StockCard ledger, Consignment*, DeliveryPlanning, etc.),
-  server-paginated non-SCM pages (Projects/ServiceCases/Team), and detail line tables.
+### 1C. Mobile code-splitting (the measured load-time long task)
 
----
+- [ ] **C1 (P0) — `mobile/MobileApp.tsx:11-28`** — statically imports ALL ~22 mobile
+  pages (incl. 2605-line NewSO, 2484-line ServiceCase, 2207-line DeliveryPlanning) →
+  one monolithic mobile chunk (~10k lines) downloads+parses before first mobile paint.
+  Desktop routes are already lazy; mobile is the gap. Wrap each screen in `React.lazy`
+  + `<Suspense>` keyed off the `Screen` switch. **This is the long task the trace caught.**
 
-## 3. Caching — per-module (cache where static, NOT where live)
+### 1D. O(n²) / per-render hotspots (cheap, targeted)
 
-- [x] Reference dropdowns (staff/category/warehouse/fabric): already TanStack-cached
-  in the vendored SCM layer (`staleTime` 5–10min). No work.
-- [ ] **C1 (P2) — Dashboard / overview tiles**: good cache-aside candidates (change
-  slowly within a session). Give the heavy overview aggregations a longer client
-  `staleTime` (bounded, per G1 — never Infinity).
-- [ ] **C2 (P2, grows with data) — AR aging `/api/scm/outstanding/summary` (~333ms)**:
-  a server-side snapshot candidate as debtor data grows. If built, follow ALL of
-  G9 (epoch-normalize timestamps, DELETE-on-write, single-flight, declared fields,
-  fail-toward-recompute). Not urgent while data is small — do NOT pre-optimize.
-- [ ] Do NOT cache: presence, auth, in-flight edit state, activity feeds
-  (already on `api/cache.ts` NEVER_CACHE).
-
----
-
-## 4. Search / index
-
-- [x] Products + fabric trgm indexes (0104).
-- [ ] **S1 (P2)** — audit other frequently-searched columns for trgm GIN: customer
-  names, SO `debtor_name`/phone, supplier names. Apply per G10.
-- [ ] **S2 (P1)** — where a list is server-paginated, push search + tab counts to the
-  server (a `/stats` count endpoint) rather than filtering the current page client-
-  side (correctness, per G11).
+- [ ] **D1 (P1) — `ProjectMaintenance.tsx:1089`** — `findIndex` inside `items.map` =
+  O(n²) per render, re-fired on every drag-hover. Precompute id→index Map in useMemo.
+- [ ] **D2 (P1) — `ProjectMaintenance.tsx:1008`** — `blocks` rebuilt via inline
+  `items.filter` per section every render. Group by `section_id` once in useMemo.
+- [ ] **D3 (P1) — `ProjectGantt.tsx:320`** — `getHolidaysOn` per day inside `lanes.map`
+  = O(lanes×days) (~3,650 calls/render). Compute holiday day-list once per range.
+- [ ] **D4 (P2) — `Projects.tsx:1040`** — `columns` rebuilt every render → invalidates
+  DataTable memos on each keystroke. useMemo.
+- [ ] **D5 (P2) — `Announcements.tsx:705`** — `audienceLabel` rebuilds user/dept/pos
+  Maps inside each row = O(rows×members). Build maps once in parent.
 
 ---
 
-## 5. Deploy-staleness hardening
+## 2. "Off, not hide" (cut-clean gating) — audit result: COMPLIANT
 
-- [ ] **D1 (P1)** — Derive `sw.js` `VERSION` from the Vite build hash (inject at
-  build) so it auto-bumps every deploy; removes the manual-bump failure mode (G5).
-- [ ] **D2 (P2)** — Confirm the mobile surface sits under `NewVersionBanner` /
-  version-check so phones auto-refresh on deploy (G7).
+Full audit across shared components, mobile, SCM pages, and non-SCM pages found
+**no fetch-then-hide / render-then-hide / fetch-then-filter violations.** Gated nav
+returns `null` (absent, not greyed); permission-gated queries use `enabled:false`;
+tabbed pages lazy-mount only the active tab. The established correct patterns:
+`Sidebar.filterTab` (`:551`), `Gate.tsx` (`:42`), `useQuery` `enabled` (`:22`),
+`Overview.tsx:57` (`enabled: can(...)`), `Team.tsx:276` (conditional tab mount).
+
+Three MICRO items only (not violations, optional):
+- [ ] **M1 (P2)** `TopNavbar.tsx:147` — `CompanySwitcher` fetches `/api/companies` for
+  every user, renders `null` when ≤1 company (today's reality). Skip the fetch until a
+  multi-company signal exists.
+- [ ] **M2 (P2)** `Announcements.tsx:170` — read-only viewers fetch the full org
+  directory (`/api/users`+`/api/departments`+`/api/positions`) to feed a Composer they
+  can't use (partly used by the "To:" pill). Gate `enabled: canWrite` if the pill may
+  show raw ids for non-writers.
+- [ ] **M3 (P2)** `team/MemberOrgPerformance.tsx:113` — 3 ungated queries per member
+  card; fine now, a perf note if cards grow.
+
+---
+
+## 3. Guardrails — HOOKKA pitfalls, with Houzs status
+
+| # | Pitfall (HOOKKA) | Houzs status |
+|---|------------------|--------------|
+| G1 | `staleTime` gating refetch → stale after server change | SAFE-ish: invalidation beats staleTime + epoch guard. Rule: never `staleTime: Infinity` (fixed #419). |
+| G2 | Client cache serving stale SHAPE; `ids ?? []` collapses absent→empty | AUDIT — treat absent as "not loaded → refetch", not empty default. |
+| G3 | Mutation didn't broadcast invalidation | MOSTLY SAFE (MutationCache broadcast). `postBinary` doesn't auto-invalidate. Recurring sweep. |
+| G4 | URL-keyed cache: control changes param but not key | AUDIT multi-tab date/filter controls. |
+| G5 | SW shell cache not build-id-keyed → white screen after redeploy | TODO (D-below): `VERSION` is a manual constant (`sw.js:298` v170). Auto-derive from build hash. Mitigated by network-first HTML. |
+| G6 | `respondWith(undefined)` → white screen | SAFE — both handlers always return a Response. |
+| G7 | version-check only in one layout | AUDIT — `NewVersionBanner` at `App.tsx:236`; verify mobile reaches it. |
+| G8 | `_headers` no-cache on `/` not `/*` → chunks 404 after deploy | SAFE — verified `/scm/*` returns `max-age=0, must-revalidate`; `/assets/*` immutable. |
+| G9 | Snapshot freshness: Date≥string NaN; mark-stale race; serialize drops fields | FUTURE guardrail (if we build server snapshots, e.g. AR aging). Normalize timestamps to `getTime()`; DELETE-on-write; single-flight; declare fields; fail-toward-recompute. |
+| G10 | trgm `CONCURRENTLY` in txn fails; extension dropped on staging clone | NOTE — 0104 non-concurrent (small tables OK). Large tables → out-of-band CONCURRENTLY. |
+| G11 | Client filter/counts over server-paginated list = wrong | AUDIT — ties to B1/B2 (status filter client-side over a page). |
+| G12 | Background refetch re-seeds a form, wipes edits | AUDIT (now caching is on) — edit forms hydrating from a fetch must seed-once-per-id + `!dirty` guard + nav-guard. |
+| G13 | Debounce search; don't over-debounce saves | Mostly OK (`GlobalSearch` 180ms debounce). Spot-check. |
+
+Good news already in place: heavy libs (`jspdf`/`xlsx`) are all `await import(...)`
+lazy; polling is singleton + visibility-aware (presence/notifications/announcements);
+no context re-render storms. `leaflet` is a dead dependency (imported nowhere) — drop
+from `package.json`.
+
+---
+
+## 4. Deploy-staleness hardening
+
+- [ ] **D-SW (P1)** — Derive `sw.js` `VERSION` from the Vite build hash so it auto-bumps
+  every deploy (removes the manual-bump failure mode, G5).
+- [ ] **D-MOB (P2)** — Confirm the mobile surface sits under `NewVersionBanner` (G7).
 - [x] `_headers` deep-route no-cache (G8) — verified SAFE.
-- [x] SW `respondWith` always returns a Response (G6) — SAFE.
+- [x] SW always returns a Response (G6) — SAFE.
+
+---
+
+## 5. Caching / search (as data grows — do NOT pre-optimize)
+
+- [x] Reference dropdowns already TanStack-cached (vendored SCM).
+- [ ] **C-DASH (P2)** — heavy dashboard/overview aggregations: longer bounded staleTime.
+- [ ] **C-AR (P2, data-gated)** — AR aging `/api/scm/outstanding/summary` (~333ms):
+  server snapshot candidate as debtor data grows — follow ALL of G9.
+- [ ] **S-IDX (P2)** — trgm GIN on other searched columns (customer/supplier names).
+- [ ] **S-STATS (P1)** — push search + tab counts to the server where lists paginate (G11).
 
 ---
 
 ## Delegation map (suggested sections)
 
-| Section | Items | Owner type | Independent? |
-|---------|-------|-----------|--------------|
-| A — DataTable windowing | V1, V2 | 1 frontend dev | Yes, self-contained |
-| B — Mobile lists | V4 | frontend (mobile) | Yes |
-| C — Stock-take inputs | V3 | frontend | Yes |
-| D — Deploy hardening | D1, D2 | frontend/build | Yes |
-| E — Cache-safety audits | G2, G3, G4, G11, G12, G13 | frontend | Yes (read-heavy) |
-| F — AR snapshot (defer) | C2, S1, S2 | backend | Later (data-growth gated) |
+| Section | Items | Owner | Independent? |
+|---------|-------|-------|--------------|
+| **A — DataTable windowing** | W1, W2, W5 | 1 frontend dev | Yes — biggest cascade |
+| **B — Mobile perf** | C1 (lazy split), W3, W4, B9 | frontend (mobile) | Yes |
+| **C — Cap list fetches** | B1, B2, B3, B4, B5, B6, B7, B8 | frontend | Yes — mostly independent per page |
+| **D — Render hotspots** | D1, D2, D3, D4, D5 | frontend | Yes — small surgical fixes |
+| **E — Cache-safety audits** | G2, G4, G11, G12, G13, M1, M2 | frontend | Yes — read-heavy |
+| **F — Deploy hardening** | D-SW, D-MOB, drop leaflet | frontend/build | Yes — small |
+| **G — Backend (data-gated)** | C-AR, S-IDX, S-STATS | backend | Later |
 
-P0 = do first (biggest felt win). P1 = next. P2 = as data grows.
+P0 = biggest felt win (windowing + mobile split + capping the 3 worst fetches).
+P1 = next. P2 = as data grows.
