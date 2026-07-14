@@ -2,6 +2,7 @@ import { useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
+import { MobileVirtualList } from "./MobileVirtualList";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { useChoice } from "../vendor/scm/components/ChoiceDialog";
@@ -403,8 +404,13 @@ function CaseList({
         {isLoading && <div style={{ textAlign: "center", color: "var(--mut2)", fontSize: 12, padding: "26px 0" }}>Loading…</div>}
         {error && <div style={{ textAlign: "center", color: "var(--red)", fontSize: 12, padding: "26px 0" }}>Couldn't load service cases. Pull to retry.</div>}
         {!isLoading && !error && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
-            {rows.map((r) => {
+          <>
+            {rows.length > 0 && (
+              <MobileVirtualList
+                items={rows}
+                getKey={(r) => Number(get(r, "id"))}
+                estimateHeight={132}
+                renderItem={(r) => {
               const id = Number(get(r, "id"));
               const cancelled = statusOf(r).toLowerCase() === "cancelled";
               const pr = PRIORITY_META[priorityOf(r)] ?? PRIORITY_META.normal;
@@ -462,14 +468,16 @@ function CaseList({
                   </div>
                 </div>
               );
-            })}
+                }}
+              />
+            )}
             {!rows.length && (
               <div className="empty">
                 <div className="empty-t">Nothing matches</div>
                 <div className="empty-s">Try a different filter or search.</div>
               </div>
             )}
-          </div>
+          </>
         )}
       </div>
     </div>
