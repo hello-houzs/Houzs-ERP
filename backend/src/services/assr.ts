@@ -1168,11 +1168,19 @@ export async function listAssrCases(env: Env, f: ListAssrFilters) {
     // Case-insensitive (PG LIKE is case-sensitive, unlike SQLite) and
     // covers the Ref No column too (Nick 2026-07-07). LOWER() instead
     // of ILIKE so the D1 test mirror stays happy.
+    //
+    // Restore mobile client-search coverage lost when the Service Case list
+    // moved to server pagination: the old client search also matched the
+    // complaint issue text and the item code / description. complaint_issue
+    // and item_code are denormalized columns on assr_cases; item_description
+    // lives only in the child assr_items table, matched via a correlated
+    // EXISTS so it also works inside the COUNT(*) query (no assr_items join).
+    // Additive — keeps case no / SO doc / Ref / customer.
     where.push(
-      "(LOWER(c.assr_no) LIKE ? OR LOWER(c.doc_no) LIKE ? OR LOWER(c.ref_no) LIKE ? OR LOWER(c.customer_name) LIKE ?)"
+      "(LOWER(c.assr_no) LIKE ? OR LOWER(c.doc_no) LIKE ? OR LOWER(c.ref_no) LIKE ? OR LOWER(c.customer_name) LIKE ? OR LOWER(c.complaint_issue) LIKE ? OR LOWER(c.item_code) LIKE ? OR EXISTS (SELECT 1 FROM assr_items i WHERE i.assr_id = c.id AND (LOWER(i.item_code) LIKE ? OR LOWER(i.item_description) LIKE ?)))"
     );
     const like = `%${f.search.toLowerCase()}%`;
-    binds.push(like, like, like, like);
+    binds.push(like, like, like, like, like, like, like, like);
   }
   pushVisibilityScope(where, binds, f.visible_to_user_ids);
   pushAllowedCompanies(where, f.allowed_company_ids);
@@ -1307,11 +1315,19 @@ export async function exportAssrCases(
     // Case-insensitive (PG LIKE is case-sensitive, unlike SQLite) and
     // covers the Ref No column too (Nick 2026-07-07). LOWER() instead
     // of ILIKE so the D1 test mirror stays happy.
+    //
+    // Restore mobile client-search coverage lost when the Service Case list
+    // moved to server pagination: the old client search also matched the
+    // complaint issue text and the item code / description. complaint_issue
+    // and item_code are denormalized columns on assr_cases; item_description
+    // lives only in the child assr_items table, matched via a correlated
+    // EXISTS so it also works inside the COUNT(*) query (no assr_items join).
+    // Additive — keeps case no / SO doc / Ref / customer.
     where.push(
-      "(LOWER(c.assr_no) LIKE ? OR LOWER(c.doc_no) LIKE ? OR LOWER(c.ref_no) LIKE ? OR LOWER(c.customer_name) LIKE ?)"
+      "(LOWER(c.assr_no) LIKE ? OR LOWER(c.doc_no) LIKE ? OR LOWER(c.ref_no) LIKE ? OR LOWER(c.customer_name) LIKE ? OR LOWER(c.complaint_issue) LIKE ? OR LOWER(c.item_code) LIKE ? OR EXISTS (SELECT 1 FROM assr_items i WHERE i.assr_id = c.id AND (LOWER(i.item_code) LIKE ? OR LOWER(i.item_description) LIKE ?)))"
     );
     const like = `%${f.search.toLowerCase()}%`;
-    binds.push(like, like, like, like);
+    binds.push(like, like, like, like, like, like, like, like);
   }
   pushVisibilityScope(where, binds, f.visible_to_user_ids);
   pushAllowedCompanies(where, f.allowed_company_ids);
