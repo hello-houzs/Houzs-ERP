@@ -18,7 +18,7 @@
 // isMailAdmin on every endpoint. userId is a NUMBER in Houzs (users.id serial);
 // the dept picker sends the dept NAME (assigned_dept is string-matched).
 // ---------------------------------------------------------------------------
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Plus,
   Mail,
@@ -685,6 +685,14 @@ function EditMailboxPanel({
 }
 
 // ── Region B + C: access matrix (users × shared mailboxes) + view levels ───
+// Row (user) windowing: past this many rows the matrix mounts only the user
+// rows scrolled into view (mirrors DataTable's tbody windowing) so an
+// O(users × mailboxes) checkbox grid doesn't put every row in the DOM at once.
+// No-op below the threshold, so a normal-sized team renders byte-identically.
+const MATRIX_ROW_THRESHOLD = 40;
+const MATRIX_ROW_OVERSCAN = 10;
+const MATRIX_ROW_ESTIMATE = 41; // px; corrected at runtime from a real row
+
 function AccessMatrix({
   addresses,
   users,
@@ -853,6 +861,56 @@ function AccessMatrix({
   const userLevel = (userId: number): MailScopeLevel =>
     editMode ? draftLevels.get(userId) ?? "personal" : levelOf(userId);
 
+  // ── Row windowing (page-scroll-preserving) ────────────────────────────────
+  // A capturing window scroll listener catches scroll from any ancestor; the
+  // tbody is measured against the viewport and only the visible slice of user
+  // rows renders, bracketed by two spacer <tr>s that reserve the off-screen
+  // height. Checkbox / select state lives in React state (draftGrants /
+  // draftLevels, keyed by ids), so a windowed row that scrolls out and back
+  // renders with identical checked state + onChange — no DOM state is lost.
+  const matrixReady = !loading && !accessQ.loading && !levelsQ.loading;
+  const canVirtualize = matrixReady && users.length > MATRIX_ROW_THRESHOLD;
+  const totalCols = 2 + sharedMailboxes.length; // Member + View level + mailboxes
+  const tbodyRef = useRef<HTMLTableSectionElement>(null);
+  const rowHeightRef = useRef(MATRIX_ROW_ESTIMATE);
+  const [winRange, setWinRange] = useState<{ start: number; end: number }>({
+    start: 0,
+    end: MATRIX_ROW_THRESHOLD * 2,
+  });
+  useEffect(() => {
+    if (!canVirtualize) return;
+    let raf = 0;
+    const measure = () => {
+      raf = 0;
+      const el = tbodyRef.current;
+      if (!el) return;
+      const firstRow = el.querySelector<HTMLElement>("tr[data-vrow]");
+      if (firstRow && firstRow.offsetHeight > 0)
+        rowHeightRef.current = firstRow.offsetHeight;
+      const rh = rowHeightRef.current || MATRIX_ROW_ESTIMATE;
+      const top = el.getBoundingClientRect().top;
+      const first = Math.max(0, Math.floor(-top / rh) - MATRIX_ROW_OVERSCAN);
+      const count = Math.ceil(window.innerHeight / rh) + MATRIX_ROW_OVERSCAN * 2;
+      const last = Math.min(users.length, first + count);
+      setWinRange((prev) =>
+        prev.start === first && prev.end === last ? prev : { start: first, end: last },
+      );
+    };
+    const onScroll = () => {
+      if (!raf) raf = requestAnimationFrame(measure);
+    };
+    measure();
+    window.addEventListener("scroll", onScroll, { capture: true, passive: true });
+    window.addEventListener("resize", onScroll);
+    return () => {
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onScroll);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [canVirtualize, users.length]);
+  const vStart = canVirtualize ? winRange.start : 0;
+  const vEnd = canVirtualize ? Math.min(users.length, winRange.end) : users.length;
+
   return (
     <section>
       <div className="mb-3 flex flex-wrap items-center gap-2">
@@ -927,10 +985,19 @@ function AccessMatrix({
                 ))}
               </tr>
             </thead>
-            <tbody>
-              {users.map((u) => (
+            <tbody ref={tbodyRef}>
+              {canVirtualize && vStart > 0 && (
+                <tr aria-hidden>
+                  <td
+                    colSpan={totalCols}
+                    style={{ height: vStart * rowHeightRef.current, padding: 0, border: 0 }}
+                  />
+                </tr>
+              )}
+              {users.slice(vStart, vEnd).map((u) => (
                 <tr
                   key={u.id}
+                  data-vrow=""
                   className="border-b border-border-subtle last:border-b-0"
                 >
                   <td className="sticky left-0 z-10 bg-surface px-4 py-2.5 text-[12.5px] font-semibold text-ink">
@@ -976,6 +1043,18 @@ function AccessMatrix({
                   })}
                 </tr>
               ))}
+              {canVirtualize && vEnd < users.length && (
+                <tr aria-hidden>
+                  <td
+                    colSpan={totalCols}
+                    style={{
+                      height: (users.length - vEnd) * rowHeightRef.current,
+                      padding: 0,
+                      border: 0,
+                    }}
+                  />
+                </tr>
+              )}
             </tbody>
           </table>
           {sharedMailboxes.length === 0 && (
