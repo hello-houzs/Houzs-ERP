@@ -25,6 +25,10 @@ export type Env = {
   // (/api/assr-form-intake). GitHub secret, injected at deploy; the
   // endpoint 401s on every request while unset.
   FORM_INTAKE_KEY?: string;
+  /** Shared secret for the sheet status-export pull (Nick 2026-07-14) —
+   *  a separate key from FORM_INTAKE_KEY because the form-intake script
+   *  lives in a different Google account than the HC Delivery sheet's. */
+  SHEET_SYNC_KEY?: string;
   POD_BUCKET: R2Bucket;
   // R2 buckets used by the ported SCM routes (SO item photos, public assets).
   // Typed required so the ported code compiles; bind in wrangler.toml before the

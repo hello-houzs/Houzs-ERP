@@ -22,6 +22,7 @@ import { computeVariantKey, isServiceLine, type VariantAttrs } from '../shared';
 import { syncSoDeliveredFromDo } from '../lib/so-delivery-sync';
 import { todayMyt } from '../lib/my-time';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
+import { escapeForOr } from '../lib/postgrest-search';
 import { resolveSalesScopeIds, salesDocOutOfScope } from '../lib/salesScope';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { canViewAllSales } from '../lib/houzs-perms';
@@ -1722,10 +1723,87 @@ deliveryOrdersMfg.get('/', async (c) => {
     return c.json({ error: 'Your account is not linked to a Houzs user, so delivery orders cannot be shown — please contact IT.' }, 403);
   }
   const scopeIds = await resolveSalesScopeIds(sb, c.env, houzsUserId, canViewAll);
-  let q = sb.from('delivery_orders').select(HEADER).order('do_date', { ascending: false }).limit(500);
-  if (scopeIds) q = q.in('salesperson_id', scopeIds);
-  const status = c.req.query('status'); if (status) q = q.eq('status', status);
-  const { data, error } = await q;
+
+  /* Opt-in server-side pagination + search + sort + status-counts (mirrors the
+     SO list in mfg-sales-orders.ts). The PRESENCE of `page` switches paging on;
+     when it is absent/empty the query below is BYTE-IDENTICAL to the historical
+     behavior (order do_date desc, limit 500, status param, `{ deliveryOrders }`
+     shape) so nothing that calls this today changes. Status counts are computed
+     over the FULL scoped set (no status/search/page filter) so tab counts stay
+     stable while the user types or a status tab is active. */
+  const pageRaw = c.req.query('page');
+  const paginate = pageRaw !== undefined && pageRaw !== '';
+
+  let data: unknown = null;
+  let error: { message: string } | null = null;
+  let total = 0;
+  let page = 0;
+  let pageSize = 50;
+  let statusCounts: { all: number; open: number; in_transit: number; delivered: number; cancelled: number } | undefined;
+
+  if (!paginate) {
+    /* --- LEGACY PATH (unchanged) --- */
+    let q = sb.from('delivery_orders').select(HEADER).order('do_date', { ascending: false }).limit(500);
+    if (scopeIds) q = q.in('salesperson_id', scopeIds);
+    const status = c.req.query('status'); if (status) q = q.eq('status', status);
+    const res = await q;
+    data = res.data;
+    error = res.error;
+  } else {
+    /* --- PAGINATED PATH (opt-in via `page`) --- */
+    page = Math.max(0, Math.trunc(Number(pageRaw)) || 0);
+    const psRaw = Number(c.req.query('pageSize'));
+    pageSize = Number.isFinite(psRaw) && psRaw > 0 ? Math.min(100, Math.max(1, Math.trunc(psRaw))) : 50;
+
+    const SORT_COLS = new Set(['do_date', 'do_number', 'debtor_name', 'status', 'customer_delivery_date']);
+    const [rawCol, rawDir] = (c.req.query('sort') ?? 'do_date:desc').split(':');
+    const sortCol = SORT_COLS.has(rawCol) ? rawCol : 'do_date';
+    const sortAsc = rawDir === 'asc';
+
+    let q = sb.from('delivery_orders').select(HEADER, { count: 'exact' }).order(sortCol, { ascending: sortAsc });
+    /* unique tiebreaker so range paging can't skip/repeat rows sharing the sort key */
+    if (sortCol !== 'do_number') q = q.order('do_number', { ascending: sortAsc });
+    if (scopeIds) q = q.in('salesperson_id', scopeIds);
+    const status = c.req.query('status'); if (status) q = q.eq('status', status);
+    /* free-text search over the columns the FE list's client-side search matches
+       (MfgDeliveryOrdersListV2 hay) that live on this base table. */
+    const search = c.req.query('q');
+    if (search) {
+      const s = escapeForOr(search);
+      if (s) q = q.or(`do_number.ilike.%${s}%,so_doc_no.ilike.%${s}%,debtor_name.ilike.%${s}%,debtor_code.ilike.%${s}%,ref.ilike.%${s}%,branding.ilike.%${s}%,sales_location.ilike.%${s}%,driver_name.ilike.%${s}%`);
+    }
+    const from = c.req.query('from'); if (from) q = q.gte('do_date', from);
+    const to = c.req.query('to'); if (to) q = q.lte('do_date', to);
+    q = q.range(page * pageSize, page * pageSize + pageSize - 1);
+    const res = await q;
+    data = res.data;
+    error = res.error;
+    total = res.count ?? (res.data?.length ?? 0);
+
+    /* Status counts mirror the FE filter-pill buckets (open / in_transit /
+       delivered / cancelled) over the SAME scope filter but WITHOUT status /
+       search / pagination. DO list has NO company scope (byte-identical to
+       legacy), so neither does this. */
+    const countBase = () => {
+      let cq = sb.from('delivery_orders').select('*', { count: 'exact', head: true });
+      if (scopeIds) cq = cq.in('salesperson_id', scopeIds);
+      return cq;
+    };
+    const [allC, openC, transitC, deliveredC, cancelledC] = await Promise.all([
+      countBase(),
+      countBase().in('status', ['DRAFT', 'LOADED']),
+      countBase().in('status', ['DISPATCHED', 'IN_TRANSIT']),
+      countBase().in('status', ['SIGNED', 'DELIVERED', 'INVOICED', 'COMPLETED']),
+      countBase().in('status', ['CANCELLED']),
+    ]);
+    statusCounts = {
+      all: allC.count ?? 0,
+      open: openC.count ?? 0,
+      in_transit: transitC.count ?? 0,
+      delivered: deliveredC.count ?? 0,
+      cancelled: cancelledC.count ?? 0,
+    };
+  }
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
 
   /* Tier 2 downstream-lock — one extra batched read per doc set: pull every
@@ -1755,6 +1833,7 @@ deliveryOrdersMfg.get('/', async (c) => {
     has_children: childIds.has(r.id),
     lifecycle_state: lifecycleByDo.get(r.id) ?? 'shipped',
   }));
+  if (paginate) return c.json({ deliveryOrders, total, page, pageSize, statusCounts });
   return c.json({ deliveryOrders });
 });
 
