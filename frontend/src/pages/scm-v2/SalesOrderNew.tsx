@@ -64,6 +64,7 @@ import {
 } from '../../vendor/scm/lib/so-dropdown-options-queries';
 import { useStateWarehouseMappings } from '../../vendor/scm/lib/state-warehouse-queries';
 import { SoLineCard, emptySoLine, missingRequiredVariants, type SoLineDraft } from '../../vendor/scm/components/SoLineCard';
+import { hasSofaMixConflict, SOFA_MIX_MESSAGE } from '@2990s/shared/so-variant-rule';
 /* FIX (d) scan fabric seed — resolve a scanned fabric code (e.g. "BO315-22")
    to the SAME fabric_colours / fabric_library rows SoLineCard's pickFabricColour
    uses, so the matched colour rides onto the seeded line's variants instead of
@@ -1319,6 +1320,13 @@ export const SalesOrderNew = () => {
       });
       return;
     }
+    // Sofa is exclusive among main products — the server 400s
+    // `so_sofa_no_other_main` when a sofa line rides with a bedframe/mattress.
+    // Block + warn here so the operator gets one plain sentence, not a raw 400.
+    if (hasSofaMixConflict(validLines.map((l) => l.itemGroup))) {
+      notify({ title: SOFA_MIX_MESSAGE, tone: 'error' });
+      return;
+    }
     // Variants are only mandatory once a processing date is set: with a date,
     // the order is committed to production and purchasing needs a full spec.
     // No processing date = still a draft, so allow saving with gaps.
@@ -2035,6 +2043,11 @@ export const SalesOrderNew = () => {
                   canRemove={lines.length > 1}
                   inheritVariantsByCategory={inheritVariantsByCategory}
                   onAddProducts={addProducts}
+                  /* Variants are only mandatory once a Processing Date is set
+                     (matches the backend gate + the Save block above), so the
+                     ` *` marker + red ring stay off while the order is still a
+                     no-date draft (owner 2026-07-14). */
+                  variantsRequired={!!processingDate}
                   /* Scan-Order (Task #73) — a NO-MATCH scanned line seeds an
                      empty SKU picker; pass the slip rawText as the picker's
                      placeholder hint so the operator can pick a real SKU
