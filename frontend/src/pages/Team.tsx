@@ -390,6 +390,127 @@ export function Team() {
 }
 
 // ──────────────────────────────────────────────────────────
+// Windowed card grid — renders only the rows scrolled into view
+// ──────────────────────────────────────────────────────────
+// The default Members view is a responsive card grid. Rendering EVERY card
+// unvirtualized freezes the page once the workspace grows (10× users). This
+// windows the grid the same way the desktop DataTable and MobileVirtualList do:
+// a CAPTURING window scroll listener (scroll events don't bubble) measures the
+// grid against the viewport, and only the visible slice of ROWS is mounted,
+// bracketed by two spacer divs that reserve the off-screen height so the page
+// scrollbar behaves exactly as before. Card height is measured from a real
+// rendered card and the live column count is read from the grid's computed
+// `grid-template-columns`, so the responsive `grid-cols-*` breakpoints and the
+// card layout are preserved verbatim — nothing about the columns is re-encoded
+// here. No-op below `threshold`: a small team renders byte-identically to the
+// plain `.map` grid it replaces.
+const GRID_VIRTUAL_THRESHOLD = 40;
+const GRID_OVERSCAN_ROWS = 3;
+const GRID_GAP = 12; // px — matches Tailwind `gap-3` (0.75rem) on the grid
+const CARD_HEIGHT_ESTIMATE = 168; // px; corrected at runtime by measuring a real card
+
+// Live column count from the grid's resolved template (e.g. "296px 296px 296px"
+// → 3). Follows the responsive breakpoints without re-encoding them.
+function gridColumnCount(grid: HTMLElement): number {
+  const tpl = getComputedStyle(grid).gridTemplateColumns;
+  const n = tpl && tpl !== "none" ? tpl.split(" ").filter(Boolean).length : 1;
+  return Math.max(1, n);
+}
+
+function VirtualMemberGrid<T>({
+  items,
+  renderItem,
+  gridClassName,
+  gap = GRID_GAP,
+  threshold = GRID_VIRTUAL_THRESHOLD,
+  overscanRows = GRID_OVERSCAN_ROWS,
+  estimateHeight = CARD_HEIGHT_ESTIMATE,
+}: {
+  items: T[];
+  /** Must return an element with a stable `key` (the caller owns it). */
+  renderItem: (item: T, index: number) => ReactNode;
+  /** The exact grid classes (`grid grid-cols-2 gap-3 …`) so the responsive
+   *  column count + card layout stay identical to the un-windowed grid. */
+  gridClassName: string;
+  gap?: number;
+  threshold?: number;
+  overscanRows?: number;
+  estimateHeight?: number;
+}) {
+  const on = items.length > threshold;
+  const containerRef = useRef<HTMLDivElement>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
+  const rowHRef = useRef(estimateHeight + gap);
+  const [range, setRange] = useState<{
+    start: number;
+    end: number;
+    topPad: number;
+    botPad: number;
+  }>({ start: 0, end: Math.min(items.length, threshold * 2), topPad: 0, botPad: 0 });
+
+  useEffect(() => {
+    if (!on) return;
+    let raf = 0;
+    const measure = () => {
+      raf = 0;
+      const container = containerRef.current;
+      const grid = gridRef.current;
+      if (!container || !grid) return;
+      const cols = gridColumnCount(grid);
+      const card = grid.firstElementChild as HTMLElement | null;
+      if (card && card.offsetHeight > 0) rowHRef.current = card.offsetHeight + gap;
+      const rh = rowHRef.current || estimateHeight + gap;
+      const totalRows = Math.ceil(items.length / cols);
+      const top = container.getBoundingClientRect().top; // grid top vs viewport
+      const firstRow = Math.max(0, Math.floor(-top / rh) - overscanRows);
+      const visRows = Math.ceil(window.innerHeight / rh) + overscanRows * 2;
+      const lastRow = Math.min(totalRows, firstRow + visRows);
+      const start = firstRow * cols;
+      const end = Math.min(items.length, lastRow * cols);
+      const topPad = firstRow * rh;
+      const botPad = (totalRows - lastRow) * rh;
+      setRange((p) =>
+        p.start === start && p.end === end && p.topPad === topPad && p.botPad === botPad
+          ? p
+          : { start, end, topPad, botPad },
+      );
+    };
+    const onScroll = () => {
+      if (!raf) raf = requestAnimationFrame(measure);
+    };
+    measure();
+    window.addEventListener("scroll", onScroll, { capture: true, passive: true });
+    window.addEventListener("resize", onScroll);
+    return () => {
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onScroll);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [on, items.length, overscanRows, estimateHeight, gap]);
+
+  // Below the threshold: byte-identical to the plain grid it replaces.
+  if (!on) {
+    return (
+      <div className={gridClassName}>
+        {items.map((item, i) => renderItem(item, i))}
+      </div>
+    );
+  }
+
+  const start = range.start;
+  const end = Math.min(items.length, range.end);
+  return (
+    <div ref={containerRef}>
+      {start > 0 && <div aria-hidden style={{ height: range.topPad }} />}
+      <div ref={gridRef} className={gridClassName}>
+        {items.slice(start, end).map((item, i) => renderItem(item, start + i))}
+      </div>
+      {end < items.length && <div aria-hidden style={{ height: range.botPad }} />}
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
 // Members tab — active users + pending invitations
 // ──────────────────────────────────────────────────────────
 function MembersTab({
@@ -407,6 +528,8 @@ function MembersTab({
   const toast = useToast();
   const dialog = useDialog();
 
+  // NOTE: unbounded fetch — pulls ALL users in one request; the grid below is
+  // DOM-windowed, but fetch pagination is a separate follow-up.
   const members = useQuery<{ users: TeamMember[] }>(() => api.get("/api/users"));
   const invites = useQuery<{ invitations: Invitation[] }>(() =>
     api.get("/api/users/invitations")
@@ -1499,8 +1622,13 @@ function MembersTab({
         ) : gridMembers.length === 0 ? (
           <EmptyState compact message="No members match these filters." />
         ) : (
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-            {gridMembers.map((u) => (
+          // Windowed so only the on-screen rows (plus overscan) are in the DOM;
+          // the grid classes are handed through verbatim so the responsive
+          // column count and card layout are unchanged.
+          <VirtualMemberGrid
+            items={gridMembers}
+            gridClassName="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4"
+            renderItem={(u) => (
               <MemberCard
                 key={u.id}
                 u={u}
@@ -1509,8 +1637,8 @@ function MembersTab({
                 online={onlineIds.has(u.id)}
                 onOpen={() => setViewingId(u.id)}
               />
-            ))}
-          </div>
+            )}
+          />
         )}
 
         {/* Bulk action bar — appears when rows are selected (list view). */}
