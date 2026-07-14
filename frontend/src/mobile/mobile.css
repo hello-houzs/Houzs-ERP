@@ -315,3 +315,48 @@
 .hz-m .dia.lock::after { content: ""; position: absolute; inset: 0; background: rgba(0,0,0,.28); border-radius: 2px; }
 .hz-m .today { position: absolute; top: 0; bottom: 0; width: 2px; background: rgba(22,105,95,.55); z-index: 3; }
 .hz-m .today::before { content: "TODAY"; position: absolute; top: -1px; left: 3px; font-size: 7px; font-weight: 800; color: #0c3f39; letter-spacing: .05em; }
+
+/* ---- stock card (per-SKU ledger) ---- */
+.hz-m .sc-hero { background: linear-gradient(160deg,#0c3f39,#16695f); border-radius: 12px; padding: 13px 14px; color: #fff; }
+.hz-m .sc-hero .l { font-size: 9.5px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; opacity: .8; }
+.hz-m .sc-hero .v { font-size: 27px; font-weight: 800; margin-top: 2px; letter-spacing: -.01em; }
+.hz-m .sc-hero .u { font-size: 11px; opacity: .8; font-weight: 600; }
+.hz-m .sc-sl { display: flex; align-items: center; gap: 8px; padding: 2px 3px; }
+.hz-m .sc-sl .t { font-size: 9.5px; font-weight: 800; letter-spacing: .13em; text-transform: uppercase; color: var(--gold); white-space: nowrap; }
+.hz-m .sc-sl .ln { flex: 1; height: 1px; background: linear-gradient(to right,rgba(161,106,46,.3),transparent); }
+.hz-m .sc-whgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--line2); border: 1px solid var(--line2); border-radius: 10px; overflow: hidden; }
+.hz-m .sc-whgrid > div { background: #fff; padding: 9px 11px; display: flex; align-items: center; justify-content: space-between; }
+.hz-m .sc-whgrid .wn { font-size: 11.5px; font-weight: 700; color: var(--ink2); }
+.hz-m .sc-whgrid .wq { font-size: 13px; font-weight: 800; }
+.hz-m .sc-mv { display: flex; align-items: center; gap: 10px; padding: 9px 2px; border-top: 1px solid var(--line2); }
+.hz-m .sc-mv:first-child { border-top: none; }
+.hz-m .sc-mp { font-size: 8.5px; font-weight: 800; padding: 2px 6px; border-radius: 5px; flex: none; width: 66px; text-align: center; white-space: nowrap; }
+.hz-m .sc-mp.in { background: var(--green-bg); color: var(--green); }
+.hz-m .sc-mp.out { background: var(--red-bg); color: var(--red); }
+.hz-m .sc-mp.adj { background: var(--amber-bg); color: var(--amber); }
+.hz-m .sc-mp.tr { background: var(--brand-bg); color: var(--brand-d); }
+.hz-m .sc-mv .md { flex: 1; min-width: 0; }
+.hz-m .sc-mv .md .dt { font-size: 11px; font-weight: 700; color: var(--ink); }
+.hz-m .sc-mv .md .rf { font-size: 10px; color: var(--mut); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hz-m .sc-mq { font-size: 12.5px; font-weight: 800; text-align: right; width: 42px; }
+.hz-m .sc-mq.neg { color: var(--red); }
+.hz-m .sc-mb { font-size: 12.5px; font-weight: 800; text-align: right; width: 48px; color: var(--ink); }
+
+/* ---- new stock transfer form ---- */
+.hz-m .st-whrow { display: flex; align-items: flex-end; gap: 8px; }
+.hz-m .st-fld { display: flex; flex-direction: column; gap: 5px; flex: 1; min-width: 0; }
+.hz-m .st-fld .st-fl { font-size: 9px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; color: var(--mut2); }
+.hz-m .st-arrow { flex: none; color: var(--brand); font-size: 16px; font-weight: 800; padding-bottom: 10px; }
+.hz-m .st-warn { background: var(--red-bg); color: var(--red); border-radius: 9px; padding: 9px 11px; font-size: 11px; font-weight: 700; }
+.hz-m .st-line { border: 1px solid var(--line-card); border-radius: 11px; padding: 10px 11px; display: flex; flex-direction: column; gap: 8px; background: #fff; }
+.hz-m .st-line .lh { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.hz-m .st-line .sku { font-size: 12.5px; font-weight: 800; color: var(--ink); }
+.hz-m .st-line .code { font-size: 10px; color: var(--mut); font-weight: 600; }
+.hz-m .st-line .x { border: none; background: none; color: var(--mut2); font-size: 18px; line-height: 1; cursor: pointer; font-family: inherit; padding: 0 2px; }
+.hz-m .st-line .qtyrow { display: flex; align-items: center; gap: 10px; }
+.hz-m .st-line .stepper { display: flex; align-items: center; border: 1px solid var(--line-card); border-radius: 9px; overflow: hidden; }
+.hz-m .st-line .stepper button { width: 34px; height: 34px; border: none; background: var(--bg); font-size: 17px; font-weight: 700; color: var(--ink2); cursor: pointer; font-family: inherit; }
+.hz-m .st-line .stepper .q { width: 42px; text-align: center; font-size: 14px; font-weight: 800; }
+.hz-m .st-line .avail { font-size: 10.5px; font-weight: 700; color: var(--green); }
+.hz-m .st-line .avail.over { color: var(--red); }
+.hz-m .st-addln { border: 1px dashed #c2c6bd; border-radius: 10px; padding: 11px; text-align: center; font-size: 12.5px; font-weight: 800; color: var(--brand); background: #fbfcfa; cursor: pointer; font-family: inherit; width: 100%; }

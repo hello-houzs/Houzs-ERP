@@ -37,6 +37,8 @@ const MobileScan = lazy(() => import("./MobileScan").then((m) => ({ default: m.M
 const MobileConvertWizard = lazy(() => import("./MobileConvertWizard").then((m) => ({ default: m.MobileConvertWizard })));
 const MobilePOD = lazy(() => import("./MobilePOD").then((m) => ({ default: m.MobilePOD })));
 const MobileProfile = lazy(() => import("./MobileProfile").then((m) => ({ default: m.MobileProfile })));
+const MobileStockCard = lazy(() => import("./MobileStockCard").then((m) => ({ default: m.MobileStockCard })));
+const MobileStockTransferNew = lazy(() => import("./MobileStockTransferNew").then((m) => ({ default: m.MobileStockTransferNew })));
 import "./mobile.css";
 
 type Tab = "orders" | "service" | "calendar" | "profile";
@@ -49,6 +51,7 @@ type Screen =
   | { t: "scan" }
   | { t: "module"; key: string; title: string }
   | { t: "module-detail"; key: string; row: any; title: string }
+  | { t: "stock-transfer-new"; key: string; row: any; title: string }
   | { t: "module-form"; key: string; mode: "new" | "edit"; row?: any }
   | { t: "convert"; key: string; title: string; target: ConvertTarget; initialSourceId?: string }
   | { t: "pod"; docNo: string }
@@ -360,6 +363,19 @@ function MobileAppInner() {
       ? () => setScreen({ t: "so-detail", docNo: screen.initialSourceId! })
       : () => setScreen({ t: "module", key: screen.key, title: screen.title });
     overlay = <MobileConvertWizard target={screen.target} initialSourceId={screen.initialSourceId} onBack={backToConvertHome} onCreated={backToConvertHome} />;
+  }
+  else if (screen.t === "module-detail" && screen.key === "inventory") {
+    // Inventory row → the richer per-SKU stock card (replaces the generic detail).
+    overlay = <MobileStockCard
+      productCode={screen.row?.product_code ?? ""}
+      productName={screen.row?.product_name ?? null}
+      canTransfer={allowed("/scm/stock-transfers")}
+      onBack={() => setScreen({ t: "module", key: screen.key, title: screen.title })}
+      onNewTransfer={() => setScreen({ t: "stock-transfer-new", key: screen.key, row: screen.row, title: screen.title })} />;
+  }
+  else if (screen.t === "stock-transfer-new") {
+    const backToCard = () => setScreen({ t: "module-detail", key: screen.key, row: screen.row, title: screen.title });
+    overlay = <MobileStockTransferNew onBack={backToCard} onCreated={backToCard} />;
   }
   else if (screen.t === "module-detail") {
     const doNo = screen.key === "delivery-orders-mfg" ? (screen.row?.do_number ?? screen.row?.doNumber) : null;
