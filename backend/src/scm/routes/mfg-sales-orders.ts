@@ -120,7 +120,7 @@ import { pickCrossCategoryMatch, type AutoMatchCandidate } from '../lib/cross-ca
 import { recomputeSoStockAllocation } from '../lib/so-stock-allocation';
 import { creditFromCancelledSo, getCustomerCreditBalance } from '../lib/customer-credits';
 import { summariseReadiness } from '../lib/so-readiness';
-import { nextMonthlyDocNo } from '../lib/doc-no';
+import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { soDeliverableRemaining, soLineDeliveries, computeSoLifecycle, soCurrentDocNo, soLineShippedSourcePos } from './delivery-orders-mfg';
 /* Shared 4-state delivery-planning derivation — the SO list emits planning_state
    (the mobile Orders-list card's status) from the SAME helper the Delivery
@@ -2245,7 +2245,7 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
     }
   }
 
-  const docNo = await nextDocNo(sb, c);
+  let docNo = await nextDocNo(sb, c);
 
   /* Caller's REAL scm.staff identity (mig 0066 deterministic sync row,
      linked by staff.user_id) — drives the venue auto-stamp AND the
@@ -3622,9 +3622,26 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
     }
   }
 
-  const { error: hErr } = await sb.from('mfg_sales_orders').insert({
+  /* Doc-no collision retry (HIGH, 2026-07-14): two concurrent same-company SO
+     creates in the same YYMM both read the same max and mint the same doc_no;
+     without a retry the loser hits the doc_no PK (Postgres 23505) and the whole
+     order 500s (customer + payments + PWP all lost). Wrap the header insert in
+     insertWithDocNoRetry so a collision re-mints and retries. The FIRST attempt
+     reuses the already-minted docNo (PWP claims were reserved against it, with
+     rollbackPwpClaims on failure); we only auto-retry when NO PWP claim was made
+     (tries=1 keeps today's exact clean-fail+rollback for the rare promo order,
+     so a re-mint can never orphan a pwp_codes.redeemed_doc_no). */
+  let mintedDocNo = docNo;
+  let firstMint = true;
+  const { error: hErr } = await insertWithDocNoRetry(
+    async () => {
+      if (firstMint) { firstMint = false; return mintedDocNo; }
+      mintedDocNo = await nextDocNo(sb, c);
+      return mintedDocNo;
+    },
+    (dn) => sb.from('mfg_sales_orders').insert({
     company_id: companyId, // multi-company: stamp the active company
-    doc_no: docNo,
+    doc_no: dn,
     proceeded_at: autoProceed ? new Date().toISOString() : null,
     transfer_to: (body.transferTo as string) ?? null,
     so_date: (body.soDate as string) ?? todayMyt(),
@@ -3766,8 +3783,11 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
        row compatibility, but new rows skip it entirely. */
     status: (body as { asDraft?: unknown }).asDraft === true ? 'DRAFT' : 'CONFIRMED',
     created_by: user.id,
-  });
+    }),
+    claimedPwpCodes.length === 0 ? 8 : 1,
+  );
   if (hErr) { await rollbackPwpClaims(); return c.json({ error: 'insert_failed', reason: hErr.message }, 500); }
+  docNo = mintedDocNo; // committed doc_no — every child insert below keys off it
 
   /* P1 (migration 0143) — the slip is now owned by this SO, so promote its
      pending row. 'promoted' rows are excluded from the reaper that deletes the

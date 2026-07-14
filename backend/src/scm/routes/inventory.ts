@@ -180,6 +180,74 @@ inventory.get('/', async (c) => {
   return c.json({ balances: data ?? [], warehouses: whs ?? [] });
 });
 
+/* Σ delivered / Σ returned per SO line id (net-of-delivered). Only
+   non-cancelled AND non-draft DOs count as delivered (a DRAFT DO hasn't
+   shipped); only non-cancelled DRs traced back through the active DO line count
+   as returned. Used to net gross open SO-line qty down to the still-open claim
+   for the Reserved / Available KPIs so a partially-shipped SO isn't
+   double-counted. Mirrors so-readiness's soDeliverableRemaining leak guard. */
+async function deliveredReturnedBySoItem(
+  sb: any,
+  soItemIds: string[],
+): Promise<{ deliveredBySoItem: Map<string, number>; returnedBySoItem: Map<string, number> }> {
+  const deliveredBySoItem = new Map<string, number>();
+  const returnedBySoItem = new Map<string, number>();
+  if (soItemIds.length === 0) return { deliveredBySoItem, returnedBySoItem };
+
+  const { data: doLines } = await chunkIn<{ id: string; so_item_id: string | null; qty: number; delivery_order_id: string }>(soItemIds, (batch, from, to) => sb
+    .from('delivery_order_items')
+    .select('id, so_item_id, qty, delivery_order_id')
+    .in('so_item_id', batch)
+    .range(from, to));
+  const doLineRows = (doLines ?? []) as Array<{ id: string; so_item_id: string | null; qty: number; delivery_order_id: string }>;
+  const doIds = [...new Set(doLineRows.map((l) => l.delivery_order_id).filter(Boolean))];
+  const activeDoIds = new Set<string>();
+  const doLineToSoItem = new Map<string, string>();
+  if (doIds.length > 0) {
+    const { data: dos } = await chunkIn<{ id: string; status: string | null }>(doIds, (batch, from, to) =>
+      sb.from('delivery_orders').select('id, status').in('id', batch).range(from, to));
+    for (const d of (dos ?? []) as Array<{ id: string; status: string | null }>) {
+      // DRAFT DO hasn't shipped and hasn't moved stock — excluding it (like
+      // soDeliverableRemaining's LEAK GUARD) keeps its units in Reserved so a
+      // free-to-sell KPI can't be inflated into over-sell. (DRs have no DRAFT.)
+      const st = (d.status ?? '').toUpperCase();
+      if (st !== 'CANCELLED' && st !== 'DRAFT') activeDoIds.add(d.id);
+    }
+  }
+  for (const l of doLineRows) {
+    if (!l.so_item_id || !activeDoIds.has(l.delivery_order_id)) continue;
+    doLineToSoItem.set(l.id, l.so_item_id);
+    deliveredBySoItem.set(l.so_item_id, (deliveredBySoItem.get(l.so_item_id) ?? 0) + Number(l.qty ?? 0));
+  }
+
+  const activeDoLineIds = [...doLineToSoItem.keys()];
+  if (activeDoLineIds.length > 0) {
+    const { data: drLines } = await chunkIn<{ do_item_id: string | null; qty_returned: number; delivery_return_id: string }>(activeDoLineIds, (batch, from, to) => sb
+      .from('delivery_return_items')
+      .select('do_item_id, qty_returned, delivery_return_id')
+      .in('do_item_id', batch)
+      .range(from, to));
+    const drLineRows = (drLines ?? []) as Array<{ do_item_id: string | null; qty_returned: number; delivery_return_id: string }>;
+    const drIds = [...new Set(drLineRows.map((l) => l.delivery_return_id).filter(Boolean))];
+    const activeDrIds = new Set<string>();
+    if (drIds.length > 0) {
+      const { data: drs } = await chunkIn<{ id: string; status: string | null }>(drIds, (batch, from, to) =>
+        sb.from('delivery_returns').select('id, status').in('id', batch).range(from, to));
+      for (const d of (drs ?? []) as Array<{ id: string; status: string | null }>) {
+        if ((d.status ?? '').toUpperCase() !== 'CANCELLED') activeDrIds.add(d.id);
+      }
+    }
+    for (const l of drLineRows) {
+      if (!l.do_item_id || !activeDrIds.has(l.delivery_return_id)) continue;
+      const soItemId = doLineToSoItem.get(l.do_item_id);
+      if (!soItemId) continue;
+      returnedBySoItem.set(soItemId, (returnedBySoItem.get(soItemId) ?? 0) + Number(l.qty_returned ?? 0));
+    }
+  }
+
+  return { deliveredBySoItem, returnedBySoItem };
+}
+
 /* ── Product totals (AutoCount-style list view) — PR #38 ─────────────────
    One row per product_code with summed qty across all warehouses + main
    supplier. Double-click a row in the UI to drill into per-warehouse
@@ -234,20 +302,34 @@ inventory.get('/products', async (c) => {
   if (codes.length > 0) {
     // chunkIn — codes can now exceed 1000 (un-truncated catalogue), so batch the
     // .in() lists and page each batch (PostgREST default cap is 1000 rows).
-    const { data: demand } = await chunkIn(codes, (batch, from, to) => sb
+    // Scope demand to the active company — the stock figure (v_inventory_product_totals)
+    // and the open-lots query below are already company-scoped, so leaving demand
+    // un-scoped would subtract OTHER companies' claims on a shared SKU from THIS
+    // company's stock (mfg_sales_order_items carries company_id, mig 0083).
+    const { data: demand } = await chunkIn(codes, (batch, from, to) => scopeToCompany(sb
       .from('mfg_sales_order_items')
-      .select('item_code, qty, line_delivery_date, cancelled, so:mfg_sales_orders!inner(status, customer_delivery_date)')
+      .select('id, item_code, qty, line_delivery_date, cancelled, so:mfg_sales_orders!inner(status, customer_delivery_date)'), c)
       .in('item_code', batch).eq('cancelled', false).range(from, to));
-    for (const r of (demand ?? []) as Array<{ item_code: string; qty: number; line_delivery_date: string | null; so: { status: string; customer_delivery_date: string | null } | Array<{ status: string; customer_delivery_date: string | null }> | null }>) {
-      const so = Array.isArray(r.so) ? r.so[0] : r.so;
-      const qty = Number(r.qty ?? 0);
-      if (!so || SO_DONE.has(so.status) || qty <= 0) continue;
+    const demandRows = ((demand ?? []) as Array<{ id: string; item_code: string; qty: number; line_delivery_date: string | null; so: { status: string; customer_delivery_date: string | null } | Array<{ status: string; customer_delivery_date: string | null }> | null }>)
+      .map((r) => ({ id: r.id, item_code: r.item_code, qty: Number(r.qty ?? 0), line_delivery_date: r.line_delivery_date, so: Array.isArray(r.so) ? r.so[0] : r.so }))
+      .filter((r) => r.so != null && !SO_DONE.has(r.so.status) && r.qty > 0);
+
+    // Net-of-delivered per line — mirror so-stock-allocation: an open SO line's
+    // live claim is qty − Σ delivered + Σ returned, floored at 0. Summing gross
+    // qty double-counts the shipped units of a partially-delivered SO and drives
+    // available_qty wrongly negative.
+    const { deliveredBySoItem, returnedBySoItem } = await deliveredReturnedBySoItem(sb, demandRows.map((r) => r.id));
+
+    for (const r of demandRows) {
+      const so = r.so!;
+      const net = Math.max(0, r.qty - (deliveredBySoItem.get(r.id) ?? 0) + (returnedBySoItem.get(r.id) ?? 0));
+      if (net <= 0) continue;
       const code = r.item_code;
-      reservedTotal.set(code, (reservedTotal.get(code) ?? 0) + qty);
+      reservedTotal.set(code, (reservedTotal.get(code) ?? 0) + net);
       const dd = (r.line_delivery_date ?? so.customer_delivery_date)?.slice(0, 10);
       if (dd) {
-        if (dd <= d7) reserve7.set(code, (reserve7.get(code) ?? 0) + qty);
-        if (dd <= d14) reserve14.set(code, (reserve14.get(code) ?? 0) + qty);
+        if (dd <= d7) reserve7.set(code, (reserve7.get(code) ?? 0) + net);
+        if (dd <= d14) reserve14.set(code, (reserve14.get(code) ?? 0) + net);
       }
     }
 

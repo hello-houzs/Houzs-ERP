@@ -287,8 +287,9 @@ function ThreadList({
         {!loading && folder === "inbox" && (
           <>
             <p className="max-w-xs text-[11px] leading-snug text-ink-muted/70">
-              Incoming mail will appear here once the domain MX is switched to
-              Cloudflare and the inbound Worker is live.
+              Incoming mail syncs in automatically every few minutes. Mail is
+              scoped to the active company — if a mailbox looks empty, check the
+              company selector at the top right.
             </p>
             <button
               onClick={onInjectTest}
