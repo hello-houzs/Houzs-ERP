@@ -52,15 +52,21 @@ The **~230ms fixed base** is why every SCM page feels slow *now*, independent of
 - **BUG-2026-07-05-001** — AP aging showed the **full face amount for partially-paid** invoices because the loop never selected `paid_amount` (net it).
 - **Stale-after-mutation (HOOKKA's #1 recurring class, ~10 times):** cached aggregates not invalidated on void/soft-delete; freshness probes assuming a universal `updated_at` that only 28/130 tables had → HTTP 500 on deploy. **`tsc` and unit tests do NOT catch these — verify on staging against real prod-shaped data (before/after diff).**
 
-## 6. Ranked fixes + status
+## 6. Ranked fixes + status (updated 2026-07-14, evening)
 
-| # | Fix | Risk | Status |
-|---|---|---|---|
-| 1 | **btree indexes** on scm hot columns (join cols, salesperson_id, composite `(company_id, <date> DESC)`) | additive, reversible, no I/O change | **DONE** — mig `0111_scm_hot_indexes.sql`, deploy-applied 2026-07-14 (#469) |
-| 2 | **Wrap unpaginated enrichment reads in `paginateAll`** (itemRows, soItems, doLines, grn_items) — fixes the 1000-cap silent-truncation correctness cliff | behavior-identical <1000 rows | in progress (`fix/scm-enrichment-paginate`) |
-| 3 | **Rewrite `GET /outstanding/summary`** to `SUM(CASE …)`/`count` in SQL (net = face−paid−credits, shared status set, NULLIF, one date column) | money aggregation — **must diff before/after on staging** | prepared; gated on staging verification (do NOT blind-ship) |
-| 4 | **True server-side pagination** on the SCM lists (`.range()` + estimated `Content-Range` total; enrich only the page; deterministic `ORDER BY … , id`) — the 100x fix | I/O-contract change, needs FE coordination + browser verify | planned |
-| 5 | Shorten the `soDeliverableRemaining` 5-hop serial chain (single VIEW/RPC) | optimization | planned, lower priority |
+| # | Fix | Status |
+|---|---|---|
+| 1 | **btree indexes** on scm hot columns | **DONE + deploy-verified** — mig `0111` (#469) |
+| 2 | **`paginateAll`** wrap of unpaginated enrichment reads (1000-cap truncation cliff) | **DONE** (#475), browser-verified SO list data intact |
+| 4 | **True server-side pagination on the SCM lists** (`.range()` + `count:'exact'` total + server search + `statusCounts` tabs + deterministic `ORDER BY …, id`) — the 100x fix | **DONE for 6 lists** — SO (#481 be, #483 desktop, #499/#502 mobile) + DO/GRN/SI/PO/PI (#491 be, #497 desktop). **Desktop all 6 prod-verified** (Showing X–Y of N, cross-page search on SO, no skip/dup). Mobile SO = IntersectionObserver infinite-scroll (rAF-safe). Multi-status tab buckets → `.in()` (#500). Mobile-list FE for DO/GRN/SI/PO/PI = TODO. |
+| — | **Dropdown scaling** (owner's colour-dropdown concern) | **DONE** (#501) — audit: most pickers already scale (native select/datalist virtualize; the custom listboxes were already capped 60 or on server typeahead). Fixed the 3 remaining render-all listboxes (UserMultiSelect, Products model-filter, MultiSupplierPicker+search). Flagged for later server-typeahead: desktop fabric/colour (native select, fine until thousands) + MultiSupplierPicker. |
+| 3 | **`GET /outstanding/summary`** AR-aging → SQL `SUM(CASE)`/`count` (net face−paid−credits) | **GATED on staging before/after diff** (money — never blind-ship). Not done. |
+| — | **Full-set money KPIs** (SO/list Revenue/Outstanding/Paid + mobile summary currently page-scoped "on this page") | GATED with #3 (money aggregate, verify on real data). |
+| — | **Non-SCM lists** (Projects per_page 1000, Team no-limit, Sales, Mail) | in progress (`feat/nonscm-list-scaling`) |
+| — | **Consignment (6-7 docs) + Products/SKU list** pagination | in progress (`feat/consignment-products-pagination`) |
+| 5 | Collapse `soDeliverableRemaining` 5-hop serial chain to one VIEW/RPC | planned, lower priority |
+
+**Verification method:** every change is browser-verified on prod (real Chrome, desktop + `?mobile=1`): pagination footer, cross-page search returns rows on other pages, no dup/skip, full-set counts, flat server TTFB. Caveat: the MCP-driven debug tab background-throttles rAF AND IntersectionObserver, so scroll-triggered infinite-load can't be exercised there (proven: a fresh IO on a visible element doesn't fire) — it works on a real foreground phone; backend paging is separately proven via the desktop cross-page test.
 
 ## 7. Correctness rules for this work (non-negotiable)
 
