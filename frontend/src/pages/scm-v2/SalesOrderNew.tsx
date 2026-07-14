@@ -84,6 +84,7 @@ import {
   missingMethodSubField, parseInstallmentMonths, type PaymentDraft,
 } from '../../vendor/scm/components/PaymentsTable';
 import { formatPhone } from '@2990s/shared/phone';
+import { soDateGuardError, soSliplessPaymentError } from '../../vendor/scm/lib/so-form-validate';
 import styles from './SalesOrderNew.module.css';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
@@ -1273,29 +1274,11 @@ export const SalesOrderNew = () => {
       });
       return;
     }
-    if (datesXor) {
-      notify({
-        title: 'Processing Date and Delivery Date must be set together.',
-        body:
-          'Either fill in BOTH dates, or leave BOTH empty — partial dates ' +
-          'cause scheduling issues.',
-        tone: 'error',
-      });
-      return;
-    }
-    // Commander 2026-05-28 — Processing/Delivery date must be today or future.
-    if (processingDate && processingDate < today) {
-      notify({ title: 'Processing Date cannot be in the past — pick today or a future date.', tone: 'error' });
-      return;
-    }
-    if (deliveryDate && deliveryDate < today) {
-      notify({ title: 'Delivery Date cannot be in the past — pick today or a future date.', tone: 'error' });
-      return;
-    }
-    // Owner 2026-06-03 — Process Date is the factory start; it cannot fall after
-    // the Delivery Date.
-    if (processingDate && deliveryDate && processingDate > deliveryDate) {
-      notify({ title: 'Processing Date cannot be later than the Delivery Date.', tone: 'error' });
+    // Date sanity (set-together / not-past / processing≤delivery) — shared with
+    // mobile via soDateGuardError so the rule can't drift between surfaces.
+    const dateErr = soDateGuardError({ processingDate, deliveryDate, today });
+    if (dateErr) {
+      notify({ ...dateErr, tone: 'error' });
       return;
     }
     const validLines = lines.filter((l) => l.itemCode.trim() && l.qty > 0);
@@ -1353,18 +1336,16 @@ export const SalesOrderNew = () => {
        slip, so it satisfies the guard WITHOUT a second upload; it is recorded
        through the SO-create deposit fields (order-level proof), not the strict
        per-payment route. */
-    const slipless = paymentDrafts.filter(
-      (d) => d.amountCenti > 0 && !d.slipUploadSessionId && !d.receiptImageKey,
+    // Every amount-bearing payment needs a slip (a scanned receipt's R2 key
+    // counts). Shared with mobile via soSliplessPaymentError.
+    const sliplessErr = soSliplessPaymentError(
+      paymentDrafts.map((d) => ({
+        amountCenti: d.amountCenti,
+        hasSlip: !!(d.slipUploadSessionId || d.receiptImageKey),
+      })),
     );
-    if (slipless.length > 0) {
-      notify({
-        title: 'Each payment needs a slip uploaded before saving.',
-        body:
-          `${slipless.length} payment row${slipless.length === 1 ? '' : 's'} ` +
-          `${slipless.length === 1 ? 'is' : 'are'} missing a slip — upload ` +
-          `${slipless.length === 1 ? 'it' : 'them'} (the "Slip *" button) and try again.`,
-        tone: 'error',
-      });
+    if (sliplessErr) {
+      notify({ ...sliplessErr, tone: 'error' });
       return;
     }
 

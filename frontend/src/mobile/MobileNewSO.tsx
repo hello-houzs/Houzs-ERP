@@ -9,6 +9,7 @@ import { useVenues } from "../vendor/scm/lib/venues-queries";
 import { useStateWarehouseMappings } from "../vendor/scm/lib/state-warehouse-queries";
 import { todayMyt } from "../vendor/scm/lib/dates";
 import { paymentMethodCodeForValue } from "../vendor/scm/lib/payment-methods";
+import { soDateGuardError, soSliplessPaymentError, soErrorText } from "../vendor/scm/lib/so-form-validate";
 import {
   useSoDropdownOptions,
   optionsOrFallback,
@@ -1381,16 +1382,33 @@ export function MobileNewSO({
     }
     const procOut = asDraft ? "" : procDate;
     const delivOut = asDraft ? "" : delivDate;
-    if (!asDraft && Boolean(procDate) !== Boolean(delivDate)) {
-      setError("Processing Date and Delivery Date must be set together, or both left empty.");
-      return;
-    }
+    // Date sanity (set-together / not-past / processing≤delivery) — SHARED with
+    // desktop via soDateGuardError so the rule can't drift. Validates only what
+    // will actually be saved (a draft strips both dates → procOut/delivOut "").
+    // Draft skips the both-or-neither rule (mobile parity); a firm SO enforces it.
+    const dateErr = soDateGuardError({
+      processingDate: procOut,
+      deliveryDate: delivOut,
+      today: todayMyt(),
+      requireDatesTogether: !asDraft,
+    });
+    if (dateErr) { setError(soErrorText(dateErr)); return; }
     /* Address becomes required only when this is a firm delivery (both dates set)
        and we're not stashing a draft. Otherwise an empty address saves empty. */
     if (!asDraft) {
       const addrMsg = missingAddressMsg();
       if (addrMsg) { setError(addrMsg); return; }
     }
+    /* Every amount-bearing payment row needs its slip uploaded (slipSession set)
+       BEFORE save — SHARED with desktop via soSliplessPaymentError. This closes
+       a money bug: recordSlipBackedPayments only POSTs rows WITH a slipSession,
+       so a row with an amount but no slip was silently dropped and the payment
+       never posted. Guards only the NEW rows in `pays`; already-recorded
+       payments live in existingPays (read-only) and are untouched. */
+    const sliplessErr = soSliplessPaymentError(
+      pays.map((p) => ({ amountCenti: toCenti(p.amount), hasSlip: !!p.slipSession })),
+    );
+    if (sliplessErr) { setError(soErrorText(sliplessErr)); return; }
     setError(null);
     setSubmitting(true);
     try {
