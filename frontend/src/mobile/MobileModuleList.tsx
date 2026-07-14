@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useInfiniteQuery } from "@tanstack/react-query";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { api } from "../api/client";
 import type { FormSchema } from "./MobileModuleForm";
@@ -261,6 +261,31 @@ function pickList(data: unknown, listKey?: string): any[] {
   return [];
 }
 
+const PAGE_SIZE = 30;
+
+/** SCM list endpoints whose backend handler supports server-side pagination +
+ *  search (accepts `page`/`pageSize`/`q`, returns `{ <key>, total, page,
+ *  pageSize, statusCounts }`). Matched on the endpoint's base path (query
+ *  string stripped). Everything NOT in here — the core `/api` lists and the
+ *  SCM lists without a paged handler — loads as a single page and filters
+ *  client-side, exactly as before. The runtime `total`-absent guard below is a
+ *  second safety net: even a listed endpoint that returns no `total` (e.g. an
+ *  older deploy) degrades to single-page behaviour instead of looping. */
+const SERVER_PAGINATED = new Set<string>([
+  "/delivery-orders-mfg",
+  "/sales-invoices",
+  "/grns",
+  "/mfg-purchase-orders",
+  "/purchase-invoices",
+]);
+
+/** Split an endpoint string into its base path + parsed query params. */
+function splitEndpoint(endpoint: string): { base: string; params: URLSearchParams } {
+  const qi = endpoint.indexOf("?");
+  if (qi === -1) return { base: endpoint, params: new URLSearchParams() };
+  return { base: endpoint.slice(0, qi), params: new URLSearchParams(endpoint.slice(qi + 1)) };
+}
+
 const safe = (fn: ((row: any) => string) | undefined, row: any): string => {
   if (!fn) return "";
   try {
@@ -290,16 +315,86 @@ export function MobileModuleList({
   const [chip2, setChip2] = useState("all");
   const [sortKey, setSortKey] = useState(config.sorts?.[0]?.key ?? "");
 
-  const { data, isLoading, error } = useQuery({
-    queryKey: ["mobile-module", config.core ? "core" : "scm", config.endpoint],
-    queryFn: () => (config.core ? api.get<unknown>(config.endpoint) : authedFetch<unknown>(config.endpoint)),
+  /* Debounced search term — the value actually sent to the server (and keyed
+     into the infinite query) so a keystroke doesn't fire a request per
+     character. 300ms after typing stops the paged query re-runs from page 0 and
+     the server searches the WHOLE table, not just the rows already loaded. */
+  const [debouncedQ, setDebouncedQ] = useState("");
+  useEffect(() => {
+    const t = window.setTimeout(() => setDebouncedQ(q.trim()), 300);
+    return () => window.clearTimeout(t);
+  }, [q]);
+
+  /* Whether THIS config's endpoint has a server-paginated handler. Core /api
+     lists and un-paged SCM lists fall back to a single page + client-side
+     filtering (the pre-pagination behaviour). */
+  const { base, params: baseParams } = useMemo(() => splitEndpoint(config.endpoint), [config.endpoint]);
+  const wantsPagination = !config.core && SERVER_PAGINATED.has(base);
+
+  /* Scroll container + sentinel for the IntersectionObserver infinite scroll. */
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const sentinelRef = useRef<HTMLDivElement>(null);
+
+  /* Paged URL for a given page index: keep the endpoint's own params (e.g.
+     fields=minimal) but drop `limit` (the server windows via page/pageSize) and
+     fold in the debounced search. Sort is left to the server default (each
+     handler already orders newest-first) — the configs don't expose the server
+     column name, so we omit `sort` rather than send a wrong one. */
+  const buildUrl = (page: number): string => {
+    const p = new URLSearchParams(baseParams);
+    p.delete("limit");
+    p.set("page", String(page));
+    p.set("pageSize", String(PAGE_SIZE));
+    if (debouncedQ) p.set("q", debouncedQ);
+    const s = p.toString();
+    return s ? `${base}?${s}` : base;
+  };
+
+  const {
+    data, isLoading, error,
+    fetchNextPage, hasNextPage, isFetchingNextPage,
+  } = useInfiniteQuery({
+    // Paged lists key on the debounced search so changing it restarts at page 0
+    // and the server re-searches the whole table. Un-paged lists keep the old
+    // single-fetch key (search/chip/sort stay client-side).
+    queryKey: wantsPagination
+      ? ["mobile-module-paged", base, debouncedQ]
+      : ["mobile-module", config.core ? "core" : "scm", config.endpoint],
+    queryFn: ({ pageParam }) =>
+      wantsPagination
+        ? authedFetch<unknown>(buildUrl(pageParam as number))
+        : config.core
+          ? api.get<unknown>(config.endpoint)
+          : authedFetch<unknown>(config.endpoint),
+    initialPageParam: 0,
+    getNextPageParam: (last: any, pages) => {
+      if (!wantsPagination) return undefined;
+      const total = typeof last?.total === "number" ? last.total : null;
+      if (total == null) return undefined; // un-paged / stale backend → one page
+      const loaded = pages.reduce((n, pg) => n + pickList(pg, config.listKey).length, 0);
+      return loaded < total ? pages.length : undefined;
+    },
     staleTime: 30_000,
+    placeholderData: (prev) => prev,
   });
 
-  const all = useMemo(() => pickList(data, config.listKey), [data, config.listKey]);
+  // All rows loaded so far, flat-mapped through the config's listKey extractor.
+  const all = useMemo(
+    () => (data?.pages ?? []).flatMap((pg) => pickList(pg, config.listKey)),
+    [data, config.listKey],
+  );
 
-  // Search + chip filters (real rows, client-side — mirrors the prototype's
-  // renderList: chip, then chip2, then free-text search).
+  // Did the server actually paginate? (first page carries a numeric `total`).
+  // Drives whether search is server-side and how the record count is shown.
+  const serverTotal = typeof (data?.pages?.[0] as any)?.total === "number"
+    ? ((data!.pages[0] as any).total as number)
+    : undefined;
+  const serverPaginated = wantsPagination && serverTotal != null;
+
+  // Chip / chip2 / sort stay client-side over the LOADED rows (see report note).
+  // Search: server-side for paginated lists (already applied via the `q` param),
+  // client-side otherwise — never both, so the loaded set is not re-filtered for
+  // a search the server already ran.
   const rows = useMemo(() => {
     const needle = q.trim().toLowerCase();
     const chipDef = chip !== "all" ? config.chips?.find((c) => c.key === chip) : undefined;
@@ -307,7 +402,7 @@ export function MobileModuleList({
     let out = all.filter((r) => {
       if (chipDef && !safeMatch(chipDef.match, r)) return false;
       if (chip2Def && !safeMatch(chip2Def.match, r)) return false;
-      if (needle) {
+      if (!serverPaginated && needle) {
         const hay = config.search ? safe(config.search, r) : `${safe(config.primary, r)} ${safe(config.secondary, r)}`;
         if (!hay.toLowerCase().includes(needle)) return false;
       }
@@ -316,7 +411,34 @@ export function MobileModuleList({
     const sortDef = config.sorts?.find((s) => s.key === sortKey);
     if (sortDef) out = out.slice().sort((a, b) => { try { return sortDef.cmp(a, b); } catch { return 0; } });
     return out;
-  }, [all, q, chip, chip2, sortKey, config]);
+  }, [all, q, chip, chip2, sortKey, config, serverPaginated]);
+
+  // Record-count note: the server's real total for a paginated list (when no
+  // client-only chip is narrowing it), otherwise the count actually shown.
+  const clientFilterActive = chip !== "all" || chip2 !== "all";
+  const recordCount = serverPaginated && !clientFilterActive ? (serverTotal ?? rows.length) : rows.length;
+
+  /* Infinite-scroll trigger — an IntersectionObserver watches a 1px sentinel
+     near the list bottom and pulls the next page when it nears the viewport
+     (rootMargin 600px pre-load). Observer callbacks run on the event loop, not
+     rAF, so this fires reliably even under rAF throttling (mirrors the merged,
+     prod-verified MobileSalesOrders). Guarded by hasNextPage && !isFetchingNextPage
+     so it can't double-fire; re-observing when those flip re-pulls until the
+     sentinel scrolls out or the pages are exhausted. */
+  useEffect(() => {
+    const target = sentinelRef.current;
+    if (!target || !hasNextPage) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting) && hasNextPage && !isFetchingNextPage) {
+          void fetchNextPage();
+        }
+      },
+      { root: scrollRef.current, rootMargin: "0px 0px 600px 0px" },
+    );
+    io.observe(target);
+    return () => io.disconnect();
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage, all.length]);
 
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
@@ -386,10 +508,11 @@ export function MobileModuleList({
         )}
       </header>
 
-      <div className="hz-scroll" style={{ flex: 1, overflowY: "auto", padding: 14, paddingBottom: 120 }}>
-        {/* Variable-count note pill (spec § list-note): count of shown records. */}
+      <div ref={scrollRef} className="hz-scroll" style={{ flex: 1, overflowY: "auto", padding: 14, paddingBottom: 120 }}>
+        {/* Variable-count note pill (spec § list-note): server total for a
+            paginated list, else the count of shown records. */}
         {!isLoading && !error && rows.length > 0 && (
-          <span className="list-note">{rows.length} {rows.length === 1 ? "record" : "records"}</span>
+          <span className="list-note">{recordCount} {recordCount === 1 ? "record" : "records"}</span>
         )}
 
         {/* LOADING: skeleton cards (spec § Foundations — 3 skeletons). */}
@@ -419,8 +542,23 @@ export function MobileModuleList({
             renderItem={(r) => <ListCard config={config} row={r} onOpen={onOpen} />}
           />
         )}
-        {/* EMPTY state (spec § Foundations — empty block). */}
-        {!isLoading && !error && !rows.length && (
+        {/* Infinite-scroll sentinel — the IntersectionObserver watches this 1px
+            marker and pulls the next page as it nears view. Rendered whenever
+            more pages exist (even if a client chip filtered the loaded rows to
+            zero, so the loader keeps pulling until a match appears or pages run
+            out). Absent for un-paged lists (hasNextPage is always false). */}
+        {!isLoading && !error && hasNextPage && (
+          <div ref={sentinelRef} aria-hidden style={{ height: 1 }} />
+        )}
+        {/* "Loading more…" while the next page is in flight; nothing once every
+            page is loaded. */}
+        {isFetchingNextPage && (
+          <div style={{ textAlign: "center", padding: "14px 0 2px", fontSize: 11.5, color: "var(--mut)" }}>Loading more…</div>
+        )}
+        {/* EMPTY state (spec § Foundations — empty block). Held back while more
+            pages are still loading so a client-filtered-to-zero page doesn't
+            flash "No records" before the next page arrives. */}
+        {!isLoading && !error && !rows.length && !hasNextPage && !isFetchingNextPage && (
           <div className="empty">
             <div className="empty-t">No {config.title.toLowerCase()}</div>
             <div className="empty-s">{q.trim() ? "Try a different search." : "Nothing to show yet."}</div>
