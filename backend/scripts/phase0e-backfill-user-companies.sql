@@ -8,9 +8,12 @@
 --
 -- RULE (owner-confirmed 2026-07-14):
 --   (1) every existing user belongs to Houzs (company 1)
---   (2) super_admin ALSO belongs to 2990 (company 2) = both, so owner/IT are
---       never locked out.  << expand the role list in step (2) if the owner
---       names more "both" people (e.g. specific managers). >>
+--   (2) users with role Owner / Super Admin ALSO belong to 2990 (company 2) =
+--       both, so owner/IT are never locked out. Keyed on ROLE NAME (roles.name),
+--       NOT role_id — role_ids differ across staging/prod. users.role_id -> roles.
+--       Staging (DB minnapsemfzjmtvnnvdd) applied 2026-07-14: 103 users -> Houzs,
+--       4 -> both. Prod both-list PENDING owner confirm (weisiang329/nicochoong93/
+--       hello@houzscentury.com/houzs.test.admin). << adjust IN(...) as owner says >>
 --
 -- APPLY ORDER: STAGING first (DB minnapsemfzjmtvnnvdd) -> verify the counts +
 --   that a super_admin can switch to 2990 while a sales user cannot -> then PROD
@@ -24,7 +27,8 @@ ON CONFLICT DO NOTHING;
 
 -- (2) super_admin -> also 2990 (both companies)
 INSERT INTO public.user_companies (user_id, company_id)
-SELECT id, 2 FROM public.users WHERE role = 'super_admin'
+SELECT u.id, 2 FROM public.users u JOIN public.roles r ON r.id = u.role_id
+ WHERE r.name IN ('Owner','Super Admin')
 ON CONFLICT DO NOTHING;
 
 -- verify
