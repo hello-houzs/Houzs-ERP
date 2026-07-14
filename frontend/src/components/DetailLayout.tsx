@@ -20,6 +20,11 @@ interface Props {
   description?: ReactNode;
   /** Page-level action buttons rendered top-right of the sticky chrome. */
   actions?: ReactNode;
+  /** Pin the title block (eyebrow + h1 + description) inside the sticky
+   *  chrome so page identity + actions stay visible while scrolling.
+   *  Opt-in per page (Service Case detail uses it); the default keeps
+   *  the title in normal flow. */
+  stickyTitle?: boolean;
   /** Optional fallback path for the back button when there's no history. */
   backTo?: string;
   /** Loading + error surfaced above the body grid, before main/aside split. */
@@ -54,6 +59,7 @@ export function DetailLayout({
   titleClassName,
   description,
   actions,
+  stickyTitle,
   backTo,
   loading,
   error,
@@ -83,7 +89,12 @@ export function DetailLayout({
           (Archive / Stage transition / etc.). Mobile still sees the
           breadcrumb inline so nothing gets lost below lg.
       */}
-      <div className="sticky top-14 z-20 -mx-4 -mt-6 mb-4 border-b border-border bg-bg/85 backdrop-blur-md sm:-mx-6 sm:-mt-8 lg:top-12 lg:-mx-10 lg:-mt-10 xl:-mx-12 2xl:-mx-16">
+      <div
+        className={cn(
+          "sticky top-14 z-20 -mx-4 -mt-6 mb-4 border-b border-border sm:-mx-6 sm:-mt-8 lg:top-12 lg:-mx-10 lg:-mt-10 xl:-mx-12 2xl:-mx-16",
+          stickyTitle ? "bg-bg" : "bg-bg/85 backdrop-blur-md"
+        )}
+      >
         <div className="flex h-10 w-full items-center gap-3 px-4 sm:px-6 lg:px-10 xl:px-12 2xl:px-16">
           <button
             onClick={goBack}
@@ -124,9 +135,33 @@ export function DetailLayout({
             <div className="flex shrink-0 flex-wrap items-center gap-1.5">{actions}</div>
           )}
         </div>
+        {stickyTitle && (
+          <div className="px-4 pb-3 sm:px-6 lg:px-10 xl:px-12 2xl:px-16">
+            {eyebrow && (
+              <div className="mb-1 flex items-center gap-2">
+                <span className="h-px w-5 bg-accent" />
+                <span className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-accent">
+                  {eyebrow}
+                </span>
+              </div>
+            )}
+            <h1 className={cn(
+              titleClassName ||
+                "font-serif text-[22px] font-semibold leading-tight tracking-tight text-ink sm:text-[24px] lg:text-[28px]"
+            )}>
+              {title}
+            </h1>
+            {description && (
+              <p className="mt-1 max-w-3xl text-[12px] leading-snug text-ink-secondary">
+                {description}
+              </p>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* ── Title block ──────────────────────────────────────────────── */}
+      {/* ── Title block (normal flow unless stickyTitle pinned it above) ── */}
+      {!stickyTitle && (
       <header className="mb-4">
         {eyebrow && (
           <div className="mb-1.5 flex items-center gap-2">
@@ -148,6 +183,7 @@ export function DetailLayout({
           </p>
         )}
       </header>
+      )}
 
       {loading && (
         <div className="rounded-md border border-border bg-surface px-3 py-3 text-[12px] text-ink-muted">
