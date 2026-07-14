@@ -308,9 +308,21 @@ app.get("/", requirePermissionOrSalesDirector("users.read"), async (c) => {
     .where(conds.length ? and(...conds) : undefined)
     .orderBy(desc(users.created_at));
 
+  // array_agg() can arrive as a JS array OR a Postgres array-literal string
+  // ("{1,2}") depending on the driver path — coerce both (empty on null) so the
+  // Company column + department "+N" never silently blank out.
+  const pgIntArray = (raw: unknown): number[] =>
+    (Array.isArray(raw)
+      ? raw
+      : typeof raw === "string"
+        ? raw.replace(/^\{|\}$/g, "").split(",")
+        : []
+    )
+      .map((x) => Number(x))
+      .filter((n) => Number.isFinite(n));
   const out = rows.map((r) => {
     // Primary first, then any extra departments sorted — drives the "+N" UI.
-    const arr = Array.isArray(r.department_ids_arr) ? r.department_ids_arr : [];
+    const arr = pgIntArray(r.department_ids_arr);
     const extra = arr
       .map((d) => Number(d))
       .filter((d) => Number.isFinite(d) && d !== r.department_id)
@@ -318,7 +330,7 @@ app.get("/", requirePermissionOrSalesDirector("users.read"), async (c) => {
     const department_ids =
       r.department_id != null ? [r.department_id, ...extra] : extra;
     // Company grants — normalise to a sorted number[] for the Company column.
-    const companyArr = Array.isArray(r.company_ids_arr) ? r.company_ids_arr : [];
+    const companyArr = pgIntArray(r.company_ids_arr);
     const company_ids = companyArr
       .map((x) => Number(x))
       .filter((n) => Number.isFinite(n))
