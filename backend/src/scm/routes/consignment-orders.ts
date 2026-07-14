@@ -1967,7 +1967,7 @@ consignmentOrders.delete('/:docNo/payments/:id', async (c) => {
 // ── Debtor lookup — autocomplete from prior consignment orders ────────
 consignmentOrders.get('/debtors/search', async (c) => {
   const sb = c.get('supabase'); const q = c.req.query('q') ?? '';
-  let query = sb.from('consignment_sales_orders').select('debtor_code, debtor_name, phone, address1, address2, address3, address4').order('updated_at', { ascending: false }).limit(200);
+  let query = scopeToCompany(sb.from('consignment_sales_orders').select('debtor_code, debtor_name, phone, address1, address2, address3, address4'), c).order('updated_at', { ascending: false }).limit(200);
   { const s = escapeForOr(q); if (s) query = query.or(`debtor_name.ilike.%${s}%,debtor_code.ilike.%${s}%`); }
   const { data, error } = await query;
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);

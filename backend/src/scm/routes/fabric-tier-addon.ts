@@ -5,7 +5,7 @@ import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { supabaseAuth } from '../middleware/auth';
 import { hasHouzsPerm } from '../lib/houzs-perms';
-import { activeCompanyId } from '../lib/companyScope';
+import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 type AppContext = Context<{ Bindings: Env; Variables: Variables }>;
@@ -104,9 +104,12 @@ const requireFabricEditor = async (c: AppContext) => {
 // GET — list every override row with its Model's name + code + category.
 fabricTierAddonConfig.get('/special', async (c) => {
   const supabase = c.get('supabase');
-  const { data, error } = await supabase
-    .from('model_fabric_tier_overrides')
-    .select('model_id, tier2_delta, tier3_delta, updated_at, product_models(name, model_code, category)');
+  const { data, error } = await scopeToCompany(
+    supabase
+      .from('model_fabric_tier_overrides')
+      .select('model_id, tier2_delta, tier3_delta, updated_at, product_models(name, model_code, category)'),
+    c,
+  );
   if (error) return c.json({ error: 'fetch_failed', reason: error.message }, 500);
   const rows = (data ?? []).map((r) => {
     const pm = (r as { product_models?: { name?: string; model_code?: string; category?: string } | null }).product_models ?? null;
@@ -181,9 +184,12 @@ const compartmentSpecialSchema = z.object({
 // GET — list every compartment override row.
 fabricTierAddonConfig.get('/compartment-special', async (c) => {
   const supabase = c.get('supabase');
-  const { data, error } = await supabase
-    .from('compartment_fabric_tier_overrides')
-    .select('compartment_id, tier2_delta, tier3_delta, updated_at');
+  const { data, error } = await scopeToCompany(
+    supabase
+      .from('compartment_fabric_tier_overrides')
+      .select('compartment_id, tier2_delta, tier3_delta, updated_at'),
+    c,
+  );
   if (error) return c.json({ error: 'fetch_failed', reason: error.message }, 500);
   const rows = (data ?? []).map((r) => ({
     compartmentId: (r as { compartment_id?: string; compartmentId?: string }).compartment_id ?? (r as { compartmentId?: string }).compartmentId ?? '',

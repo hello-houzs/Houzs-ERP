@@ -209,13 +209,16 @@ purchaseInvoices.get('/outstanding-grn-items', async (c) => {
   const sb = c.get('supabase');
   // Pull every POSTED GRN with its supplier + parent PO so we can group
   // and present in the picker.
-  const { data: grnHeaders, error: hErr } = await sb
-    .from('grns')
-    .select(`
+  const { data: grnHeaders, error: hErr } = await scopeToCompany(
+    sb
+      .from('grns')
+      .select(`
       id, grn_number, received_at, supplier_id, purchase_order_id,
       supplier:suppliers ( code, name ),
       purchase_order:purchase_orders ( po_number )
-    `)
+    `),
+    c,
+  )
     .eq('status', 'POSTED')
     .order('received_at', { ascending: false })
     .limit(500);

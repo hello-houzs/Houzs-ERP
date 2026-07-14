@@ -43,9 +43,10 @@ inventory.use('*', supabaseAuth);
 inventory.get('/warehouses', async (c) => {
   const sb = c.get('supabase');
   const includeInactive = c.req.query('includeInactive') === 'true';
-  let q = sb.from('warehouses')
-    .select('id, code, name, location, is_active, is_default')
-    .order('code');
+  let q = scopeToCompany(
+    sb.from('warehouses').select('id, code, name, location, is_active, is_default'),
+    c,
+  ).order('code');
   if (!includeInactive) q = q.eq('is_active', true);
   const { data, error } = await q;
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
@@ -296,7 +297,8 @@ inventory.get('/breakdown/:productCode', async (c) => {
 
   const { data: bal, error: balErr } = await sb.from('inventory_balances')
     .select('warehouse_id, variant_key, qty, last_movement_at')
-    .eq('product_code', productCode);
+    .eq('product_code', productCode)
+    .eq('company_id', activeCompanyId(c));
   if (balErr) {
     if (/relation .* does not exist/i.test(balErr.message) || /column .* does not exist/i.test(balErr.message)) {
       return c.json({ error: 'migration_pending', reason: 'Run migration 0095 against Supabase.' }, 500);

@@ -31,6 +31,7 @@ import { createClient } from '@supabase/supabase-js';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { todayMyt } from '../lib/my-time';
+import { scopeToCompany } from '../lib/companyScope';
 
 export const sofaCompartmentPhotos = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -100,9 +101,10 @@ sofaCompartmentPhotos.get('/:code/photo/:key', async (c) => {
   });
 
   // Look up the current effective master-scope config row.
-  const { data: row } = await sb
-    .from('maintenance_config_history')
-    .select('id, config')
+  const { data: row } = await scopeToCompany(
+    sb.from('maintenance_config_history').select('id, config'),
+    c,
+  )
     .eq('scope', 'master')
     .lte('effective_from', todayMyt())
     .order('effective_from', { ascending: false })
@@ -149,9 +151,10 @@ sofaCompartmentPhotos.post('/:code/photo', async (c) => {
 
   // Load the current effective master-scope row.
   const today = todayMyt();
-  const { data: row, error: rowErr } = await supabase
-    .from('maintenance_config_history')
-    .select('id, config')
+  const { data: row, error: rowErr } = await scopeToCompany(
+    supabase.from('maintenance_config_history').select('id, config'),
+    c,
+  )
     .eq('scope', 'master')
     .lte('effective_from', today)
     .order('effective_from', { ascending: false })
@@ -239,9 +242,10 @@ sofaCompartmentPhotos.delete('/:code/photo', async (c) => {
   }
 
   const today = todayMyt();
-  const { data: row, error: rowErr } = await supabase
-    .from('maintenance_config_history')
-    .select('id, config')
+  const { data: row, error: rowErr } = await scopeToCompany(
+    supabase.from('maintenance_config_history').select('id, config'),
+    c,
+  )
     .eq('scope', 'master')
     .lte('effective_from', today)
     .order('effective_from', { ascending: false })
