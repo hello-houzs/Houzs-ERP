@@ -1283,9 +1283,17 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
     }
   }
   if (f.search) {
-    where.push("(p.code LIKE ? OR p.name LIKE ? OR p.venue LIKE ? OR p.organizer LIKE ?)");
+    // Restore mobile client-search coverage lost when the PMS list moved to
+    // server pagination: brand + PIC name were previously searchable
+    // client-side. `brand` is a plain column; PIC name resolves via a
+    // correlated subquery to users (mirroring the `pic.name` display join at
+    // the SELECT) so it also works inside the COUNT(*) query, which does NOT
+    // join users. Additive — keeps code/name/venue/organizer.
+    where.push(
+      "(p.code LIKE ? OR p.name LIKE ? OR p.venue LIKE ? OR p.organizer LIKE ? OR p.brand LIKE ? OR (SELECT u.name FROM users u WHERE u.id = p.pic_id) LIKE ?)"
+    );
     const like = `%${f.search}%`;
-    binds.push(like, like, like, like);
+    binds.push(like, like, like, like, like, like);
   }
   // Row-level ACL for a scoped rep (pic_scope present ⇒ getProjectScope was
   // non-null, i.e. a scope_to_pic sales/CS rep). Mirrors BOTH the
