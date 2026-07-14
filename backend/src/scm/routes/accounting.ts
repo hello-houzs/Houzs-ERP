@@ -25,7 +25,7 @@ import { postSiRevenue } from '../lib/post-si-revenue';
 import { paginateAll } from '../lib/paginate-all';
 import { safeRate, toMyrSen } from '../lib/fx';
 import { todayMyt } from '../lib/my-time';
-import { scopeToCompany, activeCompanyId } from '../lib/companyScope';
+import { scopeToCompany, activeCompanyId, companyDocPrefix } from '../lib/companyScope';
 
 export const accounting = new Hono<{ Bindings: Env; Variables: Variables }>();
 accounting.use('*', supabaseAuth);
@@ -40,8 +40,13 @@ const padMmDd = (d: Date): string => {
   return `${yy}${m}`;
 };
 
-const nextJeNo = async (sb: any, date: Date): Promise<string> => {
-  const prefix = `JE-${padMmDd(date)}`;
+const nextJeNo = async (sb: any, date: Date, c: any): Promise<string> => {
+  // Per-company sequence: 2990 JEs get the "2990-" prefix (Houzs bare), same
+  // convention as every other doc minter (companyDocPrefix). The prefix in the
+  // LIKE pattern isolates each company's running number — "JE-2607-%" never
+  // matches "2990-JE-2607-…" and vice-versa — so the two companies' accounting
+  // vouchers can't collide or share a sequence.
+  const prefix = `${companyDocPrefix(c)}JE-${padMmDd(date)}`;
   const { data } = await sb
     .from('journal_entries')
     .select('je_no')
@@ -69,10 +74,13 @@ type JeLineIn = {
 
 accounting.get('/accounts', async (c) => {
   const sb = c.get('supabase');
-  const { data, error } = await sb
+  // Chart of Accounts is per-company (scm.accounts.company_id NOT NULL, mig 0083)
+  // — scope so one company can't see the other's account codes/names.
+  let q = sb
     .from('accounts')
-    .select('account_code, account_name, account_type, parent_code, is_active')
-    .order('account_code');
+    .select('account_code, account_name, account_type, parent_code, is_active');
+  q = scopeToCompany(q, c);
+  const { data, error } = await q.order('account_code');
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
   return c.json({ accounts: data ?? [] });
 });
@@ -145,7 +153,7 @@ accounting.post('/journal-entries', async (c) => {
   if (dr === 0) return c.json({ error: 'zero_amount' }, 400);
 
   const sb = c.get('supabase');
-  const jeNo = await nextJeNo(sb, new Date(entryDate));
+  const jeNo = await nextJeNo(sb, new Date(entryDate), c);
 
   const jeCompanyId = activeCompanyId(c);
   const { data: je, error: jeErr } = await sb
@@ -311,7 +319,7 @@ export async function postPiAccounting(sb: any, invoiceNumber: string): Promise<
     },
   ];
 
-  const jeNo = await nextJeNo(sb, new Date(pi.invoice_date));
+  const jeNo = await nextJeNo(sb, new Date(pi.invoice_date), c);
   // Multi-company (mig 0061): the JE + its lines belong to the PI's company.
   const companyId = pi.company_id ?? null;
   const { data: je, error: jeErr } = await sb
@@ -453,7 +461,7 @@ export async function reversePiAccounting(
 
   // Multi-company (mig 0061): a reversal belongs to the same company as the JE it undoes.
   const companyId = orig.company_id ?? null;
-  const revJeNo = await nextJeNo(sb, new Date(orig.entry_date));
+  const revJeNo = await nextJeNo(sb, new Date(orig.entry_date), c);
   const { data: revJe, error: revErr } = await sb
     .from('journal_entries')
     .insert({

@@ -435,6 +435,7 @@ inventory.get('/movements', async (c) => {
   if (docType) q = q.eq('source_doc_type', docType);
   if (dateFrom) q = q.gte('created_at', dateFrom);
   if (dateTo) q = q.lte('created_at', `${dateTo}T23:59:59Z`);
+  q = scopeToCompany(q, c); // stock ledger is per-company — don't leak the other company's movements.
 
   const { data, error } = await q;
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
@@ -451,6 +452,7 @@ inventory.get('/lots/:productCode', async (c) => {
   const tbl = includeClosed ? 'inventory_lots' : 'v_inventory_lots_open';
   let q = sb.from(tbl).select('*').eq('product_code', productCode);
   if (warehouseId) q = q.eq('warehouse_id', warehouseId);
+  q = scopeToCompany(q, c); // FIFO lots are per-company (both table + view carry company_id).
   const { data, error } = await q.order('received_at', { ascending: true });
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
   return c.json({ lots: data ?? [] });

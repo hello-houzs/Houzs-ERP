@@ -1753,6 +1753,7 @@ deliveryOrdersMfg.get('/', async (c) => {
   if (!paginate) {
     /* --- LEGACY PATH (unchanged) --- */
     let q = sb.from('delivery_orders').select(HEADER).order('do_date', { ascending: false }).limit(500);
+    q = scopeToCompany(q, c); // DO is a per-company document — never leak the other company's DOs.
     if (scopeIds) q = q.in('salesperson_id', scopeIds);
     const status = c.req.query('status'); if (status) q = q.eq('status', status);
     const res = await q;
@@ -1772,6 +1773,7 @@ deliveryOrdersMfg.get('/', async (c) => {
     let q = sb.from('delivery_orders').select(HEADER, { count: 'exact' }).order(sortCol, { ascending: sortAsc });
     /* unique tiebreaker so range paging can't skip/repeat rows sharing the sort key */
     if (sortCol !== 'do_number') q = q.order('do_number', { ascending: sortAsc });
+    q = scopeToCompany(q, c); // per-company document — scope the paginated list too.
     if (scopeIds) q = q.in('salesperson_id', scopeIds);
     /* Resolve the incoming `status`: a known bucket key → all its raw statuses;
        'all'/empty → no filter; otherwise treat it as a raw DB status. */
@@ -1797,10 +1799,10 @@ deliveryOrdersMfg.get('/', async (c) => {
 
     /* Status counts mirror the FE filter-pill buckets (open / in_transit /
        delivered / cancelled) over the SAME scope filter but WITHOUT status /
-       search / pagination. DO list has NO company scope (byte-identical to
-       legacy), so neither does this. */
+       search / pagination. Scoped to the active company like the list, so the
+       tab counts can't leak the other company's DO totals. */
     const countBase = () => {
-      let cq = sb.from('delivery_orders').select('*', { count: 'exact', head: true });
+      let cq = scopeToCompany(sb.from('delivery_orders').select('*', { count: 'exact', head: true }), c);
       if (scopeIds) cq = cq.in('salesperson_id', scopeIds);
       return cq;
     };
