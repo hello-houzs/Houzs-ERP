@@ -8,6 +8,12 @@ Severity tags: 🔴 critical/high · 🟠 medium · 🟢 low.
 
 ## 2026-07-14 — Multi-company + performance campaign
 
+### 🔴 "Forbidden: missing …" toast storm reappeared for restricted (Sales) users
+- **Symptom:** A restricted user (e.g. a Sales account) opening certain pages (a PMS/project Exhibition detail) saw a STACK of red toasts — "Forbidden: needs view access to scm.transportation.drivers", "needs partial access to sales", "missing users.read", "missing projects.write", plain "Forbidden", etc. — one per background query they lack access to. This is the "off, not hide" storm the owner explicitly wanted gone.
+- **Cause:** `api/client.ts` `handleResponse` fired the global `forbiddenListeners` (which `useToast` turns into a toast) on EVERY 403 — including background GET reads. Individual pages that hadn't gated their queries' `enabled:` for a restricted role each 403'd on mount → a toast each. The per-query gating was incomplete for some pages, and there was no global safety net.
+- **Fix:** Thread the request `method` into `handleResponse` and fire the forbidden toast **only for user-initiated writes** (POST/PATCH/PUT/DELETE). A 403 on a background GET read is now silent (dev-only `console.warn` pointing at the query to gate). This kills the storm system-wide + permanently, regardless of which page leaks a read. The deeper "off, not hide" fix (gate each leaked query's `enabled:` so it never fires) continues per-page on top of this net.
+- **Ref:** `fix/forbidden-toast-storm`, 2026-07-14.
+
 ### 🟢 Landed-freight lost when the last goods line has qty=0
 - **Symptom:** On a GRN whose LAST goods line (in input order) has qty=0 while a freight/charge pool exists, the whole rounding remainder was recorded as "allocated" to that line but folded into a per-unit charge of 0 — so the freight landed nowhere and the received lots carried less than the true landed cost. Edge-only (a real received goods line normally has qty>0).
 - **Cause:** `landed-allocation.ts` gave the remainder to `base.length - 1` (the last line unconditionally); `perUnitCharge = qty>0 ? round(alloc/qty) : 0` then dropped it when that line's qty was 0.

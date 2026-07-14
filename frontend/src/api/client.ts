@@ -199,7 +199,7 @@ const isColdPool503 = (e: HttpError) =>
   e.status === 503 &&
   /briefly unavailable|warming up|try again in a moment/i.test(String(e.message || ""));
 
-async function handleResponse<T>(res: Response, path: string): Promise<T> {
+async function handleResponse<T>(res: Response, path: string, method = "GET"): Promise<T> {
   if (res.status === 401) {
     // Don't fire on the auth probe endpoints themselves — they're allowed
     // to return 401 without booting the user.
@@ -220,7 +220,17 @@ async function handleResponse<T>(res: Response, path: string): Promise<T> {
     } catch {}
     if (res.status === 403) {
       const msg = extractErrorMessage(body) || "You don't have permission to do that";
-      for (const fn of forbiddenListeners) fn(msg);
+      /* "Off, not hide": a 403 on a background GET read is a query the UI
+         shouldn't have fired for this user — it must NEVER surface as a toast
+         (that was the "Forbidden: missing …" storm). Only a user-initiated
+         write (POST/PATCH/PUT/DELETE) that gets denied shows the toast. The
+         proper fix for a leaked read is to gate that query's `enabled:` so it
+         never fires; this global guard is the belt-and-braces safety net. */
+      if (method !== "GET") {
+        for (const fn of forbiddenListeners) fn(msg);
+      } else if (import.meta.env?.DEV) {
+        console.warn(`[403 suppressed] GET ${path} — gate this query's enabled: ${msg}`);
+      }
     }
     throw new HttpError(res.status, body || res.statusText);
   }
@@ -256,7 +266,7 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
       });
       const ms = Math.round(performance.now() - startedAt);
       if (ms >= SLOW_FETCH_MS) console.warn(`[perf] slow ${method} ${path} — ${ms}ms`);
-      return await handleResponse<T>(res, path);
+      return await handleResponse<T>(res, path, method);
     } catch (e) {
       // A 503 is the server's "transient — try again" contract; retry it for
       // idempotent GETs (within the GET budget) so a cold-start / connection
