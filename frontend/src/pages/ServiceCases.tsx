@@ -1359,8 +1359,35 @@ function CasesCalendarView({
     ...filters,
     exclude_stage: filters.stage === "completed" ? filters.exclude_stage : "completed",
   };
+
+  // Bound the fetch to the visible 6×7 month grid (Mon-first, 42 cells)
+  // instead of fetch-all: pass its span as from/to on the same date column
+  // the grid buckets by (reported → complained_date, deadline → deadline_at).
+  // The window covers the adjacent-month days that spill into the grid, so
+  // no rendered cell is ever under-populated. Recomputing these from `anchor`
+  // + `basis` (and listing them in the query deps) refetches on month nav.
+  const gridFirst = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
+  const gridLead = (gridFirst.getDay() + 6) % 7;
+  const winStart = new Date(gridFirst);
+  winStart.setDate(gridFirst.getDate() - gridLead);
+  const winEnd = new Date(winStart);
+  winEnd.setDate(winStart.getDate() + 41);
+  const fromISO = isoLocal(winStart);
+  const toISO = isoLocal(winEnd);
+  const dateField = basis === "deadline" ? "deadline" : "reported";
+
   const q = useQuery<Paginated<AssrCase>>(
-    () => api.get(`/api/assr${buildQuery({ ...effective, page: 1, per_page: 500 })}`),
+    () =>
+      api.get(
+        `/api/assr${buildQuery({
+          ...effective,
+          from: fromISO,
+          to: toISO,
+          date_field: dateField,
+          page: 1,
+          per_page: 500,
+        })}`
+      ),
     [
       effective.stage,
       effective.search,
@@ -1368,6 +1395,9 @@ function CasesCalendarView({
       effective.exclude_stage,
       effective.assigned_to,
       effective.creditor_code,
+      fromISO,
+      toISO,
+      dateField,
     ]
   );
   const cases = q.data?.data ?? [];

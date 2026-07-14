@@ -629,6 +629,11 @@ app.get("/", requireServiceCaseAccess(), async (c) => {
     per_page: parseInt(c.req.query("per_page") || "50", 10),
     include_archived: c.req.query("include_archived") === "1",
     exclude_stage: c.req.query("exclude_stage") || undefined,
+    // Calendar month-window bound (perf/servicecase-board-calendar-bound).
+    // Additive: absent from/to leaves the query unbounded (List view et al).
+    from: c.req.query("from") || undefined,
+    to: c.req.query("to") || undefined,
+    date_field: c.req.query("date_field") === "deadline" ? "deadline" : "reported",
     sort_by: c.req.query("sort_by") || undefined,
     sort_dir: (c.req.query("sort_dir") || "").toLowerCase() === "asc" ? "asc" : "desc",
   });
