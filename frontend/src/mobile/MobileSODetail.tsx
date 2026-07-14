@@ -12,6 +12,7 @@ import {
   type SoAuditFieldChange,
 } from "../vendor/scm/lib/sales-order-queries";
 import { buildVariantSummary } from "../vendor/shared/variant-summary";
+import { useSoDropdownOptions, optionsOrFallback, FALLBACK_OPTIONS } from "../vendor/scm/lib/so-dropdown-options-queries";
 import { PaymentInfoBlock, type RecordedPaymentLike } from "./PaymentInfoBlock";
 import "./mobile.css";
 
@@ -790,9 +791,12 @@ type PayMethodLabel = (typeof PAY_METHODS)[number];
 const PAY_METHOD_CODE: Record<string, "cash" | "transfer" | "merchant" | "installment"> = {
   Cash: "cash", Online: "transfer", Merchant: "merchant", Installment: "installment",
 };
-const BANK_OPTS = ["Maybank", "CIMB", "Public Bank", "HSBC", "RHB"];
-const PLAN_OPTS = ["One Shot", "6 months", "12 months", "24 months", "36 months"];
-const ONLINE_OPTS = ["Bank Transfer", "TNG eWallet", "DuitNow", "Cheque"];
+// Offline fallback + parsing seed only; the rendered dropdowns below read the
+// LIVE maintenance catalog via useSoDropdownOptions. Single-sourced from
+// FALLBACK_OPTIONS so it can't drift ("Maybank" -> "MBB", "One Shot" -> "One-off").
+const BANK_OPTS = FALLBACK_OPTIONS.payment_merchant.map((o) => o.value);
+const PLAN_OPTS = FALLBACK_OPTIONS.installment_plan.map((o) => o.value);
+const ONLINE_OPTS = FALLBACK_OPTIONS.online_type.map((o) => o.value);
 /* 'One Shot' → null (no installment term); 'N months' → N. Same as MobileNewSO. */
 const planToMonths = (label: string): number | null => {
   const m = /^(\d+)\s*month/i.exec(String(label).trim());
@@ -847,6 +851,11 @@ function AddPaymentSheet({
   const [bank, setBank] = useState(editPayment?.merchant_provider || BANK_OPTS[0]);
   const [plan, setPlan] = useState(() => (editPayment ? monthsToPlan(editPayment.installment_months) : PLAN_OPTS[0]));
   const [online, setOnline] = useState(editPayment?.online_type || ONLINE_OPTS[0]);
+  /* Live payment dropdowns from the maintenance catalog (same API as desktop) —
+     the module arrays above are only the offline fallback / parsing seed. */
+  const bankOpts = optionsOrFallback("payment_merchant", useSoDropdownOptions("payment_merchant").data);
+  const planOpts = optionsOrFallback("installment_plan", useSoDropdownOptions("installment_plan").data);
+  const onlineOpts = optionsOrFallback("online_type", useSoDropdownOptions("online_type").data);
   const [slipName, setSlipName] = useState("");
   const [slipSession, setSlipSession] = useState("");
   const [slipPhase, setSlipPhase] = useState<"" | "uploading" | "done" | "error">("");
@@ -942,24 +951,24 @@ function AddPaymentSheet({
               <div style={{ display: "flex", gap: 9 }}>
                 <div className="fld" style={{ flex: 1 }}>
                   <span className="fld-l">Bank</span>
-                  <select className="fld-i" value={bank} onChange={(e) => setBank(e.target.value)}>{BANK_OPTS.map((o) => <option key={o} value={o}>{o}</option>)}</select>
+                  <select className="fld-i" value={bank} onChange={(e) => setBank(e.target.value)}>{bankOpts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select>
                 </div>
                 <div className="fld" style={{ flex: 1 }}>
                   <span className="fld-l">Plan</span>
-                  <select className="fld-i" value={plan} onChange={(e) => setPlan(e.target.value)}>{PLAN_OPTS.map((o) => <option key={o} value={o}>{o}</option>)}</select>
+                  <select className="fld-i" value={plan} onChange={(e) => setPlan(e.target.value)}>{planOpts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select>
                 </div>
               </div>
             )}
             {method === "Installment" && (
               <div className="fld">
                 <span className="fld-l">Installment plan</span>
-                <select className="fld-i" value={plan} onChange={(e) => setPlan(e.target.value)}>{PLAN_OPTS.map((o) => <option key={o} value={o}>{o}</option>)}</select>
+                <select className="fld-i" value={plan} onChange={(e) => setPlan(e.target.value)}>{planOpts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select>
               </div>
             )}
             {method === "Online" && (
               <div className="fld">
                 <span className="fld-l">Sub-type</span>
-                <select className="fld-i" value={online} onChange={(e) => setOnline(e.target.value)}>{ONLINE_OPTS.map((o) => <option key={o} value={o}>{o}</option>)}</select>
+                <select className="fld-i" value={online} onChange={(e) => setOnline(e.target.value)}>{onlineOpts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select>
               </div>
             )}
             <div style={{ display: "flex", gap: 9 }}>
