@@ -272,3 +272,49 @@ export const useFabricColoursActive = () =>
       return res.colours ?? [];
     },
   });
+
+/* HOUZS SCALING (owner #1 pain 2026-07-14) — SERVER typeahead for the SoLineCard
+   Fabrics picker. The old useFabricColoursActive() pulled EVERY active colour on
+   every line card and rendered them all as <option>s. This hits the SAME GET
+   /fabric-colours with an opt-in `?q=` (ilike over the code + label, capped at
+   50 server-side), keyed on the query, and only fires when >= 2 chars are typed
+   (mirrors the SKU picker's useMfgProducts gate in SoLineCard). Selection shape
+   is unchanged — the combobox hands back a full FabricColourRow, identical to a
+   row from useFabricColoursActive(). */
+export const useFabricColoursSearch = (
+  q: string,
+  opts?: { enabled?: boolean },
+) => {
+  const trimmed = q.trim();
+  return useQuery({
+    queryKey: ['fabric-colours', 'search', trimmed],
+    staleTime: 60_000,
+    enabled: (opts?.enabled ?? true) && trimmed.length >= 2,
+    queryFn: async (): Promise<FabricColourRow[]> => {
+      const res = await authedFetch<{ colours: FabricColourRow[] }>(
+        `/fabric-colours?q=${encodeURIComponent(trimmed)}&limit=50`,
+      );
+      return res.colours ?? [];
+    },
+  });
+};
+
+/* Resolve a single colour by its code (colour_id) — used to REHYDRATE a saved
+   SO line's fabric that isn't in the current typeahead result set, so the
+   combobox can render its full object (label/swatch/series) without pulling the
+   whole library. Returns the first exact-code match. Disabled when no code. */
+export const useFabricColourByCode = (code: string | null | undefined) => {
+  const c = (code ?? '').trim();
+  return useQuery({
+    queryKey: ['fabric-colours', 'by-code', c],
+    staleTime: 60_000,
+    enabled: c.length > 0,
+    queryFn: async (): Promise<FabricColourRow | null> => {
+      const res = await authedFetch<{ colours: FabricColourRow[] }>(
+        `/fabric-colours?q=${encodeURIComponent(c)}&limit=50`,
+      );
+      const rows = res.colours ?? [];
+      return rows.find((r) => r.colourId === c) ?? null;
+    },
+  });
+};
