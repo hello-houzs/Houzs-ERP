@@ -22,6 +22,8 @@ import {
 } from "../vendor/scm/lib/localities-queries";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
+import { usePrompt } from "../vendor/scm/components/PromptDialog";
+import { useCreateAmendment, type CreateAmendmentLine } from "../vendor/scm/lib/so-amendment-queries";
 import type { ExtractedSlip } from "../vendor/scm/components/ScanOrderModal";
 import type { MobileScanPrefill } from "./MobileScan";
 import { MobileSkuPicker, type PickedSku } from "./MobileSkuPicker";
@@ -180,7 +182,23 @@ type SoItem = {
   photoUrls?: string[] | null;
   cancelled: boolean | null;
 };
-type DetailResp = { salesOrder: SoHeader & { has_children?: boolean | null; status?: string | null }; items: SoItem[] };
+type DetailResp = {
+  salesOrder: SoHeader & {
+    has_children?: boolean | null;
+    status?: string | null;
+    /* SO-amendment gate flags (Phase 1-C, read-only) — the GET /:docNo endpoint
+       derives these (backend mfg-sales-orders.ts). amendment_eligible = the SO
+       is processing-locked (already PO'd to the supplier) but not hard-locked by
+       a DO/SI and not terminal, so a line change must go out as an AMENDMENT
+       rather than a direct edit. open_amendment is the light summary of any
+       in-flight amendment (status NOT IN SENT/REJECTED). Mirrors the desktop
+       SalesOrderDetail header flags. */
+    amendment_eligible?: boolean | null;
+    has_open_amendment?: boolean | null;
+    open_amendment?: { id: string; status: string; amendment_no: string } | null;
+  };
+  items: SoItem[];
+};
 type SoPayment = {
   id: string;
   paid_at: string | null;
@@ -469,6 +487,11 @@ export function MobileNewSO({
   const qc = useQueryClient();
   const notify = useNotify();
   const confirm = useConfirm();
+  const prompt = usePrompt();
+  /* SO-amendment CREATE (Phase 1-C) — the SAME vendored mutation the desktop
+     SalesOrderDetail.submitAmendment uses (POST /:docNo/amendments). Reused
+     verbatim so the mobile amendment-raise carries no re-implemented API logic. */
+  const createAmendment = useCreateAmendment();
   const staffQ = useStaff();
   const { staff: authStaff } = useAuth();
   /* FIX A — the app-level Houzs auth exposes the permission gate + the signed-in
@@ -592,6 +615,13 @@ export function MobileNewSO({
   const [origItems, setOrigItems] = useState<SoItem[]>([]);
   const [existingPays, setExistingPays] = useState<SoPayment[]>([]);
   const [lineLocked, setLineLocked] = useState(false);
+  /* SO-amendment flags captured from the detail GET (Phase 1-C). When
+     `amendEligible` the SO is processing-locked but still editable via the
+     amendment flow — the edit view stays usable and Save submits an AMENDMENT
+     instead of writing the lines directly (desktop SalesOrderDetail parity).
+     `hasOpenAmend` blocks raising a SECOND amendment while one is in flight. */
+  const [amendEligible, setAmendEligible] = useState(false);
+  const [hasOpenAmend, setHasOpenAmend] = useState(false);
   /* FIX D2/D3 — the PERSISTED processing date (internal_expected_dd) drives the
      processing-date lock. Kept separate from the editable procDate form value so
      the lock reflects what the backend has, not an in-flight edit. */
@@ -681,6 +711,11 @@ export function MobileNewSO({
         const st = (detail.salesOrder.status ?? "").toUpperCase();
         const LOCKED = ["SHIPPED", "DELIVERED", "INVOICED", "CLOSED", "CANCELLED"];
         setLineLocked(LOCKED.includes(st) || Boolean(detail.salesOrder.has_children));
+        /* Amendment gate (server-derived) — the same flags the desktop SO Detail
+           routes on. When amendment_eligible the SO is processing-locked but the
+           edit view stays usable; Save then submits an amendment (see save()). */
+        setAmendEligible(Boolean(detail.salesOrder.amendment_eligible));
+        setHasOpenAmend(Boolean(detail.salesOrder.has_open_amendment));
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : "Couldn't load this order.");
       } finally {
@@ -825,9 +860,22 @@ export function MobileNewSO({
     () => isEdit && !!origProcDate && /^\d{4}-\d{2}-\d{2}$/.test(origProcDate) && origProcDate < todayMY,
     [isEdit, origProcDate, todayMY],
   );
+  /* AMENDMENT MODE (desktop SalesOrderDetail parity) — the SO is
+     processing-locked (already PO'd) but the server flags it amendment_eligible
+     (not hard-locked by a DO/SI, not terminal) AND no amendment is already open.
+     In this mode the LINE EDITOR STAYS ENABLED even though procLocked, but Save
+     packages the changes as an amendment request (POST /:docNo/amendments) that
+     the coordinator + supplier confirm before the order is revised — a direct
+     line write on a PO'd SO would break the supplier copy, which is exactly what
+     this flow prevents. Uses the server flag; falls back to false when absent so
+     older responses keep the old block-everything behaviour. */
+  const amendmentMode = amendEligible && !lineLocked && !hasOpenAmend;
   /* Line editing is blocked when the SO is shipped / has downstream docs
-     (lineLocked) OR when the processing date has passed (procLocked). */
-  const lineEditingBlocked = lineLocked || procLocked;
+     (lineLocked), OR when the processing date has passed (procLocked) UNLESS the
+     order is in amendment mode (then the editor stays open and Save raises an
+     amendment). A procLocked SO that already has an open amendment stays
+     read-only — a second amendment can't be raised while one is in flight. */
+  const lineEditingBlocked = lineLocked || (procLocked && !amendmentMode);
   /* Identity address columns (State/City/Postcode) freeze on the processing
      lock (State drives each line's warehouse → the supplier PO). */
   const addressIdentityLocked = procLocked;
@@ -1228,6 +1276,78 @@ export function MobileNewSO({
     return failed;
   }
 
+  /* ── Amendment line builder (Phase 1-C) ──────────────────────────────────
+     Verbatim port of the desktop SalesOrderDetail.buildAmendmentLines logic,
+     adapted to the mobile LineItem shape: diff the in-flight `lines` against the
+     pristine `origItems` seed and package the changes as CreateAmendmentLine[]
+     for POST /:docNo/amendments (via useCreateAmendment). No pricing is computed
+     here — the server recomputes on approve; we only carry the raw new values +
+     an old_snapshot for the before/after diff. Classification mirrors desktop:
+       • existing line, only qty moved              → QTY
+       • existing line, code/variants/price moved   → SPEC
+       • orig line whose itemId dropped from lines  → REMOVE
+       • new line (no itemId) with a product picked → ADD */
+  const buildAmendmentLines = (): CreateAmendmentLine[] => {
+    const out: CreateAmendmentLine[] = [];
+    const snapById = new Map(origItems.map((s) => [s.id, s]));
+    const liveIds = new Set(lines.map((l) => l.itemId).filter(Boolean));
+    // Existing lines — SPEC / QTY changes.
+    for (const l of lines) {
+      if (!l.itemId) continue; // added line handled below
+      const snap = snapById.get(l.itemId);
+      if (!snap) continue;
+      if (!lineChanged(l, snap)) continue; // untouched
+      const codeSame = l.itemCode === (snap.item_code ?? "");
+      const variantsSame = canonJson(buildVariants(l)) === canonJson(snap.variants ?? {});
+      const priceSame = toCenti(l.price) === (snap.unit_price_centi ?? 0);
+      const qtyMoved = (num(l.qty) || 1) !== (snap.qty ?? 1);
+      const qtyOnly = codeSame && variantsSame && priceSame && qtyMoved;
+      out.push({
+        salesOrderItemId: l.itemId,
+        changeType: qtyOnly ? "QTY" : "SPEC",
+        newItemCode: l.itemCode || undefined,
+        newVariants: buildVariants(l),
+        newQty: num(l.qty) || 1,
+        newUnitPriceSen: toCenti(l.price),
+        oldSnapshot: {
+          itemCode: snap.item_code,
+          variants: snap.variants ?? null,
+          qty: snap.qty,
+          unitPriceSen: snap.unit_price_centi,
+          description2: (snap as { description2?: string | null }).description2 ?? null,
+        },
+      });
+    }
+    // Removed lines — an orig item whose itemId no longer appears in `lines`.
+    for (const snap of origItems) {
+      if (liveIds.has(snap.id)) continue;
+      out.push({
+        salesOrderItemId: snap.id,
+        changeType: "REMOVE",
+        oldSnapshot: {
+          itemCode: snap.item_code,
+          variants: snap.variants ?? null,
+          qty: snap.qty,
+          unitPriceSen: snap.unit_price_centi,
+          description2: (snap as { description2?: string | null }).description2 ?? null,
+        },
+      });
+    }
+    // Added lines — new (no itemId) with a product picked.
+    for (const l of lines) {
+      if (l.itemId) continue;
+      if (!l.itemCode.trim()) continue;
+      out.push({
+        changeType: "ADD",
+        newItemCode: l.itemCode,
+        newVariants: buildVariants(l),
+        newQty: num(l.qty) || 1,
+        newUnitPriceSen: toCenti(l.price),
+      });
+    }
+    return out;
+  };
+
   // ---- Mutations ------------------------------------------------------------
   async function save(asDraft = false) {
     setTouched(true);
@@ -1303,6 +1423,45 @@ export function MobileNewSO({
           method: "PATCH",
           body: JSON.stringify(patch),
         });
+
+        /* AMENDMENT MODE (Phase 1-C, desktop SalesOrderDetail.submitAmendment
+           parity) — the SO is processing-locked but amendment_eligible, so the
+           header PATCH above still saves the still-editable fields (note / address
+           lines / contact) while LINE changes go out as an amendment request
+           rather than a direct item write. Reuses buildAmendmentLines +
+           createAmendment; the server recomputes pricing on approve. */
+        if (amendmentMode) {
+          const amLines = buildAmendmentLines();
+          if (amLines.length === 0) {
+            setSubmitting(false);
+            setError("No line changes to submit — edit, add or remove a line first, then submit the amendment.");
+            return;
+          }
+          const reason = await prompt({
+            title: `Submit amendment for ${docNo}?`,
+            body: "This Sales Order is already ordered from the supplier, so your changes go out as an amendment request. Coordinator and supplier confirm it before the order is revised. Add a short reason (optional).",
+            placeholder: "e.g. customer changed the fabric colour",
+            multiline: true,
+            confirmLabel: "Submit amendment",
+          });
+          if (reason == null) { setSubmitting(false); return; } // cancelled the prompt
+          try {
+            await createAmendment.mutateAsync({ docNo, reason: reason.trim() || undefined, lines: amLines });
+          } catch (e) {
+            setSubmitting(false);
+            // authed-fetch already humanises the API error to one plain sentence.
+            setError(e instanceof Error ? e.message : "Couldn't submit the amendment. Please try again.");
+            return;
+          }
+          // A slip-backed payment recorded alongside the amendment still posts.
+          await recordSlipBackedPayments(docNo);
+          await qc.invalidateQueries({ queryKey: ["mobile-so-detail", docNo] });
+          await qc.invalidateQueries({ queryKey: ["mobile-so-list"] });
+          void notify({ title: "Amendment submitted", body: "It now needs supplier confirmation, then approval, before the order is revised." });
+          if (onSaved) onSaved(docNo);
+          else onBack();
+          return;
+        }
 
         /* FIX D2/D3 — skip line mutations + photo staging when line editing is
            blocked (shipped/has-children OR processing-date-locked); the backend
@@ -1695,6 +1854,16 @@ export function MobileNewSO({
             <div className="card" style={{ marginBottom: 11 }}>
               <div className="card-h"><span className="card-t">Line items</span><span className="card-sub">{`${lines.length} ${lines.length === 1 ? "line" : "lines"}`}</span></div>
               <div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+                {/* Amendment-mode banner (Phase 1-C) — the SO is on order to the
+                    supplier but still editable via the amendment flow; the primary
+                    Save submits an amendment request, not a direct edit. Mirrors
+                    the desktop SalesOrderDetail amendment banner. */}
+                {amendmentMode && (
+                  <div style={{ display: "flex", alignItems: "flex-start", gap: 8, background: "rgba(232,107,58,0.08)", border: "1px solid var(--c-orange, #e86b3a)", borderRadius: 10, padding: "9px 11px", fontSize: 11, color: "#8a4a24", lineHeight: 1.45 }}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#c66a34" strokeWidth="2" strokeLinecap="round" style={{ flexShrink: 0, marginTop: 1 }}><rect x="4" y="10" width="16" height="10" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /></svg>
+                    <span>This order is already ordered from the supplier. Edit the lines as usual — your <b>Save</b> submits an <b>amendment request</b> that the coordinator and supplier confirm before the order is revised.</span>
+                  </div>
+                )}
                 {lineEditingBlocked ? (
                   <>
                     {lines.length ? lines.map((l) => (
@@ -1705,9 +1874,13 @@ export function MobileNewSO({
                         </div>
                       </div>
                     )) : <div style={{ fontSize: 11.5, color: "#9aa093", padding: "8px 0" }}>No items.</div>}
-                    {/* FIX D2/D3 — distinguish the two lock reasons in the notice. */}
+                    {/* FIX D2/D3 — distinguish the lock reasons in the notice. An
+                        already-open amendment takes precedence (procLocked but a
+                        second amendment can't be raised yet). */}
                     <div style={{ fontSize: 10, color: "#9aa093", marginTop: 4 }}>
-                      {procLocked
+                      {hasOpenAmend
+                        ? "An amendment is already pending on this order — line items are locked until it is confirmed or rejected. View its status on the order detail screen."
+                        : procLocked
                         ? "This order's processing date has passed — it is on order to the supplier, so line items can no longer be changed."
                         : "This order is shipped or has downstream documents — line items can no longer be changed."}
                     </div>
@@ -1808,7 +1981,7 @@ export function MobileNewSO({
         <footer id="nso-footer" className="actbar" style={{ display: "flex", gap: 9 }}>
           {mode === "edit" ? (
             <button className="btn" disabled={submitting} onClick={() => save(false)} style={{ flex: 1, opacity: submitting ? 0.6 : 1 }}>
-              {submitting ? "Saving…" : "Save Changes"}
+              {submitting ? (amendmentMode ? "Submitting…" : "Saving…") : amendmentMode ? "Submit Amendment" : "Save Changes"}
             </button>
           ) : (
             <>

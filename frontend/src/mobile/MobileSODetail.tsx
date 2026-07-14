@@ -13,6 +13,12 @@ import {
 } from "../vendor/scm/lib/sales-order-queries";
 import { buildVariantSummary } from "../vendor/shared/variant-summary";
 import { useSoDropdownOptions, optionsOrFallback, FALLBACK_OPTIONS } from "../vendor/scm/lib/so-dropdown-options-queries";
+import {
+  useAmendmentDetail,
+  useSupplierConfirm,
+  useApproveSo,
+  type AmendmentLine,
+} from "../vendor/scm/lib/so-amendment-queries";
 import { PaymentInfoBlock, type RecordedPaymentLike } from "./PaymentInfoBlock";
 import "./mobile.css";
 
@@ -76,6 +82,15 @@ type SoHeader = {
      non-cancelled DO/SI references this SO (locks Edit + Cancel). */
   has_children: boolean | null;
   delivery_state: string | null;
+  /* SO-amendment gate flags (Phase 1-C, read-only) — the GET /:docNo endpoint
+     derives these (backend mfg-sales-orders.ts). amendment_eligible = the SO is
+     processing-locked (already PO'd to the supplier) but still editable via the
+     amendment flow, so a line change here must go out as an amendment request.
+     open_amendment is the light summary of any in-flight amendment (status NOT IN
+     SENT/REJECTED). Same flags the desktop SalesOrderDetail routes on. */
+  amendment_eligible: boolean | null;
+  has_open_amendment: boolean | null;
+  open_amendment: { id: string; status: string; amendment_no: string } | null;
   /* Scan-flow proof photos (migrations 0033 + 0034) — R2 keys for the
      handwritten order slip and the card-terminal payment receipt this SO was
      scanned from. Dual-read camelCase ?? snake_case at the use site (the pg
@@ -168,8 +183,16 @@ const isCreatedTodayMyt = (createdAt: string | null | undefined): boolean => {
 export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBack: () => void; onEdit?: (docNo: string) => void }) {
   const qc = useQueryClient();
   const confirm = useConfirm();
+  const notifyTop = useNotify();
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  /* SO-amendment (Phase 1-C) — the pending-amendment banner's actions. The
+     diff sheet opens with the amendment id; the supplier-confirm sheet toggles
+     inline. approve-SO is a direct mutation gated by permission + status. All
+     three reuse the vendored so-amendment-queries hooks (no re-implemented API). */
+  const [viewingAmendmentId, setViewingAmendmentId] = useState<string | null>(null);
+  const [supplierConfirmOpen, setSupplierConfirmOpen] = useState(false);
+  const approveSo = useApproveSo();
 
   const detail = useQuery({
     queryKey: ["mobile-so-detail", docNo],
@@ -243,7 +266,61 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
   const originalProcessing = (h?.internal_expected_dd ?? "").slice(0, 10);
   const processingLocked = originalProcessing !== "" && originalProcessing < today && Boolean(h?.proceeded_at);
 
-  const editLocked = LOCKED.includes(rawStatus) || hasChildren || processingLocked;
+  /* Amendment gate (server-derived, desktop SalesOrderDetail parity) — when
+     amendment_eligible the SO is processing-locked but still editable via the
+     amendment flow, so Edit stays ENABLED (tapping it routes into MobileNewSO's
+     amendment-raise mode) rather than being hard-locked by the processing date.
+     open_amendment / has_open_amendment drive the pending banner + its gate
+     actions below. */
+  const amendmentEligible = Boolean(h?.amendment_eligible);
+  const openAmendment = h?.open_amendment ?? null;
+  const hasOpenAmendment = Boolean(h?.has_open_amendment) && openAmendment != null;
+
+  /* editLocked (disables the footer Edit button) = terminal status OR downstream
+     DO/SI OR a proceeded past-processing order that is NOT amendment-eligible. An
+     amendment-eligible SO keeps Edit live so the salesperson can raise an
+     amendment from mobile instead of reopening it on desktop. */
+  const editLocked = LOCKED.includes(rawStatus) || hasChildren || (processingLocked && !amendmentEligible);
+
+  /* Houzs perm gates (mirror the server-side scm.amendment.* keys, desktop
+     parity) — the server 403 stays the real gate (its plain-language message is
+     humanised by authed-fetch); these just hide the affordance from users who
+     can't use it. */
+  const canSupplierConfirm = houzsAuth.can("scm.amendment.supplier_confirm");
+  const canApproveSo = houzsAuth.can("scm.amendment.approve_so");
+
+  /* Approve-SO gate (SUPPLIER_PENDING → SO_APPROVED). Confirms, then re-derives
+     the SO server-side; the mutation invalidates the shared SO/amendment queries
+     and we additionally refresh the mobile-scoped keys so this screen updates. */
+  const handleApproveSo = async () => {
+    if (!openAmendment || busy) return;
+    if (!(await confirm({
+      title: `Approve SO revision for ${docNo}?`,
+      body: "This applies the supplier-confirmed changes: the Sales Order is re-derived and the current version is snapshotted into Revisions. This cannot be undone.",
+      confirmLabel: "Approve revision",
+    }))) return;
+    setBusy(true);
+    try {
+      await approveSo.mutateAsync({ id: openAmendment.id });
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["mobile-so-detail", docNo] }),
+        qc.invalidateQueries({ queryKey: ["mobile-so-list"] }),
+      ]);
+      void notifyTop({ title: "SO revision approved" });
+    } catch (e) {
+      void notifyTop({ title: "Could not approve the revision", body: e instanceof Error ? e.message : String(e), tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+  /* Refresh the mobile-scoped SO detail + list after any amendment gate action
+     (the vendored mutations already invalidate the shared ['mfg-sales-order-*']
+     + ['amendments'] keys; these cover the mobile query keys this screen reads). */
+  const refreshAfterAmendment = () =>
+    Promise.all([
+      qc.invalidateQueries({ queryKey: ["mobile-so-detail", docNo] }),
+      qc.invalidateQueries({ queryKey: ["mobile-so-list"] }),
+    ]);
 
   /* Owner rule 2026-07-05 (desktop parity, SalesOrderDetail.tsx): a PROCEEDED
      order that's past its processing date freezes its LINE ITEMS + State /
@@ -374,10 +451,67 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
                   ? "Locked — a delivery order or invoice references this SO. Line items can't be edited."
                   : "Locked — this order has moved past editing. Line items can't be edited."}
               </div>
+            ) : amendmentEligible ? (
+              /* Amendment-eligible (desktop parity) — the SO is on order to the
+                 supplier but still editable via the amendment flow. Edit stays
+                 live; tapping it opens the same New SO form in amendment-raise
+                 mode where Save submits an amendment request. */
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 8, background: "rgba(232,107,58,0.08)", border: "1px solid var(--c-orange, #e86b3a)", borderRadius: 10, padding: "9px 11px", marginBottom: 12, fontSize: 11, color: "#8a4a24", lineHeight: 1.45 }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#c66a34" strokeWidth="2" strokeLinecap="round" style={{ flexShrink: 0, marginTop: 1 }}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" /><path d="m10.5 13-2.5 2.5 2.5 2.5" /><path d="m13.5 13 2.5 2.5-2.5 2.5" /></svg>
+                {hasOpenAmendment
+                  ? "On order to the supplier — an amendment is pending (see below). Line changes are locked until it's confirmed or rejected."
+                  : "On order to the supplier. Tap Edit to request a line-item amendment — the coordinator and supplier confirm it before the order is revised."}
+              </div>
             ) : (
               <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#eef1ec", border: "1px solid #e3e6e0", borderRadius: 10, padding: "9px 11px", marginBottom: 12, fontSize: 11, color: "#5c6156" }}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#767b6e" strokeWidth="2" strokeLinecap="round"><rect x="4" y="10" width="16" height="10" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /></svg>
                 Locked view — tap Edit to change. Same form as New SO.
+              </div>
+            )}
+
+            {/* ── Pending-amendment banner (Phase 1-C) ──────────────────────
+                An amendment is in flight. Shows its no + status pill, a "View
+                changes" link opening the before/after diff, and the gate actions
+                the current user is permitted (record supplier confirmation at
+                REQUESTED / approve SO revision at SUPPLIER_PENDING) — mirroring
+                the desktop SalesOrderDetail pending banner. */}
+            {hasOpenAmendment && openAmendment && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 9, background: "rgba(214,158,46,0.14)", border: "1px solid rgba(214,158,46,0.55)", borderRadius: 12, padding: "11px 13px", marginBottom: 12 }}>
+                <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#8a6a2e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><path d="M3 3v5h5" /><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8" /><path d="M12 7v5l4 2" /></svg>
+                  <span style={{ fontSize: 12.5, fontWeight: 700, color: "#6d5626" }}>Amendment {openAmendment.amendment_no || "—"} pending</span>
+                  <AmendmentStatusPill status={openAmendment.status} />
+                  <button
+                    type="button"
+                    onClick={() => setViewingAmendmentId(openAmendment.id)}
+                    style={{ marginLeft: "auto", border: "none", background: "transparent", padding: 0, cursor: "pointer", color: "#a25a2a", fontFamily: "inherit", fontSize: 12, fontWeight: 700, textDecoration: "underline" }}
+                  >
+                    View changes
+                  </button>
+                </div>
+                {/* Gate actions — perm + status gated, exactly like desktop. */}
+                {openAmendment.status === "REQUESTED" && canSupplierConfirm && (
+                  <button
+                    type="button"
+                    onClick={() => setSupplierConfirmOpen(true)}
+                    disabled={busy}
+                    className="money"
+                    style={{ border: "1px solid #bcdcd7", background: "#e1efed", color: "#16695f", fontFamily: "inherit", fontSize: 12, fontWeight: 700, borderRadius: 9, padding: "9px 11px", cursor: "pointer", opacity: busy ? 0.5 : 1 }}
+                  >
+                    Record supplier confirmation
+                  </button>
+                )}
+                {openAmendment.status === "SUPPLIER_PENDING" && canApproveSo && (
+                  <button
+                    type="button"
+                    onClick={() => void handleApproveSo()}
+                    disabled={busy}
+                    className="money"
+                    style={{ border: "1px solid #bcdcd7", background: "#e1efed", color: "#16695f", fontFamily: "inherit", fontSize: 12, fontWeight: 700, borderRadius: 9, padding: "9px 11px", cursor: "pointer", opacity: busy ? 0.5 : 1 }}
+                  >
+                    {busy ? "Working…" : "Approve SO revision"}
+                  </button>
+                )}
               </div>
             )}
 
@@ -595,6 +729,27 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
             setEditPay(null);
             await refreshAfterPayment();
           }}
+        />
+      )}
+
+      {/* Supplier-confirmation sheet (Phase 1-C) — records the supplier's
+          confirmation ref/note against the open amendment (REQUESTED →
+          SUPPLIER_PENDING) via the vendored useSupplierConfirm mutation. */}
+      {supplierConfirmOpen && openAmendment && (
+        <SupplierConfirmSheet
+          amendmentId={openAmendment.id}
+          onClose={() => setSupplierConfirmOpen(false)}
+          onDone={async () => { setSupplierConfirmOpen(false); await refreshAfterAmendment(); }}
+        />
+      )}
+
+      {/* Before/after diff sheet (Phase 1-C) — reads the amendment detail
+          (useAmendmentDetail) and renders each requested line change as
+          old_snapshot → new_*, the SAME data as the desktop AmendmentDiffModal. */}
+      {viewingAmendmentId && (
+        <AmendmentDiffSheet
+          amendmentId={viewingAmendmentId}
+          onClose={() => setViewingAmendmentId(null)}
         />
       )}
 
@@ -1326,5 +1481,210 @@ function StatusPill({ status }: { status: string | null }) {
   const cls = p === "draft" ? "b-amber" : p === "cancelled" ? "b-red" : "b-brand";
   const label = p === "draft" ? "Draft" : p === "cancelled" ? "Cancelled" : "Submitted";
   return <span className={`badge ${cls}`} style={p === "draft" ? { border: "1px solid #e0cf9e" } : undefined}>{label}</span>;
+}
+
+/* ── Amendment status pill ───────────────────────────────────────────────────
+   The SO-amendment state machine (backend so-amendments.ts):
+   REQUESTED → SUPPLIER_PENDING → SO_APPROVED → PO_APPROVED → SENT (or REJECTED).
+   Plain-language labels; amber/teal/red tones by phase. */
+const AMENDMENT_STATUS_LABEL: Record<string, string> = {
+  REQUESTED: "Requested",
+  SUPPLIER_PENDING: "Supplier pending",
+  SO_APPROVED: "SO approved",
+  PO_APPROVED: "PO approved",
+  SENT: "Sent",
+  REJECTED: "Rejected",
+};
+function AmendmentStatusPill({ status }: { status: string }) {
+  const s = (status ?? "").toUpperCase();
+  const label = AMENDMENT_STATUS_LABEL[s] ?? (s ? s.replace(/_/g, " ").toLowerCase() : "—");
+  const tone =
+    s === "REJECTED"
+      ? { bg: "#f8eaea", fg: "#b23a3a" }
+      : s === "SO_APPROVED" || s === "PO_APPROVED" || s === "SENT"
+      ? { bg: "#e1efed", fg: "#0c3f39" }
+      : { bg: "#f6efd9", fg: "#8a6a2e" };
+  return (
+    <span className="money" style={{ display: "inline-block", fontSize: 10, fontWeight: 800, letterSpacing: ".04em", textTransform: "uppercase", padding: "2px 7px", borderRadius: 999, background: tone.bg, color: tone.fg }}>
+      {label}
+    </span>
+  );
+}
+
+/* changeType → plain label (desktop AmendmentDiffModal parity). */
+const amendmentChangeLabel = (t: string): string =>
+  t === "SPEC" ? "Spec change" :
+  t === "QTY" ? "Quantity change" :
+  t === "ADD" ? "Added line" :
+  t === "REMOVE" ? "Removed line" : t;
+
+/* ── Supplier-confirmation sheet ─────────────────────────────────────────────
+   Records the supplier's confirmation reference (+ optional note / attachment
+   key) against the open amendment via the vendored useSupplierConfirm mutation
+   (REQUESTED → SUPPLIER_PENDING). Mobile .hz-m bottom sheet; mirrors the desktop
+   SupplierConfirmForm fields. The server 403/409 is the real gate (humanised by
+   authed-fetch). */
+function SupplierConfirmSheet({
+  amendmentId,
+  onClose,
+  onDone,
+}: {
+  amendmentId: string;
+  onClose: () => void;
+  onDone: () => void | Promise<void>;
+}) {
+  const supplierConfirm = useSupplierConfirm();
+  const notify = useNotify();
+  const [ref, setRef] = useState("");
+  const [note, setNote] = useState("");
+  const [attachmentKey, setAttachmentKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async () => {
+    if (busy) return;
+    if (!ref.trim()) { setError("Enter the supplier's confirmation reference."); return; }
+    setError(null);
+    setBusy(true);
+    try {
+      await supplierConfirm.mutateAsync({
+        id: amendmentId,
+        ref: ref.trim(),
+        note: note.trim() || undefined,
+        attachmentKey: attachmentKey.trim() || undefined,
+      });
+      void notify({ title: "Supplier confirmation recorded" });
+      await onDone();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't record the confirmation. Please try again.");
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="hz-m sheet-bd" onClick={() => { if (!busy) onClose(); }}>
+      <div className="sheet" onClick={(e) => e.stopPropagation()}>
+        <div className="grab" />
+        <div className="sheet-head">
+          <div>
+            <div className="card-t" style={{ fontSize: 15 }}>Record supplier confirmation</div>
+            <div style={{ fontSize: 11, color: "var(--mut)", marginTop: 2 }}>The supplier confirmed the amended order</div>
+          </div>
+          <button type="button" className="sheet-x" onClick={() => { if (!busy) onClose(); }} aria-label="Close">{"✕"}</button>
+        </div>
+        <div className="sheet-scroll">
+          <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+            <label className="fld">
+              <span className="fld-l">Supplier confirmation ref *</span>
+              <input className="fld-i" value={ref} onChange={(e) => setRef(e.target.value)} placeholder="e.g. supplier WhatsApp / email ref" />
+            </label>
+            <label className="fld">
+              <span className="fld-l">Attachment key (optional)</span>
+              <input className="fld-i" value={attachmentKey} onChange={(e) => setAttachmentKey(e.target.value)} placeholder="R2 object key, if any" />
+            </label>
+            <label className="fld">
+              <span className="fld-l">Note (optional)</span>
+              <input className="fld-i" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Anything the supplier flagged" />
+            </label>
+            {error && <div style={{ fontSize: 11.5, color: "var(--red)", textAlign: "center" }}>{error}</div>}
+          </div>
+        </div>
+        <div className="sheet-foot">
+          <button type="button" className="btn-ghost" style={{ flex: 1, opacity: busy ? 0.55 : 1 }} disabled={busy} onClick={() => onClose()}>Cancel</button>
+          <button type="button" className="btn" style={{ flex: 1.3, opacity: busy || !ref.trim() ? 0.5 : 1 }} disabled={busy || !ref.trim()} onClick={() => void submit()}>{busy ? "Recording…" : "Record confirmation"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Amendment diff sheet ────────────────────────────────────────────────────
+   Reads the amendment detail (useAmendmentDetail) and renders each requested
+   line change as a Before → After pair — the SAME data as the desktop
+   AmendmentDiffModal (old_snapshot vs new_item_code / new_variants / new_qty /
+   new_unit_price_sen), laid out mobile-first as stacked cards. */
+function AmendmentDiffSheet({ amendmentId, onClose }: { amendmentId: string; onClose: () => void }) {
+  const { data, isLoading, error } = useAmendmentDetail(amendmentId);
+  const lines = (data?.lines ?? []) as AmendmentLine[];
+  const oldOf = (l: AmendmentLine): { itemCode?: string; qty?: number; unitPriceSen?: number; description2?: string | null } =>
+    (l.old_snapshot as { itemCode?: string; qty?: number; unitPriceSen?: number; description2?: string | null } | null) ?? {};
+  const amNo = data?.amendment?.amendment_no != null ? String(data.amendment.amendment_no) : "";
+  const reason = typeof data?.amendment?.reason === "string" ? data.amendment.reason : "";
+
+  return (
+    <div className="hz-m sheet-bd" onClick={onClose}>
+      <div className="sheet" onClick={(e) => e.stopPropagation()}>
+        <div className="grab" />
+        <div className="sheet-head">
+          <div>
+            <div className="card-t" style={{ fontSize: 15 }}>Requested changes{amNo ? ` — ${amNo}` : ""}</div>
+            <div style={{ fontSize: 11, color: "var(--mut)", marginTop: 2 }}>Was → requesting</div>
+          </div>
+          <button type="button" className="sheet-x" onClick={onClose} aria-label="Close">{"✕"}</button>
+        </div>
+        <div className="sheet-scroll">
+          {isLoading ? (
+            <div style={{ fontSize: 11.5, color: "var(--mut2)", padding: "8px 0" }}>Loading changes{"…"}</div>
+          ) : error ? (
+            <div style={{ fontSize: 11.5, color: "var(--red)", padding: "8px 0" }}>{error instanceof Error ? error.message : "Couldn't load the changes."}</div>
+          ) : lines.length === 0 ? (
+            <div style={{ fontSize: 11.5, color: "var(--mut2)", padding: "8px 0" }}>This amendment has no line changes recorded.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+              {lines.map((l) => {
+                const old = oldOf(l);
+                const newSummary = buildVariantSummary("", (l.new_variants as Record<string, unknown> | null) ?? null);
+                return (
+                  <div key={l.id} style={{ border: "1px solid var(--line2, #e3e6e0)", borderRadius: 11, overflow: "hidden" }}>
+                    <div style={{ padding: "7px 11px", background: "#f4f6f3", fontSize: 10.5, fontWeight: 800, letterSpacing: ".06em", textTransform: "uppercase", color: "#5c6156" }}>{amendmentChangeLabel(l.change_type)}</div>
+                    <div style={{ display: "flex", gap: 0 }}>
+                      {/* Before */}
+                      <div style={{ flex: 1, minWidth: 0, padding: "9px 11px", borderRight: "1px solid var(--line2, #e3e6e0)" }}>
+                        <div className="fld-l" style={{ marginBottom: 3 }}>Was</div>
+                        {l.change_type === "ADD" ? (
+                          <div style={{ fontSize: 11.5, color: "var(--mut2)" }}>—</div>
+                        ) : (
+                          <>
+                            <div className="money" style={{ fontSize: 12.5, fontWeight: 700, color: "var(--ink)" }}>{old.itemCode ?? "—"}</div>
+                            <div className="money" style={{ fontSize: 11, color: "var(--mut)", marginTop: 2 }}>
+                              Qty {old.qty ?? "—"}{typeof old.unitPriceSen === "number" ? ` · RM ${rm(old.unitPriceSen)}` : ""}
+                            </div>
+                            {old.description2 ? <div style={{ fontSize: 10.5, color: "var(--mut2)", marginTop: 2 }}>{old.description2}</div> : null}
+                          </>
+                        )}
+                      </div>
+                      {/* After */}
+                      <div style={{ flex: 1, minWidth: 0, padding: "9px 11px" }}>
+                        <div className="fld-l" style={{ marginBottom: 3 }}>Requesting</div>
+                        {l.change_type === "REMOVE" ? (
+                          <div style={{ fontSize: 11.5, color: "#b23a3a", fontWeight: 600 }}>Removed</div>
+                        ) : (
+                          <>
+                            <div className="money" style={{ fontSize: 12.5, fontWeight: 700, color: "#0c3f39" }}>{l.new_item_code ?? old.itemCode ?? "—"}</div>
+                            <div className="money" style={{ fontSize: 11, color: "var(--mut)", marginTop: 2 }}>
+                              Qty {l.new_qty ?? old.qty ?? "—"}{typeof l.new_unit_price_sen === "number" ? ` · RM ${rm(l.new_unit_price_sen)}` : ""}
+                            </div>
+                            {newSummary ? <div style={{ fontSize: 10.5, color: "var(--mut2)", marginTop: 2 }}>{newSummary}</div> : null}
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {reason ? (
+            <div style={{ marginTop: 11, fontSize: 11.5, color: "var(--mut)", lineHeight: 1.45 }}>
+              <span style={{ fontWeight: 700 }}>Reason:</span> {reason}
+            </div>
+          ) : null}
+        </div>
+        <div className="sheet-foot">
+          <button type="button" className="btn" style={{ flex: 1 }} onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
