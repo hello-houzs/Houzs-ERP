@@ -295,7 +295,7 @@
 //   (Overview / Stage / Info / Timeline), Status Cards list, 8-stage
 //   workflow (Pending Inspection retired into Under Verification).
 //   (v168 was taken by the multicompany/cutover release on main.)
-const VERSION = "houzs-erp-v171";
+const VERSION = "houzs-erp-v172";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 
