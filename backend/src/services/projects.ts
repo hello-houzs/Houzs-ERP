@@ -1049,6 +1049,11 @@ export interface ListProjectsFilters {
    *  matches. Special values: "__done" = all sections complete; "__none"
    *  = project has no sections defined. */
   section?: string;
+  /** Project status filter (mig 088 palette): "confirmed" | "pending" |
+   *  "cancelled". Pushed server-side so the list stays paginated even while
+   *  a status pill is active (was previously filtered client-side over a
+   *  fetch-all page). Additive / backward-compatible — unset ⇒ all statuses. */
+  status?: string;
   /** When true, drop projects whose every section is complete (the
    *  same predicate `section === "__done"` matches positively). Used
    *  by the list page's "Hide completed" toggle. Independent of
@@ -1142,6 +1147,10 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
   if (f.brand) {
     where.push("p.brand = ?");
     binds.push(f.brand);
+  }
+  if (f.status) {
+    where.push("p.status = ?");
+    binds.push(f.status);
   }
   if (f.event_type_id != null) {
     where.push("p.event_type_id = ?");

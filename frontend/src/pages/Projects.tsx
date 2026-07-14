@@ -994,12 +994,12 @@ function ProjectsListView() {
           exclude_done: excludeDoneParam,
           my_pending: myPending ? 1 : undefined,
           search,
-          // Status is filtered client-side (the list endpoint has no status
-          // param). To stay correct across pagination, pull the whole result
-          // set in one page while a status filter is active — there are only a
-          // few hundred projects, so this is cheap.
-          page: status ? 1 : page,
-          per_page: status ? 1000 : perPage,
+          // Status is filtered SERVER-side (the list endpoint's `status`
+          // param), so the list stays paginated (per_page=perPage) even while
+          // a status pill is active — no more fetch-all page-1 workaround.
+          status: status || undefined,
+          page,
+          per_page: perPage,
           include_archived: showArchived ? 1 : undefined,
           ...sortParams,
         })}`
@@ -1010,14 +1010,10 @@ function ProjectsListView() {
     { keepPreviousData: true }
   );
 
-  // Client-side status filter (Confirmed / Pending / Cancelled), applied over
-  // the rows the list endpoint returns. When active, the query above loads the
-  // full set so this sees every matching project, not just the current page.
-  const rows = useMemo(() => {
-    const all = list.data?.data ?? null;
-    if (!all || !status) return all;
-    return all.filter((r) => r.status === status);
-  }, [list.data, status]);
+  // Status (Confirmed / Pending / Cancelled) is now filtered server-side via
+  // the list endpoint's `status` param, so the rows the endpoint returns are
+  // already the matching, paginated set — no client-side filtering needed.
+  const rows = list.data?.data ?? null;
   // Non-null view of rows for the card list + right rail (rows itself stays
   // nullable for the DataTable's loading state).
   const cardRows = rows ?? [];
@@ -1567,7 +1563,7 @@ function ProjectsListView() {
       )}
       </div>
 
-      {list.data && !status && (
+      {list.data && (
         <Pagination
           page={page}
           perPage={perPage}
