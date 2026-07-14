@@ -8,6 +8,12 @@ Severity tags: 🔴 critical/high · 🟠 medium · 🟢 low.
 
 ## 2026-07-14 — Multi-company + performance campaign
 
+### 🟢 Mobile dates could show the wrong day (off-by-one) on an off-zone device
+- **Symptom:** On the mobile layer, a `YYYY-MM-DD` date (SO dates, delivery dates, PMS project dates, recorded-payment dates, search-result dates, etc.) could render one day off versus the desktop app when the phone's OS timezone was not GMT+8 — e.g. an SO dated `2026-07-14` showing `13/07/2026`.
+- **Cause:** ~7 mobile files each re-implemented their own `dm()`/`dmy()` date helper with bare `new Date(d)` + `toLocaleDateString`. `new Date("2026-07-14")` is parsed as UTC midnight and then rendered in the *device's* local zone, so any device west of GMT+8 rolled the calendar date back a day. These local helpers bypassed the shared, TZ-aware `formatDate` (which pins display to `APP_TZ = Asia/Kuala_Lumpur` and formats date-only strings verbatim). Money was also re-rolled (`÷100 + toLocaleString`) in ~8 files instead of the shared `fmtCenti`/`formatCurrency`.
+- **Fix:** Converged the mobile money + date formatting onto the shared helpers (`lib/utils` `formatDate`/`formatCurrency`, `lib/scm` `fmtCenti`). Every `dm()`/`dmy()` now delegates to `formatDate`; display money uses `fmtCenti` (centi) / `formatCurrency` (ringgit), unit-matched per call site. Form-value serializers (MobileNewSO `fromCenti`, MobileScan payment/price prefill) were intentionally left as bare number strings — they must stay prefix-free so `num()`/`toCenti` can parse them back.
+- **Ref:** `fix/mobile-format-shared`, 2026-07-14.
+
 ### 🔴 "Forbidden: missing …" toast storm reappeared for restricted (Sales) users
 - **Symptom:** A restricted user (e.g. a Sales account) opening certain pages (a PMS/project Exhibition detail) saw a STACK of red toasts — "Forbidden: needs view access to scm.transportation.drivers", "needs partial access to sales", "missing users.read", "missing projects.write", plain "Forbidden", etc. — one per background query they lack access to. This is the "off, not hide" storm the owner explicitly wanted gone.
 - **Cause:** `api/client.ts` `handleResponse` fired the global `forbiddenListeners` (which `useToast` turns into a toast) on EVERY 403 — including background GET reads. Individual pages that hadn't gated their queries' `enabled:` for a restricted role each 403'd on mount → a toast each. The per-query gating was incomplete for some pages, and there was no global safety net.
