@@ -1,5 +1,5 @@
-import { useMemo, useRef, useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { MobileVirtualList } from "./MobileVirtualList";
@@ -298,13 +298,16 @@ function CaseList({
   const [q, setQ] = useState("");
   const [chip, setChip] = useState("all");
   const [sort, setSort] = useState<"sla" | "no">("sla");
+  /* Debounced search term — the value keyed into (and sent to) the server so a
+     keystroke doesn't fire a request per character. Mirrors MobileSalesOrders. */
+  const [debouncedQ, setDebouncedQ] = useState("");
+  useEffect(() => {
+    const t = window.setTimeout(() => setDebouncedQ(q.trim()), 300);
+    return () => window.clearTimeout(t);
+  }, [q]);
 
-  const { data, isLoading, error } = useQuery({
-    queryKey: ["mobile-assr-list"],
-    queryFn: () => api.get<{ data?: Any[] }>("/api/assr?per_page=200"),
-    staleTime: 30_000,
-  });
-  const all = data?.data ?? [];
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const sentinelRef = useRef<HTMLDivElement>(null);
 
   const isMine = (r: Any) => {
     const uid = user?.id;
@@ -314,6 +317,15 @@ function CaseList({
   };
 
   // Design chips (ListA): All / SLA risk / Urgent / Mine, with counts.
+  //   · all    — no server filter.
+  //   · mine   — SERVER-SIDE: /api/assr?assigned_to=<me> (matches assigned_to
+  //              OR assigned_to_2, exactly like isMine), so it's correct across
+  //              every page.
+  //   · risk / urgent — the endpoint has no SLA-bucket or priority param, so
+  //              these two stay CLIENT-SIDE over the rows loaded so far (FLAG).
+  //              Infinite scroll keeps pulling pages as the (shorter) filtered
+  //              list leaves the sentinel in view, so matches accumulate as the
+  //              operator scrolls rather than being hard-capped at 200.
   const CHIPS: { key: string; label: string; match: (r: Any) => boolean }[] = [
     { key: "all", label: "All", match: () => true },
     { key: "risk", label: "SLA risk", match: (r) => ["breach", "risk"].includes(slaStateOf(r).tone) },
@@ -321,36 +333,80 @@ function CaseList({
     { key: "mine", label: "Mine", match: isMine },
   ];
 
+  /* Server-side search + sort + Mine + infinite scroll. `search` covers
+     case no / SO doc / Ref / customer server-side (cross-page); the sort
+     selector maps to the endpoint's sort_by (sla → hours_to_deadline asc =
+     most-overdue first, nulls last; no → assr_no asc). Changing search / sort /
+     Mine swaps the query key so the list restarts from page 1. per_page 30;
+     default id-desc tiebreak → no skipped/dup rows.
+     NOTE: the server `search` does NOT cover the complaint issue text or the
+     item code/description that the old client search also matched — those two
+     fields are no longer searchable (cross-page correctness is the trade). */
+  const mineParam = chip === "mine" ? user?.id ?? null : null;
+  const buildParams = (page: number): string => {
+    const p = new URLSearchParams();
+    p.set("page", String(page));
+    p.set("per_page", "30");
+    if (debouncedQ) p.set("search", debouncedQ);
+    if (sort === "no") { p.set("sort_by", "assr_no"); p.set("sort_dir", "asc"); }
+    else { p.set("sort_by", "hours_to_deadline"); p.set("sort_dir", "asc"); }
+    if (mineParam != null) p.set("assigned_to", String(mineParam));
+    return p.toString();
+  };
+  type AssrListPage = { data?: Any[]; total?: number; page?: number; per_page?: number };
+  const {
+    data, isLoading, error,
+    fetchNextPage, hasNextPage, isFetchingNextPage,
+  } = useInfiniteQuery({
+    queryKey: ["mobile-assr-list-paged", debouncedQ, sort, mineParam],
+    queryFn: ({ pageParam }) => api.get<AssrListPage>(`/api/assr?${buildParams(pageParam)}`),
+    initialPageParam: 1,
+    getNextPageParam: (last, pages) => {
+      const loaded = pages.reduce((n, p) => n + (p.data?.length ?? 0), 0);
+      return loaded < (last.total ?? 0) ? pages.length + 1 : undefined;
+    },
+    staleTime: 30_000,
+    placeholderData: (prev) => prev,
+  });
+  const all = useMemo(() => data?.pages.flatMap((p) => p.data ?? []) ?? [], [data]);
+
+  /* Chip count badges — computed over the rows LOADED SO FAR (they grow as the
+     operator scrolls); the "All" total from the server envelope is shown in the
+     header note instead. Honest: with server pagination the full set isn't in
+     memory, so these badges reflect loaded rows, not the whole table. */
+  const totalCount = data?.pages[0]?.total ?? 0;
   const counts = useMemo(() => {
     const c: Record<string, number> = {};
     for (const ch of CHIPS) c[ch.key] = all.filter(ch.match).length;
     return c;
   }, [all, user?.id]);
 
+  /* Rows = accumulated pages, with the active chip's client-side predicate
+     applied. Search + sort + Mine already ran server-side; re-applying the
+     Mine predicate is a harmless no-op, while risk / urgent do their real
+     (loaded-rows) filtering here. */
   const rows = useMemo(() => {
-    const needle = q.trim().toLowerCase();
     const active = CHIPS.find((c) => c.key === chip) ?? CHIPS[0];
-    let out = all.filter((r) => {
-      if (!active.match(r)) return false;
-      if (needle) {
-        // Search covers case no / SO / Ref / customer / issue / item.
-        const hay = `${customer(r)} ${caseNo(r)} ${get(r, "docNo", "doc_no") ?? ""} ${get(r, "refNo", "ref_no") ?? ""} ${issueOf(r) ?? ""} ${get(r, "itemDescription", "item_description", "itemCode", "item_code") ?? ""}`.toLowerCase();
-        if (!hay.includes(needle)) return false;
-      }
-      return true;
-    });
-    out = out.slice().sort((a, b) => {
-      if (sort === "no") return String(caseNo(a)).localeCompare(String(caseNo(b)), undefined, { numeric: true });
-      // SLA: most-overdue (smallest hours) first; nulls last.
-      const ha = hoursToDeadline(a);
-      const hb = hoursToDeadline(b);
-      if (ha == null && hb == null) return 0;
-      if (ha == null) return 1;
-      if (hb == null) return -1;
-      return ha - hb;
-    });
-    return out;
-  }, [all, q, chip, sort, user?.id]);
+    return all.filter((r) => active.match(r));
+  }, [all, chip, user?.id]);
+
+  /* Infinite-scroll trigger — IntersectionObserver on a 1px sentinel at the
+     list's bottom; fetches the next page as it nears the viewport (rootMargin
+     600px). Guarded by hasNextPage && !isFetchingNextPage. */
+  useEffect(() => {
+    const target = sentinelRef.current;
+    if (!target || !hasNextPage) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting) && hasNextPage && !isFetchingNextPage) {
+          void fetchNextPage();
+        }
+      },
+      { root: scrollRef.current, rootMargin: "0px 0px 600px 0px" },
+    );
+    io.observe(target);
+    return () => io.disconnect();
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage, rows.length]);
 
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
@@ -406,11 +462,18 @@ function CaseList({
         </div>
       </header>
 
-      <div className="scroll hz-scroll" style={{ padding: 14, paddingBottom: 120 }}>
+      <div ref={scrollRef} className="scroll hz-scroll" style={{ padding: 14, paddingBottom: 120 }}>
         {isLoading && <div style={{ textAlign: "center", color: "var(--mut2)", fontSize: 12, padding: "26px 0" }}>Loading…</div>}
         {error && <div style={{ textAlign: "center", color: "var(--red)", fontSize: 12, padding: "26px 0" }}>Couldn't load service cases. Pull to retry.</div>}
         {!isLoading && !error && (
           <>
+            {/* Count note — server total for All/Mine (cross-page); for the
+                client-side risk/urgent chips it can only reflect loaded rows. */}
+            <div style={{ fontSize: 11, color: MUTED, margin: "0 2px 10px" }}>
+              {chip === "urgent" || chip === "risk"
+                ? `${rows.length} shown (loaded)`
+                : `${totalCount} case${totalCount === 1 ? "" : "s"}`}
+            </div>
             {rows.length > 0 && (
               <MobileVirtualList
                 items={rows}
@@ -477,7 +540,22 @@ function CaseList({
                 }}
               />
             )}
-            {!rows.length && (
+            {/* Infinite-scroll sentinel — watched by the IntersectionObserver;
+                enters view (+600px) near the end and pulls the next page. Keyed
+                off hasNextPage alone (not rows.length): the client-side
+                risk/urgent chips can filter the loaded rows to zero while more
+                pages remain, and we still want those pages pulled so matches on
+                later pages surface. */}
+            {hasNextPage && (
+              <div ref={sentinelRef} aria-hidden style={{ height: 1 }} />
+            )}
+            {/* "Loading more…" while the next page is in flight. */}
+            {isFetchingNextPage && (
+              <div style={{ textAlign: "center", padding: "14px 0 2px", fontSize: 11.5, color: MUTED }}>Loading more…</div>
+            )}
+            {/* Empty only once loading has truly settled — otherwise a
+                risk/urgent chip mid-load would flash "Nothing matches". */}
+            {!rows.length && !hasNextPage && !isFetchingNextPage && (
               <div className="empty">
                 <div className="empty-t">Nothing matches</div>
                 <div className="empty-s">Try a different filter or search.</div>
