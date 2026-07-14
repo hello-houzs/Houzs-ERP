@@ -519,6 +519,13 @@ export interface TeamMember {
    * imply anything for unscoped users).
    */
   brands: string[];
+  /**
+   * Per-user company grants (Phase 0e — user_companies). Company ids the member
+   * may act in. Empty array = no grant row → the user fail-opens to ALL
+   * companies (companyContext). Older backends omit this field. Drives the Team
+   * "Company" column and the edit/invite Company selector.
+   */
+  company_ids?: number[];
   invited_at: string | null;
   /** Who issued the invite (mig: users.invited_by). */
   invited_by?: number | null;

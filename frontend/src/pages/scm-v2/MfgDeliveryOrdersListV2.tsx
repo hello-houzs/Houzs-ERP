@@ -10,7 +10,7 @@
 //       useUpdateMfgDeliveryOrderStatus (all live in the vendored SCM lib —
 //       we don't re-derive them; the Theme C paint is chrome-only).
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Plus,
@@ -35,7 +35,7 @@ import { Button } from "../../components/Button";
 import { PullToRefresh } from "../../components/PullToRefresh";
 import { useStaffLookup } from "../../hooks/useStaffLookup";
 import {
-  useMfgDeliveryOrders,
+  useMfgDeliveryOrdersPaged,
   useMfgDeliveryOrderDetail,
   useUpdateMfgDeliveryOrderStatus,
 } from "../../vendor/scm/lib/delivery-order-queries";
@@ -626,6 +626,51 @@ function TotalRow({
   );
 }
 
+// ─── Pagination footer ──────────────────────────────────────────────────────
+
+function PaginationFooter({
+  page,
+  pageSize,
+  total,
+  onPrev,
+  onNext,
+}: {
+  page: number;
+  pageSize: number;
+  total: number;
+  onPrev: () => void;
+  onNext: () => void;
+}) {
+  const from = total === 0 ? 0 : page * pageSize + 1;
+  const to = Math.min((page + 1) * pageSize, total);
+  const atStart = page === 0;
+  const atEnd = (page + 1) * pageSize >= total;
+  return (
+    <div className="mt-4 flex items-center justify-between gap-3">
+      <span className="text-[12px] text-ink-muted">
+        Showing {from}
+        {to > from ? `–${to}` : ""} of {total}
+      </span>
+      <div className="flex items-center gap-2">
+        <Button variant="secondary" onClick={onPrev} disabled={atStart}>
+          Prev
+        </Button>
+        <Button variant="secondary" onClick={onNext} disabled={atEnd}>
+          Next
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// Table column key → backend sort-whitelist column. The DO backend whitelist is
+// { do_date, do_number, debtor_name, status, customer_delivery_date } — only the
+// delivery_date column key differs from its backend name; every other sortable
+// column matches 1:1. Columns absent from the whitelist carry `disableSort`.
+const SORT_COL_MAP: Record<string, string> = {
+  delivery_date: "customer_delivery_date",
+};
+
 // ─── Main page ──────────────────────────────────────────────────────────────
 
 export function MfgDeliveryOrdersListV2() {
@@ -637,83 +682,68 @@ export function MfgDeliveryOrdersListV2() {
   const status = (params.get("status") ?? "all") as StatusTab;
   const view = (params.get("view") ?? "table") as "table" | "cards";
   const search = params.get("q") ?? "";
+  // URL is state — the 0-based page index lives in `?page=`. pageSize is a
+  // fixed 50 (backend caps at 100). Server-side paging + search + counts + sort
+  // span the FULL scoped set, not just the visible page.
+  const page = Math.max(0, parseInt(params.get("page") ?? "0", 10) || 0);
+  const pageSize = 50;
 
   const [selected, setSelected] = useState<DoRow | null>(null);
+  const [sort, setSort] = useState<string | undefined>(undefined);
+  const [debouncedSearch, setDebouncedSearch] = useState(search);
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(t);
+  }, [search]);
 
-  // The backend delivery-orders endpoint doesn't accept our compressed bucket
-  // names — pass `undefined` and filter client-side on the bucket.
-  const { data, isLoading, error } = useMfgDeliveryOrders(undefined);
+  // Send the active tab's BUCKET NAME as `status`; the backend resolves each
+  // bucket to the raw statuses it covers (open = DRAFT+LOADED, in_transit =
+  // DISPATCHED+IN_TRANSIT, delivered = SIGNED+DELIVERED+INVOICED+COMPLETED,
+  // cancelled = CANCELLED). `all` omits the filter.
+  const apiStatus = status === "all" ? undefined : status;
+
+  const { data, isLoading, error } = useMfgDeliveryOrdersPaged({
+    page,
+    pageSize,
+    status: apiStatus,
+    q: debouncedSearch,
+    sort,
+  });
   const updateStatus = useUpdateMfgDeliveryOrderStatus();
 
-  const allRows = useMemo<DoRow[]>(
-    () => ((data?.deliveryOrders ?? []) as DoRow[]),
-    [data]
-  );
+  // Server already filtered + sorted this page — render verbatim, no client
+  // re-filter / re-sort (wrong on a partial page).
+  const rows = (data?.deliveryOrders ?? []) as DoRow[];
+  const total = data?.total ?? 0;
+  // Full-set status-tab counts from the server (stable while paging / searching).
+  const counts = data?.statusCounts ?? {
+    all: 0,
+    open: 0,
+    in_transit: 0,
+    delivered: 0,
+    cancelled: 0,
+  };
 
-  // Apply the status bucket first (drops from tab), then the search filter.
-  const scopedByBucket = useMemo(() => {
-    if (status === "all") return allRows;
-    return allRows.filter((r) => statusFor(r.status).bucket === status);
-  }, [allRows, status]);
+  // Revenue is summed over the CURRENT page's rows only (the paginated contract
+  // returns counts but not full-set money sums), so its card is labelled "on
+  // this page". The In-transit / Delivered cards read the FULL-set statusCounts.
+  const revenueCenti = useMemo(() => {
+    let sum = 0;
+    for (const r of rows) sum += r.local_total_centi ?? 0;
+    return sum;
+  }, [rows]);
 
-  const filtered = useMemo(() => {
-    if (!search.trim()) return scopedByBucket;
-    const q = search.toLowerCase();
-    return scopedByBucket.filter((r) => {
-      const hay = [
-        r.do_number,
-        r.so_doc_no,
-        r.debtor_name,
-        r.debtor_code,
-        r.salesperson_id,
-        refOf(r),
-        r.branding,
-        r.sales_location,
-        r.driver_name,
-      ]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
-      return hay.includes(q);
-    });
-  }, [scopedByBucket, search]);
-
-  // Filter-pill counts scoped to the FULL query result (unfiltered by search).
-  const counts = useMemo(() => {
-    const acc = { all: allRows.length, open: 0, in_transit: 0, delivered: 0, cancelled: 0 };
-    for (const r of allRows) {
-      const b = statusFor(r.status).bucket;
-      if (b === "open") acc.open += 1;
-      else if (b === "in_transit") acc.in_transit += 1;
-      else if (b === "delivered") acc.delivered += 1;
-      else if (b === "cancelled") acc.cancelled += 1;
-    }
-    return acc;
-  }, [allRows]);
-
-  // KPI stats — scoped to the search-filtered rows (same idiom as SO V2).
-  const stats = useMemo(() => {
-    let revenueCenti = 0;
-    let inTransitCount = 0;
-    let deliveredCount = 0;
-    for (const r of filtered) {
-      revenueCenti += r.local_total_centi ?? 0;
-      const b = statusFor(r.status).bucket;
-      if (b === "in_transit") inTransitCount += 1;
-      if (b === "delivered") deliveredCount += 1;
-    }
-    return {
-      total: filtered.length,
-      revenueCenti,
-      inTransitCount,
-      deliveredCount,
-    };
-  }, [filtered]);
-
+  const setPageParam = (p: number) => {
+    const next = new URLSearchParams(params);
+    if (p <= 0) next.delete("page");
+    else next.set("page", String(p));
+    setParams(next, { replace: true });
+  };
   const setStatusChip = (s: StatusTab) => {
     const next = new URLSearchParams(params);
     if (s === "all") next.delete("status");
     else next.set("status", s);
+    next.delete("page"); // status change → back to page 0
     setParams(next, { replace: true });
   };
   const setView = (v: "table" | "cards") => {
@@ -726,9 +756,20 @@ export function MfgDeliveryOrdersListV2() {
     const next = new URLSearchParams(params);
     if (!q.trim()) next.delete("q");
     else next.set("q", q);
+    next.delete("page"); // typing → back to page 0
     setParams(next, { replace: true });
   };
+  const sortSyncedRef = useRef(false);
+  const setSortAndReset = (s: { key: string; dir: "asc" | "desc" } | null) => {
+    setSort(s ? `${SORT_COL_MAP[s.key] ?? s.key}:${s.dir}` : undefined);
+    if (!sortSyncedRef.current) {
+      sortSyncedRef.current = true;
+      return;
+    }
+    setPageParam(0); // sort change → back to page 0
+  };
   const resetLayout = () => {
+    setSort(undefined);
     setParams(new URLSearchParams(), { replace: true });
   };
   const filtersActive =
@@ -783,6 +824,7 @@ export function MfgDeliveryOrdersListV2() {
       key: "so_doc_no",
       label: "From SO",
       width: "128px",
+      disableSort: true,
       getValue: (r) => r.so_doc_no ?? "",
       render: (r) => (
         <span className="font-mono text-[12px] text-ink-secondary">{soOf(r)}</span>
@@ -813,6 +855,7 @@ export function MfgDeliveryOrdersListV2() {
       key: "driver",
       label: "Driver",
       width: "128px",
+      disableSort: true,
       getValue: (r) => r.driver_name ?? "",
       render: (r) => (
         <span className="text-[12.5px] text-ink-secondary">
@@ -824,6 +867,7 @@ export function MfgDeliveryOrdersListV2() {
       key: "reference",
       label: "Customer ref",
       width: "132px",
+      disableSort: true,
       getValue: (r) => refOf(r),
       render: (r) => (
         <span className="font-mono text-[12px] text-ink-secondary">{refOf(r)}</span>
@@ -848,6 +892,9 @@ export function MfgDeliveryOrdersListV2() {
       label: "Amount",
       width: "128px",
       align: "right",
+      // DO backend sort whitelist has no total column — keep for CSV export but
+      // disable the header sort so we never send an unsupported sort key.
+      disableSort: true,
       getValue: (r) => r.local_total_centi,
       render: (r) => (
         <span className="font-money text-[13px] font-semibold text-ink">
@@ -883,8 +930,8 @@ export function MfgDeliveryOrdersListV2() {
             Delivery Orders
           </h1>
           <div className="mt-0.5 text-[12.5px] text-ink-muted">
-            {stats.total} order{stats.total === 1 ? "" : "s"} ·{" "}
-            <span className="font-money">{fmtRm(stats.revenueCenti)}</span>
+            {total} order{total === 1 ? "" : "s"} ·{" "}
+            <span className="font-money">{fmtRm(revenueCenti)}</span>
           </div>
         </div>
       </div>
@@ -923,27 +970,27 @@ export function MfgDeliveryOrdersListV2() {
           <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
             <StatCard
               label="Total DOs"
-              value={stats.total.toLocaleString("en-MY")}
-              subtitle="Scoped to current filter"
+              value={total.toLocaleString("en-MY")}
+              subtitle="All matching orders"
               rail="bg-primary"
               active
             />
             <StatCard
               label="Revenue"
-              value={fmtRm(stats.revenueCenti)}
-              subtitle="Sum of local total"
+              value={fmtRm(revenueCenti)}
+              subtitle="Sum on this page"
               rail="bg-accent"
             />
             <StatCard
               label="In transit"
-              value={stats.inTransitCount.toLocaleString("en-MY")}
+              value={counts.in_transit.toLocaleString("en-MY")}
               subtitle="Dispatched · en route"
               tone="warning"
               rail="bg-accent-bright"
             />
             <StatCard
               label="Delivered"
-              value={stats.deliveredCount.toLocaleString("en-MY")}
+              value={counts.delivered.toLocaleString("en-MY")}
               subtitle="Signed / delivered / invoiced"
               tone="success"
               rail="bg-synced"
@@ -984,42 +1031,57 @@ export function MfgDeliveryOrdersListV2() {
 
       {/* Phone → Cards */}
       <div className="md:hidden">
-        <CardsGrid rows={filtered} onOpen={(r) => setSelected(r)} />
-        {filtered.length > 0 && (
-          <div className="mt-4 pb-24 text-center text-[11.5px] text-ink-muted">
-            {filtered.length} order{filtered.length === 1 ? "" : "s"}
-          </div>
-        )}
+        <CardsGrid rows={rows} onOpen={(r) => setSelected(r)} />
+        <div className="pb-24">
+          <PaginationFooter
+            page={page}
+            pageSize={pageSize}
+            total={total}
+            onPrev={() => setPageParam(page - 1)}
+            onNext={() => setPageParam(page + 1)}
+          />
+        </div>
       </div>
 
       {/* Desktop → Table / Cards */}
       <div className="hidden md:block">
         {view === "table" ? (
-          <DataTable<DoRow>
-            tableId="delivery-orders-v2"
-            rows={filtered}
-            loading={isLoading}
-            error={error ? (error as Error).message ?? "Failed to load" : null}
-            columns={columns}
-            getRowKey={(r) => r.id}
-            onRowClick={(r) => setSelected(r)}
-            exportName="delivery-orders"
-            emptyLabel={
-              filtersActive
-                ? "No delivery orders match — try Reset layout to clear filters."
-                : "No delivery orders yet."
-            }
-            search={{
-              value: search,
-              onChange: setSearch,
-              placeholder: "Search DO no, customer, driver, ref…",
-            }}
-            resetFilters={{
-              active: filtersActive,
-              onReset: resetLayout,
-              label: "Reset layout",
-            }}
-          />
+          <>
+            <DataTable<DoRow>
+              tableId="delivery-orders-v2"
+              rows={rows}
+              loading={isLoading}
+              error={error ? (error as Error).message ?? "Failed to load" : null}
+              columns={columns}
+              getRowKey={(r) => r.id}
+              onRowClick={(r) => setSelected(r)}
+              exportName="delivery-orders"
+              serverSort
+              onSortChange={setSortAndReset}
+              emptyLabel={
+                filtersActive
+                  ? "No delivery orders match — try Reset layout to clear filters."
+                  : "No delivery orders yet."
+              }
+              search={{
+                value: search,
+                onChange: setSearch,
+                placeholder: "Search DO no, customer, driver, ref…",
+              }}
+              resetFilters={{
+                active: filtersActive,
+                onReset: resetLayout,
+                label: "Reset layout",
+              }}
+            />
+            <PaginationFooter
+              page={page}
+              pageSize={pageSize}
+              total={total}
+              onPrev={() => setPageParam(page - 1)}
+              onNext={() => setPageParam(page + 1)}
+            />
+          </>
         ) : (
           <>
             <div className="mb-3 flex items-center justify-between">
@@ -1041,11 +1103,15 @@ export function MfgDeliveryOrdersListV2() {
                   </button>
                 )}
               </div>
-              <span className="text-[12px] text-ink-muted">
-                {filtered.length} order{filtered.length === 1 ? "" : "s"}
-              </span>
             </div>
-            <CardsGrid rows={filtered} onOpen={(r) => setSelected(r)} />
+            <CardsGrid rows={rows} onOpen={(r) => setSelected(r)} />
+            <PaginationFooter
+              page={page}
+              pageSize={pageSize}
+              total={total}
+              onPrev={() => setPageParam(page - 1)}
+              onNext={() => setPageParam(page + 1)}
+            />
           </>
         )}
       </div>

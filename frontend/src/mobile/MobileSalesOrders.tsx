@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { useAuth } from "../auth/AuthContext";
@@ -74,14 +74,29 @@ const jobTsMs = (s: string | null | undefined): number => {
   return Number.isNaN(t) ? 0 : t;
 };
 
-/* Period chips → client-side date buckets. The list endpoint returns all rows
-   (no server range param), so — like the owner's prototype — we bucket by
-   so_date locally. */
+/* Period chips → SERVER-SIDE so_date window. The chips no longer bucket the
+   loaded rows client-side (that only ever matched the ≤500 already fetched);
+   each chip maps to an inclusive [from,to] ISO yyyy-mm-dd window sent to the
+   list endpoint, so the filter runs across the WHOLE table. Buckets are
+   identical to the old `inRange`: this-month = first→last of the current month,
+   last/next-month the adjacent months, this-year = Jan 1 → Dec 31. */
 type Range = "all" | "this-month" | "last-month" | "next-month" | "this-year";
 const RANGES: [Range, string][] = [
   ["all", "All"], ["this-month", "This month"], ["last-month", "Last month"],
   ["next-month", "Next month"], ["this-year", "This year"],
 ];
+const PAGE_SIZE = 30;
+/* Local yyyy-mm-dd (never UTC-shifted — the so_date column is a plain date). */
+const ymd = (d: Date) =>
+  `${d.getFullYear()}-${`${d.getMonth() + 1}`.padStart(2, "0")}-${`${d.getDate()}`.padStart(2, "0")}`;
+function rangeToDates(range: Range): { from?: string; to?: string } {
+  if (range === "all") return {};
+  const now = new Date(); const y = now.getFullYear(); const m = now.getMonth();
+  if (range === "this-year") return { from: ymd(new Date(y, 0, 1)), to: ymd(new Date(y, 11, 31)) };
+  const base = range === "this-month" ? m : range === "last-month" ? m - 1 : m + 1; // next-month
+  // Day 0 of the following month = last day of `base` (year-wrap safe).
+  return { from: ymd(new Date(y, base, 1)), to: ymd(new Date(y, base + 1, 0)) };
+}
 
 /* Status filter → picks by raw SO status. Real SO statuses are DRAFT / CONFIRMED
    / CANCELLED (see lib/status-pill.ts SO map + lib/so-status.ts); older data /
@@ -96,22 +111,18 @@ const STATUS_FILTERS: { key: StatusFilter; label: string; match: string[] | null
   { key: "confirmed", label: "Confirmed", match: ["confirmed", "submitted"] },
   { key: "cancelled", label: "Cancelled", match: ["cancelled"] },
 ];
-function statusMatches(r: SoRow, filter: StatusFilter): boolean {
-  const entry = STATUS_FILTERS.find((f) => f.key === filter);
-  if (!entry || !entry.match) return true;
-  return entry.match.includes((r.status ?? "").toLowerCase());
-}
-function inRange(r: SoRow, range: Range): boolean {
-  if (range === "all") return true;
-  const raw = soDate(r); if (!raw) return false;
-  const d = new Date(raw); if (isNaN(+d)) return false;
-  const now = new Date(); const y = now.getFullYear(); const m = now.getMonth();
-  if (range === "this-year") return d.getFullYear() === y;
-  const bucket =
-    range === "this-month" ? new Date(y, m, 1) :
-    range === "last-month" ? new Date(y, m - 1, 1) :
-    new Date(y, m + 1, 1); // next-month
-  return d.getFullYear() === bucket.getFullYear() && d.getMonth() === bucket.getMonth();
+/* Status chip → the endpoint's exact `status` value (DRAFT/CONFIRMED/CANCELLED),
+   or null for All. Real SO rows only ever carry those three; the old two-way
+   submitted⇄confirmed match existed only to cover a legacy "SUBMITTED" spelling
+   that no live row uses, so both chips resolve to CONFIRMED server-side. */
+function statusToParam(s: StatusFilter): string | null {
+  switch (s) {
+    case "draft": return "DRAFT";
+    case "submitted":
+    case "confirmed": return "CONFIRMED";
+    case "cancelled": return "CANCELLED";
+    default: return null; // all
+  }
 }
 
 /** Sales Orders list — 1:1 with the owner's mobile prototype (`#so-list`), wired
@@ -122,6 +133,14 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
   const notify = useNotify();
   const { user, can, pageAccess } = useAuth();
   const [q, setQ] = useState("");
+  /* Debounced search term — the actual value sent to the server (and keyed into
+     the infinite query) so a keystroke doesn't fire a request per character.
+     300ms after the operator stops typing the query re-runs from page 0. */
+  const [debouncedQ, setDebouncedQ] = useState("");
+  useEffect(() => {
+    const t = window.setTimeout(() => setDebouncedQ(q.trim()), 300);
+    return () => window.clearTimeout(t);
+  }, [q]);
   // FAB "+" speed-dial — offers New Sales Order + New Service Case (parity with
   // the desktop QuickActionsFAB two-choice). A Sales user always gets the case
   // option (owner rule 2026-07); others get it only if their matrix grants it.
@@ -144,26 +163,51 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
      `longPressFired` suppresses the click that follows the long-press release. */
   const lpTimer = useRef<number | null>(null);
   const lpFired = useRef(false);
+  /* Scroll container — the infinite-scroll trigger listens on this element (the
+     mobile screens scroll an inner overflow div, not the window). */
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const sentinelRef = useRef<HTMLDivElement>(null);
 
-  const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ["mobile-so-list"],
-    queryFn: () => authedFetch<{ salesOrders?: SoRow[]; orders?: SoRow[]; rows?: SoRow[] }>("/mfg-sales-orders?limit=500&fields=minimal"),
+  /* Server-side search + status + period + infinite scroll. Each filter is a
+     query param; changing status/range/debouncedQ swaps the query key so the
+     list restarts from page 0 and the server finds matches across the WHOLE
+     table (not just the rows already loaded). pageSize 30, sort so_date:desc
+     with a doc_no tiebreaker on the backend → no skipped/duplicated rows. */
+  const buildParams = (page: number): string => {
+    const p = new URLSearchParams();
+    p.set("page", String(page));
+    p.set("pageSize", String(PAGE_SIZE));
+    p.set("sort", "so_date:desc");
+    const st = statusToParam(status); if (st) p.set("status", st);
+    const { from, to } = rangeToDates(range);
+    if (from) p.set("from", from);
+    if (to) p.set("to", to);
+    if (debouncedQ) p.set("q", debouncedQ);
+    return p.toString();
+  };
+  type SoListPage = { salesOrders?: SoRow[]; total?: number; page?: number; pageSize?: number };
+  const {
+    data, isLoading, error, refetch,
+    fetchNextPage, hasNextPage, isFetchingNextPage,
+  } = useInfiniteQuery({
+    queryKey: ["mobile-so-list-paged", status, range, debouncedQ],
+    queryFn: ({ pageParam }) => authedFetch<SoListPage>(`/mfg-sales-orders?${buildParams(pageParam)}`),
+    initialPageParam: 0,
+    getNextPageParam: (last, pages) => {
+      const loaded = pages.reduce((n, p) => n + (p.salesOrders?.length ?? 0), 0);
+      return loaded < (last.total ?? 0) ? pages.length : undefined;
+    },
     staleTime: 30_000,
+    placeholderData: (prev) => prev,
   });
-  const all = data?.salesOrders ?? data?.orders ?? data?.rows ?? [];
-
-  const rows = useMemo(() => {
-    const needle = q.trim().toLowerCase();
-    return all.filter((r) => {
-      if (!statusMatches(r, status)) return false;
-      if (!inRange(r, range)) return false;
-      if (needle && !`${r.debtor_name ?? ""} ${r.doc_no} ${r.customer_so_no ?? ""} ${r.ref ?? ""} ${r.po_doc_no ?? ""}`.toLowerCase().includes(needle)) return false;
-      return true;
-    });
-  }, [all, q, status, range]);
+  const rows = useMemo(() => data?.pages.flatMap((p) => p.salesOrders ?? []) ?? [], [data]);
+  const totalCount = data?.pages[0]?.total ?? 0;
 
   /* Summary bar totals — exclude cancelled orders (mirrors the prototype: a
-     voided order contributes neither revenue nor outstanding). */
+     voided order contributes neither revenue nor outstanding). NB: rev/out are
+     summed over the rows LOADED SO FAR (server-side pagination means the full
+     set isn't in memory), so they're labelled "(loaded)"; the order COUNT is the
+     server's real total for the current filter. */
   const summary = useMemo(() => {
     let rev = 0, out = 0;
     for (const r of rows) {
@@ -171,8 +215,32 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
       rev += total(r);
       const b = balance(r); if (b > 0) out += b;
     }
-    return { count: rows.length, rev, out };
+    return { rev, out };
   }, [rows]);
+
+  /* Infinite-scroll trigger — an IntersectionObserver watches a 1px sentinel at
+     the bottom of the list and fetches the next page when it nears the viewport
+     (rootMargin 600px pre-load). Observer callbacks run on the event loop, NOT
+     rAF, so this fires reliably even when the tab throttles rAF (a scroll+rAF
+     version silently stopped loading under throttling). Guarded by hasNextPage
+     && !isFetchingNextPage so it can't double-fire; re-observing when those flip
+     re-fires the initial-state callback, so a first page shorter than the
+     viewport (sentinel already visible) still pulls the next until the sentinel
+     scrolls out or there are no more pages. */
+  useEffect(() => {
+    const target = sentinelRef.current;
+    if (!target || !hasNextPage) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting) && hasNextPage && !isFetchingNextPage) {
+          void fetchNextPage();
+        }
+      },
+      { root: scrollRef.current, rootMargin: "0px 0px 600px 0px" },
+    );
+    io.observe(target);
+    return () => io.disconnect();
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage, rows.length]);
 
   const filterActive = status !== "all" || range !== "all";
 
@@ -378,16 +446,19 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
         </div>
       </header>
 
-      <div className="scroll hz-scroll" style={{ padding: 14, paddingBottom: 120 }}>
-        {/* Summary bar — N orders · RM rev · RM outstanding (outstanding hidden when zero). */}
+      <div ref={scrollRef} className="scroll hz-scroll" style={{ padding: 14, paddingBottom: 120 }}>
+        {/* Summary bar — N orders (server total for the filter) · RM rev · RM
+            outstanding over the LOADED rows (outstanding hidden when zero). The
+            "(loaded)" note is honest: with server-side pagination the money
+            totals reflect only what's been scrolled in, not the whole set. */}
         {!isLoading && !error && (
           <div style={{ display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap", fontSize: 11.5, color: "var(--mut)", margin: "0 2px 11px" }}>
-            <span><b style={{ color: "var(--ink)" }}>{summary.count}</b> orders</span>
+            <span><b style={{ color: "var(--ink)" }}>{totalCount}</b> orders</span>
             <span style={{ opacity: .4 }}>·</span>
-            <span className="money">{fmtCenti(summary.rev)} rev</span>
+            <span className="money">{fmtCenti(summary.rev)} rev (loaded)</span>
             {summary.out > 0 && <>
               <span style={{ opacity: .4 }}>·</span>
-              <span className="money" style={{ color: "var(--red)" }}>{fmtCenti(summary.out)} outstanding</span>
+              <span className="money" style={{ color: "var(--red)" }}>{fmtCenti(summary.out)} outstanding (loaded)</span>
             </>}
           </div>
         )}
@@ -469,6 +540,17 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
               );
                 }}
               />
+            )}
+            {/* Infinite-scroll sentinel — the IntersectionObserver watches this
+                1px marker at the list's bottom; it enters view (+600px) near the
+                end and pulls the next page. Only present while more pages exist. */}
+            {rows.length > 0 && hasNextPage && (
+              <div ref={sentinelRef} aria-hidden style={{ height: 1 }} />
+            )}
+            {/* Infinite-scroll footer — "Loading more…" while the next page is in
+                flight; nothing once every page is loaded (hasNextPage false). */}
+            {rows.length > 0 && isFetchingNextPage && (
+              <div style={{ textAlign: "center", padding: "14px 0 2px", fontSize: 11.5, color: "var(--mut)" }}>Loading more…</div>
             )}
             {!rows.length && (
               <div className="empty">

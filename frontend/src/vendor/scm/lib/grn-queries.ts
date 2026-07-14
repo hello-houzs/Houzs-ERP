@@ -61,6 +61,31 @@ export const useGrns = (status?: string) =>
     retry: 1,
     retryDelay: 800,
   });
+
+// Opt-in server-side pagination + search + sort + status-counts (mirrors
+// useMfgSalesOrdersPaged). Sending `page` switches /grns into its paginated
+// contract ({ grns, total, page, pageSize, statusCounts }); the legacy useGrns
+// above (no page) still returns the historical unpaginated list. `status` is
+// the resolved grns.status DB value (UPPERCASE); each GRN filter-pill bucket
+// (draft/posted/cancelled) maps 1:1 to a single DB status, so no bucket needs
+// to be dropped here.
+export function useGrnsPaged(params: { page: number; pageSize: number; status?: string; q?: string; sort?: string }) {
+  const { page, pageSize, status, q, sort } = params;
+  const usp = new URLSearchParams();
+  usp.set('page', String(page));
+  usp.set('pageSize', String(pageSize));
+  if (status) usp.set('status', status);
+  if (q && q.trim()) usp.set('q', q.trim());
+  if (sort) usp.set('sort', sort);
+  return useQuery({
+    queryKey: ['grns-paged', page, pageSize, status ?? '', q ?? '', sort ?? ''],
+    queryFn: () => authedFetch<{ grns: any[]; total: number; page: number; pageSize: number; statusCounts: { all: number; draft: number; posted: number; cancelled: number } }>(`/grns?${usp.toString()}`),
+    placeholderData: (prev: any) => prev,
+    staleTime: 30_000,
+    retry: 1,
+    retryDelay: 800,
+  });
+}
 export const useGrnDetail = (id: string | null) => useQuery({
   queryKey: ['grn-detail', id],
   queryFn: () => authedFetch<{ grn: any; items: any[] }>(`/grns/${id}`),

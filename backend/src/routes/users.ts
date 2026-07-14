@@ -290,6 +290,14 @@ app.get("/", requirePermissionOrSalesDirector("users.read"), async (c) => {
           FROM ${user_departments} ud
          WHERE ud.user_id = ${users.id}
       )`,
+      // Per-user company grants (Phase 0e — user_companies). Drives the Team
+      // "Company" column + the edit/invite Company selector. Empty array = no
+      // grant row → the user fail-opens to ALL companies (companyContext).
+      company_ids_arr: sql<number[] | null>`(
+        SELECT array_agg(uc.company_id)
+          FROM user_companies uc
+         WHERE uc.user_id = ${users.id}
+      )`,
     })
     .from(users)
     .innerJoin(roles, eq(roles.id, users.role_id))
@@ -309,6 +317,12 @@ app.get("/", requirePermissionOrSalesDirector("users.read"), async (c) => {
       .sort((a, b) => a - b);
     const department_ids =
       r.department_id != null ? [r.department_id, ...extra] : extra;
+    // Company grants — normalise to a sorted number[] for the Company column.
+    const companyArr = Array.isArray(r.company_ids_arr) ? r.company_ids_arr : [];
+    const company_ids = companyArr
+      .map((x) => Number(x))
+      .filter((n) => Number.isFinite(n))
+      .sort((a, b) => a - b);
     return {
       ...r,
       brands: r.brands_concat
@@ -317,6 +331,8 @@ app.get("/", requirePermissionOrSalesDirector("users.read"), async (c) => {
       brands_concat: undefined,
       department_ids,
       department_ids_arr: undefined,
+      company_ids,
+      company_ids_arr: undefined,
     };
   });
   return c.json({ users: out });
@@ -411,34 +427,28 @@ app.get("/:id/companies", requirePermission("users.read"), async (c) => {
 });
 
 /**
- * PUT /api/users/:id/companies
- * Body: { companies: number[] }  replace-set semantics, validated against the
- * companies master (silent-drop unknowns). Mirrors PUT /:id/brands.
- * NO-OP-SAFE: if `user_companies` (or `companies`) is absent (pre-0f) we return
- * 200 with an empty list rather than 500 — the feature simply isn't active yet.
+ * SET a user's company grants (replace-set semantics). Validates the requested
+ * ids against the canonical companies master (silent-drop unknowns), then
+ * DELETE-then-INSERT `user_companies` in one batch. Returns the persisted set.
+ *
+ * NO-OP-SAFE: if `user_companies` / `companies` is absent (pre-0f) the query
+ * throws and we swallow it, returning [] — the feature simply isn't active yet.
+ *
+ * Shared by PUT /:id/companies, POST /invite and PATCH /:id so the three write
+ * paths never drift (see MEMORY: single logic layer / converge drifted copies).
  */
-app.put("/:id/companies", requirePermission("users.manage"), async (c) => {
-  const id = parseInt(c.req.param("id"), 10);
-  if (!id) return c.json({ error: "Invalid ID." }, 400);
-
-  const body = await c.req.json<{ companies?: unknown }>();
-  const incoming = Array.isArray(body.companies) ? body.companies : [];
+async function setUserCompanies(
+  c: Context<{ Bindings: Env }>,
+  userId: number,
+  companyIds: number[],
+): Promise<number[]> {
   const requested = Array.from(
     new Set(
-      incoming
+      companyIds
         .map((x) => Number(x))
         .filter((n) => Number.isFinite(n) && n > 0),
     ),
   );
-
-  const db = getDb(c.env);
-  const target = await db
-    .select({ id: users.id })
-    .from(users)
-    .where(eq(users.id, id))
-    .limit(1);
-  if (target.length === 0) return c.json({ error: "User not found" }, 404);
-
   try {
     // Validate against the canonical companies master (silent-drop unknowns).
     let valid = requested;
@@ -451,21 +461,48 @@ app.put("/:id/companies", requirePermission("users.manage"), async (c) => {
     }
 
     await c.env.DB.batch([
-      c.env.DB.prepare(`DELETE FROM user_companies WHERE user_id = ?`).bind(id),
+      c.env.DB
+        .prepare(`DELETE FROM user_companies WHERE user_id = ?`)
+        .bind(userId),
       ...valid.map((cid) =>
         c.env.DB
           .prepare(
             `INSERT INTO user_companies (user_id, company_id) VALUES (?, ?)`,
           )
-          .bind(id, cid),
+          .bind(userId, cid),
       ),
     ]);
-
-    return c.json({ ok: true, companies: valid });
+    return valid;
   } catch {
     // user_companies / companies not present yet (pre-0f) — no-op gracefully.
-    return c.json({ ok: true, companies: [] });
+    return [];
   }
+}
+
+/**
+ * PUT /api/users/:id/companies
+ * Body: { companies: number[] }  replace-set semantics, validated against the
+ * companies master (silent-drop unknowns). Mirrors PUT /:id/brands.
+ * NO-OP-SAFE: if `user_companies` (or `companies`) is absent (pre-0f) we return
+ * 200 with an empty list rather than 500 — the feature simply isn't active yet.
+ */
+app.put("/:id/companies", requirePermission("users.manage"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
+
+  const body = await c.req.json<{ companies?: unknown }>();
+  const incoming = Array.isArray(body.companies) ? body.companies : [];
+
+  const db = getDb(c.env);
+  const target = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.id, id))
+    .limit(1);
+  if (target.length === 0) return c.json({ error: "User not found" }, 404);
+
+  const valid = await setUserCompanies(c, id, incoming as number[]);
+  return c.json({ ok: true, companies: valid });
 });
 
 /**
@@ -621,6 +658,11 @@ app.post("/invite", requirePermissionOrSalesDirector("users.manage"), async (c) 
     position_id?: number | null;
     manager_id?: number | null;
     phone?: string | null;
+    // Per-company grants for the new member (Phase 0e). Omitted / empty →
+    // defaults to [1] (Houzs) so a new user is NEVER left with zero grants
+    // (zero rows would fail-open to ALL companies). Full-admin only; a
+    // Sales-Director-scoped invite ignores this and is forced to Houzs.
+    company_ids?: number[];
     // When provided, the admin is setting an initial password and the account
     // is created ACTIVE — no invite link / accept step. The member signs in
     // with email + this password and can change it later.
@@ -724,26 +766,31 @@ app.post("/invite", requirePermissionOrSalesDirector("users.manage"), async (c) 
   // Create or refresh the placeholder user. Name is preset here ("the
   // Position concept") so the invitee lands with their identity already
   // set; they can still adjust it when accepting.
+  let userId: number | null = existing.length > 0 ? existing[0].id : null;
   if (existing.length === 0) {
-    await db.insert(users).values({
-      email,
-      name,
-      role_id: body.role_id,
-      department_id: departmentId,
-      position_id: positionId,
-      manager_id: managerId,
-      phone: body.phone?.trim() || null,
-      status: activate ? "active" : "invited",
-      invited_by: me.id || null,
-      ...(activate
-        ? {
-            password_hash: passwordHash,
-            joined_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` as unknown as string,
-          }
-        : {
-            invited_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` as unknown as string,
-          }),
-    });
+    const insertedUser = await db
+      .insert(users)
+      .values({
+        email,
+        name,
+        role_id: body.role_id,
+        department_id: departmentId,
+        position_id: positionId,
+        manager_id: managerId,
+        phone: body.phone?.trim() || null,
+        status: activate ? "active" : "invited",
+        invited_by: me.id || null,
+        ...(activate
+          ? {
+              password_hash: passwordHash,
+              joined_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` as unknown as string,
+            }
+          : {
+              invited_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` as unknown as string,
+            }),
+      })
+      .returning({ id: users.id });
+    userId = insertedUser[0]?.id ?? null;
   } else {
     // Re-invite — bump role and reset invited_at, drop any old token.
     // Only overwrite the name when a new one was supplied.
@@ -772,6 +819,19 @@ app.post("/invite", requirePermissionOrSalesDirector("users.manage"), async (c) 
       .delete(invitations)
       .where(and(eq(invitations.email, email), isNull(invitations.accepted_at)));
   }
+
+  // Write the member's company grants (Phase 0e). The placeholder user row
+  // exists in BOTH the invite-token and direct-activate paths, and accept-invite
+  // only promotes it (never re-creates), so grants set here persist. Default =
+  // [1] (Houzs) when the admin didn't pick one — a new user must never land with
+  // zero grants (that fail-opens to ALL companies). A Sales-Director-scoped
+  // invite may not set companies, so it is forced to Houzs.
+  const inviteCompanyIds = inviteScope.scoped
+    ? [1]
+    : Array.isArray(body.company_ids) && body.company_ids.length > 0
+      ? body.company_ids
+      : [1];
+  if (userId) await setUserCompanies(c, userId, inviteCompanyIds);
 
   // Admin set a password → the account is live now; no invite token/email.
   if (activate) {
@@ -1031,6 +1091,9 @@ app.patch("/:id", requirePermissionOrSalesDirector("users.manage"), async (c) =>
     email?: string;
     email_alias?: string | null;
     status_reason?: string | null;
+    // Per-company grants (Phase 0e) — replace-set. Full-admin (users.manage)
+    // only; stripped for a dept-scoped Sales Director below, same as role/dept.
+    company_ids?: number[];
     // Admin-set/reset password (users.manage). Hashed; never stored plaintext.
     password?: string;
   }>();
@@ -1086,6 +1149,7 @@ app.patch("/:id", requirePermissionOrSalesDirector("users.manage"), async (c) =>
     delete body.department_id;
     delete body.department_ids;
     delete body.manager_id;
+    delete body.company_ids;
     delete body.password;
     // Login identity is an ACCOUNT-TAKEOVER vector (change the email, then run
     // forgot-password to seize the account), so the login email + alias are
@@ -1267,7 +1331,11 @@ app.patch("/:id", requirePermissionOrSalesDirector("users.manage"), async (c) =>
     }
   }
 
-  if (Object.keys(set).length === 0 && finalDeptIds === null) {
+  // Company grants (Phase 0e) — replace-set when the edit carries company_ids.
+  // A company-only edit is a valid change, so it counts toward the guard below.
+  const hasCompanyChange = Array.isArray(body.company_ids);
+
+  if (Object.keys(set).length === 0 && finalDeptIds === null && !hasCompanyChange) {
     return c.json({ error: "No fields to update" }, 400);
   }
 
@@ -1317,6 +1385,12 @@ app.patch("/:id", requirePermissionOrSalesDirector("users.manage"), async (c) =>
     }
   }
 
+  // Apply the company grants (Phase 0e) — replace-set via the shared helper.
+  let finalCompanyIds: number[] | null = null;
+  if (hasCompanyChange) {
+    finalCompanyIds = await setUserCompanies(c, id, body.company_ids as number[]);
+  }
+
   // If we disabled a user, revoke their sessions. Bust the cached-user entries
   // BEFORE the delete (reads the live tokens) so a disabled user can't ride a
   // still-cached session for up to 60s.
@@ -1341,13 +1415,18 @@ app.patch("/:id", requirePermissionOrSalesDirector("users.manage"), async (c) =>
   const changedKeys = [
     ...Object.keys(set),
     ...(finalDeptIds !== null ? ["department_ids"] : []),
+    ...(finalCompanyIds !== null ? ["company_ids"] : []),
   ];
   await audit(c, {
     action: "user.update",
     entityType: "user",
     entityId: id,
     summary: `Updated user #${id} (${changedKeys.join(", ")})`,
-    meta: { changed: set, ...(finalDeptIds !== null ? { department_ids: finalDeptIds } : {}) },
+    meta: {
+      changed: set,
+      ...(finalDeptIds !== null ? { department_ids: finalDeptIds } : {}),
+      ...(finalCompanyIds !== null ? { company_ids: finalCompanyIds } : {}),
+    },
   });
 
   return c.json({ ok: true });

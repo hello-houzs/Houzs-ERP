@@ -6,7 +6,7 @@
 // Route: /scm/purchase-orders (App.tsx flips ScmPurchaseOrdersV2 here).
 // Data: usePurchaseOrders (vendored suppliers-queries slice).
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Plus,
@@ -30,7 +30,7 @@ import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
 import { PullToRefresh } from "../../components/PullToRefresh";
 import {
-  usePurchaseOrders,
+  usePurchaseOrdersPaged,
   usePurchaseOrderDetail,
   useCancelPurchaseOrder,
   type PoHeaderRow,
@@ -509,6 +509,50 @@ function TotalRow({ k, v, strong }: { k: string; v: string; strong?: boolean }) 
   );
 }
 
+// ─── Pagination footer ──────────────────────────────────────────────────────
+
+function PaginationFooter({
+  page,
+  pageSize,
+  total,
+  onPrev,
+  onNext,
+}: {
+  page: number;
+  pageSize: number;
+  total: number;
+  onPrev: () => void;
+  onNext: () => void;
+}) {
+  const from = total === 0 ? 0 : page * pageSize + 1;
+  const to = Math.min((page + 1) * pageSize, total);
+  const atStart = page === 0;
+  const atEnd = (page + 1) * pageSize >= total;
+  return (
+    <div className="mt-4 flex items-center justify-between gap-3">
+      <span className="text-[12px] text-ink-muted">
+        Showing {from}
+        {to > from ? `–${to}` : ""} of {total}
+      </span>
+      <div className="flex items-center gap-2">
+        <Button variant="secondary" onClick={onPrev} disabled={atStart}>
+          Prev
+        </Button>
+        <Button variant="secondary" onClick={onNext} disabled={atEnd}>
+          Next
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// Table column key → backend sort-whitelist column. PO backend whitelist is
+// { po_date, po_number, status, total_centi }; only `total` differs from its
+// backend name. Non-whitelisted columns (supplier / expected) carry `disableSort`.
+const SORT_COL_MAP: Record<string, string> = {
+  total: "total_centi",
+};
+
 // ─── Main page ──────────────────────────────────────────────────────────────
 
 export function PurchaseOrdersListV2() {
@@ -519,74 +563,70 @@ export function PurchaseOrdersListV2() {
   const status = (params.get("status") ?? "all") as StatusTab;
   const view = (params.get("view") ?? "table") as "table" | "cards";
   const search = params.get("q") ?? "";
+  const page = Math.max(0, parseInt(params.get("page") ?? "0", 10) || 0);
+  const pageSize = 50;
 
   const [selected, setSelected] = useState<PoHeaderRow | null>(null);
+  const [sort, setSort] = useState<string | undefined>(undefined);
+  const [debouncedSearch, setDebouncedSearch] = useState(search);
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(t);
+  }, [search]);
 
-  const { data, isLoading, error } = usePurchaseOrders();
+  // Send the active tab's BUCKET NAME as `status`; the backend resolves each
+  // bucket to the raw status it covers (open→SUBMITTED, partial→PARTIALLY_RECEIVED,
+  // received→RECEIVED, draft/cancelled 1:1). `all` omits the filter.
+  const apiStatus = status === "all" ? undefined : status;
+
+  const { data, isLoading, error } = usePurchaseOrdersPaged({
+    page,
+    pageSize,
+    status: apiStatus,
+    q: debouncedSearch,
+    sort,
+  });
   const cancelPo = useCancelPurchaseOrder();
 
-  const allRows = useMemo<PoHeaderRow[]>(() => data ?? [], [data]);
+  // Server already filtered + sorted this page — render verbatim.
+  const rows = (data?.purchaseOrders ?? []) as PoHeaderRow[];
+  const total = data?.total ?? 0;
+  const counts = data?.statusCounts ?? {
+    all: 0,
+    draft: 0,
+    open: 0,
+    partial: 0,
+    received: 0,
+    cancelled: 0,
+  };
 
-  const scopedByBucket = useMemo(() => {
-    if (status === "all") return allRows;
-    return allRows.filter((r) => statusFor(r.status).bucket === status);
-  }, [allRows, status]);
-
-  const filtered = useMemo(() => {
-    if (!search.trim()) return scopedByBucket;
-    const q = search.toLowerCase();
-    return scopedByBucket.filter((r) => {
-      const hay = [
-        r.po_number,
-        supplierNameOf(r),
-        supplierCodeOf(r),
-        r.notes,
-      ]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
-      return hay.includes(q);
-    });
-  }, [scopedByBucket, search]);
-
-  const counts = useMemo(() => {
-    const acc = { all: allRows.length, draft: 0, open: 0, partial: 0, received: 0, cancelled: 0 };
-    for (const r of allRows) {
-      const b = statusFor(r.status).bucket;
-      if (b === "draft") acc.draft += 1;
-      else if (b === "open") acc.open += 1;
-      else if (b === "partial") acc.partial += 1;
-      else if (b === "received") acc.received += 1;
-      else if (b === "cancelled") acc.cancelled += 1;
-    }
-    return acc;
-  }, [allRows]);
-
-  // Money-out framing: Total POs / Committed / Outstanding (open+partial value)
-  // / Received value.
-  const stats = useMemo(() => {
+  // Money-out KPIs are summed over the CURRENT page only (paginated contract has
+  // no full-set money sums), so their cards are labelled "on this page".
+  const money = useMemo(() => {
     let committed = 0;
     let outstanding = 0;
     let received = 0;
-    for (const r of filtered) {
+    for (const r of rows) {
       const t = totalOf(r);
       committed += t;
       const b = statusFor(r.status).bucket;
       if (b === "open" || b === "partial") outstanding += t;
       if (b === "received") received += t;
     }
-    return {
-      total: filtered.length,
-      committed,
-      outstanding,
-      received,
-    };
-  }, [filtered]);
+    return { committed, outstanding, received };
+  }, [rows]);
 
+  const setPageParam = (p: number) => {
+    const next = new URLSearchParams(params);
+    if (p <= 0) next.delete("page");
+    else next.set("page", String(p));
+    setParams(next, { replace: true });
+  };
   const setStatusChip = (s: StatusTab) => {
     const next = new URLSearchParams(params);
     if (s === "all") next.delete("status");
     else next.set("status", s);
+    next.delete("page");
     setParams(next, { replace: true });
   };
   const setView = (v: "table" | "cards") => {
@@ -599,9 +639,22 @@ export function PurchaseOrdersListV2() {
     const next = new URLSearchParams(params);
     if (!q.trim()) next.delete("q");
     else next.set("q", q);
+    next.delete("page");
     setParams(next, { replace: true });
   };
-  const resetLayout = () => setParams(new URLSearchParams(), { replace: true });
+  const sortSyncedRef = useRef(false);
+  const setSortAndReset = (s: { key: string; dir: "asc" | "desc" } | null) => {
+    setSort(s ? `${SORT_COL_MAP[s.key] ?? s.key}:${s.dir}` : undefined);
+    if (!sortSyncedRef.current) {
+      sortSyncedRef.current = true;
+      return;
+    }
+    setPageParam(0);
+  };
+  const resetLayout = () => {
+    setSort(undefined);
+    setParams(new URLSearchParams(), { replace: true });
+  };
   const filtersActive =
     status !== "all" || view !== "table" || search.trim().length > 0;
 
@@ -645,6 +698,7 @@ export function PurchaseOrdersListV2() {
     {
       key: "supplier",
       label: "Supplier",
+      disableSort: true,
       getValue: (r) => supplierNameOf(r),
       render: (r) => (
         <div className="min-w-0">
@@ -661,6 +715,7 @@ export function PurchaseOrdersListV2() {
       key: "expected",
       label: "Expected",
       width: "128px",
+      disableSort: true,
       getValue: (r) => r.expected_at ?? "",
       render: (r) => (
         <span className="text-[12.5px] text-ink-secondary">{fmtDate(r.expected_at)}</span>
@@ -714,7 +769,7 @@ export function PurchaseOrdersListV2() {
               Purchase Orders
             </h1>
             <div className="mt-0.5 text-[12.5px] text-ink-muted">
-              {stats.total} PO{stats.total === 1 ? "" : "s"} · {fmtRm(stats.committed)} committed
+              {total} PO{total === 1 ? "" : "s"} · {fmtRm(money.committed)} committed
             </div>
           </div>
         </div>
@@ -749,28 +804,28 @@ export function PurchaseOrdersListV2() {
         <div className="mb-5 hidden grid-cols-2 gap-3 md:grid lg:grid-cols-4">
           <StatCard
             label="Total POs"
-            value={stats.total.toLocaleString("en-MY")}
-            subtitle="Scoped to current filter"
+            value={total.toLocaleString("en-MY")}
+            subtitle="All matching POs"
             rail="bg-primary"
             active
           />
           <StatCard
             label="Committed"
-            value={fmtRm(stats.committed)}
-            subtitle="Sum of PO totals"
+            value={fmtRm(money.committed)}
+            subtitle="Sum on this page"
             rail="bg-accent"
           />
           <StatCard
             label="Outstanding"
-            value={fmtRm(stats.outstanding)}
-            subtitle="Submitted + partial · not yet received"
+            value={fmtRm(money.outstanding)}
+            subtitle="Submitted + partial · on this page"
             tone="warning"
             rail="bg-accent-bright"
           />
           <StatCard
             label="Received"
-            value={fmtRm(stats.received)}
-            subtitle="Fully received · loop closed"
+            value={fmtRm(money.received)}
+            subtitle="Fully received · on this page"
             tone="success"
             rail="bg-synced"
           />
@@ -802,42 +857,57 @@ export function PurchaseOrdersListV2() {
 
         {/* Phone → Cards */}
         <div className="md:hidden">
-          <CardsGrid rows={filtered} onOpen={(r) => setSelected(r)} />
-          {filtered.length > 0 && (
-            <div className="mt-4 pb-24 text-center text-[11.5px] text-ink-muted">
-              {filtered.length} PO{filtered.length === 1 ? "" : "s"}
-            </div>
-          )}
+          <CardsGrid rows={rows} onOpen={(r) => setSelected(r)} />
+          <div className="pb-24">
+            <PaginationFooter
+              page={page}
+              pageSize={pageSize}
+              total={total}
+              onPrev={() => setPageParam(page - 1)}
+              onNext={() => setPageParam(page + 1)}
+            />
+          </div>
         </div>
 
         {/* Desktop → Table / Cards */}
         <div className="hidden md:block">
           {view === "table" ? (
-            <DataTable<PoHeaderRow>
-              tableId="purchase-orders-v2"
-              rows={filtered}
-              loading={isLoading}
-              error={error ? (error as Error).message ?? "Failed to load" : null}
-              columns={columns}
-              getRowKey={(r) => r.id}
-              onRowClick={(r) => setSelected(r)}
-              exportName="purchase-orders"
-              emptyLabel={
-                filtersActive
-                  ? "No purchase orders match — try Reset layout to clear filters."
-                  : "No purchase orders yet."
-              }
-              search={{
-                value: search,
-                onChange: setSearch,
-                placeholder: "Search PO no, supplier…",
-              }}
-              resetFilters={{
-                active: filtersActive,
-                onReset: resetLayout,
-                label: "Reset layout",
-              }}
-            />
+            <>
+              <DataTable<PoHeaderRow>
+                tableId="purchase-orders-v2"
+                rows={rows}
+                loading={isLoading}
+                error={error ? (error as Error).message ?? "Failed to load" : null}
+                columns={columns}
+                getRowKey={(r) => r.id}
+                onRowClick={(r) => setSelected(r)}
+                exportName="purchase-orders"
+                serverSort
+                onSortChange={setSortAndReset}
+                emptyLabel={
+                  filtersActive
+                    ? "No purchase orders match — try Reset layout to clear filters."
+                    : "No purchase orders yet."
+                }
+                search={{
+                  value: search,
+                  onChange: setSearch,
+                  placeholder: "Search PO no, supplier…",
+                }}
+                resetFilters={{
+                  active: filtersActive,
+                  onReset: resetLayout,
+                  label: "Reset layout",
+                }}
+              />
+              <PaginationFooter
+                page={page}
+                pageSize={pageSize}
+                total={total}
+                onPrev={() => setPageParam(page - 1)}
+                onNext={() => setPageParam(page + 1)}
+              />
+            </>
           ) : (
             <>
               <div className="mb-3 flex items-center justify-between">
@@ -859,11 +929,15 @@ export function PurchaseOrdersListV2() {
                     </button>
                   )}
                 </div>
-                <span className="text-[12px] text-ink-muted">
-                  {filtered.length} PO{filtered.length === 1 ? "" : "s"}
-                </span>
               </div>
-              <CardsGrid rows={filtered} onOpen={(r) => setSelected(r)} />
+              <CardsGrid rows={rows} onOpen={(r) => setSelected(r)} />
+              <PaginationFooter
+                page={page}
+                pageSize={pageSize}
+                total={total}
+                onPrev={() => setPageParam(page - 1)}
+                onNext={() => setPageParam(page + 1)}
+              />
             </>
           )}
         </div>

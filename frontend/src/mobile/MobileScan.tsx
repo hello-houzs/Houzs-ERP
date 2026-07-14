@@ -6,7 +6,21 @@ import { normalizePhone, splitE164 } from "../vendor/shared/phone";
 import type { ExtractedSlip } from "../vendor/scm/components/ScanOrderModal";
 import { createDraftFromPrefill } from "./MobileNewSO";
 import { serviceNotify } from "../vendor/scm/lib/dialog-service";
+import {
+  normalizeJobs,
+  jobTs,
+  isTodayTs,
+  hhmm,
+  isActiveJob,
+  type ScanJob,
+  type ScanJobsResp,
+} from "../vendor/scm/lib/scan-jobs";
 import "./mobile.css";
+
+// Re-export the shared job helpers so existing consumers that import them from
+// MobileScan (MobileSalesOrders) keep working after the move to scan-jobs.ts.
+export { normalizeJobs };
+export type { ScanJob, ScanJobsResp };
 
 // Mobile OCR "Scan" screen — capture phone photos of a handwritten sales
 // slip and POST them to /scan-so/enqueue: the upload returns in seconds with a
@@ -100,53 +114,10 @@ const newOrder = (): OrderDraft => ({ id: `ord-${++ORDER_SEQ}-${Date.now()}`, fr
    Poll cadence: refetchInterval 4000 ONLY while a listed job is queued or
    running; otherwise no interval. Section hides entirely when nothing is
    visible. Fields are dual-read camelCase ?? snake_case (pg camelCase rule)
-   even though jobToJson camelizes today. */
-export type ScanJob = {
-  id: string;
-  status: string; // queued | running | done | error
-  soDocNo: string | null;
-  error: string | null;
-  duplicateOf: string | null;
-  createdAt: string | null;
-  updatedAt: string | null;
-};
-export type ScanJobsResp = { success?: boolean; data?: { jobs?: Array<Record<string, unknown>> } };
-
-/* Shared with MobileSalesOrders' draft-created notifier — same GET /scan-so/jobs
-   payload, same dual-read (camelCase ?? snake_case) normalisation, so both
-   screens read a done job's soDocNo identically. */
-export function normalizeJobs(resp: ScanJobsResp | undefined): ScanJob[] {
-  const raw = resp?.data?.jobs ?? [];
-  return raw
-    .map((j) => ({
-      id: String(j.id ?? ""),
-      status: String(j.status ?? ""),
-      soDocNo: (j.soDocNo ?? j.so_doc_no ?? null) as string | null,
-      error: (j.error ?? null) as string | null,
-      duplicateOf: (j.duplicateOf ?? j.duplicate_of ?? null) as string | null,
-      createdAt: (j.createdAt ?? j.created_at ?? null) as string | null,
-      updatedAt: (j.updatedAt ?? j.updated_at ?? null) as string | null,
-    }))
-    .filter((j) => j.id !== "");
-}
-
-const jobTs = (s: string | null): number => {
-  const t = s ? Date.parse(s) : NaN;
-  return Number.isNaN(t) ? 0 : t;
-};
-const isTodayTs = (t: number): boolean => {
-  if (t === 0) return false;
-  const d = new Date(t);
-  const n = new Date();
-  return d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate();
-};
-const hhmm = (t: number): string => {
-  const d = new Date(t);
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-};
-/* A job is "active" while the server is still working it — the only states
-   that keep the 4s poll running. */
-const isActiveJob = (j: ScanJob): boolean => j.status === "queued" || j.status === "running";
+   even though jobToJson camelizes today. The ScanJob shape, normalizeJobs and
+   the jobTs / isTodayTs / hhmm / isActiveJob predicates now live in the shared
+   vendor/scm/lib/scan-jobs.ts (reused by the desktop Scan Order modal) and are
+   imported + re-exported at the top of this file. */
 /* Owner 2026-07-04: a DONE scan is already a draft in Orders (announced by the
    Orders-open toast), so it must NOT linger on the Scan screen — not even a
    done-with-duplicate or done-with-a-note row. The Scan screen now shows only

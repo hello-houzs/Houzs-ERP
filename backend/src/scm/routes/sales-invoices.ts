@@ -199,6 +199,18 @@ async function checkSiOverRemaining(
   return offenders.length > 0 ? { error: 'over_remaining', lines: offenders } : null;
 }
 
+/* Filter-pill bucket → the raw sales_invoices.status values it covers. Single
+   source of truth for BOTH the status-count queries and the list `status`
+   filter. sent / partial / paid are MULTI-status buckets; cancelled is 1:1. The
+   FE sends the BUCKET NAME as `status`; a raw DB status still works
+   (backward-compatible fallback). */
+const SI_STATUS_BUCKETS: Record<string, string[]> = {
+  sent: ['DRAFT', 'SENT', 'ISSUED'],
+  partial: ['PARTIALLY_PAID', 'PARTIAL'],
+  paid: ['PAID', 'COMPLETED'],
+  cancelled: ['CANCELLED'],
+};
+
 // ── List ────────────────────────────────────────────────────────────────
 salesInvoices.get('/', async (c) => {
   const sb = c.get('supabase');
@@ -239,7 +251,13 @@ salesInvoices.get('/', async (c) => {
   /* unique tiebreaker so range paging can't skip/repeat rows sharing the sort key */
   if (sortCol !== 'invoice_number') q = q.order('invoice_number', { ascending: sortAsc });
   if (scopeIds) q = q.in('salesperson_id', scopeIds);
-  const status = c.req.query('status'); if (status) q = q.eq('status', status);
+  /* Resolve the incoming `status`: a known bucket key → all its raw statuses;
+     'all'/empty → no filter; otherwise treat it as a raw DB status. */
+  const status = c.req.query('status');
+  if (status && status !== 'all') {
+    if (SI_STATUS_BUCKETS[status]) q = q.in('status', SI_STATUS_BUCKETS[status]);
+    else q = q.eq('status', status);
+  }
   q = scopeToCompany(q, c); // multi-company: isolate to the active company
   /* free-text search over the base-table columns the FE list's client-side
      search matches (SalesInvoicesListV2 hay). */
@@ -266,10 +284,10 @@ salesInvoices.get('/', async (c) => {
   };
   const [allC, sentC, partialC, paidC, cancelledC] = await Promise.all([
     countBase(),
-    countBase().in('status', ['DRAFT', 'SENT', 'ISSUED']),
-    countBase().in('status', ['PARTIALLY_PAID', 'PARTIAL']),
-    countBase().in('status', ['PAID', 'COMPLETED']),
-    countBase().in('status', ['CANCELLED']),
+    countBase().in('status', SI_STATUS_BUCKETS.sent),
+    countBase().in('status', SI_STATUS_BUCKETS.partial),
+    countBase().in('status', SI_STATUS_BUCKETS.paid),
+    countBase().in('status', SI_STATUS_BUCKETS.cancelled),
   ]);
   const statusCounts = {
     all: allC.count ?? 0,

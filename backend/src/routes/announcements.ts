@@ -19,7 +19,7 @@ import { Hono } from "hono";
 import type { Env } from "../types";
 import { requirePermission } from "../middleware/auth";
 import { hasPermission } from "../services/permissions";
-import { activeCompanyId } from "../scm/lib/companyScope";
+import { activeCompanyId, allowedCompanyIds } from "../scm/lib/companyScope";
 import {
   translateAnnouncement,
   type AnnouncementTranslations,
@@ -27,12 +27,16 @@ import {
 
 const app = new Hono<{ Bindings: Env }>();
 
-// Multi-company: announcements are PER-COMPANY (a 2990 user must not see
-// Houzs office notices and vice versa). Every read below adds the active
-// company predicate CONDITIONALLY — when the companies master is unresolved
-// (pre-migration 0093, the D1 test mirror, or a DB cold-start) the predicate
-// is skipped entirely so single-company Houzs keeps serving unchanged. This
-// mirrors the raw-SQL idiom in routes/sales.ts.
+// Multi-company: announcements are a UNIFIED module with a COMPANY-TARGET
+// dimension (owner decision 2026-07). Rather than hard-isolating each company's
+// stream by the active/switched company, a notice carries target_company_ids
+// (mig 0113); a reader sees it only if that list is NULL/empty (= all companies)
+// OR intersects the reader's OWN companies (c.get('allowedCompanyIds') — their
+// user_companies grants, fail-open to all when unresolved). The per-row
+// company_id (mig 0093) is retained as the AUTHORING company (stamped on POST,
+// used for read-receipt ack tagging); it no longer gates visibility. The
+// company gate is an ADDITIONAL AND filter layered on top of the existing
+// dept/position/user audience match — a notice must pass BOTH.
 
 // The four announcement categories. GENERAL is the back-compat default.
 type AnnouncementCategory = "GENERAL" | "WARNING" | "SOP" | "LEARNING";
@@ -82,6 +86,13 @@ type AnnouncementRow = {
   targetPositionIds?: string | number[] | null;
   target_user_ids?: string | number[] | null;
   targetUserIds?: string | number[] | null;
+  // Company-targeting dimension (mig 0113). JSON array of company ids, e.g.
+  // '[1]' or '[1,2]'. NULL / empty = ALL companies (visible to everyone). The
+  // existing per-row company_id below is the AUTHORING company; this is the
+  // independent audience filter combined (AND) with the dept/position/user
+  // audience match. See userCompanyCanSee / the unified read paths below.
+  target_company_ids?: string | number[] | null;
+  targetCompanyIds?: string | number[] | null;
   category?: string | null;
   source?: string | null;
   company_id?: number | null;
@@ -234,6 +245,7 @@ function toPublic(r: AnnouncementRow) {
       r.targetPositionIds ?? r.target_position_ids ?? null,
     ),
     targetUserIds: readIntArray(r.targetUserIds ?? r.target_user_ids ?? null),
+    targetCompanyIds: readTargetCompanyIds(r),
     category: readCategory(r.category),
     // System-notice tag ('scan' for background slip-scan results). Lets the
     // client suppress the read-receipt roster on private per-user notices.
@@ -245,35 +257,60 @@ function genId(): string {
   return `ann-${crypto.randomUUID().slice(0, 12).replace(/-/g, "")}`;
 }
 
-// Fetch one announcement scoped to the active company. A cross-company id
-// resolves to null (callers answer 404, indistinguishable from a nonexistent
-// id). Predicate skipped when the company context is unresolved.
+// Fetch one announcement the caller is allowed to see under the company gate.
+// A notice targeting only companies the caller does NOT belong to resolves to
+// null (callers answer 404, indistinguishable from a nonexistent id). The gate
+// is skipped (fail-open) when the caller's allow-list is unresolved.
 async function getScopedAnnouncement(
   c: { env: Env; get: (k: string) => unknown },
   id: string,
 ): Promise<AnnouncementRow | null> {
-  const companyId = activeCompanyId(c as never);
   const row = await c.env.DB.prepare(
-    `SELECT * FROM announcements WHERE id = ?${companyId != null ? " AND company_id = ?" : ""}`,
+    `SELECT * FROM announcements WHERE id = ?`,
   )
-    .bind(id, ...(companyId != null ? [companyId] : []))
+    .bind(id)
     .first<AnnouncementRow>();
-  return row ?? null;
+  if (!row) return null;
+  const allowed = allowedCompanyIds(c as never);
+  return companyCanSee(row, allowed) ? row : null;
 }
 
 /**
- * Company filter for the active-user roster (read-receipts + reminders).
- * users has no company column — per-company access lives in `user_companies`
- * (mig 0085) with the same FAIL-OPEN rule as companyContext: a user with NO
- * grant rows belongs to every company; a user WITH grants belongs only to
- * those. Returns "" (no filter) when the company context is unresolved.
+ * Company filter for a notice's read-receipt / reminder roster. A notice's
+ * audience spans the companies it TARGETS (target_company_ids); a user belongs
+ * to that audience when they have a `user_companies` (mig 0085) grant for any
+ * targeted company — with the same FAIL-OPEN rule as companyContext: a user
+ * with NO grant rows belongs to every company. When the notice targets ALL
+ * companies (empty list) OR no valid ids are given, returns "" (no filter) so
+ * the whole active roster counts. Ids come from OUR companies master and are
+ * re-validated as positive integers, so inlining them (no binds) is safe.
  */
-function rosterCompanySql(companyId: number | undefined, alias = "users"): string {
-  if (companyId == null) return "";
-  const cid = Number(companyId);
-  if (!Number.isInteger(cid) || cid <= 0) return "";
+function rosterCompaniesSql(companyIds: number[], alias = "users"): string {
+  const ids = (companyIds ?? [])
+    .map(Number)
+    .filter((n) => Number.isInteger(n) && n > 0);
+  if (ids.length === 0) return "";
+  const inList = ids.join(",");
   return ` AND (NOT EXISTS (SELECT 1 FROM user_companies uc WHERE uc.user_id = ${alias}.id)
-             OR EXISTS (SELECT 1 FROM user_companies uc WHERE uc.user_id = ${alias}.id AND uc.company_id = ${cid}))`;
+             OR EXISTS (SELECT 1 FROM user_companies uc WHERE uc.user_id = ${alias}.id AND uc.company_id IN (${inList})))`;
+}
+
+// The announcement's targeted company ids (JSON array), dual-keyed for the pg
+// snake->camel fold. Empty = ALL companies.
+function readTargetCompanyIds(r: AnnouncementRow): number[] {
+  return readIntArray(r.targetCompanyIds ?? r.target_company_ids ?? null);
+}
+
+// Company gate: an announcement is visible to a reader whose granted companies
+// are `allowed` IFF its target_company_ids is empty (= all companies) OR
+// intersects `allowed`. Fail-open when the reader's allow-list is unresolved
+// (single-company Houzs / D1 test mirror / cold-start) — matches the
+// allowedCompaniesSql idiom so legacy single-company reads run unchanged.
+function companyCanSee(r: AnnouncementRow, allowed: number[]): boolean {
+  const targets = readTargetCompanyIds(r);
+  if (targets.length === 0) return true;
+  if (!allowed || allowed.length === 0) return true;
+  return targets.some((id) => allowed.includes(id));
 }
 
 // True when a user with (id, deptId, positionId) is in the announcement's
@@ -311,20 +348,22 @@ app.get("/", requirePermission("announcements.read"), async (c) => {
   // System per-user notices (source='scan') are delivered only through the
   // /banner + mobile Announcements screen — they must NOT clutter this office
   // composer list. Human-authored posts have source NULL.
-  const companyId = activeCompanyId(c);
-  const stmt = c.env.DB.prepare(
-    `SELECT * FROM announcements WHERE (source IS NULL OR source <> 'scan')${
-      companyId != null ? " AND company_id = ?" : ""
-    } ORDER BY created_at DESC`,
-  );
-  const res = await (companyId != null ? stmt.bind(companyId) : stmt).all<AnnouncementRow>();
+  const res = await c.env.DB
+    .prepare(
+      `SELECT * FROM announcements WHERE (source IS NULL OR source <> 'scan') ORDER BY created_at DESC`,
+    )
+    .all<AnnouncementRow>();
   const user = c.get("user");
+  const allowed = allowedCompanyIds(c);
   const granted = user?.permissions_set ?? user?.permissions ?? [];
   const isManager =
     hasPermission(granted, "*") || hasPermission(granted, "announcements.write");
+  // Company gate first (applies to managers AND readers): a notice is listed
+  // only for a caller who belongs to a targeted company (or it targets all).
+  const visible = (res.results ?? []).filter((r) => companyCanSee(r, allowed));
   const rows = isManager
-    ? (res.results ?? [])
-    : (res.results ?? []).filter(
+    ? visible
+    : visible.filter(
         (r) =>
           isActiveFlag(r.isActive ?? r.is_active ?? null) &&
           notExpired(r.expiresAt ?? r.expires_at ?? null) &&
@@ -349,17 +388,15 @@ app.get("/banner", async (c) => {
     return c.json({ success: false, error: "Unauthorized" }, 401);
   }
 
-  const companyId = activeCompanyId(c);
-  const bannerStmt = c.env.DB.prepare(
-    `SELECT * FROM announcements${
-      companyId != null ? " WHERE company_id = ?" : ""
-    } ORDER BY created_at DESC`,
-  );
-  const res = await (companyId != null ? bannerStmt.bind(companyId) : bannerStmt).all<AnnouncementRow>();
+  const allowed = allowedCompanyIds(c);
+  const res = await c.env.DB
+    .prepare(`SELECT * FROM announcements ORDER BY created_at DESC`)
+    .all<AnnouncementRow>();
   const active = (res.results ?? []).filter(
     (r) =>
       isActiveFlag(r.isActive ?? r.is_active ?? null) &&
       notExpired(r.expiresAt ?? r.expires_at ?? null) &&
+      companyCanSee(r, allowed) &&
       userCanSee(
         r,
         user.id,
@@ -419,10 +456,11 @@ app.get("/:id/acks", requirePermission("announcements.write"), async (c) => {
 
   // Only the active users this notice actually targets (userCanSee respects
   // ALL_USERS / DEPARTMENT_IDS / POSITION_IDS / USER_IDS / MIXED), narrowed to
-  // the notice's company (user_companies grants, fail-open — see helper).
+  // the notice's TARGETED companies (user_companies grants, fail-open — see
+  // helper). A notice targeting all companies counts the whole roster.
   const rosterRes = await c.env.DB.prepare(
     `SELECT id, email, name, department_id, position_id FROM users
-      WHERE status = 'active'${rosterCompanySql(activeCompanyId(c))}
+      WHERE status = 'active'${rosterCompaniesSql(readTargetCompanyIds(ann))}
       ORDER BY name ASC`,
   ).all<{
     id: number;
@@ -526,6 +564,15 @@ app.post("/", requirePermission("announcements.write"), async (c) => {
   const reqUserIds = readIntArray(
     body.targetUserIds as string | number[] | null | undefined,
   );
+  // Company-target dimension. Empty (author picked "Both"/all, or single-company
+  // Houzs) stores NULL = visible to every company.
+  const reqCompanyIds = readIntArray(
+    (body.targetCompanyIds ?? body.target_company_ids) as
+      | string
+      | number[]
+      | null
+      | undefined,
+  );
   const targetType = deriveTargetType(reqDeptIds, reqPositionIds, reqUserIds);
   const category = readCategory(body.category);
 
@@ -548,8 +595,9 @@ app.post("/", requirePermission("announcements.write"), async (c) => {
     `INSERT INTO announcements
        (id, title, body, is_active, expires_at, created_by, created_at,
         translations, attachments, target_type,
-        target_dept_ids, target_position_ids, target_user_ids, category${stampCo ? ", company_id" : ""})
-     VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${stampCo ? ", ?" : ""})`,
+        target_dept_ids, target_position_ids, target_user_ids,
+        target_company_ids, category${stampCo ? ", company_id" : ""})
+     VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${stampCo ? ", ?" : ""})`,
   )
     .bind(
       id,
@@ -564,6 +612,7 @@ app.post("/", requirePermission("announcements.write"), async (c) => {
       reqDeptIds.length ? JSON.stringify(reqDeptIds) : null,
       reqPositionIds.length ? JSON.stringify(reqPositionIds) : null,
       reqUserIds.length ? JSON.stringify(reqUserIds) : null,
+      reqCompanyIds.length ? JSON.stringify(reqCompanyIds) : null,
       category,
       ...(stampCo ? [companyId] : []),
     )
@@ -663,6 +712,19 @@ app.patch("/:id", requirePermission("announcements.write"), async (c) => {
     sets.push("target_user_ids = ?");
     binds.push(nextUsers.length ? JSON.stringify(nextUsers) : null);
   }
+  // Company retarget. Present + empty array (or null) clears to NULL = all
+  // companies; a non-empty array narrows to those companies.
+  if ("targetCompanyIds" in body || "target_company_ids" in body) {
+    const nextCompanies = readIntArray(
+      (body.targetCompanyIds ?? body.target_company_ids) as
+        | string
+        | number[]
+        | null
+        | undefined,
+    );
+    sets.push("target_company_ids = ?");
+    binds.push(nextCompanies.length ? JSON.stringify(nextCompanies) : null);
+  }
   if ("category" in body) {
     sets.push("category = ?");
     binds.push(readCategory(body.category));
@@ -733,7 +795,7 @@ app.post("/:id/remind", requirePermission("announcements.write"), async (c) => {
   }
 
   const rosterRes = await c.env.DB.prepare(
-    `SELECT id FROM users WHERE status = 'active'${rosterCompanySql(activeCompanyId(c))}`,
+    `SELECT id FROM users WHERE status = 'active'${rosterCompaniesSql(readTargetCompanyIds(ann))}`,
   ).all<{ id: number }>();
   const rosterIds = (rosterRes.results ?? []).map((u) => u.id);
   const ackRes = await c.env.DB.prepare(
