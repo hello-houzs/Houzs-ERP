@@ -39,8 +39,8 @@ deliveryFees.get('/', async (c) => {
     c,
   )
     .maybeSingle();
-  if (!error && !data) return c.json({ error: 'not_configured', reason: 'no delivery_fee_config for this company' }, 404);
   if (error) return c.json({ error: 'fetch_failed', reason: error.message }, 500);
+  if (!data) return c.json({ error: 'not_configured', reason: 'no delivery_fee_config for this company' }, 404);
   return c.json({
     baseFee:                  data.base_fee,
     crossCategoryFee:         data.cross_category_fee,
