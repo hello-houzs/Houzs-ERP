@@ -304,7 +304,7 @@
 // only as a human-readable baseline; the appended build id is what guarantees
 // uniqueness. If the build plugin somehow didn't run the token stays literal —
 // still a valid (if non-unique) string, so it degrades gracefully.
-const VERSION = "houzs-erp-v181-__SW_BUILD_ID__";
+const VERSION = "houzs-erp-v182-__SW_BUILD_ID__";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 

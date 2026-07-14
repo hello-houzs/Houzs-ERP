@@ -395,7 +395,7 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
     // Refresh the list + any open detail caches so statuses reflect the change.
     await Promise.all([
       refetch(),
-      qc.invalidateQueries({ queryKey: ["mobile-so-detail"] }),
+      qc.invalidateQueries({ queryKey: ["mfg-sales-order-detail"] }),
     ]);
     setConfirming(false);
     exitSelect();

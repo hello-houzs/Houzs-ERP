@@ -283,13 +283,13 @@ function MobileAppInner() {
      leaves via Cancel/back whenever. This handler only nudges the Orders-list
      query (so the drafts surface when he does go back) and toasts. */
   const onScanDrafted = (count: number) => {
-    void qc.invalidateQueries({ queryKey: ["mobile-so-list"] });
+    void qc.invalidateQueries({ queryKey: ["mobile-so-list-paged"] });
     // The scan runs as a BACKGROUND job now (upload returns before the OCR),
     // so refetch again on the OCR's typical timescale — a slow job still
     // surfaces its draft without the operator reloading.
-    window.setTimeout(() => { void qc.invalidateQueries({ queryKey: ["mobile-so-list"] }); }, 2500);
-    window.setTimeout(() => { void qc.invalidateQueries({ queryKey: ["mobile-so-list"] }); }, 45_000);
-    window.setTimeout(() => { void qc.invalidateQueries({ queryKey: ["mobile-so-list"] }); }, 120_000);
+    window.setTimeout(() => { void qc.invalidateQueries({ queryKey: ["mobile-so-list-paged"] }); }, 2500);
+    window.setTimeout(() => { void qc.invalidateQueries({ queryKey: ["mobile-so-list-paged"] }); }, 45_000);
+    window.setTimeout(() => { void qc.invalidateQueries({ queryKey: ["mobile-so-list-paged"] }); }, 120_000);
     void notify({
       title: count > 1 ? `${count} orders uploaded` : "Order uploaded",
       body: count > 1

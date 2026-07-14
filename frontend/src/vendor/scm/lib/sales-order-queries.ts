@@ -150,7 +150,14 @@ export const useCreateMfgSalesOrder = () => {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (body: unknown) => authedFetch<{ docNo: string }>(`/mfg-sales-orders`, { method: 'POST', body: JSON.stringify(body) }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['mfg-sales-orders'] }),
+    // Invalidate BOTH the legacy list key AND the paged key the live V2 list
+    // (useMfgSalesOrdersPaged, ['mfg-sales-orders-paged', …]) reads — the
+    // latter is NOT a prefix of ['mfg-sales-orders'], so without it a freshly
+    // created SO didn't appear until staleTime/refocus.
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['mfg-sales-orders'] });
+      qc.invalidateQueries({ queryKey: ['mfg-sales-orders-paged'] });
+    },
   });
 };
 

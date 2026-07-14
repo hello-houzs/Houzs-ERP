@@ -1141,7 +1141,7 @@ function StopDetail({
       qc.invalidateQueries({ queryKey: ["mobile-delivery-planning"] }),
       qc.invalidateQueries({ queryKey: ["mobile-do-list-for-pod"] }),
       qc.invalidateQueries({ queryKey: ["mobile-pod-detail"] }),
-      qc.invalidateQueries({ queryKey: ["mobile-so-list"] }),
+      qc.invalidateQueries({ queryKey: ["mobile-so-list-paged"] }),
     ]);
 
   // ── Convert this Sales Order → a Delivery Order (identical endpoint to the

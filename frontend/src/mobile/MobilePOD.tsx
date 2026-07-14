@@ -190,7 +190,7 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
         qc.invalidateQueries({ queryKey: ["mobile-pod-detail", doId] }),
         qc.invalidateQueries({ queryKey: ["mobile-pod-payments", doId] }),
         qc.invalidateQueries({ queryKey: ["mobile-do-list-for-pod"] }),
-        qc.invalidateQueries({ queryKey: ["mobile-so-list"] }),
+        qc.invalidateQueries({ queryKey: ["mobile-so-list-paged"] }),
       ]);
       onDone?.();
     } catch (e) {

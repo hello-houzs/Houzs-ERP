@@ -8,6 +8,7 @@ import { useAuth as useHouzsAuth } from "../auth/AuthContext";
 import { useVenues } from "../vendor/scm/lib/venues-queries";
 import { useStateWarehouseMappings } from "../vendor/scm/lib/state-warehouse-queries";
 import { todayMyt } from "../vendor/scm/lib/dates";
+import { paymentMethodCodeForValue } from "../vendor/scm/lib/payment-methods";
 import {
   useSoDropdownOptions,
   optionsOrFallback,
@@ -444,10 +445,9 @@ function newPayment(): Payment {
   };
 }
 
-// Payment-row method label → backend enum (transfer surfaces as "Online").
-const PAY_METHOD_CODE: Record<string, "cash" | "transfer" | "merchant" | "installment"> = {
-  Cash: "cash", Online: "transfer", Merchant: "merchant", Installment: "installment",
-};
+// Payment-row method label → backend enum: use the SHARED map
+// (paymentMethodCodeForValue, payment-methods.ts) so desktop + mobile can't
+// drift on method codes. "Online" surfaces as the "transfer" code.
 // 'One Shot' → null (no installment term); 'N months' → N.
 const planToMonths = (label: string): number | null => {
   const m = /^(\d+)\s*month/i.exec(String(label).trim());
@@ -1143,7 +1143,7 @@ export function MobileNewSO({
     let failed = 0;
     let firstError = "";
     for (const p of rows) {
-      const code = PAY_METHOD_CODE[p.method] ?? "cash";
+      const code = paymentMethodCodeForValue(p.method) ?? "cash";
       const body: Record<string, unknown> = {
         paidAt: p.date,
         method: code,
@@ -1457,8 +1457,8 @@ export function MobileNewSO({
           }
           // A slip-backed payment recorded alongside the amendment still posts.
           await recordSlipBackedPayments(docNo);
-          await qc.invalidateQueries({ queryKey: ["mobile-so-detail", docNo] });
-          await qc.invalidateQueries({ queryKey: ["mobile-so-list"] });
+          await qc.invalidateQueries({ queryKey: ["mfg-sales-order-detail", docNo] });
+          await qc.invalidateQueries({ queryKey: ["mobile-so-list-paged"] });
           void notify({ title: "Amendment submitted", body: "It now needs supplier confirmation, then approval, before the order is revised." });
           if (onSaved) onSaved(docNo);
           else onBack();
@@ -1477,8 +1477,8 @@ export function MobileNewSO({
         }
         await recordSlipBackedPayments(docNo);
 
-        await qc.invalidateQueries({ queryKey: ["mobile-so-detail", docNo] });
-        await qc.invalidateQueries({ queryKey: ["mobile-so-list"] });
+        await qc.invalidateQueries({ queryKey: ["mfg-sales-order-detail", docNo] });
+        await qc.invalidateQueries({ queryKey: ["mobile-so-list-paged"] });
         if (onSaved) onSaved(docNo);
         else onBack();
         return;
@@ -1525,7 +1525,7 @@ export function MobileNewSO({
         await recordSlipBackedPayments(res.docNo);
       }
       maybeLearnFromScan();
-      await qc.invalidateQueries({ queryKey: ["mobile-so-list"] });
+      await qc.invalidateQueries({ queryKey: ["mobile-so-list-paged"] });
       if (res?.docNo && onSaved) onSaved(res.docNo);
       else onBack();
     } catch (e) {
