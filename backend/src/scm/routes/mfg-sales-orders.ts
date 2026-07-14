@@ -675,12 +675,88 @@ mfgSalesOrders.get('/', async (c) => {
      computed cols; proceeded_at was added to the base table BEFORE the view
      was last recreated by the 2990-views script, so it IS present). */
   const LIST_COLS = `${HEADER}, proceeded_at, paid_total_centi, balance_centi_live`;
-  let q = sb.from('mfg_sales_orders_with_payment_totals').select(LIST_COLS).order('so_date', { ascending: false }).limit(500);
-  if (scopeIds) q = q.in('salesperson_id', scopeIds);
-  q = scopeToCompany(q, c); // multi-company: isolate to the active company
-  const status = c.req.query('status'); if (status) q = q.eq('status', status);
-  const debtor = c.req.query('debtor'); if (debtor) q = q.ilike('debtor_name', `%${debtor}%`);
-  const { data, error } = await q;
+
+  /* Opt-in server-side pagination + search + sort + status-counts.
+     WHY: keep this endpoint flat as the SO table grows — the legacy path streams
+     up to 500 fully-hydrated rows on every load. The PRESENCE of `page` switches
+     paging on; when it is absent/empty the query below is left BYTE-IDENTICAL to
+     the historical behavior (order so_date desc, limit 500, status + debtor
+     params, `{ salesOrders }` shape) so nothing that calls this today changes.
+     Status counts are computed over the FULL scoped set (no status/search/page
+     filter) so the tab counts stay stable while the user types or a status tab
+     is active — this avoids a page-scoped-KPI bug and mirrors the current FE. */
+  const pageRaw = c.req.query('page');
+  const paginate = pageRaw !== undefined && pageRaw !== '';
+
+  let data: unknown = null;
+  let error: { message: string } | null = null;
+  let total = 0;
+  let page = 0;
+  let pageSize = 50;
+  let statusCounts: { all: number; draft: number; confirmed: number; cancelled: number } | undefined;
+
+  if (!paginate) {
+    /* --- LEGACY PATH (unchanged) --- */
+    let q = sb.from('mfg_sales_orders_with_payment_totals').select(LIST_COLS).order('so_date', { ascending: false }).limit(500);
+    if (scopeIds) q = q.in('salesperson_id', scopeIds);
+    q = scopeToCompany(q, c); // multi-company: isolate to the active company
+    const status = c.req.query('status'); if (status) q = q.eq('status', status);
+    const debtor = c.req.query('debtor'); if (debtor) q = q.ilike('debtor_name', `%${debtor}%`);
+    const res = await q;
+    data = res.data;
+    error = res.error;
+  } else {
+    /* --- PAGINATED PATH (opt-in via `page`) --- */
+    page = Math.max(0, Math.trunc(Number(pageRaw)) || 0);
+    const psRaw = Number(c.req.query('pageSize'));
+    pageSize = Number.isFinite(psRaw) && psRaw > 0 ? Math.min(100, Math.max(1, Math.trunc(psRaw))) : 50;
+
+    /* sort whitelist — map to the view's columns; anything else → so_date. */
+    const SORT_COLS = new Set(['so_date', 'doc_no', 'debtor_name', 'status', 'local_total_centi', 'customer_delivery_date']);
+    const [rawCol, rawDir] = (c.req.query('sort') ?? 'so_date:desc').split(':');
+    const sortCol = SORT_COLS.has(rawCol) ? rawCol : 'so_date';
+    const sortAsc = rawDir === 'asc';
+
+    let q = sb.from('mfg_sales_orders_with_payment_totals').select(LIST_COLS, { count: 'exact' }).order(sortCol, { ascending: sortAsc });
+    /* unique tiebreaker so range paging can't skip/repeat rows sharing the sort key */
+    if (sortCol !== 'doc_no') q = q.order('doc_no', { ascending: sortAsc });
+    if (scopeIds) q = q.in('salesperson_id', scopeIds);
+    q = scopeToCompany(q, c); // multi-company: isolate to the active company
+    const status = c.req.query('status'); if (status) q = q.eq('status', status);
+    /* free-text search replaces the legacy `debtor` param in this branch */
+    const search = c.req.query('q');
+    if (search) {
+      const s = escapeForOr(search);
+      if (s) q = q.or(`doc_no.ilike.%${s}%,debtor_name.ilike.%${s}%,debtor_code.ilike.%${s}%,agent.ilike.%${s}%,sales_location.ilike.%${s}%,ref.ilike.%${s}%,branding.ilike.%${s}%`);
+    }
+    q = q.range(page * pageSize, page * pageSize + pageSize - 1);
+    const res = await q;
+    data = res.data;
+    error = res.error;
+    total = res.count ?? (res.data?.length ?? 0);
+
+    /* Status counts over the SAME scope + company filters but WITHOUT the status
+       filter, search, or pagination. Cheap `head`-only counts against the base
+       table (not the payments view). */
+    const countBase = () => {
+      let cq = sb.from('mfg_sales_orders').select('*', { count: 'exact', head: true });
+      if (scopeIds) cq = cq.in('salesperson_id', scopeIds);
+      cq = scopeToCompany(cq, c);
+      return cq;
+    };
+    const [allC, draftC, confirmedC, cancelledC] = await Promise.all([
+      countBase(),
+      countBase().eq('status', 'DRAFT'),
+      countBase().eq('status', 'CONFIRMED'),
+      countBase().eq('status', 'CANCELLED'),
+    ]);
+    statusCounts = {
+      all: allC.count ?? 0,
+      draft: draftC.count ?? 0,
+      confirmed: confirmedC.count ?? 0,
+      cancelled: cancelledC.count ?? 0,
+    };
+  }
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
 
   /* PR — Commander 2026-05-28: Stock Status chip column.
@@ -1023,6 +1099,7 @@ mfgSalesOrders.get('/', async (c) => {
     }
   }
 
+  if (paginate) return c.json({ salesOrders: rows, total, page, pageSize, statusCounts });
   return c.json({ salesOrders: rows });
 });
 
