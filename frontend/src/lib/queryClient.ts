@@ -27,6 +27,7 @@
 // unaffected — an explicit option always wins over these defaults.
 import { QueryClient, MutationCache } from "@tanstack/react-query";
 import { installCrossTabSync, broadcastDataChanged } from "./cross-tab-sync";
+import { installQueryPersist } from "./query-persist";
 
 export const queryClient = new QueryClient({
   // Cross-tab sync: every successful write tells other open tabs to refetch.
@@ -48,3 +49,9 @@ export const queryClient = new QueryClient({
 
 // Listen for other tabs' writes and invalidate our active queries.
 installCrossTabSync(queryClient);
+
+// Persist the SCM document-list queries to localStorage so a COLD open (fresh
+// session / full reload / PWA reopen) renders the last-known list instantly and
+// revalidates in the background — no full-load spinner. Runs at module init so
+// the cache is seeded before the first render. See query-persist.ts.
+installQueryPersist(queryClient);
