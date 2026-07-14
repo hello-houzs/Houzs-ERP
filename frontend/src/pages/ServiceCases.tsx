@@ -2647,6 +2647,10 @@ function DetailContent({
   // 'service' (internal); only 'customer' is portal-visible.
   // (internal team comms) since most notes are operational. Switch to
   // 'customer' to make the entry visible on the customer portal.
+  // Customer card starts read-only (Nick 2026-07-14: "don't keep the
+  // inputs open — add an Edit button"); toggling exposes the InlineEdit
+  // fields, incl. the SO-No mirror re-match.
+  const [custEditing, setCustEditing] = useState(false);
   const [noteCategory, setNoteCategory] = useState<"service" | "customer" | "supplier" | "sales">(
     "service",
   );
@@ -3765,83 +3769,54 @@ function DetailContent({
 
             <DetailAside>
           {/* Right rail per design: Customer · Assigned to · SLA · Timeline. */}
-          <PanelSection title="Customer" icon={<User size={13} />}>
-            {/* Grouped card per the detail-page redesign handoff
-                (2026-07-14): identity row, SO/Ref chips, phone row with
-                a call affordance, then the address block. Every field
-                keeps its InlineEdit wiring — sales fat-finger SO numbers
-                at intake, and correcting the SO No re-matches customer
-                info from the local SO mirror server-side. */}
-            <div className="flex items-start gap-3">
-              <span className="flex h-[42px] w-[42px] shrink-0 select-none items-center justify-center rounded-[11px] bg-primary-soft text-[15px] font-bold text-primary-ink">
-                {(c.customer_name || "?")
-                  .split(/\s+/)
-                  .map((w: string) => w[0])
-                  .filter(Boolean)
-                  .slice(0, 2)
-                  .join("")
-                  .toUpperCase()}
-              </span>
-              <div className="min-w-0 flex-1 space-y-2">
-                <InlineEdit
-                  label="Customer"
-                  value={c.customer_name}
-                  onSave={(v) => patch({ customer_name: v })}
-                  placeholder="Customer name"
-                />
-                <InlineEdit
-                  label="Agent"
-                  value={c.sales_agent}
-                  onSave={(v) => patch({ sales_agent: v })}
-                  placeholder="Sales rep"
-                />
-              </div>
-            </div>
-            {/* SO / Ref chips — SO stays editable (mirror re-match); Ref
-                is read-only and derived, so its chip is display-only. */}
-            <div className="grid grid-cols-2 gap-2">
-              <div className="rounded-md border border-border-subtle bg-bg/60 px-2.5 py-2">
-                <InlineEdit
-                  label="SO No"
-                  value={c.doc_no}
-                  onSave={(v) => patch({ doc_no: v })}
-                  placeholder="SO-2990-xxxx"
-                />
-              </div>
-              <div className="rounded-md border border-border-subtle bg-bg/60 px-2.5 py-2">
-                <div className="font-mono text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
-                  Ref No
-                </div>
-                <div className="mt-1.5 truncate font-mono text-[13px] font-semibold text-ink">
-                  {c.ref_no || "—"}
-                </div>
-              </div>
-            </div>
-            <div className="flex items-end gap-2 border-t border-border-subtle pt-2.5">
-              <div className="min-w-0 flex-1">
-                <InlineEdit
-                  label="Phone"
-                  value={c.phone}
-                  onSave={(v) => patch({ phone: v })}
-                  placeholder="012-345 6789"
-                />
-              </div>
-              {c.phone && (
-                <a
-                  href={`tel:${String(c.phone).replace(/[^+\d]/g, "")}`}
-                  className="mb-0.5 flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-md bg-primary-soft text-primary-ink transition-colors hover:bg-primary hover:text-white"
-                  title="Call customer"
-                  aria-label="Call customer"
-                >
-                  <Phone size={14} />
-                </a>
-              )}
-            </div>
-            {/* Address is always shown AND editable (Nick 2026-07-14:
-                cases created while AutoCount is disconnected carry no
-                SO-derived address, so staff fill it by hand). One
-                textarea maps line-by-line onto addr1-4. */}
-            <div className="border-t border-border-subtle pt-2.5">
+          <PanelSection
+            title="Customer"
+            icon={<User size={13} />}
+            action={
+              <button
+                type="button"
+                onClick={() => setCustEditing((e) => !e)}
+                className={cn(
+                  "rounded-md border px-2 py-0.5 text-[10.5px] font-semibold transition-colors",
+                  custEditing
+                    ? "border-primary bg-primary text-white"
+                    : "border-border bg-surface text-ink-secondary hover:border-primary/40 hover:text-primary"
+                )}
+              >
+                {custEditing ? "Done" : "Edit"}
+              </button>
+            }
+          >
+            {custEditing ? (
+            <>
+              {/* Edit view — the full InlineEdit set. Correcting the SO No
+                  re-matches customer info from the local SO mirror
+                  server-side; the address textarea maps line-by-line onto
+                  addr1-4. */}
+              <InlineEdit
+                label="Customer"
+                value={c.customer_name}
+                onSave={(v) => patch({ customer_name: v })}
+                placeholder="Customer name"
+              />
+              <InlineEdit
+                label="Agent"
+                value={c.sales_agent}
+                onSave={(v) => patch({ sales_agent: v })}
+                placeholder="Sales rep"
+              />
+              <InlineEdit
+                label="SO No"
+                value={c.doc_no}
+                onSave={(v) => patch({ doc_no: v })}
+                placeholder="SO-2990-xxxx"
+              />
+              <InlineEdit
+                label="Phone"
+                value={c.phone}
+                onSave={(v) => patch({ phone: v })}
+                placeholder="012-345 6789"
+              />
               <InlineEdit
                 label="Customer address"
                 textarea
@@ -3860,14 +3835,6 @@ function DetailContent({
                 }}
                 placeholder={"Street / unit\nCity - postcode\nState"}
               />
-              {c.location && (
-                <span className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-primary-soft px-2.5 py-1 text-[11.5px] font-semibold text-primary-ink">
-                  <MapPin size={11} />
-                  {c.location}
-                </span>
-              )}
-            </div>
-            <div className="space-y-2 border-t border-border-subtle pt-2.5">
               <InlineEdit
                 label="Location"
                 value={c.location}
@@ -3880,8 +3847,78 @@ function DetailContent({
                 onSave={(v) => patch({ customer_email: v })}
                 placeholder="customer@example.com"
               />
+              <FieldRow label="Ref No" mono>{c.ref_no || "—"}</FieldRow>
               <FieldRow label="Created">{formatDate(c.complained_date)}</FieldRow>
-            </div>
+            </>
+            ) : (
+            <>
+              {/* Read view — mirrors the .dc.html reference: identity row,
+                  SO/Ref chips, phone row with call, address + location chip. */}
+              <div className="flex items-center gap-3">
+                <span className="flex h-[42px] w-[42px] shrink-0 select-none items-center justify-center rounded-[11px] bg-primary-soft text-[15px] font-bold text-primary-ink">
+                  {(c.customer_name || "?")
+                  .split(/\s+/)
+                  .map((w: string) => w[0])
+                  .filter(Boolean)
+                  .slice(0, 2)
+                  .join("")
+                  .toUpperCase()}
+                </span>
+                <div className="min-w-0">
+                  <div className="truncate text-[16px] font-bold leading-tight text-ink">
+                    {c.customer_name || "—"}
+                  </div>
+                  <div className="mt-0.5 text-[12px] text-ink-muted">
+                    Agent · <b className="font-semibold text-ink-secondary">{c.sales_agent || "—"}</b>
+                  </div>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded-md border border-border-subtle bg-bg/60 px-2.5 py-2">
+                  <div className="font-mono text-[9px] font-semibold uppercase tracking-wider text-ink-muted">SO No</div>
+                  <div className="mt-1 truncate font-mono text-[13px] font-semibold text-primary-ink">{c.doc_no || "—"}</div>
+                </div>
+                <div className="rounded-md border border-border-subtle bg-bg/60 px-2.5 py-2">
+                  <div className="font-mono text-[9px] font-semibold uppercase tracking-wider text-ink-muted">Ref No</div>
+                  <div className="mt-1 truncate font-mono text-[13px] font-semibold text-ink">{c.ref_no || "—"}</div>
+                </div>
+              </div>
+              <div className="flex items-center justify-between gap-2 border-t border-border-subtle pt-2.5">
+                <div className="min-w-0">
+                  <div className="font-mono text-[9px] font-semibold uppercase tracking-wider text-ink-muted">Phone</div>
+                  <div className="mt-1 font-mono text-[13.5px] font-semibold text-ink">{c.phone || "—"}</div>
+                </div>
+                {c.phone && (
+                  <a
+                    href={`tel:${String(c.phone).replace(/[^+\d]/g, "")}`}
+                    className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-md bg-primary-soft text-primary-ink transition-colors hover:bg-primary hover:text-white"
+                    title="Call customer"
+                    aria-label="Call customer"
+                  >
+                    <Phone size={14} />
+                  </a>
+                )}
+              </div>
+              <div className="border-t border-border-subtle pt-2.5">
+                <div className="font-mono text-[9px] font-semibold uppercase tracking-wider text-ink-muted">Customer address</div>
+                <div className="mt-1 text-[13px] font-medium leading-relaxed text-ink">
+                  {[c.addr1, c.addr2, c.addr3, c.addr4].filter(Boolean).join(", ") || "—"}
+                </div>
+                {c.location && (
+                  <span className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-primary-soft px-2.5 py-1 text-[11.5px] font-semibold text-primary-ink">
+                    <MapPin size={11} />
+                    {c.location}
+                  </span>
+                )}
+              </div>
+              {(c.customer_email || c.complained_date) && (
+                <div className="space-y-1 border-t border-border-subtle pt-2">
+                  {c.customer_email && <FieldRow label="Email">{c.customer_email}</FieldRow>}
+                  <FieldRow label="Created">{formatDate(c.complained_date)}</FieldRow>
+                </div>
+              )}
+            </>
+            )}
           </PanelSection>
 
           {/* Assigned To — Design PR 2. Unassigned uses a dashed
