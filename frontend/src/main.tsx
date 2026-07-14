@@ -1,4 +1,4 @@
-import React, { Suspense, lazy } from "react";
+import React, { Suspense, lazy, useSyncExternalStore } from "react";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import App from "./App";
@@ -17,6 +17,24 @@ import { ChunkReloadBoundary } from "./components/RouteFallback";
 import { registerPwa } from "./pwa";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { queryClient } from "./lib/queryClient";
+import { getActiveCompanySnapshot, subscribeActiveCompany } from "./lib/activeCompany";
+
+// Remount the whole dashboard when the active company changes, so every
+// react-query observer recomputes its company-scoped hash (see
+// lib/queryClient queryKeyHashFn) and fetches the newly-selected company's
+// data — no manual page reload. Crucially this boundary sits BELOW the
+// QueryClientProvider + BrowserRouter, so a switch preserves the current
+// URL/route and keeps the previous company's cache warm for an instant
+// switch-back; only the routed subtree (desktop Layout + mobile app) remounts.
+// key=0 when unset → single-company installs never remount (unchanged).
+function CompanyScopedApp() {
+  const companyId = useSyncExternalStore(
+    subscribeActiveCompany,
+    getActiveCompanySnapshot,
+    getActiveCompanySnapshot,
+  );
+  return <App key={companyId ?? 0} />;
+}
 
 // The public surfaces (survey, customer/supplier portal, password reset)
 // are split out of the staff bundle — staff never download them, and the
@@ -86,7 +104,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
         ) : (
           <AuthProvider>
             <AuthGate>
-              <App />
+              <CompanyScopedApp />
             </AuthGate>
           </AuthProvider>
         )}

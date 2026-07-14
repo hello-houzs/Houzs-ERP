@@ -10,7 +10,6 @@ import { Avatar } from "./Avatar";
 import { cn } from "../lib/utils";
 import { api } from "../api/client";
 import { useQuery } from "../hooks/useQuery";
-import { queryClient } from "../lib/queryClient";
 import { clearAll } from "../api/cache";
 import {
   getActiveCompanySnapshot,
@@ -182,11 +181,16 @@ function CompanySwitcher() {
   function pick(id: number) {
     setOpen(false);
     if (id === activeId) return;
+    // Commit the new active company. The <CompanyScopedApp> boundary (main.tsx)
+    // is keyed on this id, so this synchronously remounts the dashboard — every
+    // react-query observer recomputes its company-scoped hash (lib/queryClient
+    // queryKeyHashFn) and fetches the newly-selected company's data, with NO
+    // page reload and no chance of serving the previous company's rows.
     setActiveCompanyId(id);
-    // Clear the path-only SWR store FIRST (else it serves the previous company's
-    // cached payload for up to TTL_MS), then refetch the whole app react-query side.
+    // Also drop the path-only SWR store (api/cache.ts) used by the non-
+    // react-query api.get layer, so it can't serve the previous company's
+    // cached payload during the remount either.
     clearAll();
-    void queryClient.invalidateQueries();
   }
 
   return (

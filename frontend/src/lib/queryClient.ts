@@ -25,9 +25,10 @@
 // snapshot layer for cold-open instancy is the tracked follow-up. refetchOnWindow-
 // Focus stays off. Callsites with their own staleTime (SCM + mobile) are
 // unaffected — an explicit option always wins over these defaults.
-import { QueryClient, MutationCache } from "@tanstack/react-query";
+import { QueryClient, MutationCache, hashKey } from "@tanstack/react-query";
 import { installCrossTabSync, broadcastDataChanged } from "./cross-tab-sync";
 import { installQueryPersist } from "./query-persist";
+import { getActiveCompanyId } from "./activeCompany";
 
 export const queryClient = new QueryClient({
   // Cross-tab sync: every successful write tells other open tabs to refetch.
@@ -39,6 +40,25 @@ export const queryClient = new QueryClient({
   }),
   defaultOptions: {
     queries: {
+      // Multi-company cache isolation (fixes "switch company → list keeps the
+      // previous company's rows until F5"). Fold the active company id into the
+      // HASH react-query uses to BUCKET each query, so two companies asking the
+      // SAME queryKey (e.g. ['mfg-products','all',''] — the ~40 vendored SCM
+      // modules and the custom useQuery hook all key by URL/args only, never by
+      // company) land in SEPARATE cache entries. Cross-company collisions become
+      // structurally impossible, and a switch re-buckets every active observer to
+      // a fresh (empty) slot → automatic refetch of the newly-selected company's
+      // data (the <CompanyScopedApp> remount in main.tsx makes observers
+      // recompute this hash). When no company is selected (single-company /
+      // pre-activation) the prefix is empty → byte-identical hashing to before,
+      // so single-company Houzs is behaviourally unchanged. NOTE: this only
+      // changes the storage bucket — invalidateQueries({queryKey}) matching still
+      // compares key ARRAYS (partialMatchKey), so every existing mutation-side
+      // invalidation keeps working across the company-scoped entries.
+      queryKeyHashFn: (key) => {
+        const cid = getActiveCompanyId();
+        return (cid !== null ? `co:${cid}|` : "") + hashKey(key);
+      },
       staleTime: 30_000,
       gcTime: 30 * 60_000,
       refetchOnWindowFocus: false,

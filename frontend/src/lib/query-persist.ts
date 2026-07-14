@@ -15,12 +15,22 @@
 //     size-capped, and fail-soft on quota / corruption.
 
 import type { QueryClient } from "@tanstack/react-query";
+import { getActiveCompanyId } from "./activeCompany";
 
 // Injected at build time by vite.config `define`. Unique per deploy.
 declare const __BUILD_ID__: string;
 const BUILD_ID = typeof __BUILD_ID__ !== "undefined" ? __BUILD_ID__ : "dev";
-const KEY = `houzs-rq-snapshot:${BUILD_ID}`;
 const NS_PREFIX = "houzs-rq-snapshot:";
+const BUILD_PREFIX = `${NS_PREFIX}${BUILD_ID}`;
+
+// Namespace the snapshot by the active company too: the persisted list rows are
+// company-scoped, so a cold open (reload / PWA reopen) as company B must not
+// hydrate company A's saved lists. Absent (single-company) → no company suffix,
+// identical to before.
+function snapshotKey(): string {
+  const cid = getActiveCompanyId();
+  return cid !== null ? `${BUILD_PREFIX}:co${cid}` : BUILD_PREFIX;
+}
 const MAX_BYTES = 1_500_000; // ~1.5 MB — skip the write if the snapshot exceeds it
 const DEBOUNCE_MS = 1200;
 
@@ -66,7 +76,7 @@ function save(qc: QueryClient): void {
     }
     const json = JSON.stringify(out);
     if (json.length > MAX_BYTES) return;
-    localStorage.setItem(KEY, json);
+    localStorage.setItem(snapshotKey(), json);
   } catch {
     // quota exceeded / serialization error → skip this write.
   }
@@ -75,12 +85,14 @@ function save(qc: QueryClient): void {
 /** Seed the cache from the last snapshot, stamped stale so it revalidates. */
 function hydrate(qc: QueryClient): void {
   try {
-    // Prune snapshots from previous builds so an old payload shape never lingers.
+    // Prune snapshots from PREVIOUS builds so an old payload shape never lingers.
+    // Keep every current-build entry (all per-company snapshots for this deploy)
+    // so switching company + reloading still finds each company's snapshot.
     for (let i = localStorage.length - 1; i >= 0; i--) {
       const k = localStorage.key(i);
-      if (k && k.startsWith(NS_PREFIX) && k !== KEY) localStorage.removeItem(k);
+      if (k && k.startsWith(NS_PREFIX) && !k.startsWith(BUILD_PREFIX)) localStorage.removeItem(k);
     }
-    const raw = localStorage.getItem(KEY);
+    const raw = localStorage.getItem(snapshotKey());
     if (!raw) return;
     const obj = JSON.parse(raw) as Record<string, unknown>;
     for (const [keyStr, data] of Object.entries(obj)) {
