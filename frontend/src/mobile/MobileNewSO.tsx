@@ -10,6 +10,7 @@ import { useStateWarehouseMappings } from "../vendor/scm/lib/state-warehouse-que
 import {
   useSoDropdownOptions,
   optionsOrFallback,
+  FALLBACK_OPTIONS,
 } from "../vendor/scm/lib/so-dropdown-options-queries";
 import {
   useLocalities,
@@ -206,10 +207,13 @@ type PaymentsResp = { payments: SoPayment[] };
    body. These module-level arrays are kept ONLY as the enum-guard allowlist for
    the headless createDraftFromPrefill() below (it has no hooks, so it validates
    a stray OCR value against a static list before it reaches the backend). */
-const CUSTOMER_TYPES = ["", "Walk-in", "Repeat", "Dealer", "Designer", "NEW", "EXISTING"];
-const BUILDING_TYPES = ["", "Landed", "Condominium", "Apartment", "Office", "Commercial", "Condo", "Shop", "Other"];
+// Derived from the shared FALLBACK_OPTIONS single source (the same catalog the
+// hooks fall back to) so mobile can NEVER drift from the desktop / DB vocabulary
+// — was "Walk-in/Repeat/Dealer" (invented), now the canonical NEW/EXISTING etc.
+const CUSTOMER_TYPES = ["", ...FALLBACK_OPTIONS.customer_type.map((o) => o.value)];
+const BUILDING_TYPES = ["", ...FALLBACK_OPTIONS.building_type.map((o) => o.value)];
 const STATES = ["", "Selangor", "Kuala Lumpur", "Penang", "Johor", "Melaka", "Perak", "Negeri Sembilan", "Kedah", "Pahang", "Sabah", "Sarawak", "Terengganu", "Kelantan", "Perlis", "Putrajaya", "Labuan"];
-const PAY_METHODS = ["Cash", "Merchant", "Online", "Installment"];
+const PAY_METHODS = FALLBACK_OPTIONS.payment_method.map((o) => o.value);
 /* Sentinel for "the signed-in creator has no scm.staff row" — shows their name
    in the Salesperson select but sends null so the backend stamps the caller. */
 const SELF_SALESPERSON = "__self__";
@@ -221,9 +225,12 @@ const LINE_CATS: Array<{ value: LineCat; label: string }> = [
 ];
 /* Payment method-aware sub-field option lists (payment-terminal metadata, not
    product variants — no product-config table, so they stay literal). */
-const BANK_OPTS = ["Maybank", "CIMB", "Public Bank", "HSBC", "RHB"];
-const PLAN_OPTS = ["One Shot", "6 months", "12 months", "24 months", "36 months"];
-const ONLINE_OPTS = ["Bank Transfer", "TNG eWallet", "DuitNow", "Cheque"];
+// Single-sourced from the shared FALLBACK_OPTIONS (payment-terminal catalog) —
+// was "Maybank"/"One Shot"/"TNG eWallet" which don't match the DB values the
+// desktop writes ("MBB"/"One-off"/"TNG"), corrupting reporting/PDF.
+const BANK_OPTS = FALLBACK_OPTIONS.payment_merchant.map((o) => o.value);
+const PLAN_OPTS = FALLBACK_OPTIONS.installment_plan.map((o) => o.value);
+const ONLINE_OPTS = FALLBACK_OPTIONS.online_type.map((o) => o.value);
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 const num = (s: string) => parseFloat(String(s).replace(/,/g, "")) || 0;
