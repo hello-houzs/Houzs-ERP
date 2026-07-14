@@ -2379,6 +2379,11 @@ function FabricField({ value, colourLabel, count, invalid, onOpen }: {
   );
 }
 
+/* Perf cap (parity with MobileSkuPicker RENDER_CAP / PR #342). Painting all
+   ~700 fabric-colour buttons froze the sheet on open + on each keystroke; cap
+   the DOM and tell the operator to narrow by search past the cap. */
+const FABRIC_RENDER_CAP = 60;
+
 /* FabricPicker — searchable bottom-sheet for the 700+ fabric-colours list.
    Mirrors the MobileSkuPicker sheet chrome + search box. Filters by fabric code
    AND colour label. */
@@ -2422,7 +2427,8 @@ function FabricPicker({ pools, current, onPick, onClose }: {
           {rows.length === 0 ? (
             <div style={{ textAlign: "center", color: "#9aa093", fontSize: 12, padding: "28px 0" }}>No fabrics match{search.trim() ? ` "${search.trim()}"` : ""}.</div>
           ) : (
-            rows.map((c) => {
+            <>
+            {rows.slice(0, FABRIC_RENDER_CAP).map((c) => {
               const on = c.colourId === current;
               const series = pools.fabricSeries.get(c.fabricId) ?? "";
               return (
@@ -2452,7 +2458,13 @@ function FabricPicker({ pools, current, onPick, onClose }: {
                   {on && <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#16695f" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" style={{ flex: "none" }}><path d="M20 6 9 17l-5-5" /></svg>}
                 </button>
               );
-            })
+            })}
+            {rows.length > FABRIC_RENDER_CAP && (
+              <div style={{ textAlign: "center", color: "#9aa093", fontSize: 11, padding: "10px 0 4px" }}>
+                Showing first {FABRIC_RENDER_CAP} of {rows.length} — search to narrow.
+              </div>
+            )}
+            </>
           )}
         </div>
       </div>
