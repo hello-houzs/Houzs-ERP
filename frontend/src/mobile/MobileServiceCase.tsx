@@ -44,6 +44,7 @@ const WARN_BG = "rgba(183,107,0,0.12)";
 const RED = "#b23a3a";
 const ERR_BG = "rgba(178,58,58,0.08)";
 const GREY = "#9aa093";
+const BLUE = "#1F3A8A";
 const LINE = "#d6d9d2";
 const LINE_SOFT = "rgba(34,31,32,0.10)";
 const DIM = "#e3e6e0";
@@ -101,12 +102,16 @@ const QC_RESULT_OPTIONS = [
   { value: "fail", label: "Fail" },
   { value: "na", label: "N/A" },
 ] as const;
-// Timeline note audience — the /:id/notes endpoint only accepts these two
-// ("system" is reserved for auto events and rejected server-side).
+// Timeline note audience buckets (mig 0108) — the /:id/notes endpoint
+// accepts these four; "system" is reserved for auto events and rejected
+// server-side. Only "customer" is visible outside the team (portal).
 const NOTE_AUDIENCE_OPTIONS = [
-  { value: "purchasing", label: "Internal (Purchasing)", detail: "Hidden from the customer" },
-  { value: "customer", label: "Customer-visible", detail: "Shows on the customer portal" },
+  { value: "service", label: "Service" },
+  { value: "customer", label: "Customer" },
+  { value: "supplier", label: "Supplier" },
+  { value: "sales", label: "Sales" },
 ] as const;
+type NoteAudience = (typeof NOTE_AUDIENCE_OPTIONS)[number]["value"];
 // Print copy variants — desktop opens /api/assr-print/:id?variant=…
 const PRINT_VARIANTS = [
   { value: "customer", label: "Customer copy" },
@@ -510,7 +515,7 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
   const [advOpen, setAdvOpen] = useState(false);
   const [noteOpen, setNoteOpen] = useState(false);
   const [noteDraft, setNoteDraft] = useState("");
-  const [noteAudience, setNoteAudience] = useState<"purchasing" | "customer">("purchasing");
+  const [noteAudience, setNoteAudience] = useState<NoteAudience>("service");
   const [tlFilter, setTlFilter] = useState("all");
   const [busy, setBusy] = useState(false);
 
@@ -552,7 +557,7 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
     }, failTitle);
 
   const addNote = useMutation({
-    mutationFn: (payload: { note: string; category: "purchasing" | "customer" }) =>
+    mutationFn: (payload: { note: string; category: NoteAudience }) =>
       api.post<Any>(`/api/assr/${id}/notes`, payload),
     onSuccess: () => {
       setNoteDraft("");
@@ -1250,6 +1255,10 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
                   open
                   busy={busy}
                   fields={[
+                    // Editable SO No (2026-07-14) — fixing a fat-fingered
+                    // SO re-matches customer info from the SO mirror
+                    // server-side.
+                    { key: "doc_no", label: "SO No", value: get(c, "docNo", "doc_no"), type: "text" },
                     { key: "customer_name", label: "Customer", value: customer(c) === "—" ? "" : customer(c), type: "text" },
                     { key: "phone", label: "Phone", value: get(c, "phone", "customerPhone", "customer_phone"), type: "text" },
                     { key: "customer_email", label: "Email", value: get(c, "customerEmail", "customer_email"), type: "text" },
@@ -1259,7 +1268,6 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
                   onSave={(body) => patchCase(body, "Couldn't save customer")}
                 >
                   <div className="pgrid2">
-                    <PGrid label="SO No" value={String(get(c, "docNo", "doc_no") ?? "—")} mono />
                     <PGrid label="Ref No" value={String(get(c, "refNo", "ref_no") ?? "—")} mono />
                     <PGrid label="Date" value={dm(get(c, "complainedDate", "complained_date", "createdAt", "created_at"))} />
                     <PGrid
@@ -1375,7 +1383,7 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
                     })}
                   </div>
                 )}
-                {/* audience picker — the /:id/notes endpoint accepts purchasing | customer */}
+                {/* audience picker — service / customer / supplier / sales (mig 0108) */}
                 <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
                   {NOTE_AUDIENCE_OPTIONS.map((o) => (
                     <button
@@ -1535,11 +1543,11 @@ function SheetShell({ title, onClose, children }: { title?: string; onClose: () 
 // input too; both post through the same mutation).
 function NoteSheet({ onClose, onSave, saving }: {
   onClose: () => void;
-  onSave: (note: string, audience: "purchasing" | "customer") => void;
+  onSave: (note: string, audience: NoteAudience) => void;
   saving: boolean;
 }) {
   const [text, setText] = useState("");
-  const [audience, setAudience] = useState<"purchasing" | "customer">("purchasing");
+  const [audience, setAudience] = useState<NoteAudience>("service");
   return (
     <SheetShell title="Add note" onClose={onClose}>
       <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
@@ -2055,9 +2063,13 @@ function PGrid({ label, value, mono, span, multiline }: { label: string; value: 
 // timeline audience badge colour (rbadge — 12% tint of the category hue).
 function catBadge(cat: string): [string, string] {
   switch (cat) {
-    case "PURCHASING": return ["#a16a2e1f", BROWN];
+    case "SERVICE": return ["#16695f1f", TEAL];
     case "CUSTOMER": return ["#2f8a5b1f", GREEN];
-    case "SERVICE ADMIN": return ["#16695f1f", TEAL];
+    case "SUPPLIER": return ["#a16a2e1f", BROWN];
+    case "SALES": return ["#1f3a8a1f", BLUE];
+    // Legacy rows from before mig 0108 (all migrated, but a cached
+    // payload may still carry it briefly).
+    case "PURCHASING": return ["#16695f1f", TEAL];
     default: return ["#16695f1f", TEAL];
   }
 }

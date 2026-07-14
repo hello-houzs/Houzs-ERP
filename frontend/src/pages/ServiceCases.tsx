@@ -2643,11 +2643,12 @@ function DetailContent({
   const ncrOptions = (ncrCategoriesQ.data?.data ?? []).map((r) => r.slug);
   const [note, setNote] = useState("");
   const [noteFormOpen, setNoteFormOpen] = useState(false);
-  // Mig 064 — note posting now picks a category. Default 'purchasing'
+  // Mig 064 / 0108 — note posting picks an audience bucket. Default
+  // 'service' (internal); only 'customer' is portal-visible.
   // (internal team comms) since most notes are operational. Switch to
   // 'customer' to make the entry visible on the customer portal.
-  const [noteCategory, setNoteCategory] = useState<"purchasing" | "customer">(
-    "purchasing",
+  const [noteCategory, setNoteCategory] = useState<"service" | "customer" | "supplier" | "sales">(
+    "service",
   );
   // Activity timeline filter. 'all' = show everything; the others
   // narrow to one category. System-emitted events (stage_change,
@@ -3784,11 +3785,40 @@ function DetailContent({
             <DetailAside>
           {/* Right rail per design: Customer · Assigned to · SLA · Timeline. */}
           <PanelSection title="Customer" icon={<User size={13} />}>
-            <FieldRow label="SO No" mono>{c.doc_no}</FieldRow>
-            <FieldRow label="Customer">{c.customer_name || "—"}</FieldRow>
-            <FieldRow label="Phone">{c.phone || "—"}</FieldRow>
-            <FieldRow label="Agent">{c.sales_agent || "—"}</FieldRow>
-            <FieldRow label="Location">{c.location || "—"}</FieldRow>
+            {/* Identity fields are editable (2026-07-14): sales sometimes
+                fat-finger the SO no at intake, so the case never matches
+                its customer. Correcting the SO No re-matches customer
+                info from the local SO mirror server-side. */}
+            <InlineEdit
+              label="SO No"
+              value={c.doc_no}
+              onSave={(v) => patch({ doc_no: v })}
+              placeholder="SO-2990-xxxx"
+            />
+            <InlineEdit
+              label="Customer"
+              value={c.customer_name}
+              onSave={(v) => patch({ customer_name: v })}
+              placeholder="Customer name"
+            />
+            <InlineEdit
+              label="Phone"
+              value={c.phone}
+              onSave={(v) => patch({ phone: v })}
+              placeholder="012-345 6789"
+            />
+            <InlineEdit
+              label="Agent"
+              value={c.sales_agent}
+              onSave={(v) => patch({ sales_agent: v })}
+              placeholder="Sales rep"
+            />
+            <InlineEdit
+              label="Location"
+              value={c.location}
+              onSave={(v) => patch({ location: v })}
+              placeholder="State / outlet"
+            />
             <FieldRow label="Created">{formatDate(c.complained_date)}</FieldRow>
             {(c.addr1 || c.addr2 || c.addr3 || c.addr4) && (
               <FieldRow label="Address">
@@ -3963,13 +3993,15 @@ function DetailContent({
                   <select
                     value={noteCategory}
                     onChange={(e) =>
-                      setNoteCategory(e.target.value as "purchasing" | "customer")
+                      setNoteCategory(e.target.value as "service" | "customer" | "supplier" | "sales")
                     }
                     className="rounded-md border border-border bg-surface px-2 py-1.5 text-[11px] font-semibold outline-none focus:border-primary"
                     title="Where this note is visible"
                   >
-                    <option value="purchasing">Purchasing (internal)</option>
+                    <option value="service">Service (internal)</option>
                     <option value="customer">Customer-visible</option>
+                    <option value="supplier">Supplier (internal)</option>
+                    <option value="sales">Sales (internal)</option>
                   </select>
                   <span className="text-[10px] text-ink-muted">
                     {noteCategory === "customer"

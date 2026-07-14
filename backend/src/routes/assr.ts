@@ -1923,20 +1923,30 @@ function surveyEmailHtml(name: string, assrNo: string, link: string): string {
 
 // ── Notes ─────────────────────────────────────────────────────
 
+// Manual-note audience buckets (mig 0108). Legacy 'purchasing' from
+// not-yet-refreshed clients maps to 'service'; unknown values fall back
+// to 'service' too so nothing lands unclassified.
+const NOTE_CATEGORIES = new Set(["service", "customer", "supplier", "sales"]);
+function noteCategory(v?: string): "service" | "customer" | "supplier" | "sales" {
+  if (v === "purchasing") return "service";
+  return NOTE_CATEGORIES.has(v ?? "") ? (v as any) : "service";
+}
+
 app.post("/:id/notes", requirePermission("service_cases.write"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const userId = (c as any).get?.("userId") ?? 0;
   const body = await c.req.json<{
     note: string;
-    category?: "purchasing" | "customer";
+    category?: string;
   }>();
   if (!body.note?.trim()) return c.json({ error: "note is required" }, 400);
-  // Manual notes are either internal (purchasing) or customer-visible.
-  // 'system' is reserved for auto-emitted events; reject it here so a
-  // misconfigured client can't impersonate a system event.
-  const category =
-    body.category === "customer" ? "customer" : "purchasing";
+  // Manual notes pick an audience bucket (mig 0108): service (internal,
+  // the old 'purchasing'), customer (portal-visible), supplier or sales.
+  // 'system' is reserved for auto-emitted events, and anything unknown
+  // (incl. the legacy 'purchasing' from stale clients) falls back to
+  // 'service', so a misconfigured client can't impersonate an event.
+  const category = noteCategory(body.category);
   await logActivity(c.env, id, "note", null, null, body.note, userId, {
     category,
     source_channel: "app",
@@ -1955,7 +1965,7 @@ app.post("/:id/notes/:noteId/correct", requirePermission("service_cases.write"),
   const noteId = parseInt(c.req.param("noteId"), 10);
   if (isNaN(id) || isNaN(noteId)) return c.json({ error: "Invalid ID" }, 400);
   const userId = (c as any).get?.("userId") ?? 0;
-  const body = await c.req.json<{ note: string; category?: "purchasing" | "customer" }>();
+  const body = await c.req.json<{ note: string; category?: string }>();
   if (!body.note?.trim()) return c.json({ error: "correction note is required" }, 400);
 
   // Verify the referenced entry belongs to this case.
@@ -1967,7 +1977,7 @@ app.post("/:id/notes/:noteId/correct", requirePermission("service_cases.write"),
   if (!prior) return c.json({ error: "Referenced entry not found on this case" }, 404);
 
   await logActivity(c.env, id, "note", null, null, body.note, userId, {
-    category: body.category === "customer" ? "customer" : "purchasing",
+    category: noteCategory(body.category),
     source_channel: "app",
     references_entry_id: noteId,
     is_correction: true,
