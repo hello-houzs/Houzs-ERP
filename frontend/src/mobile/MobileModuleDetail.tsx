@@ -4,6 +4,7 @@ import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { MODULE_CONFIGS } from "./MobileModuleList";
+import { PAYMENT_METHOD_CODES, PAYMENT_METHOD_DEFAULT_LABELS } from "../vendor/scm/lib/payment-methods";
 import "./mobile.css";
 
 // ---------------------------------------------------------------------------
@@ -539,13 +540,14 @@ function statusActionsFor(moduleKey: string, id: string, header: any): DocAction
   }
 }
 
-/** Payment-method options per module's payment route enum. */
-const SI_METHODS: Array<{ value: string; label: string }> = [
-  { value: "cash", label: "Cash" },
-  { value: "transfer", label: "Bank Transfer" },
-  { value: "merchant", label: "Card / Merchant" },
-  { value: "installment", label: "Installment" },
-];
+// Payment-method options, single-sourced from the canonical payment-methods lib
+// (vendor/scm/lib/payment-methods.ts) so the picker reads identically to desktop
+// and never drifts. The option VALUE is the canonical CODE the payment endpoints
+// store + expect (desktop reads back method === 'cash' | 'transfer' | 'merchant';
+// SalesInvoiceDetail.tsx), and the LABEL is the canonical friendly label.
+const SI_METHODS: Array<{ value: string; label: string }> = PAYMENT_METHOD_CODES.map(
+  (code) => ({ value: code, label: PAYMENT_METHOD_DEFAULT_LABELS[code] }),
+);
 
 // Footer action buttons ride the design's `.btn` (teal solid) and re-skin per
 // variant, mirroring the SO-detail actbar (Edit / Cancel = white outline).
