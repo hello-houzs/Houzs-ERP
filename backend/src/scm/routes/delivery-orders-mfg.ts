@@ -1133,7 +1133,7 @@ export async function soDeliverableRemaining(
   //    mains → accessories → services, sofa modules left-to-right). The bulk
   //    insert gives every line the same created_at, so the timestamp can't
   //    recover the persisted order once routine updates relocate rows.
-  const { data: soItems } = await sb
+  const { data: soItems } = await paginateAll<Record<string, unknown>>((from, to) => sb
     .from('mfg_sales_order_items')
     .select(
       'id, doc_no, debtor_code, debtor_name, item_code, item_group, description, description2, ' +
@@ -1144,7 +1144,9 @@ export async function soDeliverableRemaining(
     .in('doc_no', soDocNos)
     .eq('cancelled', false)
     .order('line_no', { ascending: true, nullsFirst: false })
-    .order('created_at');
+    .order('created_at')
+    .order('id')
+    .range(from, to));
   const rawLines = (soItems ?? []) as Array<Record<string, unknown> & { id: string; doc_no: string; item_code: string; qty: number }>;
   if (rawLines.length === 0) return out;
   /* buildKey values are per-SO ('build-1', …) — the walk MUST run per doc;
@@ -1165,10 +1167,12 @@ export async function soDeliverableRemaining(
   // 2. Σ delivered — DO lines linked by so_item_id whose parent DO is NOT
   //    cancelled. Two-step: pull the candidate DO lines, then drop those whose
   //    parent DO is cancelled.
-  const { data: doLines } = await sb
+  const { data: doLines } = await paginateAll<{ id: string; so_item_id: string | null; qty: number; delivery_order_id: string }>((from, to) => sb
     .from('delivery_order_items')
     .select('id, so_item_id, qty, delivery_order_id')
-    .in('so_item_id', soItemIds);
+    .in('so_item_id', soItemIds)
+    .order('id')
+    .range(from, to));
   const doLineRows = (doLines ?? []) as Array<{ id: string; so_item_id: string | null; qty: number; delivery_order_id: string }>;
   const doIds = [...new Set(doLineRows.map((l) => l.delivery_order_id).filter(Boolean))];
   const activeDoIds = new Set<string>();
@@ -3195,7 +3199,7 @@ deliveryOrdersMfg.delete('/:id/payments/:paymentId', async (c) => {
 // ── Status transition + inventory deduction / reversal ────────────────────
 deliveryOrdersMfg.patch('/:id/status', async (c) => {
   const sb = c.get('supabase'); const id = c.req.param('id'); const user = c.get('user');
-  let body: { status?: string }; try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid_json' }, 400); }
+  let body: { status?: string; signatureData?: string; podKey?: string }; try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid_json' }, 400); }
   if (!body.status) return c.json({ error: 'status_required' }, 400);
 
   // Read current status so the CANCELLED reversal is idempotent.
@@ -3231,6 +3235,13 @@ deliveryOrdersMfg.patch('/:id/status', async (c) => {
   if (body.status === 'DISPATCHED') ts.dispatched_at = now;
   if (body.status === 'SIGNED')     ts.signed_at = now;
   if (body.status === 'DELIVERED')  ts.delivered_at = now;
+  /* POD capture — the mobile app posts the proof-of-delivery signature +
+     photo alongside the status flip. Persist them to the existing columns
+     (signature_data, pod_r2_key) so a DELIVERED DO keeps its signature +
+     photo. Only write when present so a plain status change never blanks
+     an existing POD. */
+  if (typeof body.signatureData === 'string' && body.signatureData) ts.signature_data = body.signatureData;
+  if (typeof body.podKey === 'string' && body.podKey) ts.pod_r2_key = body.podKey;
 
   /* Bug #3/#11 — ATOMIC cancel guard. The read-then-write above has a TOCTOU
      window: two concurrent cancels can both read a non-cancelled status and both

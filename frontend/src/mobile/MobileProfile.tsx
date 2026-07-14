@@ -651,6 +651,12 @@ function HelpScreen({ onBack }: { onBack: () => void }) {
     <SubScreen title="Help & support" onBack={onBack}>
       <div style={sectionLabel}>Get in touch</div>
       <div style={{ display: "flex", flexDirection: "column", gap: 9, marginBottom: 18 }}>
+        {/* Shared/default support desk. Intentionally NOT swapped to the active
+            company's branding.email: that field is the general contact
+            (hello@houzscentury.com), not this ops support mailbox, and 2990's
+            is blank (would break the mailto). This operations desk backs both
+            companies in the unified ERP; revisit if a per-company support
+            address is ever configured in branding. */}
         <a
           href="mailto:operation@houzscentury.com"
           style={{ display: "flex", alignItems: "center", gap: 12, background: "#fff", border: "1px solid var(--line)", borderRadius: 13, padding: "13px 14px", textDecoration: "none" }}

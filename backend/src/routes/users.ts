@@ -1053,13 +1053,33 @@ app.patch("/:id", requirePermissionOrSalesDirector("users.manage"), async (c) =>
   // view+invite; this adds edit+disable within the same department scope.
   const dirScope = salesDirectorScope(c, "users.manage");
   if (dirScope.scoped) {
-    if (current[0].department_id !== dirScope.deptId) {
+    // Editability must mirror the LIST scope (GET / above): a member appears in
+    // a Sales Director's list when their PRIMARY department is the director's
+    // OR they are a secondary member of it (mig 0020 user_departments). The gate
+    // used to accept the primary department only, so a member visible in the list
+    // (via user_departments) was NOT editable — 404. Accept user_departments
+    // membership too so list-visibility and edit-scope agree.
+    let inDirScope = current[0].department_id === dirScope.deptId;
+    if (!inDirScope && dirScope.deptId != null) {
+      const secondary = await db
+        .select({ userId: user_departments.user_id })
+        .from(user_departments)
+        .where(
+          and(
+            eq(user_departments.user_id, id),
+            eq(user_departments.department_id, dirScope.deptId),
+          ),
+        )
+        .limit(1);
+      inDirScope = secondary.length > 0;
+    }
+    if (!inDirScope) {
       return c.json({ error: "User not found" }, 404); // out-of-dept → indistinguishable
     }
     // A dept-scoped Sales Director may only touch basic details + enable/disable.
     // STRIP (not 403) the privileged fields so an edit-form resubmit that carries
-    // the member's unchanged role/dept still saves the name/phone/email/status —
-    // the director simply cannot change role / position / department / manager /
+    // the member's unchanged role/dept still saves the name/phone/status — the
+    // director simply cannot change role / position / department / manager /
     // password. Those stay full-admin only.
     delete body.role_id;
     delete body.position_id;
@@ -1067,6 +1087,11 @@ app.patch("/:id", requirePermissionOrSalesDirector("users.manage"), async (c) =>
     delete body.department_ids;
     delete body.manager_id;
     delete body.password;
+    // Login identity is an ACCOUNT-TAKEOVER vector (change the email, then run
+    // forgot-password to seize the account), so the login email + alias are
+    // full-admin only too — strip them from a dept-scoped director's edit.
+    delete body.email;
+    delete body.email_alias;
   }
 
   const set: Record<string, any> = {};

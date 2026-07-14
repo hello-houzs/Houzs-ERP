@@ -1,6 +1,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
+import { MobileVirtualList } from "./MobileVirtualList";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { HC_SUBSTATUS_VALUES } from "../vendor/scm/lib/delivery-planning-queries";
@@ -610,16 +611,23 @@ export function MobileDeliveryPlanning({
         )}
 
         {!isLoading && !error && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
-            {list.map((o, i) => (
-              <StopCard
-                key={o.so_doc_no}
-                o={o}
-                seq={i + 1}
-                isToday={isToday}
-                onOpen={() => setOpenStop(o.so_doc_no)}
+          <>
+            {list.length > 0 && (
+              <MobileVirtualList
+                items={list}
+                getKey={(o) => o.so_doc_no}
+                estimateHeight={120}
+                renderItem={(o, i) => (
+                  <StopCard
+                    key={o.so_doc_no}
+                    o={o}
+                    seq={i + 1}
+                    isToday={isToday}
+                    onOpen={() => setOpenStop(o.so_doc_no)}
+                  />
+                )}
               />
-            ))}
+            )}
             {!list.length && (
               <div className="empty">
                 <div className="empty-t">
@@ -631,7 +639,7 @@ export function MobileDeliveryPlanning({
                 </div>
               </div>
             )}
-          </div>
+          </>
         )}
       </div>
     </div>
@@ -1132,8 +1140,18 @@ function StopDetail({
     (order.replacement_disposal && order.replacement_disposal.trim()) || "";
   const isSetup = !!disposal; // v2 "job" isn't in the feed; treat disposal as the setup/dismantle signal.
 
+  // Invalidate the board AND every sibling mobile query that renders the same
+  // DO/SO state, so a convert / start / complete on this board doesn't leave the
+  // mobile POD screen or SO list showing pre-mutation status inside their 15-30s
+  // staleTime window (the desktop board already invalidates all sibling keys).
+  // `mobile-pod-detail` is prefix-matched so every open detail refreshes.
   const invalidate = () =>
-    qc.invalidateQueries({ queryKey: ["mobile-delivery-planning"] });
+    Promise.all([
+      qc.invalidateQueries({ queryKey: ["mobile-delivery-planning"] }),
+      qc.invalidateQueries({ queryKey: ["mobile-do-list-for-pod"] }),
+      qc.invalidateQueries({ queryKey: ["mobile-pod-detail"] }),
+      qc.invalidateQueries({ queryKey: ["mobile-so-list"] }),
+    ]);
 
   // ── Convert this Sales Order → a Delivery Order (identical endpoint to the
   // desktop board's Convert-to-DO: resolve the SO's still-deliverable lines via

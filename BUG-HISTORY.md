@@ -6,6 +6,61 @@ Severity tags: 🔴 critical/high · 🟠 medium · 🟢 low.
 
 ---
 
+## 2026-07-14 — Multi-company + performance campaign
+
+### 🟢 Landed-freight lost when the last goods line has qty=0
+- **Symptom:** On a GRN whose LAST goods line (in input order) has qty=0 while a freight/charge pool exists, the whole rounding remainder was recorded as "allocated" to that line but folded into a per-unit charge of 0 — so the freight landed nowhere and the received lots carried less than the true landed cost. Edge-only (a real received goods line normally has qty>0).
+- **Cause:** `landed-allocation.ts` gave the remainder to `base.length - 1` (the last line unconditionally); `perUnitCharge = qty>0 ? round(alloc/qty) : 0` then dropped it when that line's qty was 0.
+- **Fix:** Assign the remainder to the last line with **qty > 0** (`lastPositiveIdx`); trailing qty=0 lines get 0 via the normal proportional branch, so the column still sums to the pool exactly.
+- **Ref:** `fix/low-edge-batch-0714`, 2026-07-14.
+
+### 🟢 Sales Invoice header discount/tax columns could silently overstate revenue (future-proofing)
+- **Symptom:** None yet (not a live defect) — the SI header `discount_centi` / `tax_centi` columns exist and are read into the header select but are NEVER written (all discount/tax is per-line, already inside `line_total_centi`). `recomputeTotals` set `total_centi = Σ line_total` and ignored them. A future header-discount UI wired to those columns would have posted a `total_centi` (which backs the GL) that ignored the header discount → overstated revenue.
+- **Cause:** `recomputeTotals` (`sales-invoices.ts`) never folded the header-level columns into the grand total.
+- **Fix:** Fold them defensively — `grand = max(0, Σline − headerDiscount + headerTax)`; `total_centi` / `local_total_centi` / margin now use `grand`, `subtotal_centi` stays the line sum. No-op today (both columns 0), correct if ever populated.
+- **Ref:** `fix/low-edge-batch-0714`, 2026-07-14.
+
+### 🟢 Mobile Delivery Planning board didn't refresh the POD / SO screens after a mutation
+- **Symptom:** A driver who converts SO→DO, or marks a stop IN_TRANSIT / DELIVERED, on the mobile Delivery Planning board, then opens the mobile POD screen or SO list within ~15-30s, saw the PRE-mutation status/list. Self-healed after the staleTime window.
+- **Cause:** The board's shared `invalidate()` helper (`MobileDeliveryPlanning.tsx`) invalidated only its own `["mobile-delivery-planning"]` key. The sibling mobile queries that render the same DO/SO state — `["mobile-do-list-for-pod"]`, `["mobile-pod-detail", id]`, `["mobile-so-list"]` — were never invalidated in the writing tab (BroadcastChannel doesn't deliver to the tab that wrote), so they stayed stale until their own staleTime expired. Same class as HOOKKA's bulk-deliver/POD stale-list bug (desktop was already fully disciplined — it invalidates every sibling key).
+- **Fix:** Broaden the shared `invalidate()` to also invalidate `mobile-do-list-for-pod`, `mobile-pod-detail` (prefix-matched, all open details), and `mobile-so-list`. All four board mutations (convert / start / complete / +1) get it uniformly.
+- **Ref:** `perf/mobile-virt-systemwide`, 2026-07-14. (Found by a system-wide delivery-cache audit; the two other HOOKKA-flagged risks — CHECK-constraint 500s and silent RM0 3PL rate — were verified NOT present in Houzs.)
+### 🟢 Mail Center empty-state copy claimed a mechanism that doesn't exist (misleading)
+- **Symptom:** Owner opened Mail Center under the 2990 company, saw an empty inbox with "No mailbox assigned yet" + "Incoming mail will appear here once the domain MX is switched to Cloudflare and the inbound Worker is live", and thought receiving had broken ("之前有 email 进来了 为什么又没有了").
+- **Cause:** TWO things. (1) The empty-state copy was hand-carried from Hookka and describes an MX-cutover inbound path Houzs never used — Houzs inbound is a Gmail IMAP pull (`mail-sync` GitHub Action, every 5 min; MX stays on Google Workspace). The claim was simply false and alarming. (2) No actual data loss: since migration 0107 the mail tables carry `company_id` and `getMailScope` / threads are scoped to the ACTIVE company; the owner's `hello@` mailbox + history belong to HOUZS (company 1), so viewing under 2990 (company 2) correctly shows nothing.
+- **Fix:** Replaced the copy with the truth — mail syncs automatically every few minutes, and it is scoped to the active company so an empty mailbox usually means the company selector is on the wrong company. (No backend change; the scoping is working as designed.)
+- **Ref:** `fix/mail-empty-copy`, 2026-07-14.
+### 🔴 Concurrent same-company SO / PO / GRN creates 500 on duplicate doc-no
+- **Symptom:** Two POS terminals (or two buyers / two warehouse staff) creating a document in the same company + same YYMM at the same moment: the second create fails with a generic 500 and the whole document (customer, payments, PWP claims / lines) is lost — the operator must redo it. Highest-risk on the SO create path (the most concurrent one).
+- **Cause:** The single-create minters read `max(suffix)+1` then did a PLAIN insert with no `23505` (PK / UNIQUE violation) retry. Two callers read the same max, mint the same `doc_no` / `po_number` / `grn_number`, and the loser violates the unique constraint → 500. `max+1` self-heals a *deleted-gap* re-mint but NOT a *concurrent-create* race. The repo already shipped `insertWithDocNoRetry` (loops on 23505, re-derives the next free suffix; used by DO/CN/CS/CRN/DR/SI/PI/TRIP) but SO create, PO single-create, GRN single-create and GRN batch-convert never adopted it.
+- **Fix:** Wrap all four header inserts in `insertWithDocNoRetry`. First attempt reuses the already-minted number; a 23505 re-mints from a fresh read and retries. **Child-row propagation:** PO/GRN children key off the returned `header.id` (not the doc-no), so a re-mint needs no re-stamp; SO reassigns `docNo = mintedDocNo` after the successful header insert so every downstream child (payments, items, status, price override, PWP) uses the committed number. SO is PWP-entangled (pwp_codes.redeemed_doc_no is reserved against the FIRST-minted docNo before the header insert, with rollbackPwpClaims on failure), so SO only auto-retries when NO PWP claim was made (`tries = claimedPwpCodes.length === 0 ? 8 : 1`) — a promo order keeps today's exact clean-fail+rollback, so a re-mint can never orphan a PWP redemption.
+- **Ref:** `fix/docno-retry-so-po-grn`, 2026-07-14.
+
+### 🟠 Mobile Menu listed nav items the user can't open (render-then-Forbidden)
+- **Symptom:** At tablet / narrow widths (`<lg`) and on non-HOUZS mobile, the bottom-bar centre "Menu" sheet listed destinations the user has no access to (Projects, System Health for everyone; Delivery Returns for Sales staff); tapping bounced them to the Forbidden page. The desktop Sidebar and the HOUZS-phone menu hid the same items correctly.
+- **Cause:** `MobileTabBar.MenuModal.filterTab` was a hand-copied SUBSET of `Sidebar.filterTab`: it checked only `perm` / `anyPerm` / `hidePerm` and ignored `pageAccess`, `pageAccessFull`, `requireFinanceViewer` and every sales gate (`hideForSales` / `showForSales` / rep gates). A comment claimed the two "stay in lockstep" — they had silently drifted. No data leaked (route guards still render `<Forbidden>` instead of the page), but a denied entry was shown then rejected — the "render-then-deny" that the "off, not hide" rule forbids at the nav layer.
+- **Fix:** Extract the full gate logic into a shared `frontend/src/components/navFilter.ts` (`makeNavFilter`); both `Sidebar` and `MobileTabBar` build their menu from it, so a third divergent copy cannot drift again. Mobile also gains the sales-rep `salesRepTo` reachable-click-target override for free. Verified `tsc -b` + `vite build` green.
+- **Ref:** `fix/mobile-nav-perm-parity`, 2026-07-14.
+### 🟠 Inventory list showed negative / inflated "Available" for partially-shipped or multi-company SKUs
+- **Symptom:** On the Inventory product list (`GET /inventory/products`), a SKU could show a wrongly negative `available_qty` (e.g. on-hand 6, gross open SO qty 10 → Available −4 when the true free-to-sell was 0), and in multi-company a shared SKU's Reserved/Available was distorted by the OTHER company's orders.
+- **Cause:** The Reserved / reserve_7d / reserve_14d KPIs summed the **gross** open SO-line qty. (1) Delivered qty (net of returns) was never subtracted, so a partially-shipped SO double-counted its already-shipped units → `available_qty = stock − reserved` went negative. (2) The demand query had **no company scoping** while the stock figure (`v_inventory_product_totals`) and the open-lots query WERE company-scoped, so a shared SKU subtracted other companies' demand from this company's stock.
+- **Fix:** Each SO line now contributes `max(0, qty − delivered + returned)`. Delivered = non-cancelled **AND non-draft** DOs (a DRAFT DO hasn't shipped / hasn't moved stock, so counting it would inflate Available → over-sell risk); returned = non-cancelled DRs traced through the active DO line (DRs have no DRAFT state). The demand query is also wrapped in `scopeToCompany(...)` like the lots/totals queries in the same file.
+- **Ref:** `fix/inventory-reserved-available`, 2026-07-14.
+
+### 🟠 Company switch kept showing the previous company's list (cross-tenant stale)
+- **Symptom:** Switching company in the top-bar switcher (Houzs↔2990) left the products / SO lists showing the PREVIOUS company's data (Houzs 1326 rows still under 2990); a hard refresh fixed it. Time-good-time-bad (a race).
+- **Cause:** The active company is header-based (`X-Company-Id`, read fresh from localStorage per request — so the header AND the backend scoping were correct). But react-query keys don't include the company, so company A's and B's data share one cache entry. `invalidateQueries()` raced (keepPreviousData kept A's rows / an in-flight A response repopulated the shared entry); and a first fix attempt with `queryClient.clear()` was insufficient — clear() empties the cache but does NOT re-trigger a mounted observer to refetch. Proven on prod: a remount (nav away+back) switched correctly to 2990's "2990 AKKA-FIRM MATT", an in-place clear() did not.
+- **Fix:** The switch handler now does `window.location.reload()` (a tenant switch is fundamental + rare) so the whole app re-reads the company header on every request. PLUS the new localStorage query-snapshot (`query-persist.ts`) is namespaced by active company so a cold open can't hydrate the other company's list.
+- **Ref:** `fix/multicompany-cache-staleness` (#445, snapshot namespace) + `fix/company-switch-reload` (#450, reload), 2026-07-14.
+
+### 🟠 Service-worker cache VERSION bumped by hand → stale shell / branch collisions
+- **Symptom:** After some deploys the PWA served a stale shell ("卡旧版本" / 开不进去); parallel branches bumped `sw.js` `VERSION` to the SAME `vNNN` and collided (git: "bump v172 (branch collided with #421's v171 on main)").
+- **Cause:** `public/sw.js` used a hand-edited `const VERSION = "houzs-erp-vNNN"`; the cache namespace + activate-purge key off it, so a forgotten or colliding bump left the old shell cache in place.
+- **Fix:** Auto-stamp the build id: `sw.js` carries a `__SW_BUILD_ID__` token that a `vite.config` `writeBundle` plugin replaces with a unique per-build id → every deploy yields a new VERSION → the SW's activate step purges the previous caches automatically. No manual bump. Verified: `dist/sw.js` → `const VERSION = "houzs-erp-v176-mrk9db8r"`, 0 leftover tokens.
+- **Ref:** `perf/sw-auto-version`, 2026-07-14.
+
+---
+
 ## 2026-07-14 — Go-live review batch (4-agent adversarial + FE/BE sweep)
 
 ### 🔴 POD signature + photo silently discarded

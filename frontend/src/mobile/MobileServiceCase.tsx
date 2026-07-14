@@ -44,20 +44,22 @@ const WARN_BG = "rgba(183,107,0,0.12)";
 const RED = "#b23a3a";
 const ERR_BG = "rgba(178,58,58,0.08)";
 const GREY = "#9aa093";
+const BLUE = "#1F3A8A";
 const LINE = "#d6d9d2";
 const LINE_SOFT = "rgba(34,31,32,0.10)";
 const DIM = "#e3e6e0";
 const FIELD_BG = "#f4f6f3";
 
-// Ordered stage pipeline (backend ALL_STAGES) — 8 stages since mig 0105
-// retired Pending Inspection. `label` is the chip-short form, `long` the
-// card/badge form; `owner` mirrors ServiceProgressTracker's owner map.
+// Ordered stage pipeline (backend ALL_STAGES) — 7 stages since mig 0110
+// retired Item Pickup (the customer-side collection lives inside the
+// Supplier stage; Pending Inspection went the same way in mig 0105).
+// `label` is the chip-short form, `long` the card/badge form; `owner`
+// mirrors ServiceProgressTracker's owner map.
 const STAGES: { key: string; label: string; long: string; owner: string }[] = [
   { key: "pending_review",           label: "Review",      long: "Pending Review",              owner: "Service Admin" },
   { key: "under_verification",       label: "Verify",      long: "Under Verification",          owner: "Service Admin" },
   { key: "pending_solution",         label: "Solution",    long: "Pending Solution",            owner: "Service Admin" },
-  { key: "pending_item_pickup",      label: "Item Pickup", long: "Pending Item Pickup",         owner: "Logistic Admin" },
-  { key: "pending_supplier_pickup",  label: "Supplier",    long: "Pending Supplier Pickup",     owner: "Service Admin" },
+  { key: "pending_supplier_pickup",  label: "Supplier",    long: "Supplier Pickup / Return",    owner: "Service Admin" },
   { key: "pending_item_ready",       label: "Item Ready",  long: "Pending Item Ready",          owner: "Service Admin" },
   { key: "pending_delivery_service", label: "Delivery",    long: "Pending Delivery / Service",  owner: "Logistic Admin" },
   { key: "completed",                label: "Completed",   long: "Completed",                   owner: "System" },
@@ -66,8 +68,8 @@ const STAGE_INDEX: Record<string, number> = Object.fromEntries(STAGES.map((s, i)
 // Stage-tab grouping (design StagePhases): Intake / Repair / Return.
 const PHASES: { name: string; idx: number[] }[] = [
   { name: "Intake", idx: [0, 1, 2] },
-  { name: "Repair", idx: [3, 4, 5] },
-  { name: "Return", idx: [6, 7] },
+  { name: "Repair", idx: [3, 4] },
+  { name: "Return", idx: [5, 6] },
 ];
 
 // ── Enum option lists (mirrors desktop ServiceCases.tsx) ──────────
@@ -101,12 +103,16 @@ const QC_RESULT_OPTIONS = [
   { value: "fail", label: "Fail" },
   { value: "na", label: "N/A" },
 ] as const;
-// Timeline note audience — the /:id/notes endpoint only accepts these two
-// ("system" is reserved for auto events and rejected server-side).
+// Timeline note audience buckets (mig 0108) — the /:id/notes endpoint
+// accepts these four; "system" is reserved for auto events and rejected
+// server-side. Only "customer" is visible outside the team (portal).
 const NOTE_AUDIENCE_OPTIONS = [
-  { value: "purchasing", label: "Internal (Purchasing)", detail: "Hidden from the customer" },
-  { value: "customer", label: "Customer-visible", detail: "Shows on the customer portal" },
+  { value: "service", label: "Service" },
+  { value: "customer", label: "Customer" },
+  { value: "supplier", label: "Supplier" },
+  { value: "sales", label: "Sales" },
 ] as const;
+type NoteAudience = (typeof NOTE_AUDIENCE_OPTIONS)[number]["value"];
 // Print copy variants — desktop opens /api/assr-print/:id?variant=…
 const PRINT_VARIANTS = [
   { value: "customer", label: "Customer copy" },
@@ -510,7 +516,7 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
   const [advOpen, setAdvOpen] = useState(false);
   const [noteOpen, setNoteOpen] = useState(false);
   const [noteDraft, setNoteDraft] = useState("");
-  const [noteAudience, setNoteAudience] = useState<"purchasing" | "customer">("purchasing");
+  const [noteAudience, setNoteAudience] = useState<NoteAudience>("service");
   const [tlFilter, setTlFilter] = useState("all");
   const [busy, setBusy] = useState(false);
 
@@ -552,7 +558,7 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
     }, failTitle);
 
   const addNote = useMutation({
-    mutationFn: (payload: { note: string; category: "purchasing" | "customer" }) =>
+    mutationFn: (payload: { note: string; category: NoteAudience }) =>
       api.post<Any>(`/api/assr/${id}/notes`, payload),
     onSuccess: () => {
       setNoteDraft("");
@@ -814,25 +820,10 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
               busy={busy}
               onSave={(v) => patchCase({ verified_root_cause: v || null }, "Couldn't save verification")}
             />
-            {/* QC issue inspection — on receipt (mig 0105: folded in from the
-                retired Pending Inspection stage). */}
-            <div className="fld-l" style={{ marginTop: 10 }}>QC issue inspection result</div>
-            <div style={{ display: "flex", gap: 7, margin: "6px 0 4px" }}>
-              {QC_RESULT_OPTIONS.map((o) => {
-                const active = String(get(c, "qcIssueResult", "qc_issue_result") ?? "") === o.value;
-                return (
-                  <button
-                    key={o.value}
-                    onClick={() => { if (!dis) patchCase({ qc_issue_result: active ? null : o.value }, "Couldn't save QC issue result"); }}
-                    disabled={dis}
-                    className="tinybtn"
-                    style={active ? { background: BROWN, borderColor: BROWN, color: "#fff" } : undefined}
-                  >
-                    {o.label}
-                  </button>
-                );
-              })}
-            </div>
+            {/* QC issue inspection — on receipt (mig 0105: folded in from
+                the retired Pending Inspection stage). The qc_issue_result
+                column exists but ships no UI — Nick 2026-07-14: date +
+                photos suffice; the verdict is the Outcome above. */}
             <EditRow label="QC issue date" type="date" value={get(c, "qcReceiptDate", "qc_receipt_date")} busy={busy} disabled={dis} onSave={(v) => patchCase({ qc_receipt_date: v }, "Couldn't save QC issue date")} />
             {/* Inspect by — own team or supplier (inspection_by, mig 0073). */}
             <div className="fld-l" style={{ marginTop: 10, marginBottom: 8 }}>Inspect by</div>
@@ -904,16 +895,15 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
             )}
           </>
         );
-      case "pending_item_pickup":
-        return (
-          <EditRow label="Customer pickup date" type="date" value={get(c, "customerPickupAt", "customer_pickup_at")} busy={busy} disabled={dis} onSave={(v) => patchCase({ customer_pickup_at: v }, "Couldn't save pickup date")} />
-        );
       case "pending_supplier_pickup":
         return (
           <>
             <KV label="Supplier" value={String(get(c, "creditorName", "creditor_name") ?? creditorCode ?? "—")} />
             <KV label="Supplier code" value={creditorCode ? String(creditorCode) : "—"} mono />
+            {/* Folded in from the retired Item Pickup stage (mig 0110). */}
+            <EditRow label="Customer pickup date" type="date" value={get(c, "customerPickupAt", "customer_pickup_at")} busy={busy} disabled={dis} onSave={(v) => patchCase({ customer_pickup_at: v }, "Couldn't save pickup date")} />
             <EditRow label="Supplier pickup date" type="date" value={get(c, "supplierPickupAt", "supplier_pickup_at")} busy={busy} disabled={dis} onSave={(v) => patchCase({ supplier_pickup_at: v }, "Couldn't save pickup date")} />
+            <EditRow label="Supplier return date" type="date" value={get(c, "itemsReadyAt", "items_ready_at")} busy={busy} disabled={dis} onSave={(v) => patchCase({ items_ready_at: v }, "Couldn't save return date")} />
             <EditRow label="Supplier status update" type="textarea" value={get(c, "actionRemark", "action_remark")} busy={busy} disabled={dis} onSave={(v) => patchCase({ action_remark: v }, "Couldn't save status update")} />
           </>
         );
@@ -1250,6 +1240,10 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
                   open
                   busy={busy}
                   fields={[
+                    // Editable SO No (2026-07-14) — fixing a fat-fingered
+                    // SO re-matches customer info from the SO mirror
+                    // server-side.
+                    { key: "doc_no", label: "SO No", value: get(c, "docNo", "doc_no"), type: "text" },
                     { key: "customer_name", label: "Customer", value: customer(c) === "—" ? "" : customer(c), type: "text" },
                     { key: "phone", label: "Phone", value: get(c, "phone", "customerPhone", "customer_phone"), type: "text" },
                     { key: "customer_email", label: "Email", value: get(c, "customerEmail", "customer_email"), type: "text" },
@@ -1257,23 +1251,62 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
                     { key: "sales_agent", label: "Agent", value: get(c, "salesAgent", "sales_agent", "agent"), type: "text" },
                   ]}
                   onSave={(body) => patchCase(body, "Couldn't save customer")}
-                >
-                  <div className="pgrid2">
-                    <PGrid label="SO No" value={String(get(c, "docNo", "doc_no") ?? "—")} mono />
-                    <PGrid label="Ref No" value={String(get(c, "refNo", "ref_no") ?? "—")} mono />
-                    <PGrid label="Date" value={dm(get(c, "complainedDate", "complained_date", "createdAt", "created_at"))} />
-                    <PGrid
-                      label="Address"
-                      span
-                      multiline
-                      value={
-                        [get(c, "addr1"), get(c, "addr2"), get(c, "addr3"), get(c, "addr4")]
-                          .filter(Boolean)
-                          .join(", ") || "—"
-                      }
-                    />
-                  </div>
-                </EditableAcc>
+                  readView={
+                    <>
+                      {/* Read view mirrors the desktop Customer card
+                          (avatar + name, SO/Ref chips, phone + call,
+                          address + location chip); Edit swaps in the
+                          fields above. */}
+                      <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
+                        <Avatar name={String(customer(c))} size={42} />
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: 15.5, fontWeight: 700, color: INK, ...cellEllipsis }}>{customer(c)}</div>
+                          <div style={{ fontSize: 11.5, color: MUTED, marginTop: 2 }}>
+                            Agent · <b style={{ color: INK_SEC }}>{String(get(c, "salesAgent", "sales_agent", "agent") ?? "—")}</b>
+                          </div>
+                        </div>
+                      </div>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 11 }}>
+                        <div style={{ background: FIELD_BG, border: `1px solid ${DIM}`, borderRadius: 9, padding: "7px 10px" }}>
+                          <div className="money" style={{ fontSize: 8.5, letterSpacing: ".1em", textTransform: "uppercase", color: GREY, fontWeight: 600 }}>SO No</div>
+                          <div className="money" style={{ fontSize: 12.5, fontWeight: 600, color: TEAL_DK, marginTop: 3, ...cellEllipsis }}>{String(get(c, "docNo", "doc_no") ?? "—")}</div>
+                        </div>
+                        <div style={{ background: FIELD_BG, border: `1px solid ${DIM}`, borderRadius: 9, padding: "7px 10px" }}>
+                          <div className="money" style={{ fontSize: 8.5, letterSpacing: ".1em", textTransform: "uppercase", color: GREY, fontWeight: 600 }}>Ref No</div>
+                          <div className="money" style={{ fontSize: 12.5, fontWeight: 600, color: INK, marginTop: 3, ...cellEllipsis }}>{String(get(c, "refNo", "ref_no") ?? "—")}</div>
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "10px 0 9px", borderBottom: "1px solid #f1f0ea", marginTop: 4 }}>
+                        <div style={{ minWidth: 0 }}>
+                          <div className="money" style={{ fontSize: 8.5, letterSpacing: ".1em", textTransform: "uppercase", color: GREY, fontWeight: 600 }}>Phone</div>
+                          <div className="money" style={{ fontSize: 13, fontWeight: 600, color: INK, marginTop: 3 }}>{String(get(c, "phone", "customerPhone", "customer_phone") ?? "—")}</div>
+                        </div>
+                        {get(c, "phone", "customerPhone", "customer_phone") && (
+                          <a
+                            href={`tel:${String(get(c, "phone", "customerPhone", "customer_phone")).replace(/[^+\d]/g, "")}`}
+                            aria-label="Call customer"
+                            style={{ width: 34, height: 34, flex: "none", borderRadius: 9, background: "#e1efed", color: TEAL_DK, display: "flex", alignItems: "center", justifyContent: "center", textDecoration: "none" }}
+                          >
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6.6 10.8a15 15 0 0 0 6.6 6.6l2.2-2.2a1 1 0 0 1 1-.24 11 11 0 0 0 3.4.55 1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1 11 11 0 0 0 .55 3.4 1 1 0 0 1-.24 1Z" /></svg>
+                          </a>
+                        )}
+                      </div>
+                      <div style={{ paddingTop: 9 }}>
+                        <div className="money" style={{ fontSize: 8.5, letterSpacing: ".1em", textTransform: "uppercase", color: GREY, fontWeight: 600 }}>Customer address</div>
+                        <div style={{ fontSize: 12.5, fontWeight: 500, color: INK, lineHeight: 1.5, marginTop: 3 }}>
+                          {[get(c, "addr1"), get(c, "addr2"), get(c, "addr3"), get(c, "addr4")].filter(Boolean).join(", ") || "—"}
+                        </div>
+                        {get(c, "location", "customerState", "customer_state") && (
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 6, marginTop: 8, fontSize: 11, fontWeight: 600, color: TEAL_DK, background: "#e1efed", borderRadius: 7, padding: "4px 10px" }}>
+                            {String(get(c, "location", "customerState", "customer_state"))}
+                          </span>
+                        )}
+                      </div>
+                      <KV label="Email" value={String(get(c, "customerEmail", "customer_email") ?? "—")} />
+                      <KV label="Date" value={dm(get(c, "complainedDate", "complained_date", "createdAt", "created_at"))} />
+                    </>
+                  }
+                />
 
                 {/* PIC — right-header = current assignee; Assign reassigns via PATCH */}
                 <Acc
@@ -1375,7 +1408,7 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
                     })}
                   </div>
                 )}
-                {/* audience picker — the /:id/notes endpoint accepts purchasing | customer */}
+                {/* audience picker — service / customer / supplier / sales (mig 0108) */}
                 <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
                   {NOTE_AUDIENCE_OPTIONS.map((o) => (
                     <button
@@ -1535,11 +1568,11 @@ function SheetShell({ title, onClose, children }: { title?: string; onClose: () 
 // input too; both post through the same mutation).
 function NoteSheet({ onClose, onSave, saving }: {
   onClose: () => void;
-  onSave: (note: string, audience: "purchasing" | "customer") => void;
+  onSave: (note: string, audience: NoteAudience) => void;
   saving: boolean;
 }) {
   const [text, setText] = useState("");
-  const [audience, setAudience] = useState<"purchasing" | "customer">("purchasing");
+  const [audience, setAudience] = useState<NoteAudience>("service");
   return (
     <SheetShell title="Add note" onClose={onClose}>
       <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
@@ -2055,9 +2088,13 @@ function PGrid({ label, value, mono, span, multiline }: { label: string; value: 
 // timeline audience badge colour (rbadge — 12% tint of the category hue).
 function catBadge(cat: string): [string, string] {
   switch (cat) {
-    case "PURCHASING": return ["#a16a2e1f", BROWN];
+    case "SERVICE": return ["#16695f1f", TEAL];
     case "CUSTOMER": return ["#2f8a5b1f", GREEN];
-    case "SERVICE ADMIN": return ["#16695f1f", TEAL];
+    case "SUPPLIER": return ["#a16a2e1f", BROWN];
+    case "SALES": return ["#1f3a8a1f", BLUE];
+    // Legacy rows from before mig 0108 (all migrated, but a cached
+    // payload may still carry it briefly).
+    case "PURCHASING": return ["#16695f1f", TEAL];
     default: return ["#16695f1f", TEAL];
   }
 }
@@ -2085,6 +2122,7 @@ function EditableAcc({
   accent,
   note,
   headSlot,
+  readView,
   children,
 }: {
   title: string;
@@ -2095,6 +2133,10 @@ function EditableAcc({
   accent?: string;
   note?: string;
   headSlot?: React.ReactNode;
+  /** Replaces the default read view (KV rows + children) — the fields
+   *  still drive the edit view. Used by the Customer card so its read
+   *  state matches the desktop design (avatar, chips, call button). */
+  readView?: React.ReactNode;
   children?: React.ReactNode;
 }) {
   const [editing, setEditing] = useState(false);
@@ -2183,6 +2225,8 @@ function EditableAcc({
               </button>
             </div>
           </>
+        ) : readView ? (
+          readView
         ) : (
           <>
             {fields.map((f) => (

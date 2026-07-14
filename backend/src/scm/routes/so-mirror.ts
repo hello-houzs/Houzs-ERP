@@ -48,7 +48,7 @@ const NULL_COLS: Record<string, string[]> = {
 };
 
 // --- dest-column map, cached per isolate -------------------------------------
-type TableMap = { prefixCols: Set<string>; nullCols: Set<string>; destCols: Set<string> };
+type TableMap = { prefixCols: Set<string>; nullCols: Set<string>; destCols: Set<string>; arrayCols: Set<string> };
 const mapCache = new Map<string, TableMap>();
 
 async function tableMap(DB: Env['DB'], table: string): Promise<TableMap> {
@@ -56,26 +56,44 @@ async function tableMap(DB: Env['DB'], table: string): Promise<TableMap> {
   if (cached) return cached;
 
   // Destination columns — used to DROP any 2990-only source column so an INSERT
-  // can't 500 on an unknown column (schema drift between the two ERPs).
+  // can't 500 on an unknown column (schema drift between the two ERPs). data_type
+  // also flags Postgres array columns (see arrayCols below).
   const dc = await DB.prepare(
-    `SELECT column_name AS col FROM information_schema.columns
+    `SELECT column_name AS col, data_type AS dtype FROM information_schema.columns
       WHERE table_schema='scm' AND table_name=?`,
-  ).bind(table).all<{ col: string }>();
+  ).bind(table).all<{ col: string; dtype: string }>();
 
+  const rows = dc.results ?? [];
   const m: TableMap = {
     prefixCols: new Set(PREFIX_COLS[table] ?? []),
     nullCols: new Set(NULL_COLS[table] ?? []),
-    destCols: new Set((dc.results ?? []).map((r: { col: string }) => r.col)),
+    destCols: new Set(rows.map((r: { col: string }) => r.col)),
+    // Postgres array-typed dest columns (e.g. mfg_sales_order_items.photo_urls
+    // text[]). The D1-shim coerces a bound JS array by stringification, turning an
+    // empty array [] into "" — which Postgres rejects as a malformed array literal
+    // ("malformed array literal: \"\""). These must be formatted as explicit
+    // Postgres array literals before binding (see toPgArray). NOTE: this is keyed
+    // on data_type='ARRAY' only, so jsonb columns that happen to hold a JSON array
+    // are left untouched (bound as JSON, not corrupted into a pg array literal).
+    arrayCols: new Set(rows.filter((r: { dtype: string }) => r.dtype === 'ARRAY').map((r: { col: string }) => r.col)),
   };
   mapCache.set(table, m);
   return m;
 }
 
+// Format a JS array as a Postgres array literal: '{}' for empty, '{"a","b"}'
+// otherwise. Elements are double-quoted with " and \ escaped so any text value
+// is safe. Used only for genuine array-typed columns (m.arrayCols).
+function toPgArray(v: unknown[]): string {
+  return `{${v.map((x) => (x == null ? 'NULL' : `"${String(x).replace(/(["\\])/g, '\\$1')}"`)).join(',')}}`;
+}
+
 function applyMap(row: Record<string, unknown>, m: TableMap): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   // Keep only columns that exist in the Houzs dest table (drop 2990-only cols).
+  // Array-typed dest columns get an explicit Postgres array literal (see toPgArray).
   for (const [k, v] of Object.entries(row)) {
-    if (m.destCols.has(k)) out[k] = v;
+    if (m.destCols.has(k)) out[k] = m.arrayCols.has(k) && Array.isArray(v) ? toPgArray(v) : v;
   }
   // Stamp the 2990 company (dest always carries company_id for these tables).
   out.company_id = C2990;

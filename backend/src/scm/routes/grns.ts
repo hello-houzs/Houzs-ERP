@@ -14,8 +14,9 @@ import { recostFromGrn } from '../lib/recost';
 import { normalizeExchangeRate, toMyrSen, normalizeCurrency, masterRateForCurrency } from '../lib/fx';
 import { allocateLandedCharges, normalizeAllocationMethod } from '../lib/landed-allocation';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
-import { nextMonthlyDocNo } from '../lib/doc-no';
+import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { todayMyt } from '../lib/my-time';
+import { paginateAll } from '../lib/paginate-all';
 
 export const grns = new Hono<{ Bindings: Env; Variables: Variables }>();
 grns.use('*', supabaseAuth);
@@ -612,10 +613,12 @@ grns.get('/', async (c) => {
   // the per-line downstream (PI/PR) can be rolled up to a per-GRN doc-number set.
   const grnByItem = new Map<string, string>();
   if (ids.length > 0) {
-    const { data: lineRows, error: lineErr } = await sb
+    const { data: lineRows, error: lineErr } = await paginateAll<{ id: string; grn_id: string; qty_accepted: number | null; invoiced_qty: number | null; returned_qty: number | null }>((from, to) => sb
       .from('grn_items')
       .select('id, grn_id, qty_accepted, invoiced_qty, returned_qty')
-      .in('grn_id', ids);
+      .in('grn_id', ids)
+      .order('id')
+      .range(from, to));
     if (lineErr) return c.json({ error: 'load_failed', reason: lineErr.message }, 500);
     for (const li of (lineRows ?? []) as Array<{ id: string; grn_id: string; qty_accepted: number | null; invoiced_qty: number | null; returned_qty: number | null }>) {
       const arr = linesByGrn.get(li.grn_id) ?? [];
@@ -986,7 +989,7 @@ grns.post('/', async (c) => {
     }
   }
 
-  const grnNumber = await nextNumber(sb, 'GRN', 'grns', 'grn_number', c);
+  let grnNumber = await nextNumber(sb, 'GRN', 'grns', 'grn_number', c);
 
   /* PR-DRAFT-removal — Commander 2026-05-27: GRN is created as POSTED
      directly. Commander already enters Received/Accepted/Rejected per line
@@ -1003,9 +1006,20 @@ grns.post('/', async (c) => {
   /* Migration 0082 — GRN currency + rate inherit from the source PO (MYR default);
      allocation_method for landed-freight "平摊" (default QTY). MYR ⇒ rate 1, no-op. */
   const grnFx = await resolveGrnFx(sb, (body.purchaseOrderId as string | undefined) ?? null, body.currency, body.exchangeRate);
-  const { data: header, error: hErr } = await sb.from('grns').insert({
+  /* Doc-no collision retry (2026-07-14): two warehouse staff posting a GRN in
+     the same company + YYMM both mint the same grn_number; without a retry the
+     loser hits the UNIQUE grn_number (23505) and the receipt 500s. Lines key off
+     the returned header.id, so a re-mint needs no child re-stamp. */
+  let firstMint = true;
+  const { data: header, error: hErr } = await insertWithDocNoRetry(
+    async () => {
+      if (firstMint) { firstMint = false; return grnNumber; }
+      grnNumber = await nextNumber(sb, 'GRN', 'grns', 'grn_number', c);
+      return grnNumber;
+    },
+    (dn) => sb.from('grns').insert({
     company_id: activeCompanyId(c), // multi-company: stamp the active company
-    grn_number: grnNumber,
+    grn_number: dn,
     purchase_order_id: (body.purchaseOrderId as string | undefined) ?? null,
     supplier_id: body.supplierId,
     warehouse_id: headerWarehouseId,
@@ -1020,7 +1034,8 @@ grns.post('/', async (c) => {
     status: asDraft ? 'DRAFT' : 'POSTED',
     posted_at: asDraft ? null : new Date().toISOString(),
     created_by: user.id,
-  }).select(HEADER).single();
+    }).select(HEADER).single(),
+  );
   if (hErr) return c.json({ error: 'insert_failed', reason: hErr.message }, 500);
   const h = header as unknown as { id: string; grn_number: string };
 
@@ -1146,16 +1161,28 @@ grns.post('/from-pos', async (c) => {
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
   const cp = companyDocPrefix(c);
   const { data: existingGrnNos } = await sb.from('grns').select('grn_number').like('grn_number', `${cp}GRN-${yymm}-%`);
-  const grnNumber = nextMonthlyDocNo(`${cp}GRN-${yymm}`, ((existingGrnNos ?? []) as Array<{ grn_number: string }>).map((r) => r.grn_number));
+  let grnNumber = nextMonthlyDocNo(`${cp}GRN-${yymm}`, ((existingGrnNos ?? []) as Array<{ grn_number: string }>).map((r) => r.grn_number));
 
   const poNumbersJoined = poList.map((p) => p.po_number).join(', ');
   /* Migration 0082 — GRN currency = the source POs' currency (same supplier ⇒
      assume one currency; take the primary PO's). Rate auto-fills from the master;
      allocation_method defaults QTY. MYR ⇒ rate 1, no-op. */
   const batchFx = await resolveGrnFx(sb, poList[0]!.id, poList[0]!.currency ?? undefined, undefined);
-  const { data: header, error: hErr } = await sb.from('grns').insert({
+  /* Doc-no collision retry (2026-07-14): a concurrent GRN create in the same
+     company + YYMM can mint the same grn_number; without a retry the loser hits
+     the UNIQUE grn_number (23505) and the batch-convert 500s. Lines key off the
+     returned header.id, so a re-mint needs no child re-stamp. */
+  let firstMint = true;
+  const { data: header, error: hErr } = await insertWithDocNoRetry(
+    async () => {
+      if (firstMint) { firstMint = false; return grnNumber; }
+      const { data: live } = await sb.from('grns').select('grn_number').like('grn_number', `${cp}GRN-${yymm}-%`);
+      grnNumber = nextMonthlyDocNo(`${cp}GRN-${yymm}`, ((live ?? []) as Array<{ grn_number: string }>).map((r) => r.grn_number));
+      return grnNumber;
+    },
+    (dn) => sb.from('grns').insert({
     company_id: activeCompanyId(c), // multi-company: stamp the active company
-    grn_number: grnNumber,
+    grn_number: dn,
     purchase_order_id: poList[0]!.id,                    // primary PO ref (first one)
     supplier_id: supplierId,
     received_at: todayMyt(),
@@ -1168,7 +1195,8 @@ grns.post('/from-pos', async (c) => {
     status: 'POSTED',
     posted_at: new Date().toISOString(),
     created_by: user.id,
-  }).select('id, grn_number').single();
+    }).select('id, grn_number').single(),
+  );
   if (hErr) return c.json({ error: 'insert_failed', reason: hErr.message }, 500);
   const h = header as unknown as { id: string; grn_number: string };
 

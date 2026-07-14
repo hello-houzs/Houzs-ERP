@@ -130,16 +130,20 @@ async function caseInCallerScope(
   const visibleIds = await assrVisibleUserIds(c);
   if (visibleIds === undefined) return true; // unrestricted tier
   const row = await c.env.DB.prepare(
-    `SELECT created_by, assigned_to FROM assr_cases WHERE id = ?`,
+    `SELECT created_by, assigned_to, assigned_to_2 FROM assr_cases WHERE id = ?`,
   )
     .bind(caseId)
-    .first<{ created_by: number | null; assigned_to: number | null }>();
+    .first<{ created_by: number | null; assigned_to: number | null; assigned_to_2: number | null }>();
   if (!row) return false;
   const createdBy = Number(row.created_by ?? NaN);
   const assignedTo = Number(row.assigned_to ?? NaN);
+  // Co-assignee (assigned_to_2) — the LIST includes it (services/assr.ts), so a
+  // co-assignee who sees the case in their list must be able to OPEN it too.
+  const assignedTo2 = Number(row.assigned_to_2 ?? NaN);
   return (
     (Number.isFinite(createdBy) && visibleIds.includes(createdBy)) ||
-    (Number.isFinite(assignedTo) && visibleIds.includes(assignedTo))
+    (Number.isFinite(assignedTo) && visibleIds.includes(assignedTo)) ||
+    (Number.isFinite(assignedTo2) && visibleIds.includes(assignedTo2))
   );
 }
 
@@ -354,7 +358,7 @@ app.delete("/lookups/:kind/:id", requirePermission("service_cases.manage"), asyn
 // customer_amount and po_amount in one click. The user can still edit
 // after — this is a suggestion, not a write.
 
-app.get("/:id/cost-suggestion", requirePermission("service_cases.read"), async (c) => {
+app.get("/:id/cost-suggestion", requireServiceCaseAccess(), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
 
@@ -364,6 +368,12 @@ app.get("/:id/cost-suggestion", requirePermission("service_cases.read"), async (
     .bind(id)
     .first<{ doc_no: string | null; po_no: string | null; item_code: string | null }>();
   if (!caseRow) return c.json({ error: "Not found" }, 404);
+  /* Go-live review #11 — this sub-panel used requirePermission("service_cases.
+     read"), 403-ing a Sales viewer who legitimately opened this case. Gate on
+     requireServiceCaseAccess (admits Sales / director) + the SAME case-in-scope
+     check the detail GET performs, so a scoped viewer of THIS case can load the
+     panel while an out-of-scope case still answers 404. */
+  if (!(await caseInCallerScope(c, id))) return c.json({ error: "Not found" }, 404);
 
   const itemCode = (caseRow.item_code || "").trim();
   if (!itemCode) {
@@ -996,9 +1006,13 @@ app.get("/:id{[0-9]+}", requireServiceCaseAccess(), async (c) => {
     const row = (detail as { case?: Record<string, unknown> }).case ?? (detail as Record<string, unknown>);
     const createdBy = Number((row as any).createdBy ?? (row as any).created_by ?? NaN);
     const assignedTo = Number((row as any).assignedTo ?? (row as any).assigned_to ?? NaN);
+    // Co-assignee (assigned_to_2) — the LIST scopes on it too (services/assr.ts),
+    // so a co-assignee who sees the case in their list must be able to open it.
+    const assignedTo2 = Number((row as any).assignedTo2 ?? (row as any).assigned_to_2 ?? NaN);
     const inScope =
       (Number.isFinite(createdBy) && visibleIds.includes(createdBy)) ||
-      (Number.isFinite(assignedTo) && visibleIds.includes(assignedTo));
+      (Number.isFinite(assignedTo) && visibleIds.includes(assignedTo)) ||
+      (Number.isFinite(assignedTo2) && visibleIds.includes(assignedTo2));
     if (!inScope) return c.json({ error: "Not found" }, 404);
   }
   return c.json(detail);
@@ -1015,7 +1029,7 @@ app.get("/:id{[0-9]+}", requireServiceCaseAccess(), async (c) => {
 // present, otherwise on exact name) so staff can spot repeat
 // complaints. Excludes the current case and archived rows.
 
-app.get("/:id/customer-history", requirePermission("service_cases.read"), async (c) => {
+app.get("/:id/customer-history", requireServiceCaseAccess(), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   // Column is `phone`, not `customer_phone` — pre-v3.1 naming kept for
@@ -1026,6 +1040,10 @@ app.get("/:id/customer-history", requirePermission("service_cases.read"), async 
     .bind(id)
     .first<{ customer_name: string | null; phone: string | null }>();
   if (!cur) return c.json({ error: "Not found" }, 404);
+  /* Go-live review #11 — same fix as /cost-suggestion: admit a scoped Sales
+     viewer of this case (requireServiceCaseAccess + case-in-scope) instead of
+     403-ing on the raw service_cases.read permission. */
+  if (!(await caseInCallerScope(c, id))) return c.json({ error: "Not found" }, 404);
 
   const phone = (cur.phone || "").trim();
   const name = (cur.customer_name || "").trim();
@@ -1905,20 +1923,30 @@ function surveyEmailHtml(name: string, assrNo: string, link: string): string {
 
 // ── Notes ─────────────────────────────────────────────────────
 
+// Manual-note audience buckets (mig 0108). Legacy 'purchasing' from
+// not-yet-refreshed clients maps to 'service'; unknown values fall back
+// to 'service' too so nothing lands unclassified.
+const NOTE_CATEGORIES = new Set(["service", "customer", "supplier", "sales"]);
+function noteCategory(v?: string): "service" | "customer" | "supplier" | "sales" {
+  if (v === "purchasing") return "service";
+  return NOTE_CATEGORIES.has(v ?? "") ? (v as any) : "service";
+}
+
 app.post("/:id/notes", requirePermission("service_cases.write"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const userId = (c as any).get?.("userId") ?? 0;
   const body = await c.req.json<{
     note: string;
-    category?: "purchasing" | "customer";
+    category?: string;
   }>();
   if (!body.note?.trim()) return c.json({ error: "note is required" }, 400);
-  // Manual notes are either internal (purchasing) or customer-visible.
-  // 'system' is reserved for auto-emitted events; reject it here so a
-  // misconfigured client can't impersonate a system event.
-  const category =
-    body.category === "customer" ? "customer" : "purchasing";
+  // Manual notes pick an audience bucket (mig 0108): service (internal,
+  // the old 'purchasing'), customer (portal-visible), supplier or sales.
+  // 'system' is reserved for auto-emitted events, and anything unknown
+  // (incl. the legacy 'purchasing' from stale clients) falls back to
+  // 'service', so a misconfigured client can't impersonate an event.
+  const category = noteCategory(body.category);
   await logActivity(c.env, id, "note", null, null, body.note, userId, {
     category,
     source_channel: "app",
@@ -1937,7 +1965,7 @@ app.post("/:id/notes/:noteId/correct", requirePermission("service_cases.write"),
   const noteId = parseInt(c.req.param("noteId"), 10);
   if (isNaN(id) || isNaN(noteId)) return c.json({ error: "Invalid ID" }, 400);
   const userId = (c as any).get?.("userId") ?? 0;
-  const body = await c.req.json<{ note: string; category?: "purchasing" | "customer" }>();
+  const body = await c.req.json<{ note: string; category?: string }>();
   if (!body.note?.trim()) return c.json({ error: "correction note is required" }, 400);
 
   // Verify the referenced entry belongs to this case.
@@ -1949,7 +1977,7 @@ app.post("/:id/notes/:noteId/correct", requirePermission("service_cases.write"),
   if (!prior) return c.json({ error: "Referenced entry not found on this case" }, 404);
 
   await logActivity(c.env, id, "note", null, null, body.note, userId, {
-    category: body.category === "customer" ? "customer" : "purchasing",
+    category: noteCategory(body.category),
     source_channel: "app",
     references_entry_id: noteId,
     is_correction: true,

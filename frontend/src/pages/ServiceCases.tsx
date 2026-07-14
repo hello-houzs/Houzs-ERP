@@ -34,6 +34,8 @@ import {
   X,
   ClipboardList,
   Wrench,
+  Phone,
+  MapPin,
 } from "lucide-react";
 import { HubGrid } from "../components/HubGrid";
 import { PageHeader } from "../components/Layout";
@@ -93,7 +95,6 @@ const STAGE_OPTIONS: { value: StageFilter; label: string }[] = [
   { value: "pending_review", label: "Review" },
   { value: "under_verification", label: "Verification" },
   { value: "pending_solution", label: "Solution" },
-  { value: "pending_item_pickup", label: "Item Pickup" },
   { value: "pending_supplier_pickup", label: "Supplier Pickup" },
   { value: "pending_item_ready", label: "Item Ready" },
   { value: "pending_delivery_service", label: "Delivery / Service" },
@@ -130,8 +131,7 @@ const NCR_OPTIONS = [
 const NEXT_STAGE: Record<string, { stage: AssrStage; label: string }> = {
   pending_review:           { stage: "under_verification",       label: "Start Verification" },
   under_verification:       { stage: "pending_solution",         label: "Move to Solution" },
-  pending_solution:         { stage: "pending_item_pickup",      label: "Arrange Item Pickup" },
-  pending_item_pickup:      { stage: "pending_supplier_pickup",  label: "Hand to Supplier" },
+  pending_solution:         { stage: "pending_supplier_pickup",  label: "Hand to Supplier" },
   pending_supplier_pickup:  { stage: "pending_item_ready",       label: "Mark Item Ready" },
   pending_item_ready:       { stage: "pending_delivery_service", label: "Arrange Delivery" },
   pending_delivery_service: { stage: "completed",                label: "Close Case" },
@@ -2643,11 +2643,16 @@ function DetailContent({
   const ncrOptions = (ncrCategoriesQ.data?.data ?? []).map((r) => r.slug);
   const [note, setNote] = useState("");
   const [noteFormOpen, setNoteFormOpen] = useState(false);
-  // Mig 064 — note posting now picks a category. Default 'purchasing'
+  // Mig 064 / 0108 — note posting picks an audience bucket. Default
+  // 'service' (internal); only 'customer' is portal-visible.
   // (internal team comms) since most notes are operational. Switch to
   // 'customer' to make the entry visible on the customer portal.
-  const [noteCategory, setNoteCategory] = useState<"purchasing" | "customer">(
-    "purchasing",
+  // Customer card starts read-only (Nick 2026-07-14: "don't keep the
+  // inputs open — add an Edit button"); toggling exposes the InlineEdit
+  // fields, incl. the SO-No mirror re-match.
+  const [custEditing, setCustEditing] = useState(false);
+  const [noteCategory, setNoteCategory] = useState<"service" | "customer" | "supplier" | "sales">(
+    "service",
   );
   // Activity timeline filter. 'all' = show everything; the others
   // narrow to one category. System-emitted events (stage_change,
@@ -2860,6 +2865,7 @@ function DetailContent({
         { label: c?.assr_no || "Loading…" },
       ]}
       eyebrow="Service Case"
+      stickyTitle
       title={c?.assr_no || "Loading…"}
       titleClassName="font-serif text-[26px] font-semibold leading-none tracking-tight text-ink sm:text-[28px] lg:text-[32px]"
       description={
@@ -3506,43 +3512,14 @@ function DetailContent({
           </PanelSection>
             </StageRow>
 
-            {/* pending_item_pickup — customer-side pickup */}
-            <StageRow
-              c={c}
-              priorityMap={priorityMap}
-              stageId="pending_item_pickup"
-              title="Item Pickup"
-              summary={
-                c.customer_pickup_at
-                  ? `Collected ${formatDate(c.customer_pickup_at)}`
-                  : "Awaiting customer collection date"
-              }
-              currentStage={c.stage}
-              stages={activeStages}
-              openStage={openStage}
-              setOpenStage={setOpenStage}
-            >
-              <div className="space-y-2.5 rounded-md border border-border-subtle bg-surface px-3 py-2.5">
-                <InlineEdit
-                  label="Customer Pickup Date"
-                  type="date"
-                  value={c.customer_pickup_at}
-                  onSave={(v) => patch({ customer_pickup_at: v || null })}
-                />
-                <div className="text-[11px] text-ink-muted">
-                  This is the date logistics collects the faulty item
-                  from the customer's house — precedes any supplier
-                  handover.
-                </div>
-              </div>
-            </StageRow>
-
-            {/* pending_supplier_pickup — supplier collects from us */}
+            {/* pending_supplier_pickup — the whole supplier leg since mig
+                0110: we collect from the customer, the supplier collects
+                from us, and the supplier brings it back. */}
             <StageRow
               c={c}
               priorityMap={priorityMap}
               stageId="pending_supplier_pickup"
-              title="Supplier Pickup"
+              title="Supplier Pickup / Return"
               summary={
                 c.supplier_pickup_at
                   ? `Supplier collected ${formatDate(c.supplier_pickup_at)}`
@@ -3554,6 +3531,15 @@ function DetailContent({
               setOpenStage={setOpenStage}
             >
               <div className="space-y-2.5 rounded-md border border-border-subtle bg-surface px-3 py-2.5">
+                {/* Folded in from the retired Item Pickup stage (mig 0110):
+                    the date logistics collects the faulty item from the
+                    customer's house — precedes the supplier handover. */}
+                <InlineEdit
+                  label="Customer Pickup Date"
+                  type="date"
+                  value={c.customer_pickup_at}
+                  onSave={(v) => patch({ customer_pickup_at: v || null })}
+                />
                 <InlineEdit
                   label="Supplier Pickup Date"
                   type="date"
@@ -3659,7 +3645,7 @@ function DetailContent({
             </div>
 
           {/* Logistics */}
-          {(c.stage === "pending_item_pickup" || c.stage === "pending_supplier_pickup" || c.stage === "pending_item_ready" || c.stage === "pending_delivery_service" || c.stage === "completed" || logistics.length > 0) && (
+          {(c.stage === "pending_supplier_pickup" || c.stage === "pending_item_ready" || c.stage === "pending_delivery_service" || c.stage === "completed" || logistics.length > 0) && (
             <PanelSection title={`Logistics (${logistics.length})`}>
               {logistics.map((l) => (
                 <LogisticsRow
@@ -3783,25 +3769,156 @@ function DetailContent({
 
             <DetailAside>
           {/* Right rail per design: Customer · Assigned to · SLA · Timeline. */}
-          <PanelSection title="Customer" icon={<User size={13} />}>
-            <FieldRow label="SO No" mono>{c.doc_no}</FieldRow>
-            <FieldRow label="Customer">{c.customer_name || "—"}</FieldRow>
-            <FieldRow label="Phone">{c.phone || "—"}</FieldRow>
-            <FieldRow label="Agent">{c.sales_agent || "—"}</FieldRow>
-            <FieldRow label="Location">{c.location || "—"}</FieldRow>
-            <FieldRow label="Created">{formatDate(c.complained_date)}</FieldRow>
-            {(c.addr1 || c.addr2 || c.addr3 || c.addr4) && (
-              <FieldRow label="Address">
-                {[c.addr1, c.addr2, c.addr3, c.addr4].filter(Boolean).join(", ")}
-              </FieldRow>
+          <PanelSection
+            title="Customer"
+            icon={<User size={13} />}
+            action={
+              <button
+                type="button"
+                onClick={() => setCustEditing((e) => !e)}
+                className={cn(
+                  "rounded-md border px-2 py-0.5 text-[10.5px] font-semibold transition-colors",
+                  custEditing
+                    ? "border-primary bg-primary text-white"
+                    : "border-border bg-surface text-ink-secondary hover:border-primary/40 hover:text-primary"
+                )}
+              >
+                {custEditing ? "Done" : "Edit"}
+              </button>
+            }
+          >
+            {custEditing ? (
+            <>
+              {/* Edit view — the full InlineEdit set. Correcting the SO No
+                  re-matches customer info from the local SO mirror
+                  server-side; the address textarea maps line-by-line onto
+                  addr1-4. */}
+              <InlineEdit
+                label="Customer"
+                value={c.customer_name}
+                onSave={(v) => patch({ customer_name: v })}
+                placeholder="Customer name"
+              />
+              <InlineEdit
+                label="Agent"
+                value={c.sales_agent}
+                onSave={(v) => patch({ sales_agent: v })}
+                placeholder="Sales rep"
+              />
+              <InlineEdit
+                label="SO No"
+                value={c.doc_no}
+                onSave={(v) => patch({ doc_no: v })}
+                placeholder="SO-2990-xxxx"
+              />
+              <InlineEdit
+                label="Phone"
+                value={c.phone}
+                onSave={(v) => patch({ phone: v })}
+                placeholder="012-345 6789"
+              />
+              <InlineEdit
+                label="Customer address"
+                textarea
+                value={[c.addr1, c.addr2, c.addr3, c.addr4].filter(Boolean).join("\n")}
+                onSave={(v) => {
+                  const lines = (v || "")
+                    .split(/\r?\n/)
+                    .map((t) => t.trim())
+                    .filter(Boolean);
+                  return patch({
+                    addr1: lines[0] ?? null,
+                    addr2: lines[1] ?? null,
+                    addr3: lines[2] ?? null,
+                    addr4: lines.slice(3).join(", ") || null,
+                  });
+                }}
+                placeholder={"Street / unit\nCity - postcode\nState"}
+              />
+              <InlineEdit
+                label="Location"
+                value={c.location}
+                onSave={(v) => patch({ location: v })}
+                placeholder="State / outlet"
+              />
+              <InlineEdit
+                label="Email"
+                value={c.customer_email}
+                onSave={(v) => patch({ customer_email: v })}
+                placeholder="customer@example.com"
+              />
+              <FieldRow label="Ref No" mono>{c.ref_no || "—"}</FieldRow>
+              <FieldRow label="Created">{formatDate(c.complained_date)}</FieldRow>
+            </>
+            ) : (
+            <>
+              {/* Read view — mirrors the .dc.html reference: identity row,
+                  SO/Ref chips, phone row with call, address + location chip. */}
+              <div className="flex items-center gap-3">
+                <span className="flex h-[42px] w-[42px] shrink-0 select-none items-center justify-center rounded-[11px] bg-primary-soft text-[15px] font-bold text-primary-ink">
+                  {(c.customer_name || "?")
+                  .split(/\s+/)
+                  .map((w: string) => w[0])
+                  .filter(Boolean)
+                  .slice(0, 2)
+                  .join("")
+                  .toUpperCase()}
+                </span>
+                <div className="min-w-0">
+                  <div className="truncate text-[16px] font-bold leading-tight text-ink">
+                    {c.customer_name || "—"}
+                  </div>
+                  <div className="mt-0.5 text-[12px] text-ink-muted">
+                    Agent · <b className="font-semibold text-ink-secondary">{c.sales_agent || "—"}</b>
+                  </div>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded-md border border-border-subtle bg-bg/60 px-2.5 py-2">
+                  <div className="font-mono text-[9px] font-semibold uppercase tracking-wider text-ink-muted">SO No</div>
+                  <div className="mt-1 truncate font-mono text-[13px] font-semibold text-primary-ink">{c.doc_no || "—"}</div>
+                </div>
+                <div className="rounded-md border border-border-subtle bg-bg/60 px-2.5 py-2">
+                  <div className="font-mono text-[9px] font-semibold uppercase tracking-wider text-ink-muted">Ref No</div>
+                  <div className="mt-1 truncate font-mono text-[13px] font-semibold text-ink">{c.ref_no || "—"}</div>
+                </div>
+              </div>
+              <div className="flex items-center justify-between gap-2 border-t border-border-subtle pt-2.5">
+                <div className="min-w-0">
+                  <div className="font-mono text-[9px] font-semibold uppercase tracking-wider text-ink-muted">Phone</div>
+                  <div className="mt-1 font-mono text-[13.5px] font-semibold text-ink">{c.phone || "—"}</div>
+                </div>
+                {c.phone && (
+                  <a
+                    href={`tel:${String(c.phone).replace(/[^+\d]/g, "")}`}
+                    className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-md bg-primary-soft text-primary-ink transition-colors hover:bg-primary hover:text-white"
+                    title="Call customer"
+                    aria-label="Call customer"
+                  >
+                    <Phone size={14} />
+                  </a>
+                )}
+              </div>
+              <div className="border-t border-border-subtle pt-2.5">
+                <div className="font-mono text-[9px] font-semibold uppercase tracking-wider text-ink-muted">Customer address</div>
+                <div className="mt-1 text-[13px] font-medium leading-relaxed text-ink">
+                  {[c.addr1, c.addr2, c.addr3, c.addr4].filter(Boolean).join(", ") || "—"}
+                </div>
+                {c.location && (
+                  <span className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-primary-soft px-2.5 py-1 text-[11.5px] font-semibold text-primary-ink">
+                    <MapPin size={11} />
+                    {c.location}
+                  </span>
+                )}
+              </div>
+              {(c.customer_email || c.complained_date) && (
+                <div className="space-y-1 border-t border-border-subtle pt-2">
+                  {c.customer_email && <FieldRow label="Email">{c.customer_email}</FieldRow>}
+                  <FieldRow label="Created">{formatDate(c.complained_date)}</FieldRow>
+                </div>
+              )}
+            </>
             )}
-            <InlineEdit
-              label="Email"
-              value={c.customer_email}
-              onSave={(v) => patch({ customer_email: v })}
-              placeholder="customer@example.com"
-            />
-            {c.ref_no && <FieldRow label="Ref No" mono>{c.ref_no}</FieldRow>}
           </PanelSection>
 
           {/* Assigned To — Design PR 2. Unassigned uses a dashed
@@ -3963,13 +4080,15 @@ function DetailContent({
                   <select
                     value={noteCategory}
                     onChange={(e) =>
-                      setNoteCategory(e.target.value as "purchasing" | "customer")
+                      setNoteCategory(e.target.value as "service" | "customer" | "supplier" | "sales")
                     }
                     className="rounded-md border border-border bg-surface px-2 py-1.5 text-[11px] font-semibold outline-none focus:border-primary"
                     title="Where this note is visible"
                   >
-                    <option value="purchasing">Purchasing (internal)</option>
+                    <option value="service">Service (internal)</option>
                     <option value="customer">Customer-visible</option>
+                    <option value="supplier">Supplier (internal)</option>
+                    <option value="sales">Sales (internal)</option>
                   </select>
                   <span className="text-[10px] text-ink-muted">
                     {noteCategory === "customer"
@@ -4385,11 +4504,11 @@ function getStageAdvancePredicate(
       };
     case "pending_solution":
       return {
-        next: "pending_item_pickup",
+        next: "pending_supplier_pickup",
         satisfied: !!(c.resolution_method && c.po_no && c.action_remark?.trim()),
         label: "Resolution card complete",
       };
-    case "pending_item_pickup":
+    case "pending_supplier_pickup":
       return {
         next: "pending_item_ready",
         satisfied: !!c.items_ready_at,
@@ -4529,8 +4648,7 @@ const DETAIL_STAGES: { id: AssrStage; short: string; long: string }[] = [
   { id: "pending_review",              short: "Review",       long: "Review" },
   { id: "under_verification",          short: "Verification", long: "Verification" },
   { id: "pending_solution",            short: "Solution",     long: "Solution" },
-  { id: "pending_item_pickup",         short: "Item Pickup",  long: "Item Pickup" },
-  { id: "pending_supplier_pickup",     short: "Supplier",     long: "Supplier Pickup" },
+  { id: "pending_supplier_pickup",     short: "Supplier",     long: "Supplier Pickup / Return" },
   { id: "pending_item_ready",          short: "Item Ready",   long: "Item Ready" },
   { id: "pending_delivery_service",    short: "Delivery",     long: "Delivery / Service" },
   { id: "completed",                   short: "Completed",    long: "Completed" },
@@ -4695,7 +4813,7 @@ function WorkflowCard({
 }: {
   currentStage: AssrStage;
   // PR 4 — pass the filtered active-stage list. Internal resolution
-  // methods drop Supplier Pickup + Item Ready → 6 dots instead of 8.
+  // methods drop Supplier Pickup + Item Ready → 5 dots instead of 7.
   stages: typeof DETAIL_STAGES;
   transitioning: boolean;
   onChange: (s: AssrStage) => void;
@@ -4871,11 +4989,10 @@ function StatusSummaryBar({
 // Surfaces the v3.1 `inspection_result` field (pass / fail / na) +
 // an inspection-report attachment slot. Hidden on early-stage cases
 // to keep the page uncluttered; renders once the case has reached
-// pending_item_pickup or beyond, OR when there's already a result /
+// pending_supplier_pickup or beyond, OR when there's already a result /
 // report on file.
 
 const INSPECTION_STAGES_OR_LATER: AssrStage[] = [
-  "pending_item_pickup",
   "pending_supplier_pickup",
   "pending_item_ready",
   "pending_delivery_service",
@@ -5267,37 +5384,9 @@ function VerificationCard({
         value={c.qc_receipt_date}
         onSave={(v) => patch({ qc_receipt_date: v || null })}
       />
-      {/* Mig 0105 — result of the QC-on-receipt inspection, distinct
-          from the post-repair QC in Item Ready (inspection_result). */}
-      <div>
-        <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
-          QC Issue Inspection Result
-        </div>
-        <div className="flex gap-1.5">
-          {([
-            { v: "pass", label: "Pass" },
-            { v: "fail", label: "Fail" },
-            { v: "na", label: "N/A" },
-          ] as const).map((o) => (
-            <button
-              key={o.v}
-              type="button"
-              onClick={() =>
-                patch({ qc_issue_result: c.qc_issue_result === o.v ? null : o.v })
-              }
-              disabled={archived || saving}
-              className={cn(
-                "rounded-md border px-3 py-1.5 text-[12px] font-semibold transition-colors",
-                c.qc_issue_result === o.v
-                  ? "border-primary bg-primary-soft text-primary"
-                  : "border-border bg-surface text-ink-secondary hover:border-primary/40",
-              )}
-            >
-              {o.label}
-            </button>
-          ))}
-        </div>
-      </div>
+      {/* qc_issue_result column exists (mig 0105) but has no UI — Nick
+          2026-07-14: the on-receipt check only needs the date + photos;
+          the pass/fail verdict lives in Outcome below. */}
       <div>
         <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
           Outcome
@@ -6511,7 +6600,7 @@ function SupplierPortalLinkRow({
 //
 // Third variant of the per-case portal link: same /portal/case route
 // as the customer link but the token is source='sales', so the portal
-// shows the salesperson view — full 8-stage progress with dates, and
+// shows the salesperson view — full 7-stage progress with dates, and
 // comments/uploads attributed to sales. Idempotent per case.
 
 function SalesPortalLinkRow({

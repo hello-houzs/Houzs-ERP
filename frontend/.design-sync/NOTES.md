@@ -130,3 +130,17 @@ Triaged 2026-07-09:
   tokens.css, tailwind.config.js, or any preview file.
 - `cardMode: column` pinned for PageHeader / HeaderButton / TableSkeleton
   (wide stories crop in the grid otherwise).
+- `[RENDER_THIN]` AnnouncementBanner `maxHeight: 0` (2026-07-14): the
+  redesigned banner (4-category colour split + floating card) renders its
+  visible card out of flow, so the measured root height is 0 while the
+  card itself is fully painted — see the review sheet; grades good. A
+  legit false-positive, not a blank card.
+
+## Conventions-header vocabulary (2026-07-14)
+`bg-err-bg` / `bg-synced-bg` / `font-body` are enumerated in
+`.design-sync/conventions.md` but no in-repo component uses those exact
+utilities, so Tailwind purged them from the compiled CSS — a design-agent
+usage would have rendered unstyled. Fixed by adding a `safelist` to
+`tailwind.config.js`; if the conventions header ever names new utility
+classes, either use them in a component/preview or extend that safelist,
+then re-run cfg.buildCmd.

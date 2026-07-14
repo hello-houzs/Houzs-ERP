@@ -1,6 +1,7 @@
 import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 import { fileURLToPath } from "node:url";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 
 // Dev-server proxy rules.
 //
@@ -35,6 +36,11 @@ export default defineConfig(({ mode }) => {
     changeOrigin: true,
     secure: true,
   };
+
+  // One id per build. Used for BOTH the localStorage snapshot namespace
+  // (__BUILD_ID__ define) and the service-worker cache VERSION (stamped into
+  // dist/sw.js below), so a deploy can never accidentally reuse either.
+  const buildId = Date.now().toString(36);
 
   return {
     resolve: {
@@ -137,12 +143,36 @@ export default defineConfig(({ mode }) => {
         "@tanstack/react-query",
       ],
     },
-    plugins: [react()],
+    plugins: [
+      react(),
+      // Stamp the build id into dist/sw.js (replacing the __SW_BUILD_ID__ token)
+      // so the service-worker cache VERSION is unique per deploy → the SW's
+      // activate step purges the previous deploy's caches automatically. Removes
+      // the manual sw.js VERSION bump (forgotten bumps served a stale shell;
+      // parallel branches even collided on the same vNNN). writeBundle only fires
+      // on build, so dev (which doesn't register the SW) is unaffected.
+      {
+        name: "sw-build-version",
+        writeBundle() {
+          try {
+            const swPath = fileURLToPath(new URL("./dist/sw.js", import.meta.url));
+            if (existsSync(swPath)) {
+              writeFileSync(
+                swPath,
+                readFileSync(swPath, "utf8").replace(/__SW_BUILD_ID__/g, buildId),
+              );
+            }
+          } catch (e) {
+            console.warn("[sw-build-version] could not stamp sw.js:", e);
+          }
+        },
+      },
+    ],
     // Unique per build — namespaces the localStorage query snapshot
     // (src/lib/query-persist.ts) so a deploy that changes a list's payload shape
     // orphans the previous build's snapshot instead of hydrating a stale shape.
     define: {
-      __BUILD_ID__: JSON.stringify(Date.now().toString(36)),
+      __BUILD_ID__: JSON.stringify(buildId),
     },
     build: {
       // Don't <link rel="modulepreload"> the heavy on-demand chunks (jspdf /

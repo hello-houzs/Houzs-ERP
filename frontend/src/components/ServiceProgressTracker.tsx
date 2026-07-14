@@ -14,22 +14,21 @@
  *   Future     — empty outline with grey number
  *   Connector  — green / amber / red based on the prior stage's health
  *
- * Mobile (< sm): collapses to a single line showing "Stage 4 of 8 —
- * Item Pickup · 2.1 / 2 days". Avoids a vertical stepper that
+ * Mobile (< sm): collapses to a single line showing "Stage 4 of 7 —
+ * Supplier Pickup / Return · 2.1 / 2 days". Avoids a vertical stepper that
  * pushes the actual case content off-screen.
  */
 import { Check, Clock } from "lucide-react";
 import type { AssrStage, AssrStageHistoryRow } from "../types";
 import { cn, formatTimestamp } from "../lib/utils";
 
-// ── Canonical 8-stage order + display labels (mirrors backend mig 074 + 0105) ──
+// ── Canonical 7-stage order + display labels (mirrors backend mig 074 + 0110) ──
 
 const STAGES: { value: AssrStage; label: string; short: string; owner: string }[] = [
   { value: "pending_review",           label: "Review",                   short: "Review",         owner: "Service Admin" },
   { value: "under_verification",       label: "Verification",             short: "Verify",         owner: "Service Admin" },
   { value: "pending_solution",         label: "Solution",                 short: "Solution",       owner: "Service Admin" },
-  { value: "pending_item_pickup",      label: "Item Pickup",              short: "Item Pickup",    owner: "Logistic Admin" },
-  { value: "pending_supplier_pickup",  label: "Supplier Pickup",          short: "Supplier",       owner: "Service Admin" },
+  { value: "pending_supplier_pickup",  label: "Supplier Pickup / Return", short: "Supplier",       owner: "Service Admin" },
   { value: "pending_item_ready",       label: "Item Ready",               short: "Item Ready",     owner: "Service Admin" },
   { value: "pending_delivery_service", label: "Delivery / Service",       short: "Delivery",     owner: "Logistic Admin" },
   { value: "completed",                label: "Completed",                short: "Completed",      owner: "System" },
