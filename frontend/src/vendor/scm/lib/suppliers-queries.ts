@@ -255,6 +255,46 @@ export function useSuppliers(opts?: { status?: SupplierStatus; search?: string }
   });
 }
 
+/* Opt-in server-side pagination + search + Supply-Category filter + sort for
+   the Suppliers LIST PAGE. Sending `page` switches /suppliers into its
+   paginated contract ({ suppliers, total, page, pageSize }); the legacy
+   useSuppliers above (no page) still returns the historical unpaginated
+   SupplierRow[] — that is what the supplier PICKERS (MultiSupplierPicker,
+   ProductModels supplier select) rely on, so do NOT route those through this.
+   `q` searches code/name/contact_person (same columns as the legacy search).
+   `category` is the Supply-Category chip value (omit for "all", '__mixed__' for
+   the synthetic "Mixed / Other" chip); `pool` is the active maintained pool,
+   passed ONLY for the mixed chip so the server can compute that set exactly.
+   `sort` is 'col:dir' over { name, code, status, created_at } (default
+   name:asc). placeholderData keepPrevious so paging doesn't flash empty. */
+export function useSuppliersPaged(params: {
+  page: number;
+  pageSize: number;
+  status?: SupplierStatus;
+  q?: string;
+  category?: string;
+  pool?: string[];
+  sort?: string;
+}) {
+  const { page, pageSize, status, q, category, pool, sort } = params;
+  const usp = new URLSearchParams();
+  usp.set('page', String(page));
+  usp.set('pageSize', String(pageSize));
+  if (status) usp.set('status', status);
+  if (q && q.trim()) usp.set('q', q.trim());
+  if (category) usp.set('category', category);
+  if (pool && pool.length) usp.set('pool', pool.join('||'));
+  if (sort) usp.set('sort', sort);
+  return useQuery({
+    queryKey: ['suppliers-paged', page, pageSize, status ?? '', q ?? '', category ?? '', (pool ?? []).join('||'), sort ?? ''],
+    queryFn: () => authedFetch<{ suppliers: SupplierRow[]; total: number; page: number; pageSize: number }>(`/suppliers?${usp.toString()}`),
+    placeholderData: (prev: unknown) => prev as { suppliers: SupplierRow[]; total: number; page: number; pageSize: number } | undefined,
+    staleTime: 30_000,
+    retry: 1,
+    retryDelay: 800,
+  });
+}
+
 export function useSupplierDetail(id: string | null) {
   return useQuery({
     queryKey: ['supplier-detail', id],
