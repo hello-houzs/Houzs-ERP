@@ -756,11 +756,15 @@ export function MfgSalesOrdersListV2() {
     cancelled: 0,
   };
 
-  // KPI money stats — the backend paginated contract returns `total` +
-  // `statusCounts` but NOT full-set revenue/outstanding/paid sums, so these
-  // three are necessarily scoped to the CURRENT page's rows (subtitles say so).
-  // Total Orders uses the server `total` (full set).
+  // KPI money stats — the backend paginated contract returns `aggregates` with
+  // FULL-SET revenue/outstanding/paid sums (computed server-side over the same
+  // scope+company+status+search filters, all rows), byte-identical to the old
+  // pre-pagination client sum. We use those directly. Total Orders uses `total`.
+  // Defensive fallback: if `aggregates` is absent (old backend / mid-deploy),
+  // fall back to summing the CURRENT page's rows and label it "on this page".
+  const aggregates = data?.aggregates;
   const stats = useMemo(() => {
+    if (aggregates) return { ...aggregates, fullSet: true };
     let revenueCenti = 0;
     let outstandingCenti = 0;
     let paidCenti = 0;
@@ -769,8 +773,8 @@ export function MfgSalesOrdersListV2() {
       outstandingCenti += r.balance_centi ?? 0;
       paidCenti += r.paid_centi ?? 0;
     }
-    return { revenueCenti, outstandingCenti, paidCenti };
-  }, [rows]);
+    return { revenueCenti, outstandingCenti, paidCenti, fullSet: false };
+  }, [aggregates, rows]);
 
   // Write the page index to the URL. p<=0 drops the param (clean default).
   const setPageParam = (p: number) => {
@@ -1029,20 +1033,20 @@ export function MfgSalesOrdersListV2() {
             <StatCard
               label="Revenue"
               value={fmtRm(stats.revenueCenti)}
-              subtitle="Sum on this page"
+              subtitle={stats.fullSet ? "All matching orders" : "Sum on this page"}
               rail="bg-accent"
             />
             <StatCard
               label="Outstanding"
               value={fmtRm(stats.outstandingCenti)}
-              subtitle="Balance on this page"
+              subtitle={stats.fullSet ? "Balance due" : "Balance on this page"}
               tone="error"
               rail="bg-err"
             />
             <StatCard
               label="Paid"
               value={fmtRm(stats.paidCenti)}
-              subtitle="Receipts on this page"
+              subtitle={stats.fullSet ? "Receipts to date" : "Receipts on this page"}
               tone="success"
               rail="bg-synced"
             />

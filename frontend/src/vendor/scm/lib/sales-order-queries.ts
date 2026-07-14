@@ -56,7 +56,7 @@ export function useMfgSalesOrdersPaged(params: { page: number; pageSize: number;
   if (sort) usp.set('sort', sort);
   return useQuery({
     queryKey: ['mfg-sales-orders-paged', page, pageSize, status ?? '', q ?? '', sort ?? ''],
-    queryFn: () => authedFetch<{ salesOrders: any[]; total: number; page: number; pageSize: number; statusCounts: { all: number; draft: number; confirmed: number; cancelled: number } }>(`/mfg-sales-orders?${usp.toString()}`),
+    queryFn: () => authedFetch<{ salesOrders: any[]; total: number; page: number; pageSize: number; statusCounts: { all: number; draft: number; confirmed: number; cancelled: number }; aggregates?: { revenueCenti: number; outstandingCenti: number; paidCenti: number } }>(`/mfg-sales-orders?${usp.toString()}`),
     placeholderData: (prev: any) => prev,
     staleTime: 30_000,
     retry: 1,

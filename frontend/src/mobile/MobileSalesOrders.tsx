@@ -185,7 +185,7 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
     if (debouncedQ) p.set("q", debouncedQ);
     return p.toString();
   };
-  type SoListPage = { salesOrders?: SoRow[]; total?: number; page?: number; pageSize?: number };
+  type SoListPage = { salesOrders?: SoRow[]; total?: number; page?: number; pageSize?: number; aggregates?: { revenueCenti: number; outstandingCenti: number; paidCenti: number } };
   const {
     data, isLoading, error, refetch,
     fetchNextPage, hasNextPage, isFetchingNextPage,
@@ -203,20 +203,23 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
   const rows = useMemo(() => data?.pages.flatMap((p) => p.salesOrders ?? []) ?? [], [data]);
   const totalCount = data?.pages[0]?.total ?? 0;
 
-  /* Summary bar totals — exclude cancelled orders (mirrors the prototype: a
-     voided order contributes neither revenue nor outstanding). NB: rev/out are
-     summed over the rows LOADED SO FAR (server-side pagination means the full
-     set isn't in memory), so they're labelled "(loaded)"; the order COUNT is the
-     server's real total for the current filter. */
+  /* Summary bar totals — full-set rev/out from the server `aggregates` (page-0
+     response), computed over the SAME filters (status/period/search) across the
+     WHOLE table, byte-identical to the desktop KPI. `fullSet` drops the old
+     "(loaded)" caveat. Defensive fallback if `aggregates` is absent (old backend
+     / mid-deploy): sum the rows LOADED SO FAR, excluding cancelled and clamping
+     balance to positive (the historical prototype behaviour), and keep "(loaded)". */
+  const aggregates = data?.pages[0]?.aggregates;
   const summary = useMemo(() => {
+    if (aggregates) return { rev: aggregates.revenueCenti, out: aggregates.outstandingCenti, fullSet: true };
     let rev = 0, out = 0;
     for (const r of rows) {
       if (isCancelled(r)) continue;
       rev += total(r);
       const b = balance(r); if (b > 0) out += b;
     }
-    return { rev, out };
-  }, [rows]);
+    return { rev, out, fullSet: false };
+  }, [aggregates, rows]);
 
   /* Infinite-scroll trigger — an IntersectionObserver watches a 1px sentinel at
      the bottom of the list and fetches the next page when it nears the viewport
@@ -448,17 +451,18 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
 
       <div ref={scrollRef} className="scroll hz-scroll" style={{ padding: 14, paddingBottom: 120 }}>
         {/* Summary bar — N orders (server total for the filter) · RM rev · RM
-            outstanding over the LOADED rows (outstanding hidden when zero). The
-            "(loaded)" note is honest: with server-side pagination the money
-            totals reflect only what's been scrolled in, not the whole set. */}
+            outstanding. When the server supplies full-set `aggregates` the money
+            totals are the whole filtered set (no caveat). The "(loaded)" suffix
+            only appears in the defensive fallback, where rev/out reflect just the
+            rows scrolled in so far. */}
         {!isLoading && !error && (
           <div style={{ display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap", fontSize: 11.5, color: "var(--mut)", margin: "0 2px 11px" }}>
             <span><b style={{ color: "var(--ink)" }}>{totalCount}</b> orders</span>
             <span style={{ opacity: .4 }}>·</span>
-            <span className="money">{fmtCenti(summary.rev)} rev (loaded)</span>
+            <span className="money">{fmtCenti(summary.rev)} rev{summary.fullSet ? "" : " (loaded)"}</span>
             {summary.out > 0 && <>
               <span style={{ opacity: .4 }}>·</span>
-              <span className="money" style={{ color: "var(--red)" }}>{fmtCenti(summary.out)} outstanding (loaded)</span>
+              <span className="money" style={{ color: "var(--red)" }}>{fmtCenti(summary.out)} outstanding{summary.fullSet ? "" : " (loaded)"}</span>
             </>}
           </div>
         )}

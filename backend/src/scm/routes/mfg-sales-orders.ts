@@ -694,6 +694,11 @@ mfgSalesOrders.get('/', async (c) => {
   let page = 0;
   let pageSize = 50;
   let statusCounts: { all: number; draft: number; confirmed: number; cancelled: number } | undefined;
+  /* Full-set money KPIs (Revenue / Outstanding / Paid). Pre-pagination the FE
+     summed these three view columns over the whole status+search-filtered set;
+     paging broke that (the client could only sum the current page → "on this
+     page"). We recompute the identical full-set sums server-side here. */
+  let aggregates: { revenueCenti: number; outstandingCenti: number; paidCenti: number } | undefined;
 
   if (!paginate) {
     /* --- LEGACY PATH (unchanged) --- */
@@ -762,6 +767,36 @@ mfgSalesOrders.get('/', async (c) => {
       confirmed: confirmedC.count ?? 0,
       cancelled: cancelledC.count ?? 0,
     };
+
+    /* Full-set money KPIs — sum local_total_centi / balance_centi / paid_centi
+       over the SAME scope + company + status + search (+ optional so_date window)
+       filters as the page query, but WITHOUT `.range()`/pagination. This is
+       byte-identical to the OLD pre-pagination client sum (which summed those
+       three view columns over the whole filtered set). paginateAll pages the 3
+       int cols so the 1000-row PostgREST cap can't truncate the total. */
+    const moneyRes = await paginateAll<{ local_total_centi: number | null; balance_centi: number | null; paid_centi: number | null }>((mfrom, mto) => {
+      let moneyQ = sb
+        .from('mfg_sales_orders_with_payment_totals')
+        .select('local_total_centi, balance_centi, paid_centi');
+      if (scopeIds) moneyQ = moneyQ.in('salesperson_id', scopeIds);
+      moneyQ = scopeToCompany(moneyQ, c);
+      if (status) moneyQ = moneyQ.eq('status', status);
+      if (search) {
+        const ms = escapeForOr(search);
+        if (ms) moneyQ = moneyQ.or(`doc_no.ilike.%${ms}%,debtor_name.ilike.%${ms}%,debtor_code.ilike.%${ms}%,agent.ilike.%${ms}%,sales_location.ilike.%${ms}%,ref.ilike.%${ms}%,branding.ilike.%${ms}%`);
+      }
+      if (from) moneyQ = moneyQ.gte('so_date', from);
+      if (to) moneyQ = moneyQ.lte('so_date', to);
+      return moneyQ.range(mfrom, mto);
+    });
+    if (moneyRes.error) return c.json({ error: 'load_failed', reason: moneyRes.error.message }, 500);
+    let revenueCenti = 0, outstandingCenti = 0, paidCenti = 0;
+    for (const m of (moneyRes.data ?? [])) {
+      revenueCenti += m.local_total_centi ?? 0;
+      outstandingCenti += m.balance_centi ?? 0;
+      paidCenti += m.paid_centi ?? 0;
+    }
+    aggregates = { revenueCenti, outstandingCenti, paidCenti };
   }
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
 
@@ -1105,7 +1140,7 @@ mfgSalesOrders.get('/', async (c) => {
     }
   }
 
-  if (paginate) return c.json({ salesOrders: rows, total, page, pageSize, statusCounts });
+  if (paginate) return c.json({ salesOrders: rows, total, page, pageSize, statusCounts, aggregates });
   return c.json({ salesOrders: rows });
 });
 
