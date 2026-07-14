@@ -6,11 +6,8 @@ import { TopNavbar } from "./TopNavbar";
 import { MobileTabBar } from "./MobileTabBar";
 import { PullToRefresh, PullToRefreshGuardProvider } from "./PullToRefresh";
 import { RowActionsMenu, type MenuItem } from "./RowActionsMenu";
-import { useQuery } from "../hooks/useQuery";
 import { useBranding } from "../hooks/useBranding";
 import { CompanyMark } from "./CompanyMark";
-import { api } from "../api/client";
-import type { SyncStatusResponse } from "../types";
 
 interface Props {
   children: ReactNode;
@@ -27,12 +24,11 @@ export function Layout({ children }: Props) {
   // so any document generated from inside the app carries the live letterhead.
   useBranding();
 
-  // One global poll of /api/sync/status — used to surface the
-  // AutoCount-writes-disabled kill switch as a persistent banner.
-  const status = useQuery<SyncStatusResponse>(() =>
-    api.get("/api/sync/status")
-  );
-  const writesDisabled = status.data?.autocount_writes_disabled === true;
+  // AutoCount sync-status poll removed (owner 2026-07-14): there is no
+  // /api/sync/status backend route, so it 404'd on every page for every user.
+  // The read-only banner stays dormant (never shown) until the kill-switch is
+  // re-wired to a real endpoint.
+  const writesDisabled = false;
 
   return (
     <div className="flex h-dvh min-h-dvh w-screen overflow-hidden">

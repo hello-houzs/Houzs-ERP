@@ -417,6 +417,9 @@ function MembersTab({
   const [resendingId, setResendingId] = useState<number | null>(null);
 
   const canManage = can("users.manage");
+  // `salesDirScoped` arrives as a prop (a dept-scoped Sales Director). It gates
+  // the member-detail Edit + enable/disable actions (backend enforces the
+  // own-dept + no-role/dept/password scope).
 
   // Staging-only "login as member": the backend probe reports enabled only
   // when the worker runs with IMPERSONATION_ENABLED (staging vars block), so
@@ -1075,6 +1078,7 @@ function MembersTab({
             viewing.position_id != null ? posNameById.get(viewing.position_id) : undefined
           }
           canManage={canManage && viewing.id !== me?.id}
+          canEditScoped={(canManage || salesDirScoped) && viewing.id !== me?.id}
           online={onlineIds.has(viewing.id)}
           onBack={() => setViewingId(null)}
           onOpenMember={(id) => setViewingId(id)}
@@ -1728,6 +1732,7 @@ function MemberDetail({
   departments,
   posName,
   canManage,
+  canEditScoped,
   online,
   onBack,
   onOpenMember,
@@ -1745,6 +1750,7 @@ function MemberDetail({
   departments: Department[];
   posName?: string;
   canManage: boolean;
+  canEditScoped: boolean;
   online?: boolean;
   onBack: () => void;
   onOpenMember: (id: number) => void;
@@ -1952,15 +1958,19 @@ function MemberDetail({
             )}
           </div>
 
-          {canManage && (
+          {(canManage || canEditScoped) && (
             <div className="mt-4 grid gap-2 border-t border-border-subtle pt-4">
+              {/* Edit + enable/disable are available to a full admin AND a
+                  dept-scoped Sales Director; the rest stay full-admin only. */}
               <Button variant="brass" className="w-full" icon={<Pencil size={13} />} onClick={onEdit}>
                 Edit member
               </Button>
-              <button type="button" onClick={onEditBrands} className={actionCls}>
-                <Tag size={13} /> Brand access…
-              </button>
-              {multiCompany && (
+              {canManage && (
+                <button type="button" onClick={onEditBrands} className={actionCls}>
+                  <Tag size={13} /> Brand access…
+                </button>
+              )}
+              {canManage && multiCompany && (
                 <button
                   type="button"
                   onClick={onEditCompanies}
@@ -1969,12 +1979,12 @@ function MemberDetail({
                   <Building2 size={13} /> Company access…
                 </button>
               )}
-              {user.status !== "invited" && (
+              {canManage && user.status !== "invited" && (
                 <button type="button" onClick={onSendReset} className={actionCls}>
                   <KeyRound size={13} /> Reset password
                 </button>
               )}
-              {user.status === "invited" && (
+              {canManage && user.status === "invited" && (
                 <button type="button" onClick={onResendInvite} className={actionCls}>
                   <Mail size={13} /> Resend invitation
                 </button>
@@ -1983,13 +1993,15 @@ function MemberDetail({
                 {isActive ? <UserX size={13} /> : <UserCheck size={13} />}
                 {isActive ? "Disable account" : "Enable account"}
               </button>
-              <button
-                type="button"
-                onClick={onRemove}
-                className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-err/30 bg-surface px-3 py-2 text-[12px] font-semibold text-err transition-colors hover:bg-err/10"
-              >
-                <Trash2 size={13} /> Delete permanently
-              </button>
+              {canManage && (
+                <button
+                  type="button"
+                  onClick={onRemove}
+                  className="inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-err/30 bg-surface px-3 py-2 text-[12px] font-semibold text-err transition-colors hover:bg-err/10"
+                >
+                  <Trash2 size={13} /> Delete permanently
+                </button>
+              )}
             </div>
           )}
         </div>

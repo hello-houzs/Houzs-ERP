@@ -1008,7 +1008,7 @@ app.post("/:id/resend-invite", requirePermission("users.manage"), async (c) => {
  * Update a team member's role, enable/disable, reassign manager or
  * department.
  */
-app.patch("/:id", requirePermission("users.manage"), async (c) => {
+app.patch("/:id", requirePermissionOrSalesDirector("users.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   const me = c.get("user");
   if (!id) return c.json({ error: "Invalid ID." }, 400);
@@ -1045,6 +1045,29 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
     .where(eq(users.id, id))
     .limit(1);
   if (current.length === 0) return c.json({ error: "User not found" }, 404);
+
+  // Sales Director (dept-scoped admin, not a full users.manage admin): may EDIT
+  // basic details + ENABLE/DISABLE members of their OWN department only. They
+  // cannot touch a member outside their dept, nor change role / position /
+  // department / manager / password (those stay full-admin only). #424 grants
+  // view+invite; this adds edit+disable within the same department scope.
+  const dirScope = salesDirectorScope(c, "users.manage");
+  if (dirScope.scoped) {
+    if (current[0].department_id !== dirScope.deptId) {
+      return c.json({ error: "User not found" }, 404); // out-of-dept → indistinguishable
+    }
+    // A dept-scoped Sales Director may only touch basic details + enable/disable.
+    // STRIP (not 403) the privileged fields so an edit-form resubmit that carries
+    // the member's unchanged role/dept still saves the name/phone/email/status —
+    // the director simply cannot change role / position / department / manager /
+    // password. Those stay full-admin only.
+    delete body.role_id;
+    delete body.position_id;
+    delete body.department_id;
+    delete body.department_ids;
+    delete body.manager_id;
+    delete body.password;
+  }
 
   const set: Record<string, any> = {};
 
