@@ -158,6 +158,27 @@ interface Props<T> {
     rowKey?: (row: T) => string;
   };
   /**
+   * Opt-in row selection (2990 DataGrid `selectable` parity). When set, a
+   * leading checkbox column is prepended (before any `expandable` chevron):
+   * a header select-all with an indeterminate state, plus a per-row tick. Row
+   * ids are `String(getRowKey(row))`. Selection state is owned by the parent
+   * (so it survives re-render and drives a bulk-action bar) — the table only
+   * renders the checkboxes and reports toggles. Ticking a box stops
+   * propagation, so it never also fires `onRowClick`. Absent (default) = no
+   * checkbox column, render path byte-identical to before. Desktop table only
+   * — the mobile card branch is untouched.
+   */
+  selection?: {
+    /** Currently-selected row ids (stringified `getRowKey`). */
+    selectedIds: Set<string>;
+    /** Toggle one row's selection. */
+    onToggle: (id: string) => void;
+    /** Toggle all currently-rendered rows. `keys` = the row ids shown now;
+     *  `allSelected` = whether they are all already selected (so the parent
+     *  clears vs selects the batch). */
+    onToggleAll: (keys: string[], allSelected: boolean) => void;
+  };
+  /**
    * Opt-in row right-click menu (2990 DataGrid parity). Receives the row
    * and returns the items to show. Returning an empty array suppresses
    * the menu for that row (the native menu is still suppressed once the
@@ -233,6 +254,7 @@ export function DataTable<T>({
   expandable,
   contextMenu,
   groupBy,
+  selection,
 }: Props<T>) {
   const idKey = tableId || "_";
   const [hiddenList, setHiddenList] = useLocalStorage<string[]>(`dt:hidden:${idKey}`, []);
@@ -736,7 +758,8 @@ export function DataTable<T>({
   // column that isn't in `displayColumns`. When no chevron, this equals
   // `displayColumns.length`, so non-expandable callers are unchanged.
   const expandColCount = expandable ? 1 : 0;
-  const totalColSpan = displayColumns.length + expandColCount;
+  const selectColCount = selection ? 1 : 0;
+  const totalColSpan = displayColumns.length + expandColCount + selectColCount;
 
   // ── Group-by (opt-in) ──────────────────────────────────────
   // Flatten the sorted rows into a list of render instructions — a group
@@ -815,6 +838,21 @@ export function DataTable<T>({
 
   const rowCount = sortedRows?.length ?? 0;
   const visibleCount = chooserOptions.filter((o) => !effectiveHidden.has(o.key)).length;
+
+  // ── Row selection (opt-in `selection`) ─────────────────────────────────────
+  // Select-all operates over the currently-rendered rows (post filter + sort).
+  const selectableKeys = useMemo(
+    () => (selection && sortedRows ? sortedRows.map((r) => String(getRowKey(r))) : []),
+    [selection, sortedRows, getRowKey]
+  );
+  const allRowsSelected =
+    !!selection &&
+    selectableKeys.length > 0 &&
+    selectableKeys.every((k) => selection.selectedIds.has(k));
+  const someRowsSelected =
+    !!selection &&
+    !allRowsSelected &&
+    selectableKeys.some((k) => selection.selectedIds.has(k));
 
   // ── Row windowing (page-scroll-preserving) ─────────────────────────────────
   // Only the common flat case: grouped / expandable tables and short lists render
@@ -999,12 +1037,36 @@ export function DataTable<T>({
           <table className="w-full border-separate border-spacing-0 text-sm">
             <thead className="sticky top-0 z-10">
               <tr>
+                {selection && (
+                  <th
+                    style={{ width: 36, minWidth: 36, maxWidth: 36 }}
+                    className={cn(
+                      "border-b-2 border-border bg-surface-dim pl-5 text-center align-middle",
+                      headPad
+                    )}
+                  >
+                    <input
+                      type="checkbox"
+                      aria-label="Select all rows"
+                      checked={allRowsSelected}
+                      ref={(el) => {
+                        if (el) el.indeterminate = someRowsSelected;
+                      }}
+                      onChange={() =>
+                        selection.onToggleAll(selectableKeys, allRowsSelected)
+                      }
+                      onClick={(e) => e.stopPropagation()}
+                      className="cursor-pointer accent-primary"
+                    />
+                  </th>
+                )}
                 {expandable && (
                   <th
                     aria-hidden
                     style={{ width: 32, minWidth: 32, maxWidth: 32 }}
                     className={cn(
-                      "border-b-2 border-border bg-surface-dim pl-5",
+                      "border-b-2 border-border bg-surface-dim",
+                      selection ? "pl-3" : "pl-5",
                       headPad
                     )}
                   />
@@ -1053,8 +1115,9 @@ export function DataTable<T>({
                         c.align === "center" && "text-center",
                         (c.align === "left" || !c.align) && "text-left",
                         // First real column owns the left edge gutter only
-                        // when there's no leading chevron column ahead of it.
-                        i === 0 && !expandable && "pl-5",
+                        // when there's no leading select / chevron column
+                        // ahead of it.
+                        i === 0 && !expandable && !selection && "pl-5",
                         i === displayColumns.length - 1 && "pr-5",
                         sortable && "cursor-pointer select-none hover:text-primary",
                         active && "text-primary",
@@ -1226,6 +1289,9 @@ export function DataTable<T>({
                     rowIdx % 2 === 0 ? "#ffffff" : "#f8f8f5";
                   const expId = expandable ? expansionId(row) : null;
                   const isExpanded = expId != null && expandedRows.has(expId);
+                  const selKey = selection ? String(getRowKey(row)) : null;
+                  const isRowSelected =
+                    selKey != null && selection!.selectedIds.has(selKey);
                   return (
                     <Fragment key={getRowKey(row)}>
                       <tr
@@ -1245,10 +1311,34 @@ export function DataTable<T>({
                         className={cn(
                           "group transition-colors",
                           rowIdx % 2 === 0 ? "bg-surface" : "bg-surface-dim/35",
+                          isRowSelected && "bg-primary/10",
                           onRowClick && "cursor-pointer",
                           customClass
                         )}
                       >
+                        {/* Selection checkbox cell (opt-in `selection`). Stops
+                            click propagation so ticking never also fires
+                            onRowClick (which typically opens a drawer). */}
+                        {selection && (
+                          <td
+                            style={{ width: 36, minWidth: 36, maxWidth: 36 }}
+                            className={cn(
+                              "border-b border-border-subtle pl-5 text-center align-middle transition-colors group-hover:bg-[#3f6b53]/25",
+                              cellPad
+                            )}
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <input
+                              type="checkbox"
+                              aria-label="Select row"
+                              checked={isRowSelected}
+                              onChange={() => {
+                                if (selKey != null) selection.onToggle(selKey);
+                              }}
+                              className="cursor-pointer accent-primary"
+                            />
+                          </td>
+                        )}
                         {/* Chevron drill-down cell (opt-in `expandable`).
                             Stops click propagation so toggling the row's
                             expansion never also fires onRowClick. */}
@@ -1256,7 +1346,8 @@ export function DataTable<T>({
                           <td
                             style={{ width: 32, minWidth: 32, maxWidth: 32 }}
                             className={cn(
-                              "border-b border-border-subtle pl-5 align-middle text-ink transition-colors group-hover:bg-[#3f6b53]/25",
+                              "border-b border-border-subtle align-middle text-ink transition-colors group-hover:bg-[#3f6b53]/25",
+                              selection ? "pl-3" : "pl-5",
                               cellPad
                             )}
                           >
@@ -1321,9 +1412,10 @@ export function DataTable<T>({
                                 "group-hover:bg-[#3f6b53]/25",
                                 c.align === "right" && "text-right",
                                 c.align === "center" && "text-center",
-                                // Leading gutter belongs to the chevron cell
-                                // when expandable; otherwise the first column.
-                                i === 0 && !expandable && "pl-5",
+                                // Leading gutter belongs to the select /
+                                // chevron cell when present; otherwise the
+                                // first column.
+                                i === 0 && !expandable && !selection && "pl-5",
                                 i === displayColumns.length - 1 && "pr-5",
                                 // Freeze line on the last sticky column.
                                 isLastSticky && "border-r border-border",

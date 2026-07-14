@@ -413,7 +413,7 @@ function PurchaseOrderDetailV2ReadOnly() {
   const goHistory = () => id && navigate(`/scm/purchase-orders/${id}?tab=history`);
   const goPrintPdf = () => id && navigate(`/scm/purchase-orders/${id}?print=1`);
   const goGrnFromPo = () =>
-    id && navigate(`/scm/grns/from-po?po=${id}`);
+    id && navigate(`/scm/grns/from-po?poId=${id}`);
   const doSubmit = () => {
     if (!id) return;
     if (window.confirm("Submit this PO to the supplier?")) {
