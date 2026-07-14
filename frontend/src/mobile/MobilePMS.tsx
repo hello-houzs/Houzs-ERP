@@ -1745,18 +1745,24 @@ function PhaseBlock({
               <input className="fld-i" type="time" value={time} disabled={busy} onChange={(e) => { setTime(e.target.value); void saveStart(date, e.target.value); }} />
             </label>
           </div>
-          <StaffSelect label={`${kind} driver & contact`} value={driverId} currentName={driverName} options={drivers} disabled={busy} onChange={(v) => { void patchProject({ [driverCol]: v }); }} withContact />
-          <label className="fld" style={{ marginBottom: 6 }}>
-            <span className="fld-l">Lorry / vehicle</span>
-            <select className="fld-i" value={lorryId ?? ""} disabled={busy} onChange={(e) => { const v = e.target.value; void patchProject({ [lorryCol]: v ? parseInt(v, 10) : null }); }}>
-              <option value="">— unassigned —</option>
-              {lorryId != null && lorryPlate && !lorries.some((l) => l.id === lorryId) && (
-                <option value={lorryId}>{lorryPlate}</option>
-              )}
-              {lorries.map((l) => <option key={l.id} value={l.id}>{l.plate || `#${l.id}`}{l.is_internal === false ? " (outsource)" : ""}</option>)}
-            </select>
-          </label>
-          {driverId == null && !crewIsEmpty(crew) && (
+          {/* Single driver/lorry quick-assign — only as a fallback when NO
+              per-lorry crew is set (owner: hide once crew details exist). */}
+          {crewIsEmpty(crew) && (
+            <>
+              <StaffSelect label={`${kind} driver & contact`} value={driverId} currentName={driverName} options={drivers} disabled={busy} onChange={(v) => { void patchProject({ [driverCol]: v }); }} withContact />
+              <label className="fld" style={{ marginBottom: 6 }}>
+                <span className="fld-l">Lorry / vehicle</span>
+                <select className="fld-i" value={lorryId ?? ""} disabled={busy} onChange={(e) => { const v = e.target.value; void patchProject({ [lorryCol]: v ? parseInt(v, 10) : null }); }}>
+                  <option value="">— unassigned —</option>
+                  {lorryId != null && lorryPlate && !lorries.some((l) => l.id === lorryId) && (
+                    <option value={lorryId}>{lorryPlate}</option>
+                  )}
+                  {lorries.map((l) => <option key={l.id} value={l.id}>{l.plate || `#${l.id}`}{l.is_internal === false ? " (outsource)" : ""}</option>)}
+                </select>
+              </label>
+            </>
+          )}
+          {!crewIsEmpty(crew) && (
             <div style={{ margin: "2px 0 8px" }}>
               <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", color: "#9aa093", marginBottom: 5 }}>Planned crew</div>
               {crew.lorryCrew.map((l, i) => (
@@ -1778,8 +1784,8 @@ function PhaseBlock({
         <div className="pgrid2" style={{ marginBottom: 6 }}>
           <div><div className="pkv-l">{kind} date</div><div className="pkv-v">{dOnly(startAt)}</div></div>
           <div><div className="pkv-l">Start time</div><div className="pkv-v">{tOnly(startAt)}</div></div>
-          <div><div className="pkv-l">{kind} driver</div><div className="pkv-v">{driverDisplay}</div></div>
-          <div><div className="pkv-l">Lorry / vehicle</div><div className="pkv-v">{lorryDisplay}</div></div>
+          {crewIsEmpty(crew) && <div><div className="pkv-l">{kind} driver</div><div className="pkv-v">{driverDisplay}</div></div>}
+          {crewIsEmpty(crew) && <div><div className="pkv-l">Lorry / vehicle</div><div className="pkv-v">{lorryDisplay}</div></div>}
           {crew.lorryCrew.length > 0 && (
             <div style={{ gridColumn: "1 / -1" }}>
               <div className="pkv-l">Crew per lorry</div>

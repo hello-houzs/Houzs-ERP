@@ -363,15 +363,28 @@ mfgProducts.delete('/:id', async (c) => {
   }
 
   if (force) {
-    const cleanup: Array<{ table: string; column: string; value: string }> = [
-      // Inventory side — stock lots + movements key off product_code.
-      { table: 'inventory_stock_lots',         column: 'product_code',  value: code },
-      { table: 'inventory_movements',          column: 'product_code',  value: code },
-      // Procurement side — supplier ↔ material bindings key off material_code.
-      { table: 'supplier_material_bindings',   column: 'material_code', value: code },
+    // Multi-company: product code/material_code is shared across companies
+    // (UNIQUE(company_id, code)), so cleaning side tables by code ALONE would
+    // wipe the OTHER company's rows for the same code. Scope every code-keyed
+    // delete to the active company. Force-delete therefore requires a resolved
+    // company so the cleanup can't run un-scoped.
+    const cid = activeCompanyId(c);
+    if (cid == null) {
+      return c.json({ error: 'company_unresolved', reason: 'Force delete needs an active company to scope the cleanup safely. Please retry.' }, 409);
+    }
+    const cleanup: Array<{ table: string; column: string; value: string; scoped: boolean }> = [
+      // Inventory side — movements key off product_code (per-company; company_id NOT NULL).
+      // inventory_stock_lots has no company_id column (legacy/absent table) — leave unscoped;
+      // its delete is a swallowed no-op on deployments where it doesn't exist.
+      { table: 'inventory_stock_lots',         column: 'product_code',  value: code, scoped: false },
+      { table: 'inventory_movements',          column: 'product_code',  value: code, scoped: true  },
+      // Procurement side — supplier ↔ material bindings key off material_code (per-company).
+      { table: 'supplier_material_bindings',   column: 'material_code', value: code, scoped: true  },
     ];
     for (const c2 of cleanup) {
-      const { error: delErr } = await supabase.from(c2.table).delete().eq(c2.column, c2.value);
+      let delQ = supabase.from(c2.table).delete().eq(c2.column, c2.value);
+      if (c2.scoped) delQ = delQ.eq('company_id', cid);
+      const { error: delErr } = await delQ;
       // Best-effort: missing table / no-rows-affected is fine. RLS denial we
       // surface so commander knows force isn't actually clearing.
       if (delErr && delErr.code === '42501') {
