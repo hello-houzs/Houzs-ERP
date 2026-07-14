@@ -19,6 +19,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { supabaseAuth } from '../middleware/auth';
+import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 export const mrpLeadTimes = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -46,9 +47,12 @@ const emptyBucket = (): Record<Category, number> => ({
 // global-defaults bucket is under "null"; missing categories default to 0.
 mrpLeadTimes.get('/', async (c) => {
   const sb = c.get('supabase');
-  const { data, error } = await sb
-    .from('mrp_category_lead_times')
-    .select('warehouse_id, category, lead_days');
+  const { data, error } = await scopeToCompany(
+    sb
+      .from('mrp_category_lead_times')
+      .select('warehouse_id, category, lead_days'),
+    c,
+  );
   if (error) return c.json({ error: 'fetch_failed', reason: error.message }, 500);
   const leadTimes: Record<string, Record<Category, number>> = { [GLOBAL_KEY]: emptyBucket() };
   for (const r of (data ?? []) as DbRow[]) {
@@ -73,12 +77,13 @@ mrpLeadTimes.put('/', async (c) => {
     .from('mrp_category_lead_times')
     .upsert(
       {
+        company_id: activeCompanyId(c),
         warehouse_id: parsed.data.warehouseId,
         category: parsed.data.category,
         lead_days: parsed.data.leadDays,
         updated_at: new Date().toISOString(),
       },
-      { onConflict: 'warehouse_id,category' },
+      { onConflict: 'company_id,warehouse_id,category' },
     );
   if (error) return c.json({ error: 'save_failed', reason: error.message }, 500);
   return c.json({

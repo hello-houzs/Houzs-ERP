@@ -2539,7 +2539,7 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
     }
   }
   const cachedCombos = await loadActiveSofaCombos(sb, c);  // Phase 4b — sofa selling recompute
-  const cachedFabricAddonConfig = await loadFabricTierAddonConfig(sb);  // migration 0124 — fabric-tier Δ
+  const cachedFabricAddonConfig = await loadFabricTierAddonConfig(sb, activeCompanyId(c));  // migration 0124 — fabric-tier Δ
   const cachedModelOverrides = await loadModelFabricTierOverrides(sb);  // migration 0172 — per-Model Δ
   const cachedCompartmentOverrides = await loadCompartmentFabricTierOverrides(sb);  // migration 0025 — per-compartment Δ
 
@@ -2949,9 +2949,12 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
     Number((it.variants as { extraAddonAmountRM?: unknown } | null)?.extraAddonAmountRM ?? 0) > 0);
   let autoSkuEnabled = false;
   if (hasDeclaredExtra) {
-    const { data: flagRows, error: flagErr } = await sb
-      .from('so_settings').select('key, enabled')
-      .in('key', ['pos_remark_extra_auto_sku']);
+    const { data: flagRows, error: flagErr } = await scopeToCompany(
+      sb
+        .from('so_settings').select('key, enabled')
+        .in('key', ['pos_remark_extra_auto_sku']),
+      c,
+    );
     if (flagErr) {
       await rollbackPwpClaims();
       return c.json({ error: 'lookup_failed', reason: flagErr.message }, 500);
@@ -5519,7 +5522,7 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
     loadFabricByCode(sb, variantsObj?.fabricCode ?? null),
     loadActiveSofaCombos(sb, c),
     loadFabricSellingTiers(sb, (variantsObj as { fabricId?: string } | null)?.fabricId ?? null),
-    loadFabricTierAddonConfig(sb),
+    loadFabricTierAddonConfig(sb, activeCompanyId(c)),
     loadSpecialAddons(sb),
     loadModelFabricTierOverrides(sb),
     loadCompartmentFabricTierOverrides(sb),
@@ -6083,7 +6086,7 @@ mfgSalesOrders.patch('/:docNo/items/:itemId', async (c) => {
       loadFabricByCode(sb, variantsAfter?.fabricCode ?? null),
       loadActiveSofaCombos(sb, c),
       loadFabricSellingTiers(sb, (variantsAfter as { fabricId?: string } | null)?.fabricId ?? null),
-      loadFabricTierAddonConfig(sb),
+      loadFabricTierAddonConfig(sb, activeCompanyId(c)),
       loadSpecialAddons(sb),
       loadModelFabricTierOverrides(sb),
       loadCompartmentFabricTierOverrides(sb),
@@ -6522,7 +6525,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-update', async (c) => {
     loadFabricByCode(sb, (nextVariants.fabricCode as string | undefined) ?? null),
     loadFabricSellingTiers(sb, (prevVariants.fabricId as string | undefined) ?? null),
     loadFabricSellingTiers(sb, (nextVariants.fabricId as string | undefined) ?? null),
-    loadFabricTierAddonConfig(sb),
+    loadFabricTierAddonConfig(sb, activeCompanyId(c)),
     loadSpecialAddons(sb),
     loadModelFabricTierOverrides(sb),
     loadCompartmentFabricTierOverrides(sb),
@@ -6965,7 +6968,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap', async (c) => {
     // Loaders only when the re-evaluation actually has work to do.
     const [cfgX, addonCfgX, specialDefsX, modelOverridesX, compartmentOverridesX] = await Promise.all([
       loadMaintenanceConfig(sb),
-      loadFabricTierAddonConfig(sb),
+      loadFabricTierAddonConfig(sb, activeCompanyId(c)),
       loadSpecialAddons(sb),
       loadModelFabricTierOverrides(sb),
       loadCompartmentFabricTierOverrides(sb),
@@ -7165,7 +7168,7 @@ async function planSofaRewardRevert(
     loadFabricByCode(sb, (leadV.fabricCode as string | undefined) ?? null),
     loadActiveSofaCombos(sb, c),
     loadFabricSellingTiers(sb, (leadV.fabricId as string | undefined) ?? null),
-    loadFabricTierAddonConfig(sb),
+    loadFabricTierAddonConfig(sb, activeCompanyId(c)),
     loadSpecialAddons(sb),
     loadModelSofaModulePrices(sb, splitSofaCode(lead.item_code).baseModel, depth),
     loadModelFabricTierOverrides(sb),
@@ -7338,7 +7341,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
     loadFabricByCode(sb, (newVariants.fabricCode as string | undefined) ?? null),
     loadActiveSofaCombos(sb, c),
     loadFabricSellingTiers(sb, (newVariants.fabricId as string | undefined) ?? null),
-    loadFabricTierAddonConfig(sb),
+    loadFabricTierAddonConfig(sb, activeCompanyId(c)),
     loadSpecialAddons(sb),
     loadModelSofaModulePrices(sb, prodLite.base_model, depth),
     loadModelSofaModuleCostRows(sb, prodLite.base_model),

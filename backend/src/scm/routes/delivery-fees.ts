@@ -29,10 +29,13 @@ const patchSchema = z.object({
 // GET — every authenticated staff role can read.
 deliveryFees.get('/', async (c) => {
   const supabase = c.get('supabase');
-  const { data, error } = await supabase
-    .from('delivery_fee_config')
-    .select('base_fee, cross_category_fee, mattress_bedframe_lead_days, sofa_lead_days, updated_at, updated_by')
-    .eq('id', 1)
+  const { data, error } = await scopeToCompany(
+    supabase
+      .from('delivery_fee_config')
+      .select('base_fee, cross_category_fee, mattress_bedframe_lead_days, sofa_lead_days, updated_at, updated_by')
+      .eq('id', 1),
+    c,
+  )
     .single();
   if (error) return c.json({ error: 'fetch_failed', reason: error.message }, 500);
   return c.json({
@@ -76,10 +79,12 @@ deliveryFees.patch('/', async (c) => {
   if (parsed.data.mattressBedframeLeadDays !== undefined) patch.mattress_bedframe_lead_days = parsed.data.mattressBedframeLeadDays;
   if (parsed.data.sofaLeadDays             !== undefined) patch.sofa_lead_days              = parsed.data.sofaLeadDays;
 
-  const { error } = await supabase
+  let q = supabase
     .from('delivery_fee_config')
     .update(patch)
     .eq('id', 1);
+  q = scopeToCompany(q, c);
+  const { error } = await q;
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
   return c.json({ ok: true });
 });

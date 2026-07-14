@@ -30,10 +30,13 @@ const patchSchema = z.object({
 // GET — every authenticated staff role can read.
 fabricTierAddonConfig.get('/', async (c) => {
   const supabase = c.get('supabase');
-  const { data, error } = await supabase
-    .from('fabric_tier_addon_config')
-    .select('sofa_tier2_delta, sofa_tier3_delta, bedframe_tier2_delta, bedframe_tier3_delta, updated_at, updated_by')
-    .eq('id', 1)
+  const { data, error } = await scopeToCompany(
+    supabase
+      .from('fabric_tier_addon_config')
+      .select('sofa_tier2_delta, sofa_tier3_delta, bedframe_tier2_delta, bedframe_tier3_delta, updated_at, updated_by')
+      .eq('id', 1),
+    c,
+  )
     .single();
   if (error) return c.json({ error: 'fetch_failed', reason: error.message }, 500);
   return c.json({
@@ -71,7 +74,7 @@ fabricTierAddonConfig.patch('/', async (c) => {
 
   // .select() so an RLS USING-filter (0 rows touched) surfaces as an error
   // instead of a phantom ok:true — exactly how the super_admin gap hid for days.
-  const { data: updated, error } = await supabase.from('fabric_tier_addon_config').update(patch).eq('id', 1).select('id');
+  const { data: updated, error } = await scopeToCompany(supabase.from('fabric_tier_addon_config').update(patch).eq('id', 1), c).select('id');
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
   if (!updated || updated.length === 0) return c.json({ error: 'update_failed', reason: 'rls_blocked_zero_rows' }, 403);
   return c.json({ ok: true });

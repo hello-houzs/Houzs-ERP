@@ -805,12 +805,13 @@ export async function loadFabricSellingTiersByIds(
 }
 
 /** Load the singleton fabric-tier add-on Δ config (whole MYR). Missing → all 0. */
-export async function loadFabricTierAddonConfig(sb: any): Promise<FabricTierAddonConfig> {
-  const { data } = await sb
+export async function loadFabricTierAddonConfig(sb: any, companyId?: number | null): Promise<FabricTierAddonConfig> {
+  let q = sb
     .from('fabric_tier_addon_config')
     .select('sofa_tier2_delta, sofa_tier3_delta, bedframe_tier2_delta, bedframe_tier3_delta')
-    .eq('id', 1)
-    .maybeSingle();
+    .eq('id', 1);
+  if (companyId != null) q = q.eq('company_id', companyId);
+  const { data } = await q.maybeSingle();
   const d = data as Record<string, number> | null;
   return {
     sofaTier2Delta:     d?.sofa_tier2_delta ?? 0,
@@ -909,13 +910,14 @@ export async function recomputeOneLine(
   sb: any,
   item: MfgItemForRecompute,
   cachedConfig?: MaintenanceConfig | null,
+  companyId?: number | null,
 ): Promise<RecomputedLine> {
   const config = cachedConfig ?? await loadMaintenanceConfig(sb);
   const [product, fabric, sellingTiers, fabricAddonConfig, modelOverrides, compartmentOverrides] = await Promise.all([
     loadProductByCode(sb, item.itemCode),
     loadFabricByCode(sb, item.variants?.fabricCode ?? null),
     loadFabricSellingTiers(sb, item.variants?.fabricId ?? null),
-    loadFabricTierAddonConfig(sb),
+    loadFabricTierAddonConfig(sb, companyId),
     loadModelFabricTierOverrides(sb),
     loadCompartmentFabricTierOverrides(sb),
   ]);

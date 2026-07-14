@@ -9,6 +9,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import { supabaseAuth } from '../middleware/auth';
 import { hasHouzsPerm } from '../lib/houzs-perms';
+import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 export const soSettings = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -22,9 +23,12 @@ soSettings.use('*', supabaseAuth);
 
 soSettings.get('/', async (c) => {
   const sb = c.get('supabase');
-  const { data, error } = await sb
-    .from('so_settings')
-    .select('key, enabled, label')
+  const { data, error } = await scopeToCompany(
+    sb
+      .from('so_settings')
+      .select('key, enabled, label'),
+    c,
+  )
     .order('key');
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
   return c.json({ settings: data ?? [] });
@@ -48,6 +52,7 @@ soSettings.patch('/:key', async (c) => {
     .from('so_settings')
     .update({ enabled: parsed.data.enabled, updated_at: new Date().toISOString() })
     .eq('key', key)
+    .eq('company_id', activeCompanyId(c))
     .select('key, enabled, label')
     .maybeSingle();
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
