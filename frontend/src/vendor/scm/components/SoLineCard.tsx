@@ -44,7 +44,7 @@ import {
   type MfgProductRow,
   type SpecialAddonRow,
 } from '../lib/mfg-products-queries';
-import { useFabricTrackings, useFabricColoursActive, type FabricTrackingRow } from '../lib/fabric-queries';
+import { useFabricTrackings, useFabricColoursSearch, type FabricTrackingRow, type FabricColourRow } from '../lib/fabric-queries';
 import { useFabricLibrary } from '../lib/queries';
 import {
   useUploadSoItemPhoto,
@@ -209,7 +209,6 @@ const SoLineCardInner = ({
      fabric_colours, same as POS (SO-parity, Loo 2026-06-06). */
   const fabricsQ = useFabricTrackings();
   const fabrics = useMemo(() => fabricsQ.data ?? [], [fabricsQ.data]);
-  const fabricColoursQ = useFabricColoursActive();
   const fabricLibQ     = useFabricLibrary();
   /* Special Add-ons (the per-Model system POS sells from + the server prices
      from). Replaces the legacy maintenance_config specials/sofaSpecials pools. */
@@ -525,56 +524,42 @@ const SoLineCardInner = ({
   const restrictS = (opts: string[], pool?: string[] | null) =>
     (Array.isArray(pool) && pool.length > 0) ? opts.filter((o) => pool.includes(o)) : opts;
 
-  /* ── Fabrics dropdown (SO-parity, Loo 2026-06-06) ─────────────────────
-     Source: selling-side fabric_colours (what POS offers), filtered by the
-     Model's allowed_options.fabrics (colour codes — the Modular ON/OFF
-     authority). Non-empty pool = filter (same as the server gate); empty/null
-     = show all active colours. A saved line whose code fell out of the live
-     list still renders as "(current)" so the select doesn't blank out. */
-  const fabricOptions = useMemo(() => {
-    const pool = allowOpts?.fabrics;
-    /* Migration 0167 — fabric_trackings.is_active gates pickers for NEW
-       entries. A saved line whose fabric was deactivated still renders via
-       the "(current)" unshift below. */
-    const inactiveCodes = new Set(
-      fabrics.filter((f) => f.is_active === false).map((f) => f.fabric_code),
-    );
-    const colours = ((Array.isArray(pool) && pool.length > 0)
-      ? (fabricColoursQ.data ?? []).filter((c) => pool.includes(c.colourId))
-      : (fabricColoursQ.data ?? [])
-    ).filter((c) => !inactiveCodes.has(c.colourId));
-    /* Houzs 2026-06-23 (owner): the fabric picker shows ONLY the fabric code —
-       no supplier-code suffix, no derived colour/series ("你只需要显示 Fabric
-       Code 就可以了"). The code IS the fabric's identity. */
-    const opts = colours.map((c) => ({
-      value: c.colourId,
-      priceSen: 0,
-      display: c.colourId,
-    }));
-    opts.sort((a, b) => (a.display ?? '').localeCompare(b.display ?? '', undefined, { sensitivity: 'base' }));
-    const current = String(draft.variants.fabricCode ?? '');
-    if (current && !opts.some((o) => o.value === current)) {
-      opts.unshift({ value: current, priceSen: 0, display: `${current} (current)` });
-    }
-    return opts;
-  }, [fabricColoursQ.data, fabrics, allowOpts, draft.variants.fabricCode]);
+  /* ── Fabrics picker (SO-parity, Loo 2026-06-06 · SERVER-typeahead 2026-07-14) ──
+     Scaling (owner #1 pain): the fabric picker used to pull EVERY active
+     fabric_colours row on every line card and render them all as <option>s.
+     It is now a searchable combobox (FabricColourCombobox) backed by
+     GET /fabric-colours?q= (see useFabricColoursSearch). The pool/inactive
+     filters that used to prune the option list are handed to the combobox,
+     which applies them to the SERVER results:
+       • pool  = Model's allowed_options.fabrics (colour codes). Non-empty =
+                 restrict (same as the server gate); empty/null = any active.
+       • inactive = fabric_trackings.is_active===false (Migration 0167) — hidden
+                 from NEW picks; a saved line's deactivated code still displays.
+     A saved line's fabric ALWAYS renders (the combobox shows the stored code),
+     so the picker never blanks a previously-selected fabric. */
+  const inactiveFabricCodes = useMemo(
+    () => new Set(fabrics.filter((f) => f.is_active === false).map((f) => f.fabric_code)),
+    [fabrics],
+  );
 
   /* Picking a colour writes the SAME variant keys the POS handover payload
      sends (pos-handover-so.ts buildVariants): fabricCode + colourId satisfy
      the server's allowed-fabric gate + cost lookup; fabricId (the SERIES,
      fabric_library.id) is what the selling fabric-tier add-on keys on — the
      Backend never sent it before, so a configured tier Δ silently priced
-     RM 0 on Backend-keyed lines. */
-  const pickFabricColour = (colourId: string) => {
-    const c = (fabricColoursQ.data ?? []).find((x) => x.colourId === colourId);
-    const seriesLabel = (fabricLibQ.data ?? []).find((f) => f.id === c?.fabricId)?.label ?? null;
+     RM 0 on Backend-keyed lines. Now takes the full FabricColourRow straight
+     from the combobox's selection (identical shape to the old library row), so
+     the written variant payload is byte-for-byte what the <select> produced. */
+  const pickFabricColour = (c: FabricColourRow) => {
+    const colourId = c.colourId;
+    const seriesLabel = (fabricLibQ.data ?? []).find((f) => f.id === c.fabricId)?.label ?? null;
     setVariants({
       fabricCode: colourId,
       colourId,
-      ...(c ? { fabricId: c.fabricId } : {}),
+      fabricId: c.fabricId,
       ...(seriesLabel ? { fabricLabel: seriesLabel } : {}),
-      ...(c?.label ? { colourLabel: c.label } : {}),
-      ...(c?.swatchHex ? { colourHex: c.swatchHex } : {}),
+      ...(c.label ? { colourLabel: c.label } : {}),
+      ...(c.swatchHex ? { colourHex: c.swatchHex } : {}),
     });
   };
 
@@ -900,12 +885,13 @@ const SoLineCardInner = ({
         <div className={styles.variants}>
           <div className={styles.variantsHead}>BEDFRAME VARIANTS</div>
           <div className={styles.variantsGrid}>
-            <VariantSelect
+            <FabricColourCombobox
               label="Fabrics" required={variantsRequired}
               value={String(draft.variants.fabricCode ?? '')}
               disabled={!isEditing}
-              options={fabricOptions}
-              onChange={pickFabricColour}
+              pool={allowOpts?.fabrics ?? null}
+              inactiveCodes={inactiveFabricCodes}
+              onSelect={pickFabricColour}
             />
             <VariantSelect
               label="Gaps" required={variantsRequired}
@@ -961,12 +947,13 @@ const SoLineCardInner = ({
         <div className={styles.variants}>
           <div className={styles.variantsHead}>SOFA VARIANTS</div>
           <div className={styles.variantsGrid}>
-            <VariantSelect
+            <FabricColourCombobox
               label="Fabrics" required={variantsRequired}
               value={String(draft.variants.fabricCode ?? '')}
               disabled={!isEditing}
-              options={fabricOptions}
-              onChange={pickFabricColour}
+              pool={allowOpts?.fabrics ?? null}
+              inactiveCodes={inactiveFabricCodes}
+              onSelect={pickFabricColour}
             />
             <VariantSelect
               label="Seat Heights" required={variantsRequired}
@@ -1275,6 +1262,136 @@ const VariantSelect = ({
           );
         })}
       </select>
+    </label>
+  );
+};
+
+/* ──────────────────────────────────────────────────────────────────────
+   FabricColourCombobox — searchable, server-typeahead fabric picker.
+
+   Owner #1 scaling pain (2026-07-14): the fabric field used to be a native
+   <select> whose <option>s were EVERY active fabric_colours row (via
+   useFabricColoursActive), rendered on every line card. This replaces it with
+   a combobox that mirrors this file's PROVEN SKU picker: a text input that, on
+   >= 2 typed chars, queries useFabricColoursSearch (GET /fabric-colours?q=…,
+   capped at 50 server-side), shows the matches in a body-portalled dropdown,
+   and commits a full FabricColourRow on click (identical shape to a library
+   row — so pickFabricColour writes the same variant payload the <select> did).
+
+   The pool (Model allowed_options.fabrics) + inactive (fabric_trackings
+   is_active) filters are applied to the SERVER results here. CRITICAL: the
+   selected value ALWAYS displays — when the picker is closed the input shows
+   the stored code (`value`), so a saved SO/CO line renders its fabric even
+   when it isn't in the current typeahead result set. A selection is NEVER
+   blanked.
+   ────────────────────────────────────────────────────────────────────── */
+
+const FabricColourCombobox = ({
+  label, value, onSelect, disabled = false, required = false, pool, inactiveCodes,
+}: {
+  label:    string;
+  /** Selected colour code (draft.variants.fabricCode). Shown verbatim when closed. */
+  value:    string;
+  /** Non-empty = restrict to these colour codes (Model allowed_options.fabrics). */
+  pool?:    string[] | null;
+  /** fabric_trackings.is_active===false codes — hidden from NEW picks (Mig 0167). */
+  inactiveCodes: Set<string>;
+  disabled?: boolean;
+  required?: boolean;
+  onSelect: (c: FabricColourRow) => void;
+}) => {
+  const [open, setOpen]     = useState(false);
+  const [search, setSearch] = useState('');
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number; width: number } | null>(null);
+
+  /* Same debounce + length>=2 + open gate the SKU picker uses, so the query
+     only fires while the operator is actively picking. */
+  const debounced = useDebouncedValue(search, 200);
+  const trimmed   = debounced.trim();
+  const coloursQ  = useFabricColoursSearch(trimmed, { enabled: open && trimmed.length >= 2 });
+
+  /* Apply the pool + inactive gates to the SERVER results (the old option-list
+     prune, moved server-side of the fetch). Cap at 50 like the SKU picker. */
+  const results = useMemo(() => {
+    const rows = coloursQ.data ?? [];
+    const restricted = Array.isArray(pool) && pool.length > 0;
+    const allow = new Set(pool ?? []);
+    return rows
+      .filter((c) => !inactiveCodes.has(c.colourId))
+      .filter((c) => !restricted || allow.has(c.colourId))
+      .slice(0, 50);
+  }, [coloursQ.data, pool, inactiveCodes]);
+
+  /* Pin the portalled dropdown under the input (escapes the card's
+     overflow:hidden clip), tracking scroll/resize — same as the SKU picker. */
+  useEffect(() => {
+    if (!open || disabled) { setMenuPos(null); return; }
+    const update = () => {
+      const el = wrapRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      setMenuPos({ top: r.bottom + 4, left: r.left, width: r.width });
+    };
+    update();
+    window.addEventListener('scroll', update, true);
+    window.addEventListener('resize', update);
+    return () => {
+      window.removeEventListener('scroll', update, true);
+      window.removeEventListener('resize', update);
+    };
+  }, [open, disabled]);
+
+  const invalid = required && !value;
+
+  return (
+    <label className={styles.variantField}>
+      <span className={styles.variantLabel}>{label}{required ? ' *' : ''}</span>
+      <div ref={wrapRef} style={{ position: 'relative' }}>
+        <input
+          className={styles.select}
+          /* Closed → show the selected code (NEVER blank a saved fabric).
+             Open  → show the operator's live search term. */
+          value={open ? search : value}
+          placeholder={value ? undefined : 'Type 2+ chars to search…'}
+          disabled={disabled}
+          onFocus={() => { setOpen(true); setSearch(''); }}
+          onBlur={() => setTimeout(() => setOpen(false), 150)}
+          onChange={(e) => { setSearch(e.target.value); setOpen(true); }}
+          style={invalid && !disabled ? { borderColor: 'var(--c-festive-b, #B8331F)' } : undefined}
+          title={value || undefined}
+        />
+        {open && !disabled && menuPos && createPortal(
+          <ul
+            className={styles.suggestList}
+            style={{ position: 'fixed', top: menuPos.top, left: menuPos.left, width: menuPos.width, right: 'auto', marginTop: 0, zIndex: 1000 }}
+          >
+            {results.length > 0 ? (
+              /* Owner 2026-06-23: show ONLY the fabric code — the code IS the
+                 fabric's identity. onMouseDown + preventDefault keeps the input
+                 focused so the portal doesn't blur-close before the pick lands. */
+              results.map((c) => (
+                <li
+                  key={c.colourId}
+                  className={styles.suggestItem}
+                  onMouseDown={(e) => { e.preventDefault(); onSelect(c); setSearch(''); setOpen(false); }}
+                >
+                  {c.colourId}
+                </li>
+              ))
+            ) : (
+              <li className={styles.suggestItem} style={{ color: 'var(--fg-muted)', cursor: 'default' }}>
+                {trimmed.length < 2
+                  ? 'Type at least 2 characters to search…'
+                  : coloursQ.isFetching
+                    ? 'Searching…'
+                    : `No fabrics match "${trimmed}".`}
+              </li>
+            )}
+          </ul>,
+          document.body,
+        )}
+      </div>
     </label>
   );
 };
