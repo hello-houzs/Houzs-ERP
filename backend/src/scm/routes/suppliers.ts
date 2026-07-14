@@ -162,13 +162,14 @@ async function categoryForMaterial(
   supabase: SupabaseClient,
   kind: string,
   code: string,
+  companyId?: number,
 ): Promise<string | null> {
   if (kind !== 'mfg_product') return null;
-  const { data } = await supabase
-    .from('mfg_products')
-    .select('category')
-    .eq('code', code)
-    .maybeSingle();
+  // Multi-company: `code` is shared across companies, so pin to the active
+  // company or maybeSingle() could resolve the other company's product.
+  let q = supabase.from('mfg_products').select('category').eq('code', code);
+  if (companyId != null) q = q.eq('company_id', companyId);
+  const { data } = await q.maybeSingle();
   return (data?.category as string | undefined) ?? null;
 }
 
@@ -189,6 +190,7 @@ async function syncAnchoredProductFromBinding(
     unit_price_centi?: number | null;
     price_matrix?: unknown;
   },
+  companyId?: number,
 ): Promise<void> {
   try {
     if (!binding.is_cost_anchor) return;
@@ -196,11 +198,11 @@ async function syncAnchoredProductFromBinding(
     const code = binding.material_code;
     if (!code) return;
 
-    const { data: product } = await supabase
-      .from('mfg_products')
-      .select('id, category')
-      .eq('code', code)
-      .maybeSingle();
+    // Multi-company: `code` is shared, so pin to the active company or we could
+    // mirror this binding's cost onto the OTHER company's product row.
+    let pq = supabase.from('mfg_products').select('id, category').eq('code', code);
+    if (companyId != null) pq = pq.eq('company_id', companyId);
+    const { data: product } = await pq.maybeSingle();
     if (!product) return;
 
     const result = bindingToProductPatch({
@@ -415,7 +417,7 @@ suppliers.post('/:id/bindings', async (c) => {
   // against the SKU's mfg_products.category.
   let priceMatrix: Record<string, unknown> | null | undefined;
   if (body.priceMatrix !== undefined) {
-    const cat = await categoryForMaterial(supabase, kind, String(body.materialCode));
+    const cat = await categoryForMaterial(supabase, kind, String(body.materialCode), activeCompanyId(c));
     try {
       priceMatrix = validatePriceMatrix(body.priceMatrix, cat);
     } catch (e) {
@@ -449,7 +451,8 @@ suppliers.post('/:id/bindings', async (c) => {
       .update({ is_main_supplier: false })
       .eq('material_kind', row.material_kind)
       .eq('material_code', row.material_code)
-      .eq('is_main_supplier', true);
+      .eq('is_main_supplier', true)
+      .eq('company_id', activeCompanyId(c));
   }
 
   const { data, error } = await supabase.from('supplier_material_bindings').insert({ ...row, company_id: activeCompanyId(c) }).select(BINDING_COLS).single();
@@ -512,7 +515,7 @@ suppliers.post('/:id/bindings/batch', async (c) => {
     // the row rather than 400ing the whole batch (caller can read the
     // inserted/skipped counts to know something dropped).
     if (b.priceMatrix !== undefined) {
-      const cat = await categoryForMaterial(supabase, kind, String(b.materialCode));
+      const cat = await categoryForMaterial(supabase, kind, String(b.materialCode), activeCompanyId(c));
       try {
         const pm = validatePriceMatrix(b.priceMatrix, cat);
         if (pm !== undefined) row.price_matrix = pm;
@@ -574,7 +577,7 @@ suppliers.patch('/:id/bindings/:bindingId', async (c) => {
     if (!existing) return c.json({ error: 'not_found' }, 404);
     const kind = (updates.material_kind as string | undefined) ?? existing.material_kind;
     const code = (updates.material_code as string | undefined) ?? existing.material_code;
-    const cat = await categoryForMaterial(supabase, kind, code);
+    const cat = await categoryForMaterial(supabase, kind, code, activeCompanyId(c));
     try {
       updates.price_matrix = validatePriceMatrix(body.priceMatrix, cat);
     } catch (e) {
@@ -597,6 +600,7 @@ suppliers.patch('/:id/bindings/:bindingId', async (c) => {
         .eq('material_kind', existing.material_kind)
         .eq('material_code', existing.material_code)
         .eq('is_main_supplier', true)
+        .eq('company_id', activeCompanyId(c))
         .neq('id', bindingId);
     }
   }
@@ -611,7 +615,7 @@ suppliers.patch('/:id/bindings/:bindingId', async (c) => {
      material_code, mirror its (just-written) cost onto the linked
      mfg_products row. Best-effort: the binding write above already
      committed, so a sync failure must not 500 this response. */
-  await syncAnchoredProductFromBinding(supabase, data as unknown as Record<string, unknown>);
+  await syncAnchoredProductFromBinding(supabase, data as unknown as Record<string, unknown>, activeCompanyId(c));
 
   return c.json({ binding: data });
 });
@@ -668,11 +672,12 @@ suppliers.patch('/:id/bindings/:bindingId/cost-anchor', async (c) => {
       .eq('material_kind', existing.material_kind)
       .eq('material_code', existing.material_code)
       .eq('is_cost_anchor', true)
+      .eq('company_id', activeCompanyId(c))
       .neq('id', bindingId);
 
     // Initial sync — push the binding's current cost onto the product so they
     // start aligned. Best-effort (never fails the anchor toggle).
-    await syncAnchoredProductFromBinding(supabase, updated as unknown as Record<string, unknown>);
+    await syncAnchoredProductFromBinding(supabase, updated as unknown as Record<string, unknown>, activeCompanyId(c));
   }
 
   return c.json({ binding: updated });
@@ -814,11 +819,14 @@ suppliers.get('/material/:kind/:code', async (c) => {
   if (!MATERIAL_KINDS.has(kind)) return c.json({ error: 'invalid_material_kind' }, 400);
 
   const supabase = c.get('supabase');
-  let q = supabase
-    .from('supplier_material_bindings')
-    .select(`${BINDING_COLS}, supplier:suppliers(id, code, name, status)`)
-    .eq('material_kind', kind)
-    .eq('material_code', code)
+  let q = scopeToCompany(
+    supabase
+      .from('supplier_material_bindings')
+      .select(`${BINDING_COLS}, supplier:suppliers(id, code, name, status)`)
+      .eq('material_kind', kind)
+      .eq('material_code', code),
+    c,
+  )
     .order('is_main_supplier', { ascending: false })
     .order('unit_price_centi', { ascending: true });
   if (mainOnly) q = q.eq('is_main_supplier', true);

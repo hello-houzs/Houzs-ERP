@@ -13,7 +13,7 @@ import { z } from 'zod';
 import { supabaseAuth } from '../middleware/auth';
 import { hasHouzsPerm } from '../lib/houzs-perms';
 import { todayMyt } from '../lib/my-time';
-import { activeCompanyId } from '../lib/companyScope';
+import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 type AppCtx = Context<{ Bindings: Env; Variables: Variables }>;
@@ -103,9 +103,10 @@ async function requireWrite(c: AppCtx) {
 // GET — every authenticated staff role can read.
 specialAddons.get('/', async (c) => {
   const supabase = c.get('supabase');
-  const { data, error } = await supabase
-    .from('special_addons')
-    .select(SELECT)
+  const { data, error } = await scopeToCompany(
+    supabase.from('special_addons').select(SELECT),
+    c,
+  )
     .order('sort_order', { ascending: true })
     .order('created_at', { ascending: true });
   if (error) return c.json({ error: 'fetch_failed', reason: error.message }, 500);
@@ -248,9 +249,12 @@ type HistoryRow = {
 // UI can colour future-effective snapshots (same convention as maintenance-config).
 specialAddons.get('/history', async (c) => {
   const supabase = c.get('supabase');
-  const { data, error } = await supabase
-    .from('special_addons_history')
-    .select('id, addons, effective_from, notes, created_at, created_by')
+  const { data, error } = await scopeToCompany(
+    supabase
+      .from('special_addons_history')
+      .select('id, addons, effective_from, notes, created_at, created_by'),
+    c,
+  )
     .order('effective_from', { ascending: false })
     .order('created_at', { ascending: false });
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
@@ -333,7 +337,7 @@ specialAddons.post('/save', async (c) => {
   }
   // Deactivate any live code the snapshot dropped (retire, don't delete).
   {
-    const { data: live, error: liveErr } = await supabase.from('special_addons').select('id, code');
+    const { data: live, error: liveErr } = await scopeToCompany(supabase.from('special_addons').select('id, code'), c);
     if (liveErr) return c.json({ error: 'apply_failed', reason: liveErr.message }, 500);
     const keep = new Set(codes);
     const retireIds = ((live as Array<{ id: string; code: string }>) ?? [])

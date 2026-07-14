@@ -277,13 +277,16 @@ mfgPurchaseOrders.get('/outstanding-so-items', async (c) => {
      warehouse (from the SO's sales_location) + delivery date (from the SO
      LINE's own line_delivery_date). internal_expected_dd + sales_location
      come off the SO header; line_delivery_date off the item. */
-  const { data: items, error } = await supabase
-    .from('mfg_sales_order_items')
-    .select(`
+  const { data: items, error } = await scopeToCompany(
+    supabase
+      .from('mfg_sales_order_items')
+      .select(`
       id, doc_no, item_code, description, item_group, qty, po_qty_picked, unit_price_centi,
       variants, line_suffix, cancelled, line_delivery_date,
       so:mfg_sales_orders!inner ( doc_no, debtor_name, branding, status, so_date, customer_delivery_date, internal_expected_dd, sales_location )
-    `)
+    `),
+    c,
+  )
     .eq('cancelled', false)
     .order('doc_no', { ascending: false })
     .limit(500);
@@ -313,6 +316,7 @@ mfgPurchaseOrders.get('/outstanding-so-items', async (c) => {
       .select('material_code, is_main_supplier, supplier:suppliers(code, name)')
       .eq('material_kind', 'mfg_product')
       .in('material_code', skuCodes)
+      .eq('company_id', activeCompanyId(c))
       .order('is_main_supplier', { ascending: false });
     for (const b of (binds ?? []) as Array<{ material_code: string; supplier: { code: string; name: string } | Array<{ code: string; name: string }> | null }>) {
       if (mainSupplierByCode.has(b.material_code)) continue;
@@ -927,9 +931,10 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
   const purchaseLocationOverride = body.purchaseLocationId;
 
   // Preload the warehouses list ONCE for the sales_location text → id match.
-  const { data: whRows } = await supabase
-    .from('warehouses')
-    .select('id, code, name');
+  const { data: whRows } = await scopeToCompany(
+    supabase.from('warehouses').select('id, code, name'),
+    c,
+  );
   type Wh = { id: string; code: string | null; name: string | null };
   const warehouses = (whRows ?? []) as Wh[];
 
@@ -1124,6 +1129,7 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
     .select('material_code, supplier_id, supplier_sku, unit_price_centi, currency, price_matrix')
     .in('material_code', codes)
     .eq('material_kind', 'mfg_product')
+    .eq('company_id', activeCompanyId(c))
     .order('is_main_supplier', { ascending: false });
 
   /* Commander 2026-05-29 — drop ORPHANED bindings (supplier was deleted but the
@@ -1242,7 +1248,8 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
     const { data: fabricRows } = await supabase
       .from('fabric_trackings')
       .select('fabric_code, price_tier, sofa_price_tier, bedframe_price_tier')
-      .in('fabric_code', fabricCodes);
+      .in('fabric_code', fabricCodes)
+      .eq('company_id', activeCompanyId(c));
     for (const f of (fabricRows ?? []) as FabricTierRow[]) fabricByCode.set(f.fabric_code, f);
   }
   const resolveFabricTier = (
@@ -2088,7 +2095,8 @@ mfgPurchaseOrders.post('/:id/convert-from-so', async (c) => {
     const { data: fabs } = await sb
       .from('fabric_trackings')
       .select('fabric_code, price_tier, sofa_price_tier, bedframe_price_tier')
-      .in('fabric_code', fabCodes);
+      .in('fabric_code', fabCodes)
+      .eq('company_id', activeCompanyId(c));
     for (const f of (fabs ?? []) as Array<{
       fabric_code: string; price_tier: MfgFabricTier | null;
       sofa_price_tier: MfgFabricTier | null; bedframe_price_tier: MfgFabricTier | null;

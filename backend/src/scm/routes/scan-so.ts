@@ -2641,7 +2641,7 @@ scanSo.post('/extract', async (c) => {
   // Duplicate-upload warning — shared findDuplicateSo (same rules as the
   // background job: recent same-photo sha256, or same phone + same slip
   // ref / same slip date+total). Cheap indexed lookups; fail-soft null.
-  const duplicate = await findDuplicateSo(svc, { imageSha256, excludeSampleId: sampleId, parsed });
+  const duplicate = await findDuplicateSo(svc, { imageSha256, excludeSampleId: sampleId, parsed }, activeCompanyId(c));
 
   return c.json({
     success: true,
@@ -2821,6 +2821,7 @@ async function findDuplicateSo(
     excludeSampleId: string | null;
     parsed: ExtractedSlip | null;
   },
+  companyId?: number,
 ): Promise<{ docNo: string; rule: 'image' | 'content' } | null> {
   // A) Same slip photo already processed into an SO recently — the shared
   //    findRecentSoForSlipSha core (also the /enqueue hard-reject probe).
@@ -2850,11 +2851,14 @@ async function findDuplicateSo(
       // Nothing comparable beyond the phone alone → phone-only would be far
       // too noisy (repeat customers are normal); skip.
       if (ref || (slipDate && totalCenti != null)) {
-        const { data } = await svc
+        let dupQ = svc
           .from('mfg_sales_orders')
           .select('doc_no, customer_so_no, so_date, total_revenue_centi')
           .eq('phone', storedPhone)
-          .neq('status', 'CANCELLED')
+          .neq('status', 'CANCELLED');
+        // Multi-company: never link a scan to the OTHER company's SO by phone.
+        if (companyId != null) dupQ = dupQ.eq('company_id', companyId);
+        const { data } = await dupQ
           .order('created_at', { ascending: false })
           .limit(25);
         for (const r of ((data as Array<Record<string, unknown>> | null) ?? [])) {
@@ -3495,7 +3499,7 @@ async function runScanJob(
       // again recently, or the same customer/slip already has an SO. The DRAFT
       // is STILL created for review; the flag rides on the job row (mobile
       // surfaces it in the toast) and the SO note is prefixed below.
-      const dup = await findDuplicateSo(svc, { imageSha256, excludeSampleId: sampleId, parsed });
+      const dup = await findDuplicateSo(svc, { imageSha256, excludeSampleId: sampleId, parsed }, job.companyId ?? undefined);
       if (dup) { dupDocNo = dup.docNo; await touch({ duplicate_of: dup.docNo }); }
 
       // allowShell → always returns a body; missing required fields become
@@ -4125,6 +4129,7 @@ scanSo.get('/jobs', async (c) => {
   let q = svc
     .from('scan_jobs')
     .select('id, status, salesperson, so_doc_no, error, sample_id, duplicate_of, image_keys, created_at, updated_at')
+    .eq('company_id', activeCompanyId(c))
     .order('created_at', { ascending: false })
     .limit(20);
   if (rep) q = q.ilike('salesperson', ilikeExact(rep));
@@ -4192,7 +4197,7 @@ scanSo.post('/jobs/clear-failed', async (c) => {
       400,
     );
   }
-  let q = svc.from('scan_jobs').delete().eq('status', 'error');
+  let q = svc.from('scan_jobs').delete().eq('status', 'error').eq('company_id', activeCompanyId(c));
   if (!clearsAll) q = q.ilike('salesperson', ilikeExact(caller));
   const { error } = await q;
   if (error) {

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { targetRefinementSchema } from '../shared';
 import { supabaseAuth } from '../middleware/auth';
 import { hasHouzsPerm } from '../lib/houzs-perms';
-import { activeCompanyId } from '../lib/companyScope';
+import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 type AppContext = Context<{ Bindings: Env; Variables: Variables }>;
@@ -126,9 +126,12 @@ const requireFeeEditor = async (c: AppContext) => {
 // through untouched; the matcher (deliveryTargetMatchesAnyLine) coerces on use.
 deliveryFees.get('/special', async (c) => {
   const supabase = c.get('supabase');
-  const { data, error } = await supabase
-    .from('special_delivery_fee_rules')
-    .select('id, target, standalone_fee, cross_cat_followup_fee, label, updated_at');
+  const { data, error } = await scopeToCompany(
+    supabase
+      .from('special_delivery_fee_rules')
+      .select('id, target, standalone_fee, cross_cat_followup_fee, label, updated_at'),
+    c,
+  );
   if (error) return c.json({ error: 'fetch_failed', reason: error.message }, 500);
   const rows = (data ?? []).map((r) => ({
     id:                  (r as { id: string }).id,

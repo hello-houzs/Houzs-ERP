@@ -24,7 +24,7 @@
 import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import { escapeForOr } from '../lib/postgrest-search';
-import { activeCompanyId } from '../lib/companyScope';
+import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 export const fabricTracking = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -257,15 +257,18 @@ fabricTracking.get('/', async (c) => {
   const search = c.req.query('search');
   const supabase = c.get('supabase');
 
-  let q = supabase
-    .from('fabric_trackings')
-    .select(
-      'id, fabric_code, fabric_description, fabric_category, price_tier, ' +
-        'sofa_price_tier, bedframe_price_tier, price_centi, soh_centi, ' +
-        'po_outstanding_centi, last_month_usage_centi, one_week_usage_centi, ' +
-        'two_weeks_usage_centi, one_month_usage_centi, shortage_centi, ' +
-        'reorder_point_centi, supplier, supplier_code, lead_time_days, series, is_active',
-    )
+  let q = scopeToCompany(
+    supabase
+      .from('fabric_trackings')
+      .select(
+        'id, fabric_code, fabric_description, fabric_category, price_tier, ' +
+          'sofa_price_tier, bedframe_price_tier, price_centi, soh_centi, ' +
+          'po_outstanding_centi, last_month_usage_centi, one_week_usage_centi, ' +
+          'two_weeks_usage_centi, one_month_usage_centi, shortage_centi, ' +
+          'reorder_point_centi, supplier, supplier_code, lead_time_days, series, is_active',
+      ),
+    c,
+  )
     .order('fabric_code', { ascending: true });
 
   if (category && VALID_CATEGORIES.has(category)) {
