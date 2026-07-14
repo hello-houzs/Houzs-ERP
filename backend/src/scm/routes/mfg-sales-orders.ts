@@ -63,7 +63,7 @@ import { monthBoundsMy, rangeBoundsMy, todayMyt, mytDateOf } from '../lib/my-tim
 // (canViewAllSales / isSelfScopedSales removed — replaced by flat permission
 // gates `scm.so.view_all` / `scm.so.attribute_other` against the REAL Houzs
 // caller; see lib/houzs-perms.ts.)
-import { hasHouzsPerm } from '../lib/houzs-perms';
+import { hasHouzsPerm, canViewAllSales } from '../lib/houzs-perms';
 import { resolveSalesScopeIds, salesDocOutOfScope, resolveCallerStaffId } from '../lib/salesScope';
 import { recordSoAudit, diffFields, type FieldChange } from '../lib/so-audit';
 /* TBC sofa exchange PWP re-evaluation (Loo 2026-06-12) — reuse the voucher
@@ -603,10 +603,12 @@ mfgSalesOrders.get('/', async (c) => {
      uuids), or null = unrestricted. Single source of truth in
      lib/salesScope.ts: view-all callers (`*` / scm.so.view_all) → all;
      everyone else → SELF + full manager_id downline chain (owner spec).
+     view-all = scm.so.view_all permission OR a director position (Sales
+     Director / Super Admin / Finance Manager) via canViewAllSales.
      NOTE: must pass the REAL Houzs integer user id — user.id here is the
      bridge's pinned system staff uuid and feeding it to the scope lookup
      was the non-admin 500 (uuid bound to an integer column). */
-  const scopeIds = await resolveSalesScopeIds(sb, c.env, c.get('houzsUser')?.id, hasHouzsPerm(c, 'scm.so.view_all'));
+  const scopeIds = await resolveSalesScopeIds(sb, c.env, c.get('houzsUser')?.id, canViewAllSales(c));
 
   /* Dashboard summary mode (`?summary=1`): the landing page only needs to bucket
      SOs by status/proceeded_at and count "new today" — it does NOT need the
@@ -1522,7 +1524,7 @@ mfgSalesOrders.get('/:docNo', async (c) => {
     // sellers pass only their own; other reps are held to their subtree. An
     // out-of-scope doc_no answers 404 — indistinguishable from a missing one.
     const sp = (h.data as { salesperson_id?: number | string | null }).salesperson_id;
-    if (await salesDocOutOfScope(sb, c.env, c.get('houzsUser')?.id, hasHouzsPerm(c, 'scm.so.view_all'), sp)) {
+    if (await salesDocOutOfScope(sb, c.env, c.get('houzsUser')?.id, canViewAllSales(c), sp)) {
       return c.json({ error: 'not_found' }, 404);
     }
   }
@@ -1828,7 +1830,7 @@ mfgSalesOrders.get('/:docNo/items', async (c) => {
      out-of-scope doc_no answers 404 — indistinguishable from a missing one. */
   {
     const sp = (h.data as { salesperson_id?: number | string | null }).salesperson_id;
-    if (await salesDocOutOfScope(sb, c.env, c.get('houzsUser')?.id, hasHouzsPerm(c, 'scm.so.view_all'), sp)) {
+    if (await salesDocOutOfScope(sb, c.env, c.get('houzsUser')?.id, canViewAllSales(c), sp)) {
       return c.json({ error: 'not_found' }, 404);
     }
   }

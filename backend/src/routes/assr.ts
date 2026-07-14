@@ -112,6 +112,37 @@ async function assrVisibleUserIds(c: {
   return subtreeUserIds(c.env, Number(user.id));
 }
 
+/**
+ * True when the case identified by `caseId` is within the caller's
+ * assrVisibleUserIds scope (self + downline; directors/admins unrestricted).
+ * Mirrors the row-level check the detail GET performs (createdBy / assignedTo
+ * ∈ visible ids) so Sales-reachable SUB-routes — attachment / timeline
+ * download, sales comment / nudge — can't reach a case outside the caller's
+ * reporting chain. A missing/unknown case returns false so the caller gets the
+ * same 404 as a nonexistent id (never distinguishes existence across the scope
+ * boundary). Raw env.DB reads return snake_case columns (D1-compat shim — same
+ * as the customer-history query below).
+ */
+async function caseInCallerScope(
+  c: { get(key: "user"): unknown; env: Env },
+  caseId: number,
+): Promise<boolean> {
+  const visibleIds = await assrVisibleUserIds(c);
+  if (visibleIds === undefined) return true; // unrestricted tier
+  const row = await c.env.DB.prepare(
+    `SELECT created_by, assigned_to FROM assr_cases WHERE id = ?`,
+  )
+    .bind(caseId)
+    .first<{ created_by: number | null; assigned_to: number | null }>();
+  if (!row) return false;
+  const createdBy = Number(row.created_by ?? NaN);
+  const assignedTo = Number(row.assigned_to ?? NaN);
+  return (
+    (Number.isFinite(createdBy) && visibleIds.includes(createdBy)) ||
+    (Number.isFinite(assignedTo) && visibleIds.includes(assignedTo))
+  );
+}
+
 // ── Module-level settings (default assignees) ─────────────────
 //
 // Stored in `system_settings` under keys `assr_default_assignee_id`
@@ -874,6 +905,10 @@ app.get("/my-cases", requireServiceCaseAccess(), async (c) => {
 app.post("/:id{[0-9]+}/sales-comment", requireServiceCaseAccess(), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+  // Scope guard — this append-only write must be limited to cases the caller
+  // may see (self + downline; directors/admins unrestricted). Out-of-scope →
+  // 404, indistinguishable from a nonexistent id (mirrors the detail GET).
+  if (!(await caseInCallerScope(c, id))) return c.json({ error: "Not found" }, 404);
   const userId = (c as any).get?.("userId") ?? 0;
   const body = await c.req.json<{ text?: string }>().catch(() => ({} as { text?: string }));
   const text = (body.text || "").trim();
@@ -896,6 +931,8 @@ app.post("/:id{[0-9]+}/sales-comment", requireServiceCaseAccess(), async (c) => 
 app.post("/:id{[0-9]+}/sales-nudge", requireServiceCaseAccess(), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+  // Scope guard — same as sales-comment: only nudge cases the caller may see.
+  if (!(await caseInCallerScope(c, id))) return c.json({ error: "Not found" }, 404);
   const userId = (c as any).get?.("userId") ?? 0;
   const body = await c.req.json<{ text?: string }>().catch(() => ({} as { text?: string }));
   const note = (body.text || "").trim().slice(0, 500) || "Sales rep is asking for an update.";
@@ -1925,9 +1962,15 @@ app.post("/:id/notes/:noteId/correct", requirePermission("service_cases.write"),
 // Full audit trail for one case in CSV form. Manager-only — internal
 // notes + supplier comms aren't customer-safe.
 
-app.get("/:id/timeline.csv", requirePermission("service_cases.read"), async (c) => {
+app.get("/:id/timeline.csv", requireServiceCaseAccess(), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+
+  // Scope guard — a Sales caller admitted by org field may DOWNLOAD the timeline
+  // of a case within their reporting chain (self + downline), but not an
+  // arbitrary case. Out-of-scope → 404 (mirrors the detail GET). Directors /
+  // service_cases.manage stay unrestricted (caseInCallerScope short-circuits).
+  if (!(await caseInCallerScope(c, id))) return c.json({ error: "Not found" }, 404);
 
   const row = await c.env.DB.prepare(
     `SELECT assr_no FROM assr_cases WHERE id = ?`
@@ -2057,8 +2100,23 @@ app.put("/:id/attachments", requirePermission("service_cases.write"), async (c) 
   return c.json({ id: attachId, key }, 201);
 });
 
-app.get("/attachments/:key{.+}", requirePermission("service_cases.read"), async (c) => {
+app.get("/attachments/:key{.+}", requireServiceCaseAccess(), async (c) => {
   const key = c.req.param("key");
+  // Resolve the attachment's OWNING case from its r2_key (canonical — never
+  // trust the caller-supplied key's shape), then enforce the same self+downline
+  // scope as the case detail: a Sales caller may download attachments only for
+  // cases within their reporting chain. Unknown key or out-of-scope case → 404,
+  // indistinguishable from a nonexistent object. Directors / service_cases.manage
+  // stay unrestricted (caseInCallerScope short-circuits).
+  const att = await c.env.DB.prepare(
+    `SELECT assr_id FROM assr_attachments WHERE r2_key = ?`,
+  )
+    .bind(key)
+    .first<{ assr_id: number | null }>();
+  const caseId = Number(att?.assr_id ?? NaN);
+  if (!Number.isFinite(caseId)) return c.json({ error: "Not found" }, 404);
+  if (!(await caseInCallerScope(c, caseId))) return c.json({ error: "Not found" }, 404);
+
   const obj = await c.env.POD_BUCKET.get(key);
   if (!obj) return c.json({ error: "Not found" }, 404);
 
