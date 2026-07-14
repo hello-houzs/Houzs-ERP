@@ -3732,9 +3732,17 @@ const MultiSkuPickerDialog = ({
      drives the server query, so a fast typist doesn't fire one
      /mfg-products?search=… request + full re-render per keystroke. */
   const debouncedSearch = useDebouncedValue(search, 250);
+  /* Server-typeahead gate (owner #1 scaling pain, 2026-07-14) — the "All / no
+     search" read used to pull the WHOLE ~1141-SKU catalog. It is now bounded:
+     the query only fires once >= 2 search chars are typed OR a category chip is
+     picked (a category-scoped read is bounded). Picks live in `picked`
+     (independent of this query), so gating never drops a selected product. */
+  const trimmedSearch = debouncedSearch.trim();
+  const gateOpen = trimmedSearch.length >= 2 || category !== 'all';
   const products = useMfgProducts({
     category: category === 'all' ? undefined : category,
-    search: debouncedSearch.trim() || undefined,
+    search: trimmedSearch || undefined,
+    enabled: gateOpen,
   });
 
   const alreadyBound = useMemo(
@@ -3868,10 +3876,13 @@ const MultiSkuPickerDialog = ({
                     </tr>
                   </thead>
                   <tbody>
-                    {products.isLoading && (
+                    {!gateOpen && (
+                      <tr><td colSpan={6} className={styles.emptyRow}>Type at least 2 characters, or pick a category, to search the catalog.</td></tr>
+                    )}
+                    {gateOpen && products.isLoading && (
                       <tr><td colSpan={6} className={styles.emptyRow}>Loading…</td></tr>
                     )}
-                    {!products.isLoading && (products.data ?? []).length === 0 && (
+                    {gateOpen && !products.isLoading && (products.data ?? []).length === 0 && (
                       <tr><td colSpan={6} className={styles.emptyRow}>No products match.</td></tr>
                     )}
                     {!products.isLoading && (products.data ?? []).slice(0, MULTI_PICKER_RENDER_CAP).map((p) => {
