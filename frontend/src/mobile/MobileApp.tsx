@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../auth/AuthContext";
-import { isSalesStaff, isSalesDirectorUser } from "../auth/salesAccess";
+import { isSalesStaff, isSalesDirectorUser, isSalesNonDirector } from "../auth/salesAccess";
 import { NAV_TABS, type NavTab } from "../components/Sidebar";
 import { NotifyProvider, useNotify } from "../vendor/scm/components/NotifyDialog";
 import { ConfirmProvider, useConfirm } from "../vendor/scm/components/ConfirmDialog";
@@ -40,7 +40,7 @@ type Screen =
   | { t: "module-form"; key: string; mode: "new" | "edit"; row?: any }
   | { t: "convert"; key: string; title: string; target: ConvertTarget; initialSourceId?: string }
   | { t: "pod"; docNo: string }
-  | { t: "service" }
+  | { t: "service"; startNew?: boolean }
   | { t: "delivery-planning" }
   | { t: "pms"; projectId?: number }
   | { t: "mail" }
@@ -234,9 +234,13 @@ function MobileAppInner() {
     // Sales-access model — mirror the desktop Sidebar filterTab so mobile stays
     // consistent (OFF, not hidden). HIDE first, then the Sales show-bypass.
     if (t.hideForSales && isSalesStaff(user)) return false;
+    if (t.hideForSalesRep && isSalesNonDirector(user)) return false;
+    if (t.salesRepOnly && !isSalesNonDirector(user)) return false;
     const salesBypass =
       (!!t.showForSales && isSalesStaff(user)) ||
-      (!!t.showForSalesDirector && isSalesDirectorUser(user));
+      (!!t.showForSalesDirector && isSalesDirectorUser(user)) ||
+      (!!t.showForSalesRep && isSalesNonDirector(user)) ||
+      (!!t.salesRepOnly && isSalesNonDirector(user));
     if (salesBypass) return true;
     if (t.perm && !can(t.perm)) return false;
     if (t.anyPerm || t.anyAccess) {
@@ -334,7 +338,7 @@ function MobileAppInner() {
       onSaved={() => setScreen({ t: "module", key: screen.key, title })} />;
   }
   if (screen.t === "pod") return <MobilePOD docNo={screen.docNo} onBack={back} onDone={back} />;
-  if (screen.t === "service") return <MobileServiceCase onBack={back} />;
+  if (screen.t === "service") return <MobileServiceCase onBack={back} startNew={screen.startNew} />;
   if (screen.t === "delivery-planning") return <MobileDeliveryPlanning onBack={back} onOpen={(doc) => setScreen({ t: "so-detail", docNo: doc })} />;
   if (screen.t === "pms") return <MobilePMS onBack={back} initialProjectId={screen.projectId} />;
   if (screen.t === "mail") return <MobileMailCenter onBack={back} />;
@@ -350,6 +354,9 @@ function MobileAppInner() {
             onScan={() => setScreen({ t: "scan" })}
             onOpen={(doc) => setScreen({ t: "so-detail", docNo: doc })}
             onNew={() => setScreen({ t: "new-so", mode: "new" })}
+            // FAB "+" second action — open the service-case create sheet on the
+            // Service screen (parity with the desktop QuickActionsFAB two-choice).
+            onNewCase={() => setScreen({ t: "service", startNew: true })}
           />
         )}
         {tab === "service" && <MobileServiceCase onBack={() => setTab("orders")} />}
