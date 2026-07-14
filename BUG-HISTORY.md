@@ -6,6 +6,16 @@ Severity tags: 🔴 critical/high · 🟠 medium · 🟢 low.
 
 ---
 
+## 2026-07-14 — Multi-company + performance campaign
+
+### 🟠 Company switch kept showing the previous company's list (cross-tenant stale)
+- **Symptom:** Switching company in the top-bar switcher (Houzs↔2990) left the products / SO lists showing the PREVIOUS company's data (Houzs 1326 rows still under 2990); a hard refresh fixed it. Time-good-time-bad (a race).
+- **Cause:** The active company is header-based (`X-Company-Id`, read fresh from localStorage per request — so the header AND the backend scoping were correct). But react-query keys don't include the company, so company A's and B's data share one cache entry. `invalidateQueries()` raced (keepPreviousData kept A's rows / an in-flight A response repopulated the shared entry); and a first fix attempt with `queryClient.clear()` was insufficient — clear() empties the cache but does NOT re-trigger a mounted observer to refetch. Proven on prod: a remount (nav away+back) switched correctly to 2990's "2990 AKKA-FIRM MATT", an in-place clear() did not.
+- **Fix:** The switch handler now does `window.location.reload()` (a tenant switch is fundamental + rare) so the whole app re-reads the company header on every request. PLUS the new localStorage query-snapshot (`query-persist.ts`) is namespaced by active company so a cold open can't hydrate the other company's list.
+- **Ref:** `fix/multicompany-cache-staleness` (#445, snapshot namespace) + `fix/company-switch-reload` (#450, reload), 2026-07-14.
+
+---
+
 ## 2026-07-14 — Go-live review batch (4-agent adversarial + FE/BE sweep)
 
 ### 🔴 POD signature + photo silently discarded
