@@ -205,6 +205,10 @@ const RESET_TTL_SECONDS = 60 * 60; // 1 hour — password reset should expire fa
 app.get("/", requirePermissionOrSalesDirector("users.read"), async (c) => {
   const brand = (c.req.query("brand") || "").trim();
   const department = (c.req.query("department") || "").trim();
+  // Optional server typeahead: ILIKE over name + email. Additive — no `q`
+  // leaves the query, ordering and the full-list callers untouched. When
+  // present we also cap the result set (the picker only renders a slice).
+  const search = (c.req.query("q") || c.req.query("search") || "").trim();
   const db = getDb(c.env);
   const manager = alias(users, "m");
   const inviter = alias(users, "ib");
@@ -245,8 +249,17 @@ app.get("/", requirePermissionOrSalesDirector("users.read"), async (c) => {
                      AND d2.name ILIKE ${"%" + department + "%"})`
     );
   }
+  if (search) {
+    // Typeahead: match the query as a substring of name OR email. The term is
+    // bound as a parameter (no injection) — same idiom as the department
+    // filter above.
+    conds.push(
+      sql`(${users.name} ILIKE ${"%" + search + "%"}
+           OR ${users.email} ILIKE ${"%" + search + "%"})`
+    );
+  }
 
-  const rows = await db
+  const built = db
     .select({
       id: users.id,
       email: users.email,
@@ -307,6 +320,9 @@ app.get("/", requirePermissionOrSalesDirector("users.read"), async (c) => {
     .leftJoin(inviter, eq(inviter.id, users.invited_by))
     .where(conds.length ? and(...conds) : undefined)
     .orderBy(desc(users.created_at));
+  // Bound the typeahead result set — the picker renders only a slice. No `q`
+  // → no limit, so every full-list caller keeps receiving the whole directory.
+  const rows = await (search ? built.limit(50) : built);
 
   // array_agg() can arrive as a JS array OR a Postgres array-literal string
   // ("{1,2}") depending on the driver path — coerce both (empty on null) so the

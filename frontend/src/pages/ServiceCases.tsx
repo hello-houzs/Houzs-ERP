@@ -50,7 +50,7 @@ import {
 } from "../components/DetailLayout";
 import { Button } from "../components/Button";
 import { DataTable, type Column } from "../components/DataTable";
-import { UserMultiSelect } from "../components/UserMultiSelect";
+import { UserMultiSelect, type UserOptionItem } from "../components/UserMultiSelect";
 import {
   StatusDot,
   stageVariant,
@@ -3111,18 +3111,18 @@ function DetailContent({
   const userOptions = Array.isArray(users.data)
     ? users.data.map((u) => ({ id: u.id, name: u.name }))
     : [];
-  // PIC picker is restricted to Operations-department members. The
-  // currently-assigned person is always kept selectable so an existing
-  // assignment outside Operations doesn't silently vanish.
-  const opsUserOptions = Array.isArray(users.data)
+  // PIC picker is a server typeahead now; the dropdown stays restricted to
+  // Operations-department members via `filterOption`. The currently-assigned
+  // people are resolved from the already-loaded users list so their chips
+  // always display (even if outside Operations) and stay removable.
+  const assignedItems: UserOptionItem[] = Array.isArray(users.data)
     ? users.data
-        .filter(
-          (u: any) =>
-            /operation/i.test(u.department_name || "") ||
-            u.id === c?.assigned_to ||
-            u.id === c?.assigned_to_2,
-        )
-        .map((u) => ({ id: u.id, name: u.name }))
+        .filter((u: any) => u.id === c?.assigned_to || u.id === c?.assigned_to_2)
+        .map((u: any) => ({
+          id: u.id,
+          name: u.name,
+          department_name: u.department_name,
+        }))
     : [];
 
   return (
@@ -4194,8 +4194,9 @@ function DetailContent({
                 keeps the amber "attention needed" treatment via the
                 warning row below. */}
             <UserMultiSelect
-              options={opsUserOptions}
               value={[c.assigned_to, c.assigned_to_2].filter((n): n is number => n != null)}
+              selectedItems={assignedItems}
+              filterOption={(u) => /operation/i.test(u.department_name || "")}
               onChange={(ids) =>
                 patch({ assigned_to: ids[0] ?? null, assigned_to_2: ids[1] ?? null })
               }
