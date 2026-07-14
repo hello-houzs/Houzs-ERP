@@ -37,6 +37,7 @@ import {
   Wrench,
   Phone,
   MapPin,
+  Play,
 } from "lucide-react";
 import { HubGrid } from "../components/HubGrid";
 import { PageHeader } from "../components/Layout";
@@ -2747,7 +2748,7 @@ function CreatePanel({
             Add Photos / Videos
             <input
               type="file"
-              accept="image/*,video/mp4,.pdf"
+              accept="image/*,video/mp4,video/quicktime,video/webm,.pdf"
               multiple
               className="hidden"
               onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }}
@@ -3278,7 +3279,8 @@ function DetailContent({
                     key={att.id}
                     att={att}
                     onClick={() => {
-                      if ((att.content_type || "").startsWith("image/")) {
+                      const t = att.content_type || "";
+                      if (t.startsWith("image/") || t.startsWith("video/")) {
                         setLightboxIndex(i);
                       }
                     }}
@@ -3310,7 +3312,7 @@ function DetailContent({
               {uploading ? "Uploading..." : "Upload"}
               <input
                 type="file"
-                accept="image/*,video/mp4,.pdf"
+                accept="image/*,video/mp4,video/quicktime,video/webm,.pdf"
                 className="hidden"
                 onChange={(e) => uploadFile(e, c.stage === "completed" ? "completion" : "evidence")}
                 disabled={uploading}
@@ -5779,6 +5781,7 @@ function MilestoneAttachmentSlot({
   compact?: boolean;
 }) {
   const [uploading, setUploading] = useState(false);
+  const [lbIndex, setLbIndex] = useState<number | null>(null);
   const matches = (attachments ?? []).filter(
     (a: any) => a?.category === category
   );
@@ -5814,10 +5817,14 @@ function MilestoneAttachmentSlot({
       )}
       {matches.length > 0 ? (
         <div className="mb-2 grid grid-cols-3 gap-2">
-          {matches.map((att: any) => (
+          {matches.map((att: any, i: number) => (
             <AttachmentThumb
               key={att.id}
               att={att}
+              onClick={() => {
+                const t = att.content_type || "";
+                if (t.startsWith("image/") || t.startsWith("video/")) setLbIndex(i);
+              }}
               onArchive={archived ? undefined : async () => {
                 if (!await dialog.confirm(`Archive this ${label.toLowerCase()}?`)) return;
                 try {
@@ -5846,12 +5853,20 @@ function MilestoneAttachmentSlot({
             : (uploadLabel || `Upload ${label.toLowerCase()}`)}
           <input
             type="file"
-            accept="image/*,.pdf"
+            accept="image/*,video/mp4,video/quicktime,video/webm,.pdf"
             className="hidden"
             onChange={upload}
             disabled={uploading}
           />
         </label>
+      )}
+      {lbIndex !== null && matches[lbIndex] && (
+        <StaffLightbox
+          attachments={matches}
+          index={lbIndex}
+          onChange={setLbIndex}
+          onClose={() => setLbIndex(null)}
+        />
       )}
     </div>
   );
@@ -7184,6 +7199,7 @@ function AttachmentThumb({ att, onClick, onVisibilityChange, onArchive }: {
 }) {
   const [url, setUrl] = useState<string | null>(null);
   const isImage = att.content_type?.startsWith("image/");
+  const isVideo = att.content_type?.startsWith("video/");
 
   useEffect(() => {
     if (!isImage) return;
@@ -7206,9 +7222,9 @@ function AttachmentThumb({ att, onClick, onVisibilityChange, onArchive }: {
       <button
         type="button"
         onClick={onClick}
-        disabled={!isImage || !onClick}
+        disabled={(!isImage && !isVideo) || !onClick}
         className="block w-full text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
-        aria-label={isImage ? "View full-size photo" : att.category}
+        aria-label={isImage ? "View full-size photo" : isVideo ? "Play video" : att.category}
       >
         {isImage && url ? (
           <img
@@ -7216,9 +7232,16 @@ function AttachmentThumb({ att, onClick, onVisibilityChange, onArchive }: {
             alt={att.file_name || ""}
             className="h-20 w-full object-cover transition-transform duration-200 group-hover:scale-105"
           />
+        ) : isVideo ? (
+          <div className="flex h-20 w-full flex-col items-center justify-center gap-1 bg-ink/80 text-white transition-colors group-hover:bg-ink/70">
+            <span className="flex h-7 w-7 items-center justify-center rounded-full bg-white/20">
+              <Play size={13} className="ml-0.5" />
+            </span>
+            <span className="text-[9px] font-semibold uppercase tracking-wider">Video</span>
+          </div>
         ) : (
           <div className="flex h-20 items-center justify-center text-[11px] text-ink-muted">
-            {att.content_type?.includes("video") ? "Video" : "File"}
+            File
           </div>
         )}
       </button>
@@ -7252,8 +7275,8 @@ function AttachmentThumb({ att, onClick, onVisibilityChange, onArchive }: {
 
 // ── Full-screen lightbox for staff-side attachments ──────────
 // Mirrors the portal lightbox but fetches via the staff auth path
-// (/api/assr/attachments/:r2_key) and navigates through image
-// attachments only — skips videos/PDFs.
+// (/api/assr/attachments/:r2_key). Images and videos participate in
+// prev/next navigation — PDFs/docs stay out.
 function StaffLightbox({
   attachments,
   index,
@@ -7265,27 +7288,30 @@ function StaffLightbox({
   onChange: (i: number) => void;
   onClose: () => void;
 }) {
-  // Only image attachments participate in lightbox navigation. The
+  // Images and videos participate in lightbox navigation. The
   // caller's `index` is the index into the full attachments array,
-  // but we map it to the image-only list for prev/next.
-  const imageIndices = useMemo(
+  // but we map it to the media-only list for prev/next.
+  const mediaIndices = useMemo(
     () => attachments
-      .map((a, i) => ((a.content_type || "").startsWith("image/") ? i : -1))
+      .map((a, i) => {
+        const t = a.content_type || "";
+        return t.startsWith("image/") || t.startsWith("video/") ? i : -1;
+      })
       .filter((i) => i >= 0),
     [attachments]
   );
-  const currentImagePos = imageIndices.indexOf(index);
+  const currentMediaPos = mediaIndices.indexOf(index);
 
   const att = attachments[index];
   const [url, setUrl] = useState<string | null>(null);
 
   const go = useCallback(
     (delta: number) => {
-      if (currentImagePos < 0 || imageIndices.length === 0) return;
-      const nextPos = (currentImagePos + delta + imageIndices.length) % imageIndices.length;
-      onChange(imageIndices[nextPos]);
+      if (currentMediaPos < 0 || mediaIndices.length === 0) return;
+      const nextPos = (currentMediaPos + delta + mediaIndices.length) % mediaIndices.length;
+      onChange(mediaIndices[nextPos]);
     },
-    [currentImagePos, imageIndices, onChange]
+    [currentMediaPos, mediaIndices, onChange]
   );
 
   useEffect(() => {
@@ -7344,9 +7370,9 @@ function StaffLightbox({
               Hidden
             </span>
           )}
-          {imageIndices.length > 1 && (
+          {mediaIndices.length > 1 && (
             <span className="font-mono text-[10px] text-white/60">
-              {currentImagePos + 1} / {imageIndices.length}
+              {currentMediaPos + 1} / {mediaIndices.length}
             </span>
           )}
         </div>
@@ -7359,7 +7385,7 @@ function StaffLightbox({
         </button>
       </div>
 
-      {imageIndices.length > 1 && (
+      {mediaIndices.length > 1 && (
         <>
           <button
             onClick={(e) => { e.stopPropagation(); go(-1); }}
@@ -7383,12 +7409,22 @@ function StaffLightbox({
         onClick={(e) => e.stopPropagation()}
       >
         {url ? (
-          <img
-            src={url}
-            alt={att.file_name || att.category}
-            className="max-h-[88vh] max-w-[92vw] select-none object-contain shadow-2xl"
-            draggable={false}
-          />
+          (att.content_type || "").startsWith("video/") ? (
+            <video
+              src={url}
+              controls
+              autoPlay
+              playsInline
+              className="max-h-[88vh] max-w-[92vw] rounded shadow-2xl"
+            />
+          ) : (
+            <img
+              src={url}
+              alt={att.file_name || att.category}
+              className="max-h-[88vh] max-w-[92vw] select-none object-contain shadow-2xl"
+              draggable={false}
+            />
+          )
         ) : (
           <div className="flex h-64 w-64 items-center justify-center rounded bg-white/5 text-white/60">
             Loading…
