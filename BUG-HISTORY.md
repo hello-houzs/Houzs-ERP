@@ -14,6 +14,12 @@ Severity tags: 🔴 critical/high · 🟠 medium · 🟢 low.
 - **Fix:** The switch handler now does `window.location.reload()` (a tenant switch is fundamental + rare) so the whole app re-reads the company header on every request. PLUS the new localStorage query-snapshot (`query-persist.ts`) is namespaced by active company so a cold open can't hydrate the other company's list.
 - **Ref:** `fix/multicompany-cache-staleness` (#445, snapshot namespace) + `fix/company-switch-reload` (#450, reload), 2026-07-14.
 
+### 🟠 Service-worker cache VERSION bumped by hand → stale shell / branch collisions
+- **Symptom:** After some deploys the PWA served a stale shell ("卡旧版本" / 开不进去); parallel branches bumped `sw.js` `VERSION` to the SAME `vNNN` and collided (git: "bump v172 (branch collided with #421's v171 on main)").
+- **Cause:** `public/sw.js` used a hand-edited `const VERSION = "houzs-erp-vNNN"`; the cache namespace + activate-purge key off it, so a forgotten or colliding bump left the old shell cache in place.
+- **Fix:** Auto-stamp the build id: `sw.js` carries a `__SW_BUILD_ID__` token that a `vite.config` `writeBundle` plugin replaces with a unique per-build id → every deploy yields a new VERSION → the SW's activate step purges the previous caches automatically. No manual bump. Verified: `dist/sw.js` → `const VERSION = "houzs-erp-v176-mrk9db8r"`, 0 leftover tokens.
+- **Ref:** `perf/sw-auto-version`, 2026-07-14.
+
 ---
 
 ## 2026-07-14 — Go-live review batch (4-agent adversarial + FE/BE sweep)
