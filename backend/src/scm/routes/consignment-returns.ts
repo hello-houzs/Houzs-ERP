@@ -380,7 +380,27 @@ consignmentReturns.get('/', async (c) => {
   q = q.range(page * pageSize, page * pageSize + pageSize - 1);
   const { data, error, count } = await q;
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
-  return c.json({ deliveryReturns: data ?? [], total: count ?? (data?.length ?? 0), page, pageSize });
+
+  /* Full-set money KPIs — sum local_total_centi (Returned Value) / total_cost_centi
+     (Cost) / total_margin_centi (Margin) over the SAME status + search filters as
+     the page query, WITHOUT .range(). Mirrors the pre-pagination client KPI.
+     paginateAll pages past the 1000-row cap. All three columns are in HEADER. */
+  const moneyRes = await paginateAll<{ local_total_centi: number | null; total_cost_centi: number | null; total_margin_centi: number | null }>((mfrom, mto) => {
+    let mq = sb.from('consignment_delivery_returns').select('local_total_centi, total_cost_centi, total_margin_centi');
+    if (status) mq = mq.eq('status', status);
+    if (qText) { const s = escapeForOr(qText); if (s) mq = mq.or(`return_number.ilike.%${s}%,debtor_name.ilike.%${s}%`); }
+    mq = scopeToCompany(mq, c);
+    return mq.range(mfrom, mto);
+  });
+  if (moneyRes.error) return c.json({ error: 'load_failed', reason: moneyRes.error.message }, 500);
+  let revenueCenti = 0, costCenti = 0, marginCenti = 0;
+  for (const m of (moneyRes.data ?? [])) {
+    revenueCenti += m.local_total_centi ?? 0;
+    costCenti += m.total_cost_centi ?? 0;
+    marginCenti += m.total_margin_centi ?? 0;
+  }
+  const aggregates = { revenueCenti, costCenti, marginCenti };
+  return c.json({ deliveryReturns: data ?? [], total: count ?? (data?.length ?? 0), page, pageSize, aggregates });
 });
 
 // ── Returnable Consignment Note lines (From-Note multi-picker) ────────────

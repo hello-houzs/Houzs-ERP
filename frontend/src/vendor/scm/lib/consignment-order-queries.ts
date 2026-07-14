@@ -45,25 +45,33 @@ export const useConsignmentOrders = (status?: string) => useQuery({
    the header select). `sort` is 'col:dir' over
    { so_date, doc_no, debtor_name, status, local_total_centi } (default
    so_date:desc). placeholderData keepPrevious so paging doesn't flash empty. */
+/* Full-set money KPIs returned by the paginated CO list (mirrors the SO list
+   `aggregates` contract) — summed over the SAME filters as the page, so the KPI
+   tiles stay full-set instead of page-scoped. */
+export type ConsignmentOrderAggregates = { revenueCenti: number; outstandingCenti: number; paidCenti: number };
 export const useConsignmentOrdersPaged = (params: {
   page: number;
   pageSize: number;
   status?: string;
   q?: string;
   sort?: string;
+  /* Outstanding-only overlay (?outstanding=1) — live balance > 0. Applied
+     server-side so it stays correct across pages. */
+  outstanding?: boolean;
 }) => {
-  const { page, pageSize, status, q, sort } = params;
+  const { page, pageSize, status, q, sort, outstanding } = params;
   const usp = new URLSearchParams();
   usp.set('page', String(page));
   usp.set('pageSize', String(pageSize));
   if (status) usp.set('status', status);
   if (q && q.trim()) usp.set('q', q.trim());
   if (sort) usp.set('sort', sort);
+  if (outstanding) usp.set('outstanding', '1');
   return useQuery({
-    queryKey: ['consignment-order', 'list-paged', page, pageSize, status ?? '', q ?? '', sort ?? ''],
+    queryKey: ['consignment-order', 'list-paged', page, pageSize, status ?? '', q ?? '', sort ?? '', outstanding ? '1' : ''],
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    queryFn: () => authedFetch<{ salesOrders: any[]; total: number; page: number; pageSize: number }>(`/consignment-orders?${usp.toString()}`),
-    placeholderData: (prev: unknown) => prev as { salesOrders: unknown[]; total: number; page: number; pageSize: number } | undefined,
+    queryFn: () => authedFetch<{ salesOrders: any[]; total: number; page: number; pageSize: number; aggregates?: ConsignmentOrderAggregates }>(`/consignment-orders?${usp.toString()}`),
+    placeholderData: (prev: unknown) => prev as { salesOrders: unknown[]; total: number; page: number; pageSize: number; aggregates?: ConsignmentOrderAggregates } | undefined,
     staleTime: 30_000,
     retry: 1,
     retryDelay: 800,
