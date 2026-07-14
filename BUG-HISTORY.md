@@ -8,6 +8,21 @@ Severity tags: 🔴 critical/high · 🟠 medium · 🟢 low.
 
 ## 2026-07-14 — Multi-company + performance campaign
 
+### 🟠 Mobile SO detail showed the amendment banner on a SHIPPED/terminal order (DRIFT-A)
+- **Symptom:** On the phone, opening a SHIPPED / DELIVERED / INVOICED / CLOSED (or otherwise hard-locked) Sales Order that still carried a stale `amendment_eligible` flag rendered the amber "On order to the supplier — tap Edit to request an amendment" banner, inviting an amendment on an order that is past editing. Desktop never showed it.
+- **Cause:** `MobileSODetail` computed `amendmentEligible = Boolean(h.amendment_eligible)` — a hand-rolled copy that dropped the `&& !isLocked` guard the desktop `SalesOrderDetail` has (`Boolean(header.amendment_eligible) && !isLocked`). The two implementations had drifted.
+- **Fix:** Extracted the gate into the shared pure module `frontend/src/vendor/scm/lib/so-detail-gates.ts` (`amendmentEligible(header, isLocked)` = `Boolean(header.amendment_eligible) && !locked`) and wired BOTH pages to it, so a hard-locked SO is never amendment-eligible on either platform.
+- **Ref:** `refactor/so-detail-shared-hooks`, 2026-07-14.
+### 🟠 SO processing-lock computed against the device clock, not the Malaysia day (DRIFT-B)
+- **Symptom:** The SO PROCESS lock (line items freeze once a proceeded order's processing day has passed) flipped at the wrong instant on a device whose OS timezone was not GMT+8 — a proceeded SO could still show its lines as editable (or lock a day early) around local midnight vs Malaysia midnight, and desktop and mobile could disagree.
+- **Cause:** Both `SalesOrderDetail` (two copies) and `MobileSODetail` derived "today" with `new Date().toLocaleDateString('en-CA')` — the *device's* local calendar date — then string-compared it to `internal_expected_dd`.
+- **Fix:** The shared `procLockActive(header)` in `so-detail-gates.ts` compares against `todayMyt()` (the shared Asia/Kuala_Lumpur calendar day, `vendor/scm/lib/dates.ts`). Both desktop procLock copies collapsed to the one shared fn; mobile wired to it too.
+- **Ref:** `refactor/so-detail-shared-hooks`, 2026-07-14.
+### 🟠 Mobile status change skipped audit-log + status-changes invalidation and had no optimistic update (DRIFT-D)
+- **Symptom:** Confirming / cancelling an SO from the phone updated the row, but the History timeline + status-change dependents didn't refresh, and the status pill didn't update optimistically (a beat of stale UI). Desktop did all three.
+- **Cause:** `MobileSODetail.setStatus` was a raw inline `PATCH /:docNo/status` that only invalidated the (mobile-private) detail + a dead `mobile-so-list` key — it never invalidated `mfg-sales-order-audit-log` / `mfg-sales-order-status-changes` and had no `onMutate` optimistic write, unlike the shared `useUpdateMfgSalesOrderStatus`.
+- **Fix:** Mobile now calls `useUpdateMfgSalesOrderStatus` (and reads via the shared `useMfgSalesOrderDetail` so it lives in the same query-key namespace) — inheriting the optimistic update and the audit-log + status-changes invalidations for free.
+- **Ref:** `refactor/so-detail-shared-hooks`, 2026-07-14.
 ### 🟠 Sales Director 403 / silently-empty on the PMS project detail page
 - **Symptom:** A Sales Director (or Sales PIC) opening a project/Exhibition detail saw the **Sales** section render and then 403 (no sale rows), and the **Setup & Dismantle** logistics crew dropdowns render **empty** (no drivers/helpers, no lorry plates) — the values they were supposed to be able to view never loaded.
 - **Cause:** Split authorization. The project page authorises the PAGE via the org-POSITION tier (`services/pmsAccess.getPmsAccess` → a Sales Director resolves to the `DIRECTOR` tier, so every section RENDERS), but the inner data calls authorise via the flat page-access / permission MATRIX — which a POSITION is never backfilled into (`services/pageAccess.ts`). So `GET /api/sales/entries` (`requirePageAccess("sales")`), `GET /api/fleet/staff` (`requirePermission("users.read")`) and `GET /api/scm/lorries` (behind `requireScmAccess`) all 403'd for a Sales Director whose matrix rows were empty. The sales list surfaced the 403; the crew dropdown reads were swallowed by `.catch(()=>{})` into blank required controls.
