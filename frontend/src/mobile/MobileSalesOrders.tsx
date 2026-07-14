@@ -6,6 +6,8 @@ import { useAuth } from "../auth/AuthContext";
 import { quickActionAccess } from "../auth/salesAccess";
 import { normalizeJobs, type ScanJobsResp } from "./MobileScan";
 import { MobileVirtualList } from "./MobileVirtualList";
+import { fmtCenti } from "../lib/scm";
+import { formatDate } from "../lib/utils";
 import "./mobile.css";
 
 type SoRow = {
@@ -23,15 +25,10 @@ type SoRow = {
   is_fully_ready: boolean | null; is_main_ready: boolean | null; ready_categories: string[] | null;
 };
 
-const rm = (centi: number | null | undefined) =>
-  ((centi ?? 0) / 100).toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-/* Numeric DD/MM/YYYY (owner-locked desktop/mobile date format — never month names). */
-const dm = (d: string | null | undefined) => {
-  if (!d) return "—";
-  const dt = new Date(d); if (isNaN(+dt)) return "—";
-  const p = (n: number) => `${n}`.padStart(2, "0");
-  return `${p(dt.getDate())}/${p(dt.getMonth() + 1)}/${dt.getFullYear()}`;
-};
+/* Numeric DD/MM/YYYY, TZ-aware (owner-locked desktop/mobile date format — never
+   month names). Delegates to the shared helper so YYYY-MM-DD strings render in
+   Asia/Kuala_Lumpur and never drift a day on an off-zone device. */
+const dm = (d: string | null | undefined) => formatDate(d);
 const total = (r: SoRow) => r.local_total_centi ?? r.total_revenue_centi ?? 0;
 const paid = (r: SoRow) => r.paid_total_centi ?? 0;
 const balance = (r: SoRow) => r.balance_centi_live ?? r.balance_centi ?? (total(r) - paid(r));
@@ -387,10 +384,10 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
           <div style={{ display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap", fontSize: 11.5, color: "var(--mut)", margin: "0 2px 11px" }}>
             <span><b style={{ color: "var(--ink)" }}>{summary.count}</b> orders</span>
             <span style={{ opacity: .4 }}>·</span>
-            <span className="money">RM {rm(summary.rev)} rev</span>
+            <span className="money">{fmtCenti(summary.rev)} rev</span>
             {summary.out > 0 && <>
               <span style={{ opacity: .4 }}>·</span>
-              <span className="money" style={{ color: "var(--red)" }}>RM {rm(summary.out)} outstanding</span>
+              <span className="money" style={{ color: "var(--red)" }}>{fmtCenti(summary.out)} outstanding</span>
             </>}
           </div>
         )}
@@ -466,7 +463,7 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
                   {/* Line 5 — created / total */}
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 9, paddingTop: 9, borderTop: "1px solid var(--line2)" }}>
                     <span style={{ fontSize: 10, color: "var(--mut2)" }}>{dm(soDate(r))} · created</span>
-                    <span className="money" style={{ fontSize: 14, fontWeight: 800, color: "var(--ink)" }}>RM {rm(total(r))}</span>
+                    <span className="money" style={{ fontSize: 14, fontWeight: 800, color: "var(--ink)" }}>{fmtCenti(total(r))}</span>
                   </div>
                 </div>
               );

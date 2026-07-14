@@ -5,6 +5,8 @@ import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { MODULE_CONFIGS } from "./MobileModuleList";
 import { todayMyt } from "../vendor/scm/lib/dates";
+import { fmtCenti } from "../lib/scm";
+import { formatDate } from "../lib/utils";
 import "./mobile.css";
 
 // ---------------------------------------------------------------------------
@@ -25,22 +27,16 @@ import "./mobile.css";
 //   mfg-purchase-orders  GET /mfg-purchase-orders/:id  → { purchaseOrder, items }
 // ---------------------------------------------------------------------------
 
-const rm = (centi: unknown) => {
+// Money is stored as integer *_centi — delegate display to the shared SCM
+// formatter (fmtCenti). Keep the local coercion/guard so a stray string or NaN
+// still renders "RM 0.00" rather than "RM NaN".
+const money = (centi: unknown) => {
   const n = Number(centi);
-  return (Number.isFinite(n) ? n / 100 : 0).toLocaleString("en-MY", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
+  return fmtCenti(Number.isFinite(n) ? n : 0);
 };
-const money = (centi: unknown) => `RM ${rm(centi)}`;
 
-/** DD MMM YYYY, or em-dash when absent / unparseable. */
-const dmy = (d: unknown) => {
-  if (d == null || d === "") return "—";
-  const dt = new Date(String(d));
-  if (isNaN(+dt)) return "—";
-  return dt.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
-};
+/** DD/MM/YYYY (TZ-aware via the shared helper), or em-dash when absent / unparseable. */
+const dmy = (d: unknown) => (d == null || d === "" ? "—" : formatDate(String(d)));
 
 /** Coerce anything to a safe display string; blanks / nullish → "". */
 const s = (v: unknown): string => {

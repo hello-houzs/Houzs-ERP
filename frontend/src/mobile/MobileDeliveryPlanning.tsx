@@ -5,6 +5,8 @@ import { MobileVirtualList } from "./MobileVirtualList";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { HC_SUBSTATUS_VALUES } from "../vendor/scm/lib/delivery-planning-queries";
+import { fmtCenti } from "../lib/scm";
+import { formatDate } from "../lib/utils";
 import "./mobile.css";
 
 /* ------------------------------------------------------------------ *
@@ -133,21 +135,10 @@ const DAY_TABS: { key: Day; label: string }[] = [
 
 // ── Formatters — never render null / undefined / NaN. ──
 const EM = "—";
-const rm = (centi: number | null | undefined) =>
-  (((centi ?? 0) as number) / 100).toLocaleString("en-MY", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-const dm = (d: string | null | undefined) => {
-  if (!d) return EM;
-  const dt = new Date(d);
-  if (isNaN(+dt)) return EM;
-  return dt.toLocaleDateString("en-GB", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-  });
-};
+// TZ-aware numeric DD/MM/YYYY via the shared helper (returns "—" for blank /
+// unparseable), so date-only strings render in Asia/Kuala_Lumpur without an
+// off-by-one on an off-zone device.
+const dm = (d: string | null | undefined) => formatDate(d);
 // Local YYYY-MM-DD key for a date-ish string.
 const dayKey = (d: string | null | undefined): string => {
   if (!d) return "";
@@ -870,7 +861,7 @@ function StopCard({
             className="tnum"
             style={{ fontSize: 16, fontWeight: 800, color: "#8a4b12" }}
           >
-            RM {rm(bal)}
+            {fmtCenti(bal)}
           </span>
         </div>
       )}
@@ -1754,7 +1745,7 @@ function StopDetail({
               className="tnum"
               style={{ fontSize: 19, fontWeight: 800, color: "#8a4b12" }}
             >
-              RM {rm(bal)}
+              {fmtCenti(bal)}
             </span>
           </div>
         )}

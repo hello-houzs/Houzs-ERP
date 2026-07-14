@@ -39,6 +39,7 @@ import { PaymentInfoBlock } from "./PaymentInfoBlock";
 import { useFabricLibrary } from "../vendor/scm/lib/queries";
 import { activeOptions, maintPickerValues } from "../vendor/shared/maintenance-pools";
 import { missingVariantAxes, hasSofaMixConflict, SOFA_MIX_MESSAGE } from "../vendor/shared/so-variant-rule";
+import { fmtCenti } from "../lib/scm";
 import "./mobile.css";
 
 /* ---------------------------------------------------------------------------
@@ -236,6 +237,9 @@ const ONLINE_OPTS = FALLBACK_OPTIONS.online_type.map((o) => o.value);
 const uid = () => Math.random().toString(36).slice(2, 10);
 const num = (s: string) => parseFloat(String(s).replace(/,/g, "")) || 0;
 const toCenti = (s: string) => Math.round(num(s) * 100);
+// centi → a BARE editable ringgit string ("1,234.56") for seeding the price/amount
+// form fields. NOT a display formatter — it must stay prefix-free so num()/toCenti
+// can parse it back. Display money uses the shared fmtCenti() instead.
 const fromCenti = (c: number | null | undefined) =>
   ((c ?? 0) / 100).toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmt = (n: number) => n.toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -1766,7 +1770,7 @@ export function MobileNewSO({
                       <div key={p.id} style={roItemBox}>
                         <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
                           <PaymentInfoBlock payment={p} />
-                          <span className="money" style={{ fontSize: 12.5, fontWeight: 700, color: "#0c3f39" }}>RM {fromCenti(p.amount_centi)}</span>
+                          <span className="money" style={{ fontSize: 12.5, fontWeight: 700, color: "#0c3f39" }}>{fmtCenti(p.amount_centi)}</span>
                         </div>
                       </div>
                     ))}
