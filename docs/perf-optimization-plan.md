@@ -86,9 +86,11 @@ no `limit`**. Fixing the shared pieces cascades across many pages.
   built (window-scroll, spacer divs, measured card height, gated >40 items).
   - [x] `MobileModuleList` (PR #433) — VERIFIED: products list 1326 records →
     **28 cards in DOM** + 105k px spacer. Covers products/inventory + all doc modules.
-  - [ ] Remaining, adopt the same component: `MobileSalesOrders.tsx:411`,
-    `MobileMailCenter.tsx:337`, `MobileServiceCase.tsx:405` (200, nested steppers),
-    `MobilePMS.tsx:476` (200), `MobileDeliveryPlanning.tsx:614` (full history).
+  - [x] `MobileServiceCase` (PR #434) — VERIFIED: 200 cases → **23 cards in DOM** +
+    26k px spacer (estimateHeight 132 for the taller stepper cards).
+  - [ ] Remaining, adopt the same component: `MobilePMS.tsx:476` (200 project cards),
+    `MobileMailCenter.tsx:337` (threads), `MobileDeliveryPlanning.tsx:614` (full
+    history), `MobileSalesOrders.tsx:419` (small today — future-proof).
 - [ ] **W4 (P1) — `StockTakeDetail.tsx:490`** — ~1141 rows of **live controlled
   inputs**; heaviest per-row. Window, keep edited row realized.
 - [ ] **W5 (P1) — `MailCenter/Inbox.tsx:308`** + **`Team.tsx:1381/1366`** —
