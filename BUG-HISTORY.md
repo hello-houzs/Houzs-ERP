@@ -8,6 +8,12 @@ Severity tags: 🔴 critical/high · 🟠 medium · 🟢 low.
 
 ## 2026-07-14 — Multi-company + performance campaign
 
+### 🟠 Desktop Scan Order silently dropped the backend duplicate-slip warning
+- **Symptom:** An operator on the DESKTOP Sales Orders "Scan Order" modal could re-scan a slip that had already been entered and get no warning at all — the New SO form just opened again, letting them create a second order for the same slip. The mobile Scan screen already surfaced this; desktop did not.
+- **Cause:** `/scan-so/extract` returns a `duplicate` ({ docNo, rule }) field (shared `findDuplicateSo`), but the desktop modal's `ExtractResp` type omitted it and the extract handler navigated to the New SO form immediately on success, so the flag was never read. Desktop also handled only ONE order per session and used a single undifferentiated dropzone (no labeled slip/receipt split).
+- **Fix:** Frontend-only, `ScanOrderModal.tsx`: added `duplicate` to `ExtractResp`; on a flagged duplicate the built prefill is HELD and an amber "possible duplicate of <doc no>" banner shows with an "open anyway" action (non-blocking, owner reviews — same policy as mobile). Also split the dropzone into labeled "Order slip" + optional "Payment receipt" slots and added an "Add another order" batch mode that reuses the SAME `/scan-so/enqueue` + `/scan-so/jobs` endpoints mobile uses (per-order 409 `duplicate_slip` refusals surface inline). No backend change. Job helpers factored to shared `vendor/scm/lib/scan-jobs.ts` (no third copy).
+- **Ref:** `feat/desktop-scan-parity`, 2026-07-14. Needs staging test.
+
 ### 🔴 "Forbidden: missing …" toast storm reappeared for restricted (Sales) users
 - **Symptom:** A restricted user (e.g. a Sales account) opening certain pages (a PMS/project Exhibition detail) saw a STACK of red toasts — "Forbidden: needs view access to scm.transportation.drivers", "needs partial access to sales", "missing users.read", "missing projects.write", plain "Forbidden", etc. — one per background query they lack access to. This is the "off, not hide" storm the owner explicitly wanted gone.
 - **Cause:** `api/client.ts` `handleResponse` fired the global `forbiddenListeners` (which `useToast` turns into a toast) on EVERY 403 — including background GET reads. Individual pages that hadn't gated their queries' `enabled:` for a restricted role each 403'd on mount → a toast each. The per-query gating was incomplete for some pages, and there was no global safety net.
