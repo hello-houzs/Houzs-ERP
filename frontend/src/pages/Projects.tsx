@@ -91,6 +91,7 @@ import { useStickyFilters } from "../hooks/useStickyFilters";
 import { useAuth } from "../auth/AuthContext";
 import { usePageAccess } from "../auth/PageGuard";
 import { isSalesStaff, isDirectorUser } from "../auth/salesAccess";
+import { PMS_STAGE_LABEL, pmsStageVariant } from "../vendor/scm/lib/pms-status";
 import { ACCESS_RANK } from "../types";
 import { Forbidden } from "./Forbidden";
 import { useNotifications } from "../hooks/useNotifications";
@@ -690,29 +691,10 @@ const STAGE_OPTIONS: { value: "ALL" | ProjectStage; label: string }[] = [
   { value: "completed", label: "Completed" },
 ];
 
-const STAGE_LABEL: Record<ProjectStage, string> = {
-  draft: "Draft",
-  setup: "Setup",
-  live: "Live",
-  dismantle: "Dismantle",
-  completed: "Completed",
-};
-
-function stageVariant(
-  stage: ProjectStage
-): "neutral" | "open" | "in-progress" | "closed" | "error" {
-  switch (stage) {
-    case "draft":
-      return "neutral";
-    case "setup":
-      return "open";
-    case "live":
-    case "dismantle":
-      return "in-progress";
-    case "completed":
-      return "closed";
-  }
-}
+// Stage label + variant now come from the SHARED vendor/scm/lib/pms-status so
+// desktop + mobile can't drift on the stage vocabulary.
+const STAGE_LABEL: Record<string, string> = PMS_STAGE_LABEL;
+const stageVariant = pmsStageVariant;
 
 // Project status palette — drives the calendar tint, the spec strip
 // pill, and the header dropdown.

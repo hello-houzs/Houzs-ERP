@@ -10,6 +10,7 @@ import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { usePrompt } from "../vendor/scm/components/PromptDialog";
 import { formatCurrency, formatDate } from "../lib/utils";
+import { pmsStageLabel, pmsStageVariant, type PmsStageVariant } from "../vendor/scm/lib/pms-status";
 import "./mobile.css";
 
 /* ------------------------------------------------------------------ *
@@ -362,37 +363,12 @@ export function MobilePMS({ onBack, initialProjectId }: { onBack?: () => void; i
 // `closed`/`cancelled` possible on rows. No invented Planning/Live/Settled
 // buckets: the filter chips, list-card badge and detail badge all key off
 // the real `stage` value directly.
-type StageVariant = "neutral" | "open" | "in-progress" | "closed" | "error";
-
-// Mirrors desktop STAGE_LABEL (+ graceful closed/cancelled).
-const STAGE_LABEL: Record<string, string> = {
-  draft: "Draft",
-  setup: "Setup",
-  live: "Live",
-  dismantle: "Dismantle",
-  completed: "Completed",
-  closed: "Closed",
-  cancelled: "Cancelled",
-};
-const stageLabel = (stage: string | null | undefined): string => {
-  const s = (stage ?? "").toLowerCase();
-  return STAGE_LABEL[s] ?? (s ? humanize(s) : "—");
-};
-
-// Mirrors desktop stageVariant(): draft=neutral · setup=open ·
-// live/dismantle=in-progress · completed/closed=closed · cancelled=error.
-const stageVariant = (stage: string | null | undefined): StageVariant => {
-  switch ((stage ?? "").toLowerCase()) {
-    case "draft": return "neutral";
-    case "setup": return "open";
-    case "live":
-    case "dismantle": return "in-progress";
-    case "completed":
-    case "closed": return "closed";
-    case "cancelled": return "error";
-    default: return "neutral";
-  }
-};
+// Stage label + variant now come from the SHARED vendor/scm/lib/pms-status so
+// desktop + mobile can't drift on the stage vocabulary. Mobile keeps its own
+// variant→tint palette (STAGE_TINT) below.
+type StageVariant = PmsStageVariant;
+const stageLabel = pmsStageLabel;
+const stageVariant = pmsStageVariant;
 
 // Map the desktop variant onto the mobile badge palette already used across
 // the screen (amber = open, green/teal = in-progress, grey = neutral/closed,
@@ -668,7 +644,10 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
 
   const reload = () => {
     void qc.invalidateQueries({ queryKey: ["mobile-pms-detail", id] });
-    void qc.invalidateQueries({ queryKey: ["mobile-pms-list"] });
+    // Prefix MUST match the list query (["mobile-pms-list-paged", …]);
+    // "mobile-pms-list" is not a prefix of it, so it never invalidated → the
+    // project list stayed stale after any detail mutation until staleTime.
+    void qc.invalidateQueries({ queryKey: ["mobile-pms-list-paged"] });
   };
   const reloadPhotos = () => qc.invalidateQueries({ queryKey: ["mobile-pms-phase-photos", id] });
 
