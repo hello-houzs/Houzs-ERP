@@ -1243,7 +1243,7 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
                     // Editable SO No (2026-07-14) — fixing a fat-fingered
                     // SO re-matches customer info from the SO mirror
                     // server-side.
-                    { key: "doc_no", label: "SO No", value: get(c, "docNo", "doc_no"), type: "text" },
+                    { key: "doc_no", label: "SO No", value: get(c, "docNo", "doc_no"), type: "so" },
                     { key: "customer_name", label: "Customer", value: customer(c) === "—" ? "" : customer(c), type: "text" },
                     { key: "phone", label: "Phone", value: get(c, "phone", "customerPhone", "customer_phone"), type: "text" },
                     { key: "customer_email", label: "Email", value: get(c, "customerEmail", "customer_email"), type: "text" },
@@ -2100,9 +2100,49 @@ type EditField = {
   key: string;
   label: string;
   value: any;
-  type: "text" | "textarea" | "date" | "select";
+  type: "text" | "textarea" | "date" | "select" | "so";
   options?: { value: string; label: string }[];
 };
+
+// SO input with the create-sheet's typeahead (Nick 2026-07-14 — editing
+// the SO must search like the create form). Picking a hit fills the
+// draft; EditableAcc's Save then PATCHes doc_no and the backend
+// re-matches customer info. Unknown values (post-disconnect SOs) still
+// save as typed.
+function SoSearchField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [focused, setFocused] = useState(false);
+  const { results, loading } = useSoSearch(focused ? value : "");
+  const open = focused && value.trim().length >= 2 && (loading || results.length > 0);
+  return (
+    <div style={{ position: "relative" }}>
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setTimeout(() => setFocused(false), 150)}
+        placeholder="SO #, reference, or customer name…"
+        className="fld-i money"
+        style={{ width: "100%", boxSizing: "border-box" }}
+      />
+      {open && (
+        <div className="hz-scroll" style={{ position: "absolute", left: 0, right: 0, top: "100%", marginTop: 4, zIndex: 30, border: `1px solid ${DIM}`, borderRadius: 10, background: "#fff", maxHeight: 190, overflowY: "auto", boxShadow: "0 10px 24px -10px rgba(17,24,16,.35)" }}>
+          {loading && <div style={{ fontSize: 11, color: GREY, padding: "9px 11px" }}>Searching…</div>}
+          {!loading && !results.length && <div style={{ fontSize: 11, color: GREY, padding: "9px 11px" }}>No matching sales orders.</div>}
+          {results.map((hit, i) => (
+            <button
+              key={String(get(hit, "docNo", "doc_no")) + i}
+              onMouseDown={(e) => { e.preventDefault(); onChange(String(get(hit, "docNo", "doc_no") ?? "")); setFocused(false); }}
+              style={{ display: "block", width: "100%", textAlign: "left", border: "none", borderTop: i ? "1px solid #eceee9" : "none", background: "#fff", padding: "9px 11px", cursor: "pointer" }}
+            >
+              <div className="money" style={{ fontSize: 12, fontWeight: 700, color: INK }}>{String(get(hit, "docNo", "doc_no"))}</div>
+              <div style={{ fontSize: 11, color: MUTED, ...cellEllipsis }}>{String(get(hit, "debtorName", "debtor_name") ?? "—")}{get(hit, "phone") ? ` · ${String(get(hit, "phone"))}` : ""}</div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function EditableAcc({
   title,
@@ -2194,6 +2234,11 @@ function EditableAcc({
                       <option key={o.value} value={o.value}>{o.label}</option>
                     ))}
                   </select>
+                ) : f.type === "so" ? (
+                  <SoSearchField
+                    value={draft[f.key] ?? ""}
+                    onChange={(v) => setDraft((d) => ({ ...d, [f.key]: v }))}
+                  />
                 ) : (
                   <input
                     type={f.type === "date" ? "date" : "text"}
