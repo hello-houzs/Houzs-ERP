@@ -114,7 +114,7 @@ export async function runPull(
   }
 }
 
-async function upsertSalesOrder(env: Env, o: ACSalesOrder, region: "WEST" | "EAST" | "SG"): Promise<void> {
+export async function upsertSalesOrder(env: Env, o: ACSalesOrder, region: "WEST" | "EAST" | "SG"): Promise<void> {
   await env.DB.prepare(
     `INSERT INTO sales_orders (
        doc_no, region, transfer_to, doc_date, ref, branding, debtor_name, phone,

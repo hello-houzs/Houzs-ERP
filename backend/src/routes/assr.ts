@@ -23,7 +23,8 @@ import { runSlaEscalation } from "../services/assrEscalation";
 import { issueStaffToken, issueSalesToken } from "../services/caseTracking";
 import { sendEmail, publicUrl } from "../services/email";
 import { resolveCompanyCode } from "../services/branding";
-import { AutoCountClient } from "../services/autocount";
+import { AutoCountClient, routeRegion, isAutoCountSyncDisabled } from "../services/autocount";
+import { upsertSalesOrder } from "../services/pull";
 import { requirePermission } from "../middleware/auth";
 import {
   activeCompanyId,
@@ -879,6 +880,58 @@ app.get("/search-so", requireServiceCaseAccess(), async (c) => {
     .bind(pattern, pattern, pattern)
     .all();
   return c.json({ results: rows.results ?? [] });
+});
+
+// ── Manual single-SO backfill into the local mirror ───────────
+// The cron pull is incremental (getSince) AND content-filtered by the
+// AutoCount middleware, so a doc can be absent from `sales_orders` even
+// though it exists in AutoCount — e.g. one modified during a sync outage
+// that never re-surfaced in an incremental batch (SO-011902 was one such
+// gap: KL/WEST, passes routeRegion, filter-fields identical to synced
+// neighbours). This fetches the doc directly via getSingle — which
+// bypasses the getSince content filter — and upserts it through the SAME
+// routeRegion path the cron uses, so the re-match typeahead can find it.
+// Gated at service_cases.write: the same permission that PATCH (where the
+// SO-No re-match lives) already requires.
+app.post("/resync-so/:docNo", requirePermission("service_cases.write"), async (c) => {
+  const docNo = (c.req.param("docNo") ?? "").trim();
+  if (!docNo) return c.json({ error: "docNo required" }, 400);
+  if (isAutoCountSyncDisabled(c.env)) {
+    return c.json({ error: "AutoCount sync is disabled (AUTOCOUNT_SYNC_DISABLED)" }, 503);
+  }
+
+  let so;
+  try {
+    so = await new AutoCountClient(c.env).getSingle(docNo);
+  } catch (e) {
+    return c.json({ error: `AutoCount getSingle failed: ${String(e)}` }, 502);
+  }
+  if (!so) return c.json({ error: "SO not found in AutoCount", docNo }, 404);
+
+  // Same skip rule the cron applies — an SO that doesn't route to a known
+  // region is intentionally not mirrored, so report that explicitly rather
+  // than silently dropping it.
+  const region = routeRegion(so);
+  if (!region) {
+    return c.json(
+      {
+        error: "SO does not route to a known region (skipped by routeRegion)",
+        docNo,
+        salesLocation: so.SalesLocation ?? null,
+        invAddr3: so.InvAddr3 ?? null,
+      },
+      422
+    );
+  }
+
+  await upsertSalesOrder(c.env, so, region);
+  const row = await c.env.DB.prepare(
+    `SELECT doc_no, ref, debtor_name, phone, doc_date, sales_agent, region
+       FROM sales_orders WHERE LOWER(doc_no) = LOWER(?)`
+  )
+    .bind(so.DocNo)
+    .first();
+  return c.json({ ok: true, region, mirrored: row });
 });
 
 // ── My Cases (sales-side portal) ──────────────────────────────
