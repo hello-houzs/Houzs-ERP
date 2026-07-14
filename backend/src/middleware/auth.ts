@@ -2,7 +2,7 @@ import type { MiddlewareHandler } from "hono";
 import type { Env } from "../types";
 import { getUserBySession, type AuthUser } from "../services/auth";
 import { hasPermission } from "../services/permissions";
-import { isSalesDirectorUser, isSalesUser } from "../services/pmsAccess";
+import { isSalesDirectorUser, isSalesUser, isDirectorUser } from "../services/pmsAccess";
 import {
   fullAccessMap,
   meetsLevel,
@@ -159,6 +159,83 @@ export function requirePermissionOrSalesDirector(
 }
 
 /**
+ * ADDITIVE gate: admit the caller if they hold `perm` OR they are Sales staff /
+ * a director by STABLE ORG FIELD (services/pmsAccess.isSalesUser /
+ * isDirectorUser). READ-ONLY use only — put this on GET reference endpoints the
+ * PMS project page needs (fleet crew list, etc.) that a Sales Director's
+ * position was never granted in the permission matrix (positions get no
+ * backfill). It only OPENS the door; it never widens scope and never applies to
+ * writes. A caller who already holds `perm` keeps their existing behaviour.
+ */
+export function requirePermissionOrSalesView(
+  perm: string,
+): MiddlewareHandler<{ Bindings: Env }> {
+  return async (c, next) => {
+    const user = c.get("user");
+    if (!user) return c.json({ error: "Unauthorized" }, 401);
+    const granted = user.permissions_set ?? user.permissions;
+    if (hasPermission(granted, perm) || isDirectorUser(user) || isSalesUser(user)) {
+      await next();
+      return;
+    }
+    return c.json({ error: `Forbidden: missing ${perm}` }, 403);
+  };
+}
+
+/**
+ * ADDITIVE page-access gate for the PMS project page's Sales section. Passes if
+ * `requirePageAccess(pageKey)` WOULD pass (wildcard or a page-access matrix
+ * level ≥ minLevel) OR the caller is Sales/director by STABLE ORG FIELD
+ * (isSalesUser / isDirectorUser). Fixes the root-cause split where the project
+ * page authorises via the org-POSITION tier (pmsAccess) but the inner data
+ * calls authorise via the flat matrix a Sales Director's position was never
+ * granted → sections render then 403. Purely additive: the matrix path is
+ * checked first and unchanged, so no non-sales user is weakened.
+ *
+ * `access_level` is set for downstream branching, matching requirePageAccess:
+ *   - wildcard / matrix grant → the real matrix level (unchanged)
+ *   - admitted as director     → "full"    (sees every entry — canManage)
+ *   - admitted as sales staff  → "partial" (own+downline via existing scoping)
+ */
+export function requirePageAccessOrSalesView(
+  pageKey: string,
+  minLevel: AccessLevel = "partial",
+): MiddlewareHandler<{ Bindings: Env }> {
+  return async (c, next) => {
+    const user = c.get("user");
+    if (!user) return c.json({ error: "Unauthorized" }, 401);
+    const granted = user.permissions_set ?? user.permissions;
+    // 1) Wildcard / matrix path — identical to requirePageAccess, unchanged.
+    if (hasPermission(granted, "*")) {
+      c.set("access_level", "full");
+      await next();
+      return;
+    }
+    const level: AccessLevel = (user.page_access?.[pageKey] ?? "none") as AccessLevel;
+    if (meetsLevel(level, minLevel)) {
+      c.set("access_level", level);
+      await next();
+      return;
+    }
+    // 2) Additive code-keyed Sales/director admittance.
+    if (isDirectorUser(user)) {
+      c.set("access_level", "full");
+      await next();
+      return;
+    }
+    if (isSalesUser(user)) {
+      c.set("access_level", "partial");
+      await next();
+      return;
+    }
+    return c.json(
+      { error: `Forbidden: needs ${minLevel} access to ${pageKey}` },
+      403,
+    );
+  };
+}
+
+/**
  * Per-route gate that accepts ANY of the listed permissions. Used where
  * a narrow permission (e.g. projects.chat) and a broader one
  * (projects.write) should both unlock the same endpoint, so admins can
@@ -225,6 +302,23 @@ export const requireScmAccess: MiddlewareHandler<{ Bindings: Env }> = async (c, 
   // path gate keeps procurement / warehouse / finance SCM areas closed to a
   // Sales rep with no explicit grant.
   if (c.req.path.includes("/mfg-sales-orders") && isSalesUser(user)) {
+    await next();
+    return;
+  }
+  // Additive (PMS project logistics view, owner 2026-07): the Projects "Setup &
+  // Dismantle" crew editor is READ-ONLY for Sales but must still SHOW the
+  // currently-scheduled lorry plates. Admit a code-keyed Sales/Director for the
+  // GET /api/scm/lorries LIST ONLY — view-only, no write path opened. TIGHT: the
+  // method + exact-path check keeps every other SCM area (and every lorries
+  // write) closed to a Sales rep with no explicit grant. (A Sales user with an
+  // explicit SCM L2 config still passes the downstream scmAreaGuard via its
+  // no-lockout fallback; if ever L2-restricted, the FE keeps a graceful empty
+  // dropdown rather than 403-crashing.)
+  if (
+    c.req.method === "GET" &&
+    /\/scm\/lorries\/?$/.test(c.req.path) &&
+    (isSalesUser(user) || isDirectorUser(user))
+  ) {
     await next();
     return;
   }

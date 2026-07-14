@@ -44,7 +44,7 @@ import {
   projectAccessLevel,
   canSeeProject,
 } from "../services/projectAcl";
-import { getPmsAccess, getPmsRole, financeHiddenForUser, isFinanceViewer } from "../services/pmsAccess";
+import { getPmsAccess, getPmsRole, financeHiddenForUser, isFinanceViewer, isSalesUser } from "../services/pmsAccess";
 import { scopeSalesReportsForUser } from "../services/orgScope";
 import { audit } from "../services/audit";
 import { hasPermission } from "../services/permissions";
@@ -1572,6 +1572,18 @@ app.patch("/:id", requirePermission("projects.write"), async (c) => {
       brand: string | null;
     }>();
   if (!existing) return c.json({ error: "Not found" }, 404);
+
+  // Logistics crew is READ-ONLY for Sales (owner 2026-07): a Sales user — incl.
+  // a Sales Director — may VIEW the scheduled Setup/Dismantle crew + lorries but
+  // NOT edit them; logistics editing stays with logistics/ops roles. The crew
+  // editor writes these two JSON blobs via this PATCH; strip them for any
+  // Sales-classified caller so the write silently no-ops the crew fields
+  // (defense-in-depth behind the read-only FE editor). All other project fields
+  // in the same PATCH still apply.
+  if (isSalesUser(user)) {
+    delete body.setup_crew;
+    delete body.dismantle_crew;
+  }
 
   // Gate: scoped users can only patch projects they can see. And
   // they cannot reassign pic_id away from themselves/their manager.

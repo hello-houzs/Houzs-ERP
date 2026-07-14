@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
-import { requirePageAccess } from "../middleware/auth";
+import { requirePageAccess, requirePageAccessOrSalesView } from "../middleware/auth";
 import { getDb } from "../db/client";
 import { sales_entries, users, projects } from "../db/schema";
 import { and, desc, eq, gte, isNull, lte, like, or, sql } from "drizzle-orm";
@@ -118,7 +118,15 @@ function buildOwnershipWhere(user: any, canManage: boolean) {
 }
 
 // ── List ─────────────────────────────────────────────────────
-app.get("/entries", requirePageAccess("sales"), async (c) => {
+// Read gate is ADDITIVE (owner 2026-07): the flat page-access matrix for
+// "sales" OR a code-keyed Sales/director (position/department). A Sales
+// Director's POSITION is never backfilled into the matrix, so the project
+// page's Sales section used to render (page authorised by the org-position
+// tier) and then 403 here. requirePageAccessOrSalesView admits them by code
+// and sets access_level (director → full = sees every entry; sales staff →
+// partial = own+downline via buildOwnershipWhere) without weakening any
+// non-sales caller. WRITE routes below keep requirePageAccess("sales","full").
+app.get("/entries", requirePageAccessOrSalesView("sales"), async (c) => {
   const user = c.get("user");
   const canManage = c.get("access_level") === "full";
   const status = c.req.query("status") || "";
