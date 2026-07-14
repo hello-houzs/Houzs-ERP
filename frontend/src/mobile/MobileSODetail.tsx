@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { fetchPaymentSlipUrl, fetchScanSlipImageBlobUrl, uploadSlipFull } from "../vendor/scm/lib/slip";
@@ -10,6 +9,9 @@ import {
   useMfgSalesOrderDetail,
   useSalesOrderPayments,
   useUpdateMfgSalesOrderStatus,
+  useAddSalesOrderPayment,
+  useEditSalesOrderPayment,
+  useDeleteSalesOrderPayment,
   useSalesOrderAuditLog,
   type SoAuditEntry,
   type SoAuditFieldChange,
@@ -192,6 +194,7 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
   const [supplierConfirmOpen, setSupplierConfirmOpen] = useState(false);
   const approveSo = useApproveSo();
   const updateStatus = useUpdateMfgSalesOrderStatus();
+  const deletePaymentMut = useDeleteSalesOrderPayment();
 
   /* Reads route through the SHARED vendored hooks (vendor/scm/lib/
      sales-order-queries) so mobile lives in the SAME query-key namespace as the
@@ -357,23 +360,25 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
 
   /* Refresh the payments ledger + header KPIs after a payment posts. Reused by
      both the delete action and the standalone Add-Payment sheet's onSaved. */
+  /* After a payment add/edit/delete the shared mutation already invalidates the
+     payments ledger (['mfg-sales-orders', docNo, 'payments']) — the same key
+     useSalesOrderPayments reads. The header KPIs (Paid / Balance) come from the
+     DETAIL header, which the payment mutation does NOT touch, so refresh that
+     one key here so the KPIs update live. */
   const refreshAfterPayment = () =>
-    Promise.all([
-      qc.invalidateQueries({ queryKey: ["mobile-so-payments", docNo] }),
-      qc.invalidateQueries({ queryKey: ["mobile-so-detail", docNo] }),
-      qc.invalidateQueries({ queryKey: ["mobile-so-list"] }),
-    ]);
+    qc.invalidateQueries({ queryKey: ["mfg-sales-order-detail", docNo] });
 
   /* Delete a persisted payment — parity with the desktop PaymentsTable trash
-     action. In-app confirm, then DELETE /:docNo/payments/:id; on success the
-     payments + header (balance) queries invalidate so the KPIs update live. */
+     action. In-app confirm, then the shared useDeleteSalesOrderPayment mutation
+     (invalidates the payments ledger); refreshAfterPayment then refreshes the
+     header KPIs. */
   const deletePayment = async (paymentId: string) => {
     if (busy) return;
     if (!(await confirm({ title: "Delete this payment?", body: "This removes the recorded payment and re-opens the balance.", confirmLabel: "Delete", danger: true }))) return;
     setActionError(null);
     setBusy(true);
     try {
-      await authedFetch(`/mfg-sales-orders/${encodeURIComponent(docNo)}/payments/${encodeURIComponent(paymentId)}`, { method: "DELETE" });
+      await deletePaymentMut.mutateAsync({ docNo, id: paymentId });
       await refreshAfterPayment();
     } catch (e) {
       setActionError(e instanceof Error ? e.message : "Couldn't delete the payment. Please try again.");
@@ -981,6 +986,8 @@ function AddPaymentSheet({
   onSaved: () => void | Promise<void>;
 }) {
   const notify = useNotify();
+  const addPaymentMut = useAddSalesOrderPayment();
+  const editPaymentMut = useEditSalesOrderPayment();
   const isEdit = Boolean(editPayment);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [method, setMethod] = useState<PayMethodLabel>(
@@ -1048,14 +1055,13 @@ function AddPaymentSheet({
     else if (code === "installment") { body.installmentMonths = planToMonths(plan); }
     else if (code === "transfer") { body.onlineType = online || null; }
     try {
+      /* Same body shape as before — just swap the raw transport for the shared
+         vendored mutations so mobile shares the desktop payment write path (they
+         invalidate the payments ledger key useSalesOrderPayments reads). */
       if (isEdit && editPayment) {
-        await authedFetch(`/mfg-sales-orders/${encodeURIComponent(docNo)}/payments/${encodeURIComponent(editPayment.id)}`, {
-          method: "PATCH", body: JSON.stringify(body),
-        });
+        await editPaymentMut.mutateAsync({ docNo, id: editPayment.id, ...body });
       } else {
-        await authedFetch(`/mfg-sales-orders/${encodeURIComponent(docNo)}/payments`, {
-          method: "POST", body: JSON.stringify(body),
-        });
+        await addPaymentMut.mutateAsync({ docNo, ...body });
       }
       await onSaved();
     } catch (e) {
