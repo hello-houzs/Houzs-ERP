@@ -59,7 +59,7 @@ The **~230ms fixed base** is why every SCM page feels slow *now*, independent of
 | 1 | **btree indexes** on scm hot columns | **DONE + deploy-verified** — mig `0111` (#469) |
 | 2 | **`paginateAll`** wrap of unpaginated enrichment reads (1000-cap truncation cliff) | **DONE** (#475), browser-verified SO list data intact |
 | 4 | **True server-side pagination on the SCM lists** (`.range()` + `count:'exact'` total + server search + `statusCounts` tabs + deterministic `ORDER BY …, id`) — the 100x fix | **DONE for 6 lists** — SO (#481 be, #483 desktop, #499/#502 mobile) + DO/GRN/SI/PO/PI (#491 be, #497 desktop). **Desktop all 6 prod-verified** (Showing X–Y of N, cross-page search on SO, no skip/dup). Mobile SO = IntersectionObserver infinite-scroll (rAF-safe). Multi-status tab buckets → `.in()` (#500). Mobile-list FE for DO/GRN/SI/PO/PI = TODO. |
-| — | **Dropdown scaling** (owner's colour-dropdown concern) | **DONE** (#501) — audit: most pickers already scale (native select/datalist virtualize; the custom listboxes were already capped 60 or on server typeahead). Fixed the 3 remaining render-all listboxes (UserMultiSelect, Products model-filter, MultiSupplierPicker+search). Flagged for later server-typeahead: desktop fabric/colour (native select, fine until thousands) + MultiSupplierPicker. |
+| — | **Dropdown scaling** (owner's colour-dropdown concern) | **PARTIAL.** #501 capped the DOM of 3 custom listboxes (UserMultiSelect, Products model-filter, MultiSupplierPicker+search) — but a follow-up full audit found **#501 fixed ZERO fetches**: every picker sourced from `useFabricColoursActive`/`useMfgProducts`/`useSuppliers`/users still downloads the whole option table. **Worst offender = the SoLineCard fabric/colour `<select>` (the owner's named pain): native `<select>`, fetch-ALL + render-ALL, on every SO/Consignment line card** → server-typeahead fix in progress (`feat/fabric-dropdown-typeahead`). See §8 for the full picker map. |
 | 3 | **`GET /outstanding/summary`** AR-aging → SQL `SUM(CASE)`/`count` (net face−paid−credits) | **GATED on staging before/after diff** (money — never blind-ship). Not done. |
 | — | **Full-set money KPIs** (SO/list Revenue/Outstanding/Paid + mobile summary currently page-scoped "on this page") | GATED with #3 (money aggregate, verify on real data). |
 | — | **Non-SCM lists** (Projects per_page 1000, Team no-limit, Sales, Mail) | in progress (`feat/nonscm-list-scaling`) |
@@ -74,6 +74,40 @@ The **~230ms fixed base** is why every SCM page feels slow *now*, independent of
 2. Money/aggregation rewrites (#3) are verified by a **before/after diff on real data (staging)**, never by `tsc`/unit tests alone.
 3. Pagination (#4) keeps a **deterministic total order** (unique tiebreaker) so no row is skipped/duplicated across pages; `/list` and `/count` apply the **same filters**.
 4. Every list/summary excludes TEST/cancelled/void via the same shared status set.
+
+## 8. System-wide foundation map (full audit 2026-07-14, evening)
+
+The blind spot the audit exposed: **virtualization (DataTable/DataGrid/MobileVirtualList) bounds the DOM but never the FETCH.** `api.get`/`authedFetch` send exactly the query string you build — a list is bounded only if the code explicitly passes `page`/`per_page`/`limit`. So the reference-data layer (`fabric_colours`, `mfg-products`, `suppliers`, `users`, consignment/announcement/mail collections) still ships whole tables to the client. This is the remaining work.
+
+### Already 10x-safe (done)
+- 6 SCM V2 document lists (SO/DO/PO/PI/SI/GRN) — server `page/pageSize/statusCounts` (#481/#491/#497/#500), StockTakes/StockTransfers V2.
+- Mobile SO (#499/#502) + generic mobile SCM lists via MobileModuleList infinite-scroll (#507).
+- Service Cases *list* + Logistics + Settings (`per_page=50`), all summary/aggregate tiles (ServiceMetrics, project/assr summary, Overview KPIs), Notifications (server-capped 20).
+- True server-typeahead pickers: SoLineCard product search, ConsignmentOrderNew debtor autocomplete, GlobalSearch.
+
+### LIST offenders still to fix (ranked)
+| Surface | file:line | Problem | Fix |
+|---|---|---|---|
+| **SCM Products / SKU Master** | `Products.tsx:1020` | hand-built `<table>` renders ALL rows (only SCM list not virtualized) | virtualize tbody (`perf/products-sku-virtualize`, in progress) + server limit |
+| **Team members grid + org chart** | `Team.tsx:410/1503/2984` | `/api/users` fetch-all ×2; default grid + full recursive tree unvirtualized | server-paginate `/api/users` + filters; virtualize grid; lazy-expand tree |
+| **Announcements desktop** | `Announcements.tsx:204/261` + `announcements.ts:393` | backend NO limit; renders all unvirtualized | backend LIMIT/offset + paginate + virtualize |
+| **Mail threads desktop** | `Inbox.tsx:761/309` + `mail-center.ts:908` | LIMIT 300 + client Starred/Sent/search + unvirtualized (data past 300 vanishes) | server-paginate + push starred/Sent/q; virtualize |
+| **MailboxesTab matrix** | `MailboxesTab.tsx:76/931` | O(users×mailboxes) unvirtualized grid | virtualize rows / paginate user axis |
+| **Consignment Orders/Notes/Returns + Suppliers** | `Consignment*.tsx`, `Suppliers.tsx:97` | fetch-all (DataGrid saves DOM only) | copy `suppliers-queries.ts:480` page/pageSize hook |
+| Projects list (status filter) | `Projects.tsx:1000` | `per_page=1000` fetch-all when a status filter is active | push status to server, drop the 1000 |
+| Service board/calendar | `ServiceCases.tsx:1144/1361` | `per_page=500` fetch-all | server window/aggregate |
+| Mobile PMS / ServiceCase | `MobilePMS.tsx:427` / `MobileServiceCase.tsx:304` | fixed `per_page=200` cap | server infinite-scroll (copy MobileSalesOrders) |
+| Mail outbox / Team leaderboard | `Inbox.tsx:1492` / `MemberOrgPerformance.tsx:125` | limit-60 `hasMore` ignored / unbounded | wire the paging already exposed |
+
+### DROPDOWN offenders (fetch-ALL — #501 fixed DOM only, not one fetch)
+| Picker | file:line | Problem | Fix |
+|---|---|---|---|
+| **Fabric/colour `<select>`** (owner's pain) | `SoLineCard.tsx:534/1258` | native select, fetch-ALL + render-ALL, every line card — **worst, both axes** | server typeahead `/fabric-colours?q=` + capped combobox (`feat/fabric-dropdown-typeahead`, in progress) |
+| Capped-DOM picker family | FabricPicker, MobileSkuPicker, SalesOrderNewFromProducts, MultiSupplierPicker, UserMultiSelect, SupplierDetail multi-picker | #501 capped DOM but still fetch the whole option set | shared server-typeahead / min-search-chars gate (template: SoLineCard product picker `:272`) |
+| ProductModels supplier `<select>` | `ProductModels.tsx:1310` | native select paints every supplier option | combobox/typeahead |
+
+### Honest bottom line
+6 SCM lists + mobile SCM lists + SO mobile are 10x-safe and prod-verified. The remaining ~10 list surfaces + the fabric dropdown + the picker family still fetch whole tables. Highest-leverage order: (1) fabric dropdown typeahead [in progress], (2) Products SKU virtualize [in progress], (3) `/api/users` paginate + Team grid/tree, (4) Announcements + Mail-threads backend LIMIT + virtualize, (5) shared typeahead helper across the picker family + copy the suppliers paging hook onto Consignment/Suppliers.
 
 ---
 _This doc is the versioned counterpart to the Obsidian wiki; run `/sync-wiki` in an interactive session to mirror it into `Houzs ERP/`._
