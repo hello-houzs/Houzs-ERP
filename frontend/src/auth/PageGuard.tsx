@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { useAuth } from "./AuthContext";
 import { Forbidden } from "../pages/Forbidden";
 import { ACCESS_RANK, type AccessLevel } from "../types";
-import { isSalesStaff } from "./salesAccess";
+import { isSalesStaff, isSalesDirectorUser } from "./salesAccess";
 
 /**
  * Read the current user's access level for a page (mig 073).
@@ -36,6 +36,7 @@ export function PageGuard({
   page,
   minLevel = "partial",
   allowSales = false,
+  allowSalesDirector = false,
   children,
 }: {
   page: string;
@@ -47,12 +48,19 @@ export function PageGuard({
    *  cases), but a Sales rep without the service_cases matrix page would still
    *  hit <Forbidden> here. The backend stays the real authority. */
   allowSales?: boolean;
+  /** When true, a Sales Director (auth/salesAccess.isSalesDirectorUser) is
+   *  allowed in even without page-access for `page`. Used for /team: a Sales
+   *  Director gets a DEPARTMENT-SCOPED Team view (own-dept Members / Org Chart
+   *  / Departments + Invite; NO Positions). The backend scopes every Team
+   *  endpoint to his department and 403s the positions endpoints. */
+  allowSalesDirector?: boolean;
   children: ReactNode;
 }) {
   const { user } = useAuth();
   const level = usePageAccess(page);
   if (ACCESS_RANK[level] < ACCESS_RANK[minLevel]) {
     if (allowSales && isSalesStaff(user)) return <>{children}</>;
+    if (allowSalesDirector && isSalesDirectorUser(user)) return <>{children}</>;
     return <Forbidden page={page} />;
   }
   return <>{children}</>;

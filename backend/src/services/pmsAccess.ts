@@ -71,6 +71,30 @@ const SECTIONS_BY_ROLE: Record<PmsRole, PmsSection[]> = {
 // Directors / finance — the only roles that see money on the project.
 const DIRECTOR_POSITIONS = /^(Super Admin|Sales Director|Finance Manager)$/i;
 
+// The EXACT "Sales Director" position — the signal for the department-scoped
+// Team admin grant (owner 2026-07: a Sales Director manages ONLY his own
+// department's members/org-chart/departments + Sales mailboxes, WITHOUT full
+// users.manage). Keyed off the STABLE ORG FIELD position_name, matched
+// case-insensitively but ANCHORED (^…$) so ONLY "Sales Director" qualifies —
+// "Sales Executive"/"Sales Coordinator" do NOT. Deliberately narrower than
+// isDirectorUser (which also admits Super Admin / Finance Manager, both of whom
+// already hold full admin). This is the single source of truth the users /
+// departments / mail-center routes share for the scoped-admin admittance.
+const SALES_DIRECTOR_POSITION = /^Sales Director$/i;
+
+/**
+ * True ONLY for the "Sales Director" position (exact, case-insensitive).
+ * Drives the department-scoped Team-admin grant — do NOT confuse with
+ * isDirectorUser (broader: Super Admin / Sales Director / Finance Manager /
+ * `*`). A Sales Director is NOT a full admin; the routes ADD a
+ * department-scoped admittance for them on top of the existing users.manage /
+ * users.read gates and NEVER widen it to global.
+ */
+export function isSalesDirectorUser(user: AuthUser | null | undefined): boolean {
+  if (!user) return false;
+  return SALES_DIRECTOR_POSITION.test((user.position_name ?? "").trim());
+}
+
 // Sales staff — a position whose title starts with "Sales " (Sales Executive,
 // Sales Coordinator, …) OR membership of the Sales department. Prod names the
 // department "Sales Department" while the seed is "Sales", so match any dept
