@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { invalidateDoShared, invalidateInventoryShared, invalidateSoShared } from "./sharedInvalidate";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { uploadSlipFull, ALLOWED_SLIP_MIMES, MAX_SLIP_SIZE_BYTES } from "../vendor/scm/lib/slip";
 import { todayMyt } from "../vendor/scm/lib/dates";
@@ -192,6 +193,11 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
         qc.invalidateQueries({ queryKey: ["mobile-do-list-for-pod"] }),
         qc.invalidateQueries({ queryKey: ["mobile-so-list-paged"] }),
       ]);
+      // Delivering moves stock + flips the DO + touches SO readiness — refresh
+      // the shared/desktop DO, inventory and SO caches too.
+      invalidateDoShared(qc);
+      invalidateInventoryShared(qc);
+      invalidateSoShared(qc);
       onDone?.();
     } catch (e) {
       setActionError(e instanceof Error ? e.message : "Something went wrong. Please try again.");

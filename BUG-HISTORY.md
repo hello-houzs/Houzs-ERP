@@ -6,6 +6,14 @@ Severity tags: 🔴 critical/high · 🟠 medium · 🟢 low.
 
 ---
 
+## 2026-07-15
+
+### 🟠 Desktop tab read stale DO / board / inventory / SO after a mobile deliver or convert
+- **Symptom:** After a mobile POD deliver, a mobile convert (SO→DO / DO→SI / PO→GRN / SO→PO), or a mobile delivery-planning status/convert, an open DESKTOP tab kept showing the old DO list, delivery board, stock levels or SO readiness until manually refreshed.
+- **Cause:** `MobileConvertWizard` / `MobilePOD` / `MobileDeliveryPlanning` mutate via raw `authedFetch` and invalidate only their private `["mobile-*"]` query keys — never the shared/desktop roots (`['mfg-delivery-orders*']`, `['delivery-planning']`, `['inventory']`, `['mfg-sales-orders*']`, `['sales-invoices*']`, `['grns*']`, `['mfg-purchase-orders']`). React Query never marked the desktop cache stale. (The SO-detail / New-SO screens were already converged onto the vendored shared hooks upstream — the `#540` / `so-detail-shared-hooks` series — so they were deliberately left alone.)
+- **Fix:** New `mobile/sharedInvalidate.ts` invalidates the canonical shared roots (prefix-match covers every ?page/status/id variant). Called at the 3 remaining raw-mutation sites: ConvertWizard (all 4 targets, before `onCreated`), POD (deliver + balance), DeliveryPlanning (`invalidate()`). Additive/generous (unmounted queries are no-ops). Interim band-aid until those screens adopt the shared mutation hooks the way SO-detail did.
+- **Ref:** `fix/mobile-do-convert-stale-desktop-cache`, 2026-07-15.
+
 ## 2026-07-14 — Multi-company + performance campaign
 
 ### 🟠 Mobile consignment + suppliers lists silently truncated past their fetch cap (10x gap missed by the pagination sweep)

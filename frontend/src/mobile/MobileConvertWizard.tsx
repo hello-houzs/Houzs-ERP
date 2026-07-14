@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { invalidateConvertShared } from "./sharedInvalidate";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { fmtCenti } from "../lib/scm";
@@ -327,6 +328,9 @@ export function MobileConvertWizard({
         await qc.invalidateQueries({ queryKey: ["mobile-module"] });
       }
 
+      // Also refresh the shared/desktop doc lists (source + target) so a desktop
+      // tab doesn't read a stale picker/list after a mobile convert.
+      invalidateConvertShared(qc);
       onCreated(newDocNo);
     } catch (e) {
       // A declined short-stock / drop-ship confirm surfaces as a thrown marker;
