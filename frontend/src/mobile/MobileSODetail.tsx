@@ -9,6 +9,7 @@ import { useAuth as useHouzsAuth } from "../auth/AuthContext";
 import {
   useMfgSalesOrderDetail,
   useSalesOrderPayments,
+  useUpdateMfgSalesOrderStatus,
   useSalesOrderAuditLog,
   type SoAuditEntry,
   type SoAuditFieldChange,
@@ -190,6 +191,7 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
   const [viewingAmendmentId, setViewingAmendmentId] = useState<string | null>(null);
   const [supplierConfirmOpen, setSupplierConfirmOpen] = useState(false);
   const approveSo = useApproveSo();
+  const updateStatus = useUpdateMfgSalesOrderStatus();
 
   /* Reads route through the SHARED vendored hooks (vendor/scm/lib/
      sales-order-queries) so mobile lives in the SAME query-key namespace as the
@@ -223,20 +225,16 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
     ? (staffQ.data ?? []).find((s) => String(s.id) === String(h.salesperson_id))?.name ?? null
     : null;
 
+  /* Status change routes through the SHARED useUpdateMfgSalesOrderStatus so
+     mobile gets the same optimistic update + audit-log / status-changes
+     invalidation desktop has (the raw inline PATCH skipped both). */
   const setStatus = async (status: string, confirmMsg?: string) => {
     if (busy) return;
     if (confirmMsg && !(await confirm({ title: confirmMsg, confirmLabel: "Confirm", danger: true }))) return;
     setActionError(null);
     setBusy(true);
     try {
-      await authedFetch(`/mfg-sales-orders/${encodeURIComponent(docNo)}/status`, {
-        method: "PATCH",
-        body: JSON.stringify({ status }),
-      });
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: ["mobile-so-detail", docNo] }),
-        qc.invalidateQueries({ queryKey: ["mobile-so-list"] }),
-      ]);
+      await updateStatus.mutateAsync({ docNo, status });
     } catch (e) {
       setActionError(e instanceof Error ? e.message : "Something went wrong. Please try again.");
     } finally {
