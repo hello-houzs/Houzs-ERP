@@ -10,7 +10,6 @@ import { Avatar } from "./Avatar";
 import { cn } from "../lib/utils";
 import { api } from "../api/client";
 import { useQuery } from "../hooks/useQuery";
-import { queryClient } from "../lib/queryClient";
 import { clearAll } from "../api/cache";
 import {
   getActiveCompanySnapshot,
@@ -183,16 +182,19 @@ function CompanySwitcher() {
     setOpen(false);
     if (id === activeId) return;
     setActiveCompanyId(id);
-    // Company scope is NOT in the react-query keys, so company A's and B's data
-    // share cache entries. invalidateQueries only marks stale + refetches — and
-    // keepPreviousData keeps showing A's rows while an in-flight A response can
-    // repopulate the shared entry, so the list sometimes still shows the previous
-    // company after a switch (the race the owner hit). clear() REMOVES every
-    // cached query so nothing from the old company can survive or be shown;
-    // mounted views refetch fresh with the new X-Company-Id header. Also drop the
-    // path-only SWR store (api/cache.ts) which is likewise company-agnostic.
+    // A company switch is a fundamental tenant-context change. In-place cache
+    // invalidation did NOT reliably refresh every mounted view: react-query keys
+    // don't include the company, invalidateQueries raced, and queryClient.clear()
+    // empties the cache but does NOT re-trigger a mounted observer to refetch — so
+    // a list kept showing the previous company until it happened to remount
+    // (empirically proven: a remount switches correctly, an in-place clear does
+    // not). A full reload is the bulletproof fix: the whole app re-reads the
+    // active company, every request carries the new X-Company-Id header, and the
+    // company-namespaced localStorage snapshot (query-persist.ts) hydrates the
+    // correct company instantly. Company switches are rare + deliberate, so the
+    // reload cost is acceptable in exchange for zero cross-company staleness.
     clearAll();
-    queryClient.clear();
+    window.location.reload();
   }
 
   return (
