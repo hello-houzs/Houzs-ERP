@@ -692,6 +692,10 @@ export async function markCaseOpened(
 // ── Patch case fields ─────────────────────────────────────────
 
 const PATCH_FIELDS = [
+  // doc_no is editable since 2026-07-14 — sales fat-finger the SO no at
+  // intake and the case never matches its customer. Changing it also
+  // re-matches identity fields from the local SO mirror (see below).
+  "doc_no",
   "customer_name", "customer_email", "phone", "location", "sales_agent", "item_code",
   "complaint_issue", "action_remark", "service_category",
   "completion_date", "po_no", "resolution_method", "issue_category",
@@ -736,6 +740,41 @@ export async function patchAssrCase(
 ): Promise<boolean> {
   const sets: string[] = [];
   const binds: any[] = [];
+
+  // Correcting the SO number re-matches the customer identity from the
+  // local sales_orders mirror (the AutoCount live API is disconnected —
+  // AUTOCOUNT_SYNC_DISABLED — so this is the same source search-so
+  // suggests from). Only fields the caller did NOT explicitly send are
+  // refreshed, so a combined manual edit still wins. No mirror hit →
+  // just the doc_no changes (mirror is frozen; new SOs may be absent).
+  let prevDocNo: string | null = null;
+  if ("doc_no" in body && typeof body.doc_no === "string" && body.doc_no.trim()) {
+    body.doc_no = body.doc_no.trim();
+    const prev = await env.DB.prepare(
+      `SELECT doc_no FROM assr_cases WHERE id = ?`
+    )
+      .bind(id)
+      .first<{ doc_no: string | null }>();
+    prevDocNo = prev?.doc_no ?? null;
+    if (prevDocNo !== body.doc_no) {
+      const so = await env.DB.prepare(
+        `SELECT ref, debtor_name, phone, sales_agent
+           FROM sales_orders WHERE LOWER(doc_no) = LOWER(?)`
+      )
+        .bind(body.doc_no)
+        .first<{ ref: string | null; debtor_name: string | null; phone: string | null; sales_agent: string | null }>();
+      if (so) {
+        if (!("customer_name" in body) && so.debtor_name) body.customer_name = so.debtor_name;
+        if (!("phone" in body) && so.phone) body.phone = cleanPhone(so.phone);
+        if (!("sales_agent" in body) && so.sales_agent) body.sales_agent = so.sales_agent;
+        if (!("ref_no" in body) && so.ref) body.ref_no = so.ref;
+      }
+    }
+  } else if ("doc_no" in body) {
+    // Blank / non-string doc_no would orphan the case from its SO —
+    // ignore rather than null the linkage.
+    delete body.doc_no;
+  }
 
   for (const k of PATCH_FIELDS) {
     if (k in body) {
@@ -803,6 +842,16 @@ export async function patchAssrCase(
   }
   if ("assigned_to_2" in body) {
     await logActivity(env, id, "assignment_2", null, String(body.assigned_to_2 ?? ""), null, userId);
+  }
+
+  // Audit SO-number corrections — the case's whole customer identity
+  // hangs off this key, so the change (and what it re-matched) must be
+  // visible in the service log.
+  if (prevDocNo !== null && "doc_no" in body && prevDocNo !== body.doc_no) {
+    await logActivity(env, id, "so_changed", prevDocNo, body.doc_no, null, userId, {
+      category: "service",
+      source_channel: "app",
+    });
   }
 
   // Audit complaint edits so the customer-facing description has a
@@ -1298,9 +1347,13 @@ export async function exportAssrCases(
 
 // ── Activity log helper ───────────────────────────────────────
 
-// `category` (mig 064) drives the timeline filter pills:
-//   purchasing — internal team / supplier coordination
+// `category` (mig 064) drives the timeline filter pills. Mig 0108
+// renames 'purchasing' and splits it into audience buckets (Nick
+// 2026-07-14: "purchasing 换成 service / customer / supplier / sales"):
+//   service    — internal service-team notes (the old 'purchasing')
 //   customer   — customer-visible milestones (rendered on the portal)
+//   supplier   — supplier coordination (incl. supplier-portal posts)
+//   sales      — sales follow-ups (incl. sales-portal comments)
 //   system     — automatic events (stage_change, assigned, created)
 //
 // v3.1 (mig 077) adds:
@@ -1310,7 +1363,7 @@ export async function exportAssrCases(
 //
 // All v3.1 fields are optional; existing callers don't need updating.
 export type LogActivityExtras = {
-  category?: "purchasing" | "customer" | "system";
+  category?: "service" | "customer" | "supplier" | "sales" | "system";
   stage_elapsed_days?: number | null;
   stage_target_days?: number | null;
   source_channel?: string | null;
@@ -1326,7 +1379,7 @@ async function logActivity(
   toValue: string | null,
   note: string | null,
   userId?: number | null,
-  categoryOrExtras: "purchasing" | "customer" | "system" | LogActivityExtras = "system",
+  categoryOrExtras: "service" | "customer" | "supplier" | "sales" | "system" | LogActivityExtras = "system",
 ) {
   const extras: LogActivityExtras =
     typeof categoryOrExtras === "string" ? { category: categoryOrExtras } : categoryOrExtras;
