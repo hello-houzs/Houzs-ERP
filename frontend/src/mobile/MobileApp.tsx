@@ -20,6 +20,7 @@ import type { SearchNav } from "./MobileSearch";
 import type { MobileScanPrefill } from "./MobileScan";
 import type { ConvertTarget } from "./MobileConvertWizard";
 const MobileSalesOrders = lazy(() => import("./MobileSalesOrders").then((m) => ({ default: m.MobileSalesOrders })));
+const MobileAmendments = lazy(() => import("./MobileAmendments").then((m) => ({ default: m.MobileAmendments })));
 const MobileSODetail = lazy(() => import("./MobileSODetail").then((m) => ({ default: m.MobileSODetail })));
 const MobileNewSO = lazy(() => import("./MobileNewSO").then((m) => ({ default: m.MobileNewSO })));
 const MobileCalendar = lazy(() => import("./MobileCalendar").then((m) => ({ default: m.MobileCalendar })));
@@ -43,6 +44,7 @@ type Screen =
   | { t: "tab" }
   | { t: "search" }
   | { t: "so-detail"; docNo: string }
+  | { t: "amendments" }
   | { t: "new-so"; mode: "new" | "edit" | "edit-draft"; docNo?: string; scanPrefill?: MobileScanPrefill }
   | { t: "scan" }
   | { t: "module"; key: string; title: string }
@@ -95,6 +97,7 @@ const ROUTE_TO_CONFIG: Record<string, string> = {
 const MOBILE_MENU_GROUPS: { group: string; items: { to: string; label: string; alwaysShow?: boolean }[] }[] = [
   { group: "Sales & Finance", items: [
     { to: "/scm/sales-orders", label: "Sales Orders" },
+    { to: "/scm/amendments", label: "Amendments" },
     { to: "/scm/delivery-orders", label: "Delivery Orders" },
     { to: "/scm/sales-invoices", label: "Sales Invoices" },
     { to: "/scm/delivery-returns", label: "Delivery Returns" },
@@ -309,6 +312,7 @@ function MobileAppInner() {
     setMenuOpen(false);
     const path = (to || "").split("?")[0];
     if (path === "/scm/sales-orders") { setTab("orders"); setScreen({ t: "tab" }); return; }
+    if (path === "/scm/amendments") return setScreen({ t: "amendments" });
     if (path === "/assr") return setScreen({ t: "service" });
     if (path === "/projects") return setScreen({ t: "pms" });
     if (path === "/mail-center") return setScreen({ t: "mail" });
@@ -332,6 +336,7 @@ function MobileAppInner() {
   let overlay: ReactNode = null;
   if (screen.t === "search") overlay = <MobileSearch onBack={back} onNavigate={onSearchNavigate} />;
   else if (screen.t === "so-detail") overlay = <MobileSODetail docNo={screen.docNo} onBack={back} onEdit={(d) => setScreen({ t: "new-so", mode: "edit", docNo: d })} />;
+  else if (screen.t === "amendments") overlay = <MobileAmendments onBack={back} onOpen={(doc) => setScreen({ t: "so-detail", docNo: doc })} />;
   else if (screen.t === "new-so") overlay = <MobileNewSO mode={screen.mode} docNo={screen.docNo} scanPrefill={screen.scanPrefill} onBack={back} onSaved={(d) => setScreen({ t: "so-detail", docNo: d })} />;
   else if (screen.t === "scan") overlay = <MobileScan onBack={back} onDrafted={onScanDrafted} onOpenSo={(docNo) => setScreen({ t: "so-detail", docNo })} />;
   else if (screen.t === "module") {

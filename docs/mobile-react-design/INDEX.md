@@ -23,7 +23,7 @@ every selector prefixed `.hz-m `. The engineer wires routing, auth, permissions 
 _None — all screens delivered._
 
 ## Full component list (final)
-- `MobileLogin` · `MobileSoList` · **`MobileSoDetail`** (locked form) · `MobileNewSO` · `MobileScan`
+- `MobileLogin` · `MobileSoList` · **`MobileSoDetail`** (locked form) · `MobileNewSO` · `MobileScan` · `MobileAmendments` (SO-revision inbox: status chips, tap card → SO detail's amendment flow; reuses `useAmendments` + `resolveStatusPill`, no backend)
 - `MobileDeliveryPlanning` · `MobilePlanningStop` (Delivery/Service/Project-Fair) · `MobilePOD`
 - `MobilePMS` (project detail; tasklist has a **List / Gantt** toggle) · `MobileGantt` (timeline: section swim-lanes, week axis, due-date diamonds, holiday bands, today line; ports desktop `ProjectGantt`, no backend) · `MobileServiceCase` + `MobileServiceCaseNew`
 - `MobileMailCenter` (list/thread/compose) · `MobileAnnouncements` (list/detail) · `MobileInbox` · `MobileCalendar`

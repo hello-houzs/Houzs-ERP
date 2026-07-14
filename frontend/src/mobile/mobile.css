@@ -277,6 +277,13 @@
 /* inline "N items / draft" note pill */
 .hz-m .list-note { font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--brand); background: var(--brand-bg); border-radius: 5px; padding: 2px 7px; display: inline-block; margin: 0 0 8px; }
 
+/* SO-amendment queue card (MobileAmendments) — brand-edged inbox row */
+.hz-m .amd { width: 100%; text-align: left; background: #fff; border: 1px solid var(--line-card); border-left: 3px solid var(--brand-d); border-radius: 12px; padding: 11px 12px; display: flex; flex-direction: column; gap: 7px; font-family: inherit; cursor: pointer; }
+.hz-m .amd .r1 { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.hz-m .amd .sono { font-size: 14px; font-weight: 800; color: var(--ink); }
+.hz-m .amd .amdno { font-size: 11px; color: var(--mut); line-height: 1.4; }
+.hz-m .amd .foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 10.5px; color: var(--mut); border-top: 1px solid var(--line2); padding-top: 7px; }
+
 /* ---- login (design app icon + button sheen) ---- */
 .hz-m .appicon { width: 66px; height: 66px; border-radius: 18px; background: linear-gradient(155deg,#23242a,#0e0f12); box-shadow: 0 16px 32px -14px rgba(0,0,0,.65),inset 0 1px 0 rgba(255,255,255,.09),inset 0 0 0 1px rgba(216,168,90,.14); position: relative; overflow: hidden; display: flex; align-items: center; justify-content: center; }
 .hz-m .appicon .b { width: 7px; border-radius: 2.5px; }
