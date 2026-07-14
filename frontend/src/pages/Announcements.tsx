@@ -19,6 +19,7 @@ import {
   BookOpen,
   ShieldCheck,
   Globe,
+  Building2,
 } from "lucide-react";
 import { PageHeader } from "../components/Layout";
 import { Button } from "../components/Button";
@@ -64,8 +65,12 @@ type Announcement = {
   targetDeptIds?: number[];
   targetPositionIds?: number[];
   targetUserIds?: number[];
+  targetCompanyIds?: number[];
   category?: AnnouncementCategory;
 };
+
+type Company = { id: number; code: string; name: string };
+type CompaniesResponse = { companies?: Company[] };
 
 type ListResponse = { success?: boolean; data?: Announcement[] };
 
@@ -155,6 +160,39 @@ function CategoryBadge({ category }: { category: AnnouncementCategory }) {
   );
 }
 
+// Resolve the company-scope of a notice to a compact chip label. Empty target
+// (or one covering every company) = "Both"/"All"; a subset lists the codes.
+function companyScopeLabel(
+  ids: number[] | undefined,
+  companies: Company[],
+): string {
+  const list = ids ?? [];
+  if (companies.length === 0) return "";
+  if (list.length === 0 || list.length >= companies.length) {
+    return companies.length === 2 ? "Both" : "All companies";
+  }
+  return list
+    .map((id) => companies.find((co) => co.id === id)?.code ?? `#${id}`)
+    .join(" / ");
+}
+
+// A small company-scope chip shown on each row (multi-company only).
+function CompanyBadge({
+  ids,
+  companies,
+}: {
+  ids: number[] | undefined;
+  companies: Company[];
+}) {
+  if (companies.length <= 1) return null;
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-border bg-surface-dim px-2 py-0.5 text-[10.5px] font-semibold uppercase tracking-wider text-ink-secondary">
+      <Building2 size={11} />
+      {companyScopeLabel(ids, companies)}
+    </span>
+  );
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Page
 // ────────────────────────────────────────────────────────────────────────────
@@ -174,10 +212,17 @@ export function Announcements() {
   const positionsQ = useQuery<{ positions: Position[] }>(() =>
     api.get("/api/positions"),
   );
+  // Multi-company: the company-target selector + row chip only appear when the
+  // companies master returns MORE THAN ONE company (mirrors the top-bar
+  // CompanySwitcher no-op rule). Single-company Houzs shows neither.
+  const companiesQ = useQuery<CompaniesResponse>(() =>
+    api.get("/api/companies"),
+  );
 
   const users = usersQ.data?.users ?? [];
   const depts = deptsQ.data?.departments ?? [];
   const positions = positionsQ.data?.positions ?? [];
+  const companies = companiesQ.data?.companies ?? [];
 
   return (
     <div className="mx-auto flex w-full max-w-4xl flex-col gap-5 px-4 py-5">
@@ -192,6 +237,7 @@ export function Announcements() {
           users={users}
           departments={depts}
           positions={positions}
+          companies={companies}
           onPosted={() => listQ.reload()}
         />
       )}
@@ -219,6 +265,7 @@ export function Announcements() {
                 users={users}
                 departments={depts}
                 positions={positions}
+                companies={companies}
                 canWrite={canWrite}
                 onChanged={() => listQ.reload()}
                 toast={toast}
@@ -240,11 +287,13 @@ function Composer({
   users,
   departments,
   positions,
+  companies,
   onPosted,
 }: {
   users: TeamMember[];
   departments: Department[];
   positions: Position[];
+  companies: Company[];
   onPosted: () => void;
 }) {
   const toast = useToast();
@@ -252,6 +301,10 @@ function Composer({
   const [text, setText] = useState("");
   const [category, setCategory] = useState<AnnouncementCategory>("GENERAL");
   const [bucket, setBucket] = useState<Bucket>("ALL");
+  // Company target: "ALL" = every company (Both — sends no target, NULL = all);
+  // a company id = that company only. Default "ALL" so an untargeted notice
+  // reaches everyone. Only rendered when >1 company exists.
+  const [companyPick, setCompanyPick] = useState<"ALL" | number>("ALL");
   const [selectedDepts, setSelectedDepts] = useState<Set<number>>(new Set());
   const [selectedPositions, setSelectedPositions] = useState<Set<number>>(
     new Set(),
@@ -339,6 +392,9 @@ function Composer({
       if (bucket === "POSITION")
         body.targetPositionIds = Array.from(selectedPositions);
       if (bucket === "USER") body.targetUserIds = Array.from(selectedUsers);
+      // Company target: a single company sends [id]; "Both"/ALL omits the field
+      // (backend stores NULL = all companies).
+      if (companyPick !== "ALL") body.targetCompanyIds = [companyPick];
       if (expiresAt) body.expiresAt = new Date(expiresAt).toISOString();
       await api.post("/api/announcements", body);
       // Reset.
@@ -346,6 +402,7 @@ function Composer({
       setText("");
       setCategory("GENERAL");
       setBucket("ALL");
+      setCompanyPick("ALL");
       setSelectedDepts(new Set());
       setSelectedPositions(new Set());
       setSelectedUsers(new Set());
@@ -361,6 +418,10 @@ function Composer({
   }
 
   const canPost = !posting && title.trim().length > 0;
+  const companyOptions: Array<["ALL" | number, string]> = [
+    ["ALL", "Both"],
+    ...companies.map((co) => [co.id, co.name] as ["ALL" | number, string]),
+  ];
 
   return (
     <section className="overflow-hidden rounded-lg border border-border bg-surface shadow-stone">
@@ -458,6 +519,36 @@ function Composer({
             <p className="mt-1 text-[11px] text-err">{uploadErr}</p>
           )}
         </div>
+
+        {/* Company target — only when more than one company exists. */}
+        {companies.length > 1 && (
+          <div>
+            <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-ink-secondary">
+              Company
+            </label>
+            <div className="flex flex-wrap gap-1.5">
+              {companyOptions.map(([key, label]) => {
+                const selected = companyPick === key;
+                return (
+                  <button
+                    key={String(key)}
+                    type="button"
+                    onClick={() => setCompanyPick(key)}
+                    className={cn(
+                      "inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-[12px] font-semibold transition-colors",
+                      selected
+                        ? "border-primary bg-primary/10 text-primary"
+                        : "border-border bg-surface text-ink-secondary hover:border-accent/40 hover:text-accent",
+                    )}
+                  >
+                    <Building2 size={12} />
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {/* Category */}
         <div>
@@ -672,6 +763,7 @@ function AnnouncementRow({
   users,
   departments,
   positions,
+  companies,
   canWrite,
   onChanged,
   toast,
@@ -680,6 +772,7 @@ function AnnouncementRow({
   users: TeamMember[];
   departments: Department[];
   positions: Position[];
+  companies: Company[];
   canWrite: boolean;
   onChanged: () => void;
   toast: ReturnType<typeof useToast>;
@@ -839,6 +932,7 @@ function AnnouncementRow({
         <div className="min-w-0 flex-1">
           <div className="mb-1 flex flex-wrap items-center gap-2">
             <CategoryBadge category={a.category ?? "GENERAL"} />
+            <CompanyBadge ids={a.targetCompanyIds} companies={companies} />
             <span className="truncate text-[14px] font-semibold text-ink">
               {a.title}
             </span>
