@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { useAuth } from "./AuthContext";
 import { Forbidden } from "../pages/Forbidden";
 import { ACCESS_RANK, type AccessLevel } from "../types";
+import { isSalesStaff } from "./salesAccess";
 
 /**
  * Read the current user's access level for a page (mig 073).
@@ -34,14 +35,24 @@ export function usePageAccess(page: string): AccessLevel {
 export function PageGuard({
   page,
   minLevel = "partial",
+  allowSales = false,
   children,
 }: {
   page: string;
   minLevel?: AccessLevel;
+  /** When true, a Sales-department user (auth/salesAccess.isSalesStaff) is
+   *  allowed in even if their page-access for `page` is 'none'. Used for the
+   *  Service-Cases routes (/assr, /my-cases): #399 exposed the "My Cases" nav
+   *  leaf to Sales and #400 granted the backend read (scoped to their OWN
+   *  cases), but a Sales rep without the service_cases matrix page would still
+   *  hit <Forbidden> here. The backend stays the real authority. */
+  allowSales?: boolean;
   children: ReactNode;
 }) {
+  const { user } = useAuth();
   const level = usePageAccess(page);
   if (ACCESS_RANK[level] < ACCESS_RANK[minLevel]) {
+    if (allowSales && isSalesStaff(user)) return <>{children}</>;
     return <Forbidden page={page} />;
   }
   return <>{children}</>;

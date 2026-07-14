@@ -2,7 +2,7 @@ import { lazy, Suspense } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import { Layout } from "./components/Layout";
 import { useAuth } from "./auth/AuthContext";
-import { isSalesNonDirector } from "./auth/salesAccess";
+import { isSalesStaff } from "./auth/salesAccess";
 import { PageGuard } from "./auth/PageGuard";
 import { Forbidden } from "./pages/Forbidden";
 import { GlobalSearchProvider } from "./components/GlobalSearch";
@@ -210,14 +210,17 @@ function ScmGuard({
 
 /**
  * Delivery Returns route guard — Sales-access model. Denies BEFORE mount for
- * non-director Sales users (so the page component never mounts and none of its
- * data hooks fire — OFF, not hidden), then falls through to the normal
- * scm.sales.returns area guard for everyone else. Backend remains the source of
- * truth; this is nav-consistent defence-in-depth for a typed URL.
+ * ANY Sales-department user — INCLUDING the Sales Director (owner rule, 2026-07:
+ * Delivery Returns is hidden from all Sales staff, director too; every OTHER
+ * sales-restricted item stays director-visible) — so the page component never
+ * mounts and none of its data hooks fire (OFF, not hidden). Everyone else falls
+ * through to the normal scm.sales.returns area guard. Also wraps the
+ * delivery-return report route (the off-not-hide fix). Backend remains the
+ * source of truth; this is nav-consistent defence-in-depth for a typed URL.
  */
 function DeliveryReturnsGuard({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
-  if (isSalesNonDirector(user)) return <Forbidden page="scm.sales.returns" />;
+  if (isSalesStaff(user)) return <Forbidden page="scm.sales.returns" />;
   return <ScmGuard area="scm.sales.returns">{children}</ScmGuard>;
 }
 
@@ -242,7 +245,7 @@ export default function App() {
         <Route
           path="/assr"
           element={
-            <PageGuard page="service_cases">
+            <PageGuard page="service_cases" allowSales>
               <ServiceCases />
             </PageGuard>
           }
@@ -266,7 +269,7 @@ export default function App() {
         <Route
           path="/my-cases"
           element={
-            <PageGuard page="service_cases">
+            <PageGuard page="service_cases" allowSales>
               <MyCases />
             </PageGuard>
           }
@@ -274,7 +277,7 @@ export default function App() {
         <Route
           path="/my-cases/:id"
           element={
-            <PageGuard page="service_cases">
+            <PageGuard page="service_cases" allowSales>
               <>
                 <MyCases />
                 <MyCaseDetail />
@@ -466,7 +469,7 @@ export default function App() {
         <Route path="/scm/reports/sales-order-detail-listing" element={<ScmGuard area="scm.sales.orders"><Scm2990Shell><ScmSoDetailListingV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/reports/delivery-order-detail-listing" element={<ScmGuard area="scm.sales.delivery"><Scm2990Shell><ScmDoDetailListingV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/reports/sales-invoice-detail-listing" element={<ScmGuard area="scm.sales.invoices"><Scm2990Shell><ScmSiDetailListingV2 /></Scm2990Shell></ScmGuard>} />
-        <Route path="/scm/reports/delivery-return-detail-listing" element={<ScmGuard area="scm.sales.returns"><Scm2990Shell><ScmDrDetailListingV2 /></Scm2990Shell></ScmGuard>} />
+        <Route path="/scm/reports/delivery-return-detail-listing" element={<DeliveryReturnsGuard><Scm2990Shell><ScmDrDetailListingV2 /></Scm2990Shell></DeliveryReturnsGuard>} />
         <Route path="/scm/delivery-orders" element={<ScmGuard area="scm.sales.delivery"><Scm2990Shell><ScmDeliveryOrdersV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/delivery-orders/new" element={<ScmGuard area="scm.sales.delivery"><Scm2990Shell><ScmDeliveryOrderNewV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/delivery-orders/from-so" element={<ScmGuard area="scm.sales.delivery"><Scm2990Shell><ScmDeliveryOrderFromSoV2 /></Scm2990Shell></ScmGuard>} />

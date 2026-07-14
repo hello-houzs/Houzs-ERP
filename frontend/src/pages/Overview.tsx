@@ -56,10 +56,12 @@ export function Overview() {
   const inbox = useQuery<InboxResp>(() => api.get("/api/inbox"));
   const assr = useQuery<{ active_count: number; breach_count: number }>(
     () => api.get("/api/assr/summary"),
+    [],
     { enabled: can("service_cases.read") },
   );
   const projects = useQuery<{ live_count: number; upcoming_30d: number }>(
     () => api.get("/api/projects/summary"),
+    [],
     { enabled: can("projects.read") },
   );
 

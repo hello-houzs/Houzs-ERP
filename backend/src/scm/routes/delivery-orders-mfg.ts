@@ -22,7 +22,7 @@ import { computeVariantKey, isServiceLine, type VariantAttrs } from '../shared';
 import { syncSoDeliveredFromDo } from '../lib/so-delivery-sync';
 import { todayMyt } from '../lib/my-time';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
-import { resolveSalesScopeIds } from '../lib/salesScope';
+import { resolveSalesScopeIds, salesDocOutOfScope } from '../lib/salesScope';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { canViewAllSales } from '../lib/houzs-perms';
 import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item-codes';
@@ -1802,6 +1802,16 @@ deliveryOrdersMfg.get('/:id', async (c) => {
   ]);
   if (h.error) return c.json({ error: 'load_failed', reason: h.error.message }, 500);
   if (!h.data) return c.json({ error: 'not_found' }, 404);
+  /* Own/downline sales scope (lib/salesScope.ts) — mirror the list scope. A
+     scoped seller must not read another salesperson's DO/finance by
+     enumerating ids; out-of-scope → 404. Directors/view-all bypass.
+     HEADER carries salesperson_id already. */
+  {
+    const sp = (h.data as { salesperson_id?: number | string | null }).salesperson_id;
+    if (await salesDocOutOfScope(sb, c.env, c.get('houzsUser')?.id, canViewAllSales(c), sp)) {
+      return c.json({ error: 'not_found' }, 404);
+    }
+  }
   /* Tier 2 downstream-lock — stamp has_children so the DO Detail page can lock
      once any non-cancelled DR / SI references it. */
   const [{ count: drCount }, { count: siCount }] = await Promise.all([
@@ -3094,6 +3104,18 @@ deliveryOrdersMfg.delete('/:id/items/:itemId', async (c) => {
 // ── Payments (mirror SO payments ledger) ──────────────────────────────────
 deliveryOrdersMfg.get('/:id/payments', async (c) => {
   const sb = c.get('supabase'); const id = c.req.param('id');
+  /* Own/downline sales scope (lib/salesScope.ts) — resolve the DO's
+     salesperson_id first so a scoped seller can't read another
+     salesperson's payment ledger by enumerating ids. Out-of-scope /
+     missing → 404. Directors/view-all bypass. */
+  {
+    const { data: hdr } = await sb.from('delivery_orders').select('salesperson_id').eq('id', id).maybeSingle();
+    if (!hdr) return c.json({ error: 'not_found' }, 404);
+    const sp = (hdr as { salesperson_id?: number | string | null }).salesperson_id;
+    if (await salesDocOutOfScope(sb, c.env, c.get('houzsUser')?.id, canViewAllSales(c), sp)) {
+      return c.json({ error: 'not_found' }, 404);
+    }
+  }
   const { data, error } = await sb
     .from('delivery_order_payments')
     .select(`${PAYMENT_COLS}, staff:collected_by ( name )`)
