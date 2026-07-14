@@ -324,7 +324,7 @@ export default function App() {
         <Route
           path="/team"
           element={
-            <PageGuard page="team">
+            <PageGuard page="team" allowSalesDirector>
               <Team />
             </PageGuard>
           }

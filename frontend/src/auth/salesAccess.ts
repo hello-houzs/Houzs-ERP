@@ -63,3 +63,22 @@ export function isSalesStaff(user: AuthUser | null | undefined): boolean {
 export function isSalesNonDirector(user: AuthUser | null | undefined): boolean {
   return isSalesStaff(user) && !isDirectorUser(user);
 }
+
+/** Exact "Sales Director" position — the signal for the DEPARTMENT-SCOPED Team
+ *  admin grant (owner 2026-07). Anchored so ONLY "Sales Director" matches, not
+ *  "Sales Executive"/"Sales Coordinator". Mirrors the backend
+ *  services/pmsAccess.isSalesDirectorUser; the backend stays the authority —
+ *  this drives nav visibility + in-page scoping (defence-in-depth / UX only). */
+const SALES_DIRECTOR_POSITION = /^Sales Director$/i;
+
+/**
+ * True ONLY for the "Sales Director" position. A Sales Director gets a scoped
+ * Team view (own-department Members / Org Chart / Departments + Invite forced
+ * into his dept; NO Positions tab, NO permission editing). Distinct from
+ * isDirectorUser (broader — also Super Admin / Finance Manager / `*`, all full
+ * admins). A caller who already holds users.manage keeps full admin unchanged.
+ */
+export function isSalesDirectorUser(user: AuthUser | null | undefined): boolean {
+  if (!user) return false;
+  return SALES_DIRECTOR_POSITION.test((user.position_name ?? "").trim());
+}

@@ -1,6 +1,11 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
-import { requirePermission } from "../middleware/auth";
+import {
+  requirePermission,
+  requirePermissionOrSalesDirector,
+} from "../middleware/auth";
+import { isSalesDirectorUser } from "../services/pmsAccess";
+import { hasPermission } from "../services/permissions";
 import { getDb } from "../db/client";
 import { departments, users } from "../db/schema";
 import { and, eq, sql } from "drizzle-orm";
@@ -13,8 +18,18 @@ const app = new Hono<{ Bindings: Env }>();
  * them (same gate as the Members tab — department info is not
  * sensitive).
  */
-app.get("/", requirePermission("users.read"), async (c) => {
+app.get("/", requirePermissionOrSalesDirector("users.read"), async (c) => {
   const db = getDb(c.env);
+
+  // Sales Director → sees ONLY his own department (owner: "删掉别部门内容").
+  // A caller holding users.read / `*` is a full admin and sees every
+  // department, unchanged. No department assigned → empty list.
+  const user = c.get("user");
+  const granted = user?.permissions_set ?? user?.permissions ?? [];
+  const isFullAdmin = hasPermission(granted, "*") || hasPermission(granted, "users.read");
+  const scopeDeptId =
+    !isFullAdmin && isSalesDirectorUser(user) ? user?.department_id ?? -1 : null;
+
   const rows = await db
     .select({
       id: departments.id,
@@ -32,6 +47,7 @@ app.get("/", requirePermission("users.read"), async (c) => {
       )`,
     })
     .from(departments)
+    .where(scopeDeptId !== null ? eq(departments.id, scopeDeptId) : undefined)
     .orderBy(departments.sort_order, departments.name);
   return c.json({ departments: rows });
 });

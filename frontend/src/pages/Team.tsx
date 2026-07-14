@@ -20,6 +20,7 @@ import { useStickyFilters } from "../hooks/useStickyFilters";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { api, tokenStore } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
+import { isSalesDirectorUser } from "../auth/salesAccess";
 import { relativeTime, cn } from "../lib/utils";
 import type { TeamMember, Invitation, Role, Department, Position } from "../types";
 import { MemberOrgPerformance } from "./team/MemberOrgPerformance";
@@ -111,7 +112,7 @@ function ExtraDeptCount({
  * slot — not duplicated inside each tab body.
  */
 export function Team() {
-  const { can } = useAuth();
+  const { can, user } = useAuth();
   const [params, setParams] = useStickyFilters("team", TEAM_KEYS);
 
   const canUsers = can("users.read");
@@ -120,6 +121,15 @@ export function Team() {
   const canManageRoles = can("roles.manage");
   // Mail Center admin — gates the Mailboxes tab (owner via "*").
   const canManageMail = can("mail_center.manage");
+  // Sales Director — department-scoped Team admin (owner 2026-07). Gets
+  // Members / Org Chart / Departments (own-dept only, backend-scoped) + Invite,
+  // but NOT Positions/Mailboxes and NOT permission editing. A full admin
+  // (canManageUsers) keeps everything unchanged. `salesDirScoped` is true only
+  // when the Sales Director is NOT already a full admin.
+  const isSalesDir = isSalesDirectorUser(user);
+  const salesDirScoped = isSalesDir && !canManageUsers;
+  const canSeeMembers = canUsers || isSalesDir;
+  const canInvite = canManageUsers || isSalesDir;
 
   const raw = params.get("tab") as TeamTabValue | null;
   const active: TeamTabValue =
@@ -128,7 +138,7 @@ export function Team() {
       raw,
     )
       ? raw
-      : canUsers
+      : canSeeMembers
       ? "members"
       : "roles";
 
@@ -143,10 +153,12 @@ export function Team() {
   const [creatingDept, setCreatingDept] = useState(false);
 
   const tabs: TabOption<TeamTabValue>[] = [
-    { value: "members", label: "Members", show: canUsers },
+    { value: "members", label: "Members", show: canSeeMembers },
+    // Positions = permission editing — deliberately NOT shown to a Sales
+    // Director (owner: "去掉 Positions"); backend also 403s its endpoints.
     { value: "positions", label: "Positions", show: canManageUsers },
-    { value: "orgchart", label: "Org Chart", show: canUsers },
-    { value: "departments", label: "Departments", show: canUsers },
+    { value: "orgchart", label: "Org Chart", show: canSeeMembers },
+    { value: "departments", label: "Departments", show: canSeeMembers },
     { value: "mail", label: "Mailboxes", show: canManageMail },
     // Roles tab removed (owner: "删了role") — Position governs page access; a
     // baseline role is auto-assigned on invite. Re-add this line to restore.
@@ -200,7 +212,7 @@ export function Team() {
 
   const actions =
     active === "members" ? (
-      canManageUsers ? (
+      canInvite ? (
         <Button
           variant="brass"
           icon={<Plus size={14} />}
@@ -273,15 +285,16 @@ export function Team() {
         </div>
       )}
 
-      {active === "members" && canUsers && (
+      {active === "members" && canSeeMembers && (
         <MembersTab
           inviteOpen={inviteOpen}
           onCloseInvite={() => setInviteOpen(false)}
+          salesDirScoped={salesDirScoped}
         />
       )}
       {active === "positions" && canManageUsers && <PositionsTab />}
-      {active === "orgchart" && canUsers && <OrgChartTab />}
-      {active === "departments" && canUsers && (
+      {active === "orgchart" && canSeeMembers && <OrgChartTab />}
+      {active === "departments" && canSeeMembers && (
         <DepartmentsTab
           creating={creatingDept}
           onCloseCreate={() => setCreatingDept(false)}
@@ -304,9 +317,13 @@ export function Team() {
 function MembersTab({
   inviteOpen,
   onCloseInvite,
+  salesDirScoped = false,
 }: {
   inviteOpen: boolean;
   onCloseInvite: () => void;
+  /** Sales Director (non-admin) — invite is forced into HIS department and the
+   *  Position/Role pickers are hidden (backend forces dept + defaults role). */
+  salesDirScoped?: boolean;
 }) {
   const { user: me, can } = useAuth();
   const toast = useToast();
@@ -1593,6 +1610,7 @@ function MembersTab({
         departments={depts.data?.departments ?? []}
         positions={positions.data?.positions ?? []}
         members={members.data?.users ?? []}
+        lockDeptId={salesDirScoped ? me?.department_id ?? null : undefined}
         onInvited={() => {
           onCloseInvite();
           reload();
@@ -4247,6 +4265,7 @@ export function InvitePanel({
   departments,
   positions,
   members,
+  lockDeptId,
   onInvited,
 }: {
   open: boolean;
@@ -4255,14 +4274,22 @@ export function InvitePanel({
   departments: Department[];
   positions: Position[];
   members: TeamMember[];
+  /** Sales Director (scoped) — when provided (number or null), the new member
+   *  is FORCED into this department and the Department/Position/Role pickers are
+   *  hidden. `undefined` = normal full-admin invite (all pickers shown). */
+  lockDeptId?: number | null;
   onInvited: () => void;
 }) {
   const toast = useToast();
+  // Scoped Sales-Director invite: department is fixed, extra org pickers hidden.
+  const scoped = lockDeptId !== undefined;
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [roleId, setRoleId] = useState<number | "">("");
-  const [deptId, setDeptId] = useState<number | "">("");
+  const [deptId, setDeptId] = useState<number | "">(
+    scoped ? lockDeptId ?? "" : "",
+  );
   const [positionId, setPositionId] = useState<number | "">("");
   const [managerId, setManagerId] = useState<number | "">("");
   const [managerQuery, setManagerQuery] = useState("");
@@ -4341,9 +4368,12 @@ export function InvitePanel({
       }>("/api/users/invite", {
         email: email.toLowerCase().trim(),
         name: name.trim() || undefined,
-        role_id: roleId,
-        department_id: deptId || undefined,
-        position_id: positionId || undefined,
+        // Scoped Sales-Director invite: department is FORCED server-side to the
+        // director's own; role is defaulted server-side; no position sent. The
+        // full-admin flow keeps sending all picked org dimensions.
+        role_id: scoped ? undefined : roleId,
+        department_id: scoped ? lockDeptId ?? undefined : deptId || undefined,
+        position_id: scoped ? undefined : positionId || undefined,
         manager_id: managerId || undefined,
         phone: phone.trim() || undefined,
         password: pw || undefined,
@@ -4463,74 +4493,95 @@ export function InvitePanel({
               className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
             />
           </div>
-          <div>
-            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
-              Department
-            </label>
-            <select
-              value={deptId}
-              onChange={(e) => {
-                setDeptId(e.target.value ? Number(e.target.value) : "");
-                setPositionId(""); // positions are department-scoped — reset
-              }}
-              className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
-            >
-              <option value="">— Select department —</option>
-              {departments.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
-              Position
-            </label>
-            <select
-              value={positionId}
-              onChange={(e) => setPositionId(e.target.value ? Number(e.target.value) : "")}
-              className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
-            >
-              <option value="">— Select position —</option>
-              {positions
-                .filter((p) => deptId === "" || !p.department_id || p.department_id === deptId)
-                .map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-            </select>
-            <div className="mt-1 text-[10px] text-ink-muted">
-              Controls which pages this member can see (least-privilege per position).
-            </div>
-            {positionHasNoPages && (
-              <div className="mt-1.5 rounded-md border border-warning-text/30 bg-warning-bg px-2.5 py-1.5 text-[10.5px] text-warning-text">
-                This position has no pages enabled yet — set its access under
-                Team → Positions first, or the member sees a blank screen.
+          {scoped ? (
+            /* Sales-Director scoped invite — department is fixed to the
+               director's own; Position + Role pickers are hidden (assigned by
+               an admin later / defaulted server-side). */
+            <div>
+              <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+                Department
+              </label>
+              <div className="flex h-10 w-full items-center rounded-md border border-border bg-surface-2 px-3 text-[13px] text-ink-secondary">
+                {departments.find((d) => d.id === lockDeptId)?.name ??
+                  "Your department"}
               </div>
-            )}
-          </div>
-          <div>
-            <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
-              Role
-            </label>
-            <select
-              value={roleId}
-              onChange={(e) => setRoleId(e.target.value ? Number(e.target.value) : "")}
-              className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
-            >
-              <option value="">— Select role —</option>
-              {roles.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.name}
-                </option>
-              ))}
-            </select>
-            <div className="mt-1 text-[10px] text-ink-muted">
-              Action permissions (which pages they see still follows the Position).
+              <div className="mt-1 text-[10px] text-ink-muted">
+                New members join your department. Their position &amp; role can be
+                set by an admin afterwards.
+              </div>
             </div>
-          </div>
+          ) : (
+            <>
+              <div>
+                <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+                  Department
+                </label>
+                <select
+                  value={deptId}
+                  onChange={(e) => {
+                    setDeptId(e.target.value ? Number(e.target.value) : "");
+                    setPositionId(""); // positions are department-scoped — reset
+                  }}
+                  className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+                >
+                  <option value="">— Select department —</option>
+                  {departments.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+                  Position
+                </label>
+                <select
+                  value={positionId}
+                  onChange={(e) => setPositionId(e.target.value ? Number(e.target.value) : "")}
+                  className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+                >
+                  <option value="">— Select position —</option>
+                  {positions
+                    .filter((p) => deptId === "" || !p.department_id || p.department_id === deptId)
+                    .map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                </select>
+                <div className="mt-1 text-[10px] text-ink-muted">
+                  Controls which pages this member can see (least-privilege per position).
+                </div>
+                {positionHasNoPages && (
+                  <div className="mt-1.5 rounded-md border border-warning-text/30 bg-warning-bg px-2.5 py-1.5 text-[10.5px] text-warning-text">
+                    This position has no pages enabled yet — set its access under
+                    Team → Positions first, or the member sees a blank screen.
+                  </div>
+                )}
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+                  Role
+                </label>
+                <select
+                  value={roleId}
+                  onChange={(e) => setRoleId(e.target.value ? Number(e.target.value) : "")}
+                  className="h-10 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+                >
+                  <option value="">— Select role —</option>
+                  {roles.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.name}
+                    </option>
+                  ))}
+                </select>
+                <div className="mt-1 text-[10px] text-ink-muted">
+                  Action permissions (which pages they see still follows the Position).
+                </div>
+              </div>
+            </>
+          )}
           <div>
             <label className="mb-1.5 block text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
               Reports to

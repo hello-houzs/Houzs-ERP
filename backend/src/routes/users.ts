@@ -3,7 +3,13 @@ import type { Env } from "../types";
 import { createSession, generateToken, hashPassword, isoIn } from "../services/auth";
 import { bustUserSessions } from "../services/sessionCache";
 import { validatePasswordStrength } from "../services/passwordStrength";
-import { requirePermission } from "../middleware/auth";
+import {
+  requirePermission,
+  requirePermissionOrSalesDirector,
+} from "../middleware/auth";
+import { isSalesDirectorUser } from "../services/pmsAccess";
+import { hasPermission } from "../services/permissions";
+import type { Context } from "hono";
 import {
   sendEmail,
   publicUrl,
@@ -122,6 +128,64 @@ async function ensurePersonalMailbox(
 
 const app = new Hono<{ Bindings: Env }>();
 
+/**
+ * Department-scoped Team admin decision for the current caller (owner 2026-07,
+ * "Sales Director = department-scoped admin"). ADDITIVE on top of the existing
+ * users.read / users.manage gates — it NEVER loosens what an admin already has:
+ *
+ *   • caller holds `*` or `adminPerm`  → { scoped: false } — full admin, UNCHANGED.
+ *   • caller is a Sales Director (only) → { scoped: true, deptId: <their dept> }.
+ *   • deptId === null (Sales Director with no department assigned) → they see
+ *     ONLY themselves, never the whole org (fail-closed).
+ *
+ * A caller who is neither can't reach the handler — the route middleware
+ * (requirePermissionOrSalesDirector) already 403'd them.
+ */
+function salesDirectorScope(
+  c: Context<{ Bindings: Env }>,
+  adminPerm: string,
+): { scoped: boolean; deptId: number | null } {
+  const user = c.get("user");
+  const granted = user?.permissions_set ?? user?.permissions ?? [];
+  if (hasPermission(granted, "*") || hasPermission(granted, adminPerm)) {
+    return { scoped: false, deptId: null };
+  }
+  if (isSalesDirectorUser(user)) {
+    return { scoped: true, deptId: user?.department_id ?? null };
+  }
+  // Defensive: should be unreachable behind requirePermissionOrSalesDirector.
+  return { scoped: false, deptId: null };
+}
+
+/**
+ * Baseline role for a department-scoped (Sales Director) invite, whose UI hides
+ * the Role picker. Mirrors the frontend InvitePanel default: prefer the neutral
+ * "Position Preview" role (zero action-permissions — page visibility follows
+ * the Position), then any zero-permission non-system role, then any non-system
+ * role, then anything. Returns null only when the roles table is empty.
+ */
+async function resolveDefaultRoleId(
+  db: ReturnType<typeof getDb>,
+): Promise<number | null> {
+  const all = await db
+    .select({ id: roles.id, name: roles.name, is_system: roles.is_system, permissions: roles.permissions })
+    .from(roles)
+    .orderBy(roles.id);
+  if (all.length === 0) return null;
+  const permCount = (p: string | null): number => {
+    try {
+      const arr = JSON.parse(p ?? "[]");
+      return Array.isArray(arr) ? arr.length : 0;
+    } catch {
+      return 0;
+    }
+  };
+  const preview = all.find((r) => (r.name ?? "").trim().toLowerCase() === "position preview");
+  const zeroPerm = all.find((r) => !r.is_system && permCount(r.permissions) === 0);
+  const nonSystem = all.find((r) => !r.is_system);
+  return (preview ?? zeroPerm ?? nonSystem ?? all[0]).id;
+}
+
 const INVITE_TTL_SECONDS = 60 * 60 * 24 * 14; // 14 days
 const RESET_TTL_SECONDS = 60 * 60; // 1 hour — password reset should expire fast
 
@@ -138,7 +202,7 @@ const RESET_TTL_SECONDS = 60 * 60; // 1 hour — password reset should expire fa
  * regardless of brand (owner: Option A). Prod's dept is "Sales Department",
  * so the match is a substring (ILIKE %name%), not equality.
  */
-app.get("/", requirePermission("users.read"), async (c) => {
+app.get("/", requirePermissionOrSalesDirector("users.read"), async (c) => {
   const brand = (c.req.query("brand") || "").trim();
   const department = (c.req.query("department") || "").trim();
   const db = getDb(c.env);
@@ -146,6 +210,23 @@ app.get("/", requirePermission("users.read"), async (c) => {
   const inviter = alias(users, "ib");
 
   const conds: any[] = [];
+  // Sales Director → own-department scope only. A caller admitted purely as a
+  // Sales Director sees ONLY members whose primary department is theirs OR who
+  // are members of it (mig 0020 user_departments). No dept assigned → self only.
+  const scope = salesDirectorScope(c, "users.read");
+  if (scope.scoped) {
+    const me = c.get("user");
+    if (scope.deptId != null) {
+      conds.push(
+        sql`(${users.department_id} = ${scope.deptId}
+             OR EXISTS (SELECT 1 FROM ${user_departments} ud
+                         WHERE ud.user_id = ${users.id}
+                           AND ud.department_id = ${scope.deptId}))`,
+      );
+    } else {
+      conds.push(sql`${users.id} = ${me.id}`);
+    }
+  }
   if (brand) {
     // EXISTS-on-user_brands narrows the list without exploding rows
     // through a JOIN.
@@ -530,7 +611,7 @@ app.put("/:id/profile-pic", requirePermission("users.manage"), async (c) => {
  * Creates a placeholder user (status='invited') and a fresh invitation
  * token. Returns the token so the caller can copy it into a chat / email.
  */
-app.post("/invite", requirePermission("users.manage"), async (c) => {
+app.post("/invite", requirePermissionOrSalesDirector("users.manage"), async (c) => {
   const me = c.get("user");
   const body = await c.req.json<{
     email: string;
@@ -545,6 +626,47 @@ app.post("/invite", requirePermission("users.manage"), async (c) => {
     // with email + this password and can change it later.
     password?: string;
   }>();
+
+  const db = getDb(c.env);
+
+  // Sales Director → department-scoped invite. The new member is FORCED into
+  // the director's own department; a position from another department is
+  // rejected; and — since the scoped invite UI hides the Role picker — a
+  // baseline role is defaulted server-side when none is supplied. A Sales
+  // Director with no department cannot invite (fail-closed).
+  const inviteScope = salesDirectorScope(c, "users.manage");
+  if (inviteScope.scoped) {
+    if (inviteScope.deptId == null) {
+      return c.json(
+        { error: "You have no department assigned — ask an admin to set yours before inviting." },
+        403,
+      );
+    }
+    // Force the member's department; ignore any client-supplied value.
+    body.department_id = inviteScope.deptId;
+    // A position must belong to the director's own department.
+    if (body.position_id) {
+      const pos = await db
+        .select({ id: positions.id, department_id: positions.department_id })
+        .from(positions)
+        .where(eq(positions.id, body.position_id))
+        .limit(1);
+      if (pos.length === 0) return c.json({ error: "Position not found" }, 404);
+      if (pos[0].department_id && pos[0].department_id !== inviteScope.deptId) {
+        return c.json(
+          { error: "You can only assign positions within your own department." },
+          403,
+        );
+      }
+    }
+    // Default the role when the scoped UI didn't send one.
+    if (!body.role_id) {
+      const def = await resolveDefaultRoleId(db);
+      if (def == null) return c.json({ error: "No role available to assign" }, 500);
+      body.role_id = def;
+    }
+  }
+
   if (!body.email || !body.role_id) {
     return c.json({ error: "email and role_id are required" }, 400);
   }
@@ -560,8 +682,6 @@ app.post("/invite", requirePermission("users.manage"), async (c) => {
     passwordHash = await hashPassword(directPassword);
   }
   const activate = !!passwordHash;
-
-  const db = getDb(c.env);
 
   const role = await db
     .select({ id: roles.id, name: roles.name })
@@ -1314,9 +1434,20 @@ app.delete("/:id", requirePermission("users.manage"), async (c) => {
  * GET /api/users/invitations
  * Pending invitations.
  */
-app.get("/invitations", requirePermission("users.read"), async (c) => {
+app.get("/invitations", requirePermissionOrSalesDirector("users.read"), async (c) => {
   const db = getDb(c.env);
   const inviter = alias(users, "ib");
+  // Sales Director → only pending invites into his own department (invitations
+  // carry department_id, set at invite time). No dept assigned → none.
+  const scope = salesDirectorScope(c, "users.read");
+  const inviteConds: any[] = [isNull(invitations.accepted_at)];
+  if (scope.scoped) {
+    inviteConds.push(
+      scope.deptId != null
+        ? eq(invitations.department_id, scope.deptId)
+        : sql`1 = 0`,
+    );
+  }
   const rows = await db
     .select({
       id: invitations.id,
@@ -1345,7 +1476,7 @@ app.get("/invitations", requirePermission("users.read"), async (c) => {
     .from(invitations)
     .innerJoin(roles, eq(roles.id, invitations.role_id))
     .leftJoin(inviter, eq(inviter.id, invitations.invited_by))
-    .where(isNull(invitations.accepted_at))
+    .where(and(...inviteConds))
     .orderBy(desc(invitations.created_at));
   return c.json({
     invitations: rows.map((r) => ({

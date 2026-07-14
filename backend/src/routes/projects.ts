@@ -727,6 +727,11 @@ app.get("/", requirePageAccess("projects.list"), async (c) => {
     sort_dir: (c.req.query("sort_dir") || "").toLowerCase() === "asc" ? "asc" : "desc",
     pic_scope: scope?.pic_ids,
     brand_scope: scope?.brands,
+    // Attendee arm — only for a scoped rep (scope != null). OR-in projects
+    // where they're on the Sales Attending list, mirroring /calendar/events
+    // so the list and the calendar agree. Admins/directors/unscoped roles
+    // have scope === null and never carry this (they see all, unchanged).
+    attendee_user_id: scope ? user?.id : undefined,
   });
   // Server-side finance strip (rule 3): the list SELECTs pf.rental /
   // total_sales / contractor_cost per row. Blank them for any non-director
@@ -1328,7 +1333,19 @@ app.get("/:id", requirePageAccess("projects.list"), async (c) => {
   // from a nonexistent id). Predicate skipped when the context is unresolved.
   const detail = await getProjectDetail(c.env, id, activeCompanyId(c));
   if (!detail) return c.json({ error: "Not found" }, 404);
-  if (!canSeeProject(user, detail.project)) {
+  // Row-level ACL. canSeeProject covers the PIC line + brand + grace (the same
+  // predicate as the list's PIC arm). A scoped rep on the project's Sales
+  // Attending list also has visibility — the list's attendee arm surfaces the
+  // row, so opening it must not 404. Mirror that arm here using the already-
+  // loaded sales_attendees (rep_user_id; pg driver camelCases → dual-read).
+  // Attendee access is read-only: the write gate (PATCH below) still uses
+  // canSeeProject alone, so attendees can view but not edit a project.
+  const isDetailAttendee =
+    !!user?.id &&
+    (detail.sales_attendees ?? []).some(
+      (a: any) => (a.rep_user_id ?? a.repUserId) === user.id
+    );
+  if (!canSeeProject(user, detail.project) && !isDetailAttendee) {
     return c.json({ error: "Not found" }, 404);
   }
   // Tell the frontend which panels to hide for this user/project.

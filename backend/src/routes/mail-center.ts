@@ -30,6 +30,7 @@ import { hasPermission } from "../services/permissions";
 import { sendEmail } from "../services/email";
 import { getBranding } from "../services/branding";
 import { validateMailAttachments } from "../lib/mail-attachments";
+import { isSalesDirectorUser } from "../services/pmsAccess";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -595,6 +596,50 @@ async function getMailScope(c: Context<{ Bindings: Env }>): Promise<{
   )
     ? (levelRow!.level as MailScopeLevel)
     : "personal";
+
+  // Sales Director → own-department mailbox tier (owner 2026-07, rule 5): the
+  // personal set PLUS every active mailbox whose assigned_dept matches the
+  // director's ORG department (Sales). This ADDS the Sales mailboxes on top of
+  // 'personal' WITHOUT granting the all-mailbox 'company' view — non-Sales
+  // mailboxes stay hidden. Keyed off the STABLE ORG FIELD department_name, not
+  // the mailbox-owner's assigned_dept (a director may not own a dept mailbox),
+  // so it's distinct from the generic 'department' tier below. Never DOWNGRADES
+  // an explicitly-set 'company' scope. isMailAdmin (mail_center.manage / `*`)
+  // is handled by the caller and is unaffected.
+  const user = c.get("user");
+  const salesDirDept = isSalesDirectorUser(user)
+    ? (user?.department_name ?? "").trim() || "Sales"
+    : null;
+  if (salesDirDept && level !== "company") {
+    const own = await c.env.DB.prepare(
+      `SELECT address FROM email_addresses
+         WHERE active = 1 AND (
+           assigned_user_id = ?
+           OR id IN (SELECT address_id FROM email_address_access WHERE user_id = ?)
+         )`,
+    )
+      .bind(userId, userId)
+      .all<{ address: string }>();
+    const deptRows = await c.env.DB.prepare(
+      `SELECT address FROM email_addresses
+         WHERE active = 1
+           AND assigned_dept IS NOT NULL AND trim(assigned_dept) <> ''
+           AND ( lower(assigned_dept) LIKE '%' || lower(?) || '%'
+                 OR lower(?) LIKE '%' || lower(assigned_dept) || '%' )`,
+    )
+      .bind(salesDirDept, salesDirDept)
+      .all<{ address: string }>();
+    const addrs = [
+      ...(own.results ?? []).map((r) => r.address),
+      ...(deptRows.results ?? []).map((r) => r.address),
+    ];
+    return {
+      isAdmin: false,
+      userId,
+      addresses: dedupeLower(addrs),
+      level: "department",
+    };
+  }
 
   // 'company' — every active mailbox.
   if (level === "company") {
