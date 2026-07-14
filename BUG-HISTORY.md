@@ -8,6 +8,18 @@ Severity tags: 🔴 critical/high · 🟠 medium · 🟢 low.
 
 ## 2026-07-14 — Multi-company + performance campaign
 
+### 🟢 Landed-freight lost when the last goods line has qty=0
+- **Symptom:** On a GRN whose LAST goods line (in input order) has qty=0 while a freight/charge pool exists, the whole rounding remainder was recorded as "allocated" to that line but folded into a per-unit charge of 0 — so the freight landed nowhere and the received lots carried less than the true landed cost. Edge-only (a real received goods line normally has qty>0).
+- **Cause:** `landed-allocation.ts` gave the remainder to `base.length - 1` (the last line unconditionally); `perUnitCharge = qty>0 ? round(alloc/qty) : 0` then dropped it when that line's qty was 0.
+- **Fix:** Assign the remainder to the last line with **qty > 0** (`lastPositiveIdx`); trailing qty=0 lines get 0 via the normal proportional branch, so the column still sums to the pool exactly.
+- **Ref:** `fix/low-edge-batch-0714`, 2026-07-14.
+
+### 🟢 Sales Invoice header discount/tax columns could silently overstate revenue (future-proofing)
+- **Symptom:** None yet (not a live defect) — the SI header `discount_centi` / `tax_centi` columns exist and are read into the header select but are NEVER written (all discount/tax is per-line, already inside `line_total_centi`). `recomputeTotals` set `total_centi = Σ line_total` and ignored them. A future header-discount UI wired to those columns would have posted a `total_centi` (which backs the GL) that ignored the header discount → overstated revenue.
+- **Cause:** `recomputeTotals` (`sales-invoices.ts`) never folded the header-level columns into the grand total.
+- **Fix:** Fold them defensively — `grand = max(0, Σline − headerDiscount + headerTax)`; `total_centi` / `local_total_centi` / margin now use `grand`, `subtotal_centi` stays the line sum. No-op today (both columns 0), correct if ever populated.
+- **Ref:** `fix/low-edge-batch-0714`, 2026-07-14.
+
 ### 🟢 Mobile Delivery Planning board didn't refresh the POD / SO screens after a mutation
 - **Symptom:** A driver who converts SO→DO, or marks a stop IN_TRANSIT / DELIVERED, on the mobile Delivery Planning board, then opens the mobile POD screen or SO list within ~15-30s, saw the PRE-mutation status/list. Self-healed after the staleTime window.
 - **Cause:** The board's shared `invalidate()` helper (`MobileDeliveryPlanning.tsx`) invalidated only its own `["mobile-delivery-planning"]` key. The sibling mobile queries that render the same DO/SO state — `["mobile-do-list-for-pod"]`, `["mobile-pod-detail", id]`, `["mobile-so-list"]` — were never invalidated in the writing tab (BroadcastChannel doesn't deliver to the tab that wrote), so they stayed stale until their own staleTime expired. Same class as HOOKKA's bulk-deliver/POD stale-list bug (desktop was already fully disciplined — it invalidates every sibling key).
