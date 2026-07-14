@@ -245,10 +245,13 @@ productModels.get('/:id', async (c) => {
   const id = c.req.param('id');
   const supabase = c.get('supabase');
 
-  const { data: model, error } = await supabase
-    .from('product_models')
-    .select(COLS)
-    .eq('id', id)
+  const { data: model, error } = await scopeToCompany(
+    supabase
+      .from('product_models')
+      .select(COLS)
+      .eq('id', id),
+    c,
+  )
     .maybeSingle();
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
   if (!model) return c.json({ error: 'not_found' }, 404);
@@ -1034,10 +1037,13 @@ const GALLERY_MIME = new Set(['image/jpeg', 'image/png', 'image/webp']);
 productModels.get('/:id/photos', async (c) => {
   const supabase = c.get('supabase');
   const id = c.req.param('id');
-  const { data, error } = await supabase
-    .from('product_model_photos')
-    .select('id, r2_key, thumb_key, sort_order, is_primary, mime_type, size_bytes')
-    .eq('model_id', id)
+  const { data, error } = await scopeToCompany(
+    supabase
+      .from('product_model_photos')
+      .select('id, r2_key, thumb_key, sort_order, is_primary, mime_type, size_bytes')
+      .eq('model_id', id),
+    c,
+  )
     .order('is_primary', { ascending: false })
     .order('sort_order', { ascending: true })
     .order('created_at', { ascending: true });

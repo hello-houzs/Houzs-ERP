@@ -78,8 +78,12 @@ const fetchScopedSkus = async (
   warehouseId: string,
   scopeType: 'ALL' | 'CATEGORY' | 'CODE_PREFIX',
   scopeValue: string | null,
+  c: any,
 ): Promise<{ rows: ScopedSku[]; error?: string }> => {
   // 1) Scope → the set of product_codes (+ names) at this warehouse.
+  // NOTE: v_inventory_all_skus intentionally aggregates across companies and has
+  // NO company_id column (see inventory.ts) — product codes are per-company, and
+  // the balances read below is company-scoped, so the snapshot stays isolated.
   let q = sb.from('v_inventory_all_skus')
     .select('product_code, product_name, category')
     .eq('warehouse_id', warehouseId);
@@ -99,10 +103,13 @@ const fetchScopedSkus = async (
   const balByCode = new Map<string, Array<{ variant_key: string; product_name: string | null; qty: number }>>();
   for (let i = 0; i < codes.length; i += 200) {
     const chunk = codes.slice(i, i + 200);
-    const { data: balData, error: balErr } = await sb.from('inventory_balances')
-      .select('product_code, variant_key, product_name, qty')
-      .eq('warehouse_id', warehouseId)
-      .in('product_code', chunk);
+    const { data: balData, error: balErr } = await scopeToCompany(
+      sb.from('inventory_balances')
+        .select('product_code, variant_key, product_name, qty')
+        .eq('warehouse_id', warehouseId)
+        .in('product_code', chunk),
+      c,
+    );
     if (balErr) return { rows: [], error: balErr.message };
     for (const b of (balData as Array<{
       product_code: string; variant_key: string | null; product_name: string | null; qty: number | null;
@@ -205,9 +212,9 @@ stockTakes.get('/:id', async (c) => {
   const id = c.req.param('id');
 
   const [headerRes, linesRes] = await Promise.all([
-    sb.from('stock_takes')
+    scopeToCompany(sb.from('stock_takes')
       .select(`${HEADER}, warehouse:warehouses(id, code, name)`)
-      .eq('id', id).maybeSingle(),
+      .eq('id', id), c).maybeSingle(),
     sb.from('stock_take_lines').select(LINE).eq('stock_take_id', id).order('product_code'),
   ]);
 
@@ -243,6 +250,7 @@ stockTakes.post('/', async (c) => {
     sb, warehouseId,
     scopeType as 'ALL' | 'CATEGORY' | 'CODE_PREFIX',
     scopeValue,
+    c,
   );
   if (scoped.error) return c.json({ error: 'scope_load_failed', reason: scoped.error }, 500);
   if (scoped.rows.length === 0) {
@@ -504,10 +512,13 @@ stockTakes.patch('/:id/post', async (c) => {
   for (let i = 0; i < codes.length; i += 200) {
     const chunk = codes.slice(i, i + 200);
     if (chunk.length === 0) break;
-    const { data: bal } = await sb.from('inventory_balances')
-      .select('product_code, variant_key, qty')
-      .eq('warehouse_id', header.warehouse_id)
-      .in('product_code', chunk);
+    const { data: bal } = await scopeToCompany(
+      sb.from('inventory_balances')
+        .select('product_code, variant_key, qty')
+        .eq('warehouse_id', header.warehouse_id)
+        .in('product_code', chunk),
+      c,
+    );
     for (const b of (bal as Array<{ product_code: string; variant_key: string | null; qty: number | null }>) ?? []) {
       liveByKey.set(`${b.product_code} ${b.variant_key ?? ''}`, Number(b.qty ?? 0));
     }

@@ -118,10 +118,13 @@ accounting.get('/journal-entries', async (c) => {
 accounting.get('/journal-entries/:id', async (c) => {
   const id = c.req.param('id');
   const sb = c.get('supabase');
-  const { data: je, error: e1 } = await sb
-    .from('journal_entries')
-    .select('*')
-    .eq('id', id)
+  const { data: je, error: e1 } = await scopeToCompany(
+    sb
+      .from('journal_entries')
+      .select('*')
+      .eq('id', id),
+    c,
+  )
     .single();
   if (e1) return c.json({ error: 'not_found', reason: e1.message }, 404);
   const { data: lines, error: e2 } = await sb

@@ -83,10 +83,13 @@ pwpCodes.get('/mine', async (c) => {
   if (!u?.id) return c.json({ error: 'auth_required' }, 401);
   const userId = u.id;
   const supabase = c.get('supabase');
-  const { data, error } = await supabase
-    .from('pwp_codes')
-    .select(SELECT)
-    .eq('owner_staff_id', userId)
+  const { data, error } = await scopeToCompany(
+    supabase
+      .from('pwp_codes')
+      .select(SELECT)
+      .eq('owner_staff_id', userId),
+    c,
+  )
     .eq('status', 'RESERVED');
   if (error) return c.json({ error: 'fetch_failed', reason: error.message }, 500);
   return c.json({ codes: ((data as unknown as CodeRow[]) ?? []).map(toApi) });
@@ -283,10 +286,13 @@ pwpCodes.delete('/reserve', async (c) => {
 pwpCodes.get('/by-so/:docNo', async (c) => {
   const supabase = c.get('supabase');
   const docNo = c.req.param('docNo');
-  const { data, error } = await supabase
-    .from('pwp_codes')
-    .select(SELECT)
-    .eq('source_doc_no', docNo)
+  const { data, error } = await scopeToCompany(
+    supabase
+      .from('pwp_codes')
+      .select(SELECT)
+      .eq('source_doc_no', docNo),
+    c,
+  )
     .in('status', ['USED', 'AVAILABLE']);
   if (error) return c.json({ error: 'fetch_failed', reason: error.message }, 500);
   return c.json({ codes: ((data as unknown as CodeRow[]) ?? []).map(toApi) });
@@ -308,7 +314,7 @@ pwpCodes.get('/:code', async (c) => {
   const rewardComboId = c.req.query('rewardComboId') ?? '';  // SOFA reward (Phase 2)
   const customerId = c.req.query('customerId') ?? '';
 
-  const { data: row } = await supabase.from('pwp_codes').select(SELECT).eq('code', code).maybeSingle();
+  const { data: row } = await scopeToCompany(supabase.from('pwp_codes').select(SELECT).eq('code', code), c).maybeSingle();
   if (!row) return c.json({ valid: false, reason: 'not_found' });
   const r = row as unknown as CodeRow;
 

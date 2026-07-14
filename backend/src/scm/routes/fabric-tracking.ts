@@ -446,11 +446,14 @@ fabricTracking.patch('/:id/tier', async (c) => {
     const targetCategories = body.field === 'bedframePriceTier'
       ? ['BEDFRAME']
       : ['SOFA', 'ACCESSORY'];
-    const { count } = await supabase
-      .from('mfg_products')
-      .select('id', { head: true, count: 'exact' })
-      .eq('fabric_color', fabricCode)
-      .in('category', targetCategories);
+    const { count } = await scopeToCompany(
+      supabase
+        .from('mfg_products')
+        .select('id', { head: true, count: 'exact' })
+        .eq('fabric_color', fabricCode)
+        .in('category', targetCategories),
+      c,
+    );
     affectedProducts = count ?? 0;
   }
 

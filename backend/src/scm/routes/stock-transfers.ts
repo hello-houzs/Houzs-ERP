@@ -115,13 +115,13 @@ stockTransfers.get('/:id', async (c) => {
   const id = c.req.param('id');
 
   const [headerRes, linesRes] = await Promise.all([
-    sb.from('stock_transfers')
+    scopeToCompany(sb.from('stock_transfers')
       .select(
         `${HEADER}, ` +
         `from_warehouse:warehouses!stock_transfers_from_warehouse_id_fkey(id, code, name), ` +
         `to_warehouse:warehouses!stock_transfers_to_warehouse_id_fkey(id, code, name)`,
       )
-      .eq('id', id).maybeSingle(),
+      .eq('id', id), c).maybeSingle(),
     sb.from('stock_transfer_lines').select(LINE).eq('stock_transfer_id', id).order('created_at'),
   ]);
 
@@ -142,6 +142,9 @@ async function writeTransferMovements(
   userId: string,
   // Multi-company (mig 0061): stamp the transfer's company on every movement row.
   companyId?: number | null,
+  // Context for scopeToCompany on the source open-lots read (no-ops when the
+  // active company is unresolved / single-company fallback).
+  c?: any,
 ): Promise<string[]> {
   const movementErrors: string[] = [];
   const { data: lines } = await sb.from('stock_transfer_lines')
@@ -159,12 +162,15 @@ async function writeTransferMovements(
      → empty map → every line un-batched (old behaviour). */
   const batchByBucket = new Map<string, string | null>(); // key `code::variant` → batch_no | null (ambiguous/none)
   try {
-    const { data: lots, error: lotsErr } = await sb
-      .from('v_inventory_lots_open')
-      .select('warehouse_id, product_code, variant_key, batch_no, qty_remaining')
-      .eq('warehouse_id', header.from_warehouse_id)
-      .not('batch_no', 'is', null)
-      .gt('qty_remaining', 0);
+    const { data: lots, error: lotsErr } = await scopeToCompany(
+      sb
+        .from('v_inventory_lots_open')
+        .select('warehouse_id, product_code, variant_key, batch_no, qty_remaining')
+        .eq('warehouse_id', header.from_warehouse_id)
+        .not('batch_no', 'is', null)
+        .gt('qty_remaining', 0),
+      c,
+    );
     if (!lotsErr) {
       // Collect the distinct non-null batches per bucket; single → carry, else null.
       const batchesByBucket = new Map<string, Set<string>>();
@@ -346,7 +352,7 @@ stockTransfers.post('/', async (c) => {
   }
 
   // Write inventory movements (paired OUT/IN) inline.
-  const movementErrors = await writeTransferMovements(sb, header, user.id, activeCompanyId(c));
+  const movementErrors = await writeTransferMovements(sb, header, user.id, activeCompanyId(c), c);
 
   /* If ANY line's movement failed, the transfer did NOT fully complete. We
      compensated the source side per-line above (so stock isn't destroyed), then
@@ -418,7 +424,7 @@ stockTransfers.patch('/:id/cancel', async (c) => {
 stockTransfers.patch('/:id/post', async (c) => {
   const sb = c.get('supabase');
   const id = c.req.param('id');
-  const { data } = await sb.from('stock_transfers').select(HEADER).eq('id', id).maybeSingle();
+  const { data } = await scopeToCompany(sb.from('stock_transfers').select(HEADER).eq('id', id), c).maybeSingle();
   if (!data) return c.json({ error: 'not_found' }, 404);
   const row = data as unknown as { status: string };
   if (row.status === 'POSTED') return c.json({ transfer: data });

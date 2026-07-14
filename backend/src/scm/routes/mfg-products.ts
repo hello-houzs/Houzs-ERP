@@ -419,10 +419,13 @@ mfgProducts.get('/:id', async (c) => {
   const id = c.req.param('id');
   const supabase = c.get('supabase');
 
-  const { data, error } = await supabase
-    .from('mfg_products')
-    .select('*')
-    .eq('id', id)
+  const { data, error } = await scopeToCompany(
+    supabase
+      .from('mfg_products')
+      .select('*')
+      .eq('id', id),
+    c,
+  )
     .maybeSingle();
 
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
@@ -816,10 +819,13 @@ mfgProducts.get('/:id/price-history', async (c) => {
   const id = c.req.param('id');
   const supabase = c.get('supabase');
 
-  const { data: product, error: pErr } = await supabase
-    .from('mfg_products')
-    .select('code')
-    .eq('id', id)
+  const { data: product, error: pErr } = await scopeToCompany(
+    supabase
+      .from('mfg_products')
+      .select('code')
+      .eq('id', id),
+    c,
+  )
     .maybeSingle();
   if (pErr) return c.json({ error: 'load_failed', reason: pErr.message }, 500);
   if (!product) return c.json({ error: 'not_found' }, 404);
@@ -843,10 +849,13 @@ mfgProducts.get('/:id/suppliers', async (c) => {
   const id = c.req.param('id');
   const supabase = c.get('supabase');
 
-  const { data: product, error: pErr } = await supabase
-    .from('mfg_products')
-    .select('code, name, category')
-    .eq('id', id)
+  const { data: product, error: pErr } = await scopeToCompany(
+    supabase
+      .from('mfg_products')
+      .select('code, name, category')
+      .eq('id', id),
+    c,
+  )
     .maybeSingle();
   if (pErr) return c.json({ error: 'load_failed', reason: pErr.message }, 500);
   if (!product) return c.json({ error: 'not_found' }, 404);
