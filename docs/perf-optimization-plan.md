@@ -56,15 +56,21 @@ no `limit`**. Fixing the shared pieces cascades across many pages.
 
 ### 1A. Windowing (render-only-what's-scrolled)
 
-- [ ] **W1 (P0) — Window `components/DataTable.tsx` once** (`:751`, `:1121`).
-  Shared desktop table renders EVERY row (`sortedRows.map` / `renderList.map`) — no
-  windowing. Fixing it once blunts ~6 HIGH list findings (Projects, Sales,
-  ServiceCases, Team, Mail, SystemHealth). Reuse `vendor/scm/lib/react-virtual-shim`.
-  Derive total height from `rows.length × ROW_HEIGHT` (NOT the virtualizer's async
-  `getTotalSize()` — HOOKKA bug 4a); clip virtual items to `< rows.length`; portal
-  any row dropdown (a scroll wrapper clips `absolute` menus — HOOKKA 4b).
-  Note: `DataGrid` (SCM master data) already windows >25 rows — confirmed 58 DOM
-  rows over 1141 SKUs. This is the DataTable-side gap.
+- [ ] **W1 (P0, NEEDS A UX DECISION — do not blind-ship)** — Window
+  `components/DataTable.tsx` (`:751`, `:1121`). BLOCKER found while scoping:
+  `DataGrid` virtualizes because it has its OWN fixed-height inner scroll container;
+  `DataTable` is PAGE-scrolled (no inner scroll pane). To window it we must either
+  (a) give every DataTable page an inner fixed-height scroll pane — a visible
+  UX/feel change (inner scroll vs page scroll, sticky header sticks to the pane), or
+  (b) implement window-scroll windowing (the react-virtual-shim only reads a
+  container's scrollTop, so this needs extending — more code). ALSO: no current page
+  exceeds the 25-row threshold (the big lists all use the already-virtual DataGrid;
+  DataTable pages currently hold small data), so there is ZERO payoff today AND no way
+  to verify against real data. Recommendation: keep page-scroll (option b) so the feel
+  is unchanged, implement behind a threshold so it's a no-op below N rows, and verify
+  with synthetic data before shipping. Deferred pending that decision — it's the only
+  P0 that isn't a safe immediate ship. Reuse the DataGrid playbook (spacer rows,
+  total = length × ROW_HEIGHT not getTotalSize (HOOKKA 4a), portal row dropdowns (4b)).
 - [ ] **W2 (P0) — Stop building the hidden mobile CardsGrid on desktop.**
   ListV2 pages keep the `md:hidden` `CardsGrid` mounted (CSS-hidden) on desktop →
   ~2× row nodes. Gate by viewport so only one branch mounts.
@@ -119,8 +125,8 @@ no `limit`**. Fixing the shared pieces cascades across many pages.
   O(n²) per render, re-fired on every drag-hover. Precompute id→index Map in useMemo.
 - [ ] **D2 (P1) — `ProjectMaintenance.tsx:1008`** — `blocks` rebuilt via inline
   `items.filter` per section every render. Group by `section_id` once in useMemo.
-- [ ] **D3 (P1) — `ProjectGantt.tsx:320`** — `getHolidaysOn` per day inside `lanes.map`
-  = O(lanes×days) (~3,650 calls/render). Compute holiday day-list once per range.
+- [x] **D3 (P1) — `ProjectGantt.tsx:320`** — DONE (PR #429). Holiday-day list hoisted
+  to a `useMemo` keyed on `range`; O(lanes×days) → O(days).
 - [ ] **D4 (P2) — `Projects.tsx:1040`** — `columns` rebuilt every render → invalidates
   DataTable memos on each keystroke. useMemo.
 - [ ] **D5 (P2) — `Announcements.tsx:705`** — `audienceLabel` rebuilds user/dept/pos
