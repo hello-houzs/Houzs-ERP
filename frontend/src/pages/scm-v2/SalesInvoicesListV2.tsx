@@ -11,7 +11,7 @@
 //         for a follow-up drawer action, not wired here to keep this PR to
 //         chrome only.)
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Plus,
@@ -36,7 +36,7 @@ import { Button } from "../../components/Button";
 import { PullToRefresh } from "../../components/PullToRefresh";
 import { useStaffLookup } from "../../hooks/useStaffLookup";
 import {
-  useSalesInvoices,
+  useSalesInvoicesPaged,
   useSalesInvoiceDetail,
   useUpdateSalesInvoiceStatus,
 } from "../../vendor/scm/lib/sales-invoice-queries";
@@ -646,6 +646,61 @@ function TotalRow({
   );
 }
 
+// ─── Pagination footer ──────────────────────────────────────────────────────
+
+function PaginationFooter({
+  page,
+  pageSize,
+  total,
+  onPrev,
+  onNext,
+}: {
+  page: number;
+  pageSize: number;
+  total: number;
+  onPrev: () => void;
+  onNext: () => void;
+}) {
+  const from = total === 0 ? 0 : page * pageSize + 1;
+  const to = Math.min((page + 1) * pageSize, total);
+  const atStart = page === 0;
+  const atEnd = (page + 1) * pageSize >= total;
+  return (
+    <div className="mt-4 flex items-center justify-between gap-3">
+      <span className="text-[12px] text-ink-muted">
+        Showing {from}
+        {to > from ? `–${to}` : ""} of {total}
+      </span>
+      <div className="flex items-center gap-2">
+        <Button variant="secondary" onClick={onPrev} disabled={atStart}>
+          Prev
+        </Button>
+        <Button variant="secondary" onClick={onNext} disabled={atEnd}>
+          Next
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// Table column key → backend sort-whitelist column. SI backend whitelist is
+// { invoice_date, invoice_number, debtor_name, status, total_centi }; only the
+// `amount` (Total) column key differs from its backend name. Non-whitelisted
+// columns carry `disableSort`.
+const SORT_COL_MAP: Record<string, string> = {
+  amount: "total_centi",
+};
+
+// Filter-pill bucket → single sales_invoices.status DB value. Only `cancelled`
+// is a single DB status; sent / partial / paid are MULTI-status buckets (sent =
+// DRAFT+SENT+ISSUED, partial = PARTIALLY_PAID+PARTIAL, paid = PAID+COMPLETED)
+// that the backend's single `.eq('status', …)` can't express — those send NO
+// status (list shows all rows, still paginated; pill COUNTS stay correct from
+// statusCounts). Flagged limitation, per "never return wrong rows".
+const SI_BUCKET_STATUS: Partial<Record<StatusTab, string>> = {
+  cancelled: "CANCELLED",
+};
+
 // ─── Main page ──────────────────────────────────────────────────────────────
 
 export function SalesInvoicesListV2() {
@@ -657,80 +712,69 @@ export function SalesInvoicesListV2() {
   const status = (params.get("status") ?? "all") as StatusTab;
   const view = (params.get("view") ?? "table") as "table" | "cards";
   const search = params.get("q") ?? "";
+  const page = Math.max(0, parseInt(params.get("page") ?? "0", 10) || 0);
+  const pageSize = 50;
 
   const [selected, setSelected] = useState<SiRow | null>(null);
+  const [sort, setSort] = useState<string | undefined>(undefined);
+  const [debouncedSearch, setDebouncedSearch] = useState(search);
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(t);
+  }, [search]);
 
-  const { data, isLoading, error } = useSalesInvoices(undefined);
+  // sent / partial / paid are multi-status buckets the backend's single
+  // `.eq('status', …)` can't express, so send NO status for them (all rows,
+  // still paginated + counted) rather than an incomplete/empty page.
+  const apiStatus = status === "all" ? undefined : SI_BUCKET_STATUS[status];
+
+  const { data, isLoading, error } = useSalesInvoicesPaged({
+    page,
+    pageSize,
+    status: apiStatus,
+    q: debouncedSearch,
+    sort,
+  });
   const updateStatus = useUpdateSalesInvoiceStatus();
 
-  const allRows = useMemo<SiRow[]>(
-    () => ((data?.salesInvoices ?? []) as SiRow[]),
-    [data]
-  );
+  // Server already filtered + sorted this page — render verbatim.
+  const rows = (data?.salesInvoices ?? []) as SiRow[];
+  const total = data?.total ?? 0;
+  const counts = data?.statusCounts ?? {
+    all: 0,
+    sent: 0,
+    partial: 0,
+    paid: 0,
+    cancelled: 0,
+  };
 
-  const scopedByBucket = useMemo(() => {
-    if (status === "all") return allRows;
-    return allRows.filter((r) => statusFor(r.status).bucket === status);
-  }, [allRows, status]);
-
-  const filtered = useMemo(() => {
-    if (!search.trim()) return scopedByBucket;
-    const q = search.toLowerCase();
-    return scopedByBucket.filter((r) => {
-      const hay = [
-        r.invoice_number,
-        r.so_doc_no,
-        r.delivery_order_id,
-        r.debtor_name,
-        r.debtor_code,
-        r.salesperson_id,
-        refOf(r),
-        r.branding,
-        r.sales_location,
-      ]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
-      return hay.includes(q);
-    });
-  }, [scopedByBucket, search]);
-
-  const counts = useMemo(() => {
-    const acc = { all: allRows.length, sent: 0, partial: 0, paid: 0, cancelled: 0 };
-    for (const r of allRows) {
-      const b = statusFor(r.status).bucket;
-      if (b === "sent") acc.sent += 1;
-      else if (b === "partial") acc.partial += 1;
-      else if (b === "paid") acc.paid += 1;
-      else if (b === "cancelled") acc.cancelled += 1;
-    }
-    return acc;
-  }, [allRows]);
-
-  // Money-forward stats — SI is where finance actually reads the numbers.
-  const stats = useMemo(() => {
+  // Money KPIs are summed over the CURRENT page only (paginated contract has no
+  // full-set money sums), so their cards are labelled "on this page".
+  const money = useMemo(() => {
     let revenueCenti = 0;
     let outstandingCenti = 0;
     let paidCenti = 0;
-    for (const r of filtered) {
-      const total = r.total_centi ?? r.local_total_centi ?? 0;
+    for (const r of rows) {
+      const t = r.total_centi ?? r.local_total_centi ?? 0;
       const paid = r.paid_centi ?? 0;
-      revenueCenti += total;
+      revenueCenti += t;
       paidCenti += paid;
-      outstandingCenti += Math.max(0, total - paid);
+      outstandingCenti += Math.max(0, t - paid);
     }
-    return {
-      total: filtered.length,
-      revenueCenti,
-      outstandingCenti,
-      paidCenti,
-    };
-  }, [filtered]);
+    return { revenueCenti, outstandingCenti, paidCenti };
+  }, [rows]);
 
+  const setPageParam = (p: number) => {
+    const next = new URLSearchParams(params);
+    if (p <= 0) next.delete("page");
+    else next.set("page", String(p));
+    setParams(next, { replace: true });
+  };
   const setStatusChip = (s: StatusTab) => {
     const next = new URLSearchParams(params);
     if (s === "all") next.delete("status");
     else next.set("status", s);
+    next.delete("page");
     setParams(next, { replace: true });
   };
   const setView = (v: "table" | "cards") => {
@@ -743,9 +787,20 @@ export function SalesInvoicesListV2() {
     const next = new URLSearchParams(params);
     if (!q.trim()) next.delete("q");
     else next.set("q", q);
+    next.delete("page");
     setParams(next, { replace: true });
   };
+  const sortSyncedRef = useRef(false);
+  const setSortAndReset = (s: { key: string; dir: "asc" | "desc" } | null) => {
+    setSort(s ? `${SORT_COL_MAP[s.key] ?? s.key}:${s.dir}` : undefined);
+    if (!sortSyncedRef.current) {
+      sortSyncedRef.current = true;
+      return;
+    }
+    setPageParam(0);
+  };
   const resetLayout = () => {
+    setSort(undefined);
     setParams(new URLSearchParams(), { replace: true });
   };
   const filtersActive =
@@ -798,6 +853,7 @@ export function SalesInvoicesListV2() {
       key: "due_date",
       label: "Due",
       width: "108px",
+      disableSort: true,
       getValue: (r) => r.due_date ?? "",
       render: (r) => (
         <span className="text-[12.5px] text-ink-secondary">{fmtDate(r.due_date)}</span>
@@ -807,6 +863,7 @@ export function SalesInvoicesListV2() {
       key: "so_doc_no",
       label: "From SO",
       width: "128px",
+      disableSort: true,
       getValue: (r) => r.so_doc_no ?? "",
       render: (r) => (
         <span className="font-mono text-[12px] text-ink-secondary">{soOf(r)}</span>
@@ -826,6 +883,7 @@ export function SalesInvoicesListV2() {
       key: "reference",
       label: "Customer ref",
       width: "132px",
+      disableSort: true,
       getValue: (r) => refOf(r),
       render: (r) => (
         <span className="font-mono text-[12px] text-ink-secondary">{refOf(r)}</span>
@@ -850,6 +908,8 @@ export function SalesInvoicesListV2() {
       label: "Outstanding",
       width: "128px",
       align: "right",
+      // Derived (Total − Paid) — not a backend-sortable column.
+      disableSort: true,
       getValue: (r) => outstandingOf(r),
       render: (r) => {
         const outstanding = outstandingOf(r);
@@ -904,8 +964,8 @@ export function SalesInvoicesListV2() {
             Sales Invoices
           </h1>
           <div className="mt-0.5 text-[12.5px] text-ink-muted">
-            {stats.total} invoice{stats.total === 1 ? "" : "s"} ·{" "}
-            <span className="font-money">{fmtRm(stats.revenueCenti)}</span> billed
+            {total} invoice{total === 1 ? "" : "s"} ·{" "}
+            <span className="font-money">{fmtRm(money.revenueCenti)}</span> billed
           </div>
         </div>
       </div>
@@ -943,28 +1003,28 @@ export function SalesInvoicesListV2() {
           <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
             <StatCard
               label="Total Invoices"
-              value={stats.total.toLocaleString("en-MY")}
-              subtitle="Scoped to current filter"
+              value={total.toLocaleString("en-MY")}
+              subtitle="All matching invoices"
               rail="bg-primary"
               active
             />
             <StatCard
               label="Billed"
-              value={fmtRm(stats.revenueCenti)}
-              subtitle="Sum of invoice totals"
+              value={fmtRm(money.revenueCenti)}
+              subtitle="Sum on this page"
               rail="bg-accent"
             />
             <StatCard
               label="Outstanding"
-              value={fmtRm(stats.outstandingCenti)}
-              subtitle="Balance across visible rows"
+              value={fmtRm(money.outstandingCenti)}
+              subtitle="Balance on this page"
               tone="error"
               rail="bg-err"
             />
             <StatCard
               label="Paid"
-              value={fmtRm(stats.paidCenti)}
-              subtitle="Receipts logged"
+              value={fmtRm(money.paidCenti)}
+              subtitle="Receipts on this page"
               tone="success"
               rail="bg-synced"
             />
@@ -1001,41 +1061,56 @@ export function SalesInvoicesListV2() {
       </div>
 
       <div className="md:hidden">
-        <CardsGrid rows={filtered} onOpen={(r) => setSelected(r)} />
-        {filtered.length > 0 && (
-          <div className="mt-4 pb-24 text-center text-[11.5px] text-ink-muted">
-            {filtered.length} invoice{filtered.length === 1 ? "" : "s"}
-          </div>
-        )}
+        <CardsGrid rows={rows} onOpen={(r) => setSelected(r)} />
+        <div className="pb-24">
+          <PaginationFooter
+            page={page}
+            pageSize={pageSize}
+            total={total}
+            onPrev={() => setPageParam(page - 1)}
+            onNext={() => setPageParam(page + 1)}
+          />
+        </div>
       </div>
 
       <div className="hidden md:block">
         {view === "table" ? (
-          <DataTable<SiRow>
-            tableId="sales-invoices-v2"
-            rows={filtered}
-            loading={isLoading}
-            error={error ? (error as Error).message ?? "Failed to load" : null}
-            columns={columns}
-            getRowKey={(r) => r.id}
-            onRowClick={(r) => setSelected(r)}
-            exportName="sales-invoices"
-            emptyLabel={
-              filtersActive
-                ? "No invoices match — try Reset layout to clear filters."
-                : "No sales invoices yet."
-            }
-            search={{
-              value: search,
-              onChange: setSearch,
-              placeholder: "Search SI no, customer, ref…",
-            }}
-            resetFilters={{
-              active: filtersActive,
-              onReset: resetLayout,
-              label: "Reset layout",
-            }}
-          />
+          <>
+            <DataTable<SiRow>
+              tableId="sales-invoices-v2"
+              rows={rows}
+              loading={isLoading}
+              error={error ? (error as Error).message ?? "Failed to load" : null}
+              columns={columns}
+              getRowKey={(r) => r.id}
+              onRowClick={(r) => setSelected(r)}
+              exportName="sales-invoices"
+              serverSort
+              onSortChange={setSortAndReset}
+              emptyLabel={
+                filtersActive
+                  ? "No invoices match — try Reset layout to clear filters."
+                  : "No sales invoices yet."
+              }
+              search={{
+                value: search,
+                onChange: setSearch,
+                placeholder: "Search SI no, customer, ref…",
+              }}
+              resetFilters={{
+                active: filtersActive,
+                onReset: resetLayout,
+                label: "Reset layout",
+              }}
+            />
+            <PaginationFooter
+              page={page}
+              pageSize={pageSize}
+              total={total}
+              onPrev={() => setPageParam(page - 1)}
+              onNext={() => setPageParam(page + 1)}
+            />
+          </>
         ) : (
           <>
             <div className="mb-3 flex items-center justify-between">
@@ -1057,11 +1132,15 @@ export function SalesInvoicesListV2() {
                   </button>
                 )}
               </div>
-              <span className="text-[12px] text-ink-muted">
-                {filtered.length} invoice{filtered.length === 1 ? "" : "s"}
-              </span>
             </div>
-            <CardsGrid rows={filtered} onOpen={(r) => setSelected(r)} />
+            <CardsGrid rows={rows} onOpen={(r) => setSelected(r)} />
+            <PaginationFooter
+              page={page}
+              pageSize={pageSize}
+              total={total}
+              onPrev={() => setPageParam(page - 1)}
+              onNext={() => setPageParam(page + 1)}
+            />
           </>
         )}
       </div>

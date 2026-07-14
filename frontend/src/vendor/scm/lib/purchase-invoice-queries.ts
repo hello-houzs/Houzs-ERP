@@ -26,6 +26,31 @@ export const usePurchaseInvoices = (status?: string) =>
     retry: 1,
     retryDelay: 800,
   });
+
+// Opt-in server-side pagination + search + sort + status-counts (mirrors
+// useMfgSalesOrdersPaged). Sending `page` switches /purchase-invoices into its
+// paginated contract ({ purchaseInvoices, total, page, pageSize, statusCounts });
+// the legacy usePurchaseInvoices above (no page) still returns the historical
+// unpaginated list. `status` is the resolved purchase_invoices.status DB value
+// (UPPERCASE); each PI filter-pill bucket (draft/posted/partial/paid/cancelled)
+// maps 1:1 to a single DB status, so no bucket needs dropping.
+export function usePurchaseInvoicesPaged(params: { page: number; pageSize: number; status?: string; q?: string; sort?: string }) {
+  const { page, pageSize, status, q, sort } = params;
+  const usp = new URLSearchParams();
+  usp.set('page', String(page));
+  usp.set('pageSize', String(pageSize));
+  if (status) usp.set('status', status);
+  if (q && q.trim()) usp.set('q', q.trim());
+  if (sort) usp.set('sort', sort);
+  return useQuery({
+    queryKey: ['purchase-invoices-paged', page, pageSize, status ?? '', q ?? '', sort ?? ''],
+    queryFn: () => authedFetch<{ purchaseInvoices: any[]; total: number; page: number; pageSize: number; statusCounts: { all: number; draft: number; posted: number; partial: number; paid: number; cancelled: number } }>(`/purchase-invoices?${usp.toString()}`),
+    placeholderData: (prev: any) => prev,
+    staleTime: 30_000,
+    retry: 1,
+    retryDelay: 800,
+  });
+}
 export const usePurchaseInvoiceDetail = (id: string | null) => useQuery({
   queryKey: ['purchase-invoice-detail', id],
   queryFn: () => authedFetch<{ purchaseInvoice: any; items: any[] }>(`/purchase-invoices/${id}`),
