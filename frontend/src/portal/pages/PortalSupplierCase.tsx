@@ -94,7 +94,6 @@ const STAGE_LABEL: Record<string, string> = {
   pending_review: "Review",
   under_verification: "Verification",
   pending_solution: "Solution",
-  pending_item_pickup: "Item Pickup",
   pending_supplier_pickup: "Supplier Pickup",
   pending_item_ready: "Item Ready",
   pending_delivery_service: "Delivery / Service",
@@ -108,7 +107,6 @@ const STAGE_COLOR: Record<string, PortalStatusColor> = {
   pending_review: "grey",
   under_verification: "amber",
   pending_solution: "amber",
-  pending_item_pickup: "violet",
   pending_supplier_pickup: "violet",
   pending_item_ready: "violet",
   pending_delivery_service: "blue",
@@ -133,6 +131,7 @@ function supplierStepFor(cs: { stage: string; items_ready_at: string | null }): 
     case "pending_item_ready":
       return cs.items_ready_at ? 4 : 3;
     case "pending_supplier_pickup":
+    // Retired stage (mig 0110) — legacy alias for mid-flight links.
     case "pending_item_pickup":
       return 2;
     default:

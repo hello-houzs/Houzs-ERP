@@ -30,7 +30,6 @@ const STAGES: StageDef[] = [
   { value: "pending_review",            short: "Review" },
   { value: "under_verification",        short: "Verify" },
   { value: "pending_solution",          short: "Solution" },
-  { value: "pending_item_pickup",       short: "Pickup" },
   { value: "pending_supplier_pickup",   short: "Supplier" },
   { value: "pending_item_ready",        short: "Ready" },
   { value: "pending_delivery_service",  short: "Delivery" },
