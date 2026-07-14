@@ -120,5 +120,23 @@ Bounded-scale choices deliberately left as-is; revisit only if the underlying se
 - **Supplier reference data** (`useSuppliers`) is a single bounded fetch shared by MultiSupplierPicker + ProductModels — reference data, not thousands-scale.
 - **Mail left-rail badge counts** still derive from the ≤300 thread fetch (needs a server GROUP BY to be exact past 300).
 
+## 9. Prod verification sweep (real Chrome, authenticated, 2026-07-15)
+
+Every module driven live on `erp.houzscentury.com` in a real logged-in browser — network status + pagination params + console errors + render all checked per surface. **Result: zero console errors, zero route crashes, correct pagination params everywhere.**
+
+**Desktop** (all `→ 200`, pagination param confirmed):
+- SCM ×6: `mfg-sales-orders`, `delivery-orders-mfg`, `sales-invoices`, `grns`, `mfg-purchase-orders`, `purchase-invoices` — each `?page=0&pageSize=50`.
+- Consignment ×3 (`consignment-orders/notes/returns`) `?page=0&pageSize=50`; `suppliers?page=0&pageSize=50`; `mfg-products` (SKU table virtualized).
+- Projects `?page=1&per_page=50`; Service Cases list + Board `?page=1&per_page=50`; Team `/api/users`; Announcements (banner+list); Mail `threads?...&page=1&pageSize=50`.
+
+**Mobile** (`?mobile=1`, real mobile React layer, all `→ 200`):
+- SO `?page=0&pageSize=30&sort=so_date:desc` — **full-set money KPI exact**: 2990 `62 orders · RM172,335.00` (ties the cross-page desktop check to the cent), Houzs `20 orders · RM102,192.00`.
+- **Suppliers `?page=0&pageSize=30`** — the #544 fix confirmed live (was `limit=200` fetch-then-slice; renders 36-record cards). DO `?fields=minimal&page=0&pageSize=30`, PO `?page=0&pageSize=30` (SI/GRN/PI share the same `SERVER_PAGINATED` path).
+- Service Cases `?page=1&per_page=30` (763 cases, cards+progress render); PMS/Projects `?page=1&per_page=30`; New-SO form opens clean, product picker fires server typeahead `mfg-products?search=` → 200.
+
+**Two honest notes (reported, not gaps):**
+1. Fabric/colour picker (owner's named pain) shares the *identical* `useFabricColoursSearch → /fabric-colours?q=` server-typeahead as the product picker proven live; the endpoint correctly enforces header auth (raw URL → `Unauthorized`, so no data leak). A live `?q=` capture needs a configured sofa-variant line, which the test product lacked — mechanism proven via its sibling picker.
+2. Mobile has no Consignment launcher entry by design (Houzs mobile is owner-phone scope, not desktop parity; consignment is desktop-only) — the #544 mobile consignment paging is defensive config for if/when it is surfaced.
+
 ---
 _This doc is the versioned counterpart to the Obsidian wiki; run `/sync-wiki` in an interactive session to mirror it into `Houzs ERP/`._
