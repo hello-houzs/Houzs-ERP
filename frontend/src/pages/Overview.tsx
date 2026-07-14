@@ -45,15 +45,22 @@ const SEV_BADGE: Record<string, { tone: "accent" | "warning" | "error" | "succes
 };
 
 export function Overview() {
-  const { user } = useAuth();
+  const { user, can } = useAuth();
   const navigate = useNavigate();
 
+  // OFF-NOT-HIDE: the home dashboard's org-summary KPIs hit permission-gated
+  // aggregate endpoints. A user without the read permission (e.g. a Sales
+  // Manager/Agent) would otherwise fire these on every home load and get a
+  // "Forbidden: missing …" toast. Gate the fetch so it never fires for them —
+  // the tile just shows 0 instead of erroring.
   const inbox = useQuery<InboxResp>(() => api.get("/api/inbox"));
   const assr = useQuery<{ active_count: number; breach_count: number }>(
     () => api.get("/api/assr/summary"),
+    { enabled: can("service_cases.read") },
   );
   const projects = useQuery<{ live_count: number; upcoming_30d: number }>(
     () => api.get("/api/projects/summary"),
+    { enabled: can("projects.read") },
   );
 
   const now = new Date();
