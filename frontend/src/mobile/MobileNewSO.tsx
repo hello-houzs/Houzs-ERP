@@ -36,9 +36,10 @@ import {
   type ModelAllowedOptions,
   type SpecialAddonRow,
 } from "../vendor/scm/lib/mfg-products-queries";
-import { useFabricColoursActive, type FabricColourRow } from "../vendor/scm/lib/fabric-queries";
+import { useFabricColoursSearch, type FabricColourRow } from "../vendor/scm/lib/fabric-queries";
 import { PaymentInfoBlock } from "./PaymentInfoBlock";
 import { useFabricLibrary } from "../vendor/scm/lib/queries";
+import { useDebouncedValue } from "../vendor/scm/lib/hooks";
 import { activeOptions, maintPickerValues } from "../vendor/shared/maintenance-pools";
 import { missingVariantAxes, hasSofaMixConflict, SOFA_MIX_MESSAGE } from "../vendor/shared/so-variant-rule";
 import { fmtCenti } from "../lib/scm";
@@ -456,7 +457,10 @@ const planToMonths = (label: string): number | null => {
 type Opt = { value: string; label: string };
 type VariantPools = {
   ready: boolean; // maintenance config loaded (pools meaningful)
-  fabricColours: FabricColourRow[];
+  /* Owner #1 scaling pain (2026-07-14): the fabric-colour library is NO LONGER
+     preloaded here — the mobile Fabric picker now server-typeaheads via
+     useFabricColoursSearch (parity with the desktop FabricColourCombobox), so
+     only fabricSeries (fabric_library labels) stays warm for the series display. */
   fabricSeries: Map<string, string>; // fabricId → series label
   maint: MaintenanceConfig | null;
   /* Special Add-ons pool (owner 2026-07-04) — the SAME special_addons defs the
@@ -519,7 +523,6 @@ export function MobileNewSO({
   /* ── Real variant sources — the SAME hooks the desktop SoLineCard reads. */
   const maintQ = useMaintenanceConfig("master");
   const maint = maintQ.data?.data ?? null;
-  const fabricColoursQ = useFabricColoursActive();
   const fabricLibQ = useFabricLibrary();
   /* Special Add-ons (owner 2026-07-04) — the mobile line editor now renders a
      Specials accordion (bedframe + sofa), consuming the same pool it used to
@@ -531,12 +534,11 @@ export function MobileNewSO({
     for (const f of fabricLibQ.data ?? []) fabricSeries.set(f.id, f.label);
     return {
       ready: Boolean(maint),
-      fabricColours: fabricColoursQ.data ?? [],
       fabricSeries,
       maint,
       specialAddons: specialAddonsQ.data ?? [],
     };
-  }, [maint, fabricColoursQ.data, fabricLibQ.data, specialAddonsQ.data]);
+  }, [maint, fabricLibQ.data, specialAddonsQ.data]);
 
   /* One-shot seed derived from the scan handoff (new-from-scan only). */
   const scanLines: Array<{ line: LineItem; meta: ScanLineMetaSeed }> = (scanPrefill?.lines ?? []).map((l) => {
@@ -2083,16 +2085,16 @@ export function MobileNewSO({
             pools={pools}
             current={String(line?.variants.fabricCode ?? "")}
             onClose={() => setFabricPickerFor(null)}
-            onPick={(colourId) => {
-              const c = pools.fabricColours.find((x) => x.colourId === colourId);
-              const seriesLabel = c ? pools.fabricSeries.get(c.fabricId) ?? null : null;
+            onPick={(c) => {
+              const colourId = c.colourId;
+              const seriesLabel = pools.fabricSeries.get(c.fabricId) ?? null;
               const patch: Record<string, unknown> = {
                 fabricCode: colourId,
                 colourId,
-                ...(c ? { fabricId: c.fabricId } : {}),
+                fabricId: c.fabricId,
                 ...(seriesLabel ? { fabricLabel: seriesLabel } : {}),
-                ...(c?.label ? { colourLabel: c.label } : {}),
-                ...(c?.swatchHex ? { colourHex: c.swatchHex } : {}),
+                ...(c.label ? { colourLabel: c.label } : {}),
+                ...(c.swatchHex ? { colourHex: c.swatchHex } : {}),
               };
               const targetBk = (line?.variants as { buildKey?: unknown } | undefined)?.buildKey;
               const cascadeBk = typeof targetBk === "string" && targetBk !== "" ? targetBk : null;
@@ -2185,20 +2187,6 @@ function sortNumeric<T extends { value: string }>(opts: T[]): T[] {
   });
 }
 
-/* Fabric options — active fabric_colours filtered by the Model's
-   allowed_options.fabrics. Used by BOTH the count-check and the searchable
-   FabricPicker modal. */
-function fabricOptions(pools: VariantPools, allow: ModelAllowedOptions | null, current: string): Opt[] {
-  const pool = allow?.fabrics;
-  const colours = (Array.isArray(pool) && pool.length > 0)
-    ? pools.fabricColours.filter((c) => pool.includes(c.colourId))
-    : pools.fabricColours;
-  const opts: Opt[] = colours.map((c) => ({ value: c.colourId, label: c.colourId }));
-  opts.sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: "base" }));
-  if (current && !opts.some((o) => o.value === current)) opts.unshift({ value: current, label: `${current} (current)` });
-  return opts;
-}
-
 function LineCard({
   line,
   index,
@@ -2279,7 +2267,6 @@ function LineCard({
 
   const fabVal = String(v.fabricCode ?? "");
   const fabColourLabel = String(v.colourLabel ?? "");
-  const fabOptsCount = fabricOptions(pools, allow, fabVal).length;
 
   // Sofa pools (real): seat = sofaSizes (string), leg = sofaLegHeights (priced)
   const sofaSeatOpts = maint
@@ -2384,7 +2371,7 @@ function LineCard({
         {picked && pools.ready && line.cat === "sofa" && (
           <>
             <FabricField
-              value={fabVal} colourLabel={fabColourLabel} count={fabOptsCount}
+              value={fabVal} colourLabel={fabColourLabel}
               invalid={showErrors && missing.has("fabricCode")} onOpen={onOpenFabricPicker}
             />
             <div style={{ display: "flex", gap: 9 }}>
@@ -2401,7 +2388,7 @@ function LineCard({
         {picked && pools.ready && line.cat === "bedframe" && (
           <>
             <FabricField
-              value={fabVal} colourLabel={fabColourLabel} count={fabOptsCount}
+              value={fabVal} colourLabel={fabColourLabel}
               invalid={showErrors && missing.has("fabricCode")} onOpen={onOpenFabricPicker}
             />
             {/* Bedframe build — 3 selects stacked in a responsive grid so DIVAN /
@@ -2526,8 +2513,8 @@ function StagedPhotoThumb({ file, onRemove }: { file: File; onRemove: () => void
 /* FabricField — a tappable read-only row that opens the searchable FabricPicker
    modal (native <select> with 700+ options is unusable per owner). Shows the
    picked fabric code (+ colour label) or a "Select fabric" placeholder. */
-function FabricField({ value, colourLabel, count, invalid, onOpen }: {
-  value: string; colourLabel: string; count: number; invalid: boolean; onOpen: () => void;
+function FabricField({ value, colourLabel, invalid, onOpen }: {
+  value: string; colourLabel: string; invalid: boolean; onOpen: () => void;
 }) {
   return (
     <Field label="Fabric / colour *">
@@ -2542,7 +2529,7 @@ function FabricField({ value, colourLabel, count, invalid, onOpen }: {
         }}
       >
         <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: value ? "#11140f" : "#9aa093", fontWeight: value ? 700 : 400 }}>
-          {value ? (colourLabel ? `${value} — ${colourLabel}` : value) : (count === 0 ? "No fabrics configured" : "Select fabric…")}
+          {value ? (colourLabel ? `${value} — ${colourLabel}` : value) : "Select fabric…"}
         </span>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#9aa093" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ flex: "none" }}><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
       </button>
@@ -2550,28 +2537,26 @@ function FabricField({ value, colourLabel, count, invalid, onOpen }: {
   );
 }
 
-/* Perf cap (parity with MobileSkuPicker RENDER_CAP / PR #342). Painting all
-   ~700 fabric-colour buttons froze the sheet on open + on each keystroke; cap
-   the DOM and tell the operator to narrow by search past the cap. */
-const FABRIC_RENDER_CAP = 60;
-
-/* FabricPicker — searchable bottom-sheet for the 700+ fabric-colours list.
-   Mirrors the MobileSkuPicker sheet chrome + search box. Filters by fabric code
-   AND colour label. */
+/* FabricPicker — server-typeahead bottom-sheet (owner #1 scaling pain
+   2026-07-14). Converged onto the SAME logic layer as the desktop
+   FabricColourCombobox: the sheet's search box drives useFabricColoursSearch
+   (GET /fabric-colours?q=…, capped 50 server-side) — it fires only at >= 2 typed
+   chars (debounced), so the old "pull EVERY active colour + render capped 60"
+   pass is gone. The mobile bottom-sheet chrome is kept (tappable rows fit a
+   phone); only the data source moved from the preloaded pool to the server.
+   The picked value itself lives on the SO line (FabricField reads it), so a
+   saved line always renders its fabric even with no active search here. */
 function FabricPicker({ pools, current, onPick, onClose }: {
-  pools: VariantPools; current: string; onPick: (colourId: string) => void; onClose: () => void;
+  pools: VariantPools; current: string; onPick: (c: FabricColourRow) => void; onClose: () => void;
 }) {
   const [search, setSearch] = useState("");
-  const rows = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    const all = [...pools.fabricColours].sort((a, b) => a.colourId.localeCompare(b.colourId, undefined, { sensitivity: "base" }));
-    if (!q) return all;
-    return all.filter((c) =>
-      c.colourId.toLowerCase().includes(q) ||
-      (c.label ?? "").toLowerCase().includes(q) ||
-      (pools.fabricSeries.get(c.fabricId) ?? "").toLowerCase().includes(q),
-    );
-  }, [pools.fabricColours, pools.fabricSeries, search]);
+  /* Same debounce + length>=2 gate the desktop combobox uses, so the query only
+     fires while the operator is actively typing. The sheet only mounts while
+     open, so no extra `open` gate is needed. */
+  const debounced = useDebouncedValue(search, 200);
+  const trimmed = debounced.trim();
+  const coloursQ = useFabricColoursSearch(trimmed, { enabled: trimmed.length >= 2 });
+  const rows = useMemo(() => (coloursQ.data ?? []).slice(0, 50), [coloursQ.data]);
 
   return (
     <div className="sheet-bd" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
@@ -2590,23 +2575,29 @@ function FabricPicker({ pools, current, onPick, onClose }: {
         <div style={{ padding: "0 14px 10px", flex: "none" }}>
           <div className="searchbar">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9aa093" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
-            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search fabric code or colour" autoFocus />
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Type 2+ chars — fabric code or colour" autoFocus />
           </div>
         </div>
 
         <div className="sheet-scroll" style={{ gap: 7 }}>
           {rows.length === 0 ? (
-            <div style={{ textAlign: "center", color: "#9aa093", fontSize: 12, padding: "28px 0" }}>No fabrics match{search.trim() ? ` "${search.trim()}"` : ""}.</div>
+            <div style={{ textAlign: "center", color: "#9aa093", fontSize: 12, padding: "28px 0" }}>
+              {trimmed.length < 2
+                ? "Type at least 2 characters to search…"
+                : coloursQ.isFetching
+                  ? "Searching…"
+                  : `No fabrics match "${trimmed}".`}
+            </div>
           ) : (
             <>
-            {rows.slice(0, FABRIC_RENDER_CAP).map((c) => {
+            {rows.map((c) => {
               const on = c.colourId === current;
               const series = pools.fabricSeries.get(c.fabricId) ?? "";
               return (
                 <button
                   key={c.colourId}
                   type="button"
-                  onClick={() => { onPick(c.colourId); onClose(); }}
+                  onClick={() => { onPick(c); onClose(); }}
                   style={{
                     textAlign: "left", width: "100%", boxSizing: "border-box",
                     border: on ? "1px solid #16695f" : "1px solid rgba(34,31,32,.12)",
@@ -2630,11 +2621,6 @@ function FabricPicker({ pools, current, onPick, onClose }: {
                 </button>
               );
             })}
-            {rows.length > FABRIC_RENDER_CAP && (
-              <div style={{ textAlign: "center", color: "#9aa093", fontSize: 11, padding: "10px 0 4px" }}>
-                Showing first {FABRIC_RENDER_CAP} of {rows.length} — search to narrow.
-              </div>
-            )}
             </>
           )}
         </div>
