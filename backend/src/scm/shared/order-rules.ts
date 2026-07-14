@@ -17,6 +17,12 @@ export const paidPct = (paid: number, total: number): number => {
 /** Minimum paid fraction (of the order total) to advance an order to Proceed. */
 export const PROCEED_PAID_THRESHOLD = 0.5;
 
+/** Minimum paid fraction to SET a Processing Date. Houzs requires only 30%
+ *  (owner 2026-07-14) — the ≥50% PROCEED_PAID_THRESHOLD is a 2990 rule and must
+ *  NOT gate the Houzs processing date. Kept as its own constant so the two gates
+ *  can never be conflated again. */
+export const PROCESSING_DATE_PAID_THRESHOLD = 0.30;
+
 /** Inputs to the "ready to Proceed" gate. `paid` / `total` must share a unit
  *  (whole-MYR on the POS, centi on the server) — only their ratio is used, so
  *  either side may pass its own representation. */
@@ -51,8 +57,9 @@ export const meetsProceedGate = (i: ProceedGateInput): boolean =>
  *  collection so far? Owner/Loo 2026-06-30 — the Processing Date is production's
  *  "ready to build" signal: once it is set, the backend treats the SO as a go and
  *  orders materials / starts the build when the date arrives. So it must NOT be
- *  set until the customer has paid the same ≥50% deposit the Proceed marker
- *  requires. UNLIKE meetsProceedGate, customer-info / address completeness is
+ *  set until the customer has paid the ≥30% deposit Houzs requires
+ *  (PROCESSING_DATE_PAID_THRESHOLD — owner 2026-07-14; the 50% Proceed threshold
+ *  is a 2990 rule). UNLIKE meetsProceedGate, customer-info / address completeness is
  *  deliberately NOT gated here — an order with incomplete customer info may still
  *  carry a Processing Date (Loo: resolve customer details in Proceed). Only the
  *  money gates the date.
@@ -62,7 +69,7 @@ export const meetsProceedGate = (i: ProceedGateInput): boolean =>
  *  giveaway): nothing to collect, so the gate is vacuously met (mirrors
  *  meetsProceedGate, and avoids the 0/0 = NaN a `total > 0` guard would need). */
 export const meetsProcessingDatePaymentGate = (paid: number, total: number): boolean =>
-  total <= 0 || paid / total >= PROCEED_PAID_THRESHOLD;
+  total <= 0 || paid / total >= PROCESSING_DATE_PAID_THRESHOLD;
 
 /** Total physical pieces in an order (for delivery slot allocation). */
 export const pieceCount = (_orderItems: unknown[]): number => {

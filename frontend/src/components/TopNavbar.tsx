@@ -10,8 +10,6 @@ import { Avatar } from "./Avatar";
 import { cn } from "../lib/utils";
 import { api } from "../api/client";
 import { useQuery } from "../hooks/useQuery";
-import { queryClient } from "../lib/queryClient";
-import { clearAll } from "../api/cache";
 import {
   getActiveCompanySnapshot,
   setActiveCompanyId,
@@ -182,11 +180,22 @@ function CompanySwitcher() {
   function pick(id: number) {
     setOpen(false);
     if (id === activeId) return;
+    // A company switch is a fundamental tenant-context change. Backend scoping
+    // already isolates each company's data (companyContext + X-Company-Id); the
+    // frontend must never leave the previous company's rows on screen for even
+    // one frame. In-place cache invalidation could not guarantee that: react-query
+    // keys don't include the company, invalidateQueries raced, and
+    // queryClient.clear() empties the cache but does NOT re-trigger a mounted
+    // observer to refetch — so a list kept showing the previous company until it
+    // happened to remount. A full page reload is the bulletproof fix: nothing
+    // stale can render because the whole app re-boots. We persist the new active
+    // company to localStorage FIRST (setActiveCompanyId is a synchronous
+    // localStorage write), so after the reload the app boots under the new company
+    // and every request carries the new X-Company-Id header. Company switches are
+    // rare + deliberate, so the reload cost is an acceptable trade for guaranteed
+    // zero cross-company staleness.
     setActiveCompanyId(id);
-    // Clear the path-only SWR store FIRST (else it serves the previous company's
-    // cached payload for up to TTL_MS), then refetch the whole app react-query side.
-    clearAll();
-    void queryClient.invalidateQueries();
+    window.location.reload();
   }
 
   return (

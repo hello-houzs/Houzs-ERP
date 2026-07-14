@@ -2,7 +2,7 @@ import type { MiddlewareHandler } from "hono";
 import type { Env } from "../types";
 import { getUserBySession, type AuthUser } from "../services/auth";
 import { hasPermission } from "../services/permissions";
-import { isSalesDirectorUser } from "../services/pmsAccess";
+import { isSalesDirectorUser, isSalesUser } from "../services/pmsAccess";
 import {
   fullAccessMap,
   meetsLevel,
@@ -212,6 +212,19 @@ export const requireScmAccess: MiddlewareHandler<{ Bindings: Env }> = async (c, 
     ([key, level]) => key.startsWith("scm") && level !== "none",
   );
   if (hasScmPage) {
+    await next();
+    return;
+  }
+  // Additive (go-live review #5): a code-keyed Sales rep — Sales by STABLE ORG
+  // FIELD (position "Sales …" / dept name containing "sales", pmsAccess.
+  // isSalesUser), with NO matrix grant — is otherwise 403'd from the
+  // Sales-Orders backend even though the FE (allowSales) shows it and every SO
+  // route scopes them to own+downline (salesScope). Admit such a caller for the
+  // SALES-ORDERS AREA ONLY (the /mfg-sales-orders sub-router). Mirrors how
+  // assr.ts canAccessServiceCases OR-ins isSalesUser. Deliberately TIGHT — the
+  // path gate keeps procurement / warehouse / finance SCM areas closed to a
+  // Sales rep with no explicit grant.
+  if (c.req.path.includes("/mfg-sales-orders") && isSalesUser(user)) {
     await next();
     return;
   }

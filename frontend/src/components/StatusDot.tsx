@@ -52,13 +52,14 @@ const STAGE_VARIANT: Record<string, Variant> = {
   pending_review: "open",
   under_verification: "open",
   pending_solution: "open",
-  pending_item_pickup: "open",
   pending_supplier_pickup: "open",
   pending_item_ready: "open",
   pending_delivery_service: "open",
   completed: "closed",
-  // Legacy aliases — 5-stage vocabulary + pending_inspection (retired mig 0105).
+  // Legacy aliases — 5-stage vocabulary + retired stages
+  // (pending_inspection mig 0105, pending_item_pickup mig 0110).
   pending_inspection: "open",
+  pending_item_pickup: "open",
   registration: "open",
   triage: "open",
   action: "in-progress",

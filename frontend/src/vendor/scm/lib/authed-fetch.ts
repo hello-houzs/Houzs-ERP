@@ -267,6 +267,10 @@ const ERROR_CODE_MESSAGES: Record<string, string> = {
   not_found:        'That item could no longer be found. Please refresh.',
   forbidden:        "You don't have permission to do that.",
   invalid_json:     'Something went wrong sending the request. Please try again.',
+  // SO gates — curate the code so the operator never sees the raw sentence's
+  // wording drift (owner 2026-07-14: Houzs Processing Date needs only 30%).
+  processing_date_unpaid: 'A Processing Date needs at least 30% of the order total collected first.',
+  so_sofa_no_other_main:  "A sofa order can't be mixed with bedframe or mattress items — use a separate order.",
 };
 
 export function humanApiError(status: number, body: string): string {

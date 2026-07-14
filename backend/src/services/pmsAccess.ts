@@ -95,20 +95,23 @@ export function isSalesDirectorUser(user: AuthUser | null | undefined): boolean 
   return SALES_DIRECTOR_POSITION.test((user.position_name ?? "").trim());
 }
 
-// Sales staff — a position whose title starts with "Sales " (Sales Executive,
-// Sales Coordinator, …) OR membership of the Sales department. Prod names the
-// department "Sales Department" while the seed is "Sales", so match any dept
-// name containing "sales" (same rule salesTeam.syncSalesRepFromUser uses).
-const SALES_POSITION = /^Sales /i;
+// Sales staff — a position whose title starts with "sales" (Sales Executive,
+// Sales Coordinator, Salesperson, Sales-Executive, …) OR membership of the Sales
+// department. Prod names the department "Sales Department" while the seed is
+// "Sales", so match any dept name containing "sales" (same rule
+// salesTeam.syncSalesRepFromUser uses). Aligned with the FE salesAccess.ts
+// (/^sales/i) — the old /^Sales /i required a trailing space and so missed
+// "Salesperson" / "Sales-Executive", disagreeing with the frontend.
+const SALES_POSITION = /^sales/i;
 
 /**
  * True when the user is Sales staff by STABLE ORG FIELDS — position_name
  * "Sales …" OR their department name contains "sales". Deliberately keyed off
  * org fields (not the configurable permission matrix) per the owner's
- * code-keyed Sales access model. Note: "Sales Director" does NOT match
- * SALES_POSITION (no trailing space in "Director") and is handled by
- * isDirectorUser instead — directors get the full-visibility tier, not the
- * scoped Sales tier.
+ * code-keyed Sales access model. Note: "Sales Director" also matches here, but
+ * every caller resolves the DIRECTOR / view-all tier FIRST (isDirectorUser /
+ * canViewAllSales), which supersedes the scoped Sales tier — so a Sales Director
+ * is never held to the self+downline Sales scope.
  */
 export function isSalesUser(user: AuthUser | null | undefined): boolean {
   if (!user) return false;

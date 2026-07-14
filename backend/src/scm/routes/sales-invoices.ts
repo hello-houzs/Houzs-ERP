@@ -93,7 +93,17 @@ async function recomputeTotals(sb: any, salesInvoiceId: string) {
     else if (g.includes('accessor')) { accessories += lineTotal; accessoriesCost += lineCost; }
     else { others += lineTotal; othersCost += lineCost; }
   }
-  const margin = total - totalCost;
+  /* Fold any header-level discount/tax into the grand total. These columns are
+     currently never written (all discount/tax is per-line, already inside
+     line_total_centi), so this is a no-op today — but it stops a future
+     header-discount UI that populates them from silently overstating the posted
+     revenue (total_centi backs the GL). subtotal_centi stays the line sum. */
+  const { data: siHdr } = await sb.from('sales_invoices')
+    .select('discount_centi, tax_centi').eq('id', salesInvoiceId).maybeSingle();
+  const headerDiscount = Math.max(0, Number(siHdr?.discount_centi ?? 0));
+  const headerTax = Math.max(0, Number(siHdr?.tax_centi ?? 0));
+  const grand = Math.max(0, total - headerDiscount + headerTax);
+  const margin = grand - totalCost;
   await sb.from('sales_invoices').update({
     mattress_sofa_centi: mattressSofa,
     bedframe_centi: bedframe,
@@ -105,13 +115,13 @@ async function recomputeTotals(sb: any, salesInvoiceId: string) {
     accessories_cost_centi: accessoriesCost,
     others_cost_centi: othersCost,
     service_cost_centi: serviceCost,
-    local_total_centi: total,
+    local_total_centi: grand,
     total_cost_centi: totalCost,
     total_margin_centi: margin,
-    margin_pct_basis: total > 0 ? Math.round((margin / total) * 10000) : 0,
+    margin_pct_basis: grand > 0 ? Math.round((margin / grand) * 10000) : 0,
     line_count: (items ?? []).length,
     subtotal_centi: total,
-    total_centi: total,
+    total_centi: grand,
     updated_at: new Date().toISOString(),
   }).eq('id', salesInvoiceId);
 }

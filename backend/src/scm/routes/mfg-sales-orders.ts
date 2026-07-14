@@ -59,6 +59,7 @@ import { buildOneShotMints, type OneShotMintReq } from '../lib/one-shot-mint';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { supabaseAuth } from '../middleware/auth';
 import { escapeForOr } from '../lib/postgrest-search';
+import { paginateAll } from '../lib/paginate-all';
 import { monthBoundsMy, rangeBoundsMy, todayMyt, mytDateOf } from '../lib/my-time';
 // (canViewAllSales / isSelfScopedSales removed — replaced by flat permission
 // gates `scm.so.view_all` / `scm.so.attribute_other` against the REAL Houzs
@@ -120,7 +121,7 @@ import { pickCrossCategoryMatch, type AutoMatchCandidate } from '../lib/cross-ca
 import { recomputeSoStockAllocation } from '../lib/so-stock-allocation';
 import { creditFromCancelledSo, getCustomerCreditBalance } from '../lib/customer-credits';
 import { summariseReadiness } from '../lib/so-readiness';
-import { nextMonthlyDocNo } from '../lib/doc-no';
+import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { soDeliverableRemaining, soLineDeliveries, computeSoLifecycle, soCurrentDocNo, soLineShippedSourcePos } from './delivery-orders-mfg';
 /* Shared 4-state delivery-planning derivation — the SO list emits planning_state
    (the mobile Orders-list card's status) from the SAME helper the Delivery
@@ -278,14 +279,30 @@ async function isPriceOverrideCaller(c: any): Promise<boolean> {
   return hasHouzsPerm(c, 'scm.so.price_override');
 }
 
-/* TBC fill-in + hatch hardening (Loo 2026-06-11) — self-scoped selling roles
-   used to be gated by scm.staff.role. Houzs has NO POS-self-scoped sellers
-   (the SCM bridge pins every caller to one super_admin row, so this gate
-   trivially passed for nobody). Hardcode false; the every-line edit path is
-   already gated upstream by the Houzs session auth + the scm.access gate.
-   Signature kept for call-site compatibility — args ignored. */
-async function selfScopedSalesBlocked(_sb: any, _userId: string, _docNo: string): Promise<boolean> {
-  return false;
+/* Write-side own/downline guard (Audit 2026-07, go-live review #2) — the SO
+   READ paths scope a rep to their OWN + reporting-downline orders via
+   salesDocOutOfScope, but the MUTATION routes were a no-op stub (returned
+   false), so a scoped salesperson could PATCH / delete / repay / reassign ANY
+   SO by enumerable doc_no. This mirrors salesDocOutOfScope exactly: load the
+   target SO's salesperson_id by doc_no, then defer to the shared scope helper
+   (view-all callers — `scm.so.view_all` / director / office via
+   canViewAllSales — bypass; everyone else is held to self + full reporting
+   chain). Reads sb / env / real Houzs caller id / view-all off the Hono
+   context so it uses the SAME identity vocabulary as the reads (houzsUser.id,
+   NOT the pinned scm.staff uuid on user.id). Returns TRUE ⇒ block (the caller
+   answers 404, indistinguishable from a nonexistent doc_no). A missing SO also
+   returns TRUE (fail closed). */
+async function selfScopedSalesBlocked(c: any, docNo: string): Promise<boolean> {
+  if (canViewAllSales(c)) return false; // view-all tier (director / office / *)
+  const sb = c.get('supabase');
+  const { data, error } = await sb
+    .from('mfg_sales_orders')
+    .select('salesperson_id')
+    .eq('doc_no', docNo)
+    .maybeSingle();
+  if (error || !data) return true; // fail closed — unknown/unreadable doc is out of scope
+  const sp = (data as { salesperson_id?: number | string | null }).salesperson_id;
+  return salesDocOutOfScope(sb, c.env, c.get('houzsUser')?.id, false, sp);
 }
 
 /* Anti-tamper (Task 6) — Strip variants.freeItem from a client-supplied
@@ -712,14 +729,15 @@ mfgSalesOrders.get('/', async (c) => {
        the mattress brand source for the first-item rule below; item_code lets
        us fall back to mfg_products.branding when a mattress line's own branding
        is blank; created_at drives the first-line pick. */
-    const { data: itemRows } = await sb
+    const { data: itemRows } = await paginateAll<{ doc_no: string; item_group: string | null; stock_status: string | null; cancelled: boolean; branding: string | null; item_code: string | null; warehouse_id: string | null; created_at: string }>((from, to) => sb
       .from('mfg_sales_order_items')
       .select('doc_no, item_group, stock_status, cancelled, branding, item_code, warehouse_id, created_at')
       .in('doc_no', docNos)
       .eq('cancelled', false)
       .order('doc_no')
       .order('line_no', { ascending: true, nullsFirst: false })
-      .order('created_at', { ascending: true });
+      .order('created_at', { ascending: true })
+      .range(from, to));
     const agg = new Map<string, Map<string, { total: number; ready: number }>>();
     /* Branding auto-derive (Commander 2026-05-28, refined PR #266): the SO list
        grid derives its Branding pill from the SO's FIRST line item — no longer
@@ -2229,7 +2247,7 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
     }
   }
 
-  const docNo = await nextDocNo(sb, c);
+  let docNo = await nextDocNo(sb, c);
 
   /* Caller's REAL scm.staff identity (mig 0066 deterministic sync row,
      linked by staff.user_id) — drives the venue auto-stamp AND the
@@ -3589,8 +3607,9 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
 
   /* Processing-Date payment gate (Loo 2026-06-30) — a Processing Date is
      production's "ready to build" signal: once set, the backend orders materials
-     / starts the build when the date arrives. So it must NOT be set until ≥50% of
-     the order total is collected. Money-only: customer-info / address completeness
+     / starts the build when the date arrives. So it must NOT be set until ≥30% of
+     the order total is collected (PROCESSING_DATE_PAID_THRESHOLD, owner 2026-07-14
+     — NOT the 50% Proceed threshold). Money-only: customer-info / address completeness
      is deliberately NOT required here (those resolve later in Proceed). Mirrors
      the deposit half of the Proceed gate via the shared rule so the two can't
      drift. depositTotalCenti = the POS deposit on this create; grandTotal = order
@@ -3600,14 +3619,31 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
     if (procDateOnCreate && !meetsProcessingDatePaymentGate(depositTotalCenti, grandTotal)) {
       return c.json({
         error: 'processing_date_unpaid',
-        reason: 'A Processing Date can only be set once at least 50% of the order total is paid.',
+        reason: 'A Processing Date can only be set once at least 30% of the order total is paid.',
       }, 400);
     }
   }
 
-  const { error: hErr } = await sb.from('mfg_sales_orders').insert({
+  /* Doc-no collision retry (HIGH, 2026-07-14): two concurrent same-company SO
+     creates in the same YYMM both read the same max and mint the same doc_no;
+     without a retry the loser hits the doc_no PK (Postgres 23505) and the whole
+     order 500s (customer + payments + PWP all lost). Wrap the header insert in
+     insertWithDocNoRetry so a collision re-mints and retries. The FIRST attempt
+     reuses the already-minted docNo (PWP claims were reserved against it, with
+     rollbackPwpClaims on failure); we only auto-retry when NO PWP claim was made
+     (tries=1 keeps today's exact clean-fail+rollback for the rare promo order,
+     so a re-mint can never orphan a pwp_codes.redeemed_doc_no). */
+  let mintedDocNo = docNo;
+  let firstMint = true;
+  const { error: hErr } = await insertWithDocNoRetry(
+    async () => {
+      if (firstMint) { firstMint = false; return mintedDocNo; }
+      mintedDocNo = await nextDocNo(sb, c);
+      return mintedDocNo;
+    },
+    (dn) => sb.from('mfg_sales_orders').insert({
     company_id: companyId, // multi-company: stamp the active company
-    doc_no: docNo,
+    doc_no: dn,
     proceeded_at: autoProceed ? new Date().toISOString() : null,
     transfer_to: (body.transferTo as string) ?? null,
     so_date: (body.soDate as string) ?? todayMyt(),
@@ -3749,8 +3785,11 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
        row compatibility, but new rows skip it entirely. */
     status: (body as { asDraft?: unknown }).asDraft === true ? 'DRAFT' : 'CONFIRMED',
     created_by: user.id,
-  });
+    }),
+    claimedPwpCodes.length === 0 ? 8 : 1,
+  );
   if (hErr) { await rollbackPwpClaims(); return c.json({ error: 'insert_failed', reason: hErr.message }, 500); }
+  docNo = mintedDocNo; // committed doc_no — every child insert below keys off it
 
   /* P1 (migration 0143) — the slip is now owned by this SO, so promote its
      pending row. 'promoted' rows are excluded from the reaper that deletes the
@@ -4165,7 +4204,7 @@ mfgSalesOrders.patch('/:docNo/status', async (c) => {
      transition or cancel another salesperson's SO by doc_no — a cancel even
      converts that SO's deposit into a customer credit. Mirror the
      line-mutation endpoints' self-scope guard. */
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   const { data: prev } = await sb.from('mfg_sales_orders').select('status').eq('doc_no', docNo).maybeSingle();
   const fromStatus = (prev as { status: string } | null)?.status ?? null;
@@ -4654,7 +4693,7 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
      this a sales/sales_executive reaching the Backend SO detail could PATCH any
      order by doc_no (customer fields, even salesperson_id reassignment). Mirror
      the line-mutation endpoints' self-scope guard. */
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   /* Owner 2026-06-03 (migration 0144) — phone is COMPULSORY on every SO. The
      CREATE path blocks an empty phone (phone_required); the EDIT path must too,
@@ -4818,7 +4857,7 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
      super_admin; Houzs has no live staff_role (the SCM bridge pins every caller to
      one super_admin row), so gate on the flat `scm.so.remove_processing_date` key
      (Owner + IT Admin pass via `*`). Setting it the first time, or moving it to
-     another date, stays governed by the existing gates (payment ≥50%, variants
+     another date, stays governed by the existing gates (payment ≥30%, variants
      complete, not-in-the-past, processing lock). */
   let superAdminClearsProc = false;
   {
@@ -4871,10 +4910,10 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
     }
   }
 
-  /* Processing-Date payment gate (Loo 2026-06-30) — the same ≥50%-collected rule
+  /* Processing-Date payment gate (Loo 2026-06-30) — the same ≥30%-collected rule
      the CREATE path enforces, applied when a header PATCH SETS or CHANGES the
      Processing Date to a non-null value. The date is production's "ready to build"
-     signal, so it can't go in until half the money is in. Fires ONLY on a genuine
+     signal, so it can't go in until ≥30% of the money is in. Fires ONLY on a genuine
      change (clearing it, or an unchanged re-save, passes — so an unrelated edit on
      an already-dated, since-refunded SO isn't blocked). Money-only — customer-info
      / address are deliberately not gated (they resolve later in Proceed). `paid` =
@@ -4897,7 +4936,7 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
         if (!meetsProcessingDatePaymentGate(paidCenti, totalCenti)) {
           return c.json({
             error: 'processing_date_unpaid',
-            reason: 'A Processing Date can only be set once at least 50% of the order total is paid.',
+            reason: 'A Processing Date can only be set once at least 30% of the order total is paid.',
           }, 400);
         }
       }
@@ -5282,7 +5321,7 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
 
   /* TBC fill-in (Loo 2026-06-11) — self-scoped selling roles only touch
      their own SO. */
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   /* Composition guard (Loo 2026-06-11) — the create-path MAIN-mix rule
      (sofa never shares a bill with bedframe / mattress, PR #519) now also
@@ -5334,6 +5373,27 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
       variantsObj as Parameters<typeof checkAllowedOptions>[2],
     );
     if (aoErr) return c.json({ ...aoErr, itemCode: itemCodeStr }, 400);
+  }
+  /* Go-live review #6 — variant completeness on the LINE routes. The header
+     POST/PATCH already blocks setting a Processing Date while any line has
+     blank category-mandatory variants (findIncompleteVariantLines), but a line
+     ADDED to an already processing-dated SO skipped that check — so a fabric
+     could be blanked on a build that's already "ready to build". Re-run the
+     shared guard on this added line when the SO carries a Processing Date
+     (internal_expected_dd). Same 409 shape the header path returns. */
+  if ((header as { internal_expected_dd?: string | null }).internal_expected_dd) {
+    const offenders = findIncompleteVariantLines([{
+      itemCode: itemCodeStr,
+      group: (it.itemGroup as string | null | undefined) ?? null,
+      variants: variantsObj as Record<string, unknown> | null,
+    }]);
+    if (offenders.length > 0) {
+      return c.json({
+        error: 'variants_incomplete',
+        message: 'Processing Date requires all category-mandatory variants on every line.',
+        offenders,
+      }, 409);
+    }
   }
   const [cachedConfig, productLite, fabricLite, sofaCombosLite, sellingTiersLite, fabricAddonConfigLite, specialAddonsLite, modelOverridesLite, compartmentOverridesLite] = await Promise.all([
     loadMaintenanceConfig(sb),
@@ -5775,7 +5835,7 @@ mfgSalesOrders.patch('/:docNo/items/:itemId', async (c) => {
 
   /* TBC fill-in (Loo 2026-06-11) — self-scoped selling roles only touch
      their own SO. */
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   /* Owner 2026-06-12 — processing-date lock: no line EDIT once the processing
      day has passed (the locked order is already PO'd to the supplier). */
@@ -5873,6 +5933,30 @@ mfgSalesOrders.patch('/:docNo/items/:itemId', async (c) => {
       variantsAfter as Parameters<typeof checkAllowedOptions>[2],
     );
     if (aoErr) return c.json({ ...aoErr, itemCode: itemCodeAfter }, 400);
+    /* Go-live review #6 — variant completeness on the LINE-EDIT route. When the
+       SO already carries a Processing Date (internal_expected_dd) the header
+       guard (findIncompleteVariantLines) has already vouched every line is
+       complete; a later line edit must not be able to blank a category-mandatory
+       variant (e.g. clear a fabric) on that "ready to build" order. Only checked
+       when the caller actually CHANGED variants / item code (same grandfather as
+       the allowed-options gate above) so an untouched re-save is never rejected. */
+    const { data: soHdr } = await sb.from('mfg_sales_orders')
+      .select('internal_expected_dd').eq('doc_no', docNo).maybeSingle();
+    if ((soHdr as { internal_expected_dd?: string | null } | null)?.internal_expected_dd) {
+      const offenders = findIncompleteVariantLines([{
+        id: itemId,
+        itemCode: itemCodeAfter,
+        group: itemGroupAfter,
+        variants: variantsAfter as Record<string, unknown> | null,
+      }]);
+      if (offenders.length > 0) {
+        return c.json({
+          error: 'variants_incomplete',
+          message: 'Processing Date requires all category-mandatory variants on every line.',
+          offenders,
+        }, 409);
+      }
+    }
   }
   if (shouldRecompute && itemCodeAfter) {
     const [cfg, prodLite, fabLite, sofaCombosPatch, sellingTiersPatch, fabricAddonConfigPatch, specialAddonsPatch, modelOverridesPatch, compartmentOverridesPatch] = await Promise.all([
@@ -6140,7 +6224,7 @@ mfgSalesOrders.delete('/:docNo/items/:itemId', async (c) => {
 
   /* TBC fill-in (Loo 2026-06-11) — self-scoped selling roles only touch
      their own SO. */
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   /* Owner 2026-06-12 — processing-date lock: no line DELETE once the
      processing day has passed (the locked order is already PO'd). */
@@ -6271,7 +6355,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-update', async (c) => {
 
   const childLock = await soHasDownstream(sb, docNo);
   if (childLock) return c.json(childLock, 409);
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   /* Owner 2026-06-12 — processing-date lock: a TBC fill-in is still a line
      EDIT (it changes what we PO to the supplier), so it locks too. */
@@ -6480,7 +6564,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap', async (c) => {
 
   const childLock = await soHasDownstream(sb, docNo);
   if (childLock) return c.json(childLock, 409);
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   /* Owner 2026-06-12 — processing-date lock: a product swap is a line EDIT
      (it changes what we PO to the supplier), so it locks too. */
@@ -7037,7 +7121,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
     const procLock = await soProcessingLockBlocked(sb, docNo);
     if (procLock) return c.json(procLock, 409);
   }
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   const { data: prevRow } = await sb.from('mfg_sales_order_items')
     .select('id, item_code, item_group, qty, discount_centi, total_centi, variants, cancelled, line_date, debtor_code, debtor_name, agent, venue, branding, line_delivery_date, line_delivery_date_overridden, warehouse_id, remark')
@@ -7669,7 +7753,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/photos', async (c) => {
   const itemId = c.req.param('itemId');
   const user = c.get('user');
   // Audit 2026-06-20 — self-scoped sales may only touch their OWN SO (mirror the line/header guards).
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   if (!c.env.SO_ITEM_PHOTOS) {
     return c.json({ error: 'photo_bucket_not_configured' }, 500);
@@ -7861,7 +7945,7 @@ mfgSalesOrders.delete('/:docNo/items/:itemId/photos/:photoKey', async (c) => {
   const photoKey = decodeURIComponent(c.req.param('photoKey'));
   const user = c.get('user');
   // Audit 2026-06-20 — self-scoped sales may only touch their OWN SO (mirror the line/header guards).
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   if (!c.env.SO_ITEM_PHOTOS) {
     return c.json({ error: 'photo_bucket_not_configured' }, 500);
@@ -8101,7 +8185,7 @@ export async function recordSoPaymentRow(
 mfgSalesOrders.post('/:docNo/payments', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const user = c.get('user');
   // Audit 2026-06-20 — self-scoped sales may only touch their OWN SO (mirror the line/header guards).
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   // Ensure the SO exists before inserting a child row (gives a cleaner
   // 404 than a deferred FK violation).
@@ -8227,7 +8311,7 @@ mfgSalesOrders.patch('/:docNo/payments/:id', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const id = c.req.param('id');
   const user = c.get('user');
   // Same self-scope gate as POST / DELETE payments.
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   // Load the row (need every method-scoped column + created_at for the lock).
   const { data: row } = await sb.from('mfg_sales_order_payments').select('*').eq('id', id).maybeSingle();
@@ -8356,7 +8440,7 @@ mfgSalesOrders.delete('/:docNo/payments/:id', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const id = c.req.param('id');
   const user = c.get('user');
   // Audit 2026-06-20 — self-scoped sales may only touch their OWN SO (mirror the line/header guards).
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   // Guard: only delete if the row belongs to this docNo. Prevents a
   // mis-routed call from nuking another SO's payment.
@@ -8452,7 +8536,7 @@ mfgSalesOrders.patch('/:docNo/items/:itemId/stock-status', async (c) => {
   const itemId = c.req.param('itemId');
   const user = c.get('user');
   // Audit 2026-06-20 — self-scoped sales may only touch their OWN SO (mirror the line/header guards).
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   let body: { status?: string };
   try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid_json' }, 400); }
@@ -8616,7 +8700,7 @@ mfgSalesOrders.post('/:docNo/amendments', async (c) => {
 
   // Self-scope stub (no-op in Houzs — the SCM bridge has no POS-self-scoped
   // sellers); kept for call-site parity with 2990.
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   // Guard 2 — an amendment only makes sense once the SO is processing-locked;
   // an unlocked SO is still directly editable, so no amendment is needed.

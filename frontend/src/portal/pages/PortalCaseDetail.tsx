@@ -18,7 +18,6 @@ const STAGE_COPY: Record<string, { step: 1 | 2 | 3 | 4 | 5; eyebrow: string; tit
   pending_review:           { step: 1, eyebrow: "Request received", title: "Thanks — we've got your request", body: "A member of our team will pick this up shortly and confirm the next step." },
   under_verification:       { step: 2, eyebrow: "In progress",      title: "We're reviewing your request",     body: "Our team is assessing the reported issue. We'll message you once the next step is scheduled." },
   pending_solution:         { step: 2, eyebrow: "In progress",      title: "Choosing the best resolution",     body: "We're figuring out the best path forward — replace, repair, or on-site service. Update coming soon." },
-  pending_item_pickup:      { step: 3, eyebrow: "In progress",      title: "Arranging collection",             body: "We're scheduling pickup of your item. Someone will reach out to confirm date and time." },
   pending_supplier_pickup:  { step: 3, eyebrow: "In progress",      title: "With our service specialist",      body: "Your item is with our specialist for repair. We'll ping you as soon as it's back with us." },
   pending_item_ready:       { step: 4, eyebrow: "Nearly done",      title: "Final quality check",              body: "Your item is back with us and going through a final quality check before delivery." },
   pending_delivery_service: { step: 5, eyebrow: "On its way",       title: "Being delivered",                  body: "Your item is on its way back to you. We'll confirm a delivery window shortly." },

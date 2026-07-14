@@ -170,6 +170,7 @@ const SoLineCardInner = ({
   docNo,
   itemId,
   isEditing = true,
+  variantsRequired = true,
   searchHint,
 }: {
   index:     number;
@@ -187,6 +188,13 @@ const SoLineCardInner = ({
   docNo?:    string;
   itemId?:   string;
   isEditing?: boolean;
+  /* Whether the category-mandatory variants (fabric / seat / divan / leg / gap)
+     are REQUIRED on this line — drives the ` *` marker + red invalid ring.
+     Matches the backend, which only enforces them once a Processing Date is set
+     (mfg-sales-orders variants gate). SO New / Detail pass !!processingDate.
+     DEFAULT true so Consignment + any other consumer is unchanged (owner
+     2026-07-14). */
+  variantsRequired?: boolean;
   /* Scan-Order (Task #73) — the OCR rawText for a NO-MATCH line, shown as the
      SKU picker's placeholder so the operator sees what was on the slip while
      they pick a real SKU. It is a HINT ONLY — never committed as the product
@@ -571,15 +579,19 @@ const SoLineCardInner = ({
   };
 
   /* ── Special Add-ons (SO-parity, Loo 2026-06-06) ──────────────────────
-     Mirror the POS configurator exactly: active special_addons rows for this
-     line's category ∩ the Model's allowed_options.specials ticks. POS
-     semantics — no ticks = nothing offered (Modular is the ON/OFF authority),
-     unlike the height pools where empty = unrestricted. */
+     Active special_addons rows for this line's category, intersected with the
+     Model's allowed_options.specials pool. Owner 2026-07-14 — the pool is now
+     OPT-OUT, matching the height pools + the backend (allowed-options-check
+     only gates specials when the pool is non-empty; honest-pricing prices any
+     picked code): an EMPTY/absent pool ⇒ offer ALL active specials for the
+     category; a NON-EMPTY pool restricts to the ticked codes. */
   const catUpper = category.toUpperCase();
   const specialOptions = useMemo(() => {
-    const allowed = new Set(allowOpts?.specials ?? []);
+    const pool = allowOpts?.specials;
+    const restricted = Array.isArray(pool) && pool.length > 0;
+    const allowed = new Set(pool ?? []);
     return specialDefs.filter(
-      (a) => a.active && a.categories.includes(catUpper) && allowed.has(a.code),
+      (a) => a.active && a.categories.includes(catUpper) && (!restricted || allowed.has(a.code)),
     );
   }, [specialDefs, catUpper, allowOpts]);
   const specialChoicesMap: Record<string, string[]> =
@@ -889,28 +901,28 @@ const SoLineCardInner = ({
           <div className={styles.variantsHead}>BEDFRAME VARIANTS</div>
           <div className={styles.variantsGrid}>
             <VariantSelect
-              label="Fabrics" required
+              label="Fabrics" required={variantsRequired}
               value={String(draft.variants.fabricCode ?? '')}
               disabled={!isEditing}
               options={fabricOptions}
               onChange={pickFabricColour}
             />
             <VariantSelect
-              label="Gaps" required
+              label="Gaps" required={variantsRequired}
               value={String(draft.variants.gap ?? '')}
               disabled={!isEditing}
               options={sortByNumeric(restrictS(maintPickerValues(maint!.gaps, String(draft.variants.gap ?? '')), allowOpts?.gaps).map((g) => ({ value: g, priceSen: 0 })))}
               onChange={(v) => setVariant('gap', v)}
             />
             <VariantSelect
-              label="Divan Heights" required
+              label="Divan Heights" required={variantsRequired}
               value={String(draft.variants.divanHeight ?? '')}
               disabled={!isEditing}
               options={sortByNumeric(restrictP(activeOptions(maint!.divanHeights, String(draft.variants.divanHeight ?? '')), allowOpts?.divan_heights))}
               onChange={(v) => setVariant('divanHeight', v)}
             />
             <VariantSelect
-              label="Leg Heights" required
+              label="Leg Heights" required={variantsRequired}
               value={String(draft.variants.legHeight ?? '')}
               disabled={!isEditing}
               options={sortByNumeric(restrictP(activeOptions(maint!.legHeights, String(draft.variants.legHeight ?? '')), allowOpts?.leg_heights))}
@@ -950,14 +962,14 @@ const SoLineCardInner = ({
           <div className={styles.variantsHead}>SOFA VARIANTS</div>
           <div className={styles.variantsGrid}>
             <VariantSelect
-              label="Fabrics" required
+              label="Fabrics" required={variantsRequired}
               value={String(draft.variants.fabricCode ?? '')}
               disabled={!isEditing}
               options={fabricOptions}
               onChange={pickFabricColour}
             />
             <VariantSelect
-              label="Seat Heights" required
+              label="Seat Heights" required={variantsRequired}
               value={String(draft.variants.seatHeight ?? '')}
               disabled={!isEditing}
               options={sortByNumeric(restrictS(maintPickerValues(maint!.sofaSizes, String(draft.variants.seatHeight ?? '')), allowOpts?.sizes).map((s) => {

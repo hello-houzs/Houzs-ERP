@@ -1,4 +1,4 @@
--- 0099_remove_pending_inspection.sql
+-- 0105_remove_pending_inspection.sql
 -- Service-case workflow drops the standalone Pending Inspection stage
 -- (mobile redesign handoff, Nick 2026-07-14). Inspection now lives
 -- INSIDE Under Verification: inspection_by (own/supplier, mig 0073),

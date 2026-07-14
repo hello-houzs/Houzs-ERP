@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, ReactNode, SetStateAction } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
+import { MobileVirtualList } from "./MobileVirtualList";
 import { MediaLightbox, type MediaItem } from "../components/MediaLightbox";
 import { useAuth } from "../auth/AuthContext";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
@@ -472,8 +473,13 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
         {isLoading && <div style={{ textAlign: "center", color: "#9aa093", fontSize: 12, padding: "26px 0" }}>Loading…</div>}
         {error && <div style={{ textAlign: "center", color: "#b23a3a", fontSize: 12, padding: "26px 0" }}>Couldn't load projects. Pull to retry.</div>}
         {!isLoading && !error && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
-            {rows.map((r) => {
+          <>
+            {rows.length > 0 && (
+              <MobileVirtualList
+                items={rows}
+                getKey={(r) => r.id}
+                estimateHeight={108}
+                renderItem={(r) => {
               const s = (r.stage ?? "").toLowerCase();
               const dimmed = s === "cancelled" || s === "closed";
               const where = r.venue || r.state || null;
@@ -499,14 +505,16 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
                   </div>
                 </div>
               );
-            })}
+                }}
+              />
+            )}
             {!rows.length && (
               <div className="empty">
                 <div className="empty-t">No projects</div>
                 <div className="empty-s">No projects match this filter.</div>
               </div>
             )}
-          </div>
+          </>
         )}
       </div>
     </div>

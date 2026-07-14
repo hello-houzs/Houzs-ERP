@@ -7,10 +7,14 @@ import { splitHighlight } from "./utils";
  * mobile search palette (MobileSearch) so the "bold the matched keyword"
  * behaviour is identical everywhere.
  *
- * The <mark> is styled inline (transparent background, inherited colour, bold
- * weight) so it reads as an emphasised run of the SAME text — not a yellow
- * highlighter block — matching the ERP's restrained palette. Callers on either
- * platform can override via `className`.
+ * Default (no className) — reads as an emphasised run of the SAME text:
+ * transparent background, inherited colour, weight 700. This is what
+ * MobileSearch relies on so the highlight matches the surrounding label.
+ *
+ * With a className — the caller owns the visual entirely (bg / colour /
+ * weight / radius). Inline overrides are dropped so Tailwind classes like
+ * `bg-primary/[.12] text-primary-ink font-semibold` actually paint. Used by
+ * the desktop GlobalSearch palette for the Theme C petrol pill.
  */
 export function HighlightedText({
   text,
@@ -22,19 +26,14 @@ export function HighlightedText({
   className?: string;
 }): ReactNode {
   const segments = splitHighlight(text, query);
+  const defaultStyle = className
+    ? undefined
+    : { background: "transparent", color: "inherit", fontWeight: 700 };
   return (
     <>
       {segments.map((seg, i) =>
         seg.match ? (
-          <mark
-            key={i}
-            className={className}
-            style={{
-              background: "transparent",
-              color: "inherit",
-              fontWeight: 700,
-            }}
-          >
+          <mark key={i} className={className} style={defaultStyle}>
             {seg.text}
           </mark>
         ) : (

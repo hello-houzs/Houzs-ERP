@@ -701,14 +701,18 @@ async function getMailScope(c: Context<{ Bindings: Env }>): Promise<{
     )
       .bind(userId, userId)
       .all<{ address: string }>();
+    /* Go-live review #12 — the bidirectional substring LIKE over-matched: a
+       "Sales" director captured "Presales" / "Wholesales" mailboxes (either
+       direction of the LIKE). Tighten to a NORMALIZED equality (case-insensitive,
+       trimmed) on the department name so a Sales director sees exactly the Sales
+       department's mailboxes and nothing whose name merely contains "sales". */
     const deptRows = await c.env.DB.prepare(
       `SELECT address FROM email_addresses
          WHERE active = 1${coSql}
            AND assigned_dept IS NOT NULL AND trim(assigned_dept) <> ''
-           AND ( lower(assigned_dept) LIKE '%' || lower(?) || '%'
-                 OR lower(?) LIKE '%' || lower(assigned_dept) || '%' )`,
+           AND lower(trim(assigned_dept)) = lower(trim(?))`,
     )
-      .bind(salesDirDept, salesDirDept)
+      .bind(salesDirDept)
       .all<{ address: string }>();
     const addrs = [
       ...(own.results ?? []).map((r) => r.address),
@@ -749,18 +753,28 @@ async function getMailScope(c: Context<{ Bindings: Env }>): Promise<{
 
   // 'department' — additionally every active mailbox in the caller's own dept.
   if (level === "department") {
-    const deptRow = await c.env.DB.prepare(
-      `SELECT assigned_dept FROM email_addresses
-         WHERE assigned_user_id = ?${coSql}
-           AND assigned_dept IS NOT NULL AND assigned_dept <> '' LIMIT 1`,
-    )
-      .bind(userId)
-      .first<{ assigned_dept?: string | null }>();
-    const dept = (deptRow?.assigned_dept ?? "").trim();
+    /* Go-live review #12 — the caller's department is the caller's OWN org
+       department_name, not whatever dept happens to be stamped on a mailbox they
+       were granted access to. Deriving it from an owned mailbox row let a member
+       whose only assigned mailbox carries an unrelated assigned_dept scope to the
+       WRONG department. Prefer the caller's org department_name; fall back to the
+       mailbox-derived dept only when the org field is absent (legacy rows). */
+    let dept = (user?.department_name ?? "").trim();
+    if (!dept) {
+      const deptRow = await c.env.DB.prepare(
+        `SELECT assigned_dept FROM email_addresses
+           WHERE assigned_user_id = ?${coSql}
+             AND assigned_dept IS NOT NULL AND assigned_dept <> '' LIMIT 1`,
+      )
+        .bind(userId)
+        .first<{ assigned_dept?: string | null }>();
+      dept = (deptRow?.assigned_dept ?? "").trim();
+    }
     if (dept) {
       const deptRows = await c.env.DB.prepare(
         `SELECT address FROM email_addresses
-           WHERE active = 1${coSql} AND assigned_dept = ?`,
+           WHERE active = 1${coSql}
+             AND lower(trim(assigned_dept)) = lower(trim(?))`,
       )
         .bind(dept)
         .all<{ address: string }>();

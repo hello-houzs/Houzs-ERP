@@ -88,6 +88,13 @@ import { distillAllSalespersonRules, warmCatalogCacheForCron, processScanQueueMe
 import { runAgentHeartbeat } from "./services/agent-scheduler";
 import { getSupabaseService } from "./db/supabase";
 import { getBranding } from "./services/branding";
+// AutoCount inbound SO pull — restored 2026-07-14. Reads SO from the AutoCount
+// middleware and upserts the local `sales_orders` mirror (read-only against
+// AutoCount; writes only ERP tables). Gated by isAutoCountSyncDisabled so the
+// env kill switch still halts it. The mirror feeds Finance/P&L revenue and the
+// ASSR SO lookup, which had been frozen since the 2026-06-13 pause.
+import { runPull } from "./services/pull";
+import { isAutoCountSyncDisabled } from "./services/autocount";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -305,6 +312,19 @@ export default {
           })
           .catch((e) => console.error("[cron email-outbox]", e))
       );
+      // AutoCount inbound SO pull (incremental, checkpoint-driven). getSince()
+      // fetches every SO modified since the stored pull_checkpoint and upserts
+      // the local `sales_orders` mirror — so the first run after re-enabling
+      // catches the mirror up from the 2026-06-13 freeze, and every 5-min run
+      // keeps it fresh. Read-only against AutoCount (no writes back). Gated by
+      // the env kill switch; best-effort so a pull failure never breaks the slot.
+      if (!isAutoCountSyncDisabled(env)) {
+        ctx.waitUntil(
+          runPull(env, "SCHEDULED")
+            .then((r) => console.log(`[cron so-pull] ${r.message}`))
+            .catch((e) => console.error("[cron so-pull]", e))
+        );
+      }
     } else if (event.cron === "*/30 * * * *") {
       // ASSR/QMS v3.1 — per-stage alert scanner (half / approaching / breach).
       // Cheap: one query over open stage_history rows, idempotent via the

@@ -228,6 +228,11 @@ async function handleResponse<T>(res: Response, path: string): Promise<T> {
   return (await res.json()) as T;
 }
 
+// RUM-lite: warn in the console on any request slower than this, so a
+// future slow endpoint surfaces itself (the "find the next slow thing" signal —
+// how this whole perf campaign started). Pure observability, no behaviour change.
+const SLOW_FETCH_MS = 800;
+
 async function request<T>(path: string, opts?: RequestInit): Promise<T> {
   const token = tokenStore.get();
   const method = (opts?.method || "GET").toUpperCase();
@@ -237,6 +242,7 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
     const ctrl = new AbortController();
     const timer =
       method === "GET" ? setTimeout(() => ctrl.abort(), GET_TIMEOUT_MS) : null;
+    const startedAt = performance.now();
     try {
       const res = await fetch(`${baseUrl}${path}`, {
         ...opts,
@@ -248,6 +254,8 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
           ...(opts?.headers || {}),
         },
       });
+      const ms = Math.round(performance.now() - startedAt);
+      if (ms >= SLOW_FETCH_MS) console.warn(`[perf] slow ${method} ${path} — ${ms}ms`);
       return await handleResponse<T>(res, path);
     } catch (e) {
       // A 503 is the server's "transient — try again" contract; retry it for

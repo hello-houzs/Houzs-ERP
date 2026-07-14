@@ -117,9 +117,14 @@ export function allocateLandedCharges(
   // the LAST goods line absorbs whatever is left so Σ allocated === pool exactly.
   const goods: AllocatedGoodsLine[] = [];
   let allocatedSoFar = 0;
+  // The remainder must land on the last line with qty > 0. A trailing qty=0
+  // goods line would fold it into a per-unit charge of 0 (round(alloc/0)→0) and
+  // the freight would vanish from every lot instead of summing to the pool.
+  let lastPositiveIdx = -1;
+  for (let k = base.length - 1; k >= 0; k -= 1) { if (base[k]!.qty > 0) { lastPositiveIdx = k; break; } }
   for (let i = 0; i < base.length; i += 1) {
     const b = base[i]!;
-    const isLast = i === base.length - 1;
+    const isLast = i === lastPositiveIdx;
     let alloc: number;
     if (chargePoolMyr === 0 || sumBasis <= 0) {
       // No pool, or nowhere to land it → no allocation anywhere (no-op).
