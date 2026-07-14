@@ -972,9 +972,18 @@ function StageStatStrip({
   stage: StageFilter;
   onPick: (s: StageFilter) => void;
 }) {
+  const { can } = useAuth();
+  // OFF-NOT-HIDE: the stage-funnel strip is an ORG aggregate gated behind
+  // `service_cases.read`. A non-director Sales user reaches this page (their
+  // My-Cases list loads via the widened requireServiceCaseAccess route) but
+  // lacks that matrix permission, so firing this would 403 → "Forbidden"
+  // toast. Gate the fetch so it never fires for them; the strip just renders
+  // its empty/zero state instead.
+  const canReadSummary = can("service_cases.read");
   const q = useQuery<AssrSummary>(
     () => api.get("/api/assr/summary?since_days=730"),
-    []
+    [],
+    { enabled: canReadSummary }
   );
 
   // The /summary aggregate runs ~13 queries and flakes with a 500 on a
@@ -1853,6 +1862,7 @@ function CreatePanel({
   onCreated: (id: number) => void;
   toast: ReturnType<typeof useToast>;
 }) {
+  const { can } = useAuth();
   const [docNo, setDocNo] = useState("");
   // Typeahead state: search local SO mirror by partial DocNo /
   // reference / customer name so staff don't have to remember the
@@ -1913,9 +1923,18 @@ function CreatePanel({
   // PIC picker — same source + Operations filter as the detail view's
   // "Assigned to" select. Optional at intake; left blank falls back to
   // the admin-configured default assignee on the backend.
+  //
+  // OFF-NOT-HIDE: `/api/users` is gated behind `users.read`. A non-director
+  // Sales user can create a case (their submission defaults the assignee to
+  // null → the office sets the PIC later), but lacks that permission, so
+  // firing this would 403 → "Forbidden" toast. Gate the fetch so it never
+  // fires for them; the Assign-To block below is hidden and the create
+  // proceeds with a null assignee (see submit: `assignedTo ? … : null`).
+  const canPickAssignee = can("users.read");
   const usersQ = useQuery<{ id: number; name: string; department_name?: string }[]>(
     () => api.get<any>("/api/users").then((r: any) => r.users ?? r.data ?? r ?? []),
     [],
+    { enabled: canPickAssignee },
   );
   const opsUserOptions = Array.isArray(usersQ.data)
     ? usersQ.data
@@ -2433,23 +2452,25 @@ function CreatePanel({
               className="w-full rounded-md border border-border bg-bg px-3 py-2 text-[13px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
             />
           </div>
-          <div>
-            <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
-              Assign To (Operations PIC)
+          {canPickAssignee && (
+            <div>
+              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+                Assign To (Operations PIC)
+              </div>
+              <select
+                value={assignedTo}
+                onChange={(e) => setAssignedTo(e.target.value)}
+                className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+              >
+                <option value="">Use default assignee</option>
+                {opsUserOptions.map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.name}
+                  </option>
+                ))}
+              </select>
             </div>
-            <select
-              value={assignedTo}
-              onChange={(e) => setAssignedTo(e.target.value)}
-              className="w-full appearance-none rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-ink outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
-            >
-              <option value="">Use default assignee</option>
-              {opsUserOptions.map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.name}
-                </option>
-              ))}
-            </select>
-          </div>
+          )}
         </div>
       </PanelSection>
 
