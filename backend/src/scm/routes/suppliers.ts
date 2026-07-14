@@ -323,8 +323,8 @@ suppliers.get('/:id', async (c) => {
   const supabase = c.get('supabase');
 
   const [supplierRes, bindingsRes] = await Promise.all([
-    supabase.from('suppliers').select(SUPPLIER_COLS).eq('id', id).maybeSingle(),
-    supabase.from('supplier_material_bindings').select(BINDING_COLS).eq('supplier_id', id).order('material_code'),
+    scopeToCompany(supabase.from('suppliers').select(SUPPLIER_COLS).eq('id', id), c).maybeSingle(),
+    scopeToCompany(supabase.from('supplier_material_bindings').select(BINDING_COLS).eq('supplier_id', id), c).order('material_code'),
   ]);
 
   if (supplierRes.error) return c.json({ error: 'load_failed', reason: supplierRes.error.message }, 500);
@@ -458,10 +458,13 @@ suppliers.patch('/:id', async (c) => {
 suppliers.get('/:id/bindings', async (c) => {
   const id = c.req.param('id');
   const supabase = c.get('supabase');
-  const { data, error } = await supabase
-    .from('supplier_material_bindings')
-    .select(BINDING_COLS)
-    .eq('supplier_id', id)
+  const { data, error } = await scopeToCompany(
+    supabase
+      .from('supplier_material_bindings')
+      .select(BINDING_COLS)
+      .eq('supplier_id', id),
+    c,
+  )
     .order('material_code');
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
   return c.json({ bindings: data ?? [] });
@@ -775,10 +778,21 @@ suppliers.get('/:id/scorecard', async (c) => {
   const id = c.req.param('id');
   const supabase = c.get('supabase');
 
-  const { data: pos, error: posErr } = await supabase
-    .from('purchase_orders')
-    .select('id, po_number, status, po_date, expected_at, supplier_delivery_date_2, supplier_delivery_date_3, supplier_delivery_date_4, received_at, total_centi')
-    .eq('supplier_id', id)
+  // Multi-company: verify the supplier belongs to the active company before
+  // aggregating — the PO/GRN reads below key on supplier_id only.
+  const { data: supplierRow } = await scopeToCompany(
+    supabase.from('suppliers').select('id').eq('id', id),
+    c,
+  ).maybeSingle();
+  if (!supplierRow) return c.json({ error: 'not_found' }, 404);
+
+  const { data: pos, error: posErr } = await scopeToCompany(
+    supabase
+      .from('purchase_orders')
+      .select('id, po_number, status, po_date, expected_at, supplier_delivery_date_2, supplier_delivery_date_3, supplier_delivery_date_4, received_at, total_centi')
+      .eq('supplier_id', id),
+    c,
+  )
     .order('po_date', { ascending: false });
 
   if (posErr) return c.json({ error: 'load_failed', reason: posErr.message }, 500);
@@ -819,11 +833,14 @@ suppliers.get('/:id/scorecard', async (c) => {
   const averageLeadDays = receivedPOs > 0 ? leadDaysSum / receivedPOs : 0;
 
   // Defect rate = rejected_qty / received_qty across this supplier's posted GRNs.
-  const { data: grnAgg } = await supabase
-    .from('grn_items')
-    .select('qty_received, qty_rejected, grn:grns!inner(supplier_id, status)')
-    .eq('grn.supplier_id', id)
-    .eq('grn.status', 'POSTED');
+  const { data: grnAgg } = await scopeToCompany(
+    supabase
+      .from('grn_items')
+      .select('qty_received, qty_rejected, grn:grns!inner(supplier_id, status)')
+      .eq('grn.supplier_id', id)
+      .eq('grn.status', 'POSTED'),
+    c,
+  );
 
   let totalReceived = 0;
   let totalRejected = 0;
@@ -841,10 +858,13 @@ suppliers.get('/:id/scorecard', async (c) => {
   const last10Ids = last10Raw.map((po) => po.id);
   const qtyByPo = new Map<string, { orderedQty: number; receivedQty: number }>();
   if (last10Ids.length > 0) {
-    const { data: itemRows } = await supabase
-      .from('purchase_order_items')
-      .select('purchase_order_id, qty, received_qty')
-      .in('purchase_order_id', last10Ids);
+    const { data: itemRows } = await scopeToCompany(
+      supabase
+        .from('purchase_order_items')
+        .select('purchase_order_id, qty, received_qty')
+        .in('purchase_order_id', last10Ids),
+      c,
+    );
     for (const r of (itemRows ?? []) as Array<{ purchase_order_id: string; qty: number | null; received_qty: number | null }>) {
       // Dual-read camelCase ?? snake_case for the FK column.
       const poId = ((r as Record<string, unknown>).purchaseOrderId ?? r.purchase_order_id) as string;

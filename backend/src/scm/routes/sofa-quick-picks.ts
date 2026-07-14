@@ -17,7 +17,7 @@
 import { Hono, type Context } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import { hasHouzsPerm } from '../lib/houzs-perms';
-import { activeCompanyId } from '../lib/companyScope';
+import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 import { canonicalizeLayoutModulesForStorage, type ComboSlots } from '../shared';
 
@@ -91,11 +91,14 @@ sofaQuickPicks.get('/', async (c) => {
   // review). Require the scope; the POS always passes it for a real sofa Model.
   if (!baseModel) return c.json({ picks: [] });
 
-  const q = supabase
-    .from('sofa_quick_picks')
-    .select('id, base_model, label, modules, depth, sort_order, deleted_at, created_at, updated_at, created_by')
-    .is('deleted_at', null)
-    .eq('base_model', baseModel)
+  const q = scopeToCompany(
+    supabase
+      .from('sofa_quick_picks')
+      .select('id, base_model, label, modules, depth, sort_order, deleted_at, created_at, updated_at, created_by')
+      .is('deleted_at', null)
+      .eq('base_model', baseModel),
+    c,
+  )
     .order('sort_order', { ascending: true })
     .order('created_at', { ascending: false });
 

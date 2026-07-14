@@ -57,7 +57,7 @@ categoriesApi.get('/:id/hero-image', async (c) => {
   }
 
   const id = c.req.param('id');
-  const row = await supabase.from('categories').select('hero_image_key').eq('id', id).maybeSingle();
+  const row = await scopeToCompany(supabase.from('categories').select('hero_image_key').eq('id', id), c).maybeSingle();
   const heroKey = (row.data as { hero_image_key?: string | null } | null)?.hero_image_key ?? null;
   if (!heroKey) return c.json({ error: 'hero_not_set' }, 404);
 
@@ -208,10 +208,13 @@ publicCategoriesApi.get('/', async (c) => {
 publicCategoriesApi.get('/:id/hero-meta', async (c) => {
   const supabase = c.get('supabase');
   const id = c.req.param('id');
-  const { data, error } = await supabase
-    .from('categories')
-    .select('hero_image_key, hero_focal_x, hero_focal_y, hero_alt')
-    .eq('id', id)
+  const { data, error } = await scopeToCompany(
+    supabase
+      .from('categories')
+      .select('hero_image_key, hero_focal_x, hero_focal_y, hero_alt')
+      .eq('id', id),
+    c,
+  )
     .maybeSingle();
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
   if (!data) return c.json({ error: 'not_found' }, 404);
@@ -364,10 +367,13 @@ publicCategoriesApi.delete('/:id', async (c) => {
   // those the delete proceeds, which is the right semantics — they have
   // no FK protection because there's no enum binding.
   const enumValue = id.toUpperCase();
-  const { data: refs, count } = await supabase
-    .from('product_models')
-    .select('model_code', { count: 'exact' })
-    .eq('category', enumValue)
+  const { data: refs, count } = await scopeToCompany(
+    supabase
+      .from('product_models')
+      .select('model_code', { count: 'exact' })
+      .eq('category', enumValue),
+    c,
+  )
     .limit(9);
   if ((count ?? 0) > 0) {
     return c.json({

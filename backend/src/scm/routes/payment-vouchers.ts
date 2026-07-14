@@ -189,13 +189,13 @@ paymentVouchers.get('/', async (c) => {
 paymentVouchers.get('/:id', async (c) => {
   const sb = c.get('supabase'); const id = c.req.param('id');
   const [h, i, a] = await Promise.all([
-    sb.from('payment_vouchers').select(`${HEADER}, supplier:suppliers(id, code, name)`).eq('id', id).maybeSingle(),
-    sb.from('payment_voucher_lines').select(LINE).eq('pv_id', id).order('line_no'),
+    scopeToCompany(sb.from('payment_vouchers').select(`${HEADER}, supplier:suppliers(id, code, name)`).eq('id', id), c).maybeSingle(),
+    scopeToCompany(sb.from('payment_voucher_lines').select(LINE).eq('pv_id', id), c).order('line_no'),
     /* PV→PI settlement (0202) — the PIs this PV applies to, joined for the PI
        number + the live total/paid so the detail page can show "Apply to PI". */
-    sb.from('pv_allocations')
+    scopeToCompany(sb.from('pv_allocations')
       .select('id, amount_centi, pi:purchase_invoices(id, invoice_number, supplier_invoice_ref, currency, total_centi, paid_centi, status)')
-      .eq('pv_id', id),
+      .eq('pv_id', id), c),
   ]);
   if (h.error) return c.json({ error: 'load_failed', reason: h.error.message }, 500);
   if (!h.data) return c.json({ error: 'not_found' }, 404);
