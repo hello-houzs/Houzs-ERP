@@ -173,8 +173,8 @@ function LineItem({ name, sub, qty, unitCenti, amountCenti }: {
 }
 
 // ── Header card (shared by every module) ────────────────────────────────────
-function DetailHeader({ eyebrow, title, subtitle, status, onBack, onEdit }: {
-  eyebrow: string; title: string; subtitle?: string; status?: unknown; onBack: () => void; onEdit?: () => void;
+function DetailHeader({ eyebrow, title, subtitle, status, onBack, onEdit, onPdf }: {
+  eyebrow: string; title: string; subtitle?: string; status?: unknown; onBack: () => void; onEdit?: () => void; onPdf?: () => void;
 }) {
   return (
     <header className="hdr">
@@ -184,6 +184,11 @@ function DetailHeader({ eyebrow, title, subtitle, status, onBack, onEdit }: {
         </span>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <StatusPill status={status} />
+          {onPdf && (
+            <button className="tinybtn" onClick={onPdf} style={{ background: "#f4f6f3", border: "1px solid var(--line2)", color: "var(--ink)" }}>
+              PDF
+            </button>
+          )}
           {onEdit && (
             <button className="tinybtn" onClick={onEdit} style={{ background: "#e1efed", border: "1px solid #16695f", color: "#0c3f39" }}>
               Edit
@@ -742,6 +747,7 @@ function DocActionFooter({ moduleKey, id, header, invalidate, onPOD, onDeleted }
 function DocumentDetail({ map, row, moduleKey, onBack, onEdit, onPOD }: { map: DocMap; row: any; moduleKey: string; onBack: () => void; onEdit?: () => void; onPOD?: () => void }) {
   const id = docId(row);
   const qc = useQueryClient();
+  const detailNotify = useNotify();
   const { data, isLoading, error } = useQuery({
     queryKey: ["mobile-module-detail", map.path, id],
     queryFn: () => authedFetch<Record<string, unknown>>(`${map.path}/${encodeURIComponent(id)}`),
@@ -758,6 +764,25 @@ function DocumentDetail({ map, row, moduleKey, onBack, onEdit, onPOD }: { map: D
 
   const cancelled = isCancelledDoc(map.status(header));
 
+  /* Download the DO / SI PDF — reuses the SAME desktop generators so phone output
+     is byte-identical. Only wired for the two doc types with a mobile-relevant PDF. */
+  const onPdf =
+    moduleKey === "delivery-orders-mfg"
+      ? async () => {
+          try {
+            const { generateDeliveryOrderPdf } = await import("../vendor/scm/lib/delivery-order-pdf");
+            await generateDeliveryOrderPdf(header as never, items as never);
+          } catch (e) { void detailNotify({ title: "Couldn't generate the PDF", body: e instanceof Error ? e.message : "Please try again." }); }
+        }
+      : moduleKey === "sales-invoices"
+        ? async () => {
+            try {
+              const { generateSalesInvoicePdf } = await import("../vendor/scm/lib/sales-invoice-pdf");
+              await generateSalesInvoicePdf(header as never, items as never);
+            } catch (e) { void detailNotify({ title: "Couldn't generate the PDF", body: e instanceof Error ? e.message : "Please try again." }); }
+          }
+        : undefined;
+
   // Whether a sticky footer will render — used to reserve scroll padding so it
   // never covers the last line item. A POD button (delivery orders) also counts.
   const hasStatusActions = !!id && (statusActionsFor(moduleKey, id, header).length > 0 || paymentKind(moduleKey, header) !== null);
@@ -773,6 +798,7 @@ function DocumentDetail({ map, row, moduleKey, onBack, onEdit, onPOD }: { map: D
         status={map.status(header)}
         onBack={onBack}
         onEdit={onEdit}
+        onPdf={onPdf}
       />
       <div className="scroll hz-scroll" style={hasFooter ? { ...scrollStyle, paddingBottom: onPOD && hasStatusActions ? 150 : 96 } : scrollStyle}>
         {!id && <div style={{ textAlign: "center", color: "#b23a3a", fontSize: 12, padding: "26px 0" }}>Couldn't identify this record.</div>}

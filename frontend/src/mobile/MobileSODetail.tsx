@@ -210,6 +210,17 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
   const h = detail.data?.salesOrder;
   const items = detail.data?.items ?? [];
   const payments = paymentsQ.data?.payments ?? [];
+  /* Download the SO PDF — reuses the SAME desktop generator (per-brand letterhead)
+     so the phone produces byte-identical output. 'save' = normal download. */
+  const onPdf = async () => {
+    if (!h) return;
+    try {
+      const { generateSalesOrderPdf } = await import("../vendor/scm/lib/sales-order-pdf");
+      await generateSalesOrderPdf(h as never, items as never, payments as never, "save", []);
+    } catch (e) {
+      void notifyTop({ title: "Couldn't generate the PDF", body: e instanceof Error ? e.message : "Please try again." });
+    }
+  };
 
   /* Salesperson NAME — the detail header carries only salesperson_id (a staff
      UUID), so resolve it against the shared /staff list. Falls back to em-dash
@@ -397,6 +408,7 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
         <div className="hdr-row">
           <button className="back" onClick={onBack}><span className="chev">{"‹"}</span> Sales Orders</button>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {h && <button className="tinybtn" onClick={onPdf} style={{ background: "#f4f6f3", border: "1px solid var(--line2)", color: "var(--ink)" }}>PDF</button>}
             {h && <StatusPill status={h.status} />}
           </div>
         </div>
