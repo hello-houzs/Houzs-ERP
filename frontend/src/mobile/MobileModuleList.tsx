@@ -308,6 +308,15 @@ const SERVER_PAGINATED = new Set<string>([
   "/grns",
   "/mfg-purchase-orders",
   "/purchase-invoices",
+  // Backends return { <key>, total, page, pageSize } (page-param opt-in) — same
+  // as the five above, so mobile can drop the limit=500 fetch-then-slice and
+  // truly server-window. delivery-returns / purchase-returns are intentionally
+  // absent: their list handlers are NOT paginated (no `total`), and opting them
+  // in would collapse each to a single 30-row page.
+  "/consignment-orders",
+  "/consignment-notes",
+  "/consignment-returns",
+  "/suppliers",
 ]);
 
 /** Split an endpoint string into its base path + parsed query params. */

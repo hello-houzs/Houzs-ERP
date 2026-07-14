@@ -88,7 +88,7 @@ Every list surface now bounds **both** the DOM and the fetch (server page/limit 
 | Surface | Fix shipped | Ref |
 |---|---|---|
 | 6 SCM V2 doc lists (SO/DO/PO/PI/SI/GRN) + StockTakes/StockTransfers | server `page/pageSize/statusCounts` + deterministic order | #481/#491/#497/#500 |
-| Mobile SO + generic mobile SCM lists | IntersectionObserver infinite-scroll (MobileSalesOrders / MobileModuleList) | #499/#502/#507 |
+| Mobile SO + generic mobile SCM lists (SO/DO/SI/GRN/PO/PI + Consignment ×3 + Suppliers) | IntersectionObserver infinite-scroll, true server paging via `MobileModuleList.SERVER_PAGINATED` | #499/#502/#507 + mobile consignment/suppliers paging |
 | Mobile PMS / Service Case (was `per_page=200`) | server infinite-scroll (same pattern) | #515 |
 | SCM Products / SKU Master Edit-Prices | virtualized table body | #509 |
 | Team members grid + org chart | `/api/users` server pagination + filters; org-tree department lazy-mount | #513/#537 |
