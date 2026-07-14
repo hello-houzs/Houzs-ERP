@@ -209,7 +209,7 @@ export async function applySoAmendment(
         qty,
         unitPriceCenti: Number(diff.new_unit_price_sen ?? 0),
         variants: (variants as MfgItemForRecompute['variants']) ?? null,
-      }, cachedConfig);
+      }, cachedConfig, soCompanyId);
 
       const unit = rec.unit_price_sen;
       const lineTotal = qty * unit;
@@ -282,7 +282,7 @@ export async function applySoAmendment(
       qty,
       unitPriceCenti: clientUnit,
       variants: (variants as MfgItemForRecompute['variants']) ?? null,
-    }, cachedConfig);
+    }, cachedConfig, soCompanyId);
 
     const unit = rec.unit_price_sen;
     const discount = Number(row.discount_centi ?? 0);

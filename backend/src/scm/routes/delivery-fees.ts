@@ -29,12 +29,18 @@ const patchSchema = z.object({
 // GET — every authenticated staff role can read.
 deliveryFees.get('/', async (c) => {
   const supabase = c.get('supabase');
-  const { data, error } = await supabase
-    .from('delivery_fee_config')
-    .select('base_fee, cross_category_fee, mattress_bedframe_lead_days, sofa_lead_days, updated_at, updated_by')
-    .eq('id', 1)
-    .single();
+  // Read the ACTIVE company's single config row by company_id (each company has
+  // exactly one). NOT `.eq('id',1)` — 2990's row is id=100001, not 1, so keying
+  // on id would miss it and fall back to Houzs's. company_id is the real key.
+  const { data, error } = await scopeToCompany(
+    supabase
+      .from('delivery_fee_config')
+      .select('base_fee, cross_category_fee, mattress_bedframe_lead_days, sofa_lead_days, updated_at, updated_by'),
+    c,
+  )
+    .maybeSingle();
   if (error) return c.json({ error: 'fetch_failed', reason: error.message }, 500);
+  if (!data) return c.json({ error: 'not_configured', reason: 'no delivery_fee_config for this company' }, 404);
   return c.json({
     baseFee:                  data.base_fee,
     crossCategoryFee:         data.cross_category_fee,
@@ -76,10 +82,12 @@ deliveryFees.patch('/', async (c) => {
   if (parsed.data.mattressBedframeLeadDays !== undefined) patch.mattress_bedframe_lead_days = parsed.data.mattressBedframeLeadDays;
   if (parsed.data.sofaLeadDays             !== undefined) patch.sofa_lead_days              = parsed.data.sofaLeadDays;
 
-  const { error } = await supabase
+  // Update the ACTIVE company's row by company_id (not id=1 — 2990's is id=100001).
+  let q = supabase
     .from('delivery_fee_config')
-    .update(patch)
-    .eq('id', 1);
+    .update(patch);
+  q = scopeToCompany(q, c);
+  const { error } = await q;
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
   return c.json({ ok: true });
 });

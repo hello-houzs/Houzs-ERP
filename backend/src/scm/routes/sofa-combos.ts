@@ -120,12 +120,14 @@ type Sb = SupabaseClient;
 async function loadComboAnchor(
   sb: Sb,
   baseModel: string,
+  companyId?: number | null,
 ): Promise<string | null> {
-  const { data } = await sb
+  let q = sb
     .from('sofa_combo_anchor')
     .select('supplier_id')
-    .eq('base_model', baseModel)
-    .maybeSingle();
+    .eq('base_model', baseModel);
+  if (companyId != null) q = q.eq('company_id', companyId);
+  const { data } = await q.maybeSingle();
   return (data as { supplier_id?: string } | null)?.supplier_id ?? null;
 }
 
@@ -381,9 +383,12 @@ sofaCombos.get('/history', async (c) => {
 // `/anchors` path always wins over the `:id` param matcher.
 sofaCombos.get('/anchors', async (c) => {
   const supabase = c.get('supabase');
-  const { data, error } = await supabase
-    .from('sofa_combo_anchor')
-    .select('base_model, supplier_id')
+  const { data, error } = await scopeToCompany(
+    supabase
+      .from('sofa_combo_anchor')
+      .select('base_model, supplier_id'),
+    c,
+  )
     .order('base_model', { ascending: true });
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
   return c.json({ anchors: (data ?? []) as Array<{ base_model: string; supplier_id: string }> });
@@ -417,12 +422,13 @@ sofaCombos.put('/anchors/:baseModel', async (c) => {
       .from('sofa_combo_anchor')
       .upsert(
         {
+          company_id: activeCompanyId(c),
           base_model: baseModel,
           supplier_id: supplierId,
           created_by: user.id,
           updated_at: new Date().toISOString(),
         },
-        { onConflict: 'base_model' },
+        { onConflict: 'company_id,base_model' },
       );
     if (error) {
       if (error.code === '42501' || /permission denied/i.test(error.message)) {
@@ -431,7 +437,7 @@ sofaCombos.put('/anchors/:baseModel', async (c) => {
       return c.json({ error: 'anchor_upsert_failed', reason: error.message }, 500);
     }
   } else {
-    const { error } = await supabase.from('sofa_combo_anchor').delete().eq('base_model', baseModel);
+    const { error } = await supabase.from('sofa_combo_anchor').delete().eq('base_model', baseModel).eq('company_id', activeCompanyId(c));
     if (error) {
       if (error.code === '42501' || /permission denied/i.test(error.message)) {
         return c.json({ error: 'forbidden', reason: error.message }, 403);
@@ -592,7 +598,7 @@ sofaCombos.post('/', async (c) => {
   // combo to the other side (master ⇄ that supplier). Best-effort: a mirror
   // failure leaves the primary row intact and just reports mirrored:false.
   const savedRow = data as unknown as Row;
-  const anchor = await loadComboAnchor(supabase, baseModel);
+  const anchor = await loadComboAnchor(supabase, baseModel, activeCompanyId(c));
   const mirrored = anchor ? await mirrorAnchoredCombo(supabase, savedRow, anchor, user.id, activeCompanyId(c)) : false;
   return c.json({ ...rowToWire(savedRow), mirrored }, 201);
 });
@@ -713,7 +719,7 @@ sofaCombos.put('/:id', async (c) => {
   // R8 — mirror the new effective row to the other side of the anchor when the
   // base model is anchored (master ⇄ supplier). Same best-effort contract as POST.
   const savedRow = data as unknown as Row;
-  const anchor = await loadComboAnchor(supabase, (orig as { base_model: string }).base_model);
+  const anchor = await loadComboAnchor(supabase, (orig as { base_model: string }).base_model, activeCompanyId(c));
   const mirrored = anchor ? await mirrorAnchoredCombo(supabase, savedRow, anchor, user.id, activeCompanyId(c)) : false;
   return c.json({ ...rowToWire(savedRow), mirrored }, 201);
 });
