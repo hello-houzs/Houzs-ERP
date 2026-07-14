@@ -44,6 +44,10 @@ import { useAuth } from "../../auth/AuthContext";
 import { useToast } from "../../hooks/useToast";
 import { useDialog } from "../../hooks/useDialog";
 import { cn } from "../../lib/utils";
+import {
+  subscribeActiveCompany,
+  getActiveCompanySnapshot,
+} from "../../lib/activeCompany";
 import { ComposeDialog } from "./Compose";
 import { MailThread } from "./Thread";
 import {
@@ -150,6 +154,27 @@ type MailAddress = {
   assignedUserName: string | null;
   active: boolean;
 };
+
+// Paginated /threads response (opt-in via ?page=&pageSize=). The bare-array
+// shape is still used by the counts + trash-badge fetches.
+type ThreadsPageResp = {
+  threads: MailThreadRow[];
+  total: number;
+  hasMore: boolean;
+  page: number;
+  pageSize: number;
+};
+
+// Debounce a rapidly-changing value (the search box) so each keystroke doesn't
+// fire a server round-trip — the list refetches 300ms after typing settles.
+function useDebouncedValue<T>(value: T, ms: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const id = setTimeout(() => setDebounced(value), ms);
+    return () => clearTimeout(id);
+  }, [value, ms]);
+  return debounced;
+}
 
 type MailboxFilter =
   | { kind: "all" }
@@ -837,23 +862,23 @@ export function MailInbox() {
           ? "trashed"
           : "all";
 
-  const params = new URLSearchParams();
-  if (apiStatus !== "all") params.set("status", apiStatus);
-  if (filter.kind === "mailbox") params.set("mailbox", filter.value);
-  const listUrl = `/api/mail-center/threads${params.toString() ? `?${params.toString()}` : ""}`;
-
-  // NOTE: the server returns up to LIMIT 300 threads (newest first); all
-  // Starred/Sent/label/search narrowing below is client-side over that array.
-  // Pushing these filters server-side is a separate follow-up — this task only
-  // DOM-windows the rendered list (see WindowedThreadUl), leaving the fetch as-is.
+  // COUNTS / AGGREGATES query — feeds the left-rail unread badges, the Starred
+  // and Trash counts, and the label union. Scoped to the folder's status + the
+  // selected mailbox (same shape as before). The MAIN thread list no longer
+  // reads this array; it has its own server-filtered + paginated fetch (below),
+  // so nothing past the first page is lost to Starred/Sent/label/search.
+  const countsParams = new URLSearchParams();
+  if (apiStatus !== "all") countsParams.set("status", apiStatus);
+  if (filter.kind === "mailbox") countsParams.set("mailbox", filter.value);
+  const countsUrl = `/api/mail-center/threads${countsParams.toString() ? `?${countsParams.toString()}` : ""}`;
   const {
     data: threads,
-    loading,
-    error,
-    reload,
-  } = useQuery<MailThreadRow[]>(() => api.get(listUrl), [listUrl], {
-    // Folder / filter switch keeps the current threads on screen while the next
-    // folder loads instead of flashing an empty list.
+    loading: countsLoading,
+    error: countsError,
+    reload: reloadCounts,
+  } = useQuery<MailThreadRow[]>(() => api.get(countsUrl), [countsUrl], {
+    // Folder / filter switch keeps the current counts on screen while the next
+    // folder loads instead of flashing empty badges.
     keepPreviousData: true,
   });
   const { data: addresses } = useQuery<MailAddress[]>(
@@ -933,34 +958,129 @@ export function MailInbox() {
     return other?.mailboxes ?? [];
   }, [deptGroups]);
 
-  const categoryBase = useMemo(() => {
-    let list = threads ?? [];
-    if (folder === "starred") {
-      list = list.filter((t) => t.starred);
-    } else if (folder === "sent") {
-      list = list.filter((t) => t.hasOutbound);
-    }
+  // ── Server-filtered + paginated thread list ──────────────────────────────
+  // The visible list is fetched with EVERY narrowing applied in SQL — folder
+  // status, Starred, Sent, the dept mailbox set, the label filter, and the
+  // (debounced) search box — then paged in with "Load more". Nothing is filtered
+  // client-side over a truncated array, so a match on thread #900 is reachable.
+  // Drafts (local) and Auto-sent (its own OutboxPanel) don't use this fetch.
+  const LIST_PAGE_SIZE = 50;
+  const debouncedQ = useDebouncedValue(q, 300);
+  const activeCompanyId = useSyncExternalStore(
+    subscribeActiveCompany,
+    getActiveCompanySnapshot,
+    getActiveCompanySnapshot,
+  );
+  const usesThreadList = folder !== "drafts" && folder !== "autosent";
+
+  const listQueryStr = useMemo(() => {
+    const p = new URLSearchParams();
+    if (apiStatus !== "all") p.set("status", apiStatus);
+    if (folder === "starred") p.set("starred", "1");
+    if (folder === "sent") p.set("sent", "1");
+    if (filter.kind === "mailbox") p.set("mailbox", filter.value);
     if (filter.kind === "dept") {
       const addrs = addressesByDept.get(filter.value);
-      list = addrs ? list.filter((t) => addrs.has(t.mailboxAddress)) : [];
-    }
-    if (labelFilter) {
-      list = list.filter((t) =>
-        t.labels.some((l) => l.toLowerCase() === labelFilter.toLowerCase()),
+      // A dept with no mailboxes must return NOTHING, never everything — send a
+      // sentinel that matches no address rather than omitting the filter.
+      p.set(
+        "mailboxes",
+        addrs && addrs.size ? Array.from(addrs).join(",") : "__none__",
       );
     }
-    const needle = q.trim().toLowerCase();
-    if (needle) {
-      list = list.filter(
-        (t) =>
-          (t.subject ?? "").toLowerCase().includes(needle) ||
-          (t.counterpartyEmail ?? "").toLowerCase().includes(needle) ||
-          (t.counterpartyName ?? "").toLowerCase().includes(needle) ||
-          (t.lastSnippet ?? "").toLowerCase().includes(needle),
-      );
+    if (labelFilter) p.set("label", labelFilter);
+    const needle = debouncedQ.trim();
+    if (needle) p.set("q", needle);
+    return p.toString();
+  }, [apiStatus, folder, filter, addressesByDept, labelFilter, debouncedQ]);
+
+  const [listRows, setListRows] = useState<MailThreadRow[]>([]);
+  const [listTotal, setListTotal] = useState(0);
+  const [listPage, setListPage] = useState(1);
+  const [listHasMore, setListHasMore] = useState(false);
+  const [listLoading, setListLoading] = useState(true);
+  const [listLoadingMore, setListLoadingMore] = useState(false);
+  const [listError, setListError] = useState<string | null>(null);
+  const [listReloadKey, setListReloadKey] = useState(0);
+
+  useEffect(() => {
+    if (!usesThreadList) {
+      setListRows([]);
+      setListTotal(0);
+      setListHasMore(false);
+      setListLoading(false);
+      return;
     }
-    return list;
-  }, [threads, q, folder, filter, addressesByDept, labelFilter]);
+    let alive = true;
+    setListLoading(true);
+    (async () => {
+      try {
+        const p = new URLSearchParams(listQueryStr);
+        p.set("page", "1");
+        p.set("pageSize", String(LIST_PAGE_SIZE));
+        const data = await api.get<ThreadsPageResp>(
+          `/api/mail-center/threads?${p.toString()}`,
+        );
+        if (!alive) return;
+        setListRows(Array.isArray(data.threads) ? data.threads : []);
+        setListTotal(Number(data.total ?? 0));
+        setListHasMore(!!data.hasMore);
+        setListPage(1);
+        setListError(null);
+      } catch {
+        if (!alive) return;
+        setListRows([]);
+        setListTotal(0);
+        setListHasMore(false);
+        setListError("Couldn't load mail. Please try again.");
+      } finally {
+        if (alive) setListLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+    // listReloadKey / activeCompanyId force a refetch on mutation + company switch.
+  }, [usesThreadList, listQueryStr, listReloadKey, activeCompanyId]);
+
+  async function loadMoreThreads() {
+    if (listLoadingMore || !listHasMore) return;
+    setListLoadingMore(true);
+    try {
+      const nextPage = listPage + 1;
+      const p = new URLSearchParams(listQueryStr);
+      p.set("page", String(nextPage));
+      p.set("pageSize", String(LIST_PAGE_SIZE));
+      const data = await api.get<ThreadsPageResp>(
+        `/api/mail-center/threads?${p.toString()}`,
+      );
+      setListRows((prev) => [
+        ...prev,
+        ...(Array.isArray(data.threads) ? data.threads : []),
+      ]);
+      setListTotal(Number(data.total ?? 0));
+      setListHasMore(!!data.hasMore);
+      setListPage(nextPage);
+      setListError(null);
+    } catch {
+      setListError("Couldn't load more mail. Please try again.");
+    } finally {
+      setListLoadingMore(false);
+    }
+  }
+
+  // Refresh BOTH the aggregates query and the paginated list — a mutation
+  // changes the badges AND the rows (and may drop a row out of the current view).
+  function reloadAll() {
+    reloadCounts();
+    setListReloadKey((k) => k + 1);
+  }
+  const loading = listLoading || countsLoading;
+  const error = listError ?? countsError;
+
+  // The server already narrowed the list; the only remaining client split is the
+  // optional Primary/Notifications category tab over the loaded pages.
+  const categoryBase = listRows;
 
   const categoryCounts = useMemo(() => {
     let primary = 0;
@@ -1067,25 +1187,25 @@ export function MailInbox() {
     switch (action) {
       case "star": {
         const ok = await patchThreadStarred(t.id, true);
-        if (ok) reload();
+        if (ok) reloadAll();
         else toast.error("Couldn't star. Please try again.");
         break;
       }
       case "unstar": {
         const ok = await patchThreadStarred(t.id, false);
-        if (ok) reload();
+        if (ok) reloadAll();
         else toast.error("Couldn't unstar. Please try again.");
         break;
       }
       case "read": {
         const ok = await patchThreadUnread(t.id, false);
-        if (ok) reload();
+        if (ok) reloadAll();
         else toast.error("Couldn't update. Please try again.");
         break;
       }
       case "unread": {
         const ok = await patchThreadUnread(t.id, true);
-        if (ok) reload();
+        if (ok) reloadAll();
         toast[ok ? "success" : "error"](
           ok ? "Marked as unread." : "Couldn't update. Please try again.",
         );
@@ -1093,13 +1213,13 @@ export function MailInbox() {
       }
       case "archive": {
         const ok = await patchThreadStatus(t.id, "closed");
-        if (ok) reload();
+        if (ok) reloadAll();
         toast[ok ? "success" : "error"](ok ? "Archived." : "Couldn't archive. Please try again.");
         break;
       }
       case "inbox": {
         const ok = await patchThreadStatus(t.id, "open");
-        if (ok) reload();
+        if (ok) reloadAll();
         toast[ok ? "success" : "error"](ok ? "Moved to Inbox." : "Couldn't move. Please try again.");
         break;
       }
@@ -1107,7 +1227,7 @@ export function MailInbox() {
         const ok = await patchThreadTrashed(t.id, true);
         if (ok) {
           if (selectedId === t.id) setSelectedId(null);
-          reload();
+          reloadAll();
           toast.info("Moved to Trash.");
         } else {
           toast.error("Couldn't move to Trash. Please try again.");
@@ -1116,7 +1236,7 @@ export function MailInbox() {
       }
       case "restore": {
         const ok = await patchThreadTrashed(t.id, false);
-        if (ok) reload();
+        if (ok) reloadAll();
         toast[ok ? "info" : "error"](
           ok ? "Restored from Trash." : "Couldn't restore. Please try again.",
         );
@@ -1134,7 +1254,7 @@ export function MailInbox() {
     else if (ok > 0) toast.warning(`${ok} of ${ids.length} ${verb}.`);
     else toast.error("Couldn't update. Please try again.");
     clearSelection();
-    reload();
+    reloadAll();
   }
 
   async function bulkRead(value: boolean) {
@@ -1146,7 +1266,7 @@ export function MailInbox() {
     else if (ok > 0) toast.warning(`${ok} of ${ids.length} marked as ${verb}.`);
     else toast.error("Couldn't update. Please try again.");
     clearSelection();
-    reload();
+    reloadAll();
   }
 
   async function bulkTrash() {
@@ -1165,7 +1285,7 @@ export function MailInbox() {
     else if (ok > 0) toast.warning(`${ok} of ${ids.length} moved to Trash.`);
     else toast.error("Couldn't move to Trash. Please try again.");
     clearSelection();
-    reload();
+    reloadAll();
   }
 
   async function bulkApplyLabel(name: string) {
@@ -1181,7 +1301,7 @@ export function MailInbox() {
     else if (ok > 0) toast.warning(`Labeled ${ok} of ${items.length}.`);
     else toast.error("Couldn't label. Please try again.");
     clearSelection();
-    reload();
+    reloadAll();
   }
 
   async function injectTest() {
@@ -1190,7 +1310,7 @@ export function MailInbox() {
     } catch {
       /* ignore — reload just shows nothing changed */
     }
-    reload();
+    reloadAll();
   }
 
   async function setupDeptMailbox(address: string, dept: string) {
@@ -1229,7 +1349,7 @@ export function MailInbox() {
         <div className="flex items-center gap-2">
           <ViewSettingsMenu prefs={prefs} />
           <button
-            onClick={() => reload()}
+            onClick={() => reloadAll()}
             className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-3 py-1.5 text-[12px] font-semibold text-ink-secondary hover:text-ink"
           >
             <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
@@ -1436,7 +1556,9 @@ export function MailInbox() {
                 {selectedCount > 0 ? `${selectedCount} selected` : "Select"}
               </label>
               <span className="text-[11px] text-ink-muted/70">
-                {visible.length} {visible.length === 1 ? "conversation" : "conversations"}
+                {/* Server total across the active filters (not just what's
+                    loaded). Falls back to the loaded count for Drafts. */}
+                {listTotal} {listTotal === 1 ? "conversation" : "conversations"}
               </span>
             </div>
           )}
@@ -1465,19 +1587,37 @@ export function MailInbox() {
               }}
             />
           ) : (
-            <ThreadList
-              threads={visible}
-              loading={loading}
-              activeId={isDesktop && splitView ? selectedId : null}
-              folder={folder}
-              density={prefs.density}
-              selectedIds={selectedVisibleIds}
-              colorMap={colorMap}
-              onToggleSelect={toggleSelect}
-              onOpen={openThread}
-              onInjectTest={injectTest}
-              onRowAction={onRowAction}
-            />
+            <>
+              <ThreadList
+                threads={visible}
+                loading={listLoading}
+                activeId={isDesktop && splitView ? selectedId : null}
+                folder={folder}
+                density={prefs.density}
+                selectedIds={selectedVisibleIds}
+                colorMap={colorMap}
+                onToggleSelect={toggleSelect}
+                onOpen={openThread}
+                onInjectTest={injectTest}
+                onRowAction={onRowAction}
+              />
+              {/* Server-side pagination: pull the next page in place. The
+                  windowed <ul> keeps the DOM light as the array grows. */}
+              {listHasMore && (
+                <div className="border-t border-border bg-surface-dim/20 p-3 text-center">
+                  <button
+                    type="button"
+                    onClick={loadMoreThreads}
+                    disabled={listLoadingMore}
+                    className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-3 py-1.5 text-[12px] font-semibold text-ink-secondary transition hover:text-ink disabled:opacity-50"
+                  >
+                    {listLoadingMore
+                      ? "Loading…"
+                      : `Load more (${listRows.length} of ${listTotal})`}
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </div>
 
@@ -1504,7 +1644,7 @@ export function MailInbox() {
         open={labelManagerOpen}
         labels={labelCatalog ?? []}
         onClose={() => setLabelManagerOpen(false)}
-        onChanged={reload}
+        onChanged={reloadAll}
       />
 
       <ComposeDialog
@@ -1515,7 +1655,7 @@ export function MailInbox() {
           setResumeDraft(null);
         }}
         onSent={(threadId) => {
-          reload();
+          reloadAll();
           if (isDesktop && splitView) setSelectedId(threadId);
         }}
       />

@@ -846,15 +846,35 @@ function dedupeLower(addrs: string[]): string[] {
 // mailbox; admins read all.
 // ---------------------------------------------------------------------------
 
-// GET /api/mail-center/threads?mailbox=&status=&q=&starred=
+// GET /api/mail-center/threads?mailbox=&status=&q=&starred=&sent=&label=&mailboxes=
+// Opt-in pagination: pass page (1-based) + pageSize to get
+//   { threads, total, hasMore, page, pageSize }
+// instead of the bare array. With NO page/pageSize the response is UNCHANGED
+// (bare array, newest 300) so existing callers (the Trash badge fetch, the
+// mobile client) are unaffected. Every narrowing the desktop list used to do
+// client-side over that truncated 300 — starred / sent / label / q, plus a
+// department's mailbox set — is now applied here in SQL, so pagination reaches
+// the whole mailbox and a match on thread #900 is no longer invisible.
 app.get("/threads", async (c) => {
   const scope = await getMailScope(c);
-  if (!scope.isAdmin && scope.addresses.length === 0) return c.json([]);
+  const pageParam = c.req.query("page");
+  const pageSizeParam = c.req.query("pageSize");
+  const paginated = pageParam != null || pageSizeParam != null;
+  if (!scope.isAdmin && scope.addresses.length === 0) {
+    return c.json(
+      paginated
+        ? { threads: [], total: 0, hasMore: false, page: 1, pageSize: 0 }
+        : [],
+    );
+  }
 
   const mailbox = c.req.query("mailbox");
   const status = c.req.query("status");
   const q = c.req.query("q");
   const starredOnly = c.req.query("starred") === "1";
+  const sentOnly = c.req.query("sent") === "1";
+  const label = c.req.query("label");
+  const mailboxesCsv = c.req.query("mailboxes");
 
   const where: string[] = [];
   const binds: (string | number)[] = [];
@@ -875,6 +895,23 @@ app.get("/threads", async (c) => {
     where.push("mailbox_address = ?");
     binds.push(mailbox);
   }
+  // Department filter: restrict to an explicit set of mailbox addresses (the
+  // dept's mailboxes, sent as a comma list). An empty set — the client sends a
+  // "__none__"-style sentinel for a dept with no mailboxes — matches nothing,
+  // never everything.
+  if (mailboxesCsv != null) {
+    const list = mailboxesCsv
+      .split(",")
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+    if (list.length) {
+      const ph = list.map(() => "?").join(", ");
+      where.push(`LOWER(mailbox_address) IN (${ph})`);
+      binds.push(...list);
+    } else {
+      where.push("1 = 0");
+    }
+  }
   // Trash is its own folder: status=trashed returns ONLY soft-deleted rows;
   // every other view EXCLUDES them.
   if (status === "trashed") {
@@ -889,24 +926,69 @@ app.get("/threads", async (c) => {
   if (starredOnly) {
     where.push("starred = 1");
   }
+  // Sent folder: the thread has at least one outbound message (mirrors the
+  // has_outbound flag below, but as a WHERE filter).
+  if (sentOnly) {
+    where.push(
+      "EXISTS (SELECT 1 FROM email_messages m WHERE m.thread_id = t.id AND m.direction = 'outbound')",
+    );
+  }
+  // Label filter: labels are a JSON string array (e.g. ["Urgent","VIP"]). Match
+  // the quoted, lower-cased token so "VIP" doesn't also match "VIProom". Strip
+  // quote/LIKE-wildcard chars from the needle to keep the pattern well-formed.
+  if (label && label.trim()) {
+    const token = label.trim().toLowerCase().replace(/["%_]/g, "");
+    where.push("LOWER(labels) LIKE ?");
+    binds.push(`%"${token}"%`);
+  }
   if (q) {
     where.push(
-      "(LOWER(subject) LIKE ? OR LOWER(counterparty_email) LIKE ? OR LOWER(last_snippet) LIKE ?)",
+      "(LOWER(subject) LIKE ? OR LOWER(counterparty_email) LIKE ? OR LOWER(counterparty_name) LIKE ? OR LOWER(last_snippet) LIKE ?)",
     );
     const like = `%${q.toLowerCase()}%`;
-    binds.push(like, like, like);
+    binds.push(like, like, like, like);
   }
 
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
-  const sql =
-    `SELECT t.*,
+  const selectSql = `SELECT t.*,
        EXISTS (
          SELECT 1 FROM email_messages m
           WHERE m.thread_id = t.id AND m.direction = 'outbound'
        ) AS has_outbound
-       FROM email_threads t ${whereSql}` +
-    " ORDER BY t.last_message_at DESC NULLS LAST LIMIT 300";
-  const res = await c.env.DB.prepare(sql)
+       FROM email_threads t ${whereSql}`;
+  const orderSql = " ORDER BY t.last_message_at DESC NULLS LAST";
+
+  if (paginated) {
+    let pageSize = Number(pageSizeParam ?? 50);
+    if (!Number.isFinite(pageSize) || pageSize <= 0) pageSize = 50;
+    pageSize = Math.min(pageSize, 200);
+    let page = Number(pageParam ?? 1);
+    if (!Number.isFinite(page) || page < 1) page = 1;
+    const offset = (page - 1) * pageSize;
+
+    const countRow = await c.env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM email_threads t ${whereSql}`,
+    )
+      .bind(...binds)
+      .first<{ n: number }>();
+    const total = Number(countRow?.n ?? 0);
+
+    const res = await c.env.DB.prepare(
+      selectSql + orderSql + " LIMIT ? OFFSET ?",
+    )
+      .bind(...binds, pageSize, offset)
+      .all<ThreadRow>();
+    const threadsPage = (res.results ?? []).map(rowToThread);
+    return c.json({
+      threads: threadsPage,
+      total,
+      hasMore: offset + threadsPage.length < total,
+      page,
+      pageSize,
+    });
+  }
+
+  const res = await c.env.DB.prepare(selectSql + orderSql + " LIMIT 300")
     .bind(...binds)
     .all<ThreadRow>();
   return c.json((res.results ?? []).map(rowToThread));
