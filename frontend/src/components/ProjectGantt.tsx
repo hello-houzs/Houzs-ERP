@@ -192,6 +192,19 @@ export function ProjectGantt({
     return out;
   }, [range]);
 
+  // Holiday bands depend only on the date range, not on any lane — so compute
+  // the holiday-day list ONCE here instead of re-scanning every day for every
+  // lane in the render below (was O(lanes × days): ~3,650 getHolidaysOn calls
+  // for a 1-year × 10-lane chart, every render).
+  const holidayBands = useMemo(() => {
+    const out: { i: number; title: string }[] = [];
+    for (let i = 0; i < range.totalDays; i++) {
+      const hols = getHolidaysOn(isoOnly(addDays(range.start, i)));
+      if (hols.length > 0) out.push({ i, title: hols.map((h) => h.name).join(", ") });
+    }
+    return out;
+  }, [range]);
+
   // ── Render ────────────────────────────────────────────────
   return (
     <div className="rounded-md border border-border bg-surface">
@@ -317,21 +330,15 @@ export function ProjectGantt({
                 {/* Holiday bands — share PnlCalendar's getHolidaysOn so
                     the Gantt inherits the same calendar awareness
                     without parallel data. */}
-                {Array.from({ length: range.totalDays }).map((_, i) => {
-                  const day = addDays(range.start, i);
-                  const iso = isoOnly(day);
-                  const hols = getHolidaysOn(iso);
-                  if (hols.length === 0) return null;
-                  return (
-                    <div
-                      key={`hol-${i}`}
-                      aria-hidden
-                      title={hols.map((h) => h.name).join(", ")}
-                      className="pointer-events-none absolute inset-y-0 bg-err/5"
-                      style={{ left: i * dayWidth, width: dayWidth }}
-                    />
-                  );
-                })}
+                {holidayBands.map(({ i, title }) => (
+                  <div
+                    key={`hol-${i}`}
+                    aria-hidden
+                    title={title}
+                    className="pointer-events-none absolute inset-y-0 bg-err/5"
+                    style={{ left: i * dayWidth, width: dayWidth }}
+                  />
+                ))}
 
                 {/* Per-section track (hairline). */}
                 {trackStart && trackEnd && (
