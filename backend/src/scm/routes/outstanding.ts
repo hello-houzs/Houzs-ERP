@@ -88,9 +88,43 @@ for (const [slug, { view, dateCol }] of Object.entries(MODULES)) {
   });
 }
 
+/* Per-module aggregate shape for /summary. The JS reducer this replaces sums
+   `Number(r.total_centi ?? r.local_total_centi ?? 0)` and
+   `Number(r.outstanding_centi ?? 0)` over every outstanding row. Cross-referenced
+   against the v_*_outstanding view definitions (mig 0084), each view exposes at
+   most ONE of {total_centi, local_total_centi} and only pi/si expose
+   outstanding_centi — so no view ever mixes columns in the `??` chain and each
+   module maps to a single SUM column (or none → the total is always 0). We push
+   these sums into SQL via PostgREST aggregates:
+     - pkCol:   a non-null PK → PK.count() equals rows.length exactly.
+     - amtCol:  the column the `total_centi` reduce resolves to for this view
+                (null ⇒ total_centi is always 0, so no sum is requested).
+     - outCol:  outstanding_centi where the view has it (null ⇒ always 0).
+   SUM ignores NULLs (0 contribution) exactly as the `?? 0` chain does, so the
+   numbers stay byte-identical. */
+const SUMMARY_AGG: Record<
+  string,
+  { pkCol: string; amtCol: string | null; outCol: string | null }
+> = {
+  po:  { pkCol: "id",     amtCol: "total_centi",       outCol: null },
+  grn: { pkCol: "id",     amtCol: null,                outCol: null },
+  pi:  { pkCol: "id",     amtCol: "total_centi",       outCol: "outstanding_centi" },
+  pr:  { pkCol: "id",     amtCol: null,                outCol: null },
+  so:  { pkCol: "doc_no", amtCol: "local_total_centi", outCol: null },
+  do:  { pkCol: "id",     amtCol: null,                outCol: null },
+  si:  { pkCol: "id",     amtCol: "total_centi",       outCol: "outstanding_centi" },
+};
+
 /* /outstanding/summary — counts + totals across all modules in one call.
    Used by the cross-module Outstanding Dashboard. Degrades to a zeroed summary
-   when a view is missing/empty. */
+   when a view is missing/empty.
+
+   Aggregates in SQL (one PostgREST aggregate request per module) instead of
+   fetching every outstanding row and reducing in JS. Output numbers are
+   byte-identical to the old reducer (see SUMMARY_AGG). If the aggregate request
+   errors for any reason (aggregates disabled, missing view, etc.) that module
+   falls back to the original paginate-all + JS reduce so a total is never
+   wrong — worst case it's as slow as before, never incorrect. */
 outstanding.get("/summary", async (c) => {
   const sb = c.get("supabase");
   const from = c.req.query("from");
@@ -100,30 +134,69 @@ outstanding.get("/summary", async (c) => {
     string,
     { count: number; total_centi?: number; total_outstanding_centi?: number }
   > = {};
+
+  // Shared filter set — IDENTICAL to the individual endpoints' outstanding path:
+  // is_outstanding=true + company scope + SI DRAFT leak-guard + optional date range.
+  // Typed loosely (any) on purpose: the dynamic aggregate `.select("cnt:...")`
+  // string defeats supabase-js's static column-type inference, so we chain the
+  // PostgREST filter methods structurally without dragging in the builder's type.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const applyFilters = (q0: any, slug: string, dateCol: string): any => {
+    let q = q0.eq("is_outstanding", true);
+    q = scopeToCompany(q, c); // multi-company: isolate to the active company
+    // LEAK GUARD (DRAFT) — keep DRAFT SIs out of the AR outstanding totals.
+    if (slug === "si") q = q.neq("status", "DRAFT");
+    if (from) q = q.gte(dateCol, from);
+    if (to) q = q.lte(dateCol, to);
+    return q;
+  };
+
   for (const [slug, { view, dateCol }] of Object.entries(MODULES)) {
-    // Page through — the count + totals reduce over EVERY row, so PostgREST's
-    // 1000-row cap would understate both on a large outstanding set.
-    const { data } = await paginateAll((pFrom, pTo) => {
-      let q = sb.from(view).select("*").eq("is_outstanding", true);
-      q = scopeToCompany(q, c); // multi-company: isolate to the active company
-      // LEAK GUARD (DRAFT) — keep DRAFT SIs out of the AR outstanding totals.
-      if (slug === "si") q = q.neq("status", "DRAFT");
-      if (from) q = q.gte(dateCol, from);
-      if (to) q = q.lte(dateCol, to);
-      return q.range(pFrom, pTo);
-    });
-    const rows = (data ?? []) as Array<Record<string, unknown>>;
-    summary[slug] = {
-      count: rows.length,
-      total_centi: rows.reduce(
-        (s, r) => s + Number(r.total_centi ?? r.local_total_centi ?? 0),
-        0,
-      ),
-      total_outstanding_centi: rows.reduce(
-        (s, r) => s + Number(r.outstanding_centi ?? 0),
-        0,
-      ),
-    };
+    const agg = SUMMARY_AGG[slug];
+    let done = false;
+
+    if (agg) {
+      // PostgREST aggregate: PK.count() = row count, plus the module's SUM
+      // column(s). All aggregates → a single implicit group → one returned row.
+      const parts = [`cnt:${agg.pkCol}.count()`];
+      if (agg.amtCol) parts.push(`amt:${agg.amtCol}.sum()`);
+      if (agg.outCol) parts.push(`outs:${agg.outCol}.sum()`);
+      const { data, error } = await applyFilters(
+        sb.from(view).select(parts.join(",")),
+        slug,
+        dateCol,
+      );
+      if (!error) {
+        const row = ((data ?? []) as Array<Record<string, unknown>>)[0] ?? {};
+        summary[slug] = {
+          count: Number(row.cnt ?? 0),
+          // SUM over zero rows is NULL → coalesce to 0, matching the empty reduce.
+          total_centi: agg.amtCol ? Number(row.amt ?? 0) : 0,
+          total_outstanding_centi: agg.outCol ? Number(row.outs ?? 0) : 0,
+        };
+        done = true;
+      }
+    }
+
+    if (!done) {
+      // Fallback — original paginate-all + JS reduce. Preserves exact numbers and
+      // the missing-view graceful degradation (error → data null → zeroed module).
+      const { data } = await paginateAll((pFrom, pTo) =>
+        applyFilters(sb.from(view).select("*"), slug, dateCol).range(pFrom, pTo),
+      );
+      const rows = (data ?? []) as Array<Record<string, unknown>>;
+      summary[slug] = {
+        count: rows.length,
+        total_centi: rows.reduce(
+          (s, r) => s + Number(r.total_centi ?? r.local_total_centi ?? 0),
+          0,
+        ),
+        total_outstanding_centi: rows.reduce(
+          (s, r) => s + Number(r.outstanding_centi ?? 0),
+          0,
+        ),
+      };
+    }
   }
   return c.json({ summary });
 });
