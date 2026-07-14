@@ -1133,7 +1133,7 @@ export async function soDeliverableRemaining(
   //    mains → accessories → services, sofa modules left-to-right). The bulk
   //    insert gives every line the same created_at, so the timestamp can't
   //    recover the persisted order once routine updates relocate rows.
-  const { data: soItems } = await sb
+  const { data: soItems } = await paginateAll<Record<string, unknown>>((from, to) => sb
     .from('mfg_sales_order_items')
     .select(
       'id, doc_no, debtor_code, debtor_name, item_code, item_group, description, description2, ' +
@@ -1144,7 +1144,9 @@ export async function soDeliverableRemaining(
     .in('doc_no', soDocNos)
     .eq('cancelled', false)
     .order('line_no', { ascending: true, nullsFirst: false })
-    .order('created_at');
+    .order('created_at')
+    .order('id')
+    .range(from, to));
   const rawLines = (soItems ?? []) as Array<Record<string, unknown> & { id: string; doc_no: string; item_code: string; qty: number }>;
   if (rawLines.length === 0) return out;
   /* buildKey values are per-SO ('build-1', …) — the walk MUST run per doc;
@@ -1165,10 +1167,12 @@ export async function soDeliverableRemaining(
   // 2. Σ delivered — DO lines linked by so_item_id whose parent DO is NOT
   //    cancelled. Two-step: pull the candidate DO lines, then drop those whose
   //    parent DO is cancelled.
-  const { data: doLines } = await sb
+  const { data: doLines } = await paginateAll<{ id: string; so_item_id: string | null; qty: number; delivery_order_id: string }>((from, to) => sb
     .from('delivery_order_items')
     .select('id, so_item_id, qty, delivery_order_id')
-    .in('so_item_id', soItemIds);
+    .in('so_item_id', soItemIds)
+    .order('id')
+    .range(from, to));
   const doLineRows = (doLines ?? []) as Array<{ id: string; so_item_id: string | null; qty: number; delivery_order_id: string }>;
   const doIds = [...new Set(doLineRows.map((l) => l.delivery_order_id).filter(Boolean))];
   const activeDoIds = new Set<string>();
