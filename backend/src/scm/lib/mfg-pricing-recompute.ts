@@ -806,11 +806,13 @@ export async function loadFabricSellingTiersByIds(
 
 /** Load the singleton fabric-tier add-on Δ config (whole MYR). Missing → all 0. */
 export async function loadFabricTierAddonConfig(sb: any, companyId?: number | null): Promise<FabricTierAddonConfig> {
+  // Key by company_id (each company has one row; 2990's is id=100001, not 1).
+  // When companyId is unresolved (single-company fallback) read the sole row.
   let q = sb
     .from('fabric_tier_addon_config')
-    .select('sofa_tier2_delta, sofa_tier3_delta, bedframe_tier2_delta, bedframe_tier3_delta')
-    .eq('id', 1);
+    .select('sofa_tier2_delta, sofa_tier3_delta, bedframe_tier2_delta, bedframe_tier3_delta');
   if (companyId != null) q = q.eq('company_id', companyId);
+  else q = q.eq('id', 1);
   const { data } = await q.maybeSingle();
   const d = data as Record<string, number> | null;
   return {
