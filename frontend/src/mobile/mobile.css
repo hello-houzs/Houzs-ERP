@@ -282,3 +282,29 @@
 .hz-m .appicon .b { width: 7px; border-radius: 2.5px; }
 .hz-m .lg-btn { transition: transform .16s ease, box-shadow .16s ease, filter .16s ease; box-shadow: 0 14px 32px -14px rgba(22,105,95,.75); }
 .hz-m .lg-btn:active { transform: translateY(1px) scale(.99); box-shadow: 0 8px 20px -12px rgba(22,105,95,.7); }
+
+/* ---- PMS Gantt / timeline (ported verbatim from the approved .hz-m mockup) ---- */
+.hz-m .seg { display: flex; background: #eceee9; border-radius: 9px; padding: 3px; gap: 3px; }
+.hz-m .seg button { flex: 1; border: none; background: none; font-family: inherit; font-size: 12px; font-weight: 800; color: #767b6e; padding: 6px 0; border-radius: 7px; cursor: pointer; }
+.hz-m .seg button.on { background: #16695f; color: #fff; }
+.hz-m .legend { display: flex; gap: 10px; flex-wrap: wrap; font-size: 10px; color: #767b6e; font-weight: 700; }
+.hz-m .legend span { display: inline-flex; align-items: center; gap: 4px; }
+.hz-m .lgd { width: 9px; height: 9px; transform: rotate(45deg); border-radius: 2px; display: inline-block; }
+.hz-m .gantt { border: 1px solid #d6d9d2; border-radius: 12px; overflow: hidden; background: #fff; margin-top: 10px; }
+.hz-m .gscroll { overflow-x: auto; }
+.hz-m .gantt .grid { min-width: 520px; }
+.hz-m .gaxis { display: grid; grid-template-columns: 112px repeat(6, 1fr); border-bottom: 1px solid #d6d9d2; background: #f7f8f5; }
+.hz-m .gaxis div { font-size: 9px; font-weight: 800; color: #767b6e; padding: 7px 0 7px 8px; border-left: 1px solid #eceee9; text-align: left; }
+.hz-m .gaxis div:first-child { border-left: none; }
+.hz-m .glane { display: grid; grid-template-columns: 112px repeat(6, 1fr); border-bottom: 1px solid #eceee9; position: relative; }
+.hz-m .glane:last-child { border-bottom: none; }
+.hz-m .glane .lbl { padding: 12px 8px; border-right: 1px solid #eceee9; background: #fbfcfa; }
+.hz-m .glane .lbl .nm { font-size: 11px; font-weight: 800; color: #11140f; line-height: 1.15; }
+.hz-m .glane .lbl .pr { font-size: 9px; font-weight: 700; color: #767b6e; margin-top: 3px; }
+.hz-m .gtrack { grid-column: 2 / -1; display: grid; grid-template-columns: repeat(6, 1fr); position: relative; min-height: 44px; }
+.hz-m .gcell { border-left: 1px solid #f0f2ed; }
+.hz-m .gcell.hol { background: repeating-linear-gradient(45deg,#f8eaea,#f8eaea 5px,#fff 5px,#fff 10px); }
+.hz-m .dia { position: absolute; top: 50%; width: 15px; height: 15px; transform: translate(-50%,-50%) rotate(45deg); border-radius: 3px; box-shadow: 0 1px 2px rgba(0,0,0,.18); border: 1.5px solid #fff; }
+.hz-m .dia.lock::after { content: ""; position: absolute; inset: 0; background: rgba(0,0,0,.28); border-radius: 2px; }
+.hz-m .today { position: absolute; top: 0; bottom: 0; width: 2px; background: rgba(22,105,95,.55); z-index: 3; }
+.hz-m .today::before { content: "TODAY"; position: absolute; top: -1px; left: 3px; font-size: 7px; font-weight: 800; color: #0c3f39; letter-spacing: .05em; }

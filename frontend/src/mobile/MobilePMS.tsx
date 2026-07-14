@@ -3,6 +3,7 @@ import type { Dispatch, ReactNode, SetStateAction } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { MobileVirtualList } from "./MobileVirtualList";
+import { MobileGantt } from "./MobileGantt";
 import { MediaLightbox, type MediaItem } from "../components/MediaLightbox";
 import { useAuth } from "../auth/AuthContext";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
@@ -894,6 +895,8 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
               items={data.checklist}
               progress={data.section_progress}
               attachments={data.checklist_attachments}
+              projectStart={p.start_date}
+              projectEnd={p.end_date}
               canTick={canTick && !archived}
               can={can}
               busy={busy}
@@ -1187,13 +1190,15 @@ const NEXT_STATUS: Record<string, "pending" | "done" | "na"> = {
 };
 
 function TasklistSectionView({
-  projectId, sections, items, progress, attachments, canTick, can, busy, setBusy, notify, prompt, reload,
+  projectId, sections, items, progress, attachments, projectStart, projectEnd, canTick, can, busy, setBusy, notify, prompt, reload,
 }: {
   projectId: number;
   sections?: TasklistSection[];
   items?: ChecklistItem[];
   progress?: SectionProgress[];
   attachments?: TaskAttachment[];
+  projectStart: string | null;
+  projectEnd: string | null;
   canTick: boolean;
   can: (perm: string) => boolean;
   busy: boolean;
@@ -1231,20 +1236,38 @@ function TasklistSectionView({
   const orderedSecs = [...secs].sort((a, b) => a.sort_order - b.sort_order);
   const progressById = new Map((progress ?? []).map((p) => [p.id, p]));
 
+  // List | Gantt toggle. Tapping a Gantt diamond flips back to the list and
+  // scrolls the tapped task's row into view with a brief highlight.
+  const [view, setView] = useState<"list" | "gantt">("list");
+  const [flashId, setFlashId] = useState<number | null>(null);
+  useEffect(() => {
+    if (flashId == null || view !== "list") return;
+    const el = document.getElementById(`pms-task-${flashId}`);
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+    const t = setTimeout(() => setFlashId(null), 1600);
+    return () => clearTimeout(t);
+  }, [flashId, view]);
+  const openTask = (taskId: number) => { setView("list"); setFlashId(taskId); };
+
   const renderRows = (rows: ChecklistItem[]) =>
     rows.map((it) => (
-      <TaskRow
+      <div
         key={it.id}
-        item={it}
-        attachments={attachBySection.get(it.id) ?? []}
-        canTick={canTick}
-        can={can}
-        busy={busy}
-        setBusy={setBusy}
-        notify={notify}
-        prompt={prompt}
-        reload={reload}
-      />
+        id={`pms-task-${it.id}`}
+        style={flashId === it.id ? { outline: "2px solid #16695f", outlineOffset: 2, borderRadius: 8 } : undefined}
+      >
+        <TaskRow
+          item={it}
+          attachments={attachBySection.get(it.id) ?? []}
+          canTick={canTick}
+          can={can}
+          busy={busy}
+          setBusy={setBusy}
+          notify={notify}
+          prompt={prompt}
+          reload={reload}
+        />
+      </div>
     ));
 
   const totalTasks = list.length;
@@ -1253,37 +1276,54 @@ function TasklistSectionView({
     <details className="pacc" open>
       <summary>
         <span className="psec-t">{`Tasklist${totalTasks ? ` (${totalTasks})` : ""}`}</span>
-        <span style={{ marginLeft: "auto", fontSize: 10, color: "#9aa093" }}>List · Section</span>
+        <span style={{ marginLeft: "auto", fontSize: 10, color: "#9aa093" }}>{view === "gantt" ? "Timeline" : "List · Section"}</span>
         <svg className="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
       </summary>
       <div className="pbody">
-        {totalTasks === 0 && !orderedSecs.length && <div style={{ fontSize: 12, color: "#9aa093" }}>No tasks yet.</div>}
-        {orderedSecs.map((sec) => {
-          const rows = bySection.get(sec.id) ?? [];
-          const prog = progressById.get(sec.id);
-          return (
-            <div key={sec.id} style={{ marginTop: 10 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0 2px" }}>
-                <span style={{ fontSize: 11, fontWeight: 800, color: "#11140f" }}>{sec.name}</span>
-                {prog && <span style={{ marginLeft: "auto", fontSize: 10, fontWeight: 700, color: "#9aa093" }}>{prog.done}/{prog.total}</span>}
-              </div>
-              {rows.length ? renderRows(rows) : <div style={{ fontSize: 11, color: "#9aa093", padding: "4px 0" }}>No tasks in this section.</div>}
-            </div>
-          );
-        })}
-        {/* Uncategorised bucket */}
-        {(() => {
-          const rows = bySection.get(0) ?? [];
-          if (!rows.length) return null;
-          return (
-            <div style={{ marginTop: 10 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0 2px" }}>
-                <span style={{ fontSize: 11, fontWeight: 800, color: "#11140f" }}>Uncategorised</span>
-              </div>
-              {renderRows(rows)}
-            </div>
-          );
-        })()}
+        <div className="seg" style={{ marginBottom: 12 }}>
+          <button className={view === "list" ? "on" : ""} onClick={() => setView("list")}>List</button>
+          <button className={view === "gantt" ? "on" : ""} onClick={() => setView("gantt")}>Gantt</button>
+        </div>
+        {view === "gantt" ? (
+          <MobileGantt
+            projectStart={projectStart}
+            projectEnd={projectEnd}
+            sections={orderedSecs}
+            sectionProgress={progress ?? []}
+            tasks={list}
+            onTaskClick={openTask}
+          />
+        ) : (
+          <>
+            {totalTasks === 0 && !orderedSecs.length && <div style={{ fontSize: 12, color: "#9aa093" }}>No tasks yet.</div>}
+            {orderedSecs.map((sec) => {
+              const rows = bySection.get(sec.id) ?? [];
+              const prog = progressById.get(sec.id);
+              return (
+                <div key={sec.id} style={{ marginTop: 10 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0 2px" }}>
+                    <span style={{ fontSize: 11, fontWeight: 800, color: "#11140f" }}>{sec.name}</span>
+                    {prog && <span style={{ marginLeft: "auto", fontSize: 10, fontWeight: 700, color: "#9aa093" }}>{prog.done}/{prog.total}</span>}
+                  </div>
+                  {rows.length ? renderRows(rows) : <div style={{ fontSize: 11, color: "#9aa093", padding: "4px 0" }}>No tasks in this section.</div>}
+                </div>
+              );
+            })}
+            {/* Uncategorised bucket */}
+            {(() => {
+              const rows = bySection.get(0) ?? [];
+              if (!rows.length) return null;
+              return (
+                <div style={{ marginTop: 10 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0 2px" }}>
+                    <span style={{ fontSize: 11, fontWeight: 800, color: "#11140f" }}>Uncategorised</span>
+                  </div>
+                  {renderRows(rows)}
+                </div>
+              );
+            })()}
+          </>
+        )}
       </div>
     </details>
   );
