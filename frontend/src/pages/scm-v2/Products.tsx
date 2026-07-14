@@ -307,6 +307,13 @@ type ProductEditPatch = {
   price1Sen?: number | null;
 };
 
+// Row windowing (Edit Prices legacy table). Past this many rows we render only
+// the slice scrolled into view; short catalogs render in full (byte-identical
+// to before). Mirrors components/DataTable.tsx's window-scroll virtualization.
+const VIRTUAL_ROW_THRESHOLD = 40;
+const VIRTUAL_OVERSCAN = 12;
+const SKU_ROW_HEIGHT_ESTIMATE = 34; // px; corrected at runtime by measuring a real row
+
 const SkuMasterTab = () => {
   const [category, setCategory] = useState<MfgCategory | 'all'>('all');
   const [search, setSearch] = useState('');
@@ -345,6 +352,10 @@ const SkuMasterTab = () => {
   // One-shot filter — narrows the grid to one_shot=true rows only.
   const [oneShotOnly, setOneShotOnly] = useState(false);
 
+  // NOTE: this fetch is unbounded — it pulls the full mfg_products set for the
+  // category/search (no limit/pagination). The DOM is now windowed below, but
+  // the payload still scales with catalog size; a server-side cap / cursor is a
+  // separate follow-up (out of scope for this DOM-virtualization change).
   const { data: products, isLoading, error } = useMfgProducts({
     category: category === 'all' ? undefined : category,
     search: search.trim() || undefined,
@@ -560,6 +571,55 @@ const SkuMasterTab = () => {
     : isMattressView
       ? 6
       : 7);
+
+  // ── Row windowing (Edit Prices legacy table) ────────────────────────────
+  // Normal viewing goes through the shared DataGrid (own virtualization). The
+  // Edit Prices editor keeps this hand-built <table> because DataGrid can't host
+  // the inline PriceInput / BrandingInput cells. It used to mount EVERY ProductRow
+  // (each with inputs) — at ~1141 SKUs, thousands at 10x, that froze the page.
+  // Mirror components/DataTable.tsx: a capturing `window` scroll listener (catches
+  // the .skuScroll container's non-bubbling scroll too) measures the tbody against
+  // the viewport and renders only rows.slice(vStart, vEnd), bracketed by two spacer
+  // <tr>s that reserve the off-screen height so the internal scrollbar + sticky
+  // header behave exactly as before. Row height is measured from a real [data-vrow]
+  // row so the spacers can't drift. Gated to editMode + long lists → short catalogs
+  // and the existing layout stay byte-identical.
+  const canVirtualize = editMode && !isLoading && !error && rows.length > VIRTUAL_ROW_THRESHOLD;
+  const tbodyRef = useRef<HTMLTableSectionElement>(null);
+  const rowHeightRef = useRef(SKU_ROW_HEIGHT_ESTIMATE);
+  const [winRange, setWinRange] = useState<{ start: number; end: number }>({
+    start: 0,
+    end: VIRTUAL_ROW_THRESHOLD * 2,
+  });
+  useEffect(() => {
+    if (!canVirtualize) return;
+    let raf = 0;
+    const measure = () => {
+      raf = 0;
+      const el = tbodyRef.current;
+      if (!el) return;
+      const firstRow = el.querySelector<HTMLElement>('tr[data-vrow]');
+      if (firstRow && firstRow.offsetHeight > 0) rowHeightRef.current = firstRow.offsetHeight;
+      const rh = rowHeightRef.current || SKU_ROW_HEIGHT_ESTIMATE;
+      const top = el.getBoundingClientRect().top; // tbody top relative to viewport
+      const vh = window.innerHeight;
+      const first = Math.max(0, Math.floor(-top / rh) - VIRTUAL_OVERSCAN);
+      const count = Math.ceil(vh / rh) + VIRTUAL_OVERSCAN * 2;
+      const last = Math.min(rows.length, first + count);
+      setWinRange((prev) => (prev.start === first && prev.end === last ? prev : { start: first, end: last }));
+    };
+    const onScroll = () => { if (!raf) raf = requestAnimationFrame(measure); };
+    measure();
+    window.addEventListener('scroll', onScroll, { capture: true, passive: true });
+    window.addEventListener('resize', onScroll);
+    return () => {
+      window.removeEventListener('scroll', onScroll, true);
+      window.removeEventListener('resize', onScroll);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [canVirtualize, rows.length]);
+  const vStart = canVirtualize ? winRange.start : 0;
+  const vEnd = canVirtualize ? Math.min(rows.length, winRange.end) : rows.length;
 
   /* ── DataGrid conversion (owner request 2026-06-12) ─────────────────
      Normal viewing renders through the shared DataGrid (sorting, per-column
@@ -1015,9 +1075,14 @@ const SkuMasterTab = () => {
               <th style={{ textAlign: 'right' }}>Unit (m³)</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody ref={tbodyRef}>
             {isLoading && <SkeletonRows cols={colCount} rows={12} />}
-            {!isLoading && rows.map((row) => (
+            {canVirtualize && vStart > 0 && (
+              <tr aria-hidden>
+                <td colSpan={colCount} style={{ height: vStart * rowHeightRef.current, padding: 0, border: 0 }} />
+              </tr>
+            )}
+            {!isLoading && rows.slice(vStart, vEnd).map((row) => (
               <ProductRow
                 key={row.id}
                 row={row}
@@ -1033,6 +1098,11 @@ const SkuMasterTab = () => {
                 onStage={stageEdit}
               />
             ))}
+            {canVirtualize && vEnd < rows.length && (
+              <tr aria-hidden>
+                <td colSpan={colCount} style={{ height: (rows.length - vEnd) * rowHeightRef.current, padding: 0, border: 0 }} />
+              </tr>
+            )}
             {!isLoading && !error && rows.length === 0 && (
               <tr>
                 <td colSpan={colCount} style={{ textAlign: 'center', color: 'var(--fg-muted)', padding: 'var(--space-7)' }}>
@@ -1117,6 +1187,7 @@ const ProductRow = memo(({
 
   return (
     <tr
+      data-vrow=""
       className={styles.rowCompact}
       onDoubleClick={() => !editMode && onOpenSuppliers?.(row)}
       title={editMode
