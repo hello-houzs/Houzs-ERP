@@ -188,7 +188,7 @@ const BADGE_CLASS: Record<string, string> = {
   invited: "b-amber", outsource: "b-amber",
   // reds (cancelled / overdue / shortage / zero / maintenance)
   cancelled: "b-red", voided: "b-red", void: "b-red", overdue: "b-red",
-  shortage: "b-red", zero: "b-red", maintenance: "b-red",
+  shortage: "b-red", zero: "b-red", negative: "b-red", maintenance: "b-red",
   // brand (approved / submitted)
   approved: "b-brand", submitted: "b-brand",
   // greys (draft / closed / inactive / off)
@@ -247,12 +247,13 @@ function Avatar({ seed, size = 40 }: { seed: string; size?: number }) {
   );
 }
 
-/** Stock-level pill label from an on-hand qty (design: In stock / Low / Zero).
- *  Threshold mirrors the chip filters (<5 = Low, 0 = Zero). */
+/** Stock-level pill label from on-hand qty — matches desktop Inventory's
+ *  positive / zero / negative classification. NO arbitrary "<5 = Low" threshold
+ *  (that was a mobile-only invented rule with no data source; owner 2026-07-14). */
 const stockLevel = (qty: unknown): string => {
   const q = Number(qty ?? 0);
-  if (!Number.isFinite(q) || q <= 0) return "Zero";
-  if (q < 5) return "Low";
+  if (!Number.isFinite(q) || q === 0) return "Zero";
+  if (q < 0) return "Negative";
   return "In stock";
 };
 
@@ -1122,9 +1123,9 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     ],
     chips: [
       { key: "all", label: "All", match: () => true },
-      { key: "in", label: "In stock", match: (r) => Number(pick(r, "qty") ?? 0) >= 5 },
-      { key: "low", label: "Low", match: (r) => { const q = Number(pick(r, "qty") ?? 0); return q > 0 && q < 5; } },
-      { key: "zero", label: "Zero", match: (r) => Number(pick(r, "qty") ?? 0) <= 0 },
+      { key: "in", label: "In stock", match: (r) => Number(pick(r, "qty") ?? 0) > 0 },
+      { key: "zero", label: "Zero", match: (r) => Number(pick(r, "qty") ?? 0) === 0 },
+      { key: "neg", label: "Negative", match: (r) => Number(pick(r, "qty") ?? 0) < 0 },
     ],
     sorts: [
       { key: "name", label: "Name", cmp: (a, b) => byStr(a.product_name, b.product_name) },
