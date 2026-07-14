@@ -224,13 +224,58 @@ consignmentOrders.get('/', async (c) => {
   // Row-level "own / downline chain" scope (scm.staff uuids) — see lib/salesScope.ts.
   // Pass the REAL Houzs user id, NOT user.id (bridge-pinned staff uuid — was the non-admin 500).
   const scopeIds = await resolveSalesScopeIds(sb, c.env, c.get('houzsUser')?.id, canViewAllSales(c));
-  let q = sb.from('consignment_sales_orders').select(HEADER).order('so_date', { ascending: false }).limit(500);
-  if (scopeIds) q = q.in('salesperson_id', scopeIds);
-  const status = c.req.query('status'); if (status) q = q.eq('status', status);
-  const debtor = c.req.query('debtor'); if (debtor) q = q.ilike('debtor_name', `%${debtor}%`);
-  q = scopeToCompany(q, c); // multi-company: isolate to the active company
-  const { data, error } = await q;
-  if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
+  const status = c.req.query('status');
+  const debtor = c.req.query('debtor');
+
+  /* Opt-in server-side pagination + search + sort (mirrors useSuppliersPaged in
+     suppliers.ts). The PRESENCE of `page` switches paging on; when it is
+     absent/empty the query below is BYTE-IDENTICAL to the historical behavior
+     (so_date desc, limit 500, scopeIds + status + debtor + company scope,
+     `{ salesOrders }` shape after the same per-doc rollups) — so every existing
+     full-list caller is UNAFFECTED. */
+  const pageRaw = c.req.query('page');
+  const paginate = pageRaw !== undefined && pageRaw !== '';
+  const page = Math.max(0, Math.trunc(Number(pageRaw)) || 0);
+  const psRaw = Number(c.req.query('pageSize'));
+  const pageSize = Number.isFinite(psRaw) && psRaw > 0 ? Math.min(200, Math.max(1, Math.trunc(psRaw))) : 50;
+
+  let data: unknown[] | null;
+  let count: number | null = null;
+  if (!paginate) {
+    /* --- LEGACY PATH (unchanged) --- */
+    let q = sb.from('consignment_sales_orders').select(HEADER).order('so_date', { ascending: false }).limit(500);
+    if (scopeIds) q = q.in('salesperson_id', scopeIds);
+    if (status) q = q.eq('status', status);
+    if (debtor) q = q.ilike('debtor_name', `%${debtor}%`);
+    q = scopeToCompany(q, c); // multi-company: isolate to the active company
+    const res = await q;
+    if (res.error) return c.json({ error: 'load_failed', reason: res.error.message }, 500);
+    data = res.data ?? [];
+  } else {
+    /* --- PAGINATED PATH (opt-in via `page`) --- */
+    /* Deterministic order + a unique tiebreaker (doc_no — the CO number is
+       unique per company) so range paging can't skip/repeat rows that share the
+       sort key. Sort over columns already in HEADER (schema-drift safe). */
+    const SORT_COLS = new Set(['so_date', 'doc_no', 'debtor_name', 'status', 'local_total_centi']);
+    const [rawCol, rawDir] = (c.req.query('sort') ?? 'so_date:desc').split(':');
+    const sortCol = SORT_COLS.has(rawCol) ? rawCol : 'so_date';
+    const sortAsc = rawDir === 'asc';
+    let q = sb.from('consignment_sales_orders').select(HEADER, { count: 'exact' }).order(sortCol, { ascending: sortAsc });
+    if (sortCol !== 'doc_no') q = q.order('doc_no', { ascending: false }); // unique tiebreaker
+    if (scopeIds) q = q.in('salesperson_id', scopeIds);
+    if (status) q = q.eq('status', status);
+    if (debtor) q = q.ilike('debtor_name', `%${debtor}%`);
+    /* Free-text search over the SAME columns the FE list currently searches +
+       that already live in the HEADER select: doc_no + debtor_name. */
+    const qText = c.req.query('q');
+    if (qText) { const s = escapeForOr(qText); if (s) q = q.or(`doc_no.ilike.%${s}%,debtor_name.ilike.%${s}%`); }
+    q = scopeToCompany(q, c); // multi-company: isolate to the active company
+    q = q.range(page * pageSize, page * pageSize + pageSize - 1);
+    const res = await q;
+    if (res.error) return c.json({ error: 'load_failed', reason: res.error.message }, 500);
+    data = res.data ?? [];
+    count = res.count ?? (res.data?.length ?? 0);
+  }
 
   const rows = (data ?? []) as unknown as Array<{ doc_no?: string } & Record<string, unknown>>;
   const docNos = rows.map((r) => r.doc_no).filter((x): x is string => !!x);
@@ -340,6 +385,7 @@ consignmentOrders.get('/', async (c) => {
     }
   }
 
+  if (paginate) return c.json({ salesOrders: rows, total: count ?? rows.length, page, pageSize });
   return c.json({ salesOrders: rows });
 });
 

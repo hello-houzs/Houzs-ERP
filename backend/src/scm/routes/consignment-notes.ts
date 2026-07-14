@@ -34,6 +34,7 @@ import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item
 import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { todayMyt } from '../lib/my-time';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
+import { escapeForOr } from '../lib/postgrest-search';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 
 export const consignmentNotes = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -332,11 +333,51 @@ function buildItemRow(noteId: string, it: Record<string, unknown>) {
 // ── List ────────────────────────────────────────────────────────────────
 consignmentNotes.get('/', async (c) => {
   const sb = c.get('supabase');
-  let q = sb.from('consignment_delivery_orders').select(HEADER).order('do_date', { ascending: false }).limit(500);
-  const status = c.req.query('status'); if (status) q = q.eq('status', status);
-  q = scopeToCompany(q, c); // multi-company: isolate to the active company
-  const { data, error } = await q;
-  if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
+  const status = c.req.query('status');
+
+  /* Opt-in server-side pagination + search + sort (mirrors useSuppliersPaged).
+     The PRESENCE of `page` switches paging on; when absent/empty the query is
+     BYTE-IDENTICAL to the historical behavior (do_date desc, limit 500, status +
+     company scope, `{ deliveryOrders }` shape after has_children stamping) — so
+     every existing full-list caller is UNAFFECTED. */
+  const pageRaw = c.req.query('page');
+  const paginate = pageRaw !== undefined && pageRaw !== '';
+  const page = Math.max(0, Math.trunc(Number(pageRaw)) || 0);
+  const psRaw = Number(c.req.query('pageSize'));
+  const pageSize = Number.isFinite(psRaw) && psRaw > 0 ? Math.min(200, Math.max(1, Math.trunc(psRaw))) : 50;
+
+  let data: unknown[] | null;
+  let count: number | null = null;
+  if (!paginate) {
+    /* --- LEGACY PATH (unchanged) --- */
+    let q = sb.from('consignment_delivery_orders').select(HEADER).order('do_date', { ascending: false }).limit(500);
+    if (status) q = q.eq('status', status);
+    q = scopeToCompany(q, c); // multi-company: isolate to the active company
+    const res = await q;
+    if (res.error) return c.json({ error: 'load_failed', reason: res.error.message }, 500);
+    data = res.data ?? [];
+  } else {
+    /* --- PAGINATED PATH (opt-in via `page`) --- */
+    /* Deterministic order + unique tiebreaker (id, in HEADER). Sort columns are
+       all already in the HEADER select (schema-drift safe). */
+    const SORT_COLS = new Set(['do_date', 'do_number', 'debtor_name', 'status', 'local_total_centi']);
+    const [rawCol, rawDir] = (c.req.query('sort') ?? 'do_date:desc').split(':');
+    const sortCol = SORT_COLS.has(rawCol) ? rawCol : 'do_date';
+    const sortAsc = rawDir === 'asc';
+    let q = sb.from('consignment_delivery_orders').select(HEADER, { count: 'exact' }).order(sortCol, { ascending: sortAsc });
+    if (sortCol !== 'id') q = q.order('id', { ascending: true }); // unique tiebreaker
+    if (status) q = q.eq('status', status);
+    /* Free-text search over the SAME columns already in HEADER + that the FE
+       list searches: do_number (note no) + debtor_name. */
+    const qText = c.req.query('q');
+    if (qText) { const s = escapeForOr(qText); if (s) q = q.or(`do_number.ilike.%${s}%,debtor_name.ilike.%${s}%`); }
+    q = scopeToCompany(q, c); // multi-company: isolate to the active company
+    q = q.range(page * pageSize, page * pageSize + pageSize - 1);
+    const res = await q;
+    if (res.error) return c.json({ error: 'load_failed', reason: res.error.message }, 500);
+    data = res.data ?? [];
+    count = res.count ?? (res.data?.length ?? 0);
+  }
 
   /* Downstream-lock — stamp has_children when a non-cancelled Consignment Return
      references the note (the list grid hides Edit / Cancel on locked notes). */
@@ -354,6 +395,7 @@ consignmentNotes.get('/', async (c) => {
     }
   }
   const consignmentNotesOut = rows.map((r) => ({ ...r, has_children: childIds.has(r.id) }));
+  if (paginate) return c.json({ deliveryOrders: consignmentNotesOut, total: count ?? consignmentNotesOut.length, page, pageSize });
   return c.json({ deliveryOrders: consignmentNotesOut });
 });
 

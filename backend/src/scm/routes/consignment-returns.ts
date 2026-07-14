@@ -32,6 +32,7 @@ import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item
 import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { todayMyt } from '../lib/my-time';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
+import { escapeForOr } from '../lib/postgrest-search';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 
 export const consignmentReturns = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -337,12 +338,49 @@ function buildItemRow(returnId: string, it: Record<string, unknown>) {
 // ── List ────────────────────────────────────────────────────────────────
 consignmentReturns.get('/', async (c) => {
   const sb = c.get('supabase');
-  let q = sb.from('consignment_delivery_returns').select(HEADER).order('return_date', { ascending: false }).limit(500);
-  const status = c.req.query('status'); if (status) q = q.eq('status', status);
+  const status = c.req.query('status');
+
+  /* Opt-in server-side pagination + search + sort (mirrors useSuppliersPaged).
+     The PRESENCE of `page` switches paging on; when absent/empty the query is
+     BYTE-IDENTICAL to the historical behavior (return_date desc, limit 500,
+     status + company scope, `{ deliveryReturns }` shape) — so every existing
+     full-list caller is UNAFFECTED. */
+  const pageRaw = c.req.query('page');
+  const paginate = pageRaw !== undefined && pageRaw !== '';
+
+  if (!paginate) {
+    /* --- LEGACY PATH (unchanged) --- */
+    let q = sb.from('consignment_delivery_returns').select(HEADER).order('return_date', { ascending: false }).limit(500);
+    if (status) q = q.eq('status', status);
+    q = scopeToCompany(q, c); // multi-company: isolate to the active company
+    const { data, error } = await q;
+    if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
+    return c.json({ deliveryReturns: data ?? [] });
+  }
+
+  /* --- PAGINATED PATH (opt-in via `page`) --- */
+  const page = Math.max(0, Math.trunc(Number(pageRaw)) || 0);
+  const psRaw = Number(c.req.query('pageSize'));
+  const pageSize = Number.isFinite(psRaw) && psRaw > 0 ? Math.min(200, Math.max(1, Math.trunc(psRaw))) : 50;
+
+  /* Deterministic order + unique tiebreaker (id, in HEADER). Sort columns are
+     all already in the HEADER select (schema-drift safe). */
+  const SORT_COLS = new Set(['return_date', 'return_number', 'debtor_name', 'status', 'local_total_centi']);
+  const [rawCol, rawDir] = (c.req.query('sort') ?? 'return_date:desc').split(':');
+  const sortCol = SORT_COLS.has(rawCol) ? rawCol : 'return_date';
+  const sortAsc = rawDir === 'asc';
+  let q = sb.from('consignment_delivery_returns').select(HEADER, { count: 'exact' }).order(sortCol, { ascending: sortAsc });
+  if (sortCol !== 'id') q = q.order('id', { ascending: true }); // unique tiebreaker
+  if (status) q = q.eq('status', status);
+  /* Free-text search over the SAME columns already in HEADER + that the FE list
+     searches: return_number + debtor_name. */
+  const qText = c.req.query('q');
+  if (qText) { const s = escapeForOr(qText); if (s) q = q.or(`return_number.ilike.%${s}%,debtor_name.ilike.%${s}%`); }
   q = scopeToCompany(q, c); // multi-company: isolate to the active company
-  const { data, error } = await q;
+  q = q.range(page * pageSize, page * pageSize + pageSize - 1);
+  const { data, error, count } = await q;
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
-  return c.json({ deliveryReturns: data ?? [] });
+  return c.json({ deliveryReturns: data ?? [], total: count ?? (data?.length ?? 0), page, pageSize });
 });
 
 // ── Returnable Consignment Note lines (From-Note multi-picker) ────────────
