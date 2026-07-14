@@ -8,6 +8,7 @@ import { useAuth } from "../auth/AuthContext";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { usePrompt } from "../vendor/scm/components/PromptDialog";
+import { formatCurrency, formatDate } from "../lib/utils";
 import "./mobile.css";
 
 /* ------------------------------------------------------------------ *
@@ -288,14 +289,9 @@ function pick<T>(...vals: (T | null | undefined)[]): T | null {
 }
 
 // ── Formatters ──
-const rm = (v: number | null | undefined) =>
-  ((v ?? 0)).toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const dm = (d: string | null | undefined) => {
-  if (!d) return "—";
-  const dt = new Date(d);
-  if (isNaN(+dt)) return "—";
-  return dt.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
-};
+// P&L figures here are plain ringgit numbers (NOT centi) — format via the shared
+// ringgit formatter. TZ-aware numeric DD/MM/YYYY date via the shared helper.
+const dm = (d: string | null | undefined) => formatDate(d);
 // Date-only portion of an ISO "date T time" string (setup_start_at etc).
 const dOnly = (d: string | null | undefined) => dm(d);
 // Time-only portion ("08:00"). Reads the literal HH:mm off the ISO string so
@@ -2091,22 +2087,22 @@ function FinancialSnapshot({
             live net so the collapsed header still carries the headline number. */}
         <span className="psec-t" style={{ color: "#8a4b12" }}>P&amp;L (finance)</span>
         <span className="rbadge" style={{ marginLeft: "auto", background: "#f3ece0", color: "#a16a2e" }}>Owner / Director only</span>
-        <span style={{ fontSize: 11, fontWeight: 700, color: netColor, marginLeft: 8 }}>Net RM {rm(net)}</span>
+        <span style={{ fontSize: 11, fontWeight: 700, color: netColor, marginLeft: 8 }}>Net {formatCurrency(net)}</span>
         <svg className="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
       </summary>
       <div className="pbody">
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
           <div style={{ background: "#f4f6f3", borderRadius: 10, padding: 11 }}>
             <div className="pkv-l">Total sales</div>
-            <div className="money" style={{ fontSize: 16, fontWeight: 800, color: "#11140f", marginTop: 3 }}>RM {rm(sales)}</div>
+            <div className="money" style={{ fontSize: 16, fontWeight: 800, color: "#11140f", marginTop: 3 }}>{formatCurrency(sales)}</div>
           </div>
           <div style={{ background: "#f4f6f3", borderRadius: 10, padding: 11 }}>
             <div className="pkv-l">Total cost</div>
-            <div className="money" style={{ fontSize: 16, fontWeight: 800, color: "#11140f", marginTop: 3 }}>RM {rm(cost)}</div>
+            <div className="money" style={{ fontSize: 16, fontWeight: 800, color: "#11140f", marginTop: 3 }}>{formatCurrency(cost)}</div>
           </div>
           <div style={{ background: "#f4f6f3", borderRadius: 10, padding: 11 }}>
             <div className="pkv-l">Net profit</div>
-            <div className="money" style={{ fontSize: 16, fontWeight: 800, color: netColor, marginTop: 3 }}>RM {rm(net)}</div>
+            <div className="money" style={{ fontSize: 16, fontWeight: 800, color: netColor, marginTop: 3 }}>{formatCurrency(net)}</div>
           </div>
           <div style={{ background: "#f4f6f3", borderRadius: 10, padding: 11 }}>
             <div className="pkv-l">Margin</div>
@@ -2126,7 +2122,7 @@ function FinancialSnapshot({
             {incomeLines.map((line, i) => (
               <div key={`${line.source ?? "l"}-${line.id}`} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", borderTop: i === 0 ? "none" : "1px solid #eceee9", flexWrap: "wrap" }}>
                 <span style={{ flex: 1, minWidth: 90, fontSize: 12, color: "#414539" }}>{line.description || humanize(line.category || "sales")}</span>
-                <span className="money" style={{ fontSize: 12, fontWeight: 700, color: "#2f8a5b" }}>RM {rm(line.amount)}</span>
+                <span className="money" style={{ fontSize: 12, fontWeight: 700, color: "#2f8a5b" }}>{formatCurrency(line.amount)}</span>
               </div>
             ))}
           </div>
@@ -2147,14 +2143,14 @@ function FinancialSnapshot({
                     {line.description || humanize(line.category || "—")}
                     {auto && <span style={{ marginLeft: 5, fontSize: 9, color: "#9aa093" }}>auto</span>}
                   </span>
-                  <span className="money" style={{ fontSize: 12, fontWeight: 700 }}>RM {rm(line.amount)}</span>
+                  <span className="money" style={{ fontSize: 12, fontWeight: 700 }}>{formatCurrency(line.amount)}</span>
                   {receiptKey && <button className="tinybtn" disabled={busy} onClick={() => openReceipt(line)}>Receipt</button>}
                 </div>
               );
             })}
             <div style={{ display: "flex", justifyContent: "space-between", padding: "9px 12px", borderTop: "1px solid #eceee9", fontSize: 12, fontWeight: 700, color: "#11140f", background: "#f4f6f3" }}>
               <span>Net profit{marginPct != null ? ` (${marginPct.toFixed(1)}%)` : ""}</span>
-              <span className="money" style={{ color: netColor }}>RM {rm(net)}</span>
+              <span className="money" style={{ color: netColor }}>{formatCurrency(net)}</span>
             </div>
           </div>
         )}

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { uploadSlipFull, ALLOWED_SLIP_MIMES, MAX_SLIP_SIZE_BYTES } from "../vendor/scm/lib/slip";
+import { todayMyt } from "../vendor/scm/lib/dates";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import "./mobile.css";
 
@@ -158,7 +159,7 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
         await authedFetch(`/delivery-orders-mfg/${encodeURIComponent(doId)}/payments`, {
           method: "POST",
           body: JSON.stringify({
-            paidAt: new Date().toISOString().slice(0, 10),
+            paidAt: todayMyt(),
             method: PAY_METHOD_API[payMethod],
             amountCenti: balance,
           }),

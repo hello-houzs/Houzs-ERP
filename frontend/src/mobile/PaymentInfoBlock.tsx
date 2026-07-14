@@ -15,6 +15,8 @@
 // screens' `.hz-m` root, so the block looks identical in either context.
 // ----------------------------------------------------------------------------
 
+import { formatDate } from "../lib/utils";
+
 /** A recorded payment as either surface holds it. Fields are optional so the
  *  draft-edit view's reduced fetch and the detail view's full fetch both fit;
  *  camelCase aliases cover the postgres.js / PostgREST casing drift. */
@@ -37,13 +39,10 @@ const METHOD_LABELS: Record<string, string> = {
 };
 const methodLabel = (m: string | null): string => (m ? METHOD_LABELS[m] ?? m : '—');
 
-/** Short "14 Jun" date, em-dash when empty/unparseable — matches MobileSODetail. */
-const dm = (d: string | null | undefined): string => {
-  if (!d) return '—';
-  const dt = new Date(d);
-  if (isNaN(+dt)) return '—';
-  return dt.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
-};
+/** Numeric DD/MM/YYYY (owner-locked date format), TZ-aware via the shared helper
+ *  so a date-only string renders in Asia/Kuala_Lumpur without an off-by-one on an
+ *  off-zone device; em-dash when empty/unparseable. */
+const dm = (d: string | null | undefined): string => formatDate(d);
 
 export function PaymentInfoBlock({ payment }: { payment: RecordedPaymentLike }) {
   const p = payment;

@@ -2,6 +2,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { api } from "../api/client";
+import {
+  resolveStatusPill,
+  statusLabel as scmStatusLabel,
+  type StatusDocType,
+  type StatusTone,
+} from "../vendor/scm/lib/status-pill";
 import type { FormSchema } from "./MobileModuleForm";
 import { MobileVirtualList } from "./MobileVirtualList";
 import "./mobile.css";
@@ -68,6 +74,14 @@ export type ModuleConfig = {
    *  the detail-header status, so keep it stable even when the list badge differs
    *  (override the list-only badge via `badgeText`). */
   pill?: (row: any) => string;
+  /** Canonical document type for the shared status map (vendor/scm/lib/status-
+   *  pill.ts). When set, the list card resolves the pill's TONE (and thus badge
+   *  colour) from `resolveStatusPill(statusDocType, row.status)` so a document's
+   *  status colour matches its desktop scm-v2 list. The `pill` accessor should
+   *  return the matching canonical label via `scmStatusLabel(statusDocType, …)`
+   *  so list + detail read identically. Leave unset for non-document pills
+   *  (category / code / role) that have no canonical status map. */
+  statusDocType?: StatusDocType;
   /** List-card badge override. When set, the list card's status badge uses this
    *  instead of `pill` (e.g. Positions shows "N members" while `pill` stays the
    *  department for the detail header). */
@@ -144,9 +158,12 @@ const pick = (row: any, ...keys: string[]) => {
 /** Case-insensitive equality against a value that may be null. */
 const eq = (a: unknown, b: string) => String(a ?? "").trim().toLowerCase() === b.toLowerCase();
 
-/** Humanize a raw status enum ("partially_received", "IN_STOCK") into a Title
- *  Case pill label that matches the PILL palette keys. */
-const statusLabel = (raw: unknown): string => {
+/** Generic Title-Case humanizer for a raw enum ("partially_received",
+ *  "IN_STOCK") — used ONLY for non-document fields that have no canonical status
+ *  map: product category, account type, user account status. Document statuses
+ *  go through the shared `scmStatusLabel(docType, status)` instead so a doc reads
+ *  identically on phone and desktop. */
+const humanize = (raw: unknown): string => {
   const t = String(raw ?? "").trim();
   if (!t) return "";
   return t
@@ -171,7 +188,7 @@ const BADGE_CLASS: Record<string, string> = {
   invited: "b-amber", outsource: "b-amber",
   // reds (cancelled / overdue / shortage / zero / maintenance)
   cancelled: "b-red", voided: "b-red", void: "b-red", overdue: "b-red",
-  shortage: "b-red", zero: "b-red", maintenance: "b-red",
+  shortage: "b-red", zero: "b-red", negative: "b-red", maintenance: "b-red",
   // brand (approved / submitted)
   approved: "b-brand", submitted: "b-brand",
   // greys (draft / closed / inactive / off)
@@ -185,11 +202,27 @@ const badgeClass = (label: string): string => {
   return BADGE_CLASS[k] ?? "b-grey";
 };
 
-/** Canonical spec status badge (`.badge .b-*`). Empty label → nothing. */
-function Badge({ label }: { label: string }) {
+// Canonical status TONE (vendor/scm/lib/status-pill.ts) → mobile .b-* badge
+// class, so a document badge's colour is driven by the SAME tone the desktop
+// scm-v2 pill uses instead of a label-keyed guess. info/progress map to the
+// brand/amber accents; pending (draft) reads amber like the desktop gold pill.
+const TONE_BADGE_CLASS: Record<StatusTone, string> = {
+  neutral: "b-grey",
+  info: "b-brand",
+  progress: "b-amber",
+  success: "b-green",
+  danger: "b-red",
+  pending: "b-amber",
+};
+
+/** Canonical spec status badge (`.badge .b-*`). Empty label → nothing. When a
+ *  `tone` is given (document pills), the colour comes from the shared status
+ *  map; otherwise it falls back to the label-keyed BADGE_CLASS. */
+function Badge({ label, tone }: { label: string; tone?: StatusTone }) {
   const clean = (label ?? "").trim();
   if (!clean) return null;
-  return <span className={`badge ${badgeClass(clean)}`}>{clean}</span>;
+  const cls = tone ? TONE_BADGE_CLASS[tone] : badgeClass(clean);
+  return <span className={`badge ${cls}`}>{clean}</span>;
 }
 
 /** Circle avatar with initials on #15161a / gold (spec drivers/members). */
@@ -214,12 +247,13 @@ function Avatar({ seed, size = 40 }: { seed: string; size?: number }) {
   );
 }
 
-/** Stock-level pill label from an on-hand qty (design: In stock / Low / Zero).
- *  Threshold mirrors the chip filters (<5 = Low, 0 = Zero). */
+/** Stock-level pill label from on-hand qty — matches desktop Inventory's
+ *  positive / zero / negative classification. NO arbitrary "<5 = Low" threshold
+ *  (that was a mobile-only invented rule with no data source; owner 2026-07-14). */
 const stockLevel = (qty: unknown): string => {
   const q = Number(qty ?? 0);
-  if (!Number.isFinite(q) || q <= 0) return "Zero";
-  if (q < 5) return "Low";
+  if (!Number.isFinite(q) || q === 0) return "Zero";
+  if (q < 0) return "Negative";
   return "In stock";
 };
 
@@ -583,6 +617,14 @@ function ListCard({ config, row, onOpen }: { config: ModuleConfig; row: any; onO
   const cardStyle: React.CSSProperties = clickable ? { cursor: "pointer" } : { cursor: "default" };
   const pillStatus = config.pill ? safe(config.pill, row) : "";
   const status = config.badgeText ? safe(config.badgeText, row) : pillStatus;
+  // Document modules carry a canonical docType → the badge colour comes from the
+  // shared status map's tone (same as desktop), not a label-keyed guess. The
+  // badgeText override (positions / departments / accounting) is never a status,
+  // so it keeps the label-keyed colour.
+  const statusTone: StatusTone | undefined =
+    config.statusDocType && !config.badgeText
+      ? resolveStatusPill(config.statusDocType, pick(row, "status")).tone
+      : undefined;
   const cancelled = eq(pillStatus, "Cancelled");
   const name = safe(config.primary, row) || "—";
   const sub = config.subline ? safe(config.subline, row) : safe(config.secondary, row);
@@ -598,7 +640,7 @@ function ListCard({ config, row, onOpen }: { config: ModuleConfig; row: any; onO
             <div style={{ fontSize: 13.5, fontWeight: 700, color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</div>
             {sub && <div className="tnum" style={{ fontSize: 11, color: "var(--mut)", marginTop: 2 }}>{sub}</div>}
           </div>
-          {status ? <Badge label={status} /> : null}
+          {status ? <Badge label={status} tone={statusTone} /> : null}
         </div>
       </div>
     );
@@ -635,7 +677,7 @@ function ListCard({ config, row, onOpen }: { config: ModuleConfig; row: any; onO
         <div className="card-b" style={{ padding: "12px 13px" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
             <span style={{ fontSize: config.variant === "warehouse" ? 14 : 13.5, fontWeight: config.variant === "warehouse" ? 800 : 700, color: "var(--ink)" }}>{name}</span>
-            {status ? <Badge label={status} /> : null}
+            {status ? <Badge label={status} tone={statusTone} /> : null}
           </div>
           {sub && <div className="tnum" style={{ fontSize: 11, color: "var(--mut)", marginTop: 3 }}>{sub}</div>}
           {noteLine && <div style={{ fontSize: 11.5, color: "var(--ink2)", marginTop: 6, lineHeight: 1.4 }}>{noteLine}</div>}
@@ -675,7 +717,7 @@ function ListCard({ config, row, onOpen }: { config: ModuleConfig; row: any; onO
         <div className="card-b" style={{ padding: "12px 13px" }}>
           <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
             <span style={{ fontSize: 14, fontWeight: 800, color: "var(--ink)", flex: 1, minWidth: 0, whiteSpace: "normal" }}>{name}</span>
-            {status ? <span style={{ flex: "none" }}><Badge label={status} /></span> : null}
+            {status ? <span style={{ flex: "none" }}><Badge label={status} tone={statusTone} /></span> : null}
           </div>
           {sub && <div className="tnum" style={{ fontSize: 11.5, color: "var(--mut)", marginTop: 5 }}>{sub}</div>}
           {noteLine && <div style={{ fontSize: 11.5, color: "var(--ink2)", marginTop: 6, lineHeight: 1.4 }}>{noteLine}</div>}
@@ -699,7 +741,7 @@ function ListCard({ config, row, onOpen }: { config: ModuleConfig; row: any; onO
     <div className="card" onClick={open} style={{ ...cardStyle, padding: "12px 13px", ...(cancelled ? { opacity: 0.6 } : null) }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" }}>
         <span style={{ flex: 1, minWidth: 0, fontSize: 14, fontWeight: 800, color: "#11140f" }}>{name}</span>
-        {status ? <span style={{ flex: "none" }}><Badge label={status} /></span> : (() => {
+        {status ? <span style={{ flex: "none" }}><Badge label={status} tone={statusTone} /></span> : (() => {
           const rightRaw = config.right ? config.right(row) : "";
           const rightText = config.rightMoney ? `RM ${rm(rightRaw as unknown as number)}` : rightRaw;
           return rightText ? <span className="money-row">{rightText}</span> : null;
@@ -775,9 +817,14 @@ export const FORM_SUPPLIERS: FormSchema = {
     { key: "status", label: "Status", type: "select", options: [
       { value: "ACTIVE", label: "Active" }, { value: "INACTIVE", label: "Inactive" }, { value: "BLOCKED", label: "Blocked" },
     ], placeholder: "Active" },
-    { key: "currency", label: "Currency", type: "select", options: [
-      { value: "MYR", label: "MYR" }, { value: "RMB", label: "RMB" }, { value: "USD", label: "USD" }, { value: "SGD", label: "SGD" },
-    ], placeholder: "MYR" },
+    // Currency options come from the live currency MASTER (migration 0193 —
+    // /api/scm/currencies, the same source useActiveCurrencies reads and every
+    // desktop currency <select> uses), NOT a hardcoded list, so adding a
+    // currency is fully UI. Loaded via the form's async optionsSource (same
+    // mechanism as roles/departments). Falls back to the placeholder if the
+    // master hasn't loaded.
+    { key: "currency", label: "Currency", type: "select", placeholder: "MYR",
+      optionsSource: { base: "scm", path: "/currencies?active=true", listKey: "currencies", value: (r) => r.code, label: (r) => r.code } },
     { key: "creditLimitSen", label: "Credit Limit (RM)", type: "money", moneyScale: 100 },
     { key: "businessRegNo", label: "Business Reg No", type: "text" },
     { key: "tinNumber", label: "TIN Number", type: "text" },
@@ -989,7 +1036,8 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     right: (r) => r.local_total_centi,
     rightMoney: true,
     search: (r) => join(r.debtor_name, r.do_number, r.so_doc_no, r.ref),
-    pill: (r) => statusLabel(pick(r, "status")),
+    statusDocType: "do",
+    pill: (r) => scmStatusLabel("do", pick(r, "status")),
     // Spec #do-list: name + status badge, "{{doc_no}} · {{delivery_date}}" sub-
     // line, footer "Driver {{name}}" + RM {{total_centi}}. items_summary has no
     // list column → line-count shown in the footer left instead.
@@ -1033,7 +1081,8 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     right: (r) => r.total_centi,
     rightMoney: true,
     search: (r) => join(r.debtor_name, r.invoice_number, r.so_doc_no, r.ref),
-    pill: (r) => statusLabel(pick(r, "status")),
+    statusDocType: "si",
+    pill: (r) => scmStatusLabel("si", pick(r, "status")),
     // Spec #si-list: "{{doc_no}} · due {{due_date}}" sub-line, footer
     // "Balance RM {{balance_centi}}" + RM {{total_centi}} (balance computed).
     variant: "doc",
@@ -1077,7 +1126,8 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     right: (r) => r.total_centi,
     rightMoney: true,
     search: (r) => join(r.grn_number, r.supplier?.name, r.supplier?.code, r.delivery_note_ref),
-    pill: (r) => statusLabel(pick(r, "status")),
+    statusDocType: "grn",
+    pill: (r) => scmStatusLabel("grn", pick(r, "status")),
     // Spec #grn-list: name + status, "{{doc_no}} · {{received_date}} · PO
     // {{po_doc_no}}" sub-line, no money footer. items_summary has no list column.
     variant: "doc",
@@ -1114,7 +1164,8 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     right: (r) => r.total_centi,
     rightMoney: true,
     search: (r) => join(r.po_number, r.supplier?.name, r.supplier?.code),
-    pill: (r) => statusLabel(pick(r, "status")),
+    statusDocType: "po",
+    pill: (r) => scmStatusLabel("po", pick(r, "status")),
     // Spec #po-list: name + status, "{{doc_no}} · exp {{expected_date}}" sub-line,
     // footer "{{line_count}} lines" + RM {{total_centi}}.
     variant: "doc",
@@ -1128,12 +1179,14 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
       [(r) => dm(pick(r, "expectedAt", "expected_at")), "Expected"],
       [(r) => rmField(pick(r, "totalCenti", "total_centi")), "Value"],
     ],
+    // Mirrors the desktop PO list (PurchaseOrders.tsx): the buyer's 95% view is
+    // "Outstanding" = SUBMITTED ∪ PARTIALLY_RECEIVED (still inbound), plus a
+    // Draft review queue; All is the escape hatch for closed/cancelled history.
+    // PoStatus has no "open" — the old chip never matched (audit #2).
     chips: [
       { key: "all", label: "All", match: () => true },
-      { key: "open", label: "Open", match: (r) => eq(pick(r, "status"), "open") },
-      { key: "partial", label: "Part. recv", match: (r) => /partial/i.test(String(pick(r, "status") ?? "")) },
-      { key: "received", label: "Received", match: (r) => eq(pick(r, "status"), "received") },
-      { key: "cancelled", label: "Cancelled", match: (r) => eq(pick(r, "status"), "cancelled") },
+      { key: "outstanding", label: "Outstanding", match: (r) => { const st = String(pick(r, "status") ?? "").toUpperCase(); return st === "SUBMITTED" || st === "PARTIALLY_RECEIVED"; } },
+      { key: "draft", label: "Draft", match: (r) => eq(pick(r, "status"), "draft") },
     ],
     sorts: [
       { key: "exp", label: "Expected", cmp: (a, b) => byDate(pick(a, "expectedAt", "expected_at"), pick(b, "expectedAt", "expected_at")) },
@@ -1208,9 +1261,9 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     ],
     chips: [
       { key: "all", label: "All", match: () => true },
-      { key: "in", label: "In stock", match: (r) => Number(pick(r, "qty") ?? 0) >= 5 },
-      { key: "low", label: "Low", match: (r) => { const q = Number(pick(r, "qty") ?? 0); return q > 0 && q < 5; } },
-      { key: "zero", label: "Zero", match: (r) => Number(pick(r, "qty") ?? 0) <= 0 },
+      { key: "in", label: "In stock", match: (r) => Number(pick(r, "qty") ?? 0) > 0 },
+      { key: "zero", label: "Zero", match: (r) => Number(pick(r, "qty") ?? 0) === 0 },
+      { key: "neg", label: "Negative", match: (r) => Number(pick(r, "qty") ?? 0) < 0 },
     ],
     sorts: [
       { key: "name", label: "Name", cmp: (a, b) => byStr(a.product_name, b.product_name) },
@@ -1287,7 +1340,7 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     secondary: (r) => join(r.position_name, r.department_name, r.email),
     right: (r) => r.status ?? "",
     search: (r) => join(r.name, r.email, r.phone, r.position_name, r.department_name, r.role_name),
-    pill: (r) => statusLabel(pick(r, "status")),
+    pill: (r) => humanize(pick(r, "status")),
     // Spec #members: avatar initials + name + "{{position}} · {{department}}"
     // sub-line + status badge (ACTIVE=green / INACTIVE=grey; Invited=amber here).
     variant: "person",
@@ -1379,7 +1432,8 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     right: (r) => r.refund_centi,
     rightMoney: true,
     search: (r) => join(r.debtor_name, r.return_number, r.do_doc_no),
-    pill: (r) => statusLabel(pick(r, "status")),
+    statusDocType: "dr",
+    pill: (r) => scmStatusLabel("dr", pick(r, "status")),
     // Spec #sr-list: name + status, "{{doc_no}} · {{return_date}} · ref
     // {{so_doc_no}}" sub-line, "{{reason}}" note (hidden when blank), right-only
     // RM {{refund_centi}} footer.
@@ -1422,7 +1476,8 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     right: (r) => r.total_centi,
     rightMoney: true,
     search: (r) => join(r.invoice_number, r.supplier?.name, r.supplier_invoice_ref),
-    pill: (r) => statusLabel(pick(r, "status")),
+    statusDocType: "pi",
+    pill: (r) => scmStatusLabel("pi", pick(r, "status")),
     // Spec #pi-list: name + status, "{{doc_no}} · due {{due_date}}" sub-line,
     // footer "Balance RM {{balance_centi}}" + RM {{total_centi}}.
     variant: "doc",
@@ -1463,7 +1518,8 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     right: (r) => r.refund_centi,
     rightMoney: true,
     search: (r) => join(r.return_number, r.supplier?.name, r.credit_note_ref),
-    pill: (r) => statusLabel(pick(r, "status")),
+    statusDocType: "pr",
+    pill: (r) => scmStatusLabel("pr", pick(r, "status")),
     // Spec #preturn-list: name + status, "{{doc_no}} · {{return_date}} · PO
     // {{po_doc_no}}" sub-line, "{{reason}}" note (hidden when blank), right-only
     // RM {{refund_centi}} footer.
@@ -1504,7 +1560,8 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     right: (r) => r.total_centi,
     rightMoney: true,
     search: (r) => join(r.pc_number, r.supplier?.name),
-    pill: (r) => statusLabel(pick(r, "status")),
+    statusDocType: "po",
+    pill: (r) => scmStatusLabel("po", pick(r, "status")),
     variant: "doc",
     subline: (r) => join(pick(r, "pcNumber", "pc_number"), dm(pick(r, "poDate", "po_date"))),
     footR: (r) => pick(r, "totalCenti", "total_centi"),
@@ -1525,7 +1582,8 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     right: (r) => r.total_centi,
     rightMoney: true,
     search: (r) => join(r.receive_number, r.supplier?.name, r.pc_order_no),
-    pill: (r) => statusLabel(pick(r, "status")),
+    statusDocType: "grn",
+    pill: (r) => scmStatusLabel("grn", pick(r, "status")),
     variant: "doc",
     subline: (r) => {
       const po = pick(r, "pcOrderNo", "pc_order_no");
@@ -1549,7 +1607,8 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     right: (r) => r.refund_centi,
     rightMoney: true,
     search: (r) => join(r.return_number, r.supplier?.name),
-    pill: (r) => statusLabel(pick(r, "status")),
+    statusDocType: "pr",
+    pill: (r) => scmStatusLabel("pr", pick(r, "status")),
     variant: "doc",
     subline: (r) => join(pick(r, "returnNumber", "return_number"), dm(pick(r, "returnDate", "return_date"))),
     note: (r) => pick(r, "reason") ?? "",
@@ -1571,7 +1630,7 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     right: (r) => r.local_total_centi,
     rightMoney: true,
     search: (r) => join(r.debtor_name, r.doc_no, r.ref, r.po_doc_no),
-    pill: (r) => statusLabel(pick(r, "status")),
+    pill: (r) => humanize(pick(r, "status")),
     variant: "doc",
     subline: (r) => join(pick(r, "docNo", "doc_no"), dm(pick(r, "soDate", "so_date"))),
     footR: (r) => pick(r, "localTotalCenti", "local_total_centi"),
@@ -1597,7 +1656,8 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     primary: (r) => pick(r, "debtorName", "debtor_name") ?? pick(r, "docNo", "doc_no", "doNumber", "do_number") ?? "—",
     secondary: (r) => join(pick(r, "docNo", "doc_no", "doNumber", "do_number"), pick(r, "status"), dm(pick(r, "noteDate", "note_date", "doDate", "do_date"))),
     search: (r) => join(pick(r, "debtorName", "debtor_name"), pick(r, "docNo", "doc_no", "doNumber", "do_number")),
-    pill: (r) => statusLabel(pick(r, "status")),
+    statusDocType: "do",
+    pill: (r) => scmStatusLabel("do", pick(r, "status")),
     variant: "doc",
     subline: (r) => join(pick(r, "docNo", "doc_no", "doNumber", "do_number"), dm(pick(r, "noteDate", "note_date", "doDate", "do_date"))),
     sorts: [{ key: "date", label: "Date", cmp: (a, b) => byDate(pick(a, "noteDate", "note_date", "doDate", "do_date"), pick(b, "noteDate", "note_date", "doDate", "do_date")) }],
@@ -1616,7 +1676,8 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     right: (r) => r.refund_centi,
     rightMoney: true,
     search: (r) => join(r.debtor_name, r.return_number, r.do_doc_no),
-    pill: (r) => statusLabel(pick(r, "status")),
+    statusDocType: "dr",
+    pill: (r) => scmStatusLabel("dr", pick(r, "status")),
     variant: "doc",
     subline: (r) => join(pick(r, "returnNumber", "return_number"), dm(pick(r, "returnDate", "return_date"))),
     note: (r) => pick(r, "reason") ?? "",
@@ -1643,7 +1704,7 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     right: (r) => pick(r, "basePriceSen", "base_price_sen") ?? "",
     rightMoney: true,
     search: (r) => join(r.name, pick(r, "code", "sku"), pick(r, "category"), pick(r, "branding"), pick(r, "barcode")),
-    pill: (r) => statusLabel(pick(r, "category")),
+    pill: (r) => humanize(pick(r, "category")),
     // Spec #products: .ph thumbnail + name + "SKU {{sku}} · {{category}}" sub-
     // line + right "RM {{price_centi}}". base_price_sen is the base selling
     // price (SEN); uom has no mfg column → omitted.
@@ -1657,7 +1718,7 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
       [(r) => rmField(pick(r, "basePriceSen", "base_price_sen")), "Base Price"],
       [(r) => rmField(pick(r, "sellPriceSen", "sell_price_sen")), "Selling Price"],
       [(r) => rmField(pick(r, "costPriceSen", "cost_price_sen")), "Cost Price"],
-      [(r) => statusLabel(pick(r, "status")) || "—", "Status"],
+      [(r) => humanize(pick(r, "status")) || "—", "Status"],
     ],
     chips: [
       { key: "all", label: "All", match: () => true },
@@ -1769,7 +1830,8 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     },
     secondary: (r) => join(pick(r, "transferNo", "transfer_no"), pick(r, "status"), dm(pick(r, "transferDate", "transfer_date"))),
     search: (r) => join(pick(r, "transferNo", "transfer_no"), pick(r, "fromWarehouse", "from_warehouse")?.name, pick(r, "toWarehouse", "to_warehouse")?.name),
-    pill: (r) => statusLabel(pick(r, "status")),
+    statusDocType: "stockTransfer",
+    pill: (r) => scmStatusLabel("stockTransfer", pick(r, "status")),
     variant: "doc",
     subline: (r) => join(pick(r, "transferNo", "transfer_no"), dm(pick(r, "transferDate", "transfer_date"))),
     footL: (r) => { const n = pick(r, "lineCount", "line_count"); return ["", n == null ? "" : `${n} lines`]; },
@@ -1795,7 +1857,8 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     primary: (r) => pick(r, "warehouse")?.name ?? pick(r, "warehouse")?.code ?? pick(r, "takeNo", "take_no") ?? "—",
     secondary: (r) => join(pick(r, "takeNo", "take_no"), pick(r, "status"), dm(pick(r, "takeDate", "take_date"))),
     search: (r) => join(pick(r, "takeNo", "take_no"), pick(r, "warehouse")?.name, pick(r, "scopeValue", "scope_value")),
-    pill: (r) => statusLabel(pick(r, "status")),
+    statusDocType: "stockTake",
+    pill: (r) => scmStatusLabel("stockTake", pick(r, "status")),
     variant: "inventory",
     subline: (r) => join(pick(r, "takeNo", "take_no"), dm(pick(r, "takeDate", "take_date"))),
     kpis: (r) => {
@@ -1847,7 +1910,7 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     primary: (r) => pick(r, "accountName", "account_name") ?? pick(r, "accountCode", "account_code") ?? "—",
     secondary: (r) => join(pick(r, "accountCode", "account_code"), pick(r, "accountType", "account_type")),
     search: (r) => join(pick(r, "accountName", "account_name"), pick(r, "accountCode", "account_code"), pick(r, "accountType", "account_type")),
-    badgeText: (r) => statusLabel(pick(r, "accountType", "account_type")),
+    badgeText: (r) => humanize(pick(r, "accountType", "account_type")),
     variant: "doc",
     subline: (r) => { const parent = pick(r, "parentCode", "parent_code"); return join(pick(r, "accountCode", "account_code"), parent ? `under ${parent}` : ""); },
     sorts: [{ key: "code", label: "Code", cmp: (a, b) => byStr(pick(a, "accountCode", "account_code"), pick(b, "accountCode", "account_code")) }],

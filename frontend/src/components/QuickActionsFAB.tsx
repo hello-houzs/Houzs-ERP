@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { useLocation, useNavigate } from "react-router-dom";
 import { Plus, ShoppingCart, Wrench, X } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
+import { quickActionAccess } from "../auth/salesAccess";
 import { cn } from "../lib/utils";
 
 /**
@@ -52,10 +53,9 @@ export function QuickActionsFAB() {
   if (!user) return null;
   if (location.pathname.startsWith("/driver")) return null;
 
-  const canNewSo =
-    can("scm.access") || pageAccess("scm.sales.orders") !== "none";
-  const canNewCase =
-    can("service_cases.write") || pageAccess("service_cases") !== "none";
+  // Shared with the mobile MobileSalesOrders FAB (auth/salesAccess) so the
+  // "New Service Case includes Sales staff" rule lives in one place.
+  const { canNewSo, canNewCase } = quickActionAccess(user, can, pageAccess);
 
   const actions: Array<{
     key: "so" | "case";

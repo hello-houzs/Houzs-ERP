@@ -36,16 +36,53 @@
 //
 // The modal NEVER creates the SO itself — everything lands in the normal New
 // SO form where pricing, variants and validation run as usual.
+//
+// ── MOBILE PARITY (2026-07-14) ──────────────────────────────────────────────
+// Three capabilities were brought over from MobileScan (mirroring the CAPABILITY,
+// not the mobile layout — this modal keeps its own styling):
+//
+//   1. LABELED SLOTS — the single undifferentiated dropzone is split into a
+//      labeled "Order slip" slot + an optional "Payment receipt" slot (mirrors
+//      mobile's Front/Payment split). The positional /scan-so/extract contract
+//      is unchanged: file[0] = slip, file[1] = receipt.
+//
+//   2. DUPLICATE WARNING — the /scan-so/extract response's `duplicate`
+//      ({ docNo, rule }) field was previously dropped. It is now typed and, when
+//      the slip looks like a re-upload, surfaced as an amber "possible duplicate
+//      of <doc no>" banner with an "open anyway" action (a duplicate NEVER
+//      blocks — the owner reviews, same policy as the backend + mobile).
+//
+//   3. MULTI-ORDER BATCH — an "Add another order" affordance queues MULTIPLE
+//      orders in one session. A SINGLE order keeps the signature review-first
+//      flow (extract → open the New SO form). TWO OR MORE orders switch to the
+//      SAME background path mobile uses: POST /scan-so/enqueue per order creates
+//      a DRAFT SO server-side, and the modal polls GET /scan-so/jobs (the shared
+//      normalizeJobs helper) to show a live results list. There is NO new
+//      backend flow — the exact endpoints + shared job helpers mobile uses are
+//      reused. Per-order 409 duplicate_slip refusals surface inline on that
+//      order's card, exactly as mobile does.
 // ----------------------------------------------------------------------------
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
-import { Camera, Loader2, Upload, X } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
+import { AlertTriangle, Camera, CheckCircle2, Loader2, Plus, Receipt, Upload, X } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { useAuth } from '../../../auth/AuthContext';
 import { authedFetch } from '../lib/authed-fetch';
 import { sortByText } from '../lib/sort-options';
 import { useVenues, type VenueRow } from '../lib/venues-queries';
+import {
+  normalizeJobs,
+  isActiveJob,
+  jobTs,
+  hhmm,
+  type ScanJob,
+  type ScanJobsResp,
+} from '../lib/scan-jobs';
+import { useSoDropdownOptions, optionsOrFallback } from '../lib/so-dropdown-options-queries';
+import { useLocalities, distinctStates } from '../lib/localities-queries';
+import { reconcileScanPrefill } from '../lib/scan-prefill';
 import { normalizePhone } from '@2990s/shared/phone';
 import styles from './ScanOrderModal.module.css';
 
@@ -196,10 +233,18 @@ type CatalogOptions = {
   venue:            CatalogOption[];
 };
 type RepRulesMeta = { salesperson: string; sampleCount: number };
+/* Suspected re-upload the backend flags on /scan-so/extract: { docNo, rule } of
+   the SO this same slip already became, else null. `rule` is 'image' (exact
+   same photo sha256) or 'content' (same phone + slip ref / date+total). NEVER
+   blocks — the operator reviews (owner policy) — so the modal surfaces it as an
+   amber warning with an "open anyway" action. */
+export type ScanDuplicate = { docNo: string; rule: 'image' | 'content' };
 type ExtractResp = {
   success: boolean;
   data: {
     sampleId: string | null;
+    // Backend flags a suspected duplicate here; previously dropped by this type.
+    duplicate?: ScanDuplicate | null;
     imageKey?: string | null;
     receiptImageKey?: string | null;
     extracted: ExtractedSlip;
@@ -217,62 +262,30 @@ type ExtractResp = {
 };
 type SalespeopleResp = { success: boolean; data: { salespeople: string[] } };
 
-/* mfg_product_category → SO line item_group (SoLineCard lowercases the
-   product category; SERVICE lines carry item_group='service'). */
-const CATEGORY_TO_GROUP: Record<string, string> = {
-  SOFA: 'sofa',
-  BEDFRAME: 'bedframe',
-  MATTRESS: 'mattress',
-  ACCESSORY: 'accessory',
-  SERVICE: 'service',
-};
+/* The OCR → New SO prefill MAPPING now lives in one shared, pure reconciler
+   (../lib/scan-prefill) that BOTH this desktop modal and the mobile scan path
+   call, so a future mapping fix lands in one file. This modal supplies the live
+   catalogs (venues + SO dropdown options + localities) it already reads and then
+   adapts the neutral ReconciledPrefill to the desktop ScanPrefill handoff shape.
+   The venue-unify helper, the One-Shot payment default, the SOFA specialCodes
+   pass-through and the category→group map all moved into that file. */
 
-const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+/* One queued order in the session: a single order slip + an OPTIONAL payment
+   receipt. `id` is a stable client key (independent of array index so removing
+   an order doesn't reshuffle React keys). Mirrors mobile's OrderDraft, reduced
+   to desktop's file-drop model (one receipt file, not a payShots[] array —
+   desktop's per-order review flow reads exactly one slip + one receipt per the
+   /scan-so/extract positional contract). */
+type SlotKind = 'slip' | 'receipt';
+type OrderRow = { id: string; slip: File | null; receipt: File | null };
+let ORDER_SEQ = 0;
+const newOrder = (): OrderRow => ({ id: `ord-${++ORDER_SEQ}-${Date.now()}`, slip: null, receipt: null });
 
-/* Owner rule (spec 6, 2026-06-24) — a card paid through a bank (Merchant) with
-   NO written month/tenure defaults to "One Shot", NOT a 12-month plan. Only an
-   explicitly-written tenure seeds N months. The value MUST equal the
-   installment_plan "One Shot" option VALUE seeded for this category. */
-const ONE_SHOT_PLAN = 'One Shot';
-
-/* ── Venue unify helper ─────────────────────────────────────────────────
-   Resolve the OCR's venue text to a REAL venue id from the SAME useVenues()
-   master the New SO form's Venue dropdown renders. We try, in order, the
-   server's so_dropdown_options match value (locationMatch) then the raw
-   location text, against each venue's name (case-insensitive, trim). A
-   confident hit returns the venue id; no hit returns '' so the form keeps its
-   salesperson-default venue (never a wrong forced pick). Substring matching is
-   intentionally conservative: only when one side fully contains the other AND
-   the shorter side is at least 3 chars, so "PJ" never collides with a longer
-   unrelated name. */
-function resolveVenueId(
-  venues: VenueRow[],
-  locationMatch: string,
-  rawLocation: string,
-): string {
-  const candidates = [locationMatch, rawLocation]
-    .map((s) => (s ?? '').trim().toLowerCase())
-    .filter((s) => s !== '');
-  if (candidates.length === 0 || venues.length === 0) return '';
-
-  for (const cand of candidates) {
-    // Exact name match first (the dropdown's source of truth).
-    const exact = venues.find((v) => v.name.trim().toLowerCase() === cand);
-    if (exact) return exact.id;
-  }
-  for (const cand of candidates) {
-    // Conservative containment — only with a meaningful overlap length.
-    const contains = venues.find((v) => {
-      const name = v.name.trim().toLowerCase();
-      if (name === '' ) return false;
-      const a = name.length <= cand.length ? name : cand;
-      const b = name.length <= cand.length ? cand : name;
-      return a.length >= 3 && b.includes(a);
-    });
-    if (contains) return contains.id;
-  }
-  return '';
-}
+const ACCEPT = 'image/jpeg,image/png,image/webp,application/pdf';
+const isAcceptedFile = (f: File): boolean =>
+  /^image\/(jpeg|png|webp)$/.test(f.type) ||
+  f.type === 'application/pdf' ||
+  /\.(jpe?g|png|webp|pdf)$/i.test(f.name);
 
 interface Props {
   onClose: () => void;
@@ -281,17 +294,46 @@ interface Props {
 export const ScanOrderModal = ({ onClose }: Props) => {
   const navigate = useNavigate();
   const { user } = useAuth();
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  // ONE hidden slip input + ONE hidden receipt input, both re-targeted to the
+  // active order right before each pick (activeOrderIdRef).
+  const slipInputRef = useRef<HTMLInputElement>(null);
+  const receiptInputRef = useRef<HTMLInputElement>(null);
+  const activeOrderIdRef = useRef<string | null>(null);
 
-  /* VENUE UNIFY — the SAME venue master the New SO form's Venue dropdown reads.
-     We match the OCR's venue text against this list and carry the resolved id
-     in the prefill so the form seeds a real dropdown selection. */
+  /* Live catalogs the shared reconciler needs — the SAME masters the New SO form
+     renders its dropdowns from, so a reconciled value always matches a live
+     option. venues = VENUE UNIFY (OCR venue text → a real venue id); the SO
+     dropdown options + localities canonicalise customer/building type, payment
+     method/merchant/online/plan and state. optionsOrFallback keeps them
+     populated before the API resolves (snapping is non-destructive, so a not-yet-
+     loaded list never drops a server-matched value). */
   const venuesQ = useVenues();
+  const customerTypeOptsQ  = useSoDropdownOptions('customer_type');
+  const buildingTypeOptsQ  = useSoDropdownOptions('building_type');
+  const paymentMethodOptsQ = useSoDropdownOptions('payment_method');
+  const paymentMerchantQ   = useSoDropdownOptions('payment_merchant');
+  const onlineTypeOptsQ    = useSoDropdownOptions('online_type');
+  const installmentPlanQ   = useSoDropdownOptions('installment_plan');
+  const localitiesQ        = useLocalities();
 
-  const [files, setFiles] = useState<File[]>([]);
-  const [dragOver, setDragOver] = useState(false);
-  const [extracting, setExtracting] = useState(false);
+  // The session is an ARRAY of orders (one order in the common case). Each order
+  // = one slip + an optional receipt. A single order keeps the review-first
+  // flow; two or more switch to the background /enqueue batch path.
+  const [orders, setOrders] = useState<OrderRow[]>(() => [newOrder()]);
+  const [dragOver, setDragOver] = useState<string | null>(null); // "<orderId>:<kind>" while dragging
+  const [extracting, setExtracting] = useState(false); // single-order review extract
+  const [submitting, setSubmitting] = useState(false); // multi-order enqueue
   const [error, setError] = useState<string | null>(null);
+  // Single-order duplicate gate — a built prefill held back while the operator
+  // decides whether to open the New SO form despite the duplicate warning.
+  const [pending, setPending] = useState<{ prefill: ScanPrefill; duplicate: ScanDuplicate } | null>(null);
+  // Per-order 409 duplicate_slip refusal on /enqueue, keyed by OrderRow.id.
+  const [orderErrors, setOrderErrors] = useState<Record<string, string>>({});
+  // Job ids returned by /enqueue this session — the results list polls their
+  // status via the shared /scan-so/jobs helper.
+  const [enqueuedJobIds, setEnqueuedJobIds] = useState<string[]>([]);
+
+  const multiOrder = orders.length > 1;
 
   // Salesperson — each rep has their own handwriting/notation habits, so the
   // extractor learns PER REP (rules + few-shot filtered to this rep). Owner
@@ -318,14 +360,90 @@ export const ScanOrderModal = ({ onClose }: Props) => {
     authedFetch('/scan-so/warm', { method: 'POST' }).catch(() => { /* best-effort warm */ });
   }, []);
 
-  const addFiles = (picked: FileList | File[] | null) => {
-    if (!picked) return;
-    const ok = Array.from(picked).filter((f) =>
-      /^image\/(jpeg|png|webp)$/.test(f.type) ||
-      f.type === 'application/pdf' ||
-      /\.(jpe?g|png|webp|pdf)$/i.test(f.name),
+  /* ── Batch results — the SHARED background-job status poll ───────────────
+     After /scan-so/enqueue the OCR + DRAFT create run server-side. We poll the
+     SAME GET /scan-so/jobs endpoint the mobile Scan screen uses (via the shared
+     normalizeJobs helper) and show only the jobs THIS session enqueued. Poll
+     every 4s while any tracked job is still queued/running or hasn't surfaced
+     yet; a fully-settled list stops the interval. */
+  const repParam = salesperson.trim();
+  const { data: jobsData } = useQuery({
+    queryKey: ['scan-modal-jobs', repParam],
+    enabled: enqueuedJobIds.length > 0,
+    queryFn: () =>
+      authedFetch<ScanJobsResp>(
+        repParam ? `/scan-so/jobs?salesperson=${encodeURIComponent(repParam)}` : '/scan-so/jobs',
+      ),
+    staleTime: 0,
+    retry: false, // fail-soft — a jobs hiccup just leaves the rows pending
+    refetchInterval: (query) => {
+      if (enqueuedJobIds.length === 0) return false;
+      const tracked = normalizeJobs(query.state.data).filter((j) => enqueuedJobIds.includes(j.id));
+      const allSettled = tracked.length === enqueuedJobIds.length && !tracked.some(isActiveJob);
+      return allSettled ? false : 4000;
+    },
+  });
+  const trackedJobs = useMemo<ScanJob[]>(() => {
+    const byId = new Map(normalizeJobs(jobsData).map((j) => [j.id, j]));
+    return enqueuedJobIds
+      .map((id) => byId.get(id))
+      .filter((j): j is ScanJob => Boolean(j))
+      .sort((a, b) => jobTs(a.createdAt) - jobTs(b.createdAt));
+  }, [jobsData, enqueuedJobIds]);
+
+  /* ── Slot capture ───────────────────────────────────────────────────────
+     Re-target the hidden input to the active order, then open the file picker.
+     One accepted file per slot (slip or receipt); a re-pick replaces it. */
+  const pickSlot = (orderId: string, kind: SlotKind) => {
+    if (extracting || submitting) return;
+    activeOrderIdRef.current = orderId;
+    (kind === 'slip' ? slipInputRef : receiptInputRef).current?.click();
+  };
+  const clearOrderError = (orderId: string) =>
+    setOrderErrors((cur) => {
+      if (!cur[orderId]) return cur;
+      const next = { ...cur };
+      delete next[orderId];
+      return next;
+    });
+  const setSlot = (orderId: string, kind: SlotKind, file: File | null) => {
+    setOrders((cur) =>
+      cur.map((o) => {
+        if (o.id !== orderId) return o;
+        return kind === 'slip' ? { ...o, slip: file } : { ...o, receipt: file };
+      }),
     );
-    if (ok.length > 0) setFiles((prev) => [...prev, ...ok]);
+    setError(null);
+    setPending(null); // any photo change invalidates a held duplicate decision
+    clearOrderError(orderId);
+  };
+  const onSlotFile = (kind: SlotKind, file: File | undefined) => {
+    const orderId = activeOrderIdRef.current;
+    if (!orderId || !file) return;
+    if (!isAcceptedFile(file)) { setError('Unsupported file — use a JPEG, PNG, WEBP or PDF.'); return; }
+    setSlot(orderId, kind, file);
+  };
+  const onDrop = (orderId: string, kind: SlotKind, list: FileList | null) => {
+    setDragOver(null);
+    const file = Array.from(list ?? []).find(isAcceptedFile);
+    if (file) setSlot(orderId, kind, file);
+  };
+
+  const addOrder = () => {
+    if (extracting || submitting) return;
+    setOrders((cur) => [...cur, newOrder()]);
+    setError(null);
+    setPending(null);
+  };
+  // Never let the list go empty — removing the last order resets it to blank.
+  const removeOrder = (orderId: string) => {
+    if (extracting || submitting) return;
+    setOrders((cur) => {
+      const next = cur.filter((o) => o.id !== orderId);
+      return next.length ? next : [newOrder()];
+    });
+    clearOrderError(orderId);
+    setError(null);
   };
 
   /* Build the New-SO handoff straight from the AI extraction — NO operator
@@ -339,163 +457,115 @@ export const ScanOrderModal = ({ onClose }: Props) => {
     repName: string,
   ): ScanPrefill => {
     const ex = d.extracted;
-    const skuByCode = new Map(d.catalog.skus.map((s) => [s.code.toUpperCase(), s]));
 
-    /* Bug #1 (2026-06-24) — seed phones in canonical +60 E.164 so the New SO
-       PhoneInput's country selector resolves to Malaysia, never US +1. The OCR
-       returns the national form ("+60 without the leading 0", e.g. "197770309")
-       which, plus-less, the dial-code split would otherwise mis-claim as US.
-       normalizePhone prepends the +60 country code (any explicit international
-       number the rep wrote — +65…/+62… — is preserved). */
-    const phones = ex.phones
-      .map((p) => normalizePhone(p) ?? '')
-      .filter((p) => p.trim() !== '');
-
-    /* 3-method model (spec 1 + 6, 2026-06-24) — top-level method is only
-       Merchant / Online / Cash; "Installment" is no longer a returnable method
-       (a bank EPP is Merchant + an installment plan). Defensively fold any
-       legacy "Installment" match to Merchant so a stale backend never seeds a
-       dropped method. */
-    const rawPmValue = ex.paymentMethodMatch?.value ?? '';
-    const pmValue = rawPmValue === 'Installment' ? 'Merchant' : rawPmValue;
-    /* A bank card (Merchant) with NO matched tenure → "One Shot" (spec 6:
-       Maybank merchant swipe = One Shot). Only an explicitly-matched plan
-       seeds N months. */
-    const isMerchant = pmValue === 'Merchant';
-    const planValue = ex.installmentPlanMatch?.value ?? '';
-
-    /* VENUE UNIFY — resolve the OCR venue text to a real venue id from the
-       form's own dropdown master. '' when no confident match. */
-    const venueId = resolveVenueId(
-      venuesQ.data ?? [],
-      ex.locationMatch?.value ?? '',
-      ex.location ?? '',
-    );
-
-    /* Note carries ONLY the genuine order remark. Venue, payment, deposit,
-       total, sales rep and extra phones all have their own dedicated fields /
-       flows on the form, so they must NOT be piled into the Note (owner: it
-       over-stuffed the Note). The only extras kept here are things with NO
-       home on the form: a non-date delivery text (e.g. "after CNY", "TBC") and
-       the raw venue text when it could not be resolved to a dropdown id (so the
-       slip's venue isn't silently lost). */
-    const noteParts: string[] = [];
-    if (ex.remarks) noteParts.push(ex.remarks);
-    /* Owner: do NOT pile the venue or the delivery note into the Note. The venue
-       has its own picker (an unmatched venue is simply left for the operator to
-       pick — not dumped here), and delivery has its own date field. The Note
-       carries ONLY the genuine standalone order remark. */
+    /* SHARED RECONCILER — the OCR → prefill mapping is done once, here and in the
+       mobile scan path, so it can never drift again. We feed it the live catalogs
+       the New SO form renders its dropdowns from; it returns a platform-neutral
+       ReconciledPrefill (venue id resolved, dropdown values snapped to the live
+       catalog, SOFA specialCodes + structured payment). We then adapt that neutral
+       shape to the desktop ScanPrefill handoff (RM → centi, first phone, R2 keys +
+       edit-gate carry-through). */
+    const rec = reconcileScanPrefill(ex, {
+      skus:            d.catalog.skus,
+      venues:          venuesQ.data ?? [],
+      customerType:    optionsOrFallback('customer_type',    customerTypeOptsQ.data),
+      buildingType:    optionsOrFallback('building_type',    buildingTypeOptsQ.data),
+      paymentMethod:   optionsOrFallback('payment_method',   paymentMethodOptsQ.data),
+      paymentMerchant: optionsOrFallback('payment_merchant', paymentMerchantQ.data),
+      onlineType:      optionsOrFallback('online_type',      onlineTypeOptsQ.data),
+      installmentPlan: optionsOrFallback('installment_plan', installmentPlanQ.data),
+      states:          distinctStates(localitiesQ.data ?? []),
+    });
 
     return {
-      customerName: ex.customerName ?? '',
-      phone: phones[0] ?? '',
-      phones,
-      /* Prefer the parsed street-only addressLine1 so State/City/Postcode don't
-         double up in Address Line 1; fall back to the full address string when
-         the model didn't split it. */
-      address1: ex.addressLine1 ?? ex.address ?? '',
-      /* Structured address parts. addressState is a server-validated
-         my_localities state VALUE ('' = no confident match); city/postcode are
-         free text the form reconciles against the chosen state's cascade. */
-      addressState:    ex.addressStateMatch?.value ?? '',
-      addressCity:     ex.city ?? '',
-      addressPostcode: ex.postcode ?? '',
-      customerSoRef:   ex.customerSoRef ?? '',
-      note: noteParts.join('\n'),
-      deliveryDate: ex.deliveryDate && ISO_DATE_RE.test(ex.deliveryDate) ? ex.deliveryDate : null,
-      processingDate: ex.processingDate && ISO_DATE_RE.test(ex.processingDate) ? ex.processingDate : null,
-      customerType: ex.customerTypeMatch?.value ?? '',
-      buildingType: ex.buildingTypeMatch?.value ?? '',
-      venueId,
+      customerName: rec.customerName,
+      phone: rec.phones[0] ?? '',
+      phones: rec.phones,
+      address1: rec.address1,
+      addressState:    rec.addressState,
+      addressCity:     rec.addressCity,
+      addressPostcode: rec.addressPostcode,
+      customerSoRef:   rec.customerSoRef,
+      note: rec.note,
+      deliveryDate: rec.deliveryDate,
+      processingDate: rec.processingDate,
+      customerType: rec.customerType,
+      buildingType: rec.buildingType,
+      venueId: rec.venueId,
       /* Matched method → ONE editable payment-draft row in New SO's Payments
          table. Deposit lands as the row amount (Spec D4 still requires a slip
          upload before save; the operator can zero/delete the row instead). */
-      payment: pmValue
+      payment: rec.payment
         ? {
-            methodValue:      pmValue,
-            bankValue:        ex.bankMatch?.value ?? '',
-            /* Plan default (spec 6) — a Merchant card with no matched tenure
-               seeds "One Shot" (a plain swipe is a one-shot Merchant payment,
-               not a 12-month plan). An explicitly-matched plan wins. Non-Merchant
-               methods (Online / Cash) carry no plan. The value MUST equal the
-               installment_plan option VALUE for the One-shot row. */
-            installmentLabel: isMerchant ? (planValue || ONE_SHOT_PLAN) : '',
-            onlineTypeValue:  ex.onlineTypeMatch?.value ?? '',
-            approvalCode:     ex.approvalCode ?? '',
-            depositCenti:     Math.round((ex.depositRm ?? 0) * 100),
+            methodValue:      rec.payment.methodValue,
+            bankValue:        rec.payment.bankValue,
+            installmentLabel: rec.payment.installmentLabel,
+            onlineTypeValue:  rec.payment.onlineTypeValue,
+            approvalCode:     rec.payment.approvalCode,
+            depositCenti:     Math.round(rec.payment.depositRm * 100),
           }
         : null,
-      lines: ex.lines.map((l) => {
-        const code = l.skuMatch?.code ?? '';
-        const sku = code ? skuByCode.get(code.toUpperCase()) : undefined;
-        /* Owner (repeated): do NOT emit a visible "Slip: …" line remark — it was
-           noise on the line display. The line remark seeds EMPTY. The verbatim
-           slip text is NOT lost: it still rides in the `rawText` field below (and
-           into the learning sample via aiOriginal), which feeds the learning gate
-           and the per-line scanned-hint placeholder. */
-        return {
-          itemCode: sku?.code ?? '',
-          itemGroup: sku ? (CATEGORY_TO_GROUP[sku.category] ?? 'others') : 'others',
-          /* Owner core rule (Task #73) — a NO-MATCH line must seed an EMPTY,
-             UNPICKED product so the New SO form renders the normal SKU picker
-             dropdown the operator is FORCED to fill. Never commit the OCR
-             rawText as the product description (that became a free-text
-             "OTHERS" row the operator could type anything into and save —
-             "不可以走后门乱插"). The rawText still rides along in `rawText`
-             (shown as the picker's search-hint placeholder), so nothing on the
-             slip is lost. A MATCHED line keeps its picked SKU name. */
-          description: sku?.name ?? '',
-          qty: l.qtyGuess > 0 ? l.qtyGuess : 1,
-          unitPriceCenti: Math.round((l.priceRmGuess ?? 0) * 100),
-          /* Owner (repeated): no "Slip: …" chip — line remark seeds empty. */
-          remark: '',
-          rawText: l.rawText,
-          fabricCode: l.fabricMatch?.code ?? '',
-          suggestedCode: code,
-          confidence: l.skuMatch?.confidence ?? 0,
-          /* OCR-matched configured specials (already model-gated server-side) →
-             the New SO line auto-checks them. */
-          specialCodes: Array.isArray(l.specialsMatch)
-            ? l.specialsMatch.map((s) => s.code).filter(Boolean)
-            : [],
-        };
-      }),
+      lines: rec.lines.map((l) => ({
+        itemCode: l.itemCode,
+        itemGroup: l.itemGroup,
+        description: l.description,
+        qty: l.qty,
+        unitPriceCenti: Math.round(l.unitPriceRm * 100),
+        /* Owner (repeated): no "Slip: …" chip — line remark seeds empty. */
+        remark: '',
+        rawText: l.rawText,
+        fabricCode: l.fabricCode,
+        suggestedCode: l.suggestedCode,
+        confidence: l.confidence,
+        specialCodes: l.specialCodes,
+      })),
       // Original-slip R2 key → carried to the New SO create body.
       slipImageKey: d.imageKey ?? '',
       // Payment-receipt R2 key → carried to the New SO create body alongside.
       receiptImageKey: d.receiptImageKey ?? '',
       sampleId: d.sampleId,
-      salesperson: repName || (ex.salesRep ?? '') || null,
+      salesperson: repName || rec.salesRep || null,
       /* FROZEN AI snapshot — the New SO save diffs the operator's final values
          against this to decide whether to fire the edit-gate learning POST. */
       aiOriginal: ex,
     };
   };
 
-  const runExtract = async () => {
-    if (files.length === 0 || extracting) return;
+  /* Commit a built prefill → the New SO review form (the signature single-order
+     flow, unchanged). ?fromScan=1 + the sessionStorage handoff are consumed by
+     SalesOrderNew's fromScan effect (which also runs the edit-gate). */
+  const commitPrefill = (prefill: ScanPrefill) => {
+    sessionStorage.setItem(SCAN_PREFILL_KEY, JSON.stringify(prefill));
+    onClose();
+    navigate('/scm/sales-orders/new?fromScan=1');
+  };
+
+  /* SINGLE order — review-first. Extract the one order's slip (+ optional
+     receipt) and open the New SO form prefilled. If the backend flags a
+     duplicate, HOLD the prefill and show the amber warning first (the operator
+     decides whether to open anyway — a duplicate never blocks). */
+  const runExtractSingle = async () => {
+    const order = orders[0];
+    if (!order?.slip || extracting) return;
     setExtracting(true);
     setError(null);
+    setPending(null);
     try {
       const fd = new FormData();
-      for (const f of files) fd.append('file', f);
+      fd.append('file', order.slip);              // file[0] = order slip (positional contract)
+      if (order.receipt) fd.append('file', order.receipt); // file[1] = payment receipt
       const repTyped = salesperson.trim();
       if (repTyped) fd.append('salesperson', repTyped);
-      const resp = await authedFetch<ExtractResp>('/scan-so/extract', {
-        method: 'POST',
-        body: fd,
-      });
+      const resp = await authedFetch<ExtractResp>('/scan-so/extract', { method: 'POST', body: fd });
       const d = resp.data;
-      // Blank salesperson → backfill from the slip's SALES REPRESENTATIVE box
-      // so the learning sample is still attributed to the rep.
+      // Blank salesperson → backfill from the slip's SALES REPRESENTATIVE box.
       const repName = repTyped || (d.extracted.salesRep ?? '').trim();
       const prefill = buildPrefill(d, repName);
-      sessionStorage.setItem(SCAN_PREFILL_KEY, JSON.stringify(prefill));
-      onClose();
-      // HOUZS VENDOR — the New SO page lives at /scm/sales-orders/new here.
-      // ?fromScan=1 + the sessionStorage handoff are consumed by
-      // SalesOrderNew's fromScan effect (which now also runs the edit-gate).
-      navigate('/scm/sales-orders/new?fromScan=1');
+      if (d.duplicate && d.duplicate.docNo) {
+        setPending({ prefill, duplicate: d.duplicate });
+      } else {
+        commitPrefill(prefill);
+      }
     } catch (e) {
       /* authedFetch already throws operator-friendly messages (humanApiError
          runs inside it) — surface the message as-is. */
@@ -503,6 +573,128 @@ export const ScanOrderModal = ({ onClose }: Props) => {
     } finally {
       setExtracting(false);
     }
+  };
+
+  /* MULTIPLE orders — background batch. Reuse the SAME endpoint mobile uses:
+     POST /scan-so/enqueue per order returns a job id and the OCR + DRAFT SO
+     create finish server-side. A 409 duplicate_slip refusal for one order is
+     surfaced inline on that order's card (the others still enqueue). The
+     results list polls /scan-so/jobs for the drafts as they land in Orders. */
+  const runEnqueueBatch = async () => {
+    if (submitting) return;
+    const queueable = orders.filter((o) => o.slip);
+    if (queueable.length === 0) return;
+    setSubmitting(true);
+    setError(null);
+    setOrderErrors({});
+    const dupErrors: Record<string, string> = {};
+    const newJobIds: string[] = [];
+    try {
+      for (const order of queueable) {
+        const fd = new FormData();
+        fd.append('file', order.slip!);            // file[0] = order slip
+        if (order.receipt) fd.append('file', order.receipt); // file[1] = payment receipt
+        const repTyped = salesperson.trim();
+        if (repTyped) fd.append('salesperson', repTyped);
+        try {
+          const r = await authedFetch<{ job_id: string; status: string }>('/scan-so/enqueue', {
+            method: 'POST',
+            body: fd,
+          });
+          if (r?.job_id) newJobIds.push(r.job_id);
+        } catch (e) {
+          const err = e as Error & { status?: number; body?: string };
+          // 409 duplicate_slip = this order's slip already created an SO (hard
+          // reject, nothing queued). Keep it on screen with the reason inline;
+          // the OTHER orders still enqueue.
+          if (err.status === 409 && typeof err.body === 'string' && err.body.includes('duplicate_slip')) {
+            let reason = 'This slip was already uploaded.';
+            try {
+              const b = JSON.parse(err.body) as { reason?: string };
+              if (typeof b.reason === 'string' && b.reason.trim() !== '') reason = b.reason;
+            } catch { /* body wasn't JSON — keep the fallback wording */ }
+            dupErrors[order.id] = reason;
+            continue;
+          }
+          throw e;
+        }
+      }
+
+      if (newJobIds.length > 0) setEnqueuedJobIds((prev) => [...prev, ...newJobIds]);
+
+      if (Object.keys(dupErrors).length > 0) {
+        // Keep ONLY the refused orders on screen (with their inline reason); the
+        // queued ones are already running server-side and appear in the results
+        // list below.
+        setOrders((cur) => {
+          const keep = cur.filter((o) => dupErrors[o.id]);
+          return keep.length ? keep : [newOrder()];
+        });
+        setOrderErrors(dupErrors);
+        if (newJobIds.length === 0) return;
+      } else {
+        // All queued cleanly — reset the capture area to a fresh blank order.
+        setOrders([newOrder()]);
+      }
+
+      if (newJobIds.length === 0 && Object.keys(dupErrors).length === 0) {
+        setError("Couldn't read the slip — try again.");
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Something went wrong. Please try again.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const busy = extracting || submitting;
+  const ready = orders.length > 0 && orders.every((o) => o.slip !== null);
+
+  /* One labeled slot (slip or receipt) — a dashed dropzone when empty, a solid
+     filename card with a remove control when filled. */
+  const renderSlot = (order: OrderRow, kind: SlotKind) => {
+    const file = order[kind];
+    const label = kind === 'slip' ? 'Order slip' : 'Payment receipt';
+    const key = `${order.id}:${kind}`;
+    return (
+      <div className={styles.slot}>
+        <span className={styles.slotLabel}>
+          {label}
+          {kind === 'receipt' && <span className={styles.slotLabelOptional}> · optional</span>}
+        </span>
+        {file ? (
+          <div className={styles.slotFilled}>
+            {kind === 'slip'
+              ? <Camera size={20} strokeWidth={1.5} />
+              : <Receipt size={20} strokeWidth={1.5} />}
+            <span className={styles.slotFileName}>{file.name}</span>
+            {!busy && (
+              <button
+                type="button"
+                className={styles.removeBtn}
+                onClick={() => setSlot(order.id, kind, null)}
+                aria-label={`Remove ${label}`}
+              >
+                <X size={14} strokeWidth={1.75} /> Remove
+              </button>
+            )}
+          </div>
+        ) : (
+          <div
+            className={`${styles.slotZone} ${dragOver === key ? styles.slotZoneActive : ''}`}
+            onClick={() => pickSlot(order.id, kind)}
+            onDragOver={(e) => { e.preventDefault(); setDragOver(key); }}
+            onDragLeave={() => setDragOver((cur) => (cur === key ? null : cur))}
+            onDrop={(e) => { e.preventDefault(); onDrop(order.id, kind, e.dataTransfer.files); }}
+          >
+            {kind === 'slip'
+              ? <Camera size={22} strokeWidth={1.5} />
+              : <Receipt size={22} strokeWidth={1.5} />}
+            <div>{kind === 'slip' ? 'Drop the slip, or click' : 'Card receipt (optional)'}</div>
+          </div>
+        )}
+      </div>
+    );
   };
 
   return (
@@ -513,9 +705,9 @@ export const ScanOrderModal = ({ onClose }: Props) => {
             <div className={styles.eyebrow}>Sales Orders</div>
             <h2 className={styles.title}>Scan Order</h2>
             <p className={styles.sub}>
-              Photo of a handwritten sale-order slip → the New SO form opens prefilled,
-              where you review every field against its dropdown. Nothing is saved until
-              you save the SO itself.
+              {multiOrder
+                ? 'Queue a stack of slips — each becomes a draft order in Orders, ready to review.'
+                : 'Photo of a handwritten sale-order slip → the New SO form opens prefilled, where you review every field against its dropdown. Nothing is saved until you save the SO itself.'}
             </p>
           </div>
           <button type="button" className={styles.closeBtn} onClick={onClose} aria-label="Close">
@@ -525,6 +717,23 @@ export const ScanOrderModal = ({ onClose }: Props) => {
 
         <div className={styles.body}>
           {error && <div className={styles.error}>{error}</div>}
+
+          {/* Hidden inputs — one for slips, one for receipts, both re-targeted to
+              the active order before each pick. */}
+          <input
+            ref={slipInputRef}
+            type="file"
+            accept={ACCEPT}
+            style={{ display: 'none' }}
+            onChange={(e) => { onSlotFile('slip', e.target.files?.[0]); e.target.value = ''; }}
+          />
+          <input
+            ref={receiptInputRef}
+            type="file"
+            accept={ACCEPT}
+            style={{ display: 'none' }}
+            onChange={(e) => { onSlotFile('receipt', e.target.files?.[0]); e.target.value = ''; }}
+          />
 
           <label className={styles.field}>
             <span className={styles.fieldLabel}>Salesperson</span>
@@ -539,63 +748,156 @@ export const ScanOrderModal = ({ onClose }: Props) => {
             {sortByText(knownReps).map((r) => <option key={r} value={r} />)}
           </datalist>
 
-          <div
-            className={`${styles.dropZone} ${dragOver ? styles.dropZoneActive : ''}`}
-            onClick={() => fileInputRef.current?.click()}
-            onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
-            onDragLeave={() => setDragOver(false)}
-            onDrop={(e) => { e.preventDefault(); setDragOver(false); addFiles(e.dataTransfer.files); }}
+          {/* One card per queued order, each grouping its labeled slip + receipt
+              slots. The single order in the common case renders the same way,
+              without a removable header. */}
+          {orders.map((order, oi) => (
+            <div key={order.id} className={styles.orderCard}>
+              {multiOrder && (
+                <div className={styles.orderHead}>
+                  <span className={styles.orderTitle}>Order {oi + 1}</span>
+                  {!busy && (
+                    <button
+                      type="button"
+                      className={styles.removeOrderBtn}
+                      onClick={() => removeOrder(order.id)}
+                    >
+                      <X size={12} strokeWidth={1.75} /> Remove
+                    </button>
+                  )}
+                </div>
+              )}
+              <div className={styles.slotGrid}>
+                {renderSlot(order, 'slip')}
+                {renderSlot(order, 'receipt')}
+              </div>
+              {orderErrors[order.id] && (
+                <div className={styles.orderError}>{orderErrors[order.id]}</div>
+              )}
+            </div>
+          ))}
+
+          {/* Add another order → switches this session to the background batch
+              path (each order becomes a draft in Orders). */}
+          <button
+            type="button"
+            className={styles.addOrderBtn}
+            onClick={addOrder}
+            disabled={busy}
           >
-            <Camera size={28} strokeWidth={1.5} style={{ marginBottom: 8 }} />
-            <div>Drop slip photo(s) here, or click to choose</div>
-            <div style={{ fontSize: 12, marginTop: 4 }}>JPEG / PNG / WEBP / PDF · max 20MB each</div>
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              accept="image/jpeg,image/png,image/webp,application/pdf"
-              style={{ display: 'none' }}
-              onChange={(e) => { addFiles(e.target.files); e.target.value = ''; }}
-            />
-          </div>
-          {files.length > 0 && (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-              {files.map((f, i) => (
-                <span key={`${f.name}-${i}`} className={styles.fileChip}>
-                  {f.name}
-                  <button
-                    type="button"
-                    className={styles.removeBtn}
-                    style={{ padding: 0 }}
-                    onClick={() => setFiles((prev) => prev.filter((_, j) => j !== i))}
-                    aria-label={`Remove ${f.name}`}
-                  >
-                    <X size={12} strokeWidth={1.75} />
-                  </button>
-                </span>
-              ))}
+            <Plus size={ICON.size} strokeWidth={ICON.strokeWidth} /> Add another order
+          </button>
+
+          {/* Duplicate-slip warning (single-order flow) — non-blocking, mirrors
+              mobile's dup pill. The operator opens the New SO form anyway or
+              backs out to change the photo. */}
+          {pending && (
+            <div className={styles.warn}>
+              <AlertTriangle size={18} strokeWidth={1.75} style={{ flex: 'none', marginTop: 1 }} />
+              <div style={{ flex: 1 }}>
+                <p className={styles.warnTitle}>Possible duplicate of {pending.duplicate.docNo}</p>
+                <p className={styles.warnBody}>
+                  {pending.duplicate.rule === 'image'
+                    ? 'This exact slip photo was already scanned into that order.'
+                    : 'A recent order has the same customer phone and slip details.'}{' '}
+                  Open a new order anyway, or cancel if it is the same order.
+                </p>
+                <div className={styles.warnActions}>
+                  <Button variant="secondary" size="sm" onClick={() => setPending(null)}>
+                    Back
+                  </Button>
+                  <Button variant="primary" size="sm" onClick={() => commitPrefill(pending.prefill)}>
+                    Open New SO anyway
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Batch results — the shared /scan-so/jobs poll. Shown once anything
+              has been enqueued this session. */}
+          {enqueuedJobIds.length > 0 && (
+            <div>
+              <div className={styles.sectionLabel} style={{ marginBottom: 6 }}>
+                Scanned this session
+              </div>
+              <div className={styles.results}>
+                {trackedJobs.length === 0 && (
+                  <div className={styles.resultRow}>
+                    <span className={`${styles.chip} ${styles.chipGrey}`}>Queued</span>
+                    <div className={styles.resultMain}>Uploading — the reading finishes in the background.</div>
+                  </div>
+                )}
+                {trackedJobs.map((j) => {
+                  const active = isActiveJob(j);
+                  const done = j.status === 'done';
+                  const failed = j.status === 'error';
+                  const chipClass = done ? styles.chipTeal : failed ? styles.chipYellow : styles.chipGrey;
+                  const chipLabel = active ? (j.status === 'running' ? 'Reading…' : 'Queued') : done ? 'Done' : failed ? 'Failed' : j.status;
+                  return (
+                    <div key={j.id} className={styles.resultRow}>
+                      <span className={`${styles.chip} ${chipClass}`}>
+                        {active && <Loader2 size={11} strokeWidth={2} className={styles.spin} style={{ marginRight: 4 }} />}
+                        {done && <CheckCircle2 size={11} strokeWidth={2} style={{ marginRight: 4 }} />}
+                        {chipLabel}
+                      </span>
+                      <div className={styles.resultMain}>
+                        {done
+                          ? (j.soDocNo ? `${j.soDocNo} — saved to Orders` : 'Saved to Orders')
+                          : failed
+                            ? (j.error || "Couldn't read the slip.")
+                            : 'Reading the slip…'}
+                        {j.duplicateOf && (
+                          <div className={styles.resultSub}>Possible duplicate of {j.duplicateOf}</div>
+                        )}
+                      </div>
+                      <span style={{ flex: 'none', fontSize: 11, color: 'var(--fg-muted)' }}>
+                        {jobTs(j.createdAt) ? hhmm(jobTs(j.createdAt)) : ''}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+              <p className={styles.sub} style={{ marginTop: 8 }}>
+                Drafts land in Orders — open each to review every field before finalising.
+              </p>
             </div>
           )}
 
           <p className={styles.sub} style={{ marginTop: 4 }}>
-            You can upload two photos: the handwritten order slip and a card-terminal
-            payment receipt. After scanning, the New SO form opens with the customer,
-            line items and payment prefilled for you to confirm.
+            {multiOrder
+              ? 'Each order takes an order slip and, optionally, a card-terminal payment receipt. We read every slip and save a draft order per slip in the background.'
+              : 'Upload the handwritten order slip and, optionally, a card-terminal payment receipt. After scanning, the New SO form opens with the customer, line items and payment prefilled for you to confirm.'}
           </p>
         </div>
 
         <div className={styles.foot}>
-          <Button variant="secondary" size="sm" onClick={onClose}>Cancel</Button>
+          <Button variant="secondary" size="sm" onClick={onClose}>
+            {enqueuedJobIds.length > 0 ? 'Close' : 'Cancel'}
+          </Button>
+          {enqueuedJobIds.length > 0 && (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => { onClose(); navigate('/scm/sales-orders'); }}
+            >
+              View Orders
+            </Button>
+          )}
           <Button
             variant="primary"
             size="sm"
-            onClick={() => void runExtract()}
-            disabled={files.length === 0 || extracting}
+            onClick={() => void (multiOrder ? runEnqueueBatch() : runExtractSingle())}
+            disabled={!ready || busy || pending !== null}
           >
-            {extracting
+            {busy
               ? <Loader2 size={ICON.size} strokeWidth={ICON.strokeWidth} className={styles.spin} />
               : <Upload size={ICON.size} strokeWidth={ICON.strokeWidth} />}
-            <span>{extracting ? 'Scanning slip…' : 'Scan & open New SO'}</span>
+            <span>
+              {multiOrder
+                ? (submitting ? 'Uploading…' : `Scan & save ${orders.length} drafts`)
+                : (extracting ? 'Scanning slip…' : 'Scan & open New SO')}
+            </span>
           </Button>
         </div>
       </div>

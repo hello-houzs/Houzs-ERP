@@ -2,6 +2,7 @@ import { useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
+import { isSalesStaff } from "../auth/salesAccess";
 import { MobileVirtualList } from "./MobileVirtualList";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
@@ -294,15 +295,21 @@ function CaseList({
   onOpen: (id: number) => void;
   onNew: () => void;
 }) {
-  const { user } = useAuth();
+  const { user, can } = useAuth();
   const [q, setQ] = useState("");
   const [chip, setChip] = useState("all");
   const [sort, setSort] = useState<"sla" | "no">("sla");
 
+  // Same capability the desktop Service-Cases nav uses: service_cases.read OR
+  // any Sales staff (showForSales). Gate the /api/assr read so it never fires a
+  // 403 for a user without access (OFF, not hide) — defence-in-depth on top of
+  // the shell's tab gating.
+  const canViewCases = can("service_cases.read") || isSalesStaff(user);
   const { data, isLoading, error } = useQuery({
     queryKey: ["mobile-assr-list"],
     queryFn: () => api.get<{ data?: Any[] }>("/api/assr?per_page=200"),
     staleTime: 30_000,
+    enabled: canViewCases,
   });
   const all = data?.data ?? [];
 

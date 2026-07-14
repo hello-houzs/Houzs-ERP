@@ -16,6 +16,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
+import { fmtCenti } from "../lib/scm";
 import "./mobile.css";
 
 /* ------------------------------------------------------------------ *
@@ -277,7 +278,7 @@ export function MobileProfile({ onLogout, orgItems, onOpenOrg }: {
     }
   };
 
-  const mtdSales = "RM " + (mtdSalesCenti / 100).toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const mtdSales = fmtCenti(mtdSalesCenti);
 
   // Prototype #profile VERBATIM: DARK header eyebrow "Account" + "Profile" +
   // a settings icon button, DARK identity card (#15161a) with a radial-glow

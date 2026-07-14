@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
 import { HighlightedText } from "../lib/highlight";
+import { formatDate } from "../lib/utils";
 import "./mobile.css";
 
 /**
@@ -48,16 +49,13 @@ export type SearchNav =
   | { kind: "user" };
 
 /* Numeric DD/MM/YYYY — the owner-locked mobile date format (never month names),
-   matching MobileSalesOrders / MobileCalendar. */
+   matching MobileSalesOrders / MobileCalendar. Delegates to the shared TZ-aware
+   helper so date-only strings never drift a day on an off-zone device; keeps this
+   surface's empty-string (not em-dash) fallback for a blank/unparseable date. */
 const dm = (d: string | null | undefined): string => {
   if (!d) return "";
-  // Date-only strings compare/format directly without a timezone shift.
-  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(d);
-  if (m) return `${m[3]}/${m[2]}/${m[1]}`;
-  const dt = new Date(d);
-  if (isNaN(+dt)) return "";
-  const p = (n: number) => `${n}`.padStart(2, "0");
-  return `${p(dt.getDate())}/${p(dt.getMonth() + 1)}/${dt.getFullYear()}`;
+  const s = formatDate(d);
+  return s === "—" ? "" : s;
 };
 
 const TYPE_ORDER: SearchHitType[] = [
