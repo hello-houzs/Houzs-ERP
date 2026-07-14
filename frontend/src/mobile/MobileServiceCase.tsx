@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { formatDate, formatDateTime } from "../lib/utils";
 import { createPortal } from "react-dom";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
@@ -243,18 +244,10 @@ const prettyStage = (stage: string) => {
   const idx = STAGE_INDEX[stage];
   return idx != null ? STAGES[idx].long : cap(stage.replace(/_/g, " ")) || "—";
 };
-const dm = (d: string | null | undefined) => {
-  if (!d) return "—";
-  const dt = new Date(d);
-  if (isNaN(+dt)) return "—";
-  return dt.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
-};
-const dtm = (d: string | null | undefined) => {
-  if (!d) return "—";
-  const dt = new Date(d);
-  if (isNaN(+dt)) return "—";
-  return dt.toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
-};
+// Numeric DD/MM/YYYY (+ HH:mm) via the shared formatter — house rule, and it
+// UTC-tags bare SQLite timestamps so they don't shift by the device timezone.
+const dm = (d: string | null | undefined) => formatDate(d);
+const dtm = (d: string | null | undefined) => formatDateTime(d);
 // Human overdue / due-in from hours-to-deadline (drives the SLA banner).
 const slaText = (h: number | null): { label: string; overdue: boolean } | null => {
   if (h == null || !isFinite(h)) return null;
