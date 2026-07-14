@@ -1,6 +1,5 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
-import { requirePermission } from "../middleware/auth";
 import { getProjectScope } from "../services/projectAcl";
 import { allowedCompanyIds } from "../scm/lib/companyScope";
 import { getDb } from "../db/client";
@@ -43,8 +42,18 @@ const app = new Hono<{ Bindings: Env }>();
  *                caller's last_read_at for that project. Used by the
  *                bell; the /notifications page calls without it to
  *                see history.
+ *
+ * Access: ANY authenticated user. The notification bell/badge is
+ * personal data (the caller's own scoped project activity + their
+ * own Houzs Points snapshot) and must never 403 — a Sales user who
+ * lacks the `projects.read` matrix permission still has a bell. The
+ * result stays scoped per-user via getProjectScope below (a scoped
+ * rep only sees activity on projects where they/their manager is the
+ * PIC and whose brand is in their allow-list), so widening the gate
+ * does not leak anything the caller can't already see. This is a
+ * deliberate WIDEN (drop the matrix-perm gate, keep the scoping).
  */
-app.get("/", requirePermission("projects.read"), async (c) => {
+app.get("/", async (c) => {
   const user = c.get("user");
   const limit = Math.min(parseInt(c.req.query("limit") || "20", 10), 100);
   const offset = Math.max(parseInt(c.req.query("offset") || "0", 10), 0);
