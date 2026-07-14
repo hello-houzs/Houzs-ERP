@@ -836,7 +836,7 @@ function AddPaymentSheet({
     () => (editPayment ? CODE_TO_PAY_METHOD[editPayment.method ?? "cash"] ?? "Cash" : "Cash"),
   );
   const [date, setDate] = useState<string>(
-    () => (editPayment?.paid_at ?? "").slice(0, 10) || new Date().toISOString().slice(0, 10),
+    () => (editPayment?.paid_at ?? "").slice(0, 10) || todayMyt(),
   );
   const [amount, setAmount] = useState(
     () => (editPayment ? ((editPayment.amount_centi ?? 0) / 100).toFixed(2) : "0.00"),

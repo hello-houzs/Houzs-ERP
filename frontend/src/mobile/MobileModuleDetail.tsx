@@ -4,6 +4,7 @@ import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { MODULE_CONFIGS } from "./MobileModuleList";
+import { todayMyt } from "../vendor/scm/lib/dates";
 import "./mobile.css";
 
 // ---------------------------------------------------------------------------
@@ -571,7 +572,7 @@ function PaymentSheet({ kind, id, header, onClose, onDone }: {
 
   const [amount, setAmount] = useState(() => (balance > 0 ? (balance / 100).toFixed(2) : ""));
   const [method, setMethod] = useState("cash");
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(() => todayMyt());
   const [ref, setRef] = useState("");
   const [error, setError] = useState<string | null>(null);
 

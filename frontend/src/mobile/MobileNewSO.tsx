@@ -7,6 +7,7 @@ import { useAuth, isAdminLevel } from "../vendor/scm/lib/auth";
 import { useAuth as useHouzsAuth } from "../auth/AuthContext";
 import { useVenues } from "../vendor/scm/lib/venues-queries";
 import { useStateWarehouseMappings } from "../vendor/scm/lib/state-warehouse-queries";
+import { todayMyt } from "../vendor/scm/lib/dates";
 import {
   useSoDropdownOptions,
   optionsOrFallback,
@@ -419,7 +420,7 @@ function lineFromItem(it: SoItem): LineItem {
   };
 }
 function newPayment(): Payment {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayMyt();
   return {
     key: uid(), method: "Cash", date: today, amount: "0.00", account: "", approval: "", collectedBy: "",
     bank: BANK_OPTS[0], plan: PLAN_OPTS[0], online: ONLINE_OPTS[0],
