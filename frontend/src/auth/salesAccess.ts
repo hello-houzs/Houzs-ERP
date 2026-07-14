@@ -16,12 +16,15 @@ import type { AuthUser } from "../types";
 /** Owner/IT `*` or a director-level position — sees everything. */
 const DIRECTOR_POSITIONS = /^(Super Admin|Sales Director|Finance Manager)$/i;
 
-/** A "Sales <role>" position (Sales Executive, Sales Coordinator, Sales
- *  Director, …). NOTE: `department_name` is not yet on the /auth/me payload
- *  (only the numeric `department_id`), so the Sales-department test currently
- *  keys off the position name. Add `department_name` to /auth/me for a fully
- *  robust department check — see the PR body. */
-const SALES_POSITION = /^Sales\s/i;
+/** A sales position name — matches "Sales Executive", "Sales Coordinator",
+ *  "Sales Director", but ALSO the no-space / punctuated variants that the old
+ *  `/^Sales\s/` missed and thereby FAILED OPEN on: "Salesperson",
+ *  "Sales-Executive", "Sales_Rep". A `Sales`-prefixed title is always a sales
+ *  role here, so a prefix test is correct and safe (there is no non-sales
+ *  position that starts with "Sales"). The primary, most-robust signal is now
+ *  `department_name` (see isSalesStaff); this remains as a fallback for rows
+ *  whose department isn't populated. */
+const SALES_POSITION = /^sales/i;
 
 /**
  * Director signal — the cohort that sees everything. Matches the backend
@@ -39,11 +42,16 @@ export function isDirectorUser(user: AuthUser | null | undefined): boolean {
 
 /**
  * Sales staff — a member of the Sales department (director sales reps
- * included, e.g. "Sales Director" also matches). Currently derived from
- * `position_name` because `department_name` isn't on the wire yet.
+ * included, e.g. "Sales Director" also matches). Keyed PRIMARILY off
+ * `department_name` (now sent on /auth/me by backend #400) so any position
+ * within the Sales department is caught, with the position-name prefix as a
+ * fallback. Broadening these matches CLOSES the previous fail-open hole where
+ * non-space titles ("Salesperson") slipped through as unrestricted.
  */
 export function isSalesStaff(user: AuthUser | null | undefined): boolean {
   if (!user) return false;
+  const dept = (user.department_name ?? "").toLowerCase();
+  if (dept.includes("sales")) return true;
   return SALES_POSITION.test((user.position_name ?? "").trim());
 }
 

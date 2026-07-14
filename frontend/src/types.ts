@@ -473,9 +473,13 @@ export interface AuthUser {
   position_name?: string | null;
   /** Org position id (positions.id). Sent by /auth/me. */
   position_id?: number | null;
-  /** Primary DEPARTMENT id (users.department_id). Sent by /auth/me. NOTE: the
-   *  department NAME is not yet on the wire — see auth/salesAccess.ts. */
+  /** Primary DEPARTMENT id (users.department_id). Sent by /auth/me. */
   department_id?: number | null;
+  /** Primary DEPARTMENT name (departments.name) — e.g. "Sales". Sent by
+   *  /auth/me (backend #400 → services/auth.ts). Primary signal for the
+   *  code-keyed Sales-access model (auth/salesAccess.ts isSalesStaff), which
+   *  is more robust than keying off the position name alone. */
+  department_name?: string | null;
 }
 
 export interface TeamMember {

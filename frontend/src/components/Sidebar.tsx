@@ -53,7 +53,7 @@ import {
 import { cn } from "../lib/utils";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useAuth } from "../auth/AuthContext";
-import { isSalesStaff, isSalesNonDirector } from "../auth/salesAccess";
+import { isSalesStaff } from "../auth/salesAccess";
 import { CompanyMark } from "./CompanyMark";
 import { PresencePanel } from "./PresencePanel";
 import { GlobalSearchTrigger } from "./GlobalSearch";
@@ -113,10 +113,12 @@ export interface NavTab {
    *  used to hide the Projects "Finances" sub-page from sales staff. */
   requireFinanceViewer?: boolean;
   /** Sales-access model (code-keyed off org fields — auth/salesAccess.ts):
-   *  hide this entry from NON-director Sales-department users. Directors and
-   *  non-sales staff are unaffected. Used to remove Delivery Returns from the
-   *  Sales cohort. */
-  hideForSalesNonDirector?: boolean;
+   *  hide this entry from ALL Sales-department users, INCLUDING the Sales
+   *  Director (owner rule 2026-07 — Delivery Returns is off for the whole Sales
+   *  cohort, director too). Non-sales staff are unaffected. Only Delivery
+   *  Returns gets this treatment; every other sales-restricted item stays
+   *  director-visible. */
+  hideForSales?: boolean;
   /** Sales-access model: ADDITIVELY show this entry to Sales-department users
    *  even when they lack the usual `perm` / `anyPerm` / `pageAccess` gate —
    *  keyed off department, NOT the permission matrix. Used so "My Cases"
@@ -309,7 +311,7 @@ export const NAV_TABS: NavTab[] = [
           { to: "/scm/amendments", label: "Amendments", icon: History, anyPerm: ["*", "scm.access", "scm.amendment.create", "scm.amendment.supplier_confirm", "scm.amendment.approve_so", "scm.amendment.approve_po"], anyAccess: ["scm.sales.orders"] },
           { to: "/scm/delivery-orders", label: "Delivery Orders", icon: Send, anyPerm: ["*", "scm.access"], anyAccess: ["scm.sales.delivery"] },
           { to: "/scm/sales-invoices", label: "Sales Invoices", icon: FileText, anyPerm: ["*", "scm.access"], anyAccess: ["scm.sales.invoices"] },
-          { to: "/scm/delivery-returns", label: "Delivery Returns", icon: RotateCcw, anyPerm: ["*", "scm.access"], anyAccess: ["scm.sales.returns"], hideForSalesNonDirector: true },
+          { to: "/scm/delivery-returns", label: "Delivery Returns", icon: RotateCcw, anyPerm: ["*", "scm.access"], anyAccess: ["scm.sales.returns"], hideForSales: true },
         ],
       },
       {
@@ -547,10 +549,10 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
   // richer replacement is available). Recursive — a group with no
   // visible children is itself hidden.
   function filterTab(t: NavTab): NavTab | null {
-    // Sales-access model HIDE gate — cut entirely for non-director Sales users
-    // (checked first so it wins over any show-gate below). Directors and
-    // non-sales staff pass through unchanged.
-    if (t.hideForSalesNonDirector && isSalesNonDirector(user)) return null;
+    // Sales-access model HIDE gate — cut entirely for ALL Sales users
+    // (director included; checked first so it wins over any show-gate below).
+    // Non-sales staff pass through unchanged.
+    if (t.hideForSales && isSalesStaff(user)) return null;
     // Sales-access model SHOW bypass — Sales staff see `showForSales` entries
     // even without the usual permission / page-access gate (keyed off the org
     // department, NOT the config matrix). HIDE gates (above + hidePerm /

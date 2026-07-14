@@ -24,7 +24,7 @@ import {
 } from '../shared';
 import { supabaseAuth } from '../middleware/auth';
 import { escapeForOr } from '../lib/postgrest-search';
-import { resolveSalesScopeIds } from '../lib/salesScope';
+import { resolveSalesScopeIds, salesDocOutOfScope, resolveCallerStaffId } from '../lib/salesScope';
 import { canViewAllSales } from '../lib/houzs-perms';
 import { todayMyt } from '../lib/my-time';
 import { recordSoAudit, diffFields, type FieldChange } from '../lib/so-audit';
@@ -346,6 +346,11 @@ consignmentOrders.get('/', async (c) => {
 /* "My consignment orders" board — the salesperson's OWN COs (lightweight). */
 consignmentOrders.get('/mine', async (c) => {
   const sb = c.get('supabase'); const user = c.get('user');
+  /* Attribution fix (mirror mfg-sales-orders.ts:1073): the SCM auth bridge
+     pins user.id to ONE shared system scm.staff uuid, so filtering by it
+     always returns empty. Resolve the caller's OWN deterministic staff uuid
+     (mig-0066 link) for the self-view. */
+  const myStaffId = (await resolveCallerStaffId(sb, c.get('houzsUser')?.id)) ?? user.id;
   const { data, error } = await sb
     .from('consignment_sales_orders')
     .select(
@@ -353,7 +358,7 @@ consignmentOrders.get('/mine', async (c) => {
       'customer_delivery_date, internal_expected_dd, status, payment_method, approval_code, note, so_date, created_at, ' +
       'total_revenue_centi, line_count, deposit_centi',
     )
-    .eq('salesperson_id', user.id)
+    .eq('salesperson_id', myStaffId)
     .not('status', 'in', '("CANCELLED","ON_HOLD")')
     .order('created_at', { ascending: false })
     .limit(80);
@@ -448,6 +453,16 @@ consignmentOrders.get('/:docNo', async (c) => {
   ]);
   if (h.error) return c.json({ error: 'load_failed', reason: h.error.message }, 500);
   if (!h.data) return c.json({ error: 'not_found' }, 404);
+  /* Own/downline sales scope (lib/salesScope.ts) — mirror the SO detail. A
+     scoped seller must not read another salesperson's CO/finance by
+     enumerating doc_nos; out-of-scope → 404. Directors/view-all bypass.
+     HEADER carries salesperson_id already. */
+  {
+    const sp = (h.data as { salesperson_id?: number | string | null }).salesperson_id;
+    if (await salesDocOutOfScope(sb, c.env, c.get('houzsUser')?.id, canViewAllSales(c), sp)) {
+      return c.json({ error: 'not_found' }, 404);
+    }
+  }
   /* Tier 2 downstream-lock — stamp has_children from the Consignment Note table
      (consignment_delivery_orders), the CO's real downstream. */
   const { count: noteCount } = await sb.from('consignment_delivery_orders')
@@ -899,6 +914,18 @@ consignmentOrders.patch('/:docNo/status', async (c) => {
 // ── GET /:docNo/audit-log — unified history feed (newest first). ──────
 consignmentOrders.get('/:docNo/audit-log', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo');
+  /* Own/downline sales scope (lib/salesScope.ts) — resolve the CO's
+     salesperson_id first so a scoped seller can't read another
+     salesperson's history by enumerating doc_nos. Out-of-scope /
+     missing → 404. Directors/view-all bypass. */
+  {
+    const { data: hdr } = await sb.from('consignment_sales_orders').select('salesperson_id').eq('doc_no', docNo).maybeSingle();
+    if (!hdr) return c.json({ error: 'not_found' }, 404);
+    const sp = (hdr as { salesperson_id?: number | string | null }).salesperson_id;
+    if (await salesDocOutOfScope(sb, c.env, c.get('houzsUser')?.id, canViewAllSales(c), sp)) {
+      return c.json({ error: 'not_found' }, 404);
+    }
+  }
   const { data, error } = await sb.from('mfg_so_audit_log')
     .select('id, so_doc_no, action, actor_id, actor_name_snapshot, field_changes, status_snapshot, source, note, created_at')
     .eq('so_doc_no', docNo)
@@ -1851,6 +1878,18 @@ const PAYMENT_COLS =
 
 consignmentOrders.get('/:docNo/payments', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo');
+  /* Own/downline sales scope (lib/salesScope.ts) — resolve the CO's
+     salesperson_id first so a scoped seller can't read another
+     salesperson's payment ledger by enumerating doc_nos. Out-of-scope /
+     missing → 404. Directors/view-all bypass. */
+  {
+    const { data: hdr } = await sb.from('consignment_sales_orders').select('salesperson_id').eq('doc_no', docNo).maybeSingle();
+    if (!hdr) return c.json({ error: 'not_found' }, 404);
+    const sp = (hdr as { salesperson_id?: number | string | null }).salesperson_id;
+    if (await salesDocOutOfScope(sb, c.env, c.get('houzsUser')?.id, canViewAllSales(c), sp)) {
+      return c.json({ error: 'not_found' }, 404);
+    }
+  }
   const { data, error } = await sb
     .from('consignment_sales_order_payments')
     .select(`${PAYMENT_COLS}, staff:collected_by ( name )`)
