@@ -1,0 +1,53 @@
+name: Mirror drift sentinel (2990 -> Houzs, read-only)
+
+# Watches the one-way SO mirror (2990 public.sync_outbox -> Houzs
+# scm.mfg_sales_orders WHERE company_id = 2) for a silent stall. Read-only:
+# the script only SELECTs. When it detects an alarm condition it exits
+# non-zero, this job fails, and the owner gets the standard failed-workflow
+# email -- that IS the alarm (there is no other notifier today).
+#
+# Alarm conditions (see backend/scripts/mirror-drift-sentinel.mjs):
+#   - outbox rows stuck (status <> 'done' and enqueued > 15 min ago)
+#   - persisted drift: source SO count != mirrored count AND stuck rows exist
+#     (a transient in-flight delta with no stuck rows is normal, no alarm)
+#   - no successful delivery for > 1 hour while rows are pending
+#
+# REQUIRED SECRETS (owner must add these two repo secrets before this runs;
+# until then the script prints SKIP and exits 0 -- the workflow is inert):
+#   SENTINEL_2990_DB_URL   2990 Supabase Postgres connection string
+#                          (postgresql://...pooler... from the 2990 project's
+#                          Connect dialog, ref dolvxrchzbnqvahocwsu)
+#   SENTINEL_HOUZS_DB_URL  Houzs Supabase Postgres connection string
+#                          (postgresql://...pooler... from the Houzs project's
+#                          Connect dialog, ref anogrigyjbduyzclzjgn)
+#
+# NOTE: scheduled runs only fire from the repo's DEFAULT branch. To test on a
+# feature branch first, use "Run workflow" (workflow_dispatch) and pick it.
+
+on:
+  schedule:
+    - cron: "*/30 * * * *" # every 30 minutes
+  workflow_dispatch:
+
+# Never let two checks overlap.
+concurrency:
+  group: mirror-sentinel
+  cancel-in-progress: false
+
+jobs:
+  sentinel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: node scripts/mirror-drift-sentinel.mjs
+        env:
+          SENTINEL_2990_DB_URL: ${{ secrets.SENTINEL_2990_DB_URL }}
+          SENTINEL_HOUZS_DB_URL: ${{ secrets.SENTINEL_HOUZS_DB_URL }}
