@@ -201,6 +201,9 @@ export function Announcements() {
   const toast = useToast();
   const canWrite = can("announcements.write");
 
+  // NOTE: this fetch is unbounded (no LIMIT/pagination) — the backend returns
+  // every announcement. Capping it server-side is a separate follow-up; the DOM
+  // list below is windowed so a large payload no longer freezes rendering.
   const listQ = useQuery<ListResponse>(() => api.get("/api/announcements"));
   const items = listQ.data?.data ?? [];
 
@@ -257,24 +260,130 @@ export function Announcements() {
             Nothing posted yet.
           </div>
         ) : (
-          <ul className="flex flex-col gap-2.5">
-            {items.map((a) => (
-              <AnnouncementRow
-                key={a.id}
-                announcement={a}
-                users={users}
-                departments={depts}
-                positions={positions}
-                companies={companies}
-                canWrite={canWrite}
-                onChanged={() => listQ.reload()}
-                toast={toast}
-              />
-            ))}
-          </ul>
+          <PostedList
+            items={items}
+            users={users}
+            departments={depts}
+            positions={positions}
+            companies={companies}
+            canWrite={canWrite}
+            onChanged={() => listQ.reload()}
+            toast={toast}
+          />
         )}
       </section>
     </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Posted list — window-scroll virtualized so a 10x announcement volume keeps
+// only the visible rows (plus overscan) in the DOM instead of freezing on a
+// full unvirtualized render. Mirrors the mobile MobileVirtualList technique:
+// a CAPTURING window scroll listener (scroll events don't bubble up from the
+// scroll container), the visible slice measured from the list's viewport
+// position, and top/bottom spacer <li>s reserving the off-screen height so the
+// scrollbar behaves normally. Row height is sampled from a real rendered row.
+//
+// Gated: below THRESHOLD rows this renders every row exactly as the old plain
+// `.map` did — byte-identical for the small lists that are the common case.
+//
+// Heads-up on drift: announcement rows are variable-height (body length,
+// attachment chips, and especially an expanded read-receipt roster), so a
+// single sampled row height is only an estimate. We re-sample the first visible
+// row on every scroll frame, which keeps the spacers locally accurate; residual
+// drift only affects the scrollbar thumb position on very tall/expanded rows and
+// self-corrects as you scroll. Overscan (8) hides the small-slice pop-in.
+// ────────────────────────────────────────────────────────────────────────────
+const POSTED_THRESHOLD = 40;
+const POSTED_OVERSCAN = 8;
+const POSTED_GAP = 10; // matches the <ul> `gap-2.5` (0.625rem = 10px)
+
+function PostedList({
+  items,
+  users,
+  departments,
+  positions,
+  companies,
+  canWrite,
+  onChanged,
+  toast,
+}: {
+  items: Announcement[];
+  users: TeamMember[];
+  departments: Department[];
+  positions: Position[];
+  companies: Company[];
+  canWrite: boolean;
+  onChanged: () => void;
+  toast: ReturnType<typeof useToast>;
+}) {
+  const on = items.length > POSTED_THRESHOLD;
+  const ref = useRef<HTMLUListElement>(null);
+  const rowH = useRef(180); // rough first-paint estimate incl. gap; re-measured
+  const [range, setRange] = useState({ start: 0, end: POSTED_THRESHOLD * 2 });
+
+  useEffect(() => {
+    if (!on) return;
+    let raf = 0;
+    const measure = () => {
+      raf = 0;
+      const el = ref.current;
+      if (!el) return;
+      // Sample the first real (non-spacer) row so the spacers can't drift.
+      const row = el.querySelector<HTMLElement>("li:not([aria-hidden])");
+      if (row && row.offsetHeight > 0) rowH.current = row.offsetHeight + POSTED_GAP;
+      const rh = rowH.current || 180;
+      const top = el.getBoundingClientRect().top; // list top relative to viewport
+      const first = Math.max(0, Math.floor(-top / rh) - POSTED_OVERSCAN);
+      const count = Math.ceil(window.innerHeight / rh) + POSTED_OVERSCAN * 2;
+      const last = Math.min(items.length, first + count);
+      setRange((p) =>
+        p.start === first && p.end === last ? p : { start: first, end: last },
+      );
+    };
+    const onScroll = () => {
+      if (!raf) raf = requestAnimationFrame(measure);
+    };
+    measure();
+    window.addEventListener("scroll", onScroll, { capture: true, passive: true });
+    window.addEventListener("resize", onScroll);
+    return () => {
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onScroll);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [on, items.length]);
+
+  const start = on ? range.start : 0;
+  const end = on ? Math.min(items.length, range.end) : items.length;
+  const rh = rowH.current;
+
+  return (
+    <ul ref={ref} className="flex flex-col gap-2.5">
+      {on && start > 0 && (
+        <li aria-hidden style={{ height: Math.max(0, start * rh - POSTED_GAP) }} />
+      )}
+      {items.slice(start, end).map((a) => (
+        <AnnouncementRow
+          key={a.id}
+          announcement={a}
+          users={users}
+          departments={departments}
+          positions={positions}
+          companies={companies}
+          canWrite={canWrite}
+          onChanged={onChanged}
+          toast={toast}
+        />
+      ))}
+      {on && end < items.length && (
+        <li
+          aria-hidden
+          style={{ height: Math.max(0, (items.length - end) * rh - POSTED_GAP) }}
+        />
+      )}
+    </ul>
   );
 }
 
