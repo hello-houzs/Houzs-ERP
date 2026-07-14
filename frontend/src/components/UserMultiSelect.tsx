@@ -9,6 +9,12 @@ export interface UserOptionItem {
   email?: string | null;
 }
 
+/* Perf cap — bound the rendered option DOM so a large people directory can't
+   freeze the dropdown open. All options stay reachable: typing narrows the
+   client filter, so any person surfaces within the cap. Pure render bounding,
+   no data/selection change. (parity with FabricPicker / MobileSkuPicker.) */
+const RENDER_CAP = 60;
+
 /**
  * Searchable, A→Z sorted, multi-select people picker (Nick 2026-07-06:
  * "选人的做成 sort A to Z + 搜索 + multi-select"). Selected people render
@@ -125,7 +131,7 @@ export function UserMultiSelect({
             {filtered.length === 0 && (
               <div className="px-3 py-2 text-[12px] text-ink-muted">No matches</div>
             )}
-            {filtered.map((o) => {
+            {filtered.slice(0, RENDER_CAP).map((o) => {
               const isSel = value.includes(o.id);
               return (
                 <button
@@ -144,6 +150,11 @@ export function UserMultiSelect({
                 </button>
               );
             })}
+            {filtered.length > RENDER_CAP && (
+              <div className="px-3 py-1.5 text-[11px] text-ink-muted">
+                Showing first {RENDER_CAP} of {filtered.length} — keep typing to narrow.
+              </div>
+            )}
           </div>,
           document.body
         )

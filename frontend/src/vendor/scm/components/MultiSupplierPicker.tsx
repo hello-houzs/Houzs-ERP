@@ -11,10 +11,15 @@
 // list, and the loading flag. No I/O.
 // ----------------------------------------------------------------------------
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Plus, X } from 'lucide-react';
 import type { SupplierRow } from '../lib/suppliers-queries';
+
+/* Perf cap — bound the rendered checkbox rows so a large ACTIVE-supplier list
+   can't freeze the dropdown open. A search input above the list keeps every
+   supplier reachable within the cap. Render-only; no selection/data change. */
+const SUPPLIER_RENDER_CAP = 60;
 
 export function MultiSupplierPicker({
   suppliers,
@@ -30,6 +35,7 @@ export function MultiSupplierPicker({
   disabled?:   boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
   const wrapRef = useRef<HTMLDivElement | null>(null);
   // The dropdown is portaled to body (so an overflow:hidden ancestor can't clip
   // it); menuRef tracks the portaled node so click-outside doesn't close on an
@@ -68,6 +74,16 @@ export function MultiSupplierPicker({
   const selectedSet = new Set(selectedIds);
   const selected    = suppliers.filter((s) => selectedSet.has(s.id));
   const remaining   = suppliers.filter((s) => !selectedSet.has(s.id));
+
+  // Client-side narrow so the render cap can never hide a supplier the operator
+  // is looking for — typing surfaces any match within SUPPLIER_RENDER_CAP.
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return suppliers;
+    return suppliers.filter(
+      (s) => (s.code ?? '').toLowerCase().includes(q) || (s.name ?? '').toLowerCase().includes(q),
+    );
+  }, [suppliers, query]);
 
   const toggle = (id: string) => {
     if (selectedSet.has(id)) onChange(selectedIds.filter((x) => x !== id));
@@ -143,7 +159,7 @@ export function MultiSupplierPicker({
         ))}
         <button
           type="button"
-          onClick={() => setOpen((v) => !v)}
+          onClick={() => setOpen((v) => { const next = !v; if (!next) setQuery(''); return next; })}
           disabled={disabled || loading || remaining.length === 0}
           style={{
             display: 'inline-flex',
@@ -178,12 +194,37 @@ export function MultiSupplierPicker({
           borderRadius: 'var(--radius-sm)',
           boxShadow: '0 4px 16px rgba(0,0,0,0.08)',
           zIndex: 1000,
+          display: 'flex',
+          flexDirection: 'column',
         }}>
+          {suppliers.length > SUPPLIER_RENDER_CAP && (
+            <input
+              type="search"
+              autoFocus
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search suppliers…"
+              style={{
+                margin: 8,
+                padding: '6px 8px',
+                fontSize: 'var(--fs-13)',
+                background: 'var(--c-cream)',
+                border: '1px solid var(--line)',
+                borderRadius: 'var(--radius-sm)',
+                outline: 'none',
+              }}
+            />
+          )}
+          <div style={{ overflowY: 'auto' }}>
           {suppliers.length === 0 ? (
             <div style={{ padding: '12px', color: 'var(--fg-muted)', fontSize: 'var(--fs-13)' }}>
               No ACTIVE suppliers.
             </div>
-          ) : suppliers.map((s) => {
+          ) : filtered.length === 0 ? (
+            <div style={{ padding: '12px', color: 'var(--fg-muted)', fontSize: 'var(--fs-13)' }}>
+              No suppliers match “{query}”.
+            </div>
+          ) : filtered.slice(0, SUPPLIER_RENDER_CAP).map((s) => {
             const checked = selectedSet.has(s.id);
             return (
               <label
@@ -209,6 +250,12 @@ export function MultiSupplierPicker({
               </label>
             );
           })}
+          {filtered.length > SUPPLIER_RENDER_CAP && (
+            <div style={{ padding: '8px 12px', color: 'var(--fg-muted)', fontSize: 'var(--fs-12)' }}>
+              Showing first {SUPPLIER_RENDER_CAP} of {filtered.length} — search to narrow.
+            </div>
+          )}
+          </div>
         </div>,
         document.body,
       )}
