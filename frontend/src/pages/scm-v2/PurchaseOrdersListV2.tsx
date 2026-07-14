@@ -21,6 +21,7 @@ import {
   Printer,
   CheckCircle2,
   Package,
+  ArrowRightLeft,
 } from "lucide-react";
 import { PageHeader } from "../../components/Layout";
 import { StatCard } from "../../components/StatCard";
@@ -263,6 +264,7 @@ function DetailDrawer({
   onEdit,
   onPrint,
   onCancel,
+  onConvertGrn,
 }: {
   row: PoHeaderRow | null;
   onClose: () => void;
@@ -270,6 +272,7 @@ function DetailDrawer({
   onEdit: () => void;
   onPrint: () => void;
   onCancel: () => void;
+  onConvertGrn: () => void;
 }) {
   const detailQ = usePurchaseOrderDetail(row?.id ?? null);
   const items: PoItemRow[] =
@@ -430,29 +433,32 @@ function DetailDrawer({
               <div className="flex-1" />
               {(() => {
                 const s = (row.status || "").toUpperCase();
-                if (s === "DRAFT" || s === "SUBMITTED" || s === "PARTIALLY_RECEIVED") {
-                  return (
-                    <Button
-                      variant="danger"
-                      icon={<XIcon size={14} />}
-                      onClick={onCancel}
-                    >
-                      Cancel PO
-                    </Button>
-                  );
-                }
-                if (s === "PARTIALLY_RECEIVED" || s === "SUBMITTED") {
-                  return (
-                    <Button
-                      variant="primary"
-                      icon={<CheckCircle2 size={14} />}
-                      onClick={() => {}}
-                    >
-                      Convert to GRN
-                    </Button>
-                  );
-                }
-                return null;
+                const canCancel =
+                  s === "DRAFT" || s === "SUBMITTED" || s === "PARTIALLY_RECEIVED";
+                const canConvert =
+                  s === "SUBMITTED" || s === "PARTIALLY_RECEIVED";
+                return (
+                  <>
+                    {canCancel && (
+                      <Button
+                        variant="danger"
+                        icon={<XIcon size={14} />}
+                        onClick={onCancel}
+                      >
+                        Cancel PO
+                      </Button>
+                    )}
+                    {canConvert && (
+                      <Button
+                        variant="primary"
+                        icon={<CheckCircle2 size={14} />}
+                        onClick={onConvertGrn}
+                      >
+                        Convert to GRN
+                      </Button>
+                    )}
+                  </>
+                );
               })()}
             </div>
           </>
@@ -568,6 +574,9 @@ export function PurchaseOrdersListV2() {
 
   const [selected, setSelected] = useState<PoHeaderRow | null>(null);
   const [sort, setSort] = useState<string | undefined>(undefined);
+  // Multi-select → batch-convert N POs into one GRN. State is owned here (the
+  // DataTable `selection` prop only renders the checkboxes + reports toggles).
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [debouncedSearch, setDebouncedSearch] = useState(search);
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search), 300);
@@ -671,6 +680,37 @@ export function PurchaseOrdersListV2() {
   const goEdit = (r: PoHeaderRow) => navigate(`/scm/purchase-orders/${r.id}?edit=1`);
   const goPrint = (r: PoHeaderRow) => navigate(`/scm/purchase-orders/${r.id}?print=1`);
   const goFullPage = (r: PoHeaderRow) => navigate(`/scm/purchase-orders/${r.id}`);
+  // Convert to GRN routes to the reviewable From-PO picker pre-scoped to this
+  // PO (?poId=<id>); the picker pre-ticks the PO's outstanding lines so the
+  // operator reviews a ready draft and only Save creates the GRN.
+  const goGrnFromPo = (r: PoHeaderRow) =>
+    navigate(`/scm/grns/from-po?poId=${r.id}`);
+
+  // ── Multi-select bulk convert ──────────────────────────────────────────────
+  const toggleSelect = (id: string) =>
+    setSelectedIds((s) => {
+      const next = new Set(s);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  const toggleSelectAll = (keys: string[], allSelected: boolean) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allSelected) for (const k of keys) next.delete(k);
+      else for (const k of keys) next.add(k);
+      return next;
+    });
+  const clearSelection = () => setSelectedIds(new Set());
+  // Batch convert → the From-PO picker accepts a comma-separated poId list and
+  // pre-ticks each PO's outstanding lines (honouring its one-warehouse lock).
+  const convertSelectedToGrn = () => {
+    if (selectedIds.size === 0) return;
+    const ids = [...selectedIds];
+    clearSelection();
+    navigate(`/scm/grns/from-po?poId=${ids.join(",")}`);
+  };
+
   const doCancel = (r: PoHeaderRow) => {
     if (window.confirm(`Cancel PO ${r.po_number}? This can only be undone if no GRN has been raised.`)) {
       cancelPo.mutate(r.id, { onSuccess: () => setSelected(null) });
@@ -781,16 +821,25 @@ export function PurchaseOrdersListV2() {
             title="Purchase Orders"
             description="Every PO raised to a supplier — Draft through Received. Click any row for the quick view; open the full page to edit or receive."
             primaryAction={
-              <div className="flex items-stretch">
+              <div className="flex items-stretch gap-2">
                 <Button
-                  variant="primary"
-                  icon={<Plus size={14} />}
-                  onClick={goNewPo}
-                  className="rounded-r-none"
+                  variant="secondary"
+                  icon={<ArrowRightLeft size={14} />}
+                  onClick={goFromSo}
                 >
-                  New Purchase Order
+                  From Sales Order
                 </Button>
-                <SplitDropdown onFromSo={goFromSo} onImport={goImport} onDuplicate={goDuplicate} />
+                <div className="flex items-stretch">
+                  <Button
+                    variant="primary"
+                    icon={<Plus size={14} />}
+                    onClick={goNewPo}
+                    className="rounded-r-none"
+                  >
+                    New Purchase Order
+                  </Button>
+                  <SplitDropdown onFromSo={goFromSo} onImport={goImport} onDuplicate={goDuplicate} />
+                </div>
               </div>
             }
             secondaryActions={[
@@ -873,6 +922,25 @@ export function PurchaseOrdersListV2() {
         <div className="hidden md:block">
           {view === "table" ? (
             <>
+              {selectedIds.size > 0 && (
+                <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-primary/40 bg-primary/10 px-4 py-2.5">
+                  <span className="text-[13px] font-semibold text-primary">
+                    {selectedIds.size} selected
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <Button variant="ghost" onClick={clearSelection}>
+                      Clear
+                    </Button>
+                    <Button
+                      variant="primary"
+                      icon={<Package size={14} />}
+                      onClick={convertSelectedToGrn}
+                    >
+                      To Goods Receipt ({selectedIds.size})
+                    </Button>
+                  </div>
+                </div>
+              )}
               <DataTable<PoHeaderRow>
                 tableId="purchase-orders-v2"
                 rows={rows}
@@ -881,6 +949,11 @@ export function PurchaseOrdersListV2() {
                 columns={columns}
                 getRowKey={(r) => r.id}
                 onRowClick={(r) => setSelected(r)}
+                selection={{
+                  selectedIds,
+                  onToggle: toggleSelect,
+                  onToggleAll: toggleSelectAll,
+                }}
                 exportName="purchase-orders"
                 serverSort
                 onSortChange={setSortAndReset}
@@ -950,6 +1023,7 @@ export function PurchaseOrdersListV2() {
         onEdit={() => selected && goEdit(selected)}
         onPrint={() => selected && goPrint(selected)}
         onCancel={() => selected && doCancel(selected)}
+        onConvertGrn={() => selected && goGrnFromPo(selected)}
       />
     </PullToRefresh>
   );
