@@ -138,6 +138,12 @@ export default defineConfig(({ mode }) => {
       ],
     },
     plugins: [react()],
+    // Unique per build — namespaces the localStorage query snapshot
+    // (src/lib/query-persist.ts) so a deploy that changes a list's payload shape
+    // orphans the previous build's snapshot instead of hydrating a stale shape.
+    define: {
+      __BUILD_ID__: JSON.stringify(Date.now().toString(36)),
+    },
     build: {
       rollupOptions: {
         output: {
