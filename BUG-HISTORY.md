@@ -238,6 +238,8 @@ Severity tags: 🔴 critical/high · 🟠 medium · 🟢 low.
 - 🟠 **CI "tsc false-clean" in worktrees** — a frontend worktree without `node_modules` reports a false-clean local `tsc`; only CI's `tsc -b && vite build` is authoritative. Verify via CI, not local.
 - 🟠 **Vendored SCM fetch hit the wrong base URL** — `VITE_API_URL` inlined empty at build; `?? worker` kept the empty string. Fix: use `|| worker`.
 - 🟠 **Cloudflare Pages `_headers` over-broad** — Pages MERGES rules; keep only `/index.html` + `/assets/*` or headers leak to all routes.
+- 🟠 **Desktop/mobile drift on service-case stage routing** — the rule "internal-resolution cases (own field service / return visit) skip the two supplier-only stages" lived only in desktop's `getActiveStages`; mobile ignored it, so those cases mis-routed INTO Supplier Pickup / Item Ready and showed the wrong progress denominator (N/7 not N/5). Fix: extracted the rule to shared `vendor/scm/lib/assr/stages.ts` (`resolutionRoute`/`isStageActive`/`activeAssrStages`); both surfaces now filter the pipeline identically. Class: per-screen business logic duplicated → converge to one shared source.
+- 🟠 **TanStack invalidation key that never matched** — mobile service-case writes invalidated `["mobile-assr-list"]`, but the list query is keyed `["mobile-assr-list-paged", …]`; a non-prefix key silently matches nothing, so the list stayed stale until `staleTime`. Fix: invalidate the real prefix. Check prefix-equality when an invalidation "does nothing".
 
 ### SCM correctness (mostly caught pre-Houzs on 2990, verified on Houzs)
 - 🟠 **GRN defaulted warehouse to CHINA-transit** → false MRP alarms. Fix + GRN 防呆.
