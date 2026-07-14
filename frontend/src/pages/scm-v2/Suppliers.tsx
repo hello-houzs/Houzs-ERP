@@ -16,7 +16,7 @@ import { Button } from '@2990s/design-system';
 import { formatPhone } from '@2990s/shared/phone';
 import { PhoneInput } from '../../vendor/scm/components/PhoneInput';
 import {
-  useSuppliers,
+  useSuppliersPaged,
   useCreateSupplier,
   useUpdateSupplier,
   type SupplierRow,
@@ -24,14 +24,13 @@ import {
 } from '../../vendor/scm/lib/suppliers-queries';
 import {
   displaySupplierCategories,
-  supplierIsMixedOrOther,
-  supplierMatchesCategory,
 } from '../../vendor/scm/lib/supplier-categories';
 import {
   SupplyCategoryPicker,
   useSupplierCategoryPool,
 } from '../../vendor/scm/components/SupplyCategoryPicker';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
+import { useDebouncedValue } from '../../vendor/scm/lib/hooks';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import styles from './Suppliers.module.css';
 
@@ -62,11 +61,27 @@ const STATUS_CLASS: Record<SupplierStatus, string> = {
 export const Suppliers = () => {
   const navigate = useNavigate();
   const [status, setStatus] = useState<'all' | SupplierStatus>('all');
-  // Supply Category filter — client-side since the server doesn't expose
-  // ?category= and the list is small (< a few hundred rows).
+  // Supply Category filter — now applied SERVER-SIDE (the /suppliers paged
+  // endpoint takes ?category=/?pool=) so it stays correct across pages.
   const [category, setCategory] = useState<string>(FILTER_ALL);
   const [search, setSearch] = useState('');
+  const [page, setPage] = useState(0);
   const [creating, setCreating] = useState(false);
+
+  const PAGE_SIZE = 50;
+  // Debounce the search box so each keystroke doesn't fire a server round-trip.
+  const debouncedSearch = useDebouncedValue(search, 300);
+
+  // Maintained Supply Category pool (fallback: the default five). Declared up
+  // here because it feeds both the filter chips AND the server query (the
+  // "Mixed / Other" chip needs the pool to be computed exactly server-side).
+  const pool = useSupplierCategoryPool();
+
+  // Reset to the first page whenever a server-query input changes — otherwise a
+  // filter change could leave the operator stranded on an out-of-range page.
+  useEffect(() => {
+    setPage(0);
+  }, [status, category, debouncedSearch]);
 
   /* Batch edit (Commander 2026-06-19 — HOOKKA parity). Selection lives in the
      parent so it survives DataGrid re-renders and drives the batch modal. */
@@ -87,20 +102,24 @@ export const Suppliers = () => {
       return next;
     });
 
-  /* Clear the selection whenever the status / category filter changes — the
-     visible row set shifts, so a lingering selection would batch-edit rows the
-     operator can no longer see. */
+  /* Clear the selection whenever the visible row set shifts (filter change OR
+     page change) — a lingering selection would batch-edit rows the operator can
+     no longer see. Selection does not survive paging (server-side, per page). */
   useEffect(() => {
     setSelectedIds(new Set());
-  }, [status, category]);
+  }, [status, category, page, debouncedSearch]);
 
-  const { data, isLoading, error } = useSuppliers({
+  const { data, isLoading, error } = useSuppliersPaged({
+    page,
+    pageSize: PAGE_SIZE,
     status: status === 'all' ? undefined : status,
-    search: search.trim() || undefined,
+    q: debouncedSearch.trim() || undefined,
+    // '__all__' → omit (no filter); '__mixed__' → send + pool so the server
+    // reproduces the "Mixed / Other" set exactly.
+    category: category === FILTER_ALL ? undefined : category,
+    pool: category === FILTER_MIXED ? pool : undefined,
   });
 
-  // Maintained Supply Category pool (fallback: the default five).
-  const pool = useSupplierCategoryPool();
   const categoryChips: { value: string; label: string }[] = useMemo(
     () => [
       { value: FILTER_ALL, label: 'All supply categories' },
@@ -110,19 +129,11 @@ export const Suppliers = () => {
     [pool],
   );
 
-  /* Owner spec 2026-06-12 — filter against the supplier's own Supply
-     Category list (suppliers.category, comma-joined, parsed on read). A
-     chip matches when the supplier's list INCLUDES it — a sofa+bedframe
-     supplier appears under BOTH chips. "Mixed / Other" = ≥2 categories OR
-     a value outside the maintained pool. */
-  const rows = useMemo(() => {
-    const all = data ?? [];
-    if (category === FILTER_ALL) return all;
-    if (category === FILTER_MIXED) {
-      return all.filter((r) => supplierIsMixedOrOther(r.category, pool));
-    }
-    return all.filter((r) => supplierMatchesCategory(r.category, category));
-  }, [data, category, pool]);
+  /* Server page rows + grand total. The Supply-Category chip (incl. the
+     owner-spec "Mixed / Other" semantics) is now resolved server-side in the
+     /suppliers paged endpoint, so this is just the loaded page. */
+  const rows = data?.suppliers ?? [];
+  const total = data?.total ?? 0;
 
   /* Shared DataGrid conversion (2026-06-12). Status + Supply Category chip
      rows above stay as-is (they drive the server query / client pre-filter);
@@ -261,7 +272,7 @@ export const Suppliers = () => {
       </div>
 
       <p className={styles.eyebrow}>
-        {isLoading ? 'Loading suppliers…' : `${rows.length} suppliers`}
+        {isLoading ? 'Loading suppliers…' : `${total} supplier${total === 1 ? '' : 's'}`}
       </p>
 
       {error && !isLoading && (
@@ -274,17 +285,30 @@ export const Suppliers = () => {
         </div>
       )}
 
+      {/* Search + Supply-Category + status are all driven SERVER-SIDE from the
+          page-level controls above, so the grid's own client search box is
+          hidden (`hideSearch`) — it would otherwise only filter the loaded page
+          and silently hide matches on other pages. Column sort / filters /
+          show-hide still operate on the loaded page. */}
       <DataGrid
         rows={rows}
         columns={columns}
         storageKey="dg-suppliers"
         rowKey={(r) => r.id}
-        searchPlaceholder="Filter visible suppliers…"
+        hideSearch
         groupBanner={false}
         isLoading={isLoading}
         emptyMessage="No suppliers yet."
         onRowClick={(r) => navigate(`/scm/suppliers/${r.id}`)}
         selectable={{ selectedKeys: selectedIds, onToggle: toggle, onToggleAll: toggleAll }}
+      />
+
+      <PaginationFooter
+        page={page}
+        pageSize={PAGE_SIZE}
+        total={total}
+        onPrev={() => setPage((p) => Math.max(0, p - 1))}
+        onNext={() => setPage((p) => p + 1)}
       />
 
       {creating && (
@@ -330,6 +354,47 @@ const StatusChip = ({
     {children}
   </button>
 );
+
+/* Pagination footer — "Showing X–Y of N" + Prev/Next, mirroring the other
+   scm-v2 list pages (PurchaseOrdersListV2 etc.). Server-side paging, so N is
+   the grand total across all pages. */
+const PaginationFooter = ({
+  page,
+  pageSize,
+  total,
+  onPrev,
+  onNext,
+}: {
+  page: number;
+  pageSize: number;
+  total: number;
+  onPrev: () => void;
+  onNext: () => void;
+}) => {
+  const from = total === 0 ? 0 : page * pageSize + 1;
+  const to = Math.min((page + 1) * pageSize, total);
+  const atStart = page === 0;
+  const atEnd = (page + 1) * pageSize >= total;
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 'var(--space-3)',
+        marginTop: 'var(--space-3)',
+      }}
+    >
+      <span style={{ color: 'var(--fg-muted)', fontSize: 'var(--fs-12)' }}>
+        {total === 0 ? 'No suppliers' : `Showing ${from}${to > from ? `–${to}` : ''} of ${total}`}
+      </span>
+      <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+        <Button variant="secondary" size="md" onClick={onPrev} disabled={atStart}>Prev</Button>
+        <Button variant="secondary" size="md" onClick={onNext} disabled={atEnd}>Next</Button>
+      </div>
+    </div>
+  );
+};
 
 /* ════════════════════════════════════════════════════════════════════════
    Batch edit modal (Commander 2026-06-19 — HOOKKA parity)

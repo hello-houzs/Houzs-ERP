@@ -228,22 +228,93 @@ suppliers.get('/', async (c) => {
   const search = c.req.query('search');
   const supabase = c.get('supabase');
 
-  /* Query the derived-category view so the list page can show an
-     auto-derived Category column (see migration 0088). */
+  /* Opt-in server-side pagination + search + sort + Supply-Category filter
+     (mirrors usePurchaseOrdersPaged in mfg-purchase-orders.ts). The PRESENCE
+     of `page` switches paging on; when it is absent/empty the query below is
+     BYTE-IDENTICAL to the historical behavior (order name asc, limit 2000,
+     status + search params, company scope, `{ suppliers }` shape) — so the
+     supplier PICKERS (MultiSupplierPicker, ProductModels supplier select) and
+     every other caller of the full list are UNAFFECTED. */
+  const pageRaw = c.req.query('page');
+  const paginate = pageRaw !== undefined && pageRaw !== '';
+
+  if (!paginate) {
+    /* --- LEGACY PATH (unchanged) --- */
+    /* Query the derived-category view so the list page can show an
+       auto-derived Category column (see migration 0088). */
+    let q = supabase
+      .from('suppliers_with_derived_category')
+      .select(SUPPLIER_LIST_COLS)
+      .order('name', { ascending: true })
+      // Bound the result so PostgREST's default 1000-row cap can't silently
+      // truncate the supplier master — match the SO/DO/SI list convention.
+      .limit(2000);
+    if (status && SUPPLIER_STATUSES.has(status)) q = q.eq('status', status);
+    if (search) { const s = escapeForOr(search); if (s) q = q.or(`code.ilike.%${s}%,name.ilike.%${s}%,contact_person.ilike.%${s}%`); }
+    q = scopeToCompany(q, c); // multi-company: suppliers are per-company (view exposes company_id via mig 0062)
+
+    const { data, error } = await q;
+    if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
+    return c.json({ suppliers: data ?? [] });
+  }
+
+  /* --- PAGINATED PATH (opt-in via `page`) --- */
+  const page = Math.max(0, Math.trunc(Number(pageRaw)) || 0);
+  const psRaw = Number(c.req.query('pageSize'));
+  const pageSize = Number.isFinite(psRaw) && psRaw > 0 ? Math.min(200, Math.max(1, Math.trunc(psRaw))) : 50;
+
+  /* Deterministic order + a unique tiebreaker (id) so range paging can't
+     skip/repeat rows that share the sort key (e.g. duplicate names). */
+  const SORT_COLS = new Set(['name', 'code', 'status', 'created_at']);
+  const [rawCol, rawDir] = (c.req.query('sort') ?? 'name:asc').split(':');
+  const sortCol = SORT_COLS.has(rawCol) ? rawCol : 'name';
+  const sortAsc = rawDir !== 'desc';
+
   let q = supabase
     .from('suppliers_with_derived_category')
-    .select(SUPPLIER_LIST_COLS)
-    .order('name', { ascending: true })
-    // Bound the result so PostgREST's default 1000-row cap can't silently
-    // truncate the supplier master — match the SO/DO/SI list convention.
-    .limit(2000);
-  if (status && SUPPLIER_STATUSES.has(status)) q = q.eq('status', status);
-  if (search) { const s = escapeForOr(search); if (s) q = q.or(`code.ilike.%${s}%,name.ilike.%${s}%,contact_person.ilike.%${s}%`); }
-  q = scopeToCompany(q, c); // multi-company: suppliers are per-company (view exposes company_id via mig 0062)
+    .select(SUPPLIER_LIST_COLS, { count: 'exact' })
+    .order(sortCol, { ascending: sortAsc });
+  if (sortCol !== 'id') q = q.order('id', { ascending: true }); // unique tiebreaker
 
-  const { data, error } = await q;
+  if (status && SUPPLIER_STATUSES.has(status)) q = q.eq('status', status);
+
+  /* Free-text search over the SAME base-table columns the legacy `search`
+     param + the FE client search cover (code / name / contact_person).
+     Accept both `q` (paged contract) and the legacy `search` alias. */
+  const qText = c.req.query('q') ?? search;
+  if (qText) { const s = escapeForOr(qText); if (s) q = q.or(`code.ilike.%${s}%,name.ilike.%${s}%,contact_person.ilike.%${s}%`); }
+
+  /* Supply-Category chip filter — applied server-side so it stays correct
+     ACROSS pages (the list page previously filtered the whole in-memory
+     array). Suppliers store a comma-joined `category` text ("Sofa, Bedframe"),
+     so a concrete chip matches via ilike — pool values are distinct words, so
+     no substring collision in practice. The synthetic "Mixed / Other" chip
+     (`__mixed__`) = has a category AND is NOT a single in-pool token: the FE
+     passes the active pool (`pool`, `||`-joined) so we exclude the in-pool
+     singletons exactly. A comma-joined multi-category value is never equal to
+     a single pool token, so it is correctly kept as mixed. */
+  const category = c.req.query('category');
+  if (category === '__mixed__') {
+    q = q.not('category', 'is', null).neq('category', '');
+    const poolRaw = c.req.query('pool');
+    if (poolRaw) {
+      const variants = [...new Set(
+        poolRaw.split('||').map((v) => v.trim()).filter(Boolean)
+          .flatMap((v) => [v, v.toUpperCase(), v.toLowerCase()]),
+      )].map((v) => `"${v.replace(/["(),{}]/g, '')}"`);
+      if (variants.length) q = q.not('category', 'in', `(${variants.join(',')})`);
+    }
+  } else if (category && category !== '__all__') {
+    const s = escapeForOr(category);
+    if (s) q = q.ilike('category', `%${s}%`);
+  }
+
+  q = scopeToCompany(q, c); // multi-company: suppliers are per-company (view exposes company_id via mig 0062)
+  q = q.range(page * pageSize, page * pageSize + pageSize - 1);
+
+  const { data, error, count } = await q;
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
-  return c.json({ suppliers: data ?? [] });
+  return c.json({ suppliers: data ?? [], total: count ?? (data?.length ?? 0), page, pageSize });
 });
 
 // ── Supplier detail (+ bindings) ──────────────────────────────────────

@@ -30,18 +30,32 @@ export interface NavFilterCtx {
   pageAccess: (page: string) => AccessLevel;
 }
 
-export function makeNavFilter({ user, can, pageAccess }: NavFilterCtx) {
-  return function filterTab(t: NavTab): NavTab | null {
+/**
+ * Per-NODE visibility predicate — the SINGLE source of "can this user see this
+ * one nav entry", checking EVERY gate (sales hide/show, perm, anyPerm/anyAccess,
+ * pageAccess, pageAccessFull, hidePerm, requireFinanceViewer) in the correct
+ * order. It does NOT recurse into children and does NOT apply the salesRepTo
+ * click-target remap — those belong to the tree filter below.
+ *
+ * `makeNavFilter` (the recursive tree filter used by the desktop Sidebar and the
+ * MobileTabBar MenuModal) is built ON TOP of this predicate, and the mobile
+ * `MobileApp` shell uses the predicate DIRECTLY to gate its hand-laid-out menu +
+ * bottom tabs. Sharing this one function is what stops the mobile shell drifting
+ * (it used to hand-copy a SUBSET that omitted pageAccessFull / hidePerm /
+ * requireFinanceViewer and short-circuited the sales bypass before them).
+ */
+export function makeNavVisible({ user, can, pageAccess }: NavFilterCtx) {
+  return function navVisible(t: NavTab): boolean {
     // Sales-access model HIDE gate — cut entirely for ALL Sales users
     // (director included; checked first so it wins over any show-gate below).
     // Non-sales staff pass through unchanged.
-    if (t.hideForSales && isSalesStaff(user)) return null;
+    if (t.hideForSales && isSalesStaff(user)) return false;
     // Rep HIDE gate — cut from a NON-director Sales rep only (SCM trim +
     // Service-Cases board/metrics). Director/office pass through.
-    if (t.hideForSalesRep && isSalesNonDirector(user)) return null;
+    if (t.hideForSalesRep && isSalesNonDirector(user)) return false;
     // Rep-only entry — visible ONLY to a non-director Sales rep; everyone else
     // (office/director) never sees it.
-    if (t.salesRepOnly && !isSalesNonDirector(user)) return null;
+    if (t.salesRepOnly && !isSalesNonDirector(user)) return false;
     // Sales-access model SHOW bypass — Sales staff see `showForSales` entries
     // even without the usual permission / page-access gate (keyed off the org
     // department, NOT the config matrix). HIDE gates (above + hidePerm /
@@ -52,7 +66,7 @@ export function makeNavFilter({ user, can, pageAccess }: NavFilterCtx) {
       (!!t.showForSalesRep && isSalesNonDirector(user)) ||
       (!!t.salesRepOnly && isSalesNonDirector(user));
     if (!salesBypass) {
-      if (t.perm && !can(t.perm)) return null;
+      if (t.perm && !can(t.perm)) return false;
       // `anyPerm` + `anyAccess` are ORed: when both are present the tab shows
       // if EITHER a listed permission OR a listed page-access key passes. This
       // keeps the SCM nav ADDITIVE — `scm.access`/`*` still grant everything,
@@ -70,17 +84,26 @@ export function makeNavFilter({ user, can, pageAccess }: NavFilterCtx) {
         const accessOk = t.anyAccess
           ? t.anyAccess.some((k) => pageAccess(k) !== "none")
           : false;
-        if (!permOk && !accessOk) return null;
+        if (!permOk && !accessOk) return false;
       }
       // Page-access (mig 073) — `pageAccess` requires >= partial; the
       // -Full variant requires "full". Wildcard short-circuits to full
       // inside `pageAccess(...)`.
-      if (t.pageAccess && pageAccess(t.pageAccess) === "none") return null;
+      if (t.pageAccess && pageAccess(t.pageAccess) === "none") return false;
       if (t.pageAccessFull && pageAccess(t.pageAccessFull) !== "full")
-        return null;
+        return false;
     }
-    if (t.hidePerm && can(t.hidePerm)) return null;
-    if (t.requireFinanceViewer && !user?.project_finance_viewer) return null;
+    if (t.hidePerm && can(t.hidePerm)) return false;
+    if (t.requireFinanceViewer && !user?.project_finance_viewer) return false;
+    return true;
+  };
+}
+
+export function makeNavFilter(ctx: NavFilterCtx) {
+  const { user } = ctx;
+  const navVisible = makeNavVisible(ctx);
+  return function filterTab(t: NavTab): NavTab | null {
+    if (!navVisible(t)) return null;
     // Rep click-target override — a non-director Sales rep's group headers point
     // at a reachable leaf (Supply Chain -> /scm/sales-orders, Service Cases ->
     // /my-cases) instead of the /scm or board hub that would 403 them.

@@ -1,8 +1,8 @@
 import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../auth/AuthContext";
-import { isSalesStaff, isSalesDirectorUser, isSalesNonDirector } from "../auth/salesAccess";
 import { NAV_TABS, type NavTab } from "../components/Sidebar";
+import { makeNavVisible } from "../components/navFilter";
 import { NotifyProvider, useNotify } from "../vendor/scm/components/NotifyDialog";
 import { ConfirmProvider, useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { PromptProvider } from "../vendor/scm/components/PromptDialog";
@@ -201,7 +201,36 @@ function MobileAppInner() {
   const { user, can, pageAccess, logout } = useAuth();
   const notify = useNotify();
   const qc = useQueryClient();
-  const [tab, setTab] = useState<Tab>("orders");
+
+  // Single-source the mobile gating on the SHARED per-node predicate the desktop
+  // Sidebar + MobileTabBar filter with (components/navFilter.makeNavVisible), so
+  // the mobile shell can never drift back into a hand-copied subset that omitted
+  // pageAccessFull / hidePerm / requireFinanceViewer. `allowed(to)` answers "is
+  // the nav destination at this path visible for the user"; a route that isn't in
+  // NAV_TABS at all still shows (backend-gated, e.g. /activity-inbox).
+  const navVisible = makeNavVisible({ user, can, pageAccess });
+  const flatNav: NavTab[] = [];
+  const walkNav = (t: NavTab) => { flatNav.push(t); (t.children ?? []).forEach(walkNav); };
+  NAV_TABS.forEach(walkNav);
+  const allowed = (to: string): boolean => {
+    const path = to.split("?")[0];
+    const matches = flatNav.filter((t) => t.to != null && t.to.split("?")[0] === path);
+    return matches.length === 0 ? true : matches.some(navVisible);
+  };
+
+  // Bottom-tab access — a tab whose destination the user can't reach must NOT
+  // mount its screen (its screen fires ungated queries → 403). Mirror the exact
+  // capability the desktop nav uses: Orders = the /scm/sales-orders shortcut,
+  // Service = the /assr Service-Cases group (service_cases.read OR Sales staff
+  // via showForSales), Calendar = projects.calendar page access. Profile always.
+  const canOrders = allowed("/scm/sales-orders");
+  const canService = allowed("/assr");
+  const canCalendar = pageAccess("projects.calendar") !== "none";
+  // Land on the first tab the user can actually open (falls back to Profile) so
+  // no one starts on a locked screen.
+  const firstTab: Tab = canOrders ? "orders" : canService ? "service" : canCalendar ? "calendar" : "profile";
+
+  const [tab, setTab] = useState<Tab>(firstTab);
   const [menuOpen, setMenuOpen] = useState(false);
   const [screen, setScreen] = useState<Screen>({ t: "tab" });
   const back = () => setScreen({ t: "tab" });
@@ -263,40 +292,10 @@ function MobileAppInner() {
     });
   };
 
-  const visible = (t: NavTab): boolean => {
-    // Sales-access model — mirror the desktop Sidebar filterTab so mobile stays
-    // consistent (OFF, not hidden). HIDE first, then the Sales show-bypass.
-    if (t.hideForSales && isSalesStaff(user)) return false;
-    if (t.hideForSalesRep && isSalesNonDirector(user)) return false;
-    if (t.salesRepOnly && !isSalesNonDirector(user)) return false;
-    const salesBypass =
-      (!!t.showForSales && isSalesStaff(user)) ||
-      (!!t.showForSalesDirector && isSalesDirectorUser(user)) ||
-      (!!t.showForSalesRep && isSalesNonDirector(user)) ||
-      (!!t.salesRepOnly && isSalesNonDirector(user));
-    if (salesBypass) return true;
-    if (t.perm && !can(t.perm)) return false;
-    if (t.anyPerm || t.anyAccess) {
-      const navPerms = user?.scm_l2_configured && t.anyPerm ? t.anyPerm.filter((p) => p !== "scm.access") : t.anyPerm;
-      const permOk = navPerms ? navPerms.some((p) => can(p)) : false;
-      const accessOk = t.anyAccess ? t.anyAccess.some((k) => pageAccess(k) !== "none") : false;
-      if (!permOk && !accessOk) return false;
-    }
-    if (t.pageAccess && pageAccess(t.pageAccess) === "none") return false;
-    return true;
-  };
-
   // Build the grouped mobile Menu from MOBILE_MENU_GROUPS (design mirror), keeping
   // only items whose matching desktop nav tab is visible for this user's position
-  // (permission consistency). Items with no nav match still show (backend gates).
-  const flatNav: NavTab[] = [];
-  const walkNav = (t: NavTab) => { flatNav.push(t); (t.children ?? []).forEach(walkNav); };
-  NAV_TABS.forEach(walkNav);
-  const allowed = (to: string): boolean => {
-    const path = to.split("?")[0];
-    const matches = flatNav.filter((t) => t.to != null && t.to.split("?")[0] === path);
-    return matches.length === 0 ? true : matches.some(visible);
-  };
+  // (via the shared `allowed` above). Items with no nav match still show (backend
+  // gates).
   const menuGroups = MOBILE_MENU_GROUPS
     .map((g) => ({ group: g.group, items: g.items.filter((it) => it.alwaysShow || allowed(it.to)) }))
     .filter((g) => g.items.length > 0);
@@ -391,7 +390,12 @@ function MobileAppInner() {
             so switching to a not-yet-loaded tab shows a content skeleton without
             the nav flashing. */}
         <Suspense fallback={<MobileScreenFallback />}>
-          {tab === "orders" && (
+          {/* Each content tab mounts its screen ONLY when the user can reach the
+              destination (same makeNavVisible gate as the nav). A tab the user
+              can't access renders a locked placeholder instead of the real screen
+              — so its ungated queries (/api/scm/mfg-sales-orders, /api/assr,
+              /api/projects/calendar…) never fire a 403 (OFF, not hide). */}
+          {tab === "orders" && (canOrders ? (
             <MobileSalesOrders
               onScan={() => setScreen({ t: "scan" })}
               onOpen={(doc) => setScreen({ t: "so-detail", docNo: doc })}
@@ -400,9 +404,11 @@ function MobileAppInner() {
               // Service screen (parity with the desktop QuickActionsFAB two-choice).
               onNewCase={() => setScreen({ t: "service", startNew: true })}
             />
-          )}
-          {tab === "service" && <MobileServiceCase onBack={() => setTab("orders")} />}
-          {tab === "calendar" && (
+          ) : <TabLocked title="Sales Orders" />)}
+          {tab === "service" && (canService
+            ? <MobileServiceCase onBack={() => setTab(firstTab)} />
+            : <TabLocked title="Service Cases" />)}
+          {tab === "calendar" && (canCalendar ? (
             <MobileCalendar
               onOpenProject={(id) => setScreen({ t: "pms", projectId: id })}
               onOpenSearch={() => setScreen({ t: "search" })}
@@ -413,7 +419,7 @@ function MobileAppInner() {
               initialMonth={calJump?.month}
               focusProjectId={calJump?.projectId}
             />
-          )}
+          ) : <TabLocked title="Calendar" />)}
           {tab === "profile" && <MobileProfile onLogout={logout} orgItems={profileOrgItems} onOpenOrg={openRoute} />}
         </Suspense>
       </div>
@@ -483,6 +489,22 @@ function MobileAppInner() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/** Locked placeholder for a bottom tab the user can't access — the tab button
+ *  stays in the fixed bar (design), but its screen (and every query it fires)
+ *  never mounts. OFF, not hide: no fetch, no 403. */
+function TabLocked({ title }: { title: string }) {
+  return (
+    <div className="hz-m" style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", background: "var(--app-bg)" }}>
+      <header style={{ background: "#fff", borderBottom: "1px solid var(--line)", padding: "calc(env(safe-area-inset-top) + 16px) 16px 14px" }}>
+        <div style={{ fontSize: 19, fontWeight: 800, color: "var(--ink)" }}>{title}</div>
+      </header>
+      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "#9aa093", fontSize: 12.5, padding: 24, textAlign: "center" }}>
+        Your position doesn't have access to this section.
+      </div>
     </div>
   );
 }

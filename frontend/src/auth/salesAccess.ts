@@ -1,4 +1,4 @@
-import type { AuthUser } from "../types";
+import type { AuthUser, AccessLevel } from "../types";
 
 /**
  * Sales-access model — CODE-KEYED off STABLE ORG FIELDS (position_name /
@@ -81,4 +81,29 @@ const SALES_DIRECTOR_POSITION = /^Sales Director$/i;
 export function isSalesDirectorUser(user: AuthUser | null | undefined): boolean {
   if (!user) return false;
   return SALES_DIRECTOR_POSITION.test((user.position_name ?? "").trim());
+}
+
+/**
+ * Quick-action ("+" speed-dial) eligibility — the SINGLE source for whether a
+ * user can start a New Sales Order and/or a New Service Case. Both the desktop
+ * `QuickActionsFAB` and the mobile `MobileSalesOrders` FAB call this so the
+ * "New Service Case includes Sales staff" rule (owner 2026-07: a Sales user
+ * always gets the case option even without the service_cases matrix grant)
+ * lives in ONE place and can't drift between the two surfaces.
+ *
+ *   canNewSo   → SO route gate: `scm.access` OR a per-position scm.sales.orders grant.
+ *   canNewCase → service_cases.write / service_cases page access, OR any Sales staff.
+ */
+export function quickActionAccess(
+  user: AuthUser | null | undefined,
+  can: (perm: string) => boolean,
+  pageAccess: (page: string) => AccessLevel,
+): { canNewSo: boolean; canNewCase: boolean } {
+  return {
+    canNewSo: can("scm.access") || pageAccess("scm.sales.orders") !== "none",
+    canNewCase:
+      isSalesStaff(user) ||
+      can("service_cases.write") ||
+      pageAccess("service_cases") !== "none",
+  };
 }

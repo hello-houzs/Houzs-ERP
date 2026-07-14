@@ -185,6 +185,15 @@ export type DataGridProps<T> = {
    * columns still work. Pair with `groupBanner={false}`.
    */
   embedded?: boolean;
+  /**
+   * Suppress ONLY the grid's built-in client-side search box (keeps the status
+   * line, Columns popover, etc. — unlike `embedded`). Used by pages that drive
+   * search SERVER-SIDE from a page-level input (e.g. the paginated Suppliers
+   * list): the grid's client search would otherwise only filter the loaded
+   * page, silently hiding matches on other pages. Default false — existing
+   * callers keep their in-grid search box.
+   */
+  hideSearch?: boolean;
 };
 
 type Layout = {
@@ -294,6 +303,7 @@ function DataGridInner<T>({
   expandable,
   selectable,
   embedded = false,
+  hideSearch = false,
 }: DataGridProps<T>) {
   /* HOUZS-style inline expansion (PR so-list-houzs-port). Tracks the set of
      expanded row ids; rendering inserts a colSpan sub-<tr> directly under
@@ -1097,7 +1107,7 @@ function DataGridInner<T>({
       <div className={styles.toolbar}>
         {toolbar}
         <div className={styles.toolbarSpacer} />
-        {!embedded && (
+        {!embedded && !hideSearch && (
           <div className={styles.searchWrap}>
             <Search {...ICON} aria-hidden />
             <input

@@ -4,6 +4,10 @@ import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { MODULE_CONFIGS } from "./MobileModuleList";
+import { todayMyt } from "../vendor/scm/lib/dates";
+import { fmtCenti } from "../lib/scm";
+import { formatDate } from "../lib/utils";
+import { PAYMENT_METHOD_CODES, PAYMENT_METHOD_DEFAULT_LABELS } from "../vendor/scm/lib/payment-methods";
 import "./mobile.css";
 
 // ---------------------------------------------------------------------------
@@ -24,22 +28,16 @@ import "./mobile.css";
 //   mfg-purchase-orders  GET /mfg-purchase-orders/:id  → { purchaseOrder, items }
 // ---------------------------------------------------------------------------
 
-const rm = (centi: unknown) => {
+// Money is stored as integer *_centi — delegate display to the shared SCM
+// formatter (fmtCenti). Keep the local coercion/guard so a stray string or NaN
+// still renders "RM 0.00" rather than "RM NaN".
+const money = (centi: unknown) => {
   const n = Number(centi);
-  return (Number.isFinite(n) ? n / 100 : 0).toLocaleString("en-MY", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
+  return fmtCenti(Number.isFinite(n) ? n : 0);
 };
-const money = (centi: unknown) => `RM ${rm(centi)}`;
 
-/** DD MMM YYYY, or em-dash when absent / unparseable. */
-const dmy = (d: unknown) => {
-  if (d == null || d === "") return "—";
-  const dt = new Date(String(d));
-  if (isNaN(+dt)) return "—";
-  return dt.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
-};
+/** DD/MM/YYYY (TZ-aware via the shared helper), or em-dash when absent / unparseable. */
+const dmy = (d: unknown) => (d == null || d === "" ? "—" : formatDate(String(d)));
 
 /** Coerce anything to a safe display string; blanks / nullish → "". */
 const s = (v: unknown): string => {
@@ -175,8 +173,8 @@ function LineItem({ name, sub, qty, unitCenti, amountCenti }: {
 }
 
 // ── Header card (shared by every module) ────────────────────────────────────
-function DetailHeader({ eyebrow, title, subtitle, status, onBack, onEdit }: {
-  eyebrow: string; title: string; subtitle?: string; status?: unknown; onBack: () => void; onEdit?: () => void;
+function DetailHeader({ eyebrow, title, subtitle, status, onBack, onEdit, onPdf }: {
+  eyebrow: string; title: string; subtitle?: string; status?: unknown; onBack: () => void; onEdit?: () => void; onPdf?: () => void;
 }) {
   return (
     <header className="hdr">
@@ -186,6 +184,11 @@ function DetailHeader({ eyebrow, title, subtitle, status, onBack, onEdit }: {
         </span>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <StatusPill status={status} />
+          {onPdf && (
+            <button className="tinybtn" onClick={onPdf} style={{ background: "#f4f6f3", border: "1px solid var(--line2)", color: "var(--ink)" }}>
+              PDF
+            </button>
+          )}
           {onEdit && (
             <button className="tinybtn" onClick={onEdit} style={{ background: "#e1efed", border: "1px solid #16695f", color: "#0c3f39" }}>
               Edit
@@ -539,13 +542,14 @@ function statusActionsFor(moduleKey: string, id: string, header: any): DocAction
   }
 }
 
-/** Payment-method options per module's payment route enum. */
-const SI_METHODS: Array<{ value: string; label: string }> = [
-  { value: "cash", label: "Cash" },
-  { value: "transfer", label: "Bank Transfer" },
-  { value: "merchant", label: "Card / Merchant" },
-  { value: "installment", label: "Installment" },
-];
+// Payment-method options, single-sourced from the canonical payment-methods lib
+// (vendor/scm/lib/payment-methods.ts) so the picker reads identically to desktop
+// and never drifts. The option VALUE is the canonical CODE the payment endpoints
+// store + expect (desktop reads back method === 'cash' | 'transfer' | 'merchant';
+// SalesInvoiceDetail.tsx), and the LABEL is the canonical friendly label.
+const SI_METHODS: Array<{ value: string; label: string }> = PAYMENT_METHOD_CODES.map(
+  (code) => ({ value: code, label: PAYMENT_METHOD_DEFAULT_LABELS[code] }),
+);
 
 // Footer action buttons ride the design's `.btn` (teal solid) and re-skin per
 // variant, mirroring the SO-detail actbar (Edit / Cancel = white outline).
@@ -571,7 +575,7 @@ function PaymentSheet({ kind, id, header, onClose, onDone }: {
 
   const [amount, setAmount] = useState(() => (balance > 0 ? (balance / 100).toFixed(2) : ""));
   const [method, setMethod] = useState("cash");
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(() => todayMyt());
   const [ref, setRef] = useState("");
   const [error, setError] = useState<string | null>(null);
 
@@ -743,6 +747,7 @@ function DocActionFooter({ moduleKey, id, header, invalidate, onPOD, onDeleted }
 function DocumentDetail({ map, row, moduleKey, onBack, onEdit, onPOD }: { map: DocMap; row: any; moduleKey: string; onBack: () => void; onEdit?: () => void; onPOD?: () => void }) {
   const id = docId(row);
   const qc = useQueryClient();
+  const detailNotify = useNotify();
   const { data, isLoading, error } = useQuery({
     queryKey: ["mobile-module-detail", map.path, id],
     queryFn: () => authedFetch<Record<string, unknown>>(`${map.path}/${encodeURIComponent(id)}`),
@@ -759,6 +764,25 @@ function DocumentDetail({ map, row, moduleKey, onBack, onEdit, onPOD }: { map: D
 
   const cancelled = isCancelledDoc(map.status(header));
 
+  /* Download the DO / SI PDF — reuses the SAME desktop generators so phone output
+     is byte-identical. Only wired for the two doc types with a mobile-relevant PDF. */
+  const onPdf =
+    moduleKey === "delivery-orders-mfg"
+      ? async () => {
+          try {
+            const { generateDeliveryOrderPdf } = await import("../vendor/scm/lib/delivery-order-pdf");
+            await generateDeliveryOrderPdf(header as never, items as never);
+          } catch (e) { void detailNotify({ title: "Couldn't generate the PDF", body: e instanceof Error ? e.message : "Please try again." }); }
+        }
+      : moduleKey === "sales-invoices"
+        ? async () => {
+            try {
+              const { generateSalesInvoicePdf } = await import("../vendor/scm/lib/sales-invoice-pdf");
+              await generateSalesInvoicePdf(header as never, items as never);
+            } catch (e) { void detailNotify({ title: "Couldn't generate the PDF", body: e instanceof Error ? e.message : "Please try again." }); }
+          }
+        : undefined;
+
   // Whether a sticky footer will render — used to reserve scroll padding so it
   // never covers the last line item. A POD button (delivery orders) also counts.
   const hasStatusActions = !!id && (statusActionsFor(moduleKey, id, header).length > 0 || paymentKind(moduleKey, header) !== null);
@@ -774,6 +798,7 @@ function DocumentDetail({ map, row, moduleKey, onBack, onEdit, onPOD }: { map: D
         status={map.status(header)}
         onBack={onBack}
         onEdit={onEdit}
+        onPdf={onPdf}
       />
       <div className="scroll hz-scroll" style={hasFooter ? { ...scrollStyle, paddingBottom: onPOD && hasStatusActions ? 150 : 96 } : scrollStyle}>
         {!id && <div style={{ textAlign: "center", color: "#b23a3a", fontSize: 12, padding: "26px 0" }}>Couldn't identify this record.</div>}

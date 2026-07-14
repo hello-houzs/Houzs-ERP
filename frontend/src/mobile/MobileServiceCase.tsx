@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
+import { isSalesStaff } from "../auth/salesAccess";
 import { MobileVirtualList } from "./MobileVirtualList";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
@@ -294,7 +295,7 @@ function CaseList({
   onOpen: (id: number) => void;
   onNew: () => void;
 }) {
-  const { user } = useAuth();
+  const { user, can } = useAuth();
   const [q, setQ] = useState("");
   const [chip, setChip] = useState("all");
   const [sort, setSort] = useState<"sla" | "no">("sla");
@@ -308,6 +309,11 @@ function CaseList({
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
+  // Same capability the desktop Service-Cases nav uses: service_cases.read OR
+  // any Sales staff (showForSales). Gate the /api/assr read so it never fires a
+  // 403 for a user without access (OFF, not hide) — defence-in-depth on top of
+  // the shell's tab gating. Applied to the infinite query's `enabled` below.
+  const canViewCases = can("service_cases.read") || isSalesStaff(user);
 
   const isMine = (r: Any) => {
     const uid = user?.id;
@@ -367,6 +373,7 @@ function CaseList({
     },
     staleTime: 30_000,
     placeholderData: (prev) => prev,
+    enabled: canViewCases,
   });
   const all = useMemo(() => data?.pages.flatMap((p) => p.data ?? []) ?? [], [data]);
 

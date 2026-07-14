@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api/client";
+import { useAuth } from "../auth/AuthContext";
 import { getHolidaysOn } from "../lib/holidays";
 import { useBranding } from "../hooks/useBranding";
 import { HOUZS_COMPANY_CODE, shortCompanyName } from "../lib/branding";
@@ -142,6 +143,11 @@ export function MobileCalendar({
   // other active company derives from its short name: first word as the bold
   // mark, the remaining words + "· ERP" as the spaced eyebrow (so a 2990
   // session never shows the Houzs brand).
+  const { pageAccess } = useAuth();
+  // Same capability the desktop Projects → Calendar sub-tab uses. Gate every
+  // /api/projects/* read so none fires a 403 for a user without calendar access
+  // (OFF, not hide) — defence-in-depth on top of the shell's tab gating.
+  const canViewCalendar = pageAccess("projects.calendar") !== "none";
   const branding = useBranding();
   const isHouzsBrand = branding.companyCode === HOUZS_COMPANY_CODE;
   const brandWords = shortCompanyName(branding.companyName).split(/\s+/).filter(Boolean);
@@ -186,6 +192,7 @@ export function MobileCalendar({
         `/api/projects/calendar/events?from=${from}&to=${to}`
       ),
     staleTime: 30_000,
+    enabled: canViewCalendar,
   });
   const projects = data?.projects ?? [];
   const tasks = data?.tasks ?? [];
@@ -198,16 +205,19 @@ export function MobileCalendar({
     queryKey: ["mobile-calendar-brands"],
     queryFn: () => api.get<{ data: string[] }>("/api/projects/brands"),
     staleTime: 300_000,
+    enabled: canViewCalendar,
   });
   const { data: sectionsData } = useQuery({
     queryKey: ["mobile-calendar-sections"],
     queryFn: () => api.get<{ data: string[] }>("/api/projects/sections-distinct"),
     staleTime: 300_000,
+    enabled: canViewCalendar,
   });
   const { data: organizersData } = useQuery({
     queryKey: ["mobile-calendar-organizers"],
     queryFn: () => api.get<{ data: { id: number; name: string }[] }>("/api/projects/organizers"),
     staleTime: 300_000,
+    enabled: canViewCalendar,
   });
   const brandOptions = brandsData?.data ?? [];
   const sectionOptions = sectionsData?.data ?? [];
