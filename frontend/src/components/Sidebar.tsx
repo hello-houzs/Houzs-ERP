@@ -53,7 +53,7 @@ import {
 import { cn } from "../lib/utils";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useAuth } from "../auth/AuthContext";
-import { isSalesStaff, isSalesDirectorUser, isSalesNonDirector } from "../auth/salesAccess";
+import { makeNavFilter } from "./navFilter";
 import { CompanyMark } from "./CompanyMark";
 import { PresencePanel } from "./PresencePanel";
 import { GlobalSearchTrigger } from "./GlobalSearch";
@@ -622,72 +622,10 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
   }
 
   // Filter tabs the current user can't access, plus tabs explicitly
-  // suppressed by hidePerm (used to remove redundant entries when a
-  // richer replacement is available). Recursive — a group with no
-  // visible children is itself hidden.
-  function filterTab(t: NavTab): NavTab | null {
-    // Sales-access model HIDE gate — cut entirely for ALL Sales users
-    // (director included; checked first so it wins over any show-gate below).
-    // Non-sales staff pass through unchanged.
-    if (t.hideForSales && isSalesStaff(user)) return null;
-    // Rep HIDE gate — cut from a NON-director Sales rep only (SCM trim +
-    // Service-Cases board/metrics). Director/office pass through.
-    if (t.hideForSalesRep && isSalesNonDirector(user)) return null;
-    // Rep-only entry — visible ONLY to a non-director Sales rep; everyone else
-    // (office/director) never sees it.
-    if (t.salesRepOnly && !isSalesNonDirector(user)) return null;
-    // Sales-access model SHOW bypass — Sales staff see `showForSales` entries
-    // even without the usual permission / page-access gate (keyed off the org
-    // department, NOT the config matrix). HIDE gates (above + hidePerm /
-    // requireFinanceViewer below) still apply.
-    const salesBypass =
-      (!!t.showForSales && isSalesStaff(user)) ||
-      (!!t.showForSalesDirector && isSalesDirectorUser(user)) ||
-      (!!t.showForSalesRep && isSalesNonDirector(user)) ||
-      (!!t.salesRepOnly && isSalesNonDirector(user));
-    if (!salesBypass) {
-      if (t.perm && !can(t.perm)) return null;
-      // `anyPerm` + `anyAccess` are ORed: when both are present the tab shows
-      // if EITHER a listed permission OR a listed page-access key passes. This
-      // keeps the SCM nav ADDITIVE — `scm.access`/`*` still grant everything,
-      // and a per-position SCM page-access grant ALSO unlocks its area.
-      if (t.anyPerm || t.anyAccess) {
-        // For users with an explicit SCM L2 config, `scm.access` no longer
-        // auto-shows every SCM nav item — visibility falls to the granular
-        // page_access (anyAccess), mirroring the backend area-guard. `*` still
-        // shows everything; scm.access-only users (no L2) are unaffected.
-        const navPerms =
-          user?.scm_l2_configured && t.anyPerm
-            ? t.anyPerm.filter((p) => p !== "scm.access")
-            : t.anyPerm;
-        const permOk = navPerms ? navPerms.some((p) => can(p)) : false;
-        const accessOk = t.anyAccess
-          ? t.anyAccess.some((k) => pageAccess(k) !== "none")
-          : false;
-        if (!permOk && !accessOk) return null;
-      }
-      // Page-access (mig 073) — `pageAccess` requires ≥ partial; the
-      // -Full variant requires "full". Wildcard short-circuits to full
-      // inside `pageAccess(...)`.
-      if (t.pageAccess && pageAccess(t.pageAccess) === "none") return null;
-      if (t.pageAccessFull && pageAccess(t.pageAccessFull) !== "full") return null;
-    }
-    if (t.hidePerm && can(t.hidePerm)) return null;
-    if (t.requireFinanceViewer && !user?.project_finance_viewer) return null;
-    // Rep click-target override — a non-director Sales rep's group headers point
-    // at a reachable leaf (Supply Chain → /scm/sales-orders, Service Cases →
-    // /my-cases) instead of the /scm or board hub that would 403 them.
-    const to =
-      t.salesRepTo && isSalesNonDirector(user) ? t.salesRepTo : t.to;
-    if (t.children) {
-      const kids = t.children
-        .map(filterTab)
-        .filter((x): x is NavTab => x !== null);
-      if (kids.length === 0) return null;
-      return { ...t, to, children: kids };
-    }
-    return to === t.to ? t : { ...t, to };
-  }
+  // suppressed by hidePerm. Recursive — a group with no visible children is
+  // itself hidden. The full gate logic lives in ./navFilter so the mobile
+  // MenuModal (MobileTabBar) filters identically and can never drift.
+  const filterTab = makeNavFilter({ user, can, pageAccess });
 
   const visibleTabs = NAV_TABS.map(filterTab).filter(
     (t): t is NavTab => t !== null,

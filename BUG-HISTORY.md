@@ -8,6 +8,12 @@ Severity tags: 🔴 critical/high · 🟠 medium · 🟢 low.
 
 ## 2026-07-14 — Multi-company + performance campaign
 
+### 🟠 Mobile Menu listed nav items the user can't open (render-then-Forbidden)
+- **Symptom:** At tablet / narrow widths (`<lg`) and on non-HOUZS mobile, the bottom-bar centre "Menu" sheet listed destinations the user has no access to (Projects, System Health for everyone; Delivery Returns for Sales staff); tapping bounced them to the Forbidden page. The desktop Sidebar and the HOUZS-phone menu hid the same items correctly.
+- **Cause:** `MobileTabBar.MenuModal.filterTab` was a hand-copied SUBSET of `Sidebar.filterTab`: it checked only `perm` / `anyPerm` / `hidePerm` and ignored `pageAccess`, `pageAccessFull`, `requireFinanceViewer` and every sales gate (`hideForSales` / `showForSales` / rep gates). A comment claimed the two "stay in lockstep" — they had silently drifted. No data leaked (route guards still render `<Forbidden>` instead of the page), but a denied entry was shown then rejected — the "render-then-deny" that the "off, not hide" rule forbids at the nav layer.
+- **Fix:** Extract the full gate logic into a shared `frontend/src/components/navFilter.ts` (`makeNavFilter`); both `Sidebar` and `MobileTabBar` build their menu from it, so a third divergent copy cannot drift again. Mobile also gains the sales-rep `salesRepTo` reachable-click-target override for free. Verified `tsc -b` + `vite build` green.
+- **Ref:** `fix/mobile-nav-perm-parity`, 2026-07-14.
+
 ### 🟠 Company switch kept showing the previous company's list (cross-tenant stale)
 - **Symptom:** Switching company in the top-bar switcher (Houzs↔2990) left the products / SO lists showing the PREVIOUS company's data (Houzs 1326 rows still under 2990); a hard refresh fixed it. Time-good-time-bad (a race).
 - **Cause:** The active company is header-based (`X-Company-Id`, read fresh from localStorage per request — so the header AND the backend scoping were correct). But react-query keys don't include the company, so company A's and B's data share one cache entry. `invalidateQueries()` raced (keepPreviousData kept A's rows / an in-flight A response repopulated the shared entry); and a first fix attempt with `queryClient.clear()` was insufficient — clear() empties the cache but does NOT re-trigger a mounted observer to refetch. Proven on prod: a remount (nav away+back) switched correctly to 2990's "2990 AKKA-FIRM MATT", an in-place clear() did not.
