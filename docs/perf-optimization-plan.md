@@ -106,11 +106,12 @@ no `limit`**. Fixing the shared pieces cascades across many pages.
 
 ### 1C. Mobile code-splitting (the measured load-time long task)
 
-- [ ] **C1 (P0) — `mobile/MobileApp.tsx:11-28`** — statically imports ALL ~22 mobile
-  pages (incl. 2605-line NewSO, 2484-line ServiceCase, 2207-line DeliveryPlanning) →
-  one monolithic mobile chunk (~10k lines) downloads+parses before first mobile paint.
-  Desktop routes are already lazy; mobile is the gap. Wrap each screen in `React.lazy`
-  + `<Suspense>` keyed off the `Screen` switch. **This is the long task the trace caught.**
+- [x] **C1 (P0) — `mobile/MobileApp.tsx`** — DONE (PR #426, verified on prod). All
+  heavy screens → `React.lazy`; two Suspense boundaries (overlay + tab-content, so the
+  tab bar never flashes); MobileModuleList stays eager (MODULE_CONFIGS used sync).
+  Build: MobileApp chunk 64kB, big screens now on-demand. Verified: landing loads only
+  MobileApp+SalesOrders; tapping Service lazy-loads MobileServiceCase on demand, tab bar
+  stays mounted. This was the load-time long task the trace caught.
 
 ### 1D. O(n²) / per-render hotspots (cheap, targeted)
 
