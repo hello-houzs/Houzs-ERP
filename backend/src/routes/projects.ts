@@ -716,6 +716,7 @@ app.get("/", requirePageAccess("projects.list"), async (c) => {
     state: c.req.query("state") || undefined,
     event_type_id: eventTypeParam ? parseInt(eventTypeParam, 10) : undefined,
     section: c.req.query("section") || undefined,
+    status: c.req.query("status") || undefined,
     exclude_done: c.req.query("exclude_done") === "1",
     search: c.req.query("search"),
     year: yearParam ? parseInt(yearParam, 10) : undefined,

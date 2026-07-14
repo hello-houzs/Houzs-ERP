@@ -15,6 +15,7 @@ import { usePageAccess } from "../auth/PageGuard";
 import { formatCurrency, formatDate, formatDateTime, cn } from "../lib/utils";
 import { DataTable, type Column } from "../components/DataTable";
 import { EmptyState } from "../components/EmptyState";
+import { Pagination } from "../components/Pagination";
 
 const SALES_FILTER_KEYS = ["status", "search", "date_from", "date_to", "view"] as const;
 
@@ -184,6 +185,12 @@ export function Sales() {
   const [creating, setCreating] = useState(false);
   const [fieldsOpen, setFieldsOpen] = useState(false);
 
+  // Fixed page size, matching the /api/sales/entries server default. Page is a
+  // transient cursor kept in local state (not the URL — it's not a shareable
+  // filter) and resets to 1 whenever the active filters change.
+  const PER_PAGE = 50;
+  const [page, setPage] = useState(1);
+
   const qs = useMemo(() => {
     const p = new URLSearchParams();
     if (status) p.set("status", status);
@@ -197,9 +204,19 @@ export function Sales() {
     return p.toString();
   }, [status, search, dateFrom, dateTo, view]);
 
+  // qs is filter-only (page excluded) so a filter change lands here → page 1.
+  useEffect(() => {
+    setPage(1);
+  }, [qs]);
+
   const list = useQuery<ListResponse>(
-    () => api.get(`/api/sales/entries${qs ? `?${qs}` : ""}`),
-    [qs]
+    () => {
+      const p = new URLSearchParams(qs);
+      p.set("page", String(page));
+      p.set("per_page", String(PER_PAGE));
+      return api.get(`/api/sales/entries?${p.toString()}`);
+    },
+    [qs, page]
   );
   // Pending edit-approval queue (managers only). Drives the Approvals tab +
   // its badge; reps don't see this surface.
@@ -567,6 +584,14 @@ export function Sales() {
           error={list.error}
           getRowKey={(e) => e.id}
           exportName="sales"
+        />
+      )}
+      {list.data && (
+        <Pagination
+          page={page}
+          perPage={PER_PAGE}
+          total={list.data.total}
+          onPageChange={setPage}
         />
       )}
       </>
