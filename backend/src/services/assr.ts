@@ -1270,7 +1270,7 @@ export async function exportAssrCases(
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
   const rows = await env.DB.prepare(
     `SELECT c.assr_no, c.doc_no, c.stage, c.status, c.priority,
-            c.customer_name, c.customer_phone, c.location,
+            c.customer_name, c.phone AS customer_phone, c.location,
             c.service_category, c.ncr_category, c.resolution_method,
             c.item_code, c.complaint_issue,
             c.complained_date, c.created_at, c.deadline_at,
