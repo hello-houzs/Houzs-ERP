@@ -71,6 +71,69 @@ const SECTIONS_BY_ROLE: Record<PmsRole, PmsSection[]> = {
 // Directors / finance — the only roles that see money on the project.
 const DIRECTOR_POSITIONS = /^(Super Admin|Sales Director|Finance Manager)$/i;
 
+// The EXACT "Sales Director" position — the signal for the department-scoped
+// Team admin grant (owner 2026-07: a Sales Director manages ONLY his own
+// department's members/org-chart/departments + Sales mailboxes, WITHOUT full
+// users.manage). Keyed off the STABLE ORG FIELD position_name, matched
+// case-insensitively but ANCHORED (^…$) so ONLY "Sales Director" qualifies —
+// "Sales Executive"/"Sales Coordinator" do NOT. Deliberately narrower than
+// isDirectorUser (which also admits Super Admin / Finance Manager, both of whom
+// already hold full admin). This is the single source of truth the users /
+// departments / mail-center routes share for the scoped-admin admittance.
+const SALES_DIRECTOR_POSITION = /^Sales Director$/i;
+
+/**
+ * True ONLY for the "Sales Director" position (exact, case-insensitive).
+ * Drives the department-scoped Team-admin grant — do NOT confuse with
+ * isDirectorUser (broader: Super Admin / Sales Director / Finance Manager /
+ * `*`). A Sales Director is NOT a full admin; the routes ADD a
+ * department-scoped admittance for them on top of the existing users.manage /
+ * users.read gates and NEVER widen it to global.
+ */
+export function isSalesDirectorUser(user: AuthUser | null | undefined): boolean {
+  if (!user) return false;
+  return SALES_DIRECTOR_POSITION.test((user.position_name ?? "").trim());
+}
+
+// Sales staff — a position whose title starts with "sales" (Sales Executive,
+// Sales Coordinator, Salesperson, Sales-Executive, …) OR membership of the Sales
+// department. Prod names the department "Sales Department" while the seed is
+// "Sales", so match any dept name containing "sales" (same rule
+// salesTeam.syncSalesRepFromUser uses). Aligned with the FE salesAccess.ts
+// (/^sales/i) — the old /^Sales /i required a trailing space and so missed
+// "Salesperson" / "Sales-Executive", disagreeing with the frontend.
+const SALES_POSITION = /^sales/i;
+
+/**
+ * True when the user is Sales staff by STABLE ORG FIELDS — position_name
+ * "Sales …" OR their department name contains "sales". Deliberately keyed off
+ * org fields (not the configurable permission matrix) per the owner's
+ * code-keyed Sales access model. Note: "Sales Director" also matches here, but
+ * every caller resolves the DIRECTOR / view-all tier FIRST (isDirectorUser /
+ * canViewAllSales), which supersedes the scoped Sales tier — so a Sales Director
+ * is never held to the self+downline Sales scope.
+ */
+export function isSalesUser(user: AuthUser | null | undefined): boolean {
+  if (!user) return false;
+  const pos = (user.position_name ?? "").trim();
+  if (SALES_POSITION.test(pos)) return true;
+  const dept = (user.department_name ?? "").trim().toLowerCase();
+  return dept.includes("sales");
+}
+
+/**
+ * True for the DIRECTOR tier that sees ALL data — Owner / IT Admin (`*`
+ * wildcard) or a director/finance position (Super Admin, Sales Director,
+ * Finance Manager). Same definition getPmsRole() uses for its DIRECTOR role,
+ * exposed standalone so the SO / Service-Case scope gates can share one source
+ * of truth without constructing a ProjectLike.
+ */
+export function isDirectorUser(user: AuthUser | null | undefined): boolean {
+  if (!user) return false;
+  if (user.permissions_set?.has("*")) return true;
+  return DIRECTOR_POSITIONS.test((user.position_name ?? "").trim());
+}
+
 export interface ProjectLike {
   pic_id: number | null;
   created_by?: number | null;
@@ -123,6 +186,26 @@ export function getPmsAccess(user: AuthUser | null | undefined, project: Project
     canSensitive: sections.includes("WF_SENSITIVE"),
     sections,
   };
+}
+
+/**
+ * The project-checklist rows governed by WF_SENSITIVE — quotation /
+ * agreement. Identified by their template title (mig 066). A position
+ * whose PMS role lacks WF_SENSITIVE (getPmsAccess().canSensitive === false)
+ * must not receive these rows in the project-detail payload or the print
+ * debrief; they are stripped server-side, the same way finance / payment
+ * are (rule 5, owner 2026-07). Security Deposit is deliberately NOT
+ * included — the owner rule hides quotation & agreement only.
+ */
+export const SENSITIVE_CHECKLIST_TITLES: ReadonlySet<string> = new Set([
+  "Agreement / Quotation",
+]);
+
+/** True when a checklist row is one of the WF_SENSITIVE (quotation/agreement) items. */
+export function isSensitiveChecklistItem(
+  item: { title?: string | null } | null | undefined,
+): boolean {
+  return !!item && SENSITIVE_CHECKLIST_TITLES.has((item.title ?? "").trim());
 }
 
 /**

@@ -2,6 +2,7 @@ import { lazy, Suspense } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import { Layout } from "./components/Layout";
 import { useAuth } from "./auth/AuthContext";
+import { isSalesStaff } from "./auth/salesAccess";
 import { PageGuard } from "./auth/PageGuard";
 import { Forbidden } from "./pages/Forbidden";
 import { GlobalSearchProvider } from "./components/GlobalSearch";
@@ -11,7 +12,7 @@ import { AnnouncementBanner } from "./components/AnnouncementBanner";
 import { QuickActionsFAB } from "./components/QuickActionsFAB";
 import { BackToTopFAB } from "./components/BackToTopFAB";
 import { BreadcrumbsProvider } from "./hooks/useBreadcrumbs";
-import { PageSkeleton, ChunkReloadBoundary } from "./components/RouteFallback";
+import { PageSkeleton, RouteCrashBoundary } from "./components/RouteFallback";
 import { NewVersionBanner } from "./components/NewVersionBanner";
 import { IosInstallGuide } from "./components/IosInstallGuide";
 import { AndroidInstallGuide } from "./components/AndroidInstallGuide";
@@ -36,6 +37,7 @@ const Announcements = lazy(() => import("./pages/Announcements").then((m) => ({ 
 const Settings = lazy(() => import("./pages/Settings").then((m) => ({ default: m.Settings })));
 const Team = lazy(() => import("./pages/Team").then((m) => ({ default: m.Team })));
 const SystemHealth = lazy(() => import("./pages/SystemHealth").then((m) => ({ default: m.SystemHealth })));
+const Agents = lazy(() => import("./pages/Agents").then((m) => ({ default: m.Agents })));
 // Mail Center — in-ERP shared inbox (ported from Hookka). Inbox + thread detail;
 // Compose is a modal opened from the inbox (no standalone route).
 const MailInbox = lazy(() => import("./pages/MailCenter/Inbox").then((m) => ({ default: m.MailInbox })));
@@ -191,19 +193,45 @@ function Guard({
  * position granted the mapped SCM page-access area ALSO passes (additive).
  * `area` is one of the scm.<area> page keys. Thin wrapper over <Guard> so the
  * ~75 /scm/* routes stay a one-line change each.
+ *
+ * `allowSales` (owner rule 2026-07) — mirrors PageGuard's allowSales: a
+ * Sales-department user (auth/salesAccess.isSalesStaff) is let through even
+ * without the matrix page-access. ONLY set on the Sales-Orders-area routes
+ * (list + create + SO detail): the backend already scopes a rep's Sales Orders
+ * to own + downline (#400/#410), so this is safe and opens NO other SCM area.
  */
 function ScmGuard({
   area,
+  allowSales = false,
   children,
 }: {
   area: string;
+  allowSales?: boolean;
   children: React.ReactNode;
 }) {
+  const { user } = useAuth();
+  if (allowSales && isSalesStaff(user)) return <>{children}</>;
   return (
     <Guard perm="scm.access" anyAccess={[area]}>
       {children}
     </Guard>
   );
+}
+
+/**
+ * Delivery Returns route guard — Sales-access model. Denies BEFORE mount for
+ * ANY Sales-department user — INCLUDING the Sales Director (owner rule, 2026-07:
+ * Delivery Returns is hidden from all Sales staff, director too; every OTHER
+ * sales-restricted item stays director-visible) — so the page component never
+ * mounts and none of its data hooks fire (OFF, not hidden). Everyone else falls
+ * through to the normal scm.sales.returns area guard. Also wraps the
+ * delivery-return report route (the off-not-hide fix). Backend remains the
+ * source of truth; this is nav-consistent defence-in-depth for a typed URL.
+ */
+function DeliveryReturnsGuard({ children }: { children: React.ReactNode }) {
+  const { user } = useAuth();
+  if (isSalesStaff(user)) return <Forbidden page="scm.sales.returns" />;
+  return <ScmGuard area="scm.sales.returns">{children}</ScmGuard>;
 }
 
 export default function App() {
@@ -219,7 +247,7 @@ export default function App() {
       <IosInstallGuide />
       <AndroidInstallGuide />
       <Layout>
-        <ChunkReloadBoundary>
+        <RouteCrashBoundary>
         <Suspense fallback={<PageSkeleton />}>
         <Routes>
         {/* Landing → Overview workspace home (P1). */}
@@ -227,7 +255,7 @@ export default function App() {
         <Route
           path="/assr"
           element={
-            <PageGuard page="service_cases">
+            <PageGuard page="service_cases" allowSales>
               <ServiceCases />
             </PageGuard>
           }
@@ -251,7 +279,7 @@ export default function App() {
         <Route
           path="/my-cases"
           element={
-            <PageGuard page="service_cases">
+            <PageGuard page="service_cases" allowSales>
               <MyCases />
             </PageGuard>
           }
@@ -259,7 +287,7 @@ export default function App() {
         <Route
           path="/my-cases/:id"
           element={
-            <PageGuard page="service_cases">
+            <PageGuard page="service_cases" allowSales>
               <>
                 <MyCases />
                 <MyCaseDetail />
@@ -291,6 +319,10 @@ export default function App() {
             </PageGuard>
           }
         />
+        {/* Agent console — owner/IT only (wildcard). Runtime governance for the
+            agent fleet: pause/kill, autonomy gates, proposals + findings, the
+            learned-tuning approvals, and the per-agent teaching notebook. */}
+        <Route path="/agents" element={<Guard anyPerm={["*"]}><Agents /></Guard>} />
         <Route
           path="/system-health"
           element={
@@ -302,7 +334,7 @@ export default function App() {
         <Route
           path="/team"
           element={
-            <PageGuard page="team">
+            <PageGuard page="team" allowSalesDirector>
               <Team />
             </PageGuard>
           }
@@ -430,24 +462,26 @@ export default function App() {
         {/* Sales Orders READ side (vendored). The literal /maintenance route
             MUST precede /:docNo so 'maintenance' isn't caught as a doc number.
             2990 uses :docNo (not :id) for the SO detail. */}
-        <Route path="/scm/sales-orders" element={<ScmGuard area="scm.sales.orders"><Scm2990Shell><ScmSalesOrdersV2 /></Scm2990Shell></ScmGuard>} />
+        <Route path="/scm/sales-orders" element={<ScmGuard area="scm.sales.orders" allowSales><Scm2990Shell><ScmSalesOrdersV2 /></Scm2990Shell></ScmGuard>} />
         {/* SO amendment / revision queue (Phase 1-C). Gated on the amendment
             permission keys (any of create / supplier-confirm / approve-so /
             approve-po) — OR scm.access / Sales-Orders page access, so a full-
             access SCM user still reaches it. Belongs to the Sales-Order domain. */}
         <Route path="/scm/amendments" element={<Guard perm="scm.access" anyPerm={["scm.amendment.create", "scm.amendment.supplier_confirm", "scm.amendment.approve_so", "scm.amendment.approve_po"]} anyAccess={["scm.sales.orders"]}><Scm2990Shell><ScmAmendmentsV2 /></Scm2990Shell></Guard>} />
         <Route path="/scm/sales-orders/maintenance" element={<ScmGuard area="scm.sales.orders"><Scm2990Shell><ScmSalesOrderMaintenanceV2 /></Scm2990Shell></ScmGuard>} />
-        {/* Literal /new + /generate MUST precede /:docNo so they match first. */}
-        <Route path="/scm/sales-orders/new" element={<ScmGuard area="scm.sales.orders"><Scm2990Shell><ScmSalesOrderNewV2 /></Scm2990Shell></ScmGuard>} />
-        <Route path="/scm/sales-orders/new/guided" element={<ScmGuard area="scm.sales.orders"><Scm2990Shell><ScmSalesOrderNewGuidedV2 /></Scm2990Shell></ScmGuard>} />
-        <Route path="/scm/sales-orders/new/from-products" element={<ScmGuard area="scm.sales.orders"><Scm2990Shell><ScmSalesOrderNewFromProductsV2 /></Scm2990Shell></ScmGuard>} />
-        <Route path="/scm/sales-orders/generate" element={<ScmGuard area="scm.sales.orders"><Scm2990Shell><ScmSoFromProductsV2 /></Scm2990Shell></ScmGuard>} />
-        <Route path="/scm/sales-orders/:docNo" element={<ScmGuard area="scm.sales.orders"><Scm2990Shell><ScmSalesOrderDetailV2 /></Scm2990Shell></ScmGuard>} />
+        {/* Literal /new + /generate MUST precede /:docNo so they match first.
+            All Sales-Orders-area routes carry allowSales so a rep reaches their
+            own SO list / create / detail without the matrix page-access. */}
+        <Route path="/scm/sales-orders/new" element={<ScmGuard area="scm.sales.orders" allowSales><Scm2990Shell><ScmSalesOrderNewV2 /></Scm2990Shell></ScmGuard>} />
+        <Route path="/scm/sales-orders/new/guided" element={<ScmGuard area="scm.sales.orders" allowSales><Scm2990Shell><ScmSalesOrderNewGuidedV2 /></Scm2990Shell></ScmGuard>} />
+        <Route path="/scm/sales-orders/new/from-products" element={<ScmGuard area="scm.sales.orders" allowSales><Scm2990Shell><ScmSalesOrderNewFromProductsV2 /></Scm2990Shell></ScmGuard>} />
+        <Route path="/scm/sales-orders/generate" element={<ScmGuard area="scm.sales.orders" allowSales><Scm2990Shell><ScmSoFromProductsV2 /></Scm2990Shell></ScmGuard>} />
+        <Route path="/scm/sales-orders/:docNo" element={<ScmGuard area="scm.sales.orders" allowSales><Scm2990Shell><ScmSalesOrderDetailV2 /></Scm2990Shell></ScmGuard>} />
         {/* SCM Reports v2 — AutoCount-style detail listings. Each wrapped in <Scm2990Shell>. */}
         <Route path="/scm/reports/sales-order-detail-listing" element={<ScmGuard area="scm.sales.orders"><Scm2990Shell><ScmSoDetailListingV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/reports/delivery-order-detail-listing" element={<ScmGuard area="scm.sales.delivery"><Scm2990Shell><ScmDoDetailListingV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/reports/sales-invoice-detail-listing" element={<ScmGuard area="scm.sales.invoices"><Scm2990Shell><ScmSiDetailListingV2 /></Scm2990Shell></ScmGuard>} />
-        <Route path="/scm/reports/delivery-return-detail-listing" element={<ScmGuard area="scm.sales.returns"><Scm2990Shell><ScmDrDetailListingV2 /></Scm2990Shell></ScmGuard>} />
+        <Route path="/scm/reports/delivery-return-detail-listing" element={<DeliveryReturnsGuard><Scm2990Shell><ScmDrDetailListingV2 /></Scm2990Shell></DeliveryReturnsGuard>} />
         <Route path="/scm/delivery-orders" element={<ScmGuard area="scm.sales.delivery"><Scm2990Shell><ScmDeliveryOrdersV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/delivery-orders/new" element={<ScmGuard area="scm.sales.delivery"><Scm2990Shell><ScmDeliveryOrderNewV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/delivery-orders/from-so" element={<ScmGuard area="scm.sales.delivery"><Scm2990Shell><ScmDeliveryOrderFromSoV2 /></Scm2990Shell></ScmGuard>} />
@@ -456,10 +490,10 @@ export default function App() {
         <Route path="/scm/sales-invoices/new" element={<ScmGuard area="scm.sales.invoices"><Scm2990Shell><ScmSalesInvoiceNewV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/sales-invoices/from-do" element={<ScmGuard area="scm.sales.invoices"><Scm2990Shell><ScmSalesInvoiceFromDoV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/sales-invoices/:id" element={<ScmGuard area="scm.sales.invoices"><Scm2990Shell><ScmSalesInvoiceDetailV2 /></Scm2990Shell></ScmGuard>} />
-        <Route path="/scm/delivery-returns" element={<ScmGuard area="scm.sales.returns"><Scm2990Shell><ScmDeliveryReturnsV2 /></Scm2990Shell></ScmGuard>} />
-        <Route path="/scm/delivery-returns/new" element={<ScmGuard area="scm.sales.returns"><Scm2990Shell><ScmDeliveryReturnNewV2 /></Scm2990Shell></ScmGuard>} />
-        <Route path="/scm/delivery-returns/from-do" element={<ScmGuard area="scm.sales.returns"><Scm2990Shell><ScmDeliveryReturnFromDoV2 /></Scm2990Shell></ScmGuard>} />
-        <Route path="/scm/delivery-returns/:id" element={<ScmGuard area="scm.sales.returns"><Scm2990Shell><ScmDeliveryReturnDetailV2 /></Scm2990Shell></ScmGuard>} />
+        <Route path="/scm/delivery-returns" element={<DeliveryReturnsGuard><Scm2990Shell><ScmDeliveryReturnsV2 /></Scm2990Shell></DeliveryReturnsGuard>} />
+        <Route path="/scm/delivery-returns/new" element={<DeliveryReturnsGuard><Scm2990Shell><ScmDeliveryReturnNewV2 /></Scm2990Shell></DeliveryReturnsGuard>} />
+        <Route path="/scm/delivery-returns/from-do" element={<DeliveryReturnsGuard><Scm2990Shell><ScmDeliveryReturnFromDoV2 /></Scm2990Shell></DeliveryReturnsGuard>} />
+        <Route path="/scm/delivery-returns/:id" element={<DeliveryReturnsGuard><Scm2990Shell><ScmDeliveryReturnDetailV2 /></Scm2990Shell></DeliveryReturnsGuard>} />
         <Route path="/scm/consignment-orders" element={<ScmGuard area="scm.consignment.orders"><Scm2990Shell><ScmConsignmentOrdersV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/consignment-orders/new" element={<ScmGuard area="scm.consignment.orders"><Scm2990Shell><ScmConsignmentOrderNewV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/consignment-orders/:docNo" element={<ScmGuard area="scm.consignment.orders"><Scm2990Shell><ScmConsignmentOrderDetailV2 /></Scm2990Shell></ScmGuard>} />
@@ -509,7 +543,7 @@ export default function App() {
         <Route path="*" element={<Forbidden kind="not-found" />} />
         </Routes>
         </Suspense>
-        </ChunkReloadBoundary>
+        </RouteCrashBoundary>
       </Layout>
       </BreadcrumbsProvider>
       </NotificationsProvider>

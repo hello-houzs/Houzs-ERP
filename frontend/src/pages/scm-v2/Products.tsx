@@ -1432,6 +1432,10 @@ const CategoryChip = ({
    ════════════════════════════════════════════════════════════════════════ */
 
 const MODEL_PILLS_VISIBLE_LIMIT = 12;
+/* Perf cap — bound the searchable overflow dropdown's rendered rows so a large
+   model pool can't freeze the menu. Every model stays reachable: the search
+   input filters first, so any model surfaces within the cap. Render-only. */
+const MODEL_OVERFLOW_RENDER_CAP = 60;
 
 const ModelFilterRail = ({
   models,
@@ -1589,7 +1593,7 @@ const ModelFilterRail = ({
                     No models match “{search}”.
                   </p>
                 )}
-                {filteredOverflow.map((m) => (
+                {filteredOverflow.slice(0, MODEL_OVERFLOW_RENDER_CAP).map((m) => (
                   <button
                     key={m}
                     type="button"
@@ -1616,6 +1620,16 @@ const ModelFilterRail = ({
                     {m}
                   </button>
                 ))}
+                {filteredOverflow.length > MODEL_OVERFLOW_RENDER_CAP && (
+                  <p style={{
+                    fontSize: 'var(--fs-11)',
+                    color: 'var(--fg-muted)',
+                    padding: 'var(--space-2)',
+                    textAlign: 'center',
+                  }}>
+                    Showing first {MODEL_OVERFLOW_RENDER_CAP} of {filteredOverflow.length} — keep typing to narrow.
+                  </p>
+                )}
               </div>
             </div>
           )}

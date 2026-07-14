@@ -12,13 +12,22 @@
 // invalidateQueries (other tabs), and invalidation ignores staleTime and forces
 // an active refetch. Queries that must always be live (role/permission lists,
 // see pages/Team.tsx) already override with staleTime:0 + refetchOnMount:"always",
-// and /api/auth/* is never cached (see api/cache.ts NEVER_CACHE). gcTime keeps
-// the cached snapshot in memory for 5 min after a page unmounts so a quick
-// there-and-back is instant; refetchOnWindowFocus stays off as before. Callsites
-// that pass their own staleTime (the whole SCM + mobile layer) are unaffected —
-// an explicit option always wins over these defaults.
+// and /api/auth/* is never cached (see api/cache.ts NEVER_CACHE).
+//
+// gcTime keeps a page's cached data in memory after it unmounts so re-opening it
+// is instant (cache-while-revalidate: cached rows show immediately, a background
+// refetch replaces them if stale — NO loading spinner). Measured: a warm revisit
+// of the SCM SO/PO lists already refetches=false, skeleton=false. Bumped 5min →
+// 30min so that "instant re-open" window covers a whole work session, not just a
+// quick there-and-back — the SCM doc lists (SO/PO/DO/SI/GRN) were showing a
+// full-load spinner whenever a revisit fell outside the old 5-min window. It does
+// NOT survive a full page reload / PWA reopen (in-memory only); a localStorage
+// snapshot layer for cold-open instancy is the tracked follow-up. refetchOnWindow-
+// Focus stays off. Callsites with their own staleTime (SCM + mobile) are
+// unaffected — an explicit option always wins over these defaults.
 import { QueryClient, MutationCache } from "@tanstack/react-query";
 import { installCrossTabSync, broadcastDataChanged } from "./cross-tab-sync";
+import { installQueryPersist } from "./query-persist";
 
 export const queryClient = new QueryClient({
   // Cross-tab sync: every successful write tells other open tabs to refetch.
@@ -31,7 +40,7 @@ export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       staleTime: 30_000,
-      gcTime: 5 * 60_000,
+      gcTime: 30 * 60_000,
       refetchOnWindowFocus: false,
       retry: 1,
     },
@@ -40,3 +49,9 @@ export const queryClient = new QueryClient({
 
 // Listen for other tabs' writes and invalidate our active queries.
 installCrossTabSync(queryClient);
+
+// Persist the SCM document-list queries to localStorage so a COLD open (fresh
+// session / full reload / PWA reopen) renders the last-known list instantly and
+// revalidates in the background — no full-load spinner. Runs at module init so
+// the cache is seeded before the first render. See query-persist.ts.
+installQueryPersist(queryClient);

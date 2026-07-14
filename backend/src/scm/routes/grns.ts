@@ -14,8 +14,10 @@ import { recostFromGrn } from '../lib/recost';
 import { normalizeExchangeRate, toMyrSen, normalizeCurrency, masterRateForCurrency } from '../lib/fx';
 import { allocateLandedCharges, normalizeAllocationMethod } from '../lib/landed-allocation';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
-import { nextMonthlyDocNo } from '../lib/doc-no';
+import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { todayMyt } from '../lib/my-time';
+import { paginateAll } from '../lib/paginate-all';
+import { escapeForOr } from '../lib/postgrest-search';
 
 export const grns = new Hono<{ Bindings: Env; Variables: Variables }>();
 grns.use('*', supabaseAuth);
@@ -583,17 +585,107 @@ function computeGrnFlags(items: Array<{ qty_accepted?: number | null; invoiced_q
   return { has_children: hasChildren, fully_invoiced: fullyInvoiced, fully_returned: fullyReturned };
 }
 
+/* Filter-pill bucket → the raw grns.status values it covers. Single source of
+   truth for BOTH the status-count queries and the list `status` filter. All
+   three buckets are 1:1 today, but the FE sends the BUCKET NAME as `status`; a
+   raw DB status still works (backward-compatible fallback). */
+const GRN_STATUS_BUCKETS: Record<string, string[]> = {
+  draft: ['DRAFT'],
+  posted: ['POSTED'],
+  cancelled: ['CANCELLED'],
+};
+
 grns.get('/', async (c) => {
   const sb = c.get('supabase');
   // .limit(500) bounds the result so PostgREST's default 1000-row cap can't
   // silently truncate the GRN list — match the SO/DO/SI list convention.
   // warehouse embeds the receiving location's NAME (Owner 2026-07-02 — the GRN
   // list "Purchase Location" column); warehouse_id is already in HEADER.
-  let q = sb.from('grns').select(`${HEADER}, supplier:suppliers(id, code, name), purchase_order:purchase_orders(id, po_number), warehouse:warehouses!warehouse_id(id, code, name)`).order('received_at', { ascending: false }).limit(500);
-  const status = c.req.query('status'); if (status) q = q.eq('status', status);
-  const supplierId = c.req.query('supplierId'); if (supplierId) q = q.eq('supplier_id', supplierId);
-  q = scopeToCompany(q, c); // multi-company: isolate to the active company
-  const { data, error } = await q;
+  /* Opt-in server-side pagination + search + sort + status-counts (mirrors the
+     SO list in mfg-sales-orders.ts). The PRESENCE of `page` switches paging on;
+     when it is absent/empty the query below is BYTE-IDENTICAL to the historical
+     behavior (order received_at desc, limit 500, status + supplierId params,
+     `{ grns }` shape). */
+  const pageRaw = c.req.query('page');
+  const paginate = pageRaw !== undefined && pageRaw !== '';
+
+  let data: unknown = null;
+  let error: { message: string } | null = null;
+  let total = 0;
+  let page = 0;
+  let pageSize = 50;
+  let statusCounts: { all: number; draft: number; posted: number; cancelled: number } | undefined;
+
+  if (!paginate) {
+    /* --- LEGACY PATH (unchanged) --- */
+    let q = sb.from('grns').select(`${HEADER}, supplier:suppliers(id, code, name), purchase_order:purchase_orders(id, po_number), warehouse:warehouses!warehouse_id(id, code, name)`).order('received_at', { ascending: false }).limit(500);
+    const status = c.req.query('status'); if (status) q = q.eq('status', status);
+    const supplierId = c.req.query('supplierId'); if (supplierId) q = q.eq('supplier_id', supplierId);
+    q = scopeToCompany(q, c); // multi-company: isolate to the active company
+    const res = await q;
+    data = res.data;
+    error = res.error;
+  } else {
+    /* --- PAGINATED PATH (opt-in via `page`) --- */
+    page = Math.max(0, Math.trunc(Number(pageRaw)) || 0);
+    const psRaw = Number(c.req.query('pageSize'));
+    pageSize = Number.isFinite(psRaw) && psRaw > 0 ? Math.min(100, Math.max(1, Math.trunc(psRaw))) : 50;
+
+    const SORT_COLS = new Set(['received_at', 'grn_number', 'status', 'total_centi']);
+    const [rawCol, rawDir] = (c.req.query('sort') ?? 'received_at:desc').split(':');
+    const sortCol = SORT_COLS.has(rawCol) ? rawCol : 'received_at';
+    const sortAsc = rawDir === 'asc';
+
+    let q = sb.from('grns').select(`${HEADER}, supplier:suppliers(id, code, name), purchase_order:purchase_orders(id, po_number), warehouse:warehouses!warehouse_id(id, code, name)`, { count: 'exact' }).order(sortCol, { ascending: sortAsc });
+    /* unique tiebreaker so range paging can't skip/repeat rows sharing the sort key */
+    if (sortCol !== 'grn_number') q = q.order('grn_number', { ascending: sortAsc });
+    /* Resolve the incoming `status`: a known bucket key → all its raw statuses;
+       'all'/empty → no filter; otherwise treat it as a raw DB status. */
+    const status = c.req.query('status');
+    if (status && status !== 'all') {
+      if (GRN_STATUS_BUCKETS[status]) q = q.in('status', GRN_STATUS_BUCKETS[status]);
+      else q = q.eq('status', status);
+    }
+    const supplierId = c.req.query('supplierId'); if (supplierId) q = q.eq('supplier_id', supplierId);
+    q = scopeToCompany(q, c); // multi-company: isolate to the active company
+    /* free-text search over the base-table text columns the FE searches
+       (GoodsReceivedListV2 hay). Supplier name / PO number are embedded resources,
+       not base grns columns, so they can't be ilike'd here. */
+    const search = c.req.query('q');
+    if (search) {
+      const s = escapeForOr(search);
+      if (s) q = q.or(`grn_number.ilike.%${s}%,delivery_note_ref.ilike.%${s}%,notes.ilike.%${s}%`);
+    }
+    const from = c.req.query('from'); if (from) q = q.gte('received_at', from);
+    const to = c.req.query('to'); if (to) q = q.lte('received_at', to);
+    q = q.range(page * pageSize, page * pageSize + pageSize - 1);
+    const res = await q;
+    data = res.data;
+    error = res.error;
+    total = res.count ?? (res.data?.length ?? 0);
+
+    /* Status counts mirror the FE filter-pill buckets (draft / posted /
+       cancelled) over the SAME company + supplier filters but WITHOUT status /
+       search / pagination. */
+    const countBase = () => {
+      let cq = sb.from('grns').select('*', { count: 'exact', head: true });
+      cq = scopeToCompany(cq, c);
+      if (supplierId) cq = cq.eq('supplier_id', supplierId);
+      return cq;
+    };
+    const [allC, draftC, postedC, cancelledC] = await Promise.all([
+      countBase(),
+      countBase().in('status', GRN_STATUS_BUCKETS.draft),
+      countBase().in('status', GRN_STATUS_BUCKETS.posted),
+      countBase().in('status', GRN_STATUS_BUCKETS.cancelled),
+    ]);
+    statusCounts = {
+      all: allC.count ?? 0,
+      draft: draftC.count ?? 0,
+      posted: postedC.count ?? 0,
+      cancelled: cancelledC.count ?? 0,
+    };
+  }
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
 
   // Commander 2026-05-29 — the GRN list grid needs a money column (AutoCount's
@@ -612,10 +704,12 @@ grns.get('/', async (c) => {
   // the per-line downstream (PI/PR) can be rolled up to a per-GRN doc-number set.
   const grnByItem = new Map<string, string>();
   if (ids.length > 0) {
-    const { data: lineRows, error: lineErr } = await sb
+    const { data: lineRows, error: lineErr } = await paginateAll<{ id: string; grn_id: string; qty_accepted: number | null; invoiced_qty: number | null; returned_qty: number | null }>((from, to) => sb
       .from('grn_items')
       .select('id, grn_id, qty_accepted, invoiced_qty, returned_qty')
-      .in('grn_id', ids);
+      .in('grn_id', ids)
+      .order('id')
+      .range(from, to));
     if (lineErr) return c.json({ error: 'load_failed', reason: lineErr.message }, 500);
     for (const li of (lineRows ?? []) as Array<{ id: string; grn_id: string; qty_accepted: number | null; invoiced_qty: number | null; returned_qty: number | null }>) {
       const arr = linesByGrn.get(li.grn_id) ?? [];
@@ -649,6 +743,7 @@ grns.get('/', async (c) => {
     downstream: [...(downstreamByGrn.get(g.id)?.values() ?? [])],
     ...computeGrnFlags(linesByGrn.get(g.id) ?? []),
   }));
+  if (paginate) return c.json({ grns, total, page, pageSize, statusCounts });
   return c.json({ grns });
 });
 
@@ -986,7 +1081,7 @@ grns.post('/', async (c) => {
     }
   }
 
-  const grnNumber = await nextNumber(sb, 'GRN', 'grns', 'grn_number', c);
+  let grnNumber = await nextNumber(sb, 'GRN', 'grns', 'grn_number', c);
 
   /* PR-DRAFT-removal — Commander 2026-05-27: GRN is created as POSTED
      directly. Commander already enters Received/Accepted/Rejected per line
@@ -1003,9 +1098,20 @@ grns.post('/', async (c) => {
   /* Migration 0082 — GRN currency + rate inherit from the source PO (MYR default);
      allocation_method for landed-freight "平摊" (default QTY). MYR ⇒ rate 1, no-op. */
   const grnFx = await resolveGrnFx(sb, (body.purchaseOrderId as string | undefined) ?? null, body.currency, body.exchangeRate);
-  const { data: header, error: hErr } = await sb.from('grns').insert({
+  /* Doc-no collision retry (2026-07-14): two warehouse staff posting a GRN in
+     the same company + YYMM both mint the same grn_number; without a retry the
+     loser hits the UNIQUE grn_number (23505) and the receipt 500s. Lines key off
+     the returned header.id, so a re-mint needs no child re-stamp. */
+  let firstMint = true;
+  const { data: header, error: hErr } = await insertWithDocNoRetry(
+    async () => {
+      if (firstMint) { firstMint = false; return grnNumber; }
+      grnNumber = await nextNumber(sb, 'GRN', 'grns', 'grn_number', c);
+      return grnNumber;
+    },
+    (dn) => sb.from('grns').insert({
     company_id: activeCompanyId(c), // multi-company: stamp the active company
-    grn_number: grnNumber,
+    grn_number: dn,
     purchase_order_id: (body.purchaseOrderId as string | undefined) ?? null,
     supplier_id: body.supplierId,
     warehouse_id: headerWarehouseId,
@@ -1020,7 +1126,8 @@ grns.post('/', async (c) => {
     status: asDraft ? 'DRAFT' : 'POSTED',
     posted_at: asDraft ? null : new Date().toISOString(),
     created_by: user.id,
-  }).select(HEADER).single();
+    }).select(HEADER).single(),
+  );
   if (hErr) return c.json({ error: 'insert_failed', reason: hErr.message }, 500);
   const h = header as unknown as { id: string; grn_number: string };
 
@@ -1146,16 +1253,28 @@ grns.post('/from-pos', async (c) => {
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
   const cp = companyDocPrefix(c);
   const { data: existingGrnNos } = await sb.from('grns').select('grn_number').like('grn_number', `${cp}GRN-${yymm}-%`);
-  const grnNumber = nextMonthlyDocNo(`${cp}GRN-${yymm}`, ((existingGrnNos ?? []) as Array<{ grn_number: string }>).map((r) => r.grn_number));
+  let grnNumber = nextMonthlyDocNo(`${cp}GRN-${yymm}`, ((existingGrnNos ?? []) as Array<{ grn_number: string }>).map((r) => r.grn_number));
 
   const poNumbersJoined = poList.map((p) => p.po_number).join(', ');
   /* Migration 0082 — GRN currency = the source POs' currency (same supplier ⇒
      assume one currency; take the primary PO's). Rate auto-fills from the master;
      allocation_method defaults QTY. MYR ⇒ rate 1, no-op. */
   const batchFx = await resolveGrnFx(sb, poList[0]!.id, poList[0]!.currency ?? undefined, undefined);
-  const { data: header, error: hErr } = await sb.from('grns').insert({
+  /* Doc-no collision retry (2026-07-14): a concurrent GRN create in the same
+     company + YYMM can mint the same grn_number; without a retry the loser hits
+     the UNIQUE grn_number (23505) and the batch-convert 500s. Lines key off the
+     returned header.id, so a re-mint needs no child re-stamp. */
+  let firstMint = true;
+  const { data: header, error: hErr } = await insertWithDocNoRetry(
+    async () => {
+      if (firstMint) { firstMint = false; return grnNumber; }
+      const { data: live } = await sb.from('grns').select('grn_number').like('grn_number', `${cp}GRN-${yymm}-%`);
+      grnNumber = nextMonthlyDocNo(`${cp}GRN-${yymm}`, ((live ?? []) as Array<{ grn_number: string }>).map((r) => r.grn_number));
+      return grnNumber;
+    },
+    (dn) => sb.from('grns').insert({
     company_id: activeCompanyId(c), // multi-company: stamp the active company
-    grn_number: grnNumber,
+    grn_number: dn,
     purchase_order_id: poList[0]!.id,                    // primary PO ref (first one)
     supplier_id: supplierId,
     received_at: todayMyt(),
@@ -1168,7 +1287,8 @@ grns.post('/from-pos', async (c) => {
     status: 'POSTED',
     posted_at: new Date().toISOString(),
     created_by: user.id,
-  }).select('id, grn_number').single();
+    }).select('id, grn_number').single(),
+  );
   if (hErr) return c.json({ error: 'insert_failed', reason: hErr.message }, 500);
   const h = header as unknown as { id: string; grn_number: string };
 

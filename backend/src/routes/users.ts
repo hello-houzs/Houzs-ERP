@@ -3,7 +3,13 @@ import type { Env } from "../types";
 import { createSession, generateToken, hashPassword, isoIn } from "../services/auth";
 import { bustUserSessions } from "../services/sessionCache";
 import { validatePasswordStrength } from "../services/passwordStrength";
-import { requirePermission } from "../middleware/auth";
+import {
+  requirePermission,
+  requirePermissionOrSalesDirector,
+} from "../middleware/auth";
+import { isSalesDirectorUser } from "../services/pmsAccess";
+import { hasPermission } from "../services/permissions";
+import type { Context } from "hono";
 import {
   sendEmail,
   publicUrl,
@@ -122,6 +128,64 @@ async function ensurePersonalMailbox(
 
 const app = new Hono<{ Bindings: Env }>();
 
+/**
+ * Department-scoped Team admin decision for the current caller (owner 2026-07,
+ * "Sales Director = department-scoped admin"). ADDITIVE on top of the existing
+ * users.read / users.manage gates — it NEVER loosens what an admin already has:
+ *
+ *   • caller holds `*` or `adminPerm`  → { scoped: false } — full admin, UNCHANGED.
+ *   • caller is a Sales Director (only) → { scoped: true, deptId: <their dept> }.
+ *   • deptId === null (Sales Director with no department assigned) → they see
+ *     ONLY themselves, never the whole org (fail-closed).
+ *
+ * A caller who is neither can't reach the handler — the route middleware
+ * (requirePermissionOrSalesDirector) already 403'd them.
+ */
+function salesDirectorScope(
+  c: Context<{ Bindings: Env }>,
+  adminPerm: string,
+): { scoped: boolean; deptId: number | null } {
+  const user = c.get("user");
+  const granted = user?.permissions_set ?? user?.permissions ?? [];
+  if (hasPermission(granted, "*") || hasPermission(granted, adminPerm)) {
+    return { scoped: false, deptId: null };
+  }
+  if (isSalesDirectorUser(user)) {
+    return { scoped: true, deptId: user?.department_id ?? null };
+  }
+  // Defensive: should be unreachable behind requirePermissionOrSalesDirector.
+  return { scoped: false, deptId: null };
+}
+
+/**
+ * Baseline role for a department-scoped (Sales Director) invite, whose UI hides
+ * the Role picker. Mirrors the frontend InvitePanel default: prefer the neutral
+ * "Position Preview" role (zero action-permissions — page visibility follows
+ * the Position), then any zero-permission non-system role, then any non-system
+ * role, then anything. Returns null only when the roles table is empty.
+ */
+async function resolveDefaultRoleId(
+  db: ReturnType<typeof getDb>,
+): Promise<number | null> {
+  const all = await db
+    .select({ id: roles.id, name: roles.name, is_system: roles.is_system, permissions: roles.permissions })
+    .from(roles)
+    .orderBy(roles.id);
+  if (all.length === 0) return null;
+  const permCount = (p: string | null): number => {
+    try {
+      const arr = JSON.parse(p ?? "[]");
+      return Array.isArray(arr) ? arr.length : 0;
+    } catch {
+      return 0;
+    }
+  };
+  const preview = all.find((r) => (r.name ?? "").trim().toLowerCase() === "position preview");
+  const zeroPerm = all.find((r) => !r.is_system && permCount(r.permissions) === 0);
+  const nonSystem = all.find((r) => !r.is_system);
+  return (preview ?? zeroPerm ?? nonSystem ?? all[0]).id;
+}
+
 const INVITE_TTL_SECONDS = 60 * 60 * 24 * 14; // 14 days
 const RESET_TTL_SECONDS = 60 * 60; // 1 hour — password reset should expire fast
 
@@ -138,7 +202,7 @@ const RESET_TTL_SECONDS = 60 * 60; // 1 hour — password reset should expire fa
  * regardless of brand (owner: Option A). Prod's dept is "Sales Department",
  * so the match is a substring (ILIKE %name%), not equality.
  */
-app.get("/", requirePermission("users.read"), async (c) => {
+app.get("/", requirePermissionOrSalesDirector("users.read"), async (c) => {
   const brand = (c.req.query("brand") || "").trim();
   const department = (c.req.query("department") || "").trim();
   const db = getDb(c.env);
@@ -146,6 +210,23 @@ app.get("/", requirePermission("users.read"), async (c) => {
   const inviter = alias(users, "ib");
 
   const conds: any[] = [];
+  // Sales Director → own-department scope only. A caller admitted purely as a
+  // Sales Director sees ONLY members whose primary department is theirs OR who
+  // are members of it (mig 0020 user_departments). No dept assigned → self only.
+  const scope = salesDirectorScope(c, "users.read");
+  if (scope.scoped) {
+    const me = c.get("user");
+    if (scope.deptId != null) {
+      conds.push(
+        sql`(${users.department_id} = ${scope.deptId}
+             OR EXISTS (SELECT 1 FROM ${user_departments} ud
+                         WHERE ud.user_id = ${users.id}
+                           AND ud.department_id = ${scope.deptId}))`,
+      );
+    } else {
+      conds.push(sql`${users.id} = ${me.id}`);
+    }
+  }
   if (brand) {
     // EXISTS-on-user_brands narrows the list without exploding rows
     // through a JOIN.
@@ -209,6 +290,14 @@ app.get("/", requirePermission("users.read"), async (c) => {
           FROM ${user_departments} ud
          WHERE ud.user_id = ${users.id}
       )`,
+      // Per-user company grants (Phase 0e — user_companies). Drives the Team
+      // "Company" column + the edit/invite Company selector. Empty array = no
+      // grant row → the user fail-opens to ALL companies (companyContext).
+      company_ids_arr: sql<number[] | null>`(
+        SELECT array_agg(uc.company_id)
+          FROM user_companies uc
+         WHERE uc.user_id = ${users.id}
+      )`,
     })
     .from(users)
     .innerJoin(roles, eq(roles.id, users.role_id))
@@ -228,6 +317,12 @@ app.get("/", requirePermission("users.read"), async (c) => {
       .sort((a, b) => a - b);
     const department_ids =
       r.department_id != null ? [r.department_id, ...extra] : extra;
+    // Company grants — normalise to a sorted number[] for the Company column.
+    const companyArr = Array.isArray(r.company_ids_arr) ? r.company_ids_arr : [];
+    const company_ids = companyArr
+      .map((x) => Number(x))
+      .filter((n) => Number.isFinite(n))
+      .sort((a, b) => a - b);
     return {
       ...r,
       brands: r.brands_concat
@@ -236,6 +331,8 @@ app.get("/", requirePermission("users.read"), async (c) => {
       brands_concat: undefined,
       department_ids,
       department_ids_arr: undefined,
+      company_ids,
+      company_ids_arr: undefined,
     };
   });
   return c.json({ users: out });
@@ -330,34 +427,28 @@ app.get("/:id/companies", requirePermission("users.read"), async (c) => {
 });
 
 /**
- * PUT /api/users/:id/companies
- * Body: { companies: number[] }  replace-set semantics, validated against the
- * companies master (silent-drop unknowns). Mirrors PUT /:id/brands.
- * NO-OP-SAFE: if `user_companies` (or `companies`) is absent (pre-0f) we return
- * 200 with an empty list rather than 500 — the feature simply isn't active yet.
+ * SET a user's company grants (replace-set semantics). Validates the requested
+ * ids against the canonical companies master (silent-drop unknowns), then
+ * DELETE-then-INSERT `user_companies` in one batch. Returns the persisted set.
+ *
+ * NO-OP-SAFE: if `user_companies` / `companies` is absent (pre-0f) the query
+ * throws and we swallow it, returning [] — the feature simply isn't active yet.
+ *
+ * Shared by PUT /:id/companies, POST /invite and PATCH /:id so the three write
+ * paths never drift (see MEMORY: single logic layer / converge drifted copies).
  */
-app.put("/:id/companies", requirePermission("users.manage"), async (c) => {
-  const id = parseInt(c.req.param("id"), 10);
-  if (!id) return c.json({ error: "Invalid ID." }, 400);
-
-  const body = await c.req.json<{ companies?: unknown }>();
-  const incoming = Array.isArray(body.companies) ? body.companies : [];
+async function setUserCompanies(
+  c: Context<{ Bindings: Env }>,
+  userId: number,
+  companyIds: number[],
+): Promise<number[]> {
   const requested = Array.from(
     new Set(
-      incoming
+      companyIds
         .map((x) => Number(x))
         .filter((n) => Number.isFinite(n) && n > 0),
     ),
   );
-
-  const db = getDb(c.env);
-  const target = await db
-    .select({ id: users.id })
-    .from(users)
-    .where(eq(users.id, id))
-    .limit(1);
-  if (target.length === 0) return c.json({ error: "User not found" }, 404);
-
   try {
     // Validate against the canonical companies master (silent-drop unknowns).
     let valid = requested;
@@ -370,21 +461,48 @@ app.put("/:id/companies", requirePermission("users.manage"), async (c) => {
     }
 
     await c.env.DB.batch([
-      c.env.DB.prepare(`DELETE FROM user_companies WHERE user_id = ?`).bind(id),
+      c.env.DB
+        .prepare(`DELETE FROM user_companies WHERE user_id = ?`)
+        .bind(userId),
       ...valid.map((cid) =>
         c.env.DB
           .prepare(
             `INSERT INTO user_companies (user_id, company_id) VALUES (?, ?)`,
           )
-          .bind(id, cid),
+          .bind(userId, cid),
       ),
     ]);
-
-    return c.json({ ok: true, companies: valid });
+    return valid;
   } catch {
     // user_companies / companies not present yet (pre-0f) — no-op gracefully.
-    return c.json({ ok: true, companies: [] });
+    return [];
   }
+}
+
+/**
+ * PUT /api/users/:id/companies
+ * Body: { companies: number[] }  replace-set semantics, validated against the
+ * companies master (silent-drop unknowns). Mirrors PUT /:id/brands.
+ * NO-OP-SAFE: if `user_companies` (or `companies`) is absent (pre-0f) we return
+ * 200 with an empty list rather than 500 — the feature simply isn't active yet.
+ */
+app.put("/:id/companies", requirePermission("users.manage"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
+
+  const body = await c.req.json<{ companies?: unknown }>();
+  const incoming = Array.isArray(body.companies) ? body.companies : [];
+
+  const db = getDb(c.env);
+  const target = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.id, id))
+    .limit(1);
+  if (target.length === 0) return c.json({ error: "User not found" }, 404);
+
+  const valid = await setUserCompanies(c, id, incoming as number[]);
+  return c.json({ ok: true, companies: valid });
 });
 
 /**
@@ -530,7 +648,7 @@ app.put("/:id/profile-pic", requirePermission("users.manage"), async (c) => {
  * Creates a placeholder user (status='invited') and a fresh invitation
  * token. Returns the token so the caller can copy it into a chat / email.
  */
-app.post("/invite", requirePermission("users.manage"), async (c) => {
+app.post("/invite", requirePermissionOrSalesDirector("users.manage"), async (c) => {
   const me = c.get("user");
   const body = await c.req.json<{
     email: string;
@@ -540,11 +658,57 @@ app.post("/invite", requirePermission("users.manage"), async (c) => {
     position_id?: number | null;
     manager_id?: number | null;
     phone?: string | null;
+    // Per-company grants for the new member (Phase 0e). Omitted / empty →
+    // defaults to [1] (Houzs) so a new user is NEVER left with zero grants
+    // (zero rows would fail-open to ALL companies). Full-admin only; a
+    // Sales-Director-scoped invite ignores this and is forced to Houzs.
+    company_ids?: number[];
     // When provided, the admin is setting an initial password and the account
     // is created ACTIVE — no invite link / accept step. The member signs in
     // with email + this password and can change it later.
     password?: string;
   }>();
+
+  const db = getDb(c.env);
+
+  // Sales Director → department-scoped invite. The new member is FORCED into
+  // the director's own department; a position from another department is
+  // rejected; and — since the scoped invite UI hides the Role picker — a
+  // baseline role is defaulted server-side when none is supplied. A Sales
+  // Director with no department cannot invite (fail-closed).
+  const inviteScope = salesDirectorScope(c, "users.manage");
+  if (inviteScope.scoped) {
+    if (inviteScope.deptId == null) {
+      return c.json(
+        { error: "You have no department assigned — ask an admin to set yours before inviting." },
+        403,
+      );
+    }
+    // Force the member's department; ignore any client-supplied value.
+    body.department_id = inviteScope.deptId;
+    // A position must belong to the director's own department.
+    if (body.position_id) {
+      const pos = await db
+        .select({ id: positions.id, department_id: positions.department_id })
+        .from(positions)
+        .where(eq(positions.id, body.position_id))
+        .limit(1);
+      if (pos.length === 0) return c.json({ error: "Position not found" }, 404);
+      if (pos[0].department_id && pos[0].department_id !== inviteScope.deptId) {
+        return c.json(
+          { error: "You can only assign positions within your own department." },
+          403,
+        );
+      }
+    }
+    // Default the role when the scoped UI didn't send one.
+    if (!body.role_id) {
+      const def = await resolveDefaultRoleId(db);
+      if (def == null) return c.json({ error: "No role available to assign" }, 500);
+      body.role_id = def;
+    }
+  }
+
   if (!body.email || !body.role_id) {
     return c.json({ error: "email and role_id are required" }, 400);
   }
@@ -560,8 +724,6 @@ app.post("/invite", requirePermission("users.manage"), async (c) => {
     passwordHash = await hashPassword(directPassword);
   }
   const activate = !!passwordHash;
-
-  const db = getDb(c.env);
 
   const role = await db
     .select({ id: roles.id, name: roles.name })
@@ -604,26 +766,31 @@ app.post("/invite", requirePermission("users.manage"), async (c) => {
   // Create or refresh the placeholder user. Name is preset here ("the
   // Position concept") so the invitee lands with their identity already
   // set; they can still adjust it when accepting.
+  let userId: number | null = existing.length > 0 ? existing[0].id : null;
   if (existing.length === 0) {
-    await db.insert(users).values({
-      email,
-      name,
-      role_id: body.role_id,
-      department_id: departmentId,
-      position_id: positionId,
-      manager_id: managerId,
-      phone: body.phone?.trim() || null,
-      status: activate ? "active" : "invited",
-      invited_by: me.id || null,
-      ...(activate
-        ? {
-            password_hash: passwordHash,
-            joined_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` as unknown as string,
-          }
-        : {
-            invited_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` as unknown as string,
-          }),
-    });
+    const insertedUser = await db
+      .insert(users)
+      .values({
+        email,
+        name,
+        role_id: body.role_id,
+        department_id: departmentId,
+        position_id: positionId,
+        manager_id: managerId,
+        phone: body.phone?.trim() || null,
+        status: activate ? "active" : "invited",
+        invited_by: me.id || null,
+        ...(activate
+          ? {
+              password_hash: passwordHash,
+              joined_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` as unknown as string,
+            }
+          : {
+              invited_at: sql`to_char(timezone('UTC', now()), 'YYYY-MM-DD HH24:MI:SS')` as unknown as string,
+            }),
+      })
+      .returning({ id: users.id });
+    userId = insertedUser[0]?.id ?? null;
   } else {
     // Re-invite — bump role and reset invited_at, drop any old token.
     // Only overwrite the name when a new one was supplied.
@@ -652,6 +819,19 @@ app.post("/invite", requirePermission("users.manage"), async (c) => {
       .delete(invitations)
       .where(and(eq(invitations.email, email), isNull(invitations.accepted_at)));
   }
+
+  // Write the member's company grants (Phase 0e). The placeholder user row
+  // exists in BOTH the invite-token and direct-activate paths, and accept-invite
+  // only promotes it (never re-creates), so grants set here persist. Default =
+  // [1] (Houzs) when the admin didn't pick one — a new user must never land with
+  // zero grants (that fail-opens to ALL companies). A Sales-Director-scoped
+  // invite may not set companies, so it is forced to Houzs.
+  const inviteCompanyIds = inviteScope.scoped
+    ? [1]
+    : Array.isArray(body.company_ids) && body.company_ids.length > 0
+      ? body.company_ids
+      : [1];
+  if (userId) await setUserCompanies(c, userId, inviteCompanyIds);
 
   // Admin set a password → the account is live now; no invite token/email.
   if (activate) {
@@ -888,7 +1068,7 @@ app.post("/:id/resend-invite", requirePermission("users.manage"), async (c) => {
  * Update a team member's role, enable/disable, reassign manager or
  * department.
  */
-app.patch("/:id", requirePermission("users.manage"), async (c) => {
+app.patch("/:id", requirePermissionOrSalesDirector("users.manage"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   const me = c.get("user");
   if (!id) return c.json({ error: "Invalid ID." }, 400);
@@ -911,6 +1091,9 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
     email?: string;
     email_alias?: string | null;
     status_reason?: string | null;
+    // Per-company grants (Phase 0e) — replace-set. Full-admin (users.manage)
+    // only; stripped for a dept-scoped Sales Director below, same as role/dept.
+    company_ids?: number[];
     // Admin-set/reset password (users.manage). Hashed; never stored plaintext.
     password?: string;
   }>();
@@ -925,6 +1108,55 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
     .where(eq(users.id, id))
     .limit(1);
   if (current.length === 0) return c.json({ error: "User not found" }, 404);
+
+  // Sales Director (dept-scoped admin, not a full users.manage admin): may EDIT
+  // basic details + ENABLE/DISABLE members of their OWN department only. They
+  // cannot touch a member outside their dept, nor change role / position /
+  // department / manager / password (those stay full-admin only). #424 grants
+  // view+invite; this adds edit+disable within the same department scope.
+  const dirScope = salesDirectorScope(c, "users.manage");
+  if (dirScope.scoped) {
+    // Editability must mirror the LIST scope (GET / above): a member appears in
+    // a Sales Director's list when their PRIMARY department is the director's
+    // OR they are a secondary member of it (mig 0020 user_departments). The gate
+    // used to accept the primary department only, so a member visible in the list
+    // (via user_departments) was NOT editable — 404. Accept user_departments
+    // membership too so list-visibility and edit-scope agree.
+    let inDirScope = current[0].department_id === dirScope.deptId;
+    if (!inDirScope && dirScope.deptId != null) {
+      const secondary = await db
+        .select({ userId: user_departments.user_id })
+        .from(user_departments)
+        .where(
+          and(
+            eq(user_departments.user_id, id),
+            eq(user_departments.department_id, dirScope.deptId),
+          ),
+        )
+        .limit(1);
+      inDirScope = secondary.length > 0;
+    }
+    if (!inDirScope) {
+      return c.json({ error: "User not found" }, 404); // out-of-dept → indistinguishable
+    }
+    // A dept-scoped Sales Director may only touch basic details + enable/disable.
+    // STRIP (not 403) the privileged fields so an edit-form resubmit that carries
+    // the member's unchanged role/dept still saves the name/phone/status — the
+    // director simply cannot change role / position / department / manager /
+    // password. Those stay full-admin only.
+    delete body.role_id;
+    delete body.position_id;
+    delete body.department_id;
+    delete body.department_ids;
+    delete body.manager_id;
+    delete body.company_ids;
+    delete body.password;
+    // Login identity is an ACCOUNT-TAKEOVER vector (change the email, then run
+    // forgot-password to seize the account), so the login email + alias are
+    // full-admin only too — strip them from a dept-scoped director's edit.
+    delete body.email;
+    delete body.email_alias;
+  }
 
   const set: Record<string, any> = {};
 
@@ -1099,7 +1331,11 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
     }
   }
 
-  if (Object.keys(set).length === 0 && finalDeptIds === null) {
+  // Company grants (Phase 0e) — replace-set when the edit carries company_ids.
+  // A company-only edit is a valid change, so it counts toward the guard below.
+  const hasCompanyChange = Array.isArray(body.company_ids);
+
+  if (Object.keys(set).length === 0 && finalDeptIds === null && !hasCompanyChange) {
     return c.json({ error: "No fields to update" }, 400);
   }
 
@@ -1149,6 +1385,12 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
     }
   }
 
+  // Apply the company grants (Phase 0e) — replace-set via the shared helper.
+  let finalCompanyIds: number[] | null = null;
+  if (hasCompanyChange) {
+    finalCompanyIds = await setUserCompanies(c, id, body.company_ids as number[]);
+  }
+
   // If we disabled a user, revoke their sessions. Bust the cached-user entries
   // BEFORE the delete (reads the live tokens) so a disabled user can't ride a
   // still-cached session for up to 60s.
@@ -1173,13 +1415,18 @@ app.patch("/:id", requirePermission("users.manage"), async (c) => {
   const changedKeys = [
     ...Object.keys(set),
     ...(finalDeptIds !== null ? ["department_ids"] : []),
+    ...(finalCompanyIds !== null ? ["company_ids"] : []),
   ];
   await audit(c, {
     action: "user.update",
     entityType: "user",
     entityId: id,
     summary: `Updated user #${id} (${changedKeys.join(", ")})`,
-    meta: { changed: set, ...(finalDeptIds !== null ? { department_ids: finalDeptIds } : {}) },
+    meta: {
+      changed: set,
+      ...(finalDeptIds !== null ? { department_ids: finalDeptIds } : {}),
+      ...(finalCompanyIds !== null ? { company_ids: finalCompanyIds } : {}),
+    },
   });
 
   return c.json({ ok: true });
@@ -1314,9 +1561,20 @@ app.delete("/:id", requirePermission("users.manage"), async (c) => {
  * GET /api/users/invitations
  * Pending invitations.
  */
-app.get("/invitations", requirePermission("users.read"), async (c) => {
+app.get("/invitations", requirePermissionOrSalesDirector("users.read"), async (c) => {
   const db = getDb(c.env);
   const inviter = alias(users, "ib");
+  // Sales Director → only pending invites into his own department (invitations
+  // carry department_id, set at invite time). No dept assigned → none.
+  const scope = salesDirectorScope(c, "users.read");
+  const inviteConds: any[] = [isNull(invitations.accepted_at)];
+  if (scope.scoped) {
+    inviteConds.push(
+      scope.deptId != null
+        ? eq(invitations.department_id, scope.deptId)
+        : sql`1 = 0`,
+    );
+  }
   const rows = await db
     .select({
       id: invitations.id,
@@ -1345,7 +1603,7 @@ app.get("/invitations", requirePermission("users.read"), async (c) => {
     .from(invitations)
     .innerJoin(roles, eq(roles.id, invitations.role_id))
     .leftJoin(inviter, eq(inviter.id, invitations.invited_by))
-    .where(isNull(invitations.accepted_at))
+    .where(and(...inviteConds))
     .orderBy(desc(invitations.created_at));
   return c.json({
     invitations: rows.map((r) => ({

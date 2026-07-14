@@ -6,6 +6,7 @@
     "lib": ["ES2022"],
     "types": ["@cloudflare/workers-types"],
     "strict": true,
+    "noEmit": true,
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "esModuleInterop": true,

@@ -33,7 +33,8 @@ import {
   sortSoLinesByGroupRank,
 } from '../shared/so-line-display';
 import { resolveMaintenanceConfigForSupplier } from '../lib/po-pricing';
-import { nextMonthlyDocNo } from '../lib/doc-no';
+import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
+import { escapeForOr } from '../lib/postgrest-search';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { supabaseAuth } from '../middleware/auth';
 import { computeMrp } from './mrp';
@@ -151,6 +152,19 @@ async function poHasOutstandingDropshipOut(
 }
 
 const VALID_STATUSES = new Set(['DRAFT', 'SUBMITTED', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CANCELLED']);
+/* Filter-pill bucket → the raw purchase_orders.status values it covers. Single
+   source of truth for BOTH the status-count queries and the list `status`
+   filter. All five buckets are 1:1 today, but their KEYS differ from the raw
+   status (open→SUBMITTED, partial→PARTIALLY_RECEIVED, received→RECEIVED). The FE
+   sends the BUCKET NAME as `status`; a raw DB status still works
+   (backward-compatible fallback via VALID_STATUSES). */
+const PO_STATUS_BUCKETS: Record<string, string[]> = {
+  draft: ['DRAFT'],
+  open: ['SUBMITTED'],
+  partial: ['PARTIALLY_RECEIVED'],
+  received: ['RECEIVED'],
+  cancelled: ['CANCELLED'],
+};
 const VALID_CURRENCIES = new Set(['MYR', 'RMB', 'USD', 'SGD']);
 const VALID_KINDS = new Set(['mfg_product', 'fabric', 'raw']);
 
@@ -191,31 +205,111 @@ mfgPurchaseOrders.get('/', async (c) => {
   const supplierId = c.req.query('supplierId');
   const supabase = c.get('supabase');
 
-  let q = supabase
-    .from('purchase_orders')
-    .select(
-      // PR — Commander 2026-05-27: PO list rows now surface a per-row items
-      // summary (AutoCount-style) so the buyer can see at a glance what's
-      // inside each PO without drilling in. Nested select keeps it to one
-      // query — Postgres / Supabase joins purchase_order_items on
-      // purchase_order_id for every row.
-      // purchase_location embeds the warehouse the PO ships to (PR #77 — the
-      // column is an FK → warehouses.id); the list needs its NAME, not just the
-      // id, for the "Purchase Location" column (Owner 2026-07-02).
-      `${HEADER_COLS}, supplier:suppliers(id, code, name), items:purchase_order_items(material_code, material_name, qty), purchase_location:warehouses!purchase_location_id(id, code, name)`,
-    )
-    .order('po_date', { ascending: false })
-    .order('created_at', { ascending: false })
-    // Bound the result so PostgREST's default 1000-row cap can't silently
-    // truncate the PO list — match the SO/DO/SI list convention.
-    .limit(500);
+  // PR — Commander 2026-05-27: PO list rows now surface a per-row items
+  // summary (AutoCount-style) so the buyer can see at a glance what's
+  // inside each PO without drilling in. Nested select keeps it to one
+  // query — Postgres / Supabase joins purchase_order_items on
+  // purchase_order_id for every row.
+  // purchase_location embeds the warehouse the PO ships to (PR #77 — the
+  // column is an FK → warehouses.id); the list needs its NAME, not just the
+  // id, for the "Purchase Location" column (Owner 2026-07-02).
+  const SELECT = `${HEADER_COLS}, supplier:suppliers(id, code, name), items:purchase_order_items(material_code, material_name, qty), purchase_location:warehouses!purchase_location_id(id, code, name)`;
 
-  if (status && VALID_STATUSES.has(status)) q = q.eq('status', status);
-  if (supplierId) q = q.eq('supplier_id', supplierId);
+  /* Opt-in server-side pagination + search + sort + status-counts (mirrors the
+     SO list in mfg-sales-orders.ts). The PRESENCE of `page` switches paging on;
+     when it is absent/empty the query below is BYTE-IDENTICAL to the historical
+     behavior (order po_date desc, created_at desc, limit 500, status + supplierId
+     params, company scope, `{ purchaseOrders }` shape). */
+  const pageRaw = c.req.query('page');
+  const paginate = pageRaw !== undefined && pageRaw !== '';
 
-  q = scopeToCompany(q, c); // multi-company: isolate to the active company
+  let data: unknown = null;
+  let error: { message: string } | null = null;
+  let total = 0;
+  let page = 0;
+  let pageSize = 50;
+  let statusCounts: { all: number; draft: number; open: number; partial: number; received: number; cancelled: number } | undefined;
 
-  const { data, error } = await q;
+  if (!paginate) {
+    /* --- LEGACY PATH (unchanged) --- */
+    let q = supabase
+      .from('purchase_orders')
+      .select(SELECT)
+      .order('po_date', { ascending: false })
+      .order('created_at', { ascending: false })
+      // Bound the result so PostgREST's default 1000-row cap can't silently
+      // truncate the PO list — match the SO/DO/SI list convention.
+      .limit(500);
+    if (status && VALID_STATUSES.has(status)) q = q.eq('status', status);
+    if (supplierId) q = q.eq('supplier_id', supplierId);
+    q = scopeToCompany(q, c); // multi-company: isolate to the active company
+    const res = await q;
+    data = res.data;
+    error = res.error;
+  } else {
+    /* --- PAGINATED PATH (opt-in via `page`) --- */
+    page = Math.max(0, Math.trunc(Number(pageRaw)) || 0);
+    const psRaw = Number(c.req.query('pageSize'));
+    pageSize = Number.isFinite(psRaw) && psRaw > 0 ? Math.min(100, Math.max(1, Math.trunc(psRaw))) : 50;
+
+    const SORT_COLS = new Set(['po_date', 'po_number', 'status', 'total_centi']);
+    const [rawCol, rawDir] = (c.req.query('sort') ?? 'po_date:desc').split(':');
+    const sortCol = SORT_COLS.has(rawCol) ? rawCol : 'po_date';
+    const sortAsc = rawDir === 'asc';
+
+    let q = supabase.from('purchase_orders').select(SELECT, { count: 'exact' }).order(sortCol, { ascending: sortAsc });
+    /* unique tiebreaker so range paging can't skip/repeat rows sharing the sort key */
+    if (sortCol !== 'po_number') q = q.order('po_number', { ascending: sortAsc });
+    /* Resolve the incoming `status`: a known bucket key → all its raw statuses;
+       'all'/empty → no filter; otherwise a raw DB status (VALID_STATUSES guard). */
+    if (status && status !== 'all') {
+      if (PO_STATUS_BUCKETS[status]) q = q.in('status', PO_STATUS_BUCKETS[status]);
+      else if (VALID_STATUSES.has(status)) q = q.eq('status', status);
+    }
+    if (supplierId) q = q.eq('supplier_id', supplierId);
+    q = scopeToCompany(q, c); // multi-company: isolate to the active company
+    /* free-text search over the base-table text columns the FE searches
+       (PurchaseOrdersListV2 hay). Supplier name / code are embedded resources,
+       not base purchase_orders columns, so they can't be ilike'd here. */
+    const search = c.req.query('q');
+    if (search) {
+      const s = escapeForOr(search);
+      if (s) q = q.or(`po_number.ilike.%${s}%,notes.ilike.%${s}%`);
+    }
+    const from = c.req.query('from'); if (from) q = q.gte('po_date', from);
+    const to = c.req.query('to'); if (to) q = q.lte('po_date', to);
+    q = q.range(page * pageSize, page * pageSize + pageSize - 1);
+    const res = await q;
+    data = res.data;
+    error = res.error;
+    total = res.count ?? (res.data?.length ?? 0);
+
+    /* Status counts mirror the FE filter-pill buckets (draft / open / partial /
+       received / cancelled) over the SAME company + supplier filters but WITHOUT
+       status / search / pagination. */
+    const countBase = () => {
+      let cq = supabase.from('purchase_orders').select('*', { count: 'exact', head: true });
+      if (supplierId) cq = cq.eq('supplier_id', supplierId);
+      cq = scopeToCompany(cq, c);
+      return cq;
+    };
+    const [allC, draftC, openC, partialC, receivedC, cancelledC] = await Promise.all([
+      countBase(),
+      countBase().in('status', PO_STATUS_BUCKETS.draft),
+      countBase().in('status', PO_STATUS_BUCKETS.open),
+      countBase().in('status', PO_STATUS_BUCKETS.partial),
+      countBase().in('status', PO_STATUS_BUCKETS.received),
+      countBase().in('status', PO_STATUS_BUCKETS.cancelled),
+    ]);
+    statusCounts = {
+      all: allC.count ?? 0,
+      draft: draftC.count ?? 0,
+      open: openC.count ?? 0,
+      partial: partialC.count ?? 0,
+      received: receivedC.count ?? 0,
+      cancelled: cancelledC.count ?? 0,
+    };
+  }
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
 
   /* Tier 2 downstream-lock (mirror computeGrnFlags in routes/grns.ts) — one
@@ -250,6 +344,7 @@ mfgPurchaseOrders.get('/', async (c) => {
     has_children: childIds.has(r.id),
     transfer_to_grns: grnNumbersByPo.get(r.id) ?? [],
   }));
+  if (paginate) return c.json({ purchaseOrders, total, page, pageSize, statusCounts });
   return c.json({ purchaseOrders });
 });
 
@@ -277,13 +372,16 @@ mfgPurchaseOrders.get('/outstanding-so-items', async (c) => {
      warehouse (from the SO's sales_location) + delivery date (from the SO
      LINE's own line_delivery_date). internal_expected_dd + sales_location
      come off the SO header; line_delivery_date off the item. */
-  const { data: items, error } = await supabase
-    .from('mfg_sales_order_items')
-    .select(`
+  const { data: items, error } = await scopeToCompany(
+    supabase
+      .from('mfg_sales_order_items')
+      .select(`
       id, doc_no, item_code, description, item_group, qty, po_qty_picked, unit_price_centi,
       variants, line_suffix, cancelled, line_delivery_date,
       so:mfg_sales_orders!inner ( doc_no, debtor_name, branding, status, so_date, customer_delivery_date, internal_expected_dd, sales_location )
-    `)
+    `),
+    c,
+  )
     .eq('cancelled', false)
     .order('doc_no', { ascending: false })
     .limit(500);
@@ -313,6 +411,7 @@ mfgPurchaseOrders.get('/outstanding-so-items', async (c) => {
       .select('material_code, is_main_supplier, supplier:suppliers(code, name)')
       .eq('material_kind', 'mfg_product')
       .in('material_code', skuCodes)
+      .eq('company_id', activeCompanyId(c))
       .order('is_main_supplier', { ascending: false });
     for (const b of (binds ?? []) as Array<{ material_code: string; supplier: { code: string; name: string } | Array<{ code: string; name: string }> | null }>) {
       if (mainSupplierByCode.has(b.material_code)) continue;
@@ -335,7 +434,7 @@ mfgPurchaseOrders.get('/outstanding-so-items', async (c) => {
   const shortageBySoItem = new Map<string, number>();
   let pooledOk = true;
   try {
-    const mrpRes = await computeMrp(supabase, { catFilter: null, whFilter: null, includeUndated: true });
+    const mrpRes = await computeMrp(supabase, { catFilter: null, whFilter: null, includeUndated: true, companyId: activeCompanyId(c) });
     for (const sku of mrpRes.skus) {
       for (const l of sku.lines) shortageBySoItem.set(l.soItemId, l.shortageQty);
     }
@@ -689,7 +788,7 @@ mfgPurchaseOrders.post('/', async (c) => {
     .from('purchase_orders')
     .select('po_number')
     .like('po_number', `${p}PO-${yymm}-%`);
-  const poNumber = nextMonthlyDocNo(`${p}PO-${yymm}`, ((existingPoNos ?? []) as Array<{ po_number: string }>).map((r) => r.po_number));
+  let poNumber = nextMonthlyDocNo(`${p}PO-${yymm}`, ((existingPoNos ?? []) as Array<{ po_number: string }>).map((r) => r.po_number));
 
   // Compute totals
   let subtotal = 0;
@@ -783,11 +882,25 @@ mfgPurchaseOrders.post('/', async (c) => {
   // Optional poDate — if absent, the column default (now()) wins.
   if (body.poDate) headerInsert.po_date = body.poDate;
 
-  const { data: headerData, error: hErr } = await supabase
-    .from('purchase_orders')
-    .insert(headerInsert)
-    .select(HEADER_COLS)
-    .single();
+  /* Doc-no collision retry (2026-07-14): two buyers cutting a PO in the same
+     company + YYMM both read the same max and mint the same po_number; without a
+     retry the loser hits the UNIQUE po_number (23505) and the PO 500s. Items key
+     off the returned header.id (not po_number), so a re-mint needs no child
+     re-stamp. Non-23505 errors (e.g. 42501) fall straight through unchanged. */
+  let firstMint = true;
+  const { data: headerData, error: hErr } = await insertWithDocNoRetry(
+    async () => {
+      if (firstMint) { firstMint = false; return poNumber; }
+      const { data: live } = await supabase
+        .from('purchase_orders').select('po_number').like('po_number', `${p}PO-${yymm}-%`);
+      poNumber = nextMonthlyDocNo(`${p}PO-${yymm}`, ((live ?? []) as Array<{ po_number: string }>).map((r) => r.po_number));
+      return poNumber;
+    },
+    (dn) => {
+      headerInsert.po_number = dn;
+      return supabase.from('purchase_orders').insert(headerInsert).select(HEADER_COLS).single();
+    },
+  );
 
   if (hErr) {
     if (hErr.code === '42501') return c.json({ error: 'forbidden', reason: hErr.message }, 403);
@@ -927,9 +1040,10 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
   const purchaseLocationOverride = body.purchaseLocationId;
 
   // Preload the warehouses list ONCE for the sales_location text → id match.
-  const { data: whRows } = await supabase
-    .from('warehouses')
-    .select('id, code, name');
+  const { data: whRows } = await scopeToCompany(
+    supabase.from('warehouses').select('id, code, name'),
+    c,
+  );
   type Wh = { id: string; code: string | null; name: string | null };
   const warehouses = (whRows ?? []) as Wh[];
 
@@ -1124,6 +1238,7 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
     .select('material_code, supplier_id, supplier_sku, unit_price_centi, currency, price_matrix')
     .in('material_code', codes)
     .eq('material_kind', 'mfg_product')
+    .eq('company_id', activeCompanyId(c))
     .order('is_main_supplier', { ascending: false });
 
   /* Commander 2026-05-29 — drop ORPHANED bindings (supplier was deleted but the
@@ -1242,7 +1357,8 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
     const { data: fabricRows } = await supabase
       .from('fabric_trackings')
       .select('fabric_code, price_tier, sofa_price_tier, bedframe_price_tier')
-      .in('fabric_code', fabricCodes);
+      .in('fabric_code', fabricCodes)
+      .eq('company_id', activeCompanyId(c));
     for (const f of (fabricRows ?? []) as FabricTierRow[]) fabricByCode.set(f.fabric_code, f);
   }
   const resolveFabricTier = (
@@ -2088,7 +2204,8 @@ mfgPurchaseOrders.post('/:id/convert-from-so', async (c) => {
     const { data: fabs } = await sb
       .from('fabric_trackings')
       .select('fabric_code, price_tier, sofa_price_tier, bedframe_price_tier')
-      .in('fabric_code', fabCodes);
+      .in('fabric_code', fabCodes)
+      .eq('company_id', activeCompanyId(c));
     for (const f of (fabs ?? []) as Array<{
       fabric_code: string; price_tier: MfgFabricTier | null;
       sofa_price_tier: MfgFabricTier | null; bedframe_price_tier: MfgFabricTier | null;

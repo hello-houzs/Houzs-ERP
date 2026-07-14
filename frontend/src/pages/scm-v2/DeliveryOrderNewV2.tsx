@@ -46,6 +46,7 @@ import {
   useMfgDeliveryOrderDetail,
 } from "../../vendor/scm/lib/delivery-order-queries";
 import { useMfgSalesOrderDetail } from "../../vendor/scm/lib/sales-order-queries";
+import { useSoDropdownOptions, optionsOrFallback } from "../../vendor/scm/lib/so-dropdown-options-queries";
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
 import { cn } from "../../lib/utils";
 
@@ -601,6 +602,8 @@ export function DeliveryOrderNewV2() {
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
   const [customerType, setCustomerType] = useState("");
+  // Customer type from the live maintenance catalog (same as SO), not hardcoded.
+  const customerTypeOpts = optionsOrFallback("customer_type", useSoDropdownOptions("customer_type").data);
   const [salesperson, setSalesperson] = useState("");
   const [addr1, setAddr1] = useState("");
   const [addr2, setAddr2] = useState("");
@@ -938,11 +941,7 @@ export function DeliveryOrderNewV2() {
                 value={customerType}
                 onChange={setCustomerType}
                 placeholder="—"
-                options={[
-                  { value: "Walk-in", label: "Walk-in" },
-                  { value: "Corporate", label: "Corporate" },
-                  { value: "Dealer", label: "Dealer" },
-                ]}
+                options={customerTypeOpts}
               />
             </div>
             <div>

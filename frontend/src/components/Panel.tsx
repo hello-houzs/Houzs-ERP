@@ -18,6 +18,9 @@ interface Props {
   /** Called when the user attempts to dismiss while `dirty`. Required when
    *  `dirty` is set; ignored otherwise. */
   onAttemptClose?: () => void;
+  /** Render as a centered modal (page-middle floating card) instead of
+   *  the right-side drawer. `width` becomes the card's max width. */
+  centered?: boolean;
 }
 
 /** Selector for "anything keyboard-tabbable" used by the focus trap. */
@@ -43,6 +46,7 @@ export function Panel({
   children,
   footer,
   width = 420,
+  centered,
   dirty,
   onAttemptClose,
 }: Props) {
@@ -119,25 +123,41 @@ export function Panel({
   const node = (
     <div
       className={cn(
-        "fixed inset-y-0 right-0 z-50 flex transition-transform duration-200",
-        // Width is set inline but capped to leave a 24 px gutter on the
-        // left at narrow widths so the panel reads as a sheet, not a
-        // full-screen takeover. At sm+ (≥640 px) the gutter falls away
-        // because the panel never needs to fill the viewport there.
-        "max-w-[calc(100vw-1.5rem)] sm:max-w-[100vw]",
+        centered
+          ? "fixed inset-0 z-50 flex items-center justify-center p-4 transition-opacity duration-200"
+          : "fixed inset-y-0 right-0 z-50 flex transition-transform duration-200",
+        // Drawer: width is set inline but capped to leave a 24 px gutter
+        // on the left at narrow widths so the panel reads as a sheet, not
+        // a full-screen takeover.
+        !centered && "max-w-[calc(100vw-1.5rem)] sm:max-w-[100vw]",
         // pointer-events-none when closed so the off-screen panel can't
         // intercept clicks on the underlying canvas.
-        open ? "translate-x-0 pointer-events-auto" : "translate-x-full pointer-events-none",
+        open
+          ? cn("pointer-events-auto", centered ? "opacity-100" : "translate-x-0")
+          : cn("pointer-events-none", centered ? "opacity-0" : "translate-x-full"),
       )}
-      style={{ width }}
+      style={centered ? undefined : { width }}
       aria-hidden={!open}
       role="dialog"
       aria-modal="true"
       aria-label={typeof title === "string" ? title : undefined}
     >
+      {centered && (
+        <div
+          className="absolute inset-0 bg-ink/40"
+          onClick={attemptClose}
+          aria-hidden="true"
+        />
+      )}
       <div
         ref={panelRef}
-        className="relative flex h-full w-full flex-col border-l border-border bg-surface shadow-slab"
+        className={cn(
+          "relative flex w-full flex-col bg-surface shadow-slab",
+          centered
+            ? "max-h-[88vh] overflow-hidden rounded-lg border border-border"
+            : "h-full border-l border-border",
+        )}
+        style={centered ? { maxWidth: width } : undefined}
       >
         {/* Brass accent rail at the very left edge of the panel */}
         <span className="pointer-events-none absolute left-0 top-0 h-full w-[2px] bg-gradient-to-b from-accent/0 via-accent/60 to-accent/0" />

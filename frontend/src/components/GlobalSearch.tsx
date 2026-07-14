@@ -214,8 +214,11 @@ function Palette({ onClose }: { onClose: () => void }) {
         aria-label="Global search"
       >
         {/* Search input row */}
-        <div className="flex items-center gap-3 border-b border-border-subtle px-4 py-3">
-          <Search size={16} className="shrink-0 text-ink-muted" />
+        <div className="group flex items-center gap-3 border-b border-border-subtle px-4 py-3">
+          <Search
+            size={16}
+            className="shrink-0 text-ink-muted transition-colors duration-fast group-focus-within:text-primary"
+          />
           <input
             ref={inputRef}
             value={q}
@@ -259,8 +262,8 @@ function Palette({ onClose }: { onClose: () => void }) {
             groups.map((g) => (
               <div key={g.type}>
                 <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-border-subtle bg-bg/80 px-4 py-1.5 backdrop-blur-sm">
-                  <span className="text-ink-muted">{TYPE_META[g.type].icon}</span>
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-ink-muted">
+                  <span className="text-primary-ink">{TYPE_META[g.type].icon}</span>
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-primary-ink">
                     {TYPE_META[g.type].label}
                   </span>
                   <span className="text-[10px] text-ink-muted">· {g.items.length}</span>
@@ -307,6 +310,9 @@ function Palette({ onClose }: { onClose: () => void }) {
   );
 }
 
+const HIGHLIGHT_CLASS =
+  "rounded-[3px] bg-primary/[.12] px-px font-semibold text-primary-ink";
+
 function HitRow({
   item,
   query,
@@ -327,20 +333,25 @@ function HitRow({
       onMouseEnter={onHover}
       onClick={onSelect}
       className={cn(
-        "flex w-full items-start gap-3 px-4 py-2.5 text-left transition-colors",
+        "flex w-full items-start gap-3 border-l-2 border-transparent px-4 py-2.5 text-left transition-colors",
         isSelected
-          ? "bg-accent-soft/60"
-          : "hover:bg-accent-soft/30"
+          ? "border-primary bg-primary/[.07]"
+          : "hover:bg-primary/[.04]"
       )}
     >
-      <span className={cn("mt-0.5 shrink-0", isSelected ? "text-accent" : "text-ink-muted")}>
+      <span
+        className={cn(
+          "mt-0.5 grid h-[26px] w-[26px] shrink-0 place-items-center rounded-lg",
+          meta.tile
+        )}
+      >
         {meta.icon}
       </span>
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
           {/* Bold the matched keyword in the title (query passed from palette). */}
           <span className="truncate text-[12.5px] font-medium text-ink">
-            <HighlightedText text={item.title} query={query} />
+            <HighlightedText text={item.title} query={query} className={HIGHLIGHT_CLASS} />
           </span>
           {item.date && (
             <span className="shrink-0 text-[10px] text-ink-muted">
@@ -350,12 +361,12 @@ function HitRow({
         </div>
         {item.subtitle && (
           <div className="truncate text-[11px] text-ink-secondary">
-            <HighlightedText text={item.subtitle} query={query} />
+            <HighlightedText text={item.subtitle} query={query} className={HIGHLIGHT_CLASS} />
           </div>
         )}
       </div>
       {isSelected && (
-        <CornerDownLeft size={11} className="mt-1 shrink-0 text-accent" />
+        <CornerDownLeft size={11} className="mt-1 shrink-0 text-primary" />
       )}
     </button>
   );
@@ -369,23 +380,23 @@ function EmptyHelp() {
       </div>
       <ul className="space-y-1.5 text-[12px] text-ink-secondary">
         <li className="flex items-center gap-2">
-          <FileText size={12} className="text-accent/70" />
+          <FileText size={12} className="text-primary/70" />
           Sales orders by SO no, customer, phone, PO, or ref
         </li>
         <li className="flex items-center gap-2">
-          <Layers size={12} className="text-accent/70" />
+          <Layers size={12} className="text-primary/70" />
           Projects by code, name, venue, organizer, or brand
         </li>
         <li className="flex items-center gap-2">
-          <Wrench size={12} className="text-accent/70" />
+          <Wrench size={12} className="text-primary/70" />
           Service cases by ASSR no, customer, phone, or issue
         </li>
         <li className="flex items-center gap-2">
-          <Package size={12} className="text-accent/70" />
+          <Package size={12} className="text-primary/70" />
           Products by code or name
         </li>
         <li className="flex items-center gap-2">
-          <Users size={12} className="text-accent/70" />
+          <Users size={12} className="text-primary/70" />
           Teammates by name, email, or role
         </li>
       </ul>
@@ -420,12 +431,41 @@ function groupHits(hits: SearchHit[]): Array<{
   return out;
 }
 
-const TYPE_META: Record<SearchHitType, { label: string; icon: ReactNode }> = {
-  sales_order: { label: "Sales Orders", icon: <FileText size={13} /> },
-  project: { label: "Projects", icon: <Layers size={13} /> },
-  assr_case: { label: "Service Cases", icon: <Wrench size={13} /> },
-  product: { label: "Products", icon: <Package size={13} /> },
-  user: { label: "Users", icon: <Users size={13} /> },
+// Nico 2026-07-13 (GlobalSearch Theme C handoff) — each result type gets a
+// coloured 26×26 icon tile so the palette scans by type at a glance. Hex
+// literals are the exact Theme C secondary swatches from vendor/design-system/
+// tokens.css (--c-secondary-a forest, --c-secondary-b blue, --c-warn amber).
+// `learning` is already registered as #1F3A8A in tailwind.config.js so the
+// project + product tiles share that blue via its opacity variants.
+const TYPE_META: Record<
+  SearchHitType,
+  { label: string; icon: ReactNode; tile: string }
+> = {
+  sales_order: {
+    label: "Sales Orders",
+    icon: <FileText size={13} />,
+    tile: "bg-primary/[.12] text-primary",
+  },
+  project: {
+    label: "Projects",
+    icon: <Layers size={13} />,
+    tile: "bg-learning/[.12] text-learning",
+  },
+  assr_case: {
+    label: "Service Cases",
+    icon: <Wrench size={13} />,
+    tile: "bg-[#B76B00]/[.14] text-[#B76B00]",
+  },
+  product: {
+    label: "Products",
+    icon: <Package size={13} />,
+    tile: "bg-learning/[.12] text-learning",
+  },
+  user: {
+    label: "Users",
+    icon: <Users size={13} />,
+    tile: "bg-[#2F5D4F]/[.14] text-[#2F5D4F]",
+  },
 };
 
 // ── Trigger button ─────────────────────────────────────────
@@ -450,7 +490,7 @@ export function GlobalSearchTrigger({
           // 44 px hit area on mobile (Pass A touch-target floor),
           // compresses to 36 px at sm+ where the desktop sidebar wants
           // tighter chrome.
-          "flex h-11 w-11 sm:h-9 sm:w-9 items-center justify-center rounded-md border border-border bg-surface text-ink-secondary transition-colors hover:border-accent/50 hover:text-accent",
+          "flex h-11 w-11 sm:h-9 sm:w-9 items-center justify-center rounded-md border border-border bg-surface text-ink-secondary transition-colors hover:border-primary/50 hover:text-primary",
           className
         )}
         title={`Search (${shortcut})`}
@@ -465,12 +505,12 @@ export function GlobalSearchTrigger({
     <button
       onClick={open}
       className={cn(
-        "group flex h-9 w-full items-center gap-2 rounded-md border border-border bg-surface px-2.5 text-left text-[12px] text-ink-muted transition-colors hover:border-accent/50 hover:text-ink",
+        "group flex h-9 w-full items-center gap-2 rounded-md border border-border bg-surface px-2.5 text-left text-[12px] text-ink-muted transition-colors hover:border-primary/50 hover:text-ink",
         className
       )}
       title={`Search (${shortcut})`}
     >
-      <Search size={13} className="shrink-0 group-hover:text-accent" />
+      <Search size={13} className="shrink-0 group-hover:text-primary" />
       <span className="flex-1 truncate">Search…</span>
       <kbd className="rounded border border-border bg-bg px-1 py-0.5 font-mono text-[9.5px] text-ink-muted">
         {shortcut}

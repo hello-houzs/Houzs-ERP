@@ -54,6 +54,7 @@ import { addons } from "./routes/addons";
 import { documentFlow } from "./routes/document-flow";
 import { drivers } from "./routes/drivers";
 import { soDropdownOptions } from "./routes/so-dropdown-options";
+import { venues } from "./routes/venues";
 import { reports } from "./routes/reports";
 import { scanSo } from "./routes/scan-so";
 import { scanPayment } from "./routes/scan-payment";
@@ -67,6 +68,11 @@ import { lorries } from "./routes/lorries";
 import { soSettings } from "./routes/so-settings";
 import { freeItemCampaigns } from "./routes/free-item-campaigns";
 import { modelFreeGifts } from "./routes/model-free-gifts";
+// POS endpoints ported from 2990 apps/api (cutover P2), company_2 scoped.
+import { posCart } from "./routes/pos-cart";
+import { quotes } from "./routes/quotes";
+import { personalQuickPicks } from "./routes/personal-quick-picks";
+import { salesAnalysis } from "./routes/sales-analysis";
 
 import { scmAreaGuard } from "./middleware/area-guard";
 
@@ -149,6 +155,12 @@ scm.use("/free-item-campaigns/*", scmAreaGuard("scm.procurement.products", { ope
 scm.route("/free-item-campaigns", freeItemCampaigns);
 scm.use("/model-free-gifts/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
 scm.route("/model-free-gifts", modelFreeGifts);
+// ── POS endpoints ported from 2990 (cutover P2), company_2 scoped ────────────
+scm.route("/pos-cart", posCart);
+scm.route("/personal-quick-picks", personalQuickPicks);
+scm.route("/sales-analysis", salesAnalysis);
+scm.use("/quotes/*", scmAreaGuard("scm.sales.orders", { writeLevel: "view" }));
+scm.route("/quotes", quotes);
 // ── Suppliers (scm.procurement.suppliers) ───────────────────────────────────
 scm.use("/suppliers/*", scmAreaGuard("scm.procurement.suppliers"));
 scm.route("/suppliers", suppliers);
@@ -278,6 +290,14 @@ scm.route("/lorries", lorries);
 // edit-gated on scm.procurement.products.
 scm.use("/so-dropdown-options/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
 scm.route("/so-dropdown-options", soDropdownOptions);
+// Cutover P3 (#389) — venue master for the 2990 POS's direct /api/scm/venues
+// calls. Thin adapter over public.project_venues (the Houzs venue master the FE
+// venue picker + SO auto-fill already use — genuine ONE source of truth), NOT
+// scm.so_dropdown_options. openRead: read by every salesperson building an SO
+// (like the other SO-flow picklists); venue writes stay edit-gated on
+// scm.procurement.products.
+scm.use("/venues/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
+scm.route("/venues", venues);
 // Ported 2026-06-21 — AutoCount-style Detail Listing reports. The vendored
 // report pages (reports-queries.ts) call GET /reports/{sales-order,delivery-order,
 // sales-invoice,delivery-return}-detail-listing; never mounted before, so all

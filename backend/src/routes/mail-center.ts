@@ -30,8 +30,74 @@ import { hasPermission } from "../services/permissions";
 import { sendEmail } from "../services/email";
 import { getBranding } from "../services/branding";
 import { validateMailAttachments } from "../lib/mail-attachments";
+import { isSalesDirectorUser } from "../services/pmsAccess";
+import { activeCompanyId, activeCompanySql } from "../scm/lib/companyScope";
 
 const app = new Hono<{ Bindings: Env }>();
+
+// ---------------------------------------------------------------------------
+// Multi-company scoping (merge: HOUZS=1, 2990=2). Every PER-COMPANY mail table
+// (email_addresses / email_address_access / email_threads / email_messages /
+// email_labels) carries a company_id (migration 0107). Authed reads/writes in
+// this router filter/stamp the ACTIVE company via activeCompanyId(c) /
+// activeCompanySql(c) — both NO-OP when the company is unresolved (pre-migration
+// / cold-start), so single-company Houzs never locks out.
+//
+// The PRE-AUTH inbound path (ingestInboundEmail) has no request context, so it
+// resolves the company from the RECIPIENT address instead — see
+// companyCodeForRecipient / resolveInboundCompanyId below.
+// ---------------------------------------------------------------------------
+
+// Recipient-address -> company CODE mapping for inbound tagging. EXTENSIBLE:
+// add 2990's inbound address(es) / domain here so their mail is tagged company
+// 2. Anything unmatched defaults to HOUZS (the base company). The 2990 mail
+// address is not known yet (2026-07), so no 2990 rule is wired.
+//
+// >>> ADD 2990 HERE: push a rule returning "2990" once the address is known,
+//     e.g. { match: (a) => a.endsWith("@<2990-domain>"), code: "2990" }
+const RECIPIENT_COMPANY_RULES: Array<{
+  match: (addr: string) => boolean;
+  code: string;
+}> = [
+  // HOUZS inbound addresses / domain.
+  {
+    match: (a) => a.endsWith("@houzscentury.com") || a === "hello@houzscentury.com",
+    code: "HOUZS",
+  },
+  // TODO(multi-company): add 2990 recipient address(es)/domain here -> "2990".
+];
+
+// Resolve the owning company CODE for one inbound email from its recipients
+// (Delivered-To, then To, then Cc). First matching rule wins; unmatched => HOUZS.
+function companyCodeForRecipient(recipients: string[]): string {
+  for (const r of recipients) {
+    const a = (r ?? "").trim().toLowerCase();
+    if (!a) continue;
+    for (const rule of RECIPIENT_COMPANY_RULES) {
+      if (rule.match(a)) return rule.code;
+    }
+  }
+  return "HOUZS";
+}
+
+// Map a company CODE to its numeric id from the companies master. Returns null
+// when the master is absent (pre-migration / cold-start) or the code is unknown,
+// so the caller degrades to leaving company_id unstamped — the column DEFAULTs
+// to HOUZS (migration 0107), never a NOT NULL violation.
+async function companyIdForCode(
+  db: D1Database,
+  code: string,
+): Promise<number | null> {
+  try {
+    const row = await db
+      .prepare(`SELECT id FROM companies WHERE code = ? LIMIT 1`)
+      .bind(code)
+      .first<{ id: number | string }>();
+    return row?.id != null ? Number(row.id) : null;
+  } catch {
+    return null;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Inbound ingestion — called by the pre-auth /inbound route (routes/mail-inbound.ts)
@@ -251,6 +317,16 @@ export async function ingestInboundEmail(
       `hello@${domain}`;
   }
 
+  // Which company owns this inbound mail? Resolved from the recipient address
+  // (see companyCodeForRecipient). Unresolved => null, and the INSERTs below omit
+  // company_id so it falls to the column DEFAULT (HOUZS) — never a NOT NULL
+  // violation, so inbound never breaks.
+  const companyId = await companyIdForCode(
+    db,
+    companyCodeForRecipient([...deliveredTo, ...to, ...cc]),
+  );
+  const stampCo = companyId != null;
+
   const now = new Date().toISOString();
   const sentAt = safeIso(payload.date, now);
   const subject = (payload.subject || "(no subject)").slice(0, 500);
@@ -314,8 +390,8 @@ export async function ingestInboundEmail(
         `INSERT INTO email_threads
            (id, mailbox_address, subject, counterparty_email,
             counterparty_name, status, last_message_at, last_direction,
-            last_snippet, message_count, unread, created_at)
-         VALUES (?, ?, ?, ?, ?, 'open', ?, 'inbound', ?, 1, 1, ?)`,
+            last_snippet, message_count, unread, created_at${stampCo ? ", company_id" : ""})
+         VALUES (?, ?, ?, ?, ?, 'open', ?, 'inbound', ?, 1, 1, ?${stampCo ? ", ?" : ""})`,
       )
       .bind(
         threadId,
@@ -326,6 +402,7 @@ export async function ingestInboundEmail(
         sentAt,
         snippet,
         now,
+        ...(stampCo ? [companyId] : []),
       )
       .run();
   } else {
@@ -349,8 +426,8 @@ export async function ingestInboundEmail(
       `INSERT INTO email_messages
          (id, thread_id, direction, message_id, in_reply_to,
           reference_ids, from_address, from_name, to_addresses, cc_addresses,
-          subject, text_body, html_body, sent_at, received_at, created_at)
-       VALUES (?, ?, 'inbound', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          subject, text_body, html_body, sent_at, received_at, created_at${stampCo ? ", company_id" : ""})
+       VALUES (?, ?, 'inbound', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${stampCo ? ", ?" : ""})`,
     )
     .bind(
       msgId,
@@ -368,6 +445,7 @@ export async function ingestInboundEmail(
       sentAt,
       now,
       now,
+      ...(stampCo ? [companyId] : []),
     )
     .run();
 
@@ -577,6 +655,10 @@ async function getMailScope(c: Context<{ Bindings: Env }>): Promise<{
   level: string;
 }> {
   const userId = c.get("userId") ?? null;
+  // Company scope (merge): limit every mailbox lookup to the ACTIVE company so a
+  // user only ever resolves addresses — and therefore threads — from the company
+  // they're currently in. NO-OP (empty string) when the company is unresolved.
+  const coSql = activeCompanySql(c);
   // Visibility follows mail_user_scope.level for EVERYONE, admins included — a
   // mail admin keeps MANAGEMENT rights (isMailAdmin: create/assign mailboxes,
   // set scope) but no longer auto-sees every mailbox, which would defeat the
@@ -596,10 +678,58 @@ async function getMailScope(c: Context<{ Bindings: Env }>): Promise<{
     ? (levelRow!.level as MailScopeLevel)
     : "personal";
 
+  // Sales Director → own-department mailbox tier (owner 2026-07, rule 5): the
+  // personal set PLUS every active mailbox whose assigned_dept matches the
+  // director's ORG department (Sales). This ADDS the Sales mailboxes on top of
+  // 'personal' WITHOUT granting the all-mailbox 'company' view — non-Sales
+  // mailboxes stay hidden. Keyed off the STABLE ORG FIELD department_name, not
+  // the mailbox-owner's assigned_dept (a director may not own a dept mailbox),
+  // so it's distinct from the generic 'department' tier below. Never DOWNGRADES
+  // an explicitly-set 'company' scope. isMailAdmin (mail_center.manage / `*`)
+  // is handled by the caller and is unaffected.
+  const user = c.get("user");
+  const salesDirDept = isSalesDirectorUser(user)
+    ? (user?.department_name ?? "").trim() || "Sales"
+    : null;
+  if (salesDirDept && level !== "company") {
+    const own = await c.env.DB.prepare(
+      `SELECT address FROM email_addresses
+         WHERE active = 1${coSql} AND (
+           assigned_user_id = ?
+           OR id IN (SELECT address_id FROM email_address_access WHERE user_id = ?)
+         )`,
+    )
+      .bind(userId, userId)
+      .all<{ address: string }>();
+    /* Go-live review #12 — the bidirectional substring LIKE over-matched: a
+       "Sales" director captured "Presales" / "Wholesales" mailboxes (either
+       direction of the LIKE). Tighten to a NORMALIZED equality (case-insensitive,
+       trimmed) on the department name so a Sales director sees exactly the Sales
+       department's mailboxes and nothing whose name merely contains "sales". */
+    const deptRows = await c.env.DB.prepare(
+      `SELECT address FROM email_addresses
+         WHERE active = 1${coSql}
+           AND assigned_dept IS NOT NULL AND trim(assigned_dept) <> ''
+           AND lower(trim(assigned_dept)) = lower(trim(?))`,
+    )
+      .bind(salesDirDept)
+      .all<{ address: string }>();
+    const addrs = [
+      ...(own.results ?? []).map((r) => r.address),
+      ...(deptRows.results ?? []).map((r) => r.address),
+    ];
+    return {
+      isAdmin: false,
+      userId,
+      addresses: dedupeLower(addrs),
+      level: "department",
+    };
+  }
+
   // 'company' — every active mailbox.
   if (level === "company") {
     const all = await c.env.DB.prepare(
-      `SELECT address FROM email_addresses WHERE active = 1`,
+      `SELECT address FROM email_addresses WHERE active = 1${coSql}`,
     ).all<{ address: string }>();
     return {
       isAdmin: false,
@@ -612,7 +742,7 @@ async function getMailScope(c: Context<{ Bindings: Env }>): Promise<{
   // 'personal' base set: own assigned alias(es) + granted shared mailboxes.
   const own = await c.env.DB.prepare(
     `SELECT address FROM email_addresses
-       WHERE active = 1 AND (
+       WHERE active = 1${coSql} AND (
          assigned_user_id = ?
          OR id IN (SELECT address_id FROM email_address_access WHERE user_id = ?)
        )`,
@@ -623,18 +753,28 @@ async function getMailScope(c: Context<{ Bindings: Env }>): Promise<{
 
   // 'department' — additionally every active mailbox in the caller's own dept.
   if (level === "department") {
-    const deptRow = await c.env.DB.prepare(
-      `SELECT assigned_dept FROM email_addresses
-         WHERE assigned_user_id = ?
-           AND assigned_dept IS NOT NULL AND assigned_dept <> '' LIMIT 1`,
-    )
-      .bind(userId)
-      .first<{ assigned_dept?: string | null }>();
-    const dept = (deptRow?.assigned_dept ?? "").trim();
+    /* Go-live review #12 — the caller's department is the caller's OWN org
+       department_name, not whatever dept happens to be stamped on a mailbox they
+       were granted access to. Deriving it from an owned mailbox row let a member
+       whose only assigned mailbox carries an unrelated assigned_dept scope to the
+       WRONG department. Prefer the caller's org department_name; fall back to the
+       mailbox-derived dept only when the org field is absent (legacy rows). */
+    let dept = (user?.department_name ?? "").trim();
+    if (!dept) {
+      const deptRow = await c.env.DB.prepare(
+        `SELECT assigned_dept FROM email_addresses
+           WHERE assigned_user_id = ?${coSql}
+             AND assigned_dept IS NOT NULL AND assigned_dept <> '' LIMIT 1`,
+      )
+        .bind(userId)
+        .first<{ assigned_dept?: string | null }>();
+      dept = (deptRow?.assigned_dept ?? "").trim();
+    }
     if (dept) {
       const deptRows = await c.env.DB.prepare(
         `SELECT address FROM email_addresses
-           WHERE active = 1 AND assigned_dept = ?`,
+           WHERE active = 1${coSql}
+             AND lower(trim(assigned_dept)) = lower(trim(?))`,
       )
         .bind(dept)
         .all<{ address: string }>();
@@ -718,6 +858,14 @@ app.get("/threads", async (c) => {
 
   const where: string[] = [];
   const binds: (string | number)[] = [];
+  // Company scope (merge): only the active company's threads. Guarded — no-op
+  // when unresolved. Belt-and-braces with the address filter below (scope.addresses
+  // is already company-scoped via getMailScope).
+  const companyId = activeCompanyId(c);
+  if (companyId != null) {
+    where.push("company_id = ?");
+    binds.push(companyId);
+  }
   if (!scope.isAdmin) {
     const ph = scope.addresses.map(() => "?").join(", ");
     where.push(`LOWER(mailbox_address) IN (${ph})`);
@@ -770,7 +918,7 @@ app.get("/threads/:id", async (c) => {
   const scope = await getMailScope(c);
 
   const thread = await c.env.DB.prepare(
-    `SELECT * FROM email_threads WHERE id = ? LIMIT 1`,
+    `SELECT * FROM email_threads WHERE id = ?${activeCompanySql(c)} LIMIT 1`,
   )
     .bind(id)
     .first<ThreadRow>();
@@ -886,8 +1034,10 @@ app.get("/addresses", async (c) => {
   // mailbox to assign them to people. The default (sidebar + Compose from-picker)
   // is scope-bound so each user only sees their own + granted mailboxes.
   if (c.req.query("manage") === "1" && isMailAdmin(c.get("user"))) {
+    // Management view is still company-scoped: a mail admin manages only the
+    // ACTIVE company's mailboxes. Guarded — no-op when unresolved.
     const res = await c.env.DB.prepare(
-      `SELECT * FROM email_addresses ORDER BY address ASC`,
+      `SELECT * FROM email_addresses WHERE 1=1${activeCompanySql(c)} ORDER BY address ASC`,
     ).all<AddressRow>();
     return c.json((res.results ?? []).map(rowToAddress));
   }
@@ -1077,8 +1227,9 @@ async function canManageLabels(c: Context<{ Bindings: Env }>): Promise<boolean> 
 // GET /api/mail-center/labels — the catalogue (name + colour).
 app.get("/labels", async (c) => {
   c.header("Cache-Control", "no-store");
+  // Scope the catalogue to the active company. Guarded — no-op when unresolved.
   const res = await c.env.DB.prepare(
-    `SELECT * FROM email_labels ORDER BY name ASC`,
+    `SELECT * FROM email_labels WHERE 1=1${activeCompanySql(c)} ORDER BY name ASC`,
   ).all<LabelRow>();
   return c.json((res.results ?? []).map(rowToLabel));
 });
@@ -1096,7 +1247,7 @@ app.post("/labels", async (c) => {
   const color = normalizeColor(body.color);
 
   const existing = await c.env.DB.prepare(
-    `SELECT * FROM email_labels WHERE lower(name) = lower(?) LIMIT 1`,
+    `SELECT * FROM email_labels WHERE lower(name) = lower(?)${activeCompanySql(c)} LIMIT 1`,
   )
     .bind(name)
     .first<LabelRow>();
@@ -1104,23 +1255,34 @@ app.post("/labels", async (c) => {
 
   const id = crypto.randomUUID();
   const userId = c.get("userId") ?? null;
+  // Stamp the active company on the new label. Guarded — omitted when unresolved,
+  // so the column DEFAULT (HOUZS) applies.
+  const companyId = activeCompanyId(c);
+  const stampCo = companyId != null;
   try {
     await c.env.DB.prepare(
-      `INSERT INTO email_labels (id, name, color, created_at, created_by)
-       VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO email_labels (id, name, color, created_at, created_by${stampCo ? ", company_id" : ""})
+       VALUES (?, ?, ?, ?, ?${stampCo ? ", ?" : ""})`,
     )
-      .bind(id, name, color, new Date().toISOString(), userId)
+      .bind(
+        id,
+        name,
+        color,
+        new Date().toISOString(),
+        userId,
+        ...(stampCo ? [companyId] : []),
+      )
       .run();
   } catch {
     const row = await c.env.DB.prepare(
-      `SELECT * FROM email_labels WHERE lower(name) = lower(?) LIMIT 1`,
+      `SELECT * FROM email_labels WHERE lower(name) = lower(?)${activeCompanySql(c)} LIMIT 1`,
     )
       .bind(name)
       .first<LabelRow>();
     return c.json(row ? rowToLabel(row) : { id, name, color });
   }
   const row = await c.env.DB.prepare(
-    `SELECT * FROM email_labels WHERE id = ? LIMIT 1`,
+    `SELECT * FROM email_labels WHERE id = ?${activeCompanySql(c)} LIMIT 1`,
   )
     .bind(id)
     .first<LabelRow>();
@@ -1139,7 +1301,7 @@ app.patch("/labels/:id", async (c) => {
     .catch(() => ({}) as { name?: string; color?: string });
 
   const current = await c.env.DB.prepare(
-    `SELECT * FROM email_labels WHERE id = ? LIMIT 1`,
+    `SELECT * FROM email_labels WHERE id = ?${activeCompanySql(c)} LIMIT 1`,
   )
     .bind(id)
     .first<LabelRow>();
@@ -1154,7 +1316,7 @@ app.patch("/labels/:id", async (c) => {
     if (!name) return c.json({ error: "name cannot be empty" }, 400);
     if (name.toLowerCase() !== current.name.toLowerCase()) {
       const clash = await c.env.DB.prepare(
-        `SELECT id FROM email_labels WHERE lower(name) = lower(?) AND id <> ? LIMIT 1`,
+        `SELECT id FROM email_labels WHERE lower(name) = lower(?) AND id <> ?${activeCompanySql(c)} LIMIT 1`,
       )
         .bind(name, id)
         .first<{ id: string }>();
@@ -1172,7 +1334,7 @@ app.patch("/labels/:id", async (c) => {
   if (sets.length === 0) return c.json({ error: "no fields to update" }, 400);
 
   await c.env.DB.prepare(
-    `UPDATE email_labels SET ${sets.join(", ")} WHERE id = ?`,
+    `UPDATE email_labels SET ${sets.join(", ")} WHERE id = ?${activeCompanySql(c)}`,
   )
     .bind(...binds, id)
     .run();
@@ -1182,7 +1344,7 @@ app.patch("/labels/:id", async (c) => {
   }
 
   const row = await c.env.DB.prepare(
-    `SELECT * FROM email_labels WHERE id = ? LIMIT 1`,
+    `SELECT * FROM email_labels WHERE id = ?${activeCompanySql(c)} LIMIT 1`,
   )
     .bind(id)
     .first<LabelRow>();
@@ -1197,13 +1359,13 @@ app.delete("/labels/:id", async (c) => {
   }
   const id = c.req.param("id");
   const current = await c.env.DB.prepare(
-    `SELECT * FROM email_labels WHERE id = ? LIMIT 1`,
+    `SELECT * FROM email_labels WHERE id = ?${activeCompanySql(c)} LIMIT 1`,
   )
     .bind(id)
     .first<LabelRow>();
   if (!current) return c.json({ error: "label not found" }, 404);
 
-  await c.env.DB.prepare(`DELETE FROM email_labels WHERE id = ?`)
+  await c.env.DB.prepare(`DELETE FROM email_labels WHERE id = ?${activeCompanySql(c)}`)
     .bind(id)
     .run();
   await renameThreadLabel(c, current.name, "");
@@ -1218,9 +1380,11 @@ async function renameThreadLabel(
   to: string,
 ): Promise<void> {
   const like = `%${from}%`;
+  // Scope to the active company so a label rename/delete only rewrites THIS
+  // company's threads. Guarded — no-op when unresolved.
   const rows = await c.env.DB.prepare(
     `SELECT id, labels FROM email_threads
-       WHERE labels IS NOT NULL AND labels LIKE ?`,
+       WHERE labels IS NOT NULL AND labels LIKE ?${activeCompanySql(c)}`,
   )
     .bind(like)
     .all<{ id: string; labels: string | null }>();
@@ -1253,7 +1417,7 @@ app.post("/test-inject", async (c) => {
   }
   // Land it on a real configured address if one exists, else <branding domain>.
   const addr = await c.env.DB.prepare(
-    `SELECT address FROM email_addresses WHERE active = 1 ORDER BY created_at ASC LIMIT 1`,
+    `SELECT address FROM email_addresses WHERE active = 1${activeCompanySql(c)} ORDER BY created_at ASC LIMIT 1`,
   ).first<{ address: string }>();
   const domain = await brandingDomain(c.env);
   const mailbox = addr?.address || `support@${domain}`;
@@ -1314,12 +1478,16 @@ app.post("/addresses", async (c) => {
   const userId = c.get("userId") ?? null;
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
+  // Stamp the active company on the new mailbox. Guarded — omitted when
+  // unresolved, so the column DEFAULT (HOUZS) applies.
+  const companyId = activeCompanyId(c);
+  const stampCo = companyId != null;
   try {
     await c.env.DB.prepare(
       `INSERT INTO email_addresses
          (id, address, label, assigned_user_id, assigned_user_name,
-          assigned_dept, assigned_position, active, created_at, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+          assigned_dept, assigned_position, active, created_at, created_by${stampCo ? ", company_id" : ""})
+       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?${stampCo ? ", ?" : ""})`,
     )
       .bind(
         id,
@@ -1331,6 +1499,7 @@ app.post("/addresses", async (c) => {
         body.assignedPosition?.trim() || null,
         now,
         userId,
+        ...(stampCo ? [companyId] : []),
       )
       .run();
   } catch (e) {
@@ -1403,8 +1572,11 @@ app.patch("/addresses/:id", async (c) => {
     return c.json({ error: "no fields to update" }, 400);
   }
 
+  // Scope the mutation to the active company so an admin can't edit another
+  // company's mailbox. Guarded — no-op when unresolved.
+  const coSql = activeCompanySql(c);
   const res = await c.env.DB.prepare(
-    `UPDATE email_addresses SET ${sets.join(", ")} WHERE id = ?`,
+    `UPDATE email_addresses SET ${sets.join(", ")} WHERE id = ?${coSql}`,
   )
     .bind(...binds, id)
     .run();
@@ -1413,7 +1585,7 @@ app.patch("/addresses/:id", async (c) => {
   }
 
   const row = await c.env.DB.prepare(
-    `SELECT * FROM email_addresses WHERE id = ? LIMIT 1`,
+    `SELECT * FROM email_addresses WHERE id = ?${coSql} LIMIT 1`,
   )
     .bind(id)
     .first<AddressRow>();
@@ -1430,8 +1602,9 @@ app.get("/access", async (c) => {
   if (!isMailAdmin(c.get("user"))) {
     return c.json({ error: "Forbidden: requires mail_center.manage" }, 403);
   }
+  // Scope grants to the active company. Guarded — no-op when unresolved.
   const res = await c.env.DB.prepare(
-    `SELECT address_id, user_id FROM email_address_access`,
+    `SELECT address_id, user_id FROM email_address_access WHERE 1=1${activeCompanySql(c)}`,
   ).all<{ address_id: string; user_id: number }>();
   c.header("Cache-Control", "no-store");
   return c.json(
@@ -1456,11 +1629,15 @@ app.post("/access", async (c) => {
     return c.json({ error: "addressId and userId are required" }, 400);
   }
   const grantedBy = c.get("userId") ?? null;
+  // Stamp the active company on the grant. Guarded — omitted when unresolved,
+  // so the column DEFAULT (HOUZS) applies.
+  const companyId = activeCompanyId(c);
+  const stampCo = companyId != null;
   try {
     await c.env.DB.prepare(
       `INSERT INTO email_address_access
-         (id, address_id, user_id, created_at, created_by)
-       VALUES (?, ?, ?, ?, ?)`,
+         (id, address_id, user_id, created_at, created_by${stampCo ? ", company_id" : ""})
+       VALUES (?, ?, ?, ?, ?${stampCo ? ", ?" : ""})`,
     )
       .bind(
         crypto.randomUUID(),
@@ -1468,6 +1645,7 @@ app.post("/access", async (c) => {
         userId,
         new Date().toISOString(),
         grantedBy,
+        ...(stampCo ? [companyId] : []),
       )
       .run();
   } catch {
@@ -1493,7 +1671,7 @@ app.delete("/access", async (c) => {
     return c.json({ error: "addressId and userId are required" }, 400);
   }
   await c.env.DB.prepare(
-    `DELETE FROM email_address_access WHERE address_id = ? AND user_id = ?`,
+    `DELETE FROM email_address_access WHERE address_id = ? AND user_id = ?${activeCompanySql(c)}`,
   )
     .bind(addressId, userId)
     .run();
@@ -1618,7 +1796,7 @@ app.post("/threads/:id/reply", async (c) => {
   }
 
   const thread = await c.env.DB.prepare(
-    `SELECT * FROM email_threads WHERE id = ? LIMIT 1`,
+    `SELECT * FROM email_threads WHERE id = ?${activeCompanySql(c)} LIMIT 1`,
   )
     .bind(id)
     .first<ThreadRow>();
@@ -1681,12 +1859,16 @@ app.post("/threads/:id/reply", async (c) => {
   const now = new Date().toISOString();
   const snippet = (text || stripHtml(htmlBody)).slice(0, 240);
   const messageId = crypto.randomUUID();
+  // Stamp the active company (the thread was verified in it above). Guarded —
+  // omitted when unresolved, so the column DEFAULT (HOUZS) applies.
+  const companyId = activeCompanyId(c);
+  const stampCo = companyId != null;
   await c.env.DB.prepare(
     `INSERT INTO email_messages
        (id, thread_id, direction, from_address, from_name,
         to_addresses, subject, text_body, html_body, sent_at, received_at,
-        sent_by_user_id, sent_by_name, provider_message_id, created_at)
-     VALUES (?, ?, 'outbound', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        sent_by_user_id, sent_by_name, provider_message_id, created_at${stampCo ? ", company_id" : ""})
+     VALUES (?, ?, 'outbound', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?${stampCo ? ", ?" : ""})`,
   )
     .bind(
       messageId,
@@ -1703,6 +1885,7 @@ app.post("/threads/:id/reply", async (c) => {
       fromName || null,
       result.providerId ?? null,
       now,
+      ...(stampCo ? [companyId] : []),
     )
     .run();
 
@@ -1799,23 +1982,36 @@ app.post("/compose", async (c) => {
   const snippet = text.slice(0, 200);
   const threadId = crypto.randomUUID();
   const messageId = crypto.randomUUID();
+  // Stamp the active company on the new thread + message. Guarded — omitted when
+  // unresolved, so the column DEFAULT (HOUZS) applies.
+  const companyId = activeCompanyId(c);
+  const stampCo = companyId != null;
 
   await c.env.DB.prepare(
     `INSERT INTO email_threads
        (id, mailbox_address, subject, counterparty_email,
         counterparty_name, status, last_message_at, last_direction,
-        last_snippet, message_count, unread, created_at)
-     VALUES (?, ?, ?, ?, '', 'open', ?, 'outbound', ?, 1, 0, ?)`,
+        last_snippet, message_count, unread, created_at${stampCo ? ", company_id" : ""})
+     VALUES (?, ?, ?, ?, '', 'open', ?, 'outbound', ?, 1, 0, ?${stampCo ? ", ?" : ""})`,
   )
-    .bind(threadId, fromAddress, subject, to, now, snippet, now)
+    .bind(
+      threadId,
+      fromAddress,
+      subject,
+      to,
+      now,
+      snippet,
+      now,
+      ...(stampCo ? [companyId] : []),
+    )
     .run();
 
   await c.env.DB.prepare(
     `INSERT INTO email_messages
        (id, thread_id, direction, from_address, from_name,
         to_addresses, cc_addresses, subject, text_body, html_body, sent_at,
-        sent_by_user_id, sent_by_name, provider_message_id, created_at)
-     VALUES (?, ?, 'outbound', ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?, ?, ?)`,
+        sent_by_user_id, sent_by_name, provider_message_id, created_at${stampCo ? ", company_id" : ""})
+     VALUES (?, ?, 'outbound', ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?, ?, ?${stampCo ? ", ?" : ""})`,
   )
     .bind(
       messageId,
@@ -1831,6 +2027,7 @@ app.post("/compose", async (c) => {
       fromName || null,
       result.providerId ?? null,
       now,
+      ...(stampCo ? [companyId] : []),
     )
     .run();
 
@@ -1859,7 +2056,7 @@ app.patch("/threads/:id", async (c) => {
     .catch(() => ({}) as PatchBody);
 
   const owned = await c.env.DB.prepare(
-    `SELECT mailbox_address FROM email_threads WHERE id = ? LIMIT 1`,
+    `SELECT mailbox_address FROM email_threads WHERE id = ?${activeCompanySql(c)} LIMIT 1`,
   )
     .bind(id)
     .first<{ mailbox_address?: string | null }>();

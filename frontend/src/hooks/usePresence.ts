@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import type { ActiveMember, PresenceResponse } from "../types";
@@ -6,72 +6,89 @@ import type { ActiveMember, PresenceResponse } from "../types";
 const HEARTBEAT_MS = 30_000;
 
 /**
- * Tracks who else is currently using the workspace via a 30-second
- * heartbeat. The browser pings POST /api/presence/heartbeat to mark
- * itself "alive", and polls GET /api/presence on the same cadence to
- * fetch the current active list.
+ * Tracks who else is currently using the workspace via a 30-second heartbeat.
+ * The browser pings POST /api/presence/heartbeat to mark itself "alive", and
+ * polls GET /api/presence on the same cadence to fetch the current active list.
+ * The heartbeat only fires while the tab is visible.
  *
- * The heartbeat only fires while the tab is visible — minimized
- * tabs and background windows stop pinging, which means inactive
- * users naturally roll off after the 2-minute server window.
+ * SINGLETON: usePresence is mounted by more than one component at once
+ * (PresenceIndicator in the top bar + PresencePanel in the sidebar). Previously
+ * each mount ran its own poll, so every page fired 2+ GET /api/presence AND
+ * 2+ POST heartbeat. This module-level singleton runs ONE poll + heartbeat and
+ * fans the result out to all consumers, so N mounts cost one request per tick.
  */
+
+let sharedMembers: ActiveMember[] = [];
+let sharedLoading = true;
+let poller: number | undefined;
+let started = false;
+const listeners = new Set<() => void>();
+
+function emit(): void {
+  for (const l of listeners) l();
+}
+
+async function fetchActive(): Promise<void> {
+  try {
+    const res = await api.get<PresenceResponse>("/api/presence");
+    sharedMembers = res.active;
+  } catch {
+    // Network blip or 401 — keep the last known list, don't clear.
+  } finally {
+    sharedLoading = false;
+    emit();
+  }
+}
+
+async function beat(): Promise<void> {
+  try {
+    await api.post("/api/presence/heartbeat");
+  } catch {
+    // ignore — next interval will retry
+  }
+}
+
+async function tick(): Promise<void> {
+  // Only beat when the tab is visible — invisible tabs shouldn't count.
+  if (document.visibilityState === "visible") await beat();
+  await fetchActive();
+}
+
+function onVisibility(): void {
+  // Re-tick the moment the tab becomes visible so a returning user re-appears
+  // without waiting up to 30s.
+  if (document.visibilityState === "visible") void tick();
+}
+
+function ensureStarted(): void {
+  if (started) return;
+  started = true;
+  void tick();
+  poller = window.setInterval(() => void tick(), HEARTBEAT_MS);
+  document.addEventListener("visibilitychange", onVisibility);
+}
+
+function stopIfIdle(): void {
+  if (listeners.size > 0) return;
+  started = false;
+  if (poller) window.clearInterval(poller);
+  poller = undefined;
+  document.removeEventListener("visibilitychange", onVisibility);
+}
+
 export function usePresence(): { members: ActiveMember[]; loading: boolean } {
   const { user } = useAuth();
-  const [members, setMembers] = useState<ActiveMember[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  const fetchActive = useCallback(async () => {
-    try {
-      const res = await api.get<PresenceResponse>("/api/presence");
-      setMembers(res.active);
-    } catch {
-      // Network blip or 401 — keep the last known list, don't clear.
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  const beat = useCallback(async () => {
-    try {
-      await api.post("/api/presence/heartbeat");
-    } catch {
-      // ignore — next interval will retry
-    }
-  }, []);
+  const [, force] = useState(0);
 
   useEffect(() => {
-    if (!user) return;
-
-    let cancelled = false;
-    let timer: number | undefined;
-
-    async function tick() {
-      if (cancelled) return;
-      // Only beat when the tab is visible — invisible tabs shouldn't
-      // count toward presence.
-      if (document.visibilityState === "visible") {
-        await beat();
-      }
-      await fetchActive();
-    }
-
-    // Kick off immediately on mount, then on a fixed interval.
-    tick();
-    timer = window.setInterval(tick, HEARTBEAT_MS);
-
-    // Re-tick the moment the tab becomes visible again, so a user
-    // who switches back doesn't have to wait up to 30s to re-appear.
-    function onVisibility() {
-      if (document.visibilityState === "visible") tick();
-    }
-    document.addEventListener("visibilitychange", onVisibility);
-
+    const l = () => force((x) => x + 1);
+    listeners.add(l);
+    if (user) ensureStarted();
     return () => {
-      cancelled = true;
-      if (timer) window.clearInterval(timer);
-      document.removeEventListener("visibilitychange", onVisibility);
+      listeners.delete(l);
+      stopIfIdle();
     };
-  }, [user, beat, fetchActive]);
+  }, [user]);
 
-  return { members, loading };
+  return { members: sharedMembers, loading: sharedLoading };
 }

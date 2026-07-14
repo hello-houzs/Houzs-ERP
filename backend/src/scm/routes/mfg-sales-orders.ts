@@ -59,11 +59,12 @@ import { buildOneShotMints, type OneShotMintReq } from '../lib/one-shot-mint';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { supabaseAuth } from '../middleware/auth';
 import { escapeForOr } from '../lib/postgrest-search';
+import { paginateAll } from '../lib/paginate-all';
 import { monthBoundsMy, rangeBoundsMy, todayMyt, mytDateOf } from '../lib/my-time';
 // (canViewAllSales / isSelfScopedSales removed — replaced by flat permission
 // gates `scm.so.view_all` / `scm.so.attribute_other` against the REAL Houzs
 // caller; see lib/houzs-perms.ts.)
-import { hasHouzsPerm } from '../lib/houzs-perms';
+import { hasHouzsPerm, canViewAllSales, isSalesCaller } from '../lib/houzs-perms';
 import { resolveSalesScopeIds, salesDocOutOfScope, resolveCallerStaffId } from '../lib/salesScope';
 import { recordSoAudit, diffFields, type FieldChange } from '../lib/so-audit';
 /* TBC sofa exchange PWP re-evaluation (Loo 2026-06-12) — reuse the voucher
@@ -120,7 +121,7 @@ import { pickCrossCategoryMatch, type AutoMatchCandidate } from '../lib/cross-ca
 import { recomputeSoStockAllocation } from '../lib/so-stock-allocation';
 import { creditFromCancelledSo, getCustomerCreditBalance } from '../lib/customer-credits';
 import { summariseReadiness } from '../lib/so-readiness';
-import { nextMonthlyDocNo } from '../lib/doc-no';
+import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { soDeliverableRemaining, soLineDeliveries, computeSoLifecycle, soCurrentDocNo, soLineShippedSourcePos } from './delivery-orders-mfg';
 /* Shared 4-state delivery-planning derivation — the SO list emits planning_state
    (the mobile Orders-list card's status) from the SAME helper the Delivery
@@ -278,14 +279,30 @@ async function isPriceOverrideCaller(c: any): Promise<boolean> {
   return hasHouzsPerm(c, 'scm.so.price_override');
 }
 
-/* TBC fill-in + hatch hardening (Loo 2026-06-11) — self-scoped selling roles
-   used to be gated by scm.staff.role. Houzs has NO POS-self-scoped sellers
-   (the SCM bridge pins every caller to one super_admin row, so this gate
-   trivially passed for nobody). Hardcode false; the every-line edit path is
-   already gated upstream by the Houzs session auth + the scm.access gate.
-   Signature kept for call-site compatibility — args ignored. */
-async function selfScopedSalesBlocked(_sb: any, _userId: string, _docNo: string): Promise<boolean> {
-  return false;
+/* Write-side own/downline guard (Audit 2026-07, go-live review #2) — the SO
+   READ paths scope a rep to their OWN + reporting-downline orders via
+   salesDocOutOfScope, but the MUTATION routes were a no-op stub (returned
+   false), so a scoped salesperson could PATCH / delete / repay / reassign ANY
+   SO by enumerable doc_no. This mirrors salesDocOutOfScope exactly: load the
+   target SO's salesperson_id by doc_no, then defer to the shared scope helper
+   (view-all callers — `scm.so.view_all` / director / office via
+   canViewAllSales — bypass; everyone else is held to self + full reporting
+   chain). Reads sb / env / real Houzs caller id / view-all off the Hono
+   context so it uses the SAME identity vocabulary as the reads (houzsUser.id,
+   NOT the pinned scm.staff uuid on user.id). Returns TRUE ⇒ block (the caller
+   answers 404, indistinguishable from a nonexistent doc_no). A missing SO also
+   returns TRUE (fail closed). */
+async function selfScopedSalesBlocked(c: any, docNo: string): Promise<boolean> {
+  if (canViewAllSales(c)) return false; // view-all tier (director / office / *)
+  const sb = c.get('supabase');
+  const { data, error } = await sb
+    .from('mfg_sales_orders')
+    .select('salesperson_id')
+    .eq('doc_no', docNo)
+    .maybeSingle();
+  if (error || !data) return true; // fail closed — unknown/unreadable doc is out of scope
+  const sp = (data as { salesperson_id?: number | string | null }).salesperson_id;
+  return salesDocOutOfScope(sb, c.env, c.get('houzsUser')?.id, false, sp);
 }
 
 /* Anti-tamper (Task 6) — Strip variants.freeItem from a client-supplied
@@ -354,10 +371,13 @@ async function soMainMixIntroduced(sb: any, docNo: string, excludeItemId: string
    before the line is persisted; if a sofa line's variants.cells match a
    combo's modules at the line's seat-height tier, the combo price OVERRIDES
    the client-submitted unit_price (anti-tamper). */
-async function loadActiveSofaCombos(sb: any): Promise<SofaComboRow[]> {
-  const { data } = await sb
-    .from('sofa_combo_pricing')
-    .select('id, base_model, modules, tier, customer_id, prices_by_height, selling_prices_by_height, pwp_prices_by_height, label, effective_from, created_at, deleted_at, default_free_gifts')
+async function loadActiveSofaCombos(sb: any, c: any): Promise<SofaComboRow[]> {
+  const { data } = await scopeToCompany(
+    sb
+      .from('sofa_combo_pricing')
+      .select('id, base_model, modules, tier, customer_id, prices_by_height, selling_prices_by_height, pwp_prices_by_height, label, effective_from, created_at, deleted_at, default_free_gifts'),
+    c,
+  )
     .is('deleted_at', null)
     .is('customer_id', null)   // 2990 B2C — default-scope rows only
     .is('supplier_id', null);  // sales-side only — never auto-price a SO from a supplier's purchasing combos
@@ -494,16 +514,19 @@ const deriveCountryFromState = async (
 const deriveSalesLocationFromState = async (
   sb: any,
   state: string | null | undefined,
+  c: any,
 ): Promise<string | null> => {
   if (!state) return null;
   // state_warehouse_mappings keys on the canonical state name; map the common
   // WP-KL alias the locality table doesn't carry under the WP prefix.
   const key = state === 'Wilayah Persekutuan Kuala Lumpur' ? 'Kuala Lumpur' : state;
-  const { data: m } = await sb
-    .from('state_warehouse_mappings')
-    .select('warehouse_id')
-    .eq('state', key)
-    .maybeSingle();
+  const { data: m } = await scopeToCompany(
+    sb
+      .from('state_warehouse_mappings')
+      .select('warehouse_id')
+      .eq('state', key),
+    c,
+  ).maybeSingle();
   const whId = (m as { warehouse_id?: string } | null)?.warehouse_id;
   if (!whId) return null;
   const { data: w } = await sb
@@ -523,6 +546,7 @@ const deriveSalesLocationFromState = async (
 const deriveWarehouseIdFromState = async (
   sb: any,
   state: string | null | undefined,
+  c: any,
 ): Promise<string | null> => {
   if (!state) return null;
   /* Match the state against state_warehouse_mappings tolerantly: trim +
@@ -542,9 +566,12 @@ const deriveWarehouseIdFromState = async (
     return aliases[t] ?? t;
   };
   const want = canon(state);
-  const { data: rows } = await sb
-    .from('state_warehouse_mappings')
-    .select('state, warehouse_id');
+  const { data: rows } = await scopeToCompany(
+    sb
+      .from('state_warehouse_mappings')
+      .select('state, warehouse_id'),
+    c,
+  );
   for (const m of (rows ?? []) as Array<{ state: string; warehouse_id: string | null }>) {
     if (m.warehouse_id && canon(m.state) === want) return m.warehouse_id;
   }
@@ -585,14 +612,17 @@ const snapshotUnitCostSen = async (
   sb: any,
   itemCode: string,
   explicit: number,
+  c: any,
 ): Promise<number> => {
   if (explicit > 0) return explicit;
   if (!itemCode) return 0;
-  const { data } = await sb
-    .from('mfg_products')
-    .select('cost_price_sen')
-    .eq('code', itemCode)
-    .maybeSingle();
+  const { data } = await scopeToCompany(
+    sb
+      .from('mfg_products')
+      .select('cost_price_sen')
+      .eq('code', itemCode),
+    c,
+  ).maybeSingle();
   return Number((data as { cost_price_sen?: number } | null)?.cost_price_sen ?? 0);
 };
 
@@ -603,10 +633,12 @@ mfgSalesOrders.get('/', async (c) => {
      uuids), or null = unrestricted. Single source of truth in
      lib/salesScope.ts: view-all callers (`*` / scm.so.view_all) → all;
      everyone else → SELF + full manager_id downline chain (owner spec).
+     view-all = scm.so.view_all permission OR a director position (Sales
+     Director / Super Admin / Finance Manager) via canViewAllSales.
      NOTE: must pass the REAL Houzs integer user id — user.id here is the
      bridge's pinned system staff uuid and feeding it to the scope lookup
      was the non-admin 500 (uuid bound to an integer column). */
-  const scopeIds = await resolveSalesScopeIds(sb, c.env, c.get('houzsUser')?.id, hasHouzsPerm(c, 'scm.so.view_all'));
+  const scopeIds = await resolveSalesScopeIds(sb, c.env, c.get('houzsUser')?.id, canViewAllSales(c));
 
   /* Dashboard summary mode (`?summary=1`): the landing page only needs to bucket
      SOs by status/proceeded_at and count "new today" — it does NOT need the
@@ -643,12 +675,94 @@ mfgSalesOrders.get('/', async (c) => {
      computed cols; proceeded_at was added to the base table BEFORE the view
      was last recreated by the 2990-views script, so it IS present). */
   const LIST_COLS = `${HEADER}, proceeded_at, paid_total_centi, balance_centi_live`;
-  let q = sb.from('mfg_sales_orders_with_payment_totals').select(LIST_COLS).order('so_date', { ascending: false }).limit(500);
-  if (scopeIds) q = q.in('salesperson_id', scopeIds);
-  q = scopeToCompany(q, c); // multi-company: isolate to the active company
-  const status = c.req.query('status'); if (status) q = q.eq('status', status);
-  const debtor = c.req.query('debtor'); if (debtor) q = q.ilike('debtor_name', `%${debtor}%`);
-  const { data, error } = await q;
+
+  /* Opt-in server-side pagination + search + sort + status-counts.
+     WHY: keep this endpoint flat as the SO table grows — the legacy path streams
+     up to 500 fully-hydrated rows on every load. The PRESENCE of `page` switches
+     paging on; when it is absent/empty the query below is left BYTE-IDENTICAL to
+     the historical behavior (order so_date desc, limit 500, status + debtor
+     params, `{ salesOrders }` shape) so nothing that calls this today changes.
+     Status counts are computed over the FULL scoped set (no status/search/page
+     filter) so the tab counts stay stable while the user types or a status tab
+     is active — this avoids a page-scoped-KPI bug and mirrors the current FE. */
+  const pageRaw = c.req.query('page');
+  const paginate = pageRaw !== undefined && pageRaw !== '';
+
+  let data: unknown = null;
+  let error: { message: string } | null = null;
+  let total = 0;
+  let page = 0;
+  let pageSize = 50;
+  let statusCounts: { all: number; draft: number; confirmed: number; cancelled: number } | undefined;
+
+  if (!paginate) {
+    /* --- LEGACY PATH (unchanged) --- */
+    let q = sb.from('mfg_sales_orders_with_payment_totals').select(LIST_COLS).order('so_date', { ascending: false }).limit(500);
+    if (scopeIds) q = q.in('salesperson_id', scopeIds);
+    q = scopeToCompany(q, c); // multi-company: isolate to the active company
+    const status = c.req.query('status'); if (status) q = q.eq('status', status);
+    const debtor = c.req.query('debtor'); if (debtor) q = q.ilike('debtor_name', `%${debtor}%`);
+    const res = await q;
+    data = res.data;
+    error = res.error;
+  } else {
+    /* --- PAGINATED PATH (opt-in via `page`) --- */
+    page = Math.max(0, Math.trunc(Number(pageRaw)) || 0);
+    const psRaw = Number(c.req.query('pageSize'));
+    pageSize = Number.isFinite(psRaw) && psRaw > 0 ? Math.min(100, Math.max(1, Math.trunc(psRaw))) : 50;
+
+    /* sort whitelist — map to the view's columns; anything else → so_date. */
+    const SORT_COLS = new Set(['so_date', 'doc_no', 'debtor_name', 'status', 'local_total_centi', 'customer_delivery_date']);
+    const [rawCol, rawDir] = (c.req.query('sort') ?? 'so_date:desc').split(':');
+    const sortCol = SORT_COLS.has(rawCol) ? rawCol : 'so_date';
+    const sortAsc = rawDir === 'asc';
+
+    let q = sb.from('mfg_sales_orders_with_payment_totals').select(LIST_COLS, { count: 'exact' }).order(sortCol, { ascending: sortAsc });
+    /* unique tiebreaker so range paging can't skip/repeat rows sharing the sort key */
+    if (sortCol !== 'doc_no') q = q.order('doc_no', { ascending: sortAsc });
+    if (scopeIds) q = q.in('salesperson_id', scopeIds);
+    q = scopeToCompany(q, c); // multi-company: isolate to the active company
+    const status = c.req.query('status'); if (status) q = q.eq('status', status);
+    /* free-text search replaces the legacy `debtor` param in this branch */
+    const search = c.req.query('q');
+    if (search) {
+      const s = escapeForOr(search);
+      if (s) q = q.or(`doc_no.ilike.%${s}%,debtor_name.ilike.%${s}%,debtor_code.ilike.%${s}%,agent.ilike.%${s}%,sales_location.ilike.%${s}%,ref.ilike.%${s}%,branding.ilike.%${s}%`);
+    }
+    /* Optional so_date window (ISO yyyy-mm-dd, inclusive). The mobile list's
+       period chips (this-month / last-month / next-month / this-year) send a
+       from/to so the range filter runs server-side across the whole table, not
+       just the current page. Absent → no date bound. */
+    const from = c.req.query('from'); if (from) q = q.gte('so_date', from);
+    const to = c.req.query('to'); if (to) q = q.lte('so_date', to);
+    q = q.range(page * pageSize, page * pageSize + pageSize - 1);
+    const res = await q;
+    data = res.data;
+    error = res.error;
+    total = res.count ?? (res.data?.length ?? 0);
+
+    /* Status counts over the SAME scope + company filters but WITHOUT the status
+       filter, search, or pagination. Cheap `head`-only counts against the base
+       table (not the payments view). */
+    const countBase = () => {
+      let cq = sb.from('mfg_sales_orders').select('*', { count: 'exact', head: true });
+      if (scopeIds) cq = cq.in('salesperson_id', scopeIds);
+      cq = scopeToCompany(cq, c);
+      return cq;
+    };
+    const [allC, draftC, confirmedC, cancelledC] = await Promise.all([
+      countBase(),
+      countBase().eq('status', 'DRAFT'),
+      countBase().eq('status', 'CONFIRMED'),
+      countBase().eq('status', 'CANCELLED'),
+    ]);
+    statusCounts = {
+      all: allC.count ?? 0,
+      draft: draftC.count ?? 0,
+      confirmed: confirmedC.count ?? 0,
+      cancelled: cancelledC.count ?? 0,
+    };
+  }
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
 
   /* PR — Commander 2026-05-28: Stock Status chip column.
@@ -661,20 +775,51 @@ mfgSalesOrders.get('/', async (c) => {
   const rows = (data ?? []) as Array<{ doc_no?: string } & Record<string, unknown>>;
   const docNos = rows.map((r) => r.doc_no).filter((x): x is string => !!x);
   if (docNos.length > 0) {
+    /* PERF: every per-doc_no enrichment read below only needs `docNos`, so they
+       are independent of one another AND of the item/catalog chain. Launch them
+       all up-front so they run as ONE concurrent wave instead of ~6 serial
+       round-trips. supabase-js builders are lazy (the request fires on await/
+       then), so each is wrapped in an immediately-invoked async thunk to kick it
+       off now; each is awaited at its original use-site below, so results and
+       error propagation are unchanged. This was the SO list's dominant cost
+       (~390ms desktop / ~650ms mobile, almost all serial DB latency). */
+    const payRowsProm = (async () =>
+      (await sb
+        .from('mfg_sales_order_payments')
+        .select('so_doc_no, method, online_type')
+        .in('so_doc_no', docNos)).data ?? [])();
+    const downstreamProm = Promise.all([
+      sb.from('delivery_orders').select('so_doc_no').in('so_doc_no', docNos).neq('status', 'CANCELLED'),
+      sb.from('sales_invoices').select('so_doc_no').in('so_doc_no', docNos).neq('status', 'CANCELLED'),
+    ]);
+    const deliverableProm = soDeliverableRemaining(sb, docNos);
+    const lifecycleProm = Promise.all([
+      computeSoLifecycle(sb, docNos),
+      soCurrentDocNo(sb, docNos),
+    ]);
+    const whRowsProm = (async () =>
+      (await sb.from('warehouses').select('id, code, name')).data ?? [])();
+    const baseRowsProm = (async () =>
+      (await sb
+        .from('mfg_sales_orders')
+        .select('doc_no, delivery_state, amended_delivery_date')
+        .in('doc_no', docNos)).data ?? [])();
+
     /* Order deterministically so the FIRST line per doc_no is the earliest
        one created (matches the detail endpoint's `.order('created_at')`). We
        add `branding`, `item_code` and `created_at` to the select: branding is
        the mattress brand source for the first-item rule below; item_code lets
        us fall back to mfg_products.branding when a mattress line's own branding
        is blank; created_at drives the first-line pick. */
-    const { data: itemRows } = await sb
+    const { data: itemRows } = await paginateAll<{ doc_no: string; item_group: string | null; stock_status: string | null; cancelled: boolean; branding: string | null; item_code: string | null; warehouse_id: string | null; created_at: string }>((from, to) => sb
       .from('mfg_sales_order_items')
       .select('doc_no, item_group, stock_status, cancelled, branding, item_code, warehouse_id, created_at')
       .in('doc_no', docNos)
       .eq('cancelled', false)
       .order('doc_no')
       .order('line_no', { ascending: true, nullsFirst: false })
-      .order('created_at', { ascending: true });
+      .order('created_at', { ascending: true })
+      .range(from, to));
     const agg = new Map<string, Map<string, { total: number; ready: number }>>();
     /* Branding auto-derive (Commander 2026-05-28, refined PR #266): the SO list
        grid derives its Branding pill from the SO's FIRST line item — no longer
@@ -748,10 +893,13 @@ mfgSalesOrders.get('/', async (c) => {
     for (let i = 0; i < codeList.length; i += 300) {
       const chunk = codeList.slice(i, i + 300);
       if (chunk.length === 0) continue;
-      const { data: prodRows } = await sb
-        .from('mfg_products')
-        .select('code, category, branding')
-        .in('code', chunk);
+      const { data: prodRows } = await scopeToCompany(
+        sb
+          .from('mfg_products')
+          .select('code, category, branding')
+          .in('code', chunk),
+        c,
+      );
       for (const p of (prodRows ?? []) as Array<{ code: string; category: string | null; branding: string | null }>) {
         if (p.category) productCategory.set(p.code, normCategory(p.category));
         if (p.branding && p.branding.trim()) productBranding.set(p.code, p.branding);
@@ -788,10 +936,7 @@ mfgSalesOrders.get('/', async (c) => {
        One cheap batched read over the same doc_no set already in play. */
     const paymentMethods = new Map<string, Set<string>>();
     {
-      const { data: payRows } = await sb
-        .from('mfg_sales_order_payments')
-        .select('so_doc_no, method, online_type')
-        .in('so_doc_no', docNos);
+      const payRows = await payRowsProm;
       for (const p of (payRows ?? []) as Array<{ so_doc_no: string; method: string | null; online_type: string | null }>) {
         const m = (p.method ?? '').trim().toLowerCase();
         let label: string;
@@ -811,16 +956,7 @@ mfgSalesOrders.get('/', async (c) => {
        on the row. The list grid uses this to hide Edit / Cancel from SOs that
        are downstream-locked (mirrors computeGrnFlags in routes/grns.ts). */
     const downstreamDocNos = new Set<string>();
-    const [doRowsRes, siRowsRes] = await Promise.all([
-      sb.from('delivery_orders')
-        .select('so_doc_no')
-        .in('so_doc_no', docNos)
-        .neq('status', 'CANCELLED'),
-      sb.from('sales_invoices')
-        .select('so_doc_no')
-        .in('so_doc_no', docNos)
-        .neq('status', 'CANCELLED'),
-    ]);
+    const [doRowsRes, siRowsRes] = await downstreamProm;
     for (const d of ((doRowsRes.data ?? []) as Array<{ so_doc_no: string | null }>)) {
       if (d.so_doc_no) downstreamDocNos.add(d.so_doc_no);
     }
@@ -859,7 +995,7 @@ mfgSalesOrders.get('/', async (c) => {
     const deliveredTotal = new Map<string, number>();
     const remainingTotal = new Map<string, number>();
     {
-      const deliverableMap = await soDeliverableRemaining(sb, docNos);
+      const deliverableMap = await deliverableProm;
       for (const line of deliverableMap.values()) {
         if (line.remaining > 0) hasUndelivered.add(line.docNo);
         deliveredTotal.set(line.docNo, (deliveredTotal.get(line.docNo) ?? 0) + line.delivered);
@@ -869,17 +1005,14 @@ mfgSalesOrders.get('/', async (c) => {
 
     /* Per-SO status badge driver — "latest event wins" across DO / SI / DR
        (Wei Siang 2026-05-31). 'none' falls back to the stored status. */
-    const [lifecycleByDoc, currentByDoc] = await Promise.all([
-      computeSoLifecycle(sb, docNos),
-      soCurrentDocNo(sb, docNos),
-    ]);
+    const [lifecycleByDoc, currentByDoc] = await lifecycleProm;
 
     /* Warehouse label map (id → name) for the mobile Orders-list card's
        warehouse_name. Mirrors the Delivery Planning board's read-only master
        lookup (delivery-planning.ts step 1). Small master, unpaginated like there. */
     const whName = new Map<string, string>();
     {
-      const { data: whRows } = await sb.from('warehouses').select('id, code, name');
+      const whRows = await whRowsProm;
       for (const w of (whRows ?? []) as Array<{ id: string; code: string | null; name: string | null }>) {
         const label = (w.name ?? w.code ?? '').trim();
         if (label) whName.set(w.id, label);
@@ -895,10 +1028,7 @@ mfgSalesOrders.get('/', async (c) => {
     const overrideByDoc = new Map<string, string | null>();
     const amendedDDByDoc = new Map<string, string | null>();
     {
-      const { data: baseRows } = await sb
-        .from('mfg_sales_orders')
-        .select('doc_no, delivery_state, amended_delivery_date')
-        .in('doc_no', docNos);
+      const baseRows = await baseRowsProm;
       for (const b of (baseRows ?? []) as Array<{ doc_no: string | null; delivery_state?: string | null; deliveryState?: string | null; amended_delivery_date?: string | null; amendedDeliveryDate?: string | null }>) {
         if (!b.doc_no) continue;
         overrideByDoc.set(b.doc_no, b.deliveryState ?? b.delivery_state ?? null);
@@ -975,6 +1105,7 @@ mfgSalesOrders.get('/', async (c) => {
     }
   }
 
+  if (paginate) return c.json({ salesOrders: rows, total, page, pageSize, statusCounts });
   return c.json({ salesOrders: rows });
 });
 
@@ -1316,11 +1447,14 @@ mfgSalesOrders.get('/cross-category-match', async (c) => {
 
   // Candidate earlier SOs for this phone, newest first. Name is matched in the
   // pure helper with the same lower(trim) rule as the customers unique index.
-  const { data: rows } = await sb
-    .from('mfg_sales_orders')
-    .select('doc_no, debtor_name, created_at')
-    .eq('phone', normPhone)
-    .not('status', 'in', '("CANCELLED","DRAFT")')
+  const { data: rows } = await scopeToCompany(
+    sb
+      .from('mfg_sales_orders')
+      .select('doc_no, debtor_name, created_at')
+      .eq('phone', normPhone)
+      .not('status', 'in', '("CANCELLED","DRAFT")'),
+    c,
+  )
     .order('created_at', { ascending: false })
     .limit(50);
   const candidates: AutoMatchCandidate[] = ((rows ?? []) as Array<{ doc_no: string; debtor_name: string | null }>)
@@ -1328,10 +1462,13 @@ mfgSalesOrders.get('/cross-category-match', async (c) => {
   if (candidates.length === 0) return c.json({ found: false });
 
   // Which of those candidate SOs are already linked-from by another order.
-  const { data: usedRows } = await sb
-    .from('mfg_sales_orders')
-    .select('cross_category_source_doc_no')
-    .in('cross_category_source_doc_no', candidates.map((c2) => c2.docNo));
+  const { data: usedRows } = await scopeToCompany(
+    sb
+      .from('mfg_sales_orders')
+      .select('cross_category_source_doc_no')
+      .in('cross_category_source_doc_no', candidates.map((c2) => c2.docNo)),
+    c,
+  );
   const used = ((usedRows ?? []) as Array<{ cross_category_source_doc_no: string | null }>)
     .map((r) => r.cross_category_source_doc_no)
     .filter((v): v is string => !!v);
@@ -1360,11 +1497,14 @@ mfgSalesOrders.get('/customer-search', async (c) => {
   if (q.length < 2) return c.json({ customers: [] });
   // Escape LIKE metacharacters so a literal "%" in a name can't widen the scan.
   const esc = q.replace(/[\\%_]/g, (m) => `\\${m}`);
-  const { data, error } = await sb
-    .from('mfg_sales_orders')
-    .select('doc_no, debtor_name, phone, email, customer_type, address1, address2, city, postcode, customer_state, building_type, emergency_contact_name, emergency_contact_phone, emergency_contact_relationship, created_at')
-    .ilike('debtor_name', `%${esc}%`)
-    .not('status', 'in', '("CANCELLED","DRAFT")')
+  const { data, error } = await scopeToCompany(
+    sb
+      .from('mfg_sales_orders')
+      .select('doc_no, debtor_name, phone, email, customer_type, address1, address2, city, postcode, customer_state, building_type, emergency_contact_name, emergency_contact_phone, emergency_contact_relationship, created_at')
+      .ilike('debtor_name', `%${esc}%`)
+      .not('status', 'in', '("CANCELLED","DRAFT")'),
+    c,
+  )
     .order('created_at', { ascending: false })
     .limit(60);
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
@@ -1522,7 +1662,7 @@ mfgSalesOrders.get('/:docNo', async (c) => {
     // sellers pass only their own; other reps are held to their subtree. An
     // out-of-scope doc_no answers 404 — indistinguishable from a missing one.
     const sp = (h.data as { salesperson_id?: number | string | null }).salesperson_id;
-    if (await salesDocOutOfScope(sb, c.env, c.get('houzsUser')?.id, hasHouzsPerm(c, 'scm.so.view_all'), sp)) {
+    if (await salesDocOutOfScope(sb, c.env, c.get('houzsUser')?.id, canViewAllSales(c), sp)) {
       return c.json({ error: 'not_found' }, 404);
     }
   }
@@ -1719,7 +1859,7 @@ mfgSalesOrders.get('/:docNo', async (c) => {
      the allocation fails the page still loads, lines just fall back to Pending. */
   let coverageMap = new Map<string, { source: string; po: string | null; eta: string | null }>();
   try {
-    const mrpResult = await computeMrp(sb, { catFilter: null, whFilter: null, includeUndated: true });
+    const mrpResult = await computeMrp(sb, { catFilter: null, whFilter: null, includeUndated: true, companyId: activeCompanyId(c) });
     coverageMap = mrpLineCoverage(mrpResult);
   } catch {
     coverageMap = new Map();
@@ -1800,6 +1940,87 @@ mfgSalesOrders.get('/:docNo', async (c) => {
   return c.json({ salesOrder, items, pwpCodes });
 });
 
+/* GET /:docNo/items — cutover P3 (#389): the 2990 POS (apps/pos queries.ts)
+   calls this dedicated items endpoint directly. Houzs only served items inside
+   the /:docNo detail (alongside salesOrder + pwpCodes); the bare /:docNo/items
+   GET 404'd. This mirrors the detail handler's items path EXACTLY — same
+   company scope + self-scoped-sales 404, same line_no ordering, same rule
+   re-order (sortSoLinesByGroupRank + orderSofaModuleRowsWithinBuilds), and the
+   same per-line enrichment (deliveries / delivered_qty / remaining_qty /
+   stock_state / coverage_po / coverage_eta / shipped_source_pos) — so the item
+   shape is identical to what the detail returns. Returns { items }. */
+mfgSalesOrders.get('/:docNo/items', async (c) => {
+  const sb = c.get('supabase'); const docNo = c.req.param('docNo');
+  const [h, i] = await Promise.all([
+    // Header read is company-scoped + minimal — we only need it to exist +
+    // resolve salesperson_id for the same self-scoped-sales gate the detail uses.
+    scopeToCompany(sb.from('mfg_sales_orders').select('doc_no, salesperson_id').eq('doc_no', docNo), c).maybeSingle(),
+    // Same ITEM select + line_no ordering as the detail (nulls last → pre-0165
+    // fallback to created_at, then the rule re-order below).
+    sb.from('mfg_sales_order_items').select(ITEM).eq('doc_no', docNo)
+      .order('line_no', { ascending: true, nullsFirst: false })
+      .order('created_at'),
+  ]);
+  if (h.error) return c.json({ error: 'load_failed', reason: h.error.message }, 500);
+  if (!h.data) return c.json({ error: 'not_found' }, 404);
+  /* Same tiering as the detail (lib/salesScope.ts): view-all roles pass; POS
+     sellers pass only their own; other reps are held to their subtree. An
+     out-of-scope doc_no answers 404 — indistinguishable from a missing one. */
+  {
+    const sp = (h.data as { salesperson_id?: number | string | null }).salesperson_id;
+    if (await salesDocOutOfScope(sb, c.env, c.get('houzsUser')?.id, canViewAllSales(c), sp)) {
+      return c.json({ error: 'not_found' }, 404);
+    }
+  }
+  // Rule-order the rows at READ — identical to the detail (mains → accessories
+  // → services, each build walked left-to-right; see the detail's note).
+  const itemRows = orderSofaModuleRowsWithinBuilds(
+    sortSoLinesByGroupRank(
+      (i.data ?? []) as unknown as Array<Record<string, unknown> & { id: string; item_code: string; qty?: number | null }>,
+      (r) => r.item_group as string | null | undefined,
+    ),
+  );
+  // Coverage from the SAME MRP allocation engine the detail + MRP page use.
+  // Best-effort: a failed allocation just drops lines to Pending.
+  let coverageMap = new Map<string, { source: string; po: string | null; eta: string | null }>();
+  try {
+    const mrpResult = await computeMrp(sb, { catFilter: null, whFilter: null, includeUndated: true, companyId: activeCompanyId(c) });
+    coverageMap = mrpLineCoverage(mrpResult);
+  } catch {
+    coverageMap = new Map();
+  }
+  const [remainingMap, deliveriesMap, shippedPosMap] = await Promise.all([
+    soDeliverableRemaining(sb, [docNo]),
+    soLineDeliveries(sb, itemRows.map((it) => it.id)),
+    soLineShippedSourcePos(sb, itemRows.map((it) => it.id)),
+  ]);
+  const items = itemRows.map((it) => {
+    const rem = remainingMap.get(it.id);
+    const deliveries = deliveriesMap.get(it.id) ?? [];
+    const deliveredQty = deliveries.reduce((s, d) => s + d.qty, 0);
+    const cov = coverageMap.get(it.id);
+    const covered = cov?.source === 'po';
+    const shippedPos = shippedPosMap.get(it.id) ?? [];
+    // SOFA stock-coverage trusts the batch-aware stock_status; non-sofa trusts
+    // the MRP SKU-pool source (identical to the detail's rule).
+    const isSofaLine = String((it as { item_group?: string | null }).item_group ?? '').toUpperCase().includes('SOFA');
+    const stockState = isSofaLine
+      ? (it.stock_status === 'READY' ? 'stock' : (cov?.source === 'po' ? 'po' : 'shortage'))
+      : (cov?.source ?? null);
+    return {
+      ...it,
+      deliveries,
+      delivered_qty: rem?.delivered ?? deliveredQty,
+      remaining_qty: rem?.remaining ?? Number(it.qty ?? 0),
+      stock_state: stockState,
+      coverage_po: covered ? cov?.po ?? null : null,
+      coverage_eta: covered ? cov?.eta ?? null : null,
+      shipped_source_pos: shippedPos,
+    };
+  });
+  return c.json({ items });
+});
+
 /* Customer credit balance lookup — used by the New Sales Order form to flash
    "Customer has RM X credit available" once the operator picks the customer.
    Returns 0 (not 404) when there's no history yet. */
@@ -1872,11 +2093,14 @@ mfgSalesOrders.post('/backfill-warehouses', async (c) => {
   const sb = c.get('supabase');
   if (!(await isPriceOverrideCaller(c))) return c.json({ error: 'forbidden' }, 403);
 
-  const { data: nullLines } = await sb
-    .from('mfg_sales_order_items')
-    .select('doc_no')
-    .is('warehouse_id', null)
-    .eq('cancelled', false);
+  const { data: nullLines } = await scopeToCompany(
+    sb
+      .from('mfg_sales_order_items')
+      .select('doc_no')
+      .is('warehouse_id', null)
+      .eq('cancelled', false),
+    c,
+  );
   const docNos = [...new Set(
     ((nullLines ?? []) as Array<{ doc_no: string | null }>).map((r) => r.doc_no).filter((x): x is string => !!x),
   )];
@@ -1885,10 +2109,13 @@ mfgSalesOrders.post('/backfill-warehouses', async (c) => {
   // States for those SOs (chunk the .in to dodge the PostgREST row cap).
   const stateByDoc = new Map<string, string | null>();
   for (let i = 0; i < docNos.length; i += 200) {
-    const { data: sos } = await sb
-      .from('mfg_sales_orders')
-      .select('doc_no, customer_state')
-      .in('doc_no', docNos.slice(i, i + 200));
+    const { data: sos } = await scopeToCompany(
+      sb
+        .from('mfg_sales_orders')
+        .select('doc_no, customer_state')
+        .in('doc_no', docNos.slice(i, i + 200)),
+      c,
+    );
     for (const s of (sos ?? []) as Array<{ doc_no: string; customer_state: string | null }>) {
       stateByDoc.set(s.doc_no, s.customer_state);
     }
@@ -1896,14 +2123,17 @@ mfgSalesOrders.post('/backfill-warehouses', async (c) => {
 
   let filled = 0; let skipped = 0;
   for (const docNo of docNos) {
-    const wh = await deriveWarehouseIdFromState(sb, stateByDoc.get(docNo) ?? null);
+    const wh = await deriveWarehouseIdFromState(sb, stateByDoc.get(docNo) ?? null, c);
     if (!wh) { skipped += 1; continue; }
-    await sb
-      .from('mfg_sales_order_items')
-      .update({ warehouse_id: wh })
-      .eq('doc_no', docNo)
-      .is('warehouse_id', null)
-      .eq('cancelled', false);
+    await scopeToCompany(
+      sb
+        .from('mfg_sales_order_items')
+        .update({ warehouse_id: wh })
+        .eq('doc_no', docNo)
+        .is('warehouse_id', null)
+        .eq('cancelled', false),
+      c,
+    );
     filled += 1;
   }
   return c.json({ filled, skipped, orders: docNos.length });
@@ -2059,10 +2289,12 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
       const lineCodes = items.map((it) => String(it.itemCode ?? '')).filter(Boolean);
       const metaByCode = new Map<string, { category: string }>();
       if (lineCodes.length > 0) {
-        const { data: meta } = await sb
-          .from('mfg_products')
-          .select('code, category')
-          .in('code', lineCodes);
+        // SoCreateContext is not a Hono Context, so scopeToCompany can't type-
+        // check here; add the company predicate directly from the local companyId
+        // (mfg_products is per-company; shared `code` collides across companies).
+        let metaQ = sb.from('mfg_products').select('code, category').in('code', lineCodes);
+        if (companyId != null) metaQ = metaQ.eq('company_id', companyId);
+        const { data: meta } = await metaQ;
         for (const m of (meta ?? []) as Array<{ code: string; category: string }>) {
           metaByCode.set(m.code, { category: m.category });
         }
@@ -2098,7 +2330,7 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
     }
   }
 
-  const docNo = await nextDocNo(sb, c);
+  let docNo = await nextDocNo(sb, c);
 
   /* Caller's REAL scm.staff identity (mig 0066 deterministic sync row,
      linked by staff.user_id) — drives the venue auto-stamp AND the
@@ -2271,7 +2503,7 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
       return c.json({ ...err, lineIdx: i, itemCode: code }, 400);
     }
   }
-  const cachedCombos = await loadActiveSofaCombos(sb);  // Phase 4b — sofa selling recompute
+  const cachedCombos = await loadActiveSofaCombos(sb, c);  // Phase 4b — sofa selling recompute
   const cachedFabricAddonConfig = await loadFabricTierAddonConfig(sb);  // migration 0124 — fabric-tier Δ
   const cachedModelOverrides = await loadModelFabricTierOverrides(sb);  // migration 0172 — per-Model Δ
   const cachedCompartmentOverrides = await loadCompartmentFabricTierOverrides(sb);  // migration 0025 — per-compartment Δ
@@ -2819,6 +3051,7 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
   const defaultWarehouseId = await deriveWarehouseIdFromState(
     sb,
     (body.customerState as string | null | undefined) ?? null,
+    c,
   );
 
   /* Task 5 — one-shot SKU mint accumulator. When pos_remark_extra_auto_sku is
@@ -2869,7 +3102,7 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
     const itemCode = String(it.itemCode ?? '');
     const unitCost = recomputed && recomputed.unit_cost_sen > 0
       ? recomputed.unit_cost_sen
-      : await snapshotUnitCostSen(sb, itemCode, Number(it.unitCostCenti ?? 0));
+      : await snapshotUnitCostSen(sb, itemCode, Number(it.unitCostCenti ?? 0), c);
     const lineCost = unitCost * qty;
     const group = String(it.itemGroup ?? '').toLowerCase();
     total += lineTotal;
@@ -3133,11 +3366,12 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
   let deliveryFee: SoDeliveryFeeResult | null = null;
   let crossCategorySourceDocNo: string | null = null;
   if (body.applyDeliveryFee) {
-    const { data: dcfg } = await sb
-      .from('delivery_fee_config')
-      .select('base_fee, cross_category_fee')
-      .eq('id', 1)
-      .single();
+    // SoCreateContext is not a Hono Context (see metaQ note above) — add the
+    // company predicate from the local companyId so the non-owning company
+    // reads its own delivery_fee_config, not the base company's row.
+    let dcfgQ = sb.from('delivery_fee_config').select('base_fee, cross_category_fee').eq('id', 1);
+    if (companyId != null) dcfgQ = dcfgQ.eq('company_id', companyId);
+    const { data: dcfg } = await dcfgQ.single();
     const DELIVERABLE = new Set(['sofa', 'mattress', 'bedframe']);
     const categoryIds = items
       .map((it) => String((it as { itemGroup?: string }).itemGroup ?? '').toLowerCase())
@@ -3340,6 +3574,7 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
     (await deriveSalesLocationFromState(
       sb,
       (body.customerState as string | null | undefined) ?? null,
+      c,
     ));
 
   /* P1 (Owner 2026-06-03, migration 0143) — resolve the POS handover payment
@@ -3455,8 +3690,9 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
 
   /* Processing-Date payment gate (Loo 2026-06-30) — a Processing Date is
      production's "ready to build" signal: once set, the backend orders materials
-     / starts the build when the date arrives. So it must NOT be set until ≥50% of
-     the order total is collected. Money-only: customer-info / address completeness
+     / starts the build when the date arrives. So it must NOT be set until ≥30% of
+     the order total is collected (PROCESSING_DATE_PAID_THRESHOLD, owner 2026-07-14
+     — NOT the 50% Proceed threshold). Money-only: customer-info / address completeness
      is deliberately NOT required here (those resolve later in Proceed). Mirrors
      the deposit half of the Proceed gate via the shared rule so the two can't
      drift. depositTotalCenti = the POS deposit on this create; grandTotal = order
@@ -3466,14 +3702,31 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
     if (procDateOnCreate && !meetsProcessingDatePaymentGate(depositTotalCenti, grandTotal)) {
       return c.json({
         error: 'processing_date_unpaid',
-        reason: 'A Processing Date can only be set once at least 50% of the order total is paid.',
+        reason: 'A Processing Date can only be set once at least 30% of the order total is paid.',
       }, 400);
     }
   }
 
-  const { error: hErr } = await sb.from('mfg_sales_orders').insert({
+  /* Doc-no collision retry (HIGH, 2026-07-14): two concurrent same-company SO
+     creates in the same YYMM both read the same max and mint the same doc_no;
+     without a retry the loser hits the doc_no PK (Postgres 23505) and the whole
+     order 500s (customer + payments + PWP all lost). Wrap the header insert in
+     insertWithDocNoRetry so a collision re-mints and retries. The FIRST attempt
+     reuses the already-minted docNo (PWP claims were reserved against it, with
+     rollbackPwpClaims on failure); we only auto-retry when NO PWP claim was made
+     (tries=1 keeps today's exact clean-fail+rollback for the rare promo order,
+     so a re-mint can never orphan a pwp_codes.redeemed_doc_no). */
+  let mintedDocNo = docNo;
+  let firstMint = true;
+  const { error: hErr } = await insertWithDocNoRetry(
+    async () => {
+      if (firstMint) { firstMint = false; return mintedDocNo; }
+      mintedDocNo = await nextDocNo(sb, c);
+      return mintedDocNo;
+    },
+    (dn) => sb.from('mfg_sales_orders').insert({
     company_id: companyId, // multi-company: stamp the active company
-    doc_no: docNo,
+    doc_no: dn,
     proceeded_at: autoProceed ? new Date().toISOString() : null,
     transfer_to: (body.transferTo as string) ?? null,
     so_date: (body.soDate as string) ?? todayMyt(),
@@ -3615,8 +3868,11 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
        row compatibility, but new rows skip it entirely. */
     status: (body as { asDraft?: unknown }).asDraft === true ? 'DRAFT' : 'CONFIRMED',
     created_by: user.id,
-  });
+    }),
+    claimedPwpCodes.length === 0 ? 8 : 1,
+  );
   if (hErr) { await rollbackPwpClaims(); return c.json({ error: 'insert_failed', reason: hErr.message }, 500); }
+  docNo = mintedDocNo; // committed doc_no — every child insert below keys off it
 
   /* P1 (migration 0143) — the slip is now owned by this SO, so promote its
      pending row. 'promoted' rows are excluded from the reaper that deletes the
@@ -3823,7 +4079,7 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
        matched sofa SET picks up its MASTER combo cost (spread across the lines).
        The inline rollup above set per-module costs; this corrects them + the
        header totals to the combo. No-op for non-sofa / non-matching SOs. */
-    await recomputeTotals(sb, docNo);
+    await recomputeTotals(sb, docNo, c);
   }
 
   /* PWP Code Voucher (migration 0130) — carry forward the un-applied reserved
@@ -4031,7 +4287,7 @@ mfgSalesOrders.patch('/:docNo/status', async (c) => {
      transition or cancel another salesperson's SO by doc_no — a cancel even
      converts that SO's deposit into a customer credit. Mirror the
      line-mutation endpoints' self-scope guard. */
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   const { data: prev } = await sb.from('mfg_sales_orders').select('status').eq('doc_no', docNo).maybeSingle();
   const fromStatus = (prev as { status: string } | null)?.status ?? null;
@@ -4254,7 +4510,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/override', async (c) => {
   /* Task #114 — also refresh the header totals after the override so
      total_cost_centi / total_margin_centi / category cost columns stay
      consistent with the new line revenue + margin. */
-  await recomputeTotals(sb, docNo);
+  await recomputeTotals(sb, docNo, c);
 
   // PR-D — also emit a unified audit-log entry so the History drawer
   // shows this price override alongside other UPDATE_LINE actions.
@@ -4303,7 +4559,7 @@ async function repointMintedVouchers(sb: any, docNo: string, newCustomerId: stri
    recomputeTotals — the caller is responsible for any totals refresh).
    Best-effort: logs DB errors, never throws. */
 async function recomputeDeliveryFeeCore(
-  sb: any, docNo: string, sourceDocNo: string | null,
+  sb: any, docNo: string, sourceDocNo: string | null, c: any,
 ): Promise<{ isFollowup: boolean; sourceDocNo: string | null; total: number } | null> {
   const { data: lineRows } = await sb.from('mfg_sales_order_items')
     .select('item_code, item_group, total_centi, line_no, variants')
@@ -4342,8 +4598,10 @@ async function recomputeDeliveryFeeCore(
      result is matched by the SAME shared matcher the create path runs. */
   let specialModels: { standaloneFee: number; crossCategoryFollowupFee: number }[] = [];
   if (goodsCodes.length > 0) {
-    const { data: prodRows } = await sb.from('mfg_products')
-      .select('code, category, model_id, size_code').in('code', goodsCodes);
+    const { data: prodRows } = await scopeToCompany(
+      sb.from('mfg_products').select('code, category, model_id, size_code').in('code', goodsCodes),
+      c,
+    );
     const prodByCode = new Map(
       ((prodRows ?? []) as Array<{ code: string; category: string | null; model_id: string | null; size_code: string | null }>)
         .map((p) => [p.code, p]),
@@ -4360,7 +4618,10 @@ async function recomputeDeliveryFeeCore(
         };
       }),
     );
-    const { data: comboRows } = await sb.from('sofa_combo_pricing').select('id, modules');
+    const { data: comboRows } = await scopeToCompany(
+      sb.from('sofa_combo_pricing').select('id, modules'),
+      c,
+    );
     const comboModulesById = new Map<string, string[][]>(
       ((comboRows ?? []) as Array<{ id: string; modules: string[][] | null }>)
         .map((cb) => [cb.id, cb.modules ?? []]),
@@ -4368,7 +4629,10 @@ async function recomputeDeliveryFeeCore(
     specialModels = await specialDeliveryFeesForLines(sb, deliveryRuleLines, comboModulesById);
   }
 
-  const { data: dcfg } = await sb.from('delivery_fee_config').select('base_fee, cross_category_fee').eq('id', 1).single();
+  const { data: dcfg } = await scopeToCompany(
+    sb.from('delivery_fee_config').select('base_fee, cross_category_fee').eq('id', 1),
+    c,
+  ).single();
   const cfgSen = {
     baseFee: Number((dcfg as { base_fee?: number } | null)?.base_fee ?? 0) * 100,
     crossCategoryFee: Number((dcfg as { cross_category_fee?: number } | null)?.cross_category_fee ?? 0) * 100,
@@ -4440,7 +4704,7 @@ async function recomputeDeliveryFeeCore(
     delivery_fee_centi: fee.total,
     updated_at: new Date().toISOString(),
   }).eq('doc_no', docNo);
-  await recomputeTotals(sb, docNo);
+  await recomputeTotals(sb, docNo, c);
   return { isFollowup, sourceDocNo, total: fee.total };
 }
 
@@ -4453,30 +4717,36 @@ async function recomputeDeliveryFeeCore(
    computeSoDeliveryFee. Only runs when the SO already carries a delivery fee.
    Best-effort. */
 async function redetectCrossCategoryDelivery(
-  sb: any, docNo: string, newName: string, newPhone: string | null,
+  sb: any, docNo: string, newName: string, newPhone: string | null, c: any,
 ): Promise<{ isFollowup: boolean; sourceDocNo: string | null; total: number } | null> {
   // Auto-match the new customer for an eligible cross-category source SO.
   let sourceDocNo: string | null = null;
   const normPhone = newPhone ? (normalizePhone(newPhone) ?? newPhone) : null;
   if (newName && normPhone) {
-    const { data: candRows } = await sb.from('mfg_sales_orders')
-      .select('doc_no, debtor_name, created_at')
-      .eq('phone', normPhone).not('status', 'in', '("CANCELLED","DRAFT")').neq('doc_no', docNo)
+    const { data: candRows } = await scopeToCompany(
+      sb.from('mfg_sales_orders')
+        .select('doc_no, debtor_name, created_at')
+        .eq('phone', normPhone).not('status', 'in', '("CANCELLED","DRAFT")').neq('doc_no', docNo),
+      c,
+    )
       .order('created_at', { ascending: false }).limit(50);
     const candidates: AutoMatchCandidate[] = ((candRows ?? []) as Array<{ doc_no: string; debtor_name: string | null }>)
       .map((r) => ({ docNo: r.doc_no, debtorName: r.debtor_name }));
     if (candidates.length > 0) {
-      const { data: usedRows } = await sb.from('mfg_sales_orders')
-        .select('cross_category_source_doc_no')
-        .in('cross_category_source_doc_no', candidates.map((x) => x.docNo))
-        .neq('doc_no', docNo); // self-excluded: this SO's own link must not burn its own source
+      const { data: usedRows } = await scopeToCompany(
+        sb.from('mfg_sales_orders')
+          .select('cross_category_source_doc_no')
+          .in('cross_category_source_doc_no', candidates.map((x) => x.docNo))
+          .neq('doc_no', docNo), // self-excluded: this SO's own link must not burn its own source
+        c,
+      );
       const used = ((usedRows ?? []) as Array<{ cross_category_source_doc_no: string | null }>)
         .map((r) => r.cross_category_source_doc_no).filter((v): v is string => !!v);
       const match = pickCrossCategoryMatch(candidates, newName, used);
       if (match) sourceDocNo = match.docNo;
     }
   }
-  return recomputeDeliveryFeeCore(sb, docNo, sourceDocNo);
+  return recomputeDeliveryFeeCore(sb, docNo, sourceDocNo, c);
 }
 
 /* Re-derive the delivery fee from the SO's CURRENT items — the ITEM-EDIT path.
@@ -4488,13 +4758,13 @@ async function redetectCrossCategoryDelivery(
    the SO carries no delivery fee, the core early-bails (null) before
    recomputeTotals, so we still refresh the header totals for the edit.
    Best-effort. */
-export async function rederiveDeliveryFee(sb: any, docNo: string): Promise<void> {
+export async function rederiveDeliveryFee(sb: any, docNo: string, c: any): Promise<void> {
   let storedSource: string | null = null;
   const { data: hdr } = await sb.from('mfg_sales_orders')
     .select('cross_category_source_doc_no').eq('doc_no', docNo).maybeSingle();
   storedSource = (hdr as { cross_category_source_doc_no?: string | null } | null)?.cross_category_source_doc_no ?? null;
-  const res = await recomputeDeliveryFeeCore(sb, docNo, storedSource);
-  if (res === null) await recomputeTotals(sb, docNo);
+  const res = await recomputeDeliveryFeeCore(sb, docNo, storedSource, c);
+  if (res === null) await recomputeTotals(sb, docNo, c);
 }
 
 mfgSalesOrders.patch('/:docNo', async (c) => {
@@ -4506,7 +4776,7 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
      this a sales/sales_executive reaching the Backend SO detail could PATCH any
      order by doc_no (customer fields, even salesperson_id reassignment). Mirror
      the line-mutation endpoints' self-scope guard. */
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   /* Owner 2026-06-03 (migration 0144) — phone is COMPULSORY on every SO. The
      CREATE path blocks an empty phone (phone_required); the EDIT path must too,
@@ -4606,6 +4876,7 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
       const derived = await deriveSalesLocationFromState(
         sb,
         body['customerState'] as string | null,
+        c,
       );
       if (derived) updates['sales_location'] = derived;
     }
@@ -4614,7 +4885,7 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
        warehouse_id NULL → "—" in MRP. Backfill the warehouse onto lines that
        don't have one yet (NULL only — explicit per-line overrides untouched).
        Wei Siang 2026-06-16. */
-    const reboundWh = await deriveWarehouseIdFromState(sb, body['customerState'] as string | null);
+    const reboundWh = await deriveWarehouseIdFromState(sb, body['customerState'] as string | null, c);
     if (reboundWh) {
       await sb
         .from('mfg_sales_order_items')
@@ -4669,7 +4940,7 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
      super_admin; Houzs has no live staff_role (the SCM bridge pins every caller to
      one super_admin row), so gate on the flat `scm.so.remove_processing_date` key
      (Owner + IT Admin pass via `*`). Setting it the first time, or moving it to
-     another date, stays governed by the existing gates (payment ≥50%, variants
+     another date, stays governed by the existing gates (payment ≥30%, variants
      complete, not-in-the-past, processing lock). */
   let superAdminClearsProc = false;
   {
@@ -4722,10 +4993,10 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
     }
   }
 
-  /* Processing-Date payment gate (Loo 2026-06-30) — the same ≥50%-collected rule
+  /* Processing-Date payment gate (Loo 2026-06-30) — the same ≥30%-collected rule
      the CREATE path enforces, applied when a header PATCH SETS or CHANGES the
      Processing Date to a non-null value. The date is production's "ready to build"
-     signal, so it can't go in until half the money is in. Fires ONLY on a genuine
+     signal, so it can't go in until ≥30% of the money is in. Fires ONLY on a genuine
      change (clearing it, or an unchanged re-save, passes — so an unrelated edit on
      an already-dated, since-refunded SO isn't blocked). Money-only — customer-info
      / address are deliberately not gated (they resolve later in Proceed). `paid` =
@@ -4748,7 +5019,7 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
         if (!meetsProcessingDatePaymentGate(paidCenti, totalCenti)) {
           return c.json({
             error: 'processing_date_unpaid',
-            reason: 'A Processing Date can only be set once at least 50% of the order total is paid.',
+            reason: 'A Processing Date can only be set once at least 30% of the order total is paid.',
           }, 400);
         }
       }
@@ -4884,7 +5155,7 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
       if (resolvedNewCustomerId && resolvedNewCustomerId !== oldCustomerId) {
         await repointMintedVouchers(sb, docNo, resolvedNewCustomerId);
       }
-      crossCategoryRedetect = await redetectCrossCategoryDelivery(sb, docNo, reNewName, reNewPhone);
+      crossCategoryRedetect = await redetectCrossCategoryDelivery(sb, docNo, reNewName, reNewPhone, c);
     } catch (e) {
       /* eslint-disable-next-line no-console */
       console.error('[mfg-so] customer-change re-detect failed:', e);
@@ -4952,7 +5223,7 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
 // Exported so the free-gift reconciler (lib/free-gift-reconcile.ts) can finish
 // with the SAME authoritative roll-up the edit endpoints used to call directly.
 // route<->lib function cycle is safe (not invoked at module-eval time).
-export async function recomputeTotals(sb: any, docNo: string) {
+export async function recomputeTotals(sb: any, docNo: string, c: any) {
   const { data: items } = await sb.from('mfg_sales_order_items')
     .select('id, item_code, item_group, variants, qty, total_centi, line_cost_centi')
     .eq('doc_no', docNo).eq('cancelled', false);
@@ -4968,12 +5239,15 @@ export async function recomputeTotals(sb: any, docNo: string) {
      spreadComboTotal re-normalises an already-spread group to the same total. */
   const sofaRows = rows.filter((r) => (r.item_group ?? '').toLowerCase() === 'sofa');
   if (sofaRows.length > 0) {
-    const combos = await loadActiveSofaCombos(sb); // master scope only
+    const combos = await loadActiveSofaCombos(sb, c); // master scope only
     if (combos.length > 0) {
       const fabricCodes = [...new Set(sofaRows.map((r) => String((r.variants ?? {} as Record<string, unknown>).fabricCode ?? '')).filter(Boolean))];
       const tierByFabric = new Map<string, SofaPriceTier>();
       if (fabricCodes.length > 0) {
-        const { data: fabs } = await sb.from('fabric_trackings').select('fabric_code, price_tier, sofa_price_tier').in('fabric_code', fabricCodes);
+        const { data: fabs } = await scopeToCompany(
+          sb.from('fabric_trackings').select('fabric_code, price_tier, sofa_price_tier').in('fabric_code', fabricCodes),
+          c,
+        );
         for (const f of (fabs ?? []) as Array<{ fabric_code: string; price_tier: SofaPriceTier | null; sofa_price_tier: SofaPriceTier | null }>) {
           tierByFabric.set(f.fabric_code, (f.sofa_price_tier ?? f.price_tier ?? 'PRICE_2'));
         }
@@ -5130,7 +5404,7 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
 
   /* TBC fill-in (Loo 2026-06-11) — self-scoped selling roles only touch
      their own SO. */
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   /* Composition guard (Loo 2026-06-11) — the create-path MAIN-mix rule
      (sofa never shares a bill with bedframe / mattress, PR #519) now also
@@ -5160,7 +5434,7 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
   /* Commander 2026-05-31 — a line added later inherits the SO state's warehouse
      by default (migration 0118). Explicit it.warehouseId override wins. */
   const addLineWarehouseId = (it.warehouseId as string | null | undefined)
-    ?? await deriveWarehouseIdFromState(sb, (header.customer_state as string | null) ?? null);
+    ?? await deriveWarehouseIdFromState(sb, (header.customer_state as string | null) ?? null, c);
 
   /* POS line quantity (Loo 2026-06-12) — same 422 gate as POST / (review
      found the create-only gate left qty 0 free-line inserts open here). */
@@ -5183,11 +5457,32 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
     );
     if (aoErr) return c.json({ ...aoErr, itemCode: itemCodeStr }, 400);
   }
+  /* Go-live review #6 — variant completeness on the LINE routes. The header
+     POST/PATCH already blocks setting a Processing Date while any line has
+     blank category-mandatory variants (findIncompleteVariantLines), but a line
+     ADDED to an already processing-dated SO skipped that check — so a fabric
+     could be blanked on a build that's already "ready to build". Re-run the
+     shared guard on this added line when the SO carries a Processing Date
+     (internal_expected_dd). Same 409 shape the header path returns. */
+  if ((header as { internal_expected_dd?: string | null }).internal_expected_dd) {
+    const offenders = findIncompleteVariantLines([{
+      itemCode: itemCodeStr,
+      group: (it.itemGroup as string | null | undefined) ?? null,
+      variants: variantsObj as Record<string, unknown> | null,
+    }]);
+    if (offenders.length > 0) {
+      return c.json({
+        error: 'variants_incomplete',
+        message: 'Processing Date requires all category-mandatory variants on every line.',
+        offenders,
+      }, 409);
+    }
+  }
   const [cachedConfig, productLite, fabricLite, sofaCombosLite, sellingTiersLite, fabricAddonConfigLite, specialAddonsLite, modelOverridesLite, compartmentOverridesLite] = await Promise.all([
     loadMaintenanceConfig(sb),
     loadProductByCode(sb, itemCodeStr),
     loadFabricByCode(sb, variantsObj?.fabricCode ?? null),
-    loadActiveSofaCombos(sb),
+    loadActiveSofaCombos(sb, c),
     loadFabricSellingTiers(sb, (variantsObj as { fabricId?: string } | null)?.fabricId ?? null),
     loadFabricTierAddonConfig(sb),
     loadSpecialAddons(sb),
@@ -5365,7 +5660,7 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
   // client cost only when the recompute produced no cost.
   const unitCost = recomputed.unit_cost_sen > 0
     ? recomputed.unit_cost_sen
-    : await snapshotUnitCostSen(sb, itemCodeStr, Number(it.unitCostCenti ?? 0));
+    : await snapshotUnitCostSen(sb, itemCodeStr, Number(it.unitCostCenti ?? 0), c);
   const lineCost = unitCost * qty;
   /* PR-E — same inheritance rule as POST /. Explicit per-line value wins
      (and flips overridden=true unless the client says otherwise);
@@ -5537,10 +5832,10 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
       const firstRow = (moduleData ?? [])[0] ?? moduleRows[0];
 
       // Default Free Gift — adding a sofa trigger may grant a gift.
-      await reconcileFreeGiftLinesForSo(sb, docNo);
+      await reconcileFreeGiftLinesForSo(sb, docNo, c);
       // Re-derive the delivery fee — a new sofa can introduce a cross-category
       // mix or a special-delivery trigger. Stored cross-category source kept.
-      await rederiveDeliveryFee(sb, docNo);
+      await rederiveDeliveryFee(sb, docNo, c);
 
       await recordSoAudit(sb, {
         docNo,
@@ -5577,10 +5872,10 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
   }
   // Default Free Gift (0170) — adding a trigger line may grant a new accessory
   // gift; reconcile auto-inserts/deletes gift lines, then recomputes totals.
-  await reconcileFreeGiftLinesForSo(sb, docNo);
+  await reconcileFreeGiftLinesForSo(sb, docNo, c);
   // Re-derive the delivery fee — a new goods line can introduce a cross-category
   // mix or a special-delivery trigger. Stored cross-category source kept.
-  await rederiveDeliveryFee(sb, docNo);
+  await rederiveDeliveryFee(sb, docNo, c);
 
   // PR-D — emit ADD_LINE audit row. Capture item code + qty + unit price
   // so the timeline shows the meaningful what-was-added without an explosion
@@ -5623,7 +5918,7 @@ mfgSalesOrders.patch('/:docNo/items/:itemId', async (c) => {
 
   /* TBC fill-in (Loo 2026-06-11) — self-scoped selling roles only touch
      their own SO. */
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   /* Owner 2026-06-12 — processing-date lock: no line EDIT once the processing
      day has passed (the locked order is already PO'd to the supplier). */
@@ -5721,13 +6016,37 @@ mfgSalesOrders.patch('/:docNo/items/:itemId', async (c) => {
       variantsAfter as Parameters<typeof checkAllowedOptions>[2],
     );
     if (aoErr) return c.json({ ...aoErr, itemCode: itemCodeAfter }, 400);
+    /* Go-live review #6 — variant completeness on the LINE-EDIT route. When the
+       SO already carries a Processing Date (internal_expected_dd) the header
+       guard (findIncompleteVariantLines) has already vouched every line is
+       complete; a later line edit must not be able to blank a category-mandatory
+       variant (e.g. clear a fabric) on that "ready to build" order. Only checked
+       when the caller actually CHANGED variants / item code (same grandfather as
+       the allowed-options gate above) so an untouched re-save is never rejected. */
+    const { data: soHdr } = await sb.from('mfg_sales_orders')
+      .select('internal_expected_dd').eq('doc_no', docNo).maybeSingle();
+    if ((soHdr as { internal_expected_dd?: string | null } | null)?.internal_expected_dd) {
+      const offenders = findIncompleteVariantLines([{
+        id: itemId,
+        itemCode: itemCodeAfter,
+        group: itemGroupAfter,
+        variants: variantsAfter as Record<string, unknown> | null,
+      }]);
+      if (offenders.length > 0) {
+        return c.json({
+          error: 'variants_incomplete',
+          message: 'Processing Date requires all category-mandatory variants on every line.',
+          offenders,
+        }, 409);
+      }
+    }
   }
   if (shouldRecompute && itemCodeAfter) {
     const [cfg, prodLite, fabLite, sofaCombosPatch, sellingTiersPatch, fabricAddonConfigPatch, specialAddonsPatch, modelOverridesPatch, compartmentOverridesPatch] = await Promise.all([
       loadMaintenanceConfig(sb),
       loadProductByCode(sb, itemCodeAfter),
       loadFabricByCode(sb, variantsAfter?.fabricCode ?? null),
-      loadActiveSofaCombos(sb),
+      loadActiveSofaCombos(sb, c),
       loadFabricSellingTiers(sb, (variantsAfter as { fabricId?: string } | null)?.fabricId ?? null),
       loadFabricTierAddonConfig(sb),
       loadSpecialAddons(sb),
@@ -5849,7 +6168,7 @@ mfgSalesOrders.patch('/:docNo/items/:itemId', async (c) => {
   } else if (recomputedPatch && recomputedPatch.unit_cost_sen > 0) {
     unitCost = recomputedPatch.unit_cost_sen;
   } else if (itemCodeChanged) {
-    unitCost = await snapshotUnitCostSen(sb, String(it.itemCode ?? ''), 0);
+    unitCost = await snapshotUnitCostSen(sb, String(it.itemCode ?? ''), 0, c);
   } else {
     unitCost = prev.unit_cost_centi;
   }
@@ -5935,10 +6254,10 @@ mfgSalesOrders.patch('/:docNo/items/:itemId', async (c) => {
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
   // Default Free Gift (0170) — editing a line (code/qty) may add or drop a
   // trigger; reconcile auto-syncs the gift lines, then recomputes totals.
-  await reconcileFreeGiftLinesForSo(sb, docNo);
+  await reconcileFreeGiftLinesForSo(sb, docNo, c);
   // Re-derive the delivery fee — a line code/qty change can flip a cross-category
   // mix or a special-delivery trigger. Stored cross-category source kept.
-  await rederiveDeliveryFee(sb, docNo);
+  await rederiveDeliveryFee(sb, docNo, c);
 
   // PR-D — diff old vs new and emit one UPDATE_LINE row only if any field
   // moved. Compare across both the derived columns (qty/price/discount)
@@ -5988,7 +6307,7 @@ mfgSalesOrders.delete('/:docNo/items/:itemId', async (c) => {
 
   /* TBC fill-in (Loo 2026-06-11) — self-scoped selling roles only touch
      their own SO. */
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   /* Owner 2026-06-12 — processing-date lock: no line DELETE once the
      processing day has passed (the locked order is already PO'd). */
@@ -6025,10 +6344,10 @@ mfgSalesOrders.delete('/:docNo/items/:itemId', async (c) => {
   if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
   // Default Free Gift (0170) — removing a trigger line (e.g. a mattress) must
   // auto-delete its free gift; reconcile drops orphaned gifts, then recomputes.
-  await reconcileFreeGiftLinesForSo(sb, docNo);
+  await reconcileFreeGiftLinesForSo(sb, docNo, c);
   // Re-derive the delivery fee — removing a goods line can drop a cross-category
   // mix or a special-delivery trigger. Stored cross-category source kept.
-  await rederiveDeliveryFee(sb, docNo);
+  await rederiveDeliveryFee(sb, docNo, c);
 
   // Task #93 — orphan cleanup. Loop over the photo keys and best-effort
   // delete each from R2. Failures are swallowed (logged) so a flaky R2
@@ -6119,7 +6438,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-update', async (c) => {
 
   const childLock = await soHasDownstream(sb, docNo);
   if (childLock) return c.json(childLock, 409);
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   /* Owner 2026-06-12 — processing-date lock: a TBC fill-in is still a line
      EDIT (it changes what we PO to the supplier), so it locks too. */
@@ -6293,10 +6612,10 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-update', async (c) => {
 
   // Default Free Gift (0170) — a sofa/variant build change may newly match (or
   // stop matching) a gifting combo; reconcile syncs the gift lines, then totals.
-  await reconcileFreeGiftLinesForSo(sb, docNo);
+  await reconcileFreeGiftLinesForSo(sb, docNo, c);
   // Re-derive the delivery fee — a TBC variant fill-in can resolve a special-
   // delivery trigger (model/variant/combo). Stored cross-category source kept.
-  await rederiveDeliveryFee(sb, docNo);
+  await rederiveDeliveryFee(sb, docNo, c);
   await recordSoAudit(sb, {
     docNo,
     action: 'UPDATE_LINE',
@@ -6328,7 +6647,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap', async (c) => {
 
   const childLock = await soHasDownstream(sb, docNo);
   if (childLock) return c.json(childLock, 409);
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   /* Owner 2026-06-12 — processing-date lock: a product swap is a line EDIT
      (it changes what we PO to the supplier), so it locks too. */
@@ -6347,9 +6666,12 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap', async (c) => {
     return c.json({ error: 'sofa_swap_not_supported', reason: 'A sofa build is exchanged by rebuilding the order, not by swapping one line.' }, 400);
   }
 
-  const { data: prodRow } = await sb.from('mfg_products')
-    .select('code, name, category, status, pos_active, sell_price_sen, cost_price_sen, pwp_price_sen, model_id, size_code')
-    .eq('code', newCode).maybeSingle();
+  const { data: prodRow } = await scopeToCompany(
+    sb.from('mfg_products')
+      .select('code, name, category, status, pos_active, sell_price_sen, cost_price_sen, pwp_price_sen, model_id, size_code')
+      .eq('code', newCode),
+    c,
+  ).maybeSingle();
   const prod = prodRow as { code: string; name: string; category: string; status: string; pos_active: boolean; sell_price_sen: number | null; cost_price_sen: number | null; pwp_price_sen: number | null; model_id: string | null; size_code: string | null } | null;
   if (!prod) return c.json(unknownItemCodeResponse([newCode]), 409);
   if (String(prod.category).toUpperCase() === 'SOFA') {
@@ -6445,9 +6767,11 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap', async (c) => {
       .eq('source_doc_no', docNo);
     const anchors = (soCodes ?? []) as Array<{ code: string; rule_id: string | null; status: string; trigger_item_code: string | null; redeemed_doc_no: string | null }>;
     {
-      const { data: ruleRows } = await sb.from('pwp_rules')
-        .select('id, trigger_category, trigger_eligible_model_ids, trigger_combo_ids, reward_category, eligible_reward_model_ids, reward_combo_ids, trigger_size_codes, trigger_compartments, reward_size_codes, reward_compartments, qty_per_trigger, type')
-        .eq('active', true);
+      const { data: ruleRows } = await scopeToCompany(
+        sb.from('pwp_rules')
+          .select('id, trigger_category, trigger_eligible_model_ids, trigger_combo_ids, reward_category, eligible_reward_model_ids, reward_combo_ids, trigger_size_codes, trigger_compartments, reward_size_codes, reward_compartments, qty_per_trigger, type'),
+        c,
+      ).eq('active', true);
       const rules = (ruleRows ?? []) as SwapPwpRule[];
       const ruleById = new Map(rules.map((r) => [r.id, r]));
       const fitsTrigger = (r: SwapPwpRule | undefined,
@@ -6511,7 +6835,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap', async (c) => {
             .map((l) => String(((l.variants ?? {}) as Record<string, unknown>).pwpCode ?? ''))
             .filter(Boolean))];
           for (const cdx of sofaRevertCodes) {
-            const plan = await planSofaRewardRevert(sb, docNo, cdx);
+            const plan = await planSofaRewardRevert(sb, docNo, cdx, c);
             if (!plan.ok) {
               return c.json({
                 error: 'pwp_reward_sofa_revert_unsupported',
@@ -6698,10 +7022,10 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap', async (c) => {
   // Default Free Gift (0170) — runs AFTER the PWP re-evaluation above, in place
   // of the final recomputeTotals: a product swap can add/drop a trigger, so
   // reconcile syncs the accessory gift lines and then recomputes header totals.
-  await reconcileFreeGiftLinesForSo(sb, docNo);
+  await reconcileFreeGiftLinesForSo(sb, docNo, c);
   // Re-derive the delivery fee — a product swap can flip a cross-category mix or
   // a special-delivery trigger. Stored cross-category source kept.
-  await rederiveDeliveryFee(sb, docNo);
+  await rederiveDeliveryFee(sb, docNo, c);
   await recordSoAudit(sb, {
     docNo,
     action: 'UPDATE_LINE',
@@ -6764,6 +7088,7 @@ async function planSofaRewardRevert(
   sb: any,
   docNo: string,
   pwpCode: string,
+  c: any,
 ): Promise<{ ok: true; updates: SofaRewardRevertUpdate[] } | { ok: false }> {
   const { data } = await sb.from('mfg_sales_order_items')
     .select('id, item_code, item_group, qty, unit_price_centi, discount_centi, unit_cost_centi, line_cost_centi, variants')
@@ -6803,7 +7128,7 @@ async function planSofaRewardRevert(
     loadMaintenanceConfig(sb),
     loadProductByCode(sb, lead.item_code),
     loadFabricByCode(sb, (leadV.fabricCode as string | undefined) ?? null),
-    loadActiveSofaCombos(sb),
+    loadActiveSofaCombos(sb, c),
     loadFabricSellingTiers(sb, (leadV.fabricId as string | undefined) ?? null),
     loadFabricTierAddonConfig(sb),
     loadSpecialAddons(sb),
@@ -6879,7 +7204,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
     const procLock = await soProcessingLockBlocked(sb, docNo);
     if (procLock) return c.json(procLock, 409);
   }
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   const { data: prevRow } = await sb.from('mfg_sales_order_items')
     .select('id, item_code, item_group, qty, discount_centi, total_centi, variants, cancelled, line_date, debtor_code, debtor_name, agent, venue, branding, line_delivery_date, line_delivery_date_overridden, warehouse_id, remark')
@@ -6976,7 +7301,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
   const [cfg, fabLite, combos, sellingTiers, fabricAddonCfg, specialDefs, modulePrices, moduleCostRows, modelOverridesSwap] = await Promise.all([
     loadMaintenanceConfig(sb),
     loadFabricByCode(sb, (newVariants.fabricCode as string | undefined) ?? null),
-    loadActiveSofaCombos(sb),
+    loadActiveSofaCombos(sb, c),
     loadFabricSellingTiers(sb, (newVariants.fabricId as string | undefined) ?? null),
     loadFabricTierAddonConfig(sb),
     loadSpecialAddons(sb),
@@ -7025,7 +7350,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
   const unit = recomputed.unit_price_sen;
   const unitCost = recomputed.unit_cost_sen > 0
     ? recomputed.unit_cost_sen
-    : await snapshotUnitCostSen(sb, newCode, 0);
+    : await snapshotUnitCostSen(sb, newCode, 0, c);
   const discount = Number(prev.discount_centi ?? 0);
   const newBuildTotal = (qty * unit) - discount;
   const oldBuildTotal = oldLines.reduce((s, l) => s + Number(l.total_centi ?? 0), 0);
@@ -7102,9 +7427,11 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
   let pwpNewlyTriggered: PwpRuleRow[] = [];
   let rewardLinesToRevert: RewardRevertLine[] = [];
   {
-    const { data: ruleRows } = await sb.from('pwp_rules')
-      .select('id, trigger_category, trigger_eligible_model_ids, trigger_combo_ids, reward_category, eligible_reward_model_ids, reward_combo_ids, trigger_size_codes, trigger_compartments, reward_size_codes, reward_compartments, qty_per_trigger, type, active')
-      .eq('active', true);
+    const { data: ruleRows } = await scopeToCompany(
+      sb.from('pwp_rules')
+        .select('id, trigger_category, trigger_eligible_model_ids, trigger_combo_ids, reward_category, eligible_reward_model_ids, reward_combo_ids, trigger_size_codes, trigger_compartments, reward_size_codes, reward_compartments, qty_per_trigger, type, active'),
+      c,
+    ).eq('active', true);
     pwpRules = ((ruleRows ?? []) as PwpRuleRow[]);
     const comboById = new Map((combos ?? []).map((cb) => [cb.id, cb]));
     const newModuleIds = (newCells as Array<{ moduleId?: unknown }>)
@@ -7180,7 +7507,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
         .map((l) => String(((l.variants ?? {}) as Record<string, unknown>).pwpCode ?? ''))
         .filter(Boolean))];
       for (const cdx of sofaRevertCodes) {
-        const plan = await planSofaRewardRevert(sb, docNo, cdx);
+        const plan = await planSofaRewardRevert(sb, docNo, cdx, c);
         if (!plan.ok) {
           return c.json({
             error: 'pwp_reward_sofa_revert_unsupported',
@@ -7425,10 +7752,10 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
   // place of the final recomputeTotals: a sofa build swap can newly match (or
   // stop matching) a gifting combo, so reconcile syncs the accessory gift lines
   // and then recomputes header totals.
-  await reconcileFreeGiftLinesForSo(sb, docNo);
+  await reconcileFreeGiftLinesForSo(sb, docNo, c);
   // Re-derive the delivery fee — a sofa build swap can flip a cross-category mix
   // or a special-delivery trigger (model/combo/compartment). Source kept.
-  await rederiveDeliveryFee(sb, docNo);
+  await rederiveDeliveryFee(sb, docNo, c);
   await recordSoAudit(sb, {
     docNo,
     action: 'UPDATE_LINE',
@@ -7509,7 +7836,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/photos', async (c) => {
   const itemId = c.req.param('itemId');
   const user = c.get('user');
   // Audit 2026-06-20 — self-scoped sales may only touch their OWN SO (mirror the line/header guards).
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   if (!c.env.SO_ITEM_PHOTOS) {
     return c.json({ error: 'photo_bucket_not_configured' }, 500);
@@ -7701,7 +8028,7 @@ mfgSalesOrders.delete('/:docNo/items/:itemId/photos/:photoKey', async (c) => {
   const photoKey = decodeURIComponent(c.req.param('photoKey'));
   const user = c.get('user');
   // Audit 2026-06-20 — self-scoped sales may only touch their OWN SO (mirror the line/header guards).
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   if (!c.env.SO_ITEM_PHOTOS) {
     return c.json({ error: 'photo_bucket_not_configured' }, 500);
@@ -7941,7 +8268,7 @@ export async function recordSoPaymentRow(
 mfgSalesOrders.post('/:docNo/payments', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const user = c.get('user');
   // Audit 2026-06-20 — self-scoped sales may only touch their OWN SO (mirror the line/header guards).
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   // Ensure the SO exists before inserting a child row (gives a cleaner
   // 404 than a deferred FK violation).
@@ -8067,7 +8394,7 @@ mfgSalesOrders.patch('/:docNo/payments/:id', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const id = c.req.param('id');
   const user = c.get('user');
   // Same self-scope gate as POST / DELETE payments.
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   // Load the row (need every method-scoped column + created_at for the lock).
   const { data: row } = await sb.from('mfg_sales_order_payments').select('*').eq('id', id).maybeSingle();
@@ -8081,14 +8408,23 @@ mfgSalesOrders.patch('/:docNo/payments/:id', async (c) => {
   };
   if (before.so_doc_no !== docNo) return c.json({ error: 'payment_doc_mismatch' }, 400);
 
-  /* Same-day lock — compare the row's created_at (UTC) to now, both as MYT
-     calendar days via the shared helper (never raw new Date()). Different day →
-     locked. */
+  /* Same-day lock — a payment recorded TODAY (MYT) can be corrected; after
+     midnight the day's cash-up is settled and it LOCKS. EXEMPT DRAFT SOs: a
+     draft isn't confirmed/settled yet (e.g. an OCR-scanned draft whose payment
+     was mis-read), so its payments must stay freely editable — mirrors the
+     frontend's draftUnlocked (2026-07-13), which was never matched here. */
   if (mytDateOf(before.created_at) !== todayMyt()) {
-    return c.json({
-      error: 'payment_edit_locked',
-      reason: 'This payment can only be edited on the day it was recorded.',
-    }, 409);
+    const { data: soRow } = await sb
+      .from('mfg_sales_orders')
+      .select('status')
+      .eq('doc_no', docNo)
+      .maybeSingle();
+    if ((soRow?.status as string | undefined) !== 'DRAFT') {
+      return c.json({
+        error: 'payment_edit_locked',
+        reason: 'This payment can only be edited on the day it was recorded.',
+      }, 409);
+    }
   }
 
   let body: unknown;
@@ -8187,7 +8523,7 @@ mfgSalesOrders.delete('/:docNo/payments/:id', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const id = c.req.param('id');
   const user = c.get('user');
   // Audit 2026-06-20 — self-scoped sales may only touch their OWN SO (mirror the line/header guards).
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   // Guard: only delete if the row belongs to this docNo. Prevents a
   // mis-routed call from nuking another SO's payment.
@@ -8249,7 +8585,7 @@ mfgSalesOrders.get('/:docNo/payments/:id/slip-url', async (c) => {
 // ── Debtor lookup — autocomplete from prior SOs ───────────────────────
 mfgSalesOrders.get('/debtors/search', async (c) => {
   const sb = c.get('supabase'); const q = c.req.query('q') ?? '';
-  let query = sb.from('mfg_sales_orders').select('debtor_code, debtor_name, phone, address1, address2, address3, address4').order('updated_at', { ascending: false }).limit(200);
+  let query = scopeToCompany(sb.from('mfg_sales_orders').select('debtor_code, debtor_name, phone, address1, address2, address3, address4'), c).order('updated_at', { ascending: false }).limit(200);
   { const s = escapeForOr(q); if (s) query = query.or(`debtor_name.ilike.%${s}%,debtor_code.ilike.%${s}%`); }
   const { data, error } = await query;
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
@@ -8283,7 +8619,7 @@ mfgSalesOrders.patch('/:docNo/items/:itemId/stock-status', async (c) => {
   const itemId = c.req.param('itemId');
   const user = c.get('user');
   // Audit 2026-06-20 — self-scoped sales may only touch their OWN SO (mirror the line/header guards).
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   let body: { status?: string };
   try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid_json' }, 400); }
@@ -8391,11 +8727,21 @@ mfgSalesOrders.patch('/:docNo/items/:itemId/stock-status', async (c) => {
 
    Houzs gate: scm.amendment.create against the REAL caller (hasHouzsPerm) — the
    2990 scm.staff.role check is dead here (the SCM bridge pins to one super_admin
-   row). Owner + IT Admin pass via `*`. */
+   row). Owner + IT Admin pass via `*`. ADDITIVELY, any salesperson (isSalesCaller,
+   keyed off STABLE ORG FIELDS) may submit an amendment on their OWN locked SO:
+   the gate below OR-s in isSalesCaller, and the ownership check further down
+   (salesDocOutOfScope) confines a rep to their own + downline Sales Orders while
+   view-all roles (directors / office) stay unrestricted. The approve-so /
+   approve-po / supplier-confirm gates are UNCHANGED — those remain office-only
+   (scm.amendment.approve_so / approve_po). */
 mfgSalesOrders.post('/:docNo/amendments', async (c) => {
   const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const user = c.get('user');
 
-  if (!hasHouzsPerm(c, 'scm.amendment.create')) {
+  // Submit gate — the flat `scm.amendment.create` grant (Owner / IT Admin via
+  // `*`, office positions via the matrix) OR any salesperson by STABLE ORG
+  // FIELD (isSalesCaller). Ownership is enforced after the SO row loads, so a
+  // rep passing here can still only amend a Sales Order within their own scope.
+  if (!hasHouzsPerm(c, 'scm.amendment.create') && !isSalesCaller(c)) {
     return c.json({
       error: 'amendment_create_forbidden',
       message: 'You do not have permission to raise a Sales Order amendment.',
@@ -8416,15 +8762,28 @@ mfgSalesOrders.post('/:docNo/amendments', async (c) => {
   };
   try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid_json' }, 400); }
 
-  // Guard 1 — SO exists. Pull the lock columns (processing-date + proceeded_at).
+  // Guard 1 — SO exists. Pull the lock columns (processing-date + proceeded_at)
+  // plus salesperson_id for the ownership scope check below.
   const { data: soRow } = await scopeToCompany(sb.from('mfg_sales_orders')
-    .select('doc_no, status, revision, internal_expected_dd, processing_date, proceeded_at')
+    .select('doc_no, status, revision, internal_expected_dd, processing_date, proceeded_at, salesperson_id')
     .eq('doc_no', docNo), c).maybeSingle();
   if (!soRow) return c.json({ error: 'not_found' }, 404);
 
+  // Ownership scope — same tiering as the SO detail/list reads (lib/salesScope):
+  // view-all roles (directors / office, canViewAllSales) may amend ANY SO; a
+  // scoped salesperson may amend only a Sales Order whose salesperson_id is in
+  // their own + downline subtree. An out-of-scope doc_no answers 404 —
+  // indistinguishable from a nonexistent one, exactly like the detail route.
+  {
+    const sp = (soRow as { salesperson_id?: number | string | null }).salesperson_id;
+    if (await salesDocOutOfScope(sb, c.env, c.get('houzsUser')?.id, canViewAllSales(c), sp)) {
+      return c.json({ error: 'not_found' }, 404);
+    }
+  }
+
   // Self-scope stub (no-op in Houzs — the SCM bridge has no POS-self-scoped
   // sellers); kept for call-site parity with 2990.
-  if (await selfScopedSalesBlocked(sb, user.id, docNo)) return c.json({ error: 'not_found' }, 404);
+  if (await selfScopedSalesBlocked(c, docNo)) return c.json({ error: 'not_found' }, 404);
 
   // Guard 2 — an amendment only makes sense once the SO is processing-locked;
   // an unlocked SO is still directly editable, so no amendment is needed.

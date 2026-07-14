@@ -153,7 +153,7 @@ app.post("/accept", async (c) => {
     .run();
   await c.env.DB.prepare(
     `INSERT INTO assr_activity (assr_id, action, note, category, source_channel)
-     VALUES (?, 'note', 'Supplier accepted the job', 'purchasing', 'supplier_portal')`
+     VALUES (?, 'note', 'Supplier accepted the job', 'supplier', 'supplier_portal')`
   )
     .bind(assr_id)
     .run();
@@ -196,7 +196,7 @@ app.post("/quote", async (c) => {
     .run();
   await c.env.DB.prepare(
     `INSERT INTO assr_activity (assr_id, action, note, category, source_channel)
-     VALUES (?, 'note', ?, 'purchasing', 'supplier_portal')`
+     VALUES (?, 'note', ?, 'supplier', 'supplier_portal')`
   )
     .bind(
       assr_id,
@@ -223,7 +223,7 @@ app.post("/remarks", async (c) => {
   const clipped = note.slice(0, 2000);
   await c.env.DB.prepare(
     `INSERT INTO assr_activity (assr_id, action, note, category, source_channel)
-     VALUES (?, 'note', ?, 'purchasing', 'supplier_portal')`
+     VALUES (?, 'note', ?, 'supplier', 'supplier_portal')`
   )
     .bind(assr_id, clipped)
     .run();

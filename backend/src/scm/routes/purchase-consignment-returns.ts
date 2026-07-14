@@ -289,9 +289,12 @@ purchaseConsignmentReturns.get('/', async (c) => {
 // DO→DR returnable picker. MUST precede /:id so the static path isn't an id.
 purchaseConsignmentReturns.get('/returnable-receive-lines', async (c) => {
   const sb = c.get('supabase');
-  const { data: receives, error: rErr } = await paginateAll((from, to) => sb
-    .from('purchase_consignment_receives')
-    .select('id, receive_number, supplier_id, status, supplier:suppliers(id, code, name)')
+  const { data: receives, error: rErr } = await paginateAll((from, to) => scopeToCompany(
+    sb
+      .from('purchase_consignment_receives')
+      .select('id, receive_number, supplier_id, status, supplier:suppliers(id, code, name)'),
+    c,
+  )
     .neq('status', 'CANCELLED')
     .order('receive_number', { ascending: false })
     .range(from, to));

@@ -43,6 +43,7 @@ import { useActiveCurrencies, rateFor } from '../../vendor/scm/lib/currencies-qu
 import { CurrencySelect } from '../../vendor/scm/components/CurrencySelect';
 import { useSuppliers, useSupplierDetail } from '../../vendor/scm/lib/suppliers-queries';
 import { useMfgProducts, useMaintenanceConfig, useSpecialAddons } from '../../vendor/scm/lib/mfg-products-queries';
+import { useDebouncedValue } from '../../vendor/scm/lib/hooks';
 import { sortByText, sortByNumeric } from '../../vendor/scm/lib/sort-options';
 import { MoneyInput } from '../../vendor/scm/components/MoneyInput';
 import { ActionResultDialog } from '../../vendor/scm/components/ActionResultDialog';
@@ -345,9 +346,13 @@ export const PurchaseInvoiceNew = () => {
 
   // ── Manual product search (gated by min query length, mirrors GrnNew). ───
   const [productQuery, setProductQuery] = useState<string>('');
+  /* Perf — debounce the datalist search so a fast typist fires one
+     /mfg-products request per pause, not per keystroke. Native <datalist>
+     renders <option>s directly, so no render cap is needed — only the refetch. */
+  const debouncedProductQuery = useDebouncedValue(productQuery, 250);
   const productsQ = useMfgProducts({
-    search: productQuery,
-    enabled: isManual && productQuery.trim().length >= 2,
+    search: debouncedProductQuery,
+    enabled: isManual && debouncedProductQuery.trim().length >= 2,
   });
 
   // Supplier-bound picks carry no category on the binding row, so (mirroring
@@ -584,12 +589,12 @@ export const PurchaseInvoiceNew = () => {
             </label>
 
             <label className={styles.field}>
-              <span className={styles.fieldLabel}>Supplier Invoice # *</span>
-              <input type="text" value={supplierInvoiceRef} onChange={(e) => setSupplierInvoiceRef(e.target.value)} placeholder="From the supplier's printed invoice" className={styles.fieldInput} required />
+              <span className={styles.fieldLabel}>Supplier Invoice #</span>
+              <input type="text" value={supplierInvoiceRef} onChange={(e) => setSupplierInvoiceRef(e.target.value)} placeholder="From the supplier's printed invoice" className={styles.fieldInput} />
             </label>
             <label className={styles.field}>
-              <span className={styles.fieldLabel}>Invoice Date *</span>
-              <input type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} className={styles.fieldInput} required />
+              <span className={styles.fieldLabel}>Invoice Date</span>
+              <input type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} className={styles.fieldInput} />
             </label>
 
             <label className={styles.field}>

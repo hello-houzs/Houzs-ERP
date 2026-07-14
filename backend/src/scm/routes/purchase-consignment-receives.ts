@@ -413,14 +413,17 @@ purchaseConsignmentReceives.get('/', async (c) => {
    read-only query (no inventory side-effects) without the warehouse-lock plumbing. */
 purchaseConsignmentReceives.get('/outstanding-pco-items', async (c) => {
   const sb = c.get('supabase');
-  const { data: items, error } = await sb
-    .from('purchase_consignment_order_items')
-    .select(`
+  const { data: items, error } = await scopeToCompany(
+    sb
+      .from('purchase_consignment_order_items')
+      .select(`
       id, purchase_consignment_order_id, material_kind, material_code, material_name, item_group,
       description, qty, received_qty, unit_price_centi, warehouse_id, variants, delivery_date,
       pco:purchase_consignment_orders!inner ( id, pc_number, supplier_id, status, po_date, expected_at,
         purchase_location_id, supplier:suppliers ( code, name ) )
-    `)
+    `),
+    c,
+  )
     .order('purchase_consignment_order_id', { ascending: false })
     .limit(500);
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
@@ -508,9 +511,12 @@ export async function pcReceiveLineDownstream(
 // picker. MUST precede /:id so the static path isn't read as an id.
 purchaseConsignmentReceives.get('/outstanding-order-lines', async (c) => {
   const sb = c.get('supabase');
-  const { data: orders, error: oErr } = await paginateAll((from, to) => sb
-    .from('purchase_consignment_orders')
-    .select('id, pc_number, supplier_id, status, supplier:suppliers(id, code, name)')
+  const { data: orders, error: oErr } = await paginateAll((from, to) => scopeToCompany(
+    sb
+      .from('purchase_consignment_orders')
+      .select('id, pc_number, supplier_id, status, supplier:suppliers(id, code, name)'),
+    c,
+  )
     .neq('status', 'CANCELLED')
     .order('pc_number', { ascending: false })
     .range(from, to));

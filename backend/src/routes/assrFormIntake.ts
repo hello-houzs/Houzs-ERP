@@ -339,4 +339,73 @@ app.post("/attachments-by-so", async (c) => {
   return c.json({ ok: true, id: attId, case_id: caseId }, 201);
 });
 
+// ── Sheet status export (Nick 2026-07-14) ─────────────────────
+//
+// The "ASSR Case (Farra)" tab of the same HC Delivery sheet keeps a
+// hand-maintained ASSR STATUS column that has drifted from the ERP
+// (it still shows retired stages like Pending Inspection / Item
+// Pickup). A sheet-bound Apps Script time trigger (every 10 min) GETs
+// this endpoint and rewrites column A from the ERP's live stage, so
+// the sheet's own stats block stays honest without anyone re-keying.
+//
+// Same X-Intake-Key guard as the intake webhook — the script already
+// holds that secret for the form POST. Read-only, no PII: just the
+// match keys (assr/so/ref) + the display status + completion date.
+
+// ERP stage → the sheet's ASSR STATUS vocabulary. The sheet's stats
+// block counts these exact strings ("Pending Delivery/Service" has no
+// spaces around the slash). Retired stages can't appear (migs 0105 /
+// 0110 moved every row), but legacy values fall through prettified so
+// a surprise never writes "undefined" into the sheet.
+const SHEET_STATUS: Record<string, string> = {
+  pending_review: "Pending Review",
+  under_verification: "Under Verification",
+  pending_solution: "Pending Solution",
+  pending_supplier_pickup: "Pending Supplier Pickup",
+  pending_item_ready: "Pending Item Ready",
+  pending_delivery_service: "Pending Delivery/Service",
+  completed: "Completed",
+};
+
+app.get("/status-export", async (c) => {
+  // Accepts EITHER shared secret: FORM_INTAKE_KEY (the form-intake
+  // script's key) or SHEET_SYNC_KEY (issued for the HC Delivery
+  // sheet's own Apps Script, which lives in a different Google account
+  // and never held the intake key).
+  const provided = c.req.header("X-Intake-Key") || "";
+  const keys = [c.env.FORM_INTAKE_KEY, c.env.SHEET_SYNC_KEY];
+  const ok = keys.some((k) => k && timingSafeEqualStr(provided, k));
+  if (!ok) {
+    const limited = await checkRateLimit(c, "intake_badkey", clientIp(c), 10, 900);
+    await new Promise((r) => setTimeout(r, 250));
+    if (limited) return limited;
+    return c.json({ error: "unauthorized" }, 401);
+  }
+
+  const rows = await c.env.DB.prepare(
+    `SELECT assr_no, doc_no, ref_no, stage, completion_date, closed_at
+       FROM assr_cases
+      WHERE archived_at IS NULL`
+  ).all<{
+    assr_no: string;
+    doc_no: string | null;
+    ref_no: string | null;
+    stage: string;
+    completion_date: string | null;
+    closed_at: string | null;
+  }>();
+
+  const cases = (rows.results ?? []).map((r) => ({
+    assr_no: r.assr_no,
+    so_no: r.doc_no,
+    ref_no: r.ref_no,
+    status:
+      SHEET_STATUS[r.stage] ??
+      r.stage.replace(/_/g, " ").replace(/\b\w/g, (ch) => ch.toUpperCase()),
+    completed_date: r.completion_date ?? r.closed_at ?? null,
+  }));
+
+  return c.json({ count: cases.length, cases });
+});
+
 export default app;

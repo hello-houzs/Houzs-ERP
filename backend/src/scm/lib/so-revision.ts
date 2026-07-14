@@ -315,7 +315,7 @@ export async function applySoAmendment(
      helper the create + add-line paths call after a line change; it internally
      runs recomputeTotals. Best-effort (logs, never throws). */
   try {
-    await rederiveDeliveryFee(sb, docNo);
+    await rederiveDeliveryFee(sb, docNo, c);
   } catch (e) {
     // eslint-disable-next-line no-console
     console.error('[so-amendment] rederiveDeliveryFee failed (non-fatal):', e);

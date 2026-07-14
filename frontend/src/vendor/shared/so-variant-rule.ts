@@ -68,6 +68,34 @@ export const REQUIRED_VARIANT_AXES_BY_CATEGORY: Record<string, readonly VariantA
   ],
 };
 
+/** Resolve a raw item group / category to the MAIN bucket the server's sofa
+ *  gate uses. Mirrors mfg-sales-orders `normCat` (substring match, so 'Sofa Set'
+ *  → SOFA). SERVICE / ACCESSORY / OTHERS ride on any order and return ''. */
+function mainCategory(raw: string | null | undefined): '' | 'SOFA' | 'BEDFRAME' | 'MATTRESS' {
+  const g = (raw ?? '').trim().toUpperCase();
+  if (g.includes('BEDFRAME')) return 'BEDFRAME';
+  if (g.includes('SOFA'))     return 'SOFA';
+  if (g.includes('MATTRESS')) return 'MATTRESS';
+  return '';
+}
+
+/** True when the lines mix a SOFA main product with a bedframe / mattress main
+ *  product — the server rejects this 400 `so_sofa_no_other_main`
+ *  (mfg-sales-orders). Service / accessory / others lines never trip it. Used by
+ *  the SO editors (desktop New / Detail + mobile) to block + warn BEFORE save so
+ *  the operator gets one plain sentence instead of a raw 400. `itemGroups` is
+ *  each line's resolved category / itemGroup. */
+export function hasSofaMixConflict(itemGroups: Array<string | null | undefined>): boolean {
+  const cats = itemGroups.map(mainCategory);
+  return cats.includes('SOFA')
+    && cats.some((c) => c === 'BEDFRAME' || c === 'MATTRESS');
+}
+
+/** One plain sentence for the sofa-mix block (owner standing rule: user errors
+ *  = one plain sentence). Shared so desktop + mobile show identical copy. */
+export const SOFA_MIX_MESSAGE =
+  "A sofa order can't be mixed with bedframe or mattress items — use a separate order.";
+
 const isEmpty = (val: unknown): boolean =>
   val === undefined || val === null || String(val).trim() === '';
 

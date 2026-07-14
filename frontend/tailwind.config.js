@@ -1,6 +1,10 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ["./index.html", "./src/**/*.{js,ts,jsx,tsx}"],
+  // Semantic utilities the design-system docs (conventions header)
+  // enumerate for the claude.ai/design agent — keep them in the
+  // compiled CSS even when no in-repo component happens to use them.
+  safelist: ["bg-err-bg", "bg-synced-bg", "font-body"],
   theme: {
     extend: {
       colors: {

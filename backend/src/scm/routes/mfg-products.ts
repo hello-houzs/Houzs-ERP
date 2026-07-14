@@ -64,25 +64,30 @@ async function syncAnchorBindingFromProduct(
   supabase: SupabaseClient,
   productCode: string,
   product: { base_price_sen: number | null; price1_sen: number | null },
+  companyId?: number,
 ): Promise<void> {
   try {
     // The anchor binding for this code (at most one — enforced app-side).
-    const { data: binding } = await supabase
+    // Multi-company: material_code is shared across companies, so pin to the
+    // active company or the maybeSingle() could resolve the other company's row.
+    let bindingQ = supabase
       .from('supplier_material_bindings')
       .select('id, price_matrix')
       .eq('material_kind', 'mfg_product')
       .eq('material_code', productCode)
-      .eq('is_cost_anchor', true)
-      .maybeSingle();
+      .eq('is_cost_anchor', true);
+    if (companyId != null) bindingQ = bindingQ.eq('company_id', companyId);
+    const { data: binding } = await bindingQ.maybeSingle();
     if (!binding) return;
 
     // Category drives the mapping lane — read it off the product row we just
     // updated (passed in so we don't re-query mfg_products).
-    const { data: prod } = await supabase
+    let prodQ = supabase
       .from('mfg_products')
       .select('category')
-      .eq('code', productCode)
-      .maybeSingle();
+      .eq('code', productCode);
+    if (companyId != null) prodQ = prodQ.eq('company_id', companyId);
+    const { data: prod } = await prodQ.maybeSingle();
 
     const result = productToBindingPatch(
       { base_price_sen: product.base_price_sen, price1_sen: product.price1_sen },
@@ -282,7 +287,7 @@ mfgProducts.post('/batch-import', async (c) => {
     // Never rewrite the PK id on re-import: UPDATE an existing SKU by code (id +
     // any omitted column left untouched), INSERT a brand-new SKU with a fresh id.
     const { data: existing } = await supabase.from('mfg_products')
-      .select('id, seat_height_prices').eq('code', code).maybeSingle();
+      .select('id, seat_height_prices').eq('code', code).eq('company_id', activeCompanyId(c)).maybeSingle();
     let error;
     if (existing) {
       // Merge sofa prices BY TIER: the export ships one tier at a time, so an
@@ -296,7 +301,7 @@ mfgProducts.post('/batch-import', async (c) => {
         const kept = existingSeat.filter((e) => !incomingTiers.has(tierOf(e)));
         row.seat_height_prices = [...kept, ...incomingSeat];
       }
-      ({ error } = await supabase.from('mfg_products').update(row).eq('code', code));
+      ({ error } = await supabase.from('mfg_products').update(row).eq('code', code).eq('company_id', activeCompanyId(c)));
     } else {
       if (incomingSeat.length > 0) row.seat_height_prices = incomingSeat;
       const rand = (typeof crypto !== 'undefined' && crypto.randomUUID)
@@ -358,15 +363,28 @@ mfgProducts.delete('/:id', async (c) => {
   }
 
   if (force) {
-    const cleanup: Array<{ table: string; column: string; value: string }> = [
-      // Inventory side — stock lots + movements key off product_code.
-      { table: 'inventory_stock_lots',         column: 'product_code',  value: code },
-      { table: 'inventory_movements',          column: 'product_code',  value: code },
-      // Procurement side — supplier ↔ material bindings key off material_code.
-      { table: 'supplier_material_bindings',   column: 'material_code', value: code },
+    // Multi-company: product code/material_code is shared across companies
+    // (UNIQUE(company_id, code)), so cleaning side tables by code ALONE would
+    // wipe the OTHER company's rows for the same code. Scope every code-keyed
+    // delete to the active company. Force-delete therefore requires a resolved
+    // company so the cleanup can't run un-scoped.
+    const cid = activeCompanyId(c);
+    if (cid == null) {
+      return c.json({ error: 'company_unresolved', reason: 'Force delete needs an active company to scope the cleanup safely. Please retry.' }, 409);
+    }
+    const cleanup: Array<{ table: string; column: string; value: string; scoped: boolean }> = [
+      // Inventory side — movements key off product_code (per-company; company_id NOT NULL).
+      // inventory_stock_lots has no company_id column (legacy/absent table) — leave unscoped;
+      // its delete is a swallowed no-op on deployments where it doesn't exist.
+      { table: 'inventory_stock_lots',         column: 'product_code',  value: code, scoped: false },
+      { table: 'inventory_movements',          column: 'product_code',  value: code, scoped: true  },
+      // Procurement side — supplier ↔ material bindings key off material_code (per-company).
+      { table: 'supplier_material_bindings',   column: 'material_code', value: code, scoped: true  },
     ];
     for (const c2 of cleanup) {
-      const { error: delErr } = await supabase.from(c2.table).delete().eq(c2.column, c2.value);
+      let delQ = supabase.from(c2.table).delete().eq(c2.column, c2.value);
+      if (c2.scoped) delQ = delQ.eq('company_id', cid);
+      const { error: delErr } = await delQ;
       // Best-effort: missing table / no-rows-affected is fine. RLS denial we
       // surface so commander knows force isn't actually clearing.
       if (delErr && delErr.code === '42501') {
@@ -416,6 +434,7 @@ mfgProducts.get('/:id', async (c) => {
     .from('product_dept_configs')
     .select('*')
     .eq('product_code', data.code)
+    .eq('company_id', activeCompanyId(c))
     .maybeSingle();
 
   return c.json({ product: data, deptConfig: cfg ?? null });
@@ -722,7 +741,7 @@ mfgProducts.patch('/:id', async (c) => {
       price1_sen: 'price1_sen' in updates
         ? (updates.price1_sen as number | null)
         : current.price1_sen,
-    });
+    }, activeCompanyId(c));
   }
 
   // Audit trail. Best-effort — if these fail the price update has already
@@ -809,6 +828,7 @@ mfgProducts.get('/:id/price-history', async (c) => {
     .from('master_price_history')
     .select('id, product_code, field, old_value_sen, new_value_sen, reason, changed_at, changed_by')
     .eq('product_code', product.code)
+    .eq('company_id', activeCompanyId(c))
     .order('changed_at', { ascending: false });
 
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
@@ -839,6 +859,7 @@ mfgProducts.get('/:id/suppliers', async (c) => {
       suppliers(code, name, phone)
     `)
     .eq('material_code', (product as { code: string }).code)
+    .eq('company_id', activeCompanyId(c))
     .order('is_main_supplier', { ascending: false })
     .order('unit_price_centi', { ascending: true });
 

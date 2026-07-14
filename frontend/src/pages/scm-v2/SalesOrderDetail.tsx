@@ -28,7 +28,7 @@ import {
 } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { formatPhone } from '@2990s/shared/phone';
-import { buildVariantSummary, canonicalizeVariants, fmtCenti, fmtDate, fmtDateOrDash, fmtDateTime, missingVariantAxes } from '@2990s/shared'; // Commander 2026-05-28
+import { buildVariantSummary, canonicalizeVariants, fmtCenti, fmtDate, fmtDateOrDash, fmtDateTime, missingVariantAxes, hasSofaMixConflict, SOFA_MIX_MESSAGE } from '@2990s/shared'; // Commander 2026-05-28
 import { PhoneInput } from '../../vendor/scm/components/PhoneInput';
 import { SkeletonDetailPage } from '../../vendor/scm/components/Skeleton';
 import {
@@ -560,6 +560,19 @@ export const SalesOrderDetail = () => {
     const blankLine = Object.values(editingDrafts).find((d) => !d.itemCode.trim());
     if (blankLine) {
       setSaveError('Every line must have a product selected before saving.');
+      return;
+    }
+    // Sofa is exclusive among main products — the server 400s
+    // `so_sofa_no_other_main` when a sofa line rides with a bedframe/mattress.
+    // Block + warn here so the operator gets one plain sentence, not a raw 400.
+    // In edit mode every existing line is seeded into editingDrafts, so this
+    // (+ the pending add-draft) covers the whole order.
+    const editedGroups = [
+      ...Object.values(editingDrafts),
+      ...(addingDraft ? [addingDraft] : []),
+    ].filter((d) => d.itemCode.trim()).map((d) => d.itemGroup);
+    if (hasSofaMixConflict(editedGroups)) {
+      setSaveError(SOFA_MIX_MESSAGE);
       return;
     }
     // Variants are only mandatory once a processing date is set: with a date
@@ -1112,6 +1125,11 @@ export const SalesOrderDetail = () => {
   // back to CONFIRMED. Cancel is offered only on in-flight statuses (not once
   // it has SHIPPED / been INVOICED / CLOSED — those have downstream docs).
   const isCancelled = header.status === 'CANCELLED';
+  /* Owner 2026-07-13 (no-naked-payment-edits) — a DRAFT SO isn't confirmed yet,
+     so its payments must ALWAYS be editable (the user is still adjusting), even
+     while the detail is in its read-only view. For every other status the
+     Payments section stays view-only until the operator clicks Edit. */
+  const isDraftSo = (header.status as string) === 'DRAFT';
   const cancellableStatuses: SoStatus[] = ['CONFIRMED', 'IN_PRODUCTION', 'READY_TO_SHIP'];
   const canCancel = cancellableStatuses.includes(header.status);
 
@@ -1563,6 +1581,11 @@ export const SalesOrderDetail = () => {
                     docNo={header.doc_no}
                     itemId={it.id}
                     isEditing={!linesLocked}
+                    /* Variants are mandatory only once a Processing Date is set
+                       (matches this page's Save gate + the backend), so the ` *`
+                       marker + red ring stay off on a no-date draft (owner
+                       2026-07-14). */
+                    variantsRequired={requireVariants}
                   />
                 </div>
               );
@@ -1577,6 +1600,7 @@ export const SalesOrderDetail = () => {
                 onChange={patchAddingDraft}
                 onRemove={cancelAddLine}
                 canRemove={true}
+                variantsRequired={requireVariants}
               />
             )}
 
@@ -1771,11 +1795,16 @@ export const SalesOrderDetail = () => {
           (transactions + Deposit Paid + Balance) only.
           Task #105 — PaymentCard was extracted into <PaymentsTable> so
           New SO and Edit SO render the same ledger from one source. */}
+      {/* No-naked-payment-edits (owner 2026-07-13): Add / Delete / Edit are only
+          exposed when (SO is DRAFT) OR (the detail is in Edit mode). A DRAFT SO
+          is never confirmed, so its payments stay editable in the read-only view
+          too (draftUnlocked also lifts the per-row same-day EDIT lock). */}
       <PaymentsTable
         docNo={header.doc_no}
         grandTotalCenti={header.local_total_centi}
         currency={header.currency}
-        locked={isLocked || !isEditing}
+        locked={!isDraftSo && (isLocked || !isEditing)}
+        draftUnlocked={isDraftSo}
         slip={{ slipKey: header.slip_key, fetcher: fetchSoSlipUrl }}
         defaultCollectedBy={selfStaffMatch?.id ?? ''}
       />

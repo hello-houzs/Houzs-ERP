@@ -24,7 +24,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { supabaseAuth } from '../middleware/auth';
-import { activeCompanyId } from '../lib/companyScope';
+import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 export const addons = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -110,9 +110,10 @@ const SELECT =
 // GET — list, ordered the way the manager expects (sort_order then label).
 addons.get('/', async (c) => {
   const supabase = c.get('supabase');
-  const { data, error } = await supabase
-    .from('addons')
-    .select(SELECT)
+  const { data, error } = await scopeToCompany(
+    supabase.from('addons').select(SELECT),
+    c,
+  )
     .order('sort_order', { ascending: true })
     .order('label', { ascending: true });
   if (error) return c.json({ error: 'fetch_failed', reason: error.message }, 500);

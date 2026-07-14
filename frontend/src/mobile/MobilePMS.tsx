@@ -2,11 +2,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, ReactNode, SetStateAction } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
+import { MobileVirtualList } from "./MobileVirtualList";
 import { MediaLightbox, type MediaItem } from "../components/MediaLightbox";
 import { useAuth } from "../auth/AuthContext";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { usePrompt } from "../vendor/scm/components/PromptDialog";
+import { formatCurrency, formatDate } from "../lib/utils";
 import "./mobile.css";
 
 /* ------------------------------------------------------------------ *
@@ -179,7 +181,7 @@ type ProjectDetail = {
   attachments?: ProjectAttachment[];
   _access?: {
     level?: string;
-    pms?: { canFinancial?: boolean; canEdit?: boolean };
+    pms?: { canFinancial?: boolean; canEdit?: boolean; canPayment?: boolean; role?: string };
   };
 };
 
@@ -287,14 +289,9 @@ function pick<T>(...vals: (T | null | undefined)[]): T | null {
 }
 
 // ── Formatters ──
-const rm = (v: number | null | undefined) =>
-  ((v ?? 0)).toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const dm = (d: string | null | undefined) => {
-  if (!d) return "—";
-  const dt = new Date(d);
-  if (isNaN(+dt)) return "—";
-  return dt.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
-};
+// P&L figures here are plain ringgit numbers (NOT centi) — format via the shared
+// ringgit formatter. TZ-aware numeric DD/MM/YYYY date via the shared helper.
+const dm = (d: string | null | undefined) => formatDate(d);
 // Date-only portion of an ISO "date T time" string (setup_start_at etc).
 const dOnly = (d: string | null | undefined) => dm(d);
 // Time-only portion ("08:00"). Reads the literal HH:mm off the ISO string so
@@ -472,8 +469,13 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
         {isLoading && <div style={{ textAlign: "center", color: "#9aa093", fontSize: 12, padding: "26px 0" }}>Loading…</div>}
         {error && <div style={{ textAlign: "center", color: "#b23a3a", fontSize: 12, padding: "26px 0" }}>Couldn't load projects. Pull to retry.</div>}
         {!isLoading && !error && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
-            {rows.map((r) => {
+          <>
+            {rows.length > 0 && (
+              <MobileVirtualList
+                items={rows}
+                getKey={(r) => r.id}
+                estimateHeight={108}
+                renderItem={(r) => {
               const s = (r.stage ?? "").toLowerCase();
               const dimmed = s === "cancelled" || s === "closed";
               const where = r.venue || r.state || null;
@@ -499,14 +501,16 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
                   </div>
                 </div>
               );
-            })}
+                }}
+              />
+            )}
             {!rows.length && (
               <div className="empty">
                 <div className="empty-t">No projects</div>
                 <div className="empty-s">No projects match this filter.</div>
               </div>
             )}
-          </div>
+          </>
         )}
       </div>
     </div>
@@ -639,10 +643,20 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
   // backend permission — no in-screen view-as switcher (removed to match v4).
   const financeVisible =
     (pms ? !!pms.canFinancial : canSeeFinance) && !!data?.finance;
+  // Rental & payment section: gate on the PMS PAYMENT flag. The backend blanks
+  // payment_* cols for a role without it (#345), so a non-payment sales user
+  // would otherwise see an empty "N/A" section — hide it outright. Fail-open
+  // when pms/canPayment is absent (older cached response); backend enforces
+  // the POST /:id/payment either way.
+  const paymentVisible = pms ? pms.canPayment ?? true : true;
   // A sales PIC (canEdit=false) sees Team as read-only, matching the desktop
   // ProjectTeamSection/ProjectSpecStrip gate. Falls back to canWrite when the
   // backend omitted pms.
   const canEditTeam = canWrite && (pms ? pms.canEdit !== false : true);
+  // Owner 2026-07-13: the event's own Sales PIC manages Sales Attending even
+  // while the rest of the Team card (PIC picker) stays read-only for them.
+  const canEditAttending =
+    canWrite && (pms ? pms.canEdit !== false || pms.role === "PIC" : true);
 
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
@@ -800,7 +814,7 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                   projectId={id}
                   attendees={data.sales_attendees ?? []}
                   options={salesReps}
-                  canWrite={canEditTeam && !archived}
+                  canWrite={canEditAttending && !archived}
                   busy={busy}
                   setBusy={setBusy}
                   notify={notify}
@@ -853,15 +867,17 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
               reload={reload}
             />
 
-            {/* rental & payment */}
-            <RentalPayment
-              status={p.payment_status ?? null}
-              canWrite={canWrite && !archived}
-              busy={busy}
-              setBusy={setBusy}
-              notify={notify}
-              onSet={(status) => patchPayment(id, status, setBusy, notify, reload)}
-            />
+            {/* rental & payment (PMS PAYMENT-gated) */}
+            {paymentVisible && (
+              <RentalPayment
+                status={p.payment_status ?? null}
+                canWrite={canWrite && !archived}
+                busy={busy}
+                setBusy={setBusy}
+                notify={notify}
+                onSet={(status) => patchPayment(id, status, setBusy, notify, reload)}
+              />
+            )}
 
             {/* financial snapshot (finance-gated) — design v7 places P&L as the
                 FINAL card, after the logistics + money sections. */}
@@ -1451,9 +1467,10 @@ function TaskRow({
 // columns (setup_driver_user_id / setup_lorry_id) untouched. Mobile shows
 // the FK-joined names when present and falls back to this JSON otherwise.
 type CrewPerson = { name: string; phone?: string | null };
-type PhaseCrew = { drivers: CrewPerson[]; helpers: CrewPerson[]; lorries: string[] };
+type LorryCrew = { plate: string; drivers: CrewPerson[]; helpers: CrewPerson[] };
+type PhaseCrew = { lorryCrew: LorryCrew[]; outsourced: CrewPerson[]; drivers: CrewPerson[]; helpers: CrewPerson[]; lorries: string[] };
 const parseCrewJson = (raw: string | null | undefined): PhaseCrew => {
-  const out: PhaseCrew = { drivers: [], helpers: [], lorries: [] };
+  const out: PhaseCrew = { lorryCrew: [], outsourced: [], drivers: [], helpers: [], lorries: [] };
   if (!raw || raw === "{}") return out;
   try {
     const j = JSON.parse(raw) as Record<string, unknown>;
@@ -1462,15 +1479,32 @@ const parseCrewJson = (raw: string | null | undefined): PhaseCrew => {
         .filter((p): p is { name?: unknown; phone?: unknown } => !!p && typeof p === "object")
         .filter((p) => typeof p.name === "string" && p.name.trim() !== "")
         .map((p) => ({ name: String(p.name), phone: typeof p.phone === "string" && p.phone ? p.phone : null }));
+    // Per-lorry structure (new, desktop writes it). Flat arrays are kept for
+    // legacy data + the FK-fallback display.
+    if (Array.isArray(j.lorry_crew) && j.lorry_crew.length) {
+      out.lorryCrew = (j.lorry_crew as any[]).map((l) => ({
+        plate: typeof l?.plate === "string" ? l.plate : "",
+        drivers: people(l?.drivers),
+        helpers: people(l?.helpers),
+      }));
+    }
     out.drivers = people(j.drivers);
     out.helpers = people(j.helpers);
     out.lorries = (Array.isArray(j.lorries) ? j.lorries : []).filter((l): l is string => typeof l === "string" && l.trim() !== "");
     const oc = j.outsourced as { enabled?: unknown; entries?: unknown } | undefined;
     if (oc?.enabled && Array.isArray(oc.entries)) {
       for (const e of oc.entries as Array<{ name?: unknown; phone?: unknown; plate?: unknown }>) {
-        if (typeof e?.name === "string" && e.name.trim()) out.drivers.push({ name: `${e.name} (outsource)`, phone: typeof e.phone === "string" && e.phone ? e.phone : null });
-        if (typeof e?.plate === "string" && e.plate.trim()) out.lorries.push(e.plate);
+        if (typeof e?.name === "string" && e.name.trim()) {
+          const plate = typeof e.plate === "string" && e.plate.trim() ? ` · ${e.plate}` : "";
+          out.outsourced.push({ name: `${e.name}${plate}`, phone: typeof e.phone === "string" && e.phone ? e.phone : null });
+        }
       }
+    }
+    // Legacy flat crew with no per-lorry array → synthesize one lorry per plate.
+    if (out.lorryCrew.length === 0 && (out.drivers.length || out.helpers.length || out.lorries.length)) {
+      out.lorryCrew = out.lorries.length
+        ? out.lorries.map((plate, i) => (i === 0 ? { plate, drivers: out.drivers, helpers: out.helpers } : { plate, drivers: [], helpers: [] }))
+        : [{ plate: "", drivers: out.drivers, helpers: out.helpers }];
     }
   } catch {
     // Legacy plain-text crew — nothing structured to show.
@@ -1478,7 +1512,8 @@ const parseCrewJson = (raw: string | null | undefined): PhaseCrew => {
   return out;
 };
 const crewLabel = (p: CrewPerson): string => (p.phone ? `${p.name} (${p.phone})` : p.name);
-const crewIsEmpty = (c: PhaseCrew): boolean => c.drivers.length === 0 && c.helpers.length === 0 && c.lorries.length === 0;
+const crewIsEmpty = (c: PhaseCrew): boolean =>
+  c.lorryCrew.length === 0 && c.outsourced.length === 0 && c.drivers.length === 0 && c.helpers.length === 0 && c.lorries.length === 0;
 
 // Best-effort content type from an R2 key's extension — some payloads
 // (finance lines, phase photos) don't carry a stored mime type, and the
@@ -1714,24 +1749,38 @@ function PhaseBlock({
               <input className="fld-i" type="time" value={time} disabled={busy} onChange={(e) => { setTime(e.target.value); void saveStart(date, e.target.value); }} />
             </label>
           </div>
-          <StaffSelect label={`${kind} driver & contact`} value={driverId} currentName={driverName} options={drivers} disabled={busy} onChange={(v) => { void patchProject({ [driverCol]: v }); }} withContact />
-          <label className="fld" style={{ marginBottom: 6 }}>
-            <span className="fld-l">Lorry / vehicle</span>
-            <select className="fld-i" value={lorryId ?? ""} disabled={busy} onChange={(e) => { const v = e.target.value; void patchProject({ [lorryCol]: v ? parseInt(v, 10) : null }); }}>
-              <option value="">— unassigned —</option>
-              {lorryId != null && lorryPlate && !lorries.some((l) => l.id === lorryId) && (
-                <option value={lorryId}>{lorryPlate}</option>
+          {/* Single driver/lorry quick-assign — only as a fallback when NO
+              per-lorry crew is set (owner: hide once crew details exist). */}
+          {crewIsEmpty(crew) && (
+            <>
+              <StaffSelect label={`${kind} driver & contact`} value={driverId} currentName={driverName} options={drivers} disabled={busy} onChange={(v) => { void patchProject({ [driverCol]: v }); }} withContact />
+              <label className="fld" style={{ marginBottom: 6 }}>
+                <span className="fld-l">Lorry / vehicle</span>
+                <select className="fld-i" value={lorryId ?? ""} disabled={busy} onChange={(e) => { const v = e.target.value; void patchProject({ [lorryCol]: v ? parseInt(v, 10) : null }); }}>
+                  <option value="">— unassigned —</option>
+                  {lorryId != null && lorryPlate && !lorries.some((l) => l.id === lorryId) && (
+                    <option value={lorryId}>{lorryPlate}</option>
+                  )}
+                  {lorries.map((l) => <option key={l.id} value={l.id}>{l.plate || `#${l.id}`}{l.is_internal === false ? " (outsource)" : ""}</option>)}
+                </select>
+              </label>
+            </>
+          )}
+          {!crewIsEmpty(crew) && (
+            <div style={{ margin: "2px 0 8px" }}>
+              <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", color: "#9aa093", marginBottom: 5 }}>Planned crew</div>
+              {crew.lorryCrew.map((l, i) => (
+                <div key={i} style={{ fontSize: 10.5, color: "#414539", lineHeight: 1.55, marginBottom: 5, paddingLeft: 7, borderLeft: "2px solid #cfd4c9" }}>
+                  <div style={{ fontWeight: 700, color: "#2f3329" }}>{l.plate || `Lorry ${i + 1}`}</div>
+                  {l.drivers.length > 0 && <div><span style={{ color: "#9aa093" }}>Drivers:</span> {l.drivers.map(crewLabel).join(", ")}</div>}
+                  {l.helpers.length > 0 && <div><span style={{ color: "#9aa093" }}>Helpers:</span> {l.helpers.map(crewLabel).join(", ")}</div>}
+                </div>
+              ))}
+              {crew.outsourced.length > 0 && (
+                <div style={{ fontSize: 10.5, color: "#767b6e", lineHeight: 1.55, paddingLeft: 7 }}>
+                  <span style={{ color: "#9aa093" }}>Outsourced:</span> {crew.outsourced.map(crewLabel).join(", ")}
+                </div>
               )}
-              {lorries.map((l) => <option key={l.id} value={l.id}>{l.plate || `#${l.id}`}{l.is_internal === false ? " (outsource)" : ""}</option>)}
-            </select>
-          </label>
-          {driverId == null && !crewIsEmpty(crew) && (
-            <div style={{ fontSize: 10.5, color: "#767b6e", margin: "0 0 6px", lineHeight: 1.5 }}>
-              Planned crew: {[
-                crew.drivers.map(crewLabel).join(", "),
-                crew.lorries.join(", "),
-                crew.helpers.length ? `Helpers: ${crew.helpers.map(crewLabel).join(", ")}` : "",
-              ].filter(Boolean).join(" · ")}
             </div>
           )}
         </>
@@ -1739,10 +1788,20 @@ function PhaseBlock({
         <div className="pgrid2" style={{ marginBottom: 6 }}>
           <div><div className="pkv-l">{kind} date</div><div className="pkv-v">{dOnly(startAt)}</div></div>
           <div><div className="pkv-l">Start time</div><div className="pkv-v">{tOnly(startAt)}</div></div>
-          <div><div className="pkv-l">{kind} driver</div><div className="pkv-v">{driverDisplay}</div></div>
-          <div><div className="pkv-l">Lorry / vehicle</div><div className="pkv-v">{lorryDisplay}</div></div>
-          {crew.helpers.length > 0 && (
-            <div style={{ gridColumn: "1 / -1" }}><div className="pkv-l">Helpers</div><div className="pkv-v">{crew.helpers.map(crewLabel).join(", ")}</div></div>
+          {crewIsEmpty(crew) && <div><div className="pkv-l">{kind} driver</div><div className="pkv-v">{driverDisplay}</div></div>}
+          {crewIsEmpty(crew) && <div><div className="pkv-l">Lorry / vehicle</div><div className="pkv-v">{lorryDisplay}</div></div>}
+          {crew.lorryCrew.length > 0 && (
+            <div style={{ gridColumn: "1 / -1" }}>
+              <div className="pkv-l">Crew per lorry</div>
+              {crew.lorryCrew.map((l, i) => (
+                <div key={i} className="pkv-v" style={{ lineHeight: 1.5, marginTop: i ? 3 : 0 }}>
+                  <b>{l.plate || `Lorry ${i + 1}`}</b>
+                  {l.drivers.length > 0 && ` — ${l.drivers.map(crewLabel).join(", ")}`}
+                  {l.helpers.length > 0 && ` · Helpers: ${l.helpers.map(crewLabel).join(", ")}`}
+                </div>
+              ))}
+              {crew.outsourced.length > 0 && <div className="pkv-v" style={{ marginTop: 3 }}>Outsourced: {crew.outsourced.map(crewLabel).join(", ")}</div>}
+            </div>
           )}
         </div>
       )}
@@ -2028,22 +2087,22 @@ function FinancialSnapshot({
             live net so the collapsed header still carries the headline number. */}
         <span className="psec-t" style={{ color: "#8a4b12" }}>P&amp;L (finance)</span>
         <span className="rbadge" style={{ marginLeft: "auto", background: "#f3ece0", color: "#a16a2e" }}>Owner / Director only</span>
-        <span style={{ fontSize: 11, fontWeight: 700, color: netColor, marginLeft: 8 }}>Net RM {rm(net)}</span>
+        <span style={{ fontSize: 11, fontWeight: 700, color: netColor, marginLeft: 8 }}>Net {formatCurrency(net)}</span>
         <svg className="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
       </summary>
       <div className="pbody">
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
           <div style={{ background: "#f4f6f3", borderRadius: 10, padding: 11 }}>
             <div className="pkv-l">Total sales</div>
-            <div className="money" style={{ fontSize: 16, fontWeight: 800, color: "#11140f", marginTop: 3 }}>RM {rm(sales)}</div>
+            <div className="money" style={{ fontSize: 16, fontWeight: 800, color: "#11140f", marginTop: 3 }}>{formatCurrency(sales)}</div>
           </div>
           <div style={{ background: "#f4f6f3", borderRadius: 10, padding: 11 }}>
             <div className="pkv-l">Total cost</div>
-            <div className="money" style={{ fontSize: 16, fontWeight: 800, color: "#11140f", marginTop: 3 }}>RM {rm(cost)}</div>
+            <div className="money" style={{ fontSize: 16, fontWeight: 800, color: "#11140f", marginTop: 3 }}>{formatCurrency(cost)}</div>
           </div>
           <div style={{ background: "#f4f6f3", borderRadius: 10, padding: 11 }}>
             <div className="pkv-l">Net profit</div>
-            <div className="money" style={{ fontSize: 16, fontWeight: 800, color: netColor, marginTop: 3 }}>RM {rm(net)}</div>
+            <div className="money" style={{ fontSize: 16, fontWeight: 800, color: netColor, marginTop: 3 }}>{formatCurrency(net)}</div>
           </div>
           <div style={{ background: "#f4f6f3", borderRadius: 10, padding: 11 }}>
             <div className="pkv-l">Margin</div>
@@ -2063,7 +2122,7 @@ function FinancialSnapshot({
             {incomeLines.map((line, i) => (
               <div key={`${line.source ?? "l"}-${line.id}`} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", borderTop: i === 0 ? "none" : "1px solid #eceee9", flexWrap: "wrap" }}>
                 <span style={{ flex: 1, minWidth: 90, fontSize: 12, color: "#414539" }}>{line.description || humanize(line.category || "sales")}</span>
-                <span className="money" style={{ fontSize: 12, fontWeight: 700, color: "#2f8a5b" }}>RM {rm(line.amount)}</span>
+                <span className="money" style={{ fontSize: 12, fontWeight: 700, color: "#2f8a5b" }}>{formatCurrency(line.amount)}</span>
               </div>
             ))}
           </div>
@@ -2084,14 +2143,14 @@ function FinancialSnapshot({
                     {line.description || humanize(line.category || "—")}
                     {auto && <span style={{ marginLeft: 5, fontSize: 9, color: "#9aa093" }}>auto</span>}
                   </span>
-                  <span className="money" style={{ fontSize: 12, fontWeight: 700 }}>RM {rm(line.amount)}</span>
+                  <span className="money" style={{ fontSize: 12, fontWeight: 700 }}>{formatCurrency(line.amount)}</span>
                   {receiptKey && <button className="tinybtn" disabled={busy} onClick={() => openReceipt(line)}>Receipt</button>}
                 </div>
               );
             })}
             <div style={{ display: "flex", justifyContent: "space-between", padding: "9px 12px", borderTop: "1px solid #eceee9", fontSize: 12, fontWeight: 700, color: "#11140f", background: "#f4f6f3" }}>
               <span>Net profit{marginPct != null ? ` (${marginPct.toFixed(1)}%)` : ""}</span>
-              <span className="money" style={{ color: netColor }}>RM {rm(net)}</span>
+              <span className="money" style={{ color: netColor }}>{formatCurrency(net)}</span>
             </div>
           </div>
         )}

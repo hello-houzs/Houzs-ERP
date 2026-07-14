@@ -12,6 +12,13 @@ import {
   type SoAuditFieldChange,
 } from "../vendor/scm/lib/sales-order-queries";
 import { buildVariantSummary } from "../vendor/shared/variant-summary";
+import { useSoDropdownOptions, optionsOrFallback, FALLBACK_OPTIONS } from "../vendor/scm/lib/so-dropdown-options-queries";
+import {
+  useAmendmentDetail,
+  useSupplierConfirm,
+  useApproveSo,
+  type AmendmentLine,
+} from "../vendor/scm/lib/so-amendment-queries";
 import { PaymentInfoBlock, type RecordedPaymentLike } from "./PaymentInfoBlock";
 import "./mobile.css";
 
@@ -75,6 +82,15 @@ type SoHeader = {
      non-cancelled DO/SI references this SO (locks Edit + Cancel). */
   has_children: boolean | null;
   delivery_state: string | null;
+  /* SO-amendment gate flags (Phase 1-C, read-only) — the GET /:docNo endpoint
+     derives these (backend mfg-sales-orders.ts). amendment_eligible = the SO is
+     processing-locked (already PO'd to the supplier) but still editable via the
+     amendment flow, so a line change here must go out as an amendment request.
+     open_amendment is the light summary of any in-flight amendment (status NOT IN
+     SENT/REJECTED). Same flags the desktop SalesOrderDetail routes on. */
+  amendment_eligible: boolean | null;
+  has_open_amendment: boolean | null;
+  open_amendment: { id: string; status: string; amendment_no: string } | null;
   /* Scan-flow proof photos (migrations 0033 + 0034) — R2 keys for the
      handwritten order slip and the card-terminal payment receipt this SO was
      scanned from. Dual-read camelCase ?? snake_case at the use site (the pg
@@ -167,8 +183,16 @@ const isCreatedTodayMyt = (createdAt: string | null | undefined): boolean => {
 export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBack: () => void; onEdit?: (docNo: string) => void }) {
   const qc = useQueryClient();
   const confirm = useConfirm();
+  const notifyTop = useNotify();
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  /* SO-amendment (Phase 1-C) — the pending-amendment banner's actions. The
+     diff sheet opens with the amendment id; the supplier-confirm sheet toggles
+     inline. approve-SO is a direct mutation gated by permission + status. All
+     three reuse the vendored so-amendment-queries hooks (no re-implemented API). */
+  const [viewingAmendmentId, setViewingAmendmentId] = useState<string | null>(null);
+  const [supplierConfirmOpen, setSupplierConfirmOpen] = useState(false);
+  const approveSo = useApproveSo();
 
   const detail = useQuery({
     queryKey: ["mobile-so-detail", docNo],
@@ -186,6 +210,17 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
   const h = detail.data?.salesOrder;
   const items = detail.data?.items ?? [];
   const payments = paymentsQ.data?.payments ?? [];
+  /* Download the SO PDF — reuses the SAME desktop generator (per-brand letterhead)
+     so the phone produces byte-identical output. 'save' = normal download. */
+  const onPdf = async () => {
+    if (!h) return;
+    try {
+      const { generateSalesOrderPdf } = await import("../vendor/scm/lib/sales-order-pdf");
+      await generateSalesOrderPdf(h as never, items as never, payments as never, "save", []);
+    } catch (e) {
+      void notifyTop({ title: "Couldn't generate the PDF", body: e instanceof Error ? e.message : "Please try again." });
+    }
+  };
 
   /* Salesperson NAME — the detail header carries only salesperson_id (a staff
      UUID), so resolve it against the shared /staff list. Falls back to em-dash
@@ -242,7 +277,61 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
   const originalProcessing = (h?.internal_expected_dd ?? "").slice(0, 10);
   const processingLocked = originalProcessing !== "" && originalProcessing < today && Boolean(h?.proceeded_at);
 
-  const editLocked = LOCKED.includes(rawStatus) || hasChildren || processingLocked;
+  /* Amendment gate (server-derived, desktop SalesOrderDetail parity) — when
+     amendment_eligible the SO is processing-locked but still editable via the
+     amendment flow, so Edit stays ENABLED (tapping it routes into MobileNewSO's
+     amendment-raise mode) rather than being hard-locked by the processing date.
+     open_amendment / has_open_amendment drive the pending banner + its gate
+     actions below. */
+  const amendmentEligible = Boolean(h?.amendment_eligible);
+  const openAmendment = h?.open_amendment ?? null;
+  const hasOpenAmendment = Boolean(h?.has_open_amendment) && openAmendment != null;
+
+  /* editLocked (disables the footer Edit button) = terminal status OR downstream
+     DO/SI OR a proceeded past-processing order that is NOT amendment-eligible. An
+     amendment-eligible SO keeps Edit live so the salesperson can raise an
+     amendment from mobile instead of reopening it on desktop. */
+  const editLocked = LOCKED.includes(rawStatus) || hasChildren || (processingLocked && !amendmentEligible);
+
+  /* Houzs perm gates (mirror the server-side scm.amendment.* keys, desktop
+     parity) — the server 403 stays the real gate (its plain-language message is
+     humanised by authed-fetch); these just hide the affordance from users who
+     can't use it. */
+  const canSupplierConfirm = houzsAuth.can("scm.amendment.supplier_confirm");
+  const canApproveSo = houzsAuth.can("scm.amendment.approve_so");
+
+  /* Approve-SO gate (SUPPLIER_PENDING → SO_APPROVED). Confirms, then re-derives
+     the SO server-side; the mutation invalidates the shared SO/amendment queries
+     and we additionally refresh the mobile-scoped keys so this screen updates. */
+  const handleApproveSo = async () => {
+    if (!openAmendment || busy) return;
+    if (!(await confirm({
+      title: `Approve SO revision for ${docNo}?`,
+      body: "This applies the supplier-confirmed changes: the Sales Order is re-derived and the current version is snapshotted into Revisions. This cannot be undone.",
+      confirmLabel: "Approve revision",
+    }))) return;
+    setBusy(true);
+    try {
+      await approveSo.mutateAsync({ id: openAmendment.id });
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["mobile-so-detail", docNo] }),
+        qc.invalidateQueries({ queryKey: ["mobile-so-list"] }),
+      ]);
+      void notifyTop({ title: "SO revision approved" });
+    } catch (e) {
+      void notifyTop({ title: "Could not approve the revision", body: e instanceof Error ? e.message : String(e), tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+  /* Refresh the mobile-scoped SO detail + list after any amendment gate action
+     (the vendored mutations already invalidate the shared ['mfg-sales-order-*']
+     + ['amendments'] keys; these cover the mobile query keys this screen reads). */
+  const refreshAfterAmendment = () =>
+    Promise.all([
+      qc.invalidateQueries({ queryKey: ["mobile-so-detail", docNo] }),
+      qc.invalidateQueries({ queryKey: ["mobile-so-list"] }),
+    ]);
 
   /* Owner rule 2026-07-05 (desktop parity, SalesOrderDetail.tsx): a PROCEEDED
      order that's past its processing date freezes its LINE ITEMS + State /
@@ -254,7 +343,21 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
      processing lock. Drafts + cancelled orders still take NO payment (owner:
      "no payments on drafts"), matching desktop hiding Add Payment off-status. */
   const paymentLocked = LOCKED.includes(rawStatus) || hasChildren;
-  const canAddPayment = ph === "submitted" && !paymentLocked;
+
+  /* No-naked-payment-edits (owner 2026-07-13) — Add / Delete / Edit must NOT
+     show in the read-only detail without the operator opting in. The rule
+     (desktop parity, SalesOrderDetail.tsx): payments are editable when the SO is
+     a DRAFT (never confirmed — always adjustable) OR the operator has entered
+     the payments Edit mode on this card. `payEditing` is that in-card toggle,
+     offered only on a submitted, non-terminal / non-downstream-locked SO (the
+     SHIPPED+/has-children lock still fully view-onlys the section, matching the
+     desktop Edit button being disabled when isLocked). The processing lock does
+     NOT gate payments (owner rule 2026-07-05), same as before. */
+  const isDraftSo = ph === "draft";
+  const [payEditing, setPayEditing] = useState(false);
+  const canOfferPayEdit = ph === "submitted" && !paymentLocked;
+  const canEditPayments = isDraftSo || (canOfferPayEdit && payEditing);
+  const canAddPayment = canEditPayments;
   const [payOpen, setPayOpen] = useState(false);
   /* Same-day EDIT (owner 2026-07-13) — the payment row being edited (null = the
      Add-Payment sheet is in create mode / closed). */
@@ -305,6 +408,7 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
         <div className="hdr-row">
           <button className="back" onClick={onBack}><span className="chev">{"‹"}</span> Sales Orders</button>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {h && <button className="tinybtn" onClick={onPdf} style={{ background: "#f4f6f3", border: "1px solid var(--line2)", color: "var(--ink)" }}>PDF</button>}
             {h && <StatusPill status={h.status} />}
           </div>
         </div>
@@ -359,10 +463,67 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
                   ? "Locked — a delivery order or invoice references this SO. Line items can't be edited."
                   : "Locked — this order has moved past editing. Line items can't be edited."}
               </div>
+            ) : amendmentEligible ? (
+              /* Amendment-eligible (desktop parity) — the SO is on order to the
+                 supplier but still editable via the amendment flow. Edit stays
+                 live; tapping it opens the same New SO form in amendment-raise
+                 mode where Save submits an amendment request. */
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 8, background: "rgba(232,107,58,0.08)", border: "1px solid var(--c-orange, #e86b3a)", borderRadius: 10, padding: "9px 11px", marginBottom: 12, fontSize: 11, color: "#8a4a24", lineHeight: 1.45 }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#c66a34" strokeWidth="2" strokeLinecap="round" style={{ flexShrink: 0, marginTop: 1 }}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" /><path d="m10.5 13-2.5 2.5 2.5 2.5" /><path d="m13.5 13 2.5 2.5-2.5 2.5" /></svg>
+                {hasOpenAmendment
+                  ? "On order to the supplier — an amendment is pending (see below). Line changes are locked until it's confirmed or rejected."
+                  : "On order to the supplier. Tap Edit to request a line-item amendment — the coordinator and supplier confirm it before the order is revised."}
+              </div>
             ) : (
               <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#eef1ec", border: "1px solid #e3e6e0", borderRadius: 10, padding: "9px 11px", marginBottom: 12, fontSize: 11, color: "#5c6156" }}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#767b6e" strokeWidth="2" strokeLinecap="round"><rect x="4" y="10" width="16" height="10" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /></svg>
                 Locked view — tap Edit to change. Same form as New SO.
+              </div>
+            )}
+
+            {/* ── Pending-amendment banner (Phase 1-C) ──────────────────────
+                An amendment is in flight. Shows its no + status pill, a "View
+                changes" link opening the before/after diff, and the gate actions
+                the current user is permitted (record supplier confirmation at
+                REQUESTED / approve SO revision at SUPPLIER_PENDING) — mirroring
+                the desktop SalesOrderDetail pending banner. */}
+            {hasOpenAmendment && openAmendment && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 9, background: "rgba(214,158,46,0.14)", border: "1px solid rgba(214,158,46,0.55)", borderRadius: 12, padding: "11px 13px", marginBottom: 12 }}>
+                <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#8a6a2e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><path d="M3 3v5h5" /><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8" /><path d="M12 7v5l4 2" /></svg>
+                  <span style={{ fontSize: 12.5, fontWeight: 700, color: "#6d5626" }}>Amendment {openAmendment.amendment_no || "—"} pending</span>
+                  <AmendmentStatusPill status={openAmendment.status} />
+                  <button
+                    type="button"
+                    onClick={() => setViewingAmendmentId(openAmendment.id)}
+                    style={{ marginLeft: "auto", border: "none", background: "transparent", padding: 0, cursor: "pointer", color: "#a25a2a", fontFamily: "inherit", fontSize: 12, fontWeight: 700, textDecoration: "underline" }}
+                  >
+                    View changes
+                  </button>
+                </div>
+                {/* Gate actions — perm + status gated, exactly like desktop. */}
+                {openAmendment.status === "REQUESTED" && canSupplierConfirm && (
+                  <button
+                    type="button"
+                    onClick={() => setSupplierConfirmOpen(true)}
+                    disabled={busy}
+                    className="money"
+                    style={{ border: "1px solid #bcdcd7", background: "#e1efed", color: "#16695f", fontFamily: "inherit", fontSize: 12, fontWeight: 700, borderRadius: 9, padding: "9px 11px", cursor: "pointer", opacity: busy ? 0.5 : 1 }}
+                  >
+                    Record supplier confirmation
+                  </button>
+                )}
+                {openAmendment.status === "SUPPLIER_PENDING" && canApproveSo && (
+                  <button
+                    type="button"
+                    onClick={() => void handleApproveSo()}
+                    disabled={busy}
+                    className="money"
+                    style={{ border: "1px solid #bcdcd7", background: "#e1efed", color: "#16695f", fontFamily: "inherit", fontSize: 12, fontWeight: 700, borderRadius: 9, padding: "9px 11px", cursor: "pointer", opacity: busy ? 0.5 : 1 }}
+                  >
+                    {busy ? "Working…" : "Approve SO revision"}
+                  </button>
+                )}
               </div>
             )}
 
@@ -479,6 +640,19 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
             <div className="card"><div className="card-h"><span className="card-t">Payments</span>
               <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 {!!payments.length && <span className="card-sub">{payments.length}</span>}
+                {/* No-naked-edits toggle (owner 2026-07-13) — on a submitted SO the
+                    payments stay view-only until the operator taps Edit here; a
+                    DRAFT skips the toggle (always editable). Mirrors the desktop
+                    Detail's Edit-mode gate on the PaymentsTable. */}
+                {canOfferPayEdit && (
+                  <button
+                    type="button"
+                    onClick={() => setPayEditing((v) => !v)}
+                    style={{ border: "1px solid var(--line2)", background: payEditing ? "#eef1ec" : "#fff", color: "var(--mut)", fontFamily: "inherit", fontSize: 11.5, fontWeight: 700, borderRadius: 8, padding: "4px 10px", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 }}
+                  >
+                    {payEditing ? "Done" : "Edit"}
+                  </button>
+                )}
                 {canAddPayment && (
                   <button
                     type="button"
@@ -502,10 +676,11 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
                     {/* Slip present — dual-read camelCase ?? snake_case. */}
                     {((p as unknown as { slipKey?: string | null }).slipKey ?? p.slip_key) ? <SlipLink docNo={docNo} paymentId={p.id} /> : null}
                     <span className="money-row">RM {rm(p.amount_centi)}</span>
-                    {/* Same-day EDIT (owner 2026-07-13) — pencil shown only for a
-                        payment recorded today; after MYT midnight it locks. Same
-                        cancelled / edit-locked hide as the delete button. */}
-                    {ph !== "cancelled" && !editLocked && isCreatedTodayMyt((p as unknown as { createdAt?: string | null }).createdAt ?? p.created_at) && (
+                    {/* Same-day EDIT (owner 2026-07-13) — pencil requires the
+                        payments Edit mode (or a DRAFT SO) AND, for a submitted SO,
+                        that the row was recorded today (after MYT midnight it
+                        locks). A DRAFT's rows are never same-day-locked. */}
+                    {canEditPayments && (isDraftSo || isCreatedTodayMyt((p as unknown as { createdAt?: string | null }).createdAt ?? p.created_at)) && (
                       <button
                         type="button"
                         onClick={() => setEditPay(p)}
@@ -517,10 +692,10 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2f5d4f" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>
                       </button>
                     )}
-                    {/* Delete payment — parity with desktop PaymentsTable. Hidden
-                        on cancelled / edit-locked (SHIPPED+ / has children) orders,
-                        matching the desktop's locked-mode hide. */}
-                    {ph !== "cancelled" && !editLocked && (
+                    {/* Delete payment — parity with desktop PaymentsTable. Shown
+                        only in the payments Edit mode (or on a DRAFT SO); the
+                        read-only view exposes no delete control. */}
+                    {canEditPayments && (
                       <button
                         type="button"
                         onClick={() => void deletePayment(p.id)}
@@ -566,6 +741,27 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
             setEditPay(null);
             await refreshAfterPayment();
           }}
+        />
+      )}
+
+      {/* Supplier-confirmation sheet (Phase 1-C) — records the supplier's
+          confirmation ref/note against the open amendment (REQUESTED →
+          SUPPLIER_PENDING) via the vendored useSupplierConfirm mutation. */}
+      {supplierConfirmOpen && openAmendment && (
+        <SupplierConfirmSheet
+          amendmentId={openAmendment.id}
+          onClose={() => setSupplierConfirmOpen(false)}
+          onDone={async () => { setSupplierConfirmOpen(false); await refreshAfterAmendment(); }}
+        />
+      )}
+
+      {/* Before/after diff sheet (Phase 1-C) — reads the amendment detail
+          (useAmendmentDetail) and renders each requested line change as
+          old_snapshot → new_*, the SAME data as the desktop AmendmentDiffModal. */}
+      {viewingAmendmentId && (
+        <AmendmentDiffSheet
+          amendmentId={viewingAmendmentId}
+          onClose={() => setViewingAmendmentId(null)}
         />
       )}
 
@@ -689,6 +885,62 @@ function SlipLink({ docNo, paymentId }: { docNo: string; paymentId: string }) {
   );
 }
 
+/* Existing-slip preview for the Edit Payment sheet — blob-fetches the persisted
+   payment's slip (same GET /:docNo/payments/:id/slip-url the read-view SlipLink
+   uses) and shows it as a thumbnail the operator taps to open full-size, so they
+   SEE which slip is attached while editing. PDFs (no <img> render) fall back to a
+   "View slip" link. The slip itself is never changed by an edit. */
+function PaymentSlipPreview({ docNo, paymentId }: { docNo: string; paymentId: string }) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [contentType, setContentType] = useState<string>("");
+  const [state, setState] = useState<"loading" | "ready" | "error">("loading");
+  useEffect(() => {
+    let live = true;
+    let objUrl: string | null = null;
+    (async () => {
+      try {
+        const res = await fetchPaymentSlipUrl(docNo, paymentId);
+        if (!live) { URL.revokeObjectURL(res.url); return; }
+        objUrl = res.url;
+        setUrl(res.url);
+        setContentType(res.contentType);
+        setState("ready");
+      } catch {
+        if (live) setState("error");
+      }
+    })();
+    return () => { live = false; if (objUrl) URL.revokeObjectURL(objUrl); };
+  }, [docNo, paymentId]);
+  const isPdf = contentType.includes("pdf");
+  return (
+    <div className="fld">
+      <span className="fld-l">Attached slip</span>
+      {state === "loading" ? (
+        <div style={{ fontSize: 11.5, color: "var(--mut)", padding: "6px 0" }}>Loading slip…</div>
+      ) : state === "error" || !url ? (
+        <div style={{ fontSize: 11.5, color: "var(--mut)", padding: "6px 0" }}>Couldn't load the attached slip.</div>
+      ) : isPdf ? (
+        <button
+          type="button"
+          onClick={() => window.open(url, "_blank", "noopener")}
+          style={{ width: "100%", boxSizing: "border-box", height: 40, borderRadius: 9, cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, border: "1px solid #bcdcd7", background: "#e1efed", color: "#16695f" }}
+        >
+          View attached slip (PDF)
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={() => window.open(url, "_blank", "noopener")}
+          title="Open slip full-size"
+          style={{ padding: 0, border: "1px solid #d6d9d2", borderRadius: 9, background: "#f4f6f3", cursor: "pointer", overflow: "hidden", display: "block", width: "fit-content" }}
+        >
+          <img src={url} alt="Payment slip" style={{ display: "block", maxHeight: 120, maxWidth: "100%", objectFit: "contain" }} />
+        </button>
+      )}
+    </div>
+  );
+}
+
 /* ── Add Payment sheet ───────────────────────────────────────────────────────
    Standalone payment-recording flow for a LOCKED (or unlocked) submitted SO.
    Records ONE slip-backed payment through POST /:docNo/payments — the SAME
@@ -706,9 +958,12 @@ type PayMethodLabel = (typeof PAY_METHODS)[number];
 const PAY_METHOD_CODE: Record<string, "cash" | "transfer" | "merchant" | "installment"> = {
   Cash: "cash", Online: "transfer", Merchant: "merchant", Installment: "installment",
 };
-const BANK_OPTS = ["Maybank", "CIMB", "Public Bank", "HSBC", "RHB"];
-const PLAN_OPTS = ["One Shot", "6 months", "12 months", "24 months", "36 months"];
-const ONLINE_OPTS = ["Bank Transfer", "TNG eWallet", "DuitNow", "Cheque"];
+// Offline fallback + parsing seed only; the rendered dropdowns below read the
+// LIVE maintenance catalog via useSoDropdownOptions. Single-sourced from
+// FALLBACK_OPTIONS so it can't drift ("Maybank" -> "MBB", "One Shot" -> "One-off").
+const BANK_OPTS = FALLBACK_OPTIONS.payment_merchant.map((o) => o.value);
+const PLAN_OPTS = FALLBACK_OPTIONS.installment_plan.map((o) => o.value);
+const ONLINE_OPTS = FALLBACK_OPTIONS.online_type.map((o) => o.value);
 /* 'One Shot' → null (no installment term); 'N months' → N. Same as MobileNewSO. */
 const planToMonths = (label: string): number | null => {
   const m = /^(\d+)\s*month/i.exec(String(label).trim());
@@ -752,7 +1007,7 @@ function AddPaymentSheet({
     () => (editPayment ? CODE_TO_PAY_METHOD[editPayment.method ?? "cash"] ?? "Cash" : "Cash"),
   );
   const [date, setDate] = useState<string>(
-    () => (editPayment?.paid_at ?? "").slice(0, 10) || new Date().toISOString().slice(0, 10),
+    () => (editPayment?.paid_at ?? "").slice(0, 10) || todayMyt(),
   );
   const [amount, setAmount] = useState(
     () => (editPayment ? ((editPayment.amount_centi ?? 0) / 100).toFixed(2) : "0.00"),
@@ -763,6 +1018,11 @@ function AddPaymentSheet({
   const [bank, setBank] = useState(editPayment?.merchant_provider || BANK_OPTS[0]);
   const [plan, setPlan] = useState(() => (editPayment ? monthsToPlan(editPayment.installment_months) : PLAN_OPTS[0]));
   const [online, setOnline] = useState(editPayment?.online_type || ONLINE_OPTS[0]);
+  /* Live payment dropdowns from the maintenance catalog (same API as desktop) —
+     the module arrays above are only the offline fallback / parsing seed. */
+  const bankOpts = optionsOrFallback("payment_merchant", useSoDropdownOptions("payment_merchant").data);
+  const planOpts = optionsOrFallback("installment_plan", useSoDropdownOptions("installment_plan").data);
+  const onlineOpts = optionsOrFallback("online_type", useSoDropdownOptions("online_type").data);
   const [slipName, setSlipName] = useState("");
   const [slipSession, setSlipSession] = useState("");
   const [slipPhase, setSlipPhase] = useState<"" | "uploading" | "done" | "error">("");
@@ -858,24 +1118,24 @@ function AddPaymentSheet({
               <div style={{ display: "flex", gap: 9 }}>
                 <div className="fld" style={{ flex: 1 }}>
                   <span className="fld-l">Bank</span>
-                  <select className="fld-i" value={bank} onChange={(e) => setBank(e.target.value)}>{BANK_OPTS.map((o) => <option key={o} value={o}>{o}</option>)}</select>
+                  <select className="fld-i" value={bank} onChange={(e) => setBank(e.target.value)}>{bankOpts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select>
                 </div>
                 <div className="fld" style={{ flex: 1 }}>
                   <span className="fld-l">Plan</span>
-                  <select className="fld-i" value={plan} onChange={(e) => setPlan(e.target.value)}>{PLAN_OPTS.map((o) => <option key={o} value={o}>{o}</option>)}</select>
+                  <select className="fld-i" value={plan} onChange={(e) => setPlan(e.target.value)}>{planOpts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select>
                 </div>
               </div>
             )}
             {method === "Installment" && (
               <div className="fld">
                 <span className="fld-l">Installment plan</span>
-                <select className="fld-i" value={plan} onChange={(e) => setPlan(e.target.value)}>{PLAN_OPTS.map((o) => <option key={o} value={o}>{o}</option>)}</select>
+                <select className="fld-i" value={plan} onChange={(e) => setPlan(e.target.value)}>{planOpts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select>
               </div>
             )}
             {method === "Online" && (
               <div className="fld">
                 <span className="fld-l">Sub-type</span>
-                <select className="fld-i" value={online} onChange={(e) => setOnline(e.target.value)}>{ONLINE_OPTS.map((o) => <option key={o} value={o}>{o}</option>)}</select>
+                <select className="fld-i" value={online} onChange={(e) => setOnline(e.target.value)}>{onlineOpts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select>
               </div>
             )}
             <div style={{ display: "flex", gap: 9 }}>
@@ -895,6 +1155,12 @@ function AddPaymentSheet({
                 {staff.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
               </select>
             </div>
+            {/* Edit mode — show the EXISTING attached slip so the operator can
+                see what's on the row while editing (owner request). The slip is
+                not changed by an edit; this is view-only. */}
+            {isEdit && editPayment?.slip_key && (
+              <PaymentSlipPreview docNo={docNo} paymentId={editPayment.id} />
+            )}
             {/* Owner 2026-07-13 — slip is OPTIONAL. Uploader stays available for
                 when a receipt IS on hand; no "required" gate. Hidden in edit
                 mode (the slip isn't changed by an edit). */}
@@ -1227,5 +1493,210 @@ function StatusPill({ status }: { status: string | null }) {
   const cls = p === "draft" ? "b-amber" : p === "cancelled" ? "b-red" : "b-brand";
   const label = p === "draft" ? "Draft" : p === "cancelled" ? "Cancelled" : "Submitted";
   return <span className={`badge ${cls}`} style={p === "draft" ? { border: "1px solid #e0cf9e" } : undefined}>{label}</span>;
+}
+
+/* ── Amendment status pill ───────────────────────────────────────────────────
+   The SO-amendment state machine (backend so-amendments.ts):
+   REQUESTED → SUPPLIER_PENDING → SO_APPROVED → PO_APPROVED → SENT (or REJECTED).
+   Plain-language labels; amber/teal/red tones by phase. */
+const AMENDMENT_STATUS_LABEL: Record<string, string> = {
+  REQUESTED: "Requested",
+  SUPPLIER_PENDING: "Supplier pending",
+  SO_APPROVED: "SO approved",
+  PO_APPROVED: "PO approved",
+  SENT: "Sent",
+  REJECTED: "Rejected",
+};
+function AmendmentStatusPill({ status }: { status: string }) {
+  const s = (status ?? "").toUpperCase();
+  const label = AMENDMENT_STATUS_LABEL[s] ?? (s ? s.replace(/_/g, " ").toLowerCase() : "—");
+  const tone =
+    s === "REJECTED"
+      ? { bg: "#f8eaea", fg: "#b23a3a" }
+      : s === "SO_APPROVED" || s === "PO_APPROVED" || s === "SENT"
+      ? { bg: "#e1efed", fg: "#0c3f39" }
+      : { bg: "#f6efd9", fg: "#8a6a2e" };
+  return (
+    <span className="money" style={{ display: "inline-block", fontSize: 10, fontWeight: 800, letterSpacing: ".04em", textTransform: "uppercase", padding: "2px 7px", borderRadius: 999, background: tone.bg, color: tone.fg }}>
+      {label}
+    </span>
+  );
+}
+
+/* changeType → plain label (desktop AmendmentDiffModal parity). */
+const amendmentChangeLabel = (t: string): string =>
+  t === "SPEC" ? "Spec change" :
+  t === "QTY" ? "Quantity change" :
+  t === "ADD" ? "Added line" :
+  t === "REMOVE" ? "Removed line" : t;
+
+/* ── Supplier-confirmation sheet ─────────────────────────────────────────────
+   Records the supplier's confirmation reference (+ optional note / attachment
+   key) against the open amendment via the vendored useSupplierConfirm mutation
+   (REQUESTED → SUPPLIER_PENDING). Mobile .hz-m bottom sheet; mirrors the desktop
+   SupplierConfirmForm fields. The server 403/409 is the real gate (humanised by
+   authed-fetch). */
+function SupplierConfirmSheet({
+  amendmentId,
+  onClose,
+  onDone,
+}: {
+  amendmentId: string;
+  onClose: () => void;
+  onDone: () => void | Promise<void>;
+}) {
+  const supplierConfirm = useSupplierConfirm();
+  const notify = useNotify();
+  const [ref, setRef] = useState("");
+  const [note, setNote] = useState("");
+  const [attachmentKey, setAttachmentKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async () => {
+    if (busy) return;
+    if (!ref.trim()) { setError("Enter the supplier's confirmation reference."); return; }
+    setError(null);
+    setBusy(true);
+    try {
+      await supplierConfirm.mutateAsync({
+        id: amendmentId,
+        ref: ref.trim(),
+        note: note.trim() || undefined,
+        attachmentKey: attachmentKey.trim() || undefined,
+      });
+      void notify({ title: "Supplier confirmation recorded" });
+      await onDone();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't record the confirmation. Please try again.");
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="hz-m sheet-bd" onClick={() => { if (!busy) onClose(); }}>
+      <div className="sheet" onClick={(e) => e.stopPropagation()}>
+        <div className="grab" />
+        <div className="sheet-head">
+          <div>
+            <div className="card-t" style={{ fontSize: 15 }}>Record supplier confirmation</div>
+            <div style={{ fontSize: 11, color: "var(--mut)", marginTop: 2 }}>The supplier confirmed the amended order</div>
+          </div>
+          <button type="button" className="sheet-x" onClick={() => { if (!busy) onClose(); }} aria-label="Close">{"✕"}</button>
+        </div>
+        <div className="sheet-scroll">
+          <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+            <label className="fld">
+              <span className="fld-l">Supplier confirmation ref *</span>
+              <input className="fld-i" value={ref} onChange={(e) => setRef(e.target.value)} placeholder="e.g. supplier WhatsApp / email ref" />
+            </label>
+            <label className="fld">
+              <span className="fld-l">Attachment key (optional)</span>
+              <input className="fld-i" value={attachmentKey} onChange={(e) => setAttachmentKey(e.target.value)} placeholder="R2 object key, if any" />
+            </label>
+            <label className="fld">
+              <span className="fld-l">Note (optional)</span>
+              <input className="fld-i" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Anything the supplier flagged" />
+            </label>
+            {error && <div style={{ fontSize: 11.5, color: "var(--red)", textAlign: "center" }}>{error}</div>}
+          </div>
+        </div>
+        <div className="sheet-foot">
+          <button type="button" className="btn-ghost" style={{ flex: 1, opacity: busy ? 0.55 : 1 }} disabled={busy} onClick={() => onClose()}>Cancel</button>
+          <button type="button" className="btn" style={{ flex: 1.3, opacity: busy || !ref.trim() ? 0.5 : 1 }} disabled={busy || !ref.trim()} onClick={() => void submit()}>{busy ? "Recording…" : "Record confirmation"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Amendment diff sheet ────────────────────────────────────────────────────
+   Reads the amendment detail (useAmendmentDetail) and renders each requested
+   line change as a Before → After pair — the SAME data as the desktop
+   AmendmentDiffModal (old_snapshot vs new_item_code / new_variants / new_qty /
+   new_unit_price_sen), laid out mobile-first as stacked cards. */
+function AmendmentDiffSheet({ amendmentId, onClose }: { amendmentId: string; onClose: () => void }) {
+  const { data, isLoading, error } = useAmendmentDetail(amendmentId);
+  const lines = (data?.lines ?? []) as AmendmentLine[];
+  const oldOf = (l: AmendmentLine): { itemCode?: string; qty?: number; unitPriceSen?: number; description2?: string | null } =>
+    (l.old_snapshot as { itemCode?: string; qty?: number; unitPriceSen?: number; description2?: string | null } | null) ?? {};
+  const amNo = data?.amendment?.amendment_no != null ? String(data.amendment.amendment_no) : "";
+  const reason = typeof data?.amendment?.reason === "string" ? data.amendment.reason : "";
+
+  return (
+    <div className="hz-m sheet-bd" onClick={onClose}>
+      <div className="sheet" onClick={(e) => e.stopPropagation()}>
+        <div className="grab" />
+        <div className="sheet-head">
+          <div>
+            <div className="card-t" style={{ fontSize: 15 }}>Requested changes{amNo ? ` — ${amNo}` : ""}</div>
+            <div style={{ fontSize: 11, color: "var(--mut)", marginTop: 2 }}>Was → requesting</div>
+          </div>
+          <button type="button" className="sheet-x" onClick={onClose} aria-label="Close">{"✕"}</button>
+        </div>
+        <div className="sheet-scroll">
+          {isLoading ? (
+            <div style={{ fontSize: 11.5, color: "var(--mut2)", padding: "8px 0" }}>Loading changes{"…"}</div>
+          ) : error ? (
+            <div style={{ fontSize: 11.5, color: "var(--red)", padding: "8px 0" }}>{error instanceof Error ? error.message : "Couldn't load the changes."}</div>
+          ) : lines.length === 0 ? (
+            <div style={{ fontSize: 11.5, color: "var(--mut2)", padding: "8px 0" }}>This amendment has no line changes recorded.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+              {lines.map((l) => {
+                const old = oldOf(l);
+                const newSummary = buildVariantSummary("", (l.new_variants as Record<string, unknown> | null) ?? null);
+                return (
+                  <div key={l.id} style={{ border: "1px solid var(--line2, #e3e6e0)", borderRadius: 11, overflow: "hidden" }}>
+                    <div style={{ padding: "7px 11px", background: "#f4f6f3", fontSize: 10.5, fontWeight: 800, letterSpacing: ".06em", textTransform: "uppercase", color: "#5c6156" }}>{amendmentChangeLabel(l.change_type)}</div>
+                    <div style={{ display: "flex", gap: 0 }}>
+                      {/* Before */}
+                      <div style={{ flex: 1, minWidth: 0, padding: "9px 11px", borderRight: "1px solid var(--line2, #e3e6e0)" }}>
+                        <div className="fld-l" style={{ marginBottom: 3 }}>Was</div>
+                        {l.change_type === "ADD" ? (
+                          <div style={{ fontSize: 11.5, color: "var(--mut2)" }}>—</div>
+                        ) : (
+                          <>
+                            <div className="money" style={{ fontSize: 12.5, fontWeight: 700, color: "var(--ink)" }}>{old.itemCode ?? "—"}</div>
+                            <div className="money" style={{ fontSize: 11, color: "var(--mut)", marginTop: 2 }}>
+                              Qty {old.qty ?? "—"}{typeof old.unitPriceSen === "number" ? ` · RM ${rm(old.unitPriceSen)}` : ""}
+                            </div>
+                            {old.description2 ? <div style={{ fontSize: 10.5, color: "var(--mut2)", marginTop: 2 }}>{old.description2}</div> : null}
+                          </>
+                        )}
+                      </div>
+                      {/* After */}
+                      <div style={{ flex: 1, minWidth: 0, padding: "9px 11px" }}>
+                        <div className="fld-l" style={{ marginBottom: 3 }}>Requesting</div>
+                        {l.change_type === "REMOVE" ? (
+                          <div style={{ fontSize: 11.5, color: "#b23a3a", fontWeight: 600 }}>Removed</div>
+                        ) : (
+                          <>
+                            <div className="money" style={{ fontSize: 12.5, fontWeight: 700, color: "#0c3f39" }}>{l.new_item_code ?? old.itemCode ?? "—"}</div>
+                            <div className="money" style={{ fontSize: 11, color: "var(--mut)", marginTop: 2 }}>
+                              Qty {l.new_qty ?? old.qty ?? "—"}{typeof l.new_unit_price_sen === "number" ? ` · RM ${rm(l.new_unit_price_sen)}` : ""}
+                            </div>
+                            {newSummary ? <div style={{ fontSize: 10.5, color: "var(--mut2)", marginTop: 2 }}>{newSummary}</div> : null}
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {reason ? (
+            <div style={{ marginTop: 11, fontSize: 11.5, color: "var(--mut)", lineHeight: 1.45 }}>
+              <span style={{ fontWeight: 700 }}>Reason:</span> {reason}
+            </div>
+          ) : null}
+        </div>
+        <div className="sheet-foot">
+          <button type="button" className="btn" style={{ flex: 1 }} onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
 }
 

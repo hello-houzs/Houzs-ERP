@@ -678,6 +678,10 @@ export function AcceptInviteScreen() {
 export function AuthGate({ children }: { children: ReactNode }) {
   const { user, loading, hasUsers } = useAuth();
   const isMobile = useIsMobile();
+  // The mobile build exists ONLY for HOUZS (the owner's phone design). 2990 (and
+  // any other company) has no mobile UI, so on the 2990 host we fall back to the
+  // desktop app even on phones — "2990 手机关闭".
+  const mobileEnabled = isMobile && hostDefaultCompanyCode() === HOUZS_COMPANY_CODE;
 
   // Track the hash so in-page links (#forgot, back-to-login) re-render
   // the gate without a full navigation. #invite= arrives as a fresh
@@ -719,7 +723,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
     if (hash === "#forgot") {
       return <ForgotPasswordScreen />;
     }
-    return isMobile ? (
+    return mobileEnabled ? (
       <Suspense fallback={null}>
         <MobileLogin />
       </Suspense>
@@ -728,7 +732,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
     );
   }
 
-  return isMobile ? (
+  return mobileEnabled ? (
     <Suspense fallback={null}>
       <MobileApp />
     </Suspense>

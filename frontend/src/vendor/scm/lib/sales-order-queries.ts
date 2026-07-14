@@ -40,6 +40,30 @@ export const useMfgSalesOrders = (status?: string) =>
     retryDelay: 800,
   });
 
+// Opt-in server-side pagination + search + sort + status-counts. Sending
+// `page` switches the backend into its paginated contract (returns
+// { salesOrders, total, page, pageSize, statusCounts }); the legacy
+// useMfgSalesOrders above (no page) still returns all 500 for the dead V1 page.
+// Status tab values in the UI are lowercase (draft/confirmed/cancelled) but the
+// mfg_sales_orders.status column stores UPPERCASE — uppercase here to match.
+export function useMfgSalesOrdersPaged(params: { page: number; pageSize: number; status?: string; q?: string; sort?: string }) {
+  const { page, pageSize, status, q, sort } = params;
+  const usp = new URLSearchParams();
+  usp.set('page', String(page));
+  usp.set('pageSize', String(pageSize));
+  if (status && status !== 'all') usp.set('status', status.toUpperCase());
+  if (q && q.trim()) usp.set('q', q.trim());
+  if (sort) usp.set('sort', sort);
+  return useQuery({
+    queryKey: ['mfg-sales-orders-paged', page, pageSize, status ?? '', q ?? '', sort ?? ''],
+    queryFn: () => authedFetch<{ salesOrders: any[]; total: number; page: number; pageSize: number; statusCounts: { all: number; draft: number; confirmed: number; cancelled: number } }>(`/mfg-sales-orders?${usp.toString()}`),
+    placeholderData: (prev: any) => prev,
+    staleTime: 30_000,
+    retry: 1,
+    retryDelay: 800,
+  });
+}
+
 export const useMfgSalesOrderDetail = (docNo: string | null) => useQuery({
   queryKey: ['mfg-sales-order-detail', docNo],
   queryFn: () => authedFetch<{ salesOrder: any; items: any[] }>(`/mfg-sales-orders/${docNo}`),

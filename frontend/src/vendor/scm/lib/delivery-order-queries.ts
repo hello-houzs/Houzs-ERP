@@ -92,6 +92,33 @@ export const useMfgDeliveryOrders = (status?: string) => useQuery({
   retryDelay: 800,
 });
 
+// Opt-in server-side pagination + search + sort + status-counts (mirrors
+// useMfgSalesOrdersPaged). Sending `page` switches the /delivery-orders-mfg
+// endpoint into its paginated contract ({ deliveryOrders, total, page,
+// pageSize, statusCounts }); the legacy useMfgDeliveryOrders above (no page)
+// still returns the historical unpaginated list.
+// `status` here is the RESOLVED delivery_orders.status DB value (UPPERCASE) —
+// the caller maps its compressed filter-pill bucket to a DB status first, and
+// passes undefined for multi-status buckets the single-status filter can't
+// express (open/in_transit/delivered), so those show all rows still counted.
+export function useMfgDeliveryOrdersPaged(params: { page: number; pageSize: number; status?: string; q?: string; sort?: string }) {
+  const { page, pageSize, status, q, sort } = params;
+  const usp = new URLSearchParams();
+  usp.set('page', String(page));
+  usp.set('pageSize', String(pageSize));
+  if (status) usp.set('status', status);
+  if (q && q.trim()) usp.set('q', q.trim());
+  if (sort) usp.set('sort', sort);
+  return useQuery({
+    queryKey: ['mfg-delivery-orders-paged', page, pageSize, status ?? '', q ?? '', sort ?? ''],
+    queryFn: () => authedFetch<{ deliveryOrders: any[]; total: number; page: number; pageSize: number; statusCounts: { all: number; open: number; in_transit: number; delivered: number; cancelled: number } }>(`/delivery-orders-mfg?${usp.toString()}`),
+    placeholderData: (prev: any) => prev,
+    staleTime: 30_000,
+    retry: 1,
+    retryDelay: 800,
+  });
+}
+
 export const useMfgDeliveryOrderDetail = (id: string | null) => useQuery({
   queryKey: ['mfg-delivery-order-detail', id],
   queryFn: () => authedFetch<{ deliveryOrder: any; items: any[] }>(`/delivery-orders-mfg/${id}`),

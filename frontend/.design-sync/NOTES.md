@@ -89,6 +89,29 @@ non-card export). Key mechanics a re-sync must know:
   single + primaryStory + viewport for fixed/portal components) — preserve
   them when editing config.
 
+## Preview fetch stubs — never let /api/* fall through (2026-07-13)
+- The DS bundle's `api.baseUrl` resolves to the REAL workers.dev API (the
+  bundle isn't a Vite PROD build, so the dev fallback URL wins). A preview
+  stub that ends with `return realFetch(...)` therefore sends any UNSTUBBED
+  `/api/*` request to production with the fake `ds-preview-token` Bearer —
+  the API answers a genuine 401, `handleResponse` fires the global
+  `onUnauthorized` listeners, and AuthContext clears the token + sets
+  `user: null` mid-render. Symptom: connected chrome (presence pill, bell,
+  avatar) renders for ~400 ms then vanishes before capture.
+- First hit 2026-07-13: the multicompany commit (f6bbe2e) added
+  `<CompanySwitcher />` to TopNavbar fetching `GET /api/companies`, which no
+  stub covered — TopNavbar and Layout captures lost their right rail.
+- Fix pattern (now in ALL 15 stubbed previews): stub every endpoint the tree
+  fetches, then guard the fallthrough — unmatched `/api/*` returns a local
+  404 JSON (`{error:"not stubbed in preview"}`); only non-API assets reach
+  `realFetch`. A 404 fails the individual query quietly; only a 401 triggers
+  the global logout.
+- When app code grows a new top-chrome fetch, add its stub to BOTH
+  `previews/TopNavbar.tsx` and `previews/Layout.tsx` (Layout renders
+  TopNavbar). `/api/companies` single-company shape keeps the switcher
+  hidden: `{companies:[{id:1,code:"HOUZS",name:"Houzs Century Sdn Bhd"}],
+  activeCompanyId:1, activeCompanyCode:"HOUZS"}`.
+
 ## Known render warns
 Triaged 2026-07-09:
 - `[FONT_REMOTE]` listing Archivo / Caveat / Mistrully / Brush Script MT /
@@ -107,3 +130,17 @@ Triaged 2026-07-09:
   tokens.css, tailwind.config.js, or any preview file.
 - `cardMode: column` pinned for PageHeader / HeaderButton / TableSkeleton
   (wide stories crop in the grid otherwise).
+- `[RENDER_THIN]` AnnouncementBanner `maxHeight: 0` (2026-07-14): the
+  redesigned banner (4-category colour split + floating card) renders its
+  visible card out of flow, so the measured root height is 0 while the
+  card itself is fully painted — see the review sheet; grades good. A
+  legit false-positive, not a blank card.
+
+## Conventions-header vocabulary (2026-07-14)
+`bg-err-bg` / `bg-synced-bg` / `font-body` are enumerated in
+`.design-sync/conventions.md` but no in-repo component uses those exact
+utilities, so Tailwind purged them from the compiled CSS — a design-agent
+usage would have rendered unstyled. Fixed by adding a `safelist` to
+`tailwind.config.js`; if the conventions header ever names new utility
+classes, either use them in a component/preview or extend that safelist,
+then re-run cfg.buildCmd.

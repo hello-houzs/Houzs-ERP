@@ -48,6 +48,7 @@ import {
   PaymentsTable, labelToApi, draftMethodFields, type PaymentDraft,
 } from '../../vendor/scm/components/PaymentsTable';
 import { formatPhone } from '@2990s/shared/phone';
+import { hasSofaMixConflict, SOFA_MIX_MESSAGE } from '@2990s/shared/so-variant-rule';
 import styles from './SalesOrderDetail.module.css';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
@@ -459,6 +460,13 @@ export const ConsignmentOrderNew = () => {
       notify({ title: 'Add at least one item via "+ Add Line Item".', tone: 'error' });
       return;
     }
+    // Sofa is exclusive among main products — the server 400s
+    // `so_sofa_no_other_main` when a sofa line rides with a bedframe/mattress.
+    // Block + warn here so the operator gets one plain sentence, not a raw 400.
+    if (hasSofaMixConflict(validLines.map((l) => l.itemGroup))) {
+      notify({ title: SOFA_MIX_MESSAGE, tone: 'error' });
+      return;
+    }
     if (processingDate) {
       const variantGaps = validLines
         .map((l) => ({ code: l.itemCode, miss: missingRequiredVariants(l.itemGroup, l.variants) }))
@@ -624,7 +632,7 @@ export const ConsignmentOrderNew = () => {
               />
             </label>
             <label className={styles.field}>
-              <span className={styles.fieldLabel}>Email *</span>
+              <span className={styles.fieldLabel}>Email</span>
               <input
                 type="email"
                 className={styles.fieldInput}

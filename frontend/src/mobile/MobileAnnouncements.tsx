@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
+import { MobileVirtualList } from "./MobileVirtualList";
 import { useAuth } from "../auth/AuthContext";
 import { formatDate } from "../lib/utils";
 import "./mobile.css";
@@ -40,9 +41,14 @@ type Announcement = {
   targetDeptIds?: number[];
   targetPositionIds?: number[];
   targetUserIds?: number[];
+  targetCompanyIds?: number[];
   category: string;
   source?: string | null;
 };
+
+// Multi-company: the company-target selector + row chip only appear when
+// /api/companies returns MORE THAN ONE company (mirrors the desktop rule).
+type Company = { id: number; code: string; name: string };
 
 // Audience-picker lookups. Dept + position come from the same core endpoints the
 // desktop Announcements composer uses (/api/departments, /api/positions);
@@ -115,6 +121,27 @@ function CatChip({ ann }: { ann: Announcement }) {
   return (
     <span className="spill" style={{ background: `${col}1f`, color: col }}>
       {catLabel(ann)}
+    </span>
+  );
+}
+
+// Company-scope label: empty target (or covering every company) = "Both"/"All";
+// a subset lists the codes. Mirrors the desktop companyScopeLabel.
+function companyScopeLabel(ids: number[] | undefined, companies: Company[]): string {
+  const list = ids ?? [];
+  if (companies.length === 0) return "";
+  if (list.length === 0 || list.length >= companies.length) {
+    return companies.length === 2 ? "Both" : "All";
+  }
+  return list.map((id) => companies.find((co) => co.id === id)?.code ?? `#${id}`).join(" / ");
+}
+
+// A neutral company-scope chip (multi-company only), styled like .spill.
+function CompanyChip({ ann, companies }: { ann: Announcement; companies: Company[] }) {
+  if (companies.length <= 1) return null;
+  return (
+    <span className="spill" style={{ background: "#eef1ec", color: "#556052" }}>
+      {companyScopeLabel(ann.targetCompanyIds, companies)}
     </span>
   );
 }
@@ -345,11 +372,21 @@ export function MobileAnnouncements({ onBack }: { onBack?: () => void }) {
     staleTime: 60_000,
     retry: false,
   });
+  // Companies drive the compose selector + the list/detail chip — fetched for
+  // everyone (cheap, cached). Empty/one company hides both controls.
+  const companiesQ = useQuery({
+    queryKey: ["mobile-ann-companies"],
+    queryFn: () => api.get<{ companies: Company[] }>("/api/companies"),
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+  const companies = companiesQ.data?.companies ?? [];
   const lookups = {
     depts: deptsQ.data?.departments ?? [],
     positions: positionsQ.data?.positions ?? [],
     users: (usersQ.data?.users ?? []).filter((u) => (u.status ?? "active") === "active"),
     usersDenied: !!usersQ.error,
+    companies,
   };
 
   const list = data?.data ?? [];
@@ -385,6 +422,7 @@ export function MobileAnnouncements({ onBack }: { onBack?: () => void }) {
     return (
       <Detail
         ann={open}
+        companies={companies}
         // Read-receipts only for company-wide human notices. A private/targeted
         // notice (esp. a source='scan' per-user notice) must NOT show a roster —
         // it's meant for one person, so "who read it" is meaningless + wrong.
@@ -426,8 +464,14 @@ export function MobileAnnouncements({ onBack }: { onBack?: () => void }) {
         {isLoading && <div style={{ textAlign: "center", color: "var(--mut2)", fontSize: 12, padding: "26px 0" }}>Loading…</div>}
         {error && <div style={{ textAlign: "center", color: "var(--red)", fontSize: 12, padding: "26px 0" }}>Couldn't load announcements. Pull to retry.</div>}
         {!isLoading && !error && (
-          <div id="ann-list" style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-            {list.map((a) => {
+          <>
+            {list.length > 0 && (
+              <MobileVirtualList
+                items={list}
+                getKey={(a) => a.id}
+                estimateHeight={72}
+                gap={9}
+                renderItem={(a) => {
               const unread = !ackedIds.has(a.id);
               const na = (a.attachments ?? []).length;
               const col = catColor(a);
@@ -448,8 +492,9 @@ export function MobileAnnouncements({ onBack }: { onBack?: () => void }) {
                       <span style={{ flex: 1, minWidth: 0, fontSize: 14, fontWeight: unread ? 800 : 700, color: "#11140f", lineHeight: 1.25 }}>{a.title}</span>
                       {unread && <span style={{ width: 8, height: 8, flex: "none", borderRadius: "50%", background: "#16695f" }} />}
                     </span>
-                    <span style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 5 }}>
+                    <span style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 5, flexWrap: "wrap" }}>
                       <CatChip ann={a} />
+                      <CompanyChip ann={a} companies={companies} />
                       <span style={{ fontSize: 11, color: "#767b6e" }}>{byLine(a)} · {dm(a.createdAt)}</span>
                     </span>
                     {na > 0 && (
@@ -461,14 +506,16 @@ export function MobileAnnouncements({ onBack }: { onBack?: () => void }) {
                   </span>
                 </button>
               );
-            })}
+                }}
+              />
+            )}
             {!list.length && (
               <div className="empty">
                 <div className="empty-t">No announcements yet</div>
                 <div className="empty-s">Notices from HQ will appear here.</div>
               </div>
             )}
-          </div>
+          </>
         )}
       </div>
     </div>
@@ -477,12 +524,14 @@ export function MobileAnnouncements({ onBack }: { onBack?: () => void }) {
 
 function Detail({
   ann,
+  companies,
   canReceipts,
   acked,
   onAcked,
   onBack,
 }: {
   ann: Announcement;
+  companies: Company[];
   canReceipts: boolean;
   acked: boolean;
   onAcked: () => void;
@@ -522,6 +571,7 @@ function Detail({
       <div className="scroll hz-scroll" style={{ padding: 14, paddingBottom: 40 }}>
         <div id="ann-d-meta" style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10, alignItems: "center" }}>
           <CatChip ann={ann} />
+          <CompanyChip ann={ann} companies={companies} />
           <span style={{ fontSize: 11, color: "#9aa093", alignSelf: "center" }}>{dm(ann.createdAt)}</span>
         </div>
         <div id="ann-d-title" style={{ fontSize: 21, fontWeight: 800, color: "#11140f", lineHeight: 1.25 }}>{ann.title}</div>
@@ -553,7 +603,7 @@ function Detail({
   );
 }
 
-type Lookups = { depts: Dept[]; positions: Position[]; users: UserRow[]; usersDenied: boolean };
+type Lookups = { depts: Dept[]; positions: Position[]; users: UserRow[]; usersDenied: boolean; companies: Company[] };
 
 // Compose (create) an announcement. Audience targeting is real: dept +
 // position always available; People (user ids) only when /api/users is readable.
@@ -571,6 +621,9 @@ function Compose({
   const [title, setTitle] = useState("");
   const [category, setCategory] = useState(CATEGORY_OPTIONS[0].value);
   const [bucket, setBucket] = useState<Bucket>("ALL");
+  // Company target: "ALL" = every company (Both — sends no target, NULL = all);
+  // a company id = that company only. Default "ALL". Only shown when >1 company.
+  const [companyPick, setCompanyPick] = useState<"ALL" | number>("ALL");
   const [selDepts, setSelDepts] = useState<Set<number>>(new Set());
   const [selPositions, setSelPositions] = useState<Set<number>>(new Set());
   const [selUsers, setSelUsers] = useState<Set<number>>(new Set());
@@ -643,6 +696,9 @@ function Compose({
       if (bucket === "DEPT") payload.targetDeptIds = Array.from(selDepts);
       if (bucket === "POSITION") payload.targetPositionIds = Array.from(selPositions);
       if (bucket === "USER") payload.targetUserIds = Array.from(selUsers);
+      // Company target: a single company sends [id]; "Both"/ALL omits the field
+      // (backend stores NULL = all companies).
+      if (companyPick !== "ALL") payload.targetCompanyIds = [companyPick];
       payload.attachments = uploaded;
       await api.post("/api/announcements", payload);
       onPublished();
@@ -655,6 +711,10 @@ function Compose({
   const poster = user?.name?.trim() || "your account";
   // People bucket only offered when the directory is readable.
   const buckets = lookups.usersDenied ? BUCKETS.filter((b) => b.value !== "USER") : BUCKETS;
+  const companyOptions: Array<["ALL" | number, string]> = [
+    ["ALL", "Both"],
+    ...lookups.companies.map((co) => [co.id, co.name] as ["ALL" | number, string]),
+  ];
 
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
@@ -682,6 +742,28 @@ function Compose({
             {CATEGORY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
         </label>
+
+        {/* Company target — only when more than one company exists. */}
+        {lookups.companies.length > 1 && (
+          <>
+            <div className="fld-l" style={{ margin: "0 2px 7px" }}>Company</div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
+              {companyOptions.map(([key, label]) => {
+                const on = companyPick === key;
+                return (
+                  <button
+                    key={String(key)}
+                    onClick={() => setCompanyPick(key)}
+                    className="tinybtn"
+                    style={{ padding: "7px 13px", background: on ? "var(--brand)" : "#fff", borderColor: on ? "var(--brand)" : "var(--line)", color: on ? "#fff" : "var(--ink)" }}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        )}
 
         {/* Audience targeting — bucket selector + the matching id picker. */}
         <div className="fld-l" style={{ margin: "0 2px 7px" }}>Send to</div>

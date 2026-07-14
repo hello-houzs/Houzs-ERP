@@ -31,7 +31,7 @@ import { canonicalizeComboModulesForStorage, comboSlotsKey, sofaComboCostSen, pa
 import { loadModelSofaModuleCosts } from '../lib/mfg-pricing-recompute';
 import { hasHouzsPerm } from '../lib/houzs-perms';
 import { todayMyt } from '../lib/my-time';
-import { activeCompanyId } from '../lib/companyScope';
+import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
 
 export const sofaCombos = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -241,12 +241,15 @@ sofaCombos.get('/', async (c) => {
   const supplierIdRaw = c.req.query('supplierId');
   const includeAll = c.req.query('includeAll') === '1';
 
-  let q = supabase
-    .from('sofa_combo_pricing')
-    .select(
-      'id, base_model, modules, tier, customer_id, supplier_id, prices_by_height, selling_prices_by_height, pwp_prices_by_height, default_free_gifts, label, ' +
-      'effective_from, deleted_at, notes, created_at, updated_at, created_by',
-    )
+  let q = scopeToCompany(
+    supabase
+      .from('sofa_combo_pricing')
+      .select(
+        'id, base_model, modules, tier, customer_id, supplier_id, prices_by_height, selling_prices_by_height, pwp_prices_by_height, default_free_gifts, label, ' +
+        'effective_from, deleted_at, notes, created_at, updated_at, created_by',
+      ),
+    c,
+  )
     .order('base_model', { ascending: true })
     .order('effective_from', { ascending: false })
     .order('created_at', { ascending: false });
@@ -331,13 +334,16 @@ sofaCombos.get('/history', async (c) => {
   );
   const tier = TIERS.has(tierRaw) ? (tierRaw as Tier) : null;
 
-  let q = supabase
-    .from('sofa_combo_pricing')
-    .select(
-      'id, base_model, modules, tier, customer_id, supplier_id, prices_by_height, selling_prices_by_height, pwp_prices_by_height, default_free_gifts, label, ' +
-      'effective_from, deleted_at, notes, created_at, updated_at, created_by',
-    )
-    .eq('base_model', baseModel)
+  let q = scopeToCompany(
+    supabase
+      .from('sofa_combo_pricing')
+      .select(
+        'id, base_model, modules, tier, customer_id, supplier_id, prices_by_height, selling_prices_by_height, pwp_prices_by_height, default_free_gifts, label, ' +
+        'effective_from, deleted_at, notes, created_at, updated_at, created_by',
+      )
+      .eq('base_model', baseModel),
+    c,
+  )
     .order('effective_from', { ascending: false })
     .order('created_at', { ascending: false });
 

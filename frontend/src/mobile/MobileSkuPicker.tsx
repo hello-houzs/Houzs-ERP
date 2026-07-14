@@ -1,6 +1,12 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMfgProducts, type MfgCategory, type MfgProductRow } from "../vendor/scm/lib/mfg-products-queries";
 import "./mobile.css";
+
+/* Perf cap (parity with SalesOrderNewFromProducts, PR #342) — never render more
+   than this many rows at once. The full active catalog is ~1141 SKUs; painting
+   every one as a bottom-sheet button froze the sheet on open + on each keystroke.
+   Beyond the cap a hint tells the operator to narrow by search / category. */
+const RENDER_CAP = 60;
 
 /* ---------------------------------------------------------------------------
  * MobileSkuPicker — searchable bottom-sheet SKU catalog picker for the mobile
@@ -65,7 +71,18 @@ export function MobileSkuPicker({
   const seedCat: MfgCategory | "" =
     initialCat === "sofa" ? "SOFA" : initialCat === "bedframe" ? "BEDFRAME" : "";
   const [cat, setCat] = useState<MfgCategory | "">(seedCat);
+  /* Search is DEBOUNCED (PR #342 parity) — `searchInput` is the live text box;
+     only after a 250ms idle does it commit to `search`, the value that drives the
+     server query. Without this every keystroke refetched the whole catalog and
+     repainted the sheet, freezing the input while typing. */
+  const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      if (searchInput !== search) setSearch(searchInput);
+    }, 250);
+    return () => window.clearTimeout(t);
+  }, [searchInput, search]);
   /* Multi-select order-preserving pick list (keyed by catalog id → the picked
      SKU) so "Add N products" hands back selections in the order tapped. */
   const [picked, setPicked] = useState<Array<{ id: string; sku: PickedSku }>>([]);
@@ -81,6 +98,10 @@ export function MobileSkuPicker({
     () => (productsQ.data ?? []).filter((p) => p.status !== "INACTIVE"),
     [productsQ.data],
   );
+  // Cap the DOM to RENDER_CAP rows so an "All / no search" set can't freeze the
+  // sheet; the hint below tells the operator to narrow when rows are hidden.
+  const shown = useMemo(() => rows.slice(0, RENDER_CAP), [rows]);
+  const hiddenCount = rows.length - shown.length;
 
   return (
     <div className="sheet-bd" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
@@ -100,8 +121,8 @@ export function MobileSkuPicker({
           <div className="searchbar">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9aa093" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
             <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
               placeholder="Search code or name"
               autoFocus
             />
@@ -127,7 +148,8 @@ export function MobileSkuPicker({
           ) : rows.length === 0 ? (
             <div style={{ textAlign: "center", color: "#9aa093", fontSize: 12, padding: "28px 0" }}>No products match{search.trim() ? ` "${search.trim()}"` : ""}.</div>
           ) : (
-            rows.map((p) => {
+            <>
+            {shown.map((p) => {
               const priceSen = p.sell_price_sen ?? p.base_price_sen ?? 0;
               const skuOf = (): PickedSku => ({
                 itemCode: p.code,
@@ -188,7 +210,13 @@ export function MobileSkuPicker({
                   </span>
                 </button>
               );
-            })
+            })}
+            {hiddenCount > 0 && (
+              <div style={{ textAlign: "center", color: "#9aa093", fontSize: 11, padding: "10px 0 4px" }}>
+                Showing the first {RENDER_CAP} of {rows.length} products — narrow by search or category.
+              </div>
+            )}
+            </>
           )}
         </div>
 

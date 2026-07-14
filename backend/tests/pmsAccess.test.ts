@@ -3,14 +3,23 @@ import {
   getPmsAccess,
   isFinanceViewer,
   financeHiddenForUser,
+  isSensitiveChecklistItem,
+  isSalesUser,
+  isDirectorUser,
 } from "../src/services/pmsAccess";
+import { stripSensitiveChecklist } from "../src/services/projects";
 import type { AuthUser } from "../src/services/auth";
 
 // Pure-function tests for the project-detail (PMS) section gating — the
 // security boundary that hides financial/rental from non-finance positions.
 // PIC is per-project (project.pic_id === user.id), not a job title.
 
-function user(over: { id?: number; position_name?: string | null; perms?: string[] }): AuthUser {
+function user(over: {
+  id?: number;
+  position_name?: string | null;
+  department_name?: string | null;
+  perms?: string[];
+}): AuthUser {
   const perms = over.perms ?? [];
   return {
     id: over.id ?? 1,
@@ -26,6 +35,7 @@ function user(over: { id?: number; position_name?: string | null; perms?: string
     manager_id: null,
     scope_to_pic: false,
     department_id: null,
+    department_name: over.department_name ?? null,
     brand_scope: null,
     page_access: {},
   } as AuthUser;
@@ -128,5 +138,125 @@ describe("pmsAccess — project-detail section gating", () => {
     expect(a.role).toBe("OTHER");
     expect(a.canFinancial).toBe(false);
     expect(a.sections).not.toContain("FINANCIAL");
+  });
+});
+
+// Org-field Sales / director helpers — the code-keyed gate the Service-Case
+// access model (rule 8) and the SO/SC data scope (rule 9 director bypass) share.
+describe("isSalesUser / isDirectorUser — stable org-field access model", () => {
+  test("Sales by position title (starts with 'Sales ')", () => {
+    expect(isSalesUser(user({ position_name: "Sales Executive" }))).toBe(true);
+    expect(isSalesUser(user({ position_name: "Sales Coordinator" }))).toBe(true);
+  });
+
+  test("Sales by department name (contains 'sales', case-insensitive)", () => {
+    // No sales position, but the department carries it — prod names it
+    // "Sales Department"; the seed is "Sales".
+    expect(isSalesUser(user({ position_name: "Coordinator", department_name: "Sales Department" }))).toBe(true);
+    expect(isSalesUser(user({ position_name: null, department_name: "sales" }))).toBe(true);
+  });
+
+  test("non-sales users are not Sales", () => {
+    expect(isSalesUser(user({ position_name: "Ops Manager", department_name: "Operations" }))).toBe(false);
+    expect(isSalesUser(user({ position_name: null, department_name: null }))).toBe(false);
+    expect(isSalesUser(null)).toBe(false);
+  });
+
+  test("director = wildcard OR director/finance position", () => {
+    expect(isDirectorUser(user({ perms: ["*"], position_name: null }))).toBe(true);
+    expect(isDirectorUser(user({ position_name: "Super Admin" }))).toBe(true);
+    expect(isDirectorUser(user({ position_name: "Sales Director" }))).toBe(true);
+    expect(isDirectorUser(user({ position_name: "Finance Manager" }))).toBe(true);
+  });
+
+  test("Sales Director is a director (director tier governs the data scope)", () => {
+    // "Sales Director" matches BOTH helpers (/^Sales / also matches the "Sales "
+    // prefix). That's harmless for the gate — both admit the caller — and the
+    // data-scope bypass (assrVisibleUserIds) keys off isDirectorUser, so a Sales
+    // Director gets the unrestricted "sees ALL" tier, not the scoped Sales tier.
+    const sd = user({ position_name: "Sales Director" });
+    expect(isDirectorUser(sd)).toBe(true);
+    expect(isSalesUser(sd)).toBe(true);
+  });
+
+  test("Sales Executive is Sales, not a director", () => {
+    const se = user({ position_name: "Sales Executive" });
+    expect(isSalesUser(se)).toBe(true);
+    expect(isDirectorUser(se)).toBe(false);
+  });
+});
+
+describe("WF_SENSITIVE checklist stripping — quotation / agreement", () => {
+  test("isSensitiveChecklistItem matches the Agreement / Quotation row only", () => {
+    expect(isSensitiveChecklistItem({ title: "Agreement / Quotation" })).toBe(true);
+    // Tolerates stray surrounding whitespace from a hand-edited row.
+    expect(isSensitiveChecklistItem({ title: "  Agreement / Quotation " })).toBe(true);
+    expect(isSensitiveChecklistItem({ title: "Security Deposit" })).toBe(false);
+    expect(isSensitiveChecklistItem({ title: "3D Design" })).toBe(false);
+    expect(isSensitiveChecklistItem({ title: null })).toBe(false);
+    expect(isSensitiveChecklistItem(null)).toBe(false);
+  });
+
+  test("strips the sensitive row + its comments/attachments and drops the emptied section", () => {
+    const detail = {
+      checklist: [
+        { id: 1, title: "Agreement / Quotation", section_id: 10, status: "done" },
+        { id: 2, title: "3D Design", section_id: 20, status: "pending" },
+      ],
+      checklist_comments: [
+        { id: 100, item_id: 1, body: "signed" },
+        { id: 101, item_id: 2, body: "wip" },
+      ],
+      checklist_attachments: [
+        { id: 200, item_id: 1 },
+        { id: 201, item_id: 2 },
+      ],
+      sections: [
+        { id: 10, name: "CONTRACT", sort_order: 10 },
+        { id: 20, name: "3D APPROVAL", sort_order: 20 },
+      ],
+      section_progress: [
+        { id: 10, name: "CONTRACT", total: 1, done: 1, na: 0, complete: 1 },
+        { id: 20, name: "3D APPROVAL", total: 1, done: 0, na: 0, complete: 0 },
+      ],
+    };
+    const out = stripSensitiveChecklist(detail);
+    expect(out.checklist.map((r: any) => r.id)).toEqual([2]);
+    expect(out.checklist_comments.map((r: any) => r.id)).toEqual([101]);
+    expect(out.checklist_attachments.map((r: any) => r.id)).toEqual([201]);
+    // CONTRACT held only the sensitive row → section + its progress dropped.
+    expect(out.sections.map((s: any) => s.id)).toEqual([20]);
+    expect(out.section_progress.map((s: any) => s.id)).toEqual([20]);
+  });
+
+  test("keeps a section that still holds other items, recomputing its progress", () => {
+    const detail = {
+      checklist: [
+        { id: 1, title: "Agreement / Quotation", section_id: 10, status: "done" },
+        { id: 3, title: "Other contract doc", section_id: 10, status: "pending" },
+      ],
+      checklist_comments: [],
+      checklist_attachments: [],
+      sections: [{ id: 10, name: "CONTRACT", sort_order: 10 }],
+      section_progress: [
+        { id: 10, name: "CONTRACT", total: 2, done: 1, na: 0, complete: 0 },
+      ],
+    };
+    const out = stripSensitiveChecklist(detail);
+    expect(out.checklist.map((r: any) => r.id)).toEqual([3]);
+    expect(out.sections.map((s: any) => s.id)).toEqual([10]);
+    const cp = out.section_progress.find((s: any) => s.id === 10);
+    expect(cp).toMatchObject({ total: 1, done: 0, na: 0, complete: 0 });
+  });
+
+  test("no sensitive rows → returns the payload untouched (same reference)", () => {
+    const detail = {
+      checklist: [{ id: 2, title: "3D Design", section_id: 20, status: "pending" }],
+      checklist_comments: [],
+      checklist_attachments: [],
+      sections: [{ id: 20, name: "3D APPROVAL", sort_order: 20 }],
+      section_progress: [{ id: 20, total: 1, done: 0, na: 0, complete: 0 }],
+    };
+    expect(stripSensitiveChecklist(detail)).toBe(detail);
   });
 });

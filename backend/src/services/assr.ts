@@ -47,13 +47,15 @@ export interface CreateAssrInput {
 export type Stage =
   | "pending_review"            // Stage 1 — Service Admin
   | "under_verification"        // Stage 2 — Service Admin
-  | "pending_solution"          // Stage 3 — Service Admin / Manager
-  | "pending_inspection"        // Stage 4 — inspection (own team OR supplier)
-  | "pending_item_pickup"       // Stage 5 — SA assigns Logistic Admin
-  | "pending_supplier_pickup"   // Stage 6 — SA contacts supplier
-  | "pending_item_ready"        // Stage 7 — SA updates on supplier return
-  | "pending_delivery_service"  // Stage 8 — SA assigns Logistic Admin
-  | "completed";                // Stage 9 — system
+  | "pending_solution"          // Stage 3 — Service Admin / Manager pick the fix
+  //  (pending_inspection retired 2026-07-14 — inspection folded into
+  //   Under Verification as inspect_by + QC-issue fields; mig 0105.
+  //   pending_item_pickup retired 2026-07-14 too — the customer-side
+  //   collection lives inside the Supplier stage now; mig 0110)
+  | "pending_supplier_pickup"   // Stage 4 — supplier pickup AND return leg
+  | "pending_item_ready"        // Stage 5 — QC after the supplier returns it
+  | "pending_delivery_service"  // Stage 6 — SA assigns Logistic Admin
+  | "completed";                // Stage 7 — system
 
 type Priority = "low" | "normal" | "high" | "urgent";
 
@@ -89,8 +91,6 @@ export const ALL_STAGES: ReadonlyArray<Stage> = [
   "pending_review",
   "under_verification",
   "pending_solution",
-  "pending_inspection",
-  "pending_item_pickup",
   "pending_supplier_pickup",
   "pending_item_ready",
   "pending_delivery_service",
@@ -104,8 +104,6 @@ const DEFAULT_STAGE_TARGET_DAYS: Record<Stage, number> = {
   pending_review: 1,
   under_verification: 2,
   pending_solution: 2,
-  pending_inspection: 2,
-  pending_item_pickup: 2,
   pending_supplier_pickup: 3,
   pending_item_ready: 5,
   pending_delivery_service: 4,
@@ -693,6 +691,10 @@ export async function markCaseOpened(
 // ── Patch case fields ─────────────────────────────────────────
 
 const PATCH_FIELDS = [
+  // doc_no is editable since 2026-07-14 — sales fat-finger the SO no at
+  // intake and the case never matches its customer. Changing it also
+  // re-matches identity fields from the local SO mirror (see below).
+  "doc_no",
   "customer_name", "customer_email", "phone", "location", "sales_agent", "item_code",
   "complaint_issue", "action_remark", "service_category",
   "completion_date", "po_no", "resolution_method", "issue_category",
@@ -720,9 +722,13 @@ const PATCH_FIELDS = [
   // the main case, supplier edits supplier_service_note from the
   // supplier portal.
   "goods_returned_note", "supplier_service_note",
-  // Mig 0073 — who performs the inspection stage: 'own' | 'supplier'.
+  // Mig 0073 — who performs the issue inspection: 'own' | 'supplier'.
   // Own-team inspections link into delivery planning for the visit.
+  // Lives on the Under Verification stage since mig 0105.
   "inspection_by",
+  // Mig 0105 — QC-on-receipt result (pass/fail/na), shown next to
+  // qc_receipt_date in the Verification stage panel.
+  "qc_issue_result",
 ] as const;
 
 export async function patchAssrCase(
@@ -733,6 +739,41 @@ export async function patchAssrCase(
 ): Promise<boolean> {
   const sets: string[] = [];
   const binds: any[] = [];
+
+  // Correcting the SO number re-matches the customer identity from the
+  // local sales_orders mirror (the AutoCount live API is disconnected —
+  // AUTOCOUNT_SYNC_DISABLED — so this is the same source search-so
+  // suggests from). Only fields the caller did NOT explicitly send are
+  // refreshed, so a combined manual edit still wins. No mirror hit →
+  // just the doc_no changes (mirror is frozen; new SOs may be absent).
+  let prevDocNo: string | null = null;
+  if ("doc_no" in body && typeof body.doc_no === "string" && body.doc_no.trim()) {
+    body.doc_no = body.doc_no.trim();
+    const prev = await env.DB.prepare(
+      `SELECT doc_no FROM assr_cases WHERE id = ?`
+    )
+      .bind(id)
+      .first<{ doc_no: string | null }>();
+    prevDocNo = prev?.doc_no ?? null;
+    if (prevDocNo !== body.doc_no) {
+      const so = await env.DB.prepare(
+        `SELECT ref, debtor_name, phone, sales_agent
+           FROM sales_orders WHERE LOWER(doc_no) = LOWER(?)`
+      )
+        .bind(body.doc_no)
+        .first<{ ref: string | null; debtor_name: string | null; phone: string | null; sales_agent: string | null }>();
+      if (so) {
+        if (!("customer_name" in body) && so.debtor_name) body.customer_name = so.debtor_name;
+        if (!("phone" in body) && so.phone) body.phone = cleanPhone(so.phone);
+        if (!("sales_agent" in body) && so.sales_agent) body.sales_agent = so.sales_agent;
+        if (!("ref_no" in body) && so.ref) body.ref_no = so.ref;
+      }
+    }
+  } else if ("doc_no" in body) {
+    // Blank / non-string doc_no would orphan the case from its SO —
+    // ignore rather than null the linkage.
+    delete body.doc_no;
+  }
 
   for (const k of PATCH_FIELDS) {
     if (k in body) {
@@ -800,6 +841,16 @@ export async function patchAssrCase(
   }
   if ("assigned_to_2" in body) {
     await logActivity(env, id, "assignment_2", null, String(body.assigned_to_2 ?? ""), null, userId);
+  }
+
+  // Audit SO-number corrections — the case's whole customer identity
+  // hangs off this key, so the change (and what it re-matched) must be
+  // visible in the service log.
+  if (prevDocNo !== null && "doc_no" in body && prevDocNo !== body.doc_no) {
+    await logActivity(env, id, "so_changed", prevDocNo, body.doc_no, null, userId, {
+      category: "service",
+      source_channel: "app",
+    });
   }
 
   // Audit complaint edits so the customer-facing description has a
@@ -1267,7 +1318,7 @@ export async function exportAssrCases(
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
   const rows = await env.DB.prepare(
     `SELECT c.assr_no, c.doc_no, c.stage, c.status, c.priority,
-            c.customer_name, c.customer_phone, c.location,
+            c.customer_name, c.phone AS customer_phone, c.location,
             c.service_category, c.ncr_category, c.resolution_method,
             c.item_code, c.complaint_issue,
             c.complained_date, c.created_at, c.deadline_at,
@@ -1295,9 +1346,13 @@ export async function exportAssrCases(
 
 // ── Activity log helper ───────────────────────────────────────
 
-// `category` (mig 064) drives the timeline filter pills:
-//   purchasing — internal team / supplier coordination
+// `category` (mig 064) drives the timeline filter pills. Mig 0108
+// renames 'purchasing' and splits it into audience buckets (Nick
+// 2026-07-14: "purchasing 换成 service / customer / supplier / sales"):
+//   service    — internal service-team notes (the old 'purchasing')
 //   customer   — customer-visible milestones (rendered on the portal)
+//   supplier   — supplier coordination (incl. supplier-portal posts)
+//   sales      — sales follow-ups (incl. sales-portal comments)
 //   system     — automatic events (stage_change, assigned, created)
 //
 // v3.1 (mig 077) adds:
@@ -1307,7 +1362,7 @@ export async function exportAssrCases(
 //
 // All v3.1 fields are optional; existing callers don't need updating.
 export type LogActivityExtras = {
-  category?: "purchasing" | "customer" | "system";
+  category?: "service" | "customer" | "supplier" | "sales" | "system";
   stage_elapsed_days?: number | null;
   stage_target_days?: number | null;
   source_channel?: string | null;
@@ -1323,7 +1378,7 @@ async function logActivity(
   toValue: string | null,
   note: string | null,
   userId?: number | null,
-  categoryOrExtras: "purchasing" | "customer" | "system" | LogActivityExtras = "system",
+  categoryOrExtras: "service" | "customer" | "supplier" | "sales" | "system" | LogActivityExtras = "system",
 ) {
   const extras: LogActivityExtras =
     typeof categoryOrExtras === "string" ? { category: categoryOrExtras } : categoryOrExtras;

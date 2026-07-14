@@ -1,30 +1,41 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../auth/AuthContext";
 import { NAV_TABS, type NavTab } from "../components/Sidebar";
+import { makeNavVisible } from "../components/navFilter";
 import { NotifyProvider, useNotify } from "../vendor/scm/components/NotifyDialog";
 import { ConfirmProvider, useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { PromptProvider } from "../vendor/scm/components/PromptDialog";
 import { ChoiceProvider } from "../vendor/scm/components/ChoiceDialog";
 import { registerDialogService } from "../vendor/scm/lib/dialog-service";
-import { MobileSalesOrders } from "./MobileSalesOrders";
-import { MobileSODetail } from "./MobileSODetail";
-import { MobileNewSO } from "./MobileNewSO";
-import { MobileCalendar } from "./MobileCalendar";
-import { MobileSearch, type SearchNav } from "./MobileSearch";
-import { MobileInbox } from "./MobileInbox";
-import { MobileServiceCase } from "./MobileServiceCase";
-import { MobilePMS } from "./MobilePMS";
-import { MobileMailCenter } from "./MobileMailCenter";
-import { MobileAnnouncements } from "./MobileAnnouncements";
+// Heavy mobile screens are lazy-loaded so the initial mobile chunk stays small
+// (desktop routes were already lazy — this closes the mobile gap that made the
+// first mobile paint download/parse a ~10k-line monolith). Rendered under the
+// <Suspense> boundaries in MobileAppInner. Types import separately so they don't
+// pull a module into the eager bundle. MobileModuleList stays EAGER: its
+// MODULE_CONFIGS / FORM_MEMBERS_EDIT are read synchronously by the routing +
+// form logic below, so it can't be deferred without splitting those out first.
 import { MobileModuleList, MODULE_CONFIGS, FORM_MEMBERS_EDIT } from "./MobileModuleList";
-import { MobileModuleDetail } from "./MobileModuleDetail";
-import { MobileModuleForm } from "./MobileModuleForm";
-import { MobileDeliveryPlanning } from "./MobileDeliveryPlanning";
-import { MobileScan, type MobileScanPrefill } from "./MobileScan";
-import { MobileConvertWizard, type ConvertTarget } from "./MobileConvertWizard";
-import { MobilePOD } from "./MobilePOD";
-import { MobileProfile } from "./MobileProfile";
+import type { SearchNav } from "./MobileSearch";
+import type { MobileScanPrefill } from "./MobileScan";
+import type { ConvertTarget } from "./MobileConvertWizard";
+const MobileSalesOrders = lazy(() => import("./MobileSalesOrders").then((m) => ({ default: m.MobileSalesOrders })));
+const MobileSODetail = lazy(() => import("./MobileSODetail").then((m) => ({ default: m.MobileSODetail })));
+const MobileNewSO = lazy(() => import("./MobileNewSO").then((m) => ({ default: m.MobileNewSO })));
+const MobileCalendar = lazy(() => import("./MobileCalendar").then((m) => ({ default: m.MobileCalendar })));
+const MobileSearch = lazy(() => import("./MobileSearch").then((m) => ({ default: m.MobileSearch })));
+const MobileInbox = lazy(() => import("./MobileInbox").then((m) => ({ default: m.MobileInbox })));
+const MobileServiceCase = lazy(() => import("./MobileServiceCase").then((m) => ({ default: m.MobileServiceCase })));
+const MobilePMS = lazy(() => import("./MobilePMS").then((m) => ({ default: m.MobilePMS })));
+const MobileMailCenter = lazy(() => import("./MobileMailCenter").then((m) => ({ default: m.MobileMailCenter })));
+const MobileAnnouncements = lazy(() => import("./MobileAnnouncements").then((m) => ({ default: m.MobileAnnouncements })));
+const MobileModuleDetail = lazy(() => import("./MobileModuleDetail").then((m) => ({ default: m.MobileModuleDetail })));
+const MobileModuleForm = lazy(() => import("./MobileModuleForm").then((m) => ({ default: m.MobileModuleForm })));
+const MobileDeliveryPlanning = lazy(() => import("./MobileDeliveryPlanning").then((m) => ({ default: m.MobileDeliveryPlanning })));
+const MobileScan = lazy(() => import("./MobileScan").then((m) => ({ default: m.MobileScan })));
+const MobileConvertWizard = lazy(() => import("./MobileConvertWizard").then((m) => ({ default: m.MobileConvertWizard })));
+const MobilePOD = lazy(() => import("./MobilePOD").then((m) => ({ default: m.MobilePOD })));
+const MobileProfile = lazy(() => import("./MobileProfile").then((m) => ({ default: m.MobileProfile })));
 import "./mobile.css";
 
 type Tab = "orders" | "service" | "calendar" | "profile";
@@ -39,7 +50,7 @@ type Screen =
   | { t: "module-form"; key: string; mode: "new" | "edit"; row?: any }
   | { t: "convert"; key: string; title: string; target: ConvertTarget; initialSourceId?: string }
   | { t: "pod"; docNo: string }
-  | { t: "service" }
+  | { t: "service"; startNew?: boolean }
   | { t: "delivery-planning" }
   | { t: "pms"; projectId?: number }
   | { t: "mail" }
@@ -86,7 +97,7 @@ const MOBILE_MENU_GROUPS: { group: string; items: { to: string; label: string; a
     { to: "/scm/sales-orders", label: "Sales Orders" },
     { to: "/scm/delivery-orders", label: "Delivery Orders" },
     { to: "/scm/sales-invoices", label: "Sales Invoices" },
-    { to: "/scm/delivery-returns", label: "Sales Returns" },
+    { to: "/scm/delivery-returns", label: "Delivery Returns" },
   ]},
   { group: "Projects · PMS", items: [
     { to: "/projects", label: "Projects" },
@@ -148,6 +159,29 @@ function MobileDialogBridge() {
   return null;
 }
 
+// Shown while a lazy screen's chunk is in flight. Absolutely positioned so it
+// fills its Suspense container (the overlay slot or the tab-content slot) without
+// disturbing the persistent tab bar, which lives outside the boundary.
+function MobileScreenFallback() {
+  return (
+    <div
+      style={{
+        position: "absolute",
+        inset: 0,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "var(--app-bg)",
+      }}
+    >
+      <div
+        className="animate-pulse"
+        style={{ width: 120, height: 12, borderRadius: 6, background: "var(--border, #d8d5c8)" }}
+      />
+    </div>
+  );
+}
+
 export function MobileApp() {
   return (
     <NotifyProvider>
@@ -167,7 +201,36 @@ function MobileAppInner() {
   const { user, can, pageAccess, logout } = useAuth();
   const notify = useNotify();
   const qc = useQueryClient();
-  const [tab, setTab] = useState<Tab>("orders");
+
+  // Single-source the mobile gating on the SHARED per-node predicate the desktop
+  // Sidebar + MobileTabBar filter with (components/navFilter.makeNavVisible), so
+  // the mobile shell can never drift back into a hand-copied subset that omitted
+  // pageAccessFull / hidePerm / requireFinanceViewer. `allowed(to)` answers "is
+  // the nav destination at this path visible for the user"; a route that isn't in
+  // NAV_TABS at all still shows (backend-gated, e.g. /activity-inbox).
+  const navVisible = makeNavVisible({ user, can, pageAccess });
+  const flatNav: NavTab[] = [];
+  const walkNav = (t: NavTab) => { flatNav.push(t); (t.children ?? []).forEach(walkNav); };
+  NAV_TABS.forEach(walkNav);
+  const allowed = (to: string): boolean => {
+    const path = to.split("?")[0];
+    const matches = flatNav.filter((t) => t.to != null && t.to.split("?")[0] === path);
+    return matches.length === 0 ? true : matches.some(navVisible);
+  };
+
+  // Bottom-tab access — a tab whose destination the user can't reach must NOT
+  // mount its screen (its screen fires ungated queries → 403). Mirror the exact
+  // capability the desktop nav uses: Orders = the /scm/sales-orders shortcut,
+  // Service = the /assr Service-Cases group (service_cases.read OR Sales staff
+  // via showForSales), Calendar = projects.calendar page access. Profile always.
+  const canOrders = allowed("/scm/sales-orders");
+  const canService = allowed("/assr");
+  const canCalendar = pageAccess("projects.calendar") !== "none";
+  // Land on the first tab the user can actually open (falls back to Profile) so
+  // no one starts on a locked screen.
+  const firstTab: Tab = canOrders ? "orders" : canService ? "service" : canCalendar ? "calendar" : "profile";
+
+  const [tab, setTab] = useState<Tab>(firstTab);
   const [menuOpen, setMenuOpen] = useState(false);
   const [screen, setScreen] = useState<Screen>({ t: "tab" });
   const back = () => setScreen({ t: "tab" });
@@ -229,29 +292,10 @@ function MobileAppInner() {
     });
   };
 
-  const visible = (t: NavTab): boolean => {
-    if (t.perm && !can(t.perm)) return false;
-    if (t.anyPerm || t.anyAccess) {
-      const navPerms = user?.scm_l2_configured && t.anyPerm ? t.anyPerm.filter((p) => p !== "scm.access") : t.anyPerm;
-      const permOk = navPerms ? navPerms.some((p) => can(p)) : false;
-      const accessOk = t.anyAccess ? t.anyAccess.some((k) => pageAccess(k) !== "none") : false;
-      if (!permOk && !accessOk) return false;
-    }
-    if (t.pageAccess && pageAccess(t.pageAccess) === "none") return false;
-    return true;
-  };
-
   // Build the grouped mobile Menu from MOBILE_MENU_GROUPS (design mirror), keeping
   // only items whose matching desktop nav tab is visible for this user's position
-  // (permission consistency). Items with no nav match still show (backend gates).
-  const flatNav: NavTab[] = [];
-  const walkNav = (t: NavTab) => { flatNav.push(t); (t.children ?? []).forEach(walkNav); };
-  NAV_TABS.forEach(walkNav);
-  const allowed = (to: string): boolean => {
-    const path = to.split("?")[0];
-    const matches = flatNav.filter((t) => t.to != null && t.to.split("?")[0] === path);
-    return matches.length === 0 ? true : matches.some(visible);
-  };
+  // (via the shared `allowed` above). Items with no nav match still show (backend
+  // gates).
   const menuGroups = MOBILE_MENU_GROUPS
     .map((g) => ({ group: g.group, items: g.items.filter((it) => it.alwaysShow || allowed(it.to)) }))
     .filter((g) => g.items.length > 0);
@@ -282,12 +326,15 @@ function MobileAppInner() {
     setScreen({ t: "stub", title: label });
   };
 
-  // Overlay screens (pushed above the tab bar).
-  if (screen.t === "search") return <MobileSearch onBack={back} onNavigate={onSearchNavigate} />;
-  if (screen.t === "so-detail") return <MobileSODetail docNo={screen.docNo} onBack={back} onEdit={(d) => setScreen({ t: "new-so", mode: "edit", docNo: d })} />;
-  if (screen.t === "new-so") return <MobileNewSO mode={screen.mode} docNo={screen.docNo} scanPrefill={screen.scanPrefill} onBack={back} onSaved={(d) => setScreen({ t: "so-detail", docNo: d })} />;
-  if (screen.t === "scan") return <MobileScan onBack={back} onDrafted={onScanDrafted} onOpenSo={(docNo) => setScreen({ t: "so-detail", docNo })} />;
-  if (screen.t === "module") {
+  // Overlay screens (pushed above the tab bar). These resolve to lazy-loaded
+  // components, so the chosen element is returned under a single <Suspense>
+  // boundary (full-screen fallback — an overlay owns the whole viewport anyway).
+  let overlay: ReactNode = null;
+  if (screen.t === "search") overlay = <MobileSearch onBack={back} onNavigate={onSearchNavigate} />;
+  else if (screen.t === "so-detail") overlay = <MobileSODetail docNo={screen.docNo} onBack={back} onEdit={(d) => setScreen({ t: "new-so", mode: "edit", docNo: d })} />;
+  else if (screen.t === "new-so") overlay = <MobileNewSO mode={screen.mode} docNo={screen.docNo} scanPrefill={screen.scanPrefill} onBack={back} onSaved={(d) => setScreen({ t: "so-detail", docNo: d })} />;
+  else if (screen.t === "scan") overlay = <MobileScan onBack={back} onDrafted={onScanDrafted} onOpenSo={(docNo) => setScreen({ t: "so-detail", docNo })} />;
+  else if (screen.t === "module") {
     const k = screen.key;
     const convertTarget = MODULE_TO_CONVERT[k];
     const onNew = convertTarget
@@ -295,11 +342,11 @@ function MobileAppInner() {
       : MODULE_CONFIGS[k]?.form
         ? () => setScreen({ t: "module-form", key: k, mode: "new" })
         : undefined;
-    return <MobileModuleList config={MODULE_CONFIGS[k]} onBack={back}
+    overlay = <MobileModuleList config={MODULE_CONFIGS[k]} onBack={back}
       onOpen={(row) => setScreen({ t: "module-detail", key: k, row, title: screen.title })}
       onNew={onNew} />;
   }
-  if (screen.t === "convert") {
+  else if (screen.t === "convert") {
     // Convert is entered from a module list ("+ New") → return to that list
     // afterwards. If ever re-seeded with an initialSourceId (source doc), return
     // to that SO detail instead so the operator sees the updated state.
@@ -307,57 +354,74 @@ function MobileAppInner() {
     const backToConvertHome = fromSo
       ? () => setScreen({ t: "so-detail", docNo: screen.initialSourceId! })
       : () => setScreen({ t: "module", key: screen.key, title: screen.title });
-    return <MobileConvertWizard target={screen.target} initialSourceId={screen.initialSourceId} onBack={backToConvertHome} onCreated={backToConvertHome} />;
+    overlay = <MobileConvertWizard target={screen.target} initialSourceId={screen.initialSourceId} onBack={backToConvertHome} onCreated={backToConvertHome} />;
   }
-  if (screen.t === "module-detail") {
+  else if (screen.t === "module-detail") {
     const doNo = screen.key === "delivery-orders-mfg" ? (screen.row?.do_number ?? screen.row?.doNumber) : null;
-    return <MobileModuleDetail moduleKey={screen.key} row={screen.row} title={screen.title}
+    overlay = <MobileModuleDetail moduleKey={screen.key} row={screen.row} title={screen.title}
       onBack={() => setScreen({ t: "module", key: screen.key, title: screen.title })}
       onEdit={() => setScreen({ t: "module-form", key: screen.key, mode: "edit", row: screen.row })}
       onPOD={doNo ? () => setScreen({ t: "pod", docNo: String(doNo) }) : undefined} />;
   }
-  if (screen.t === "module-form") {
+  else if (screen.t === "module-form") {
     const cfg = MODULE_CONFIGS[screen.key];
     const schema = screen.mode === "edit" && screen.key === "members" ? FORM_MEMBERS_EDIT : cfg?.form;
     const title = cfg?.title ?? screen.key;
-    if (!schema) return <Stub title={title} onBack={back} />;
-    return <MobileModuleForm schema={schema} mode={screen.mode} initial={screen.mode === "edit" ? screen.row : undefined}
-      onBack={() => setScreen(screen.mode === "edit" && screen.row ? { t: "module-detail", key: screen.key, row: screen.row, title } : { t: "module", key: screen.key, title })}
-      onSaved={() => setScreen({ t: "module", key: screen.key, title })} />;
+    overlay = !schema ? <Stub title={title} onBack={back} /> : (
+      <MobileModuleForm schema={schema} mode={screen.mode} initial={screen.mode === "edit" ? screen.row : undefined}
+        onBack={() => setScreen(screen.mode === "edit" && screen.row ? { t: "module-detail", key: screen.key, row: screen.row, title } : { t: "module", key: screen.key, title })}
+        onSaved={() => setScreen({ t: "module", key: screen.key, title })} />
+    );
   }
-  if (screen.t === "pod") return <MobilePOD docNo={screen.docNo} onBack={back} onDone={back} />;
-  if (screen.t === "service") return <MobileServiceCase onBack={back} />;
-  if (screen.t === "delivery-planning") return <MobileDeliveryPlanning onBack={back} onOpen={(doc) => setScreen({ t: "so-detail", docNo: doc })} />;
-  if (screen.t === "pms") return <MobilePMS onBack={back} initialProjectId={screen.projectId} />;
-  if (screen.t === "mail") return <MobileMailCenter onBack={back} />;
-  if (screen.t === "announcements") return <MobileAnnouncements onBack={back} />;
-  if (screen.t === "inbox") return <MobileInbox onBack={back} onOpen={(n) => { const doc = (n as { doc_no?: string }).doc_no; if (doc) setScreen({ t: "so-detail", docNo: doc }); }} />;
-  if (screen.t === "stub") return <Stub title={screen.title} onBack={back} />;
+  else if (screen.t === "pod") overlay = <MobilePOD docNo={screen.docNo} onBack={back} onDone={back} />;
+  else if (screen.t === "service") overlay = <MobileServiceCase onBack={back} startNew={screen.startNew} />;
+  else if (screen.t === "delivery-planning") overlay = <MobileDeliveryPlanning onBack={back} onOpen={(doc) => setScreen({ t: "so-detail", docNo: doc })} />;
+  else if (screen.t === "pms") overlay = <MobilePMS onBack={back} initialProjectId={screen.projectId} />;
+  else if (screen.t === "mail") overlay = <MobileMailCenter onBack={back} />;
+  else if (screen.t === "announcements") overlay = <MobileAnnouncements onBack={back} />;
+  else if (screen.t === "inbox") overlay = <MobileInbox onBack={back} onOpen={(n) => { const doc = (n as { doc_no?: string }).doc_no; if (doc) setScreen({ t: "so-detail", docNo: doc }); }} />;
+  else if (screen.t === "stub") overlay = <Stub title={screen.title} onBack={back} />;
+  if (overlay !== null) return <Suspense fallback={<MobileScreenFallback />}>{overlay}</Suspense>;
 
   return (
     <div className="hz-m" style={{ position: "fixed", inset: 0, background: "var(--app-bg)", display: "flex", flexDirection: "column" }}>
       <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
-        {tab === "orders" && (
-          <MobileSalesOrders
-            onScan={() => setScreen({ t: "scan" })}
-            onOpen={(doc) => setScreen({ t: "so-detail", docNo: doc })}
-            onNew={() => setScreen({ t: "new-so", mode: "new" })}
-          />
-        )}
-        {tab === "service" && <MobileServiceCase onBack={() => setTab("orders")} />}
-        {tab === "calendar" && (
-          <MobileCalendar
-            onOpenProject={(id) => setScreen({ t: "pms", projectId: id })}
-            onOpenSearch={() => setScreen({ t: "search" })}
-            // Search → calendar jump: keyed by the jump nonce so re-jumping to the
-            // same month re-triggers the snap + highlight.
-            key={calJump ? `caljump-${calJump.nonce}` : "cal"}
-            initialYear={calJump?.year}
-            initialMonth={calJump?.month}
-            focusProjectId={calJump?.projectId}
-          />
-        )}
-        {tab === "profile" && <MobileProfile onLogout={logout} orgItems={profileOrgItems} onOpenOrg={openRoute} />}
+        {/* Suspense wraps only the tab CONTENT — the tab bar below stays mounted,
+            so switching to a not-yet-loaded tab shows a content skeleton without
+            the nav flashing. */}
+        <Suspense fallback={<MobileScreenFallback />}>
+          {/* Each content tab mounts its screen ONLY when the user can reach the
+              destination (same makeNavVisible gate as the nav). A tab the user
+              can't access renders a locked placeholder instead of the real screen
+              — so its ungated queries (/api/scm/mfg-sales-orders, /api/assr,
+              /api/projects/calendar…) never fire a 403 (OFF, not hide). */}
+          {tab === "orders" && (canOrders ? (
+            <MobileSalesOrders
+              onScan={() => setScreen({ t: "scan" })}
+              onOpen={(doc) => setScreen({ t: "so-detail", docNo: doc })}
+              onNew={() => setScreen({ t: "new-so", mode: "new" })}
+              // FAB "+" second action — open the service-case create sheet on the
+              // Service screen (parity with the desktop QuickActionsFAB two-choice).
+              onNewCase={() => setScreen({ t: "service", startNew: true })}
+            />
+          ) : <TabLocked title="Sales Orders" />)}
+          {tab === "service" && (canService
+            ? <MobileServiceCase onBack={() => setTab(firstTab)} />
+            : <TabLocked title="Service Cases" />)}
+          {tab === "calendar" && (canCalendar ? (
+            <MobileCalendar
+              onOpenProject={(id) => setScreen({ t: "pms", projectId: id })}
+              onOpenSearch={() => setScreen({ t: "search" })}
+              // Search → calendar jump: keyed by the jump nonce so re-jumping to the
+              // same month re-triggers the snap + highlight.
+              key={calJump ? `caljump-${calJump.nonce}` : "cal"}
+              initialYear={calJump?.year}
+              initialMonth={calJump?.month}
+              focusProjectId={calJump?.projectId}
+            />
+          ) : <TabLocked title="Calendar" />)}
+          {tab === "profile" && <MobileProfile onLogout={logout} orgItems={profileOrgItems} onOpenOrg={openRoute} />}
+        </Suspense>
       </div>
 
       <div className="navwrap">
@@ -425,6 +489,22 @@ function MobileAppInner() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/** Locked placeholder for a bottom tab the user can't access — the tab button
+ *  stays in the fixed bar (design), but its screen (and every query it fires)
+ *  never mounts. OFF, not hide: no fetch, no 403. */
+function TabLocked({ title }: { title: string }) {
+  return (
+    <div className="hz-m" style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", background: "var(--app-bg)" }}>
+      <header style={{ background: "#fff", borderBottom: "1px solid var(--line)", padding: "calc(env(safe-area-inset-top) + 16px) 16px 14px" }}>
+        <div style={{ fontSize: 19, fontWeight: 800, color: "var(--ink)" }}>{title}</div>
+      </header>
+      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "#9aa093", fontSize: 12.5, padding: 24, textAlign: "center" }}>
+        Your position doesn't have access to this section.
+      </div>
     </div>
   );
 }

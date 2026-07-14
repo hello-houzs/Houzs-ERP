@@ -100,14 +100,14 @@ export interface Creditor {
   total_local_ex_tax?: number;
 }
 
-// v3.1 9-stage workflow (backend mig 074). Stage names mirror the SQL
-// enum. The legacy 6-stage vocabulary is no longer accepted by writes.
+// v3.1 workflow (backend mig 074) — 8 stages since mig 0105 retired
+// pending_inspection (inspection folded into Under Verification).
+// Stage names mirror the SQL enum. The legacy 6-stage vocabulary is
+// no longer accepted by writes.
 export type AssrStage =
   | "pending_review"
   | "under_verification"
   | "pending_solution"
-  | "pending_inspection"
-  | "pending_item_pickup"
   | "pending_supplier_pickup"
   | "pending_item_ready"
   | "pending_delivery_service"
@@ -189,7 +189,8 @@ export interface AssrCase {
   supplier_pickup_at?: string | null;
   // Mig 107 — date we collect the faulty item from the customer's house.
   customer_pickup_at?: string | null;
-  // Mig 0073 — who performs the inspection stage: 'own' | 'supplier'.
+  // Mig 0073 — who performs the issue inspection: 'own' | 'supplier'.
+  // Lives on the Under Verification stage since mig 0105.
   inspection_by?: "own" | "supplier" | null;
   items_ready_at?: string | null;
   stage_changed_at?: string | null;
@@ -205,6 +206,9 @@ export interface AssrCase {
   // Mig 105 — editable QC-on-receipt inspection date, distinct from
   // the auto-stamped verified_at audit timestamp.
   qc_receipt_date?: string | null;
+  // Mig 0105 — result of the QC-on-receipt issue inspection (the
+  // retired Pending Inspection stage folded into Verification).
+  qc_issue_result?: "pass" | "fail" | "na" | null;
   // Mig 106 — paperwork that travels with the item between Houzs and
   // supplier. Ops edits goods_returned_note; supplier edits
   // supplier_service_note from their portal.
@@ -461,6 +465,20 @@ export interface AuthUser {
    *  Finance Manager, owner `*`). Gates the Projects "Finances" sub-page
    *  (nav + route). Older backends omit it → treated as false. */
   project_finance_viewer?: boolean;
+  /** Org POSITION name (positions.name) — e.g. "Sales Executive",
+   *  "Super Admin". Sent by /auth/me (services/auth.ts → hydrateAuthUser).
+   *  Drives the code-keyed Sales-access model (director / sales detection in
+   *  auth/salesAccess.ts), NOT the configurable page matrix. */
+  position_name?: string | null;
+  /** Org position id (positions.id). Sent by /auth/me. */
+  position_id?: number | null;
+  /** Primary DEPARTMENT id (users.department_id). Sent by /auth/me. */
+  department_id?: number | null;
+  /** Primary DEPARTMENT name (departments.name) — e.g. "Sales". Sent by
+   *  /auth/me (backend #400 → services/auth.ts). Primary signal for the
+   *  code-keyed Sales-access model (auth/salesAccess.ts isSalesStaff), which
+   *  is more robust than keying off the position name alone. */
+  department_name?: string | null;
 }
 
 export interface TeamMember {
@@ -501,6 +519,13 @@ export interface TeamMember {
    * imply anything for unscoped users).
    */
   brands: string[];
+  /**
+   * Per-user company grants (Phase 0e — user_companies). Company ids the member
+   * may act in. Empty array = no grant row → the user fail-opens to ALL
+   * companies (companyContext). Older backends omit this field. Drives the Team
+   * "Company" column and the edit/invite Company selector.
+   */
+  company_ids?: number[];
   invited_at: string | null;
   /** Who issued the invite (mig: users.invited_by). */
   invited_by?: number | null;

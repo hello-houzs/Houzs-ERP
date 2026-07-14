@@ -402,6 +402,51 @@
   color: var(--c-festive-a, #C77F3E);
 }
 
+/* ── Custom / other (unified free-text special order) ─────────────── */
+
+.customSpecial {
+  grid-column: 1 / -1;
+  border-top: 1px dashed var(--line);
+  padding-top: var(--space-2);
+  margin-top: 2px;
+}
+
+.customHead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+  padding: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.customHead:hover { background: var(--c-paper); }
+
+.customFields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-2);
+  margin-top: 6px;
+}
+
+.customFields .variantField { flex: 1 1 200px; }
+
+.customClear {
+  height: 28px;
+  padding: 0 10px;
+  font-family: var(--font-sans);
+  font-size: var(--fs-11);
+  color: var(--c-festive-b, #B8331F);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.customClear:hover { background: var(--c-cream); }
+
 /* ── Photos strip (carried over from PR-F) ─────────────────────────── */
 
 .photos {

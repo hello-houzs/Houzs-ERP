@@ -19,7 +19,7 @@
 // The old ledger-style page (MfgSalesOrdersList.tsx, DataGrid-based) stays in
 // the tree; App.tsx route swap decides which one users see.
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Plus,
@@ -44,7 +44,7 @@ import { Button } from "../../components/Button";
 import { PullToRefresh } from "../../components/PullToRefresh";
 import { useStaffLookup } from "../../hooks/useStaffLookup";
 import {
-  useMfgSalesOrders,
+  useMfgSalesOrdersPaged,
   useUpdateMfgSalesOrderStatus,
   useMfgSalesOrderDetail,
 } from "../../vendor/scm/lib/sales-order-queries";
@@ -652,6 +652,51 @@ function TotalRow({
   );
 }
 
+// ─── Pagination footer ──────────────────────────────────────────────────────
+
+function PaginationFooter({
+  page,
+  pageSize,
+  total,
+  onPrev,
+  onNext,
+}: {
+  page: number;
+  pageSize: number;
+  total: number;
+  onPrev: () => void;
+  onNext: () => void;
+}) {
+  const from = total === 0 ? 0 : page * pageSize + 1;
+  const to = Math.min((page + 1) * pageSize, total);
+  const atStart = page === 0;
+  const atEnd = (page + 1) * pageSize >= total;
+  return (
+    <div className="mt-4 flex items-center justify-between gap-3">
+      <span className="text-[12px] text-ink-muted">
+        Showing {from}
+        {to > from ? `–${to}` : ""} of {total}
+      </span>
+      <div className="flex items-center gap-2">
+        <Button variant="secondary" onClick={onPrev} disabled={atStart}>
+          Prev
+        </Button>
+        <Button variant="secondary" onClick={onNext} disabled={atEnd}>
+          Next
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// Table column key → backend sort-whitelist column. Only the mismatched key
+// ("amount" → "local_total_centi") needs a map; doc_no / so_date / debtor_name
+// / status already match the backend names 1:1. Columns not in this map that
+// are also not backend-sortable are marked `disableSort` on the column def.
+const SORT_COL_MAP: Record<string, string> = {
+  amount: "local_total_centi",
+};
+
 // ─── Main page ──────────────────────────────────────────────────────────────
 
 export function MfgSalesOrdersListV2() {
@@ -665,83 +710,80 @@ export function MfgSalesOrdersListV2() {
   // regardless of the URL param (a 9-col DataTable is unreadable on 360dpi).
   const view = (params.get("view") ?? "table") as "table" | "cards";
   const search = params.get("q") ?? "";
+  // URL is state — the page index lives in `?page=` (0-based). pageSize is a
+  // fixed 50 (backend caps at 100). Both feed the server-pagination hook so
+  // search / status counts / sort span the FULL set, not the visible page.
+  const page = Math.max(0, parseInt(params.get("page") ?? "0", 10) || 0);
+  const pageSize = 50;
 
   const [selected, setSelected] = useState<SoRow | null>(null);
+  // Server-side sort, formatted "<col>:<dir>" for the backend whitelist
+  // (so_date/doc_no/debtor_name/status/local_total_centi/customer_delivery_date).
+  const [sort, setSort] = useState<string | undefined>(undefined);
+  // Debounced search — the URL `q` updates on every keystroke (so the input
+  // stays controlled + shareable) but we only re-query the server 300ms after
+  // the user stops typing.
+  const [debouncedSearch, setDebouncedSearch] = useState(search);
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(t);
+  }, [search]);
   // Scan Order — handwritten slip OCR → prefilled New SO (ScanOrderModal).
   // The modal owns its own extract → sessionStorage → navigate(new?fromScan=1)
   // flow; we only toggle its visibility (mirrors MfgSalesOrdersList V1).
   const [showScan, setShowScan] = useState(false);
 
-  const { data, isLoading, error } = useMfgSalesOrders(
-    status === "all" ? undefined : status
-  );
+  const { data, isLoading, error } = useMfgSalesOrdersPaged({
+    page,
+    pageSize,
+    status,
+    q: debouncedSearch,
+    sort,
+  });
   const updateStatus = useUpdateMfgSalesOrderStatus();
 
-  const allRows = useMemo<SoRow[]>(
-    () => ((data?.salesOrders ?? []) as SoRow[]),
-    [data]
-  );
+  // The server already filtered (status + search) and sorted this page; the
+  // rows are rendered verbatim — NO client re-filter / re-sort (that would be
+  // wrong on a partial page).
+  const rows = (data?.salesOrders ?? []) as SoRow[];
+  const total = data?.total ?? 0;
+  // Status tab counts come from the server over the FULL scoped set (not the
+  // page), so the pills stay correct while paging / searching.
+  const counts = data?.statusCounts ?? {
+    all: 0,
+    draft: 0,
+    confirmed: 0,
+    cancelled: 0,
+  };
 
-  // Client-side search filter — matches doc_no, customer name, ref number,
-  // and salesperson. Server hits still respect status (query param above).
-  const filtered = useMemo(() => {
-    if (!search.trim()) return allRows;
-    const q = search.toLowerCase();
-    return allRows.filter((r) => {
-      const hay = [
-        r.doc_no,
-        r.debtor_name,
-        r.debtor_code,
-        r.agent,
-        r.salesperson_id,
-        refOf(r),
-        r.branding,
-        r.sales_location,
-      ]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
-      return hay.includes(q);
-    });
-  }, [allRows, search]);
-
-  // Status tab counts — computed on the FULL query result (unfiltered by
-  // search), so the pill counts stay stable while the user types.
-  const counts = useMemo(() => {
-    const byStatus = { all: allRows.length, draft: 0, confirmed: 0, cancelled: 0 };
-    for (const r of allRows) {
-      const s = (r.status || "").toLowerCase();
-      if (s === "draft") byStatus.draft += 1;
-      else if (s === "confirmed") byStatus.confirmed += 1;
-      else if (s === "cancelled" || s === "cancel") byStatus.cancelled += 1;
-    }
-    return byStatus;
-  }, [allRows]);
-
-  // KPI stats — scoped to the SEARCH-FILTERED rows so narrowing the filter
-  // row re-scopes the headline numbers (matches the interactive feel we've
-  // established elsewhere in the app).
+  // KPI money stats — the backend paginated contract returns `total` +
+  // `statusCounts` but NOT full-set revenue/outstanding/paid sums, so these
+  // three are necessarily scoped to the CURRENT page's rows (subtitles say so).
+  // Total Orders uses the server `total` (full set).
   const stats = useMemo(() => {
     let revenueCenti = 0;
     let outstandingCenti = 0;
     let paidCenti = 0;
-    for (const r of filtered) {
+    for (const r of rows) {
       revenueCenti += r.local_total_centi ?? 0;
       outstandingCenti += r.balance_centi ?? 0;
       paidCenti += r.paid_centi ?? 0;
     }
-    return {
-      total: filtered.length,
-      revenueCenti,
-      outstandingCenti,
-      paidCenti,
-    };
-  }, [filtered]);
+    return { revenueCenti, outstandingCenti, paidCenti };
+  }, [rows]);
 
+  // Write the page index to the URL. p<=0 drops the param (clean default).
+  const setPageParam = (p: number) => {
+    const next = new URLSearchParams(params);
+    if (p <= 0) next.delete("page");
+    else next.set("page", String(p));
+    setParams(next, { replace: true });
+  };
   const setStatusChip = (s: StatusTab) => {
     const next = new URLSearchParams(params);
     if (s === "all") next.delete("status");
     else next.set("status", s);
+    next.delete("page"); // status change → back to page 0
     setParams(next, { replace: true });
   };
   const setView = (v: "table" | "cards") => {
@@ -754,9 +796,26 @@ export function MfgSalesOrdersListV2() {
     const next = new URLSearchParams(params);
     if (!q.trim()) next.delete("q");
     else next.set("q", q);
+    next.delete("page"); // typing → back to page 0
     setParams(next, { replace: true });
   };
+  // The DataTable fires onSortChange once on mount to sync any localStorage-
+  // persisted sort up to us. That first call must ADOPT the sort without
+  // resetting the page (so a deep-linked ?page=N survives a refresh); only
+  // subsequent user-initiated header clicks reset back to page 0.
+  const sortSyncedRef = useRef(false);
+  const setSortAndReset = (
+    s: { key: string; dir: "asc" | "desc" } | null
+  ) => {
+    setSort(s ? `${SORT_COL_MAP[s.key] ?? s.key}:${s.dir}` : undefined);
+    if (!sortSyncedRef.current) {
+      sortSyncedRef.current = true;
+      return;
+    }
+    setPageParam(0); // sort change → back to page 0
+  };
   const resetLayout = () => {
+    setSort(undefined);
     setParams(new URLSearchParams(), { replace: true });
   };
   const filtersActive =
@@ -816,6 +875,9 @@ export function MfgSalesOrdersListV2() {
       key: "salesperson",
       label: "Salesperson",
       width: "148px",
+      // Not in the backend sort whitelist — keep getValue for CSV export but
+      // disable the header sort so we never send an unsupported sort key.
+      disableSort: true,
       getValue: (r) => salespersonNameOf(r.agent, r.salesperson_id, ""),
       render: (r) => (
         <span className="text-[12.5px] text-ink-secondary">
@@ -827,6 +889,7 @@ export function MfgSalesOrdersListV2() {
       key: "sales_location",
       label: "Location",
       width: "132px",
+      disableSort: true,
       getValue: (r) => r.sales_location ?? "",
       render: (r) => (
         <span className="text-[12.5px] text-ink-secondary">{r.sales_location || "—"}</span>
@@ -836,6 +899,7 @@ export function MfgSalesOrdersListV2() {
       key: "reference",
       label: "Reference",
       width: "132px",
+      disableSort: true,
       getValue: (r) => refOf(r),
       render: (r) => (
         <span className="font-mono text-[12px] text-ink-secondary">{refOf(r)}</span>
@@ -845,6 +909,7 @@ export function MfgSalesOrdersListV2() {
       key: "branding",
       label: "Branding",
       width: "112px",
+      disableSort: true,
       getValue: (r) => brandOf(r),
       render: (r) => {
         const b = brandOf(r);
@@ -914,7 +979,7 @@ export function MfgSalesOrdersListV2() {
             Sales Orders
           </h1>
           <div className="mt-0.5 text-[12.5px] text-ink-muted">
-            {stats.total} order{stats.total === 1 ? "" : "s"} ·{" "}
+            {total} order{total === 1 ? "" : "s"} ·{" "}
             <span className="font-money">{fmtRm(stats.revenueCenti)}</span>
           </div>
         </div>
@@ -956,28 +1021,28 @@ export function MfgSalesOrdersListV2() {
           <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
             <StatCard
               label="Total Orders"
-              value={stats.total.toLocaleString("en-MY")}
-              subtitle="Scoped to current filter"
+              value={total.toLocaleString("en-MY")}
+              subtitle="All matching orders"
               rail="bg-primary"
               active
             />
             <StatCard
               label="Revenue"
               value={fmtRm(stats.revenueCenti)}
-              subtitle="Sum of local total"
+              subtitle="Sum on this page"
               rail="bg-accent"
             />
             <StatCard
               label="Outstanding"
               value={fmtRm(stats.outstandingCenti)}
-              subtitle="Balance across visible rows"
+              subtitle="Balance on this page"
               tone="error"
               rail="bg-err"
             />
             <StatCard
               label="Paid"
               value={fmtRm(stats.paidCenti)}
-              subtitle="Receipts logged"
+              subtitle="Receipts on this page"
               tone="success"
               rail="bg-synced"
             />
@@ -1017,42 +1082,57 @@ export function MfgSalesOrdersListV2() {
 
       {/* Phone → CardsGrid ALWAYS. Desktop → the view toggle decides. */}
       <div className="md:hidden">
-        <CardsGrid rows={filtered} onOpen={(r) => setSelected(r)} />
-        {filtered.length > 0 && (
-          <div className="mt-4 pb-24 text-center text-[11.5px] text-ink-muted">
-            {filtered.length} order{filtered.length === 1 ? "" : "s"}
-          </div>
-        )}
+        <CardsGrid rows={rows} onOpen={(r) => setSelected(r)} />
+        <div className="pb-24">
+          <PaginationFooter
+            page={page}
+            pageSize={pageSize}
+            total={total}
+            onPrev={() => setPageParam(page - 1)}
+            onNext={() => setPageParam(page + 1)}
+          />
+        </div>
       </div>
 
       {/* Table / Cards (md+) */}
       <div className="hidden md:block">
       {view === "table" ? (
-        <DataTable<SoRow>
-          tableId="sales-orders-v2"
-          rows={filtered}
-          loading={isLoading}
-          error={error ? (error as Error).message ?? "Failed to load" : null}
-          columns={columns}
-          getRowKey={(r) => r.doc_no}
-          onRowClick={(r) => setSelected(r)}
-          exportName="sales-orders"
-          emptyLabel={
-            filtersActive
-              ? "No sales orders match — try Reset layout to clear filters."
-              : "No sales orders yet."
-          }
-          search={{
-            value: search,
-            onChange: setSearch,
-            placeholder: "Search doc no, customer, ref…",
-          }}
-          resetFilters={{
-            active: filtersActive,
-            onReset: resetLayout,
-            label: "Reset layout",
-          }}
-        />
+        <>
+          <DataTable<SoRow>
+            tableId="sales-orders-v2"
+            rows={rows}
+            loading={isLoading}
+            error={error ? (error as Error).message ?? "Failed to load" : null}
+            columns={columns}
+            getRowKey={(r) => r.doc_no}
+            onRowClick={(r) => setSelected(r)}
+            exportName="sales-orders"
+            serverSort
+            onSortChange={setSortAndReset}
+            emptyLabel={
+              filtersActive
+                ? "No sales orders match — try Reset layout to clear filters."
+                : "No sales orders yet."
+            }
+            search={{
+              value: search,
+              onChange: setSearch,
+              placeholder: "Search doc no, customer, ref…",
+            }}
+            resetFilters={{
+              active: filtersActive,
+              onReset: resetLayout,
+              label: "Reset layout",
+            }}
+          />
+          <PaginationFooter
+            page={page}
+            pageSize={pageSize}
+            total={total}
+            onPrev={() => setPageParam(page - 1)}
+            onNext={() => setPageParam(page + 1)}
+          />
+        </>
       ) : (
         <>
           <div className="mb-3 flex items-center justify-between">
@@ -1074,11 +1154,15 @@ export function MfgSalesOrdersListV2() {
                 </button>
               )}
             </div>
-            <span className="text-[12px] text-ink-muted">
-              {filtered.length} order{filtered.length === 1 ? "" : "s"}
-            </span>
           </div>
-          <CardsGrid rows={filtered} onOpen={(r) => setSelected(r)} />
+          <CardsGrid rows={rows} onOpen={(r) => setSelected(r)} />
+          <PaginationFooter
+            page={page}
+            pageSize={pageSize}
+            total={total}
+            onPrev={() => setPageParam(page - 1)}
+            onNext={() => setPageParam(page + 1)}
+          />
         </>
       )}
       </div>

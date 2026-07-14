@@ -3,7 +3,7 @@
 // so the framing is stock-in (received value + line count) rather than
 // outstanding/owed.
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Plus,
@@ -29,7 +29,7 @@ import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
 import { PullToRefresh } from "../../components/PullToRefresh";
 import {
-  useGrns,
+  useGrnsPaged,
   useGrnDetail,
   usePostGrn,
   useCancelGrn,
@@ -391,6 +391,48 @@ function TotalRow({ k, v, strong }: { k: string; v: string; strong?: boolean }) 
   );
 }
 
+function PaginationFooter({
+  page,
+  pageSize,
+  total,
+  onPrev,
+  onNext,
+}: {
+  page: number;
+  pageSize: number;
+  total: number;
+  onPrev: () => void;
+  onNext: () => void;
+}) {
+  const from = total === 0 ? 0 : page * pageSize + 1;
+  const to = Math.min((page + 1) * pageSize, total);
+  const atStart = page === 0;
+  const atEnd = (page + 1) * pageSize >= total;
+  return (
+    <div className="mt-4 flex items-center justify-between gap-3">
+      <span className="text-[12px] text-ink-muted">
+        Showing {from}
+        {to > from ? `–${to}` : ""} of {total}
+      </span>
+      <div className="flex items-center gap-2">
+        <Button variant="secondary" onClick={onPrev} disabled={atStart}>
+          Prev
+        </Button>
+        <Button variant="secondary" onClick={onNext} disabled={atEnd}>
+          Next
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// Table column key → backend sort-whitelist column. GRN backend whitelist is
+// { received_at, grn_number, status, total_centi }; only `total` differs from
+// its backend name. Non-whitelisted columns carry `disableSort`.
+const SORT_COL_MAP: Record<string, string> = {
+  total: "total_centi",
+};
+
 export function GoodsReceivedListV2() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
@@ -399,62 +441,60 @@ export function GoodsReceivedListV2() {
   const status = (params.get("status") ?? "all") as StatusTab;
   const view = (params.get("view") ?? "table") as "table" | "cards";
   const search = params.get("q") ?? "";
+  const page = Math.max(0, parseInt(params.get("page") ?? "0", 10) || 0);
+  const pageSize = 50;
 
   const [selected, setSelected] = useState<GrnRow | null>(null);
+  const [sort, setSort] = useState<string | undefined>(undefined);
+  const [debouncedSearch, setDebouncedSearch] = useState(search);
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(t);
+  }, [search]);
 
-  const { data, isLoading, error } = useGrns();
+  // Send the active tab's BUCKET NAME as `status`; the backend resolves it to
+  // the raw statuses it covers (draft/posted/cancelled are 1:1). `all` omits it.
+  const apiStatus = status === "all" ? undefined : status;
+
+  const { data, isLoading, error } = useGrnsPaged({
+    page,
+    pageSize,
+    status: apiStatus,
+    q: debouncedSearch,
+    sort,
+  });
   const postGrn = usePostGrn();
   const cancelGrn = useCancelGrn();
 
-  const allRows = useMemo<GrnRow[]>(
-    () => ((data?.grns ?? []) as GrnRow[]),
-    [data]
-  );
+  // Server already filtered + sorted this page — render verbatim.
+  const rows = (data?.grns ?? []) as GrnRow[];
+  const total = data?.total ?? 0;
+  const counts = data?.statusCounts ?? { all: 0, draft: 0, posted: 0, cancelled: 0 };
 
-  const scopedByBucket = useMemo(() => {
-    if (status === "all") return allRows;
-    return allRows.filter((r) => statusFor(r.status).bucket === status);
-  }, [allRows, status]);
-
-  const filtered = useMemo(() => {
-    if (!search.trim()) return scopedByBucket;
-    const q = search.toLowerCase();
-    return scopedByBucket.filter((r) => {
-      const hay = [r.grn_number, supplierNameOf(r), supplierCodeOf(r), poOf(r), r.delivery_note_ref, r.notes]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
-      return hay.includes(q);
-    });
-  }, [scopedByBucket, search]);
-
-  const counts = useMemo(() => {
-    const acc = { all: allRows.length, draft: 0, posted: 0, cancelled: 0 };
-    for (const r of allRows) {
-      const b = statusFor(r.status).bucket;
-      if (b === "draft") acc.draft += 1;
-      else if (b === "posted") acc.posted += 1;
-      else if (b === "cancelled") acc.cancelled += 1;
-    }
-    return acc;
-  }, [allRows]);
-
-  const stats = useMemo(() => {
+  // Money KPIs are summed over the CURRENT page only (paginated contract has no
+  // full-set money sums), so their cards are labelled "on this page".
+  const money = useMemo(() => {
     let received = 0;
     let draft = 0;
     let awaitingPi = 0;
-    for (const r of filtered) {
+    for (const r of rows) {
       received += totalOf(r);
       const b = statusFor(r.status).bucket;
       if (b === "draft") draft += totalOf(r);
       if (b === "posted" && !r.fully_invoiced) awaitingPi += totalOf(r);
     }
-    return { total: filtered.length, received, draft, awaitingPi };
-  }, [filtered]);
+    return { received, draft, awaitingPi };
+  }, [rows]);
 
+  const setPageParam = (p: number) => {
+    const next = new URLSearchParams(params);
+    if (p <= 0) next.delete("page"); else next.set("page", String(p));
+    setParams(next, { replace: true });
+  };
   const setStatusChip = (s: StatusTab) => {
     const next = new URLSearchParams(params);
     if (s === "all") next.delete("status"); else next.set("status", s);
+    next.delete("page");
     setParams(next, { replace: true });
   };
   const setView = (v: "table" | "cards") => {
@@ -465,9 +505,22 @@ export function GoodsReceivedListV2() {
   const setSearch = (q: string) => {
     const next = new URLSearchParams(params);
     if (!q.trim()) next.delete("q"); else next.set("q", q);
+    next.delete("page");
     setParams(next, { replace: true });
   };
-  const resetLayout = () => setParams(new URLSearchParams(), { replace: true });
+  const sortSyncedRef = useRef(false);
+  const setSortAndReset = (s: { key: string; dir: "asc" | "desc" } | null) => {
+    setSort(s ? `${SORT_COL_MAP[s.key] ?? s.key}:${s.dir}` : undefined);
+    if (!sortSyncedRef.current) {
+      sortSyncedRef.current = true;
+      return;
+    }
+    setPageParam(0);
+  };
+  const resetLayout = () => {
+    setSort(undefined);
+    setParams(new URLSearchParams(), { replace: true });
+  };
   const filtersActive = status !== "all" || view !== "table" || search.trim().length > 0;
 
   const onPullToRefresh = async () => {
@@ -514,12 +567,14 @@ export function GoodsReceivedListV2() {
       key: "po",
       label: "From PO",
       width: "128px",
+      disableSort: true,
       getValue: (r) => poOf(r),
       render: (r) => <span className="font-mono text-[12px] text-ink-secondary">{poOf(r)}</span>,
     },
     {
       key: "supplier",
       label: "Supplier",
+      disableSort: true,
       getValue: (r) => supplierNameOf(r),
       render: (r) => (
         <div className="min-w-0">
@@ -532,6 +587,7 @@ export function GoodsReceivedListV2() {
       key: "dn",
       label: "Delivery note",
       width: "128px",
+      disableSort: true,
       getValue: (r) => r.delivery_note_ref ?? "",
       render: (r) => <span className="font-mono text-[12px] text-ink-secondary">{r.delivery_note_ref || "—"}</span>,
     },
@@ -569,7 +625,7 @@ export function GoodsReceivedListV2() {
           <div className="min-w-0">
             <h1 className="font-display text-[22px] font-extrabold leading-tight tracking-tight text-ink">Goods Received</h1>
             <div className="mt-0.5 text-[12.5px] text-ink-muted">
-              {stats.total} GRN{stats.total === 1 ? "" : "s"} · {fmtRm(stats.received)}
+              {total} GRN{total === 1 ? "" : "s"} · {fmtRm(money.received)}
             </div>
           </div>
         </div>
@@ -595,10 +651,10 @@ export function GoodsReceivedListV2() {
         </div>
 
         <div className="mb-5 hidden grid-cols-2 gap-3 md:grid lg:grid-cols-4">
-          <StatCard label="Total GRNs" value={stats.total.toLocaleString("en-MY")} subtitle="Scoped to current filter" rail="bg-primary" active />
-          <StatCard label="Received Value" value={fmtRm(stats.received)} subtitle="Sum of posted GRN values" tone="success" rail="bg-synced" />
-          <StatCard label="Awaiting PI" value={fmtRm(stats.awaitingPi)} subtitle="Posted GRNs not yet invoiced" tone="warning" rail="bg-accent-bright" />
-          <StatCard label="Draft" value={fmtRm(stats.draft)} subtitle="Not yet posted" rail="bg-accent" />
+          <StatCard label="Total GRNs" value={total.toLocaleString("en-MY")} subtitle="All matching GRNs" rail="bg-primary" active />
+          <StatCard label="Received Value" value={fmtRm(money.received)} subtitle="Value on this page" tone="success" rail="bg-synced" />
+          <StatCard label="Awaiting PI" value={fmtRm(money.awaitingPi)} subtitle="Not yet invoiced · on this page" tone="warning" rail="bg-accent-bright" />
+          <StatCard label="Draft" value={fmtRm(money.draft)} subtitle="Not yet posted · on this page" rail="bg-accent" />
         </div>
 
         <div className="sticky top-0 z-10 -mx-4 mb-3 bg-bg/95 px-4 py-2 backdrop-blur-sm md:hidden">
@@ -618,29 +674,44 @@ export function GoodsReceivedListV2() {
         </div>
 
         <div className="md:hidden">
-          <CardsGrid rows={filtered} onOpen={(r) => setSelected(r)} />
-          {filtered.length > 0 && (
-            <div className="mt-4 pb-24 text-center text-[11.5px] text-ink-muted">
-              {filtered.length} GRN{filtered.length === 1 ? "" : "s"}
-            </div>
-          )}
+          <CardsGrid rows={rows} onOpen={(r) => setSelected(r)} />
+          <div className="pb-24">
+            <PaginationFooter
+              page={page}
+              pageSize={pageSize}
+              total={total}
+              onPrev={() => setPageParam(page - 1)}
+              onNext={() => setPageParam(page + 1)}
+            />
+          </div>
         </div>
 
         <div className="hidden md:block">
           {view === "table" ? (
-            <DataTable<GrnRow>
-              tableId="grns-v2"
-              rows={filtered}
-              loading={isLoading}
-              error={error ? (error as Error).message ?? "Failed to load" : null}
-              columns={columns}
-              getRowKey={(r) => r.id}
-              onRowClick={(r) => setSelected(r)}
-              exportName="grns"
-              emptyLabel={filtersActive ? "No GRNs match — try Reset layout to clear filters." : "No GRNs yet."}
-              search={{ value: search, onChange: setSearch, placeholder: "Search GRN no, supplier, PO, delivery note…" }}
-              resetFilters={{ active: filtersActive, onReset: resetLayout, label: "Reset layout" }}
-            />
+            <>
+              <DataTable<GrnRow>
+                tableId="grns-v2"
+                rows={rows}
+                loading={isLoading}
+                error={error ? (error as Error).message ?? "Failed to load" : null}
+                columns={columns}
+                getRowKey={(r) => r.id}
+                onRowClick={(r) => setSelected(r)}
+                exportName="grns"
+                serverSort
+                onSortChange={setSortAndReset}
+                emptyLabel={filtersActive ? "No GRNs match — try Reset layout to clear filters." : "No GRNs yet."}
+                search={{ value: search, onChange: setSearch, placeholder: "Search GRN no, supplier, PO, delivery note…" }}
+                resetFilters={{ active: filtersActive, onReset: resetLayout, label: "Reset layout" }}
+              />
+              <PaginationFooter
+                page={page}
+                pageSize={pageSize}
+                total={total}
+                onPrev={() => setPageParam(page - 1)}
+                onNext={() => setPageParam(page + 1)}
+              />
+            </>
           ) : (
             <>
               <div className="mb-3 flex items-center justify-between">
@@ -656,9 +727,15 @@ export function GoodsReceivedListV2() {
                     <button type="button" onClick={resetLayout} className="text-[12px] font-semibold text-primary hover:underline">Reset layout</button>
                   )}
                 </div>
-                <span className="text-[12px] text-ink-muted">{filtered.length} GRN{filtered.length === 1 ? "" : "s"}</span>
               </div>
-              <CardsGrid rows={filtered} onOpen={(r) => setSelected(r)} />
+              <CardsGrid rows={rows} onOpen={(r) => setSelected(r)} />
+              <PaginationFooter
+                page={page}
+                pageSize={pageSize}
+                total={total}
+                onPrev={() => setPageParam(page - 1)}
+                onNext={() => setPageParam(page + 1)}
+              />
             </>
           )}
         </div>

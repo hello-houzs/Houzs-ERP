@@ -40,6 +40,7 @@ import {
   Play,
   UserCircle2,
   Users,
+  Phone,
   ClipboardList,
   DollarSign,
   Wrench,
@@ -89,9 +90,12 @@ import { useFocusFromUrl } from "../hooks/useFocusFromUrl";
 import { useStickyFilters } from "../hooks/useStickyFilters";
 import { useAuth } from "../auth/AuthContext";
 import { usePageAccess } from "../auth/PageGuard";
+import { isSalesStaff, isDirectorUser } from "../auth/salesAccess";
+import { ACCESS_RANK } from "../types";
 import { Forbidden } from "./Forbidden";
 import { useNotifications } from "../hooks/useNotifications";
 import { api, buildQuery, humanHttpMessage } from "../api/client";
+import { companyHeader } from "../lib/activeCompany";
 import { MediaLightbox } from "../components/MediaLightbox";
 import { ResetFiltersButton } from "../components/ResetFiltersButton";
 import { formatDate, formatDateTime, formatTimestamp, formatCurrency, cn, relativeTime } from "../lib/utils";
@@ -164,6 +168,7 @@ interface ProjectDetail {
     pic_id: number | null;
     pic_name: string | null;
     pic_email: string | null;
+    pic_phone: string | null;
     // Logistics schedule (Notion parity)
     setup_start_at: string | null;
     setup_end_at: string | null;
@@ -263,6 +268,7 @@ interface SalesAttendee {
   sales_rep_id: number;
   rep_code: string | null;
   rep_name: string | null;
+  rep_phone: string | null;
   rep_user_id: number | null;
   user_name: string | null;
   created_at: string | null;
@@ -1909,6 +1915,12 @@ const FINANCE_LIST_FILTER_KEYS = [
 
 function FinanceListView() {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  // The parent (ProjectsFinancesView) only mounts this view when the viewer
+  // has the DIRECTOR-level finance flag, but guard the denyFinance-protected
+  // fetch with `enabled` too so a future refactor can never let it fire (and
+  // 403) for a non-viewer. Fail-open when the flag is absent — backend enforces.
+  const canProjectFinance = !!user?.project_finance_viewer;
   const thisYear = new Date().getFullYear();
   const defaultFrom = `${thisYear}-01-01`;
   const defaultTo = `${thisYear}-12-31`;
@@ -1977,7 +1989,7 @@ function FinanceListView() {
     [dateFrom, dateTo, brand, stage, search, includeArchived, page, perPage, sort?.key, sort?.dir],
     // Paginated + filter-switched list: keep the current rows on screen while
     // the next page/filter loads instead of flashing an empty table.
-    { keepPreviousData: true }
+    { keepPreviousData: true, enabled: canProjectFinance }
   );
 
   const columns: Column<FinanceProjectRow>[] = [
@@ -2457,6 +2469,10 @@ function ProjectsAnalyticsView() {
   // Date range default: current year. User can clear or change.
   const thisYear = new Date().getFullYear();
   const navigate = useNavigate();
+  const { user } = useAuth();
+  // Belt-and-suspenders finance gate (see FinanceListView): the profitability
+  // fetch is denyFinance-guarded server-side; never fire it for a non-viewer.
+  const canProjectFinance = !!user?.project_finance_viewer;
   const [dateFrom, setDateFrom] = useState<string>(`${thisYear}-01-01`);
   const [dateTo, setDateTo] = useState<string>(`${thisYear}-12-31`);
   const [brand, setBrand] = useState<string>("");
@@ -2483,7 +2499,8 @@ function ProjectsAnalyticsView() {
           event_type_id: eventTypeId || undefined,
         })}`
       ),
-    [dateFrom, dateTo, brand, organizer, eventTypeId]
+    [dateFrom, dateTo, brand, organizer, eventTypeId],
+    { enabled: canProjectFinance }
   );
 
   const d = q.data;
@@ -4577,7 +4594,7 @@ function ProjectDetailContent({
   // brand (owner: Option A). The backend ?department= filter matches the
   // dept name case-insensitively/by-substring (prod = "Sales Department"),
   // and the PIC-save brand gate is brand-relaxed for Sales-dept members.
-  const picUsersQ = useQuery<{ users: Array<{ id: number; name: string | null; email: string }> }>(
+  const picUsersQ = useQuery<{ users: Array<{ id: number; name: string | null; email: string; phone?: string | null }> }>(
     () => api.get(`/api/users?department=${encodeURIComponent("Sales")}`),
     []
   );
@@ -4597,6 +4614,11 @@ function ProjectDetailContent({
   // absent (older cached response) we fall back to `fullAccess`.
   const pms = detail.data?._access?.pms;
   const canEditDetail = fullAccess && (pms ? pms.canEdit : true);
+  // Owner 2026-07-13: the event's own Sales PIC may manage WHO attends their
+  // event, even though the rest of the project stays read-only for them
+  // (pms.canEdit=false). The PIC picker itself stays on canEditDetail.
+  const canEditAttending =
+    fullAccess && (pms ? pms.canEdit || pms.role === "PIC" : true);
 
   async function patch(body: Record<string, any>) {
     const res = await api.patch<{ shifted_tasks?: number; delta_days?: number }>(
@@ -4850,6 +4872,7 @@ function ProjectDetailContent({
                 picUsers={picUsers}
                 picUsersLoading={picUsersQ.loading}
                 fullAccess={canEditDetail}
+                canEditAttending={canEditAttending}
                 patch={patch}
                 onChanged={() => detail.reload()}
                 toast={toast}
@@ -4883,6 +4906,7 @@ interface SalesRepBrief {
   id: number;
   code: string;
   name: string;
+  phone?: string | null;
   brands?: string[];
   brands_csv?: string | null;
 }
@@ -4894,6 +4918,7 @@ function ProjectTeamSection({
   picUsers,
   picUsersLoading,
   fullAccess,
+  canEditAttending,
   patch,
   onChanged,
   toast,
@@ -4904,6 +4929,10 @@ function ProjectTeamSection({
   picUsers: Array<{ id: number; name: string | null; email: string }>;
   picUsersLoading: boolean;
   fullAccess: boolean;
+  /** Owner 2026-07-13: the event's own Sales PIC manages Sales Attending
+   *  even while the rest of the project (incl. the PIC picker) is
+   *  read-only for them. */
+  canEditAttending: boolean;
   patch: (body: Record<string, any>) => Promise<void>;
   onChanged: () => void;
   toast: ReturnType<typeof useToast>;
@@ -5011,6 +5040,11 @@ function ProjectTeamSection({
                 </option>
               ))}
             </select>
+            {p.pic_phone && (
+              <div className="mt-1 flex items-center gap-1 text-[11px] text-ink-secondary">
+                <Phone size={11} /> {p.pic_phone}
+              </div>
+            )}
             {picUsers.length === 0 && !picUsersLoading && (
               <div className="mt-1 text-[9.5px] leading-snug text-warning-text">
                 No Sales-department members found.
@@ -5018,9 +5052,16 @@ function ProjectTeamSection({
             )}
           </>
         ) : (
-          <div className="text-[12.5px] font-medium text-ink">
-            {p.pic_name || "—"}
-          </div>
+          <>
+            <div className="text-[12.5px] font-medium text-ink">
+              {p.pic_name || "—"}
+            </div>
+            {p.pic_phone && (
+              <div className="mt-0.5 flex items-center gap-1 text-[11px] text-ink-secondary">
+                <Phone size={11} /> {p.pic_phone}
+              </div>
+            )}
+          </>
         )}
       </div>
 
@@ -5043,12 +5084,17 @@ function ProjectTeamSection({
                 <span className="font-medium text-ink">
                   {a.rep_name || a.user_name || `#${a.sales_rep_id}`}
                 </span>
+                {a.rep_phone && (
+                  <span className="font-mono text-[9px] text-ink-muted">
+                    {a.rep_phone}
+                  </span>
+                )}
                 {a.rep_code && (
                   <span className="font-mono text-[9px] text-ink-muted">
                     {a.rep_code}
                   </span>
                 )}
-                {fullAccess && (
+                {canEditAttending && (
                   <button
                     onClick={() => removeRep(a)}
                     aria-label={`Remove ${a.rep_name ?? "rep"}`}
@@ -5061,14 +5107,17 @@ function ProjectTeamSection({
             ))}
           </div>
         )}
-        {fullAccess && (
+        {canEditAttending && (
           <div className="mt-2">
             {/* Multi-select (owner 2026-06-25: "直接可以 multiselect 多选,不用
                 一个一个按") — filter + tick several + "Add N" in one go. */}
             {reps.length === 0 ? (
               !repsQ.loading && (
                 <div className="text-[9.5px] leading-snug text-warning-text">
-                  No Sales Persons found. Add members to the Sales department in User Management.
+                  No Sales Persons found. This picker reads the active Sales Reps
+                  master (not the User Management member list). A rep is
+                  auto-created when a user is assigned to the Sales department —
+                  make sure that rep exists and is active (not archived).
                 </div>
               )
             ) : availableReps.length === 0 ? (
@@ -5104,6 +5153,11 @@ function ProjectTeamSection({
                           {r.code}
                         </span>
                         <span className="truncate text-ink">{r.name}</span>
+                        {r.phone && (
+                          <span className="ml-auto shrink-0 font-mono text-[9.5px] text-ink-muted">
+                            {r.phone}
+                          </span>
+                        )}
                       </label>
                     ))
                   )}
@@ -7789,10 +7843,13 @@ function DateTimeField({
   label,
   value,
   onSave,
+  readOnly = false,
 }: {
   label: string;
   value: string | null | undefined;
   onSave: (next: string | null) => Promise<void> | void;
+  /** View-only for Sales (owner 2026-07): disable inputs, no commit. */
+  readOnly?: boolean;
 }) {
   // Split into a separate date + time input — the native datetime-local
   // control is too wide for the Logistics 2-col grid (browser locale +
@@ -7833,16 +7890,18 @@ function DateTimeField({
         <input
           type="date"
           value={datePart}
+          disabled={readOnly}
           onChange={(e) => setDatePart(e.target.value)}
-          onBlur={commit}
-          className="flex-1 min-w-0 rounded-md border border-border bg-surface px-2 py-1.5 text-[12px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+          onBlur={readOnly ? undefined : commit}
+          className="flex-1 min-w-0 rounded-md border border-border bg-surface px-2 py-1.5 text-[12px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:bg-bg/40 disabled:opacity-70"
         />
         <input
           type="time"
           value={timePart}
+          disabled={readOnly}
           onChange={(e) => setTimePart(e.target.value)}
-          onBlur={commit}
-          className="w-[88px] rounded-md border border-border bg-surface px-2 py-1.5 text-[12px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+          onBlur={readOnly ? undefined : commit}
+          className="w-[88px] rounded-md border border-border bg-surface px-2 py-1.5 text-[12px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 disabled:bg-bg/40 disabled:opacity-70"
         />
       </div>
       <div className="mt-1 font-mono text-[10px] text-ink-muted">
@@ -8270,12 +8329,15 @@ function CrewSlotRow({
   options,
   slot,
   onChange,
+  readOnly = false,
 }: {
   label: string;
   color: string;
   options: CrewMember[];
   slot: CrewSlot | undefined;
   onChange: (s: CrewSlot) => void;
+  /** View-only for Sales (owner 2026-07): disable both controls. */
+  readOnly?: boolean;
 }) {
   const cur = slot ?? { name: "", phone: "" };
   return (
@@ -8286,8 +8348,9 @@ function CrewSlotRow({
           {label}
         </span>
         <select
-          className="min-w-0 flex-1 rounded-md border border-border bg-surface px-1.5 py-1 text-[12px]"
+          className="min-w-0 flex-1 rounded-md border border-border bg-surface px-1.5 py-1 text-[12px] disabled:bg-bg/40 disabled:opacity-70"
           value={cur.name}
+          disabled={readOnly}
           onChange={(e) => {
             const u = options.find((o) => o.name === e.target.value);
             onChange({ name: e.target.value, phone: u?.phone ?? (e.target.value ? cur.phone : "") });
@@ -8308,7 +8371,7 @@ function CrewSlotRow({
         className="min-w-0 rounded-md border border-border bg-surface px-1.5 py-1 text-[11px] disabled:bg-bg/40"
         placeholder={cur.name ? "Phone…" : "(pick a name first)"}
         value={cur.phone}
-        disabled={!cur.name}
+        disabled={readOnly || !cur.name}
         onChange={(e) => onChange({ name: cur.name, phone: e.target.value })}
       />
     </div>
@@ -8350,6 +8413,7 @@ function PhaseCrewEditor({
   patch,
   emptyHint,
   headerExtra,
+  readOnly = false,
 }: {
   title: string;
   field: "setup_crew" | "dismantle_crew";
@@ -8361,6 +8425,9 @@ function PhaseCrewEditor({
   emptyHint?: string;
   /** Rendered above the "{title} Drivers" heading (e.g. the Dismantle Time field). */
   headerExtra?: React.ReactNode;
+  /** View-only for Sales (owner 2026-07): render current crew/plates but
+   *  disable every control and suppress the add/remove/save actions. */
+  readOnly?: boolean;
 }) {
   const [pc, setPc] = useState<PhaseCrew>(() => parsePhaseCrew(value));
   useEffect(() => {
@@ -8370,8 +8437,11 @@ function PhaseCrewEditor({
     setPc(next);
     patch({ [field]: serializePhaseCrew(next) });
   }
+  // Always show at least one lorry card so an empty project isn't blank —
+  // the card is only persisted once the user actually fills something in.
+  const lorries = pc.lorryCrew.length ? pc.lorryCrew : [{ plate: "", drivers: [], helpers: [] }];
   const setLorrySlot = (li: number, kind: "drivers" | "helpers", si: number, s: CrewSlot) => {
-    const arr = pc.lorryCrew.map((l, i) => {
+    const arr = lorries.map((l, i) => {
       if (i !== li) return l;
       const slots = [...l[kind]];
       while (slots.length <= si) slots.push({ name: "", phone: "" });
@@ -8381,16 +8451,16 @@ function PhaseCrewEditor({
     save({ ...pc, lorryCrew: arr });
   };
   const updateLorry = (li: number, p: Partial<LorryCrew>) =>
-    save({ ...pc, lorryCrew: pc.lorryCrew.map((l, i) => (i === li ? { ...l, ...p } : l)) });
-  const addLorry = () => save({ ...pc, lorryCrew: [...pc.lorryCrew, { plate: "", drivers: [], helpers: [] }] });
-  const removeLorry = (li: number) => save({ ...pc, lorryCrew: pc.lorryCrew.filter((_, i) => i !== li) });
+    save({ ...pc, lorryCrew: lorries.map((l, i) => (i === li ? { ...l, ...p } : l)) });
+  const addLorry = () => save({ ...pc, lorryCrew: [...lorries, { plate: "", drivers: [], helpers: [] }] });
+  const removeLorry = (li: number) => save({ ...pc, lorryCrew: lorries.filter((_, i) => i !== li) });
   return (
     <div className="mt-3 space-y-2">
       {emptyHint && <div className="text-[9px] italic text-ink-muted">{emptyHint}</div>}
       {headerExtra}
       <div className="text-[10px] font-semibold uppercase tracking-wider text-ink-secondary">{title} — crew per lorry</div>
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-        {pc.lorryCrew.map((lorry, li) => (
+        {lorries.map((lorry, li) => (
           <div key={li} className="space-y-1 rounded-lg border border-border bg-bg/30 p-2.5">
             <div className="flex items-center gap-2">
               <Truck size={13} className="shrink-0 text-ink-secondary" />
@@ -8398,7 +8468,8 @@ function PhaseCrewEditor({
               <select
                 value={lorry.plate}
                 onChange={(e) => updateLorry(li, { plate: e.target.value })}
-                className="min-w-0 flex-1 rounded-md border border-border bg-surface px-2 py-1 text-[12px]"
+                disabled={readOnly}
+                className="min-w-0 flex-1 rounded-md border border-border bg-surface px-2 py-1 text-[12px] disabled:bg-bg/40 disabled:opacity-70"
               >
                 <option value="">Select plate…</option>
                 {lorry.plate && !lorryOptions.includes(lorry.plate) && <option value={lorry.plate}>{lorry.plate}</option>}
@@ -8406,27 +8477,32 @@ function PhaseCrewEditor({
                   <option key={pl} value={pl}>{pl}</option>
                 ))}
               </select>
-              <button onClick={() => removeLorry(li)} className="shrink-0 text-ink-muted hover:text-err" title="Remove lorry">
-                <X size={13} />
-              </button>
+              {!readOnly && (
+                <button onClick={() => removeLorry(li)} className="shrink-0 text-ink-muted hover:text-err" title="Remove lorry">
+                  <X size={13} />
+                </button>
+              )}
             </div>
-            <CrewSlotRow label="Driver 1" color="text-synced" options={drivers} slot={lorry.drivers[0]} onChange={(s) => setLorrySlot(li, "drivers", 0, s)} />
-            <CrewSlotRow label="Driver 2" color="text-synced" options={drivers} slot={lorry.drivers[1]} onChange={(s) => setLorrySlot(li, "drivers", 1, s)} />
-            <CrewSlotRow label="Helper 1" color="text-warning-text" options={helpers} slot={lorry.helpers[0]} onChange={(s) => setLorrySlot(li, "helpers", 0, s)} />
-            <CrewSlotRow label="Helper 2" color="text-warning-text" options={helpers} slot={lorry.helpers[1]} onChange={(s) => setLorrySlot(li, "helpers", 1, s)} />
+            <CrewSlotRow label="Driver 1" color="text-synced" options={drivers} slot={lorry.drivers[0]} onChange={(s) => setLorrySlot(li, "drivers", 0, s)} readOnly={readOnly} />
+            <CrewSlotRow label="Driver 2" color="text-synced" options={drivers} slot={lorry.drivers[1]} onChange={(s) => setLorrySlot(li, "drivers", 1, s)} readOnly={readOnly} />
+            <CrewSlotRow label="Helper 1" color="text-warning-text" options={helpers} slot={lorry.helpers[0]} onChange={(s) => setLorrySlot(li, "helpers", 0, s)} readOnly={readOnly} />
+            <CrewSlotRow label="Helper 2" color="text-warning-text" options={helpers} slot={lorry.helpers[1]} onChange={(s) => setLorrySlot(li, "helpers", 1, s)} readOnly={readOnly} />
           </div>
         ))}
       </div>
-      <button
-        onClick={addLorry}
-        className="rounded-md border border-dashed border-border bg-surface px-3 py-1.5 text-[11px] font-semibold text-ink-secondary hover:border-accent/40 hover:text-accent"
-      >
-        + Add lorry
-      </button>
+      {!readOnly && (
+        <button
+          onClick={addLorry}
+          className="rounded-md border border-dashed border-border bg-surface px-3 py-1.5 text-[11px] font-semibold text-ink-secondary hover:border-accent/40 hover:text-accent"
+        >
+          + Add lorry
+        </button>
+      )}
       <label className="mt-1 flex items-center gap-2 text-[11px] font-semibold text-ink-secondary">
         <input
           type="checkbox"
           checked={pc.outsourced.enabled}
+          disabled={readOnly}
           onChange={(e) => save({ ...pc, outsourced: { ...pc.outsourced, enabled: e.target.checked } })}
         />
         Outsourced
@@ -8441,29 +8517,33 @@ function PhaseCrewEditor({
                   {o.name}
                   {o.phone ? ` · ${o.phone}` : ""}
                   {o.plate ? ` · ${o.plate}` : ""}
-                  <button
-                    onClick={() =>
-                      save({
-                        ...pc,
-                        outsourced: {
-                          ...pc.outsourced,
-                          entries: pc.outsourced.entries.filter((_, j) => j !== i),
-                        },
-                      })
-                    }
-                    className="text-ink-muted hover:text-err"
-                  >
-                    <X size={11} />
-                  </button>
+                  {!readOnly && (
+                    <button
+                      onClick={() =>
+                        save({
+                          ...pc,
+                          outsourced: {
+                            ...pc.outsourced,
+                            entries: pc.outsourced.entries.filter((_, j) => j !== i),
+                          },
+                        })
+                      }
+                      className="text-ink-muted hover:text-err"
+                    >
+                      <X size={11} />
+                    </button>
+                  )}
                 </span>
               ))}
             </div>
           )}
-          <OutsourcedBox
-            onAdd={(o) =>
-              save({ ...pc, outsourced: { enabled: true, entries: [...pc.outsourced.entries, o] } })
-            }
-          />
+          {!readOnly && (
+            <OutsourcedBox
+              onAdd={(o) =>
+                save({ ...pc, outsourced: { enabled: true, entries: [...pc.outsourced.entries, o] } })
+              }
+            />
+          )}
         </div>
       )}
     </div>
@@ -8477,6 +8557,13 @@ function LogisticsCrewSection({
   project: ProjectDetail["project"];
   patch: (body: Record<string, any>) => Promise<void>;
 }) {
+  const { user } = useAuth();
+  // Owner 2026-07: the logistics crew (Setup & Dismantle) is READ-ONLY for Sales
+  // — a Sales user (incl. Sales Director) may SEE the scheduled crew/lorries but
+  // not edit them. The reference reads below (fleet/staff + scm/lorries) are now
+  // permitted for Sales view-only, so the current values still display; the
+  // editor renders disabled and the backend PATCH strips the crew fields.
+  const readOnly = isSalesStaff(user);
   const [crew, setCrew] = useState<CrewMember[]>([]);
   const [lorryOptions, setLorryOptions] = useState<string[]>([]);
   useEffect(() => {
@@ -8499,13 +8586,18 @@ function LogisticsCrewSection({
           <span className={cn("rounded-full border px-1.5 py-0.5 text-[8.5px] font-bold uppercase tracking-wider", roleChipClass("LOGISTIC"))}>
             LOGISTIC
           </span>
+          {readOnly && (
+            <span className="rounded-full border border-border px-1.5 py-0.5 text-[8.5px] font-bold uppercase tracking-wider text-ink-muted">
+              View only
+            </span>
+          )}
         </span>
       }
     >
       <div>
-        <DateTimeField label="Setup Time" value={project.setup_start_at} onSave={(v) => patch({ setup_start_at: v })} />
+        <DateTimeField label="Setup Time" value={project.setup_start_at} onSave={(v) => patch({ setup_start_at: v })} readOnly={readOnly} />
       </div>
-      <PhaseCrewEditor title="Setup" field="setup_crew" value={project.setup_crew} drivers={drivers} helpers={helpers} lorryOptions={lorryOptions} patch={patch} />
+      <PhaseCrewEditor title="Setup" field="setup_crew" value={project.setup_crew} drivers={drivers} helpers={helpers} lorryOptions={lorryOptions} patch={patch} readOnly={readOnly} />
       <div className="my-3 border-t border-dashed border-border" />
       {/* Dismantle Time sits above Dismantle Drivers, mirroring Setup. */}
       <PhaseCrewEditor
@@ -8516,9 +8608,10 @@ function LogisticsCrewSection({
         helpers={helpers}
         lorryOptions={lorryOptions}
         patch={patch}
+        readOnly={readOnly}
         emptyHint="Leave empty if same as setup"
         headerExtra={
-          <DateTimeField label="Dismantle Time" value={project.dismantle_start_at} onSave={(v) => patch({ dismantle_start_at: v })} />
+          <DateTimeField label="Dismantle Time" value={project.dismantle_start_at} onSave={(v) => patch({ dismantle_start_at: v })} readOnly={readOnly} />
         }
       />
     </PanelSection>
@@ -9447,6 +9540,18 @@ function ProjectSalesEntriesSection({
   const dialog = useDialog();
   const auth = useAuth();
   const meId = auth.user?.id;
+  // Sales-section visibility (owner 2026-07): mirror the backend read gate
+  // (requirePageAccessOrSalesView("sales")) exactly so the query fires iff it
+  // would be authorised — the "sales" page-access matrix ≥ partial OR a
+  // code-keyed Sales-staff / director. A Sales Director (no matrix "sales" row)
+  // now qualifies and gets data; a user who genuinely can't access sales
+  // neither renders this section nor fires the request (off, not hide) — no
+  // render-then-403.
+  const salesLevel = usePageAccess("sales");
+  const canViewSales =
+    ACCESS_RANK[salesLevel] >= ACCESS_RANK["partial"] ||
+    isSalesStaff(auth.user) ||
+    isDirectorUser(auth.user);
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<SalesEntry | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>("");
@@ -9526,7 +9631,8 @@ function ProjectSalesEntriesSection({
           statusFilter ? `&status=${statusFilter}` : ""
         }&per_page=200`
       ),
-    [projectId, statusFilter]
+    [projectId, statusFilter],
+    { enabled: canViewSales }
   );
   const udf = useUdf("sales_entries");
 
@@ -9572,6 +9678,10 @@ function ProjectSalesEntriesSection({
     ? totals.by_status.draft + totals.by_status.submitted + totals.by_status.pushed
     : 0;
   const showLumpTotal = salesEntryCount === 0 && currentTotalSales != null;
+
+  // Off, not hide: a user who can't access sales neither renders this section
+  // nor fires the (now enabled-gated) request. All hooks above run first.
+  if (!canViewSales) return null;
 
   return (
     <PanelSection title={`Sales (${rows.length})`}>
@@ -11755,6 +11865,10 @@ function ImportCsvPanel({
           headers: {
             Authorization: `Bearer ${token}`,
             "Content-Type": "text/csv",
+            // Without X-Company-Id the backend stamps the hostname-default company
+            // (HOUZS), so importing while "2990" is active would write to the wrong
+            // company. Mirror lib/branding.ts.
+            ...companyHeader(),
           },
           body: text,
           signal,

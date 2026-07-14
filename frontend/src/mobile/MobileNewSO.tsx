@@ -3,13 +3,15 @@ import { useQueryClient } from "@tanstack/react-query";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { uploadSlipFull } from "../vendor/scm/lib/slip";
 import { useStaff } from "../vendor/scm/lib/admin-queries";
-import { useAuth } from "../vendor/scm/lib/auth";
+import { useAuth, isAdminLevel } from "../vendor/scm/lib/auth";
 import { useAuth as useHouzsAuth } from "../auth/AuthContext";
 import { useVenues } from "../vendor/scm/lib/venues-queries";
 import { useStateWarehouseMappings } from "../vendor/scm/lib/state-warehouse-queries";
+import { todayMyt } from "../vendor/scm/lib/dates";
 import {
   useSoDropdownOptions,
   optionsOrFallback,
+  FALLBACK_OPTIONS,
 } from "../vendor/scm/lib/so-dropdown-options-queries";
 import {
   useLocalities,
@@ -20,6 +22,8 @@ import {
 } from "../vendor/scm/lib/localities-queries";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
+import { usePrompt } from "../vendor/scm/components/PromptDialog";
+import { useCreateAmendment, type CreateAmendmentLine } from "../vendor/scm/lib/so-amendment-queries";
 import type { ExtractedSlip } from "../vendor/scm/components/ScanOrderModal";
 import type { MobileScanPrefill } from "./MobileScan";
 import { MobileSkuPicker, type PickedSku } from "./MobileSkuPicker";
@@ -36,7 +40,8 @@ import { useFabricColoursActive, type FabricColourRow } from "../vendor/scm/lib/
 import { PaymentInfoBlock } from "./PaymentInfoBlock";
 import { useFabricLibrary } from "../vendor/scm/lib/queries";
 import { activeOptions, maintPickerValues } from "../vendor/shared/maintenance-pools";
-import { missingVariantAxes } from "../vendor/shared/so-variant-rule";
+import { missingVariantAxes, hasSofaMixConflict, SOFA_MIX_MESSAGE } from "../vendor/shared/so-variant-rule";
+import { fmtCenti } from "../lib/scm";
 import "./mobile.css";
 
 /* ---------------------------------------------------------------------------
@@ -177,7 +182,23 @@ type SoItem = {
   photoUrls?: string[] | null;
   cancelled: boolean | null;
 };
-type DetailResp = { salesOrder: SoHeader & { has_children?: boolean | null; status?: string | null }; items: SoItem[] };
+type DetailResp = {
+  salesOrder: SoHeader & {
+    has_children?: boolean | null;
+    status?: string | null;
+    /* SO-amendment gate flags (Phase 1-C, read-only) — the GET /:docNo endpoint
+       derives these (backend mfg-sales-orders.ts). amendment_eligible = the SO
+       is processing-locked (already PO'd to the supplier) but not hard-locked by
+       a DO/SI and not terminal, so a line change must go out as an AMENDMENT
+       rather than a direct edit. open_amendment is the light summary of any
+       in-flight amendment (status NOT IN SENT/REJECTED). Mirrors the desktop
+       SalesOrderDetail header flags. */
+    amendment_eligible?: boolean | null;
+    has_open_amendment?: boolean | null;
+    open_amendment?: { id: string; status: string; amendment_no: string } | null;
+  };
+  items: SoItem[];
+};
 type SoPayment = {
   id: string;
   paid_at: string | null;
@@ -200,16 +221,16 @@ type SoPayment = {
 };
 type PaymentsResp = { payments: SoPayment[] };
 
-/* FIX A — the interactive form now sources Customer Type / Building Type /
+/* FIX A — the interactive form sources Customer Type / Building Type /
    Relationship / State / City / Postcode from the SAME real hooks the desktop
    SalesOrderNew reads (useSoDropdownOptions + useLocalities); see the component
-   body. These module-level arrays are kept ONLY as the enum-guard allowlist for
-   the headless createDraftFromPrefill() below (it has no hooks, so it validates
-   a stray OCR value against a static list before it reaches the backend). */
-const CUSTOMER_TYPES = ["", "Walk-in", "Repeat", "Dealer", "Designer", "NEW", "EXISTING"];
-const BUILDING_TYPES = ["", "Landed", "Condominium", "Apartment", "Office", "Commercial", "Condo", "Shop", "Other"];
-const STATES = ["", "Selangor", "Kuala Lumpur", "Penang", "Johor", "Melaka", "Perak", "Negeri Sembilan", "Kedah", "Pahang", "Sabah", "Sarawak", "Terengganu", "Kelantan", "Perlis", "Putrajaya", "Labuan"];
-const PAY_METHODS = ["Cash", "Merchant", "Online", "Installment"];
+   body. The scan prefill's customer/building type + state no longer need a
+   static allowlist here: the SHARED reconciler (vendor/scm/lib/scan-prefill) has
+   already snapped those against the LIVE catalog before the value reaches this
+   file, so both the interactive seed and the headless createDraftFromPrefill
+   trust the reconciled value. PAY_METHODS stays (fixed 4-value enum), single-
+   sourced from the shared FALLBACK_OPTIONS. */
+const PAY_METHODS = FALLBACK_OPTIONS.payment_method.map((o) => o.value);
 /* Sentinel for "the signed-in creator has no scm.staff row" — shows their name
    in the Salesperson select but sends null so the backend stamps the caller. */
 const SELF_SALESPERSON = "__self__";
@@ -221,13 +242,19 @@ const LINE_CATS: Array<{ value: LineCat; label: string }> = [
 ];
 /* Payment method-aware sub-field option lists (payment-terminal metadata, not
    product variants — no product-config table, so they stay literal). */
-const BANK_OPTS = ["Maybank", "CIMB", "Public Bank", "HSBC", "RHB"];
-const PLAN_OPTS = ["One Shot", "6 months", "12 months", "24 months", "36 months"];
-const ONLINE_OPTS = ["Bank Transfer", "TNG eWallet", "DuitNow", "Cheque"];
+// Single-sourced from the shared FALLBACK_OPTIONS (payment-terminal catalog) —
+// was "Maybank"/"One Shot"/"TNG eWallet" which don't match the DB values the
+// desktop writes ("MBB"/"One-off"/"TNG"), corrupting reporting/PDF.
+const BANK_OPTS = FALLBACK_OPTIONS.payment_merchant.map((o) => o.value);
+const PLAN_OPTS = FALLBACK_OPTIONS.installment_plan.map((o) => o.value);
+const ONLINE_OPTS = FALLBACK_OPTIONS.online_type.map((o) => o.value);
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 const num = (s: string) => parseFloat(String(s).replace(/,/g, "")) || 0;
 const toCenti = (s: string) => Math.round(num(s) * 100);
+// centi → a BARE editable ringgit string ("1,234.56") for seeding the price/amount
+// form fields. NOT a display formatter — it must stay prefix-free so num()/toCenti
+// can parse it back. Display money uses the shared fmtCenti() instead.
 const fromCenti = (c: number | null | undefined) =>
   ((c ?? 0) / 100).toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmt = (n: number) => n.toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -357,11 +384,15 @@ export async function createDraftFromPrefill(prefill: MobileScanPrefill): Promis
     debtorName: prefill.name.trim(),
     customerSoNo: prefill.custRef.trim() || null,
     phone: phoneOut,
-    customerType: inListOpt(prefill.customerType, CUSTOMER_TYPES) || null,
-    buildingType: inListOpt(prefill.buildingType, BUILDING_TYPES) || null,
+    /* The scan prefill's customer/building type + state are already reconciled
+       against the LIVE catalog by the SHARED reconciler (MobileScan builds this
+       prefill through reconcileScanPrefill), so trust them here rather than
+       re-guarding against a stale hardcoded list that would drop a valid value. */
+    customerType: prefill.customerType.trim() || null,
+    buildingType: prefill.buildingType.trim() || null,
     note: prefill.note.trim() || null,
     address1: prefill.address1.trim() || null,
-    customerState: inListOpt(prefill.state, STATES) || null,
+    customerState: prefill.state.trim() || null,
     city: prefill.city.trim() || null,
     postcode: prefill.postcode.trim() || null,
     // DRAFT: no dates (the interactive "Save draft" nulls these too).
@@ -380,14 +411,6 @@ export async function createDraftFromPrefill(prefill: MobileScanPrefill): Promis
     body: JSON.stringify(body),
   });
   return res?.docNo ?? "";
-}
-
-/* Keep a value only when it's one of the known option strings (empty otherwise) —
-   the headless equivalent of the component's `inList` seed guard, so a stray OCR
-   value never reaches the backend as an invalid enum. */
-function inListOpt(v: string | null | undefined, list: string[]): string {
-  const s = (v ?? "").trim();
-  return list.includes(s) ? s : "";
 }
 
 /* Map a persisted SoItem (edit prefill) back into an editable LineItem. */
@@ -412,7 +435,7 @@ function lineFromItem(it: SoItem): LineItem {
   };
 }
 function newPayment(): Payment {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayMyt();
   return {
     key: uid(), method: "Cash", date: today, amount: "0.00", account: "", approval: "", collectedBy: "",
     bank: BANK_OPTS[0], plan: PLAN_OPTS[0], online: ONLINE_OPTS[0],
@@ -457,6 +480,11 @@ export function MobileNewSO({
   const qc = useQueryClient();
   const notify = useNotify();
   const confirm = useConfirm();
+  const prompt = usePrompt();
+  /* SO-amendment CREATE (Phase 1-C) — the SAME vendored mutation the desktop
+     SalesOrderDetail.submitAmendment uses (POST /:docNo/amendments). Reused
+     verbatim so the mobile amendment-raise carries no re-implemented API logic. */
+  const createAmendment = useCreateAmendment();
   const staffQ = useStaff();
   const { staff: authStaff } = useAuth();
   /* FIX A — the app-level Houzs auth exposes the permission gate + the signed-in
@@ -465,6 +493,11 @@ export function MobileNewSO({
      SalesOrderNew (which reads `can` + `user` from the same context). */
   const { user: currentUser, can } = useHouzsAuth();
   const canChangeSalesperson = can("scm.so.attribute_other");
+  /* Unified special-order price gate (owner-approved) — reuses the SAME
+     isAdminLevel gate the desktop SoLineCard uses (lib/auth). A non-admin sales
+     role only DESCRIBES the special order; all RM surcharges + the custom
+     Extra-charge field are hidden for them. */
+  const showSpecialPrices = isAdminLevel(authStaff?.role);
   const isEdit = mode === "edit" || mode === "edit-draft";
 
   /* FIX A — real DB-backed SO dropdowns (was hardcoded arrays). Same hooks +
@@ -539,12 +572,18 @@ export function MobileNewSO({
   const [custRef, setCustRef] = useState(scanPrefill?.custRef ?? "");
   const [phone, setPhone] = useState(scanPrefill?.phone ?? "");
   const [email, setEmail] = useState("");
-  const [custType, setCustType] = useState(inList(scanPrefill?.customerType ?? "", CUSTOMER_TYPES));
+  /* Trust the value the SHARED reconciler produced — it already snapped the OCR
+     match against the LIVE customer_type catalog (optionsOrFallback), the same
+     master this form's dropdown renders. Re-guarding against a stale hardcoded
+     list is what silently dropped valid scanned values on mobile; mirror desktop
+     (setCustomerType(payload.customerType)) and seed it straight. */
+  const [custType, setCustType] = useState(scanPrefill?.customerType ?? "");
   // Salesperson (staff.id). Blank = the backend stamps the logged-in caller.
   const [salespersonId, setSalespersonId] = useState(scanPrefill?.salesperson ?? "");
 
   // Order info
-  const [buildingType, setBuildingType] = useState(inList(scanPrefill?.buildingType ?? "", BUILDING_TYPES));
+  // Reconciled against the live building_type catalog — seed it straight (see custType).
+  const [buildingType, setBuildingType] = useState(scanPrefill?.buildingType ?? "");
   const [procDate, setProcDate] = useState(scanPrefill?.processingDate ?? "");
   const [delivDate, setDelivDate] = useState(scanPrefill?.deliveryDate ?? "");
   const [note, setNote] = useState(scanPrefill?.note ?? "");
@@ -557,7 +596,8 @@ export function MobileNewSO({
   // Delivery address
   const [addr1, setAddr1] = useState(scanPrefill?.address1 ?? "");
   const [addr2, setAddr2] = useState("");
-  const [state, setState] = useState(inList(scanPrefill?.state ?? "", STATES));
+  // Reconciled against the live my_localities state list — seed it straight (see custType).
+  const [state, setState] = useState(scanPrefill?.state ?? "");
   const [city, setCity] = useState(scanPrefill?.city ?? "");
   const [postcode, setPostcode] = useState(scanPrefill?.postcode ?? "");
 
@@ -575,6 +615,13 @@ export function MobileNewSO({
   const [origItems, setOrigItems] = useState<SoItem[]>([]);
   const [existingPays, setExistingPays] = useState<SoPayment[]>([]);
   const [lineLocked, setLineLocked] = useState(false);
+  /* SO-amendment flags captured from the detail GET (Phase 1-C). When
+     `amendEligible` the SO is processing-locked but still editable via the
+     amendment flow — the edit view stays usable and Save submits an AMENDMENT
+     instead of writing the lines directly (desktop SalesOrderDetail parity).
+     `hasOpenAmend` blocks raising a SECOND amendment while one is in flight. */
+  const [amendEligible, setAmendEligible] = useState(false);
+  const [hasOpenAmend, setHasOpenAmend] = useState(false);
   /* FIX D2/D3 — the PERSISTED processing date (internal_expected_dd) drives the
      processing-date lock. Kept separate from the editable procDate form value so
      the lock reflects what the backend has, not an in-flight edit. */
@@ -586,6 +633,8 @@ export function MobileNewSO({
   const [pickerFor, setPickerFor] = useState<string | null>(null);
   // Fabric picker sheet — the line key it was opened for, or null when closed.
   const [fabricPickerFor, setFabricPickerFor] = useState<string | null>(null);
+  // Special-order picker sheet — the line key it was opened for, or null.
+  const [specialPickerFor, setSpecialPickerFor] = useState<string | null>(null);
 
   const [loading, setLoading] = useState(isEdit);
   const [submitting, setSubmitting] = useState(false);
@@ -662,6 +711,11 @@ export function MobileNewSO({
         const st = (detail.salesOrder.status ?? "").toUpperCase();
         const LOCKED = ["SHIPPED", "DELIVERED", "INVOICED", "CLOSED", "CANCELLED"];
         setLineLocked(LOCKED.includes(st) || Boolean(detail.salesOrder.has_children));
+        /* Amendment gate (server-derived) — the same flags the desktop SO Detail
+           routes on. When amendment_eligible the SO is processing-locked but the
+           edit view stays usable; Save then submits an amendment (see save()). */
+        setAmendEligible(Boolean(detail.salesOrder.amendment_eligible));
+        setHasOpenAmend(Boolean(detail.salesOrder.has_open_amendment));
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : "Couldn't load this order.");
       } finally {
@@ -806,9 +860,22 @@ export function MobileNewSO({
     () => isEdit && !!origProcDate && /^\d{4}-\d{2}-\d{2}$/.test(origProcDate) && origProcDate < todayMY,
     [isEdit, origProcDate, todayMY],
   );
+  /* AMENDMENT MODE (desktop SalesOrderDetail parity) — the SO is
+     processing-locked (already PO'd) but the server flags it amendment_eligible
+     (not hard-locked by a DO/SI, not terminal) AND no amendment is already open.
+     In this mode the LINE EDITOR STAYS ENABLED even though procLocked, but Save
+     packages the changes as an amendment request (POST /:docNo/amendments) that
+     the coordinator + supplier confirm before the order is revised — a direct
+     line write on a PO'd SO would break the supplier copy, which is exactly what
+     this flow prevents. Uses the server flag; falls back to false when absent so
+     older responses keep the old block-everything behaviour. */
+  const amendmentMode = amendEligible && !lineLocked && !hasOpenAmend;
   /* Line editing is blocked when the SO is shipped / has downstream docs
-     (lineLocked) OR when the processing date has passed (procLocked). */
-  const lineEditingBlocked = lineLocked || procLocked;
+     (lineLocked), OR when the processing date has passed (procLocked) UNLESS the
+     order is in amendment mode (then the editor stays open and Save raises an
+     amendment). A procLocked SO that already has an open amendment stays
+     read-only — a second amendment can't be raised while one is in flight. */
+  const lineEditingBlocked = lineLocked || (procLocked && !amendmentMode);
   /* Identity address columns (State/City/Postcode) freeze on the processing
      lock (State drives each line's warehouse → the supplier PO). */
   const addressIdentityLocked = procLocked;
@@ -1209,6 +1276,78 @@ export function MobileNewSO({
     return failed;
   }
 
+  /* ── Amendment line builder (Phase 1-C) ──────────────────────────────────
+     Verbatim port of the desktop SalesOrderDetail.buildAmendmentLines logic,
+     adapted to the mobile LineItem shape: diff the in-flight `lines` against the
+     pristine `origItems` seed and package the changes as CreateAmendmentLine[]
+     for POST /:docNo/amendments (via useCreateAmendment). No pricing is computed
+     here — the server recomputes on approve; we only carry the raw new values +
+     an old_snapshot for the before/after diff. Classification mirrors desktop:
+       • existing line, only qty moved              → QTY
+       • existing line, code/variants/price moved   → SPEC
+       • orig line whose itemId dropped from lines  → REMOVE
+       • new line (no itemId) with a product picked → ADD */
+  const buildAmendmentLines = (): CreateAmendmentLine[] => {
+    const out: CreateAmendmentLine[] = [];
+    const snapById = new Map(origItems.map((s) => [s.id, s]));
+    const liveIds = new Set(lines.map((l) => l.itemId).filter(Boolean));
+    // Existing lines — SPEC / QTY changes.
+    for (const l of lines) {
+      if (!l.itemId) continue; // added line handled below
+      const snap = snapById.get(l.itemId);
+      if (!snap) continue;
+      if (!lineChanged(l, snap)) continue; // untouched
+      const codeSame = l.itemCode === (snap.item_code ?? "");
+      const variantsSame = canonJson(buildVariants(l)) === canonJson(snap.variants ?? {});
+      const priceSame = toCenti(l.price) === (snap.unit_price_centi ?? 0);
+      const qtyMoved = (num(l.qty) || 1) !== (snap.qty ?? 1);
+      const qtyOnly = codeSame && variantsSame && priceSame && qtyMoved;
+      out.push({
+        salesOrderItemId: l.itemId,
+        changeType: qtyOnly ? "QTY" : "SPEC",
+        newItemCode: l.itemCode || undefined,
+        newVariants: buildVariants(l),
+        newQty: num(l.qty) || 1,
+        newUnitPriceSen: toCenti(l.price),
+        oldSnapshot: {
+          itemCode: snap.item_code,
+          variants: snap.variants ?? null,
+          qty: snap.qty,
+          unitPriceSen: snap.unit_price_centi,
+          description2: (snap as { description2?: string | null }).description2 ?? null,
+        },
+      });
+    }
+    // Removed lines — an orig item whose itemId no longer appears in `lines`.
+    for (const snap of origItems) {
+      if (liveIds.has(snap.id)) continue;
+      out.push({
+        salesOrderItemId: snap.id,
+        changeType: "REMOVE",
+        oldSnapshot: {
+          itemCode: snap.item_code,
+          variants: snap.variants ?? null,
+          qty: snap.qty,
+          unitPriceSen: snap.unit_price_centi,
+          description2: (snap as { description2?: string | null }).description2 ?? null,
+        },
+      });
+    }
+    // Added lines — new (no itemId) with a product picked.
+    for (const l of lines) {
+      if (l.itemId) continue;
+      if (!l.itemCode.trim()) continue;
+      out.push({
+        changeType: "ADD",
+        newItemCode: l.itemCode,
+        newVariants: buildVariants(l),
+        newQty: num(l.qty) || 1,
+        newUnitPriceSen: toCenti(l.price),
+      });
+    }
+    return out;
+  };
+
   // ---- Mutations ------------------------------------------------------------
   async function save(asDraft = false) {
     setTouched(true);
@@ -1219,13 +1358,20 @@ export function MobileNewSO({
       setError(`Pick a product from the catalog for every line (${unpickedLines.length} line${unpickedLines.length === 1 ? "" : "s"} still ha${unpickedLines.length === 1 ? "s" : "ve"} no product selected).`);
       return;
     }
-    /* Owner 2026-07-13 — a partially-configured sofa/bedframe line may stay a
-       DRAFT (it prices to 0 until completed); the mandatory variants are only
-       enforced when CONFIRMING (asDraft === false), matching the desktop
-       SalesOrderDetail gate + the server "Processing Date requires variants"
-       rule. So a scanned sofa the operator hasn't finished still saves as a
-       draft instead of blocking. */
-    if (!asDraft && linesMissingVariants.length > 0) {
+    // Sofa is exclusive among main products — the server 400s
+    // `so_sofa_no_other_main` when a sofa line rides with a bedframe/mattress.
+    // Block + warn here so the operator gets one plain sentence, not a raw 400.
+    if (hasSofaMixConflict(namedLines.map((l) => l.itemGroup))) {
+      setError(SOFA_MIX_MESSAGE);
+      return;
+    }
+    /* Owner 2026-07-14 — the mandatory variants are enforced ONLY when a
+       Processing Date is being set (Boolean(procOut) === !asDraft && procDate),
+       matching the backend gate (mfg-sales-orders requires them `if procDate`)
+       + the desktop Save gates. A no-date confirm, or a draft (procDate stripped
+       to procOut ""), still saves with variant gaps — a scanned sofa the
+       operator hasn't finished isn't blocked. */
+    if (!asDraft && Boolean(procDate) && linesMissingVariants.length > 0) {
       const l = linesMissingVariants[0];
       const miss = missingVariantAxes(l.itemGroup, l.variants).map((a) => a.label).join(", ");
       setError(`Complete the required options (${miss}) on "${l.name || l.itemCode}".`);
@@ -1277,6 +1423,45 @@ export function MobileNewSO({
           method: "PATCH",
           body: JSON.stringify(patch),
         });
+
+        /* AMENDMENT MODE (Phase 1-C, desktop SalesOrderDetail.submitAmendment
+           parity) — the SO is processing-locked but amendment_eligible, so the
+           header PATCH above still saves the still-editable fields (note / address
+           lines / contact) while LINE changes go out as an amendment request
+           rather than a direct item write. Reuses buildAmendmentLines +
+           createAmendment; the server recomputes pricing on approve. */
+        if (amendmentMode) {
+          const amLines = buildAmendmentLines();
+          if (amLines.length === 0) {
+            setSubmitting(false);
+            setError("No line changes to submit — edit, add or remove a line first, then submit the amendment.");
+            return;
+          }
+          const reason = await prompt({
+            title: `Submit amendment for ${docNo}?`,
+            body: "This Sales Order is already ordered from the supplier, so your changes go out as an amendment request. Coordinator and supplier confirm it before the order is revised. Add a short reason (optional).",
+            placeholder: "e.g. customer changed the fabric colour",
+            multiline: true,
+            confirmLabel: "Submit amendment",
+          });
+          if (reason == null) { setSubmitting(false); return; } // cancelled the prompt
+          try {
+            await createAmendment.mutateAsync({ docNo, reason: reason.trim() || undefined, lines: amLines });
+          } catch (e) {
+            setSubmitting(false);
+            // authed-fetch already humanises the API error to one plain sentence.
+            setError(e instanceof Error ? e.message : "Couldn't submit the amendment. Please try again.");
+            return;
+          }
+          // A slip-backed payment recorded alongside the amendment still posts.
+          await recordSlipBackedPayments(docNo);
+          await qc.invalidateQueries({ queryKey: ["mobile-so-detail", docNo] });
+          await qc.invalidateQueries({ queryKey: ["mobile-so-list"] });
+          void notify({ title: "Amendment submitted", body: "It now needs supplier confirmation, then approval, before the order is revised." });
+          if (onSaved) onSaved(docNo);
+          else onBack();
+          return;
+        }
 
         /* FIX D2/D3 — skip line mutations + photo staging when line editing is
            blocked (shipped/has-children OR processing-date-locked); the backend
@@ -1669,6 +1854,16 @@ export function MobileNewSO({
             <div className="card" style={{ marginBottom: 11 }}>
               <div className="card-h"><span className="card-t">Line items</span><span className="card-sub">{`${lines.length} ${lines.length === 1 ? "line" : "lines"}`}</span></div>
               <div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+                {/* Amendment-mode banner (Phase 1-C) — the SO is on order to the
+                    supplier but still editable via the amendment flow; the primary
+                    Save submits an amendment request, not a direct edit. Mirrors
+                    the desktop SalesOrderDetail amendment banner. */}
+                {amendmentMode && (
+                  <div style={{ display: "flex", alignItems: "flex-start", gap: 8, background: "rgba(232,107,58,0.08)", border: "1px solid var(--c-orange, #e86b3a)", borderRadius: 10, padding: "9px 11px", fontSize: 11, color: "#8a4a24", lineHeight: 1.45 }}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#c66a34" strokeWidth="2" strokeLinecap="round" style={{ flexShrink: 0, marginTop: 1 }}><rect x="4" y="10" width="16" height="10" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /></svg>
+                    <span>This order is already ordered from the supplier. Edit the lines as usual — your <b>Save</b> submits an <b>amendment request</b> that the coordinator and supplier confirm before the order is revised.</span>
+                  </div>
+                )}
                 {lineEditingBlocked ? (
                   <>
                     {lines.length ? lines.map((l) => (
@@ -1679,9 +1874,13 @@ export function MobileNewSO({
                         </div>
                       </div>
                     )) : <div style={{ fontSize: 11.5, color: "#9aa093", padding: "8px 0" }}>No items.</div>}
-                    {/* FIX D2/D3 — distinguish the two lock reasons in the notice. */}
+                    {/* FIX D2/D3 — distinguish the lock reasons in the notice. An
+                        already-open amendment takes precedence (procLocked but a
+                        second amendment can't be raised yet). */}
                     <div style={{ fontSize: 10, color: "#9aa093", marginTop: 4 }}>
-                      {procLocked
+                      {hasOpenAmend
+                        ? "An amendment is already pending on this order — line items are locked until it is confirmed or rejected. View its status on the order detail screen."
+                        : procLocked
                         ? "This order's processing date has passed — it is on order to the supplier, so line items can no longer be changed."
                         : "This order is shipped or has downstream documents — line items can no longer be changed."}
                     </div>
@@ -1696,9 +1895,14 @@ export function MobileNewSO({
                           index={i}
                           pools={pools}
                           removable={lines.length > 1}
-                          showErrors={touched}
+                          /* Red "missing axis" ring only once a Processing Date
+                             is set — matches the backend variants gate + the
+                             save block above (owner 2026-07-14). */
+                          showErrors={touched && Boolean(procDate)}
                           onOpenPicker={() => setPickerFor(l.key)}
                           onOpenFabricPicker={() => setFabricPickerFor(l.key)}
+                          onOpenSpecialPicker={() => setSpecialPickerFor(l.key)}
+                          showPrices={showSpecialPrices}
                           onChange={(patch) => patchLine(l.key, patch)}
                           onDdateChange={(v) => setLineDdateManual(l.key, v)}
                           onRemove={async () => {
@@ -1739,7 +1943,7 @@ export function MobileNewSO({
                       <div key={p.id} style={roItemBox}>
                         <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
                           <PaymentInfoBlock payment={p} />
-                          <span className="money" style={{ fontSize: 12.5, fontWeight: 700, color: "#0c3f39" }}>RM {fromCenti(p.amount_centi)}</span>
+                          <span className="money" style={{ fontSize: 12.5, fontWeight: 700, color: "#0c3f39" }}>{fmtCenti(p.amount_centi)}</span>
                         </div>
                       </div>
                     ))}
@@ -1777,7 +1981,7 @@ export function MobileNewSO({
         <footer id="nso-footer" className="actbar" style={{ display: "flex", gap: 9 }}>
           {mode === "edit" ? (
             <button className="btn" disabled={submitting} onClick={() => save(false)} style={{ flex: 1, opacity: submitting ? 0.6 : 1 }}>
-              {submitting ? "Saving…" : "Save Changes"}
+              {submitting ? (amendmentMode ? "Submitting…" : "Saving…") : amendmentMode ? "Submit Amendment" : "Save Changes"}
             </button>
           ) : (
             <>
@@ -1911,6 +2115,20 @@ export function MobileNewSO({
           />
         );
       })()}
+
+      {specialPickerFor && (() => {
+        const line = lines.find((l) => l.key === specialPickerFor);
+        if (!line) return null;
+        return (
+          <SpecialOrderSheet
+            line={line}
+            pools={pools}
+            showPrices={showSpecialPrices}
+            onClose={() => setSpecialPickerFor(null)}
+            onChange={(patch) => patchLine(specialPickerFor, patch)}
+          />
+        );
+      })()}
     </div>
   );
 }
@@ -1989,6 +2207,8 @@ function LineCard({
   showErrors,
   onOpenPicker,
   onOpenFabricPicker,
+  onOpenSpecialPicker,
+  showPrices,
   onChange,
   onDdateChange,
   onRemove,
@@ -2000,6 +2220,11 @@ function LineCard({
   showErrors: boolean;
   onOpenPicker: () => void;
   onOpenFabricPicker: () => void;
+  /* Unified special-order entry — opens the bottom sheet (presets + Custom /
+     other). Replaces the old inline Specials accordion. */
+  onOpenSpecialPicker: () => void;
+  /* Owner-approved role gate — false for non-admin sales (hide RM amounts). */
+  showPrices: boolean;
   onChange: (patch: Partial<LineItem>) => void;
   /* FIX D1(b) — a manual Item Delivery Date edit routes through here so the
      parent can flag the line as an override the header cascade won't touch. */
@@ -2077,50 +2302,21 @@ function LineCard({
 
   const missing = new Set(missingVariantAxes(line.itemGroup, line.variants).map((a) => a.key));
 
-  /* ── Special Add-ons (owner 2026-07-04, mirrors SoLineCard verbatim) ──
-     Pool = active special_addons rows for this line's category ∩ the Model's
-     allowed_options.specials ticks (POS semantics: no ticks = nothing offered,
-     Modular is the ON/OFF authority). Ticking writes variants.specials (codes)
-     + specialChoices (required groups default to their first choice, like the
-     POS picker) + specialLabels (display snapshot) — the SAME vocabulary the
-     desktop + server honest-pricing recompute read. The +RM shown is the
-     addon's sellingPriceSen, display-only; the server prices the line. */
+  /* ── Special orders (unified entry) — the editing UI moved to the
+     SpecialOrderSheet bottom sheet (owner-approved). Here we only derive a
+     one-line summary for the tappable "Special order" row. Presets live on
+     variants.specials; the "Custom / other" free-text order on the UNCHANGED
+     variants.extraAddonNote + extraAddonAmountRM. */
   const specialsList = (val: unknown): string[] => {
     if (Array.isArray(val)) return val.map(String).filter(Boolean);
     if (typeof val === "string" && val) return [val];
     return [];
   };
-  const catUpper = line.itemGroup.toUpperCase();
-  const specialOptions = useMemo(() => {
-    const allowed = new Set(allow?.specials ?? []);
-    return pools.specialAddons.filter(
-      (a) => a.active && a.categories.includes(catUpper) && allowed.has(a.code),
-    );
-  }, [pools.specialAddons, catUpper, allow]);
   const pickedSpecials = specialsList(v.specials ?? v.special);
-  const [specialsOpen, setSpecialsOpen] = useState(() => pickedSpecials.length > 0);
-  const specialChoicesMap: Record<string, string[]> =
-    v.specialChoices && typeof v.specialChoices === "object"
-      ? (v.specialChoices as Record<string, string[]>)
-      : {};
-  const toggleSpecial = (code: string) => {
-    const has = pickedSpecials.includes(code);
-    const nextPicked = has ? pickedSpecials.filter((c) => c !== code) : [...pickedSpecials, code];
-    const nextChoices: Record<string, string[]> = { ...specialChoicesMap };
-    if (has) {
-      delete nextChoices[code];
-    } else {
-      const def = pools.specialAddons.find((d) => d.code === code);
-      if (def && def.optionGroups.length > 0) {
-        nextChoices[code] = def.optionGroups.map((g) => (g.required && g.choices[0] ? g.choices[0].label : ""));
-      }
-    }
-    setVar({
-      specials: nextPicked,
-      specialChoices: nextChoices,
-      specialLabels: nextPicked.map((c) => pools.specialAddons.find((d) => d.code === c)?.label ?? c),
-    });
-  };
+  const extraNote = String(v.extraAddonNote ?? "");
+  const extraAmountRM = Number(v.extraAddonAmountRM ?? 0);
+  const hasCustom = Boolean(extraNote.trim()) || extraAmountRM > 0;
+  const specialCount = pickedSpecials.length + (hasCustom ? 1 : 0);
 
   const addPhotos = (files: File[]) => {
     if (files.length === 0) return;
@@ -2225,52 +2421,27 @@ function LineCard({
           </>
         )}
 
-        {/* Special orders accordion (owner-approved 2026-07-04) — bedframe +
-            sofa. Hidden when the Model offers no specials and none are picked
-            (POS semantics). Collapsed by default; auto-open when the line
-            already carries specials (edit mode). */}
-        {picked && pools.ready && (line.cat === "sofa" || line.cat === "bedframe") && (specialOptions.length > 0 || pickedSpecials.length > 0) && (
-          <div style={{ border: "1px solid #eceee9", borderRadius: 10, overflow: "hidden" }}>
-            <button
-              type="button"
-              onClick={() => setSpecialsOpen((o) => !o)}
-              style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "8px 10px", background: "#f4f6f3", border: "none", fontFamily: "inherit", cursor: "pointer" }}
-            >
-              <span style={{ fontSize: 12, fontWeight: 700, color: "#11140f" }}>Special orders</span>
-              <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, fontWeight: 700, color: "#16695f" }}>
-                {pickedSpecials.length > 0 ? `${pickedSpecials.length} selected` : ""}
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" style={{ transform: specialsOpen ? "rotate(180deg)" : "none", transition: "transform .15s" }}><polyline points="6 9 12 15 18 9" /></svg>
-              </span>
-            </button>
-            {specialsOpen && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 7, padding: "8px 10px" }}>
-                {specialOptions.map((a) => {
-                  const on = pickedSpecials.includes(a.code);
-                  return (
-                    <label key={a.code} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, cursor: "pointer" }}>
-                      <input type="checkbox" checked={on} onChange={() => toggleSpecial(a.code)} style={{ width: 16, height: 16, flex: "none", accentColor: "#16695f" }} />
-                      <span style={{ flex: 1, minWidth: 0, color: "#11140f" }}>{a.label}</span>
-                      {/* Owner 2026-07-04 — config prices are hand-entered and mostly
-                          0; a wall of "+RM 0.00" is noise. Only price non-zero addons. */}
-                      {a.sellingPriceSen !== 0 && (
-                        <span className="money" style={{ fontSize: 11.5, color: "#767b6e", flex: "none" }}>+RM {(a.sellingPriceSen / 100).toFixed(2)}</span>
-                      )}
-                    </label>
-                  );
-                })}
-                {/* A previously-saved special whose code the Model no longer
-                    offers still shows (untickable ghost) so edit never hides
-                    what the order carries. */}
-                {pickedSpecials.filter((c) => !specialOptions.some((a) => a.code === c)).map((c) => (
-                  <label key={c} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, cursor: "pointer" }}>
-                    <input type="checkbox" checked onChange={() => toggleSpecial(c)} style={{ width: 16, height: 16, flex: "none", accentColor: "#16695f" }} />
-                    <span style={{ flex: 1, minWidth: 0, color: "#11140f" }}>{String((v.specialLabels as string[] | undefined)?.[pickedSpecials.indexOf(c)] ?? c)}</span>
-                    <span style={{ fontSize: 10.5, color: "#9aa093", flex: "none" }}>not in model</span>
-                  </label>
-                ))}
-              </div>
-            )}
-          </div>
+        {/* Special order — unified entry (owner-approved). A full-width row that
+            opens the bottom sheet (presets + Custom / other). Replaces the old
+            inline accordion + the standalone Extra input; the data path is
+            unchanged (variants.specials + extraAddonNote/extraAddonAmountRM).
+            Shown for sofa + bedframe (where specials apply). */}
+        {picked && pools.ready && (line.cat === "sofa" || line.cat === "bedframe") && (
+          <button
+            type="button"
+            onClick={onOpenSpecialPicker}
+            style={{
+              width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+              padding: "9px 11px", background: "#fff", border: "1px solid #eceee9", borderRadius: 10,
+              fontFamily: "inherit", cursor: "pointer",
+            }}
+          >
+            <span style={{ fontSize: 12.5, fontWeight: 700, color: "#11140f" }}>Special order</span>
+            <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 700, color: specialCount > 0 ? "#16695f" : "#9aa093" }}>
+              {specialCount > 0 ? `${specialCount} added` : "None"}
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{ flex: "none" }}><polyline points="9 6 15 12 9 18" /></svg>
+            </span>
+          </button>
         )}
 
         {picked && pools.ready && line.cat === "mattress" && (
@@ -2379,6 +2550,11 @@ function FabricField({ value, colourLabel, count, invalid, onOpen }: {
   );
 }
 
+/* Perf cap (parity with MobileSkuPicker RENDER_CAP / PR #342). Painting all
+   ~700 fabric-colour buttons froze the sheet on open + on each keystroke; cap
+   the DOM and tell the operator to narrow by search past the cap. */
+const FABRIC_RENDER_CAP = 60;
+
 /* FabricPicker — searchable bottom-sheet for the 700+ fabric-colours list.
    Mirrors the MobileSkuPicker sheet chrome + search box. Filters by fabric code
    AND colour label. */
@@ -2422,7 +2598,8 @@ function FabricPicker({ pools, current, onPick, onClose }: {
           {rows.length === 0 ? (
             <div style={{ textAlign: "center", color: "#9aa093", fontSize: 12, padding: "28px 0" }}>No fabrics match{search.trim() ? ` "${search.trim()}"` : ""}.</div>
           ) : (
-            rows.map((c) => {
+            <>
+            {rows.slice(0, FABRIC_RENDER_CAP).map((c) => {
               const on = c.colourId === current;
               const series = pools.fabricSeries.get(c.fabricId) ?? "";
               return (
@@ -2452,8 +2629,209 @@ function FabricPicker({ pools, current, onPick, onClose }: {
                   {on && <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#16695f" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" style={{ flex: "none" }}><path d="M20 6 9 17l-5-5" /></svg>}
                 </button>
               );
-            })
+            })}
+            {rows.length > FABRIC_RENDER_CAP && (
+              <div style={{ textAlign: "center", color: "#9aa093", fontSize: 11, padding: "10px 0 4px" }}>
+                Showing first {FABRIC_RENDER_CAP} of {rows.length} — search to narrow.
+              </div>
+            )}
+            </>
           )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* SpecialOrderSheet — unified special-order entry as a bottom sheet
+   (owner-approved). Lists the active special_addons presets for this line's
+   category ∩ the Model's allowed_options.specials, PLUS a "Custom / other"
+   free-text order. Mirrors the FabricPicker sheet chrome.
+
+   DATA MODEL UNCHANGED: presets write variants.specials + specialChoices +
+   specialLabels; Custom / other writes variants.extraAddonNote +
+   extraAddonAmountRM — the SAME fields the desktop SoLineCard writes and the
+   server honest-pricing recompute reads. No migration, no backend change.
+
+   ROLE GATE (owner): showPrices=false (non-admin sales) hides every RM amount —
+   presets show the NAME ONLY, and the Custom flow shows the description but NO
+   Extra-charge field. Sales just describes what the customer needs. */
+function SpecialOrderSheet({ line, pools, showPrices, onChange, onClose }: {
+  line: LineItem;
+  pools: VariantPools;
+  showPrices: boolean;
+  onChange: (patch: Partial<LineItem>) => void;
+  onClose: () => void;
+}) {
+  const allowQ = useModelAllowedOptionsByCode(line.itemCode || undefined);
+  const allow = allowQ.data ?? null;
+  const v = line.variants;
+
+  /* setVar — merge one or more variant keys + track overriddenKeys so the
+     sofa-compartment follower cascade leaves a manual pick alone (mirrors
+     LineCard.setVar). */
+  const setVar = (patch: Record<string, unknown>) => {
+    const overrides = Array.from(new Set([...line.overriddenKeys, ...Object.keys(patch)]));
+    onChange({ variants: { ...line.variants, ...patch }, overriddenKeys: overrides });
+  };
+
+  const specialsList = (val: unknown): string[] => {
+    if (Array.isArray(val)) return val.map(String).filter(Boolean);
+    if (typeof val === "string" && val) return [val];
+    return [];
+  };
+  const catUpper = line.itemGroup.toUpperCase();
+  const specialOptions: SpecialAddonRow[] = useMemo(() => {
+    // Owner 2026-07-14 — opt-out pool (mirrors SoLineCard/main): empty/absent
+    // allowed_options.specials ⇒ offer ALL active specials for the category;
+    // a non-empty pool restricts to the ticked codes.
+    const pool = allow?.specials;
+    const restricted = Array.isArray(pool) && pool.length > 0;
+    const allowed = new Set(pool ?? []);
+    return pools.specialAddons.filter(
+      (a) => a.active && a.categories.includes(catUpper) && (!restricted || allowed.has(a.code)),
+    );
+  }, [pools.specialAddons, catUpper, allow]);
+  const pickedSpecials = specialsList(v.specials ?? v.special);
+  const specialChoicesMap: Record<string, string[]> =
+    v.specialChoices && typeof v.specialChoices === "object"
+      ? (v.specialChoices as Record<string, string[]>)
+      : {};
+  const toggleSpecial = (code: string) => {
+    const has = pickedSpecials.includes(code);
+    const nextPicked = has ? pickedSpecials.filter((c) => c !== code) : [...pickedSpecials, code];
+    const nextChoices: Record<string, string[]> = { ...specialChoicesMap };
+    if (has) {
+      delete nextChoices[code];
+    } else {
+      const def = pools.specialAddons.find((d) => d.code === code);
+      if (def && def.optionGroups.length > 0) {
+        nextChoices[code] = def.optionGroups.map((g) => (g.required && g.choices[0] ? g.choices[0].label : ""));
+      }
+    }
+    setVar({
+      specials: nextPicked,
+      specialChoices: nextChoices,
+      specialLabels: nextPicked.map((c) => pools.specialAddons.find((d) => d.code === c)?.label ?? c),
+    });
+  };
+
+  const extraNote = String(v.extraAddonNote ?? "");
+  const extraAmountRM = Number(v.extraAddonAmountRM ?? 0);
+  const hasCustom = Boolean(extraNote.trim()) || extraAmountRM > 0;
+  const [customOpen, setCustomOpen] = useState(hasCustom);
+  const ghostPicks = pickedSpecials.filter((c) => !specialOptions.some((a) => a.code === c));
+
+  return (
+    <div className="sheet-bd" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="sheet" onClick={(e) => e.stopPropagation()}>
+        <div className="grab" />
+        <div className="sheet-head">
+          <div>
+            <div className="ey" style={{ color: "#a16a2e" }}>Special order</div>
+            <div style={{ fontSize: 16, fontWeight: 800, color: "#11140f", marginTop: 2 }}>Add special orders</div>
+          </div>
+          <button className="sheet-x" onClick={onClose}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M6 6l12 12M18 6 6 18" /></svg>
+          </button>
+        </div>
+
+        <div className="sheet-scroll" style={{ gap: 9 }}>
+          {specialOptions.length === 0 && ghostPicks.length === 0 && (
+            <div style={{ fontSize: 12, color: "#767b6e" }}>
+              No preset special orders for this model — use “Custom / other” below.
+            </div>
+          )}
+          {specialOptions.map((a) => {
+            const on = pickedSpecials.includes(a.code);
+            return (
+              <label
+                key={a.code}
+                style={{
+                  display: "flex", alignItems: "center", gap: 10, fontSize: 13, cursor: "pointer",
+                  border: on ? "1px solid #16695f" : "1px solid rgba(34,31,32,.12)",
+                  background: on ? "#e1efed" : "#fff", borderRadius: 11, padding: "11px 12px",
+                }}
+              >
+                <input type="checkbox" checked={on} onChange={() => toggleSpecial(a.code)} style={{ width: 18, height: 18, flex: "none", accentColor: "#16695f" }} />
+                <span style={{ flex: 1, minWidth: 0, color: "#11140f", fontWeight: 600 }}>{a.label}</span>
+                {/* Role gate — non-admin sales sees the NAME only (owner). */}
+                {showPrices && a.sellingPriceSen !== 0 && (
+                  <span className="money" style={{ fontSize: 12, color: "#767b6e", flex: "none" }}>+RM {(a.sellingPriceSen / 100).toFixed(2)}</span>
+                )}
+              </label>
+            );
+          })}
+          {/* A previously-saved special the Model no longer offers — kept
+              visible + untickable so edit never hides what the order carries. */}
+          {ghostPicks.map((c) => (
+            <label key={c} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13, cursor: "pointer", border: "1px solid rgba(34,31,32,.12)", background: "#fff", borderRadius: 11, padding: "11px 12px" }}>
+              <input type="checkbox" checked onChange={() => toggleSpecial(c)} style={{ width: 18, height: 18, flex: "none", accentColor: "#16695f" }} />
+              <span style={{ flex: 1, minWidth: 0, color: "#11140f" }}>{String((v.specialLabels as string[] | undefined)?.[pickedSpecials.indexOf(c)] ?? c)}</span>
+              <span style={{ fontSize: 11, color: "#9aa093", flex: "none" }}>not in model</span>
+            </label>
+          ))}
+
+          {/* ── Custom / other ── */}
+          <div style={{ borderTop: "1px dashed #d6d9d2", paddingTop: 11, marginTop: 2 }}>
+            <button
+              type="button"
+              onClick={() => setCustomOpen((o) => !o)}
+              style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "4px 2px", background: "transparent", border: "none", fontFamily: "inherit", cursor: "pointer" }}
+            >
+              <span style={{ fontSize: 13, fontWeight: 700, color: "#11140f" }}>Custom / other</span>
+              <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, fontWeight: 700, color: hasCustom ? "#16695f" : "#9aa093" }}>
+                {hasCustom ? "1 added" : ""}
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" style={{ transform: (customOpen || hasCustom) ? "rotate(180deg)" : "none", transition: "transform .15s" }}><polyline points="6 9 12 15 18 9" /></svg>
+              </span>
+            </button>
+            {(customOpen || hasCustom) && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 9, marginTop: 8 }}>
+                <Field label="Description">
+                  <textarea
+                    className="fld-i"
+                    rows={3}
+                    style={{ resize: "vertical", minHeight: 64 }}
+                    placeholder="Describe the special order the customer needs…"
+                    value={extraNote}
+                    onChange={(e) => setVar({ extraAddonNote: e.target.value })}
+                  />
+                </Field>
+                {showPrices && (
+                  <Field label="Extra charge (RM)" style={{ maxWidth: 160 }}>
+                    <input
+                      className="fld-i money"
+                      inputMode="numeric"
+                      placeholder="0"
+                      value={extraAmountRM ? String(extraAmountRM) : ""}
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        const n = raw === "" ? 0 : Math.max(0, Math.round(Number(raw)) || 0);
+                        setVar({ extraAddonAmountRM: n });
+                      }}
+                    />
+                  </Field>
+                )}
+                {/* Clear hidden from non-admin sales when a price they can't see
+                    is set — they must not silently wipe an admin-priced order. */}
+                {hasCustom && (showPrices || extraAmountRM <= 0) && (
+                  <button
+                    type="button"
+                    onClick={() => setVar({ extraAddonNote: "", extraAddonAmountRM: 0 })}
+                    style={{ alignSelf: "flex-start", fontSize: 12, fontWeight: 600, color: "#b23a3a", background: "transparent", border: "1px solid #e3d2cf", borderRadius: 9, padding: "6px 12px", cursor: "pointer", fontFamily: "inherit" }}
+                  >
+                    Clear custom order
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="sheet-foot">
+          <button type="button" className="btn" onClick={onClose} style={{ flex: 1, padding: "11px 16px" }}>
+            Done
+          </button>
         </div>
       </div>
     </div>
@@ -2484,6 +2862,13 @@ function SpecSel({ label, value, opts, onChange, required = false, invalid = fal
 
 function PayCard({ pay, staff, onChange, onRemove }: { pay: Payment; staff: Array<{ id: string; name: string }>; onChange: (patch: Partial<Payment>) => void; onRemove: () => void }) {
   const fileRef = useRef<HTMLInputElement | null>(null);
+  /* Live payment dropdowns from the maintenance catalog (same API the desktop
+     SalesOrderNew uses); FALLBACK_OPTIONS only backs an offline load. Was
+     hardcoded ("Maybank"/"One Shot") and never hit the API — that was the drift. */
+  const methodOpts = optionsOrFallback("payment_method", useSoDropdownOptions("payment_method").data);
+  const bankOpts = optionsOrFallback("payment_merchant", useSoDropdownOptions("payment_merchant").data);
+  const planOpts = optionsOrFallback("installment_plan", useSoDropdownOptions("installment_plan").data);
+  const onlineOpts = optionsOrFallback("online_type", useSoDropdownOptions("online_type").data);
   const onPickSlip = async (f: File | null) => {
     if (!f) return;
     onChange({ slipName: f.name, slipSession: "", slipPhase: "uploading" });
@@ -2500,7 +2885,7 @@ function PayCard({ pay, staff, onChange, onRemove }: { pay: Payment; staff: Arra
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: "#f4f6f3", borderBottom: "1px solid #eceee9" }}>
         <span style={{ fontSize: 9, fontWeight: 700, color: "#767b6e", textTransform: "uppercase", letterSpacing: ".06em" }}>Method</span>
         <select className="fld-i" style={{ flex: 1, fontWeight: 600 }} value={pay.method} onChange={(e) => onChange({ method: e.target.value })}>
-          {PAY_METHODS.map((m) => <option key={m} value={m}>{m}</option>)}
+          {methodOpts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
         <span onClick={onRemove} style={{ fontSize: 14, color: "#9aa093", cursor: "pointer", padding: "0 2px" }}>{"✕"}</span>
       </div>
@@ -2515,15 +2900,15 @@ function PayCard({ pay, staff, onChange, onRemove }: { pay: Payment; staff: Arra
         </div>
         {pay.method === "Merchant" && (
           <div style={{ display: "flex", gap: 9 }}>
-            <SpecSel label="Bank" value={pay.bank} opts={BANK_OPTS.map((o) => ({ value: o, label: o }))} onChange={(vv) => onChange({ bank: vv })} />
-            <SpecSel label="Plan" value={pay.plan} opts={PLAN_OPTS.map((o) => ({ value: o, label: o }))} onChange={(vv) => onChange({ plan: vv })} />
+            <SpecSel label="Bank" value={pay.bank} opts={bankOpts} onChange={(vv) => onChange({ bank: vv })} />
+            <SpecSel label="Plan" value={pay.plan} opts={planOpts} onChange={(vv) => onChange({ plan: vv })} />
           </div>
         )}
         {pay.method === "Installment" && (
-          <SpecSel label="Installment plan" value={pay.plan} opts={PLAN_OPTS.map((o) => ({ value: o, label: o }))} onChange={(vv) => onChange({ plan: vv })} />
+          <SpecSel label="Installment plan" value={pay.plan} opts={planOpts} onChange={(vv) => onChange({ plan: vv })} />
         )}
         {pay.method === "Online" && (
-          <SpecSel label="Sub-type" value={pay.online} opts={ONLINE_OPTS.map((o) => ({ value: o, label: o }))} onChange={(vv) => onChange({ online: vv })} />
+          <SpecSel label="Sub-type" value={pay.online} opts={onlineOpts} onChange={(vv) => onChange({ online: vv })} />
         )}
         <div style={{ display: "flex", gap: 9 }}>
           <Field label="Account Sheet" style={{ flex: 1 }}>

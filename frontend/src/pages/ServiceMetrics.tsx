@@ -9,6 +9,7 @@ import { ListSkeleton } from "../components/Skeleton";
 import { EmptyState } from "../components/EmptyState";
 import { useQuery } from "../hooks/useQuery";
 import { api } from "../api/client";
+import { useAuth } from "../auth/AuthContext";
 import { cn, formatDate } from "../lib/utils";
 import { resolutionLabel } from "../components/StatusDot";
 import type { AssrMetrics } from "../types";
@@ -29,8 +30,6 @@ const STAGE_FUNNEL_ORDER = [
   "pending_review",
   "under_verification",
   "pending_solution",
-  "pending_inspection",
-  "pending_item_pickup",
   "pending_supplier_pickup",
   "pending_item_ready",
   "pending_delivery_service",
@@ -41,9 +40,7 @@ const STAGE_FUNNEL_LABEL: Record<string, string> = {
   pending_review: "Review",
   under_verification: "Verification",
   pending_solution: "Solution",
-  pending_inspection: "Inspection",
-  pending_item_pickup: "Item Pickup",
-  pending_supplier_pickup: "Supplier Pickup",
+  pending_supplier_pickup: "Supplier Pickup / Return",
   pending_item_ready: "Item Ready",
   pending_delivery_service: "Delivery / Service",
   completed: "Completed",
@@ -172,12 +169,21 @@ function MetricCard({
 }
 
 export function ServiceMetrics() {
+  const { can } = useAuth();
   const [since, setSince] = useState<"30" | "90" | "180" | "365">("90");
   const [drill, setDrill] = useState<DrillState | null>(null);
 
+  // OFF-NOT-HIDE: both /metrics and /summary are ORG aggregates gated behind
+  // `service_cases.read`. This view is reachable via the Service Cases board
+  // (/assr?view=metrics), which a non-director Sales user can open (allowSales
+  // route), so firing these would 403 → "Forbidden" toast for them. Gate the
+  // fetches so they never fire without the permission; the dashboard renders
+  // its empty state instead.
+  const canReadMetrics = can("service_cases.read");
   const metrics = useQuery<AssrMetrics>(
     () => api.get(`/api/assr/metrics?since_days=${since}`),
-    [since]
+    [since],
+    { enabled: canReadMetrics }
   );
   // v3.1 — pull the enriched /summary alongside the legacy metrics
   // payload. Both share the same since_days filter so the pulse row
@@ -186,7 +192,8 @@ export function ServiceMetrics() {
   // chart, not a window-aware stat).
   const summary = useQuery<AssrSummaryV31>(
     () => api.get(`/api/assr/summary?since_days=${since}`),
-    [since]
+    [since],
+    { enabled: canReadMetrics }
   );
 
   const m = metrics.data;

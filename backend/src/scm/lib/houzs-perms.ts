@@ -14,6 +14,8 @@
 
 import type { MiddlewareHandler } from 'hono';
 import { hasPermission } from '../../services/permissions';
+import { isDirectorUser, isSalesUser } from '../../services/pmsAccess';
+import type { AuthUser } from '../../services/auth';
 import type { Env, Variables } from '../env';
 
 /* Structural source of the stashed houzsUser — satisfied by the real Hono
@@ -33,6 +35,62 @@ function grantedFor(c: HouzsUserSource): ReadonlyArray<string> | ReadonlySet<str
 /** Inline check — true when the caller holds `perm` (or the `*` wildcard). */
 export function hasHouzsPerm(c: HouzsUserSource, perm: string): boolean {
   return hasPermission(grantedFor(c), perm);
+}
+
+/**
+ * True when the caller may see ALL sales-side documents — Sales Orders, Sales
+ * Invoices, Delivery Orders, Consignment Orders, Sales Analysis. Two INDEPENDENT
+ * grants, OR-ed together (additive — this never removes the existing permission
+ * bypass, only widens):
+ *   1. the flat permission key `scm.so.view_all` (legacy path — Owner / IT Admin
+ *      pass via `*`, other positions via the Team > Positions matrix), OR
+ *   2. a DIRECTOR by STABLE ORG FIELD — Super Admin / Sales Director / Finance
+ *      Manager (pmsAccess.isDirectorUser). This aligns Sales Orders with Service
+ *      Cases (assr.ts) and Finance, which ALREADY grant the director-position
+ *      the full-visibility tier. Keyed off the org position, NOT the configurable
+ *      permission matrix.
+ *
+ * isDirectorUser needs the caller's position_name + permissions_set. Inside
+ * /api/scm/* the `user` context is the pinned scm.staff system row (no
+ * position), so we read the REAL Houzs caller stashed on `houzsUser` —
+ * scm/middleware/auth.ts mirrors position_name there for exactly this check.
+ */
+export function canViewAllSales(c: HouzsUserSource): boolean {
+  if (hasHouzsPerm(c, 'scm.so.view_all')) return true;
+  const hu = c.get('houzsUser');
+  if (!hu) return false;
+  // isDirectorUser only reads position_name + permissions_set; feed it a
+  // minimal AuthUser-shaped object built from the stashed real caller.
+  return isDirectorUser({
+    position_name: hu.position_name ?? null,
+    permissions_set: hu.permissions_set,
+  } as AuthUser);
+}
+
+/**
+ * True when the REAL caller is Sales staff by STABLE ORG FIELDS —
+ * pmsAccess.isSalesUser (position "Sales …" OR a department name containing
+ * "sales"). Keyed off org fields, NOT the configurable permission matrix.
+ *
+ * Same caller-source shim as canViewAllSales: inside /api/scm/* the `user`
+ * context is the pinned scm.staff system row (no position/department), so we
+ * read the REAL Houzs caller stashed on `houzsUser` (scm/middleware/auth.ts
+ * mirrors position_name + department_name there for exactly these checks).
+ *
+ * Used by the SO Amendment submit gate so every salesperson can raise an
+ * amendment on their OWN locked Sales Order (ownership is enforced separately
+ * via salesDocOutOfScope) — additive to the flat `scm.amendment.create` grant.
+ */
+export function isSalesCaller(c: HouzsUserSource): boolean {
+  const hu = c.get('houzsUser');
+  if (!hu) return false;
+  // isSalesUser reads position_name + department_name; feed it a minimal
+  // AuthUser-shaped object built from the stashed real caller.
+  return isSalesUser({
+    position_name: hu.position_name ?? null,
+    department_name: hu.department_name ?? null,
+    permissions_set: hu.permissions_set,
+  } as AuthUser);
 }
 
 /** Hono middleware — 403s when the caller lacks `perm`. Mirrors

@@ -22,9 +22,10 @@ import { computeVariantKey, isServiceLine, type VariantAttrs } from '../shared';
 import { syncSoDeliveredFromDo } from '../lib/so-delivery-sync';
 import { todayMyt } from '../lib/my-time';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
-import { resolveSalesScopeIds } from '../lib/salesScope';
+import { escapeForOr } from '../lib/postgrest-search';
+import { resolveSalesScopeIds, salesDocOutOfScope } from '../lib/salesScope';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
-import { hasHouzsPerm } from '../lib/houzs-perms';
+import { canViewAllSales } from '../lib/houzs-perms';
 import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item-codes';
 import { checkStockAvailability, shortStockResponse } from '../lib/check-stock-availability';
 import { findSofaLinesWithoutCompleteBatch, sofaNoCompleteBatchResponse, findIncompleteSofaSets, sofaIncompleteSetResponse, detectSofaSoItemIds } from '../lib/sofa-batch-guard';
@@ -1133,7 +1134,7 @@ export async function soDeliverableRemaining(
   //    mains → accessories → services, sofa modules left-to-right). The bulk
   //    insert gives every line the same created_at, so the timestamp can't
   //    recover the persisted order once routine updates relocate rows.
-  const { data: soItems } = await sb
+  const { data: soItems } = await paginateAll<Record<string, unknown>>((from, to) => sb
     .from('mfg_sales_order_items')
     .select(
       'id, doc_no, debtor_code, debtor_name, item_code, item_group, description, description2, ' +
@@ -1144,7 +1145,9 @@ export async function soDeliverableRemaining(
     .in('doc_no', soDocNos)
     .eq('cancelled', false)
     .order('line_no', { ascending: true, nullsFirst: false })
-    .order('created_at');
+    .order('created_at')
+    .order('id')
+    .range(from, to));
   const rawLines = (soItems ?? []) as Array<Record<string, unknown> & { id: string; doc_no: string; item_code: string; qty: number }>;
   if (rawLines.length === 0) return out;
   /* buildKey values are per-SO ('build-1', …) — the walk MUST run per doc;
@@ -1165,10 +1168,12 @@ export async function soDeliverableRemaining(
   // 2. Σ delivered — DO lines linked by so_item_id whose parent DO is NOT
   //    cancelled. Two-step: pull the candidate DO lines, then drop those whose
   //    parent DO is cancelled.
-  const { data: doLines } = await sb
+  const { data: doLines } = await paginateAll<{ id: string; so_item_id: string | null; qty: number; delivery_order_id: string }>((from, to) => sb
     .from('delivery_order_items')
     .select('id, so_item_id, qty, delivery_order_id')
-    .in('so_item_id', soItemIds);
+    .in('so_item_id', soItemIds)
+    .order('id')
+    .range(from, to));
   const doLineRows = (doLines ?? []) as Array<{ id: string; so_item_id: string | null; qty: number; delivery_order_id: string }>;
   const doIds = [...new Set(doLineRows.map((l) => l.delivery_order_id).filter(Boolean))];
   const activeDoIds = new Set<string>();
@@ -1703,12 +1708,26 @@ async function soRemainingByItemId(
   return out;
 }
 
+/* Filter-pill bucket → the raw delivery_orders.status values it covers. Single
+   source of truth for BOTH the status-count queries and the list `status`
+   filter. open / in_transit / delivered are MULTI-status buckets; cancelled is
+   1:1. The FE sends the BUCKET NAME as `status`; a raw DB status still works
+   (backward-compatible fallback). */
+const DO_STATUS_BUCKETS: Record<string, string[]> = {
+  open: ['DRAFT', 'LOADED'],
+  in_transit: ['DISPATCHED', 'IN_TRANSIT'],
+  delivered: ['SIGNED', 'DELIVERED', 'INVOICED', 'COMPLETED'],
+  cancelled: ['CANCELLED'],
+};
+
 // ── List ────────────────────────────────────────────────────────────────
 deliveryOrdersMfg.get('/', async (c) => {
   const sb = c.get('supabase');
   // Row-level "own / downline chain" scope (scm.staff uuids) — see lib/salesScope.ts.
   // Pass the REAL Houzs user id, NOT user.id (bridge-pinned staff uuid — was the non-admin 500).
-  const canViewAll = hasHouzsPerm(c, 'scm.so.view_all');
+  // view-all = scm.so.view_all permission OR a director position (Sales
+  // Director / Super Admin / Finance Manager) via canViewAllSales.
+  const canViewAll = canViewAllSales(c);
   const houzsUserId = c.get('houzsUser')?.id;
   if (!canViewAll && houzsUserId == null) {
     // No Houzs identity to scope by — say so plainly instead of silently
@@ -1716,10 +1735,93 @@ deliveryOrdersMfg.get('/', async (c) => {
     return c.json({ error: 'Your account is not linked to a Houzs user, so delivery orders cannot be shown — please contact IT.' }, 403);
   }
   const scopeIds = await resolveSalesScopeIds(sb, c.env, houzsUserId, canViewAll);
-  let q = sb.from('delivery_orders').select(HEADER).order('do_date', { ascending: false }).limit(500);
-  if (scopeIds) q = q.in('salesperson_id', scopeIds);
-  const status = c.req.query('status'); if (status) q = q.eq('status', status);
-  const { data, error } = await q;
+
+  /* Opt-in server-side pagination + search + sort + status-counts (mirrors the
+     SO list in mfg-sales-orders.ts). The PRESENCE of `page` switches paging on;
+     when it is absent/empty the query below is BYTE-IDENTICAL to the historical
+     behavior (order do_date desc, limit 500, status param, `{ deliveryOrders }`
+     shape) so nothing that calls this today changes. Status counts are computed
+     over the FULL scoped set (no status/search/page filter) so tab counts stay
+     stable while the user types or a status tab is active. */
+  const pageRaw = c.req.query('page');
+  const paginate = pageRaw !== undefined && pageRaw !== '';
+
+  let data: unknown = null;
+  let error: { message: string } | null = null;
+  let total = 0;
+  let page = 0;
+  let pageSize = 50;
+  let statusCounts: { all: number; open: number; in_transit: number; delivered: number; cancelled: number } | undefined;
+
+  if (!paginate) {
+    /* --- LEGACY PATH (unchanged) --- */
+    let q = sb.from('delivery_orders').select(HEADER).order('do_date', { ascending: false }).limit(500);
+    if (scopeIds) q = q.in('salesperson_id', scopeIds);
+    const status = c.req.query('status'); if (status) q = q.eq('status', status);
+    const res = await q;
+    data = res.data;
+    error = res.error;
+  } else {
+    /* --- PAGINATED PATH (opt-in via `page`) --- */
+    page = Math.max(0, Math.trunc(Number(pageRaw)) || 0);
+    const psRaw = Number(c.req.query('pageSize'));
+    pageSize = Number.isFinite(psRaw) && psRaw > 0 ? Math.min(100, Math.max(1, Math.trunc(psRaw))) : 50;
+
+    const SORT_COLS = new Set(['do_date', 'do_number', 'debtor_name', 'status', 'customer_delivery_date']);
+    const [rawCol, rawDir] = (c.req.query('sort') ?? 'do_date:desc').split(':');
+    const sortCol = SORT_COLS.has(rawCol) ? rawCol : 'do_date';
+    const sortAsc = rawDir === 'asc';
+
+    let q = sb.from('delivery_orders').select(HEADER, { count: 'exact' }).order(sortCol, { ascending: sortAsc });
+    /* unique tiebreaker so range paging can't skip/repeat rows sharing the sort key */
+    if (sortCol !== 'do_number') q = q.order('do_number', { ascending: sortAsc });
+    if (scopeIds) q = q.in('salesperson_id', scopeIds);
+    /* Resolve the incoming `status`: a known bucket key → all its raw statuses;
+       'all'/empty → no filter; otherwise treat it as a raw DB status. */
+    const status = c.req.query('status');
+    if (status && status !== 'all') {
+      if (DO_STATUS_BUCKETS[status]) q = q.in('status', DO_STATUS_BUCKETS[status]);
+      else q = q.eq('status', status);
+    }
+    /* free-text search over the columns the FE list's client-side search matches
+       (MfgDeliveryOrdersListV2 hay) that live on this base table. */
+    const search = c.req.query('q');
+    if (search) {
+      const s = escapeForOr(search);
+      if (s) q = q.or(`do_number.ilike.%${s}%,so_doc_no.ilike.%${s}%,debtor_name.ilike.%${s}%,debtor_code.ilike.%${s}%,ref.ilike.%${s}%,branding.ilike.%${s}%,sales_location.ilike.%${s}%,driver_name.ilike.%${s}%`);
+    }
+    const from = c.req.query('from'); if (from) q = q.gte('do_date', from);
+    const to = c.req.query('to'); if (to) q = q.lte('do_date', to);
+    q = q.range(page * pageSize, page * pageSize + pageSize - 1);
+    const res = await q;
+    data = res.data;
+    error = res.error;
+    total = res.count ?? (res.data?.length ?? 0);
+
+    /* Status counts mirror the FE filter-pill buckets (open / in_transit /
+       delivered / cancelled) over the SAME scope filter but WITHOUT status /
+       search / pagination. DO list has NO company scope (byte-identical to
+       legacy), so neither does this. */
+    const countBase = () => {
+      let cq = sb.from('delivery_orders').select('*', { count: 'exact', head: true });
+      if (scopeIds) cq = cq.in('salesperson_id', scopeIds);
+      return cq;
+    };
+    const [allC, openC, transitC, deliveredC, cancelledC] = await Promise.all([
+      countBase(),
+      countBase().in('status', DO_STATUS_BUCKETS.open),
+      countBase().in('status', DO_STATUS_BUCKETS.in_transit),
+      countBase().in('status', DO_STATUS_BUCKETS.delivered),
+      countBase().in('status', DO_STATUS_BUCKETS.cancelled),
+    ]);
+    statusCounts = {
+      all: allC.count ?? 0,
+      open: openC.count ?? 0,
+      in_transit: transitC.count ?? 0,
+      delivered: deliveredC.count ?? 0,
+      cancelled: cancelledC.count ?? 0,
+    };
+  }
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
 
   /* Tier 2 downstream-lock — one extra batched read per doc set: pull every
@@ -1749,6 +1851,7 @@ deliveryOrdersMfg.get('/', async (c) => {
     has_children: childIds.has(r.id),
     lifecycle_state: lifecycleByDo.get(r.id) ?? 'shipped',
   }));
+  if (paginate) return c.json({ deliveryOrders, total, page, pageSize, statusCounts });
   return c.json({ deliveryOrders });
 });
 
@@ -1800,6 +1903,16 @@ deliveryOrdersMfg.get('/:id', async (c) => {
   ]);
   if (h.error) return c.json({ error: 'load_failed', reason: h.error.message }, 500);
   if (!h.data) return c.json({ error: 'not_found' }, 404);
+  /* Own/downline sales scope (lib/salesScope.ts) — mirror the list scope. A
+     scoped seller must not read another salesperson's DO/finance by
+     enumerating ids; out-of-scope → 404. Directors/view-all bypass.
+     HEADER carries salesperson_id already. */
+  {
+    const sp = (h.data as { salesperson_id?: number | string | null }).salesperson_id;
+    if (await salesDocOutOfScope(sb, c.env, c.get('houzsUser')?.id, canViewAllSales(c), sp)) {
+      return c.json({ error: 'not_found' }, 404);
+    }
+  }
   /* Tier 2 downstream-lock — stamp has_children so the DO Detail page can lock
      once any non-cancelled DR / SI references it. */
   const [{ count: drCount }, { count: siCount }] = await Promise.all([
@@ -3092,6 +3205,18 @@ deliveryOrdersMfg.delete('/:id/items/:itemId', async (c) => {
 // ── Payments (mirror SO payments ledger) ──────────────────────────────────
 deliveryOrdersMfg.get('/:id/payments', async (c) => {
   const sb = c.get('supabase'); const id = c.req.param('id');
+  /* Own/downline sales scope (lib/salesScope.ts) — resolve the DO's
+     salesperson_id first so a scoped seller can't read another
+     salesperson's payment ledger by enumerating ids. Out-of-scope /
+     missing → 404. Directors/view-all bypass. */
+  {
+    const { data: hdr } = await sb.from('delivery_orders').select('salesperson_id').eq('id', id).maybeSingle();
+    if (!hdr) return c.json({ error: 'not_found' }, 404);
+    const sp = (hdr as { salesperson_id?: number | string | null }).salesperson_id;
+    if (await salesDocOutOfScope(sb, c.env, c.get('houzsUser')?.id, canViewAllSales(c), sp)) {
+      return c.json({ error: 'not_found' }, 404);
+    }
+  }
   const { data, error } = await sb
     .from('delivery_order_payments')
     .select(`${PAYMENT_COLS}, staff:collected_by ( name )`)
@@ -3171,7 +3296,7 @@ deliveryOrdersMfg.delete('/:id/payments/:paymentId', async (c) => {
 // ── Status transition + inventory deduction / reversal ────────────────────
 deliveryOrdersMfg.patch('/:id/status', async (c) => {
   const sb = c.get('supabase'); const id = c.req.param('id'); const user = c.get('user');
-  let body: { status?: string }; try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid_json' }, 400); }
+  let body: { status?: string; signatureData?: string; podKey?: string }; try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid_json' }, 400); }
   if (!body.status) return c.json({ error: 'status_required' }, 400);
 
   // Read current status so the CANCELLED reversal is idempotent.
@@ -3207,6 +3332,13 @@ deliveryOrdersMfg.patch('/:id/status', async (c) => {
   if (body.status === 'DISPATCHED') ts.dispatched_at = now;
   if (body.status === 'SIGNED')     ts.signed_at = now;
   if (body.status === 'DELIVERED')  ts.delivered_at = now;
+  /* POD capture — the mobile app posts the proof-of-delivery signature +
+     photo alongside the status flip. Persist them to the existing columns
+     (signature_data, pod_r2_key) so a DELIVERED DO keeps its signature +
+     photo. Only write when present so a plain status change never blanks
+     an existing POD. */
+  if (typeof body.signatureData === 'string' && body.signatureData) ts.signature_data = body.signatureData;
+  if (typeof body.podKey === 'string' && body.podKey) ts.pod_r2_key = body.podKey;
 
   /* Bug #3/#11 — ATOMIC cancel guard. The read-then-write above has a TOCTOU
      window: two concurrent cancels can both read a non-cancelled status and both

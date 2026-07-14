@@ -20,7 +20,7 @@ import { z } from 'zod';
 import { createClient } from '@supabase/supabase-js';
 import { supabaseAuth } from '../middleware/auth';
 import { findModelUsage } from '../lib/sku-usage';
-import { activeCompanyId, stampCompany } from '../lib/companyScope';
+import { activeCompanyId, stampCompany, scopeToCompany } from '../lib/companyScope';
 import { hasHouzsPerm } from '../lib/houzs-perms';
 import { todayMyt } from '../lib/my-time';
 import type { Env, Variables } from '../env';
@@ -149,7 +149,7 @@ productModels.get('/', async (c) => {
   const supabase = c.get('supabase');
   const category = c.req.query('category');
 
-  let q = supabase.from('product_models').select(COLS).order('category').order('model_code');
+  let q = scopeToCompany(supabase.from('product_models').select(COLS), c).order('category').order('model_code');
   if (category && (CATEGORIES as readonly string[]).includes(category)) {
     q = q.eq('category', category);
   }
@@ -207,6 +207,7 @@ productModels.get('/by-code/:code', async (c) => {
     .from('mfg_products')
     .select('model_id, category')
     .eq('code', code)
+    .eq('company_id', activeCompanyId(c))
     .limit(1)
     .maybeSingle();
   if (skuErr) {
@@ -404,7 +405,8 @@ productModels.patch('/:id', async (c) => {
       const { data: existing } = await admin
         .from('mfg_products')
         .select('code')
-        .in('code', wantCodes);
+        .in('code', wantCodes)
+        .eq('company_id', activeCompanyId(c));
       const have = new Set((existing ?? []).map((r) => (r as { code: string }).code));
       const now = new Date().toISOString();
       const rows = added
@@ -757,7 +759,7 @@ productModels.post('/:id/generate-skus', async (c) => {
   // Find which codes already exist so we can report skip count.
   const codes = wantedFiltered.map((w) => w.code);
   const { data: existing } = codes.length
-    ? await supabase.from('mfg_products').select('code').in('code', codes)
+    ? await supabase.from('mfg_products').select('code').in('code', codes).eq('company_id', activeCompanyId(c))
     : { data: [] as Array<{ code: string }> };
   const existingSet = new Set((existing ?? []).map((r) => r.code as string));
 

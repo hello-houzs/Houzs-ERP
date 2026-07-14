@@ -7,7 +7,7 @@ import { parseFreeItemEligible, ruleTargetSchema } from '../shared';
 import { supabaseAuth } from '../middleware/auth';
 import { hasHouzsPerm } from '../lib/houzs-perms';
 import type { Env, Variables } from '../env';
-import { activeCompanyId } from '../lib/companyScope';
+import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
 
 type AppContext = Context<{ Bindings: Env; Variables: Variables }>;
 
@@ -51,7 +51,7 @@ const rowToWire = (r: Record<string, unknown>) => ({
 // GET — list all (admin view) or ?active=1 (slim, for the POS cart hook).
 freeItemCampaigns.get('/', async (c) => {
   const supabase = c.get('supabase');
-  let q = supabase.from('free_item_campaigns').select('id, name, active, max_free_qty, eligible');
+  let q = scopeToCompany(supabase.from('free_item_campaigns').select('id, name, active, max_free_qty, eligible'), c);
   if (c.req.query('active') === '1') q = q.eq('active', true);
   const { data, error } = await q;
   if (error) return c.json({ error: 'fetch_failed', reason: error.message }, 500);

@@ -3,6 +3,10 @@
 This file is loaded into every Claude session. It tells you what's
 non-obvious about this codebase and how the user wants to collaborate.
 
+## ⚠️ Log every bug in `BUG-HISTORY.md` — MANDATORY (owner rule, everyone)
+
+Every bug you find and fix **must** get an entry in [`BUG-HISTORY.md`](./BUG-HISTORY.md) at the repo root — no exceptions. One short entry: **Symptom → Root cause (traced, not guessed) → Fix → Ref (PR/date)**, newest first, with a severity tag. This is how we stop re-introducing the same class of bug: **read it before touching a subsystem, and add to it in the same PR that fixes the bug.** This applies to every contributor and every agent/session.
+
 ## What this repo is
 
 Internal ERP for Houzs. Cloudflare Workers + Hono backend, React/Vite SPA

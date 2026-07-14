@@ -96,6 +96,13 @@ export function invalidate(prefix: string): void {
   } catch {}
 }
 
+/** Company switch: drop EVERY cached GET + in-flight read (all families, all
+ *  tabs). Without this the path-only `store` would serve the previous company's
+ *  payload for up to TTL_MS after switching. Call before invalidateQueries(). */
+export function clearAll(): void {
+  invalidate("/api");
+}
+
 /** A mutation on `/api/<resource>/...` invalidates that whole resource. */
 export function invalidateForMutation(path: string): void {
   const m = path.match(/^(\/api\/[^/?]+)/);

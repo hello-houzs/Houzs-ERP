@@ -170,6 +170,7 @@ const SoLineCardInner = ({
   docNo,
   itemId,
   isEditing = true,
+  variantsRequired = true,
   searchHint,
 }: {
   index:     number;
@@ -187,6 +188,13 @@ const SoLineCardInner = ({
   docNo?:    string;
   itemId?:   string;
   isEditing?: boolean;
+  /* Whether the category-mandatory variants (fabric / seat / divan / leg / gap)
+     are REQUIRED on this line — drives the ` *` marker + red invalid ring.
+     Matches the backend, which only enforces them once a Processing Date is set
+     (mfg-sales-orders variants gate). SO New / Detail pass !!processingDate.
+     DEFAULT true so Consignment + any other consumer is unchanged (owner
+     2026-07-14). */
+  variantsRequired?: boolean;
   /* Scan-Order (Task #73) — the OCR rawText for a NO-MATCH line, shown as the
      SKU picker's placeholder so the operator sees what was on the slip while
      they pick a real SKU. It is a HINT ONLY — never committed as the product
@@ -219,6 +227,13 @@ const SoLineCardInner = ({
      (isHatchSales in lib/auth.tsx — remove with the hatch). */
   const { staff } = useAuth();
   const canEditPrice = isAdminLevel(staff?.role) || isHatchSales(staff?.role);
+  /* Unified special-order price-visibility gate (owner-approved, PR "unified
+     special-order entry"). REUSES the SAME isAdminLevel gate the Unit Price
+     locks on (lib/auth.ts: "price stays locked unless isAdminLevel"). A
+     non-admin sales role only DESCRIBES the special order — every RM surcharge
+     on the presets AND the "Custom / other" price field are hidden for them;
+     office/admin see + edit the amounts as before. */
+  const showPrices = isAdminLevel(staff?.role);
 
   const [search, setSearch] = useState(draft.description || draft.itemCode || '');
   const [picked, setPicked]         = useState<MfgProductRow | null>(null);
@@ -418,6 +433,15 @@ const SoLineCardInner = ({
   };
   const setVariant = (k: string, v: string | number | string[]) => setVariants({ [k]: v });
 
+  /* Unified "Custom / other" special-order writer — feeds the free-text channel
+     (variants.extraAddonNote + extraAddonAmountRM), the SAME fields POS folds
+     and the server honest-pricing recompute reads (mfg-pricing-recompute.ts).
+     DATA MODEL UNCHANGED: we only write these two existing keys — no migration,
+     no new field. setVariants keeps overriddenKeys in sync so the follower
+     cascade leaves a manually-entered custom order alone. */
+  const setExtraAddon = (patch: { extraAddonNote?: string; extraAddonAmountRM?: number }) =>
+    setVariants(patch);
+
   /* PR #127 — HOOKKA multi-select Special Orders. */
   const specialsList = (v: unknown): string[] => {
     if (Array.isArray(v)) return v.map(String).filter(Boolean);
@@ -555,15 +579,19 @@ const SoLineCardInner = ({
   };
 
   /* ── Special Add-ons (SO-parity, Loo 2026-06-06) ──────────────────────
-     Mirror the POS configurator exactly: active special_addons rows for this
-     line's category ∩ the Model's allowed_options.specials ticks. POS
-     semantics — no ticks = nothing offered (Modular is the ON/OFF authority),
-     unlike the height pools where empty = unrestricted. */
+     Active special_addons rows for this line's category, intersected with the
+     Model's allowed_options.specials pool. Owner 2026-07-14 — the pool is now
+     OPT-OUT, matching the height pools + the backend (allowed-options-check
+     only gates specials when the pool is non-empty; honest-pricing prices any
+     picked code): an EMPTY/absent pool ⇒ offer ALL active specials for the
+     category; a NON-EMPTY pool restricts to the ticked codes. */
   const catUpper = category.toUpperCase();
   const specialOptions = useMemo(() => {
-    const allowed = new Set(allowOpts?.specials ?? []);
+    const pool = allowOpts?.specials;
+    const restricted = Array.isArray(pool) && pool.length > 0;
+    const allowed = new Set(pool ?? []);
     return specialDefs.filter(
-      (a) => a.active && a.categories.includes(catUpper) && allowed.has(a.code),
+      (a) => a.active && a.categories.includes(catUpper) && (!restricted || allowed.has(a.code)),
     );
   }, [specialDefs, catUpper, allowOpts]);
   const specialChoicesMap: Record<string, string[]> =
@@ -873,28 +901,28 @@ const SoLineCardInner = ({
           <div className={styles.variantsHead}>BEDFRAME VARIANTS</div>
           <div className={styles.variantsGrid}>
             <VariantSelect
-              label="Fabrics" required
+              label="Fabrics" required={variantsRequired}
               value={String(draft.variants.fabricCode ?? '')}
               disabled={!isEditing}
               options={fabricOptions}
               onChange={pickFabricColour}
             />
             <VariantSelect
-              label="Gaps" required
+              label="Gaps" required={variantsRequired}
               value={String(draft.variants.gap ?? '')}
               disabled={!isEditing}
               options={sortByNumeric(restrictS(maintPickerValues(maint!.gaps, String(draft.variants.gap ?? '')), allowOpts?.gaps).map((g) => ({ value: g, priceSen: 0 })))}
               onChange={(v) => setVariant('gap', v)}
             />
             <VariantSelect
-              label="Divan Heights" required
+              label="Divan Heights" required={variantsRequired}
               value={String(draft.variants.divanHeight ?? '')}
               disabled={!isEditing}
               options={sortByNumeric(restrictP(activeOptions(maint!.divanHeights, String(draft.variants.divanHeight ?? '')), allowOpts?.divan_heights))}
               onChange={(v) => setVariant('divanHeight', v)}
             />
             <VariantSelect
-              label="Leg Heights" required
+              label="Leg Heights" required={variantsRequired}
               value={String(draft.variants.legHeight ?? '')}
               disabled={!isEditing}
               options={sortByNumeric(restrictP(activeOptions(maint!.legHeights, String(draft.variants.legHeight ?? '')), allowOpts?.leg_heights))}
@@ -919,7 +947,10 @@ const SoLineCardInner = ({
             choices={specialChoicesMap}
             options={specialOptions}
             disabled={!isEditing}
-            posRemark={posRemarkSpecial}
+            showPrices={showPrices}
+            extraNote={String(draft.variants.extraAddonNote ?? '')}
+            extraAmountRM={Number(draft.variants.extraAddonAmountRM ?? 0)}
+            onExtraChange={setExtraAddon}
             onToggleCode={toggleSpecial}
             onChoice={changeSpecialChoice}
           />
@@ -931,14 +962,14 @@ const SoLineCardInner = ({
           <div className={styles.variantsHead}>SOFA VARIANTS</div>
           <div className={styles.variantsGrid}>
             <VariantSelect
-              label="Fabrics" required
+              label="Fabrics" required={variantsRequired}
               value={String(draft.variants.fabricCode ?? '')}
               disabled={!isEditing}
               options={fabricOptions}
               onChange={pickFabricColour}
             />
             <VariantSelect
-              label="Seat Heights" required
+              label="Seat Heights" required={variantsRequired}
               value={String(draft.variants.seatHeight ?? '')}
               disabled={!isEditing}
               options={sortByNumeric(restrictS(maintPickerValues(maint!.sofaSizes, String(draft.variants.seatHeight ?? '')), allowOpts?.sizes).map((s) => {
@@ -970,7 +1001,10 @@ const SoLineCardInner = ({
             choices={specialChoicesMap}
             options={specialOptions}
             disabled={!isEditing}
-            posRemark={posRemarkSpecial}
+            showPrices={showPrices}
+            extraNote={String(draft.variants.extraAddonNote ?? '')}
+            extraAmountRM={Number(draft.variants.extraAddonAmountRM ?? 0)}
+            onExtraChange={setExtraAddon}
             onToggleCode={toggleSpecial}
             onChoice={changeSpecialChoice}
           />
@@ -987,7 +1021,10 @@ const SoLineCardInner = ({
             choices={specialChoicesMap}
             options={specialOptions}
             disabled={!isEditing}
-            posRemark={posRemarkSpecial}
+            showPrices={showPrices}
+            extraNote={String(draft.variants.extraAddonNote ?? '')}
+            extraAmountRM={Number(draft.variants.extraAddonAmountRM ?? 0)}
+            onExtraChange={setExtraAddon}
             onToggleCode={toggleSpecial}
             onChoice={changeSpecialChoice}
           />
@@ -1267,7 +1304,8 @@ export function missingRequiredVariants(
    ────────────────────────────────────────────────────────────────────── */
 
 const SpecialsAccordion = ({
-  open, onToggle, picked, choices, options, onToggleCode, onChoice, disabled = false, posRemark = null,
+  open, onToggle, picked, choices, options, onToggleCode, onChoice, disabled = false,
+  showPrices, extraNote, extraAmountRM, onExtraChange,
 }: {
   open:     boolean;
   onToggle: () => void;
@@ -1283,10 +1321,18 @@ const SpecialsAccordion = ({
      charges via buildSpecialsPoolFromAddons. */
   options:  SpecialAddonRow[];
   disabled?: boolean;
-  /** Loo 2026-06-12 — the POS product-page remark + extra charge, shown as a
-      checked, read-only special row. The amount is already folded into the
-      line's unit price, so it renders "incl." and can't be unticked here. */
-  posRemark?: { label: string; amountSen: number } | null;
+  /* Owner-approved role gate — non-admin sales only DESCRIBES specials, so all
+     RM surcharges + the "Custom / other" price field are hidden (see
+     SoLineCard.showPrices, which reuses lib/auth isAdminLevel). */
+  showPrices: boolean;
+  /* Unified "Custom / other" channel — free-text description + manual RM,
+     stored on the UNCHANGED variants.extraAddonNote + extraAddonAmountRM. This
+     replaces the old standalone "Extra" input AND the read-only POS-remark row:
+     both now flow through this one control, and the server honest-pricing
+     recompute prices it exactly as before. */
+  extraNote: string;
+  extraAmountRM: number;
+  onExtraChange: (patch: { extraAddonNote?: string; extraAddonAmountRM?: number }) => void;
   onToggleCode: (code: string) => void;
   onChoice: (code: string, groupIdx: number, label: string) => void;
 }) => {
@@ -1304,6 +1350,11 @@ const SpecialsAccordion = ({
      removable rows — invisible-but-stuck picks were how the old editor leaked
      RM 0 specials onto orders. */
   const retired = picked.filter((c) => !options.some((o) => o.code === c));
+  /* "Custom / other" carries data whenever the free-text note or a manual RM
+     is present. Old orders whose Extra was entered through the legacy channel
+     (or POS) still render here with their description + amount intact. */
+  const hasCustom = Boolean(extraNote.trim()) || extraAmountRM > 0;
+  const [customOpen, setCustomOpen] = useState(hasCustom);
   return (
     <div className={styles.specials}>
       <div
@@ -1315,39 +1366,10 @@ const SpecialsAccordion = ({
       >
         {open ? <ChevronDown {...SM_ICON} /> : <ChevronRight {...SM_ICON} />}
         <span>Special Orders</span>
-        <span className={styles.specialsCount}>({picked.length + (posRemark ? 1 : 0)} selected)</span>
+        <span className={styles.specialsCount}>({picked.length + (hasCustom ? 1 : 0)} selected)</span>
       </div>
       {open && (
         <div className={styles.specialsBody}>
-          {options.length === 0 && retired.length === 0 && !posRemark && (
-            <span style={{ fontSize: 'var(--fs-12)', color: 'var(--fg-muted)' }}>
-              No specials configured.
-            </span>
-          )}
-          {/* POS special add-on (note + extra charge) keyed on the POS product
-              page (variants.extraAddonNote). Always checked + locked: the amount
-              is already inside the unit price (POS fold + server recompute), so
-              unticking here would misstate the line total. This is separate from
-              the line's Remarks field, which is the item remark. */}
-          {posRemark && (
-            <label
-              className={styles.specialsItem}
-              title="From the POS product page — amount already included in the unit price"
-            >
-              <input
-                type="checkbox"
-                className={styles.specialsCheckbox}
-                checked
-                disabled
-              />
-              <div>
-                <div className={styles.specialsLabel}>{posRemark.label}</div>
-                <div className={styles.specialsSurcharge}>
-                  {posRemark.amountSen > 0 ? `+${fmtRm(posRemark.amountSen)} incl.` : 'RM 0'}
-                </div>
-              </div>
-            </label>
-          )}
           {options.map((o) => {
             const on = picked.includes(o.code);
             const sen = on ? effectiveSen(o) : o.sellingPriceSen;
@@ -1362,9 +1384,12 @@ const SpecialsAccordion = ({
                 />
                 <div>
                   <div className={styles.specialsLabel}>{o.label}</div>
-                  <div className={styles.specialsSurcharge}>
-                    {sen > 0 ? `+${fmtRm(sen)}` : sen < 0 ? `−${fmtRm(Math.abs(sen))}` : 'RM 0'}
-                  </div>
+                  {/* Role gate — non-admin sales sees the NAME only (owner). */}
+                  {showPrices && (
+                    <div className={styles.specialsSurcharge}>
+                      {sen > 0 ? `+${fmtRm(sen)}` : sen < 0 ? `−${fmtRm(Math.abs(sen))}` : 'RM 0'}
+                    </div>
+                  )}
                 </div>
               </label>
             );
@@ -1381,7 +1406,7 @@ const SpecialsAccordion = ({
               <div>
                 <div className={styles.specialsLabel}>{code}</div>
                 <div className={styles.specialsSurcharge} style={{ color: 'var(--c-festive-b, #B8331F)' }}>
-                  retired — prices RM 0, untick to remove
+                  {showPrices ? 'retired — prices RM 0, untick to remove' : 'retired — untick to remove'}
                 </div>
               </div>
             </label>
@@ -1404,13 +1429,78 @@ const SpecialsAccordion = ({
                   {g.required && <option value="" disabled>Select…</option>}
                   {g.choices.map((c) => (
                     <option key={c.label} value={c.label}>
-                      {c.label}{c.extraSen !== 0 ? ` (${c.extraSen > 0 ? '+' : '−'}${fmtRm(Math.abs(c.extraSen))})` : ''}
+                      {c.label}{showPrices && c.extraSen !== 0 ? ` (${c.extraSen > 0 ? '+' : '−'}${fmtRm(Math.abs(c.extraSen))})` : ''}
                     </option>
                   ))}
                 </select>
               </label>
             )),
           )}
+
+          {/* ── Custom / other (unified free-text special order) ─────────────
+              Replaces the old standalone "Extra" input + the read-only POS
+              remark row. Picking it reveals a description (→ extraAddonNote)
+              and, for admin/office only, an Extra-charge field (→
+              extraAddonAmountRM). Sales just describes what the customer
+              needs. Spans the full grid width, always offered last. */}
+          <div className={styles.customSpecial}>
+            <div
+              className={styles.customHead}
+              role="button"
+              tabIndex={0}
+              onClick={() => { if (!disabled) setCustomOpen((o) => !o); }}
+              onKeyDown={(e) => { if (!disabled && (e.key === 'Enter' || e.key === ' ')) setCustomOpen((o) => !o); }}
+            >
+              {(customOpen || hasCustom) ? <ChevronDown {...SM_ICON} /> : <ChevronRight {...SM_ICON} />}
+              <span className={styles.specialsLabel} style={{ fontWeight: 600 }}>Custom / other</span>
+              {hasCustom && <span className={styles.specialsCount}>1 added</span>}
+            </div>
+            {(customOpen || hasCustom) && (
+              <div className={styles.customFields}>
+                <label className={styles.variantField}>
+                  <span className={styles.variantLabel}>Description</span>
+                  <input
+                    className={styles.select}
+                    placeholder="Describe the special order…"
+                    value={extraNote}
+                    disabled={disabled}
+                    onChange={(e) => onExtraChange({ extraAddonNote: e.target.value })}
+                  />
+                </label>
+                {showPrices && (
+                  <label className={styles.variantField} style={{ maxWidth: 140 }}>
+                    <span className={styles.variantLabel}>Extra charge (RM)</span>
+                    <input
+                      type="number"
+                      min={0}
+                      step={1}
+                      className={styles.select}
+                      style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}
+                      placeholder="0"
+                      value={extraAmountRM ? String(extraAmountRM) : ''}
+                      disabled={disabled}
+                      onChange={(e) => {
+                        const raw = e.target.value;
+                        const n = raw === '' ? 0 : Math.max(0, Math.round(Number(raw)) || 0);
+                        onExtraChange({ extraAddonAmountRM: n });
+                      }}
+                    />
+                  </label>
+                )}
+                {/* Clear hidden from non-admin sales when a price they can't see
+                    is set — they must not silently wipe an admin-priced order. */}
+                {hasCustom && !disabled && (showPrices || extraAmountRM <= 0) && (
+                  <button
+                    type="button"
+                    className={styles.customClear}
+                    onClick={() => onExtraChange({ extraAddonNote: '', extraAddonAmountRM: 0 })}
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

@@ -1,0 +1,139 @@
+# Module: Sales Order (SCM)
+
+Per-module technical doc — the data flow from the screen down to the database,
+plus the performance characteristics. First of the per-module set; the same
+structure applies to PO / DO / SI / GRN (they are near-identical clones).
+
+> Convention: money is in **sen** (integer cents) end-to-end. Dates are stored
+> UTC, displayed DD/MM/YYYY. All reads/writes go through `/api/scm/*`.
+
+---
+
+## 1. Frontend
+
+### Screens
+| Surface | File | Notes |
+|---------|------|-------|
+| Desktop list | `frontend/src/pages/scm-v2/MfgSalesOrdersListV2.tsx` | Renders via the shared `DataTable`. **Windowed** past 30 rows (page-scroll-preserving, PR #430). |
+| Desktop detail | `frontend/src/pages/scm-v2/SalesOrderDetail*.tsx` | Bounded to one doc's lines. |
+| Mobile list | `frontend/src/mobile/MobileSalesOrders.tsx` | Card list (bottom "Orders" tab). |
+| Mobile new/edit | `frontend/src/mobile/MobileNewSO.tsx` | 2600-line screen, **lazy-loaded** (PR #426). |
+
+### Data hooks
+`frontend/src/vendor/scm/lib/sales-order-queries.ts`
+
+- `useMfgSalesOrders(status?)` — the list.
+  - `queryKey: ['mfg-sales-orders', status ?? 'all']`
+  - `queryFn` → `authedFetch('/mfg-sales-orders?status=…')`
+  - `staleTime: 30_000`, `placeholderData: prev` (keep old rows while a tab switch loads).
+- `useMfgSalesOrderDetail(docNo)` — `['mfg-sales-order-detail', docNo]`, `enabled: !!docNo`.
+- Mutations (`create/patch/proceed/cancel/…`) each call
+  `qc.invalidateQueries({ queryKey: ['mfg-sales-orders'] })` on success, so the list
+  reflects a write immediately (same tab) and cross-tab via the MutationCache broadcast.
+
+### Caching / loading behaviour (why the list opens instantly)
+Three layers, tuned so the list never shows a full-load spinner on a revisit:
+1. **react-query in-memory** (`lib/queryClient.ts`) — `staleTime 30s`, `gcTime 30min`.
+   A warm re-visit serves cached rows instantly and revalidates in the background
+   (measured: refetch=false, skeleton=false).
+2. **localStorage snapshot** (`lib/query-persist.ts`, PR #437) — persists the list
+   query; on a COLD open (reload / PWA reopen) it hydrates the cache at boot so the
+   last-known list renders instantly, then revalidates. Verified: list rendered at
+   ~81ms, revalidation fetch didn't start until ~767ms. Namespaced by `__BUILD_ID__`
+   so a payload-shape change on deploy can't hydrate a stale shape.
+3. **`api/cache.ts`** — 15s path-cache + in-flight dedup under `authedFetch`.
+
+Invalidation always wins over all three (mutation → invalidate → forced refetch).
+
+---
+
+## 2. API surface
+
+| Method | Path | Handler | Purpose |
+|--------|------|---------|---------|
+| GET | `/api/scm/mfg-sales-orders` | list handler | Grid rows (+ `?summary=1` lightweight bucket mode, `?status=`, `?debtor=`) |
+| GET | `/api/scm/mfg-sales-orders/:docNo` | detail | One SO header + lines |
+| GET | `/api/scm/mfg-sales-orders/my-mtd` | MTD scoreboard | Mobile Profile tiles |
+| GET | `/api/scm/mfg-sales-orders/mine` | POS board | Salesperson's own orders |
+| PATCH/POST | `…/:docNo/*` | mutations | proceed / cancel / amend / payments / etc. |
+
+All under `backend/src/scm/routes/mfg-sales-orders.ts`. Auth: inside `/api/scm/*`,
+`user.id` is the caller's **scm.staff UUID** (bridge-pinned); use `houzsUser.id` for
+the public bigint or you get a 500 (uuid-in-int column).
+
+---
+
+## 3. Backend (list handler)
+
+`backend/src/scm/routes/mfg-sales-orders.ts` — `mfgSalesOrders.get('/')`.
+
+Flow:
+1. **Scope** — `resolveSalesScopeIds()` → allowed salesperson ids (SELF + manager
+   downline, or all for directors / `scm.so.view_all`). Feeds the main query's `.in()`.
+2. **Main query** — reads the VIEW `mfg_sales_orders_with_payment_totals` (so the
+   Balance column is live = total − Σpayments), `order by so_date desc limit 500`.
+   ⚠️ **VIEW-TRAP** (`docs/scm-view-trap-coe.md`): the view's column set is frozen at
+   CREATE VIEW; a base-table column added to `HEADER` that the view lacks 500s the
+   whole page. Post-view columns (delivery_state, amended_delivery_date) are read
+   separately off the base table.
+3. **Enrichment wave (PERF, PR #416)** — 6 independent per-doc_no reads run
+   **concurrently** (was serial ~390ms desktop / 650ms mobile → ~40ms warm):
+   payment-method summary, downstream DO/SI lock, deliverable-remaining, lifecycle +
+   current-doc, warehouse labels, base-table planning cols. Only the item→catalog
+   chain is sequential (catalog needs the item codes). Pattern: launch each as an
+   immediately-invoked async thunk, await at its use-site.
+4. **Assemble** — per-row flags (stock readiness, planning state, branding pill,
+   payment-methods, has_children lock) merged onto the rows, returned as
+   `{ salesOrders: [...] }`.
+
+`?summary=1` skips the view join + item read entirely (dashboard only needs status
+buckets) — do not fully-hydrate 500 rows for a count.
+
+---
+
+## 4. Database
+
+Schema: `scm` (vendored 2990 clone, 108 tables). Key tables:
+
+| Table | Role |
+|-------|------|
+| `scm.mfg_sales_orders` | SO header (doc_no PK-ish, status, salesperson_id, totals in sen, so_date, delivery_state, amended_delivery_date, company_id) |
+| `scm.mfg_sales_order_items` | SO lines (item_group, stock_status, variants, warehouse_id) |
+| `scm.mfg_sales_order_payments` | payments ledger (so_doc_no FK, method, online_type) |
+| VIEW `scm.mfg_sales_orders_with_payment_totals` | header + `paid_total_centi` + `balance_centi_live` (Σ over payments) — the list reads this |
+
+Indexes that matter here:
+- `idx_msop_doc` on `mfg_sales_order_payments(so_doc_no)` — the payment-totals view's
+  aggregation (already present; not the bottleneck).
+- mig **0104** — trigram GIN on `mfg_products(description,barcode)` + partial
+  `(category) WHERE status='ACTIVE'` (feeds the SO line item picker's search).
+- FIFO / stock movement handled by scm PL/pgSQL functions (12 fns + 2 triggers,
+  `search_path=scm` pinned) — a doc "proceed" moves stock via these.
+
+Stock/inventory rules: DO=out, DR/GR=in, PR=out; one ledger + FIFO lots; balances
+are a VIEW; allocation is computed; SO readiness is binary.
+
+---
+
+## 5. Performance summary (what's optimized, what to watch)
+
+Optimized:
+- List endpoint: 6 serial enrichment reads → one concurrent wave (**388ms → ~40ms warm**, PR #416).
+- Desktop list: row windowing past 30 rows (PR #430).
+- Cold/warm open: gcTime 30min (#436) + localStorage snapshot (#437) → no spinner.
+- Search: trgm GIN indexes (0104).
+
+Watch as data grows:
+- The 500-row `limit` on the list — beyond that, page it server-side + push filter/
+  counts to the server (don't filter a page client-side).
+- If AR aging (`/outstanding/summary`) gets slow, snapshot it server-side (follow the
+  freshness guardrails in `docs/perf-optimization-plan.md` §G9).
+
+---
+
+## Applying this to the sibling modules
+PO / DO / SI / GRN follow the same shape (list hook → `/api/scm/<doc>` handler →
+`scm.<doc>` tables). Differences to fill in per-module: the enrichment reads each
+list does (audited — DO already parallel; GRN has a genuine item→downstream chain;
+PO/SI make ≤1), and each doc's stock direction. See `docs/perf-optimization-plan.md`
+for the cross-module audit.

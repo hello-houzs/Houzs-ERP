@@ -148,9 +148,10 @@ warehouse.get('/', async (c) => {
   const occupancyRate = total > 0 ? Math.round((occupied / total) * 100) : 0;
 
   // Warehouse picker options (mirrors /inventory's pattern).
-  const { data: warehouses } = await sb
-    .from('warehouses')
-    .select('id, code, name')
+  const { data: warehouses } = await scopeToCompany(
+    sb.from('warehouses').select('id, code, name'),
+    c,
+  )
     .eq('is_active', true)
     .order('code');
 
@@ -470,8 +471,10 @@ warehouse.get('/movements', async (c) => {
   const warehouseId = c.req.query('warehouseId');
   const limit = Math.min(1000, Number(c.req.query('limit') ?? 500));
 
-  let q = sb.from('warehouse_rack_movements')
-    .select(MOVE_COLS)
+  let q = scopeToCompany(
+    sb.from('warehouse_rack_movements').select(MOVE_COLS),
+    c,
+  )
     .order('created_at', { ascending: false })
     .limit(limit);
   if (type) q = q.eq('movement_type', type);

@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
+import { fmtCenti } from "../lib/scm";
+import { formatDate } from "../lib/utils";
 import "./mobile.css";
 
 /* ---------------------------------------------------------------------------
@@ -72,14 +74,9 @@ const META: Record<
 };
 
 // ── Money / helpers ────────────────────────────────────────────────────────
-const rm = (centi: number | null | undefined) =>
-  ((Number(centi) || 0) / 100).toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const dm = (d: string | null | undefined) => {
-  if (!d) return "—";
-  const dt = new Date(d);
-  if (isNaN(+dt)) return "—";
-  return dt.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
-};
+// Money is integer *_centi → shared fmtCenti() (includes the "RM " symbol).
+// Dates via the shared TZ-aware numeric DD/MM/YYYY helper.
+const dm = (d: string | null | undefined) => formatDate(d);
 /** First defined-and-non-empty of the candidates (pg driver camelCases result
  *  columns; snake_case is the raw shape — always dual-read). */
 const pick = (row: any, ...keys: string[]) => {
@@ -463,7 +460,7 @@ export function MobileConvertWizard({
           {meta.hasLinePicker && (
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 9 }}>
               <span style={{ fontSize: 11.5, color: "#767b6e" }}>{picks.length} {picks.length === 1 ? "line" : "lines"}</span>
-              <span className="money" style={{ fontSize: 17, fontWeight: 800, color: "#0c3f39" }}>MYR {rm(pickedTotalCenti)}</span>
+              <span className="money" style={{ fontSize: 17, fontWeight: 800, color: "#0c3f39" }}>{fmtCenti(pickedTotalCenti)}</span>
             </div>
           )}
           <button
@@ -523,7 +520,7 @@ function SourceStep({
                 <span className="so-k">Date</span>
                 <span className="so-v">{dm(r.po_date)}</span>
                 <span className="so-k">Total</span>
-                <span className="so-v money" style={{ fontSize: 14, fontWeight: 800, color: "#11140f" }}>RM {rm(r.total_centi)}</span>
+                <span className="so-v money" style={{ fontSize: 14, fontWeight: 800, color: "#11140f" }}>{fmtCenti(r.total_centi)}</span>
               </div>
               {on && <Check />}
             </div>
@@ -559,7 +556,7 @@ function SourceStep({
               <span className="so-k">Date</span>
               <span className="so-v">{dm(date)}</span>
               <span className="so-k">Total</span>
-              <span className="so-v money" style={{ fontSize: 14, fontWeight: 800, color: "#11140f" }}>RM {rm(totalC)}</span>
+              <span className="so-v money" style={{ fontSize: 14, fontWeight: 800, color: "#11140f" }}>{fmtCenti(totalC)}</span>
             </div>
           </div>
         );
@@ -614,7 +611,7 @@ function LinesStep({
                   <span style={{ display: "block", fontSize: 13, fontWeight: 700, color: "#11140f", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{l.label}</span>
                   {/* Spec #convert meta: "Outstanding ×{outstanding} of {qty}". */}
                   <span className="tnum" style={{ display: "block", marginTop: 3, fontSize: 11, color: "#767b6e" }}>
-                    Outstanding ×{l.remaining} of {ofQty} · RM {rm(l.unitPriceCenti)} each
+                    Outstanding ×{l.remaining} of {ofQty} · {fmtCenti(l.unitPriceCenti)} each
                   </span>
                 </span>
               </label>
@@ -650,7 +647,7 @@ function LinesStep({
                       +
                     </button>
                   </div>
-                  <span className="tnum" style={{ fontSize: 13, fontWeight: 800, color: "#0c3f39" }}>RM {rm(l.unitPriceCenti * qtyNum)}</span>
+                  <span className="tnum" style={{ fontSize: 13, fontWeight: 800, color: "#0c3f39" }}>{fmtCenti(l.unitPriceCenti * qtyNum)}</span>
                 </div>
               )}
             </div>

@@ -1,9 +1,12 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
+import { MobileVirtualList } from "./MobileVirtualList";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { HC_SUBSTATUS_VALUES } from "../vendor/scm/lib/delivery-planning-queries";
+import { fmtCenti } from "../lib/scm";
+import { formatDate } from "../lib/utils";
 import "./mobile.css";
 
 /* ------------------------------------------------------------------ *
@@ -132,21 +135,10 @@ const DAY_TABS: { key: Day; label: string }[] = [
 
 // ── Formatters — never render null / undefined / NaN. ──
 const EM = "—";
-const rm = (centi: number | null | undefined) =>
-  (((centi ?? 0) as number) / 100).toLocaleString("en-MY", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-const dm = (d: string | null | undefined) => {
-  if (!d) return EM;
-  const dt = new Date(d);
-  if (isNaN(+dt)) return EM;
-  return dt.toLocaleDateString("en-GB", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-  });
-};
+// TZ-aware numeric DD/MM/YYYY via the shared helper (returns "—" for blank /
+// unparseable), so date-only strings render in Asia/Kuala_Lumpur without an
+// off-by-one on an off-zone device.
+const dm = (d: string | null | undefined) => formatDate(d);
 // Local YYYY-MM-DD key for a date-ish string.
 const dayKey = (d: string | null | undefined): string => {
   if (!d) return "";
@@ -610,16 +602,23 @@ export function MobileDeliveryPlanning({
         )}
 
         {!isLoading && !error && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
-            {list.map((o, i) => (
-              <StopCard
-                key={o.so_doc_no}
-                o={o}
-                seq={i + 1}
-                isToday={isToday}
-                onOpen={() => setOpenStop(o.so_doc_no)}
+          <>
+            {list.length > 0 && (
+              <MobileVirtualList
+                items={list}
+                getKey={(o) => o.so_doc_no}
+                estimateHeight={120}
+                renderItem={(o, i) => (
+                  <StopCard
+                    key={o.so_doc_no}
+                    o={o}
+                    seq={i + 1}
+                    isToday={isToday}
+                    onOpen={() => setOpenStop(o.so_doc_no)}
+                  />
+                )}
               />
-            ))}
+            )}
             {!list.length && (
               <div className="empty">
                 <div className="empty-t">
@@ -631,7 +630,7 @@ export function MobileDeliveryPlanning({
                 </div>
               </div>
             )}
-          </div>
+          </>
         )}
       </div>
     </div>
@@ -862,7 +861,7 @@ function StopCard({
             className="tnum"
             style={{ fontSize: 16, fontWeight: 800, color: "#8a4b12" }}
           >
-            RM {rm(bal)}
+            {fmtCenti(bal)}
           </span>
         </div>
       )}
@@ -1132,8 +1131,18 @@ function StopDetail({
     (order.replacement_disposal && order.replacement_disposal.trim()) || "";
   const isSetup = !!disposal; // v2 "job" isn't in the feed; treat disposal as the setup/dismantle signal.
 
+  // Invalidate the board AND every sibling mobile query that renders the same
+  // DO/SO state, so a convert / start / complete on this board doesn't leave the
+  // mobile POD screen or SO list showing pre-mutation status inside their 15-30s
+  // staleTime window (the desktop board already invalidates all sibling keys).
+  // `mobile-pod-detail` is prefix-matched so every open detail refreshes.
   const invalidate = () =>
-    qc.invalidateQueries({ queryKey: ["mobile-delivery-planning"] });
+    Promise.all([
+      qc.invalidateQueries({ queryKey: ["mobile-delivery-planning"] }),
+      qc.invalidateQueries({ queryKey: ["mobile-do-list-for-pod"] }),
+      qc.invalidateQueries({ queryKey: ["mobile-pod-detail"] }),
+      qc.invalidateQueries({ queryKey: ["mobile-so-list"] }),
+    ]);
 
   // ── Convert this Sales Order → a Delivery Order (identical endpoint to the
   // desktop board's Convert-to-DO: resolve the SO's still-deliverable lines via
@@ -1736,7 +1745,7 @@ function StopDetail({
               className="tnum"
               style={{ fontSize: 19, fontWeight: 800, color: "#8a4b12" }}
             >
-              RM {rm(bal)}
+              {fmtCenti(bal)}
             </span>
           </div>
         )}

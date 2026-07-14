@@ -2,11 +2,33 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
 import { useQuery } from "@tanstack/react-query";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { useAuth } from "../auth/AuthContext";
-import { normalizePhone, splitE164 } from "../vendor/shared/phone";
+import { splitE164 } from "../vendor/shared/phone";
 import type { ExtractedSlip } from "../vendor/scm/components/ScanOrderModal";
+import {
+  reconcileScanPrefill,
+  reconcilePayment,
+  type ReconcileCatalogs,
+} from "../vendor/scm/lib/scan-prefill";
+import { useSoDropdownOptions, optionsOrFallback } from "../vendor/scm/lib/so-dropdown-options-queries";
+import { useLocalities, distinctStates } from "../vendor/scm/lib/localities-queries";
+import { useVenues } from "../vendor/scm/lib/venues-queries";
 import { createDraftFromPrefill } from "./MobileNewSO";
 import { serviceNotify } from "../vendor/scm/lib/dialog-service";
+import {
+  normalizeJobs,
+  jobTs,
+  isTodayTs,
+  hhmm,
+  isActiveJob,
+  type ScanJob,
+  type ScanJobsResp,
+} from "../vendor/scm/lib/scan-jobs";
 import "./mobile.css";
+
+// Re-export the shared job helpers so existing consumers that import them from
+// MobileScan (MobileSalesOrders) keep working after the move to scan-jobs.ts.
+export { normalizeJobs };
+export type { ScanJob, ScanJobsResp };
 
 // Mobile OCR "Scan" screen — capture phone photos of a handwritten sales
 // slip and POST them to /scan-so/enqueue: the upload returns in seconds with a
@@ -100,53 +122,10 @@ const newOrder = (): OrderDraft => ({ id: `ord-${++ORDER_SEQ}-${Date.now()}`, fr
    Poll cadence: refetchInterval 4000 ONLY while a listed job is queued or
    running; otherwise no interval. Section hides entirely when nothing is
    visible. Fields are dual-read camelCase ?? snake_case (pg camelCase rule)
-   even though jobToJson camelizes today. */
-export type ScanJob = {
-  id: string;
-  status: string; // queued | running | done | error
-  soDocNo: string | null;
-  error: string | null;
-  duplicateOf: string | null;
-  createdAt: string | null;
-  updatedAt: string | null;
-};
-export type ScanJobsResp = { success?: boolean; data?: { jobs?: Array<Record<string, unknown>> } };
-
-/* Shared with MobileSalesOrders' draft-created notifier — same GET /scan-so/jobs
-   payload, same dual-read (camelCase ?? snake_case) normalisation, so both
-   screens read a done job's soDocNo identically. */
-export function normalizeJobs(resp: ScanJobsResp | undefined): ScanJob[] {
-  const raw = resp?.data?.jobs ?? [];
-  return raw
-    .map((j) => ({
-      id: String(j.id ?? ""),
-      status: String(j.status ?? ""),
-      soDocNo: (j.soDocNo ?? j.so_doc_no ?? null) as string | null,
-      error: (j.error ?? null) as string | null,
-      duplicateOf: (j.duplicateOf ?? j.duplicate_of ?? null) as string | null,
-      createdAt: (j.createdAt ?? j.created_at ?? null) as string | null,
-      updatedAt: (j.updatedAt ?? j.updated_at ?? null) as string | null,
-    }))
-    .filter((j) => j.id !== "");
-}
-
-const jobTs = (s: string | null): number => {
-  const t = s ? Date.parse(s) : NaN;
-  return Number.isNaN(t) ? 0 : t;
-};
-const isTodayTs = (t: number): boolean => {
-  if (t === 0) return false;
-  const d = new Date(t);
-  const n = new Date();
-  return d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate();
-};
-const hhmm = (t: number): string => {
-  const d = new Date(t);
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-};
-/* A job is "active" while the server is still working it — the only states
-   that keep the 4s poll running. */
-const isActiveJob = (j: ScanJob): boolean => j.status === "queued" || j.status === "running";
+   even though jobToJson camelizes today. The ScanJob shape, normalizeJobs and
+   the jobTs / isTodayTs / hhmm / isActiveJob predicates now live in the shared
+   vendor/scm/lib/scan-jobs.ts (reused by the desktop Scan Order modal) and are
+   imported + re-exported at the top of this file. */
 /* Owner 2026-07-04: a DONE scan is already a draft in Orders (announced by the
    Orders-open toast), so it must NOT linger on the Scan screen — not even a
    done-with-duplicate or done-with-a-note row. The Scan screen now shows only
@@ -240,8 +219,6 @@ export type MobileScanPrefill = {
   aiOriginal: ExtractedSlip;
 };
 
-const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-
 /* mfg_product_category → the mobile line has no itemGroup; we only surface a
    display name, so category isn't needed here (kept minimal). */
 
@@ -295,30 +272,34 @@ function JobPill({ status }: { status: string }) {
   return <span style={{ ...base, background: "#eef0ec", color: "#767b6e" }}>{status === "queued" ? "Queued" : status}</span>;
 }
 
+/* Money formatter shared by the payment + line mappings below (matches the
+   desktop RM→display shape). */
+const fmtRm = (rm: number): string =>
+  rm.toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
 /* Map ONE extracted slip's payment fields into the mobile payment shape, or
-   null when the slip carries no payment. Shared by the front-slip extraction
-   (payment #1) and every additional payment-slip extraction (payments #2..N) so
-   they resolve method/amount/approval identically. */
-function extractPayment(ex: ExtractedSlip): MobileScanPayment | null {
-  // 3-method model — top-level method is only Merchant / Online / Cash. Fold any
-  // legacy "Installment" match to Merchant (a bank EPP is Merchant + a plan).
-  const rawPmValue = ex.paymentMethodMatch?.value ?? "";
-  const pmValue = rawPmValue === "Installment" ? "Merchant" : rawPmValue;
-  if (!pmValue) return null;
+   null when the slip carries no payment. Delegates to the SHARED reconciler's
+   reconcilePayment so method-folding + the One-Shot default resolve identically
+   to desktop; the mobile row keeps only method/amount/approval (bank/plan/online
+   are carried by the reconciler but the mobile payment row doesn't surface them
+   yet — see report note). Shared by the front-slip extraction (payment #1) and
+   every additional payment-slip extraction (payments #2..N). */
+function extractPayment(ex: ExtractedSlip, catalogs: ReconcileCatalogs): MobileScanPayment | null {
+  const p = reconcilePayment(ex, catalogs);
+  if (!p) return null;
   return {
-    method: pmValue,
-    amount:
-      ex.depositRm && ex.depositRm > 0
-        ? ex.depositRm.toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-        : "0.00",
-    approval: ex.approvalCode ?? "",
+    method: p.methodValue,
+    amount: p.depositRm > 0 ? fmtRm(p.depositRm) : "0.00",
+    approval: p.approvalCode,
   };
 }
 
-/* Build the mobile New-SO handoff straight from the AI extraction — the SAME
-   field mapping desktop's buildPrefill uses, reduced to the mobile form's
-   simpler state (free-text venue, plain State/method strings, free-text line
-   name). No dropdown reconcile (the mobile form has no dropdown masters).
+/* Build the mobile New-SO handoff via the SAME shared reconciler desktop uses
+   (reconcileScanPrefill) — so the OCR values are reconciled to the live catalog
+   IDENTICALLY on both platforms (venue text resolved, customer/building type +
+   state + payment method snapped to the maintained dropdowns) — then adapted to
+   the mobile form's simpler state (free-text venue, national phone parts,
+   free-text line name).
 
    `paymentSlips` is the per-slip payment + captured File for EVERY payment slip
    (one per /extract call, in capture order). The prefill's back-compat `payment`
@@ -328,64 +309,54 @@ function buildPrefill(
   d: ExtractResp["data"],
   repName: string,
   paymentSlips: MobileScanPaymentSlip[],
+  catalogs: ReconcileCatalogs,
 ): MobileScanPrefill {
   const ex = d.extracted;
-  const skuByCode = new Map(d.catalog.skus.map((s) => [s.code.toUpperCase(), s]));
+  const rec = reconcileScanPrefill(ex, catalogs);
 
-  // Canonical +60 E.164 phones, then split off the national part (the form's
-  // +60 prefix box owns the country code). First = main, second = emergency.
-  const phonesE164 = (ex.phones ?? [])
-    .map((p) => normalizePhone(p) ?? "")
-    .filter((p) => p.trim() !== "");
-  const mainNational = phonesE164[0] ? splitE164(phonesE164[0]).national : "";
-  const emergencyNational = phonesE164[1] ? splitE164(phonesE164[1]).national : "";
+  // Canonical +60 E.164 phones (from the reconciler), then split off the
+  // national part (the form's +60 prefix box owns the country code).
+  const mainNational = rec.phones[0] ? splitE164(rec.phones[0]).national : "";
+  const emergencyNational = rec.phones[1] ? splitE164(rec.phones[1]).national : "";
 
   return {
-    name: ex.customerName ?? "",
+    name: rec.customerName,
     phone: mainNational,
     emergencyPhone: emergencyNational,
-    // Prefer the parsed street-only line so State/City/Postcode don't double up.
-    address1: ex.addressLine1 ?? ex.address ?? "",
-    state: ex.addressStateMatch?.value ?? "",
-    city: ex.city ?? "",
-    postcode: ex.postcode ?? "",
-    custRef: ex.customerSoRef ?? "",
-    note: ex.remarks ?? "",
-    deliveryDate: ex.deliveryDate && ISO_DATE_RE.test(ex.deliveryDate) ? ex.deliveryDate : "",
-    processingDate: ex.processingDate && ISO_DATE_RE.test(ex.processingDate) ? ex.processingDate : "",
-    customerType: ex.customerTypeMatch?.value ?? "",
-    buildingType: ex.buildingTypeMatch?.value ?? "",
+    address1: rec.address1,
+    state: rec.addressState,
+    city: rec.addressCity,
+    postcode: rec.addressPostcode,
+    custRef: rec.customerSoRef,
+    note: rec.note,
+    deliveryDate: rec.deliveryDate ?? "",
+    processingDate: rec.processingDate ?? "",
+    customerType: rec.customerType,
+    buildingType: rec.buildingType,
     // Mobile venue is free text — seed the raw slip location (nothing lost).
-    venue: ex.location ?? "",
+    venue: rec.venueText,
     // Back-compat first payment = payments[0] (the existing single-payment New
-    // SO seed reads this). Falls back to the front slip's own payment when no
-    // payment-slip-specific extraction produced one.
-    payment: paymentSlips[0] ? { method: paymentSlips[0].method, amount: paymentSlips[0].amount, approval: paymentSlips[0].approval } : extractPayment(ex),
+    // SO seed reads this). Falls back to the front slip's own reconciled payment
+    // when no payment-slip-specific extraction produced one.
+    payment: paymentSlips[0]
+      ? { method: paymentSlips[0].method, amount: paymentSlips[0].amount, approval: paymentSlips[0].approval }
+      : extractPayment(ex, catalogs),
     // One payment per captured payment slip, each with its captured File.
     payments: paymentSlips,
-    lines: (ex.lines ?? []).map((l) => {
-      const code = l.skuMatch?.code ?? "";
-      const sku = code ? skuByCode.get(code.toUpperCase()) : undefined;
-      const qty = l.qtyGuess > 0 ? l.qtyGuess : 1;
-      const price = ((l.priceRmGuess ?? 0)).toLocaleString("en-MY", {
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2,
-      });
-      return {
-        // Matched SKU name, else the raw slip text so the operator has the
-        // handwriting to type the real item against (never lost).
-        name: sku?.name ?? l.rawText ?? "",
-        qty: String(qty),
-        price,
-        remark: "",
-        rawText: l.rawText ?? "",
-        suggestedCode: code,
-        confidence: l.skuMatch?.confidence ?? 0,
-        itemCode: sku?.code ?? "",
-      };
-    }),
+    lines: rec.lines.map((l) => ({
+      // Matched SKU name, else the raw slip text so the operator has the
+      // handwriting to type the real item against (never lost).
+      name: l.description || l.rawText || "",
+      qty: String(l.qty),
+      price: fmtRm(l.unitPriceRm),
+      remark: "",
+      rawText: l.rawText,
+      suggestedCode: l.suggestedCode,
+      confidence: l.confidence,
+      itemCode: l.itemCode,
+    })),
     sampleId: d.sampleId,
-    salesperson: repName || (ex.salesRep ?? "") || null,
+    salesperson: repName || rec.salesRep || null,
     aiOriginal: ex,
   };
 }
@@ -447,6 +418,42 @@ export function MobileScan({
   useEffect(() => {
     authedFetch("/scan-so/warm", { method: "POST" }).catch(() => {});
   }, []);
+
+  /* Live catalogs for the SHARED reconciler — the SAME masters MobileNewSO
+     renders its dropdowns from, so a reconciled value always matches a live
+     option (this is the fix: the mapping now snaps against the live catalog, not
+     stale hardcoded lists). Venues stay a resolvable master even though mobile's
+     venue field is free-text (venueText carries the raw location regardless).
+     The per-order skus catalog is merged in at call time from each /extract
+     response (d.catalog.skus). */
+  const venuesQ = useVenues();
+  const customerTypeOptsQ  = useSoDropdownOptions("customer_type");
+  const buildingTypeOptsQ  = useSoDropdownOptions("building_type");
+  const paymentMethodOptsQ = useSoDropdownOptions("payment_method");
+  const paymentMerchantQ   = useSoDropdownOptions("payment_merchant");
+  const onlineTypeOptsQ    = useSoDropdownOptions("online_type");
+  const installmentPlanQ   = useSoDropdownOptions("installment_plan");
+  const localitiesQ        = useLocalities();
+
+  /* Catalogs sans skus — merged with each /extract response's catalog.skus at
+     call time. Memoised on the resolved option lists. */
+  const catalogsBase = useMemo(
+    () => ({
+      venues:          venuesQ.data ?? [],
+      customerType:    optionsOrFallback("customer_type",    customerTypeOptsQ.data),
+      buildingType:    optionsOrFallback("building_type",    buildingTypeOptsQ.data),
+      paymentMethod:   optionsOrFallback("payment_method",   paymentMethodOptsQ.data),
+      paymentMerchant: optionsOrFallback("payment_merchant", paymentMerchantQ.data),
+      onlineType:      optionsOrFallback("online_type",      onlineTypeOptsQ.data),
+      installmentPlan: optionsOrFallback("installment_plan", installmentPlanQ.data),
+      states:          distinctStates(localitiesQ.data ?? []),
+    }),
+    [
+      venuesQ.data, customerTypeOptsQ.data, buildingTypeOptsQ.data,
+      paymentMethodOptsQ.data, paymentMerchantQ.data, onlineTypeOptsQ.data,
+      installmentPlanQ.data, localitiesQ.data,
+    ],
+  );
 
   const salesperson = (user?.name || user?.email || "").trim();
 
@@ -655,6 +662,9 @@ export function MobileScan({
     const first = responses[0];
     if (!first || !first.success || !first.data) return null;
     const repName = salesperson || (first.data.extracted.salesRep ?? "").trim();
+    /* Full reconciler catalogs = the live option/venue/state masters + this
+       order's SKU catalog (from the first extract response). */
+    const catalogs: ReconcileCatalogs = { ...catalogsBase, skus: first.data.catalog.skus };
     // One MobileScanPaymentSlip per captured slip: the per-call OCR'd payment
     // (falling back to a blank-method / zeroed row when a call couldn't read a
     // payment, so the slip is never silently dropped — the operator picks the
@@ -662,7 +672,7 @@ export function MobileScan({
     // upload.
     const paymentSlips: MobileScanPaymentSlip[] = order.payShots.map((shot, i) => {
       const res = responses[i];
-      const pm = res && res.success && res.data ? extractPayment(res.data.extracted) : null;
+      const pm = res && res.success && res.data ? extractPayment(res.data.extracted, catalogs) : null;
       return {
         method: pm?.method ?? "",
         amount: pm?.amount ?? "0.00",
@@ -670,7 +680,7 @@ export function MobileScan({
         file: shot.file,
       };
     });
-    return buildPrefill(first.data, repName, paymentSlips);
+    return buildPrefill(first.data, repName, paymentSlips, catalogs);
   };
 
   // TRUE background path (owner 2026-07-04): POST /scan-so/enqueue uploads the
@@ -806,7 +816,11 @@ export function MobileScan({
       if (keyMissing) {
         setUnavailable(true);
       } else {
-        setError("Couldn't read the slip — try again.");
+        // Surface the server's OWN plain-language reason (authedFetch already
+        // ran it through humanApiError, so err.message is a clean sentence —
+        // "File too large…", "Unsupported file type…", "The photos could not be
+        // uploaded…") instead of a blanket line that hides WHY it failed.
+        setError(err.message || "Couldn't read the slip — try again.");
       }
     } finally {
       setSubmitting(false);

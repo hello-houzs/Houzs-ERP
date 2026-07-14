@@ -59,9 +59,19 @@ import supplierPortal from "./routes/supplierPortal";
 // read/reply/compose/label/address/access/scope router.
 import mailCenter from "./routes/mail-center";
 import mailInbound from "./routes/mail-inbound";
+// 2990 → Houzs LIVE SO mirror receiver. PRE-AUTH (secret-guarded, called by the
+// 2990 DB via pg_net, no user JWT) — mounted at the top level, outside /api/scm.
+import { soMirror } from "./scm/routes/so-mirror";
+// POS auth (Phase 1 of the 2990-backend replacement): PIN/session login for the
+// 2990 POS. Mounted PRE-AUTH; its two write endpoints re-apply `auth` per-route.
+import pos from "./routes/pos";
 // Announcements — office posts every logged-in user sees as a top banner with
 // a "Got it" ack. Ported from Hookka (single-tenant + office-only here).
 import announcements from "./routes/announcements";
+// Agent Console — owner-only fleet console for the HOOKKA-ported agents
+// (Delivery/Document/CS). Skeleton: controls + runs + config proposals +
+// feedback; the engines register themselves in services/agent-scheduler.ts.
+import agentConsole from "./routes/agent-console";
 import { caseTrack } from "./middleware/caseTrack";
 import { supplierTrack } from "./middleware/supplierTrack";
 import { dbInject, withPgDb } from "./middleware/db";
@@ -75,8 +85,16 @@ import { runProjectDueReminders } from "./services/projectReminders";
 // slot gated to Sundays — no new cron trigger. getSupabaseService is the same
 // service client scan-so.ts uses internally (serviceClient(env)).
 import { distillAllSalespersonRules, warmCatalogCacheForCron, processScanQueueMessage } from "./scm/routes/scan-so";
+import { runAgentHeartbeat } from "./services/agent-scheduler";
 import { getSupabaseService } from "./db/supabase";
 import { getBranding } from "./services/branding";
+// AutoCount inbound SO pull — restored 2026-07-14. Reads SO from the AutoCount
+// middleware and upserts the local `sales_orders` mirror (read-only against
+// AutoCount; writes only ERP tables). Gated by isAutoCountSyncDisabled so the
+// env kill switch still halts it. The mirror feeds Finance/P&L revenue and the
+// ASSR SO lookup, which had been frozen since the 2026-06-13 pause.
+import { runPull } from "./services/pull";
+import { isAutoCountSyncDisabled } from "./services/autocount";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -134,6 +152,11 @@ app.route("/api/supplier-portal", supplierPortal);
 // is set. Mounted at the exact sub-path so the authed mail-center router below
 // never shadows it.
 app.route("/api/mail-center/inbound", mailInbound);
+// 2990 live SO mirror — pre-auth, secret-guarded (x-sync-secret == SYNC_SECRET).
+app.route("/api/sync/so-mirror", soMirror);
+// POS auth — pin-login + sales-staff are PRE-AUTH (before the /api/* gate);
+// set-pin/verify-pin/sales-stats re-apply `auth` inside the router.
+app.route("/api/pos", pos);
 
 // Google Form intake webhook — PRE-AUTH like mail-inbound: called by
 // Google Apps Script (no staff session), self-guarded by the
@@ -209,6 +232,10 @@ app.route("/api/mail-center", mailCenter);
 // (the route handles it internally); list/CRUD/remind/acks-readout are
 // announcements.read / announcements.write gated.
 app.route("/api/announcements", announcements);
+// Agent Console — owner-only (requirePermission("*") inside the router).
+// Deliberately in the public /api tree, NOT /api/scm (the scm subtree swaps
+// c.get('user') to scm.staff UUIDs — the known staff-UUID bigint trap).
+app.route("/api/agents", agentConsole);
 app.route("/api/projects-print", projectsPrint);
 app.route("/api/search", search);
 app.route("/api/assr-print", assrPrint);
@@ -285,6 +312,19 @@ export default {
           })
           .catch((e) => console.error("[cron email-outbox]", e))
       );
+      // AutoCount inbound SO pull (incremental, checkpoint-driven). getSince()
+      // fetches every SO modified since the stored pull_checkpoint and upserts
+      // the local `sales_orders` mirror — so the first run after re-enabling
+      // catches the mirror up from the 2026-06-13 freeze, and every 5-min run
+      // keeps it fresh. Read-only against AutoCount (no writes back). Gated by
+      // the env kill switch; best-effort so a pull failure never breaks the slot.
+      if (!isAutoCountSyncDisabled(env)) {
+        ctx.waitUntil(
+          runPull(env, "SCHEDULED")
+            .then((r) => console.log(`[cron so-pull] ${r.message}`))
+            .catch((e) => console.error("[cron so-pull]", e))
+        );
+      }
     } else if (event.cron === "*/30 * * * *") {
       // ASSR/QMS v3.1 — per-stage alert scanner (half / approaching / breach).
       // Cheap: one query over open stage_history rows, idempotent via the
@@ -306,6 +346,20 @@ export default {
             if (r.fired > 0) console.log(`[cron lead-time-schedule] fired=${r.fired}`);
           })
           .catch((e) => console.error("[cron lead-time-schedule]", e))
+      );
+      // Agent heartbeat — the agents decide their own cadence (scheduler's
+      // >=1h min-gap makes this an effective hourly beat). No-op until an
+      // engine registers; kill switch / pause honoured inside. Best-effort:
+      // a heartbeat failure can never break the other crons.
+      ctx.waitUntil(
+        runAgentHeartbeat(env)
+          .then((r) => {
+            if (r.ran.length)
+              console.log(
+                `[cron agent-heartbeat] ran=${r.ran.map((x) => x.task).join(",")} skipped=${r.skipped.length}`
+              );
+          })
+          .catch((e) => console.error("[cron agent-heartbeat]", e))
       );
       // Keep-warm the scan-SO catalog prompt-cache during Malaysia business
       // hours (UTC+8 ~08:00–22:00 → UTC hour 0–13) so the shared Anthropic

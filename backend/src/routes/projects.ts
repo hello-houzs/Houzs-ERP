@@ -37,13 +37,14 @@ import {
   unconfirmStockTransfer,
   archiveStockTransfer,
   getUserPhasesOnProject,
+  stripSensitiveChecklist,
 } from "../services/projects";
 import {
   getProjectScope,
   projectAccessLevel,
   canSeeProject,
 } from "../services/projectAcl";
-import { getPmsAccess, getPmsRole, financeHiddenForUser, isFinanceViewer } from "../services/pmsAccess";
+import { getPmsAccess, getPmsRole, financeHiddenForUser, isFinanceViewer, isSalesUser } from "../services/pmsAccess";
 import { scopeSalesReportsForUser } from "../services/orgScope";
 import { audit } from "../services/audit";
 import { hasPermission } from "../services/permissions";
@@ -726,6 +727,11 @@ app.get("/", requirePageAccess("projects.list"), async (c) => {
     sort_dir: (c.req.query("sort_dir") || "").toLowerCase() === "asc" ? "asc" : "desc",
     pic_scope: scope?.pic_ids,
     brand_scope: scope?.brands,
+    // Attendee arm — only for a scoped rep (scope != null). OR-in projects
+    // where they're on the Sales Attending list, mirroring /calendar/events
+    // so the list and the calendar agree. Admins/directors/unscoped roles
+    // have scope === null and never carry this (they see all, unchanged).
+    attendee_user_id: scope ? user?.id : undefined,
   });
   // Server-side finance strip (rule 3): the list SELECTs pf.rental /
   // total_sales / contractor_cost per row. Blank them for any non-director
@@ -1308,12 +1314,12 @@ app.get("/analytics/profitability", requirePageAccess("projects.finances"), asyn
 // lack); legacy ?brand= accepted but ignored.
 app.get("/sales-rep-options", requirePermission("projects.write"), async (c) => {
   const rows = await c.env.DB.prepare(
-    `SELECT r.id, r.code, r.name
+    `SELECT r.id, r.code, r.name, r.phone
        FROM sales_reps r
       WHERE r.archived_at IS NULL
         AND r.status = 'active'
       ORDER BY r.code`
-  ).all<{ id: number; code: string; name: string }>();
+  ).all<{ id: number; code: string; name: string; phone: string | null }>();
   return c.json({ data: rows.results ?? [] });
 });
 
@@ -1327,7 +1333,19 @@ app.get("/:id", requirePageAccess("projects.list"), async (c) => {
   // from a nonexistent id). Predicate skipped when the context is unresolved.
   const detail = await getProjectDetail(c.env, id, activeCompanyId(c));
   if (!detail) return c.json({ error: "Not found" }, 404);
-  if (!canSeeProject(user, detail.project)) {
+  // Row-level ACL. canSeeProject covers the PIC line + brand + grace (the same
+  // predicate as the list's PIC arm). A scoped rep on the project's Sales
+  // Attending list also has visibility — the list's attendee arm surfaces the
+  // row, so opening it must not 404. Mirror that arm here using the already-
+  // loaded sales_attendees (rep_user_id; pg driver camelCases → dual-read).
+  // Attendee access is read-only: the write gate (PATCH below) still uses
+  // canSeeProject alone, so attendees can view but not edit a project.
+  const isDetailAttendee =
+    !!user?.id &&
+    (detail.sales_attendees ?? []).some(
+      (a: any) => (a.rep_user_id ?? a.repUserId) === user.id
+    );
+  if (!canSeeProject(user, detail.project) && !isDetailAttendee) {
     return c.json({ error: "Not found" }, 404);
   }
   // Tell the frontend which panels to hide for this user/project.
@@ -1383,6 +1401,15 @@ app.get("/:id", requirePageAccess("projects.list"), async (c) => {
         payment_updated_by: null,
       },
     };
+  }
+  // Quotation / Agreement (WF_SENSITIVE) are DIRECTOR-only (rule 5). Strip
+  // those checklist rows — plus their comments, attachments, and section
+  // progress — on the wire for a position whose PMS role lacks WF_SENSITIVE,
+  // the same defense-in-depth as finance/payment above. Position-gated so
+  // un-migrated users keep legacy access until positions are assigned.
+  const stripSensitive = user.position_id != null && !pms.canSensitive;
+  if (stripSensitive) {
+    payload = stripSensitiveChecklist(payload);
   }
   // Sales-reports row scoping (owner 2026-07): the `sales_reports` panel is a
   // per-rep sale-amount log. A non-director sales user may see only THEIR OWN
@@ -1546,6 +1573,18 @@ app.patch("/:id", requirePermission("projects.write"), async (c) => {
     }>();
   if (!existing) return c.json({ error: "Not found" }, 404);
 
+  // Logistics crew is READ-ONLY for Sales (owner 2026-07): a Sales user — incl.
+  // a Sales Director — may VIEW the scheduled Setup/Dismantle crew + lorries but
+  // NOT edit them; logistics editing stays with logistics/ops roles. The crew
+  // editor writes these two JSON blobs via this PATCH; strip them for any
+  // Sales-classified caller so the write silently no-ops the crew fields
+  // (defense-in-depth behind the read-only FE editor). All other project fields
+  // in the same PATCH still apply.
+  if (isSalesUser(user)) {
+    delete body.setup_crew;
+    delete body.dismantle_crew;
+  }
+
   // Gate: scoped users can only patch projects they can see. And
   // they cannot reassign pic_id away from themselves/their manager.
   if (user?.scope_to_pic) {
@@ -1610,6 +1649,7 @@ app.post("/:id/notes", requireAnyPermission(["projects.write", "projects.chat"])
 app.get("/:id/activity", requirePageAccess("projects.list"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+  const user = c.get("user");
   const since = c.req.query("since") || "";
   const sinceClause = since ? " AND act.created_at > ?" : "";
   const sinceBinds = since ? [since] : [];
@@ -1634,7 +1674,23 @@ app.get("/:id/activity", requirePageAccess("projects.list"), async (c) => {
   )
     .bind(id, ...sinceBinds)
     .all();
-  return c.json({ data: rows.results ?? [] });
+  // Finance/payment strip (Sales-department visibility, rules 3/5/7): the
+  // timeline replays payment_status transitions (to_value = 'paid'/'deposit',
+  // note = payment remarks) and finance-edit markers. The detail GET already
+  // blanks these fields on the wire for a non-director; the activity feed must
+  // not re-leak them. Drop the money-bearing rows for any user finance is
+  // hidden from — same gate (financeHiddenForUser: positioned non-directors).
+  let activity = (rows.results ?? []) as any[];
+  if (financeHiddenForUser(user)) {
+    const HIDDEN_ACTIONS = new Set([
+      "payment_status",
+      "finance_edit",
+      "finance_line_edit",
+      "finance_line_remove",
+    ]);
+    activity = activity.filter((r) => !HIDDEN_ACTIONS.has(r.action));
+  }
+  return c.json({ data: activity });
 });
 
 // ── Mark as read ─────────────────────────────────────────────
@@ -2543,16 +2599,33 @@ app.post("/checklist/:itemId/status", requireAnyPermission(["projects.write", "p
     return c.json({ error: "invalid status" }, 400);
   }
   const item = await c.env.DB.prepare(
-    `SELECT required_perm FROM project_checklist WHERE id = ?`
+    `SELECT required_perm, role_label FROM project_checklist WHERE id = ?`
   )
     .bind(itemId)
-    .first<{ required_perm: string | null }>();
+    .first<{ required_perm: string | null; role_label: string | null }>();
   if (!item) return c.json({ error: "Not found" }, 404);
   if (item.required_perm) {
     const has =
       user.permissions.includes("*") || user.permissions.includes(item.required_perm);
     if (!has) {
       return c.json({ error: `Requires ${item.required_perm}` }, 403);
+    }
+  }
+  // Per-function gate for tick-only roles (Sales-department visibility, rules
+  // 4 & 6) — parity with the /attachments route. A user without projects.write
+  // (drivers/helpers, and a Sales PIC granted only projects.checklist.tick) may
+  // only change the status of a task badged for THEIR role (item.role_label vs
+  // their role_name). Items badged for another function (DRIVER / PURCHASER / …)
+  // stay view+download only for them. projects.write holders / directors are
+  // unaffected (they manage the whole checklist).
+  {
+    const granted = user?.permissions_set ?? user?.permissions;
+    if (!hasPermission(granted, "projects.write")) {
+      const label = (item.role_label ?? "").trim().toUpperCase();
+      const roleName = (user?.role_name ?? "").trim().toUpperCase();
+      if (!label || !roleName || label !== roleName) {
+        return c.json({ error: "You can only update tasks assigned to your role" }, 403);
+      }
     }
   }
   const ok = await setChecklistStatus(c.env, itemId, status, user?.id ?? 0);
@@ -2569,10 +2642,10 @@ app.post("/checklist/:itemId/review", requireAnyPermission(["projects.write", "p
   const body = await c.req.json<{ action?: string; reason?: string; note?: string }>();
   const action = body.action as "submit" | "reject" | "amend" | "approve" | "comment";
   const item = await c.env.DB.prepare(
-    `SELECT required_perm FROM project_checklist WHERE id = ?`
+    `SELECT required_perm, role_label FROM project_checklist WHERE id = ?`
   )
     .bind(itemId)
-    .first<{ required_perm: string | null }>();
+    .first<{ required_perm: string | null; role_label: string | null }>();
   if (!item) return c.json({ error: "Not found" }, 404);
 
   // Approval / rejection gates on required_perm (same rule as
@@ -2582,6 +2655,22 @@ app.post("/checklist/:itemId/review", requireAnyPermission(["projects.write", "p
     const has =
       user.permissions.includes("*") || user.permissions.includes(item.required_perm);
     if (!has) return c.json({ error: `Requires ${item.required_perm}` }, 403);
+  }
+  // Per-function gate for tick-only roles (Sales-department visibility, rules
+  // 4 & 6) — parity with the status / attachments routes, so the review loop
+  // can't be used to progress another function's task. A user without
+  // projects.write may only submit/amend a task badged for THEIR role.
+  // `comment` stays open (collaboration); approve/reject are already
+  // required_perm-gated above.
+  if (action !== "comment") {
+    const granted = user?.permissions_set ?? user?.permissions;
+    if (!hasPermission(granted, "projects.write")) {
+      const label = (item.role_label ?? "").trim().toUpperCase();
+      const roleName = (user?.role_name ?? "").trim().toUpperCase();
+      if (!label || !roleName || label !== roleName) {
+        return c.json({ error: "You can only update tasks assigned to your role" }, 403);
+      }
+    }
   }
 
   try {

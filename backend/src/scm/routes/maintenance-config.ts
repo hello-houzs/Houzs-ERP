@@ -23,7 +23,7 @@ import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import { hasHouzsPerm } from '../lib/houzs-perms';
 import { todayMyt } from '../lib/my-time';
-import { activeCompanyId } from '../lib/companyScope';
+import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
 export const maintenanceConfig = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -88,10 +88,13 @@ maintenanceConfig.get('/resolved', async (c) => {
 
   const supabase = c.get('supabase');
 
-  const { data: rows, error } = await supabase
-    .from('maintenance_config_history')
-    .select('id, scope, config, effective_from, notes, created_at, created_by')
-    .eq('scope', scope)
+  const { data: rows, error } = await scopeToCompany(
+    supabase
+      .from('maintenance_config_history')
+      .select('id, scope, config, effective_from, notes, created_at, created_by')
+      .eq('scope', scope),
+    c,
+  )
     .lte('effective_from', asOf)
     .order('effective_from', { ascending: false })
     .order('created_at', { ascending: false })
@@ -104,10 +107,13 @@ maintenanceConfig.get('/resolved', async (c) => {
 
   // Lookahead for a pending future change so the UI can show "Pricing
   // updates 2026-06-15" banner above the live config.
-  const { data: pending } = await supabase
-    .from('maintenance_config_history')
-    .select('effective_from')
-    .eq('scope', scope)
+  const { data: pending } = await scopeToCompany(
+    supabase
+      .from('maintenance_config_history')
+      .select('effective_from')
+      .eq('scope', scope),
+    c,
+  )
     .gt('effective_from', asOf)
     .order('effective_from', { ascending: true })
     .limit(1);
@@ -128,10 +134,13 @@ maintenanceConfig.get('/history', async (c) => {
   if (!scope) return c.json({ error: 'scope_required' }, 400);
 
   const supabase = c.get('supabase');
-  const { data, error } = await supabase
-    .from('maintenance_config_history')
-    .select('id, scope, config, effective_from, notes, created_at, created_by')
-    .eq('scope', scope)
+  const { data, error } = await scopeToCompany(
+    supabase
+      .from('maintenance_config_history')
+      .select('id, scope, config, effective_from, notes, created_at, created_by')
+      .eq('scope', scope),
+    c,
+  )
     .order('effective_from', { ascending: false })
     .order('created_at', { ascending: false });
 
@@ -263,15 +272,20 @@ maintenanceConfig.delete('/changes/:id', async (c) => {
   const id = c.req.param('id');
   const supabase = c.get('supabase');
 
-  const { data: row, error: findErr } = await supabase
-    .from('maintenance_config_history')
-    .select('id')
-    .eq('id', id)
-    .maybeSingle();
+  const { data: row, error: findErr } = await scopeToCompany(
+    supabase
+      .from('maintenance_config_history')
+      .select('id')
+      .eq('id', id),
+    c,
+  ).maybeSingle();
   if (findErr) return c.json({ error: 'load_failed', reason: findErr.message }, 500);
   if (!row) return c.json({ error: 'not_found' }, 404);
 
-  const { error } = await supabase.from('maintenance_config_history').delete().eq('id', id);
+  const { error } = await scopeToCompany(
+    supabase.from('maintenance_config_history').delete().eq('id', id),
+    c,
+  );
   if (error) {
     if (error.code === '42501' || /permission denied/i.test(error.message)) {
       return c.json({ error: 'forbidden', reason: error.message }, 403);

@@ -1,6 +1,9 @@
 import { useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
+import { useAuth } from "../auth/AuthContext";
+import { isSalesStaff } from "../auth/salesAccess";
+import { MobileVirtualList } from "./MobileVirtualList";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { useChoice } from "../vendor/scm/components/ChoiceDialog";
@@ -16,46 +19,62 @@ import "./mobile.css";
 // can arrive as camelCase or snake_case depending on the path — we always
 // dual-read `r.camelCase ?? r.snake_case` and never crash on a missing one.
 //
-// This screen is a FAITHFUL port of the owner's "Houzs Mobile.html" design
-// (sections #m-service list / #service detail / #service-new form). It uses
-// the design's own CSS classes (.hz-m: .hdr .ey .sochip .so-row .so-grid
-// .spill .pacc .psec-t .pbody .pstage .pdot .rbadge .tinybtn .pgrid2
-// .so-card .so-hd .so-ti .so-bd .fld .fld-l .fld-i .actbar .btn) — not inline
-// styles. Only the genuinely dynamic values (pill colours, stage state,
-// SLA overdue red) remain inline, exactly as the design markup does.
+// 2026-07-14 redesign (service-case-mobile handoff): the list is "Status
+// Cards" (priority stripe + SLA pill + mini 8-step progress) and the
+// detail is TABBED — Overview / Stage / Info / Timeline. "Stage" shows
+// the 8-stage workflow grouped into Intake / Repair / Return phases;
+// tapping a stage chip jumps to Info with that stage's accordion open.
+// Inspection is no longer a stage (mig 0105): Inspect by + the QC-issue
+// fields live inside Under Verification.
 
 type Any = Record<string, any>;
 
-// ── design colour tokens (only for the genuinely dynamic bits the design
-//    also keeps inline: pill bg/fg pairs, stage dot state, SLA red) ──
+// ── Theme C colour tokens (design SC_T) ───────────────────────────
 const INK = "#11140f";
+const INK_SEC = "#3f463a";
 const MUTED = "#767b6e";
 const TEAL = "#16695f";
 const TEAL_DK = "#0c3f39";
 const BROWN = "#a16a2e";
+const BROWN_SOFT = "#f6efd9";
+const BROWN_FG = "#8a6a2e";
 const GREEN = "#2f8a5b";
+const OK_BG = "#e2f0e9";
+const WARN = "#B76B00";
+const WARN_BG = "rgba(183,107,0,0.12)";
 const RED = "#b23a3a";
+const ERR_BG = "rgba(178,58,58,0.08)";
 const GREY = "#9aa093";
+const BLUE = "#1F3A8A";
 const LINE = "#d6d9d2";
+const LINE_SOFT = "rgba(34,31,32,0.10)";
+const DIM = "#e3e6e0";
 const FIELD_BG = "#f4f6f3";
 
-// Ordered stage pipeline (backend ALL_STAGES). Short mobile labels as per
-// the design's 9-stage pipeline (Review…Completed).
-const STAGES: { key: string; label: string }[] = [
-  { key: "pending_review", label: "Review" },
-  { key: "under_verification", label: "Verify" },
-  { key: "pending_solution", label: "Solution" },
-  { key: "pending_inspection", label: "Inspection" },
-  { key: "pending_item_pickup", label: "Item Pickup" },
-  { key: "pending_supplier_pickup", label: "Supplier" },
-  { key: "pending_item_ready", label: "Item Ready" },
-  { key: "pending_delivery_service", label: "Delivery" },
-  { key: "completed", label: "Completed" },
+// Ordered stage pipeline (backend ALL_STAGES) — 7 stages since mig 0110
+// retired Item Pickup (the customer-side collection lives inside the
+// Supplier stage; Pending Inspection went the same way in mig 0105).
+// `label` is the chip-short form, `long` the card/badge form; `owner`
+// mirrors ServiceProgressTracker's owner map.
+const STAGES: { key: string; label: string; long: string; owner: string }[] = [
+  { key: "pending_review",           label: "Review",      long: "Pending Review",              owner: "Service Admin" },
+  { key: "under_verification",       label: "Verify",      long: "Under Verification",          owner: "Service Admin" },
+  { key: "pending_solution",         label: "Solution",    long: "Pending Solution",            owner: "Service Admin" },
+  { key: "pending_supplier_pickup",  label: "Supplier",    long: "Supplier Pickup / Return",    owner: "Service Admin" },
+  { key: "pending_item_ready",       label: "Item Ready",  long: "Pending Item Ready",          owner: "Service Admin" },
+  { key: "pending_delivery_service", label: "Delivery",    long: "Pending Delivery / Service",  owner: "Logistic Admin" },
+  { key: "completed",                label: "Completed",   long: "Completed",                   owner: "System" },
 ];
 const STAGE_INDEX: Record<string, number> = Object.fromEntries(STAGES.map((s, i) => [s.key, i]));
+// Stage-tab grouping (design StagePhases): Intake / Repair / Return.
+const PHASES: { name: string; idx: number[] }[] = [
+  { name: "Intake", idx: [0, 1, 2] },
+  { name: "Repair", idx: [3, 4] },
+  { name: "Return", idx: [5, 6] },
+];
 
 // ── Enum option lists (mirrors desktop ServiceCases.tsx) ──────────
-// PATCH /:id accepts these column values; the mobile edit sheets write
+// PATCH /:id accepts these column values; the mobile edit controls write
 // the same field names + values the desktop InlineEdit controls do.
 const PRIORITY_OPTIONS = ["low", "normal", "high", "urgent"] as const;
 const ISSUE_CATEGORY_OPTIONS = [
@@ -78,14 +97,23 @@ const VERIFICATION_OPTIONS = [
   { value: "needs_more_info", label: "Needs more info" },
   { value: "rejected", label: "Rejected" },
 ] as const;
-// QC / inspection result (v3.1 inspection_result column).
-const INSPECTION_OPTIONS = ["pass", "fail", "na"] as const;
-// Timeline note audience — the /:id/notes endpoint only accepts these two
-// ("system" is reserved for auto events and rejected server-side).
-const NOTE_AUDIENCE_OPTIONS = [
-  { value: "purchasing", label: "Internal (Purchasing)", detail: "Hidden from the customer" },
-  { value: "customer", label: "Customer-visible", detail: "Shows on the customer portal" },
+// QC result values shared by qc_issue_result (on receipt, mig 0105) and
+// inspection_result (after repair, v3.1).
+const QC_RESULT_OPTIONS = [
+  { value: "pass", label: "Pass" },
+  { value: "fail", label: "Fail" },
+  { value: "na", label: "N/A" },
 ] as const;
+// Timeline note audience buckets (mig 0108) — the /:id/notes endpoint
+// accepts these four; "system" is reserved for auto events and rejected
+// server-side. Only "customer" is visible outside the team (portal).
+const NOTE_AUDIENCE_OPTIONS = [
+  { value: "service", label: "Service" },
+  { value: "customer", label: "Customer" },
+  { value: "supplier", label: "Supplier" },
+  { value: "sales", label: "Sales" },
+] as const;
+type NoteAudience = (typeof NOTE_AUDIENCE_OPTIONS)[number]["value"];
 // Print copy variants — desktop opens /api/assr-print/:id?variant=…
 const PRINT_VARIANTS = [
   { value: "customer", label: "Customer copy" },
@@ -94,41 +122,15 @@ const PRINT_VARIANTS = [
 ] as const;
 // Upload constraints mirror the PUT /:id/attachments backend guard.
 const ATTACH_EXTS = new Set(["jpg", "jpeg", "png", "webp", "mp4", "pdf"]);
+const ATTACH_ACCEPT = "image/jpeg,image/png,image/webp,video/mp4,application/pdf";
 
-// Pill colours — design PILL map (bg, fg). Open stages read as amber, the
-// "waiting on our side" ones teal, completed green, cancelled red.
-const STAGE_PILL: Record<string, [string, string]> = {
-  pending_review: ["#f6efd9", "#6e4d12"],
-  under_verification: ["#f6efd9", "#6e4d12"],
-  pending_solution: ["#f6efd9", "#6e4d12"],
-  pending_inspection: ["#e1efed", TEAL_DK],
-  pending_item_pickup: ["#f6efd9", "#6e4d12"],
-  pending_supplier_pickup: ["#f6efd9", "#6e4d12"],
-  pending_item_ready: ["#e1efed", TEAL_DK],
-  pending_delivery_service: ["#f6efd9", "#6e4d12"],
-  completed: ["#e2f0e9", GREEN],
+// Priority meta — design SC_PRIORITY (Theme C hues).
+const PRIORITY_META: Record<string, { label: string; color: string }> = {
+  low: { label: "Low", color: GREY },
+  normal: { label: "Normal", color: TEAL },
+  high: { label: "High", color: WARN },
+  urgent: { label: "Urgent", color: "#B71C1C" },
 };
-const PRIORITY_PILL: Record<string, [string, string]> = {
-  urgent: ["#f8eaea", RED],
-  high: ["#f6efd9", "#6e4d12"],
-  normal: [FIELD_BG, "#6e4d12"],
-  low: [FIELD_BG, MUTED],
-};
-
-// Canonical badge class per spec STATES(stage): the "waiting on our side"
-// stages read petrol (b-brand), completed green, everything else amber.
-function stageBadgeClass(stage: string): string {
-  if (stage === "completed") return "b-green";
-  if (stage === "pending_inspection" || stage === "pending_item_ready") return "b-brand";
-  return "b-amber";
-}
-// Spec priority chip: LOW=grey · MEDIUM/normal=amber · HIGH/urgent=red.
-function priorityBadgeClass(priority: string): string {
-  const p = priority.toLowerCase();
-  if (p === "high" || p === "urgent") return "b-red";
-  if (p === "low") return "b-grey";
-  return "b-amber";
-}
 
 // ── field readers (dual-read camelCase / snake_case) ──────────────
 const get = (r: Any, ...keys: string[]) => {
@@ -149,12 +151,32 @@ const hoursToDeadline = (r: Any): number | null => {
   return v == null ? null : Number(v);
 };
 
+// SLA state for the list pills / detail banner (design SC_slaState).
+type SlaTone = "breach" | "risk" | "ok" | "done";
+const SLA_TONE: Record<SlaTone, { fg: string; bg: string }> = {
+  breach: { fg: RED, bg: "#f8eaea" },
+  risk: { fg: WARN, bg: WARN_BG },
+  ok: { fg: GREEN, bg: OK_BG },
+  done: { fg: GREY, bg: FIELD_BG },
+};
+const slaStateOf = (r: Any): { tone: SlaTone; label: string } => {
+  if (stageOf(r) === "completed") return { tone: "done", label: "Closed" };
+  const h = hoursToDeadline(r);
+  if (h == null || !isFinite(h)) return { tone: "ok", label: "No SLA" };
+  if (h < 0) {
+    const days = Math.floor(-h / 24);
+    return { tone: "breach", label: days >= 1 ? `${days}d overdue` : `${Math.abs(Math.round(h))}h overdue` };
+  }
+  if (h < 24) return { tone: "risk", label: `Due in ${Math.round(h)}h` };
+  return { tone: "ok", label: `Due in ${Math.floor(h / 24)}d` };
+};
+
 // ── Lookup option hooks (mirror desktop) ──────────────────────────
-// The four assr pickers live behind /api/assr/lookups/:kind, which
-// returns { data: [{ id, slug, name, sort_order, active }] }. Desktop
-// reads issue-categories by `name` and resolution-methods / priorities
-// by `slug`. We do the same, falling back to the hardcoded constant
-// until the (cheap, cached) call returns so the form stays usable.
+// The assr pickers live behind /api/assr/lookups/:kind, which returns
+// { data: [{ id, slug, name, sort_order, active }] }. Desktop reads
+// issue-categories by `name` and resolution-methods / priorities by
+// `slug`. We do the same, falling back to the hardcoded constant until
+// the (cheap, cached) call returns so the form stays usable.
 type LookupOpt = { slug: string; name: string };
 function useLookupRows(kind: string): LookupOpt[] {
   const { data } = useQuery({
@@ -218,8 +240,7 @@ const RESOLUTION_LABELS: Record<string, string> = {
 const resolutionLabel = (v: string) => RESOLUTION_LABELS[v] ?? cap(v.replace(/_/g, " "));
 const prettyStage = (stage: string) => {
   const idx = STAGE_INDEX[stage];
-  const label = idx != null ? STAGES[idx].label : stage.replace(/_/g, " ");
-  return label ? cap(label) : "—";
+  return idx != null ? STAGES[idx].long : cap(stage.replace(/_/g, " ")) || "—";
 };
 const dm = (d: string | null | undefined) => {
   if (!d) return "—";
@@ -233,7 +254,7 @@ const dtm = (d: string | null | undefined) => {
   if (isNaN(+dt)) return "—";
   return dt.toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 };
-// Human overdue / due-in from hours-to-deadline (drives the SLA chip).
+// Human overdue / due-in from hours-to-deadline (drives the SLA banner).
 const slaText = (h: number | null): { label: string; overdue: boolean } | null => {
   if (h == null || !isFinite(h)) return null;
   if (h < 0) {
@@ -244,12 +265,14 @@ const slaText = (h: number | null): { label: string; overdue: boolean } | null =
   return { label: days >= 1 ? `Due in ${days} days` : `Due in ${Math.round(h)}h`, overdue: false };
 };
 
-/** Mobile Service Case (ASSR) — faithful port of the owner's design.
- *  Searchable list + rich read-first detail + new-case form, all wired to
+/** Mobile Service Case (ASSR) — Status Cards list + tabbed detail
+ *  (Overview / Stage / Info / Timeline) + new-case sheet, all wired to
  *  the core /api/assr backend. */
-export function MobileServiceCase({ onBack }: { onBack?: () => void }) {
+export function MobileServiceCase({ onBack, startNew = false }: { onBack?: () => void; startNew?: boolean }) {
   const [openId, setOpenId] = useState<number | null>(null);
-  const [showNew, setShowNew] = useState(false);
+  // `startNew` (from the Orders FAB "+ New Service Case") opens the create sheet
+  // straight away.
+  const [showNew, setShowNew] = useState(startNew);
 
   if (openId != null) {
     return <CaseDetail id={openId} onBack={() => setOpenId(null)} />;
@@ -262,7 +285,7 @@ export function MobileServiceCase({ onBack }: { onBack?: () => void }) {
   );
 }
 
-// ── LIST (#m-service) ─────────────────────────────────────────────
+// ── LIST — "Status Cards" (design ListA) ──────────────────────────
 function CaseList({
   onBack,
   onOpen,
@@ -272,31 +295,44 @@ function CaseList({
   onOpen: (id: number) => void;
   onNew: () => void;
 }) {
+  const { user, can } = useAuth();
   const [q, setQ] = useState("");
   const [chip, setChip] = useState("all");
   const [sort, setSort] = useState<"sla" | "no">("sla");
 
+  // Same capability the desktop Service-Cases nav uses: service_cases.read OR
+  // any Sales staff (showForSales). Gate the /api/assr read so it never fires a
+  // 403 for a user without access (OFF, not hide) — defence-in-depth on top of
+  // the shell's tab gating.
+  const canViewCases = can("service_cases.read") || isSalesStaff(user);
   const { data, isLoading, error } = useQuery({
     queryKey: ["mobile-assr-list"],
     queryFn: () => api.get<{ data?: Any[] }>("/api/assr?per_page=200"),
     staleTime: 30_000,
+    enabled: canViewCases,
   });
   const all = data?.data ?? [];
 
-  // Design chips (m-service): All / Pending / Item ready / Delivery / Completed.
+  const isMine = (r: Any) => {
+    const uid = user?.id;
+    if (!uid) return false;
+    return Number(get(r, "assignedTo", "assigned_to") ?? 0) === uid
+      || Number(get(r, "assignedTo2", "assigned_to_2") ?? 0) === uid;
+  };
+
+  // Design chips (ListA): All / SLA risk / Urgent / Mine, with counts.
   const CHIPS: { key: string; label: string; match: (r: Any) => boolean }[] = [
     { key: "all", label: "All", match: () => true },
-    { key: "pending", label: "Pending", match: (r) => ["pending_item_pickup", "pending_supplier_pickup", "pending_review", "under_verification", "pending_solution", "pending_inspection"].includes(stageOf(r)) },
-    { key: "item_ready", label: "Item ready", match: (r) => stageOf(r) === "pending_item_ready" },
-    { key: "delivery", label: "Delivery", match: (r) => stageOf(r) === "pending_delivery_service" },
-    { key: "completed", label: "Completed", match: (r) => stageOf(r) === "completed" },
+    { key: "risk", label: "SLA risk", match: (r) => ["breach", "risk"].includes(slaStateOf(r).tone) },
+    { key: "urgent", label: "Urgent", match: (r) => priorityOf(r) === "urgent" },
+    { key: "mine", label: "Mine", match: isMine },
   ];
 
   const counts = useMemo(() => {
     const c: Record<string, number> = {};
     for (const ch of CHIPS) c[ch.key] = all.filter(ch.match).length;
     return c;
-  }, [all]);
+  }, [all, user?.id]);
 
   const rows = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -304,7 +340,8 @@ function CaseList({
     let out = all.filter((r) => {
       if (!active.match(r)) return false;
       if (needle) {
-        const hay = `${customer(r)} ${caseNo(r)} ${issueOf(r) ?? ""} ${get(r, "itemDescription", "item_description", "itemCode", "item_code") ?? ""}`.toLowerCase();
+        // Search covers case no / SO / Ref / customer / issue / item.
+        const hay = `${customer(r)} ${caseNo(r)} ${get(r, "docNo", "doc_no") ?? ""} ${get(r, "refNo", "ref_no") ?? ""} ${issueOf(r) ?? ""} ${get(r, "itemDescription", "item_description", "itemCode", "item_code") ?? ""}`.toLowerCase();
         if (!hay.includes(needle)) return false;
       }
       return true;
@@ -320,11 +357,11 @@ function CaseList({
       return ha - hb;
     });
     return out;
-  }, [all, q, chip, sort]);
+  }, [all, q, chip, sort, user?.id]);
 
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
-      {/* header (.hdr) — eyebrow + title + new-case iconbtn (spec #service-list) */}
+      {/* header (.hdr) — eyebrow + title + new-case iconbtn */}
       <header className="hdr">
         <div className="hdr-row">
           <div>
@@ -343,19 +380,36 @@ function CaseList({
         <div className="hdr-row" style={{ marginTop: 11 }}>
           <div className="searchbar">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={GREY} strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4-4" /></svg>
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search case · customer · item" />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search case · SO · Ref · customer" />
           </div>
           <select value={sort} onChange={(e) => setSort(e.target.value as "sla" | "no")} style={{ flex: "none", fontFamily: "inherit", fontSize: 12, color: "var(--mut)", background: "var(--bg)", border: "1px solid var(--line)", borderRadius: 10, padding: "0 8px", height: 38, appearance: "none", WebkitAppearance: "none" }}>
             <option value="sla">Sort: SLA</option>
             <option value="no">Sort: Case</option>
           </select>
         </div>
-        <div className="chips" style={{ marginTop: 11 }}>
-          {CHIPS.map((c) => (
-            <button key={c.key} className={`chip${chip === c.key ? " on" : ""}`} onClick={() => setChip(c.key)}>
-              {c.label} ({counts[c.key] ?? 0})
-            </button>
-          ))}
+        {/* status chips — petrol active pill with count badge (design SegChips) */}
+        <div className="hz-scroll" style={{ display: "flex", gap: 8, overflowX: "auto", marginTop: 11, paddingBottom: 2 }}>
+          {CHIPS.map((c) => {
+            const on = chip === c.key;
+            return (
+              <button
+                key={c.key}
+                onClick={() => setChip(c.key)}
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: 6, flex: "none",
+                  padding: "7px 13px", borderRadius: 999, cursor: "pointer",
+                  border: `1px solid ${on ? TEAL : LINE_SOFT}`,
+                  background: on ? TEAL : "#fff", color: on ? "#fff" : INK_SEC,
+                  fontSize: 12.5, fontWeight: 600, fontFamily: "inherit",
+                }}
+              >
+                {c.label}
+                <span style={{ fontSize: 11, fontWeight: 700, padding: "0 6px", borderRadius: 999, background: on ? "rgba(255,255,255,0.22)" : FIELD_BG, color: on ? "#fff" : MUTED }}>
+                  {counts[c.key] ?? 0}
+                </span>
+              </button>
+            );
+          })}
         </div>
       </header>
 
@@ -363,49 +417,113 @@ function CaseList({
         {isLoading && <div style={{ textAlign: "center", color: "var(--mut2)", fontSize: 12, padding: "26px 0" }}>Loading…</div>}
         {error && <div style={{ textAlign: "center", color: "var(--red)", fontSize: 12, padding: "26px 0" }}>Couldn't load service cases. Pull to retry.</div>}
         {!isLoading && !error && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {rows.map((r) => {
+          <>
+            {rows.length > 0 && (
+              <MobileVirtualList
+                items={rows}
+                getKey={(r) => Number(get(r, "id"))}
+                estimateHeight={132}
+                renderItem={(r) => {
               const id = Number(get(r, "id"));
               const cancelled = statusOf(r).toLowerCase() === "cancelled";
-              const sla = slaText(hoursToDeadline(r));
+              const pr = PRIORITY_META[priorityOf(r)] ?? PRIORITY_META.normal;
+              const sla = slaStateOf(r);
+              const tone = SLA_TONE[sla.tone];
               const item = get(r, "itemDescription", "item_description", "itemCode", "item_code");
-              // Design card (.so-row): title(customer) + stage pill, then a
-              // .so-grid of the config field rows — Case · Item · Issue · SLA.
+              const idx = STAGE_INDEX[stageOf(r)] ?? -1;
               return (
-                <div key={id} className={`so-row${cancelled ? " cancelled" : ""}`} onClick={() => onOpen(id)} style={{ cursor: "pointer" }}>
-                  <div className="so-row-head" style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
-                    <span className="so-row-name" style={{ flex: 1, minWidth: 0, whiteSpace: "normal" }}>{customer(r)}</span>
-                    <span style={{ flex: "none" }}><span className={`badge ${stageBadgeClass(stageOf(r))}`}>{prettyStage(stageOf(r))}</span></span>
-                  </div>
-                  <div className="so-grid">
-                    <span className="so-k">Case</span><span className="so-v money">{String(caseNo(r))}</span>
-                    <span className="so-k">Item</span><span className="so-v">{item ? String(item) : "—"}</span>
-                    <span className="so-k">SLA</span><span className="so-v" style={sla?.overdue ? { color: "var(--red)", fontWeight: 700 } : undefined}>{sla ? sla.label : "—"}</span>
+                <div
+                  key={id}
+                  onClick={() => onOpen(id)}
+                  style={{
+                    background: "#fff", borderRadius: 16, border: `1px solid ${LINE_SOFT}`,
+                    overflow: "hidden", cursor: "pointer", position: "relative",
+                    boxShadow: "0 1px 2px rgba(17,20,15,0.03)", opacity: cancelled ? 0.55 : 1,
+                  }}
+                >
+                  {/* priority stripe */}
+                  <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 4, background: pr.color }} />
+                  <div style={{ padding: "13px 15px 13px 17px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                      <span className="money" style={{ fontSize: 11.5, color: MUTED, fontWeight: 600 }}>{String(caseNo(r))}</span>
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                        <span style={{ width: 7, height: 7, borderRadius: "50%", background: pr.color, flex: "none" }} />
+                        <span style={{ fontSize: 11.5, fontWeight: 600, color: pr.color }}>{pr.label}</span>
+                      </span>
+                      <div style={{ flex: 1 }} />
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "2px 8px", borderRadius: 999, background: tone.bg, color: tone.fg, fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>
+                        {sla.label}
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", gap: 11, alignItems: "flex-start" }}>
+                      <Avatar name={String(customer(r))} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 15, fontWeight: 700, color: INK }}>{customer(r)}</div>
+                        <div style={{ fontSize: 12.5, color: INK_SEC, marginTop: 1, ...cellEllipsis }}>{item ? String(item) : "—"}</div>
+                      </div>
+                    </div>
+                    <div style={{ marginTop: 12 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
+                        <span style={{ fontSize: 11.5, fontWeight: 600, color: TEAL_DK }}>{prettyStage(stageOf(r))}</span>
+                        <span style={{ fontSize: 11, color: GREY }}>{Math.max(idx, 0) + 1}/{STAGES.length}</span>
+                      </div>
+                      {/* mini 8-step progress bars */}
+                      <div style={{ display: "flex", gap: 3, alignItems: "center" }}>
+                        {STAGES.map((s, i) => {
+                          const done = idx >= 0 && i < idx;
+                          const cur = i === idx;
+                          return (
+                            <div key={s.key} style={{ flex: 1, height: cur ? 5 : 4, borderRadius: 999, background: done || cur ? TEAL : DIM, opacity: done ? 0.55 : 1 }} />
+                          );
+                        })}
+                      </div>
+                    </div>
                   </div>
                 </div>
               );
-            })}
+                }}
+              />
+            )}
             {!rows.length && (
               <div className="empty">
                 <div className="empty-t">Nothing matches</div>
                 <div className="empty-s">Try a different filter or search.</div>
               </div>
             )}
-          </div>
+          </>
         )}
       </div>
     </div>
   );
 }
 
-// ── DETAIL (#service) ─────────────────────────────────────────────
+// initials avatar (design SC_Avatar) — hue derived from the name.
+function Avatar({ name, size = 38 }: { name: string; size?: number }) {
+  const init = name.split(/\s+/).map((w) => w[0]).filter(Boolean).slice(0, 2).join("").toUpperCase() || "—";
+  const hue = [...name].reduce((a, ch) => a + ch.charCodeAt(0), 0) % 360;
+  return (
+    <div style={{
+      width: size, height: size, borderRadius: "50%", flex: "none",
+      background: `oklch(0.62 0.09 ${hue})`, color: "#fff",
+      display: "grid", placeItems: "center", fontSize: size * 0.36, fontWeight: 600, letterSpacing: 0.2,
+    }}>{init}</div>
+  );
+}
+
+// ── DETAIL — tabbed (Overview / Stage / Info / Timeline) ──────────
+type DetailTab = "overview" | "stage" | "info" | "timeline";
+
 function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
   const qc = useQueryClient();
   const confirm = useConfirm();
   const notify = useNotify();
   const choose = useChoice();
+  const [tab, setTab] = useState<DetailTab>("overview");
+  const [openStage, setOpenStage] = useState<string | null>(null);
+  const [advOpen, setAdvOpen] = useState(false);
+  const [noteOpen, setNoteOpen] = useState(false);
   const [noteDraft, setNoteDraft] = useState("");
-  const [noteAudience, setNoteAudience] = useState<"purchasing" | "customer">("purchasing");
+  const [noteAudience, setNoteAudience] = useState<NoteAudience>("service");
   const [tlFilter, setTlFilter] = useState("all");
   const [busy, setBusy] = useState(false);
 
@@ -447,7 +565,7 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
     }, failTitle);
 
   const addNote = useMutation({
-    mutationFn: (payload: { note: string; category: "purchasing" | "customer" }) =>
+    mutationFn: (payload: { note: string; category: NoteAudience }) =>
       api.post<Any>(`/api/assr/${id}/notes`, payload),
     onSuccess: () => {
       setNoteDraft("");
@@ -460,12 +578,22 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
   const activity: Any[] = data?.activity ?? [];
   const attachments: Any[] = data?.attachments ?? [];
   const relatedPOs: Any[] = data?.related_pos ?? data?.relatedPos ?? [];
+  const stageHistory: Any[] = data?.stage_history ?? data?.stageHistory ?? [];
   const portalToken = get(data ?? {}, "portal_token", "portalToken");
 
   const sla = slaText(hoursToDeadline(c));
   const leadDays = get(c, "stageTargetDays", "stage_target_days");
   const resolutionMethod = get(c, "resolutionMethod", "resolution_method");
   const curStageIdx = STAGE_INDEX[stageOf(c)] ?? -1;
+  const nextStage = curStageIdx >= 0 ? STAGES[curStageIdx + 1] : undefined;
+  const isCompleted = stageOf(c) === "completed";
+
+  // Latest history row per stage (drives done-times in the Info accordion).
+  const historyByStage = useMemo(() => {
+    const m: Record<string, Any> = {};
+    for (const h of stageHistory) m[String(get(h, "stage") ?? "")] = h;
+    return m;
+  }, [stageHistory]);
 
   // Timeline audience categories present on activity rows.
   const timelineCats = useMemo(() => {
@@ -488,7 +616,7 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
   // Mirrors desktop openAddItem(): GET /api/assr/lookup-items/:doc_no returns
   // { items: [{ item_code, item_description, qty? }] }. We only offer items
   // that aren't already on the case; when nothing is pickable the "+ Add item"
-  // action is hidden entirely (see the Product & PO section below).
+  // action is hidden entirely (see the Product info section below).
   type LookupItem = { item_code: string; item_description: string | null; qty?: number };
   const caseDocNo = String(get(c, "docNo", "doc_no") ?? "").trim();
   const { data: lookupData } = useQuery({
@@ -547,7 +675,7 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
     }, "Couldn't add item");
   };
 
-  // ── Remove product item → DELETE /:id/items/:itemId (desktop parity) ────────
+  // ── Remove product item → DELETE /:id/items/:itemId (desktop parity) ──
   const removeItem = async (it: Any) => {
     if (busy) return;
     const itemId = Number(get(it, "id"));
@@ -559,9 +687,9 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
     }, "Couldn't remove item");
   };
 
-  // ── Assign PIC → PATCH /:id { assigned_to } (desktop parity) ────────────────
-  // The picker is narrowed to Operations-department members, keeping the current
-  // assignee selectable, exactly as the desktop DetailContent PIC select does.
+  // ── Assign PIC → PATCH /:id { assigned_to } (desktop parity) ─────
+  // The picker is narrowed to Operations-department members, keeping the
+  // current assignee selectable, exactly as the desktop PIC select does.
   const assignPic = async () => {
     if (busy) return;
     const curId = Number(get(c, "assignedTo", "assigned_to") ?? 0) || null;
@@ -634,474 +762,858 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
     }, "Couldn't archive");
   };
 
+  // Stage transition (used by the Stage tab select + the Advance sheet).
+  const transitionTo = async (target: string, withConfirm = true) => {
+    if (!target || target === stageOf(c)) return;
+    if (withConfirm) {
+      const label = STAGES[STAGE_INDEX[target]]?.long ?? target;
+      if (!(await confirm({ title: `Move to ${label}?`, confirmLabel: "Change stage" }))) return;
+    }
+    await runWrite(async () => {
+      await api.post(`/api/assr/${id}/transition`, { stage: target });
+    }, "Stage change failed");
+  };
+
+  // Stage-chip tap (Stage tab) → jump to Info with that stage expanded.
+  const jumpToStage = (key: string) => {
+    setOpenStage(key);
+    setTab("info");
+  };
+
+  const openStageEffective = openStage ?? (curStageIdx >= 0 ? STAGES[curStageIdx].key : null);
+
+  const TABS: { k: DetailTab; label: string }[] = [
+    { k: "overview", label: "Overview" },
+    { k: "stage", label: "Stage" },
+    { k: "info", label: "Info" },
+    { k: "timeline", label: "Timeline" },
+  ];
+
+  // ── Per-stage Info panels (handoff STAGE_FIELDS map) ─────────────
+  function stagePanel(key: string, state: "done" | "current" | "future") {
+    const dis = busy || isArchived;
+    switch (key) {
+      case "pending_review":
+        return (
+          <>
+            <KV label="Complaint" value={issueOf(c) ? String(issueOf(c)) : "—"} multiline />
+            <KV label="Issue category" value={String(get(c, "issueCategory", "issue_category") ?? "—")} />
+            <KV label="Complained date" value={dm(get(c, "complainedDate", "complained_date"))} />
+            <div style={{ fontSize: 10.5, color: GREY, marginTop: 6 }}>Edit the complaint under Overview → Issue.</div>
+          </>
+        );
+      case "under_verification":
+        return (
+          <>
+            <div className="fld-l">Outcome</div>
+            <div style={{ display: "flex", gap: 7, margin: "6px 0 10px", flexWrap: "wrap" }}>
+              {VERIFICATION_OPTIONS.map((o) => {
+                const active = String(get(c, "verificationOutcome", "verification_outcome") ?? "") === o.value;
+                return (
+                  <button
+                    key={o.value}
+                    onClick={() => { if (!dis && !active) patchCase({ verification_outcome: o.value }, "Couldn't save verification"); }}
+                    disabled={dis}
+                    className="tinybtn"
+                    style={active ? { background: TEAL, borderColor: TEAL, color: "#fff" } : undefined}
+                  >
+                    {o.label}
+                  </button>
+                );
+              })}
+            </div>
+            <RootCauseField
+              value={get(c, "verifiedRootCause", "verified_root_cause")}
+              busy={busy}
+              onSave={(v) => patchCase({ verified_root_cause: v || null }, "Couldn't save verification")}
+            />
+            {/* QC issue inspection — on receipt (mig 0105: folded in from
+                the retired Pending Inspection stage). The qc_issue_result
+                column exists but ships no UI — Nick 2026-07-14: date +
+                photos suffice; the verdict is the Outcome above. */}
+            <EditRow label="QC issue date" type="date" value={get(c, "qcReceiptDate", "qc_receipt_date")} busy={busy} disabled={dis} onSave={(v) => patchCase({ qc_receipt_date: v }, "Couldn't save QC issue date")} />
+            {/* Inspect by — own team or supplier (inspection_by, mig 0073). */}
+            <div className="fld-l" style={{ marginTop: 10, marginBottom: 8 }}>Inspect by</div>
+            <div style={{ display: "flex", gap: 8, marginBottom: 4 }}>
+              {([{ v: "own", label: "Own team" }, { v: "supplier", label: "Supplier" }] as const).map((o) => {
+                const on = String(get(c, "inspectionBy", "inspection_by") ?? "") === o.v;
+                return (
+                  <button
+                    key={o.v}
+                    onClick={() => { if (!dis) patchCase({ inspection_by: on ? null : o.v }, "Couldn't save inspect-by"); }}
+                    disabled={dis}
+                    style={{
+                      flex: 1, height: 40, borderRadius: 10, cursor: dis ? "default" : "pointer", fontFamily: "inherit",
+                      fontSize: 13, fontWeight: 600, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6,
+                      border: `1px solid ${on ? BROWN : LINE}`, background: on ? BROWN_SOFT : "#fff", color: on ? BROWN_FG : INK_SEC,
+                      opacity: dis ? 0.6 : 1,
+                    }}
+                  >
+                    {on && (
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={BROWN_FG} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12l5 5L20 6" /></svg>
+                    )}
+                    {o.label}
+                  </button>
+                );
+              })}
+            </div>
+            {/* QC issue photos — on-receipt evidence, same category as the
+                desktop Verification card (receipt_evidence). */}
+            <PhotoGrid
+              caseId={id}
+              attachments={attachments.filter((a) => String(get(a, "category") ?? "") === "receipt_evidence")}
+              category="receipt_evidence"
+              label="QC issue photos"
+              hint="Tap to capture or upload · on receipt"
+              accent={BROWN}
+              onChanged={refetch}
+              notify={notify}
+              confirm={confirm}
+            />
+            {get(c, "verifiedByName", "verified_by_name") && (
+              <div style={{ fontSize: 10.5, color: MUTED, background: FIELD_BG, borderRadius: 9, padding: "8px 10px", marginTop: 10 }}>
+                Verified by {String(get(c, "verifiedByName", "verified_by_name"))} · {dm(get(c, "verifiedAt", "verified_at"))}
+              </div>
+            )}
+          </>
+        );
+      case "pending_solution":
+        return (
+          <>
+            <EditRow
+              label="Resolution method"
+              type="select"
+              value={resolutionMethod}
+              options={[{ value: "", label: "—" }, ...resolutionOptions.map((o) => ({ value: o, label: resolutionLabel(o) }))]}
+              busy={busy}
+              disabled={dis}
+              onSave={(v) => patchCase({ resolution_method: v }, "Couldn't save resolution")}
+            />
+            <div className="fld-l" style={{ marginTop: 8 }}>Supplier</div>
+            {creditorCode ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 9, border: `1px solid ${DIM}`, borderRadius: 10, padding: "10px 11px", marginTop: 5 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12.5, fontWeight: 700, color: INK }}>{String(get(c, "creditorName", "creditor_name") ?? creditorCode)}</div>
+                  <div className="money" style={{ fontSize: 10, color: GREY }}>{String(creditorCode)}</div>
+                </div>
+              </div>
+            ) : (
+              <div style={{ fontSize: 11, color: GREY, marginTop: 5 }}>No supplier linked.</div>
+            )}
+          </>
+        );
+      case "pending_supplier_pickup":
+        return (
+          <>
+            <KV label="Supplier" value={String(get(c, "creditorName", "creditor_name") ?? creditorCode ?? "—")} />
+            <KV label="Supplier code" value={creditorCode ? String(creditorCode) : "—"} mono />
+            {/* Folded in from the retired Item Pickup stage (mig 0110). */}
+            <EditRow label="Customer pickup date" type="date" value={get(c, "customerPickupAt", "customer_pickup_at")} busy={busy} disabled={dis} onSave={(v) => patchCase({ customer_pickup_at: v }, "Couldn't save pickup date")} />
+            <EditRow label="Supplier pickup date" type="date" value={get(c, "supplierPickupAt", "supplier_pickup_at")} busy={busy} disabled={dis} onSave={(v) => patchCase({ supplier_pickup_at: v }, "Couldn't save pickup date")} />
+            <EditRow label="Supplier return date" type="date" value={get(c, "itemsReadyAt", "items_ready_at")} busy={busy} disabled={dis} onSave={(v) => patchCase({ items_ready_at: v }, "Couldn't save return date")} />
+            <EditRow label="Supplier status update" type="textarea" value={get(c, "actionRemark", "action_remark")} busy={busy} disabled={dis} onSave={(v) => patchCase({ action_remark: v }, "Couldn't save status update")} />
+          </>
+        );
+      case "pending_item_ready":
+        return (
+          <>
+            <div className="fld-l">QC result (after repair)</div>
+            <div style={{ display: "flex", gap: 7, margin: "6px 0 4px" }}>
+              {QC_RESULT_OPTIONS.map((o) => {
+                const active = String(get(c, "inspectionResult", "inspection_result") ?? "") === o.value;
+                return (
+                  <button
+                    key={o.value}
+                    onClick={() => { if (!dis) patchCase({ inspection_result: active ? null : o.value }, "Couldn't save QC result"); }}
+                    disabled={dis}
+                    className="tinybtn"
+                    style={active ? { background: GREEN, borderColor: GREEN, color: "#fff" } : undefined}
+                  >
+                    {o.label}
+                  </button>
+                );
+              })}
+            </div>
+            <EditRow label="QC inspection date" type="date" value={get(c, "itemsReadyAt", "items_ready_at")} busy={busy} disabled={dis} onSave={(v) => patchCase({ items_ready_at: v }, "Couldn't save QC date")} />
+            <div style={{ fontSize: 10, color: GREY, marginTop: 2 }}>Pass + date → becomes the Item Ready date. Fail → stays pending.</div>
+            {/* After-repair QC photos / report — same category the old
+                "Upload inspection report" button used (qc). */}
+            <PhotoGrid
+              caseId={id}
+              attachments={attachments.filter((a) => ["qc", "inspection_report"].includes(String(get(a, "category") ?? "")))}
+              category="qc"
+              label="QC photos"
+              hint="After-repair QC evidence / report"
+              accent={GREEN}
+              onChanged={refetch}
+              notify={notify}
+              confirm={confirm}
+            />
+          </>
+        );
+      case "pending_delivery_service":
+        return (
+          <>
+            <EditRow label="Delivery order" value={get(c, "deliveryOrder", "delivery_order")} mono busy={busy} disabled={dis} onSave={(v) => patchCase({ delivery_order: v }, "Couldn't save delivery order")} />
+            <EditRow label="DO date" type="date" value={get(c, "doDate", "do_date")} busy={busy} disabled={dis} onSave={(v) => patchCase({ do_date: v }, "Couldn't save DO date")} />
+            <EditRow label="Ref No" value={get(c, "refNo", "ref_no")} mono busy={busy} disabled={dis} onSave={(v) => patchCase({ ref_no: v }, "Couldn't save Ref No")} />
+          </>
+        );
+      case "completed":
+        return (
+          <>
+            <KV label="Status" value={statusOf(c) ? cap(statusOf(c).replace(/_/g, " ")) : "—"} />
+            <KV label="Completed" value={dm(get(c, "completionDate", "completion_date", "closedAt", "closed_at"))} />
+            {state !== "current" && state !== "done" && (
+              <div style={{ fontSize: 10.5, color: GREY, marginTop: 6 }}>Sign-off lands here when the case closes.</div>
+            )}
+          </>
+        );
+      default:
+        return <div style={{ fontSize: 12, color: GREY, padding: "6px 0" }}>No fields for this stage.</div>;
+    }
+  }
+
   return (
-    <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
-      {/* header (.hdr) — design: back "‹ Cases" + Archive · eyebrow "Service
-          Case" · case_no (money) · customer. */}
-      <header className="hdr">
+    <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)", position: "relative" }}>
+      {/* header (.hdr) — back + Archive · stage badge · case no + priority · customer · tabs */}
+      <header className="hdr" style={{ paddingBottom: 0 }}>
         <div className="hdr-row">
           <button className="back" onClick={onBack}>
             <span className="chev">‹</span> Cases
           </button>
           {!isLoading && !error && (
-            isArchived ? (
-              <span className="badge b-grey" style={{ flex: "none" }}>Archived</span>
-            ) : (
-              <button onClick={archiveCase} disabled={busy} className="tinybtn" style={{ flex: "none", opacity: busy ? 0.5 : 1 }}>Archive</button>
-            )
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 7, flex: "none" }}>
+              {isArchived ? (
+                <span className="badge b-grey">Archived</span>
+              ) : (
+                <button onClick={archiveCase} disabled={busy} className="tinybtn" style={{ opacity: busy ? 0.5 : 1 }}>Archive</button>
+              )}
+              <span style={{ padding: "3px 10px", borderRadius: 999, background: BROWN_SOFT, color: BROWN_FG, fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>
+                {prettyStage(stageOf(c))}
+              </span>
+            </span>
           )}
         </div>
-        <div className="eyebrow" style={{ marginTop: 7 }}>Service Case</div>
-        <div className="scr-title money">{String(caseNo(c))}</div>
-        <div style={{ fontSize: 11.5, color: "var(--mut)", marginTop: 3 }}>
-          {customer(c)}
-          {assignedTo ? (
-            <span> · Assigned {[assignedTo, assignedTo2].filter(Boolean).map(String).join(" · ")}</span>
-          ) : null}
+        <div className="money" style={{ fontSize: 11.5, color: MUTED, fontWeight: 600, marginTop: 8 }}>
+          {String(caseNo(c))} · {(PRIORITY_META[priorityOf(c)] ?? PRIORITY_META.normal).label}
+        </div>
+        <div className="scr-title" style={{ marginTop: 2 }}>{customer(c)}</div>
+        {assignedTo ? (
+          <div style={{ fontSize: 11, color: MUTED, marginTop: 2 }}>
+            Assigned {[assignedTo, assignedTo2].filter(Boolean).map(String).join(" · ")}
+          </div>
+        ) : null}
+        {/* tab row */}
+        <div style={{ display: "flex", gap: 2, marginTop: 8 }}>
+          {TABS.map((t) => (
+            <button
+              key={t.k}
+              onClick={() => setTab(t.k)}
+              style={{
+                flex: 1, padding: "10px 2px", background: "none", border: "none", cursor: "pointer", fontFamily: "inherit",
+                borderBottom: tab === t.k ? `2.5px solid ${TEAL}` : "2.5px solid transparent",
+                fontSize: 12.5, fontWeight: tab === t.k ? 700 : 600, color: tab === t.k ? TEAL : MUTED,
+              }}
+            >
+              {t.label}
+            </button>
+          ))}
         </div>
       </header>
 
-      <div className="scroll hz-scroll" style={{ padding: 14, paddingBottom: 120 }}>
+      <div className="scroll hz-scroll" style={{ padding: 14, paddingBottom: 170 }}>
         {isLoading && <div style={{ textAlign: "center", color: "var(--mut2)", fontSize: 12, padding: "26px 0" }}>Loading…</div>}
         {error && <div style={{ textAlign: "center", color: "var(--red)", fontSize: 12, padding: "26px 0" }}>Couldn't load this case.</div>}
         {!isLoading && !error && (
           <>
-            {/* status chip row — stage pill + SLA-overdue pill (design) */}
-            <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap", marginBottom: 9 }}>
-              <Spill colors={STAGE_PILL[stageOf(c)] ?? [FIELD_BG, MUTED]} dot>{prettyStage(stageOf(c))}</Spill>
-              {sla?.overdue && <Spill colors={["#f8eaea", RED]}>{sla.label}</Spill>}
-            </div>
-
-            {/* SLA banner — surfaced right below status (design) */}
-            <div style={{ display: "flex", alignItems: "center", gap: 9, background: sla?.overdue ? "#f8eaea" : FIELD_BG, border: `1px solid ${sla?.overdue ? "#f0d4d4" : "#e3e6e0"}`, borderRadius: 12, padding: "10px 13px", marginBottom: 12 }}>
-              <svg width="16" height="16" style={{ flex: "none" }} viewBox="0 0 24 24" fill="none" stroke={sla?.overdue ? RED : MUTED} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9" /><path d="M12 8v4M12 16h.01" /></svg>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 12, fontWeight: 800, color: sla?.overdue ? RED : "var(--ink-2)" }}>
-                  {sla ? (sla.overdue ? `SLA breached · ${sla.label}` : sla.label) : "No SLA deadline"}
+            {/* ══ OVERVIEW ══ */}
+            {tab === "overview" && (
+              <>
+                {/* SLA banner */}
+                <div style={{ background: sla?.overdue ? ERR_BG : "#fff", border: `1px solid ${sla?.overdue ? "rgba(178,58,58,0.25)" : LINE_SOFT}`, borderRadius: 13, padding: "12px 14px", marginBottom: 10 }}>
+                  <div style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: ".1em", textTransform: "uppercase", color: sla?.overdue ? RED : MUTED }}>SLA</div>
+                  <div style={{ fontSize: 12, color: sla?.overdue ? "#7a2222" : INK_SEC, marginTop: 5 }}>
+                    Deadline {dm(get(c, "deadlineAt", "deadline_at"))} · {(PRIORITY_META[priorityOf(c)] ?? PRIORITY_META.normal).label}
+                  </div>
+                  <div style={{ fontSize: 15, fontWeight: 800, color: sla?.overdue ? RED : isCompleted ? GREY : GREEN, marginTop: 2 }}>
+                    {isCompleted ? "Closed" : sla ? sla.label : "No SLA deadline"}
+                  </div>
                 </div>
-                <div style={{ fontSize: 11, color: sla?.overdue ? "#7a2222" : MUTED, marginTop: 1 }}>
-                  Deadline {dm(get(c, "deadlineAt", "deadline_at"))} · Priority {cap(priorityOf(c))}
+
+                {/* meta line — Priority / Lead time / Resolution */}
+                <div style={{ display: "flex", gap: 16, flexWrap: "wrap", fontSize: 11, color: MUTED, marginBottom: 13 }}>
+                  <span>Priority <b style={{ color: INK }}>{cap(priorityOf(c))}</b></span>
+                  {leadDays != null && <span>Lead time <b style={{ color: INK }}>{Number(leadDays).toFixed(1)}d</b></span>}
+                  {resolutionMethod && <span>Resolution <b style={{ color: INK }}>{resolutionLabel(String(resolutionMethod))}</b></span>}
+                </div>
+
+                {/* Issue (Edit → Save) — Complaint / Issue category / Priority,
+                    with the defect photo grid inside (design keeps it here). */}
+                <EditableAcc
+                  title="Issue"
+                  open
+                  busy={busy}
+                  fields={[
+                    { key: "complaint_issue", label: "Complaint", value: issueOf(c), type: "textarea" },
+                    { key: "issue_category", label: "Issue category", value: get(c, "issueCategory", "issue_category"), type: "select", options: issueCatOptions.map((o) => ({ value: o, label: o })) },
+                    { key: "priority", label: "Priority", value: priorityOf(c), type: "select", options: priorityOptions.map((o) => ({ value: o, label: cap(o) })) },
+                  ]}
+                  onSave={(body) => patchCase(body, "Couldn't save issue")}
+                >
+                  <KV label="Status" value={statusOf(c) ? cap(statusOf(c).replace(/_/g, " ")) : "—"} />
+                  <PhotoGrid
+                    caseId={id}
+                    attachments={attachments.filter((a) => !["receipt_evidence", "qc", "inspection_report"].includes(String(get(a, "category") ?? "")))}
+                    category="complaint"
+                    label="Photos / videos"
+                    onChanged={refetch}
+                    notify={notify}
+                    confirm={confirm}
+                  />
+                </EditableAcc>
+
+                {/* Product info — items + "+ Add item" + Product category. */}
+                <EditableAcc
+                  title="Product info"
+                  open
+                  busy={busy}
+                  fields={[
+                    // Prototype's "Product category" field → the REAL, whitelisted
+                    // assr_cases.service_category column (desktop ServiceCases.tsx
+                    // edits this same key). There is NO product_category column
+                    // server-side, so writing that key would silently no-op and
+                    // never read back — we bind to service_category instead.
+                    { key: "service_category", label: "Product category", value: get(c, "serviceCategory", "service_category"), type: "text" },
+                  ]}
+                  onSave={(body) => patchCase(body, "Couldn't save product info")}
+                  headSlot={
+                    availableItems.length ? (
+                      <span
+                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); if (!busy) addItem(); }}
+                        className="tinybtn"
+                        style={{ color: BROWN, opacity: busy ? 0.5 : 1 }}
+                      >
+                        + Add item
+                      </span>
+                    ) : undefined
+                  }
+                >
+                  {items.length ? items.map((it, i) => (
+                    <div key={get(it, "id") ?? i} style={{ display: "flex", alignItems: "center", gap: 9, border: `1px solid ${DIM}`, borderRadius: 10, padding: "10px 11px", marginBottom: 7 }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div className="money" style={{ fontSize: 10, fontWeight: 700, color: BROWN }}>{String(get(it, "itemCode", "item_code") ?? "—")}</div>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: INK, marginTop: 2 }}>{String(get(it, "itemDescription", "item_description") ?? "—")}</div>
+                      </div>
+                      <span style={{ fontSize: 11, color: MUTED }}>×{String(get(it, "qty") ?? 1)}</span>
+                      <button
+                        onClick={() => removeItem(it)}
+                        disabled={busy}
+                        aria-label="Remove item"
+                        style={{ flex: "none", width: 26, height: 26, borderRadius: 8, border: `1px solid ${DIM}`, background: "#fff", color: RED, fontSize: 15, lineHeight: 1, cursor: busy ? "default" : "pointer", opacity: busy ? 0.5 : 1 }}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  )) : (
+                    <div style={{ fontSize: 12, color: GREY, padding: "2px 0" }}>No items recorded.</div>
+                  )}
+                  <KV label="PO No" value={(poNo ? [String(poNo)] : []).concat(relatedPOs.map((p) => String(get(p, "docNo", "doc_no") ?? "")).filter(Boolean)).join(", ") || "—"} mono />
+                </EditableAcc>
+              </>
+            )}
+
+            {/* ══ STAGE — grouped phases (Intake / Repair / Return) ══ */}
+            {tab === "stage" && (
+              <div style={{ background: "#fff", borderRadius: 14, border: `1px solid ${LINE_SOFT}`, padding: 14 }}>
+                <div className="fld-l">Stage</div>
+                <div style={{ marginTop: 12 }}>
+                  {/* progress bar + n/8 */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+                    <div style={{ flex: 1, height: 6, borderRadius: 999, background: DIM, overflow: "hidden" }}>
+                      <div style={{ width: `${Math.round((Math.max(curStageIdx, 0) / (STAGES.length - 1)) * 100)}%`, height: "100%", background: `linear-gradient(90deg, ${GREEN}, ${BROWN})`, borderRadius: 999 }} />
+                    </div>
+                    <span className="money" style={{ fontSize: 11.5, fontWeight: 700, color: INK_SEC }}>{Math.max(curStageIdx, 0) + 1}/{STAGES.length}</span>
+                  </div>
+                  {PHASES.map((p) => {
+                    const allDone = p.idx.every((i) => i < curStageIdx);
+                    const active = p.idx.some((i) => i === curStageIdx);
+                    const d = p.idx.filter((i) => i < curStageIdx).length;
+                    return (
+                      <div key={p.name} style={{
+                        border: `1px solid ${active ? BROWN : allDone ? "transparent" : LINE_SOFT}`,
+                        background: allDone ? OK_BG : active ? BROWN_SOFT : "#fff",
+                        borderRadius: 11, padding: "11px 12px", marginBottom: 8,
+                      }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                          <span style={{ width: 9, height: 9, borderRadius: "50%", flex: "none", background: allDone ? GREEN : active ? BROWN : DIM }} />
+                          <span style={{ flex: 1, fontSize: 12.5, fontWeight: 700, color: allDone ? GREEN : active ? BROWN_FG : INK }}>{p.name}</span>
+                          <span className="money" style={{ fontSize: 10.5, color: MUTED }}>{allDone ? "Done" : `${d}/${p.idx.length}`}</span>
+                        </div>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 9 }}>
+                          {p.idx.map((i) => {
+                            const on = i < curStageIdx;
+                            const isc = i === curStageIdx;
+                            return (
+                              <button
+                                key={STAGES[i].key}
+                                onClick={() => jumpToStage(STAGES[i].key)}
+                                style={{
+                                  fontSize: 10, fontWeight: 600, padding: "4px 9px", borderRadius: 999, fontFamily: "inherit",
+                                  border: "none", cursor: "pointer",
+                                  background: on ? "rgba(47,138,91,0.14)" : isc ? BROWN : FIELD_BG,
+                                  color: on ? GREEN : isc ? "#fff" : GREY,
+                                }}
+                              >
+                                {STAGES[i].label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  <div style={{ fontSize: 11, color: GREY, marginTop: 10, textAlign: "center" }}>Tap a stage to see its details</div>
+
+                  {/* Change to — arbitrary (incl. backward) transition, kept
+                      from the previous design so ops can correct mistakes. */}
+                  <label className="fld" style={{ marginTop: 12, marginBottom: 0 }}>
+                    <span className="fld-l">Change stage to</span>
+                    <select
+                      value={stageOf(c)}
+                      disabled={busy || isArchived}
+                      onChange={(e) => transitionTo(e.target.value)}
+                      className="fld-i"
+                    >
+                      {STAGES.map((s) => (
+                        <option key={s.key} value={s.key}>{s.long}</option>
+                      ))}
+                    </select>
+                  </label>
                 </div>
               </div>
-            </div>
+            )}
 
-            {/* meta line — Priority / Lead time / Resolution (design inline) */}
-            <div style={{ display: "flex", gap: 16, flexWrap: "wrap", fontSize: 11, color: MUTED, marginBottom: 13 }}>
-              <span>Priority <b style={{ color: INK }}>{cap(priorityOf(c))}</b></span>
-              {leadDays != null && <span>Lead time <b style={{ color: INK }}>{Number(leadDays).toFixed(1)}d</b></span>}
-              {resolutionMethod && <span>Resolution <b style={{ color: INK }}>{resolutionLabel(String(resolutionMethod))}</b></span>}
-            </div>
-
-            {/* Print copy + Portal link + Sales link (design .tinybtn row).
-                Links carry the ASSR slug for readability; permanent tokens. */}
-            <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-              <button onClick={printCopy} disabled={isLoading || !!error} className="tinybtn" style={{ flex: 1, padding: 9, opacity: isLoading || error ? 0.5 : 1 }}>Print copy</button>
-              <button
-                onClick={async () => {
-                  if (!portalToken) return;
-                  const slug = String(caseNo(c)).replace(/[^A-Za-z0-9-]+/g, "-");
-                  const url = `${window.location.origin}/portal/case/${slug}/${portalToken}`;
-                  try {
-                    if (navigator.clipboard) await navigator.clipboard.writeText(url);
-                    await notify({ title: "Portal link copied", body: url });
-                  } catch {
-                    await notify({ title: "Portal link", body: url });
-                  }
-                }}
-                disabled={!portalToken}
-                className="tinybtn"
-                style={{ flex: 1, padding: 9, opacity: portalToken ? 1 : 0.5 }}
-              >
-                Portal link
-              </button>
-              <button
-                onClick={async () => {
-                  if (busy) return;
-                  try {
-                    const r = await api.post<{ token: string }>(`/api/assr/${id}/sales-link`);
-                    const slug = String(caseNo(c)).replace(/[^A-Za-z0-9-]+/g, "-");
-                    const url = `${window.location.origin}/portal/case/${slug}/${r.token}`;
-                    if (navigator.clipboard) await navigator.clipboard.writeText(url);
-                    await notify({ title: "Sales link copied", body: url });
-                  } catch (e: any) {
-                    await notify({ title: "Sales link failed", body: e?.message || "Try again." });
-                  }
-                }}
-                disabled={isLoading || !!error}
-                className="tinybtn"
-                style={{ flex: 1, padding: 9, opacity: isLoading || error ? 0.5 : 1 }}
-              >
-                Sales link
-              </button>
-            </div>
-
-            {/* pipeline — Done/Current legend + 9-stage dots (design). Real
-                tap-to-jump (POST /transition) kept on each dot. */}
-            <div style={{ display: "flex", alignItems: "center", gap: 14, margin: "0 2px 8px" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 9, height: 9, borderRadius: "50%", background: GREEN }} /><span style={{ fontSize: 10, color: "#414539" }}>Done</span></div>
-              <div style={{ display: "flex", alignItems: "center", gap: 5 }}><span style={{ width: 9, height: 9, borderRadius: "50%", background: RED }} /><span style={{ fontSize: 10, color: "#414539" }}>Current</span></div>
-            </div>
-            <div className="hz-scroll" style={{ display: "flex", gap: 2, overflowX: "auto", padding: "4px 2px 10px" }}>
-              {STAGES.map((s, i) => {
-                const done = curStageIdx >= 0 && i < curStageIdx;
-                const current = i === curStageIdx;
-                const fg = done ? GREEN : current ? RED : MUTED;
-                const jump = async () => {
-                  if (busy || current) return;
-                  if (!(await confirm({ title: `Move to ${s.label}?`, confirmLabel: "Change stage" }))) return;
-                  await runWrite(async () => {
-                    await api.post(`/api/assr/${id}/transition`, { stage: s.key });
-                  }, "Stage change failed");
-                };
-                return (
-                  <div key={s.key} className="pstage" onClick={jump} style={{ cursor: busy || current ? "default" : "pointer" }}>
-                    <span className="pdot" style={{
-                      background: done ? GREEN : current ? RED : "#fff",
-                      color: done || current ? "#fff" : GREY,
-                      border: done || current ? "none" : `2px solid ${LINE}`,
-                    }}>
-                      {done ? (
-                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
-                      ) : (
-                        i + 1
+            {/* ══ INFO — per-stage accordion + case details ══ */}
+            {tab === "info" && (
+              <>
+                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.3, textTransform: "uppercase", color: MUTED, margin: "2px 2px 10px" }}>Stage details</div>
+                {STAGES.map((s, si) => {
+                  const st: "done" | "current" | "future" = si < curStageIdx ? "done" : si === curStageIdx ? "current" : "future";
+                  const h = historyByStage[s.key];
+                  const open = openStageEffective === s.key;
+                  const dot = st === "done" ? GREEN : st === "current" ? BROWN : DIM;
+                  return (
+                    <div key={s.key} style={{ background: "#fff", borderRadius: 12, border: `1px solid ${open ? (st === "current" ? BROWN : "rgba(34,31,32,0.20)") : LINE_SOFT}`, marginBottom: 8, overflow: "hidden" }}>
+                      <button
+                        onClick={() => setOpenStage(open ? "" : s.key)}
+                        style={{
+                          width: "100%", display: "flex", alignItems: "center", gap: 9, padding: "12px 13px",
+                          background: open && st === "current" ? BROWN_SOFT : "transparent", border: "none", cursor: "pointer", textAlign: "left", fontFamily: "inherit",
+                        }}
+                      >
+                        <span style={{ width: 20, height: 20, borderRadius: "50%", flex: "none", background: st === "future" ? "#fff" : dot, border: st === "future" ? `2px solid ${DIM}` : "none", display: "grid", placeItems: "center" }}>
+                          {st === "done" && (
+                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12l5 5L20 6" /></svg>
+                          )}
+                          {st === "current" && <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#fff" }} />}
+                        </span>
+                        <span style={{ flex: 1, fontSize: 13, fontWeight: st === "future" ? 600 : 700, color: st === "future" ? GREY : INK }}>{s.long}</span>
+                        {st === "done" && (
+                          <span style={{ fontSize: 10.5, color: GREEN, fontWeight: 600 }}>{h?.skipped ? "Skipped" : dm(get(h ?? {}, "exitedAt", "exited_at", "enteredAt", "entered_at"))}</span>
+                        )}
+                        {st === "current" && <span style={{ fontSize: 9.5, fontWeight: 700, color: "#fff", background: BROWN, padding: "2px 7px", borderRadius: 999 }}>CURRENT</span>}
+                        {st === "future" && <span style={{ fontSize: 10.5, color: GREY }}>Not started</span>}
+                        <span style={{ color: "#c2c6bd", fontSize: 15, transform: open ? "rotate(90deg)" : "none", transition: "transform .15s" }}>›</span>
+                      </button>
+                      {open && (
+                        <div style={{ padding: "0 13px 12px" }}>
+                          <div style={{ fontSize: 11, color: GREY, padding: "0 0 6px" }}>
+                            Owner: {s.owner}
+                            {h ? ` · ${dm(get(h, "enteredAt", "entered_at"))}` : ""}
+                          </div>
+                          {stagePanel(s.key, st)}
+                        </div>
                       )}
-                    </span>
-                    <span style={{ fontSize: 8.5, fontWeight: current ? 800 : 600, color: fg, lineHeight: 1.1 }}>{s.label}</span>
-                  </div>
-                );
-              })}
-            </div>
+                    </div>
+                  );
+                })}
 
-            {/* Advance stage to — inline select (design). Confirms, then POSTs
-                the transition; kept in sync with the actbar Advance button. */}
-            <label className="fld" style={{ marginBottom: 12 }}>
-              <span className="fld-l">Advance stage to</span>
-              <select
-                value={stageOf(c)}
-                disabled={busy || isArchived}
-                onChange={async (e) => {
-                  const target = e.target.value;
-                  if (!target || target === stageOf(c)) return;
-                  const label = STAGES[STAGE_INDEX[target]]?.label ?? target;
-                  if (!(await confirm({ title: `Move to ${label}?`, confirmLabel: "Change stage" }))) return;
-                  await runWrite(async () => {
-                    await api.post(`/api/assr/${id}/transition`, { stage: target });
-                  }, "Stage change failed");
-                }}
-                className="fld-i"
-              >
-                {STAGES.map((s) => (
-                  <option key={s.key} value={s.key}>{s.label}</option>
-                ))}
-              </select>
-            </label>
+                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.3, textTransform: "uppercase", color: MUTED, margin: "16px 2px 10px" }}>Case details</div>
 
-            {/* Issue (Edit → Save) — Complaint / Issue category / Priority, and
-                the defect photo grid lives INSIDE this section (design). */}
-            <EditableAcc
-              title="Issue"
-              open
-              busy={busy}
-              fields={[
-                { key: "complaint_issue", label: "Complaint", value: issueOf(c), type: "textarea" },
-                { key: "issue_category", label: "Issue category", value: get(c, "issueCategory", "issue_category"), type: "select", options: issueCatOptions.map((o) => ({ value: o, label: o })) },
-                { key: "priority", label: "Priority", value: priorityOf(c), type: "select", options: priorityOptions.map((o) => ({ value: o, label: cap(o) })) },
-              ]}
-              onSave={(body) => patchCase(body, "Couldn't save issue")}
-            >
-              <KV label="Status" value={statusOf(c) ? cap(statusOf(c).replace(/_/g, " ")) : "—"} />
-              {/* Photos / videos (design keeps these under Issue) → PUT /:id/attachments */}
-              <PhotoGrid caseId={id} attachments={attachments} onChanged={refetch} notify={notify} confirm={confirm} />
-            </EditableAcc>
+                {/* Customer (Edit → Save + read-only .pgrid2 references). */}
+                <EditableAcc
+                  title="Customer"
+                  open
+                  busy={busy}
+                  fields={[
+                    // Editable SO No (2026-07-14) — fixing a fat-fingered
+                    // SO re-matches customer info from the SO mirror
+                    // server-side.
+                    { key: "doc_no", label: "SO No", value: get(c, "docNo", "doc_no"), type: "so" },
+                    { key: "customer_name", label: "Customer", value: customer(c) === "—" ? "" : customer(c), type: "text" },
+                    { key: "phone", label: "Phone", value: get(c, "phone", "customerPhone", "customer_phone"), type: "text" },
+                    { key: "customer_email", label: "Email", value: get(c, "customerEmail", "customer_email"), type: "text" },
+                    { key: "location", label: "Location", value: get(c, "location", "customerState", "customer_state"), type: "text" },
+                    { key: "sales_agent", label: "Agent", value: get(c, "salesAgent", "sales_agent", "agent"), type: "text" },
+                  ]}
+                  onSave={(body) => patchCase(body, "Couldn't save customer")}
+                  readView={
+                    <>
+                      {/* Read view mirrors the desktop Customer card
+                          (avatar + name, SO/Ref chips, phone + call,
+                          address + location chip); Edit swaps in the
+                          fields above. */}
+                      <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
+                        <Avatar name={String(customer(c))} size={42} />
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: 15.5, fontWeight: 700, color: INK, ...cellEllipsis }}>{customer(c)}</div>
+                          <div style={{ fontSize: 11.5, color: MUTED, marginTop: 2 }}>
+                            Agent · <b style={{ color: INK_SEC }}>{String(get(c, "salesAgent", "sales_agent", "agent") ?? "—")}</b>
+                          </div>
+                        </div>
+                      </div>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 11 }}>
+                        <div style={{ background: FIELD_BG, border: `1px solid ${DIM}`, borderRadius: 9, padding: "7px 10px" }}>
+                          <div className="money" style={{ fontSize: 8.5, letterSpacing: ".1em", textTransform: "uppercase", color: GREY, fontWeight: 600 }}>SO No</div>
+                          <div className="money" style={{ fontSize: 12.5, fontWeight: 600, color: TEAL_DK, marginTop: 3, ...cellEllipsis }}>{String(get(c, "docNo", "doc_no") ?? "—")}</div>
+                        </div>
+                        <div style={{ background: FIELD_BG, border: `1px solid ${DIM}`, borderRadius: 9, padding: "7px 10px" }}>
+                          <div className="money" style={{ fontSize: 8.5, letterSpacing: ".1em", textTransform: "uppercase", color: GREY, fontWeight: 600 }}>Ref No</div>
+                          <div className="money" style={{ fontSize: 12.5, fontWeight: 600, color: INK, marginTop: 3, ...cellEllipsis }}>{String(get(c, "refNo", "ref_no") ?? "—")}</div>
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "10px 0 9px", borderBottom: "1px solid #f1f0ea", marginTop: 4 }}>
+                        <div style={{ minWidth: 0 }}>
+                          <div className="money" style={{ fontSize: 8.5, letterSpacing: ".1em", textTransform: "uppercase", color: GREY, fontWeight: 600 }}>Phone</div>
+                          <div className="money" style={{ fontSize: 13, fontWeight: 600, color: INK, marginTop: 3 }}>{String(get(c, "phone", "customerPhone", "customer_phone") ?? "—")}</div>
+                        </div>
+                        {get(c, "phone", "customerPhone", "customer_phone") && (
+                          <a
+                            href={`tel:${String(get(c, "phone", "customerPhone", "customer_phone")).replace(/[^+\d]/g, "")}`}
+                            aria-label="Call customer"
+                            style={{ width: 34, height: 34, flex: "none", borderRadius: 9, background: "#e1efed", color: TEAL_DK, display: "flex", alignItems: "center", justifyContent: "center", textDecoration: "none" }}
+                          >
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6.6 10.8a15 15 0 0 0 6.6 6.6l2.2-2.2a1 1 0 0 1 1-.24 11 11 0 0 0 3.4.55 1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1 11 11 0 0 0 .55 3.4 1 1 0 0 1-.24 1Z" /></svg>
+                          </a>
+                        )}
+                      </div>
+                      <div style={{ paddingTop: 9 }}>
+                        <div className="money" style={{ fontSize: 8.5, letterSpacing: ".1em", textTransform: "uppercase", color: GREY, fontWeight: 600 }}>Customer address</div>
+                        <div style={{ fontSize: 12.5, fontWeight: 500, color: INK, lineHeight: 1.5, marginTop: 3 }}>
+                          {[get(c, "addr1"), get(c, "addr2"), get(c, "addr3"), get(c, "addr4")].filter(Boolean).join(", ") || "—"}
+                        </div>
+                        {get(c, "location", "customerState", "customer_state") && (
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 6, marginTop: 8, fontSize: 11, fontWeight: 600, color: TEAL_DK, background: "#e1efed", borderRadius: 7, padding: "4px 10px" }}>
+                            {String(get(c, "location", "customerState", "customer_state"))}
+                          </span>
+                        )}
+                      </div>
+                      <KV label="Email" value={String(get(c, "customerEmail", "customer_email") ?? "—")} />
+                      <KV label="Date" value={dm(get(c, "complainedDate", "complained_date", "createdAt", "created_at"))} />
+                    </>
+                  }
+                />
 
-            {/* Product info (design wording) — items + "+ Add item" + Product
-                category (editable) + PO No (read-only). */}
-            <EditableAcc
-              title="Product info"
-              open
-              busy={busy}
-              fields={[
-                // Prototype's "Product category" field → the REAL, whitelisted
-                // assr_cases.service_category column (desktop ServiceCases.tsx
-                // edits this same key). There is NO product_category column
-                // server-side, so writing that key would silently no-op and
-                // never read back — we bind to service_category instead.
-                { key: "service_category", label: "Product category", value: get(c, "serviceCategory", "service_category"), type: "text" },
-              ]}
-              onSave={(body) => patchCase(body, "Couldn't save product info")}
-              headSlot={
-                availableItems.length ? (
-                  <span
-                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); if (!busy) addItem(); }}
-                    className="tinybtn"
-                    style={{ color: BROWN, opacity: busy ? 0.5 : 1 }}
-                  >
-                    + Add item
-                  </span>
-                ) : undefined
-              }
-            >
-              {items.length ? items.map((it, i) => (
-                <div key={get(it, "id") ?? i} style={{ display: "flex", alignItems: "center", gap: 9, border: `1px solid #e3e6e0`, borderRadius: 10, padding: "10px 11px", marginBottom: 7 }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div className="money" style={{ fontSize: 10, fontWeight: 700, color: BROWN }}>{String(get(it, "itemCode", "item_code") ?? "—")}</div>
-                    <div style={{ fontSize: 12, fontWeight: 600, color: INK, marginTop: 2 }}>{String(get(it, "itemDescription", "item_description") ?? "—")}</div>
-                  </div>
-                  <span style={{ fontSize: 11, color: MUTED }}>×{String(get(it, "qty") ?? 1)}</span>
+                {/* PIC — right-header = current assignee; Assign reassigns via PATCH */}
+                <Acc
+                  title="PIC"
+                  open
+                  headRight={[assignedTo, assignedTo2].filter(Boolean).map(String).join(" · ") || "Unassigned"}
+                  headSlot={
+                    <>
+                      <span
+                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); if (!busy) assignPic(); }}
+                        className="tinybtn"
+                        style={{ color: BROWN, opacity: busy ? 0.5 : 1 }}
+                      >
+                        Assign
+                      </span>
+                      <span
+                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); if (!busy) assignCoPic(); }}
+                        className="tinybtn"
+                        style={{ color: BROWN, opacity: busy ? 0.5 : 1, marginLeft: 6 }}
+                      >
+                        Co-assign
+                      </span>
+                    </>
+                  }
+                >
+                  <KV label="Assigned to" value={assignedTo ? String(assignedTo) : "Unassigned"} />
+                  <KV label="Co-assignee" value={assignedTo2 ? String(assignedTo2) : "None"} />
+                  <KV label="Created by" value={String(get(c, "createdByName", "created_by_name") ?? "—")} />
+                </Acc>
+
+                {/* Print copy + Portal link + Sales link. Links carry the
+                    ASSR slug for readability; tokens are permanent. */}
+                <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                  <button onClick={printCopy} className="tinybtn" style={{ flex: 1, padding: 9 }}>Print copy</button>
                   <button
-                    onClick={() => removeItem(it)}
-                    disabled={busy}
-                    aria-label="Remove item"
-                    style={{ flex: "none", width: 26, height: 26, borderRadius: 8, border: "1px solid #e3e6e0", background: "#fff", color: RED, fontSize: 15, lineHeight: 1, cursor: busy ? "default" : "pointer", opacity: busy ? 0.5 : 1 }}
+                    onClick={async () => {
+                      if (!portalToken) return;
+                      const slug = String(caseNo(c)).replace(/[^A-Za-z0-9-]+/g, "-");
+                      const url = `${window.location.origin}/portal/case/${slug}/${portalToken}`;
+                      try {
+                        if (navigator.clipboard) await navigator.clipboard.writeText(url);
+                        await notify({ title: "Portal link copied", body: url });
+                      } catch {
+                        await notify({ title: "Portal link", body: url });
+                      }
+                    }}
+                    disabled={!portalToken}
+                    className="tinybtn"
+                    style={{ flex: 1, padding: 9, opacity: portalToken ? 1 : 0.5 }}
                   >
-                    ×
+                    Portal link
+                  </button>
+                  <button
+                    onClick={async () => {
+                      if (busy) return;
+                      try {
+                        const r = await api.post<{ token: string }>(`/api/assr/${id}/sales-link`);
+                        const slug = String(caseNo(c)).replace(/[^A-Za-z0-9-]+/g, "-");
+                        const url = `${window.location.origin}/portal/case/${slug}/${r.token}`;
+                        if (navigator.clipboard) await navigator.clipboard.writeText(url);
+                        await notify({ title: "Sales link copied", body: url });
+                      } catch (e: any) {
+                        await notify({ title: "Sales link failed", body: e?.message || "Try again." });
+                      }
+                    }}
+                    className="tinybtn"
+                    style={{ flex: 1, padding: 9 }}
+                  >
+                    Sales link
                   </button>
                 </div>
-              )) : (
-                <div style={{ fontSize: 12, color: GREY, padding: "2px 0" }}>No items recorded.</div>
-              )}
-              <KV label="PO No" value={(poNo ? [String(poNo)] : []).concat(relatedPOs.map((p) => String(get(p, "docNo", "doc_no") ?? "")).filter(Boolean)).join(", ") || "—"} mono />
-            </EditableAcc>
+              </>
+            )}
 
-            {/* Issue inspection (brown left-border, "on receipt") — Outcome as
-                design pick-buttons + Root cause + verified-by note. */}
-            <Acc title="Issue inspection" open accent={BROWN} note="on receipt">
-              <div className="fld-l">Outcome</div>
-              <div style={{ display: "flex", gap: 7, margin: "6px 0 10px", flexWrap: "wrap" }}>
-                {VERIFICATION_OPTIONS.map((o) => {
-                  const active = String(get(c, "verificationOutcome", "verification_outcome") ?? "") === o.value;
-                  return (
+            {/* ══ TIMELINE ══ */}
+            {tab === "timeline" && (
+              <Acc
+                title="Timeline"
+                open
+                headSlot={
+                  <span
+                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); const el = document.getElementById(`svc-note-${id}`); el?.focus(); }}
+                    className="tinybtn"
+                    style={{ background: BROWN, borderColor: BROWN, color: "#fff" }}
+                  >
+                    + Add note
+                  </span>
+                }
+              >
+                {timelineCats.length > 1 && (
+                  <div className="hz-scroll" style={{ display: "flex", gap: 6, overflowX: "auto", marginBottom: 6, paddingBottom: 2 }}>
+                    {timelineCats.map((cat) => {
+                      const key = cat === "ALL" ? "all" : cat;
+                      return (
+                        <button key={cat} className={`sochip${tlFilter === key ? " on" : ""}`} onClick={() => setTlFilter(key)}>
+                          {cat === "ALL" ? "All" : cap(cat.toLowerCase())}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+                {/* audience picker — service / customer / supplier / sales (mig 0108) */}
+                <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+                  {NOTE_AUDIENCE_OPTIONS.map((o) => (
                     <button
                       key={o.value}
-                      onClick={() => { if (!busy && !active) patchCase({ verification_outcome: o.value }, "Couldn't save verification"); }}
-                      disabled={busy}
-                      className="tinybtn"
-                      style={active ? { background: TEAL, borderColor: TEAL, color: "#fff" } : undefined}
+                      onClick={() => setNoteAudience(o.value)}
+                      className={`sochip${noteAudience === o.value ? " on" : ""}`}
+                      style={{ flex: 1 }}
                     >
                       {o.label}
                     </button>
-                  );
-                })}
-              </div>
-              <RootCauseField
-                value={get(c, "verifiedRootCause", "verified_root_cause")}
-                busy={busy}
-                onSave={(v) => patchCase({ verified_root_cause: v || null }, "Couldn't save verification")}
-              />
-              {get(c, "verifiedByName", "verified_by_name") && (
-                <div style={{ fontSize: 10.5, color: MUTED, background: FIELD_BG, borderRadius: 9, padding: "8px 10px", marginTop: 8 }}>
-                  Verified by {String(get(c, "verifiedByName", "verified_by_name"))} · {dm(get(c, "verifiedAt", "verified_at"))}
+                  ))}
                 </div>
-              )}
-            </Acc>
-
-            {/* Resolution + supplier (design) — method + supplier card (Open →)
-                + Supplier status update + Supplier pickup date. */}
-            <EditableAcc
-              title="Resolution"
-              open
-              busy={busy}
-              fields={[
-                { key: "resolution_method", label: "Resolution method", value: resolutionMethod, type: "select", options: [{ value: "", label: "—" }, ...resolutionOptions.map((o) => ({ value: o, label: resolutionLabel(o) }))] },
-                { key: "action_remark", label: "Supplier status update", value: get(c, "actionRemark", "action_remark"), type: "textarea" },
-                { key: "supplier_pickup_at", label: "Supplier pickup date", value: get(c, "supplierPickupAt", "supplier_pickup_at"), type: "date" },
-              ]}
-              onSave={(body) => patchCase(body, "Couldn't save resolution")}
-            >
-              {/* Supplier / creditor — read-only card with Open → (design). */}
-              <div className="fld-l" style={{ marginTop: 8 }}>Supplier</div>
-              {creditorCode ? (
-                <div style={{ display: "flex", alignItems: "center", gap: 9, border: `1px solid #e3e6e0`, borderRadius: 10, padding: "10px 11px", marginTop: 5 }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 12.5, fontWeight: 700, color: INK }}>{String(get(c, "creditorName", "creditor_name") ?? creditorCode)}</div>
-                    <div className="money" style={{ fontSize: 10, color: GREY }}>{String(creditorCode)}</div>
-                  </div>
-                </div>
-              ) : (
-                <div style={{ fontSize: 11, color: GREY, marginTop: 5 }}>No supplier linked.</div>
-              )}
-            </EditableAcc>
-
-            {/* QC inspection (green left-border, "after repair") — QC result +
-                QC inspection date + hint + Upload inspection report. */}
-            <EditableAcc
-              title="QC inspection"
-              accent={GREEN}
-              note="after repair"
-              busy={busy}
-              fields={[
-                { key: "inspection_result", label: "QC result", value: get(c, "inspectionResult", "inspection_result"), type: "select", options: [{ value: "", label: "— none —" }, ...INSPECTION_OPTIONS.map((o) => ({ value: o, label: cap(o) }))] },
-                { key: "items_ready_at", label: "QC inspection date", value: get(c, "itemsReadyAt", "items_ready_at"), type: "date" },
-              ]}
-              onSave={(body) => patchCase(body, "Couldn't save QC result")}
-            >
-              <div style={{ fontSize: 10, color: GREY, marginTop: 2 }}>Pass + date → becomes the Item Ready date. Fail → stays pending.</div>
-              <QcReportUpload caseId={id} onChanged={refetch} notify={notify} />
-            </EditableAcc>
-
-            {/* Reference & logistics — Delivery date + (customer) Pickup date
-                two-up (design). Distinct columns from Resolution's supplier
-                pickup so no field is double-bound. */}
-            <EditableAcc
-              title="Reference & logistics"
-              busy={busy}
-              fields={[
-                { key: "do_date", label: "Delivery date", value: get(c, "doDate", "do_date"), type: "date" },
-                { key: "customer_pickup_at", label: "Pickup date", value: get(c, "customerPickupAt", "customer_pickup_at"), type: "date" },
-              ]}
-              onSave={(body) => patchCase(body, "Couldn't save reference")}
-            />
-
-            {/* Customer (Edit → Save, .pgrid2 read view — design field set:
-                SO No, Ref No, Customer, Phone, Location, Agent, Date, Address). */}
-            <EditableAcc
-              title="Customer"
-              open
-              busy={busy}
-              fields={[
-                { key: "customer_name", label: "Customer", value: customer(c) === "—" ? "" : customer(c), type: "text" },
-                { key: "phone", label: "Phone", value: get(c, "phone", "customerPhone", "customer_phone"), type: "text" },
-                { key: "customer_email", label: "Email", value: get(c, "customerEmail", "customer_email"), type: "text" },
-                { key: "location", label: "Location", value: get(c, "location", "customerState", "customer_state"), type: "text" },
-                { key: "sales_agent", label: "Agent", value: get(c, "salesAgent", "sales_agent", "agent"), type: "text" },
-              ]}
-              onSave={(body) => patchCase(body, "Couldn't save customer")}
-            >
-              <div className="pgrid2">
-                <PGrid label="SO No" value={String(get(c, "docNo", "doc_no") ?? "—")} mono />
-                <PGrid label="Ref No" value={String(get(c, "refNo", "ref_no") ?? "—")} mono />
-                <PGrid label="Date" value={dm(get(c, "complainedDate", "complained_date", "createdAt", "created_at"))} />
-                <PGrid
-                  label="Address"
-                  span
-                  multiline
-                  value={
-                    [get(c, "addr1"), get(c, "addr2"), get(c, "addr3"), get(c, "addr4")]
-                      .filter(Boolean)
-                      .join(", ") || "—"
-                  }
-                />
-              </div>
-            </EditableAcc>
-
-            {/* PIC — right-header = current assignee; Assign reassigns via PATCH */}
-            <Acc
-              title="PIC"
-              open
-              headRight={[assignedTo, assignedTo2].filter(Boolean).map(String).join(" · ") || "Unassigned"}
-              headSlot={
-                <>
-                  <span
-                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); if (!busy) assignPic(); }}
-                    className="tinybtn"
-                    style={{ color: BROWN, opacity: busy ? 0.5 : 1 }}
-                  >
-                    Assign
-                  </span>
-                  <span
-                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); if (!busy) assignCoPic(); }}
-                    className="tinybtn"
-                    style={{ color: BROWN, opacity: busy ? 0.5 : 1, marginLeft: 6 }}
-                  >
-                    Co-assign
-                  </span>
-                </>
-              }
-            >
-              <KV label="Assigned to" value={assignedTo ? String(assignedTo) : "Unassigned"} />
-              <KV label="Co-assignee" value={assignedTo2 ? String(assignedTo2) : "None"} />
-              <KV label="Created by" value={String(get(c, "createdByName", "created_by_name") ?? "—")} />
-            </Acc>
-
-            {/* Timeline (.pacc) with "+ Add note" header, audience chips + rows */}
-            <Acc
-              title="Timeline"
-              open
-              headSlot={
-                <span
-                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); const el = document.getElementById(`svc-note-${id}`); el?.focus(); }}
-                  className="tinybtn"
-                  style={{ background: BROWN, borderColor: BROWN, color: "#fff" }}
-                >
-                  + Add note
-                </span>
-              }
-            >
-              {timelineCats.length > 1 && (
-                <div className="hz-scroll" style={{ display: "flex", gap: 6, overflowX: "auto", marginBottom: 6, paddingBottom: 2 }}>
-                  {timelineCats.map((cat) => {
-                    const key = cat === "ALL" ? "all" : cat;
-                    return (
-                      <button key={cat} className={`sochip${tlFilter === key ? " on" : ""}`} onClick={() => setTlFilter(key)}>
-                        {cat === "ALL" ? "All" : cap(cat.toLowerCase())}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-              {/* audience picker — the /:id/notes endpoint accepts purchasing | customer */}
-              <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
-                {NOTE_AUDIENCE_OPTIONS.map((o) => (
+                {/* add note input */}
+                <div style={{ display: "flex", gap: 7, marginBottom: 4 }}>
+                  <input
+                    id={`svc-note-${id}`}
+                    value={noteDraft}
+                    onChange={(e) => setNoteDraft(e.target.value)}
+                    placeholder={noteAudience === "customer" ? "Add a customer-visible note" : "Add an internal note"}
+                    className="fld-i"
+                    style={{ flex: 1, minWidth: 0, fontSize: 12.5 }}
+                  />
                   <button
-                    key={o.value}
-                    onClick={() => setNoteAudience(o.value)}
-                    className={`sochip${noteAudience === o.value ? " on" : ""}`}
-                    style={{ flex: 1 }}
+                    onClick={() => noteDraft.trim() && addNote.mutate({ note: noteDraft.trim(), category: noteAudience })}
+                    disabled={!noteDraft.trim() || addNote.isPending}
+                    style={{ flex: "none", padding: "0 14px", borderRadius: 9, border: "none", background: noteDraft.trim() ? BROWN : "#c9c1b4", color: "#fff", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: noteDraft.trim() ? "pointer" : "default" }}
                   >
-                    {o.label}
+                    {addNote.isPending ? "…" : "Add"}
                   </button>
-                ))}
-              </div>
-              {/* add note input */}
-              <div style={{ display: "flex", gap: 7, marginBottom: 4 }}>
-                <input
-                  id={`svc-note-${id}`}
-                  value={noteDraft}
-                  onChange={(e) => setNoteDraft(e.target.value)}
-                  placeholder={noteAudience === "customer" ? "Add a customer-visible note" : "Add an internal note"}
-                  className="fld-i"
-                  style={{ flex: 1, minWidth: 0, fontSize: 12.5 }}
-                />
-                <button
-                  onClick={() => noteDraft.trim() && addNote.mutate({ note: noteDraft.trim(), category: noteAudience })}
-                  disabled={!noteDraft.trim() || addNote.isPending}
-                  style={{ flex: "none", padding: "0 14px", borderRadius: 9, border: "none", background: noteDraft.trim() ? BROWN : "#c9c1b4", color: "#fff", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: noteDraft.trim() ? "pointer" : "default" }}
-                >
-                  {addNote.isPending ? "…" : "Add"}
-                </button>
-              </div>
-              <div style={{ fontSize: 10, color: GREY, marginBottom: 10 }}>
-                {noteAudience === "customer" ? "Visible to the customer on the portal." : "Internal only — hidden from the customer."}
-              </div>
-              {addNote.isError && <div style={{ fontSize: 11, color: RED, marginBottom: 8 }}>Couldn't add the note. Try again.</div>}
-              {shownActivity.length ? shownActivity.map((a, i) => {
-                const cat = String(get(a, "category") ?? "").toUpperCase();
-                const label = get(a, "note", "toValue", "to_value", "action") ?? "Update";
-                const who = get(a, "userName", "user_name") ?? "System";
-                const badge = catBadge(cat);
-                return (
-                  <div key={get(a, "id") ?? i} style={{ display: "flex", gap: 10, padding: "10px 0", borderTop: `1px solid #eceee9` }}>
-                    <span style={{ width: 9, height: 9, flex: "none", borderRadius: "50%", border: "2px solid #c2c6bd", marginTop: 3 }} />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 10, color: GREY }}>{dtm(get(a, "createdAt", "created_at"))}</div>
-                      <div style={{ fontSize: 12.5, fontWeight: 700, color: INK, marginTop: 1 }}>{String(label)}</div>
-                      <div style={{ fontSize: 10.5, color: MUTED, marginTop: 2, display: "flex", alignItems: "center", flexWrap: "wrap", gap: 3 }}>
-                        <span>by {String(who)}</span>
-                        {cat && (
-                          <span className="rbadge" style={{ background: badge[0], color: badge[1], marginLeft: 3 }}>{cat}</span>
-                        )}
+                </div>
+                <div style={{ fontSize: 10, color: GREY, marginBottom: 10 }}>
+                  {noteAudience === "customer" ? "Visible to the customer on the portal." : "Internal only — hidden from the customer."}
+                </div>
+                {addNote.isError && <div style={{ fontSize: 11, color: RED, marginBottom: 8 }}>Couldn't add the note. Try again.</div>}
+                {shownActivity.length ? shownActivity.map((a, i) => {
+                  const cat = String(get(a, "category") ?? "").toUpperCase();
+                  const label = get(a, "note", "toValue", "to_value", "action") ?? "Update";
+                  const who = get(a, "userName", "user_name") ?? "System";
+                  const badge = catBadge(cat);
+                  return (
+                    <div key={get(a, "id") ?? i} style={{ display: "flex", gap: 10, padding: "10px 0", borderTop: `1px solid #eceee9` }}>
+                      <span style={{ width: 9, height: 9, flex: "none", borderRadius: "50%", border: "2px solid #c2c6bd", marginTop: 3 }} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 10, color: GREY }}>{dtm(get(a, "createdAt", "created_at"))}</div>
+                        <div style={{ fontSize: 12.5, fontWeight: 700, color: INK, marginTop: 1 }}>{String(label)}</div>
+                        <div style={{ fontSize: 10.5, color: MUTED, marginTop: 2, display: "flex", alignItems: "center", flexWrap: "wrap", gap: 3 }}>
+                          <span>by {String(who)}</span>
+                          {cat && (
+                            <span className="rbadge" style={{ background: badge[0], color: badge[1], marginLeft: 3 }}>{cat}</span>
+                          )}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                );
-              }) : (
-                <div style={{ fontSize: 12, color: GREY, padding: "8px 0" }}>No timeline entries.</div>
-              )}
-            </Acc>
+                  );
+                }) : (
+                  <div style={{ fontSize: 12, color: GREY, padding: "8px 0" }}>No timeline entries.</div>
+                )}
+              </Acc>
+            )}
           </>
         )}
       </div>
+
+      {/* floating action bar — Note + Advance / Mark complete / Print.
+          Floats above the app's bottom tab bar (navwrap, z30) which sits
+          ~74px + safe-area tall; the sheets below use fixed z40 instead. */}
+      {!isLoading && !error && (
+        <div style={{
+          position: "absolute", left: 12, right: 12, bottom: "calc(env(safe-area-inset-bottom) + 86px)", zIndex: 20,
+          display: "flex", gap: 9, alignItems: "stretch",
+          background: "rgba(255,255,255,0.94)", backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)",
+          border: `1px solid ${LINE}`, borderRadius: 16, padding: 9,
+          boxShadow: "0 14px 34px -14px rgba(17,24,16,0.4)",
+        }}>
+          <button
+            onClick={() => setNoteOpen(true)}
+            className="tinybtn"
+            style={{ flex: "none", padding: "0 18px", height: 42, fontSize: 13 }}
+          >
+            Note
+          </button>
+          {isCompleted ? (
+            <button onClick={printCopy} className="tinybtn" style={{ flex: 1, height: 42, fontSize: 13.5, fontWeight: 700 }}>
+              Print
+            </button>
+          ) : (
+            <button
+              onClick={() => setAdvOpen(true)}
+              disabled={busy || isArchived || !nextStage}
+              style={{
+                flex: 1, height: 42, borderRadius: 11, border: "none", background: TEAL, color: "#fff",
+                fontFamily: "inherit", fontWeight: 700, fontSize: 14, cursor: "pointer",
+                opacity: busy || isArchived || !nextStage ? 0.55 : 1,
+              }}
+            >
+              {nextStage?.key === "completed" ? "Mark complete" : "Advance stage →"}
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Advance sheet — current → next chips + confirm. */}
+      {advOpen && nextStage && (
+        <SheetShell title="Advance stage" onClose={() => setAdvOpen(false)}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 0 14px", flexWrap: "wrap" }}>
+            <span style={{ padding: "7px 13px", borderRadius: 10, fontSize: 13, fontWeight: 700, background: FIELD_BG, color: INK_SEC }}>{prettyStage(stageOf(c))}</span>
+            <span style={{ color: GREY, fontSize: 15 }}>›</span>
+            <span style={{ padding: "7px 13px", borderRadius: 10, fontSize: 13, fontWeight: 700, background: TEAL, color: "#fff" }}>{nextStage.long}</span>
+          </div>
+          <div style={{ fontSize: 12.5, color: MUTED, marginBottom: 16 }}>
+            Next-stage owner: <b style={{ color: INK_SEC }}>{nextStage.owner}</b>. The customer portal reflects the change immediately.
+          </div>
+          <button
+            className="btn"
+            disabled={busy}
+            style={{ opacity: busy ? 0.6 : 1 }}
+            onClick={async () => {
+              setAdvOpen(false);
+              await transitionTo(nextStage.key, false);
+            }}
+          >
+            {nextStage.key === "completed" ? "Confirm — mark complete" : "Confirm advance"}
+          </button>
+        </SheetShell>
+      )}
+
+      {/* Note sheet — audience + textarea, posts to /:id/notes. */}
+      {noteOpen && (
+        <NoteSheet
+          onClose={() => setNoteOpen(false)}
+          saving={addNote.isPending}
+          onSave={(text, audience) => {
+            addNote.mutate({ note: text, category: audience });
+            setNoteOpen(false);
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+// ── bottom sheet shell (fixed z40 — same pattern as NewCaseSheet, which
+// must sit ABOVE the floating tab bar at z30) ───────────────────────
+function SheetShell({ title, onClose, children }: { title?: string; onClose: () => void; children: React.ReactNode }) {
+  return (
+    <div className="hz-m" style={{ position: "fixed", inset: 0, zIndex: 40, background: "rgba(17,20,15,.4)", display: "flex", flexDirection: "column", justifyContent: "flex-end" }} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: "#fff", borderTopLeftRadius: 22, borderTopRightRadius: 22, padding: "10px 18px", paddingBottom: "calc(env(safe-area-inset-bottom) + 24px)", maxHeight: "80%", overflowY: "auto" }}>
+        <div style={{ width: 38, height: 4, borderRadius: 999, background: DIM, margin: "4px auto 14px" }} />
+        {title && <div style={{ fontSize: 17, fontWeight: 700, color: INK, marginBottom: 14 }}>{title}</div>}
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// Note entry sheet — own local draft (the Timeline tab keeps its inline
+// input too; both post through the same mutation).
+function NoteSheet({ onClose, onSave, saving }: {
+  onClose: () => void;
+  onSave: (note: string, audience: NoteAudience) => void;
+  saving: boolean;
+}) {
+  const [text, setText] = useState("");
+  const [audience, setAudience] = useState<NoteAudience>("service");
+  return (
+    <SheetShell title="Add note" onClose={onClose}>
+      <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+        {NOTE_AUDIENCE_OPTIONS.map((o) => (
+          <button
+            key={o.value}
+            onClick={() => setAudience(o.value)}
+            className={`sochip${audience === o.value ? " on" : ""}`}
+            style={{ flex: 1 }}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+      <textarea
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        rows={4}
+        placeholder="Findings, next steps…"
+        className="fld-i"
+        style={{ resize: "none", width: "100%", boxSizing: "border-box" }}
+      />
+      <div style={{ fontSize: 10, color: GREY, margin: "6px 0 12px" }}>
+        {audience === "customer" ? "Visible to the customer on the portal." : "Internal only — hidden from the customer."}
+      </div>
+      <button
+        className="btn"
+        disabled={!text.trim() || saving}
+        style={{ opacity: !text.trim() || saving ? 0.6 : 1 }}
+        onClick={() => text.trim() && onSave(text.trim(), audience)}
+      >
+        {saving ? "Saving…" : "Save note"}
+      </button>
+    </SheetShell>
   );
 }
 
@@ -1118,7 +1630,6 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
   // Issue categories render by NAME; priority by SLUG. Fall back to the
   // hardcoded constants until the call returns so the form stays usable.
   const issueCatOptions = useLookupNames("issue-categories", ISSUE_CATEGORY_OPTIONS as readonly string[]);
-  const priorityOptions = useLookupSlugs("priorities", PRIORITY_OPTIONS as readonly string[]);
   const [docNo, setDocNo] = useState("");
   // SO picker (real search-so lookup, replacing free-text). `soQuery` is
   // what the user types; once they pick a hit we lock `docNo` and show the
@@ -1136,7 +1647,10 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
   const [manualCode, setManualCode] = useState("");
   const [complaint, setComplaint] = useState("");
   const [category, setCategory] = useState("");
-  const [priority, setPriority] = useState("normal");
+  // Optional "Issue number" (handoff §5) — the customer's own complaint /
+  // ticket ref. Maps to assr_cases.ref_no; when left blank the create
+  // endpoint falls back to the SO's pre-printed Ref (input.ref_no ?? ctx.Ref).
+  const [issueNo, setIssueNo] = useState("");
   // Complaint date (assr_cases.complained_date) — defaults to today (MYT).
   // Stored/sent as YYYY-MM-DD (the native date input's value format, which
   // is also what the backend's todayMyt() default produces).
@@ -1208,7 +1722,11 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
         })),
         complaint_issue: complaint.trim(),
         issue_category: category.trim() || null,
-        priority,
+        // Priority is no longer picked at intake (Nick 2026-07-14) —
+        // the backend defaults to "normal"; adjust on the case page.
+        // Empty string must NOT reach the server — it would beat the
+        // `?? context.Ref` SO-reference fallback.
+        ref_no: issueNo.trim() || null,
         // Complaint date — the backend defaults this to today (MYT) when
         // omitted; we always send the (defaulted-to-today, user-editable)
         // value so the intake date is honoured. Sent as YYYY-MM-DD.
@@ -1294,7 +1812,7 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
                   <>
                     <input value={soQuery} onChange={(e) => setSoQuery(e.target.value)} placeholder="SO #, reference, or customer name…" className="fld-i money" />
                     {soQuery.trim().length >= 2 && (
-                      <div style={{ marginTop: 5, border: `1px solid #e3e6e0`, borderRadius: 10, overflow: "hidden", maxHeight: 190, overflowY: "auto" }} className="hz-scroll">
+                      <div style={{ marginTop: 5, border: `1px solid ${DIM}`, borderRadius: 10, overflow: "hidden", maxHeight: 190, overflowY: "auto" }} className="hz-scroll">
                         {soLoading && <div style={{ fontSize: 11, color: GREY, padding: "9px 11px" }}>Searching…</div>}
                         {!soLoading && !soResults.length && <div style={{ fontSize: 11, color: GREY, padding: "9px 11px" }}>No matching sales orders.</div>}
                         {soResults.map((hit, i) => (
@@ -1319,13 +1837,13 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
               <div className="fld">
                 <span className="fld-l">Affected products * ({selItems.length})</span>
                 {selItems.map((it) => (
-                  <div key={it.item_code} style={{ display: "flex", alignItems: "center", gap: 8, border: "1px solid #e3e6e0", borderRadius: 10, padding: "8px 10px", marginBottom: 6, background: "#fff" }}>
+                  <div key={it.item_code} style={{ display: "flex", alignItems: "center", gap: 8, border: `1px solid ${DIM}`, borderRadius: 10, padding: "8px 10px", marginBottom: 6, background: "#fff" }}>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div className="money" style={{ fontSize: 11, fontWeight: 700, color: BROWN, wordBreak: "break-word" }}>{it.item_code}</div>
                       {it.item_description && <div style={{ fontSize: 11, color: MUTED, marginTop: 1, ...cellEllipsis }}>{it.item_description}</div>}
                     </div>
                     {/* qty stepper — min 1 */}
-                    <div style={{ flex: "none", display: "flex", alignItems: "center", gap: 0, border: "1px solid #e3e6e0", borderRadius: 8, overflow: "hidden" }}>
+                    <div style={{ flex: "none", display: "flex", alignItems: "center", gap: 0, border: `1px solid ${DIM}`, borderRadius: 8, overflow: "hidden" }}>
                       <button
                         onClick={() => setSelQty(it.item_code, it.qty - 1)}
                         disabled={it.qty <= 1}
@@ -1346,7 +1864,7 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
                     <button
                       onClick={() => removeSelItem(it.item_code)}
                       aria-label="Remove product"
-                      style={{ flex: "none", width: 26, height: 26, borderRadius: 8, border: "1px solid #e3e6e0", background: "#fff", color: RED, fontSize: 15, lineHeight: 1, cursor: "pointer" }}
+                      style={{ flex: "none", width: 26, height: 26, borderRadius: 8, border: `1px solid ${DIM}`, background: "#fff", color: RED, fontSize: 15, lineHeight: 1, cursor: "pointer" }}
                     >
                       ×
                     </button>
@@ -1429,12 +1947,13 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
                 </select>
               </label>
               <label className="fld">
-                <span className="fld-l">Priority *</span>
-                <select value={priority} onChange={(e) => setPriority(e.target.value)} className="fld-i">
-                  {priorityOptions.map((o) => (
-                    <option key={o} value={o}>{cap(o)}</option>
-                  ))}
-                </select>
+                <span className="fld-l">Issue number</span>
+                <input
+                  value={issueNo}
+                  onChange={(e) => setIssueNo(e.target.value)}
+                  placeholder="Customer complaint / ticket ref"
+                  className="fld-i money"
+                />
               </label>
               {/* Complaint date — assr_cases.complained_date. Native date input
                   (value = YYYY-MM-DD), defaulted to today (MYT). */}
@@ -1458,7 +1977,7 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
               {files.length > 0 && (
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 7 }}>
                   {files.map((f, i) => (
-                    <div key={i} style={{ position: "relative", aspectRatio: "1", borderRadius: 9, overflow: "hidden", background: FIELD_BG, border: `1px solid #e3e6e0`, display: "flex", alignItems: "center", justifyContent: "center", padding: 4 }}>
+                    <div key={i} style={{ position: "relative", aspectRatio: "1", borderRadius: 9, overflow: "hidden", background: FIELD_BG, border: `1px solid ${DIM}`, display: "flex", alignItems: "center", justifyContent: "center", padding: 4 }}>
                       <span style={{ fontSize: 9, color: MUTED, textAlign: "center", wordBreak: "break-word", lineHeight: 1.2 }}>{f.name}</span>
                       <button
                         onClick={() => setFiles((prev) => prev.filter((_, j) => j !== i))}
@@ -1475,7 +1994,7 @@ function NewCaseSheet({ onClose, onOpen }: { onClose: () => void; onOpen: (id: n
                 <label style={{ width: "100%", display: "flex", flexDirection: "column", alignItems: "center", gap: 6, border: "1px dashed #c2c6bd", borderRadius: 11, padding: 18, background: FIELD_BG, cursor: "pointer" }}>
                   <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={TEAL} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 16V4M7 9l5-5 5 5" /><path d="M5 20h14" /></svg>
                   <span style={{ fontSize: 13, fontWeight: 700, color: TEAL }}>Add Photos / Videos</span>
-                  <input type="file" accept="image/jpeg,image/png,image/webp,video/mp4,application/pdf" multiple style={{ display: "none" }} onChange={onPickFiles} />
+                  <input type="file" accept={ATTACH_ACCEPT} multiple style={{ display: "none" }} onChange={onPickFiles} />
                 </label>
               )}
               <div style={{ fontSize: 10, color: GREY, marginTop: 7, textAlign: "center" }}>JPG / PNG / WEBP / MP4 / PDF · 5MB each · up to 5 files · drag, drop, or paste</div>
@@ -1564,32 +2083,16 @@ function PGrid({ label, value, mono, span, multiline }: { label: string; value: 
   );
 }
 
-// two-up cell (.fld-l micro-label above the value).
-function KVcell({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <div className="fld-l">{label}</div>
-      <div style={{ fontSize: 12.5, fontWeight: 600, color: INK, marginTop: 2, wordBreak: "break-word" }}>{value}</div>
-    </div>
-  );
-}
-
-// .spill status pill (list + detail chip row). Colours are dynamic → inline.
-function Spill({ colors, dot, children }: { colors: [string, string]; dot?: boolean; children: React.ReactNode }) {
-  return (
-    <span className="spill" style={{ background: colors[0], color: colors[1], fontSize: 10, padding: "4px 9px", borderRadius: 20 }}>
-      {dot && <span style={{ marginRight: 4 }}>●</span>}
-      {children}
-    </span>
-  );
-}
-
 // timeline audience badge colour (rbadge — 12% tint of the category hue).
 function catBadge(cat: string): [string, string] {
   switch (cat) {
-    case "PURCHASING": return ["#a16a2e1f", BROWN];
+    case "SERVICE": return ["#16695f1f", TEAL];
     case "CUSTOMER": return ["#2f8a5b1f", GREEN];
-    case "SERVICE ADMIN": return ["#16695f1f", TEAL];
+    case "SUPPLIER": return ["#a16a2e1f", BROWN];
+    case "SALES": return ["#1f3a8a1f", BLUE];
+    // Legacy rows from before mig 0108 (all migrated, but a cached
+    // payload may still carry it briefly).
+    case "PURCHASING": return ["#16695f1f", TEAL];
     default: return ["#16695f1f", TEAL];
   }
 }
@@ -1604,9 +2107,49 @@ type EditField = {
   key: string;
   label: string;
   value: any;
-  type: "text" | "textarea" | "date" | "select";
+  type: "text" | "textarea" | "date" | "select" | "so";
   options?: { value: string; label: string }[];
 };
+
+// SO input with the create-sheet's typeahead (Nick 2026-07-14 — editing
+// the SO must search like the create form). Picking a hit fills the
+// draft; EditableAcc's Save then PATCHes doc_no and the backend
+// re-matches customer info. Unknown values (post-disconnect SOs) still
+// save as typed.
+function SoSearchField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [focused, setFocused] = useState(false);
+  const { results, loading } = useSoSearch(focused ? value : "");
+  const open = focused && value.trim().length >= 2 && (loading || results.length > 0);
+  return (
+    <div style={{ position: "relative" }}>
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setTimeout(() => setFocused(false), 150)}
+        placeholder="SO #, reference, or customer name…"
+        className="fld-i money"
+        style={{ width: "100%", boxSizing: "border-box" }}
+      />
+      {open && (
+        <div className="hz-scroll" style={{ position: "absolute", left: 0, right: 0, top: "100%", marginTop: 4, zIndex: 30, border: `1px solid ${DIM}`, borderRadius: 10, background: "#fff", maxHeight: 190, overflowY: "auto", boxShadow: "0 10px 24px -10px rgba(17,24,16,.35)" }}>
+          {loading && <div style={{ fontSize: 11, color: GREY, padding: "9px 11px" }}>Searching…</div>}
+          {!loading && !results.length && <div style={{ fontSize: 11, color: GREY, padding: "9px 11px" }}>No matching sales orders.</div>}
+          {results.map((hit, i) => (
+            <button
+              key={String(get(hit, "docNo", "doc_no")) + i}
+              onMouseDown={(e) => { e.preventDefault(); onChange(String(get(hit, "docNo", "doc_no") ?? "")); setFocused(false); }}
+              style={{ display: "block", width: "100%", textAlign: "left", border: "none", borderTop: i ? "1px solid #eceee9" : "none", background: "#fff", padding: "9px 11px", cursor: "pointer" }}
+            >
+              <div className="money" style={{ fontSize: 12, fontWeight: 700, color: INK }}>{String(get(hit, "docNo", "doc_no"))}</div>
+              <div style={{ fontSize: 11, color: MUTED, ...cellEllipsis }}>{String(get(hit, "debtorName", "debtor_name") ?? "—")}{get(hit, "phone") ? ` · ${String(get(hit, "phone"))}` : ""}</div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function EditableAcc({
   title,
@@ -1617,6 +2160,7 @@ function EditableAcc({
   accent,
   note,
   headSlot,
+  readView,
   children,
 }: {
   title: string;
@@ -1627,6 +2171,10 @@ function EditableAcc({
   accent?: string;
   note?: string;
   headSlot?: React.ReactNode;
+  /** Replaces the default read view (KV rows + children) — the fields
+   *  still drive the edit view. Used by the Customer card so its read
+   *  state matches the desktop design (avatar, chips, call button). */
+  readView?: React.ReactNode;
   children?: React.ReactNode;
 }) {
   const [editing, setEditing] = useState(false);
@@ -1693,6 +2241,11 @@ function EditableAcc({
                       <option key={o.value} value={o.value}>{o.label}</option>
                     ))}
                   </select>
+                ) : f.type === "so" ? (
+                  <SoSearchField
+                    value={draft[f.key] ?? ""}
+                    onChange={(v) => setDraft((d) => ({ ...d, [f.key]: v }))}
+                  />
                 ) : (
                   <input
                     type={f.type === "date" ? "date" : "text"}
@@ -1715,6 +2268,8 @@ function EditableAcc({
               </button>
             </div>
           </>
+        ) : readView ? (
+          readView
         ) : (
           <>
             {fields.map((f) => (
@@ -1752,9 +2307,91 @@ function isoDateOnly(v: any): string {
   return dt.toISOString().slice(0, 10);
 }
 
-// ── Root cause inline field (Issue inspection) — text input with a Save
-// affordance that patches verified_root_cause. Kept separate from the
-// EditableAcc grid because the design renders it under the Outcome buttons.
+// ── Single-field inline edit row (Info stage panels) ──────────────
+// Read view is a KV row; tapping it swaps in the input + Save/Cancel.
+// Saves null for a cleared value (PATCH stores `?? null`).
+function EditRow({
+  label,
+  value,
+  type = "text",
+  options,
+  mono,
+  busy,
+  disabled,
+  onSave,
+}: {
+  label: string;
+  value: any;
+  type?: "text" | "date" | "textarea" | "select";
+  options?: { value: string; label: string }[];
+  mono?: boolean;
+  busy: boolean;
+  disabled?: boolean;
+  onSave: (v: string | null) => Promise<void> | void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const start = () => {
+    if (disabled) return;
+    setDraft(type === "date" ? isoDateOnly(value) : value == null ? "" : String(value));
+    setEditing(true);
+  };
+  const save = async () => {
+    const v = draft.trim();
+    await onSave(v === "" ? null : v);
+    setEditing(false);
+  };
+  if (!editing) {
+    const display =
+      value == null || value === ""
+        ? "—"
+        : type === "date"
+        ? dm(value)
+        : type === "select"
+        ? options?.find((o) => o.value === String(value))?.label ?? String(value)
+        : String(value);
+    return (
+      <div
+        onClick={start}
+        style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "6px 0", borderTop: `1px solid #f4f5f2`, cursor: disabled ? "default" : "pointer" }}
+      >
+        <span style={{ fontSize: 11, color: MUTED, flex: "none" }}>{label}</span>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+          <span className={mono ? "money" : undefined} style={{ fontSize: 12.5, fontWeight: 600, color: INK, textAlign: "right", whiteSpace: type === "textarea" ? "normal" : "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{display}</span>
+          {!disabled && (
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={GREY} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flex: "none" }}><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4Z" /></svg>
+          )}
+        </span>
+      </div>
+    );
+  }
+  return (
+    <div style={{ padding: "6px 0", borderTop: `1px solid #f4f5f2` }}>
+      <div className="fld-l" style={{ marginBottom: 4 }}>{label}</div>
+      {type === "textarea" ? (
+        <textarea value={draft} onChange={(e) => setDraft(e.target.value)} rows={3} className="fld-i" style={{ resize: "none", width: "100%", boxSizing: "border-box" }} />
+      ) : type === "select" ? (
+        <select value={draft} onChange={(e) => setDraft(e.target.value)} className="fld-i" style={{ width: "100%" }}>
+          {(options ?? []).map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
+      ) : (
+        <input type={type === "date" ? "date" : "text"} value={draft} onChange={(e) => setDraft(e.target.value)} className={`fld-i${mono ? " money" : ""}`} style={{ width: "100%", boxSizing: "border-box" }} />
+      )}
+      <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+        <button onClick={() => setEditing(false)} disabled={busy} className="tinybtn" style={{ flex: 1 }}>Cancel</button>
+        <button onClick={save} disabled={busy} className="tinybtn" style={{ flex: 1, background: TEAL, borderColor: TEAL, color: "#fff", opacity: busy ? 0.6 : 1 }}>
+          {busy ? "Saving…" : "Save"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Root cause inline field (Verification panel) — text input with a
+// Save affordance that patches verified_root_cause. Kept separate from
+// EditRow because the design renders it under the Outcome buttons.
 function RootCauseField({ value, busy, onSave }: { value: any; busy: boolean; onSave: (v: string) => Promise<void> }) {
   const initial = value == null ? "" : String(value);
   const [draft, setDraft] = useState(initial);
@@ -1792,57 +2429,29 @@ function RootCauseField({ value, busy, onSave }: { value: any; busy: boolean; on
   );
 }
 
-// ── QC inspection report upload → PUT /:id/attachments?category=qc ──
-// Design's "Upload inspection report" button. Streams a single file to the
-// same raw-binary attachments endpoint used elsewhere, tagged category=qc.
-function QcReportUpload({ caseId, onChanged, notify }: { caseId: number; onChanged: () => void; notify: ReturnType<typeof useNotify> }) {
-  const [uploading, setUploading] = useState(false);
-  const onPick = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = (e.target.files ?? [])[0];
-    e.target.value = "";
-    if (!file) return;
-    const ext = (file.name.split(".").pop() || "").toLowerCase();
-    if (!ATTACH_EXTS.has(ext)) {
-      await notify({ title: "Unsupported file", body: "Allowed: JPG, PNG, WEBP, MP4, PDF.", tone: "error" });
-      return;
-    }
-    setUploading(true);
-    try {
-      const buf = await file.arrayBuffer();
-      await api.putBinary(
-        `/api/assr/${caseId}/attachments?category=qc&ext=${ext}&name=${encodeURIComponent(file.name)}`,
-        buf,
-        file.type || "application/octet-stream",
-      );
-      onChanged();
-    } catch (err: any) {
-      await notify({ title: "Upload failed", body: err?.message || "Please try again.", tone: "error" });
-    } finally {
-      setUploading(false);
-    }
-  };
-  return (
-    <label className="tinybtn" style={{ display: "inline-flex", marginTop: 9, cursor: uploading ? "default" : "pointer", opacity: uploading ? 0.6 : 1 }}>
-      {uploading ? "Uploading…" : "↑ Upload inspection report"}
-      <input type="file" accept="image/jpeg,image/png,image/webp,video/mp4,application/pdf" style={{ display: "none" }} disabled={uploading} onChange={onPick} />
-    </label>
-  );
-}
-
-// ── Defect photos / videos grid → PUT /:id/attachments ────────────
-// Shows every non-archived attachment as an auth-fetched thumbnail
-// (blob URL) and lets staff capture / pick up to 5 more per batch.
-// Each file streams to the raw-binary PUT endpoint (?category&ext&name);
-// archive routes through the in-app confirm dialog (no naked delete).
+// ── Attachment grid → PUT /:id/attachments?category=… ─────────────
+// Shows the passed (pre-filtered) attachments as auth-fetched thumbnails
+// (blob URLs) and lets staff capture / pick up to 5 more per batch, all
+// tagged with `category`. Used for Issue photos (complaint), QC-issue
+// photos (receipt_evidence) and after-repair QC photos (qc). Archive
+// routes through the in-app confirm dialog (no naked delete).
 function PhotoGrid({
   caseId,
   attachments,
+  category,
+  label,
+  hint,
+  accent = TEAL,
   onChanged,
   notify,
   confirm,
 }: {
   caseId: number;
   attachments: Any[];
+  category: string;
+  label: string;
+  hint?: string;
+  accent?: string;
   onChanged: () => void;
   notify: ReturnType<typeof useNotify>;
   confirm: ReturnType<typeof useConfirm>;
@@ -1870,7 +2479,7 @@ function PhotoGrid({
         const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
         const buf = await file.arrayBuffer();
         await api.putBinary(
-          `/api/assr/${caseId}/attachments?category=complaint&ext=${ext}&name=${encodeURIComponent(file.name)}`,
+          `/api/assr/${caseId}/attachments?category=${encodeURIComponent(category)}&ext=${ext}&name=${encodeURIComponent(file.name)}`,
           buf,
           file.type || "application/octet-stream",
         );
@@ -1902,25 +2511,23 @@ function PhotoGrid({
     }
   };
 
-  // Design: rendered INSIDE the Issue section as a "Photos / videos (N)"
-  // label + a 3-column grid whose last cell is a dashed "Add" tile.
   return (
     <>
-      <div className="fld-l" style={{ marginTop: 8 }}>Photos / videos ({attachments.length})</div>
+      <div className="fld-l" style={{ marginTop: 8 }}>{label} ({attachments.length})</div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginTop: 6 }}>
         {attachments.map((att, i) => (
           <AttachThumb key={get(att, "id") ?? i} att={att} onArchive={() => archive(att)} />
         ))}
-        <label style={{ border: "1px dashed #c2c6bd", borderRadius: 11, aspectRatio: "1", background: FIELD_BG, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 4, cursor: uploading ? "default" : "pointer", opacity: uploading ? 0.6 : 1 }}>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={TEAL} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <label style={{ border: `1px dashed ${accent}`, borderRadius: 11, aspectRatio: "1", background: FIELD_BG, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 4, cursor: uploading ? "default" : "pointer", opacity: uploading ? 0.6 : 1 }}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={accent} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3Z" />
             <circle cx="12" cy="13" r="3" />
           </svg>
-          <span style={{ fontSize: 9, fontWeight: 700, color: TEAL }}>{uploading ? `${uploading.done}/${uploading.total}` : "Add"}</span>
+          <span style={{ fontSize: 9, fontWeight: 700, color: accent }}>{uploading ? `${uploading.done}/${uploading.total}` : "Add"}</span>
           <input
             ref={inputRef}
             type="file"
-            accept="image/jpeg,image/png,image/webp,video/mp4,application/pdf"
+            accept={ATTACH_ACCEPT}
             multiple
             style={{ display: "none" }}
             disabled={!!uploading}
@@ -1928,6 +2535,7 @@ function PhotoGrid({
           />
         </label>
       </div>
+      {hint && <div style={{ fontSize: 10.5, color: GREY, marginTop: 6 }}>{hint}</div>}
     </>
   );
 }
@@ -1949,7 +2557,7 @@ function AttachThumb({ att, onArchive }: { att: Any; onArchive: () => void }) {
   if (data && data !== url) setUrl(data);
 
   return (
-    <div style={{ position: "relative", aspectRatio: "1", borderRadius: 9, overflow: "hidden", background: FIELD_BG, border: `1px solid #e3e6e0` }}>
+    <div style={{ position: "relative", aspectRatio: "1", borderRadius: 9, overflow: "hidden", background: FIELD_BG, border: `1px solid ${DIM}` }}>
       {isVideo || isPdf ? (
         <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 3 }}>
           <span style={{ fontSize: 9, fontWeight: 700, color: MUTED }}>{isVideo ? "VIDEO" : "PDF"}</span>

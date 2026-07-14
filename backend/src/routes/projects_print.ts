@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
-import { getProjectDetail } from "../services/projects";
+import { getProjectDetail, stripSensitiveChecklist } from "../services/projects";
 import { activeCompanyId } from "../scm/lib/companyScope";
 import {
   getBrandingForCompany,
@@ -34,6 +34,13 @@ function esc(s: unknown): string {
     .replace(/"/g, "&quot;");
 }
 
+// All printed dates/timestamps render in Malaysia wall-clock time
+// (UTC+8). The Worker runs in UTC and the old getUTC* formatting
+// printed instants 8 hours behind the office clock (Nick 2026-07-14:
+// the printed "Generated" stamp read 8h early). Date-only strings (YYYY-MM-DD)
+// parse as UTC midnight, so the +8h shift never moves their calendar day.
+const MYT_OFFSET_MS = 8 * 60 * 60 * 1000;
+
 function fmtDate(s: string | null | undefined): string {
   if (!s) return "—";
   const d = new Date(s);
@@ -42,16 +49,18 @@ function fmtDate(s: string | null | undefined): string {
     if (parts.length === 3 && parts[0].length === 4) return `${parts[2]}/${parts[1]}/${parts[0]}`;
     return s.slice(0, 10);
   }
-  const dd = String(d.getUTCDate()).padStart(2, "0");
-  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
-  const yyyy = d.getUTCFullYear();
+  const shifted = new Date(d.getTime() + MYT_OFFSET_MS);
+  const dd = String(shifted.getUTCDate()).padStart(2, "0");
+  const mm = String(shifted.getUTCMonth() + 1).padStart(2, "0");
+  const yyyy = shifted.getUTCFullYear();
   return `${dd}/${mm}/${yyyy}`;
 }
 
 function fmtDateTime(s: string | null | undefined): string {
   if (!s) return "—";
-  const d = new Date(s);
-  if (isNaN(d.getTime())) return s.slice(0, 16).replace("T", " ");
+  const parsed = new Date(s);
+  if (isNaN(parsed.getTime())) return s.slice(0, 16).replace("T", " ");
+  const d = new Date(parsed.getTime() + MYT_OFFSET_MS);
   const dd = String(d.getUTCDate()).padStart(2, "0");
   const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
   const yyyy = d.getUTCFullYear();
@@ -124,7 +133,18 @@ app.get("/:id", async (c) => {
   // authenticated user could print any project id. Enforce the same gate the
   // detail JSON uses.
   const user = (c as any).get("user");
-  if (user && !canSeeProject(user, detail.project as any)) return c.text("Not found", 404);
+  // Mirror the detail-GET read gate: PIC line + brand + grace (canSeeProject)
+  // OR a scoped rep on the project's Sales Attending list (attendee arm, mig
+  // 087). Keeps the printable debrief in lockstep with what the list surfaces
+  // and the detail JSON opens. Dual-read rep_user_id (pg driver camelCases).
+  const isPrintAttendee =
+    !!user?.id &&
+    ((detail as any).sales_attendees ?? []).some(
+      (a: any) => (a.rep_user_id ?? a.repUserId) === user.id
+    );
+  if (user && !canSeeProject(user, detail.project as any) && !isPrintAttendee) {
+    return c.text("Not found", 404);
+  }
   // Section-level finance/payment gate (Sales-department visibility, rules 3 &
   // 5). Non-director positions must not see money in the printable debrief
   // either — the JSON endpoint strips it, so must this. Gated on position_id
@@ -132,11 +152,16 @@ app.get("/:id", async (c) => {
   const pmsPrint = getPmsAccess(user, detail.project as any);
   const hideMoney = !!user && user.position_id != null && !pmsPrint.canFinancial;
   const hidePayment = !!user && user.position_id != null && !pmsPrint.canPayment;
+  // Quotation / Agreement (WF_SENSITIVE) are DIRECTOR-only (rule 5) — strip
+  // those checklist rows from the debrief for a non-director position, the
+  // same server-side backstop as the detail JSON.
+  const hideSensitive = !!user && user.position_id != null && !pmsPrint.canSensitive;
+  const scoped = hideSensitive ? stripSensitiveChecklist(detail as any) : detail;
 
   const p = detail.project as any;
   const finance = detail.finance as any;
   const lines = (detail.finance_lines as any[]) ?? [];
-  const checklist = (detail.checklist as any[]) ?? [];
+  const checklist = (scoped.checklist as any[]) ?? [];
   const defects = (detail.defects as any[]) ?? [];
   // Sales-reports row scoping (owner 2026-07) — mirror the detail-GET rule so
   // the printable debrief never leaks another rep's sale amounts. Non-director

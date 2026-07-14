@@ -25,6 +25,10 @@ export type Env = {
   // (/api/assr-form-intake). GitHub secret, injected at deploy; the
   // endpoint 401s on every request while unset.
   FORM_INTAKE_KEY?: string;
+  /** Shared secret for the sheet status-export pull (Nick 2026-07-14) —
+   *  a separate key from FORM_INTAKE_KEY because the form-intake script
+   *  lives in a different Google account than the HC Delivery sheet's. */
+  SHEET_SYNC_KEY?: string;
   POD_BUCKET: R2Bucket;
   // R2 buckets used by the ported SCM routes (SO item photos, public assets).
   // Typed required so the ported code compiles; bind in wrangler.toml before the
@@ -74,6 +78,10 @@ export type Env = {
   // POST /api/mail-center/inbound route 503s until this is set and >= 16 chars.
   // Set via `wrangler secret put MAIL_INBOUND_SECRET` (owner-gated, MX cutover).
   MAIL_INBOUND_SECRET?: string;
+  // Shared secret guarding POST /api/sync/so-mirror (the 2990 live SO mirror
+  // receiver). The 2990 DB (pg_net) sends it as `x-sync-secret`. Set via
+  // `wrangler secret put SYNC_SECRET`. Unset => the receiver 401s (fail-closed).
+  SYNC_SECRET?: string;
   // System Health observability (phase 2, ported from Hookka). Writes via the
   // binding; reads via the AE SQL API using the two secrets. All optional —
   // absent => health endpoints serve deterministic mock data.

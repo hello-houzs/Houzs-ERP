@@ -32,6 +32,32 @@ export const useSalesInvoices = (status?: string) =>
     retry: 1,
     retryDelay: 800,
   });
+
+// Opt-in server-side pagination + search + sort + status-counts (mirrors
+// useMfgSalesOrdersPaged). Sending `page` switches /sales-invoices into its
+// paginated contract ({ salesInvoices, total, page, pageSize, statusCounts });
+// the legacy useSalesInvoices above (no page) still returns the historical
+// unpaginated list. `status` is the RESOLVED sales_invoices.status DB value
+// (UPPERCASE) — the caller maps its filter-pill bucket to a DB status first and
+// passes undefined for the multi-status buckets the single-status filter can't
+// express (sent/partial/paid), so those show all rows still counted.
+export function useSalesInvoicesPaged(params: { page: number; pageSize: number; status?: string; q?: string; sort?: string }) {
+  const { page, pageSize, status, q, sort } = params;
+  const usp = new URLSearchParams();
+  usp.set('page', String(page));
+  usp.set('pageSize', String(pageSize));
+  if (status) usp.set('status', status);
+  if (q && q.trim()) usp.set('q', q.trim());
+  if (sort) usp.set('sort', sort);
+  return useQuery({
+    queryKey: ['sales-invoices-paged', page, pageSize, status ?? '', q ?? '', sort ?? ''],
+    queryFn: () => authedFetch<{ salesInvoices: any[]; total: number; page: number; pageSize: number; statusCounts: { all: number; sent: number; partial: number; paid: number; cancelled: number } }>(`/sales-invoices?${usp.toString()}`),
+    placeholderData: (prev: any) => prev,
+    staleTime: 30_000,
+    retry: 1,
+    retryDelay: 800,
+  });
+}
 export const useSalesInvoiceDetail = (id: string | null) => useQuery({
   queryKey: ['sales-invoice-detail', id],
   queryFn: () => authedFetch<{ salesInvoice: any; items: any[] }>(`/sales-invoices/${id}`),

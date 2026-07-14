@@ -560,6 +560,7 @@ accounting.get('/gl', async (c) => {
   // a wide account/date range exports every entry, not just the first 1000.
   const { data, error } = await paginateAll((pFrom, pTo) => {
     let q = sb.from('v_gl_entries').select('*');
+    q = scopeToCompany(q, c); // multi-company: isolate GL lines to the active company (view exposes company_id, mig 0106)
     if (accountCode) q = q.eq('account_code', accountCode);
     if (from)        q = q.gte('entry_date', from);
     if (to)          q = q.lte('entry_date', to);
@@ -573,9 +574,9 @@ accounting.get('/balances', async (c) => {
   const sb = c.get('supabase');
   // PostgREST's 1000-row cap silently truncated the balance list — page through
   // so every account balance is returned, not just the first 1000.
-  const { data, error } = await paginateAll((from, to) => sb
+  const { data, error } = await paginateAll((from, to) => scopeToCompany(sb
     .from('v_account_balances')
-    .select('*')
+    .select('*'), c) // multi-company: isolate balances to the active company (view exposes company_id, mig 0106)
     .range(from, to));
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
   return c.json({ balances: data ?? [] });
@@ -591,10 +592,10 @@ accounting.get('/ar-aging', async (c) => {
   // PostgREST's 1000-row cap silently truncated the aging buckets — page through
   // so the full AR ledger is bucketed, not just the first 1000 rows. Ordering
   // stays inside the page factory so every page is consistent.
-  const { data, error } = await paginateAll((from, to) => sb
+  const { data, error } = await paginateAll((from, to) => scopeToCompany(sb
     .from('v_ar_aging')
     .select('*')
-    .neq('status', 'DRAFT')
+    .neq('status', 'DRAFT'), c) // multi-company: isolate AR aging to the active company (view exposes company_id, mig 0106)
     .order('days_overdue', { ascending: false })
     .range(from, to));
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
@@ -611,10 +612,10 @@ accounting.get('/ap-aging', async (c) => {
   // PostgREST's 1000-row cap silently truncated the aging buckets — page through
   // so the full AP ledger is bucketed, not just the first 1000 rows. Ordering
   // stays inside the page factory so every page is consistent.
-  const { data, error } = await paginateAll((from, to) => sb
+  const { data, error } = await paginateAll((from, to) => scopeToCompany(sb
     .from('v_ap_aging')
     .select('*')
-    .neq('status', 'DRAFT')
+    .neq('status', 'DRAFT'), c) // multi-company: isolate AP aging to the active company (view exposes company_id, mig 0106)
     .order('days_overdue', { ascending: false })
     .range(from, to));
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);

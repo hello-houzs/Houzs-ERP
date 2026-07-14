@@ -1,6 +1,7 @@
 import type { Env } from "../types";
 import { recomputeAutoCostLines } from "./projectCostRates";
 import { scopeNotExpiredSql } from "./projectAcl";
+import { isSensitiveChecklistItem } from "./pmsAccess";
 
 // ── Codes ─────────────────────────────────────────────────────
 // Format: `YYYY-MM-{ORGANIZER}-{STATE}-{VENUE}-{BRAND}` — built from
@@ -607,6 +608,7 @@ export async function getProjectDetail(env: Env, id: number, companyId?: number)
             et.name  as event_type_name,
             u1.name  as created_by_name,
             pic.name as pic_name,
+            pic.phone as pic_phone,
             pic.email as pic_email,
             ud1.name as setup_driver_name,
             ud2.name as dismantle_driver_name,
@@ -922,6 +924,7 @@ export async function getProjectDetail(env: Env, id: number, companyId?: number)
     `SELECT a.sales_rep_id, a.created_at,
             r.code      as rep_code,
             r.name      as rep_name,
+            r.phone     as rep_phone,
             r.user_id   as rep_user_id,
             u.name      as user_name
        FROM project_sales_attendees a
@@ -950,6 +953,84 @@ export async function getProjectDetail(env: Env, id: number, companyId?: number)
     activity: activity.results ?? [],
     team: team.results ?? [],
     trips: trips.results ?? [],
+  };
+}
+
+/**
+ * Server-side backstop for WF_SENSITIVE (quotation / agreement) visibility.
+ * Returns a shallow copy of a project-detail payload with the sensitive
+ * checklist rows — and their comments, attachments, and section-progress
+ * contribution — removed. Called for a caller whose PMS role lacks
+ * WF_SENSITIVE (pmsAccess `canSensitive` === false), mirroring how the
+ * detail-GET strips finance / payment. Directors are unaffected: pass only
+ * when the gate is closed. No-op (returns the same object) when the payload
+ * carries no sensitive rows.
+ */
+export function stripSensitiveChecklist<
+  T extends {
+    checklist?: any[];
+    checklist_comments?: any[];
+    checklist_attachments?: any[];
+    sections?: any[];
+    section_progress?: any[];
+  }
+>(detail: T): T {
+  const removed = (detail.checklist ?? []).filter((it) =>
+    isSensitiveChecklistItem(it)
+  );
+  if (removed.length === 0) return detail;
+  const removedIds = new Set(removed.map((r: any) => r.id));
+  const checklist = (detail.checklist ?? []).filter(
+    (it: any) => !removedIds.has(it.id)
+  );
+  const checklist_comments = (detail.checklist_comments ?? []).filter(
+    (c: any) => !removedIds.has(c.item_id)
+  );
+  const checklist_attachments = (detail.checklist_attachments ?? []).filter(
+    (a: any) => !removedIds.has(a.item_id)
+  );
+  // A section that held a sensitive item and now has NO remaining items is
+  // dropped entirely — otherwise the gated user sees an empty section header
+  // (e.g. an orphan "CONTRACT" stage) that hints a hidden row exists.
+  // Sections that were already empty, or still hold other items, are kept.
+  const remainingSectionIds = new Set(
+    checklist.map((it: any) => it.section_id).filter((s: any) => s != null)
+  );
+  const emptiedSectionIds = new Set(
+    removed
+      .map((r: any) => r.section_id)
+      .filter((s: any) => s != null && !remainingSectionIds.has(s))
+  );
+  const sections = (detail.sections ?? []).filter(
+    (s: any) => !emptiedSectionIds.has(s.id)
+  );
+  // Recompute the affected section-progress rows so the count doesn't leak
+  // that a hidden item exists; drop the row outright for an emptied section.
+  // Uncategorised tasks (section_id null) roll up to the id-0 bucket.
+  const section_progress = (detail.section_progress ?? [])
+    .filter((sp: any) => !emptiedSectionIds.has(sp.id))
+    .map((sp: any) => {
+      const rm = removed.filter((r: any) => (r.section_id ?? 0) === sp.id);
+      if (rm.length === 0) return sp;
+      const total = Math.max(0, (sp.total ?? 0) - rm.length);
+      const done = Math.max(
+        0,
+        (sp.done ?? 0) - rm.filter((r: any) => r.status === "done").length
+      );
+      const na = Math.max(
+        0,
+        (sp.na ?? 0) - rm.filter((r: any) => r.status === "na").length
+      );
+      const denom = total - na;
+      return { ...sp, total, done, na, complete: denom > 0 && done === denom ? 1 : 0 };
+    });
+  return {
+    ...detail,
+    checklist,
+    checklist_comments,
+    checklist_attachments,
+    sections,
+    section_progress,
   };
 }
 
@@ -987,6 +1068,12 @@ export interface ListProjectsFilters {
    *  (migration 048). Empty array means the scoped user has no brand
    *  coverage → zero results. Undefined means no brand ACL applies. */
   brand_scope?: string[];
+  /** Scoped rep's own user id. When set (only for scope_to_pic reps,
+   *  paired with pic_scope), OR-in the sales-attendee arm so a rep on a
+   *  project's Sales Attending list sees it even when they aren't the PIC
+   *  — mirrors the /calendar/events attendee arm (mig 087). Undefined for
+   *  admins / directors / unscoped roles (they never carry pic_scope). */
+  attendee_user_id?: number;
   /** "My pending tasks" filter (role-based). When set, only return
    *  projects that have at least one PENDING checklist item with this
    *  role_label (e.g. "BD", "PURCHASER", "DRIVER", "SALES PIC",
@@ -1200,35 +1287,47 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
     const like = `%${f.search}%`;
     binds.push(like, like, like, like);
   }
+  // Row-level ACL for a scoped rep (pic_scope present ⇒ getProjectScope was
+  // non-null, i.e. a scope_to_pic sales/CS rep). Mirrors BOTH the
+  // /calendar/events assignment scoping AND services/projectAcl.canSeeProject
+  // so the list, the calendar, and the detail all agree on what a scoped rep
+  // may see (no row that 404s on open; no openable row missing from the list):
+  //   · PIC arm      — the project's PIC (COALESCE(pic_id, created_by) for
+  //                    legacy pre-039 rows) is in their [self, manager] line
+  //                    AND the project's brand is in their department allow-list
+  //                    AND the project is still inside the PIC grace window.
+  //                    This is exactly canSeeProject's inPicLine + brand + grace.
+  //   · Attendee arm — they are on the project's Sales Attending list
+  //                    (project_sales_attendees → sales_reps.user_id, mig 087) —
+  //                    the same linkage the calendar's attendee arm uses.
+  //                    Unconditional (no brand / grace gate), exactly like the
+  //                    calendar: being an attendee is itself an assignment.
+  // Fail-closed: a scoped rep with neither a PIC line nor an attendee record
+  // yields an empty OR set → `1 = 0` → an empty list, never the full list.
   if (f.pic_scope) {
-    if (f.pic_scope.length === 0) {
-      // Scoped user with no valid PIC line — return no rows.
-      where.push("1 = 0");
-    } else {
+    const scopeArms: string[] = [];
+    if (f.pic_scope.length > 0 && f.brand_scope && f.brand_scope.length > 0) {
       // Fall back to created_by when pic_id is NULL so legacy projects
-      // (pre-migration 039) still attach to their creator's team.
-      where.push(
-        `COALESCE(p.pic_id, p.created_by) IN (${f.pic_scope.map(() => "?").join(",")})`
+      // (pre-migration 039) still attach to their creator's team. Brand-less
+      // projects are intentionally invisible to scoped users — admins fix by
+      // setting the brand. Grace: PIC visibility expires PIC_GRACE_DAYS after
+      // the project ends (owner: "完了的四天之后").
+      scopeArms.push(
+        `(COALESCE(p.pic_id, p.created_by) IN (${f.pic_scope.map(() => "?").join(",")})` +
+        ` AND ${scopeNotExpiredSql}` +
+        ` AND p.brand IS NOT NULL AND p.brand IN (${f.brand_scope.map(() => "?").join(",")}))`
       );
-      binds.push(...f.pic_scope);
-      // PIC visibility expires PIC_GRACE_DAYS after the project ends (owner:
-      // "完了的四天之后"). Only scoped users (pic_scope set) get this filter.
-      where.push(scopeNotExpiredSql);
+      binds.push(...f.pic_scope, ...f.brand_scope);
     }
-  }
-  if (f.brand_scope) {
-    if (f.brand_scope.length === 0) {
-      // Scoped user with no brand coverage — return no rows.
-      where.push("1 = 0");
-    } else {
-      // Project must have a brand AND it must be in the user's
-      // department's allow-list. Brand-less projects are intentionally
-      // invisible to scoped users — admins fix by setting the brand.
-      where.push(
-        `(p.brand IS NOT NULL AND p.brand IN (${f.brand_scope.map(() => "?").join(",")}))`
+    if (f.attendee_user_id != null) {
+      scopeArms.push(
+        `EXISTS (SELECT 1 FROM project_sales_attendees psa` +
+        ` JOIN sales_reps sr ON sr.id = psa.sales_rep_id` +
+        ` WHERE psa.project_id = p.id AND sr.user_id = ?)`
       );
-      binds.push(...f.brand_scope);
+      binds.push(f.attendee_user_id);
     }
+    where.push(scopeArms.length ? `(${scopeArms.join(" OR ")})` : "1 = 0");
   }
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
