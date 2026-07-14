@@ -32,6 +32,7 @@ export const supabaseAuth = createMiddleware<{ Bindings: Env; Variables: Variabl
       email?: string;
       name?: string | null;
       position_name?: string | null;
+      department_name?: string | null;
       permissions?: string[];
       permissions_set?: Set<string>;
     } | undefined;
@@ -47,9 +48,11 @@ export const supabaseAuth = createMiddleware<{ Bindings: Env; Variables: Variabl
             id: Number(hu.id),
             email: hu.email,
             name: hu.name ?? null,
-            // STABLE ORG FIELD carried through for pmsAccess.isDirectorUser
-            // (Sales-Director view-all bypass — see lib/houzs-perms.ts).
+            // STABLE ORG FIELDS carried through for pmsAccess.isDirectorUser /
+            // isSalesUser (Sales-Director view-all bypass + salesperson
+            // amendment self-service — see lib/houzs-perms.ts).
             position_name: hu.position_name ?? null,
+            department_name: hu.department_name ?? null,
             permissions: hu.permissions,
             permissions_set: hu.permissions_set,
           }

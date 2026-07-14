@@ -31,6 +31,12 @@ export interface Variables {
      *  the director-position sales view-all bypass (canViewAllSales) reads it
      *  from here. null when the user has no position assigned. */
     position_name?: string | null;
+    /** STABLE ORG FIELD (public.users → departments.name) mirrored from the real
+     *  AuthUser so SCM handlers can call pmsAccess.isSalesUser against the REAL
+     *  caller — isSalesUser matches a "Sales …" position OR a department whose
+     *  name contains "sales", so both org fields must be carried through.
+     *  null when the user has no department assigned. */
+    department_name?: string | null;
     permissions?: string[];
     permissions_set?: Set<string>;
   } | undefined;
