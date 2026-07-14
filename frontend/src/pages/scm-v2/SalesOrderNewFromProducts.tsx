@@ -144,9 +144,16 @@ export function SalesOrderNewFromProducts() {
   };
 
   // Catalogue — server-side filter on category + search via useMfgProducts.
+  // Server-typeahead gate (owner #1 scaling pain, 2026-07-14) — the "All / no
+  // search" read used to pull the WHOLE ~2000-SKU catalogue up front. It is now
+  // bounded: the query only fires once >= 2 search chars are typed OR a category
+  // chip is picked (a category-scoped read is bounded). Below the gate the
+  // Catalogue shows a prompt instead. Cart selections are held in `knownByCode`
+  // + `cartQty`, independent of this query, so gating never drops a picked item.
   const productsQ = useMfgProducts({
     category: cat === "ALL" ? undefined : cat,
     search: q.trim() || undefined,
+    enabled: q.trim().length >= 2 || cat !== "ALL",
   });
 
   // Cart state — qty by SKU code (0 = not in cart).
@@ -389,8 +396,13 @@ function Catalogue({
   );
   const hiddenCount = filteredActive.length - shown.length;
   const hasFilters = q.trim() !== "" || cat !== "ALL";
+  /* Server-typeahead gate (2026-07-14): the catalogue query only fires once >= 2
+     search chars are typed OR a category chip is picked. Below the gate we show a
+     prompt rather than the "no products" empties (which would misread as "empty
+     catalogue"). Mirrors the parent's useMfgProducts `enabled`. */
+  const gateOpen = q.trim().length >= 2 || cat !== "ALL";
   const isEmptyAfterFilters =
-    !loading && !error && hasFilters && filteredActive.length === 0;
+    !loading && !error && hasFilters && gateOpen && filteredActive.length === 0;
 
   return (
     <div className="rounded-xl border border-border bg-surface p-4 shadow-stone sm:p-5">
@@ -466,8 +478,15 @@ function Catalogue({
         </div>
       )}
 
+      {/* Server-typeahead prompt — shown below the gate (no fetch happens). */}
+      {!loading && !error && !gateOpen && (
+        <div className="mt-4 rounded-md border border-border bg-surface-2 p-4 text-[12px] text-ink-muted">
+          Type at least 2 characters, or pick a category, to browse the catalogue.
+        </div>
+      )}
+
       {/* Empty (no products at all in this category, ignoring search) */}
-      {!loading && !error && !hasFilters && filteredActive.length === 0 && (
+      {!loading && !error && gateOpen && !hasFilters && filteredActive.length === 0 && (
         <div className="mt-4 rounded-md border border-border bg-surface-2 p-4 text-[12px] text-ink-muted">
           No active products in this category yet.
         </div>

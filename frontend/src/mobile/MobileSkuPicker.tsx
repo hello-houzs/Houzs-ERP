@@ -87,11 +87,20 @@ export function MobileSkuPicker({
      SKU) so "Add N products" hands back selections in the order tapped. */
   const [picked, setPicked] = useState<Array<{ id: string; sku: PickedSku }>>([]);
 
-  // The catalog read. Category "" omits the filter (shows all); search is a
-  // server-side code/name match (GET /mfg-products?category=&search=).
+  // The catalog read. Category "" omits the filter; search is a server-side
+  // code/name match (GET /mfg-products?category=&search=).
+  //
+  // Server-typeahead gate (owner #1 scaling pain, 2026-07-14) — the "All / no
+  // search" read used to pull the WHOLE ~1141-SKU catalog on every open. It is
+  // now bounded: the query only fires once the operator has typed >= 2 chars OR
+  // narrowed to a category chip (a category-scoped read is bounded to that
+  // category). Below the gate we show a prompt instead of fetching everything.
+  const trimmedSearch = search.trim();
+  const gateOpen = trimmedSearch.length >= 2 || cat !== "";
   const productsQ = useMfgProducts({
     category: cat || undefined,
-    search: search.trim() || undefined,
+    search: trimmedSearch || undefined,
+    enabled: gateOpen,
   });
 
   const rows = useMemo<MfgProductRow[]>(
@@ -141,7 +150,9 @@ export function MobileSkuPicker({
         </div>
 
         <div className="sheet-scroll" style={{ gap: 7 }}>
-          {productsQ.isLoading ? (
+          {!gateOpen ? (
+            <div style={{ textAlign: "center", color: "#9aa093", fontSize: 12, padding: "28px 0" }}>Type at least 2 characters, or pick a category, to browse the catalog.</div>
+          ) : productsQ.isLoading ? (
             <div style={{ textAlign: "center", color: "#9aa093", fontSize: 12, padding: "28px 0" }}>Loading catalog{"…"}</div>
           ) : productsQ.isError ? (
             <div style={{ textAlign: "center", color: "#b23a3a", fontSize: 12, padding: "28px 0" }}>Couldn{"’"}t load the catalog. Pull down and try again.</div>
