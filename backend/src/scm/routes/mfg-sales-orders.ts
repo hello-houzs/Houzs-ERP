@@ -2539,7 +2539,7 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
     }
   }
   const cachedCombos = await loadActiveSofaCombos(sb, c);  // Phase 4b — sofa selling recompute
-  const cachedFabricAddonConfig = await loadFabricTierAddonConfig(sb, activeCompanyId(c));  // migration 0124 — fabric-tier Δ
+  const cachedFabricAddonConfig = await loadFabricTierAddonConfig(sb, companyId);  // migration 0124 — fabric-tier Δ (SoCreateContext → local companyId)
   const cachedModelOverrides = await loadModelFabricTierOverrides(sb);  // migration 0172 — per-Model Δ
   const cachedCompartmentOverrides = await loadCompartmentFabricTierOverrides(sb);  // migration 0025 — per-compartment Δ
 
@@ -2949,12 +2949,13 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
     Number((it.variants as { extraAddonAmountRM?: unknown } | null)?.extraAddonAmountRM ?? 0) > 0);
   let autoSkuEnabled = false;
   if (hasDeclaredExtra) {
-    const { data: flagRows, error: flagErr } = await scopeToCompany(
-      sb
-        .from('so_settings').select('key, enabled')
-        .in('key', ['pos_remark_extra_auto_sku']),
-      c,
-    );
+    // SoCreateContext is not a Hono Context (see metaQ note above) — add the
+    // company predicate from the local companyId instead of scopeToCompany(c).
+    let flagQ = sb
+      .from('so_settings').select('key, enabled')
+      .in('key', ['pos_remark_extra_auto_sku']);
+    if (companyId != null) flagQ = flagQ.eq('company_id', companyId);
+    const { data: flagRows, error: flagErr } = await flagQ;
     if (flagErr) {
       await rollbackPwpClaims();
       return c.json({ error: 'lookup_failed', reason: flagErr.message }, 500);
