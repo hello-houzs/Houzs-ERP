@@ -8,6 +8,12 @@ Severity tags: 🔴 critical/high · 🟠 medium · 🟢 low.
 
 ## 2026-07-14 — Multi-company + performance campaign
 
+### 🟠 Inventory list showed negative / inflated "Available" for partially-shipped or multi-company SKUs
+- **Symptom:** On the Inventory product list (`GET /inventory/products`), a SKU could show a wrongly negative `available_qty` (e.g. on-hand 6, gross open SO qty 10 → Available −4 when the true free-to-sell was 0), and in multi-company a shared SKU's Reserved/Available was distorted by the OTHER company's orders.
+- **Cause:** The Reserved / reserve_7d / reserve_14d KPIs summed the **gross** open SO-line qty. (1) Delivered qty (net of returns) was never subtracted, so a partially-shipped SO double-counted its already-shipped units → `available_qty = stock − reserved` went negative. (2) The demand query had **no company scoping** while the stock figure (`v_inventory_product_totals`) and the open-lots query WERE company-scoped, so a shared SKU subtracted other companies' demand from this company's stock.
+- **Fix:** Each SO line now contributes `max(0, qty − delivered + returned)` (delivered/returned sourced from non-cancelled DOs/DRs, mirroring `so-stock-allocation.ts`), and the demand query is wrapped in `scopeToCompany(...)` like the lots/totals queries in the same file.
+- **Ref:** `fix/inventory-reserved-available`, 2026-07-14.
+
 ### 🟠 Company switch kept showing the previous company's list (cross-tenant stale)
 - **Symptom:** Switching company in the top-bar switcher (Houzs↔2990) left the products / SO lists showing the PREVIOUS company's data (Houzs 1326 rows still under 2990); a hard refresh fixed it. Time-good-time-bad (a race).
 - **Cause:** The active company is header-based (`X-Company-Id`, read fresh from localStorage per request — so the header AND the backend scoping were correct). But react-query keys don't include the company, so company A's and B's data share one cache entry. `invalidateQueries()` raced (keepPreviousData kept A's rows / an in-flight A response repopulated the shared entry); and a first fix attempt with `queryClient.clear()` was insufficient — clear() empties the cache but does NOT re-trigger a mounted observer to refetch. Proven on prod: a remount (nav away+back) switched correctly to 2990's "2990 AKKA-FIRM MATT", an in-place clear() did not.
