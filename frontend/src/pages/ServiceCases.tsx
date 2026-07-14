@@ -32,6 +32,7 @@ import {
   Printer,
   Download,
   X,
+  Check,
   ClipboardList,
   Wrench,
   Phone,
@@ -1852,6 +1853,163 @@ function BulkActionsBar({
 }
 
 // ── Create Panel ──────────────────────────────────────────────
+
+// ── SO-No editor with the create-form's SO search (Nick 2026-07-14:
+// "edit SO 的时候需要和 create case 的 search 功能一样"). Debounced
+// typeahead against /search-so (the local SO mirror); picking a hit
+// saves it — the backend then re-matches customer info. Typing a value
+// the mirror doesn't know (post-disconnect SOs) still saves on blur.
+function SoNoSearchEdit({
+  value,
+  onSave,
+}: {
+  value: string | null | undefined;
+  onSave: (v: string | null) => Promise<void> | void;
+}) {
+  const current = value == null ? "" : String(value);
+  const [draft, setDraft] = useState(current);
+  const [status, setStatus] = useState<"idle" | "saving" | "ok" | "error">("idle");
+  const [suggestions, setSuggestions] = useState<
+    { doc_no: string; ref: string | null; debtor_name: string | null; phone: string | null; doc_date: string | null }[]
+  >([]);
+  const [searching, setSearching] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [rect, setRect] = useState<{ top: number; left: number; width: number } | null>(null);
+
+  useEffect(() => {
+    setDraft(current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [current]);
+
+  // Debounced mirror search — same endpoint + cadence as CreatePanel.
+  useEffect(() => {
+    const q = draft.trim();
+    if (q.length < 2 || q === current) {
+      setSuggestions([]);
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    const handle = setTimeout(async () => {
+      try {
+        const res = await api.get<{ results: typeof suggestions }>(
+          `/api/assr/search-so?q=${encodeURIComponent(q)}`
+        );
+        setSuggestions(res.results);
+      } catch {
+        setSuggestions([]);
+      } finally {
+        setSearching(false);
+      }
+    }, 200);
+    return () => clearTimeout(handle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft, current]);
+
+  // Track the input rect so the portaled dropdown follows it.
+  useLayoutEffect(() => {
+    if (!suggestions.length || !inputRef.current) {
+      setRect(null);
+      return;
+    }
+    const compute = () => {
+      if (!inputRef.current) return;
+      const r = inputRef.current.getBoundingClientRect();
+      setRect({ top: r.bottom + 4, left: r.left, width: Math.max(r.width, 320) });
+    };
+    compute();
+    window.addEventListener("resize", compute);
+    window.addEventListener("scroll", compute, true);
+    return () => {
+      window.removeEventListener("resize", compute);
+      window.removeEventListener("scroll", compute, true);
+    };
+  }, [suggestions]);
+
+  async function commit(next: string) {
+    setSuggestions([]);
+    if (next === current) return;
+    setStatus("saving");
+    try {
+      await onSave(next || null);
+      setStatus("ok");
+      setTimeout(() => setStatus("idle"), 1500);
+    } catch {
+      setStatus("error");
+    }
+  }
+
+  return (
+    <div>
+      <div className="mb-1.5 flex items-center justify-between">
+        <label className="text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+          SO No
+        </label>
+        {status === "saving" && (
+          <span className="text-[9px] font-medium uppercase tracking-wider text-accent">saving…</span>
+        )}
+        {status === "ok" && <Check size={12} className="text-synced" />}
+        {status === "error" && <X size={12} className="text-err" />}
+      </div>
+      <input
+        ref={inputRef}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && commit(draft.trim())}
+        onBlur={() => commit(draft.trim())}
+        placeholder="SO #, reference, or customer name…"
+        className={cn(
+          "w-full rounded-md border bg-surface px-3 py-2 font-mono text-[13px] text-ink outline-none transition-colors",
+          "focus:border-primary focus:ring-2 focus:ring-primary/20",
+          status === "error" ? "border-err" : "border-border"
+        )}
+      />
+      <div className="mt-1 text-[10.5px] text-ink-muted">
+        {searching
+          ? "Searching…"
+          : "Pick a result to re-match customer info from the SO."}
+      </div>
+      {rect &&
+        createPortal(
+          <div
+            style={{ position: "fixed", top: rect.top, left: rect.left, width: rect.width, zIndex: 60 }}
+            className="max-h-72 overflow-auto rounded-md border border-border bg-surface shadow-lg"
+          >
+            {suggestions.map((s) => (
+              <button
+                key={s.doc_no}
+                type="button"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  setDraft(s.doc_no);
+                  commit(s.doc_no);
+                }}
+                className="flex w-full flex-col gap-0.5 border-b border-border/60 px-3 py-2 text-left text-[12px] last:border-b-0 hover:bg-accent-soft/20"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="font-mono font-semibold text-ink">{s.doc_no}</span>
+                  {s.ref && (
+                    <span className="rounded bg-bg px-1.5 py-0.5 font-mono text-[10px] text-ink-muted">
+                      ref: {s.ref}
+                    </span>
+                  )}
+                  {s.doc_date && <span className="ml-auto text-[10px] text-ink-muted">{s.doc_date}</span>}
+                </div>
+                {(s.debtor_name || s.phone) && (
+                  <div className="text-[11px] text-ink-secondary">
+                    {s.debtor_name ?? ""}
+                    {s.debtor_name && s.phone ? " · " : ""}
+                    {s.phone ?? ""}
+                  </div>
+                )}
+              </button>
+            ))}
+          </div>,
+          document.body
+        )}
+    </div>
+  );
+}
 
 function CreatePanel({
   onClose,
@@ -3764,12 +3922,7 @@ function DetailContent({
                 onSave={(v) => patch({ sales_agent: v })}
                 placeholder="Sales rep"
               />
-              <InlineEdit
-                label="SO No"
-                value={c.doc_no}
-                onSave={(v) => patch({ doc_no: v })}
-                placeholder="SO-2990-xxxx"
-              />
+              <SoNoSearchEdit value={c.doc_no} onSave={(v) => patch({ doc_no: v })} />
               <InlineEdit
                 label="Phone"
                 value={c.phone}
