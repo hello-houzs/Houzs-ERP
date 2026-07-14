@@ -358,9 +358,9 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
         )?.id
       : "") ?? "";
 
-  /* Refresh the payments ledger + header KPIs after a payment posts. Reused by
-     both the delete action and the standalone Add-Payment sheet's onSaved. */
-  /* After a payment add/edit/delete the shared mutation already invalidates the
+  /* Refresh the header KPIs after a payment posts. Reused by both the delete
+     action and the standalone Add-Payment sheet's onSaved.
+     After a payment add/edit/delete the shared mutation already invalidates the
      payments ledger (['mfg-sales-orders', docNo, 'payments']) — the same key
      useSalesOrderPayments reads. The header KPIs (Paid / Balance) come from the
      DETAIL header, which the payment mutation does NOT touch, so refresh that
