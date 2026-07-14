@@ -729,6 +729,12 @@ mfgSalesOrders.get('/', async (c) => {
       const s = escapeForOr(search);
       if (s) q = q.or(`doc_no.ilike.%${s}%,debtor_name.ilike.%${s}%,debtor_code.ilike.%${s}%,agent.ilike.%${s}%,sales_location.ilike.%${s}%,ref.ilike.%${s}%,branding.ilike.%${s}%`);
     }
+    /* Optional so_date window (ISO yyyy-mm-dd, inclusive). The mobile list's
+       period chips (this-month / last-month / next-month / this-year) send a
+       from/to so the range filter runs server-side across the whole table, not
+       just the current page. Absent → no date bound. */
+    const from = c.req.query('from'); if (from) q = q.gte('so_date', from);
+    const to = c.req.query('to'); if (to) q = q.lte('so_date', to);
     q = q.range(page * pageSize, page * pageSize + pageSize - 1);
     const res = await q;
     data = res.data;
