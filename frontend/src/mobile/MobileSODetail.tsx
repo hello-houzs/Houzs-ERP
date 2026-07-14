@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
@@ -7,6 +7,8 @@ import { fetchPaymentSlipUrl, fetchScanSlipImageBlobUrl, uploadSlipFull } from "
 import { useStaff } from "../vendor/scm/lib/admin-queries";
 import { useAuth as useHouzsAuth } from "../auth/AuthContext";
 import {
+  useMfgSalesOrderDetail,
+  useSalesOrderPayments,
   useSalesOrderAuditLog,
   type SoAuditEntry,
   type SoAuditFieldChange,
@@ -143,8 +145,6 @@ type SoPayment = {
      may be corrected only on the MY calendar day it was recorded). */
   created_at: string | null;
 };
-type DetailResp = { salesOrder: SoHeader; items: SoItem[] };
-type PaymentsResp = { payments: SoPayment[] };
 
 const rm = (centi: number | null | undefined) =>
   ((centi ?? 0) / 100).toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -191,22 +191,19 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
   const [supplierConfirmOpen, setSupplierConfirmOpen] = useState(false);
   const approveSo = useApproveSo();
 
-  const detail = useQuery({
-    queryKey: ["mobile-so-detail", docNo],
-    queryFn: () => authedFetch<DetailResp>(`/mfg-sales-orders/${encodeURIComponent(docNo)}`),
-    staleTime: 15_000,
-  });
-  const paymentsQ = useQuery({
-    queryKey: ["mobile-so-payments", docNo],
-    queryFn: () => authedFetch<PaymentsResp>(`/mfg-sales-orders/${encodeURIComponent(docNo)}/payments`),
-    staleTime: 15_000,
-  });
+  /* Reads route through the SHARED vendored hooks (vendor/scm/lib/
+     sales-order-queries) so mobile lives in the SAME query-key namespace as the
+     desktop SalesOrderDetail — shared mutations (status / payments / amendments)
+     invalidate ['mfg-sales-order-detail'] + ['mfg-sales-orders', docNo,
+     'payments'] and those invalidations now reach this screen too. */
+  const detail = useMfgSalesOrderDetail(docNo);
+  const paymentsQ = useSalesOrderPayments(docNo);
 
   const staffQ = useStaff();
   const houzsAuth = useHouzsAuth();
-  const h = detail.data?.salesOrder;
-  const items = detail.data?.items ?? [];
-  const payments = paymentsQ.data?.payments ?? [];
+  const h = detail.data?.salesOrder as SoHeader | undefined;
+  const items = (detail.data?.items ?? []) as SoItem[];
+  const payments = (paymentsQ.data ?? []) as SoPayment[];
   /* Download the SO PDF — reuses the SAME desktop generator (per-brand letterhead)
      so the phone produces byte-identical output. 'save' = normal download. */
   const onPdf = async () => {
@@ -297,8 +294,9 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
   const canApproveSo = houzsAuth.can("scm.amendment.approve_so");
 
   /* Approve-SO gate (SUPPLIER_PENDING → SO_APPROVED). Confirms, then re-derives
-     the SO server-side; the mutation invalidates the shared SO/amendment queries
-     and we additionally refresh the mobile-scoped keys so this screen updates. */
+     the SO server-side; the vendored useApproveSo mutation already invalidates
+     the shared SO detail + amendment queries this screen now reads, so no
+     mobile-scoped refresh is needed. */
   const handleApproveSo = async () => {
     if (!openAmendment || busy) return;
     if (!(await confirm({
@@ -309,10 +307,6 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
     setBusy(true);
     try {
       await approveSo.mutateAsync({ id: openAmendment.id });
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: ["mobile-so-detail", docNo] }),
-        qc.invalidateQueries({ queryKey: ["mobile-so-list"] }),
-      ]);
       void notifyTop({ title: "SO revision approved" });
     } catch (e) {
       void notifyTop({ title: "Could not approve the revision", body: e instanceof Error ? e.message : String(e), tone: "error" });
@@ -320,14 +314,6 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
       setBusy(false);
     }
   };
-  /* Refresh the mobile-scoped SO detail + list after any amendment gate action
-     (the vendored mutations already invalidate the shared ['mfg-sales-order-*']
-     + ['amendments'] keys; these cover the mobile query keys this screen reads). */
-  const refreshAfterAmendment = () =>
-    Promise.all([
-      qc.invalidateQueries({ queryKey: ["mobile-so-detail", docNo] }),
-      qc.invalidateQueries({ queryKey: ["mobile-so-list"] }),
-    ]);
 
   /* Owner rule 2026-07-05 (desktop parity, SalesOrderDetail.tsx): a PROCEEDED
      order that's past its processing date freezes its LINE ITEMS + State /
@@ -747,7 +733,7 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
         <SupplierConfirmSheet
           amendmentId={openAmendment.id}
           onClose={() => setSupplierConfirmOpen(false)}
-          onDone={async () => { setSupplierConfirmOpen(false); await refreshAfterAmendment(); }}
+          onDone={() => setSupplierConfirmOpen(false)}
         />
       )}
 
