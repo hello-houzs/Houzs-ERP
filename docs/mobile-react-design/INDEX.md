@@ -25,7 +25,7 @@ _None — all screens delivered._
 ## Full component list (final)
 - `MobileLogin` · `MobileSoList` · **`MobileSoDetail`** (locked form) · `MobileNewSO` · `MobileScan`
 - `MobileDeliveryPlanning` · `MobilePlanningStop` (Delivery/Service/Project-Fair) · `MobilePOD`
-- `MobilePMS` (project detail) · `MobileServiceCase` + `MobileServiceCaseNew`
+- `MobilePMS` (project detail; tasklist has a **List / Gantt** toggle) · `MobileGantt` (timeline: section swim-lanes, week axis, due-date diamonds, holiday bands, today line; ports desktop `ProjectGantt`, no backend) · `MobileServiceCase` + `MobileServiceCaseNew`
 - `MobileMailCenter` (list/thread/compose) · `MobileAnnouncements` (list/detail) · `MobileInbox` · `MobileCalendar`
 - `MobileProfile` (+ settings sub-pages via `onOpen`)
 - `MobileList` / `MobileDetail` — generic engine for every read-only module

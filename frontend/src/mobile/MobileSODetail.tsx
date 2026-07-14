@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { formatDate } from "../lib/utils";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
@@ -140,14 +141,9 @@ type PaymentsResp = { payments: SoPayment[] };
 
 const rm = (centi: number | null | undefined) =>
   ((centi ?? 0) / 100).toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-/* Full date for the locked read-only fields (design renders e.g. "14 Jun 2026").
-   Empty / unparseable → em-dash so the .fld-ro cell never shows a raw string. */
-const dl = (d: string | null | undefined) => {
-  if (!d) return "—";
-  const dt = new Date(d);
-  if (isNaN(+dt)) return "—";
-  return dt.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
-};
+/* Full date for the locked read-only fields. Numeric DD/MM/YYYY via the shared
+   formatter (house rule — no month names), which also UTC-tags bare timestamps. */
+const dl = (d: string | null | undefined) => formatDate(d);
 /* Locked-field value or em-dash — a field the detail endpoint doesn't return
    (or returns empty) renders as "—" inside the .fld-ro box, per the brief. */
 const val = (v: string | null | undefined) => {

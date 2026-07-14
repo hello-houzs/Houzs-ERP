@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { formatDate } from "../lib/utils";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { api } from "../api/client";
@@ -133,12 +134,8 @@ export type ModuleConfig = {
 const rm = (centi: number | null | undefined) =>
   ((Number(centi) || 0) / 100).toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-const dm = (d: string | null | undefined) => {
-  if (!d) return "—";
-  const dt = new Date(d);
-  if (isNaN(+dt)) return "—";
-  return dt.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
-};
+// Numeric DD/MM/YYYY via the shared formatter (house rule — no month names).
+const dm = (d: string | null | undefined) => formatDate(d);
 
 /** Format a *_centi/_sen value as `RM x,xxx.00` for a field cell. Blank input
  *  (null / undefined / "") → "—" so an absent amount is not shown as RM 0.00. */
