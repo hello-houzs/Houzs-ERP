@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, ReactNode, SetStateAction } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { MobileVirtualList } from "./MobileVirtualList";
 import { MediaLightbox, type MediaItem } from "../components/MediaLightbox";
@@ -414,28 +414,81 @@ const STAGE_FILTERS: [string, string][] = [
   ["completed", "Completed"],
 ];
 
+const PMS_PAGE_SIZE = 30;
+
 function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onBack?: () => void }) {
   const [q, setQ] = useState("");
   const [stageFilter, setStageFilter] = useState<string>("all");
+  /* Debounced search term — the value actually sent to the server (and keyed
+     into the infinite query) so a keystroke doesn't fire a request per
+     character. 300ms after the operator stops typing the list re-runs from
+     page 1. Mirrors the merged MobileSalesOrders pattern. */
+  const [debouncedQ, setDebouncedQ] = useState("");
+  useEffect(() => {
+    const t = window.setTimeout(() => setDebouncedQ(q.trim()), 300);
+    return () => window.clearTimeout(t);
+  }, [q]);
 
-  const { data, isLoading, error } = useQuery({
-    queryKey: ["mobile-pms-list"],
-    queryFn: () => api.get<ListResponse>("/api/projects?per_page=200"),
+  /* Scroll container + sentinel for the IntersectionObserver infinite-scroll
+     trigger (the mobile screens scroll an inner overflow div, not the window). */
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const sentinelRef = useRef<HTMLDivElement>(null);
+
+  /* Server-side stage filter + search + infinite scroll. Both the stage chip
+     and the search box map to real /api/projects params (stage / search), so
+     the server finds matches across the WHOLE table — not just the rows already
+     loaded (the old per_page=200 silently truncated past 200). per_page 30;
+     default order (start_date DESC, id DESC) is stable → no skipped/dup rows.
+     NOTE: the server `search` matches code/name/venue/organizer; the old
+     client search also matched brand + PIC name — those two are no longer
+     searchable (organizer now is). Stage chips + search cross every page. */
+  const buildParams = (page: number): string => {
+    const p = new URLSearchParams();
+    p.set("page", String(page));
+    p.set("per_page", String(PMS_PAGE_SIZE));
+    if (stageFilter !== "all") p.set("stage", stageFilter);
+    if (debouncedQ) p.set("search", debouncedQ);
+    return p.toString();
+  };
+  const {
+    data, isLoading, error,
+    fetchNextPage, hasNextPage, isFetchingNextPage,
+  } = useInfiniteQuery({
+    queryKey: ["mobile-pms-list-paged", stageFilter, debouncedQ],
+    queryFn: ({ pageParam }) => api.get<ListResponse>(`/api/projects?${buildParams(pageParam)}`),
+    initialPageParam: 1,
+    getNextPageParam: (last, pages) => {
+      const loaded = pages.reduce((n, p) => n + (p.data?.length ?? p.projects?.length ?? p.rows?.length ?? 0), 0);
+      return loaded < (last.total ?? 0) ? pages.length + 1 : undefined;
+    },
     staleTime: 30_000,
+    placeholderData: (prev) => prev,
   });
-  const all = data?.data ?? data?.projects ?? data?.rows ?? [];
+  const rows = useMemo(
+    () => data?.pages.flatMap((p) => p.data ?? p.projects ?? p.rows ?? []) ?? [],
+    [data],
+  );
 
-  const rows = useMemo(() => {
-    const needle = q.trim().toLowerCase();
-    return all.filter((r) => {
-      if (stageFilter !== "all" && (r.stage ?? "").toLowerCase() !== stageFilter) return false;
-      if (needle) {
-        const hay = `${r.code} ${r.name} ${r.brand ?? ""} ${r.venue ?? ""} ${r.pic_name ?? ""}`.toLowerCase();
-        if (!hay.includes(needle)) return false;
-      }
-      return true;
-    });
-  }, [all, q, stageFilter]);
+  /* Infinite-scroll trigger — an IntersectionObserver watches a 1px sentinel at
+     the list's bottom and fetches the next page as it nears the viewport
+     (rootMargin 600px pre-load). Guarded by hasNextPage && !isFetchingNextPage
+     so it can't double-fire; re-observing when those flip re-fires the
+     initial-state callback so a first page shorter than the viewport still
+     pulls the next until the sentinel scrolls out or the pages run out. */
+  useEffect(() => {
+    const target = sentinelRef.current;
+    if (!target || !hasNextPage) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting) && hasNextPage && !isFetchingNextPage) {
+          void fetchNextPage();
+        }
+      },
+      { root: scrollRef.current, rootMargin: "0px 0px 600px 0px" },
+    );
+    io.observe(target);
+    return () => io.disconnect();
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage, rows.length]);
 
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
@@ -464,7 +517,7 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
         </div>
       </header>
 
-      <div className="scroll" style={{ padding: 14, paddingBottom: 120 }}>
+      <div ref={scrollRef} className="scroll" style={{ padding: 14, paddingBottom: 120 }}>
 
         {isLoading && <div style={{ textAlign: "center", color: "#9aa093", fontSize: 12, padding: "26px 0" }}>Loading…</div>}
         {error && <div style={{ textAlign: "center", color: "#b23a3a", fontSize: 12, padding: "26px 0" }}>Couldn't load projects. Pull to retry.</div>}
@@ -503,6 +556,17 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
               );
                 }}
               />
+            )}
+            {/* Infinite-scroll sentinel — the IntersectionObserver watches this
+                1px marker at the list's bottom; it enters view (+600px) near the
+                end and pulls the next page. Only present while more pages exist. */}
+            {rows.length > 0 && hasNextPage && (
+              <div ref={sentinelRef} aria-hidden style={{ height: 1 }} />
+            )}
+            {/* "Loading more…" while the next page is in flight; nothing once
+                every page is loaded (hasNextPage false). */}
+            {rows.length > 0 && isFetchingNextPage && (
+              <div style={{ textAlign: "center", padding: "14px 0 2px", fontSize: 11.5, color: "#9aa093" }}>Loading more…</div>
             )}
             {!rows.length && (
               <div className="empty">
