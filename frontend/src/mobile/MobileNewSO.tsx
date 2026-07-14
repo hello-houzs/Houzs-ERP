@@ -200,15 +200,14 @@ type SoPayment = {
 };
 type PaymentsResp = { payments: SoPayment[] };
 
-/* FIX A — the interactive form now sources Customer Type / Building Type /
+/* FIX A — the interactive form sources Customer Type / Building Type /
    Relationship / State / City / Postcode from the SAME real hooks the desktop
    SalesOrderNew reads (useSoDropdownOptions + useLocalities); see the component
-   body. These module-level arrays are kept ONLY as the enum-guard allowlist for
-   the headless createDraftFromPrefill() below (it has no hooks, so it validates
-   a stray OCR value against a static list before it reaches the backend). */
-const CUSTOMER_TYPES = ["", "Walk-in", "Repeat", "Dealer", "Designer", "NEW", "EXISTING"];
-const BUILDING_TYPES = ["", "Landed", "Condominium", "Apartment", "Office", "Commercial", "Condo", "Shop", "Other"];
-const STATES = ["", "Selangor", "Kuala Lumpur", "Penang", "Johor", "Melaka", "Perak", "Negeri Sembilan", "Kedah", "Pahang", "Sabah", "Sarawak", "Terengganu", "Kelantan", "Perlis", "Putrajaya", "Labuan"];
+   body. The scan prefill's customer/building type + state no longer need a
+   static allowlist here: the SHARED reconciler (vendor/scm/lib/scan-prefill) has
+   already snapped those against the LIVE catalog before the value reaches this
+   file, so both the interactive seed and the headless createDraftFromPrefill
+   trust the reconciled value. */
 const PAY_METHODS = ["Cash", "Merchant", "Online", "Installment"];
 /* Sentinel for "the signed-in creator has no scm.staff row" — shows their name
    in the Salesperson select but sends null so the backend stamps the caller. */
@@ -357,11 +356,15 @@ export async function createDraftFromPrefill(prefill: MobileScanPrefill): Promis
     debtorName: prefill.name.trim(),
     customerSoNo: prefill.custRef.trim() || null,
     phone: phoneOut,
-    customerType: inListOpt(prefill.customerType, CUSTOMER_TYPES) || null,
-    buildingType: inListOpt(prefill.buildingType, BUILDING_TYPES) || null,
+    /* The scan prefill's customer/building type + state are already reconciled
+       against the LIVE catalog by the SHARED reconciler (MobileScan builds this
+       prefill through reconcileScanPrefill), so trust them here rather than
+       re-guarding against a stale hardcoded list that would drop a valid value. */
+    customerType: prefill.customerType.trim() || null,
+    buildingType: prefill.buildingType.trim() || null,
     note: prefill.note.trim() || null,
     address1: prefill.address1.trim() || null,
-    customerState: inListOpt(prefill.state, STATES) || null,
+    customerState: prefill.state.trim() || null,
     city: prefill.city.trim() || null,
     postcode: prefill.postcode.trim() || null,
     // DRAFT: no dates (the interactive "Save draft" nulls these too).
@@ -380,14 +383,6 @@ export async function createDraftFromPrefill(prefill: MobileScanPrefill): Promis
     body: JSON.stringify(body),
   });
   return res?.docNo ?? "";
-}
-
-/* Keep a value only when it's one of the known option strings (empty otherwise) —
-   the headless equivalent of the component's `inList` seed guard, so a stray OCR
-   value never reaches the backend as an invalid enum. */
-function inListOpt(v: string | null | undefined, list: string[]): string {
-  const s = (v ?? "").trim();
-  return list.includes(s) ? s : "";
 }
 
 /* Map a persisted SoItem (edit prefill) back into an editable LineItem. */
@@ -544,12 +539,18 @@ export function MobileNewSO({
   const [custRef, setCustRef] = useState(scanPrefill?.custRef ?? "");
   const [phone, setPhone] = useState(scanPrefill?.phone ?? "");
   const [email, setEmail] = useState("");
-  const [custType, setCustType] = useState(inList(scanPrefill?.customerType ?? "", CUSTOMER_TYPES));
+  /* Trust the value the SHARED reconciler produced — it already snapped the OCR
+     match against the LIVE customer_type catalog (optionsOrFallback), the same
+     master this form's dropdown renders. Re-guarding against a stale hardcoded
+     list is what silently dropped valid scanned values on mobile; mirror desktop
+     (setCustomerType(payload.customerType)) and seed it straight. */
+  const [custType, setCustType] = useState(scanPrefill?.customerType ?? "");
   // Salesperson (staff.id). Blank = the backend stamps the logged-in caller.
   const [salespersonId, setSalespersonId] = useState(scanPrefill?.salesperson ?? "");
 
   // Order info
-  const [buildingType, setBuildingType] = useState(inList(scanPrefill?.buildingType ?? "", BUILDING_TYPES));
+  // Reconciled against the live building_type catalog — seed it straight (see custType).
+  const [buildingType, setBuildingType] = useState(scanPrefill?.buildingType ?? "");
   const [procDate, setProcDate] = useState(scanPrefill?.processingDate ?? "");
   const [delivDate, setDelivDate] = useState(scanPrefill?.deliveryDate ?? "");
   const [note, setNote] = useState(scanPrefill?.note ?? "");
@@ -562,7 +563,8 @@ export function MobileNewSO({
   // Delivery address
   const [addr1, setAddr1] = useState(scanPrefill?.address1 ?? "");
   const [addr2, setAddr2] = useState("");
-  const [state, setState] = useState(inList(scanPrefill?.state ?? "", STATES));
+  // Reconciled against the live my_localities state list — seed it straight (see custType).
+  const [state, setState] = useState(scanPrefill?.state ?? "");
   const [city, setCity] = useState(scanPrefill?.city ?? "");
   const [postcode, setPostcode] = useState(scanPrefill?.postcode ?? "");
 

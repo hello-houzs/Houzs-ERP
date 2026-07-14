@@ -45,8 +45,10 @@ import { Button } from '@2990s/design-system';
 import { useAuth } from '../../../auth/AuthContext';
 import { authedFetch } from '../lib/authed-fetch';
 import { sortByText } from '../lib/sort-options';
-import { useVenues, type VenueRow } from '../lib/venues-queries';
-import { normalizePhone } from '@2990s/shared/phone';
+import { useVenues } from '../lib/venues-queries';
+import { useSoDropdownOptions, optionsOrFallback } from '../lib/so-dropdown-options-queries';
+import { useLocalities, distinctStates } from '../lib/localities-queries';
+import { reconcileScanPrefill } from '../lib/scan-prefill';
 import styles from './ScanOrderModal.module.css';
 
 const ICON = { size: 14, strokeWidth: 1.75 } as const;
@@ -217,62 +219,13 @@ type ExtractResp = {
 };
 type SalespeopleResp = { success: boolean; data: { salespeople: string[] } };
 
-/* mfg_product_category → SO line item_group (SoLineCard lowercases the
-   product category; SERVICE lines carry item_group='service'). */
-const CATEGORY_TO_GROUP: Record<string, string> = {
-  SOFA: 'sofa',
-  BEDFRAME: 'bedframe',
-  MATTRESS: 'mattress',
-  ACCESSORY: 'accessory',
-  SERVICE: 'service',
-};
-
-const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-
-/* Owner rule (spec 6, 2026-06-24) — a card paid through a bank (Merchant) with
-   NO written month/tenure defaults to "One Shot", NOT a 12-month plan. Only an
-   explicitly-written tenure seeds N months. The value MUST equal the
-   installment_plan "One Shot" option VALUE seeded for this category. */
-const ONE_SHOT_PLAN = 'One Shot';
-
-/* ── Venue unify helper ─────────────────────────────────────────────────
-   Resolve the OCR's venue text to a REAL venue id from the SAME useVenues()
-   master the New SO form's Venue dropdown renders. We try, in order, the
-   server's so_dropdown_options match value (locationMatch) then the raw
-   location text, against each venue's name (case-insensitive, trim). A
-   confident hit returns the venue id; no hit returns '' so the form keeps its
-   salesperson-default venue (never a wrong forced pick). Substring matching is
-   intentionally conservative: only when one side fully contains the other AND
-   the shorter side is at least 3 chars, so "PJ" never collides with a longer
-   unrelated name. */
-function resolveVenueId(
-  venues: VenueRow[],
-  locationMatch: string,
-  rawLocation: string,
-): string {
-  const candidates = [locationMatch, rawLocation]
-    .map((s) => (s ?? '').trim().toLowerCase())
-    .filter((s) => s !== '');
-  if (candidates.length === 0 || venues.length === 0) return '';
-
-  for (const cand of candidates) {
-    // Exact name match first (the dropdown's source of truth).
-    const exact = venues.find((v) => v.name.trim().toLowerCase() === cand);
-    if (exact) return exact.id;
-  }
-  for (const cand of candidates) {
-    // Conservative containment — only with a meaningful overlap length.
-    const contains = venues.find((v) => {
-      const name = v.name.trim().toLowerCase();
-      if (name === '' ) return false;
-      const a = name.length <= cand.length ? name : cand;
-      const b = name.length <= cand.length ? cand : name;
-      return a.length >= 3 && b.includes(a);
-    });
-    if (contains) return contains.id;
-  }
-  return '';
-}
+/* The OCR → New SO prefill MAPPING now lives in one shared, pure reconciler
+   (../lib/scan-prefill) that BOTH this desktop modal and the mobile scan path
+   call, so a future mapping fix lands in one file. This modal supplies the live
+   catalogs (venues + SO dropdown options + localities) it already reads and then
+   adapts the neutral ReconciledPrefill to the desktop ScanPrefill handoff shape.
+   The venue-unify helper, the One-Shot payment default, the SOFA specialCodes
+   pass-through and the category→group map all moved into that file. */
 
 interface Props {
   onClose: () => void;
@@ -283,10 +236,21 @@ export const ScanOrderModal = ({ onClose }: Props) => {
   const { user } = useAuth();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  /* VENUE UNIFY — the SAME venue master the New SO form's Venue dropdown reads.
-     We match the OCR's venue text against this list and carry the resolved id
-     in the prefill so the form seeds a real dropdown selection. */
+  /* Live catalogs the shared reconciler needs — the SAME masters the New SO form
+     renders its dropdowns from, so a reconciled value always matches a live
+     option. venues = VENUE UNIFY (OCR venue text → a real venue id); the SO
+     dropdown options + localities canonicalise customer/building type, payment
+     method/merchant/online/plan and state. optionsOrFallback keeps them
+     populated before the API resolves (snapping is non-destructive, so a not-yet-
+     loaded list never drops a server-matched value). */
   const venuesQ = useVenues();
+  const customerTypeOptsQ  = useSoDropdownOptions('customer_type');
+  const buildingTypeOptsQ  = useSoDropdownOptions('building_type');
+  const paymentMethodOptsQ = useSoDropdownOptions('payment_method');
+  const paymentMerchantQ   = useSoDropdownOptions('payment_merchant');
+  const onlineTypeOptsQ    = useSoDropdownOptions('online_type');
+  const installmentPlanQ   = useSoDropdownOptions('installment_plan');
+  const localitiesQ        = useLocalities();
 
   const [files, setFiles] = useState<File[]>([]);
   const [dragOver, setDragOver] = useState(false);
@@ -339,133 +303,74 @@ export const ScanOrderModal = ({ onClose }: Props) => {
     repName: string,
   ): ScanPrefill => {
     const ex = d.extracted;
-    const skuByCode = new Map(d.catalog.skus.map((s) => [s.code.toUpperCase(), s]));
 
-    /* Bug #1 (2026-06-24) — seed phones in canonical +60 E.164 so the New SO
-       PhoneInput's country selector resolves to Malaysia, never US +1. The OCR
-       returns the national form ("+60 without the leading 0", e.g. "197770309")
-       which, plus-less, the dial-code split would otherwise mis-claim as US.
-       normalizePhone prepends the +60 country code (any explicit international
-       number the rep wrote — +65…/+62… — is preserved). */
-    const phones = ex.phones
-      .map((p) => normalizePhone(p) ?? '')
-      .filter((p) => p.trim() !== '');
-
-    /* 3-method model (spec 1 + 6, 2026-06-24) — top-level method is only
-       Merchant / Online / Cash; "Installment" is no longer a returnable method
-       (a bank EPP is Merchant + an installment plan). Defensively fold any
-       legacy "Installment" match to Merchant so a stale backend never seeds a
-       dropped method. */
-    const rawPmValue = ex.paymentMethodMatch?.value ?? '';
-    const pmValue = rawPmValue === 'Installment' ? 'Merchant' : rawPmValue;
-    /* A bank card (Merchant) with NO matched tenure → "One Shot" (spec 6:
-       Maybank merchant swipe = One Shot). Only an explicitly-matched plan
-       seeds N months. */
-    const isMerchant = pmValue === 'Merchant';
-    const planValue = ex.installmentPlanMatch?.value ?? '';
-
-    /* VENUE UNIFY — resolve the OCR venue text to a real venue id from the
-       form's own dropdown master. '' when no confident match. */
-    const venueId = resolveVenueId(
-      venuesQ.data ?? [],
-      ex.locationMatch?.value ?? '',
-      ex.location ?? '',
-    );
-
-    /* Note carries ONLY the genuine order remark. Venue, payment, deposit,
-       total, sales rep and extra phones all have their own dedicated fields /
-       flows on the form, so they must NOT be piled into the Note (owner: it
-       over-stuffed the Note). The only extras kept here are things with NO
-       home on the form: a non-date delivery text (e.g. "after CNY", "TBC") and
-       the raw venue text when it could not be resolved to a dropdown id (so the
-       slip's venue isn't silently lost). */
-    const noteParts: string[] = [];
-    if (ex.remarks) noteParts.push(ex.remarks);
-    /* Owner: do NOT pile the venue or the delivery note into the Note. The venue
-       has its own picker (an unmatched venue is simply left for the operator to
-       pick — not dumped here), and delivery has its own date field. The Note
-       carries ONLY the genuine standalone order remark. */
+    /* SHARED RECONCILER — the OCR → prefill mapping is done once, here and in the
+       mobile scan path, so it can never drift again. We feed it the live catalogs
+       the New SO form renders its dropdowns from; it returns a platform-neutral
+       ReconciledPrefill (venue id resolved, dropdown values snapped to the live
+       catalog, SOFA specialCodes + structured payment). We then adapt that neutral
+       shape to the desktop ScanPrefill handoff (RM → centi, first phone, R2 keys +
+       edit-gate carry-through). */
+    const rec = reconcileScanPrefill(ex, {
+      skus:            d.catalog.skus,
+      venues:          venuesQ.data ?? [],
+      customerType:    optionsOrFallback('customer_type',    customerTypeOptsQ.data),
+      buildingType:    optionsOrFallback('building_type',    buildingTypeOptsQ.data),
+      paymentMethod:   optionsOrFallback('payment_method',   paymentMethodOptsQ.data),
+      paymentMerchant: optionsOrFallback('payment_merchant', paymentMerchantQ.data),
+      onlineType:      optionsOrFallback('online_type',      onlineTypeOptsQ.data),
+      installmentPlan: optionsOrFallback('installment_plan', installmentPlanQ.data),
+      states:          distinctStates(localitiesQ.data ?? []),
+    });
 
     return {
-      customerName: ex.customerName ?? '',
-      phone: phones[0] ?? '',
-      phones,
-      /* Prefer the parsed street-only addressLine1 so State/City/Postcode don't
-         double up in Address Line 1; fall back to the full address string when
-         the model didn't split it. */
-      address1: ex.addressLine1 ?? ex.address ?? '',
-      /* Structured address parts. addressState is a server-validated
-         my_localities state VALUE ('' = no confident match); city/postcode are
-         free text the form reconciles against the chosen state's cascade. */
-      addressState:    ex.addressStateMatch?.value ?? '',
-      addressCity:     ex.city ?? '',
-      addressPostcode: ex.postcode ?? '',
-      customerSoRef:   ex.customerSoRef ?? '',
-      note: noteParts.join('\n'),
-      deliveryDate: ex.deliveryDate && ISO_DATE_RE.test(ex.deliveryDate) ? ex.deliveryDate : null,
-      processingDate: ex.processingDate && ISO_DATE_RE.test(ex.processingDate) ? ex.processingDate : null,
-      customerType: ex.customerTypeMatch?.value ?? '',
-      buildingType: ex.buildingTypeMatch?.value ?? '',
-      venueId,
+      customerName: rec.customerName,
+      phone: rec.phones[0] ?? '',
+      phones: rec.phones,
+      address1: rec.address1,
+      addressState:    rec.addressState,
+      addressCity:     rec.addressCity,
+      addressPostcode: rec.addressPostcode,
+      customerSoRef:   rec.customerSoRef,
+      note: rec.note,
+      deliveryDate: rec.deliveryDate,
+      processingDate: rec.processingDate,
+      customerType: rec.customerType,
+      buildingType: rec.buildingType,
+      venueId: rec.venueId,
       /* Matched method → ONE editable payment-draft row in New SO's Payments
          table. Deposit lands as the row amount (Spec D4 still requires a slip
          upload before save; the operator can zero/delete the row instead). */
-      payment: pmValue
+      payment: rec.payment
         ? {
-            methodValue:      pmValue,
-            bankValue:        ex.bankMatch?.value ?? '',
-            /* Plan default (spec 6) — a Merchant card with no matched tenure
-               seeds "One Shot" (a plain swipe is a one-shot Merchant payment,
-               not a 12-month plan). An explicitly-matched plan wins. Non-Merchant
-               methods (Online / Cash) carry no plan. The value MUST equal the
-               installment_plan option VALUE for the One-shot row. */
-            installmentLabel: isMerchant ? (planValue || ONE_SHOT_PLAN) : '',
-            onlineTypeValue:  ex.onlineTypeMatch?.value ?? '',
-            approvalCode:     ex.approvalCode ?? '',
-            depositCenti:     Math.round((ex.depositRm ?? 0) * 100),
+            methodValue:      rec.payment.methodValue,
+            bankValue:        rec.payment.bankValue,
+            installmentLabel: rec.payment.installmentLabel,
+            onlineTypeValue:  rec.payment.onlineTypeValue,
+            approvalCode:     rec.payment.approvalCode,
+            depositCenti:     Math.round(rec.payment.depositRm * 100),
           }
         : null,
-      lines: ex.lines.map((l) => {
-        const code = l.skuMatch?.code ?? '';
-        const sku = code ? skuByCode.get(code.toUpperCase()) : undefined;
-        /* Owner (repeated): do NOT emit a visible "Slip: …" line remark — it was
-           noise on the line display. The line remark seeds EMPTY. The verbatim
-           slip text is NOT lost: it still rides in the `rawText` field below (and
-           into the learning sample via aiOriginal), which feeds the learning gate
-           and the per-line scanned-hint placeholder. */
-        return {
-          itemCode: sku?.code ?? '',
-          itemGroup: sku ? (CATEGORY_TO_GROUP[sku.category] ?? 'others') : 'others',
-          /* Owner core rule (Task #73) — a NO-MATCH line must seed an EMPTY,
-             UNPICKED product so the New SO form renders the normal SKU picker
-             dropdown the operator is FORCED to fill. Never commit the OCR
-             rawText as the product description (that became a free-text
-             "OTHERS" row the operator could type anything into and save —
-             "不可以走后门乱插"). The rawText still rides along in `rawText`
-             (shown as the picker's search-hint placeholder), so nothing on the
-             slip is lost. A MATCHED line keeps its picked SKU name. */
-          description: sku?.name ?? '',
-          qty: l.qtyGuess > 0 ? l.qtyGuess : 1,
-          unitPriceCenti: Math.round((l.priceRmGuess ?? 0) * 100),
-          /* Owner (repeated): no "Slip: …" chip — line remark seeds empty. */
-          remark: '',
-          rawText: l.rawText,
-          fabricCode: l.fabricMatch?.code ?? '',
-          suggestedCode: code,
-          confidence: l.skuMatch?.confidence ?? 0,
-          /* OCR-matched configured specials (already model-gated server-side) →
-             the New SO line auto-checks them. */
-          specialCodes: Array.isArray(l.specialsMatch)
-            ? l.specialsMatch.map((s) => s.code).filter(Boolean)
-            : [],
-        };
-      }),
+      lines: rec.lines.map((l) => ({
+        itemCode: l.itemCode,
+        itemGroup: l.itemGroup,
+        description: l.description,
+        qty: l.qty,
+        unitPriceCenti: Math.round(l.unitPriceRm * 100),
+        /* Owner (repeated): no "Slip: …" chip — line remark seeds empty. */
+        remark: '',
+        rawText: l.rawText,
+        fabricCode: l.fabricCode,
+        suggestedCode: l.suggestedCode,
+        confidence: l.confidence,
+        specialCodes: l.specialCodes,
+      })),
       // Original-slip R2 key → carried to the New SO create body.
       slipImageKey: d.imageKey ?? '',
       // Payment-receipt R2 key → carried to the New SO create body alongside.
       receiptImageKey: d.receiptImageKey ?? '',
       sampleId: d.sampleId,
-      salesperson: repName || (ex.salesRep ?? '') || null,
+      salesperson: repName || rec.salesRep || null,
       /* FROZEN AI snapshot — the New SO save diffs the operator's final values
          against this to decide whether to fire the edit-gate learning POST. */
       aiOriginal: ex,
