@@ -1251,22 +1251,62 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
                     { key: "sales_agent", label: "Agent", value: get(c, "salesAgent", "sales_agent", "agent"), type: "text" },
                   ]}
                   onSave={(body) => patchCase(body, "Couldn't save customer")}
-                >
-                  <div className="pgrid2">
-                    <PGrid label="Ref No" value={String(get(c, "refNo", "ref_no") ?? "—")} mono />
-                    <PGrid label="Date" value={dm(get(c, "complainedDate", "complained_date", "createdAt", "created_at"))} />
-                    <PGrid
-                      label="Address"
-                      span
-                      multiline
-                      value={
-                        [get(c, "addr1"), get(c, "addr2"), get(c, "addr3"), get(c, "addr4")]
-                          .filter(Boolean)
-                          .join(", ") || "—"
-                      }
-                    />
-                  </div>
-                </EditableAcc>
+                  readView={
+                    <>
+                      {/* Read view mirrors the desktop Customer card
+                          (avatar + name, SO/Ref chips, phone + call,
+                          address + location chip); Edit swaps in the
+                          fields above. */}
+                      <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
+                        <Avatar name={String(customer(c))} size={42} />
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: 15.5, fontWeight: 700, color: INK, ...cellEllipsis }}>{customer(c)}</div>
+                          <div style={{ fontSize: 11.5, color: MUTED, marginTop: 2 }}>
+                            Agent · <b style={{ color: INK_SEC }}>{String(get(c, "salesAgent", "sales_agent", "agent") ?? "—")}</b>
+                          </div>
+                        </div>
+                      </div>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 11 }}>
+                        <div style={{ background: FIELD_BG, border: `1px solid ${DIM}`, borderRadius: 9, padding: "7px 10px" }}>
+                          <div className="money" style={{ fontSize: 8.5, letterSpacing: ".1em", textTransform: "uppercase", color: GREY, fontWeight: 600 }}>SO No</div>
+                          <div className="money" style={{ fontSize: 12.5, fontWeight: 600, color: TEAL_DK, marginTop: 3, ...cellEllipsis }}>{String(get(c, "docNo", "doc_no") ?? "—")}</div>
+                        </div>
+                        <div style={{ background: FIELD_BG, border: `1px solid ${DIM}`, borderRadius: 9, padding: "7px 10px" }}>
+                          <div className="money" style={{ fontSize: 8.5, letterSpacing: ".1em", textTransform: "uppercase", color: GREY, fontWeight: 600 }}>Ref No</div>
+                          <div className="money" style={{ fontSize: 12.5, fontWeight: 600, color: INK, marginTop: 3, ...cellEllipsis }}>{String(get(c, "refNo", "ref_no") ?? "—")}</div>
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "10px 0 9px", borderBottom: "1px solid #f1f0ea", marginTop: 4 }}>
+                        <div style={{ minWidth: 0 }}>
+                          <div className="money" style={{ fontSize: 8.5, letterSpacing: ".1em", textTransform: "uppercase", color: GREY, fontWeight: 600 }}>Phone</div>
+                          <div className="money" style={{ fontSize: 13, fontWeight: 600, color: INK, marginTop: 3 }}>{String(get(c, "phone", "customerPhone", "customer_phone") ?? "—")}</div>
+                        </div>
+                        {get(c, "phone", "customerPhone", "customer_phone") && (
+                          <a
+                            href={`tel:${String(get(c, "phone", "customerPhone", "customer_phone")).replace(/[^+\d]/g, "")}`}
+                            aria-label="Call customer"
+                            style={{ width: 34, height: 34, flex: "none", borderRadius: 9, background: "#e1efed", color: TEAL_DK, display: "flex", alignItems: "center", justifyContent: "center", textDecoration: "none" }}
+                          >
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6.6 10.8a15 15 0 0 0 6.6 6.6l2.2-2.2a1 1 0 0 1 1-.24 11 11 0 0 0 3.4.55 1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1 11 11 0 0 0 .55 3.4 1 1 0 0 1-.24 1Z" /></svg>
+                          </a>
+                        )}
+                      </div>
+                      <div style={{ paddingTop: 9 }}>
+                        <div className="money" style={{ fontSize: 8.5, letterSpacing: ".1em", textTransform: "uppercase", color: GREY, fontWeight: 600 }}>Customer address</div>
+                        <div style={{ fontSize: 12.5, fontWeight: 500, color: INK, lineHeight: 1.5, marginTop: 3 }}>
+                          {[get(c, "addr1"), get(c, "addr2"), get(c, "addr3"), get(c, "addr4")].filter(Boolean).join(", ") || "—"}
+                        </div>
+                        {get(c, "location", "customerState", "customer_state") && (
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 6, marginTop: 8, fontSize: 11, fontWeight: 600, color: TEAL_DK, background: "#e1efed", borderRadius: 7, padding: "4px 10px" }}>
+                            {String(get(c, "location", "customerState", "customer_state"))}
+                          </span>
+                        )}
+                      </div>
+                      <KV label="Email" value={String(get(c, "customerEmail", "customer_email") ?? "—")} />
+                      <KV label="Date" value={dm(get(c, "complainedDate", "complained_date", "createdAt", "created_at"))} />
+                    </>
+                  }
+                />
 
                 {/* PIC — right-header = current assignee; Assign reassigns via PATCH */}
                 <Acc
@@ -2082,6 +2122,7 @@ function EditableAcc({
   accent,
   note,
   headSlot,
+  readView,
   children,
 }: {
   title: string;
@@ -2092,6 +2133,10 @@ function EditableAcc({
   accent?: string;
   note?: string;
   headSlot?: React.ReactNode;
+  /** Replaces the default read view (KV rows + children) — the fields
+   *  still drive the edit view. Used by the Customer card so its read
+   *  state matches the desktop design (avatar, chips, call button). */
+  readView?: React.ReactNode;
   children?: React.ReactNode;
 }) {
   const [editing, setEditing] = useState(false);
@@ -2180,6 +2225,8 @@ function EditableAcc({
               </button>
             </div>
           </>
+        ) : readView ? (
+          readView
         ) : (
           <>
             {fields.map((f) => (
