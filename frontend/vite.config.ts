@@ -145,6 +145,16 @@ export default defineConfig(({ mode }) => {
       __BUILD_ID__: JSON.stringify(Date.now().toString(36)),
     },
     build: {
+      // Don't <link rel="modulepreload"> the heavy on-demand chunks (jspdf /
+      // xlsx / leaflet). They're only ever reached via dynamic import() at a
+      // print/export/map click, so preloading them makes a COLD first visit
+      // eagerly download ~1MB of JS almost no session uses. Filtering them out of
+      // the preload graph (they still load on demand) is a pure cold-load win —
+      // HOOKKA's resolveDependencies trick.
+      modulePreload: {
+        resolveDependencies: (_filename, deps) =>
+          deps.filter((d) => !/(jspdf|xlsx|leaflet)/i.test(d)),
+      },
       rollupOptions: {
         output: {
           // Stable vendor chunks so app-code changes don't bust the
