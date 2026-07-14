@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { getHolidaysOn } from "../lib/holidays";
+import { useBranding } from "../hooks/useBranding";
+import { HOUZS_COMPANY_CODE, shortCompanyName } from "../lib/branding";
 import "./mobile.css";
 
 /**
@@ -134,6 +136,20 @@ export function MobileCalendar({
   focusProjectId?: number;
 } = {}) {
   const today = new Date();
+
+  // Header brand lockup — company-aware, mirroring the login/profile pattern.
+  // HOUZS keeps the historic literal ("HOUZS" / "CENTURY · ERP") verbatim; any
+  // other active company derives from its short name: first word as the bold
+  // mark, the remaining words + "· ERP" as the spaced eyebrow (so a 2990
+  // session never shows the Houzs brand).
+  const branding = useBranding();
+  const isHouzsBrand = branding.companyCode === HOUZS_COMPANY_CODE;
+  const brandWords = shortCompanyName(branding.companyName).split(/\s+/).filter(Boolean);
+  const brandMark = isHouzsBrand ? "HOUZS" : (brandWords[0] ?? "").toUpperCase();
+  const brandEyebrow = isHouzsBrand
+    ? "CENTURY · ERP"
+    : (brandWords.length > 1 ? `${brandWords.slice(1).join(" ")} · ERP` : "ERP").toUpperCase();
+
   const [year, setYear] = useState(initialYear ?? today.getFullYear());
   const [month, setMonth] = useState(initialMonth ?? today.getMonth());
   const [mode, setMode] = useState<"month" | "week">("month");
@@ -317,8 +333,8 @@ export function MobileCalendar({
       <header className="hdr">
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div style={{ lineHeight: 1 }}>
-            <div style={{ fontSize: 14, fontWeight: 800, color: "#15161a" }}>HOUZS</div>
-            <div style={{ fontSize: 7.5, fontWeight: 700, letterSpacing: ".28em", color: "var(--brand)", marginTop: 2 }}>CENTURY · ERP</div>
+            <div style={{ fontSize: 14, fontWeight: 800, color: "#15161a" }}>{brandMark}</div>
+            <div style={{ fontSize: 7.5, fontWeight: 700, letterSpacing: ".28em", color: "var(--brand)", marginTop: 2 }}>{brandEyebrow}</div>
           </div>
           <button
             className="iconbtn"
