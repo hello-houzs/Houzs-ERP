@@ -152,6 +152,19 @@ async function poHasOutstandingDropshipOut(
 }
 
 const VALID_STATUSES = new Set(['DRAFT', 'SUBMITTED', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CANCELLED']);
+/* Filter-pill bucket → the raw purchase_orders.status values it covers. Single
+   source of truth for BOTH the status-count queries and the list `status`
+   filter. All five buckets are 1:1 today, but their KEYS differ from the raw
+   status (open→SUBMITTED, partial→PARTIALLY_RECEIVED, received→RECEIVED). The FE
+   sends the BUCKET NAME as `status`; a raw DB status still works
+   (backward-compatible fallback via VALID_STATUSES). */
+const PO_STATUS_BUCKETS: Record<string, string[]> = {
+  draft: ['DRAFT'],
+  open: ['SUBMITTED'],
+  partial: ['PARTIALLY_RECEIVED'],
+  received: ['RECEIVED'],
+  cancelled: ['CANCELLED'],
+};
 const VALID_CURRENCIES = new Set(['MYR', 'RMB', 'USD', 'SGD']);
 const VALID_KINDS = new Set(['mfg_product', 'fabric', 'raw']);
 
@@ -247,7 +260,12 @@ mfgPurchaseOrders.get('/', async (c) => {
     let q = supabase.from('purchase_orders').select(SELECT, { count: 'exact' }).order(sortCol, { ascending: sortAsc });
     /* unique tiebreaker so range paging can't skip/repeat rows sharing the sort key */
     if (sortCol !== 'po_number') q = q.order('po_number', { ascending: sortAsc });
-    if (status && VALID_STATUSES.has(status)) q = q.eq('status', status);
+    /* Resolve the incoming `status`: a known bucket key → all its raw statuses;
+       'all'/empty → no filter; otherwise a raw DB status (VALID_STATUSES guard). */
+    if (status && status !== 'all') {
+      if (PO_STATUS_BUCKETS[status]) q = q.in('status', PO_STATUS_BUCKETS[status]);
+      else if (VALID_STATUSES.has(status)) q = q.eq('status', status);
+    }
     if (supplierId) q = q.eq('supplier_id', supplierId);
     q = scopeToCompany(q, c); // multi-company: isolate to the active company
     /* free-text search over the base-table text columns the FE searches
@@ -277,11 +295,11 @@ mfgPurchaseOrders.get('/', async (c) => {
     };
     const [allC, draftC, openC, partialC, receivedC, cancelledC] = await Promise.all([
       countBase(),
-      countBase().eq('status', 'DRAFT'),
-      countBase().eq('status', 'SUBMITTED'),
-      countBase().eq('status', 'PARTIALLY_RECEIVED'),
-      countBase().eq('status', 'RECEIVED'),
-      countBase().eq('status', 'CANCELLED'),
+      countBase().in('status', PO_STATUS_BUCKETS.draft),
+      countBase().in('status', PO_STATUS_BUCKETS.open),
+      countBase().in('status', PO_STATUS_BUCKETS.partial),
+      countBase().in('status', PO_STATUS_BUCKETS.received),
+      countBase().in('status', PO_STATUS_BUCKETS.cancelled),
     ]);
     statusCounts = {
       all: allC.count ?? 0,

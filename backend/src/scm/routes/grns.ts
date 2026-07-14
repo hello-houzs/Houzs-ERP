@@ -585,6 +585,16 @@ function computeGrnFlags(items: Array<{ qty_accepted?: number | null; invoiced_q
   return { has_children: hasChildren, fully_invoiced: fullyInvoiced, fully_returned: fullyReturned };
 }
 
+/* Filter-pill bucket → the raw grns.status values it covers. Single source of
+   truth for BOTH the status-count queries and the list `status` filter. All
+   three buckets are 1:1 today, but the FE sends the BUCKET NAME as `status`; a
+   raw DB status still works (backward-compatible fallback). */
+const GRN_STATUS_BUCKETS: Record<string, string[]> = {
+  draft: ['DRAFT'],
+  posted: ['POSTED'],
+  cancelled: ['CANCELLED'],
+};
+
 grns.get('/', async (c) => {
   const sb = c.get('supabase');
   // .limit(500) bounds the result so PostgREST's default 1000-row cap can't
@@ -629,7 +639,13 @@ grns.get('/', async (c) => {
     let q = sb.from('grns').select(`${HEADER}, supplier:suppliers(id, code, name), purchase_order:purchase_orders(id, po_number), warehouse:warehouses!warehouse_id(id, code, name)`, { count: 'exact' }).order(sortCol, { ascending: sortAsc });
     /* unique tiebreaker so range paging can't skip/repeat rows sharing the sort key */
     if (sortCol !== 'grn_number') q = q.order('grn_number', { ascending: sortAsc });
-    const status = c.req.query('status'); if (status) q = q.eq('status', status);
+    /* Resolve the incoming `status`: a known bucket key → all its raw statuses;
+       'all'/empty → no filter; otherwise treat it as a raw DB status. */
+    const status = c.req.query('status');
+    if (status && status !== 'all') {
+      if (GRN_STATUS_BUCKETS[status]) q = q.in('status', GRN_STATUS_BUCKETS[status]);
+      else q = q.eq('status', status);
+    }
     const supplierId = c.req.query('supplierId'); if (supplierId) q = q.eq('supplier_id', supplierId);
     q = scopeToCompany(q, c); // multi-company: isolate to the active company
     /* free-text search over the base-table text columns the FE searches
@@ -659,9 +675,9 @@ grns.get('/', async (c) => {
     };
     const [allC, draftC, postedC, cancelledC] = await Promise.all([
       countBase(),
-      countBase().eq('status', 'DRAFT'),
-      countBase().eq('status', 'POSTED'),
-      countBase().eq('status', 'CANCELLED'),
+      countBase().in('status', GRN_STATUS_BUCKETS.draft),
+      countBase().in('status', GRN_STATUS_BUCKETS.posted),
+      countBase().in('status', GRN_STATUS_BUCKETS.cancelled),
     ]);
     statusCounts = {
       all: allC.count ?? 0,

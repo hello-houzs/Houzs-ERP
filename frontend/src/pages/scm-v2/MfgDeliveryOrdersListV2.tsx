@@ -671,17 +671,6 @@ const SORT_COL_MAP: Record<string, string> = {
   delivery_date: "customer_delivery_date",
 };
 
-// Filter-pill bucket → single delivery_orders.status DB value for the server
-// `status` filter. Only `cancelled` is a single DB status; open / in_transit /
-// delivered are MULTI-status buckets (open = DRAFT+LOADED, in_transit =
-// DISPATCHED+IN_TRANSIT, delivered = SIGNED+DELIVERED+INVOICED+COMPLETED) that
-// the backend's single `.eq('status', …)` can't express — those send NO status
-// (list shows all rows, still server-paginated; the pill COUNTS stay correct
-// from statusCounts). Flagged limitation, per "never return wrong rows".
-const DO_BUCKET_STATUS: Partial<Record<StatusTab, string>> = {
-  cancelled: "CANCELLED",
-};
-
 // ─── Main page ──────────────────────────────────────────────────────────────
 
 export function MfgDeliveryOrdersListV2() {
@@ -707,10 +696,11 @@ export function MfgDeliveryOrdersListV2() {
     return () => clearTimeout(t);
   }, [search]);
 
-  // open / in_transit / delivered are multi-status buckets the backend's single
-  // `.eq('status', …)` can't express, so send NO status for them (all rows,
-  // still paginated + counted) rather than an incomplete/empty page.
-  const apiStatus = status === "all" ? undefined : DO_BUCKET_STATUS[status];
+  // Send the active tab's BUCKET NAME as `status`; the backend resolves each
+  // bucket to the raw statuses it covers (open = DRAFT+LOADED, in_transit =
+  // DISPATCHED+IN_TRANSIT, delivered = SIGNED+DELIVERED+INVOICED+COMPLETED,
+  // cancelled = CANCELLED). `all` omits the filter.
+  const apiStatus = status === "all" ? undefined : status;
 
   const { data, isLoading, error } = useMfgDeliveryOrdersPaged({
     page,
