@@ -40,13 +40,18 @@ const padMmDd = (d: Date): string => {
   return `${yy}${m}`;
 };
 
-const nextJeNo = async (sb: any, date: Date, c: any): Promise<string> => {
-  // Per-company sequence: 2990 JEs get the "2990-" prefix (Houzs bare), same
-  // convention as every other doc minter (companyDocPrefix). The prefix in the
-  // LIKE pattern isolates each company's running number — "JE-2607-%" never
-  // matches "2990-JE-2607-…" and vice-versa — so the two companies' accounting
-  // vouchers can't collide or share a sequence.
-  const prefix = `${companyDocPrefix(c)}JE-${padMmDd(date)}`;
+// JE-number company prefix keyed on the DOCUMENT's company (not the operator's
+// active company — an auto-posted PI/reversal belongs to the PI's company). "" for
+// HOUZS (company 1), "2990-" for company 2 — the same HOUZS-bare / else-prefixed
+// rule as companyDocPrefix + the mirror's hardcoded "2990-" (so-mirror prefixDoc).
+const jePrefixForCompany = (companyId: number | null | undefined): string =>
+  companyId == null || Number(companyId) === 1 ? '' : '2990-';
+
+const nextJeNo = async (sb: any, date: Date, coPrefix = ''): Promise<string> => {
+  // Per-company sequence: the prefix in the LIKE pattern isolates each company's
+  // running number — "JE-2607-%" never matches "2990-JE-2607-…" and vice-versa —
+  // so the two companies' accounting vouchers can't collide or share a sequence.
+  const prefix = `${coPrefix}JE-${padMmDd(date)}`;
   const { data } = await sb
     .from('journal_entries')
     .select('je_no')
@@ -156,7 +161,7 @@ accounting.post('/journal-entries', async (c) => {
   if (dr === 0) return c.json({ error: 'zero_amount' }, 400);
 
   const sb = c.get('supabase');
-  const jeNo = await nextJeNo(sb, new Date(entryDate), c);
+  const jeNo = await nextJeNo(sb, new Date(entryDate), companyDocPrefix(c));
 
   const jeCompanyId = activeCompanyId(c);
   const { data: je, error: jeErr } = await sb
@@ -322,7 +327,7 @@ export async function postPiAccounting(sb: any, invoiceNumber: string): Promise<
     },
   ];
 
-  const jeNo = await nextJeNo(sb, new Date(pi.invoice_date), c);
+  const jeNo = await nextJeNo(sb, new Date(pi.invoice_date), jePrefixForCompany(pi.company_id));
   // Multi-company (mig 0061): the JE + its lines belong to the PI's company.
   const companyId = pi.company_id ?? null;
   const { data: je, error: jeErr } = await sb
@@ -464,7 +469,7 @@ export async function reversePiAccounting(
 
   // Multi-company (mig 0061): a reversal belongs to the same company as the JE it undoes.
   const companyId = orig.company_id ?? null;
-  const revJeNo = await nextJeNo(sb, new Date(orig.entry_date), c);
+  const revJeNo = await nextJeNo(sb, new Date(orig.entry_date), jePrefixForCompany(companyId));
   const { data: revJe, error: revErr } = await sb
     .from('journal_entries')
     .insert({
