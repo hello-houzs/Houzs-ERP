@@ -417,10 +417,9 @@ function MembersTab({
   const [resendingId, setResendingId] = useState<number | null>(null);
 
   const canManage = can("users.manage");
-  // Sales Director (dept-scoped admin, not a full users.manage admin) may EDIT
-  // and enable/disable members of their OWN department — surfaced on the member
-  // detail actions (backend enforces the own-dept + no-role/dept/password scope).
-  const salesDirScoped = isSalesDirectorUser(me) && !canManage;
+  // `salesDirScoped` arrives as a prop (a dept-scoped Sales Director). It gates
+  // the member-detail Edit + enable/disable actions (backend enforces the
+  // own-dept + no-role/dept/password scope).
 
   // Staging-only "login as member": the backend probe reports enabled only
   // when the worker runs with IMPERSONATION_ENABLED (staging vars block), so
