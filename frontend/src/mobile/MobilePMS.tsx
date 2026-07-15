@@ -526,7 +526,7 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
                       </div>
                     )}
                     <div className="tnum" style={{ fontSize: 11, color: "var(--mut)", marginTop: 8, paddingTop: 8, borderTop: "1px solid #f0f1ed" }}>
-                      {dates}{r.pic_name ? ` · PIC ${r.pic_name}` : ""}
+                      {dates}{r.pic_name ? <> · PIC <b style={{ color: "#414539" }}>{r.pic_name}</b></> : ""}
                     </div>
                   </div>
                 </div>
@@ -854,6 +854,7 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                     <span className="fld-l">PIC</span>
                     <select
                       className="fld-i"
+                      style={{ fontWeight: p.pic_id != null ? 700 : 400 }}
                       disabled={busy}
                       value={p.pic_id ?? ""}
                       onChange={(e) => { const v = e.target.value; void patchProject({ pic_id: v ? parseInt(v, 10) : null }); }}
@@ -1537,6 +1538,14 @@ function TaskRow({
             </button>
           );
         })}
+        {canAttach && (
+          <>
+            <input ref={fileRef} type="file" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void upload(f); }} />
+            <button className="tinybtn" style={{ minWidth: 76, display: "inline-flex", alignItems: "center", justifyContent: "center", boxSizing: "border-box" }} disabled={busy} onClick={() => fileRef.current?.click()} title={attachments.length ? `${attachments.length} file(s)` : "Attach"}>
+              {attachments.length ? `Attach (${attachments.length})` : "Attach"}
+            </button>
+          </>
+        )}
       </div>
       {fileChips}
       {fileViewer}
