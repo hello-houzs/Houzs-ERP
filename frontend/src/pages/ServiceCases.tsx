@@ -3366,24 +3366,33 @@ function DetailContent({
             ) : (
               <div className="space-y-1">
                 {items.map((item) => (
-                  <div key={item.id} className="flex items-center gap-2 rounded border border-border px-3 py-1.5 text-sm">
-                    <span className="font-mono text-[11px] font-medium">{item.item_code}</span>
-                    <span
-                      className="flex-1 truncate text-ink-secondary"
-                      title={item.item_description || undefined}
-                    >
-                      {item.item_description || ""}
-                    </span>
-                    <span className="text-[11px] text-ink-muted">&times;{item.qty}</span>
-                    {c.stage !== "completed" && (
-                      <button
-                        onClick={() => removeItem(item.id)}
-                        className="rounded p-0.5 text-ink-muted hover:text-err"
-                        title="Remove item"
+                  <div key={item.id} className="rounded border border-border px-3 py-1.5 text-sm">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-[11px] font-medium">{item.item_code}</span>
+                      <span
+                        className="flex-1 truncate text-ink-secondary"
+                        title={item.item_description || undefined}
                       >
-                        <Trash2 size={12} />
-                      </button>
-                    )}
+                        {item.item_description || ""}
+                      </span>
+                      <span className="text-[11px] text-ink-muted">&times;{item.qty}</span>
+                      {c.stage !== "completed" && (
+                        <button
+                          onClick={() => removeItem(item.id)}
+                          className="rounded p-0.5 text-ink-muted hover:text-err"
+                          title="Remove item"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      )}
+                    </div>
+                    <ItemRemarkInput
+                      caseId={id}
+                      item={item}
+                      disabled={c.stage === "completed" || !!c.archived_at}
+                      onSaved={() => detail.reload()}
+                      toast={toast}
+                    />
                   </div>
                 ))}
               </div>
@@ -7440,6 +7449,51 @@ function SupplierField({ c, id, detail, toast, onUpdated }: {
         </div>
       )}
     </div>
+  );
+}
+
+// ── Per-item remark input ──────────────────────────────────────
+// Prints in the ITEMS table's REMARK column on both the customer and
+// supplier copies (Nick 2026-07-15). Saves on blur / Enter; empty
+// clears the remark.
+function ItemRemarkInput({ caseId, item, disabled, onSaved, toast }: {
+  caseId: number;
+  item: any;
+  disabled?: boolean;
+  onSaved: () => void;
+  toast: ReturnType<typeof useToast>;
+}) {
+  const current = String(item.remark ?? "");
+  const [draft, setDraft] = useState(current);
+  useEffect(() => {
+    setDraft(String(item.remark ?? ""));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item.id, item.remark]);
+
+  async function commit() {
+    if (draft.trim() === current.trim()) return;
+    try {
+      await api.patch(`/api/assr/${caseId}/items/${item.id}`, {
+        remark: draft.trim() || null,
+      });
+      toast.success("Remark saved");
+      onSaved();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to save remark");
+    }
+  }
+
+  if (disabled && !current) return null;
+  return (
+    <input
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+      disabled={disabled}
+      placeholder="Remark — prints on customer & supplier copies"
+      className="mt-1 w-full rounded bg-bg/60 px-2 py-1 text-[11.5px] text-ink outline-none placeholder:text-ink-muted/60 focus:ring-1 focus:ring-primary/30 disabled:opacity-60"
+    />
   );
 }
 
