@@ -72,6 +72,7 @@ import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useServerSort } from "../hooks/useServerSort";
 import { useFocusFromUrl } from "../hooks/useFocusFromUrl";
 import { useAuth } from "../auth/AuthContext";
+import { isSalesStaff } from "../auth/salesAccess";
 import { api, buildQuery } from "../api/client";
 import { formatCurrency, formatDate, formatDateTime, cn } from "../lib/utils";
 import { ServiceMetrics } from "./ServiceMetrics";
@@ -3642,7 +3643,7 @@ function DetailContent({
               title="Solution"
               summary={
                 c.resolution_method
-                  ? `Selected: ${c.resolution_method}`
+                  ? `Selected: ${resolutionLabel(c.resolution_method)}${c.creditor_name ? ` · ${c.creditor_name}` : ""}`
                   : "Set resolution method to route the case"
               }
               currentStage={c.stage}
@@ -7195,6 +7196,7 @@ function SupplierField({ c, id, detail, toast, onUpdated }: {
   toast: ReturnType<typeof useToast>;
   onUpdated: () => void;
 }) {
+  const { user } = useAuth();
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const [results, setResults] = useState<
@@ -7225,6 +7227,11 @@ function SupplierField({ c, id, detail, toast, onUpdated }: {
     return () => clearTimeout(handle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [q, open, adding]);
+
+  // Supplier identity is office + supplier-portal only (Nick
+  // 2026-07-15) — the server already strips the creditor fields for
+  // sales-scoped callers; hiding the card removes the dead controls.
+  if (isSalesStaff(user)) return null;
 
   async function assign(code: string | null) {
     setSaving(true);

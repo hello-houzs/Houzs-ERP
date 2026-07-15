@@ -2678,6 +2678,7 @@ function PhotoGrid({
 // a new one. Manual picks set creditor_source='manual' so the
 // auto-resolver won't overwrite them.
 function MobileSupplierPick({ c, onChanged, notify, disabled }: { c: Any; onChanged: () => void; notify: ReturnType<typeof useNotify>; disabled?: boolean }) {
+  const { user } = useAuth();
   const caseId = Number(get(c, "id"));
   const code = get(c, "creditorCode", "creditor_code");
   const name = get(c, "creditorName", "creditor_name");
@@ -2702,6 +2703,10 @@ function MobileSupplierPick({ c, onChanged, notify, disabled }: { c: Any; onChan
     }, 250);
     return () => clearTimeout(h);
   }, [q, open, adding]);
+
+  // Supplier identity is office + supplier-portal only — the server
+  // strips creditor fields for sales-scoped callers; hide the card.
+  if (isSalesStaff(user)) return null;
 
   const assign = async (v: string | null) => {
     setBusy(true);

@@ -616,10 +616,33 @@ app.get("/summary", requirePermission("service_cases.read"), async (c) => {
 
 // ── List ──────────────────────────────────────────────────────
 
+// Supplier identity (creditor fields) is office + supplier-portal only
+// (Nick 2026-07-15: 这个我要 office, supplier 看到而已) — sales-scoped
+// callers get case payloads without it. assrVisibleUserIds() returning
+// undefined marks an unrestricted (office) caller; an id list marks a
+// sales-scoped one. Dual-named keys because the PG driver camelCases
+// result columns.
+const CREDITOR_KEYS = [
+  "creditor_code", "creditorCode",
+  "creditor_name", "creditorName",
+  "creditor_email", "creditorEmail",
+  "creditor_phone", "creditorPhone",
+  "creditor_mobile", "creditorMobile",
+  "creditor_attention", "creditorAttention",
+  "creditor_source", "creditorSource",
+] as const;
+function stripCreditorFields(row: Record<string, any> | null | undefined): void {
+  if (!row) return;
+  for (const k of CREDITOR_KEYS) {
+    if (k in row) delete row[k];
+  }
+}
+
 app.get("/", requireServiceCaseAccess(), async (c) => {
   const assignedToParam = c.req.query("assigned_to");
+  const visibleIds = await assrVisibleUserIds(c);
   const result = await listAssrCases(c.env, {
-    visible_to_user_ids: await assrVisibleUserIds(c),
+    visible_to_user_ids: visibleIds,
     allowed_company_ids: allowedCompanyIds(c),
     stage: c.req.query("stage"),
     status: c.req.query("status"),
@@ -638,6 +661,9 @@ app.get("/", requireServiceCaseAccess(), async (c) => {
     sort_by: c.req.query("sort_by") || undefined,
     sort_dir: (c.req.query("sort_dir") || "").toLowerCase() === "asc" ? "asc" : "desc",
   });
+  if (visibleIds !== undefined) {
+    for (const row of (result.data as any[]) ?? []) stripCreditorFields(row);
+  }
   return c.json(result);
 });
 
@@ -882,8 +908,9 @@ app.post("/bulk/assign", requirePermission("service_cases.manage"), async (c) =>
 // what you export" matches the table.
 
 app.get("/export.csv", requireServiceCaseAccess(), async (c) => {
+  const csvVisibleIds = await assrVisibleUserIds(c);
   const rows = await exportAssrCases(c.env, {
-    visible_to_user_ids: await assrVisibleUserIds(c),
+    visible_to_user_ids: csvVisibleIds,
     allowed_company_ids: allowedCompanyIds(c),
     stage: c.req.query("stage"),
     status: c.req.query("status"),
@@ -918,6 +945,7 @@ app.get("/export.csv", requireServiceCaseAccess(), async (c) => {
   };
   const lines = [headers.join(",")];
   for (const r of rows as any[]) {
+    if (csvVisibleIds !== undefined) stripCreditorFields(r);
     lines.push(fields.map((f) => esc(r[f])).join(","));
   }
   const csv = "\uFEFF" + lines.join("\r\n");
@@ -1198,6 +1226,11 @@ app.get("/:id{[0-9]+}", requireServiceCaseAccess(), async (c) => {
       (Number.isFinite(assignedTo) && visibleIds.includes(assignedTo)) ||
       (Number.isFinite(assignedTo2) && visibleIds.includes(assignedTo2));
     if (!inScope) return c.json({ error: "Not found" }, 404);
+  }
+  /* Supplier identity is office + supplier-portal only — see
+     stripCreditorFields above. */
+  if (visibleIds !== undefined) {
+    stripCreditorFields((detail as { case?: Record<string, any> }).case);
   }
   return c.json(detail);
 });
