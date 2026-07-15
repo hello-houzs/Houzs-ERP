@@ -501,14 +501,15 @@ export default function App() {
             MUST precede /:docNo so 'maintenance' isn't caught as a doc number.
             2990 uses :docNo (not :id) for the SO detail. */}
         <Route path="/scm/sales-orders" element={<ScmGuard area="scm.sales.orders" allowSales><Scm2990Shell><ScmSalesOrdersV2 /></Scm2990Shell></ScmGuard>} />
-        {/* SO amendment / revision queue (Phase 1-C). Gated on the amendment
-            permission keys (any of create / supplier-confirm / approve-so /
-            approve-po) — OR scm.access / Sales-Orders page access, so a full-
-            access SCM user still reaches it. Belongs to the Sales-Order domain. */}
-        <Route path="/scm/amendments" element={<Guard perm="scm.access" anyPerm={["scm.amendment.create", "scm.amendment.supplier_confirm", "scm.amendment.approve_so", "scm.amendment.approve_po"]} anyAccess={["scm.sales.orders"]}><Scm2990Shell><ScmAmendmentsV2 /></Scm2990Shell></Guard>} />
+        {/* SO amendment / revision queue (Phase 1-C). Sales-Orders-area surface —
+            same ScmGuard + allowSales as the Sales Orders list, so a salesperson
+            reaches their own amendments (Owner 2026-07-16); the backend scopes the
+            list/detail to their own+downline SOs. Directors / office / `*` and any
+            amendment-perm holder pass via the area key. */}
+        <Route path="/scm/amendments" element={<ScmGuard area="scm.sales.orders" allowSales><Scm2990Shell><ScmAmendmentsV2 /></Scm2990Shell></ScmGuard>} />
         {/* Amendment job card — before/after diff detail for one revision. Same
             guard as the queue; reached by double-clicking a queue row. */}
-        <Route path="/scm/amendments/:id" element={<Guard perm="scm.access" anyPerm={["scm.amendment.create", "scm.amendment.supplier_confirm", "scm.amendment.approve_so", "scm.amendment.approve_po"]} anyAccess={["scm.sales.orders"]}><Scm2990Shell><ScmAmendmentDetailV2 /></Scm2990Shell></Guard>} />
+        <Route path="/scm/amendments/:id" element={<ScmGuard area="scm.sales.orders" allowSales><Scm2990Shell><ScmAmendmentDetailV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/sales-orders/maintenance" element={<SoMaintenanceGuard><Scm2990Shell><ScmSalesOrderMaintenanceV2 /></Scm2990Shell></SoMaintenanceGuard>} />
         {/* Literal /new + /generate MUST precede /:docNo so they match first.
             All Sales-Orders-area routes carry allowSales so a rep reaches their

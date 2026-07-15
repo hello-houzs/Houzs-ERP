@@ -22,7 +22,8 @@ import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { canTransition, nextStatus, type AmendStatus, type AmendAction } from '../shared';
 import { applySoAmendment, reviseBoundPo, ReceivedFloorError } from '../lib/so-revision';
-import { hasHouzsPerm } from '../lib/houzs-perms';
+import { hasHouzsPerm, canViewAllSales } from '../lib/houzs-perms';
+import { resolveSalesScopeIds, salesDocOutOfScope } from '../lib/salesScope';
 import { recordSoAudit } from '../lib/so-audit';
 import { scopeToCompany } from '../lib/companyScope';
 
@@ -37,7 +38,16 @@ function actorName(user: { user_metadata?: { name?: string } } | undefined): str
 
 /* ── GET / — amendment list (newest first) ─────────────────────────────────
    .limit(500) bounds the result so PostgREST's default 1000-row cap can't
-   silently truncate — matches the SO/DO/GRN list convention. */
+   silently truncate — matches the SO/DO/GRN list convention.
+
+   Row-level scope (Owner 2026-07-16) — a salesperson must see the amendments
+   for THEIR OWN Sales Orders (they raise them), so the area guard admits them
+   (scmAreaGuard scm.sales.orders has an isSalesStaff bypass). But an amendment
+   carries no salesperson_id of its own, so without scoping a rep would see
+   EVERY rep's amendments. Filter the loaded amendments down to those whose
+   bound SO falls in the caller's own+downline sales scope — the SAME
+   self+downline tiering the SO list/detail uses. View-all callers (directors /
+   office / `*`) are unrestricted (resolveSalesScopeIds → null). */
 soAmendments.get('/', async (c) => {
   const sb = c.get('supabase');
   // scopeToCompany: isolate the list to the active company (mig 0080 company_id);
@@ -47,7 +57,21 @@ soAmendments.get('/', async (c) => {
     .order('created_at', { ascending: false })
     .limit(500);
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
-  return c.json({ amendments: data ?? [] });
+
+  let rows = (data ?? []) as Array<{ so_doc_no?: string | null }>;
+  const scopeIds = await resolveSalesScopeIds(sb, c.env, c.get('houzsUser')?.id, canViewAllSales(c));
+  if (scopeIds && rows.length > 0) {
+    // Resolve which of the listed amendments' SOs the caller may see — a single
+    // bounded query over the ≤500 doc_nos on the page (salesperson_id ∈ scope).
+    const docNos = [...new Set(rows.map((r) => r.so_doc_no).filter((x): x is string => !!x))];
+    const { data: soRows } = await scopeToCompany(sb.from('mfg_sales_orders')
+      .select('doc_no')
+      .in('doc_no', docNos)
+      .in('salesperson_id', scopeIds), c);
+    const allowed = new Set(((soRows ?? []) as Array<{ doc_no: string }>).map((r) => r.doc_no));
+    rows = rows.filter((r) => r.so_doc_no != null && allowed.has(r.so_doc_no));
+  }
+  return c.json({ amendments: rows });
 });
 
 /* ── GET /:id — amendment detail ───────────────────────────────────────────
@@ -74,11 +98,21 @@ soAmendments.get('/:id', async (c) => {
   const amendment = amdRes.data as unknown as { so_doc_no: string } & Record<string, unknown>;
   const lines = (lineRes.data ?? []) as unknown as Array<Record<string, unknown>>;
 
-  // SO header summary — doc_no, status, revision.
+  // SO header summary — doc_no, status, revision (+ salesperson_id for the scope
+  // check below).
   const { data: soRow } = await sb.from('mfg_sales_orders')
-    .select('doc_no, status, revision')
+    .select('doc_no, status, revision, salesperson_id')
     .eq('doc_no', amendment.so_doc_no).maybeSingle();
-  const salesOrder = (soRow ?? null) as { doc_no: string; status: string; revision: number } | null;
+  const salesOrder = (soRow ?? null) as
+    { doc_no: string; status: string; revision: number; salesperson_id?: number | string | null } | null;
+
+  /* Row-level scope (Owner 2026-07-16) — a scoped salesperson may open only an
+     amendment for a Sales Order in their own+downline scope; anything else 404s
+     (indistinguishable from a nonexistent id), mirroring the SO detail read.
+     View-all callers pass. */
+  if (await salesDocOutOfScope(sb, c.env, c.get('houzsUser')?.id, canViewAllSales(c), salesOrder?.salesperson_id)) {
+    return c.json({ error: 'not_found' }, 404);
+  }
 
   /* Light bound-PO summary — the PO(s) whose lines were derived from this SO's
      lines (purchase_order_items.so_item_id → mfg_sales_order_items.id). */
