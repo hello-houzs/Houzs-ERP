@@ -8,6 +8,12 @@ Severity tags: 🔴 critical/high · 🟠 medium · 🟢 low.
 
 ## 2026-07-15
 
+### 🟠 DO Print PDF slow on sofa/fabric orders (fabric catalog fetched twice, uncached) + dead "Download PDF" button
+- **Symptom:** Printing a DO PDF was slow, but only for sofa/fabric orders; plain DOs were fast. Also the routed DO detail "Download PDF" button did nothing.
+- **Root cause:** `loadCustomerFabricMaps` ran two loaders that EACH fetched the ENTIRE `/fabric-tracking` catalog (no limit, no cache) — two full-catalog fetches per print, and a fresh fetch on every reprint. Plain DOs skip it (no fabric codes), which is why only sofa/fabric was slow. The DO detail "Download PDF" navigated to `?print=1`, which nothing consumes → no-op.
+- **Fix:** Module-level `loadFabricCatalog()` with a 60s TTL cache + in-flight-promise dedupe — one network fetch per print burst, zero on cached reprints; fail-soft preserved. (`sales-order-pdf.ts` benefits too.) Backend `/fabric-tracking` has no multi-code filter param, so fetch-once-and-cache + existing client-side filter. Wired the DO "Download PDF" to `generateDeliveryOrderPdf` (same helper the list Export PDF uses).
+- **Ref:** `fix/do-pdf-perf-clean`, 2026-07-15.
+
 ### 🟠 SCM list column chooser lost 19-32 columns per sales-side list (DataGrid->DataTable rewrite)
 - **Symptom:** The column chooser on the SCM lists offered far fewer columns than before — Sales Orders showed ~9 vs 42 in the old list; Delivery Orders / Sales Invoices / Delivery Returns similarly gutted. Owner: "my columns didn't used to be this few."
 - **Root cause:** The DataGrid->DataTable V2 rewrite hand-slimmed each `COLUMNS` array. `DataTable`/`ColumnsPanel` still support show/hide/reorder/`defaultHidden` — the columns were simply no longer DECLARED. Not a component regression, not UDF.
