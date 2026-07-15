@@ -103,43 +103,44 @@ export interface AssrSubStatusDef {
 }
 
 /**
- * Sub-status WITHIN a stage (Nick 2026-07-15 — the workflow funnel
- * needed finer states without changing the 7-stage pipeline):
- *
- *   Verification — "Pending Inspection" until the QC issue inspection
- *     is recorded (qc_receipt_date or a qc_issue_result verdict), then
- *     "QC Issue Result" (with the verdict when one is stored).
- *   Supplier — "Pending Supplier Pickup" until the supplier collects
- *     the item (supplier_pickup_at), then "Pending Supplier Return".
- *
- * Purely derived from existing case fields — no schema; the sub-status
- * flips live as ops fills the driving field. Other stages have none.
+ * Sub-statuses (小类) inside two stages — DIRECTLY switchable by ops
+ * (Nick 2026-07-15: "我要可以直接换" — the earlier field-derived version
+ * wasn't controllable). Stored on assr_cases.sub_status; entering a
+ * stage with sub-states seeds the first entry (transitionStage), other
+ * stages carry NULL.
+ */
+export const ASSR_SUB_STATUSES: Record<string, AssrSubStatusDef[]> = {
+  under_verification: [
+    { key: "pending_inspection", label: "Pending Inspection" },
+    { key: "qc_issue_result", label: "QC Issue Result" },
+  ],
+  pending_supplier_pickup: [
+    { key: "pending_supplier_pickup", label: "Pending Supplier Pickup" },
+    { key: "pending_supplier_return", label: "Pending Supplier Return" },
+  ],
+};
+
+/**
+ * Resolve a case's current sub-status from the STORED value. Falls
+ * back to the stage's first sub-state for rows written before the
+ * column existed (or between deploys). Stages without sub-states → null.
  */
 export function assrSubStatus(
   stage: string | null | undefined,
-  f: {
-    qcReceiptDate?: string | null;
-    qcIssueResult?: string | null;
-    supplierPickupAt?: string | null;
-  },
+  stored: string | null | undefined,
 ): AssrSubStatusDef | null {
-  if (stage === "under_verification") {
-    const verdict = (f.qcIssueResult || "").trim().toLowerCase();
-    const inspected = !!f.qcReceiptDate || !!verdict;
-    if (!inspected) return { key: "pending_inspection", label: "Pending Inspection" };
-    const pretty =
-      verdict === "na" ? "N/A" : verdict ? verdict.charAt(0).toUpperCase() + verdict.slice(1) : "";
-    return {
-      key: "qc_issue_result",
-      label: pretty ? `QC Issue Result: ${pretty}` : "QC Issue Result Recorded",
-    };
+  const opts = ASSR_SUB_STATUSES[stage || ""];
+  if (!opts) return null;
+  return opts.find((o) => o.key === stored) ?? opts[0];
+}
+
+/** Human label for a sub-status key (timeline rendering). */
+export function assrSubStatusLabel(key: string | null | undefined): string {
+  for (const opts of Object.values(ASSR_SUB_STATUSES)) {
+    const hit = opts.find((o) => o.key === key);
+    if (hit) return hit.label;
   }
-  if (stage === "pending_supplier_pickup") {
-    return f.supplierPickupAt
-      ? { key: "pending_supplier_return", label: "Pending Supplier Return" }
-      : { key: "pending_supplier_pickup", label: "Pending Supplier Pickup" };
-  }
-  return null;
+  return key || "—";
 }
 
 /** Active canonical stages for a case (the common mobile call). */
