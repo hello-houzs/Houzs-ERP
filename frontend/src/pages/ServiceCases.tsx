@@ -78,7 +78,7 @@ import { ServiceMetrics } from "./ServiceMetrics";
 import { ServiceSettingsView } from "./ServiceSettings";
 import { ServiceLeadTimePortal } from "./ServiceLeadTimePortal";
 import { ServiceProgressTracker } from "../components/ServiceProgressTracker";
-import { resolutionRoute, isStageActive } from "../vendor/scm/lib/assr/stages";
+import { resolutionRoute, isStageActive, assrSubStatus } from "../vendor/scm/lib/assr/stages";
 import type {
   Paginated,
   AssrCase,
@@ -3258,8 +3258,14 @@ function DetailContent({
               transitioning={transitioning}
               onChange={(s) => transition(s)}
               disabled={!!c.archived_at}
+              subStatus={caseSubStatus(c)}
             />
-            <StatusSummaryBar c={c} stages={activeStages} priorityMap={priorityMap} />
+            <StatusSummaryBar
+              c={c}
+              stages={activeStages}
+              priorityMap={priorityMap}
+              subStatus={caseSubStatus(c)}
+            />
           </div>
           <DetailGrid>
             <DetailMain>
@@ -5015,12 +5021,24 @@ function StageRow({
   );
 }
 
+// Derives the finer state inside Verification / Supplier from the
+// case's own fields (Nick 2026-07-15). Shared logic lives in
+// vendor/scm/lib/assr/stages so mobile can't drift.
+function caseSubStatus(c: any): { key: string; label: string } | null {
+  return assrSubStatus(c?.stage, {
+    qcReceiptDate: c?.qc_receipt_date ?? null,
+    qcIssueResult: c?.qc_issue_result ?? null,
+    supplierPickupAt: c?.supplier_pickup_at ?? null,
+  });
+}
+
 function WorkflowCard({
   currentStage,
   stages,
   transitioning,
   onChange,
   disabled,
+  subStatus,
 }: {
   currentStage: AssrStage;
   // PR 4 — pass the filtered active-stage list. Internal resolution
@@ -5029,6 +5047,8 @@ function WorkflowCard({
   transitioning: boolean;
   onChange: (s: AssrStage) => void;
   disabled?: boolean;
+  /** Finer state inside the current stage — rendered under its label. */
+  subStatus?: { key: string; label: string } | null;
 }) {
   const curIdx = Math.max(0, stages.findIndex((s) => s.id === currentStage));
   const n = stages.length;
@@ -5086,6 +5106,11 @@ function WorkflowCard({
                 >
                   {s.short}
                 </span>
+                {current && subStatus && (
+                  <span className="mt-1 rounded-full bg-accent-soft/60 px-1.5 py-0.5 text-center text-[8.5px] font-semibold uppercase tracking-wide leading-snug text-accent">
+                    {subStatus.label}
+                  </span>
+                )}
               </div>
               {!last && (
                 <span
@@ -5107,10 +5132,13 @@ function StatusSummaryBar({
   c,
   stages,
   priorityMap,
+  subStatus,
 }: {
   c: AssrCase;
   stages: typeof DETAIL_STAGES;
   priorityMap: Record<string, string>;
+  /** Finer state inside the current stage — shown on the Status cell. */
+  subStatus?: { key: string; label: string } | null;
 }) {
   const curIdx = Math.max(0, stages.findIndex((s) => s.id === c.stage));
   const n = stages.length;
@@ -5130,7 +5158,9 @@ function StatusSummaryBar({
     {
       label: "Status",
       value: caseStageLabel(c.stage),
-      sub: `Step ${curIdx + 1} / ${n}`,
+      sub: subStatus
+        ? `Step ${curIdx + 1} / ${n} · ${subStatus.label}`
+        : `Step ${curIdx + 1} / ${n}`,
       valColor: "text-ink",
       dotColor: "bg-accent",
     },
