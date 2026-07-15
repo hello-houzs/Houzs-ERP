@@ -97,32 +97,6 @@ const fmtDate = (iso: string | null | undefined): string => {
   return `${m[3]}/${m[2]}/${m[1]}`;
 };
 
-// ─── Line item variant chip helper (copied from DeliveryOrderDetailV2) ──────
-function VariantChip({ k, v }: { k: string; v: string }) {
-  return (
-    <span className="inline-flex items-center gap-1 rounded-full border border-border-subtle bg-surface-2 px-2 py-0.5">
-      <span className="font-mono text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
-        {k}
-      </span>
-      <span className="text-[11px] font-semibold text-ink-secondary">{v}</span>
-    </span>
-  );
-}
-
-// Best-effort extraction of variant chips from the item's variants JSON blob.
-function variantsOf(item: GrnItem): Array<{ k: string; v: string }> {
-  const raw = item.variants;
-  if (!raw || typeof raw !== "object") return [];
-  const out: Array<{ k: string; v: string }> = [];
-  for (const [k, val] of Object.entries(raw)) {
-    if (val == null || val === "") continue;
-    if (typeof val === "string" || typeof val === "number") {
-      out.push({ k, v: String(val) });
-    }
-  }
-  return out;
-}
-
 const supplierNameOf = (h: GrnHeader): string => h.supplier?.name || "—";
 const supplierCodeOf = (h: GrnHeader): string => h.supplier?.code || "—";
 const poOf = (h: GrnHeader): string => h.purchase_order?.po_number || "—";
@@ -355,7 +329,6 @@ function GoodsReceivedDetailV2ReadOnly() {
       alwaysVisible: true,
       getValue: (l) => l.material_code || l.item_code || "",
       render: (l) => {
-        const vs = variantsOf(l);
         return (
           <div className="min-w-0">
             <div className="truncate text-[13px] font-semibold text-ink">
@@ -368,13 +341,6 @@ function GoodsReceivedDetailV2ReadOnly() {
                 <span className="truncate text-ink-secondary">· {l.description2}</span>
               )}
             </div>
-            {vs.length > 0 && (
-              <div className="mt-1.5 flex flex-wrap gap-1.5">
-                {vs.map((c) => (
-                  <VariantChip key={c.k} k={c.k} v={c.v} />
-                ))}
-              </div>
-            )}
           </div>
         );
       },

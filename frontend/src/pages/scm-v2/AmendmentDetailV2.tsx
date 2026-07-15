@@ -83,16 +83,6 @@ const asStr = (v: unknown): string | null => {
   return s ? s : null;
 };
 
-/* Split a buildVariantSummary output ("A / B + C / D") back into chip tokens so
-   each variant renders as its own pill on both sides of the diff. */
-const variantChips = (summary: string | null | undefined): string[] => {
-  if (!summary) return [];
-  return summary
-    .split(/\s*\/\s*/)
-    .flatMap((seg) => seg.split(/\s*\+\s*/))
-    .map((s) => s.trim())
-    .filter(Boolean);
-};
 
 /* old_snapshot shape (mirrors the diff readers in SalesOrderDetail / mobile). */
 type OldSnap = {
@@ -148,17 +138,6 @@ function AsideCard({ title, children }: { title: string; children: ReactNode }) 
       </div>
       {children}
     </div>
-  );
-}
-
-/* Value-only variant chip — matches the VariantChip pill used across the V2
-   detail pages (DO / GRN / SI), value only because a diff side is a flat
-   summary string, not a keyed object. */
-function VariantChip({ value }: { value: string }) {
-  return (
-    <span className="inline-flex items-center rounded-full border border-border-subtle bg-surface-2 px-2 py-0.5 text-[11px] font-semibold text-ink-secondary">
-      {value}
-    </span>
   );
 }
 
@@ -266,8 +245,7 @@ function DiffCard({ line }: { line: AmendmentLine }) {
     "",
     (line.new_variants as Record<string, unknown> | null) ?? null
   );
-  const oldChips = variantChips(old.description2);
-  const newChips = variantChips(newSummary);
+  const oldSummary = (old.description2 ?? "").trim();
   const isAdd = line.change_type === "ADD";
   const isRemove = line.change_type === "REMOVE";
 
@@ -293,11 +271,9 @@ function DiffCard({ line }: { line: AmendmentLine }) {
                 Qty {old.qty ?? "—"}
                 {typeof old.unitPriceSen === "number" ? ` · ${fmtSen(old.unitPriceSen)}` : ""}
               </div>
-              {oldChips.length > 0 && (
-                <div className="mt-1.5 flex flex-wrap gap-1.5">
-                  {oldChips.map((v, i) => (
-                    <VariantChip key={`${v}-${i}`} value={v} />
-                  ))}
+              {oldSummary && (
+                <div className="mt-1.5 text-[11px] font-semibold text-ink-secondary">
+                  {oldSummary}
                 </div>
               )}
             </>
@@ -319,11 +295,9 @@ function DiffCard({ line }: { line: AmendmentLine }) {
                 Qty {line.new_qty ?? old.qty ?? "—"}
                 {typeof line.new_unit_price_sen === "number" ? ` · ${fmtSen(line.new_unit_price_sen)}` : ""}
               </div>
-              {newChips.length > 0 && (
-                <div className="mt-1.5 flex flex-wrap gap-1.5">
-                  {newChips.map((v, i) => (
-                    <VariantChip key={`${v}-${i}`} value={v} />
-                  ))}
+              {newSummary && (
+                <div className="mt-1.5 text-[11px] font-semibold text-ink-secondary">
+                  {newSummary}
                 </div>
               )}
             </>

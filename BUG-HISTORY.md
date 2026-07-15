@@ -12,6 +12,14 @@ Severity tags: 🔴 critical/high · 🟠 medium · 🟢 low.
 
 ---
 
+## 2026-07-16
+
+### 🟢 Line-item variant shown TWICE — clean summary line plus a raw key-value chip dump exposing internal ids
+- **Symptom:** On the GRN / received-goods, Purchase-Invoice, Sales-Invoice and Delivery-Order V2 detail pages, every line rendered its variant twice: (1) a clean human summary line (e.g. `PC151-01 / DIVAN 6" + NO LEG / GAP 8" / T.Heights 14"`, kept), and BELOW it (2) a redundant row of raw key-value chip pills dumping every variant field — `GAP 8"`, `COLOURID PC151-01`, `FABRICID PC151`, `LEGHEIGHT No Leg`, `FABRICCODE PC151-01`, `COLOURLABEL PC151-01`, `DIVANHEIGHT 6"`, `FABRICLABEL PC151`, `TOTALHEIGHT 14"` — noisy, duplicated, and leaking internal ids (colourId/fabricId/fabricCode/colourLabel/fabricLabel). The SO Amendment diff (desktop `AmendmentDetailV2`) showed the same summary split into token pills, drifted from mobile which already renders it as one line.
+- **Root cause:** Not one shared component — a hand-rolled `VariantChip` + `variantsOf(item)` helper (a `for (const [k, val] of Object.entries(item.variants))` raw dump) was copy-pasted into each V2 detail page (the comments literally read "copied from GoodsReceivedDetailV2" / "verbatim from DeliveryOrderDetailV2"). It rendered the entire `variants` JSON blob keyed, on top of the already-present `description2` summary line (which is the server-stamped `buildVariantSummary` output). `AmendmentDetailV2` had a `variantChips()` splitter re-tokenising the summary into pills. `SalesOrderDetail.tsx` also carried a dead `VariantsPills` (defined, never rendered) with the same intent.
+- **Fix:** Display-only, no data/backend change. Removed the raw chip row from all four V2 detail pages (`GoodsReceivedDetailV2`, `PurchaseInvoiceDetailV2`, `SalesInvoiceDetailV2`, `DeliveryOrderDetailV2`) — deleted the `VariantChip` component, the `variantsOf` extractor, and the `{vs.length > 0 && …}` JSX; the existing `description` + `description2` summary line (which prefers human labels via `buildVariantSummary`, not internal ids) is now the sole variant display. Converted `AmendmentDetailV2` to render the `buildVariantSummary` string as a single muted line per diff side (matching mobile `MobileSODetail`), dropping the token-pill splitter. Removed the dead `VariantsPills` + its `VARIANT_KEY_LABELS`/`camelCaseToTitle`/`formatVariantValue` helpers from `SalesOrderDetail.tsx`. PO/SO/DO V1 detail pages and the whole mobile layer already rendered a single summary line, so they were untouched.
+- **Ref:** `fix/variant-display-dedupe`, 2026-07-16.
+
 ## 2026-07-15
 
 ### 🟢 Mobile had no "SO Maintenance" entry — directors couldn't reach it on their phone
