@@ -28,6 +28,7 @@ import { useToast } from "../hooks/useToast";
 import { useDialog } from "../hooks/useDialog";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
+import { isSalesDirectorUser } from "../auth/salesAccess";
 import { cn, relativeTime } from "../lib/utils";
 import type { TeamMember, Department, Position } from "../types";
 
@@ -197,9 +198,16 @@ function CompanyBadge({
 // Page
 // ────────────────────────────────────────────────────────────────────────────
 export function Announcements() {
-  const { can } = useAuth();
+  const { can, user } = useAuth();
   const toast = useToast();
-  const canWrite = can("announcements.write");
+  // A Sales Director may compose (owner rule 2026-07-15) even though their
+  // POSITION carries no announcements.* permission — code-keyed off the org
+  // chart, mirroring the backend requirePermissionOrSalesDirector admittance.
+  // `salesDirOnly` = admitted purely as a Sales Director (no full grant): their
+  // composer is constrained to the Sales department / a specific salesperson.
+  const isSalesDir = isSalesDirectorUser(user);
+  const canWrite = can("announcements.write") || isSalesDir;
+  const salesDirOnly = isSalesDir && !can("announcements.write");
 
   // NOTE: this fetch is unbounded (no LIMIT/pagination) — the backend returns
   // every announcement. Capping it server-side is a separate follow-up; the DOM
@@ -241,6 +249,7 @@ export function Announcements() {
           departments={depts}
           positions={positions}
           companies={companies}
+          salesDirOnly={salesDirOnly}
           onPosted={() => listQ.reload()}
         />
       )}
@@ -267,6 +276,8 @@ export function Announcements() {
             positions={positions}
             companies={companies}
             canWrite={canWrite}
+            salesDirOnly={salesDirOnly}
+            currentUserId={user?.id ?? null}
             onChanged={() => listQ.reload()}
             toast={toast}
           />
@@ -306,6 +317,8 @@ function PostedList({
   positions,
   companies,
   canWrite,
+  salesDirOnly,
+  currentUserId,
   onChanged,
   toast,
 }: {
@@ -315,6 +328,8 @@ function PostedList({
   positions: Position[];
   companies: Company[];
   canWrite: boolean;
+  salesDirOnly: boolean;
+  currentUserId: number | null;
   onChanged: () => void;
   toast: ReturnType<typeof useToast>;
 }) {
@@ -373,6 +388,8 @@ function PostedList({
           positions={positions}
           companies={companies}
           canWrite={canWrite}
+          salesDirOnly={salesDirOnly}
+          currentUserId={currentUserId}
           onChanged={onChanged}
           toast={toast}
         />
@@ -397,19 +414,24 @@ function Composer({
   departments,
   positions,
   companies,
+  salesDirOnly,
   onPosted,
 }: {
   users: TeamMember[];
   departments: Department[];
   positions: Position[];
   companies: Company[];
+  /** Composer opened by a Sales-Director-only caller: audience is constrained
+   *  to the whole Sales department OR a specific salesperson in it (owner rule).
+   *  The department / user lookups are already server-scoped to their dept. */
+  salesDirOnly: boolean;
   onPosted: () => void;
 }) {
   const toast = useToast();
   const [title, setTitle] = useState("");
   const [text, setText] = useState("");
   const [category, setCategory] = useState<AnnouncementCategory>("GENERAL");
-  const [bucket, setBucket] = useState<Bucket>("ALL");
+  const [bucket, setBucket] = useState<Bucket>(salesDirOnly ? "DEPT" : "ALL");
   // Company target: "ALL" = every company (Both — sends no target, NULL = all);
   // a company id = that company only. Default "ALL" so an untargeted notice
   // reaches everyone. Only rendered when >1 company exists.
@@ -436,6 +458,23 @@ function Composer({
         (u.email ?? "").toLowerCase().includes(q),
     );
   }, [users, userSearch]);
+
+  // Sales Director: default the "Sales Department" bucket to their own
+  // department (the lookups already return only it), so posting with no manual
+  // pick still targets the whole Sales dept. Seeded once so a later deselect
+  // isn't fought.
+  const seededDeptRef = useRef(false);
+  useEffect(() => {
+    if (
+      salesDirOnly &&
+      !seededDeptRef.current &&
+      bucket === "DEPT" &&
+      departments.length > 0
+    ) {
+      seededDeptRef.current = true;
+      setSelectedDepts(new Set(departments.map((d) => d.id)));
+    }
+  }, [salesDirOnly, bucket, departments]);
 
   const onPickFiles = useCallback(
     async (files: FileList | null) => {
@@ -629,8 +668,9 @@ function Composer({
           )}
         </div>
 
-        {/* Company target — only when more than one company exists. */}
-        {companies.length > 1 && (
+        {/* Company target — only when more than one company exists. Hidden for
+            a Sales Director (they post within their own department only). */}
+        {companies.length > 1 && !salesDirOnly && (
           <div>
             <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-ink-secondary">
               Company
@@ -696,12 +736,17 @@ function Composer({
           </label>
           <div className="mb-2 flex flex-wrap gap-1.5">
             {(
-              [
-                ["ALL", "All users", Globe],
-                ["DEPT", "Departments", UsersIcon],
-                ["POSITION", "Positions", ShieldCheck],
-                ["USER", "Specific people", UsersIcon],
-              ] as Array<[Bucket, string, typeof Globe]>
+              salesDirOnly
+                ? ([
+                    ["DEPT", "Sales Department", UsersIcon],
+                    ["USER", "Specific salesperson", UsersIcon],
+                  ] as Array<[Bucket, string, typeof Globe]>)
+                : ([
+                    ["ALL", "All users", Globe],
+                    ["DEPT", "Departments", UsersIcon],
+                    ["POSITION", "Positions", ShieldCheck],
+                    ["USER", "Specific people", UsersIcon],
+                  ] as Array<[Bucket, string, typeof Globe]>)
             ).map(([key, label, Icon]) => {
               const selected = bucket === key;
               return (
@@ -874,6 +919,8 @@ function AnnouncementRow({
   positions,
   companies,
   canWrite,
+  salesDirOnly,
+  currentUserId,
   onChanged,
   toast,
 }: {
@@ -883,9 +930,17 @@ function AnnouncementRow({
   positions: Position[];
   companies: Company[];
   canWrite: boolean;
+  salesDirOnly: boolean;
+  currentUserId: number | null;
   onChanged: () => void;
   toast: ReturnType<typeof useToast>;
 }) {
+  // A Sales Director can manage (hide / delete / remind / view receipts) ONLY
+  // the posts they authored — the backend enforces the same ownership. Full
+  // announcers manage every row. This keeps the affordances off notices an SD
+  // can see (their audience feed) but can't act on.
+  const canManage =
+    canWrite && (!salesDirOnly || a.createdBy === currentUserId);
   const dialog = useDialog();
   const [acksOpen, setAcksOpen] = useState(false);
   const [acks, setAcks] = useState<AcksResponse["data"] | null>(null);
@@ -1084,17 +1139,19 @@ function AnnouncementRow({
             </span>
           </div>
 
-          <button
-            type="button"
-            onClick={toggleAcksPanel}
-            className="mt-2 inline-flex items-center gap-1 rounded-md border border-border bg-surface-dim px-2 py-1 text-[11px] font-semibold text-ink-secondary hover:border-accent/40 hover:text-accent"
-          >
-            {acksOpen ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-            <UsersIcon size={11} />
-            {acks
-              ? `Read ${acks.ackedCount} of ${acks.total}`
-              : "Read receipts"}
-          </button>
+          {canManage && (
+            <button
+              type="button"
+              onClick={toggleAcksPanel}
+              className="mt-2 inline-flex items-center gap-1 rounded-md border border-border bg-surface-dim px-2 py-1 text-[11px] font-semibold text-ink-secondary hover:border-accent/40 hover:text-accent"
+            >
+              {acksOpen ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+              <UsersIcon size={11} />
+              {acks
+                ? `Read ${acks.ackedCount} of ${acks.total}`
+                : "Read receipts"}
+            </button>
+          )}
 
           {acksOpen && (
             <div className="mt-2 rounded-md border border-border bg-surface-dim p-2.5">
@@ -1147,7 +1204,7 @@ function AnnouncementRow({
                   </div>
                 </div>
               )}
-              {canWrite && acks && (
+              {canManage && acks && (
                 <div className="mt-2 flex flex-wrap items-center gap-1.5">
                   {acks.pending.length > 0 && (
                     <button
@@ -1175,7 +1232,7 @@ function AnnouncementRow({
           )}
         </div>
 
-        {canWrite && (
+        {canManage && (
           <div className="flex flex-wrap items-center gap-1.5 md:shrink-0">
             <button
               type="button"

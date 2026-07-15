@@ -498,13 +498,17 @@ export const NAV_TABS: NavTab[] = [
   },
 
   // ── Announcements — office-wide notices + read receipts (ported from Hookka).
-  // Flat entry; the page hosts the composer + list inline.
+  // Flat entry; the page hosts the composer + list inline. A Sales Director is
+  // shown the entry even without announcements.read (code-keyed off position);
+  // they post to their Sales department / a specific salesperson, enforced
+  // server-side (requirePermissionOrSalesDirector).
   {
     section: "operations",
     to: "/announcements",
     label: "Announcements",
     icon: Megaphone,
     anyPerm: ["announcements.read"],
+    showForSalesDirector: true,
   },
 
   // ══ SYSTEM ═══════════════════════════════════════════════════

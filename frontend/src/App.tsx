@@ -2,7 +2,7 @@ import { lazy, Suspense } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import { Layout } from "./components/Layout";
 import { useAuth } from "./auth/AuthContext";
-import { isSalesStaff, isDirectorUser } from "./auth/salesAccess";
+import { isSalesStaff, isDirectorUser, isSalesDirectorUser } from "./auth/salesAccess";
 import { PageGuard } from "./auth/PageGuard";
 import { Forbidden } from "./pages/Forbidden";
 import { GlobalSearchProvider } from "./components/GlobalSearch";
@@ -164,6 +164,7 @@ function Guard({
   perm,
   anyPerm,
   anyAccess,
+  allowSalesDirector = false,
   children,
 }: {
   perm?: string;
@@ -173,9 +174,15 @@ function Guard({
    *  / `anyPerm` via OR — used by the SCM routes so a per-position SCM grant
    *  unlocks its area WITHOUT removing the existing `scm.access` / `*` path. */
   anyAccess?: string[];
+  /** ADDITIVE code-keyed admittance: a Sales Director (auth/salesAccess.
+   *  isSalesDirectorUser) passes even without the flat permission. Used by
+   *  /announcements — a Sales Director may post to their Sales department but
+   *  their POSITION carries no announcements.* verb (backend is the authority,
+   *  requirePermissionOrSalesDirector). Mirrors PageGuard's allowSalesDirector. */
+  allowSalesDirector?: boolean;
   children: React.ReactNode;
 }) {
-  const { can, pageAccess } = useAuth();
+  const { can, pageAccess, user } = useAuth();
   // OR across all provided gates — pass if ANY is satisfied. (Previously each
   // gate could only DENY; with anyAccess the gates are alternatives, so a
   // grant on any one is sufficient.)
@@ -185,6 +192,7 @@ function Guard({
     ? anyAccess.some((k) => pageAccess(k) !== "none")
     : false;
   if (permOk || anyPermOk || anyAccessOk) return <>{children}</>;
+  if (allowSalesDirector && isSalesDirectorUser(user)) return <>{children}</>;
   const label =
     perm ?? anyPerm?.join(" / ") ?? anyAccess?.join(" / ") ?? "access";
   return <Forbidden page={label} />;
@@ -367,11 +375,14 @@ export default function App() {
         />
         {/* ── Announcements — office-wide notices + read receipts. List page
             gated on announcements.read; create/edit/remind/delete also need
-            announcements.write (enforced server-side). ── */}
+            announcements.write (enforced server-side). A Sales Director is
+            admitted additively (code-keyed off position) — they may post to
+            their Sales department / a specific salesperson; the backend
+            (requirePermissionOrSalesDirector) is the authority. ── */}
         <Route
           path="/announcements"
           element={
-            <Guard perm="announcements.read">
+            <Guard perm="announcements.read" allowSalesDirector>
               <Announcements />
             </Guard>
           }

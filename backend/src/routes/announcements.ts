@@ -17,8 +17,10 @@
 // ============================================================
 import { Hono } from "hono";
 import type { Env } from "../types";
-import { requirePermission } from "../middleware/auth";
+import { requirePermissionOrSalesDirector } from "../middleware/auth";
 import { hasPermission } from "../services/permissions";
+import { isSalesDirectorUser } from "../services/pmsAccess";
+import type { AuthUser } from "../services/auth";
 import { activeCompanyId, allowedCompanyIds } from "../scm/lib/companyScope";
 import {
   translateAnnouncement,
@@ -336,6 +338,119 @@ function userCanSee(
 }
 
 // ============================================================
+// Sales-Director post scope (owner 2026-07-15). A Sales Director is admitted to
+// the announcements management surface ADDITIVELY (requirePermissionOrSalesDirector)
+// even though their POSITION never carries the flat announcements.* permission —
+// positions get NO permission-matrix backfill, so a Sales Director holds neither
+// announcements.read nor announcements.write. That is exactly why the composer /
+// audience picker rendered empty for them: the whole surface was gated purely on
+// those flat verbs. Admittance mirrors the Team/departments/positions endpoints.
+//
+// Unlike a full announcer (`*` / announcements.write, unrestricted), a Sales
+// Director may ONLY address (a) their OWN Sales department (whole) or (b) specific
+// people WITHIN that department — never all-company, another department, a
+// position, or a company target. This is enforced server-side (the FE is UX
+// only). `restricted` is true ONLY for a caller admitted purely as a Sales
+// Director; a `*`/announcements.write holder is never restricted.
+type SdScope = { restricted: boolean; deptId: number | null };
+
+function salesDirectorScope(c: { get: (k: string) => unknown }): SdScope {
+  const user = c.get("user") as AuthUser | undefined;
+  const granted = user?.permissions_set ?? user?.permissions ?? [];
+  if (
+    hasPermission(granted, "*") ||
+    hasPermission(granted, "announcements.write")
+  ) {
+    return { restricted: false, deptId: null };
+  }
+  if (isSalesDirectorUser(user)) {
+    return { restricted: true, deptId: user?.department_id ?? null };
+  }
+  return { restricted: false, deptId: null };
+}
+
+// Validate + normalise a restricted Sales Director's requested audience. Returns
+// the (possibly defaulted) dept/user id lists to persist, or a plain-language
+// error to answer 403 on. An empty selection defaults to the WHOLE own
+// department (never ALL_USERS). Company / position targets are rejected.
+async function enforceSalesDirectorScope(
+  c: { env: Env; get: (k: string) => unknown },
+  scope: SdScope,
+  req: {
+    deptIds: number[];
+    positionIds: number[];
+    userIds: number[];
+    companyIds: number[];
+  },
+): Promise<
+  | { ok: true; deptIds: number[]; userIds: number[] }
+  | { ok: false; error: string }
+> {
+  const deptId = scope.deptId;
+  if (deptId == null) {
+    return {
+      ok: false,
+      error:
+        "Your account has no department yet — ask an admin to add you to Sales before posting.",
+    };
+  }
+  if (req.positionIds.length > 0) {
+    return {
+      ok: false,
+      error:
+        "A Sales Director can only post to the Sales department or specific salespeople, not to positions.",
+    };
+  }
+  if (req.companyIds.length > 0) {
+    return {
+      ok: false,
+      error: "A Sales Director cannot choose a company target.",
+    };
+  }
+  if (req.deptIds.some((id) => id !== deptId)) {
+    return {
+      ok: false,
+      error: "A Sales Director can only post to their own Sales department.",
+    };
+  }
+  if (req.userIds.length > 0) {
+    const ph = req.userIds.map(() => "?").join(",");
+    const rows = await c.env.DB.prepare(
+      `SELECT id FROM users
+         WHERE id IN (${ph})
+           AND (department_id = ?
+                OR EXISTS (SELECT 1 FROM user_departments ud
+                            WHERE ud.user_id = users.id AND ud.department_id = ?))`,
+    )
+      .bind(...req.userIds, deptId, deptId)
+      .all<{ id: number }>();
+    const okIds = new Set((rows.results ?? []).map((r) => r.id));
+    const bad = req.userIds.filter((id) => !okIds.has(id));
+    if (bad.length > 0) {
+      return {
+        ok: false,
+        error:
+          "A Sales Director can only target salespeople in their own department.",
+      };
+    }
+  }
+  let deptIds = req.deptIds;
+  if (deptIds.length === 0 && req.userIds.length === 0) {
+    deptIds = [deptId];
+  }
+  return { ok: true, deptIds, userIds: req.userIds };
+}
+
+// True when a restricted Sales Director is acting on a notice they did NOT
+// author. Ownership-gates edit / delete / remind / receipts so a Sales Director
+// can only manage their OWN posts (a full announcer is never restricted).
+function sdBlockedFromRow(scope: SdScope, row: AnnouncementRow, userId: number | null): boolean {
+  if (!scope.restricted) return false;
+  const author = row.createdBy ?? row.created_by ?? null;
+  return author == null || author !== userId;
+}
+
+// ============================================================
 // LIST — newest first.
 //   · Managers (`*` wildcard or announcements.write, i.e. composers) get the
 //     FULL admin list: every active + inactive + expired row.
@@ -344,7 +459,7 @@ function userCanSee(
 //     same active + not-expired + audience filter as /banner). Server-side;
 //     the composer's targeting can't be bypassed by a read-only caller.
 // ============================================================
-app.get("/", requirePermission("announcements.read"), async (c) => {
+app.get("/", requirePermissionOrSalesDirector("announcements.read"), async (c) => {
   // System per-user notices (source='scan') are delivered only through the
   // /banner + mobile Announcements screen — they must NOT clutter this office
   // composer list. Human-authored posts have source NULL.
@@ -358,13 +473,20 @@ app.get("/", requirePermission("announcements.read"), async (c) => {
   const granted = user?.permissions_set ?? user?.permissions ?? [];
   const isManager =
     hasPermission(granted, "*") || hasPermission(granted, "announcements.write");
+  const sd = salesDirectorScope(c);
   // Company gate first (applies to managers AND readers): a notice is listed
   // only for a caller who belongs to a targeted company (or it targets all).
   const visible = (res.results ?? []).filter((r) => companyCanSee(r, allowed));
   const rows = isManager
     ? visible
-    : visible.filter(
-        (r) =>
+    : visible.filter((r) => {
+        // A Sales Director sees + manages their OWN posts here regardless of
+        // active/expiry (so the desktop page isn't empty for them), plus their
+        // normal audience feed. Full managers already saw everything above.
+        if (sd.restricted && (r.createdBy ?? r.created_by ?? null) === user!.id) {
+          return true;
+        }
+        return (
           isActiveFlag(r.isActive ?? r.is_active ?? null) &&
           notExpired(r.expiresAt ?? r.expires_at ?? null) &&
           userCanSee(
@@ -372,8 +494,9 @@ app.get("/", requirePermission("announcements.read"), async (c) => {
             user!.id,
             user!.department_id ?? null,
             user!.position_id ?? null,
-          ),
-      );
+          )
+        );
+      });
   return c.json({ success: true, data: rows.map(toPublic) });
 });
 
@@ -447,10 +570,14 @@ app.get("/banner", async (c) => {
 // (owner: a normal user must not see the read-receipts). The frontend already
 // only renders this for write-holders; this is the server-side backstop.
 // ============================================================
-app.get("/:id/acks", requirePermission("announcements.write"), async (c) => {
+app.get("/:id/acks", requirePermissionOrSalesDirector("announcements.write"), async (c) => {
   const id = c.req.param("id");
   const ann = await getScopedAnnouncement(c, id);
   if (!ann) {
+    return c.json({ success: false, error: "Announcement not found" }, 404);
+  }
+  // A Sales Director may only see read-receipts for notices they authored.
+  if (sdBlockedFromRow(salesDirectorScope(c), ann, c.get("user")?.id ?? null)) {
     return c.json({ success: false, error: "Announcement not found" }, 404);
   }
 
@@ -530,7 +657,7 @@ app.get("/:id/acks", requirePermission("announcements.write"), async (c) => {
 // ============================================================
 // POST / — create. Body validated server-side.
 // ============================================================
-app.post("/", requirePermission("announcements.write"), async (c) => {
+app.post("/", requirePermissionOrSalesDirector("announcements.write"), async (c) => {
   const user = c.get("user");
   const body = (await c.req
     .json()
@@ -573,7 +700,32 @@ app.post("/", requirePermission("announcements.write"), async (c) => {
       | null
       | undefined,
   );
-  const targetType = deriveTargetType(reqDeptIds, reqPositionIds, reqUserIds);
+
+  // Enforce the Sales-Director audience scope (own Sales department, or specific
+  // salespeople in it). A full announcer (`*` / announcements.write) is never
+  // restricted. This is the AUTHORITY — the FE composer only mirrors it.
+  const sd = salesDirectorScope(c);
+  let effDeptIds = reqDeptIds;
+  let effPositionIds = reqPositionIds;
+  let effUserIds = reqUserIds;
+  let effCompanyIds = reqCompanyIds;
+  if (sd.restricted) {
+    const enforced = await enforceSalesDirectorScope(c, sd, {
+      deptIds: reqDeptIds,
+      positionIds: reqPositionIds,
+      userIds: reqUserIds,
+      companyIds: reqCompanyIds,
+    });
+    if (!enforced.ok) {
+      return c.json({ success: false, error: enforced.error }, 403);
+    }
+    effDeptIds = enforced.deptIds;
+    effPositionIds = [];
+    effUserIds = enforced.userIds;
+    effCompanyIds = [];
+  }
+
+  const targetType = deriveTargetType(effDeptIds, effPositionIds, effUserIds);
   const category = readCategory(body.category);
 
   const id = genId();
@@ -609,10 +761,10 @@ app.post("/", requirePermission("announcements.write"), async (c) => {
       translations ? JSON.stringify(translations) : null,
       attachments.length ? JSON.stringify(attachments) : null,
       targetType,
-      reqDeptIds.length ? JSON.stringify(reqDeptIds) : null,
-      reqPositionIds.length ? JSON.stringify(reqPositionIds) : null,
-      reqUserIds.length ? JSON.stringify(reqUserIds) : null,
-      reqCompanyIds.length ? JSON.stringify(reqCompanyIds) : null,
+      effDeptIds.length ? JSON.stringify(effDeptIds) : null,
+      effPositionIds.length ? JSON.stringify(effPositionIds) : null,
+      effUserIds.length ? JSON.stringify(effUserIds) : null,
+      effCompanyIds.length ? JSON.stringify(effCompanyIds) : null,
       category,
       ...(stampCo ? [companyId] : []),
     )
@@ -634,10 +786,15 @@ app.post("/", requirePermission("announcements.write"), async (c) => {
 // ============================================================
 // PATCH /:id — edit fields, toggle isActive, retarget, re-translate.
 // ============================================================
-app.patch("/:id", requirePermission("announcements.write"), async (c) => {
+app.patch("/:id", requirePermissionOrSalesDirector("announcements.write"), async (c) => {
   const id = c.req.param("id");
   const existing = await getScopedAnnouncement(c, id);
   if (!existing) {
+    return c.json({ success: false, error: "Announcement not found" }, 404);
+  }
+  // A Sales Director may only edit notices they authored.
+  const sd = salesDirectorScope(c);
+  if (sdBlockedFromRow(sd, existing, c.get("user")?.id ?? null)) {
     return c.json({ success: false, error: "Announcement not found" }, 404);
   }
   const body = (await c.req
@@ -703,14 +860,31 @@ app.patch("/:id", requirePermission("announcements.write"), async (c) => {
       "targetUserIds" in body
         ? readIntArray(body.targetUserIds as string | number[] | null | undefined)
         : readIntArray(existing.targetUserIds ?? existing.target_user_ids ?? null);
+    let outDepts = nextDepts;
+    let outPositions = nextPositions;
+    let outUsers = nextUsers;
+    if (sd.restricted) {
+      const enforced = await enforceSalesDirectorScope(c, sd, {
+        deptIds: nextDepts,
+        positionIds: nextPositions,
+        userIds: nextUsers,
+        companyIds: [],
+      });
+      if (!enforced.ok) {
+        return c.json({ success: false, error: enforced.error }, 403);
+      }
+      outDepts = enforced.deptIds;
+      outPositions = [];
+      outUsers = enforced.userIds;
+    }
     sets.push("target_type = ?");
-    binds.push(deriveTargetType(nextDepts, nextPositions, nextUsers));
+    binds.push(deriveTargetType(outDepts, outPositions, outUsers));
     sets.push("target_dept_ids = ?");
-    binds.push(nextDepts.length ? JSON.stringify(nextDepts) : null);
+    binds.push(outDepts.length ? JSON.stringify(outDepts) : null);
     sets.push("target_position_ids = ?");
-    binds.push(nextPositions.length ? JSON.stringify(nextPositions) : null);
+    binds.push(outPositions.length ? JSON.stringify(outPositions) : null);
     sets.push("target_user_ids = ?");
-    binds.push(nextUsers.length ? JSON.stringify(nextUsers) : null);
+    binds.push(outUsers.length ? JSON.stringify(outUsers) : null);
   }
   // Company retarget. Present + empty array (or null) clears to NULL = all
   // companies; a non-empty array narrows to those companies.
@@ -722,6 +896,13 @@ app.patch("/:id", requirePermission("announcements.write"), async (c) => {
         | null
         | undefined,
     );
+    // A Sales Director cannot choose a company target — reject a non-empty set.
+    if (sd.restricted && nextCompanies.length > 0) {
+      return c.json(
+        { success: false, error: "A Sales Director cannot choose a company target." },
+        403,
+      );
+    }
     sets.push("target_company_ids = ?");
     binds.push(nextCompanies.length ? JSON.stringify(nextCompanies) : null);
   }
@@ -778,10 +959,14 @@ app.patch("/:id", requirePermission("announcements.write"), async (c) => {
 // scope=unacked (default): leaves acked rows intact; stamps reminded_at.
 // scope=all: wipes acks so the WHOLE roster re-pops from 0-of-N.
 // ============================================================
-app.post("/:id/remind", requirePermission("announcements.write"), async (c) => {
+app.post("/:id/remind", requirePermissionOrSalesDirector("announcements.write"), async (c) => {
   const id = c.req.param("id");
   const ann = await getScopedAnnouncement(c, id);
   if (!ann) {
+    return c.json({ success: false, error: "Announcement not found" }, 404);
+  }
+  // A Sales Director may only remind on notices they authored.
+  if (sdBlockedFromRow(salesDirectorScope(c), ann, c.get("user")?.id ?? null)) {
     return c.json({ success: false, error: "Announcement not found" }, 404);
   }
   let scope: "all" | "unacked" = "unacked";
@@ -830,12 +1015,16 @@ app.post("/:id/remind", requirePermission("announcements.write"), async (c) => {
 // ============================================================
 // DELETE /:id — hard delete + clean up ack rows.
 // ============================================================
-app.delete("/:id", requirePermission("announcements.write"), async (c) => {
+app.delete("/:id", requirePermissionOrSalesDirector("announcements.write"), async (c) => {
   const id = c.req.param("id");
   // Cross-company guard: verify the notice belongs to the active company
   // before touching it (or its ack rows).
   const existing = await getScopedAnnouncement(c, id);
   if (!existing) {
+    return c.json({ success: false, error: "Announcement not found" }, 404);
+  }
+  // A Sales Director may only delete notices they authored.
+  if (sdBlockedFromRow(salesDirectorScope(c), existing, c.get("user")?.id ?? null)) {
     return c.json({ success: false, error: "Announcement not found" }, 404);
   }
   await c.env.DB.prepare("DELETE FROM announcements WHERE id = ?")
@@ -890,7 +1079,7 @@ app.post("/:id/ack", async (c) => {
 // ============================================================
 app.put(
   "/:id/attachments/upload",
-  requirePermission("announcements.write"),
+  requirePermissionOrSalesDirector("announcements.write"),
   async (c) => {
     const id = c.req.param("id"); // 'compose' before save; real id on edit
     const ext = (c.req.query("ext") || "jpg").toLowerCase();
