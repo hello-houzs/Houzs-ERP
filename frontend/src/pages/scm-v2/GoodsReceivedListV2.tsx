@@ -20,6 +20,7 @@ import {
   Receipt,
   RotateCcw,
   Send,
+  ArrowRightLeft,
 } from "lucide-react";
 import { PageHeader } from "../../components/Layout";
 import { StatCard } from "../../components/StatCard";
@@ -720,11 +721,16 @@ export function GoodsReceivedListV2() {
             title="Goods Received"
             description="Every GRN raised on incoming supplier shipments — Draft through Posted. Click any row for the quick view."
             primaryAction={
-              <div className="flex items-stretch">
-                <Button variant="primary" icon={<Plus size={14} />} onClick={goNewGrn} className="rounded-r-none">
-                  New GRN
+              <div className="flex items-stretch gap-2">
+                <Button variant="secondary" icon={<ArrowRightLeft size={14} />} onClick={goFromPo}>
+                  From Purchase Order
                 </Button>
-                <SplitDropdown onFromPo={goFromPo} />
+                <div className="flex items-stretch">
+                  <Button variant="primary" icon={<Plus size={14} />} onClick={goNewGrn} className="rounded-r-none">
+                    New GRN
+                  </Button>
+                  <SplitDropdown onFromPo={goFromPo} />
+                </div>
               </div>
             }
             secondaryActions={[

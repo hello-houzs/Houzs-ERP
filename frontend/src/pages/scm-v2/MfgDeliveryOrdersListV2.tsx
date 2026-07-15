@@ -25,6 +25,8 @@ import {
   Printer,
   CheckCircle2,
   Receipt,
+  RotateCcw,
+  ArrowRightLeft,
 } from "lucide-react";
 import { PageHeader } from "../../components/Layout";
 import { StatCard } from "../../components/StatCard";
@@ -42,6 +44,7 @@ import {
 import { authedFetch } from "../../vendor/scm/lib/authed-fetch";
 import { useNotify } from "../../vendor/scm/components/NotifyDialog";
 import { useChoice } from "../../vendor/scm/components/ChoiceDialog";
+import { useConfirm } from "../../vendor/scm/components/ConfirmDialog";
 import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "../../lib/utils";
 import { useAuth } from "../../auth/AuthContext";
@@ -348,6 +351,7 @@ function DetailDrawer({
   onPrint,
   onMarkSigned,
   onConvertToSi,
+  onReopen,
   salespersonName,
 }: {
   row: DoRow | null;
@@ -357,6 +361,7 @@ function DetailDrawer({
   onPrint: () => void;
   onMarkSigned: () => void;
   onConvertToSi: () => void;
+  onReopen: () => void;
   salespersonName: string;
 }) {
   const detailQ = useMfgDeliveryOrderDetail(row?.id ?? null);
@@ -574,6 +579,19 @@ function DetailDrawer({
                     </Button>
                   );
                 }
+                // Reopen a cancelled DO back to LOADED (2990
+                // MfgDeliveryOrdersList "Reopen DO" parity).
+                if (s === "cancelled" || s === "cancel") {
+                  return (
+                    <Button
+                      variant="primary"
+                      icon={<RotateCcw size={14} />}
+                      onClick={onReopen}
+                    >
+                      Reopen
+                    </Button>
+                  );
+                }
                 return null;
               })()}
             </div>
@@ -699,6 +717,84 @@ const SORT_COL_MAP: Record<string, string> = {
   delivery_date: "customer_delivery_date",
 };
 
+// ─── Row drill-down (DataTable `expandable`) ──────────────────────────────────
+// Inline per-line breakdown for one DO under its parent row when the chevron is
+// toggled (2990 MfgDeliveryOrdersList drill-down parity). Lazy-fetches the DO
+// detail via the same useMfgDeliveryOrderDetail hook the drawer uses — TanStack
+// caches it, so re-expanding (or expanding a row the drawer already opened) is
+// instant.
+
+type DoDrillItem = {
+  product_code?: string;
+  product_name?: string;
+  description?: string;
+  qty?: number;
+  unit_price_centi?: number;
+  amount_centi?: number;
+  total_centi?: number;
+};
+
+function DoLinesExpansion({ doId }: { doId: string }) {
+  const detailQ = useMfgDeliveryOrderDetail(doId);
+  const items =
+    ((detailQ.data as { items?: unknown[] } | undefined)?.items as DoDrillItem[]) ??
+    [];
+
+  if (detailQ.isLoading) {
+    return (
+      <div className="py-4 text-center text-[12px] text-ink-muted">
+        Loading lines…
+      </div>
+    );
+  }
+  if (items.length === 0) {
+    return (
+      <div className="py-4 text-center text-[12px] text-ink-muted">
+        No lines on this delivery order.
+      </div>
+    );
+  }
+
+  return (
+    <div className="overflow-hidden rounded-lg border border-border bg-surface">
+      <div className="grid grid-cols-[1fr_64px_120px] gap-2 border-b border-border-subtle bg-surface-2 px-4 py-2 font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
+        <span>Item</span>
+        <span className="text-right">Qty</span>
+        <span className="text-right">Amount</span>
+      </div>
+      {items.map((l, i) => {
+        const amt =
+          l.amount_centi ??
+          l.total_centi ??
+          (l.qty ?? 0) * (l.unit_price_centi ?? 0);
+        return (
+          <div
+            key={i}
+            className="grid grid-cols-[1fr_64px_120px] items-start gap-2 border-b border-border-subtle px-4 py-2.5 last:border-b-0"
+          >
+            <div className="min-w-0">
+              <div className="text-[12.5px] font-semibold text-ink">
+                {l.description || l.product_name || "—"}
+              </div>
+              {l.product_code && (
+                <div className="mt-0.5 font-mono text-[10.5px] text-ink-muted">
+                  {l.product_code}
+                </div>
+              )}
+            </div>
+            <span className="text-right font-money text-[12px] text-ink-secondary">
+              {l.qty ?? 0}
+            </span>
+            <span className="text-right font-money text-[12px] font-semibold text-ink">
+              {fmtRm(amt)}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─── Main page ──────────────────────────────────────────────────────────────
 
 export function MfgDeliveryOrdersListV2() {
@@ -708,6 +804,7 @@ export function MfgDeliveryOrdersListV2() {
   const { nameOf: salespersonNameOf } = useStaffLookup();
   const notify = useNotify();
   const askChoice = useChoice();
+  const askConfirm = useConfirm();
   // Finance-viewer gate (auth/me = isFinanceViewer). Finance columns below are
   // DECLARED only for a finance-viewer; the backend also omits their keys from
   // the payload for everyone else (canViewScmFinance).
@@ -837,6 +934,29 @@ export function MfgDeliveryOrdersListV2() {
     );
   const doConvertToSi = (r: DoRow) =>
     navigate(`/scm/sales-invoices/from-do?do=${r.id}`);
+  // Reopen a cancelled DO → LOADED (2990 MfgDeliveryOrdersList "Reopen DO"
+  // parity; reuses the status PATCH endpoint).
+  const doReopen = async (r: DoRow) => {
+    if (
+      !(await askConfirm({
+        title: `Reopen ${r.do_number} back to LOADED?`,
+        confirmLabel: "Reopen",
+      }))
+    )
+      return;
+    updateStatus.mutate(
+      { id: r.id, status: "LOADED" },
+      {
+        onSuccess: () => setSelected(null),
+        onError: (e) =>
+          notify({
+            title: "Reopen failed",
+            body: e instanceof Error ? e.message : String(e),
+            tone: "error",
+          }),
+      }
+    );
+  };
 
   // ─── Batch PDF export (ported from MfgDeliveryOrdersList) ─────────────────
   // One DO's full detail for the PDF generator. Reads via the vendored
@@ -1413,20 +1533,29 @@ export function MfgDeliveryOrdersListV2() {
             title="Delivery Orders"
             description="Every Houzs delivery order — Loaded to Delivered. Click any row for the quick view; open the full page to edit."
             primaryAction={
-              <div className="flex items-stretch">
+              <div className="flex items-stretch gap-2">
                 <Button
-                  variant="primary"
-                  icon={<Plus size={14} />}
-                  onClick={goNewDo}
-                  className="rounded-r-none"
+                  variant="secondary"
+                  icon={<ArrowRightLeft size={14} />}
+                  onClick={goFromSo}
                 >
-                  New Delivery Order
+                  From Sales Order
                 </Button>
-                <SplitDropdown
-                  onFromSo={goFromSo}
-                  onImport={goImport}
-                  onDuplicate={goDuplicate}
-                />
+                <div className="flex items-stretch">
+                  <Button
+                    variant="primary"
+                    icon={<Plus size={14} />}
+                    onClick={goNewDo}
+                    className="rounded-r-none"
+                  >
+                    New Delivery Order
+                  </Button>
+                  <SplitDropdown
+                    onFromSo={goFromSo}
+                    onImport={goImport}
+                    onDuplicate={goDuplicate}
+                  />
+                </div>
               </div>
             }
             secondaryActions={[
@@ -1554,6 +1683,10 @@ export function MfgDeliveryOrdersListV2() {
               columns={columns}
               getRowKey={(r) => r.id}
               onRowClick={(r) => setSelected(r)}
+              expandable={{
+                render: (r) => <DoLinesExpansion doId={r.id} />,
+                rowKey: (r) => r.id,
+              }}
               selection={{
                 selectedIds,
                 onToggle: (id) =>
@@ -1641,6 +1774,7 @@ export function MfgDeliveryOrdersListV2() {
         onPrint={() => selected && goPrint(selected)}
         onMarkSigned={() => selected && doMarkSigned(selected)}
         onConvertToSi={() => selected && doConvertToSi(selected)}
+        onReopen={() => selected && void doReopen(selected)}
         salespersonName={
           selected ? salespersonNameOf(null, selected.salesperson_id) : "—"
         }

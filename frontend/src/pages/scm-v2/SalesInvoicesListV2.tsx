@@ -26,6 +26,8 @@ import {
   Printer,
   CheckCircle2,
   Receipt,
+  RotateCcw,
+  ArrowRightLeft,
 } from "lucide-react";
 import { PageHeader } from "../../components/Layout";
 import { StatCard } from "../../components/StatCard";
@@ -43,6 +45,7 @@ import {
 import { authedFetch } from "../../vendor/scm/lib/authed-fetch";
 import { useNotify } from "../../vendor/scm/components/NotifyDialog";
 import { useChoice } from "../../vendor/scm/components/ChoiceDialog";
+import { useConfirm } from "../../vendor/scm/components/ConfirmDialog";
 import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "../../lib/utils";
 import { useAuth } from "../../auth/AuthContext";
@@ -350,6 +353,7 @@ function DetailDrawer({
   onPrint,
   onMarkPaid,
   onRecordPayment,
+  onReopen,
   salespersonName,
 }: {
   row: SiRow | null;
@@ -359,6 +363,7 @@ function DetailDrawer({
   onPrint: () => void;
   onMarkPaid: () => void;
   onRecordPayment: () => void;
+  onReopen: () => void;
   salespersonName: string;
 }) {
   const detailQ = useSalesInvoiceDetail(row?.id ?? null);
@@ -585,6 +590,19 @@ function DetailDrawer({
                     </Button>
                   );
                 }
+                // Reopen a cancelled invoice back to SENT/Issued (2990
+                // SalesInvoicesList "Reopen Invoice" parity).
+                if (s === "cancelled" || s === "cancel") {
+                  return (
+                    <Button
+                      variant="primary"
+                      icon={<RotateCcw size={14} />}
+                      onClick={onReopen}
+                    >
+                      Reopen
+                    </Button>
+                  );
+                }
                 return null;
               })()}
             </div>
@@ -727,6 +745,7 @@ export function SalesInvoicesListV2() {
   const queryClient = useQueryClient();
   const notify = useNotify();
   const askChoice = useChoice();
+  const askConfirm = useConfirm();
   const { nameOf: salespersonNameOf } = useStaffLookup();
   // Finance-viewer gate (auth/me = isFinanceViewer). Finance columns below are
   // DECLARED only for a finance-viewer; the backend also omits their keys from
@@ -929,6 +948,29 @@ export function SalesInvoicesListV2() {
     );
   const goRecordPayment = (r: SiRow) =>
     navigate(`/scm/sales-invoices/${r.id}?tab=payments&record=1`);
+  // Reopen a cancelled invoice → SENT (2990 SalesInvoicesList "Reopen Invoice"
+  // parity; reuses the status PATCH endpoint).
+  const doReopen = async (r: SiRow) => {
+    if (
+      !(await askConfirm({
+        title: `Reopen ${r.invoice_number} back to Issued?`,
+        confirmLabel: "Reopen",
+      }))
+    )
+      return;
+    updateStatus.mutate(
+      { id: r.id, status: "SENT" },
+      {
+        onSuccess: () => setSelected(null),
+        onError: (e) =>
+          notify({
+            title: "Reopen failed",
+            body: e instanceof Error ? e.message : String(e),
+            tone: "error",
+          }),
+      }
+    );
+  };
 
   const columns: Column<SiRow>[] = [
     {
@@ -1423,20 +1465,29 @@ export function SalesInvoicesListV2() {
             title="Sales Invoices"
             description="Every Houzs sales invoice — Sent to Paid. Click any row for the quick view; open the full page to edit or record a payment."
             primaryAction={
-              <div className="flex items-stretch">
+              <div className="flex items-stretch gap-2">
                 <Button
-                  variant="primary"
-                  icon={<Plus size={14} />}
-                  onClick={goNewSi}
-                  className="rounded-r-none"
+                  variant="secondary"
+                  icon={<ArrowRightLeft size={14} />}
+                  onClick={goFromDo}
                 >
-                  New Sales Invoice
+                  From Delivery Order
                 </Button>
-                <SplitDropdown
-                  onFromDo={goFromDo}
-                  onFromSo={goFromSo}
-                  onImport={goImport}
-                />
+                <div className="flex items-stretch">
+                  <Button
+                    variant="primary"
+                    icon={<Plus size={14} />}
+                    onClick={goNewSi}
+                    className="rounded-r-none"
+                  >
+                    New Sales Invoice
+                  </Button>
+                  <SplitDropdown
+                    onFromDo={goFromDo}
+                    onFromSo={goFromSo}
+                    onImport={goImport}
+                  />
+                </div>
               </div>
             }
             secondaryActions={[
@@ -1627,6 +1678,7 @@ export function SalesInvoicesListV2() {
         onPrint={() => selected && goPrint(selected)}
         onMarkPaid={() => selected && doMarkPaid(selected)}
         onRecordPayment={() => selected && goRecordPayment(selected)}
+        onReopen={() => selected && void doReopen(selected)}
         salespersonName={
           selected ? salespersonNameOf(null, selected.salesperson_id) : "—"
         }

@@ -34,6 +34,7 @@ import {
   Printer,
   CheckCircle2,
   Truck,
+  RotateCcw,
 } from "lucide-react";
 import { PageHeader } from "../../components/Layout";
 import { StatCard } from "../../components/StatCard";
@@ -52,6 +53,7 @@ import { ScanOrderModal } from "../../vendor/scm/components/ScanOrderModal";
 import { authedFetch } from "../../vendor/scm/lib/authed-fetch";
 import { useNotify } from "../../vendor/scm/components/NotifyDialog";
 import { useChoice } from "../../vendor/scm/components/ChoiceDialog";
+import { useConfirm } from "../../vendor/scm/components/ConfirmDialog";
 import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "../../lib/utils";
 import { useAuth } from "../../auth/AuthContext";
@@ -367,6 +369,7 @@ function DetailDrawer({
   onPrint,
   onConfirm,
   onDeliver,
+  onReopen,
   salespersonName,
 }: {
   row: SoRow | null;
@@ -376,6 +379,7 @@ function DetailDrawer({
   onPrint: () => void;
   onConfirm: () => void;
   onDeliver: () => void;
+  onReopen: () => void;
   salespersonName: string;
 }) {
   const detailQ = useMfgSalesOrderDetail(row?.doc_no ?? null);
@@ -646,6 +650,19 @@ function DetailDrawer({
                     </Button>
                   );
                 }
+                // Reopen a cancelled SO back to CONFIRMED so it can proceed
+                // again (2990 MfgSalesOrdersList "Reopen SO" parity).
+                if (s === "cancelled" || s === "cancel") {
+                  return (
+                    <Button
+                      variant="primary"
+                      icon={<RotateCcw size={14} />}
+                      onClick={onReopen}
+                    >
+                      Reopen
+                    </Button>
+                  );
+                }
                 return null;
               })()}
             </div>
@@ -782,6 +799,95 @@ const SORT_COL_MAP: Record<string, string> = {
   amount: "local_total_centi",
 };
 
+// ─── Row drill-down (DataTable `expandable`) ──────────────────────────────────
+// Inline per-line breakdown for one SO, rendered under its parent row when the
+// chevron is toggled (2990 MfgSalesOrdersList drill-down parity, trimmed to the
+// fields the Houzs list needs). Lazy-fetches the SO detail via the same
+// useMfgSalesOrderDetail hook the drawer uses — TanStack caches it, so
+// expanding a row the drawer already opened (or re-expanding) is instant. Live
+// variant summary via buildVariantSummary, matching the drawer + SO full page.
+
+type DrillItem = {
+  item_code?: string;
+  description?: string;
+  description2?: string | null;
+  item_group?: string | null;
+  variants?: Record<string, unknown> | null;
+  qty?: number;
+  unit_price_centi?: number;
+  total_centi?: number;
+};
+
+function SoLinesExpansion({ docNo }: { docNo: string }) {
+  const detailQ = useMfgSalesOrderDetail(docNo);
+  const items =
+    ((detailQ.data as { items?: unknown[] } | undefined)?.items as DrillItem[]) ??
+    [];
+
+  if (detailQ.isLoading) {
+    return (
+      <div className="py-4 text-center text-[12px] text-ink-muted">
+        Loading lines…
+      </div>
+    );
+  }
+  if (items.length === 0) {
+    return (
+      <div className="py-4 text-center text-[12px] text-ink-muted">
+        No lines on this order.
+      </div>
+    );
+  }
+
+  return (
+    <div className="overflow-hidden rounded-lg border border-border bg-surface">
+      <div className="grid grid-cols-[1fr_64px_110px_120px] gap-2 border-b border-border-subtle bg-surface-2 px-4 py-2 font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
+        <span>Item</span>
+        <span className="text-right">Qty</span>
+        <span className="text-right">Unit</span>
+        <span className="text-right">Amount</span>
+      </div>
+      {items.map((l, i) => {
+        const amt = l.total_centi ?? (l.qty ?? 0) * (l.unit_price_centi ?? 0);
+        const variantSummary =
+          buildVariantSummary(l.item_group ?? "", l.variants ?? null) ||
+          (l.description2 ?? "").trim();
+        return (
+          <div
+            key={i}
+            className="grid grid-cols-[1fr_64px_110px_120px] items-start gap-2 border-b border-border-subtle px-4 py-2.5 last:border-b-0"
+          >
+            <div className="min-w-0">
+              <div className="text-[12.5px] font-semibold text-ink">
+                {l.description || l.item_code || "—"}
+              </div>
+              {l.item_code && (
+                <div className="mt-0.5 font-mono text-[10.5px] text-ink-muted">
+                  {l.item_code}
+                </div>
+              )}
+              {variantSummary && (
+                <div className="mt-0.5 text-[11px] leading-snug text-ink-secondary">
+                  {variantSummary}
+                </div>
+              )}
+            </div>
+            <span className="text-right font-money text-[12px] text-ink-secondary">
+              {l.qty ?? 0}
+            </span>
+            <span className="text-right font-money text-[12px] text-ink-secondary">
+              {fmtRm(l.unit_price_centi ?? 0)}
+            </span>
+            <span className="text-right font-money text-[12px] font-semibold text-ink">
+              {fmtRm(amt)}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─── Main page ──────────────────────────────────────────────────────────────
 
 export function MfgSalesOrdersListV2() {
@@ -790,6 +896,7 @@ export function MfgSalesOrdersListV2() {
   const queryClient = useQueryClient();
   const notify = useNotify();
   const askChoice = useChoice();
+  const askConfirm = useConfirm();
   const { nameOf: salespersonNameOf } = useStaffLookup();
   // Finance-viewer gate — same signal the PMS finance sections use
   // (auth/me = isFinanceViewer). The cost/margin/subtotal columns below are
@@ -944,6 +1051,30 @@ export function MfgSalesOrdersListV2() {
       { onSuccess: () => setSelected(null) }
     );
   const doDeliver = (r: SoRow) => navigate(`/scm/delivery-orders/from-so?so=${r.doc_no}`);
+  // Reopen a cancelled SO → CONFIRMED so it can proceed again (2990
+  // MfgSalesOrdersList "Reopen SO" parity; reuses the status PATCH endpoint).
+  const doReopen = async (r: SoRow) => {
+    if (
+      !(await askConfirm({
+        title: `Reopen ${r.doc_no}?`,
+        body: "Back to CONFIRMED so it can proceed again.",
+        confirmLabel: "Reopen",
+      }))
+    )
+      return;
+    updateStatus.mutate(
+      { docNo: r.doc_no, status: "CONFIRMED" },
+      {
+        onSuccess: () => setSelected(null),
+        onError: (e) =>
+          notify({
+            title: "Reopen failed",
+            body: e instanceof Error ? e.message : String(e),
+            tone: "error",
+          }),
+      }
+    );
+  };
 
   // ─── Multi-select → batch "Print all" ─────────────────────────────────────
   const toggleSelect = (rowId: string) =>
@@ -1776,6 +1907,10 @@ export function MfgSalesOrdersListV2() {
             columns={columns}
             getRowKey={(r) => r.doc_no}
             onRowClick={(r) => setSelected(r)}
+            expandable={{
+              render: (r) => <SoLinesExpansion docNo={r.doc_no} />,
+              rowKey: (r) => r.doc_no,
+            }}
             selection={{
               selectedIds,
               onToggle: toggleSelect,
@@ -1851,6 +1986,7 @@ export function MfgSalesOrdersListV2() {
         onPrint={() => selected && goPrint(selected)}
         onConfirm={() => selected && doConfirm(selected)}
         onDeliver={() => selected && doDeliver(selected)}
+        onReopen={() => selected && void doReopen(selected)}
         salespersonName={
           selected
             ? salespersonNameOf(selected.agent, selected.salesperson_id)
