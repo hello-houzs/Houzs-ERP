@@ -130,6 +130,15 @@ export interface NavTab {
    *  Used for the scoped Team entries (Members / Org Chart / Departments); the
    *  Positions leaf deliberately OMITS this so it stays hidden from him. */
   showForSalesDirector?: boolean;
+  /** Sales-access model: ADDITIVELY show this entry to ANY director
+   *  (auth/salesAccess.isDirectorUser — Sales Director / Super Admin / Finance
+   *  Manager / Owner-IT `*`) even without the usual `perm`/`pageAccess` gate.
+   *  Owner 2026-07-15: used so a Sales Director gets the full Service-Cases
+   *  board on DESKTOP (the backend /api/assr already grants a director every
+   *  case — assrVisibleUserIds), matching what the mobile Service-Cases screen
+   *  already shows. Broader than showForSalesDirector, which is anchored to the
+   *  exact "Sales Director" position only. */
+  showForDirector?: boolean;
   /** Sales-access model (owner rule 2026-07): HIDE this entry from a
    *  NON-director Sales user (auth/salesAccess.isSalesNonDirector). Keyed off
    *  the org chart in code, NOT the config matrix — so a rep sees exactly the
@@ -229,6 +238,13 @@ export const NAV_TABS: NavTab[] = [
         perm: "service_cases.read",
         pageAccess: "service_cases.cases",
         hideForSalesRep: true,
+        // Owner 2026-07-15: a director (incl. a Sales Director who lacks the
+        // service_cases.read matrix grant) sees the full board on DESKTOP too —
+        // desktop parity with mobile, where the board already renders for a
+        // director. The backend /api/assr already returns every case to a
+        // director (assrVisibleUserIds unrestricted). hideForSalesRep still
+        // wins for a NON-director rep (checked first), so reps keep My-Cases-only.
+        showForDirector: true,
       },
       {
         to: "/assr?view=metrics",

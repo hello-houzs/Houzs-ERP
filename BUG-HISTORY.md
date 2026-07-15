@@ -8,6 +8,12 @@ Severity tags: 🔴 critical/high · 🟠 medium · 🟢 low.
 
 ## 2026-07-15
 
+### 🟠 SO Maintenance open to all sales; non-PIC sales saw every project; Sales Director had no desktop Service Cases board
+- **Symptom:** (1) A Test Sales Executive saw the "SO Maintenance" button; (2) a non-director non-PIC sales user saw every project; (3) a Sales Director saw the Service Cases board on mobile but only "My Cases" on desktop.
+- **Root cause:** (1) SO Maintenance button had no gate + route used `ScmGuard area=scm.sales.orders` (any sales passes). (2) Project row-scope keyed only off the role `scope_to_pic` flag; a sales role with `scope_to_pic=0` returned unscoped → full list. (3) The desktop Service-Cases board nav leaf required `service_cases.read`/page-access a Sales Director lacks; backend already grants a director all cases + mobile already showed it — the gap was the desktop nav.
+- **Fix:** (1) `canMaintain = isDirectorUser` gates the button + Import/Duplicate menu items; new `SoMaintenanceGuard` Forbids the route for non-directors. (2) New `isScopedProjectUser = scope_to_pic || (isSalesUser && !isDirectorUser)` drives getProjectScope/projectAccessLevel/canSeeProject + create/patch/finance write-gates; `auth.ts` hydrates brand_scope for the whole scoped cohort so their own PIC+brand projects still match. (3) New `showForDirector` navFilter bypass on the Service-Cases board leaf (checked after hideForSalesRep, so a rep keeps My-Cases-only). Desktop+mobile share the backend authority.
+- **Ref:** `fix/sd-scope-clean`, 2026-07-15.
+
 ### 🟠 Variant selectors offered options a SKU's Model disallowed (e.g. 8" leg) on PO/consignment editors
 - **Symptom:** A bedframe LEG dropdown offered 8" even when that SKU shouldn't have it. Owner rule: variant options must follow the maintenance config everywhere, no backdoor.
 - **Root cause:** Options are NOT hardcoded — every editor reads the maintenance-config global pools (`useMaintenanceConfig`), filtered by the `active` flag. The finer per-SKU-Model gate (`product_models.allowed_options`, hook `useModelAllowedOptionsByCode`) was applied by `SoLineCard` (SO/DO/DR) + `MobileNewSO`, but NOT by `PoLineCard` (PO/PI edit) or `PcVariantEditor` (purchase-consignment) — so those offered Model-disallowed options.
