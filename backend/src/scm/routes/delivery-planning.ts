@@ -68,7 +68,7 @@ import { paginateAll } from '../lib/paginate-all';
 import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { summariseReadiness, type ReadinessLine } from '../lib/so-readiness';
 import { soDeliverableRemaining } from './delivery-orders-mfg';
-import { activeCompanyId } from '../lib/companyScope';
+import { activeCompanyId, scopeToAllowedCompanies, companyCodeMap } from '../lib/companyScope';
 import { recordSoAudit, type FieldChange } from '../lib/so-audit';
 
 export const deliveryPlanning = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -340,6 +340,8 @@ deliveryPlanning.get('/', async (c) => {
         Paginated so the 1000-row PostgREST cap never silently truncates. */
   type SoHeaderRow = {
     doc_no: string | null; debtor_code: string | null; debtor_name: string | null;
+    // multi-company: which company this SO belongs to (shared queue tags rows).
+    company_id: number | null;
     phone: string | null; branding: string | null; status: string | null; delivery_state: string | null;
     customer_state: string | null; customer_country: string | null;
     customer_delivery_date: string | null; internal_expected_dd: string | null; processing_date: string | null;
@@ -360,7 +362,7 @@ deliveryPlanning.get('/', async (c) => {
   };
   const { data: soRowsRaw, error: soErr } = await paginateAll<SoHeaderRow>((from, to) =>
     sb.from('mfg_sales_orders')
-      .select('doc_no, debtor_code, debtor_name, phone, branding, status, delivery_state, customer_state, customer_country, customer_delivery_date, amend_date_from_customer, amended_delivery_date, amend_reason, internal_expected_dd, processing_date, so_date, address1, address2, postcode, building_type, local_total_centi, balance_centi, possession_date, house_type, replacement_disposal, referral')
+      .select('doc_no, company_id, debtor_code, debtor_name, phone, branding, status, delivery_state, customer_state, customer_country, customer_delivery_date, amend_date_from_customer, amended_delivery_date, amend_reason, internal_expected_dd, processing_date, so_date, address1, address2, postcode, building_type, local_total_centi, balance_centi, possession_date, house_type, replacement_disposal, referral')
       .neq('status', 'DRAFT')
       .neq('status', 'CANCELLED')
       .order('customer_delivery_date', { ascending: true, nullsFirst: false })
@@ -624,6 +626,9 @@ deliveryPlanning.get('/', async (c) => {
 
   /* 7. Assemble one board row per SO with its derived state + region. An SO's
         "home" bucket = stateToRegionsFromConfig(customer_state, customer_country). */
+  /* multi-company: id → code map (HOUZS / 2990 / …) so each shared-queue row can
+     carry a readable company_code label. Built once. */
+  const codeMap = companyCodeMap(c);
   const orders = soRows.map((r) => {
     const docNo = String(r.doc_no ?? '');
     /* Branding — derived 1:1 with the SO list (never the empty header field).
@@ -746,6 +751,9 @@ deliveryPlanning.get('/', async (c) => {
       stock_status: (readiness.isFullyReady ? 'READY' : readyToShip ? 'READY (PARTIAL)' : 'PENDING') as string | null,
       stock_remark: readiness.stockRemark as string | null,
       is_main_ready: readiness.isMainReady as boolean | null,
+      // multi-company: readable company code for the shared-queue Company column
+      // (HOUZS / 2990). null when unresolved (pre-migration / cold-start).
+      company_code: codeMap.get(Number(r.company_id)) ?? null,
       // region(s): the customer-state bucket(s); plus the warehouse label (kept
       // for the Warehouse column, not the region).
       region: primaryRegion,
@@ -872,6 +880,9 @@ deliveryPlanning.get('/', async (c) => {
           stock_status: null,
           stock_remark: null,
           is_main_ready: null,
+          // ASSR (service) cases live in public.assr_cases (no scm company_id yet)
+          // — no company label on the shared queue.
+          company_code: null,
           region: primaryRegion,
           regions: [...regionSet],
           warehouse_id: null,
@@ -906,6 +917,40 @@ deliveryPlanning.get('/', async (c) => {
     : regionFiltered.filter((o) => o.delivery_state === stateParam);
 
   return c.json({ orders: stateFiltered, counts, regions: regionCfg.regions });
+});
+
+/* ──────────────────────────────────────────────────────────────────────────
+   GET /delivery-planning/:docNo/lines
+   The expand-row line items for one SO on the SHARED cross-company board.
+
+   WHY A DEDICATED ENDPOINT: the board is a SHARED queue that reads BOTH
+   companies' SOs (unscoped). Expanding a row used to call the PER-COMPANY SO
+   detail (GET /mfg-sales-orders/:docNo), which scopeToCompany-filters to the
+   ACTIVE company — so a 2990 row opened while browsing as Houzs 404'd ("That
+   item could no longer be found"). This endpoint instead scopes to the caller's
+   ALLOWED companies (scopeToAllowedCompanies — WIDEN, never isolate) so a
+   cross-company row expands fine. It must NOT use scopeToCompany.
+
+   Returns the same `{ items: [...] }` shape the SO-detail expand consumed; the
+   frontend filters cancelled lines + reads item_group / item_code / description
+   / variants off each item exactly as before. ─────────────────────────────── */
+deliveryPlanning.get('/:docNo/lines', async (c) => {
+  const sb = c.get('supabase');
+  const docNo = c.req.param('docNo');
+  /* Same column set the SO-detail expand consumes (see ITEM in
+     mfg-sales-orders.ts): id + group/code/description + variants + the money +
+     cancelled flag. line_no drives the SO's own listing order (NULLS LAST →
+     pre-line_no docs fall back to created_at), IDENTICAL to the detail read. */
+  const { data: items, error } = await scopeToAllowedCompanies(
+    sb.from('mfg_sales_order_items')
+      .select('id, doc_no, item_group, item_code, description, description2, uom, qty, unit_price_centi, discount_centi, total_centi, variants, stock_status, cancelled')
+      .eq('doc_no', docNo),
+    c,
+  )
+    .order('line_no', { ascending: true, nullsFirst: false })
+    .order('created_at', { ascending: true });
+  if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
+  return c.json({ items: items ?? [] });
 });
 
 /* Region match: ALL → everything; else a configured region code → orders whose
