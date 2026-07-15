@@ -8,6 +8,12 @@ Severity tags: 🔴 critical/high · 🟠 medium · 🟢 low.
 
 ## 2026-07-15
 
+### 🟢 Mobile had no "SO Maintenance" entry — directors couldn't reach it on their phone
+- **Symptom:** Desktop's Sales-Orders page shows a director-only "SO Maintenance" button (PR #581) that opens `/scm/sales-orders/maintenance` (the State→Warehouse / Localities / SO-dropdown CRUD). The MOBILE app had no equivalent, so a Sales Director on a phone couldn't reach that surface at all.
+- **Root cause:** The mobile shell (`MobileApp.tsx`) is a Screen state-machine, not router-driven, and its menu was built only from `MOBILE_MENU_GROUPS` filtered through the shared `makeNavVisible` nav gate. SO Maintenance is a desktop *toolbar button*, not a `NAV_TABS` entry, so it had no nav node to surface through and was simply absent from mobile.
+- **Fix:** Added an "SO Maintenance" row to the mobile Menu (Sales & Finance group) with a `directorOnly` flag gated by the SAME frontend helper desktop uses — `auth/salesAccess.isDirectorUser` (Super Admin / Sales Director / Finance Manager / Owner-IT `*`) — bypassing the nav-tab `allowed()` check since there is no nav node. Tapping it opens a new `so-maintenance` overlay that mounts the vendored desktop `SalesOrderMaintenance` page inside `Scm2990Shell` (its provider shell), with a mobile back header. OFF, not hide: a non-director gets NO row rendered and the overlay itself re-checks `isDirectorUser` before mounting the page or its data hooks (mirrors App.tsx `SoMaintenanceGuard`). Caveat: the maintenance page is a desktop-oriented layout (its own CSS-module chrome + an internal react-router back-link that no-ops on mobile); it scrolls inside the overlay. Owner accepted this — the ask was to give directors the entry on mobile matching desktop.
+- **Ref:** `feat/mobile-so-maintenance`, 2026-07-15.
+
 ### 🟠 SO/DO/DR detail dropped the cost/margin analytics card (+ DR leaked line-cost/margin ungated)
 - **Symptom:** The V2 SO/DO/DR detail pages lost the "Totals · Margin" card (Revenue/Cost/Margin/Margin% + per-category breakdown) the 2990 originals had. Also DR's Refund hero rendered "Line cost" + "Margin hit" to EVERY viewer (finance leak, same class as #574).
 - **Root cause:** V2 rewrite dropped the TotalsCard; the DR hero's cost sub-lines were never finance-gated. The detail endpoints already return the cost/margin fields (only the LIST endpoints strip them, #574).

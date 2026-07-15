@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../auth/AuthContext";
+import { isDirectorUser } from "../auth/salesAccess";
 import { NAV_TABS, type NavTab } from "../components/Sidebar";
 import { makeNavVisible } from "../components/navFilter";
 import { NotifyProvider, useNotify } from "../vendor/scm/components/NotifyDialog";
@@ -39,6 +40,14 @@ const MobilePOD = lazy(() => import("./MobilePOD").then((m) => ({ default: m.Mob
 const MobileProfile = lazy(() => import("./MobileProfile").then((m) => ({ default: m.MobileProfile })));
 const MobileStockCard = lazy(() => import("./MobileStockCard").then((m) => ({ default: m.MobileStockCard })));
 const MobileStockTransferNew = lazy(() => import("./MobileStockTransferNew").then((m) => ({ default: m.MobileStockTransferNew })));
+// SO Maintenance is the SAME desktop page (/scm/sales-orders/maintenance) — the
+// director-only State→Warehouse / Localities / SO-dropdown CRUD surface. Mobile
+// has no route table, so the vendored desktop page is mounted directly inside
+// its provider shell (Scm2990Shell) as a full-screen overlay. It's a desktop-
+// oriented layout (owner accepted this — the ask was to give directors the
+// entry on their phone, matching desktop; see BUG-HISTORY 2026-07-15).
+const ScmSalesOrderMaintenance = lazy(() => import("../pages/scm-v2/SalesOrderMaintenance").then((m) => ({ default: m.SalesOrderMaintenance })));
+const Scm2990Shell = lazy(() => import("../pages/scm-v2/Scm2990Shell"));
 import "./mobile.css";
 
 type Tab = "orders" | "service" | "calendar" | "profile";
@@ -47,6 +56,7 @@ type Screen =
   | { t: "search" }
   | { t: "so-detail"; docNo: string }
   | { t: "amendments" }
+  | { t: "so-maintenance" }
   | { t: "new-so"; mode: "new" | "edit" | "edit-draft"; docNo?: string; scanPrefill?: MobileScanPrefill }
   | { t: "scan" }
   | { t: "module"; key: string; title: string }
@@ -97,10 +107,18 @@ const ROUTE_TO_CONFIG: Record<string, string> = {
  *  desktop nav entry (an item whose nav tab isn't visible for the user's
  *  position is hidden). The bottom tabs cover Sales Orders / Calendar /
  *  Inbox / Profile. */
-const MOBILE_MENU_GROUPS: { group: string; items: { to: string; label: string; alwaysShow?: boolean }[] }[] = [
+const MOBILE_MENU_GROUPS: { group: string; items: { to: string; label: string; alwaysShow?: boolean; directorOnly?: boolean }[] }[] = [
   { group: "Sales & Finance", items: [
     { to: "/scm/sales-orders", label: "Sales Orders" },
     { to: "/scm/amendments", label: "Amendments" },
+    /* SO Maintenance — DIRECTOR-only (Super Admin / Sales Director / Finance
+       Manager / Owner-IT `*`, via auth/salesAccess.isDirectorUser), the same
+       gate the desktop SO-list button + route use (MfgSalesOrdersListV2
+       `canMaintain`, App.tsx SoMaintenanceGuard). `directorOnly` bypasses the
+       nav-tab `allowed()` check because this destination isn't a NAV_TABS entry
+       (it's a toolbar button on desktop). OFF, not hide: a non-director never
+       gets this row rendered and never reaches the screen. */
+    { to: "/scm/sales-orders/maintenance", label: "SO Maintenance", directorOnly: true },
     { to: "/scm/delivery-orders", label: "Delivery Orders" },
     { to: "/scm/sales-invoices", label: "Sales Invoices" },
     { to: "/scm/delivery-returns", label: "Delivery Returns" },
@@ -303,7 +321,7 @@ function MobileAppInner() {
   // (via the shared `allowed` above). Items with no nav match still show (backend
   // gates).
   const menuGroups = MOBILE_MENU_GROUPS
-    .map((g) => ({ group: g.group, items: g.items.filter((it) => it.alwaysShow || allowed(it.to)) }))
+    .map((g) => ({ group: g.group, items: g.items.filter((it) => (it.directorOnly ? isDirectorUser(user) : (it.alwaysShow || allowed(it.to)))) }))
     .filter((g) => g.items.length > 0);
 
   // Organisation rows shown inside the Profile screen — gated by the SAME
@@ -315,6 +333,7 @@ function MobileAppInner() {
     setMenuOpen(false);
     const path = (to || "").split("?")[0];
     if (path === "/scm/sales-orders") { setTab("orders"); setScreen({ t: "tab" }); return; }
+    if (path === "/scm/sales-orders/maintenance") return setScreen({ t: "so-maintenance" });
     if (path === "/scm/amendments") return setScreen({ t: "amendments" });
     if (path === "/assr") return setScreen({ t: "service" });
     if (path === "/projects") return setScreen({ t: "pms" });
@@ -340,6 +359,26 @@ function MobileAppInner() {
   if (screen.t === "search") overlay = <MobileSearch onBack={back} onNavigate={onSearchNavigate} />;
   else if (screen.t === "so-detail") overlay = <MobileSODetail docNo={screen.docNo} onBack={back} onEdit={(d) => setScreen({ t: "new-so", mode: "edit", docNo: d })} />;
   else if (screen.t === "amendments") overlay = <MobileAmendments onBack={back} onOpen={(doc) => setScreen({ t: "so-detail", docNo: doc })} />;
+  else if (screen.t === "so-maintenance") {
+    // Director-only, defence-in-depth: even though the menu row is director-gated,
+    // don't mount the maintenance page (or its data hooks) for a non-director —
+    // mirrors App.tsx SoMaintenanceGuard. OFF, not hide.
+    overlay = !isDirectorUser(user) ? (
+      <TabLocked title="SO Maintenance" />
+    ) : (
+      <div className="hz-m" style={{ position: "fixed", inset: 0, display: "flex", flexDirection: "column", background: "var(--app-bg)" }}>
+        <header style={{ background: "#fff", borderBottom: "1px solid var(--line)", padding: "calc(env(safe-area-inset-top) + 16px) 16px 14px" }}>
+          <button onClick={back} style={{ display: "flex", alignItems: "center", gap: 4, background: "none", border: "none", color: "var(--teal)", fontFamily: "inherit", fontSize: 13, fontWeight: 600 }}>‹ Back</button>
+          <div style={{ fontSize: 19, fontWeight: 800, color: "var(--ink)", marginTop: 6 }}>SO Maintenance</div>
+        </header>
+        {/* The vendored desktop maintenance page mounted inside its provider shell.
+            Desktop-oriented layout — scrolls within this container on a phone. */}
+        <div style={{ flex: 1, overflow: "auto", WebkitOverflowScrolling: "touch" }}>
+          <Scm2990Shell><ScmSalesOrderMaintenance /></Scm2990Shell>
+        </div>
+      </div>
+    );
+  }
   else if (screen.t === "new-so") overlay = <MobileNewSO mode={screen.mode} docNo={screen.docNo} scanPrefill={screen.scanPrefill} onBack={back} onSaved={(d) => setScreen({ t: "so-detail", docNo: d })} />;
   else if (screen.t === "scan") overlay = <MobileScan onBack={back} onDrafted={onScanDrafted} onOpenSo={(docNo) => setScreen({ t: "so-detail", docNo })} />;
   else if (screen.t === "module") {
