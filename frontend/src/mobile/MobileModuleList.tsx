@@ -1355,6 +1355,9 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     fields: [
       [(r) => pick(r, "email") ?? "—", "Email"],
       [(r) => pick(r, "positionName", "position_name") ?? "—", "Position"],
+      // Reporting line (Upline). /api/users returns manager_name; it was never
+      // surfaced on the member card, so a member's upline read as blank.
+      [(r) => pick(r, "managerName", "manager_name") ?? "—", "Reports to"],
       [(r) => pick(r, "departmentName", "department_name") ?? "—", "Department"],
       [(r) => pick(r, "roleName", "role_name") ?? "—", "Role"],
     ],

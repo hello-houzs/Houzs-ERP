@@ -8,7 +8,7 @@ import {
   isValidPageKey,
   type AccessLevel,
 } from "../services/pageAccess";
-import { requirePermission } from "../middleware/auth";
+import { requirePermission, requirePermissionOrSalesDirector } from "../middleware/auth";
 import { audit } from "../services/audit";
 import { getDb } from "../db/client";
 import { roles, role_page_access, users } from "../db/schema";
@@ -28,8 +28,16 @@ app.get("/permissions", requirePermission("roles.read"), async (c) => {
 /**
  * GET /api/roles
  * Returns all roles + their permission arrays + member counts.
+ *
+ * Admitted for a Sales Director too (READ-ONLY, additive on top of roles.read):
+ * the Team member-invite / edit forms render a Role picker sourced from this
+ * list, and a dept-scoped Sales Director has no roles.read in the matrix
+ * (positions get no backfill) so it 403'd — breaking the mobile Member form.
+ * Roles are a global, non-sensitive lookup; the WRITE routes below stay
+ * roles.manage-only, and a scoped invite/patch forces a baseline role
+ * server-side (routes/users.ts) regardless of what the picker sends.
  */
-app.get("/", requirePermission("roles.read"), async (c) => {
+app.get("/", requirePermissionOrSalesDirector("roles.read"), async (c) => {
   const db = getDb(c.env);
   const rows = await db
     .select({
