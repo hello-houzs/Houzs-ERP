@@ -147,6 +147,7 @@ type ProjectDetail = {
     duration_days?: number | null;
     pic_id?: number | null;
     pic_name?: string | null;
+    pic_phone?: string | null;
     payment_status?: string | null;
     archived_at?: string | null;
     // Setup / dismantle logistics (real columns + JOIN aliases).
@@ -719,6 +720,9 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
   // while the rest of the Team card (PIC picker) stays read-only for them.
   const canEditAttending =
     canWrite && (pms ? pms.canEdit !== false || pms.role === "PIC" : true);
+  // PIC's phone from the project detail (backend populates pic_phone) — shown
+  // on the mobile Team card for everyone, not just editors.
+  const picPhone = fmtPhone(p?.pic_phone);
 
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
@@ -850,27 +854,40 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
               </summary>
               <div className="pbody">
                 {canEditTeam && !archived ? (
-                  <label className="fld" style={{ marginBottom: 10 }}>
-                    <span className="fld-l">PIC</span>
-                    <select
-                      className="fld-i"
-                      style={{ fontWeight: p.pic_id != null ? 700 : 400 }}
-                      disabled={busy}
-                      value={p.pic_id ?? ""}
-                      onChange={(e) => { const v = e.target.value; void patchProject({ pic_id: v ? parseInt(v, 10) : null }); }}
-                    >
-                      <option value="">— unassigned —</option>
-                      {p.pic_id != null && p.pic_name && !picUsers.some((u) => u.id === p.pic_id) && (
-                        <option value={p.pic_id}>{p.pic_name} (out of scope)</option>
-                      )}
-                      {picUsers.map((u) => (
-                        <option key={u.id} value={u.id}>{u.name || u.email}</option>
-                      ))}
-                    </select>
-                  </label>
+                  <>
+                    <label className="fld" style={{ marginBottom: picPhone ? 4 : 10 }}>
+                      <span className="fld-l">PIC</span>
+                      <select
+                        className="fld-i"
+                        style={{ fontWeight: p.pic_id != null ? 700 : 400 }}
+                        disabled={busy}
+                        value={p.pic_id ?? ""}
+                        onChange={(e) => { const v = e.target.value; void patchProject({ pic_id: v ? parseInt(v, 10) : null }); }}
+                      >
+                        <option value="">— unassigned —</option>
+                        {p.pic_id != null && p.pic_name && !picUsers.some((u) => u.id === p.pic_id) && (
+                          <option value={p.pic_id}>{p.pic_name} (out of scope)</option>
+                        )}
+                        {picUsers.map((u) => (
+                          <option key={u.id} value={u.id}>{u.name || u.email}</option>
+                        ))}
+                      </select>
+                    </label>
+                    {picPhone && (
+                      <a href={`tel:${(p.pic_phone || "").replace(/[^\d+]/g, "")}`} style={{ display: "block", marginBottom: 10, fontSize: 13, fontWeight: 600, color: "#6b6f63", textDecoration: "none" }}>
+                        📞 {picPhone}
+                      </a>
+                    )}
+                  </>
                 ) : (
                   <div className="pgrid2" style={{ marginBottom: 10 }}>
-                    <div style={{ gridColumn: "1 / -1" }}><div className="pkv-l">PIC</div><div className="pkv-v">{p.pic_name || "—"}</div></div>
+                    <div style={{ gridColumn: "1 / -1" }}>
+                      <div className="pkv-l">PIC</div>
+                      <div className="pkv-v">
+                        {p.pic_name || "—"}
+                        {picPhone && <span style={{ color: "#6b6f63", fontWeight: 600 }}> · {picPhone}</span>}
+                      </div>
+                    </div>
                   </div>
                 )}
                 <SalesAttending
@@ -1314,7 +1331,8 @@ function TasklistSectionView({
               return (
                 <div key={sec.id} style={{ marginTop: 10 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0 2px" }}>
-                    <span style={{ fontSize: 11, fontWeight: 800, color: "#11140f" }}>{sec.name}</span>
+                    {/* Owner 2026-07-15: drop the trailing "DOCUMENTS" word — display only, section name in data stays intact (backend gating matches it). */}
+                    <span style={{ fontSize: 11, fontWeight: 800, color: "#11140f" }}>{(sec.name || "").replace(/\s+documents$/i, "")}</span>
                     {prog && <span style={{ marginLeft: "auto", fontSize: 10, fontWeight: 700, color: "#9aa093" }}>{prog.done}/{prog.total}</span>}
                   </div>
                   {rows.length ? renderRows(rows) : <div style={{ fontSize: 11, color: "#9aa093", padding: "4px 0" }}>No tasks in this section.</div>}
