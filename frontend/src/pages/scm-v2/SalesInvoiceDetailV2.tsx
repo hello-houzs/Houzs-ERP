@@ -27,7 +27,7 @@
 // vendored sales-invoice-queries slice (useSalesInvoiceDetail /
 // useUpdateSalesInvoiceStatus).
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -43,6 +43,10 @@ import {
   CheckCircle2,
   Wallet,
   AlertTriangle,
+  Check,
+  RotateCcw,
+  FileText,
+  Save,
 } from "lucide-react";
 import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
@@ -56,10 +60,21 @@ import {
 import {
   useSalesInvoiceDetail,
   useUpdateSalesInvoiceStatus,
+  useSalesInvoicePayments,
+  useAddSalesInvoicePayment,
+  useDeleteSalesInvoicePayment,
 } from "../../vendor/scm/lib/sales-invoice-queries";
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
 import { useStaffLookup } from "../../hooks/useStaffLookup";
 import { useNotify } from "../../vendor/scm/components/NotifyDialog";
+import { useConfirm } from "../../vendor/scm/components/ConfirmDialog";
+import {
+  PaymentsTable,
+  labelToApi,
+  draftMethodFields,
+  type PaymentDraft,
+} from "../../vendor/scm/components/PaymentsTable";
+import { useAuth } from "../../auth/AuthContext";
 import {
   DocumentRelationshipMapModal,
   type ChainNode,
@@ -118,6 +133,21 @@ type SiHeader = {
   paid_centi: number;
   line_count: number;
   currency: string;
+  // Finance-gated cost / margin fields (served on the detail payload; shown only
+  // to a project_finance_viewer — same rule as the SI list columns, #574).
+  mattress_sofa_centi?: number;
+  bedframe_centi?: number;
+  accessories_centi?: number;
+  others_centi?: number;
+  service_centi?: number | null;
+  mattress_sofa_cost_centi?: number;
+  bedframe_cost_centi?: number;
+  accessories_cost_centi?: number;
+  others_cost_centi?: number;
+  service_cost_centi?: number | null;
+  total_cost_centi?: number;
+  total_margin_centi?: number;
+  margin_pct_basis?: number;
 };
 
 type SiItem = {
@@ -130,6 +160,7 @@ type SiItem = {
   unit_price_centi: number;
   discount_centi: number;
   line_total_centi: number;
+  unit_cost_centi?: number;
   cancelled?: boolean;
   item_group?: string;
   variants?: Record<string, unknown> | null;
@@ -540,6 +571,23 @@ export function SalesInvoiceDetailV2() {
   const updateStatus = useUpdateSalesInvoiceStatus();
   const { nameOf: salespersonNameOf } = useStaffLookup();
   const notify = useNotify();
+  const askConfirm = useConfirm();
+  const { user } = useAuth();
+  // Finance-viewer gate (#574) — non-finance users never see cost / margin.
+  const canFinance = !!user?.project_finance_viewer;
+
+  // ── Payments (shared DRAFT-mode PaymentsTable + manual flush) ──────────
+  // Mirrors the vendored ledger SalesInvoiceDetail.tsx: the SAVED PaymentsTable
+  // mode is hardwired to the SO payment endpoints, so an SI records payments via
+  // DRAFT mode — persisted rows are mapped into PaymentDraft[] and adds/deletes
+  // flush through the SI payment hooks on Save.
+  const paymentsQ = useSalesInvoicePayments(id ?? null);
+  const addPayment = useAddSalesInvoicePayment();
+  const deletePayment = useDeleteSalesInvoicePayment();
+  const [paymentDrafts, setPaymentDrafts] = useState<PaymentDraft[]>([]);
+  const [editingPayments, setEditingPayments] = useState(false);
+  const [savingPayments, setSavingPayments] = useState(false);
+  const paymentsSectionRef = useRef<HTMLDivElement | null>(null);
 
   const salesInvoice =
     (detail.data as { salesInvoice?: SiHeader } | undefined)?.salesInvoice ??
@@ -550,6 +598,37 @@ export function SalesInvoiceDetailV2() {
         (l) => !l.cancelled
       ),
     [detail.data]
+  );
+
+  // Persisted SI payment row → the shared PaymentsTable draft shape.
+  const apiToDraft = useCallback(
+    (p: NonNullable<typeof paymentsQ.data>[number]): PaymentDraft => {
+      const methodLabel =
+        p.method === "cash" ? "Cash" : p.method === "transfer" ? "Online" : "Merchant";
+      const installmentLabel =
+        p.installment_months && p.installment_months > 0
+          ? `${p.installment_months} months`
+          : "";
+      return {
+        uid: p.id,
+        paidAt: p.paid_at,
+        methodLabel,
+        merchantProvider: p.merchant_provider ?? "",
+        installmentMonthsLabel: installmentLabel,
+        onlineType: p.online_type ?? "",
+        amountCenti: p.amount_centi,
+        accountSheet: p.account_sheet ?? "",
+        approvalCode: p.approval_code ?? "",
+        collectedBy: p.collected_by ?? "",
+        // SI payments carry no per-payment slip (Spec D4 is SO-only).
+        slipUploadSessionId: null,
+      };
+    },
+    []
+  );
+  const persistedDrafts = useMemo(
+    () => (paymentsQ.data ?? []).map(apiToDraft),
+    [paymentsQ.data, apiToDraft]
   );
 
   useSetBreadcrumbs([
@@ -581,14 +660,50 @@ export function SalesInvoiceDetailV2() {
     else navigate(-1);
   };
   const goEdit = () => id && navigate(`/scm/sales-invoices/${id}?edit=1`);
-  const doCancel = () => {
+  // Status transitions post to the same server endpoint the ledger page uses.
+  // The endpoint keys off UPPERCASE status values (SENT / CANCELLED / PAID) — a
+  // lowercase value silently misroutes (e.g. cancel would write "cancelled" and
+  // skip the revenue reversal), so all four transitions send UPPERCASE.
+  const doCancel = async () => {
     if (!salesInvoice) return;
     if (
-      window.confirm(
-        `Cancel invoice ${salesInvoice.invoice_number}? Revenue posted will be reversed via a contra JE.`
-      )
+      await askConfirm({
+        title: `Cancel invoice ${salesInvoice.invoice_number}?`,
+        body: "This reverses any posted revenue via a contra JE. You can reopen it later.",
+        confirmLabel: "Cancel invoice",
+        danger: true,
+      })
     ) {
-      updateStatus.mutate({ id: salesInvoice.id, status: "cancelled" });
+      updateStatus.mutate({ id: salesInvoice.id, status: "CANCELLED" });
+    }
+  };
+  // Confirm a DRAFT SI → SENT. The server posts the AR/GL revenue JE
+  // (Dr AR / Cr Sales) and auto-applies any customer credit ONCE on this
+  // transition; both were skipped on draft create. Mirrors the SO/DO Confirm.
+  const doConfirm = async () => {
+    if (!salesInvoice) return;
+    if (
+      await askConfirm({
+        title: `Confirm ${salesInvoice.invoice_number}?`,
+        body: "This issues the invoice — it records revenue (Dr AR / Cr Sales) and applies any customer credit, then lets you record payments. You can still cancel it afterwards.",
+        confirmLabel: "Confirm Invoice",
+      })
+    ) {
+      updateStatus.mutate({ id: salesInvoice.id, status: "SENT" });
+    }
+  };
+  // Reopen a CANCELLED SI → SENT. The server re-posts revenue and reverses the
+  // cancel-credit; payment status is re-derived from the ledger.
+  const doReopen = async () => {
+    if (!salesInvoice) return;
+    if (
+      await askConfirm({
+        title: `Reopen ${salesInvoice.invoice_number}?`,
+        body: "Reopens the cancelled invoice back to Sent and re-posts revenue. Payment status is re-derived from the ledger.",
+        confirmLabel: "Reopen invoice",
+      })
+    ) {
+      updateStatus.mutate({ id: salesInvoice.id, status: "SENT" });
     }
   };
   const [relMapOpen, setRelMapOpen] = useState(false);
@@ -656,11 +771,82 @@ export function SalesInvoiceDetailV2() {
     ];
   }, [salesInvoice]);
 
-  const goRecordPayment = () =>
-    id && navigate(`/scm/sales-invoices/${id}?tab=payments&record=1`);
-  const doMarkPaid = () => {
+  // Open the in-place payments editor (seeded from persisted rows) and scroll it
+  // into view. Replaces the old dead `?tab=payments&record=1` navigation —
+  // nothing consumed that param, so the button did nothing.
+  const goRecordPayment = () => {
+    setPaymentDrafts(persistedDrafts);
+    setEditingPayments(true);
+    requestAnimationFrame(() =>
+      paymentsSectionRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      })
+    );
+  };
+  const startEditPayments = () => {
+    setPaymentDrafts(persistedDrafts);
+    setEditingPayments(true);
+  };
+  const cancelEditPayments = () => {
+    setEditingPayments(false);
+    setPaymentDrafts([]);
+  };
+  // Flush the draft ledger against the persisted rows: delete removed rows, POST
+  // new ones. Existing (unchanged) rows keep their persisted uid and are skipped
+  // — parity with the vendored ledger SalesInvoiceDetail (no in-place edit of a
+  // persisted SI payment; add / delete only).
+  const flushPaymentDrafts = async () => {
     if (!salesInvoice) return;
-    updateStatus.mutate({ id: salesInvoice.id, status: "paid" });
+    const persisted = paymentsQ.data ?? [];
+    const draftIds = new Set(paymentDrafts.map((d) => d.uid));
+    for (const p of persisted) {
+      if (!draftIds.has(p.id)) {
+        await deletePayment.mutateAsync({ id: salesInvoice.id, paymentId: p.id });
+      }
+    }
+    const persistedIds = new Set(persisted.map((p) => p.id));
+    for (const d of paymentDrafts) {
+      if (persistedIds.has(d.uid)) continue;
+      if (d.amountCenti <= 0) continue;
+      const { method } = labelToApi(d.methodLabel);
+      const body: { id: string } & Record<string, unknown> = {
+        id: salesInvoice.id,
+        paidAt: d.paidAt,
+        method,
+        amountCenti: d.amountCenti,
+        accountSheet: d.accountSheet || null,
+        approvalCode: d.approvalCode || null,
+        collectedBy: d.collectedBy || null,
+      };
+      Object.assign(body, draftMethodFields(method, d));
+      await addPayment.mutateAsync(body);
+    }
+  };
+  const saveEditPayments = () => {
+    setSavingPayments(true);
+    flushPaymentDrafts()
+      .then(() => setEditingPayments(false))
+      .catch((e) =>
+        notify({
+          title: "Failed to save payments",
+          body: e instanceof Error ? e.message : String(e),
+          tone: "error",
+        })
+      )
+      .finally(() => setSavingPayments(false));
+  };
+  const doMarkPaid = async () => {
+    if (!salesInvoice) return;
+    if (
+      await askConfirm({
+        title: `Mark ${salesInvoice.invoice_number} as paid?`,
+        body: "Sets the invoice status to Paid.",
+        confirmLabel: "Mark paid",
+      })
+    ) {
+      updateStatus.mutate({ id: salesInvoice.id, status: "PAID" });
+    }
   };
 
   // ── SI line item columns — money-forward, 5 cols like SO detail ────────
@@ -801,9 +987,17 @@ export function SalesInvoiceDetailV2() {
 
   const rawStatus = (salesInvoice.status || "").toUpperCase();
   const isCancelled = rawStatus === "CANCELLED";
+  const isDraft = rawStatus === "DRAFT";
   const isTerminal = isCancelled || rawStatus === "PAID";
-  const canRecordPayment = !isTerminal && outstanding > 0;
-  const canMarkPaid = !isTerminal && outstanding === 0;
+  // A DRAFT SI is not payable (the server 409s any payment) until Confirm issues
+  // it — so payment actions are hidden until it leaves DRAFT.
+  const canRecordPayment = !isTerminal && !isDraft && outstanding > 0;
+  const canMarkPaid = !isTerminal && !isDraft && outstanding === 0;
+  // Cost line still pending (goods received with no price / PI yet) — mirrors the
+  // ledger page's per-line Pending semantics for the Totals · Margin card.
+  const costPending = items.some(
+    (it) => Number(it.qty) > 0 && Number(it.unit_cost_centi ?? 0) === 0
+  );
 
   return (
     <div className="pb-24 md:pb-0">
@@ -935,6 +1129,26 @@ export function SalesInvoiceDetailV2() {
             >
               Print PDF
             </Button>
+            {isDraft && (
+              <Button
+                variant="primary"
+                icon={<Check size={14} />}
+                onClick={doConfirm}
+                disabled={updateStatus.isPending}
+              >
+                Confirm Invoice
+              </Button>
+            )}
+            {isCancelled && (
+              <Button
+                variant="secondary"
+                icon={<RotateCcw size={14} />}
+                onClick={doReopen}
+                disabled={updateStatus.isPending}
+              >
+                Reopen
+              </Button>
+            )}
             {!isCancelled && (
               <Button
                 variant="danger"
@@ -997,6 +1211,30 @@ export function SalesInvoiceDetailV2() {
             {fmtMoney(paid, salesInvoice.currency)}
           </div>
         </div>
+
+        {/* Draft banner — a DRAFT SI has posted no revenue / AR and can't take a
+            payment yet. Confirm issues it (posts revenue + applies credit). */}
+        {isDraft && (
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-warning-text/30 bg-warning-bg px-4 py-3">
+            <div className="flex items-start gap-2 text-warning-text">
+              <FileText size={15} className="mt-0.5 shrink-0" />
+              <p className="text-[13px] leading-relaxed">
+                <span className="font-bold">Draft — not yet confirmed.</span> No
+                revenue has been recorded and it can't take a payment yet. Confirm
+                to issue the invoice (posts revenue / AR and applies customer
+                credit), then record payments.
+              </p>
+            </div>
+            <Button
+              variant="primary"
+              icon={<Check size={14} />}
+              onClick={doConfirm}
+              disabled={updateStatus.isPending}
+            >
+              Confirm Invoice
+            </Button>
+          </div>
+        )}
         <DetailGrid>
           <DetailMain>
             {/* Customer */}
@@ -1184,6 +1422,73 @@ export function SalesInvoiceDetailV2() {
                 emptyLabel="No line items"
               />
             </Section>
+
+            {/* Totals · Margin — finance-gated (Revenue / Cost / Margin / Margin%
+                + per-category breakdown). Non-finance users don't see cost or
+                margin at all (#574). */}
+            {canFinance && (
+              <MarginCard
+                header={salesInvoice}
+                costPending={costPending}
+                currency={salesInvoice.currency}
+              />
+            )}
+
+            {/* Payments — shared ledger. DRAFT-mode PaymentsTable seeded from the
+                persisted rows; adds / deletes flush on Save. A DRAFT SI isn't
+                payable until Confirm; a cancelled SI shows its ledger read-only. */}
+            <div ref={paymentsSectionRef}>
+              <Section
+                title="Payments"
+                actions={
+                  !isDraft && !isCancelled ? (
+                    editingPayments ? (
+                      <>
+                        <Button
+                          variant="ghost"
+                          onClick={cancelEditPayments}
+                          disabled={savingPayments}
+                        >
+                          Cancel
+                        </Button>
+                        <Button
+                          variant="primary"
+                          icon={<Save size={14} />}
+                          onClick={saveEditPayments}
+                          disabled={savingPayments}
+                        >
+                          {savingPayments ? "Saving…" : "Save payments"}
+                        </Button>
+                      </>
+                    ) : (
+                      <Button
+                        variant="secondary"
+                        icon={<Wallet size={14} />}
+                        onClick={startEditPayments}
+                      >
+                        Manage payments
+                      </Button>
+                    )
+                  ) : undefined
+                }
+              >
+                {isDraft ? (
+                  <p className="px-1 py-2 text-[13px] text-ink-muted">
+                    Confirm the invoice before recording payments — a draft has
+                    posted no revenue yet.
+                  </p>
+                ) : (
+                  <PaymentsTable
+                    docNo={null}
+                    payments={editingPayments ? paymentDrafts : persistedDrafts}
+                    onChange={setPaymentDrafts}
+                    grandTotalCenti={total}
+                    currency={salesInvoice.currency}
+                    locked={!editingPayments || isCancelled}
+                  />
+                )}
+              </Section>
+            </div>
           </DetailMain>
 
           <DetailAside>
@@ -1364,6 +1669,151 @@ function Divider() {
     <span className="inline-flex items-center text-border-strong">
       <CircleDot size={4} className="mx-0.5 opacity-40" />
     </span>
+  );
+}
+
+// ─── Totals · Margin (finance-gated) ───────────────────────────────────────
+// Revenue / Cost / Margin / Margin% KPIs + a per-category revenue·cost·margin
+// breakdown, ported from the ledger SalesInvoiceDetail's TotalsCard. Reads the
+// server-stamped header cost / margin fields; only mounted for a finance viewer.
+const PENDING_PILL = (
+  <span className="rounded bg-warning-bg px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-warning-text">
+    Pending
+  </span>
+);
+
+function MarginCard({
+  header,
+  costPending,
+  currency,
+}: {
+  header: SiHeader;
+  costPending: boolean;
+  currency: string;
+}) {
+  const revenue = header.local_total_centi || header.total_centi || 0;
+  const cost = header.total_cost_centi ?? 0;
+  const margin = header.total_margin_centi ?? revenue - cost;
+  const marginPct = (header.margin_pct_basis ?? 0) / 100;
+  const marginTone =
+    margin <= 0
+      ? "text-err"
+      : marginPct >= 30
+        ? "text-synced"
+        : marginPct >= 15
+          ? "text-warning-text"
+          : "text-err";
+  const categories = [
+    {
+      label: "Mattress / Sofa",
+      rev: header.mattress_sofa_centi ?? 0,
+      cost: header.mattress_sofa_cost_centi ?? 0,
+    },
+    { label: "Bedframe", rev: header.bedframe_centi ?? 0, cost: header.bedframe_cost_centi ?? 0 },
+    {
+      label: "Accessories",
+      rev: header.accessories_centi ?? 0,
+      cost: header.accessories_cost_centi ?? 0,
+    },
+    { label: "Others", rev: header.others_centi ?? 0, cost: header.others_cost_centi ?? 0 },
+    ...((header.service_centi ?? 0) > 0
+      ? [
+          {
+            label: "Services",
+            rev: header.service_centi ?? 0,
+            cost: header.service_cost_centi ?? 0,
+          },
+        ]
+      : []),
+  ].filter((c) => c.rev > 0 || c.cost > 0);
+
+  return (
+    <Section title="Totals · Margin">
+      <div className="grid grid-cols-2 gap-4 border-b border-border-subtle pb-4 sm:grid-cols-4">
+        <div>
+          <div className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
+            Revenue
+          </div>
+          <div className="mt-1 font-money text-[15px] font-bold text-ink">
+            {fmtMoney(revenue, currency)}
+          </div>
+        </div>
+        <div>
+          <div className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
+            Cost
+          </div>
+          <div className="mt-1 font-money text-[15px] font-semibold text-ink-secondary">
+            {costPending ? PENDING_PILL : fmtMoney(cost, currency)}
+          </div>
+        </div>
+        <div>
+          <div className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
+            Margin
+          </div>
+          <div
+            className={cn(
+              "mt-1 font-money text-[15px] font-bold",
+              costPending ? "text-ink-muted" : marginTone
+            )}
+          >
+            {costPending ? PENDING_PILL : fmtMoney(margin, currency)}
+          </div>
+        </div>
+        <div>
+          <div className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
+            Margin %
+          </div>
+          <div
+            className={cn(
+              "mt-1 font-money text-[15px] font-bold",
+              costPending ? "text-ink-muted" : marginTone
+            )}
+          >
+            {costPending ? "—" : revenue > 0 ? `${marginPct.toFixed(1)}%` : "—"}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4">
+        <div className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
+          By category
+        </div>
+        <div className="mt-2 space-y-1.5">
+          {categories.length === 0 ? (
+            <div className="text-[13px] text-ink-muted">No category totals.</div>
+          ) : (
+            categories.map(({ label, rev, cost: catCost }) => {
+              const catMargin = rev - catCost;
+              const tone =
+                rev <= 0
+                  ? "text-ink-muted"
+                  : catMargin > 0
+                    ? "text-synced"
+                    : catMargin < 0
+                      ? "text-err"
+                      : "text-ink-muted";
+              return (
+                <div
+                  key={label}
+                  className="grid grid-cols-[1.4fr_1fr_1fr_1fr] items-baseline gap-3 text-[12.5px]"
+                >
+                  <div className="font-semibold text-ink">{label}</div>
+                  <div className="font-money text-ink-secondary">
+                    Rev {fmtMoney(rev, currency)}
+                  </div>
+                  <div className="font-money text-ink-muted">
+                    Cost {fmtMoney(catCost, currency)}
+                  </div>
+                  <div className={cn("font-money font-semibold", tone)}>
+                    Margin {fmtMoney(catMargin, currency)}
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      </div>
+    </Section>
   );
 }
 
