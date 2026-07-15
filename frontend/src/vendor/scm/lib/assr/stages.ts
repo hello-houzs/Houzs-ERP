@@ -97,6 +97,51 @@ export function filterActiveStages<T>(
   return stages.filter((s) => isStageActive(method, keyOf(s), currentStage));
 }
 
+export interface AssrSubStatusDef {
+  key: string;
+  label: string;
+}
+
+/**
+ * Sub-status WITHIN a stage (Nick 2026-07-15 — the workflow funnel
+ * needed finer states without changing the 7-stage pipeline):
+ *
+ *   Verification — "Pending Inspection" until the QC issue inspection
+ *     is recorded (qc_receipt_date or a qc_issue_result verdict), then
+ *     "QC Issue Result" (with the verdict when one is stored).
+ *   Supplier — "Pending Supplier Pickup" until the supplier collects
+ *     the item (supplier_pickup_at), then "Pending Supplier Return".
+ *
+ * Purely derived from existing case fields — no schema; the sub-status
+ * flips live as ops fills the driving field. Other stages have none.
+ */
+export function assrSubStatus(
+  stage: string | null | undefined,
+  f: {
+    qcReceiptDate?: string | null;
+    qcIssueResult?: string | null;
+    supplierPickupAt?: string | null;
+  },
+): AssrSubStatusDef | null {
+  if (stage === "under_verification") {
+    const verdict = (f.qcIssueResult || "").trim().toLowerCase();
+    const inspected = !!f.qcReceiptDate || !!verdict;
+    if (!inspected) return { key: "pending_inspection", label: "Pending Inspection" };
+    const pretty =
+      verdict === "na" ? "N/A" : verdict ? verdict.charAt(0).toUpperCase() + verdict.slice(1) : "";
+    return {
+      key: "qc_issue_result",
+      label: pretty ? `QC Issue Result: ${pretty}` : "QC Issue Result Recorded",
+    };
+  }
+  if (stage === "pending_supplier_pickup") {
+    return f.supplierPickupAt
+      ? { key: "pending_supplier_return", label: "Pending Supplier Return" }
+      : { key: "pending_supplier_pickup", label: "Pending Supplier Pickup" };
+  }
+  return null;
+}
+
 /** Active canonical stages for a case (the common mobile call). */
 export function activeAssrStages(
   method: string | null | undefined,

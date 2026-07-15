@@ -15,6 +15,7 @@ import {
   ASSR_STAGE_INDEX,
   activeAssrStages,
   type AssrStageDef,
+  assrSubStatus,
 } from "../vendor/scm/lib/assr/stages";
 import "./mobile.css";
 
@@ -899,6 +900,7 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
       case "under_verification":
         return (
           <>
+            <StageSubChip c={c} stage="under_verification" />
             <div className="fld-l">Outcome</div>
             <div style={{ display: "flex", gap: 7, margin: "6px 0 10px", flexWrap: "wrap" }}>
               {VERIFICATION_OPTIONS.map((o) => {
@@ -989,6 +991,7 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
       case "pending_supplier_pickup":
         return (
           <>
+            <StageSubChip c={c} stage="pending_supplier_pickup" />
             <KV label="Supplier" value={String(get(c, "creditorName", "creditor_name") ?? creditorCode ?? "—")} />
             <KV label="Supplier code" value={creditorCode ? String(creditorCode) : "—"} mono />
             {/* Folded in from the retired Item Pickup stage (mig 0110). */}
@@ -2171,6 +2174,26 @@ function PGrid({ label, value, mono, span, multiline }: { label: string; value: 
     <div style={span ? { gridColumn: "1 / -1" } : undefined}>
       <div className="pkv-l">{label}</div>
       <div className={`pkv-v${mono ? " money" : ""}`} style={{ lineHeight: multiline ? 1.4 : undefined, fontSize: multiline ? 12 : undefined, fontWeight: multiline ? 600 : undefined, wordBreak: "break-word" }}>{value}</div>
+    </div>
+  );
+}
+
+// Sub-status chip — the finer state inside Verification / Supplier
+// (Nick 2026-07-15), derived from case fields via the shared
+// assrSubStatus helper. Shown only on the case's CURRENT stage card.
+function StageSubChip({ c, stage }: { c: Any; stage: string }) {
+  if (stageOf(c) !== stage) return null;
+  const sub = assrSubStatus(stage, {
+    qcReceiptDate: get(c, "qcReceiptDate", "qc_receipt_date"),
+    qcIssueResult: get(c, "qcIssueResult", "qc_issue_result"),
+    supplierPickupAt: get(c, "supplierPickupAt", "supplier_pickup_at"),
+  });
+  if (!sub) return null;
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <span style={{ display: "inline-block", padding: "4px 11px", borderRadius: 999, background: BROWN_SOFT, color: BROWN_FG, fontSize: 11, fontWeight: 700 }}>
+        {sub.label}
+      </span>
     </div>
   );
 }
