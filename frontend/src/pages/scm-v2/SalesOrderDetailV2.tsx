@@ -53,6 +53,7 @@ import {
   type ChainNode,
 } from "../../components/scm-v2/DocumentRelationshipMapModal";
 import { cn } from "../../lib/utils";
+import { useAuth } from "../../auth/AuthContext";
 import { buildVariantSummary } from "@2990s/shared";
 
 // ─── Row types (subset — see MfgSalesOrdersList.tsx for the full SoRow) ────
@@ -92,6 +93,23 @@ type SoHeader = {
   currency: string;
   payment_method: string | null;
   payment_methods_summary?: string;
+  // Finance-gated cost / margin analytics (migration 0079). Present on the
+  // DETAIL payload for every caller (only the LIST endpoint strips these —
+  // #574); the UI gates the Totals·Margin card behind project_finance_viewer.
+  // Cost columns are nullable for rows predating the cost backfill.
+  total_cost_centi?: number | null;
+  total_margin_centi?: number | null;
+  margin_pct_basis?: number | null;
+  mattress_sofa_centi?: number | null;
+  bedframe_centi?: number | null;
+  accessories_centi?: number | null;
+  others_centi?: number | null;
+  service_centi?: number | null;
+  mattress_sofa_cost_centi?: number | null;
+  bedframe_cost_centi?: number | null;
+  accessories_cost_centi?: number | null;
+  others_cost_centi?: number | null;
+  service_cost_centi?: number | null;
 };
 
 type SoItem = {
@@ -405,6 +423,128 @@ function TotalLine({
   );
 }
 
+// ─── Totals · Margin card (finance-gated) ──────────────────────────────────
+// Restored from the 2990 SalesOrderDetail TotalsCard. Cost / margin never
+// render for a non-finance viewer — the caller gates the whole card behind
+// user.project_finance_viewer (mirrors the #574 list-column rule). Revenue =
+// local_total_centi; margin % = margin_pct_basis / 100 (margin/revenue × 100).
+// Category cost columns fall back to 0 for rows predating the cost backfill.
+
+function MarginKpi({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone?: string;
+}) {
+  return (
+    <div className="rounded-md border border-border-subtle bg-surface-2 px-2.5 py-2">
+      <div className="font-mono text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
+        {label}
+      </div>
+      <div
+        className={cn(
+          "mt-1 font-money text-[15px] font-bold leading-none text-ink",
+          tone
+        )}
+      >
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function TotalsMarginCard({
+  currency,
+  revenue,
+  cost,
+  margin,
+  marginPctBasis,
+  categories,
+}: {
+  currency: string;
+  revenue: number;
+  cost: number;
+  margin: number;
+  marginPctBasis: number;
+  categories: Array<{ label: string; rev: number; cost: number }>;
+}) {
+  const marginPct = marginPctBasis / 100;
+  const marginTone =
+    margin <= 0
+      ? "text-err"
+      : marginPct >= 30
+        ? "text-synced"
+        : marginPct >= 15
+          ? "text-accent-bright"
+          : "text-err";
+  const rows = categories.filter((cat) => cat.rev > 0 || cat.cost > 0);
+  return (
+    <AsideCard title="Totals · Margin">
+      <div className="grid grid-cols-2 gap-2">
+        <MarginKpi label="Revenue" value={fmtMoney(revenue, currency)} />
+        <MarginKpi label="Cost" value={fmtMoney(cost, currency)} />
+        <MarginKpi
+          label="Margin"
+          value={fmtMoney(margin, currency)}
+          tone={marginTone}
+        />
+        <MarginKpi
+          label="Margin %"
+          value={revenue > 0 ? `${marginPct.toFixed(1)}%` : "—"}
+          tone={marginTone}
+        />
+      </div>
+      {rows.length > 0 && (
+        <div className="mt-4">
+          <div className="mb-2 font-mono text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+            By category
+          </div>
+          <div>
+            {rows.map((cat) => {
+              const catMargin = cat.rev - cat.cost;
+              const tone =
+                cat.rev <= 0
+                  ? "text-ink-muted"
+                  : catMargin > 0
+                    ? "text-synced"
+                    : catMargin < 0
+                      ? "text-err"
+                      : "text-ink-muted";
+              return (
+                <div
+                  key={cat.label}
+                  className="border-b border-border-subtle py-2 last:border-b-0"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[12.5px] font-semibold text-ink">
+                      {cat.label}
+                    </span>
+                    <span
+                      className={cn(
+                        "font-money text-[12.5px] font-semibold",
+                        tone
+                      )}
+                    >
+                      {fmtMoney(catMargin, currency)}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 flex items-center justify-between gap-2 text-[11px] text-ink-muted">
+                    <span>Revenue {fmtMoney(cat.rev, currency)}</span>
+                    <span>Cost {fmtMoney(cat.cost, currency)}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </AsideCard>
+  );
+}
+
 // ─── Legacy inline editor (lazy) ───────────────────────────────────────────
 // V2 is READ-ONLY by design (sticky header + section cards + Order-total
 // aside). The full 2014-LOC inline editor lives in ./SalesOrderDetail — we
@@ -447,6 +587,11 @@ function SalesOrderDetailV2ReadOnly() {
   const updateStatus = useUpdateMfgSalesOrderStatus();
   const { nameOf: salespersonNameOf } = useStaffLookup();
   const notify = useNotify();
+  // Finance-viewer gate — cost / margin (incl. the Totals·Margin aside card)
+  // must never render for a non-finance user. Same rule as the #574 SO list
+  // finance columns (canViewScmFinance server-side).
+  const { user } = useAuth();
+  const canFinance = !!user?.project_finance_viewer;
   // Followup #81 — the printed SO reads payments from the ledger, not the
   // deprecated header columns; fetch them for the Print PDF handler.
   const printPaymentsQ = useSalesOrderPayments(docNo ?? null);
@@ -1047,6 +1192,47 @@ function SalesOrderDetailV2ReadOnly() {
                 discountCenti={discountCenti}
                 totalCenti={totalCenti}
               />
+
+              {canFinance && (
+                <TotalsMarginCard
+                  currency={salesOrder.currency}
+                  revenue={salesOrder.local_total_centi}
+                  cost={salesOrder.total_cost_centi ?? 0}
+                  margin={salesOrder.total_margin_centi ?? 0}
+                  marginPctBasis={salesOrder.margin_pct_basis ?? 0}
+                  categories={[
+                    {
+                      label: "Mattress / Sofa",
+                      rev: salesOrder.mattress_sofa_centi ?? 0,
+                      cost: salesOrder.mattress_sofa_cost_centi ?? 0,
+                    },
+                    {
+                      label: "Bedframe",
+                      rev: salesOrder.bedframe_centi ?? 0,
+                      cost: salesOrder.bedframe_cost_centi ?? 0,
+                    },
+                    {
+                      label: "Accessories",
+                      rev: salesOrder.accessories_centi ?? 0,
+                      cost: salesOrder.accessories_cost_centi ?? 0,
+                    },
+                    {
+                      label: "Others",
+                      rev: salesOrder.others_centi ?? 0,
+                      cost: salesOrder.others_cost_centi ?? 0,
+                    },
+                    ...((salesOrder.service_centi ?? 0) > 0
+                      ? [
+                          {
+                            label: "Services",
+                            rev: salesOrder.service_centi ?? 0,
+                            cost: salesOrder.service_cost_centi ?? 0,
+                          },
+                        ]
+                      : []),
+                  ]}
+                />
+              )}
 
               <AsideCard title="Key dates">
                 <KeyDateRow k="SO date" v={fmtDate(salesOrder.so_date)} />
