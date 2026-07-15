@@ -43,9 +43,11 @@ import {
 import {
   useMfgSalesOrderDetail,
   useUpdateMfgSalesOrderStatus,
+  useSalesOrderPayments,
 } from "../../vendor/scm/lib/sales-order-queries";
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
 import { useStaffLookup } from "../../hooks/useStaffLookup";
+import { useNotify } from "../../vendor/scm/components/NotifyDialog";
 import {
   DocumentRelationshipMapModal,
   type ChainNode,
@@ -442,6 +444,10 @@ function SalesOrderDetailV2ReadOnly() {
   const detail = useMfgSalesOrderDetail(docNo ?? null);
   const updateStatus = useUpdateMfgSalesOrderStatus();
   const { nameOf: salespersonNameOf } = useStaffLookup();
+  const notify = useNotify();
+  // Followup #81 — the printed SO reads payments from the ledger, not the
+  // deprecated header columns; fetch them for the Print PDF handler.
+  const printPaymentsQ = useSalesOrderPayments(docNo ?? null);
 
   // Replace the auto-derived "Scm" module crumb with the actual SO doc no.
   // Falls back to the raw route param while detail is loading so the top bar
@@ -497,8 +503,38 @@ function SalesOrderDetailV2ReadOnly() {
   const goHistory = () => docNo && navigate(`/scm/sales-orders/${docNo}?tab=history`);
   const [relMapOpen, setRelMapOpen] = useState(false);
   const goRelationshipMap = () => setRelMapOpen(true);
-  const goPrintPdf = () =>
-    docNo && navigate(`/scm/sales-orders/${docNo}?print=1`);
+  // Render + download the SO PDF via the shared jspdf generator (client-side),
+  // mirroring the V1 SalesOrderDetail handler. The old `?print=1` navigation
+  // was dead — nothing consumed that param — so the button did nothing.
+  const goPrintPdf = () => {
+    if (!salesOrder) return;
+    if (printPaymentsQ.isLoading) {
+      notify({ title: "Loading payments… please try again in a moment." });
+      return;
+    }
+    const payments = printPaymentsQ.data ?? [];
+    // `pwpCodes` rides on the same GET /:docNo payload — vouchers this SO's
+    // trigger items issued, so the printed PDF can mark the trigger lines.
+    const pwpCodes = ((detail.data as { pwpCodes?: unknown[] } | undefined)
+      ?.pwpCodes ?? []) as never;
+    import("../../vendor/scm/lib/sales-order-pdf")
+      .then(({ generateSalesOrderPdf }) =>
+        generateSalesOrderPdf(
+          salesOrder as never,
+          items as never,
+          payments as never,
+          "save",
+          pwpCodes
+        )
+      )
+      .catch((e) =>
+        notify({
+          title: "PDF generation failed",
+          body: e instanceof Error ? e.message : String(e),
+          tone: "error",
+        })
+      );
+  };
 
   // Build the 5-node document chain for this SO. The SO is CURRENT; upstream
   // (Customer PO) is "done" when a PO ref exists; downstream (DO / GRN / SI)

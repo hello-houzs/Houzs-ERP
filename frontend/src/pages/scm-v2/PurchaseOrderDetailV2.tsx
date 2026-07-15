@@ -45,6 +45,7 @@ import {
 } from "../../vendor/scm/lib/suppliers-queries";
 import { useWarehouses } from "../../vendor/scm/lib/inventory-queries";
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
+import { useNotify } from "../../vendor/scm/components/NotifyDialog";
 import { cn } from "../../lib/utils";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -369,6 +370,7 @@ function PurchaseOrderDetailV2ReadOnly() {
   const confirmPo = useConfirmPurchaseOrder();
   const cancelPo = useCancelPurchaseOrder();
   const reopenPo = useReopenPurchaseOrder();
+  const notify = useNotify();
 
   /* Nick 2026-07-09 — Ship-to warehouse cell was rendering the raw
      `purchase_location_id` UUID because the field only carries the id;
@@ -411,7 +413,39 @@ function PurchaseOrderDetailV2ReadOnly() {
   };
   const goEdit = () => id && navigate(`/scm/purchase-orders/${id}?edit=1`);
   const goHistory = () => id && navigate(`/scm/purchase-orders/${id}?tab=history`);
-  const goPrintPdf = () => id && navigate(`/scm/purchase-orders/${id}?print=1`);
+  // Render + download the PO PDF via the shared jspdf generator (client-side),
+  // mirroring the V1 PurchaseOrderDetail handler. The old `?print=1` navigation
+  // was dead — nothing consumed that param — so the button did nothing.
+  const goPrintPdf = () => {
+    if (!purchaseOrder) return;
+    // PR #102 — pre-resolve purchase_location name + deliver-to address (the
+    // PDF can't hit the API), same as the V1 detail page.
+    const wh = (warehousesQ.data ?? []).find(
+      (w) => w.id === purchaseOrder.purchase_location_id
+    );
+    const headerForPdf = {
+      ...purchaseOrder,
+      purchase_location_name: wh ? `${wh.code} · ${wh.name}` : null,
+      delivery_address: wh?.location ?? null,
+      your_ref_no:
+        (purchaseOrder as unknown as { your_ref_no?: string | null })
+          .your_ref_no ?? null,
+      source_so_doc_no:
+        (purchaseOrder as unknown as { source_so_doc_no?: string | null })
+          .source_so_doc_no ?? null,
+    };
+    import("../../vendor/scm/lib/purchase-order-pdf")
+      .then(({ generatePurchaseOrderPdf }) =>
+        generatePurchaseOrderPdf(headerForPdf as never, items as never)
+      )
+      .catch((e) =>
+        notify({
+          title: "PDF generation failed",
+          body: e instanceof Error ? e.message : String(e),
+          tone: "error",
+        })
+      );
+  };
   const goGrnFromPo = () =>
     id && navigate(`/scm/grns/from-po?poId=${id}`);
   const doSubmit = () => {

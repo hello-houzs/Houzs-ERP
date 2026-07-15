@@ -33,6 +33,9 @@ import {
   usePostPurchaseReturn,
   useCancelPurchaseReturn,
 } from "../../vendor/scm/lib/purchase-return-queries";
+import { authedFetch } from "../../vendor/scm/lib/authed-fetch";
+import { useNotify } from "../../vendor/scm/components/NotifyDialog";
+import { useChoice } from "../../vendor/scm/components/ChoiceDialog";
 import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "../../lib/utils";
 
@@ -408,12 +411,16 @@ export function PurchaseReturnsListV2() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const queryClient = useQueryClient();
+  const notify = useNotify();
+  const askChoice = useChoice();
 
   const status = (params.get("status") ?? "all") as StatusTab;
   const view = (params.get("view") ?? "table") as "table" | "cards";
   const search = params.get("q") ?? "";
 
   const [selected, setSelected] = useState<PrRow | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [printingDocs, setPrintingDocs] = useState(false);
 
   const { data, isLoading, error } = usePurchaseReturns();
   const postPr = usePostPurchaseReturn();
@@ -497,6 +504,81 @@ export function PurchaseReturnsListV2() {
   const goEdit = (r: PrRow) => navigate(`/scm/purchase-returns/${r.id}?edit=1`);
   const goPrint = (r: PrRow) => navigate(`/scm/purchase-returns/${r.id}?print=1`);
   const goFullPage = (r: PrRow) => navigate(`/scm/purchase-returns/${r.id}`);
+
+  // ─── Multi-select → batch "Print all" ─────────────────────────────────────
+  const toggleSelect = (rowId: string) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(rowId)) next.delete(rowId);
+      else next.add(rowId);
+      return next;
+    });
+  const toggleSelectAll = (keys: string[], allSelected: boolean) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allSelected) for (const k of keys) next.delete(k);
+      else for (const k of keys) next.add(k);
+      return next;
+    });
+  const clearSelection = () => setSelectedIds(new Set());
+
+  // One PR's full detail for the PDF generator, via the vendored authedFetch
+  // (→ /api/scm); same endpoint + shape as the single-row detail page.
+  const fetchPrBundle = async (
+    row: PrRow
+  ): Promise<{ header: unknown; items: unknown[] }> => {
+    const json = await authedFetch<{ purchaseReturn: unknown; items: unknown[] }>(
+      `/purchase-returns/${row.id}`
+    );
+    return { header: json.purchaseReturn, items: json.items };
+  };
+
+  // Batch "Print all" — one ticked PR downloads straight; several prompt
+  // combined-vs-separate.
+  const printSelectedPrs = async () => {
+    if (printingDocs) return;
+    const chosen = filtered.filter((r) => selectedIds.has(r.id));
+    if (chosen.length === 0) return;
+    try {
+      const { generatePurchaseReturnPdf, generateCombinedPurchaseReturnPdf } =
+        await import("../../vendor/scm/lib/purchase-return-pdf");
+      if (chosen.length === 1) {
+        setPrintingDocs(true);
+        const b = await fetchPrBundle(chosen[0]!);
+        await generatePurchaseReturnPdf(b.header as never, b.items as never);
+        clearSelection();
+        return;
+      }
+      const how = await askChoice({
+        title: `Print ${chosen.length} purchase returns`,
+        options: [
+          { value: "one", label: "One combined PDF" },
+          { value: "many", label: "Separate files", detail: "One PDF per document" },
+        ],
+      });
+      if (how == null) return;
+      setPrintingDocs(true);
+      const bundles: Array<{ header: unknown; items: unknown[] }> = [];
+      for (const r of chosen) bundles.push(await fetchPrBundle(r));
+      if (how === "one") {
+        await generateCombinedPurchaseReturnPdf(bundles as never, {
+          fileName: `purchase-returns-${new Date().toISOString().slice(0, 10)}.pdf`,
+        });
+      } else {
+        for (const b of bundles)
+          await generatePurchaseReturnPdf(b.header as never, b.items as never);
+      }
+      clearSelection();
+    } catch (e) {
+      notify({
+        title: "PDF generation failed",
+        body: e instanceof Error ? e.message : String(e),
+        tone: "error",
+      });
+    } finally {
+      setPrintingDocs(false);
+    }
+  };
   const doPost = (r: PrRow) => {
     if (window.confirm(`Post return ${r.return_number}? A credit-owed entry will be booked against the supplier.`)) {
       postPr.mutate(r.id, { onSuccess: () => setSelected(null) });
@@ -647,19 +729,49 @@ export function PurchaseReturnsListV2() {
 
         <div className="hidden md:block">
           {view === "table" ? (
-            <DataTable<PrRow>
-              tableId="purchase-returns-v2"
-              rows={filtered}
-              loading={isLoading}
-              error={error ? (error as Error).message ?? "Failed to load" : null}
-              columns={columns}
-              getRowKey={(r) => r.id}
-              onRowClick={(r) => setSelected(r)}
-              exportName="purchase-returns"
-              emptyLabel={filtersActive ? "No purchase returns match — try Reset layout to clear filters." : "No purchase returns yet."}
-              search={{ value: search, onChange: setSearch, placeholder: "Search return, supplier, reason, source…" }}
-              resetFilters={{ active: filtersActive, onReset: resetLayout, label: "Reset layout" }}
-            />
+            <>
+              {selectedIds.size > 0 && (
+                <div className="mb-3 flex items-center gap-3 rounded-lg border border-primary/40 bg-primary-soft px-4 py-2.5 shadow-stone">
+                  <span className="text-[13px] font-semibold text-ink">
+                    {selectedIds.size} selected
+                  </span>
+                  <span className="text-ink-muted">·</span>
+                  <span className="text-[12px] text-ink-secondary">
+                    Combine into one PDF or download separately.
+                  </span>
+                  <div className="flex-1" />
+                  <Button
+                    variant="primary"
+                    icon={<Printer size={14} />}
+                    disabled={printingDocs}
+                    onClick={() => void printSelectedPrs()}
+                  >
+                    {printingDocs ? "Printing…" : `Print all (${selectedIds.size})`}
+                  </Button>
+                  <Button variant="ghost" disabled={printingDocs} onClick={clearSelection}>
+                    Clear
+                  </Button>
+                </div>
+              )}
+              <DataTable<PrRow>
+                tableId="purchase-returns-v2"
+                rows={filtered}
+                loading={isLoading}
+                error={error ? (error as Error).message ?? "Failed to load" : null}
+                columns={columns}
+                getRowKey={(r) => r.id}
+                onRowClick={(r) => setSelected(r)}
+                selection={{
+                  selectedIds,
+                  onToggle: toggleSelect,
+                  onToggleAll: toggleSelectAll,
+                }}
+                exportName="purchase-returns"
+                emptyLabel={filtersActive ? "No purchase returns match — try Reset layout to clear filters." : "No purchase returns yet."}
+                search={{ value: search, onChange: setSearch, placeholder: "Search return, supplier, reason, source…" }}
+                resetFilters={{ active: filtersActive, onReset: resetLayout, label: "Reset layout" }}
+              />
+            </>
           ) : (
             <>
               <div className="mb-3 flex items-center justify-between">

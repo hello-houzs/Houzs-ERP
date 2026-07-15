@@ -32,6 +32,9 @@ import {
   useCancelPurchaseInvoice,
   useRecordPiPayment,
 } from "../../vendor/scm/lib/purchase-invoice-queries";
+import { authedFetch } from "../../vendor/scm/lib/authed-fetch";
+import { useNotify } from "../../vendor/scm/components/NotifyDialog";
+import { useChoice } from "../../vendor/scm/components/ChoiceDialog";
 import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "../../lib/utils";
 
@@ -545,6 +548,8 @@ export function PurchaseInvoicesListV2() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const queryClient = useQueryClient();
+  const notify = useNotify();
+  const askChoice = useChoice();
 
   const status = (params.get("status") ?? "all") as StatusTab;
   const view = (params.get("view") ?? "table") as "table" | "cards";
@@ -554,6 +559,8 @@ export function PurchaseInvoicesListV2() {
 
   const [selected, setSelected] = useState<PiRow | null>(null);
   const [sort, setSort] = useState<string | undefined>(undefined);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [printingDocs, setPrintingDocs] = useState(false);
   const [debouncedSearch, setDebouncedSearch] = useState(search);
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search), 300);
@@ -656,6 +663,81 @@ export function PurchaseInvoicesListV2() {
   const goEdit = (r: PiRow) => navigate(`/scm/purchase-invoices/${r.id}?edit=1`);
   const goPrint = (r: PiRow) => navigate(`/scm/purchase-invoices/${r.id}?print=1`);
   const goFullPage = (r: PiRow) => navigate(`/scm/purchase-invoices/${r.id}`);
+
+  // ─── Multi-select → batch "Print all" ─────────────────────────────────────
+  const toggleSelect = (rowId: string) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(rowId)) next.delete(rowId);
+      else next.add(rowId);
+      return next;
+    });
+  const toggleSelectAll = (keys: string[], allSelected: boolean) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allSelected) for (const k of keys) next.delete(k);
+      else for (const k of keys) next.add(k);
+      return next;
+    });
+  const clearSelection = () => setSelectedIds(new Set());
+
+  // One PI's full detail for the PDF generator, via the vendored authedFetch
+  // (→ /api/scm); same endpoint + shape as the single-row detail page.
+  const fetchPiBundle = async (
+    row: PiRow
+  ): Promise<{ header: unknown; items: unknown[] }> => {
+    const json = await authedFetch<{ purchaseInvoice: unknown; items: unknown[] }>(
+      `/purchase-invoices/${row.id}`
+    );
+    return { header: json.purchaseInvoice, items: json.items };
+  };
+
+  // Batch "Print all" — one ticked PI downloads straight; several prompt
+  // combined-vs-separate.
+  const printSelectedPis = async () => {
+    if (printingDocs) return;
+    const chosen = rows.filter((r) => selectedIds.has(r.id));
+    if (chosen.length === 0) return;
+    try {
+      const { generatePurchaseInvoicePdf, generateCombinedPurchaseInvoicePdf } =
+        await import("../../vendor/scm/lib/purchase-invoice-pdf");
+      if (chosen.length === 1) {
+        setPrintingDocs(true);
+        const b = await fetchPiBundle(chosen[0]!);
+        await generatePurchaseInvoicePdf(b.header as never, b.items as never);
+        clearSelection();
+        return;
+      }
+      const how = await askChoice({
+        title: `Print ${chosen.length} purchase invoices`,
+        options: [
+          { value: "one", label: "One combined PDF" },
+          { value: "many", label: "Separate files", detail: "One PDF per document" },
+        ],
+      });
+      if (how == null) return;
+      setPrintingDocs(true);
+      const bundles: Array<{ header: unknown; items: unknown[] }> = [];
+      for (const r of chosen) bundles.push(await fetchPiBundle(r));
+      if (how === "one") {
+        await generateCombinedPurchaseInvoicePdf(bundles as never, {
+          fileName: `purchase-invoices-${new Date().toISOString().slice(0, 10)}.pdf`,
+        });
+      } else {
+        for (const b of bundles)
+          await generatePurchaseInvoicePdf(b.header as never, b.items as never);
+      }
+      clearSelection();
+    } catch (e) {
+      notify({
+        title: "PDF generation failed",
+        body: e instanceof Error ? e.message : String(e),
+        tone: "error",
+      });
+    } finally {
+      setPrintingDocs(false);
+    }
+  };
   const goRecordPayment = (r: PiRow) =>
     navigate(`/scm/purchase-invoices/${r.id}?tab=payments&record=1`);
   const doMarkPaid = (r: PiRow) => {
@@ -867,6 +949,29 @@ export function PurchaseInvoicesListV2() {
         <div className="hidden md:block">
           {view === "table" ? (
             <>
+              {selectedIds.size > 0 && (
+                <div className="mb-3 flex items-center gap-3 rounded-lg border border-primary/40 bg-primary-soft px-4 py-2.5 shadow-stone">
+                  <span className="text-[13px] font-semibold text-ink">
+                    {selectedIds.size} selected
+                  </span>
+                  <span className="text-ink-muted">·</span>
+                  <span className="text-[12px] text-ink-secondary">
+                    Combine into one PDF or download separately.
+                  </span>
+                  <div className="flex-1" />
+                  <Button
+                    variant="primary"
+                    icon={<Printer size={14} />}
+                    disabled={printingDocs}
+                    onClick={() => void printSelectedPis()}
+                  >
+                    {printingDocs ? "Printing…" : `Print all (${selectedIds.size})`}
+                  </Button>
+                  <Button variant="ghost" disabled={printingDocs} onClick={clearSelection}>
+                    Clear
+                  </Button>
+                </div>
+              )}
               <DataTable<PiRow>
                 tableId="purchase-invoices-v2"
                 rows={rows}
@@ -875,6 +980,11 @@ export function PurchaseInvoicesListV2() {
                 columns={columns}
                 getRowKey={(r) => r.id}
                 onRowClick={(r) => setSelected(r)}
+                selection={{
+                  selectedIds,
+                  onToggle: toggleSelect,
+                  onToggleAll: toggleSelectAll,
+                }}
                 exportName="purchase-invoices"
                 serverSort
                 onSortChange={setSortAndReset}

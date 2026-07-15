@@ -49,6 +49,9 @@ import {
   useMfgSalesOrderDetail,
 } from "../../vendor/scm/lib/sales-order-queries";
 import { ScanOrderModal } from "../../vendor/scm/components/ScanOrderModal";
+import { authedFetch } from "../../vendor/scm/lib/authed-fetch";
+import { useNotify } from "../../vendor/scm/components/NotifyDialog";
+import { useChoice } from "../../vendor/scm/components/ChoiceDialog";
 import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "../../lib/utils";
 import { useAuth } from "../../auth/AuthContext";
@@ -755,6 +758,8 @@ export function MfgSalesOrdersListV2() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const queryClient = useQueryClient();
+  const notify = useNotify();
+  const askChoice = useChoice();
   const { nameOf: salespersonNameOf } = useStaffLookup();
   // Finance-viewer gate — same signal the PMS finance sections use
   // (auth/me = isFinanceViewer). The cost/margin/subtotal columns below are
@@ -797,6 +802,9 @@ export function MfgSalesOrdersListV2() {
   // The modal owns its own extract → sessionStorage → navigate(new?fromScan=1)
   // flow; we only toggle its visibility (mirrors MfgSalesOrdersList V1).
   const [showScan, setShowScan] = useState(false);
+  // Multi-select → batch "Print all". Keys are doc_no (the DataTable rowKey).
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [printingDocs, setPrintingDocs] = useState(false);
 
   const { data, isLoading, error } = useMfgSalesOrdersPaged({
     page,
@@ -906,6 +914,116 @@ export function MfgSalesOrdersListV2() {
       { onSuccess: () => setSelected(null) }
     );
   const doDeliver = (r: SoRow) => navigate(`/scm/delivery-orders/from-so?so=${r.doc_no}`);
+
+  // ─── Multi-select → batch "Print all" ─────────────────────────────────────
+  const toggleSelect = (rowId: string) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(rowId)) next.delete(rowId);
+      else next.add(rowId);
+      return next;
+    });
+  const toggleSelectAll = (keys: string[], allSelected: boolean) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allSelected) for (const k of keys) next.delete(k);
+      else for (const k of keys) next.add(k);
+      return next;
+    });
+  const clearSelection = () => setSelectedIds(new Set());
+
+  // One SO's full PDF bundle — detail (header + items + pwpCodes) and the
+  // payments ledger, both via the vendored authedFetch (→ /api/scm). Payments
+  // are best-effort: a failed fetch yields [] so the PDF still renders. Mirrors
+  // the V1 MfgSalesOrdersList fetchSoBundle.
+  const fetchSoBundle = async (
+    docNo: string
+  ): Promise<{
+    header: unknown;
+    items: unknown[];
+    payments: unknown[];
+    pwpCodes: unknown[];
+  }> => {
+    const [detail, paymentsRes] = await Promise.all([
+      authedFetch<{ salesOrder: unknown; items: unknown[]; pwpCodes?: unknown[] }>(
+        `/mfg-sales-orders/${docNo}`
+      ),
+      authedFetch<{ payments?: unknown[] }>(
+        `/mfg-sales-orders/${docNo}/payments`
+      ).catch(() => ({ payments: [] })),
+    ]);
+    return {
+      header: detail.salesOrder,
+      items: detail.items,
+      payments: paymentsRes.payments ?? [],
+      pwpCodes: detail.pwpCodes ?? [],
+    };
+  };
+
+  // Batch "Print all" — one ticked SO downloads straight; several prompt
+  // combined-vs-separate. Mirrors the V1 exportSelected.
+  const printSelectedSos = async () => {
+    if (printingDocs) return;
+    const chosen = rows.filter((r) => selectedIds.has(r.doc_no));
+    if (chosen.length === 0) return;
+    try {
+      const { generateSalesOrderPdf, generateCombinedSalesOrderPdf } =
+        await import("../../vendor/scm/lib/sales-order-pdf");
+      if (chosen.length === 1) {
+        setPrintingDocs(true);
+        const b = await fetchSoBundle(chosen[0]!.doc_no);
+        await generateSalesOrderPdf(
+          b.header as never,
+          b.items as never,
+          b.payments as never,
+          "save",
+          b.pwpCodes as never
+        );
+        clearSelection();
+        return;
+      }
+      const how = await askChoice({
+        title: `Print ${chosen.length} sales orders`,
+        options: [
+          { value: "one", label: "One combined PDF" },
+          { value: "many", label: "Separate files", detail: "One PDF per document" },
+        ],
+      });
+      if (how == null) return;
+      setPrintingDocs(true);
+      const bundles: Array<Awaited<ReturnType<typeof fetchSoBundle>>> = [];
+      for (const r of chosen) bundles.push(await fetchSoBundle(r.doc_no));
+      if (how === "one") {
+        await generateCombinedSalesOrderPdf(
+          bundles.map((b) => ({
+            header: b.header as never,
+            items: b.items as never,
+            payments: b.payments as never,
+            pwpCodes: b.pwpCodes as never,
+          })),
+          { fileName: `sales-orders-${new Date().toISOString().slice(0, 10)}.pdf` }
+        );
+      } else {
+        for (const b of bundles)
+          await generateSalesOrderPdf(
+            b.header as never,
+            b.items as never,
+            b.payments as never,
+            "save",
+            b.pwpCodes as never
+          );
+      }
+      clearSelection();
+    } catch (e) {
+      notify({
+        title: "PDF generation failed",
+        body: e instanceof Error ? e.message : String(e),
+        tone: "error",
+      });
+    } finally {
+      setPrintingDocs(false);
+    }
+  };
 
   // ── Table columns ─────────────────────────────────────────────────────
   const columns: Column<SoRow>[] = [
@@ -1597,6 +1715,29 @@ export function MfgSalesOrdersListV2() {
       <div className="hidden md:block">
       {view === "table" ? (
         <>
+          {selectedIds.size > 0 && (
+            <div className="mb-3 flex items-center gap-3 rounded-lg border border-primary/40 bg-primary-soft px-4 py-2.5 shadow-stone">
+              <span className="text-[13px] font-semibold text-ink">
+                {selectedIds.size} selected
+              </span>
+              <span className="text-ink-muted">·</span>
+              <span className="text-[12px] text-ink-secondary">
+                Combine into one PDF or download separately.
+              </span>
+              <div className="flex-1" />
+              <Button
+                variant="primary"
+                icon={<Printer size={14} />}
+                disabled={printingDocs}
+                onClick={() => void printSelectedSos()}
+              >
+                {printingDocs ? "Printing…" : `Print all (${selectedIds.size})`}
+              </Button>
+              <Button variant="ghost" disabled={printingDocs} onClick={clearSelection}>
+                Clear
+              </Button>
+            </div>
+          )}
           <DataTable<SoRow>
             tableId="sales-orders-v2"
             rows={rows}
@@ -1605,6 +1746,11 @@ export function MfgSalesOrdersListV2() {
             columns={columns}
             getRowKey={(r) => r.doc_no}
             onRowClick={(r) => setSelected(r)}
+            selection={{
+              selectedIds,
+              onToggle: toggleSelect,
+              onToggleAll: toggleSelectAll,
+            }}
             exportName="sales-orders"
             serverSort
             onSortChange={setSortAndReset}

@@ -34,6 +34,7 @@ import {
   useRecordPiPayment,
 } from "../../vendor/scm/lib/purchase-invoice-queries";
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
+import { useNotify } from "../../vendor/scm/components/NotifyDialog";
 import { cn } from "../../lib/utils";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -380,6 +381,7 @@ function PurchaseInvoiceDetailV2ReadOnly() {
   const cancelPi = useCancelPurchaseInvoice();
   const postPi = usePostPurchaseInvoice();
   const recordPayment = useRecordPiPayment();
+  const notify = useNotify();
 
   const purchaseInvoice =
     (detail.data as { purchaseInvoice?: PiHeader } | undefined)?.purchaseInvoice ??
@@ -412,7 +414,23 @@ function PurchaseInvoiceDetailV2ReadOnly() {
   };
   const goEdit = () => id && navigate(`/scm/purchase-invoices/${id}?edit=1`);
   const goHistory = () => id && navigate(`/scm/purchase-invoices/${id}?tab=history`);
-  const goPrintPdf = () => id && navigate(`/scm/purchase-invoices/${id}?print=1`);
+  // Render + download the PI PDF via the shared jspdf generator (client-side),
+  // mirroring the V1 PurchaseInvoiceDetail handler. The old `?print=1`
+  // navigation was dead — nothing consumed that param — so the button did nothing.
+  const goPrintPdf = () => {
+    if (!purchaseInvoice) return;
+    import("../../vendor/scm/lib/purchase-invoice-pdf")
+      .then(({ generatePurchaseInvoicePdf }) =>
+        generatePurchaseInvoicePdf(purchaseInvoice as never, items as never)
+      )
+      .catch((e) =>
+        notify({
+          title: "PDF generation failed",
+          body: e instanceof Error ? e.message : String(e),
+          tone: "error",
+        })
+      );
+  };
   const goRecordPayment = () =>
     id && navigate(`/scm/purchase-invoices/${id}?tab=payments&record=1`);
   const doPost = () => {

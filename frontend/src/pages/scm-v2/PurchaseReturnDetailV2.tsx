@@ -33,6 +33,7 @@ import {
   useCancelPurchaseReturn,
 } from "../../vendor/scm/lib/purchase-return-queries";
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
+import { useNotify } from "../../vendor/scm/components/NotifyDialog";
 import { cn } from "../../lib/utils";
 
 type PrStatus = "DRAFT" | "POSTED" | "COMPLETED" | "CANCELLED" | string;
@@ -231,6 +232,7 @@ export function PurchaseReturnDetailV2() {
   const postPr = usePostPurchaseReturn();
   const completePr = useCompletePurchaseReturn();
   const cancelPr = useCancelPurchaseReturn();
+  const notify = useNotify();
 
   const purchaseReturn = (detail.data as { purchaseReturn?: PrHeader } | undefined)?.purchaseReturn ?? null;
   const items: PrItem[] = useMemo(
@@ -256,7 +258,23 @@ export function PurchaseReturnDetailV2() {
   };
   const goEdit = () => id && navigate(`/scm/purchase-returns/${id}?edit=1`);
   const goHistory = () => id && navigate(`/scm/purchase-returns/${id}?tab=history`);
-  const goPrintPdf = () => id && navigate(`/scm/purchase-returns/${id}?print=1`);
+  // Render + download the PR PDF via the shared jspdf generator (client-side),
+  // mirroring the V1 PurchaseReturnDetail handler. The old `?print=1`
+  // navigation was dead — nothing consumed that param — so the button did nothing.
+  const goPrintPdf = () => {
+    if (!purchaseReturn) return;
+    import("../../vendor/scm/lib/purchase-return-pdf")
+      .then(({ generatePurchaseReturnPdf }) =>
+        generatePurchaseReturnPdf(purchaseReturn as never, items as never)
+      )
+      .catch((e) =>
+        notify({
+          title: "PDF generation failed",
+          body: e instanceof Error ? e.message : String(e),
+          tone: "error",
+        })
+      );
+  };
   const doPost = () => {
     if (!purchaseReturn) return;
     if (window.confirm("Post this purchase return? A credit-owed entry will be booked against the supplier.")) {
