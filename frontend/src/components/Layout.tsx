@@ -56,7 +56,7 @@ export function Layout({ children }: Props) {
             pages with unsaved Panel state can call
             `usePullToRefreshBlock(true)` to block accidental F5. */}
         <PullToRefreshGuardProvider>
-          <PullToRefresh className="w-full px-4 pt-6 pb-[calc(10rem+env(safe-area-inset-bottom))] sm:px-6 sm:pt-8 lg:px-10 lg:py-10 xl:px-12 2xl:px-16 animate-rise">
+          <PullToRefresh className="w-full px-3 pt-6 pb-[calc(10rem+env(safe-area-inset-bottom))] sm:px-4 sm:pt-8 lg:px-4 lg:py-10 animate-rise">
             {children}
           </PullToRefresh>
         </PullToRefreshGuardProvider>
@@ -105,7 +105,7 @@ function MobileTopBar() {
 function ReadOnlyBanner() {
   return (
     <div className="sticky top-14 z-10 border-b border-warning-text/30 bg-warning-bg/95 backdrop-blur-sm lg:top-0">
-      <div className="flex w-full items-start gap-3 px-4 py-2.5 sm:px-6 lg:px-10 xl:px-12 2xl:px-16">
+      <div className="flex w-full items-start gap-3 px-3 py-2.5 sm:px-4 lg:px-4">
         <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-warning-text/15 text-warning-text">
           <ShieldAlert size={13} strokeWidth={2.4} />
         </span>
@@ -176,8 +176,8 @@ export function PageHeader({
            · bg-bg/95 + backdrop-blur keeps the header legible over any
              content that would otherwise show through. */
         (dense
-          ? "sticky top-12 z-20 -mx-4 sm:-mx-6 lg:-mx-10 xl:-mx-12 2xl:-mx-16 px-4 sm:px-6 lg:px-10 xl:px-12 2xl:px-16 bg-bg/95 backdrop-blur-sm mb-3 flex flex-col gap-2 border-b border-border pt-3 pb-2 sm:mb-4 sm:pt-4 sm:pb-3 md:flex-row md:items-end md:justify-between"
-          : "sticky top-12 z-20 -mx-4 sm:-mx-6 lg:-mx-10 xl:-mx-12 2xl:-mx-16 px-4 sm:px-6 lg:px-10 xl:px-12 2xl:px-16 bg-bg/95 backdrop-blur-sm mb-4 flex flex-col gap-3 border-b border-border pt-3 pb-3 sm:mb-8 sm:pt-4 sm:gap-3 sm:pb-6 md:flex-row md:items-end md:justify-between")
+          ? "sticky top-12 z-20 -mx-3 sm:-mx-4 lg:-mx-4 px-3 sm:px-4 lg:px-4 bg-bg/95 backdrop-blur-sm mb-3 flex flex-col gap-2 border-b border-border pt-3 pb-2 sm:mb-4 sm:pt-4 sm:pb-3 md:flex-row md:items-end md:justify-between"
+          : "sticky top-12 z-20 -mx-3 sm:-mx-4 lg:-mx-4 px-3 sm:px-4 lg:px-4 bg-bg/95 backdrop-blur-sm mb-4 flex flex-col gap-3 border-b border-border pt-3 pb-3 sm:mb-8 sm:pt-4 sm:gap-3 sm:pb-6 md:flex-row md:items-end md:justify-between")
       }
     >
       <div className="min-w-0">

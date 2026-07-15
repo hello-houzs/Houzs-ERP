@@ -541,7 +541,7 @@ export const PurchaseInvoiceNew = () => {
             ) : (
               <>
                 <label className={styles.field}>
-                  <span className={styles.fieldLabel}>Supplier *</span>
+                  <span className={`${styles.fieldLabel} ${styles.fieldLabelReq}`}>Supplier <span className={styles.req}>*</span></span>
                   <select
                     value={manualSupplierId}
                     onChange={(e) => setManualSupplierId(e.target.value)}

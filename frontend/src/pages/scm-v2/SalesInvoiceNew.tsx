@@ -401,7 +401,7 @@ export const SalesInvoiceNew = () => {
         <div className={styles.cardBody}>
           <div className={styles.formGrid4}>
             <label className={styles.field} style={{ gridColumn: 'span 3' }}>
-              <span className={styles.fieldLabel}>Customer Name *</span>
+              <span className={`${styles.fieldLabel} ${styles.fieldLabelReq}`}>Customer Name <span className={styles.req}>*</span></span>
               <input className={styles.fieldInput} value={debtorName}
                 onChange={(e) => setDebtorName(e.target.value)} placeholder="e.g. Lim Mei Hua" required />
             </label>

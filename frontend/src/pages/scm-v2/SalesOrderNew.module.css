@@ -42,7 +42,7 @@
   display: flex;
   flex-direction: column;
   min-height: 100%;
-  background: #dcdfd9;
+  background: #eef0ec;
 }
 
 /* ── Sticky page header ────────────────────────────────────────────── */
@@ -58,8 +58,8 @@
   justify-content: space-between;
   gap: 16px;
   flex-wrap: nowrap;
-  padding: 14px 26px 12px;
-  background: #dcdfd9;
+  padding: 14px 0 12px;
+  background: #eef0ec;
   border-bottom: 1px solid #cdd1c8;
 }
 
@@ -152,10 +152,10 @@
    the PaymentsTable (rendered without a .card wrapper) all line up.
    flex-direction: column + align-self: center centers each row horiz. */
 .page > *:not(.headerRow) {
-  margin: 0 26px;
-  max-width: 1160px;
-  width: calc(100% - 52px);
-  align-self: center;
+  margin: 0;
+  max-width: none;
+  width: 100%;
+  align-self: stretch;
 }
 .page > *:not(.headerRow) + *:not(.headerRow) { margin-top: 12px; }
 .page > .headerRow + *:not(.headerRow) { margin-top: 14px; }
@@ -176,8 +176,8 @@
   padding-left: 15px;
   margin: 0;
   font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 11px;
-  font-weight: 700;
+  font-size: 12px;
+  font-weight: 800;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: #11140f;
@@ -243,6 +243,22 @@
   color: #9aa093;
   margin-bottom: 5px;
   line-height: 1;
+}
+
+/* Required-field label — darker ink + heavier weight so mandatory inputs
+   read louder than the optional (soft-grey) ones. Pairs with .req below. */
+.fieldLabelReq {
+  color: #11140f;
+  font-weight: 700;
+}
+
+/* Required marker (*) — Theme C error red (--c-error #B71C1C), bold and a
+   touch larger than the label so it's impossible to miss. */
+.req {
+  color: #b71c1c;
+  font-weight: 800;
+  font-size: 11px;
+  margin-left: 3px;
 }
 
 /* Base input — matches mockup .fld exactly. */

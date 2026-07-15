@@ -731,7 +731,7 @@ export const PurchaseOrderNew = () => {
           <div className={styles.formGrid2}>
             {/* LEFT column */}
             <label className={styles.field}>
-              <span className={styles.fieldLabel}>Creditor *</span>
+              <span className={`${styles.fieldLabel} ${styles.fieldLabelReq}`}>Creditor <span className={styles.req}>*</span></span>
               <select
                 value={supplierId}
                 onChange={(e) => setSupplierId(e.target.value)}
@@ -768,7 +768,7 @@ export const PurchaseOrderNew = () => {
               />
             </label>
             <label className={styles.field}>
-              <span className={styles.fieldLabel}>Date *</span>
+              <span className={`${styles.fieldLabel} ${styles.fieldLabelReq}`}>Date <span className={styles.req}>*</span></span>
               <input
                 type="date"
                 value={poDate}
@@ -790,7 +790,7 @@ export const PurchaseOrderNew = () => {
               />
             </label>
             <label className={styles.field}>
-              <span className={styles.fieldLabel}>Expected Delivery *</span>
+              <span className={`${styles.fieldLabel} ${styles.fieldLabelReq}`}>Expected Delivery <span className={styles.req}>*</span></span>
               <input
                 type="date"
                 value={expectedAt}
@@ -832,7 +832,7 @@ export const PurchaseOrderNew = () => {
             </label>
 
             <label className={styles.field}>
-              <span className={styles.fieldLabel}>Purchase Location *</span>
+              <span className={`${styles.fieldLabel} ${styles.fieldLabelReq}`}>Purchase Location <span className={styles.req}>*</span></span>
               <select
                 value={purchaseLocationId}
                 onChange={(e) => setPurchaseLocationId(e.target.value)}
