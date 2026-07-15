@@ -1047,7 +1047,7 @@ function SalesAttending({
               <span className="money" style={{ fontSize: 10, color: "#9aa093" }}>{s.rep_code || "—"}</span>
               <span style={{ fontSize: 12.5, fontWeight: 600, color: "#11140f", flex: 1, minWidth: 0 }}>{s.rep_name || s.user_name || "—"}</span>
               {canWrite && (
-                <button aria-label="Remove" className="tinybtn" disabled={busy} style={{ padding: "3px 7px" }} onClick={() => remove(s)}>×</button>
+                <button aria-label="Remove" className="tinybtn" disabled={busy} style={{ padding: "3px 7px", color: "#a13a34", fontWeight: 700 }} onClick={() => remove(s)}>×</button>
               )}
             </div>
           ))}
