@@ -8,6 +8,12 @@ Severity tags: 🔴 critical/high · 🟠 medium · 🟢 low.
 
 ## 2026-07-15
 
+### 🟠 SO/DO/DR detail dropped the cost/margin analytics card (+ DR leaked line-cost/margin ungated)
+- **Symptom:** The V2 SO/DO/DR detail pages lost the "Totals · Margin" card (Revenue/Cost/Margin/Margin% + per-category breakdown) the 2990 originals had. Also DR's Refund hero rendered "Line cost" + "Margin hit" to EVERY viewer (finance leak, same class as #574).
+- **Root cause:** V2 rewrite dropped the TotalsCard; the DR hero's cost sub-lines were never finance-gated. The detail endpoints already return the cost/margin fields (only the LIST endpoints strip them, #574).
+- **Fix:** Restored a finance-gated Totals·Margin aside card on SalesOrderDetailV2 / DeliveryOrderDetailV2 / DeliveryReturnDetailV2 (Revenue/Cost/Margin/Margin% + category rows, read from the detail payload), rendered only when `user.project_finance_viewer` (same rule as #574). DO does carry money (recomputeTotals), so it's included. DR's Refund-hero Line-cost/Margin now also gated; the Refund line stays visible to all.
+- **Ref:** `fix/cost-margin-cards-clean`, 2026-07-15.
+
 ### 🔴 Sales Invoice V2 detail dropped Confirm / Payments / Reopen / Margin — and its Cancel wrote a lowercase status that skipped the revenue reversal
 - **Symptom:** The live Sales Invoice detail (`SalesInvoiceDetailV2.tsx`, the read-only Theme-C rewrite) had no way to Confirm a DRAFT invoice (post revenue + apply credit), no way to record/allocate payments in-place, no Reopen for a cancelled invoice, and no Revenue/Cost/Margin card — all of which the vendored ledger `SalesInvoiceDetail.tsx` (2990 clone) still had. Worse, "Cancel SI" called `updateStatus.mutate({ status: "cancelled" })` and "Mark paid" sent `"paid"` — lowercase.
 - **Root cause:** (a) The V2 rewrite simply never ported those four finance surfaces. (b) The status endpoint `PATCH /sales-invoices/:id/status` keys every transition off an UPPERCASE value: the CONFIRM/REOPEN branches require `SENT`, the cancel branch runs `reverseSiRevenue` + `creditFromCancelledSi` ONLY inside `if (status === 'CANCELLED')`. A lowercase `"cancelled"` falls through to the generic branch, which for a SENT invoice (`ACTIVE.has(prevStatus)`) writes `status:'cancelled'` verbatim to the row and never reverses the posted AR/GL revenue — a silent finance-integrity bug. `"paid"` similarly wrote a lowercase status and skipped the `paid_at` stamp.
