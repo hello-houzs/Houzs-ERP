@@ -151,12 +151,14 @@ const refOf = (r: SoRow): string =>
   r.po_doc_no || r.customer_so_no || r.ref || "—";
 
 // Branding badge tone. Spec: 2990 SOFA = success (green), AKEMI = neutral,
-// other brands = warning (amber). Falls back to first_item_branding when the
-// header brand is blank (mixed-line SOs).
+// BEDFRAME = accent (bedframe-only SOs, derived server-side), other brands =
+// warning (amber). Falls back to first_item_branding when the header brand is
+// blank (mixed-line SOs / bedframe-only SOs).
 const brandOf = (r: SoRow): string => r.branding || r.first_item_branding || "—";
 const brandTone = (b: string): "success" | "neutral" | "warning" | "accent" => {
   const s = (b || "").toUpperCase();
   if (s.includes("2990") || s.includes("SOFA")) return "success";
+  if (s.includes("BEDFRAME")) return "accent";
   if (s.includes("AKEMI")) return "neutral";
   if (s === "—" || !s) return "neutral";
   return "warning";

@@ -120,7 +120,7 @@ import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item
 import { pickCrossCategoryMatch, type AutoMatchCandidate } from '../lib/cross-category-match';
 import { recomputeSoStockAllocation } from '../lib/so-stock-allocation';
 import { creditFromCancelledSo, getCustomerCreditBalance } from '../lib/customer-credits';
-import { summariseReadiness } from '../lib/so-readiness';
+import { summariseReadiness, normCategory } from '../lib/so-readiness';
 import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { soDeliverableRemaining, soLineDeliveries, computeSoLifecycle, soCurrentDocNo, soLineShippedSourcePos } from './delivery-orders-mfg';
 /* Shared 4-state delivery-planning derivation — the SO list emits planning_state
@@ -972,6 +972,25 @@ mfgSalesOrders.get('/', async (c) => {
       }
     }
 
+    /* Bedframe-only branding (Commander 2026-07-16): "如果 BEDFRAME only 的话
+       branding 就放 BEDFRAME". When an SO's lines are ALL bedframe — at least
+       one BEDFRAME line and NO branded MATTRESS/SOFA line — its Branding pill
+       reads "BEDFRAME" instead of a blank dash. Built from the SAME catalog-
+       resolved per-line category (resolveLineCat), so a sofa-module line mis-
+       saved with item_group 'others' can't fool it into hiding an AKEMI/2990
+       brand. Non-branded ACCESSORY / SERVICE / OTHERS lines carry no brand and
+       may legitimately ride along, so they don't disqualify. */
+    const resolvedCatsByDoc = new Map<string, Set<string>>();
+    for (const it of (itemRows ?? []) as Array<{ doc_no: string; item_group: string; item_code: string | null }>) {
+      let s = resolvedCatsByDoc.get(it.doc_no);
+      if (!s) { s = new Set(); resolvedCatsByDoc.set(it.doc_no, s); }
+      s.add(resolveLineCat(it.item_code, it.item_group));
+    }
+    const isBedframeOnly = (docNo: string): boolean => {
+      const s = resolvedCatsByDoc.get(docNo);
+      return !!s && s.has('BEDFRAME') && !s.has('MATTRESS') && !s.has('SOFA');
+    };
+
     /* Commander 2026-05-29 (#19) — Payment Method column summarises the
        payments LEDGER, not just the header's single payment_method field. A
        SO can be settled across several methods (e.g. a cash deposit + a card
@@ -1130,6 +1149,11 @@ mfgSalesOrders.get('/', async (c) => {
       if (fCat === 'MATTRESS' && (!fBranding || !fBranding.trim())) {
         const code = hasRep ? repCode.get(docNo) : firstItemCode.get(docNo);
         fBranding = (code && productBranding.get(code)) || fBranding;
+      }
+      /* Bedframe-only SO → "BEDFRAME" pill (only when no explicit brand text
+         is present, so an AKEMI/2990 line always wins). */
+      if ((!fBranding || !fBranding.trim()) && isBedframeOnly(docNo)) {
+        fBranding = 'BEDFRAME';
       }
       (r as Record<string, unknown>).first_item_branding = fBranding;
       /* #19 — distinct ledger payment methods, sorted + joined ("Cash + Card").
@@ -1967,6 +1991,44 @@ mfgSalesOrders.get('/:docNo', async (c) => {
       (r) => r.item_group as string | null | undefined,
     ),
   );
+  /* Bedframe-only branding for the detail view (Commander 2026-07-16, "如果
+     BEDFRAME only 的话 branding 就放 BEDFRAME") — mirror the list rule so a
+     bedframe-only SO's Branding field reads "BEDFRAME" instead of a dash. Only
+     when the header carries no explicit brand text (an AKEMI/2990 brand always
+     wins). Category is catalog-resolved (mfg_products.category) with an
+     item_group fallback, same as the list, so a sofa line mis-saved with
+     item_group 'others' can't masquerade the SO as bedframe-only. */
+  {
+    const headerBrand = String((salesOrder as { branding?: string | null }).branding ?? '').trim();
+    if (!headerBrand) {
+      const codes = [...new Set(
+        itemRows
+          .map((it) => String((it as { item_code?: string | null }).item_code ?? '').trim())
+          .filter(Boolean),
+      )];
+      const catByCode = new Map<string, string>();
+      for (let k = 0; k < codes.length; k += 300) {
+        const chunk = codes.slice(k, k + 300);
+        if (chunk.length === 0) continue;
+        const { data: prodRows } = await scopeToCompany(
+          sb.from('mfg_products').select('code, category').in('code', chunk),
+          c,
+        );
+        for (const p of (prodRows ?? []) as Array<{ code: string; category: string | null }>) {
+          if (p.category) catByCode.set(p.code, normCategory(p.category));
+        }
+      }
+      const detailCats = new Set<string>();
+      for (const it of itemRows) {
+        const code = String((it as { item_code?: string | null }).item_code ?? '').trim();
+        const grp = String((it as { item_group?: string | null }).item_group ?? '');
+        detailCats.add(catByCode.get(code) ?? normCategory(grp));
+      }
+      if (detailCats.has('BEDFRAME') && !detailCats.has('MATTRESS') && !detailCats.has('SOFA')) {
+        (salesOrder as Record<string, unknown>).first_item_branding = 'BEDFRAME';
+      }
+    }
+  }
   /* Brand letterhead resolution (owner 2026-07) — stamp the R2 key of the
      brand logo the SO PDF should print IN PLACE OF the company logo (the
      company letterhead stays the fallback when this is null). Brands +
