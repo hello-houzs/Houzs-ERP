@@ -53,6 +53,7 @@ import {
   type ChainNode,
 } from "../../components/scm-v2/DocumentRelationshipMapModal";
 import { cn } from "../../lib/utils";
+import { buildVariantSummary } from "@2990s/shared";
 
 // ─── Row types (subset — see MfgSalesOrdersList.tsx for the full SoRow) ────
 
@@ -105,6 +106,7 @@ type SoItem = {
   total_centi: number;
   cancelled: boolean;
   item_group?: string;
+  variants?: Record<string, unknown> | null;
 };
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -586,21 +588,30 @@ function SalesOrderDetailV2ReadOnly() {
       label: "Item",
       alwaysVisible: true,
       getValue: (l) => l.item_code,
-      render: (l) => (
-        <div className="min-w-0">
-          <div className="truncate text-[13px] font-semibold text-ink">
-            {l.description || l.item_code}
+      render: (l) => {
+        // Live variant summary (colour / fabric / divan / leg / seat / specials)
+        // computed from the line's variants blob — same helper the SO full page
+        // and mobile use. Fall back to the stored description2 for older rows
+        // that carry no variants object (which can be stale, so live wins).
+        const variantSummary =
+          buildVariantSummary(l.item_group ?? "", l.variants ?? null) ||
+          (l.description2 ?? "").trim();
+        return (
+          <div className="min-w-0">
+            <div className="truncate text-[13px] font-semibold text-ink">
+              {l.description || l.item_code}
+            </div>
+            <div className="mt-0.5 flex items-center gap-2 font-mono text-[11px] text-ink-muted">
+              <span>{l.item_code}</span>
+              {variantSummary && (
+                <span className="truncate text-ink-secondary">
+                  · {variantSummary}
+                </span>
+              )}
+            </div>
           </div>
-          <div className="mt-0.5 flex items-center gap-2 font-mono text-[11px] text-ink-muted">
-            <span>{l.item_code}</span>
-            {l.description2 && (
-              <span className="truncate text-ink-secondary">
-                · {l.description2}
-              </span>
-            )}
-          </div>
-        </div>
-      ),
+        );
+      },
     },
     {
       key: "qty",

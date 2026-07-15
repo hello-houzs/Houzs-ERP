@@ -56,6 +56,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "../../lib/utils";
 import { useAuth } from "../../auth/AuthContext";
 import { isDirectorUser } from "../../auth/salesAccess";
+import { buildVariantSummary } from "@2990s/shared";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 // Minimal row shape the listing needs. The full SoRow (in MfgSalesOrdersList
@@ -384,10 +385,28 @@ function DetailDrawer({
   // amount_centi names never existed → "—" for every SO, and for mirrored 2990
   // POS lines (money in total_centi, unit_price_centi≈0) the qty×unit fallback
   // rendered RM 0.00. Prefer the authoritative total_centi.
-  const items: Array<{ item_code?: string; description?: string; qty?: number; unit_price_centi?: number; total_centi?: number }> =
+  // Owner 2026-07-15 — the quick-view line must read like the customer doc:
+  // "order line must show description, colour, divan etc." The detail response
+  // already carries item_group / description2 / variants for every line (they
+  // were simply not read here), so widen the local type and render the LIVE
+  // variant summary (shared buildVariantSummary, same helper the SO full page +
+  // mobile use) under the item name.
+  const items: Array<{
+    item_code?: string;
+    description?: string;
+    description2?: string | null;
+    item_group?: string | null;
+    variants?: Record<string, unknown> | null;
+    qty?: number;
+    unit_price_centi?: number;
+    total_centi?: number;
+  }> =
     (detailQ.data as { items?: unknown[] } | undefined)?.items as Array<{
       item_code?: string;
       description?: string;
+      description2?: string | null;
+      item_group?: string | null;
+      variants?: Record<string, unknown> | null;
       qty?: number;
       unit_price_centi?: number;
       total_centi?: number;
@@ -542,18 +561,29 @@ function DetailDrawer({
                 )}
                 {items.map((l, i) => {
                   const amt = l.total_centi ?? (l.qty ?? 0) * (l.unit_price_centi ?? 0);
+                  // Live variant summary (colour / fabric / divan / leg / seat /
+                  // specials) off the line's variants blob; fall back to the
+                  // stored description2 for older rows with no variants object.
+                  const variantSummary =
+                    buildVariantSummary(l.item_group ?? "", l.variants ?? null) ||
+                    (l.description2 ?? "").trim();
                   return (
                     <div
                       key={i}
-                      className="grid grid-cols-[1fr_52px_92px] items-center gap-2 border-b border-border-subtle px-4 py-3 last:border-b-0"
+                      className="grid grid-cols-[1fr_52px_92px] items-start gap-2 border-b border-border-subtle px-4 py-3 last:border-b-0"
                     >
-                      <div>
+                      <div className="min-w-0">
                         <div className="text-[13px] font-semibold text-ink">
                           {l.description || l.item_code || "—"}
                         </div>
                         {l.item_code && (
                           <div className="mt-0.5 font-mono text-[11px] text-ink-muted">
                             {l.item_code}
+                          </div>
+                        )}
+                        {variantSummary && (
+                          <div className="mt-0.5 text-[11.5px] leading-snug text-ink-secondary">
+                            {variantSummary}
                           </div>
                         )}
                       </div>

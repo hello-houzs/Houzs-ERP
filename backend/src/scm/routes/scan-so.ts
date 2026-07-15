@@ -3711,6 +3711,18 @@ scanSo.post('/enqueue', async (c) => {
   }
   const { fileBlocks, uploadedImages, allFiles, firstBuffer } = filesRes.parsed;
   const repGiven = normalizeRepKey(formData.get('salesperson'));
+  // Duplicate-slip = WARN, not BLOCK (owner 2026-07-15: "this was already
+  // opened; whether to open again is the person's decision — don't be too
+  // strict"). The client re-sends the SAME upload with force=1 after the
+  // operator confirms "create anyway", which skips the hard reject below and
+  // lets the order queue (the background job's soft duplicate warning still
+  // marks it so nobody loses the trail).
+  const forceCreate = ((): boolean => {
+    const v = formData.get('force');
+    if (typeof v !== 'string') return false;
+    const s = v.trim().toLowerCase();
+    return s === '1' || s === 'true' || s === 'yes';
+  })();
 
   // Identities captured while the request is still authed — replayed into the
   // headless SO create. user.id = scm.staff UUID (the SCM bridge identity);
@@ -3742,7 +3754,8 @@ scanSo.post('/enqueue', async (c) => {
   //    and the background job's soft duplicate warning still applies. Rule B
   //    (same phone + same slip serial / date+total) intentionally STAYS a
   //    soft warning inside the job — a genuine repeat order is legal.
-  if (firstBuffer) {
+  //    force=1 (operator confirmed "create anyway") skips this reject entirely.
+  if (firstBuffer && !forceCreate) {
     try {
       const dupDocNo = await findRecentSoForSlipSha(svc, await sha256Hex(firstBuffer), null);
       if (dupDocNo) {

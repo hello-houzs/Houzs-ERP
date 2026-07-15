@@ -327,8 +327,10 @@ export const ScanOrderModal = ({ onClose }: Props) => {
   // Single-order duplicate gate — a built prefill held back while the operator
   // decides whether to open the New SO form despite the duplicate warning.
   const [pending, setPending] = useState<{ prefill: ScanPrefill; duplicate: ScanDuplicate } | null>(null);
-  // Per-order 409 duplicate_slip refusal on /enqueue, keyed by OrderRow.id.
+  // Per-order 409 duplicate_slip WARNING on /enqueue, keyed by OrderRow.id.
   const [orderErrors, setOrderErrors] = useState<Record<string, string>>({});
+  // The order id currently being re-queued via "Create anyway" (force=1).
+  const [forcingId, setForcingId] = useState<string | null>(null);
   // Job ids returned by /enqueue this session — the results list polls their
   // status via the shared /scan-so/jobs helper.
   const [enqueuedJobIds, setEnqueuedJobIds] = useState<string[]>([]);
@@ -580,6 +582,46 @@ export const ScanOrderModal = ({ onClose }: Props) => {
      create finish server-side. A 409 duplicate_slip refusal for one order is
      surfaced inline on that order's card (the others still enqueue). The
      results list polls /scan-so/jobs for the drafts as they land in Orders. */
+  // One /scan-so/enqueue POST for an order. force=1 = the operator confirmed
+  // "create anyway" on a duplicate-slip warning, so the backend skips its hard
+  // reject and queues the order (owner 2026-07-15: duplicate = warn, not block).
+  const enqueueOrder = (order: OrderRow, force = false): Promise<{ job_id: string; status: string }> => {
+    const fd = new FormData();
+    fd.append('file', order.slip!);                       // file[0] = order slip
+    if (order.receipt) fd.append('file', order.receipt);  // file[1] = payment receipt
+    const repTyped = salesperson.trim();
+    if (repTyped) fd.append('salesperson', repTyped);
+    if (force) fd.append('force', '1');
+    return authedFetch<{ job_id: string; status: string }>('/scan-so/enqueue', { method: 'POST', body: fd });
+  };
+
+  // "Create anyway" — re-queue a duplicate-slip-warned order with force=1. On
+  // success the card drops off (like a normal queue) and its warning clears; the
+  // background job still marks it a soft duplicate for the trail.
+  const createAnyway = async (orderId: string) => {
+    const order = orders.find((o) => o.id === orderId);
+    if (!order || !order.slip || forcingId) return;
+    setForcingId(orderId);
+    try {
+      const r = await enqueueOrder(order, true);
+      if (r?.job_id) setEnqueuedJobIds((prev) => [...prev, r.job_id]);
+    } catch {
+      setForcingId(null);
+      setError('The order still could not be queued. Please try again.');
+      return;
+    }
+    setForcingId(null);
+    setOrderErrors((cur) => {
+      const next = { ...cur };
+      delete next[orderId];
+      return next;
+    });
+    setOrders((cur) => {
+      const keep = cur.filter((o) => o.id !== orderId);
+      return keep.length ? keep : [newOrder()];
+    });
+  };
+
   const runEnqueueBatch = async () => {
     if (submitting) return;
     const queueable = orders.filter((o) => o.slip);
@@ -591,22 +633,14 @@ export const ScanOrderModal = ({ onClose }: Props) => {
     const newJobIds: string[] = [];
     try {
       for (const order of queueable) {
-        const fd = new FormData();
-        fd.append('file', order.slip!);            // file[0] = order slip
-        if (order.receipt) fd.append('file', order.receipt); // file[1] = payment receipt
-        const repTyped = salesperson.trim();
-        if (repTyped) fd.append('salesperson', repTyped);
         try {
-          const r = await authedFetch<{ job_id: string; status: string }>('/scan-so/enqueue', {
-            method: 'POST',
-            body: fd,
-          });
+          const r = await enqueueOrder(order);
           if (r?.job_id) newJobIds.push(r.job_id);
         } catch (e) {
           const err = e as Error & { status?: number; body?: string };
-          // 409 duplicate_slip = this order's slip already created an SO (hard
-          // reject, nothing queued). Keep it on screen with the reason inline;
-          // the OTHER orders still enqueue.
+          // 409 duplicate_slip = this order's slip already created an SO. Owner
+          // 2026-07-15: WARN, don't block — keep it on screen with the reason +
+          // a "Create anyway" button (force=1); the OTHER orders still enqueue.
           if (err.status === 409 && typeof err.body === 'string' && err.body.includes('duplicate_slip')) {
             let reason = 'This slip was already uploaded.';
             try {
@@ -772,7 +806,26 @@ export const ScanOrderModal = ({ onClose }: Props) => {
                 {renderSlot(order, 'receipt')}
               </div>
               {orderErrors[order.id] && (
-                <div className={styles.orderError}>{orderErrors[order.id]}</div>
+                <div className={styles.warn}>
+                  <AlertTriangle size={18} strokeWidth={1.75} style={{ flex: 'none', marginTop: 1 }} />
+                  <div style={{ flex: 1 }}>
+                    <p className={styles.warnTitle}>Possible duplicate</p>
+                    <p className={styles.warnBody}>
+                      {orderErrors[order.id]} Whether to open it again is your call — create a
+                      new order anyway, or change the photo if it is the same order.
+                    </p>
+                    <div className={styles.warnActions}>
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        onClick={() => void createAnyway(order.id)}
+                        disabled={forcingId === order.id}
+                      >
+                        {forcingId === order.id ? 'Creating…' : 'Create anyway'}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
               )}
             </div>
           ))}
