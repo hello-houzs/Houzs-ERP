@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
-import { getProjectDetail, stripSensitiveChecklist } from "../services/projects";
+import { getProjectDetail, stripSensitiveChecklist, stripSetupDismantle } from "../services/projects";
 import { activeCompanyId } from "../scm/lib/companyScope";
 import {
   getBrandingForCompany,
@@ -156,7 +156,12 @@ app.get("/:id", async (c) => {
   // those checklist rows from the debrief for a non-director position, the
   // same server-side backstop as the detail JSON.
   const hideSensitive = !!user && user.position_id != null && !pmsPrint.canSensitive;
-  const scoped = hideSensitive ? stripSensitiveChecklist(detail as any) : detail;
+  // Setup & Dismantle (owner 2026-07-15) — the crew JSON + "SETUP & DISMANTLE
+  // DOCUMENTS" checklist rows are hidden from non-director Sales (even the PIC)
+  // in the detail JSON, so strip them from the printable debrief too.
+  const hideSetupDismantle = !!user && user.position_id != null && !pmsPrint.canSetupDismantle;
+  let scoped: any = hideSensitive ? stripSensitiveChecklist(detail as any) : detail;
+  if (hideSetupDismantle) scoped = stripSetupDismantle(scoped);
 
   const p = detail.project as any;
   const finance = detail.finance as any;
@@ -455,7 +460,7 @@ app.get("/:id", async (c) => {
 
         <!-- ── 2. Logistics schedule ─────────────────────── -->
         ${
-          p.setup_start_at || p.dismantle_start_at
+          !hideSetupDismantle && (p.setup_start_at || p.dismantle_start_at)
             ? `<section>
                 <h2>2. Logistics Schedule</h2>
                 <div class="kv">

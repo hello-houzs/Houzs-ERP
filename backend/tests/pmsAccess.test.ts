@@ -4,10 +4,11 @@ import {
   isFinanceViewer,
   financeHiddenForUser,
   isSensitiveChecklistItem,
+  isSetupDismantleSection,
   isSalesUser,
   isDirectorUser,
 } from "../src/services/pmsAccess";
-import { stripSensitiveChecklist } from "../src/services/projects";
+import { stripSensitiveChecklist, stripSetupDismantle } from "../src/services/projects";
 import type { AuthUser } from "../src/services/auth";
 
 // Pure-function tests for the project-detail (PMS) section gating — the
@@ -49,6 +50,7 @@ describe("pmsAccess — project-detail section gating", () => {
     expect(a.canRental).toBe(true);
     expect(a.canPayment).toBe(true);
     expect(a.canSensitive).toBe(true);
+    expect(a.canSetupDismantle).toBe(true);
     expect(a.canEdit).toBe(true);
     expect(a.sections).toContain("ACTIONS");
   });
@@ -64,7 +66,9 @@ describe("pmsAccess — project-detail section gating", () => {
     expect(a.sections).not.toContain("WF_SENSITIVE");
     // Still opens + views the project.
     expect(a.canOpen).toBe(true);
-    expect(a.sections).toContain("SETUP_DISMANTLE");
+    // Owner 2026-07-15: Setup & Dismantle is hidden from a Sales PIC too.
+    expect(a.canSetupDismantle).toBe(false);
+    expect(a.sections).not.toContain("SETUP_DISMANTLE");
   });
 
   test("isFinanceViewer / financeHiddenForUser gate money for non-directors only", () => {
@@ -102,21 +106,26 @@ describe("pmsAccess — project-detail section gating", () => {
     expect(a.sections).not.toContain("RENTAL");
   });
 
-  test("Sales NOT the PIC: only setup/expo/chat, no booth, no money", () => {
+  test("Sales NOT the PIC: only expo/chat, no booth, no setup/dismantle, no money", () => {
     const a = getPmsAccess(user({ id: 7, position_name: "Sales Executive" }), { pic_id: 99 });
     expect(a.role).toBe("SALES");
     expect(a.sections).toEqual(
-      expect.arrayContaining(["SETUP_DISMANTLE", "EXPO_MAP", "EVENT_CHAT"]),
+      expect.arrayContaining(["EXPO_MAP", "EVENT_CHAT"]),
     );
+    // Owner 2026-07-15: Setup & Dismantle removed from non-director Sales.
+    expect(a.canSetupDismantle).toBe(false);
+    expect(a.sections).not.toContain("SETUP_DISMANTLE");
     expect(a.sections).not.toContain("FINANCIAL");
     expect(a.sections).not.toContain("BOOTH_LAYOUT");
   });
 
-  test("Logistic = PIC sections minus event chat, no money", () => {
+  test("Logistic = PIC sections minus event chat, no money, keeps setup/dismantle", () => {
     const a = getPmsAccess(user({ position_name: "Logistic" }), { pic_id: 99 });
     expect(a.role).toBe("LOGISTIC");
     expect(a.canFinancial).toBe(false);
+    expect(a.canSetupDismantle).toBe(true);
     expect(a.sections).toContain("BOOTH_LAYOUT");
+    expect(a.sections).toContain("SETUP_DISMANTLE");
     expect(a.sections).not.toContain("EVENT_CHAT");
   });
 
@@ -258,5 +267,75 @@ describe("WF_SENSITIVE checklist stripping — quotation / agreement", () => {
       section_progress: [{ id: 20, total: 1, done: 0, na: 0, complete: 0 }],
     };
     expect(stripSensitiveChecklist(detail)).toBe(detail);
+  });
+});
+
+describe("SETUP_DISMANTLE stripping — crew editor + documents section", () => {
+  test("isSetupDismantleSection matches the SETUP & DISMANTLE DOCUMENTS section (case/space-insensitive)", () => {
+    expect(isSetupDismantleSection({ name: "SETUP & DISMANTLE DOCUMENTS" })).toBe(true);
+    expect(isSetupDismantleSection({ name: "  setup & dismantle documents " })).toBe(true);
+    expect(isSetupDismantleSection({ name: "BOOTH LAYOUT & SETUP" })).toBe(false);
+    expect(isSetupDismantleSection({ name: null })).toBe(false);
+    expect(isSetupDismantleSection(null)).toBe(false);
+  });
+
+  test("NULLs the crew JSON + times and strips the document section, comments, attachments, progress", () => {
+    const detail = {
+      project: {
+        id: 1,
+        setup_crew: '{"drivers":[{"name":"A"}]}',
+        dismantle_crew: '{"drivers":[{"name":"B"}]}',
+        setup_start_at: "2026-07-15T08:00:00Z",
+        dismantle_start_at: "2026-07-18T20:00:00Z",
+      },
+      checklist: [
+        { id: 1, title: "Setup Image", section_id: 60, status: "done" },
+        { id: 2, title: "Defect List", section_id: 60, status: "pending" },
+        { id: 3, title: "3D Design", section_id: 20, status: "pending" },
+      ],
+      checklist_comments: [
+        { id: 100, item_id: 1, body: "ok" },
+        { id: 101, item_id: 3, body: "wip" },
+      ],
+      checklist_attachments: [
+        { id: 200, item_id: 2 },
+        { id: 201, item_id: 3 },
+      ],
+      sections: [
+        { id: 60, name: "SETUP & DISMANTLE DOCUMENTS", sort_order: 60 },
+        { id: 20, name: "3D APPROVAL", sort_order: 20 },
+      ],
+      section_progress: [
+        { id: 60, name: "SETUP & DISMANTLE DOCUMENTS", total: 2, done: 1, na: 0, complete: 0 },
+        { id: 20, name: "3D APPROVAL", total: 1, done: 0, na: 0, complete: 0 },
+      ],
+    };
+    const out = stripSetupDismantle(detail);
+    expect(out.project.setup_crew).toBeNull();
+    expect(out.project.dismantle_crew).toBeNull();
+    expect(out.project.setup_start_at).toBeNull();
+    expect(out.project.dismantle_start_at).toBeNull();
+    expect(out.checklist.map((r: any) => r.id)).toEqual([3]);
+    expect(out.checklist_comments.map((r: any) => r.id)).toEqual([101]);
+    expect(out.checklist_attachments.map((r: any) => r.id)).toEqual([201]);
+    expect(out.sections.map((s: any) => s.id)).toEqual([20]);
+    expect(out.section_progress.map((s: any) => s.id)).toEqual([20]);
+  });
+
+  test("no document section → still NULLs the crew JSON (crew editor is part of the section)", () => {
+    const detail = {
+      project: { id: 1, setup_crew: "{}", dismantle_crew: null, setup_start_at: "x", dismantle_start_at: null },
+      checklist: [{ id: 3, title: "3D Design", section_id: 20, status: "pending" }],
+      checklist_comments: [],
+      checklist_attachments: [],
+      sections: [{ id: 20, name: "3D APPROVAL", sort_order: 20 }],
+      section_progress: [{ id: 20, total: 1, done: 0, na: 0, complete: 0 }],
+    };
+    const out = stripSetupDismantle(detail);
+    expect(out.project.setup_crew).toBeNull();
+    expect(out.project.setup_start_at).toBeNull();
+    // Non-setup checklist untouched.
+    expect(out.checklist.map((r: any) => r.id)).toEqual([3]);
+    expect(out.sections.map((s: any) => s.id)).toEqual([20]);
   });
 });

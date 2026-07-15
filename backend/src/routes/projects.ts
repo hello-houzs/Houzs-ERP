@@ -38,6 +38,7 @@ import {
   archiveStockTransfer,
   getUserPhasesOnProject,
   stripSensitiveChecklist,
+  stripSetupDismantle,
 } from "../services/projects";
 import {
   getProjectScope,
@@ -1411,6 +1412,17 @@ app.get("/:id", requirePageAccess("projects.list"), async (c) => {
   const stripSensitive = user.position_id != null && !pms.canSensitive;
   if (stripSensitive) {
     payload = stripSensitiveChecklist(payload);
+  }
+  // Setup & Dismantle (owner 2026-07-15): the logistics crew-per-lorry editor
+  // AND the "SETUP & DISMANTLE DOCUMENTS" checklist rows are hidden from every
+  // non-director Sales user — even the project's own PIC. Strip the crew JSON
+  // (setup_crew / dismantle_crew + scheduled times) and those checklist rows on
+  // the wire for a position whose PMS role lacks SETUP_DISMANTLE — the same
+  // defense-in-depth as finance / payment / sensitive above. Position-gated so
+  // un-migrated users keep legacy access until positions are assigned.
+  const stripSetupDismantleData = user.position_id != null && !pms.canSetupDismantle;
+  if (stripSetupDismantleData) {
+    payload = stripSetupDismantle(payload);
   }
   // Sales-reports row scoping (owner 2026-07): the `sales_reports` panel is a
   // per-rep sale-amount log. A non-director sales user may see only THEIR OWN

@@ -183,7 +183,7 @@ type ProjectDetail = {
   attachments?: ProjectAttachment[];
   _access?: {
     level?: string;
-    pms?: { canFinancial?: boolean; canEdit?: boolean; canPayment?: boolean; role?: string };
+    pms?: { canFinancial?: boolean; canEdit?: boolean; canPayment?: boolean; canSetupDismantle?: boolean; role?: string };
   };
 };
 
@@ -582,6 +582,20 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
     staleTime: 15_000,
   });
 
+  // Setup & Dismantle section (crew editor + phase photos) is section-gated by
+  // the PMS role (owner 2026-07-15): hidden from every non-director Sales user,
+  // even the project's own PIC — single logic layer with the desktop
+  // Projects.tsx gate. Fall back to the row-level "full" level when the backend
+  // omitted pms (older cached response); the backend strips the crew + document
+  // rows either way. Computed up here so it can also gate the phase-photos fetch
+  // below (off, not hide — no fetch when the section is hidden).
+  const canSetupDismantle =
+    data == null
+      ? false // unknown until the detail loads — don't fire the phase-photos fetch yet
+      : data._access?.pms
+        ? !!data._access.pms.canSetupDismantle
+        : (data._access?.level ?? "full") === "full";
+
   // Crew-uploaded setup/dismantle evidence photos (mig 084) live on a
   // separate endpoint. Used only for the uploader credit on the Setup &
   // dismantle block — a 403 (no phase access) just yields no credit.
@@ -589,6 +603,7 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
     queryKey: ["mobile-pms-phase-photos", id],
     queryFn: () => api.get<{ photos: PhasePhoto[] }>(`/api/projects/${id}/phase-photos`),
     staleTime: 15_000,
+    enabled: canSetupDismantle,
     retry: false,
   });
   const photos = photoData?.photos ?? [];
@@ -618,7 +633,9 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
     queryKey: ["mobile-pms-fleet"],
     queryFn: () => api.get<{ data: FleetStaff[] }>(`/api/fleet/staff`),
     staleTime: 5 * 60_000,
-    enabled: canWrite,
+    // Only feeds the Setup & Dismantle crew editor — skip the fetch when the
+    // section is hidden (off, not hide).
+    enabled: canWrite && canSetupDismantle,
     retry: false,
   });
   const drivers = useMemo(
@@ -632,7 +649,8 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
     queryKey: ["mobile-pms-lorries"],
     queryFn: () => api.get<{ lorries: Lorry[] }>(`/api/scm/lorries`),
     staleTime: 5 * 60_000,
-    enabled: canWrite,
+    // Only feeds the Setup & Dismantle crew editor — skip when it's hidden.
+    enabled: canWrite && canSetupDismantle,
     retry: false,
   });
   const lorries = lorriesQ.data?.lorries ?? [];
@@ -886,20 +904,24 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
               reload={reload}
             />
 
-            {/* setup & dismantle (logistic) */}
-            <SetupDismantle
-              projectId={id}
-              project={p}
-              photos={photos}
-              drivers={drivers}
-              lorries={lorries}
-              canWrite={canWrite && !archived}
-              busy={busy}
-              setBusy={setBusy}
-              patchProject={patchProject}
-              notify={notify}
-              reloadPhotos={reloadPhotos}
-            />
+            {/* setup & dismantle (logistic) — hidden entirely from non-director
+                Sales, even the PIC (owner 2026-07-15). Same PMS SETUP_DISMANTLE
+                gate as the desktop Projects.tsx crew editor. */}
+            {canSetupDismantle && (
+              <SetupDismantle
+                projectId={id}
+                project={p}
+                photos={photos}
+                drivers={drivers}
+                lorries={lorries}
+                canWrite={canWrite && !archived}
+                busy={busy}
+                setBusy={setBusy}
+                patchProject={patchProject}
+                notify={notify}
+                reloadPhotos={reloadPhotos}
+              />
+            )}
 
             {/* floor plans & layout + stock transfers (upload-only) */}
             <FloorPlans
