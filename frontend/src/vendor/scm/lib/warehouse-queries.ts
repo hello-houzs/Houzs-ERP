@@ -116,3 +116,108 @@ export function useDeleteRack() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['warehouse', 'racks'] }),
   });
 }
+
+/* ── Stock in / out / transfer + movement ledger ───────────────────────────
+   HOUZS VENDOR — Warehouse (Rack/REC) desktop experience (feat/rec-warehouse-
+   desktop-p1). The rich 3-tab Warehouse page needs the stock-flow mutations and
+   the movement ledger read the plain Racks & Bins grid never used. All hit the
+   existing backend routes verbatim in shape:
+     POST /warehouse/stock-in  — { rackId, productCode, productName?, sizeLabel?,
+                                   customerName?, sourceDocNo?, qty?, notes?, reason? }
+     POST /warehouse/stock-out — { itemId, reason? }
+     POST /warehouse/transfer  — { fromItemId, toRackId, qty? }  (same warehouse)
+     GET  /warehouse/movements — ?type&from&to&warehouseId&limit
+   Every mutation invalidates the whole ['warehouse'] query family so BOTH the
+   rack grid (['warehouse','racks']) and the ledger (['warehouse','movements'])
+   refetch. */
+
+export type RackMovementType = 'STOCK_IN' | 'STOCK_OUT' | 'TRANSFER';
+
+export type RackMovement = {
+  id: string;
+  movement_type: RackMovementType;
+  rack_id: string | null;
+  rack_label: string | null;
+  to_rack_id: string | null;
+  to_rack_label: string | null;
+  warehouse_id: string | null;
+  product_code: string;
+  variant_key: string | null;
+  product_name: string | null;
+  source_doc_no: string | null;
+  quantity: number;
+  reason: string | null;
+  performed_by: string | null;
+  created_at: string;
+};
+
+export type StockInBody = {
+  rackId: string;
+  productCode: string;
+  productName?: string;
+  sizeLabel?: string;
+  customerName?: string;
+  sourceDocNo?: string;
+  qty?: number;
+  notes?: string;
+  reason?: string;
+};
+
+export function useStockIn() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: StockInBody) =>
+      authedFetch<{ item: RackItem; status: RackStatus }>(`/warehouse/stock-in`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['warehouse'] }),
+  });
+}
+
+export function useStockOut() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { itemId: string; reason?: string }) =>
+      authedFetch<{ ok: true; status: RackStatus | null }>(`/warehouse/stock-out`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['warehouse'] }),
+  });
+}
+
+export function useTransfer() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { fromItemId: string; toRackId: string; qty?: number; reason?: string }) =>
+      authedFetch<{ ok: true; fromStatus: RackStatus; toStatus: RackStatus }>(`/warehouse/transfer`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['warehouse'] }),
+  });
+}
+
+export function useMovements(opts?: {
+  type?: RackMovementType | '';
+  from?: string;
+  to?: string;
+  warehouseId?: string;
+}) {
+  return useQuery({
+    queryKey: ['warehouse', 'movements', opts ?? {}],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      if (opts?.type) params.set('type', opts.type);
+      if (opts?.from) params.set('from', opts.from);
+      if (opts?.to) params.set('to', opts.to);
+      if (opts?.warehouseId) params.set('warehouseId', opts.warehouseId);
+      return authedFetch<{ movements: RackMovement[] }>(
+        `/warehouse/movements${params.toString() ? `?${params.toString()}` : ''}`,
+      ).then((r) => r.movements);
+    },
+    staleTime: 30_000,
+    retry: 1,
+  });
+}
