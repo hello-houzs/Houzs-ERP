@@ -52,7 +52,9 @@ import {
 import {
   useMfgDeliveryOrderDetail,
   useUpdateMfgDeliveryOrderStatus,
+  useUpdateMfgDeliveryOrderItem,
 } from "../../vendor/scm/lib/delivery-order-queries";
+import { useRacks } from "../../vendor/scm/lib/warehouse-queries";
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
 import { useStaffLookup } from "../../hooks/useStaffLookup";
 import { useNotify } from "../../vendor/scm/components/NotifyDialog";
@@ -124,6 +126,12 @@ type DoItem = {
   cancelled?: boolean;
   item_group?: string;
   variants?: Record<string, unknown> | null;
+  /* REC P4 — per-line source rack + storekeeper resolution (stamped by the
+     detail GET: warehouse_id = ship-from warehouse, racks = candidate labels,
+     rack_id = the operator's explicit pick). */
+  rack_id?: string | null;
+  racks?: string[];
+  warehouse_id?: string | null;
 };
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -262,6 +270,92 @@ function AsideCard({ title, children }: { title: string; children: ReactNode }) 
       </div>
       {children}
     </div>
+  );
+}
+
+// REC P4 — Source rack picker. Per goods line, choose which physical rack the
+// stock ships FROM; the backend logs a rack STOCK_OUT on dispatch (honouring
+// the pick, else auto-picking the rack holding the product). Lines whose
+// warehouse has no racks are hidden. Once the DO has shipped the pick is
+// locked (the stock-out already ran) and shown read-only.
+function SourceRackCard({
+  items,
+  doId,
+  locked,
+  notify,
+}: {
+  items: DoItem[];
+  doId: string;
+  locked: boolean;
+  notify: ReturnType<typeof useNotify>;
+}) {
+  const racksQ = useRacks();
+  const updateItem = useUpdateMfgDeliveryOrderItem();
+  const racksByWh = useMemo(() => {
+    const m = new Map<string, { id: string; rack: string }[]>();
+    for (const r of racksQ.data?.racks ?? []) {
+      const arr = m.get(r.warehouse_id) ?? [];
+      arr.push({ id: r.id, rack: r.rack });
+      m.set(r.warehouse_id, arr);
+    }
+    return m;
+  }, [racksQ.data]);
+
+  const lines = items.filter(
+    (l) => l.warehouse_id && (racksByWh.get(l.warehouse_id)?.length ?? 0) > 0
+  );
+  if (lines.length === 0) return null;
+
+  const pick = (l: DoItem, rackId: string) => {
+    updateItem.mutate(
+      { id: doId, itemId: l.id, rackId: rackId || null },
+      {
+        onError: (e) =>
+          notify({
+            title: "Could not set source rack",
+            body: e instanceof Error ? e.message : String(e),
+            tone: "error",
+          }),
+      }
+    );
+  };
+
+  return (
+    <AsideCard title="Source racks">
+      <p className="mb-3 text-[11.5px] leading-snug text-ink-muted">
+        {locked
+          ? "This DO has shipped — stock was taken off these racks on dispatch."
+          : "Pick which rack each line ships from. Applied when the DO is dispatched; leave on Auto to pull from the rack already holding it."}
+      </p>
+      <div className="space-y-3">
+        {lines.map((l) => {
+          const whRacks = racksByWh.get(l.warehouse_id as string) ?? [];
+          return (
+            <div key={l.id} className="border-b border-border-subtle pb-3 last:border-b-0 last:pb-0">
+              <div className="truncate text-[12.5px] font-semibold text-ink">
+                {l.description || l.item_code}
+              </div>
+              <div className="mb-1.5 text-[11px] text-ink-muted">
+                {(l.racks?.length ?? 0) > 0 ? `On rack: ${l.racks!.join(", ")}` : "Not yet placed on a rack"}
+              </div>
+              <select
+                className="w-full rounded-md border border-border bg-surface px-2 py-1.5 text-[12.5px] text-ink disabled:opacity-60"
+                value={l.rack_id ?? ""}
+                disabled={locked || updateItem.isPending}
+                onChange={(e) => pick(l, e.target.value)}
+              >
+                <option value="">Auto — rack holding it</option>
+                {whRacks.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.rack}
+                  </option>
+                ))}
+              </select>
+            </div>
+          );
+        })}
+      </div>
+    </AsideCard>
   );
 }
 
@@ -1236,6 +1330,13 @@ export function DeliveryOrderDetailV2() {
           <DetailAside>
             <div className="hidden lg:sticky lg:top-[124px] space-y-3 md:block">
               <DeliveryStatusCard header={deliveryOrder} totalQty={totalQty} />
+
+              <SourceRackCard
+                items={items}
+                doId={deliveryOrder.id}
+                locked={["dispatched", "in_transit", "signed", "delivered", "invoiced"].includes(rawStatus)}
+                notify={notify}
+              />
 
               <AsideCard title="Key dates">
                 <KeyDateRow k="DO date" v={fmtDate(deliveryOrder.do_date)} />

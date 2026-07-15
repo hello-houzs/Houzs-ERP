@@ -159,7 +159,7 @@ const ITEM =
   'id, delivery_order_id, so_item_id, item_code, item_group, description, description2, ' +
   'uom, qty, m3_milli, unit_price_centi, discount_centi, line_total_centi, ' +
   'unit_cost_centi, line_cost_centi, line_margin_centi, variants, notes, ' +
-  'line_delivery_date, line_delivery_date_overridden, created_at';
+  'line_delivery_date, line_delivery_date_overridden, rack_id, created_at';
 
 const PAYMENT_COLS =
   'id, delivery_order_id, paid_at, method, merchant_provider, installment_months, ' +
@@ -621,7 +621,7 @@ async function deductInventoryForDo(sb: any, deliveryOrderId: string, performedB
   }
   const doHeader = doHeaderRes.data;
   const { data: items } = await sb.from('delivery_order_items')
-    .select('id, so_item_id, item_code, description, qty, item_group, variants')
+    .select('id, so_item_id, item_code, description, qty, item_group, variants, rack_id')
     .eq('delivery_order_id', deliveryOrderId);
   const headerWarehouseId = (doHeader as { warehouse_id: string | null } | null)?.warehouse_id ?? null;
   const doNo = (doHeader as { do_number: string } | null)?.do_number ?? deliveryOrderId;
@@ -705,7 +705,190 @@ async function deductInventoryForDo(sb: any, deliveryOrderId: string, performedB
       await recomputeSoStockAllocation(sb);
     } catch (e) { /* eslint-disable-next-line no-console */ console.error('[so-allocation] post-do-ship failed:', e); }
   }
+  /* REC P4 — physical RACK stock-out. The DO just shipped, so pull the goods off
+     the rack(s) they sat on (the storekeeper counterpart of the GRN placement).
+     Best-effort + idempotent inside; a rack-ledger hiccup never blocks the ship. */
+  try {
+    await stockOutDoLinesFromRacks(sb, deliveryOrderId, doNo, performedBy, lineWh, items as Array<Record<string, unknown>>, (doHeader as { company_id?: number | null } | null)?.company_id ?? null);
+  } catch (e) { /* eslint-disable-next-line no-console */ console.error('[do-rack] stock-out failed:', e); }
   return movementErrors;
+}
+
+// ── DO rack stock-out (REC P4) ───────────────────────────────────────────────
+// Mirror of grn-rack-sync.placeGrnLinesOnRacks, in reverse: on the DO's first
+// ship, take each goods line's qty OFF a physical rack and log a STOCK_OUT
+// warehouse_rack_movement. Source rack = the line's explicit rack_id (operator
+// pick) when set, else auto-pick the rack(s) holding that product in the line's
+// ship-from warehouse (FIFO by stocked_in_date). Called from the single
+// deductInventoryForDo chokepoint (past its idempotency guard) so it runs once
+// per DO regardless of which UI path dispatched. Best-effort throughout — the
+// separate rack ledger must never break the FIFO stock OUT.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function stockOutDoLinesFromRacks(
+  sb: any,
+  deliveryOrderId: string,
+  doNo: string,
+  performedBy: string,
+  lineWh: Map<string, string | null>,
+  items: Array<Record<string, unknown>>,
+  companyId: number | null,
+): Promise<void> {
+  const RACK_REASON = 'Delivery order dispatch';
+  // Idempotency — this DO already logged its rack stock-out?
+  const { count: already } = await sb.from('warehouse_rack_movements')
+    .select('id', { head: true, count: 'exact' })
+    .eq('movement_type', 'STOCK_OUT').eq('source_doc_no', doNo).eq('reason', RACK_REASON);
+  if ((already ?? 0) > 0) return;
+
+  const companyCol = companyId != null ? { company_id: companyId } : {};
+  const touchedRacks = new Set<string>();
+
+  for (const it of items) {
+    if (isServiceLine({ itemGroup: it.item_group as string | null, itemCode: it.item_code as string })) continue;
+    const qty = Number(it.qty ?? 0);
+    if (qty <= 0) continue;
+    const productCode = (it.item_code as string | null) ?? null;
+    if (!productCode) continue;
+    const warehouseId = lineWh.get(it.id as string) ?? null;
+    if (!warehouseId) continue;
+
+    // Resolve the source rack row(s). Explicit pick first; else the racks in the
+    // ship-from warehouse that actually hold this product, oldest stock first.
+    const explicitRackId = (it.rack_id as string | null) ?? null;
+    let rackRows: Array<{ id: string; rack: string | null; warehouse_id: string | null }> = [];
+    if (explicitRackId) {
+      const { data } = await sb.from('warehouse_racks')
+        .select('id, rack, warehouse_id').eq('id', explicitRackId).limit(1);
+      rackRows = (data ?? []) as typeof rackRows;
+    } else {
+      const { data: whRacks } = await sb.from('warehouse_racks')
+        .select('id, rack, warehouse_id').eq('warehouse_id', warehouseId);
+      rackRows = (whRacks ?? []) as typeof rackRows;
+    }
+    if (rackRows.length === 0) continue; // warehouse has no racks — nothing to move
+    const rackIds = rackRows.map((r) => r.id);
+    const rackById = new Map(rackRows.map((r) => [r.id, r]));
+
+    // Placements of this product on the candidate rack(s), oldest first (FIFO).
+    const { data: placements } = await sb.from('warehouse_rack_items')
+      .select('id, rack_id, qty, stocked_in_date')
+      .in('rack_id', rackIds).eq('product_code', productCode)
+      .order('stocked_in_date', { ascending: true });
+    const placementRows = (placements ?? []) as Array<{ id: string; rack_id: string; qty: number; stocked_in_date: string }>;
+
+    let remaining = qty;
+    const outByRack = new Map<string, number>();
+    for (const p of placementRows) {
+      if (remaining <= 0) break;
+      const take = Math.min(p.qty, remaining);
+      if (take >= p.qty) {
+        await sb.from('warehouse_rack_items').delete().eq('id', p.id);
+      } else {
+        await sb.from('warehouse_rack_items').update({ qty: p.qty - take }).eq('id', p.id);
+      }
+      outByRack.set(p.rack_id, (outByRack.get(p.rack_id) ?? 0) + take);
+      remaining -= take;
+    }
+
+    // No matching placement found (product never racked, or all consumed). When
+    // the operator explicitly named a rack, still honour the pick by logging the
+    // whole line off that rack so the ledger reflects their action; otherwise
+    // skip silently (never invent a rack the goods were not on).
+    if (outByRack.size === 0) {
+      if (!explicitRackId) continue;
+      outByRack.set(explicitRackId, qty);
+    }
+
+    const moveRows = [...outByRack.entries()].map(([rackId, movedQty]) => {
+      const r = rackById.get(rackId);
+      touchedRacks.add(rackId);
+      return {
+        ...companyCol,
+        movement_type: 'STOCK_OUT',
+        rack_id: rackId,
+        rack_label: r?.rack ?? null,
+        warehouse_id: r?.warehouse_id ?? warehouseId,
+        product_code: productCode,
+        product_name: (it.description as string | null) ?? null,
+        source_doc_no: doNo,
+        quantity: movedQty,
+        reason: RACK_REASON,
+        performed_by: performedBy,
+      };
+    });
+    if (moveRows.length > 0) await sb.from('warehouse_rack_movements').insert(moveRows);
+  }
+
+  for (const rackId of touchedRacks) await refreshRackStatusInline(sb, rackId);
+}
+
+// Recompute + persist a rack's derived status (items win over the reserved
+// flag). Local twin of warehouse.ts refreshRackStatus / grn-rack-sync's copy —
+// kept here so the DO route has no cross-route import.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function refreshRackStatusInline(sb: any, rackId: string): Promise<void> {
+  const { count } = await sb.from('warehouse_rack_items')
+    .select('id', { head: true, count: 'exact' }).eq('rack_id', rackId);
+  const { data: rack } = await sb.from('warehouse_racks')
+    .select('reserved').eq('id', rackId).maybeSingle();
+  const status = (count ?? 0) > 0 ? 'OCCUPIED' : (rack?.reserved ? 'RESERVED' : 'EMPTY');
+  await sb.from('warehouse_racks').update({ status, updated_at: new Date().toISOString() }).eq('id', rackId);
+}
+
+// ── DO rack stock-out REVERSAL (on cancel) ───────────────────────────────────
+// A cancelled DO returns its FIFO stock (reverseInventoryForDo); do the same for
+// the physical rack ledger. For each STOCK_OUT this DO logged, log a balancing
+// STOCK_IN and put the qty back on the same rack (best-effort: re-creates a rack
+// item so occupancy recovers — original customer/date metadata is not restored).
+// Idempotent on the STOCK_IN marker so a double-cancel never double-credits.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function returnDoRacksOnCancel(sb: any, deliveryOrderId: string, doNo: string, performedBy: string, companyId: number | null): Promise<void> {
+  const OUT_REASON = 'Delivery order dispatch';
+  const IN_REASON = 'DO cancelled';
+  const { count: alreadyBack } = await sb.from('warehouse_rack_movements')
+    .select('id', { head: true, count: 'exact' })
+    .eq('movement_type', 'STOCK_IN').eq('source_doc_no', doNo).eq('reason', IN_REASON);
+  if ((alreadyBack ?? 0) > 0) return;
+
+  const { data: outs } = await sb.from('warehouse_rack_movements')
+    .select('rack_id, rack_label, warehouse_id, product_code, product_name, quantity')
+    .eq('movement_type', 'STOCK_OUT').eq('source_doc_no', doNo).eq('reason', OUT_REASON);
+  const outRows = (outs ?? []) as Array<{ rack_id: string | null; rack_label: string | null; warehouse_id: string | null; product_code: string; product_name: string | null; quantity: number }>;
+  if (outRows.length === 0) return;
+
+  const companyCol = companyId != null ? { company_id: companyId } : {};
+  const today = todayMyt();
+  const touchedRacks = new Set<string>();
+
+  for (const o of outRows) {
+    if (o.rack_id) {
+      await sb.from('warehouse_rack_items').insert({
+        ...companyCol,
+        rack_id: o.rack_id,
+        product_code: o.product_code,
+        product_name: o.product_name,
+        source_doc_no: doNo,
+        qty: o.quantity,
+        stocked_in_date: today,
+        notes: 'Returned on DO cancel',
+      });
+      touchedRacks.add(o.rack_id);
+    }
+    await sb.from('warehouse_rack_movements').insert({
+      ...companyCol,
+      movement_type: 'STOCK_IN',
+      rack_id: o.rack_id,
+      rack_label: o.rack_label,
+      warehouse_id: o.warehouse_id,
+      product_code: o.product_code,
+      product_name: o.product_name,
+      source_doc_no: doNo,
+      quantity: o.quantity,
+      reason: IN_REASON,
+      performed_by: performedBy,
+    });
+  }
+  for (const rackId of touchedRacks) await refreshRackStatusInline(sb, rackId);
 }
 
 /* ── resyncInventoryForDo (Commander 2026-05-30, TASK #24) ────────────────────
@@ -2309,6 +2492,9 @@ function buildItemRow(deliveryOrderId: string, it: Record<string, unknown>, line
     notes: (it.notes as string) ?? null,
     line_delivery_date: (it.lineDeliveryDate as string | null) ?? null,
     line_delivery_date_overridden: Boolean(it.lineDeliveryDateOverridden ?? false),
+    /* REC P4 (mig 0118) — the SOURCE rack this line ships from. Null = let the
+       dispatch chokepoint auto-pick the rack holding this product. */
+    rack_id: (it.rackId as string | undefined) || null,
     ...(typeof lineNo === 'number' ? { line_no: lineNo } : {}),
   };
 }
@@ -3153,6 +3339,8 @@ deliveryOrdersMfg.patch('/:id/items/:itemId', async (c) => {
     ['itemCode', 'item_code'], ['itemGroup', 'item_group'], ['description', 'description'],
     ['uom', 'uom'], ['variants', 'variants'], ['notes', 'notes'],
     ['lineDeliveryDate', 'line_delivery_date'],
+    /* REC P4 (mig 0118) — operator picks/changes the source rack per line. */
+    ['rackId', 'rack_id'],
   ] as const) {
     if (it[from] !== undefined) updates[to] = it[from];
   }
@@ -3438,6 +3626,13 @@ deliveryOrdersMfg.patch('/:id/status', async (c) => {
      best-effort (a movement failure never un-cancels the DO). */
   if (body.status === 'CANCELLED') {
     try { await reverseInventoryForDo(sb, id, user.id); } catch { /* best-effort */ }
+    /* REC P4 — put the physical rack stock back (mirror of the dispatch
+       stock-out). Best-effort + idempotent; never blocks the cancel. */
+    try {
+      const { data: doRow } = await sb.from('delivery_orders').select('do_number, company_id').eq('id', id).maybeSingle();
+      const doNo = (doRow as { do_number?: string } | null)?.do_number ?? null;
+      if (doNo) await returnDoRacksOnCancel(sb, id, doNo, user.id, (doRow as { company_id?: number | null } | null)?.company_id ?? null);
+    } catch (e) { /* eslint-disable-next-line no-console */ console.error('[do-rack] cancel reversal failed:', e); }
     /* SO #4 — this DO's cancellation may release its SO from DELIVERED back to a
        partial/booked status. Recompute the SO's delivery status from live
        delivered qtys (bidirectional + idempotent). Best-effort. */

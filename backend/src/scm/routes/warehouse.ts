@@ -162,28 +162,63 @@ warehouse.get('/', async (c) => {
   });
 });
 
+// ── Resolve the SCOPE of a rack create: which warehouse RECORDS the rack(s)
+// should be created into. A rack "shared across warehouses" is materialised as
+// one rack row per target warehouse (fan-out on create) — this keeps every
+// downstream consumer (GRN placement, DO stock-out, stock-in) keyed on the
+// existing per-warehouse warehouse_id with ZERO query changes. Owner's split
+// warehouse RECORDS (Display / KL goods / ice-city) that share rack numbers
+// simply get the same label created into each.
+//   body.allWarehouses === true      → every active warehouse in the company
+//   body.warehouseIds: string[]      → those warehouses (multi-select)
+//   body.warehouseId: string         → single warehouse (back-compat)
+async function resolveRackTargets(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  sb: any, c: Parameters<typeof activeCompanyId>[0], body: Record<string, unknown>,
+): Promise<string[]> {
+  if (body.allWarehouses === true) {
+    const { data } = await scopeToCompany(sb.from('warehouses').select('id'), c)
+      .eq('is_active', true);
+    return [...new Set((data ?? []).map((w: { id: string }) => w.id))];
+  }
+  if (Array.isArray(body.warehouseIds)) {
+    return [...new Set(
+      (body.warehouseIds as unknown[]).map((x) => String(x ?? '').trim()).filter(Boolean),
+    )];
+  }
+  const one = String(body.warehouseId ?? '').trim();
+  return one ? [one] : [];
+}
+
 // ── POST /warehouse/racks — create one rack, or seed `count` racks ─────────
+// Scope may be a single warehouse (back-compat), a chosen set (warehouseIds),
+// or every warehouse (allWarehouses). Fan-out inserts the label into each
+// target, skipping any warehouse where it already exists so one collision never
+// aborts the whole batch (the unique (warehouse_id, rack) still guards dupes).
 warehouse.post('/racks', async (c) => {
   const sb = c.get('supabase');
   let body: Record<string, unknown>;
   try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
 
-  const warehouseId = String(body.warehouseId ?? '').trim();
-  if (!warehouseId) return c.json({ error: 'warehouse_required' }, 400);
+  const targets = await resolveRackTargets(sb, c, body);
+  if (targets.length === 0) return c.json({ error: 'warehouse_required' }, 400);
+  const multi = targets.length > 1;
 
-  // Seed mode: { warehouseId, count, prefix } creates "Rack 1".."Rack N",
+  // Seed mode: { count, prefix } creates "Rack 1".."Rack N" in every target,
   // skipping labels that already exist (unique (warehouse_id, rack)).
   const count = Number(body.count ?? 0);
   if (Number.isFinite(count) && count > 0) {
     const prefix = String(body.prefix ?? 'Rack').trim() || 'Rack';
-    const { data: existing } = await sb
-      .from('warehouse_racks').select('rack').eq('warehouse_id', warehouseId);
-    const taken = new Set((existing ?? []).map((r: { rack: string }) => r.rack));
-    const rows = [];
-    for (let i = 1; i <= Math.min(count, 200); i++) {
-      const label = `${prefix} ${i}`;
-      // multi-company: stamp the active company on every seeded rack
-      if (!taken.has(label)) rows.push({ company_id: activeCompanyId(c), warehouse_id: warehouseId, rack: label, status: 'EMPTY' });
+    const rows: Array<Record<string, unknown>> = [];
+    for (const warehouseId of targets) {
+      const { data: existing } = await sb
+        .from('warehouse_racks').select('rack').eq('warehouse_id', warehouseId);
+      const taken = new Set((existing ?? []).map((r: { rack: string }) => r.rack));
+      for (let i = 1; i <= Math.min(count, 200); i++) {
+        const label = `${prefix} ${i}`;
+        // multi-company: stamp the active company on every seeded rack
+        if (!taken.has(label)) rows.push({ company_id: activeCompanyId(c), warehouse_id: warehouseId, rack: label, status: 'EMPTY' });
+      }
     }
     if (rows.length === 0) return c.json({ racks: [], created: 0 });
     const { data, error } = await sb.from('warehouse_racks').insert(rows).select(RACK_COLS);
@@ -191,23 +226,41 @@ warehouse.post('/racks', async (c) => {
     return c.json({ racks: data ?? [], created: data?.length ?? 0 }, 201);
   }
 
-  // Single-rack mode.
+  // Single-rack mode (one label, fanned out to every target warehouse).
   const rack = String(body.rack ?? '').trim();
   if (!rack) return c.json({ error: 'rack_required' }, 400);
-  const { data, error } = await sb.from('warehouse_racks').insert({
-    company_id: activeCompanyId(c), // multi-company: stamp the active company
-    warehouse_id: warehouseId,
-    rack,
-    position: (body.position as string) ?? null,
-    reserved: body.reserved === true,
-    status: body.reserved === true ? 'RESERVED' : 'EMPTY',
-    notes: (body.notes as string) ?? null,
-  }).select(RACK_COLS).single();
+
+  // Skip targets that already carry this label so a partial collision doesn't
+  // 23505 the whole fan-out — only genuinely-new (warehouse, label) pairs insert.
+  const { data: existing } = await sb
+    .from('warehouse_racks').select('warehouse_id').eq('rack', rack).in('warehouse_id', targets);
+  const alreadyHas = new Set((existing ?? []).map((r: { warehouse_id: string }) => r.warehouse_id));
+  const rows = targets
+    .filter((warehouseId) => !alreadyHas.has(warehouseId))
+    .map((warehouseId) => ({
+      company_id: activeCompanyId(c), // multi-company: stamp the active company
+      warehouse_id: warehouseId,
+      rack,
+      position: (body.position as string) ?? null,
+      reserved: body.reserved === true,
+      status: body.reserved === true ? 'RESERVED' : 'EMPTY',
+      notes: (body.notes as string) ?? null,
+    }));
+
+  // Single warehouse that already had the label → the old duplicate_rack 409.
+  if (rows.length === 0) {
+    if (!multi) return c.json({ error: 'duplicate_rack' }, 409);
+    return c.json({ racks: [], created: 0 });
+  }
+
+  const { data, error } = await sb.from('warehouse_racks').insert(rows).select(RACK_COLS);
   if (error) {
     if (error.code === '23505') return c.json({ error: 'duplicate_rack' }, 409);
     return c.json({ error: 'insert_failed', reason: error.message }, 500);
   }
-  return c.json({ rack: data }, 201);
+  // Back-compat: a single-warehouse single-rack create still returns { rack }.
+  if (!multi) return c.json({ rack: (data ?? [])[0] ?? null }, 201);
+  return c.json({ racks: data ?? [], created: data?.length ?? 0 }, 201);
 });
 
 // ── PATCH /warehouse/racks/:id — toggle reserved / edit label/notes ────────

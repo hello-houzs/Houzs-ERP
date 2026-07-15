@@ -80,9 +80,18 @@ export function useRacks(opts?: { warehouseId?: string }) {
    Every mutation invalidates the ['warehouse','racks'] query family so the grid
    + KPI summary refetch. */
 
+/* Scope — which warehouse RECORD(s) the rack(s) are created into. A rack shared
+   across warehouses is materialised as one row per target (fan-out on create),
+   so pass a single warehouseId (back-compat), a chosen set (warehouseIds), or
+   allWarehouses:true. Exactly one of the three is used, resolved server-side. */
+export type RackScope =
+  | { warehouseId: string }
+  | { warehouseIds: string[] }
+  | { allWarehouses: true };
+
 export type CreateRackBody =
-  | { warehouseId: string; rack: string; position?: string; reserved?: boolean; notes?: string }
-  | { warehouseId: string; count: number; prefix?: string };
+  | (RackScope & { rack: string; position?: string; reserved?: boolean; notes?: string })
+  | (RackScope & { count: number; prefix?: string });
 
 export function useCreateRack() {
   const qc = useQueryClient();
