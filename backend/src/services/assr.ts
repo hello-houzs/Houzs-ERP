@@ -1208,17 +1208,19 @@ export interface ListAssrFilters {
    *  these names — additive, OR-ed with the id clause; never narrows it.
    *  Only consulted for the scoped tier (visible_to_user_ids defined). */
   visible_agent_names?: string[];
-  /** Multi-company (CROSS-COMPANY module): the caller's ALLOWED company ids
-   *  from companyContext (allowedCompanyIds(c)). When non-empty the list is
-   *  widened to `c.company_id IN (...)` — never narrowed to the active pick.
-   *  Empty / undefined = company context unresolved (pre-migration, D1 test
-   *  mirror, cold-start) → no predicate, single-company behaviour. */
+  /** Multi-company (HOUZS-ONLY module): the company ids ASSR is pinned to. ASSR
+   *  is Houzs-exclusive, so the route passes houzsCompanyIds(c) — a single
+   *  `[houzsId]` — NOT the caller's full allowed set. The list is therefore
+   *  restricted to `c.company_id IN (<houzs>)`; a both-company user never sees
+   *  2990 cases here. Empty / undefined = HOUZS unresolved (pre-migration, D1
+   *  test mirror, cold-start) → no predicate, single-company behaviour. */
   allowed_company_ids?: number[];
 }
 
-/** Shared allowed-companies WHERE fragment for the raw-SQL ASSR readers.
- *  The ids come from OUR companies master (validated integers), so inlining
- *  is safe. No-op on an unresolved ([]) allow-list. */
+/** Shared company-scope WHERE fragment for the raw-SQL ASSR readers. ASSR pins
+ *  to HOUZS, so this receives `[houzsId]` from the route. The ids come from OUR
+ *  companies master (validated integers), so inlining is safe. No-op on an
+ *  unresolved ([]) list. */
 function pushAllowedCompanies(where: string[], ids: number[] | undefined): void {
   const clean = (ids ?? [])
     .map(Number)
