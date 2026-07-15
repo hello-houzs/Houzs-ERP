@@ -503,48 +503,55 @@ function CasesView({
       key: "stage",
       filterable: true,
       label: "Stage",
-      render: (r) => (
-        // Single-line — `flex-wrap` removed (was the only thing
-        // letting badges spill to a second row). Badges that overflow
-        // are now clipped with ellipsis at the cell edge.
-        <div className="flex items-center gap-1.5">
-          {r.archived_at && (
-            <Badge tone="neutral" variant="outline" className="bg-ink-muted/10">
-              Archived
-            </Badge>
-          )}
-          {/* Funnel-consistent dot: red when this row is SLA-breached
-              (the funnel box goes red for the same reason), else the
-              stage's own colour (amber open / green completed). */}
-          <StatusDot
-            variant={
-              r.stage !== "completed" && r.is_breached === 1
-                ? "error"
-                : stageVariant(r.stage)
-            }
-            label={caseStageLabel(r.stage)}
-          />
-          {r.stage !== "completed" && (r.is_breached === 1 || r.escalated_at) && (
-            // One SLA badge: solid red = breached, outline = escalated
-            // only (overdue >24h). Merged from the old separate SLA + Esc
-            // pills to calm the row.
-            <Badge
-              tone="error"
-              variant={r.is_breached === 1 ? "solid" : "outline"}
-              title={
-                r.is_breached === 1
-                  ? `SLA breached by ${Math.abs(r.hours_to_deadline ?? 0)}h${r.escalated_at ? " · escalated" : ""}`
-                  : `Auto-escalated ${r.escalated_at?.slice(0, 10)} — SLA overdue >24h`
-              }
-            >
-              SLA
-            </Badge>
-          )}
-          {/* Dwell-days badge removed — the dedicated "Dwell" column now
-             carries the in-stage day count, so the Stage cell only shows the
-             stage name + the SLA flag. */}
-        </div>
-      ),
+      render: (r) => {
+        // Sub-status detail (Nick 2026-07-15: the list must show e.g.
+        // "Pending Inspection" under Verification rows) — second muted
+        // line so the stage name + badges stay single-line above it.
+        const sub = assrSubStatus(r.stage, r.sub_status ?? null);
+        return (
+          <div>
+            <div className="flex items-center gap-1.5">
+              {r.archived_at && (
+                <Badge tone="neutral" variant="outline" className="bg-ink-muted/10">
+                  Archived
+                </Badge>
+              )}
+              {/* Funnel-consistent dot: red when this row is SLA-breached
+                  (the funnel box goes red for the same reason), else the
+                  stage's own colour (amber open / green completed). */}
+              <StatusDot
+                variant={
+                  r.stage !== "completed" && r.is_breached === 1
+                    ? "error"
+                    : stageVariant(r.stage)
+                }
+                label={caseStageLabel(r.stage)}
+              />
+              {r.stage !== "completed" && (r.is_breached === 1 || r.escalated_at) && (
+                // One SLA badge: solid red = breached, outline = escalated
+                // only (overdue >24h). Merged from the old separate SLA + Esc
+                // pills to calm the row.
+                <Badge
+                  tone="error"
+                  variant={r.is_breached === 1 ? "solid" : "outline"}
+                  title={
+                    r.is_breached === 1
+                      ? `SLA breached by ${Math.abs(r.hours_to_deadline ?? 0)}h${r.escalated_at ? " · escalated" : ""}`
+                      : `Auto-escalated ${r.escalated_at?.slice(0, 10)} — SLA overdue >24h`
+                  }
+                >
+                  SLA
+                </Badge>
+              )}
+            </div>
+            {sub && (
+              <div className="mt-0.5 pl-4 text-[10px] font-medium text-ink-muted">
+                {sub.label}
+              </div>
+            )}
+          </div>
+        );
+      },
       // caseStageLabel (not the legacy StatusDot stageLabel) — the old
       // helper only maps the 5 legacy slugs, so 9-stage rows fell through
       // to raw slugs in the funnel filter + CSV export.
