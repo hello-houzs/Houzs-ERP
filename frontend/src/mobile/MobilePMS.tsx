@@ -1494,7 +1494,7 @@ function TaskRow({
       <div className="docrow" style={{ flexWrap: "wrap" }}>
         <span style={{ width: 15, height: 15, flex: "none" }} />
         <span style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600, color: "#11140f" }}>{it.title}</span>
-        {it.role_label && c && <span className="rbadge" style={{ background: `${c}1f`, color: c }}>{it.role_label}</span>}
+        {it.role_label && c && <span className="rbadge" style={{ background: `${c}1f`, color: c, minWidth: 66, display: "inline-flex", alignItems: "center", justifyContent: "center", boxSizing: "border-box" }}>{it.role_label}</span>}
         {opts.map(([v, label]) => {
           const on = v === cur;
           return (
@@ -1538,7 +1538,7 @@ function TaskRow({
         )}
       </span>
       <span style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600, color: na ? "#9aa093" : "#11140f", textDecoration: na ? "line-through" : "none" }}>{it.title}</span>
-      {it.role_label && c && <span className="rbadge" style={{ background: `${c}1f`, color: c }}>{it.role_label}</span>}
+      {it.role_label && c && <span className="rbadge" style={{ background: `${c}1f`, color: c, minWidth: 66, display: "inline-flex", alignItems: "center", justifyContent: "center", boxSizing: "border-box" }}>{it.role_label}</span>}
       {it.due_date && <span style={{ fontSize: 9.5, color: "#9aa093", whiteSpace: "nowrap" }}>{dm(it.due_date)}</span>}
       {canAttach && (
         <>
