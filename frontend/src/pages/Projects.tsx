@@ -4630,10 +4630,13 @@ function ProjectDetailContent({
   }
 
   async function setItemStatus(item: ChecklistItem, status: ChecklistStatus) {
-    if (item.required_perm && !can(item.required_perm)) {
-      toast.error(`Requires ${item.required_perm} permission`);
-      return;
-    }
+    // Owner 2026-07-15: never surface a permission-error toast on a checklist
+    // control. The tick / status buttons are rendered disabled when the user
+    // can't tick (off, not error); this is the belt-and-suspenders no-op so a
+    // control reached any other way silently does nothing instead of firing a
+    // 403 that lands as a "Forbidden: requires one of ..." toast.
+    if (!can("projects.write") && !can("projects.checklist.tick")) return;
+    if (item.required_perm && !can(item.required_perm)) return;
     try {
       await api.post(`/api/projects/checklist/${item.id}/status`, { status });
       detail.reload();
