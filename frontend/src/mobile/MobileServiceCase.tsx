@@ -16,6 +16,7 @@ import {
   activeAssrStages,
   type AssrStageDef,
   assrSubStatus,
+  ASSR_SUB_STATUSES,
 } from "../vendor/scm/lib/assr/stages";
 import "./mobile.css";
 
@@ -900,7 +901,7 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
       case "under_verification":
         return (
           <>
-            <StageSubChip c={c} stage="under_verification" />
+            <StageSubChip c={c} stage="under_verification" busy={busy} disabled={dis} patchCase={patchCase} />
             <div className="fld-l">Outcome</div>
             <div style={{ display: "flex", gap: 7, margin: "6px 0 10px", flexWrap: "wrap" }}>
               {VERIFICATION_OPTIONS.map((o) => {
@@ -991,7 +992,7 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
       case "pending_supplier_pickup":
         return (
           <>
-            <StageSubChip c={c} stage="pending_supplier_pickup" />
+            <StageSubChip c={c} stage="pending_supplier_pickup" busy={busy} disabled={dis} patchCase={patchCase} />
             <KV label="Supplier" value={String(get(c, "creditorName", "creditor_name") ?? creditorCode ?? "—")} />
             <KV label="Supplier code" value={creditorCode ? String(creditorCode) : "—"} mono />
             {/* Folded in from the retired Item Pickup stage (mig 0110). */}
@@ -2178,23 +2179,39 @@ function PGrid({ label, value, mono, span, multiline }: { label: string; value: 
   );
 }
 
-// Sub-status chip — the finer state inside Verification / Supplier
-// (Nick 2026-07-15), derived from case fields via the shared
-// assrSubStatus helper. Shown only on the case's CURRENT stage card.
-function StageSubChip({ c, stage }: { c: Any; stage: string }) {
+// Sub-status switcher (小类, Nick 2026-07-15) — directly switchable
+// toggle inside the case's CURRENT stage card; PATCHes sub_status.
+function StageSubChip({ c, stage, busy, disabled, patchCase }: {
+  c: Any;
+  stage: string;
+  busy: boolean;
+  disabled?: boolean;
+  patchCase: (body: Record<string, unknown>, err: string) => void;
+}) {
   if (stageOf(c) !== stage) return null;
-  const sub = assrSubStatus(stage, {
-    qcReceiptDate: get(c, "qcReceiptDate", "qc_receipt_date"),
-    qcIssueResult: get(c, "qcIssueResult", "qc_issue_result"),
-    supplierPickupAt: get(c, "supplierPickupAt", "supplier_pickup_at"),
-  });
-  if (!sub) return null;
+  const opts = ASSR_SUB_STATUSES[stage];
+  if (!opts) return null;
+  const cur = assrSubStatus(stage, String(get(c, "subStatus", "sub_status") ?? "") || null);
   return (
-    <div style={{ marginBottom: 10 }}>
-      <span style={{ display: "inline-block", padding: "4px 11px", borderRadius: 999, background: BROWN_SOFT, color: BROWN_FG, fontSize: 11, fontWeight: 700 }}>
-        {sub.label}
-      </span>
-    </div>
+    <>
+      <div className="fld-l">Sub-status</div>
+      <div style={{ display: "flex", gap: 7, margin: "6px 0 10px", flexWrap: "wrap" }}>
+        {opts.map((o) => {
+          const active = cur?.key === o.key;
+          return (
+            <button
+              key={o.key}
+              onClick={() => { if (!disabled && !active) patchCase({ sub_status: o.key }, "Couldn't switch sub-status"); }}
+              disabled={disabled || busy}
+              className="tinybtn"
+              style={active ? { background: BROWN, borderColor: BROWN, color: "#fff" } : undefined}
+            >
+              {o.label}
+            </button>
+          );
+        })}
+      </div>
+    </>
   );
 }
 

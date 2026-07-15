@@ -1342,11 +1342,25 @@ app.post(
 // Same digit-only constraint as the GET — keeps any future literal
 // route under /api/assr (e.g. /metrics, /summary) reachable when the
 // methods overlap.
+const SUB_STATUS_VALUES = new Set([
+  "pending_inspection",
+  "qc_issue_result",
+  "pending_supplier_pickup",
+  "pending_supplier_return",
+]);
+
 app.patch("/:id{[0-9]+}", requirePermission("service_cases.write"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const userId = (c as any).get?.("userId") ?? 0;
   const body = await c.req.json<Record<string, any>>();
+  if (
+    body.sub_status !== undefined &&
+    body.sub_status !== null &&
+    !SUB_STATUS_VALUES.has(String(body.sub_status))
+  ) {
+    return c.json({ error: "Unknown sub-status" }, 400);
+  }
   const ok = await patchAssrCase(c.env, id, body, userId);
   if (!ok) return c.json({ error: "Not found or no changes" }, 404);
   return c.json({ ok: true });

@@ -607,6 +607,19 @@ export async function transitionStage(
   ];
   const binds: any[] = [newStage, newStatus, nowIso, nowIso, newTargetDays];
 
+  // Nick 2026-07-15 — switchable sub-status (小类). Entering a stage
+  // that has sub-states seeds its first one; every other stage clears
+  // the field so a stale value can't leak across stages. Ops switches
+  // it afterwards via PATCH sub_status.
+  const subDefault =
+    newStage === "under_verification"
+      ? "pending_inspection"
+      : newStage === "pending_supplier_pickup"
+        ? "pending_supplier_pickup"
+        : null;
+  sets.push("sub_status = ?");
+  binds.push(subDefault);
+
   if (newStage === "completed") {
     sets.push("closed_at = ?", "completion_date = ?");
     binds.push(nowIso, nowIso.slice(0, 10));
@@ -729,6 +742,9 @@ const PATCH_FIELDS = [
   // Mig 0105 — QC-on-receipt result (pass/fail/na), shown next to
   // qc_receipt_date in the Verification stage panel.
   "qc_issue_result",
+  // Nick 2026-07-15 — switchable sub-status (小类) inside Verification
+  // and Supplier. Values are allow-listed in the PATCH route.
+  "sub_status",
 ] as const;
 
 export async function patchAssrCase(
@@ -797,6 +813,18 @@ export async function patchAssrCase(
     }
   }
 
+  // Sub-status switches land on the timeline as system events (like
+  // stage changes) — capture the old value for the diff.
+  let prevSubStatus: string | null = null;
+  if ("sub_status" in body) {
+    const prev = await env.DB.prepare(
+      `SELECT sub_status FROM assr_cases WHERE id = ?`
+    )
+      .bind(id)
+      .first<{ sub_status: string | null }>();
+    prevSubStatus = prev?.sub_status ?? null;
+  }
+
   // For audited fields (complaint_issue), capture the OLD value so the
   // service-log row reflects an actual diff, not just "edited at X".
   let prevComplaint: string | null = null;
@@ -841,6 +869,27 @@ export async function patchAssrCase(
   }
   if ("assigned_to_2" in body) {
     await logActivity(env, id, "assignment_2", null, String(body.assigned_to_2 ?? ""), null, userId);
+  }
+
+  if ("sub_status" in body && (prevSubStatus ?? null) !== (body.sub_status ?? null)) {
+    const SUB_LABELS: Record<string, string> = {
+      pending_inspection: "Pending Inspection",
+      qc_issue_result: "QC Issue Result",
+      pending_supplier_pickup: "Pending Supplier Pickup",
+      pending_supplier_return: "Pending Supplier Return",
+    };
+    await logActivity(
+      env,
+      id,
+      "sub_status_change",
+      prevSubStatus,
+      body.sub_status ?? null,
+      body.sub_status
+        ? `Sub-status → ${SUB_LABELS[body.sub_status] ?? body.sub_status}`
+        : "Sub-status cleared",
+      userId,
+      { category: "system", source_channel: "app" }
+    );
   }
 
   // Audit SO-number corrections — the case's whole customer identity

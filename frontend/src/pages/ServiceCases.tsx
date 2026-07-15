@@ -78,7 +78,7 @@ import { ServiceMetrics } from "./ServiceMetrics";
 import { ServiceSettingsView } from "./ServiceSettings";
 import { ServiceLeadTimePortal } from "./ServiceLeadTimePortal";
 import { ServiceProgressTracker } from "../components/ServiceProgressTracker";
-import { resolutionRoute, isStageActive, assrSubStatus } from "../vendor/scm/lib/assr/stages";
+import { resolutionRoute, isStageActive, assrSubStatus, assrSubStatusLabel, ASSR_SUB_STATUSES } from "../vendor/scm/lib/assr/stages";
 import type {
   Paginated,
   AssrCase,
@@ -3259,6 +3259,7 @@ function DetailContent({
               onChange={(s) => transition(s)}
               disabled={!!c.archived_at}
               subStatus={caseSubStatus(c)}
+              onSubChange={(k) => patch({ sub_status: k })}
             />
             <StatusSummaryBar
               c={c}
@@ -4441,6 +4442,14 @@ function DetailContent({
                         );
                         if (a.note) body = a.note;
                         break;
+                      case "sub_status_change":
+                        title = (
+                          <>
+                            Sub-status changed to{" "}
+                            <span className="font-bold">{assrSubStatusLabel(a.to_value)}</span>
+                          </>
+                        );
+                        break;
                       case "note":
                         // Title is redundant — the CUSTOMER/PURCHASING
                         // pill on the "by" row already says which kind.
@@ -5021,15 +5030,11 @@ function StageRow({
   );
 }
 
-// Derives the finer state inside Verification / Supplier from the
-// case's own fields (Nick 2026-07-15). Shared logic lives in
+// Resolves the case's stored sub-status (小类) — directly switchable
+// via the Workflow card's Sub-status select. Shared table lives in
 // vendor/scm/lib/assr/stages so mobile can't drift.
 function caseSubStatus(c: any): { key: string; label: string } | null {
-  return assrSubStatus(c?.stage, {
-    qcReceiptDate: c?.qc_receipt_date ?? null,
-    qcIssueResult: c?.qc_issue_result ?? null,
-    supplierPickupAt: c?.supplier_pickup_at ?? null,
-  });
+  return assrSubStatus(c?.stage, c?.sub_status ?? null);
 }
 
 function WorkflowCard({
@@ -5039,6 +5044,7 @@ function WorkflowCard({
   onChange,
   disabled,
   subStatus,
+  onSubChange,
 }: {
   currentStage: AssrStage;
   // PR 4 — pass the filtered active-stage list. Internal resolution
@@ -5047,8 +5053,10 @@ function WorkflowCard({
   transitioning: boolean;
   onChange: (s: AssrStage) => void;
   disabled?: boolean;
-  /** Finer state inside the current stage — rendered under its label. */
+  /** Stored sub-status of the current stage — rendered under its label. */
   subStatus?: { key: string; label: string } | null;
+  /** Directly switch the sub-status (PATCH sub_status). */
+  onSubChange?: (key: string) => void;
 }) {
   const curIdx = Math.max(0, stages.findIndex((s) => s.id === currentStage));
   const n = stages.length;
@@ -5076,6 +5084,19 @@ function WorkflowCard({
                   <option key={s.id} value={s.id}>{s.long}</option>
                 ))}
               </select>
+              {onSubChange && ASSR_SUB_STATUSES[currentStage] && (
+                <select
+                  value={subStatus?.key ?? ASSR_SUB_STATUSES[currentStage][0].key}
+                  onChange={(e) => onSubChange(e.target.value)}
+                  disabled={transitioning}
+                  className="h-8 rounded-md border border-accent/40 bg-accent-soft/20 px-2.5 text-[12.5px] font-semibold text-accent outline-none focus:border-accent disabled:opacity-60"
+                  title="Switch the sub-status within this stage"
+                >
+                  {ASSR_SUB_STATUSES[currentStage].map((o) => (
+                    <option key={o.key} value={o.key}>{o.label}</option>
+                  ))}
+                </select>
+              )}
             </>
           )}
         </div>
