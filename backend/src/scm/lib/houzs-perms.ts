@@ -14,7 +14,7 @@
 
 import type { MiddlewareHandler } from 'hono';
 import { hasPermission } from '../../services/permissions';
-import { isDirectorUser, isSalesUser } from '../../services/pmsAccess';
+import { isDirectorUser, isSalesUser, isFinanceViewer } from '../../services/pmsAccess';
 import type { AuthUser } from '../../services/auth';
 import type { Env, Variables } from '../env';
 
@@ -89,6 +89,35 @@ export function isSalesCaller(c: HouzsUserSource): boolean {
   return isSalesUser({
     position_name: hu.position_name ?? null,
     department_name: hu.department_name ?? null,
+    permissions_set: hu.permissions_set,
+  } as AuthUser);
+}
+
+/**
+ * True when the REAL caller may see COST / MARGIN / per-category subtotal money
+ * on SCM documents — the finance tier. Mirrors services/pmsAccess.isFinanceViewer
+ * (Owner/IT `*` OR a director position: Super Admin / Sales Director / Finance
+ * Manager), the SAME gate the PMS project-detail + analytics endpoints use to
+ * hide the financial snapshot from non-directors, so the FE `project_finance_viewer`
+ * flag (auth/me = isFinanceViewer(user)) and this agree caller-for-caller.
+ *
+ * Deliberately STRICTER than canViewAllSales: that also admits any position that
+ * holds the `scm.so.view_all` matrix grant (e.g. a logistics/ops user who may
+ * legitimately see ALL sales documents) — such a caller must STILL NOT see cost
+ * or margin. Fails CLOSED (no houzsUser / no director position → not finance)
+ * so a newly-exposed finance column can never leak to a mis-classified caller.
+ *
+ * Same caller-source shim as canViewAllSales: inside /api/scm/* the `user`
+ * context is the pinned scm.staff system row (no position), so we read the REAL
+ * Houzs caller stashed on `houzsUser`. isFinanceViewer only reads position_name
+ * + permissions_set (its ProjectLike is pic_id:null, so sales resolve to SALES,
+ * never DIRECTOR), which are exactly the fields middleware/auth.ts mirrors here.
+ */
+export function canViewScmFinance(c: HouzsUserSource): boolean {
+  const hu = c.get('houzsUser');
+  if (!hu) return false;
+  return isFinanceViewer({
+    position_name: hu.position_name ?? null,
     permissions_set: hu.permissions_set,
   } as AuthUser);
 }
