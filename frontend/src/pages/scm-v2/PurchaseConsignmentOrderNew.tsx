@@ -767,6 +767,7 @@ export const PurchaseConsignmentOrderNew = () => {
 
                     <PcVariantEditor
                       category={l.category ?? ''}
+                      itemCode={l.materialCode}
                       variants={l.variants as Record<string, unknown>}
                       onChange={(k, v) => setVariant(l.rid, k, v)}
                       fabrics={fabrics}

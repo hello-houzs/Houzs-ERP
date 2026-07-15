@@ -9,8 +9,8 @@
 // CSS is colocated in pages/scm/); the lib + @2990s/shared imports are
 // verbatim (those modules are vendored under vendor/scm/lib + vendor/shared).
 import { useMemo } from 'react';
-import { activeOptions, maintPickerValues } from '@2990s/shared';
-import { useSpecialAddons, type MaintenanceConfig } from '../lib/mfg-products-queries';
+import { activeOptions, maintPickerValues, restrictPricedToPool, restrictStringsToPool } from '@2990s/shared';
+import { useSpecialAddons, useModelAllowedOptionsByCode, type MaintenanceConfig } from '../lib/mfg-products-queries';
 import { fabricOptionLabel, type FabricTrackingRow } from '../lib/fabric-queries';
 import { sortByNumeric, byText } from '../lib/sort-options';
 import styles from '../../../pages/scm-v2/SalesOrderDetail.module.css';
@@ -56,15 +56,20 @@ const pickableFabrics = (fabrics: FabricTrackingRow[], current: string): FabricT
   fabrics.filter((f) => f.is_active !== false || f.fabric_code === current);
 
 export const PcVariantEditor = ({
-  category, variants, onChange, fabrics, maint,
+  category, variants, onChange, fabrics, maint, itemCode,
 }: {
   category: string;
   variants: Record<string, unknown>;
   onChange: (key: string, value: unknown) => void;
   fabrics: FabricTrackingRow[];
   maint: MaintenanceConfig;
+  /* SKU code for this line — resolves the Model's allowed_options so the
+     variant dropdowns offer ONLY what the Model permits (owner 2026-07-15,
+     parity with SoLineCard). Optional: absent/unknown ⇒ no restriction. */
+  itemCode?: string;
 }) => {
   const specials = Array.isArray(variants.specials) ? (variants.specials as string[]) : [];
+  const allowOpts = useModelAllowedOptionsByCode(itemCode || undefined).data ?? null;
 
   // Specials pool now comes from special_addons (Backend↔POS parity, Loo
   // 2026-06-08), filtered by this line's category — replacing the legacy
@@ -108,7 +113,7 @@ export const PcVariantEditor = ({
               onChange={(e) => onChange('gap', e.target.value)}
             >
               <option value="" disabled>Select…</option>
-              {sortByNumeric(maintPickerValues(maint.gaps, String(variants.gap ?? ''))).map((g) => (<option key={g} value={g}>{g}</option>))}
+              {sortByNumeric(restrictStringsToPool(maintPickerValues(maint.gaps, String(variants.gap ?? '')), allowOpts?.gaps, String(variants.gap ?? ''))).map((g) => (<option key={g} value={g}>{g}</option>))}
             </select>
           </label>
           <label className={styles.field}>
@@ -119,7 +124,7 @@ export const PcVariantEditor = ({
               onChange={(e) => onChange('divanHeight', e.target.value)}
             >
               <option value="" disabled>Select…</option>
-              {sortByNumeric(activeOptions(maint.divanHeights, String(variants.divanHeight ?? ''))).map((o) => (<option key={o.value} value={o.value}>{o.value}</option>))}
+              {sortByNumeric(restrictPricedToPool(activeOptions(maint.divanHeights, String(variants.divanHeight ?? '')), allowOpts?.divan_heights, String(variants.divanHeight ?? ''))).map((o) => (<option key={o.value} value={o.value}>{o.value}</option>))}
             </select>
           </label>
           <label className={styles.field}>
@@ -130,7 +135,7 @@ export const PcVariantEditor = ({
               onChange={(e) => onChange('legHeight', e.target.value)}
             >
               <option value="" disabled>Select…</option>
-              {sortByNumeric(activeOptions(maint.legHeights, String(variants.legHeight ?? ''))).map((o) => (<option key={o.value} value={o.value}>{o.value}</option>))}
+              {sortByNumeric(restrictPricedToPool(activeOptions(maint.legHeights, String(variants.legHeight ?? '')), allowOpts?.leg_heights, String(variants.legHeight ?? ''))).map((o) => (<option key={o.value} value={o.value}>{o.value}</option>))}
             </select>
           </label>
         </div>
@@ -170,7 +175,7 @@ export const PcVariantEditor = ({
               onChange={(e) => onChange('seatHeight', e.target.value)}
             >
               <option value="" disabled>Select…</option>
-              {sortByNumeric(maintPickerValues(maint.sofaSizes, String(variants.seatHeight ?? ''))).map((s) => (<option key={s} value={s}>{s}</option>))}
+              {sortByNumeric(restrictStringsToPool(maintPickerValues(maint.sofaSizes, String(variants.seatHeight ?? '')), allowOpts?.sizes, String(variants.seatHeight ?? ''))).map((s) => (<option key={s} value={s}>{s}</option>))}
             </select>
           </label>
           <label className={styles.field}>
@@ -181,7 +186,7 @@ export const PcVariantEditor = ({
               onChange={(e) => onChange('legHeight', e.target.value)}
             >
               <option value="" disabled>Select…</option>
-              {sortByNumeric(activeOptions(maint.sofaLegHeights, String(variants.legHeight ?? ''))).map((o) => (<option key={o.value} value={o.value}>{o.value}</option>))}
+              {sortByNumeric(restrictPricedToPool(activeOptions(maint.sofaLegHeights, String(variants.legHeight ?? '')), allowOpts?.leg_heights, String(variants.legHeight ?? ''))).map((o) => (<option key={o.value} value={o.value}>{o.value}</option>))}
             </select>
           </label>
           <span />
