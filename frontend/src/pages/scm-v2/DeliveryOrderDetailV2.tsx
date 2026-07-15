@@ -311,6 +311,38 @@ function PersonRow({
   );
 }
 
+// ─── Recent activity timeline (mirrors SalesOrderDetailV2) ─────────────────
+type ActivityDot = "success" | "primary" | "muted";
+const DOT_CLS: Record<ActivityDot, string> = {
+  success: "bg-synced",
+  primary: "bg-primary",
+  muted: "bg-border-strong",
+};
+function ActivityRow({
+  title,
+  meta,
+  dot,
+  isLast,
+}: {
+  title: string;
+  meta: string;
+  dot: ActivityDot;
+  isLast?: boolean;
+}) {
+  return (
+    <div className="flex gap-3 pb-3.5">
+      <div className="flex flex-col items-center">
+        <span className={cn("mt-1 h-2 w-2 rounded-full", DOT_CLS[dot])} />
+        {!isLast && <span className="mt-1 w-[2px] flex-1 bg-border-subtle" />}
+      </div>
+      <div className="min-w-0">
+        <div className="text-[12.5px] font-semibold text-ink">{title}</div>
+        <div className="mt-0.5 text-[11px] text-ink-muted">{meta}</div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Delivery-status aside hero (dark slab) ────────────────────────────────
 //
 // Replaces the earlier "Dispatch" driver-focused hero. Now surfaces the four
@@ -1255,6 +1287,44 @@ export function DeliveryOrderDetailV2() {
                         : "Not recorded"
                   }
                   tone="neutral"
+                />
+              </AsideCard>
+
+              {/* Recent activity — synthesized from the header's status +
+                  origin info (same source as the History modal; no new
+                  fetch), mirroring SalesOrderDetailV2's aside card. */}
+              <AsideCard title="Recent activity">
+                <ActivityRow
+                  title={`Status · ${EFFECTIVE_TONE[effectiveOf(deliveryOrder)].label}`}
+                  meta={fmtDate(deliveryOrder.do_date)}
+                  dot={
+                    EFFECTIVE_TONE[effectiveOf(deliveryOrder)].tone === "success"
+                      ? "success"
+                      : EFFECTIVE_TONE[effectiveOf(deliveryOrder)].tone === "error"
+                        ? "muted"
+                        : "primary"
+                  }
+                />
+                {deliveryOrder.customer_delivery_date && (
+                  <ActivityRow
+                    title={`Delivery scheduled ${fmtDate(deliveryOrder.customer_delivery_date)}`}
+                    meta={fmtDate(deliveryOrder.do_date)}
+                    dot="primary"
+                  />
+                )}
+                <ActivityRow
+                  title={
+                    deliveryOrder.so_doc_no
+                      ? `Created from ${deliveryOrder.so_doc_no}`
+                      : "Created"
+                  }
+                  meta={`${fmtDate(deliveryOrder.created_at || deliveryOrder.do_date)}${
+                    deliveryOrder.issued_by_name
+                      ? ` · ${deliveryOrder.issued_by_name}`
+                      : ""
+                  }`}
+                  dot="muted"
+                  isLast
                 />
               </AsideCard>
             </div>
