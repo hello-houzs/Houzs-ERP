@@ -7,7 +7,8 @@
 // ----------------------------------------------------------------------------
 
 import { useMemo, useState } from 'react';
-import { Plus } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Layers, Plus } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import {
   useWarehouses,
@@ -94,10 +95,18 @@ export const Warehouses = () => {
         <div>
           <h1 className={styles.title}>Warehouses</h1>
         </div>
-        <Button variant="primary" size="md" onClick={() => setCreating(true)}>
-          <Plus {...ICON} />
-          <span>New Warehouse</span>
-        </Button>
+        <div className={styles.actionsRow}>
+          <Link to="/scm/warehouses/racks" style={{ textDecoration: 'none' }}>
+            <Button variant="ghost" size="md">
+              <Layers {...ICON} />
+              <span>Racks &amp; Bins</span>
+            </Button>
+          </Link>
+          <Button variant="primary" size="md" onClick={() => setCreating(true)}>
+            <Plus {...ICON} />
+            <span>New Warehouse</span>
+          </Button>
+        </div>
       </div>
 
       <div className={styles.headerRow}>
