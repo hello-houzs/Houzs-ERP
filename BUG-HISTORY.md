@@ -13,6 +13,11 @@ Severity tags: 🔴 critical/high · 🟠 medium · 🟢 low.
 - **Root cause:** (a) The tick + status buttons are already `disabled={!canTick}`, but the shared `setItemStatus` handler could still be reached (e.g. other control paths / gated items) and fired the POST, whose 403 landed as a toast; the per-item `required_perm` client guard also `toast.error`ed. (b) The Team "Departments" nav entry carried `showForSalesDirector: true`.
 - **Fix:** (a) `setItemStatus` now silently no-ops when the user lacks `projects.write`+`projects.checklist.tick`, and the `required_perm` guard returns silently (no toast) — off, not error; controls remain visually disabled. (b) Removed `showForSalesDirector` from the Departments nav entry (Members + Org Chart stay).
 - **Ref:** `fix/team-nav-and-checklist-ux`, 2026-07-15.
+### 🟠 Purchase Invoice detail showed no variants + no edit; GRN→PI picker showed no variants
+- **Symptom:** PI detail lines showed only code/description (no fabric/gaps/divan/leg/seat/specials chips) and had no editor; the GRN→PI convert picker rows showed no variant summary. Last doc in the SCM set still missing variant visibility.
+- **Root cause:** V2 rewrite `PurchaseInvoiceDetailV2` rendered read-only without variant chips and ignored `?edit=1` (the variant-capable legacy `PurchaseInvoiceDetail` with PoLineCard existed but was unrouted); `PurchaseInvoiceFromGrn` rendered raw description, not the variant summary. Backend already returns `variants` on the PI item select and the created-PI data carry-over was already intact.
+- **Fix:** `PurchaseInvoiceDetailV2` renders variant chips per line (VariantChip/variantsOf copied from GoodsReceivedDetailV2) and lazy-forwards `?edit=1` to `PurchaseInvoiceDetail` (same pattern as GRN/SO/PO). `PurchaseInvoiceFromGrn` picker rows now render the shared `VariantDescription`. No backend change.
+- **Ref:** `fix/pi-variant-display-edit`, 2026-07-15.
 
 ### 🟠 Sales Invoice line items showed no variants; DO detail lacked a Recent-activity card (job-card unification)
 - **Symptom:** The Sales Invoice detail line items showed only code + description with NO variant summary (fabric/gaps/divan/leg/seat/specials), inconsistent with SO/DO; and the DO detail aside lacked the Recent-activity card the SO/SI have. Owner asked for DO/SI/Amendment job cards to follow the SO template.
