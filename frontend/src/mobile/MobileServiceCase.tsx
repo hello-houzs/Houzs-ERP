@@ -533,7 +533,10 @@ function CaseList({
                     </div>
                     <div style={{ marginTop: 12 }}>
                       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
-                        <span style={{ fontSize: 11.5, fontWeight: 600, color: TEAL_DK }}>{prettyStage(stageOf(r))}</span>
+                        <span style={{ fontSize: 11.5, fontWeight: 600, color: TEAL_DK }}>{(() => {
+                          const sub = assrSubStatus(stageOf(r), String(get(r, "subStatus", "sub_status") ?? "") || null);
+                          return sub ? sub.label : prettyStage(stageOf(r));
+                        })()}</span>
                         <span style={{ fontSize: 11, color: GREY }}>{Math.max(idx, 0) + 1}/{rowStages.length}</span>
                       </div>
                       {/* mini progress bars (active pipeline for this case) */}

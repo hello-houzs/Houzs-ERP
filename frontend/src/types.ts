@@ -119,6 +119,8 @@ export interface AssrCase {
   assr_no: string;
   status: string;
   stage: AssrStage;
+  /** Switchable 小类 inside Verification / Supplier (mig 0116). */
+  sub_status?: string | null;
   doc_no: string;
   complained_date: string | null;
   customer_name: string | null;
