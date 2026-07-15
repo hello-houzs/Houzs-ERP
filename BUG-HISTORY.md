@@ -8,6 +8,12 @@ Severity tags: 🔴 critical/high · 🟠 medium · 🟢 low.
 
 ## 2026-07-15
 
+### 🟠 SCM list column chooser lost 19-32 columns per sales-side list (DataGrid->DataTable rewrite)
+- **Symptom:** The column chooser on the SCM lists offered far fewer columns than before — Sales Orders showed ~9 vs 42 in the old list; Delivery Orders / Sales Invoices / Delivery Returns similarly gutted. Owner: "my columns didn't used to be this few."
+- **Root cause:** The DataGrid->DataTable V2 rewrite hand-slimmed each `COLUMNS` array. `DataTable`/`ColumnsPanel` still support show/hide/reorder/`defaultHidden` — the columns were simply no longer DECLARED. Not a component regression, not UDF.
+- **Fix (Phase 1, code-only):** Re-added every legacy column whose field is ALREADY in the V2 row payload, as `defaultHidden: true` (chooser exposes them, default view stays slim), each with `getValue` for sort/export/filter. SO +12, DO +13, SI +11, DR +12, Stock Transfers +1 (created_by). Server-sorted lists (SO/DO/SI) get `disableSort` on the non-whitelisted keys. Phase 2 (category cost/margin subtotals, venue, customer_type/building_type, note, etc. — NOT in the V2 payload) needs a backend list-endpoint widen; deferred. No DataTable/backend change.
+- **Ref:** `fix/restore-scm-columns-clean`, 2026-07-15.
+
 ### 🟢 Checklist showed a "Forbidden: requires one of ..." toast on click; Sales Director saw Departments in Team nav
 - **Symptom:** (a) Clicking a project checklist status control a user couldn't tick surfaced a raw backend "Forbidden: requires one of projects.write, projects.checklist.tick" toast instead of the control simply being non-clickable. (b) A Sales Director (scoped Team admin) saw a "Departments" item in the Team nav; owner wants a sales user to see only Members + Org Chart.
 - **Root cause:** (a) The tick + status buttons are already `disabled={!canTick}`, but the shared `setItemStatus` handler could still be reached (e.g. other control paths / gated items) and fired the POST, whose 403 landed as a toast; the per-item `required_perm` client guard also `toast.error`ed. (b) The Team "Departments" nav entry carried `showForSalesDirector: true`.
