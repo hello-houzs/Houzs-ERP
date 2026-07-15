@@ -1520,10 +1520,12 @@ function TaskRow({
     const cur = it.pill_value || "unpaid";
     return (
       <>
-      <div className="docrow" style={{ flexWrap: "wrap" }}>
+      <div className="docrow" style={{ flexWrap: "wrap", alignItems: "flex-start" }}>
         <span style={{ width: 15, height: 15, flex: "none" }} />
-        <span style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600, color: "#11140f" }}>{it.title}</span>
-        {it.role_label && c && <span className="rbadge" style={{ background: `${c}1f`, color: c, minWidth: 66, display: "inline-flex", alignItems: "center", justifyContent: "center", boxSizing: "border-box" }}>{it.role_label}</span>}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "#11140f" }}>{it.title}</div>
+          {it.role_label && c && <span className="rbadge" style={{ background: `${c}1f`, color: c, marginTop: 4, display: "inline-flex" }}>{it.role_label}</span>}
+        </div>
         {opts.map(([v, label]) => {
           const on = v === cur;
           return (
@@ -1557,7 +1559,7 @@ function TaskRow({
   const awaitingReview = reviewStatus === "pending_review" || reviewStatus === "amended";
   return (
     <div style={{ borderTop: "1px solid #eceee9" }}>
-    <div className="docrow" style={{ flexWrap: "wrap", borderTop: "none" }}>
+    <div className="docrow" style={{ flexWrap: "wrap", borderTop: "none", alignItems: "flex-start" }}>
       <span
         role={canRowTick ? "button" : undefined}
         onClick={cycle}
@@ -1574,8 +1576,10 @@ function TaskRow({
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9aa093" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9" /></svg>
         )}
       </span>
-      <span style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600, color: na ? "#9aa093" : "#11140f", textDecoration: na ? "line-through" : "none" }}>{it.title}</span>
-      {it.role_label && c && <span className="rbadge" style={{ background: `${c}1f`, color: c, minWidth: 66, display: "inline-flex", alignItems: "center", justifyContent: "center", boxSizing: "border-box" }}>{it.role_label}</span>}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 12, fontWeight: 600, color: na ? "#9aa093" : "#11140f", textDecoration: na ? "line-through" : "none" }}>{it.title}</div>
+        {it.role_label && c && <span className="rbadge" style={{ background: `${c}1f`, color: c, marginTop: 4, display: "inline-flex" }}>{it.role_label}</span>}
+      </div>
       {it.due_date && <span style={{ fontSize: 9.5, color: "#9aa093", whiteSpace: "nowrap" }}>{dm(it.due_date)}</span>}
       {canAttach && (
         <>

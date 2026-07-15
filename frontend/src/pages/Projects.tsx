@@ -6811,14 +6811,14 @@ function DocRow({
         <td className="px-3 py-2">
           <div className="flex items-start gap-1.5">
             <FileText size={13} className="mt-0.5 shrink-0 text-ink-muted" />
-            <span className="font-medium text-ink">
-              {item.title}
+            <div className="min-w-0">
+              <div className="font-medium text-ink">{item.title}</div>
               {item.role_label && (
-                <span className={cn("ml-1.5 inline-block whitespace-nowrap rounded-full border px-1.5 py-0.5 align-middle text-[8.5px] font-bold uppercase tracking-wider", roleChipClass(item.role_label))}>
+                <span className={cn("mt-1 inline-block whitespace-nowrap rounded-full border px-1.5 py-0.5 text-[8.5px] font-bold uppercase tracking-wider", roleChipClass(item.role_label))}>
                   {item.role_label}
                 </span>
               )}
-            </span>
+            </div>
           </div>
         </td>
         <td className="px-3 py-2 text-ink-secondary">
@@ -7379,14 +7379,14 @@ function ChecklistRow({
           ) : (
             <Circle size={16} className="shrink-0 text-ink-muted" />
           )}
-          <span className={cn("text-[12px] font-medium", pillDone && "text-ink-muted")}>
-            {item.title}
-          </span>
-          {item.role_label && (
-            <span className={cn("rounded-full border px-1.5 py-0.5 text-[8.5px] font-bold uppercase tracking-wider", roleChipClass(item.role_label))}>
-              {item.role_label}
-            </span>
-          )}
+          <div className="min-w-0">
+            <div className={cn("text-[12px] font-medium", pillDone && "text-ink-muted")}>{item.title}</div>
+            {item.role_label && (
+              <span className={cn("mt-1 inline-block rounded-full border px-1.5 py-0.5 text-[8.5px] font-bold uppercase tracking-wider", roleChipClass(item.role_label))}>
+                {item.role_label}
+              </span>
+            )}
+          </div>
           <span className="flex-1" />
           {canManage && (
             <button
@@ -7482,31 +7482,32 @@ function ChecklistRow({
             >
               {item.title}
             </span>
-            {item.role_label && (
-              <span
-                className={cn("rounded-full border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider", roleChipClass(item.role_label))}
-                title="Owner role"
-              >
-                {item.role_label}
-              </span>
-            )}
-            {item.required_perm && (
-              <span
-                className="inline-flex items-center gap-0.5 rounded-full bg-accent-soft px-1.5 py-0.5 text-[9px] font-semibold text-accent"
-                title={item.required_perm}
-              >
-                <Lock size={8} /> gated
-              </span>
-            )}
-            {reviewBadge && (
-              <span
-                className={cn(
-                  "rounded-full px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider",
-                  reviewBadge.cls
+            {(item.role_label || item.required_perm || reviewBadge) && (
+              <div className="mt-1 flex basis-full flex-wrap items-center gap-1.5">
+                {item.role_label && (
+                  <span
+                    className={cn("rounded-full border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider", roleChipClass(item.role_label))}
+                    title="Owner role"
+                  >
+                    {item.role_label}
+                  </span>
                 )}
-              >
-                {reviewBadge.label}
-              </span>
+                {item.required_perm && (
+                  <span
+                    className="inline-flex items-center gap-0.5 rounded-full bg-accent-soft px-1.5 py-0.5 text-[9px] font-semibold text-accent"
+                    title={item.required_perm}
+                  >
+                    <Lock size={8} /> gated
+                  </span>
+                )}
+                {reviewBadge && (
+                  <span
+                    className={cn("rounded-full px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider", reviewBadge.cls)}
+                  >
+                    {reviewBadge.label}
+                  </span>
+                )}
+              </div>
             )}
           </div>
           <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-ink-muted">
