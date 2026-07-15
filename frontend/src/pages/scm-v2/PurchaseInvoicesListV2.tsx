@@ -18,6 +18,7 @@ import {
   Printer,
   CheckCircle2,
   Wallet,
+  ArrowRightLeft,
 } from "lucide-react";
 import { PageHeader } from "../../components/Layout";
 import { StatCard } from "../../components/StatCard";
@@ -867,11 +868,16 @@ export function PurchaseInvoicesListV2() {
             title="Purchase Invoices"
             description="Every invoice raised by a supplier — Draft through Paid. Click any row for the quick view; open the full page to edit or record a payment."
             primaryAction={
-              <div className="flex items-stretch">
-                <Button variant="primary" icon={<Plus size={14} />} onClick={goNewPi} className="rounded-r-none">
-                  New Purchase Invoice
+              <div className="flex items-stretch gap-2">
+                <Button variant="secondary" icon={<ArrowRightLeft size={14} />} onClick={goFromGrn}>
+                  From GRN
                 </Button>
-                <SplitDropdown onFromGrn={goFromGrn} onImport={goImport} onDuplicate={goDuplicate} />
+                <div className="flex items-stretch">
+                  <Button variant="primary" icon={<Plus size={14} />} onClick={goNewPi} className="rounded-r-none">
+                    New Purchase Invoice
+                  </Button>
+                  <SplitDropdown onFromGrn={goFromGrn} onImport={goImport} onDuplicate={goDuplicate} />
+                </div>
               </div>
             }
             secondaryActions={[

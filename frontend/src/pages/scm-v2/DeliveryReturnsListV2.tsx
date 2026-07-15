@@ -30,6 +30,8 @@ import {
   Printer,
   ClipboardCheck,
   CheckCircle2,
+  RotateCcw,
+  ArrowRightLeft,
 } from "lucide-react";
 import { PageHeader } from "../../components/Layout";
 import { StatCard } from "../../components/StatCard";
@@ -47,6 +49,7 @@ import {
 import { authedFetch } from "../../vendor/scm/lib/authed-fetch";
 import { useNotify } from "../../vendor/scm/components/NotifyDialog";
 import { useChoice } from "../../vendor/scm/components/ChoiceDialog";
+import { useConfirm } from "../../vendor/scm/components/ConfirmDialog";
 import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "../../lib/utils";
 import { useAuth } from "../../auth/AuthContext";
@@ -353,6 +356,7 @@ function DetailDrawer({
   onPrint,
   onMarkInspected,
   onMarkRefunded,
+  onReopen,
   salespersonName,
 }: {
   row: DrRow | null;
@@ -362,6 +366,7 @@ function DetailDrawer({
   onPrint: () => void;
   onMarkInspected: () => void;
   onMarkRefunded: () => void;
+  onReopen: () => void;
   salespersonName: string;
 }) {
   const detailQ = useDeliveryReturnDetail(row?.id ?? null);
@@ -595,6 +600,19 @@ function DetailDrawer({
                     </Button>
                   );
                 }
+                // Reopen a cancelled return back to RECEIVED (2990
+                // DeliveryReturnsList "Reopen Return" parity).
+                if (s === "cancelled" || s === "cancel") {
+                  return (
+                    <Button
+                      variant="primary"
+                      icon={<RotateCcw size={14} />}
+                      onClick={onReopen}
+                    >
+                      Reopen
+                    </Button>
+                  );
+                }
                 return null;
               })()}
             </div>
@@ -686,6 +704,7 @@ export function DeliveryReturnsListV2() {
   const queryClient = useQueryClient();
   const notify = useNotify();
   const askChoice = useChoice();
+  const askConfirm = useConfirm();
   const { nameOf: salespersonNameOf } = useStaffLookup();
   // Finance-viewer gate (auth/me = isFinanceViewer). Finance columns below are
   // DECLARED only for a finance-viewer; the backend also omits their keys from
@@ -921,6 +940,29 @@ export function DeliveryReturnsListV2() {
       { id: r.id, status: "REFUNDED" },
       { onSuccess: () => setSelected(null) }
     );
+  // Reopen a cancelled return → RECEIVED (2990 DeliveryReturnsList "Reopen
+  // Return" parity; reuses the status PATCH endpoint).
+  const doReopen = async (r: DrRow) => {
+    if (
+      !(await askConfirm({
+        title: `Reopen ${r.return_number} back to RECEIVED?`,
+        confirmLabel: "Reopen",
+      }))
+    )
+      return;
+    updateStatus.mutate(
+      { id: r.id, status: "RECEIVED" },
+      {
+        onSuccess: () => setSelected(null),
+        onError: (e) =>
+          notify({
+            title: "Reopen failed",
+            body: e instanceof Error ? e.message : String(e),
+            tone: "error",
+          }),
+      }
+    );
+  };
 
   // Table columns — Reason gets a first-class spot (a DR-only signal).
   const columns: Column<DrRow>[] = [
@@ -1359,20 +1401,29 @@ export function DeliveryReturnsListV2() {
             title="Delivery Returns"
             description="Goods returned by customers — Pending to Refunded. Click any row for the quick view; open the full page to edit."
             primaryAction={
-              <div className="flex items-stretch">
+              <div className="flex items-stretch gap-2">
                 <Button
-                  variant="primary"
-                  icon={<Plus size={14} />}
-                  onClick={goNewDr}
-                  className="rounded-r-none"
+                  variant="secondary"
+                  icon={<ArrowRightLeft size={14} />}
+                  onClick={goFromDo}
                 >
-                  New Delivery Return
+                  From Delivery Order
                 </Button>
-                <SplitDropdown
-                  onFromDo={goFromDo}
-                  onImport={goImport}
-                  onDuplicate={goDuplicate}
-                />
+                <div className="flex items-stretch">
+                  <Button
+                    variant="primary"
+                    icon={<Plus size={14} />}
+                    onClick={goNewDr}
+                    className="rounded-r-none"
+                  >
+                    New Delivery Return
+                  </Button>
+                  <SplitDropdown
+                    onFromDo={goFromDo}
+                    onImport={goImport}
+                    onDuplicate={goDuplicate}
+                  />
+                </div>
               </div>
             }
             secondaryActions={[
@@ -1551,6 +1602,7 @@ export function DeliveryReturnsListV2() {
         onPrint={() => selected && goPrint(selected)}
         onMarkInspected={() => selected && doMarkInspected(selected)}
         onMarkRefunded={() => selected && doMarkRefunded(selected)}
+        onReopen={() => selected && void doReopen(selected)}
         salespersonName={
           selected ? salespersonNameOf(null, selected.salesperson_id) : "—"
         }
