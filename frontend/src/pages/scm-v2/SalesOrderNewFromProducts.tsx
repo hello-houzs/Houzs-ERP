@@ -52,6 +52,9 @@ import {
   type DebtorSuggestion,
 } from "../../vendor/scm/lib/sales-order-queries";
 import { cn } from "../../lib/utils";
+import { soDateGuardError, soSliplessPaymentError, soErrorText } from "../../vendor/scm/lib/so-form-validate";
+import { hasSofaMixConflict, SOFA_MIX_MESSAGE } from "../../vendor/shared/so-variant-rule";
+import { todayMyt } from "../../vendor/scm/lib/dates";
 
 // ── Types & constants ───────────────────────────────────────────────────────
 
@@ -235,6 +238,25 @@ export function SalesOrderNewFromProducts() {
       variants: { addedVia: "from-products" },
       remark: "",
     }));
+    /* Pre-validate with the SAME shared guards the Full form (SalesOrderNew)
+       runs, so a bad cart surfaces one plain sentence here instead of a raw
+       server 400/409. A cart CAN mix categories, so hasSofaMixConflict is the
+       real guard here (a sofa + bedframe/mattress cart 400s so_sofa_no_other_main
+       on the server). This flow collects no dates or payments (added on the SO
+       detail), so soDateGuardError / soSliplessPaymentError run on empty inputs
+       and pass — kept for single-logic-layer parity so a future date/payment
+       field is guarded automatically. Variant completeness
+       (missingRequiredVariants) only fires once a processing date is set (server
+       parity); none is set here, so it's enforced on the SO detail. */
+    const preErr =
+      soDateGuardError({ processingDate: "", deliveryDate: "", today: todayMyt() }) ??
+      (hasSofaMixConflict(items.map((i) => i.itemGroup)) ? { title: SOFA_MIX_MESSAGE } : null) ??
+      soSliplessPaymentError([]);
+    if (preErr) {
+      setPostError(soErrorText(preErr));
+      return;
+    }
+
     const body: Record<string, unknown> = {
       customerName: customer.name.trim(),
       phone: customer.phone.trim(),
