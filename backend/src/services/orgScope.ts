@@ -79,7 +79,7 @@ export async function uplineUserIds(
     )
       .bind(currentId)
       .first<{ manager_id: number | null }>();
-    const managerId = Number(row?.manager_id ?? NaN);
+    const managerId: number = Number(row?.manager_id ?? NaN);
     if (!Number.isFinite(managerId)) break; // reached the root (no manager)
     if (seen.has(managerId)) break; // cycle guard
     seen.add(managerId);
