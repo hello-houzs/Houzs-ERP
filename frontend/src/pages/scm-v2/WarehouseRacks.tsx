@@ -79,6 +79,74 @@ const itemDescription = (it: RackItem): string => {
 const itemMeta = (it: RackItem): string =>
   [it.customer_name || '', it.source_doc_no || ''].filter(Boolean).join(' · ');
 
+/* ── Rack scope (shared across warehouses) ────────────────────────────────
+   A rack can be created into just this warehouse, ALL warehouses, or a chosen
+   set. The backend fans the label out to one rack row per target warehouse, so
+   split warehouse records that share rack numbers (Display / KL goods / …) can
+   be provisioned in one action. */
+type ScopeMode = 'this' | 'all' | 'choose';
+
+type WarehouseLite = { id: string; code: string; name: string };
+
+/* Translate the picker state into the create-body scope keys. */
+function scopeBody(
+  mode: ScopeMode, currentWarehouseId: string, chosen: string[],
+): { warehouseId: string } | { warehouseIds: string[] } | { allWarehouses: true } {
+  if (mode === 'all') return { allWarehouses: true };
+  if (mode === 'choose') {
+    // Always include the current warehouse so "choose" never ships an empty set.
+    const set = new Set(chosen.length > 0 ? chosen : [currentWarehouseId]);
+    set.add(currentWarehouseId);
+    return { warehouseIds: [...set] };
+  }
+  return { warehouseId: currentWarehouseId };
+}
+
+function RackScopeField({
+  warehouses, currentWarehouseId, mode, setMode, chosen, setChosen,
+}: {
+  warehouses: WarehouseLite[];
+  currentWarehouseId: string;
+  mode: ScopeMode;
+  setMode: (m: ScopeMode) => void;
+  chosen: string[];
+  setChosen: (ids: string[]) => void;
+}) {
+  const toggle = (id: string) => {
+    setChosen(chosen.includes(id) ? chosen.filter((x) => x !== id) : [...chosen, id]);
+  };
+  const others = warehouses.filter((w) => w.id !== currentWarehouseId);
+  return (
+    <label className={formStyles.field}>
+      <span className={formStyles.fieldLabel}>Apply to</span>
+      <span className={styles.selectWrap} style={{ minWidth: 0 }}>
+        <select className={styles.fieldSelect} value={mode} onChange={(e) => setMode(e.target.value as ScopeMode)}>
+          <option value="this">This warehouse only</option>
+          <option value="all">All warehouses</option>
+          <option value="choose">Choose warehouses…</option>
+        </select>
+        <ChevronDown className={styles.selectChevron} size={14} strokeWidth={1.75} />
+      </span>
+      {mode === 'choose' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6, maxHeight: 200, overflowY: 'auto' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, opacity: 0.7 }}>
+            <input type="checkbox" checked readOnly />
+            <span>
+              {warehouses.find((w) => w.id === currentWarehouseId)?.code ?? 'This'} — current (always included)
+            </span>
+          </label>
+          {others.map((w) => (
+            <label key={w.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
+              <input type="checkbox" checked={chosen.includes(w.id)} onChange={() => toggle(w.id)} />
+              <span>{w.code} — {w.name}</span>
+            </label>
+          ))}
+        </div>
+      )}
+    </label>
+  );
+}
+
 export const WarehouseRacks = () => {
   const [params, setParams] = useSearchParams();
   const warehouses = useWarehouses();
@@ -199,6 +267,7 @@ export const WarehouseRacks = () => {
       {(creatingMode === 'single' || editing) && warehouseId && (
         <RackFormDrawer
           warehouseId={warehouseId}
+          warehouses={warehouses.data ?? []}
           editing={editing}
           onClose={() => { setCreatingMode(null); setEditing(null); }}
         />
@@ -207,6 +276,7 @@ export const WarehouseRacks = () => {
       {creatingMode === 'seed' && warehouseId && (
         <SeedRacksModal
           warehouseId={warehouseId}
+          warehouses={warehouses.data ?? []}
           onClose={() => setCreatingMode(null)}
         />
       )}
@@ -761,9 +831,10 @@ function MovementTable({ movements, isLoading }: { movements: RackMovement[]; is
 
 /* ── Single-rack create / edit drawer — mirrors the mobile "Rack" form ──── */
 function RackFormDrawer({
-  warehouseId, editing, onClose,
+  warehouseId, warehouses, editing, onClose,
 }: {
   warehouseId: string;
+  warehouses: WarehouseLite[];
   editing: Rack | null;
   onClose: () => void;
 }) {
@@ -776,6 +847,9 @@ function RackFormDrawer({
     notes: editing?.notes ?? '',
     reserved: editing?.reserved ?? false,
   });
+  // Scope — create only. Editing touches a single warehouse's rack row.
+  const [scopeMode, setScopeMode] = useState<ScopeMode>('this');
+  const [scopeChosen, setScopeChosen] = useState<string[]>([]);
 
   const submit = () => {
     if (!form.rack.trim()) {
@@ -790,8 +864,22 @@ function RackFormDrawer({
       );
     } else {
       create.mutate(
-        { warehouseId, rack: form.rack.trim(), position: form.position || undefined, notes: form.notes || undefined, reserved: form.reserved },
-        { onSuccess: onClose, onError },
+        {
+          ...scopeBody(scopeMode, warehouseId, scopeChosen),
+          rack: form.rack.trim(),
+          position: form.position || undefined,
+          notes: form.notes || undefined,
+          reserved: form.reserved,
+        },
+        {
+          onSuccess: () => {
+            if (scopeMode !== 'this') {
+              notify({ title: scopeMode === 'all' ? 'Rack created in all warehouses.' : 'Rack created in the chosen warehouses.' });
+            }
+            onClose();
+          },
+          onError,
+        },
       );
     }
   };
@@ -826,6 +914,16 @@ function RackFormDrawer({
               onChange={(e) => setForm((s) => ({ ...s, reserved: e.target.checked }))} />
             <span className={formStyles.fieldLabel} style={{ textTransform: 'none' }}>Reserve this rack (hold empty)</span>
           </label>
+          {!editing && (
+            <RackScopeField
+              warehouses={warehouses}
+              currentWarehouseId={warehouseId}
+              mode={scopeMode}
+              setMode={setScopeMode}
+              chosen={scopeChosen}
+              setChosen={setScopeChosen}
+            />
+          )}
         </div>
         <div className={formStyles.drawerFooter}>
           <Button variant="ghost" size="md" onClick={onClose}>Cancel</Button>
@@ -840,15 +938,18 @@ function RackFormDrawer({
 
 /* ── Seed N racks quick-add (desktop-only) — POST { warehouseId, count, prefix } */
 function SeedRacksModal({
-  warehouseId, onClose,
+  warehouseId, warehouses, onClose,
 }: {
   warehouseId: string;
+  warehouses: WarehouseLite[];
   onClose: () => void;
 }) {
   const create = useCreateRack();
   const notify = useNotify();
   const [prefix, setPrefix] = useState('Rack');
   const [count, setCount] = useState(10);
+  const [scopeMode, setScopeMode] = useState<ScopeMode>('this');
+  const [scopeChosen, setScopeChosen] = useState<string[]>([]);
 
   const submit = () => {
     const n = Math.floor(Number(count));
@@ -857,7 +958,7 @@ function SeedRacksModal({
       return;
     }
     create.mutate(
-      { warehouseId, count: n, prefix: prefix.trim() || 'Rack' },
+      { ...scopeBody(scopeMode, warehouseId, scopeChosen), count: n, prefix: prefix.trim() || 'Rack' },
       {
         onSuccess: (res) => {
           const made = res.created ?? res.racks?.length ?? 0;
@@ -890,6 +991,14 @@ function SeedRacksModal({
             <input className={formStyles.fieldInput} type="number" min={1} max={200} value={count}
               onChange={(e) => setCount(Number(e.target.value))} />
           </label>
+          <RackScopeField
+            warehouses={warehouses}
+            currentWarehouseId={warehouseId}
+            mode={scopeMode}
+            setMode={setScopeMode}
+            chosen={scopeChosen}
+            setChosen={setScopeChosen}
+          />
         </div>
         <div className={formStyles.drawerFooter}>
           <Button variant="ghost" size="md" onClick={onClose}>Cancel</Button>
