@@ -10,6 +10,7 @@ import { useStateWarehouseMappings } from "../vendor/scm/lib/state-warehouse-que
 import { todayMyt } from "../vendor/scm/lib/dates";
 import { paymentMethodCodeForValue } from "../vendor/scm/lib/payment-methods";
 import { soDateGuardError, soSliplessPaymentError, soErrorText } from "../vendor/scm/lib/so-form-validate";
+import { LOCKED_STATUSES, procLockActive } from "../vendor/scm/lib/so-detail-gates";
 import {
   useSoDropdownOptions,
   optionsOrFallback,
@@ -629,6 +630,10 @@ export function MobileNewSO({
      processing-date lock. Kept separate from the editable procDate form value so
      the lock reflects what the backend has, not an in-flight edit. */
   const [origProcDate, setOrigProcDate] = useState<string>("");
+  /* PERSISTED SO status — feeds the SHARED procLockActive() so the processing
+     lock keeps a DRAFT / CANCELLED SO editable (status guard), matching the
+     mobile detail screen + desktop instead of the old status-blind copy. */
+  const [soStatus, setSoStatus] = useState<string>("");
   // Prefill venue (edit) — used to seed the manual venue pick.
   const [prefillVenueId, setPrefillVenueId] = useState<string | null>(null);
   const [prefillVenueName, setPrefillVenueName] = useState<string>("");
@@ -712,8 +717,8 @@ export function MobileNewSO({
         setDdateOverrides(new Set(editable.filter((l) => l.ddate).map((l) => l.key)));
         setExistingPays(payResp.payments ?? []);
         const st = (detail.salesOrder.status ?? "").toUpperCase();
-        const LOCKED = ["SHIPPED", "DELIVERED", "INVOICED", "CLOSED", "CANCELLED"];
-        setLineLocked(LOCKED.includes(st) || Boolean(detail.salesOrder.has_children));
+        setSoStatus(st);
+        setLineLocked(LOCKED_STATUSES.includes(st) || Boolean(detail.salesOrder.has_children));
         /* Amendment gate (server-derived) — the same flags the desktop SO Detail
            routes on. When amendment_eligible the SO is processing-locked but the
            edit view stays usable; Save then submits an amendment (see save()). */
@@ -849,19 +854,16 @@ export function MobileNewSO({
 
   /* ── FIX D2/D3 — processing-date LOCK (mirror the backend + SalesOrderDetail).
      The backend locks an SO once "today (MYT)" is strictly AFTER its processing
-     date (internal_expected_dd): line add/edit/delete + the identity columns
-     State / City / Postcode are rejected 409 so_locked_processing. "Today in
-     Malaysia" = shift the UTC clock +8h and read the calendar date, exactly as
-     soProcessingLocked() computes it server-side (procYmd < todayMY). In EDIT
-     mode we DISABLE line editing + State/City/Postcode, but keep the rest of the
-     customer info + address lines + note editable. */
-  const todayMY = useMemo(
-    () => new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10),
-    [],
-  );
+     date (internal_expected_dd) on a non-DRAFT / non-CANCELLED order: line
+     add/edit/delete + the identity columns State / City / Postcode are rejected
+     409 so_locked_processing. Delegated to the SHARED procLockActive() (which
+     reads internal_expected_dd + status against todayMyt()) so this edit form
+     can't drift from the mobile detail screen or desktop — DRAFT / CANCELLED
+     stay editable. In EDIT mode we DISABLE line editing + State/City/Postcode,
+     but keep the rest of the customer info + address lines + note editable. */
   const procLocked = useMemo(
-    () => isEdit && !!origProcDate && /^\d{4}-\d{2}-\d{2}$/.test(origProcDate) && origProcDate < todayMY,
-    [isEdit, origProcDate, todayMY],
+    () => isEdit && procLockActive({ internal_expected_dd: origProcDate, status: soStatus }),
+    [isEdit, origProcDate, soStatus],
   );
   /* AMENDMENT MODE (desktop SalesOrderDetail parity) — the SO is
      processing-locked (already PO'd) but the server flags it amendment_eligible

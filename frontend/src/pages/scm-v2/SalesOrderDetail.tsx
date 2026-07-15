@@ -54,6 +54,8 @@ import {
   procLockActive as soProcLockActive,
   amendmentEligible as soAmendmentEligible,
 } from '../../vendor/scm/lib/so-detail-gates';
+import { soDateGuardError, soErrorText } from '../../vendor/scm/lib/so-form-validate';
+import { todayMyt } from '../../vendor/scm/lib/dates';
 import { SoLineCard, emptySoLine, missingRequiredVariants, type SoLineDraft } from '../../vendor/scm/components/SoLineCard';
 import { PaymentsTable } from '../../vendor/scm/components/PaymentsTable';
 import { DocumentRelationshipMapModal, type ChainNode } from '../../components/scm-v2/DocumentRelationshipMapModal';
@@ -2252,9 +2254,12 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
     (form.processingDate.trim() !== '') !== (form.customerDeliveryDate.trim() !== '');
 
   /* Commander 2026-05-28 — Processing/Delivery Date may only be today or a
-     future date. en-CA renders the local YYYY-MM-DD. Used as the <input min>
-     AND re-checked on Save (parity with the New SO form). */
-  const today = new Date().toLocaleDateString('en-CA');
+     future date. Used as the <input min> AND re-checked on Save (parity with
+     the New SO form). todayMyt() = the Malaysia (UTC+8) calendar day — NOT the
+     device clock (`new Date().toLocaleDateString('en-CA')`, which decided
+     past-vs-future by the browser's own timezone and disagreed with the create
+     form + both mobile paths near midnight on a non-UTC+8 device). */
+  const today = todayMyt();
 
   /* Owner 2026-06-01 — Grandfather an already-past date that the edit does not
      change. The Processing Date is the day work started; once it has elapsed it
@@ -2280,24 +2285,33 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
 
   /* Returns the first blocking date error, or null when the dates are valid.
      Shared by the imperative validate() (page-level Save runs this BEFORE
-     committing any line) and trySave (defence-in-depth on the header write). */
+     committing any line) and trySave (defence-in-depth on the header write).
+
+     Delegates the XOR / not-in-past / processing≤delivery rules to the SHARED
+     soDateGuardError (same helper the create form + both mobile paths use)
+     against todayMyt(), so Detail can't drift on any of those rules.
+
+     GRANDFATHER (Owner 2026-06-01) — an already-saved past date that this edit
+     does NOT change is a historical record, not a fresh past-date entry, and
+     must never block a Save. The shared helper has no such carve-out (it rejects
+     every past date), so we present a grandfathered-unchanged past date to the
+     guard AS `today`: its not-in-past rule then passes it exactly as the old
+     `!== original` check did, while the XOR + processing≤delivery comparisons
+     still run on the real values (a freshly-typed past date, or a changed date,
+     keeps its own value and is still rejected). */
   const validateDates = (): string | null => {
-    if (datesXor) {
-      return 'Processing Date and Delivery Date must be set together.\n\n' +
-        'Either fill in BOTH dates, or leave BOTH empty.';
-    }
-    if (form.processingDate && form.processingDate < today && form.processingDate !== originalProcessing) {
-      return 'Processing Date cannot be in the past — pick today or a future date.';
-    }
-    if (form.customerDeliveryDate && form.customerDeliveryDate < today && form.customerDeliveryDate !== originalDelivery) {
-      return 'Delivery Date cannot be in the past — pick today or a future date.';
-    }
-    /* Owner 2026-06-03 — Process Date is the factory start; it cannot fall after
-       the Delivery Date (parity with the New SO form + the server gate). */
-    if (form.processingDate && form.customerDeliveryDate && form.processingDate > form.customerDeliveryDate) {
-      return 'Processing Date cannot be later than the Delivery Date.';
-    }
-    return null;
+    const grandfathered = (v: string, original: string): boolean =>
+      v !== '' && v < today && v === original;
+    const guardProcessing = grandfathered(form.processingDate, originalProcessing)
+      ? today : form.processingDate;
+    const guardDelivery = grandfathered(form.customerDeliveryDate, originalDelivery)
+      ? today : form.customerDeliveryDate;
+    const err = soDateGuardError({
+      processingDate: guardProcessing,
+      deliveryDate: guardDelivery,
+      today,
+    });
+    return err ? soErrorText(err) : null;
   };
 
   const trySave = (cb?: { onSuccess?: () => void; onError?: (msg: string) => void }) => {

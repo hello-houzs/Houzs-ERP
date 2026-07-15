@@ -50,6 +50,9 @@ import {
 } from "../../vendor/scm/lib/sales-order-queries";
 import { useQuery } from "@tanstack/react-query";
 import { cn } from "../../lib/utils";
+import { soDateGuardError, soSliplessPaymentError, soErrorText } from "../../vendor/scm/lib/so-form-validate";
+import { hasSofaMixConflict, SOFA_MIX_MESSAGE } from "../../vendor/shared/so-variant-rule";
+import { todayMyt } from "../../vendor/scm/lib/dates";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -241,6 +244,26 @@ export function SalesOrderNewGuided() {
         remark: "",
       };
     });
+
+    /* Pre-validate with the SAME shared guards the Full form (SalesOrderNew)
+       runs, so a bad build surfaces one plain sentence here instead of a raw
+       server 400/409. The wizard collects no dates or payments (added on the SO
+       detail after save), so soDateGuardError / soSliplessPaymentError operate
+       on empty inputs and pass — kept for single-logic-layer parity so a future
+       date/payment field on this flow is guarded automatically. Every line here
+       is a sofa module, so hasSofaMixConflict can't fire in practice, but the
+       check mirrors the Full form verbatim. Variant completeness
+       (missingRequiredVariants) is enforced only once a processing date is set
+       (server parity); the guided flow sets none, so it's enforced on the SO
+       detail, not here. */
+    const preErr =
+      soDateGuardError({ processingDate: "", deliveryDate: "", today: todayMyt() }) ??
+      (hasSofaMixConflict(items.map((i) => i.itemGroup)) ? { title: SOFA_MIX_MESSAGE } : null) ??
+      soSliplessPaymentError([]);
+    if (preErr) {
+      setPostError(soErrorText(preErr));
+      return;
+    }
 
     const body: Record<string, unknown> = {
       customerName: customer.name.trim(),
