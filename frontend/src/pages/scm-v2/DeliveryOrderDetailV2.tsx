@@ -875,8 +875,13 @@ export function DeliveryOrderDetailV2() {
   // Finance-viewer gate — the Totals·Margin aside card (cost / margin) must
   // never render for a non-finance user. Same rule as the #574 DO list finance
   // columns (canViewScmFinance server-side).
-  const { user } = useAuth();
+  const { user, pageAccess } = useAuth();
   const canFinance = !!user?.project_finance_viewer;
+  // Mutation gate — a salesperson opens this DO read-only via the sales inherit
+  // hatch (allowSales; backend readInheritsFrom scm.sales.orders) and cannot
+  // edit/cancel/convert it. Hide those controls (owner off-not-hide rule); Print
+  // PDF stays so the rep can still send the document. `*` resolves to "full".
+  const canWriteDo = ["edit", "full"].includes(pageAccess("scm.sales.delivery"));
 
   const deliveryOrder =
     (detail.data as { deliveryOrder?: DoHeader } | undefined)?.deliveryOrder ??
@@ -1208,7 +1213,7 @@ export function DeliveryOrderDetailV2() {
             >
               Print PDF
             </Button>
-            {!isCancelled && (
+            {!isCancelled && canWriteDo && (
               <Button
                 variant="danger"
                 icon={<XCircle size={14} />}
@@ -1217,7 +1222,7 @@ export function DeliveryOrderDetailV2() {
                 Cancel DO
               </Button>
             )}
-            {canMarkSigned && (
+            {canMarkSigned && canWriteDo && (
               <Button
                 variant="secondary"
                 icon={<CheckCircle2 size={14} />}
@@ -1226,7 +1231,7 @@ export function DeliveryOrderDetailV2() {
                 Mark signed
               </Button>
             )}
-            {canConvertToSi && (
+            {canConvertToSi && canWriteDo && (
               <Button
                 variant="secondary"
                 icon={<Receipt size={14} />}
@@ -1235,13 +1240,15 @@ export function DeliveryOrderDetailV2() {
                 Convert to SI
               </Button>
             )}
-            <Button
-              variant="primary"
-              icon={<Edit3 size={14} />}
-              onClick={goEdit}
-            >
-              Edit
-            </Button>
+            {canWriteDo && (
+              <Button
+                variant="primary"
+                icon={<Edit3 size={14} />}
+                onClick={goEdit}
+              >
+                Edit
+              </Button>
+            )}
           </div>
         </div>
       </div>
@@ -1613,20 +1620,26 @@ export function DeliveryOrderDetailV2() {
       {/* Fixed bottom action bar (phone only) */}
       <div className="fixed inset-x-0 bottom-0 z-20 border-t border-border bg-surface/95 px-3 pb-6 pt-2.5 shadow-slab backdrop-blur-sm md:hidden">
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={goEdit}
-            className="inline-flex h-11 flex-1 items-center justify-center gap-1.5 rounded-lg bg-primary text-[13.5px] font-bold text-white shadow-sm hover:bg-primary-ink"
-          >
-            <Edit3 size={16} /> Edit
-          </button>
+          {canWriteDo && (
+            <button
+              type="button"
+              onClick={goEdit}
+              className="inline-flex h-11 flex-1 items-center justify-center gap-1.5 rounded-lg bg-primary text-[13.5px] font-bold text-white shadow-sm hover:bg-primary-ink"
+            >
+              <Edit3 size={16} /> Edit
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setModal("print")}
-            className="inline-flex h-11 w-11 items-center justify-center rounded-lg bg-surface-2 text-primary-ink hover:bg-primary-soft"
+            className={cn(
+              "inline-flex h-11 items-center justify-center gap-1.5 rounded-lg bg-surface-2 text-primary-ink hover:bg-primary-soft",
+              canWriteDo ? "w-11" : "flex-1 text-[13.5px] font-bold"
+            )}
             aria-label="Print PDF"
           >
             <Printer size={17} />
+            {!canWriteDo && <span>Print PDF</span>}
           </button>
           <button
             type="button"

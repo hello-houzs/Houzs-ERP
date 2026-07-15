@@ -81,6 +81,11 @@ const ITEM =
   'uom, qty, unit_price_centi, discount_centi, tax_centi, line_total_centi, ' +
   'unit_cost_centi, line_cost_centi, line_margin_centi, variants, notes, created_at';
 
+/* FINANCE-GATED line-item keys — per-line cost / margin. In ITEM (so the detail
+   line grid can show them to a finance viewer) but stripped for a non-finance
+   caller in the DETAIL response (the list carries no items). */
+const SI_ITEM_FINANCE_KEYS = ['unit_cost_centi', 'line_cost_centi', 'line_margin_centi'] as const;
+
 const PAYMENT_COLS =
   'id, sales_invoice_id, paid_at, method, merchant_provider, installment_months, ' +
   'online_type, approval_code, amount_centi, account_sheet, collected_by, note, ' +
@@ -357,7 +362,20 @@ salesInvoices.get('/:id', async (c) => {
       return c.json({ error: 'not_found' }, 404);
     }
   }
-  return c.json({ salesInvoice: h.data, items: i.data ?? [] });
+  /* Finance gate — the DETAIL leaks cost/margin the same way the list did before
+     gateSiFinance, so strip the header's SI_FINANCE_KEYS + every line's
+     cost/margin for a non-finance caller (canViewScmFinance fails closed).
+     Critical now that a scoped salesperson can open their own invoices
+     (readInheritsFrom scm.sales.orders): they see the customer-facing invoice
+     but never cost or margin. */
+  const items = (i.data ?? []) as unknown as Array<Record<string, unknown>>;
+  if (!canViewScmFinance(c)) {
+    gateSiFinance([h.data], false);
+    for (const it of items) {
+      for (const k of SI_ITEM_FINANCE_KEYS) delete it[k];
+    }
+  }
+  return c.json({ salesInvoice: h.data, items });
 });
 
 // ── Create ──────────────────────────────────────────────────────────────

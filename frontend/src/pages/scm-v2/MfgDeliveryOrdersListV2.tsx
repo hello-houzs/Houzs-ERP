@@ -353,6 +353,7 @@ function DetailDrawer({
   onConvertToSi,
   onReopen,
   salespersonName,
+  canWrite,
 }: {
   row: DoRow | null;
   onClose: () => void;
@@ -362,6 +363,7 @@ function DetailDrawer({
   onMarkSigned: () => void;
   onConvertToSi: () => void;
   onReopen: () => void;
+  canWrite: boolean;
   salespersonName: string;
 }) {
   const detailQ = useMfgDeliveryOrderDetail(row?.id ?? null);
@@ -548,14 +550,16 @@ function DetailDrawer({
             </div>
 
             <div className="flex shrink-0 items-center gap-2 border-t border-border bg-surface px-5 py-3">
-              <Button variant="ghost" icon={<Edit3 size={14} />} onClick={onEdit}>
-                Edit
-              </Button>
+              {canWrite && (
+                <Button variant="ghost" icon={<Edit3 size={14} />} onClick={onEdit}>
+                  Edit
+                </Button>
+              )}
               <Button variant="ghost" icon={<Printer size={14} />} onClick={onPrint}>
                 Print
               </Button>
               <div className="flex-1" />
-              {(() => {
+              {canWrite && (() => {
                 const s = (row.status || "").toLowerCase();
                 if (["loaded", "dispatched", "in_transit"].includes(s)) {
                   return (
@@ -808,8 +812,14 @@ export function MfgDeliveryOrdersListV2() {
   // Finance-viewer gate (auth/me = isFinanceViewer). Finance columns below are
   // DECLARED only for a finance-viewer; the backend also omits their keys from
   // the payload for everyone else (canViewScmFinance).
-  const { user } = useAuth();
+  const { user, pageAccess } = useAuth();
   const canFinance = !!user?.project_finance_viewer;
+  // Write gate — a salesperson reaches this list read-only via the sales inherit
+  // hatch (App.tsx allowSales; backend readInheritsFrom scm.sales.orders) and
+  // cannot create/edit/convert a DO. Hide the create + row mutation actions
+  // rather than render-then-deny (owner off-not-hide rule). Only an edit/full
+  // grant on the native area shows them; `*` resolves to "full" in pageAccess.
+  const canWriteDo = ["edit", "full"].includes(pageAccess("scm.sales.delivery"));
 
   const status = (params.get("status") ?? "all") as StatusTab;
   const view = (params.get("view") ?? "table") as "table" | "cards";
@@ -1533,30 +1543,32 @@ export function MfgDeliveryOrdersListV2() {
             title="Delivery Orders"
             description="Every Houzs delivery order — Loaded to Delivered. Click any row for the quick view; open the full page to edit."
             primaryAction={
-              <div className="flex items-stretch gap-2">
-                <Button
-                  variant="secondary"
-                  icon={<ArrowRightLeft size={14} />}
-                  onClick={goFromSo}
-                >
-                  From Sales Order
-                </Button>
-                <div className="flex items-stretch">
+              canWriteDo ? (
+                <div className="flex items-stretch gap-2">
                   <Button
-                    variant="primary"
-                    icon={<Plus size={14} />}
-                    onClick={goNewDo}
-                    className="rounded-r-none"
+                    variant="secondary"
+                    icon={<ArrowRightLeft size={14} />}
+                    onClick={goFromSo}
                   >
-                    New Delivery Order
+                    From Sales Order
                   </Button>
-                  <SplitDropdown
-                    onFromSo={goFromSo}
-                    onImport={goImport}
-                    onDuplicate={goDuplicate}
-                  />
+                  <div className="flex items-stretch">
+                    <Button
+                      variant="primary"
+                      icon={<Plus size={14} />}
+                      onClick={goNewDo}
+                      className="rounded-r-none"
+                    >
+                      New Delivery Order
+                    </Button>
+                    <SplitDropdown
+                      onFromSo={goFromSo}
+                      onImport={goImport}
+                      onDuplicate={goDuplicate}
+                    />
+                  </div>
                 </div>
-              </div>
+              ) : undefined
             }
             secondaryActions={[
               { label: "Sales Orders", icon: Wrench, onClick: goSoList },
@@ -1775,6 +1787,7 @@ export function MfgDeliveryOrdersListV2() {
         onMarkSigned={() => selected && doMarkSigned(selected)}
         onConvertToSi={() => selected && doConvertToSi(selected)}
         onReopen={() => selected && void doReopen(selected)}
+        canWrite={canWriteDo}
         salespersonName={
           selected ? salespersonNameOf(null, selected.salesperson_id) : "—"
         }

@@ -305,6 +305,24 @@ export const requireScmAccess: MiddlewareHandler<{ Bindings: Env }> = async (c, 
     await next();
     return;
   }
+  // Additive (owner 2026-07-16): a code-keyed Sales rep must be able to READ the
+  // Delivery Orders / Sales Invoices generated from their OWN Sales Orders (e.g.
+  // to find + resend a customer's invoice) and the relationship-map graph that
+  // links them. Admit isSalesUser for GET-only on those three read paths; the
+  // sub-routers already row-scope every read to own+downline (lib/salesScope) and
+  // strip cost/margin from non-finance callers (canViewScmFinance). Deliberately
+  // TIGHT — GET only (a rep still cannot create/edit a DO/SI), and only these
+  // paths; every other SCM area + all writes stay closed to an ungranted rep.
+  if (
+    c.req.method === "GET" &&
+    (c.req.path.includes("/delivery-orders-mfg") ||
+      c.req.path.includes("/sales-invoices") ||
+      c.req.path.includes("/document-flow")) &&
+    isSalesUser(user)
+  ) {
+    await next();
+    return;
+  }
   // Additive (PMS project logistics view, owner 2026-07): the Projects "Setup &
   // Dismantle" crew editor is READ-ONLY for Sales but must still SHOW the
   // currently-scheduled lorry plates. Admit a code-keyed Sales/Director for the

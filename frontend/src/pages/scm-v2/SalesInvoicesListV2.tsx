@@ -355,6 +355,7 @@ function DetailDrawer({
   onRecordPayment,
   onReopen,
   salespersonName,
+  canWrite,
 }: {
   row: SiRow | null;
   onClose: () => void;
@@ -365,6 +366,7 @@ function DetailDrawer({
   onRecordPayment: () => void;
   onReopen: () => void;
   salespersonName: string;
+  canWrite: boolean;
 }) {
   const detailQ = useSalesInvoiceDetail(row?.id ?? null);
   const items: Array<{
@@ -559,14 +561,16 @@ function DetailDrawer({
             </div>
 
             <div className="flex shrink-0 items-center gap-2 border-t border-border bg-surface px-5 py-3">
-              <Button variant="ghost" icon={<Edit3 size={14} />} onClick={onEdit}>
-                Edit
-              </Button>
+              {canWrite && (
+                <Button variant="ghost" icon={<Edit3 size={14} />} onClick={onEdit}>
+                  Edit
+                </Button>
+              )}
               <Button variant="ghost" icon={<Printer size={14} />} onClick={onPrint}>
                 Print
               </Button>
               <div className="flex-1" />
-              {(() => {
+              {canWrite && (() => {
                 const s = (row.status || "").toLowerCase();
                 if (["draft", "sent", "issued", "partially_paid", "partial"].includes(s)) {
                   if (outstanding > 0) {
@@ -750,8 +754,14 @@ export function SalesInvoicesListV2() {
   // Finance-viewer gate (auth/me = isFinanceViewer). Finance columns below are
   // DECLARED only for a finance-viewer; the backend also omits their keys from
   // the payload for everyone else (canViewScmFinance).
-  const { user } = useAuth();
+  const { user, pageAccess } = useAuth();
   const canFinance = !!user?.project_finance_viewer;
+  // Write gate — a salesperson reaches this list read-only via the sales inherit
+  // hatch (App.tsx allowSales; backend readInheritsFrom scm.sales.orders) and
+  // cannot create/edit an invoice or record payments. Hide the create + row
+  // mutation actions rather than render-then-deny (owner off-not-hide rule).
+  // `*` resolves to "full" in pageAccess.
+  const canWriteSi = ["edit", "full"].includes(pageAccess("scm.sales.invoices"));
 
   const status = (params.get("status") ?? "all") as StatusTab;
   const view = (params.get("view") ?? "table") as "table" | "cards";
@@ -1465,30 +1475,32 @@ export function SalesInvoicesListV2() {
             title="Sales Invoices"
             description="Every Houzs sales invoice — Sent to Paid. Click any row for the quick view; open the full page to edit or record a payment."
             primaryAction={
-              <div className="flex items-stretch gap-2">
-                <Button
-                  variant="secondary"
-                  icon={<ArrowRightLeft size={14} />}
-                  onClick={goFromDo}
-                >
-                  From Delivery Order
-                </Button>
-                <div className="flex items-stretch">
+              canWriteSi ? (
+                <div className="flex items-stretch gap-2">
                   <Button
-                    variant="primary"
-                    icon={<Plus size={14} />}
-                    onClick={goNewSi}
-                    className="rounded-r-none"
+                    variant="secondary"
+                    icon={<ArrowRightLeft size={14} />}
+                    onClick={goFromDo}
                   >
-                    New Sales Invoice
+                    From Delivery Order
                   </Button>
-                  <SplitDropdown
-                    onFromDo={goFromDo}
-                    onFromSo={goFromSo}
-                    onImport={goImport}
-                  />
+                  <div className="flex items-stretch">
+                    <Button
+                      variant="primary"
+                      icon={<Plus size={14} />}
+                      onClick={goNewSi}
+                      className="rounded-r-none"
+                    >
+                      New Sales Invoice
+                    </Button>
+                    <SplitDropdown
+                      onFromDo={goFromDo}
+                      onFromSo={goFromSo}
+                      onImport={goImport}
+                    />
+                  </div>
                 </div>
-              </div>
+              ) : undefined
             }
             secondaryActions={[
               { label: "Delivery Orders", icon: Truck, onClick: goDoList },
@@ -1679,6 +1691,7 @@ export function SalesInvoicesListV2() {
         onMarkPaid={() => selected && doMarkPaid(selected)}
         onRecordPayment={() => selected && goRecordPayment(selected)}
         onReopen={() => selected && void doReopen(selected)}
+        canWrite={canWriteSi}
         salespersonName={
           selected ? salespersonNameOf(null, selected.salesperson_id) : "—"
         }
