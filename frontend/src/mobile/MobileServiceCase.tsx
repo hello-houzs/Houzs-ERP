@@ -1188,20 +1188,23 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
                   }
                 >
                   {items.length ? items.map((it, i) => (
-                    <div key={get(it, "id") ?? i} style={{ display: "flex", alignItems: "center", gap: 9, border: `1px solid ${DIM}`, borderRadius: 10, padding: "10px 11px", marginBottom: 7 }}>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div className="money" style={{ fontSize: 10, fontWeight: 700, color: BROWN }}>{String(get(it, "itemCode", "item_code") ?? "—")}</div>
-                        <div style={{ fontSize: 12, fontWeight: 600, color: INK, marginTop: 2 }}>{String(get(it, "itemDescription", "item_description") ?? "—")}</div>
+                    <div key={get(it, "id") ?? i} style={{ border: `1px solid ${DIM}`, borderRadius: 10, padding: "10px 11px", marginBottom: 7 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div className="money" style={{ fontSize: 10, fontWeight: 700, color: BROWN }}>{String(get(it, "itemCode", "item_code") ?? "—")}</div>
+                          <div style={{ fontSize: 12, fontWeight: 600, color: INK, marginTop: 2 }}>{String(get(it, "itemDescription", "item_description") ?? "—")}</div>
+                        </div>
+                        <span style={{ fontSize: 11, color: MUTED }}>×{String(get(it, "qty") ?? 1)}</span>
+                        <button
+                          onClick={() => removeItem(it)}
+                          disabled={busy}
+                          aria-label="Remove item"
+                          style={{ flex: "none", width: 26, height: 26, borderRadius: 8, border: `1px solid ${DIM}`, background: "#fff", color: RED, fontSize: 15, lineHeight: 1, cursor: busy ? "default" : "pointer", opacity: busy ? 0.5 : 1 }}
+                        >
+                          ×
+                        </button>
                       </div>
-                      <span style={{ fontSize: 11, color: MUTED }}>×{String(get(it, "qty") ?? 1)}</span>
-                      <button
-                        onClick={() => removeItem(it)}
-                        disabled={busy}
-                        aria-label="Remove item"
-                        style={{ flex: "none", width: 26, height: 26, borderRadius: 8, border: `1px solid ${DIM}`, background: "#fff", color: RED, fontSize: 15, lineHeight: 1, cursor: busy ? "default" : "pointer", opacity: busy ? 0.5 : 1 }}
-                      >
-                        ×
-                      </button>
+                      <MobileItemRemark c={c} it={it} busy={busy} onChanged={refetch} notify={notify} />
                     </div>
                   )) : (
                     <div style={{ fontSize: 12, color: GREY, padding: "2px 0" }}>No items recorded.</div>
@@ -2670,6 +2673,39 @@ function PhotoGrid({
       </div>
       {hint && <div style={{ fontSize: 10.5, color: GREY, marginTop: 6 }}>{hint}</div>}
     </>
+  );
+}
+
+// Per-item remark — prints in the ITEMS table's REMARK column on both
+// print copies (Nick 2026-07-15). Saves on blur; empty clears it.
+function MobileItemRemark({ c, it, busy, onChanged, notify }: { c: Any; it: Any; busy: boolean; onChanged: () => void; notify: ReturnType<typeof useNotify> }) {
+  const caseId = Number(get(c, "id"));
+  const itemId = Number(get(it, "id"));
+  const current = String(get(it, "remark") ?? "");
+  const [draft, setDraft] = useState(current);
+  useEffect(() => {
+    setDraft(String(get(it, "remark") ?? ""));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [itemId]);
+  const commit = async () => {
+    if (draft.trim() === current.trim()) return;
+    try {
+      await api.patch(`/api/assr/${caseId}/items/${itemId}`, { remark: draft.trim() || null });
+      onChanged();
+    } catch (e: any) {
+      await notify({ title: "Couldn't save remark", body: e?.message || "Please try again.", tone: "error" });
+    }
+  };
+  return (
+    <input
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      disabled={busy}
+      placeholder="Remark — prints on customer & supplier copies"
+      className="fld-i"
+      style={{ width: "100%", boxSizing: "border-box", marginTop: 8, fontSize: 11.5 }}
+    />
   );
 }
 

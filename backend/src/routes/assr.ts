@@ -19,6 +19,7 @@ import {
   logActivity,
   nextServicePONumber,
   setCaseCreditorManual,
+  setItemRemark,
 } from "../services/assr";
 import { runSlaEscalation } from "../services/assrEscalation";
 import { issueStaffToken, issueSalesToken } from "../services/caseTracking";
@@ -2324,6 +2325,19 @@ app.delete("/:id/items/:itemId", requirePermission("service_cases.write"), async
   const id = parseInt(c.req.param("id"), 10);
   const itemId = parseInt(c.req.param("itemId"), 10);
   await removeItem(c.env, id, itemId);
+  return c.json({ ok: true });
+});
+
+// Per-item remark — prints in the ITEMS table's REMARK column on both
+// the customer and supplier copies (Nick 2026-07-15).
+app.patch("/:id/items/:itemId", requirePermission("service_cases.write"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  const itemId = parseInt(c.req.param("itemId"), 10);
+  if (isNaN(id) || isNaN(itemId)) return c.json({ error: "Invalid ID" }, 400);
+  const body = await c.req.json<{ remark?: string | null }>();
+  const remark = body.remark == null ? null : String(body.remark).trim() || null;
+  const ok = await setItemRemark(c.env, id, itemId, remark);
+  if (!ok) return c.json({ error: "Not found" }, 404);
   return c.json({ ok: true });
 });
 

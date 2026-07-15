@@ -1000,13 +1000,19 @@ export async function setCaseCreditorManual(
 export async function addItems(
   env: Env,
   assrId: number,
-  items: { item_code: string; item_description?: string; qty?: number }[]
+  items: { item_code: string; item_description?: string; qty?: number; remark?: string | null }[]
 ) {
   for (const item of items) {
     await env.DB.prepare(
-      `INSERT INTO assr_items (assr_id, item_code, item_description, qty) VALUES (?, ?, ?, ?)`
+      `INSERT INTO assr_items (assr_id, item_code, item_description, qty, remark) VALUES (?, ?, ?, ?, ?)`
     )
-      .bind(assrId, item.item_code, item.item_description ?? null, item.qty ?? 1)
+      .bind(
+        assrId,
+        item.item_code,
+        item.item_description ?? null,
+        item.qty ?? 1,
+        (item.remark ?? "").trim() || null
+      )
       .run();
   }
 }
@@ -1017,6 +1023,23 @@ export async function removeItem(env: Env, assrId: number, itemId: number) {
   )
     .bind(itemId, assrId)
     .run();
+}
+
+// Per-item remark (Nick 2026-07-15) — edited from the Product Info
+// card, printed in the ITEMS table's REMARK column on both the
+// customer and supplier copies.
+export async function setItemRemark(
+  env: Env,
+  assrId: number,
+  itemId: number,
+  remark: string | null
+): Promise<boolean> {
+  const r = await env.DB.prepare(
+    `UPDATE assr_items SET remark = ? WHERE id = ? AND assr_id = ?`
+  )
+    .bind(remark, itemId, assrId)
+    .run();
+  return (r.meta.changes ?? 0) > 0;
 }
 
 // ── Attachments ───────────────────────────────────────────────
