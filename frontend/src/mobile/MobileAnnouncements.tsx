@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
 import { MobileVirtualList } from "./MobileVirtualList";
 import { useAuth } from "../auth/AuthContext";
+import { isSalesDirectorUser } from "../auth/salesAccess";
 import { formatDate } from "../lib/utils";
 import "./mobile.css";
 
@@ -335,8 +336,15 @@ const BUCKETS: Array<{ value: Bucket; label: string }> = [
 ];
 
 export function MobileAnnouncements({ onBack }: { onBack?: () => void }) {
-  const { can } = useAuth();
-  const canCreate = can("announcements.write");
+  const { can, user } = useAuth();
+  // A Sales Director may compose (owner rule 2026-07-15) even without the
+  // announcements.* permission — code-keyed off the org chart, mirroring the
+  // backend requirePermissionOrSalesDirector admittance. `salesDirOnly` =
+  // admitted purely as a Sales Director: their composer is constrained to the
+  // Sales department / a specific salesperson (backend enforces).
+  const isSalesDir = isSalesDirectorUser(user);
+  const canCreate = can("announcements.write") || isSalesDir;
+  const salesDirOnly = isSalesDir && !can("announcements.write");
   const qc = useQueryClient();
 
   const [view, setView] = useState<"list" | "detail" | "compose">("list");
@@ -409,6 +417,7 @@ export function MobileAnnouncements({ onBack }: { onBack?: () => void }) {
     return (
       <Compose
         lookups={lookups}
+        salesDirOnly={salesDirOnly}
         onClose={() => setView("list")}
         onPublished={() => {
           qc.invalidateQueries({ queryKey: ["mobile-announcements"] });
@@ -423,10 +432,13 @@ export function MobileAnnouncements({ onBack }: { onBack?: () => void }) {
       <Detail
         ann={open}
         companies={companies}
-        // Read-receipts only for company-wide human notices. A private/targeted
-        // notice (esp. a source='scan' per-user notice) must NOT show a roster —
-        // it's meant for one person, so "who read it" is meaningless + wrong.
-        canReceipts={canCreate && open.targetType === "ALL_USERS" && open.source !== "scan"}
+        // Read-receipts for any human notice this user can compose (matches the
+        // desktop: a dept/person-targeted notice has a meaningful roster too). A
+        // source='scan' per-user notice is excluded — it's meant for one person,
+        // so "who read it" is meaningless. The Receipts panel hides itself when
+        // the roster can't be loaded (e.g. a Sales Director opening a notice they
+        // didn't author — the backend 404s /:id/acks for non-owners).
+        canReceipts={canCreate && open.source !== "scan"}
         acked={ackedIds.has(open.id)}
         onAcked={() => markAcked(open.id)}
         onBack={() => setView("list")}
@@ -609,10 +621,15 @@ type Lookups = { depts: Dept[]; positions: Position[]; users: UserRow[]; usersDe
 // position always available; People (user ids) only when /api/users is readable.
 function Compose({
   lookups,
+  salesDirOnly,
   onClose,
   onPublished,
 }: {
   lookups: Lookups;
+  /** Composer opened by a Sales-Director-only caller: audience is constrained
+   *  to the whole Sales department OR a specific salesperson in it (owner rule).
+   *  The dept / user lookups are already server-scoped to their department. */
+  salesDirOnly: boolean;
   onClose: () => void;
   onPublished: () => void;
 }) {
@@ -620,7 +637,7 @@ function Compose({
 
   const [title, setTitle] = useState("");
   const [category, setCategory] = useState(CATEGORY_OPTIONS[0].value);
-  const [bucket, setBucket] = useState<Bucket>("ALL");
+  const [bucket, setBucket] = useState<Bucket>(salesDirOnly ? "DEPT" : "ALL");
   // Company target: "ALL" = every company (Both — sends no target, NULL = all);
   // a company id = that company only. Default "ALL". Only shown when >1 company.
   const [companyPick, setCompanyPick] = useState<"ALL" | number>("ALL");
@@ -653,6 +670,23 @@ function Compose({
       (u) => (u.name ?? "").toLowerCase().includes(q) || (u.email ?? "").toLowerCase().includes(q),
     );
   }, [lookups.users, userSearch]);
+
+  // Sales Director: default the "Sales Department" bucket to their own
+  // department (the lookups already return only it), so posting with no manual
+  // pick still targets the whole Sales dept + satisfies the DEPT validation.
+  // Seeded once so a later deselect isn't fought.
+  const seededDeptRef = useRef(false);
+  useEffect(() => {
+    if (
+      salesDirOnly &&
+      !seededDeptRef.current &&
+      bucket === "DEPT" &&
+      lookups.depts.length > 0
+    ) {
+      seededDeptRef.current = true;
+      setSelDepts(new Set(lookups.depts.map((d) => d.id)));
+    }
+  }, [salesDirOnly, bucket, lookups.depts]);
 
   const publish = async () => {
     const t = title.trim();
@@ -709,8 +743,18 @@ function Compose({
   };
 
   const poster = user?.name?.trim() || "your account";
+  // Sales Director: only two audiences — the whole Sales department, or a
+  // specific salesperson in it. Everyone else keeps the full bucket set.
+  const baseBuckets: Array<{ value: Bucket; label: string }> = salesDirOnly
+    ? [
+        { value: "DEPT", label: "Sales Department" },
+        { value: "USER", label: "Specific salesperson" },
+      ]
+    : BUCKETS;
   // People bucket only offered when the directory is readable.
-  const buckets = lookups.usersDenied ? BUCKETS.filter((b) => b.value !== "USER") : BUCKETS;
+  const buckets = lookups.usersDenied
+    ? baseBuckets.filter((b) => b.value !== "USER")
+    : baseBuckets;
   const companyOptions: Array<["ALL" | number, string]> = [
     ["ALL", "Both"],
     ...lookups.companies.map((co) => [co.id, co.name] as ["ALL" | number, string]),
@@ -743,8 +787,9 @@ function Compose({
           </select>
         </label>
 
-        {/* Company target — only when more than one company exists. */}
-        {lookups.companies.length > 1 && (
+        {/* Company target — only when more than one company exists. Hidden for
+            a Sales Director (they post within their own department only). */}
+        {lookups.companies.length > 1 && !salesDirOnly && (
           <>
             <div className="fld-l" style={{ margin: "0 2px 7px" }}>Company</div>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
