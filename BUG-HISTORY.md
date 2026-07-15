@@ -8,6 +8,12 @@ Severity tags: 🔴 critical/high · 🟠 medium · 🟢 low.
 
 ## 2026-07-15
 
+### 🟢 Project TEAM section showed no PIC phone number
+- **Symptom:** The project detail TEAM section PIC picker showed only the PIC's name (e.g. "Sheldon Tan"), never their phone number — even though the frontend already renders `p.pic_phone` under the picker when present.
+- **Root cause:** The project LIST query (`services/projects.ts:610`) selects `pic.phone as pic_phone`, but the project DETAIL query (`:1455`) selected only `pic.name as pic_name` — so `pic_phone` was always null on the detail payload the picker reads.
+- **Fix:** Added `pic.phone as pic_phone` to the detail query (the `pic` users-join already exists). No frontend change needed — the display was already there.
+- **Ref:** `fix/project-detail-pic-phone`, 2026-07-15.
+
 ### 🟠 SO Amendment had no readable detail — the queue jumped straight into the SO/PO editor (cramped diff)
 - **Symptom:** Opening an amendment from the queue jumped into the SO/PO inline editor; the only "requested changes" view was a cramped modal. No proper amendment job card / before-after layout.
 - **Root cause:** The Amendments queue `openRow` resolved the bound PO and navigated into the editor; the diff data (`useAmendmentDetail`, `old_snapshot` vs `new_*`) existed but nothing composed it into a detail page.
