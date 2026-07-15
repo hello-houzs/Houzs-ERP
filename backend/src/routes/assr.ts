@@ -32,13 +32,15 @@ import {
   houzsCompanyId,
   houzsCompanyIds,
   houzsCompanySql,
+  allowedCompanyIds,
+  allowedCompaniesSql,
 } from "../scm/lib/companyScope";
 import { hasPermission } from "../services/permissions";
 import { subtreeUserIds, subtreeAgentNames } from "../services/orgScope";
 import { notifyServiceCaseResponsible } from "../services/assrNotify";
 import { isSalesUser, isDirectorUser } from "../services/pmsAccess";
 import type { AuthUser } from "../services/auth";
-import type { MiddlewareHandler } from "hono";
+import type { Context, MiddlewareHandler } from "hono";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -90,6 +92,23 @@ function requireServiceCaseAccess(
 // HOUZS by `companies.code === 'HOUZS'` from the companies master and returns
 // "" / [] when that master is unresolved (pre-migration / D1 test mirror /
 // cold-start), so legacy single-company SQL runs unchanged.
+//
+// EXCEPTION (owner 2026-07-16): only rank-and-file SALES are company-split
+// (Houzs-only). Office / backend / house-operations / directors run one
+// cross-company portal, so their READS widen to the caller's allowed set.
+// `assrPinsToHouzs` is the same predicate as `isScopedProjectUser`
+// (isSalesUser && !isDirectorUser). The INSERT stamp is NOT affected — a new
+// service case ALWAYS stamps HOUZS (houzsCompanyId), ASSR being Houzs-only.
+function assrPinsToHouzs(c: Context<any>): boolean {
+  const user = c.get("user") as AuthUser | undefined;
+  return isSalesUser(user) && !isDirectorUser(user);
+}
+function assrCompanySql(c: Context<any>, col = "company_id"): string {
+  return assrPinsToHouzs(c) ? houzsCompanySql(c, col) : allowedCompaniesSql(c, col);
+}
+function assrCompanyIds(c: Context<any>): number[] {
+  return assrPinsToHouzs(c) ? houzsCompanyIds(c) : allowedCompanyIds(c);
+}
 
 // ── Row-level visibility (owner spec 2026-07) ─────────────────
 // Full view = `*` wildcard (Owner / IT Admin) or `service_cases.manage`
@@ -491,8 +510,8 @@ app.get("/summary", requirePermission("service_cases.read"), async (c) => {
     `AND COALESCE(c.complained_date, c.created_at) >= date('now', '-${sinceDays} days')`;
   // Allowed-companies predicates ("" when unresolved) — one per table alias
   // used below.
-  const coC = houzsCompanySql(c, "c.company_id");
-  const coBare = houzsCompanySql(c);
+  const coC = assrCompanySql(c, "c.company_id");
+  const coBare = assrCompanySql(c);
 
   const totals = await c.env.DB.prepare(
     `SELECT COUNT(*) as total FROM assr_cases WHERE 1=1${coBare}`
@@ -676,7 +695,7 @@ app.get("/", requireServiceCaseAccess(), async (c) => {
   const result = await listAssrCases(c.env, {
     visible_to_user_ids: visibleIds,
     visible_agent_names: visibleAgentNames,
-    allowed_company_ids: houzsCompanyIds(c),
+    allowed_company_ids: assrCompanyIds(c),
     stage: c.req.query("stage"),
     status: c.req.query("status"),
     search: c.req.query("search"),
@@ -814,7 +833,7 @@ app.post("/:id{[0-9]+}/set-creditor", requirePermission("service_cases.write"), 
 app.get("/by-creditor", requirePermission("service_cases.read"), async (c) => {
   const search = (c.req.query("search") || "").trim();
   const like = search ? `%${search}%` : null;
-  const coC = houzsCompanySql(c, "c.company_id");
+  const coC = assrCompanySql(c, "c.company_id");
 
   const rowsQ = c.env.DB.prepare(
     `SELECT c.creditor_code,
@@ -844,7 +863,7 @@ app.get("/by-creditor", requirePermission("service_cases.read"), async (c) => {
     `SELECT COUNT(*) AS total,
             SUM(CASE WHEN stage != 'completed' THEN 1 ELSE 0 END) AS open
        FROM assr_cases
-      WHERE archived_at IS NULL AND (creditor_code IS NULL OR creditor_code = '')${houzsCompanySql(c)}`
+      WHERE archived_at IS NULL AND (creditor_code IS NULL OR creditor_code = '')${assrCompanySql(c)}`
   ).first<{ total: number; open: number }>();
 
   return c.json({
@@ -962,7 +981,7 @@ app.get("/export.csv", requireServiceCaseAccess(), async (c) => {
   const rows = await exportAssrCases(c.env, {
     visible_to_user_ids: csvVisibleIds,
     visible_agent_names: csvVisibleAgentNames,
-    allowed_company_ids: houzsCompanyIds(c),
+    allowed_company_ids: assrCompanyIds(c),
     stage: c.req.query("stage"),
     status: c.req.query("status"),
     search: c.req.query("search"),
@@ -1050,11 +1069,12 @@ app.get("/search-so", requireServiceCaseAccess(), async (c) => {
     .bind(pattern, pattern, pattern)
     .all();
 
-  // (2) SCM-native SOs, PINNED to HOUZS. houzsCompanySql inlines the validated
-  // int id (safe) or "" when unresolved (then this degrades to all rows, same
-  // as legacy single-company). This is the fix that stops 2990 orders leaking
-  // into the service-case SO picker for a both-company user.
-  const coFilter = houzsCompanySql(c, "so.company_id");
+  // (2) SCM-native SOs. assrCompanySql pins rank-and-file SALES to HOUZS
+  // (inlining the validated int id, or "" when unresolved -> degrades to all
+  // rows, same as legacy single-company); office/backend/directors get their
+  // allowed set. This is the fix that stops 2990 orders leaking into the
+  // service-case SO picker for a both-company SALES user.
+  const coFilter = assrCompanySql(c, "so.company_id");
   const scmRows = await c.env.DB.prepare(
     `SELECT so.doc_no, so.ref, so.debtor_name, so.phone,
             so.so_date AS doc_date, so.agent AS sales_agent, co.code AS company_code
@@ -1171,7 +1191,7 @@ app.get("/my-cases", requireServiceCaseAccess(), async (c) => {
             complaint_issue, item_code, sales_agent
        FROM assr_cases
       WHERE (${likeClauses})
-        AND archived_at IS NULL${houzsCompanySql(c)}
+        AND archived_at IS NULL${assrCompanySql(c)}
       ORDER BY complained_date DESC, id DESC
       LIMIT 200`
   )
@@ -1255,18 +1275,20 @@ app.get("/:id{[0-9]+}", requireServiceCaseAccess(), async (c) => {
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const detail = await getAssrDetail(c.env, id);
   if (!detail) return c.json({ error: "Not found" }, 404);
-  /* Multi-company: ASSR is Houzs-only, so a case must belong to HOUZS (same
-     pin as the list). A case tagged with any other company (e.g. one wrongly
-     stamped 2990 before this pin shipped) answers 404 here too. Skipped when
-     HOUZS is unresolved (pre-migration / D1 test mirror). Out-of-scope answers
-     404, indistinguishable from a nonexistent id. */
-  const houzsCo = houzsCompanyIds(c);
-  if (houzsCo.length > 0) {
+  /* Multi-company: a case must fall inside the caller's ASSR company scope
+     (same rule as the list). Rank-and-file SALES are pinned to HOUZS; office /
+     backend / directors get their allowed set. A case tagged with a company
+     outside that scope (e.g. one wrongly stamped 2990 before the Houzs pin
+     shipped, viewed by a sales rep) answers 404 here too. Skipped when the
+     scope is empty (pre-migration / D1 test mirror). Out-of-scope answers 404,
+     indistinguishable from a nonexistent id. */
+  const allowedCo = assrCompanyIds(c);
+  if (allowedCo.length > 0) {
     const caseRow = (detail as { case?: Record<string, unknown> }).case ?? {};
     const caseCo = Number(
       (caseRow as any).companyId ?? (caseRow as any).company_id ?? NaN,
     );
-    if (Number.isFinite(caseCo) && !houzsCo.includes(caseCo)) {
+    if (Number.isFinite(caseCo) && !allowedCo.includes(caseCo)) {
       return c.json({ error: "Not found" }, 404);
     }
   }
@@ -1353,7 +1375,7 @@ app.get("/:id/customer-history", requireServiceCaseAccess(), async (c) => {
             c.complaint_issue, c.complained_date, c.created_at, c.item_code,
             c.resolution_method
        FROM assr_cases c
-      WHERE ${where.join(" AND ")}${houzsCompanySql(c, "c.company_id")}
+      WHERE ${where.join(" AND ")}${assrCompanySql(c, "c.company_id")}
       ORDER BY c.id DESC
       LIMIT 25`
   )
@@ -1452,7 +1474,7 @@ app.post(
   // it adds only one small insert. A raw env.DB read returns snake_case.
   try {
     const row = await c.env.DB.prepare(
-      `SELECT assigned_to, assigned_to_2, sales_agent, customer_name
+      `SELECT assigned_to, assigned_to_2, sales_agent, customer_name, created_by
          FROM assr_cases WHERE id = ?`,
     )
       .bind(result.id)
@@ -1461,13 +1483,18 @@ app.post(
         assigned_to_2: number | null;
         sales_agent: string | null;
         customer_name: string | null;
+        created_by: number | null;
       }>();
     if (row) {
+      // Notify the CREATOR too (owner 2026-07-16): the salesperson who opened
+      // the case should hear that it landed. The notify service de-dupes +
+      // expands upline, so adding created_by is safe even when the creator is
+      // also an assignee.
       await notifyServiceCaseResponsible(c.env, {
         reason: "created",
         assrNo: result.assr_no,
         customerName: row.customer_name,
-        userIds: [row.assigned_to, row.assigned_to_2],
+        userIds: [row.assigned_to, row.assigned_to_2, row.created_by],
         agentNames: [row.sales_agent],
       });
     }
@@ -1807,9 +1834,9 @@ app.get("/metrics", requirePermission("service_cases.read"), async (c) => {
     `AND COALESCE(${prefix}complained_date, ${prefix}created_at) >= date('now', '-${sinceDays} days')`;
   const sinceClause = sinceFor();
   // Allowed-companies predicates per table alias ("" when unresolved).
-  const coBare = houzsCompanySql(c);
-  const coC = houzsCompanySql(c, "c.company_id");
-  const coA = houzsCompanySql(c, "a.company_id");
+  const coBare = assrCompanySql(c);
+  const coC = assrCompanySql(c, "c.company_id");
+  const coA = assrCompanySql(c, "a.company_id");
 
   // Headline numbers. avg_resolution_hours filters out legacy rows
   // where julianday(closed_at) <= julianday(created_at) (corrupt
@@ -2139,7 +2166,7 @@ app.get("/metrics/drill", requirePermission("service_cases.read"), async (c) => 
     ? "FROM assr_cases c LEFT JOIN creditors cr ON cr.creditor_code = c.creditor_code JOIN assr_items i ON i.assr_id = c.id"
     : "FROM assr_cases c LEFT JOIN creditors cr ON cr.creditor_code = c.creditor_code";
   const distinct = joinItems ? "DISTINCT" : "";
-  const where = conds.join(" AND ") + houzsCompanySql(c, "c.company_id");
+  const where = conds.join(" AND ") + assrCompanySql(c, "c.company_id");
 
   const rows = await c.env.DB.prepare(
     `SELECT ${distinct} c.id, c.assr_no, c.customer_name, c.stage, c.priority,
