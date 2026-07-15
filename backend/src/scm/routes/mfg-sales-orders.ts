@@ -213,6 +213,111 @@ async function soProcessingLockBlocked(sb: any, docNo: string): Promise<typeof S
     : null;
 }
 
+/* ── SO status legal-transition guard (FIX 1, 2026-07-16) ───────────────────
+   The manual PATCH /:docNo/status endpoint used to write body.status VERBATIM:
+   a garbage string (e.g. the V2 list "Confirm" button posts lowercase
+   "confirmed") persisted, and an already-advanced SO could be moved backward
+   with no check. Mirror the purchasing side's dedicated-status guards with an
+   explicit legal-transition table. The AUTO state-machine (so-stock-allocation,
+   so-delivery-sync, delivery-returns) writes the status column DIRECTLY and does
+   NOT come through this route, so this table only governs MANUAL status changes.
+
+   Status set grepped from the codebase (list/detail pills, so-stock-allocation,
+   so-delivery-sync, delivery-returns, inventory SO_DONE, the amend-terminal set):
+     DRAFT → CONFIRMED → IN_PRODUCTION → READY_TO_SHIP → SHIPPED → DELIVERED
+       → INVOICED → CLOSED, plus the side states CANCELLED and ON_HOLD.
+   Conservative by owner rule: reject ONLY an UNKNOWN target and a clearly-illegal
+   BACKWARD jump; every forward move, idempotent no-op, ON_HOLD pause/resume and
+   known regression is allowed. */
+const SO_STATUSES = new Set([
+  'DRAFT', 'CONFIRMED', 'IN_PRODUCTION', 'READY_TO_SHIP', 'SHIPPED',
+  'DELIVERED', 'INVOICED', 'CLOSED', 'CANCELLED', 'ON_HOLD',
+]);
+const SO_STATUS_RANK: Record<string, number> = {
+  DRAFT: 0, CONFIRMED: 1, IN_PRODUCTION: 2, READY_TO_SHIP: 3,
+  SHIPPED: 4, DELIVERED: 5, INVOICED: 6, CLOSED: 7,
+};
+/* Backward edges the system legitimately performs — stock regress (all-lines
+   not-ready) + delivery-return re-open. Everything else backward is rejected.
+   Keyed `${from}>${to}`. */
+const SO_LEGAL_REGRESSIONS = new Set([
+  'IN_PRODUCTION>CONFIRMED',
+  'READY_TO_SHIP>CONFIRMED', 'READY_TO_SHIP>IN_PRODUCTION',
+  'SHIPPED>CONFIRMED', 'SHIPPED>IN_PRODUCTION', 'SHIPPED>READY_TO_SHIP',
+  'DELIVERED>CONFIRMED', 'DELIVERED>IN_PRODUCTION',
+  'DELIVERED>READY_TO_SHIP', 'DELIVERED>SHIPPED',
+]);
+
+/* null = allowed. `to` MUST already be normalised to UPPERCASE. The CANCELLED
+   target/source is validated by the caller's cancel-final + downstream guards, so
+   it short-circuits here. `from` unknown/blank (legacy row, brand-new SO) →
+   allowed (can't judge — never OVER-block). */
+function soStatusTransitionError(
+  fromRaw: string | null,
+  to: string,
+): { error: string; reason: string; code: 400 | 409 } | null {
+  if (!SO_STATUSES.has(to)) {
+    return { error: 'invalid_status', reason: `"${to}" is not a valid Sales Order status.`, code: 400 };
+  }
+  const from = String(fromRaw ?? '').toUpperCase();
+  if (!from || !SO_STATUSES.has(from)) return null;              // status-blind → allow
+  if (from === to) return null;                                  // idempotent no-op
+  if (to === 'CANCELLED' || from === 'CANCELLED') return null;   // cancel guards own this
+  if (to === 'ON_HOLD' || from === 'ON_HOLD') return null;       // pause / resume
+  const fromRank = SO_STATUS_RANK[from];
+  const toRank = SO_STATUS_RANK[to];
+  if (fromRank === undefined || toRank === undefined) return null;
+  if (toRank >= fromRank) return null;                           // forward or same rank
+  if (SO_LEGAL_REGRESSIONS.has(`${from}>${to}`)) return null;    // known regression
+  return {
+    error: 'illegal_status_transition',
+    reason: `A Sales Order cannot move from ${from} back to ${to}.`,
+    code: 409,
+  };
+}
+
+/* ── SO Proceed gate (FIX 2, 2026-07-16) ────────────────────────────────────
+   meetsProceedGate (shared order-rules) was only consulted at CREATE
+   auto-proceed. The two MANUAL proceed paths — PATCH /:docNo/status →
+   IN_PRODUCTION (stamps proceeded_at) and PATCH /:docNo proceededAt — stamped
+   proceeded_at with NO ≥50%-paid / full-address check, so mobile / API could
+   proceed an under-paid or address-less SO (desktop blocked it). Reuse the SAME
+   shared gate on both manual paths so create + manual + client can't drift.
+   `paid` mirrors the sibling processing-date gate in this file: Σ payment rows vs
+   the SO's local_total_centi — no new threshold invented (the 50% is
+   PROCEED_PAID_THRESHOLD inside meetsProceedGate). */
+const SO_PROCEED_GATE_RESPONSE = {
+  error: 'proceed_gate_unmet',
+  reason: 'This order can only Proceed once it has a customer name, an email, a full delivery address (line 1 and postcode), a delivery date, and at least 50% of the total paid.',
+} as const;
+
+async function soProceedGateBlocked(
+  sb: any,
+  docNo: string,
+  eff: {
+    customerName?: string | null; email?: string | null;
+    address1?: string | null; postcode?: string | null; deliveryDate?: string | null;
+  },
+): Promise<typeof SO_PROCEED_GATE_RESPONSE | null> {
+  const [{ data: totRow }, { data: pays }] = await Promise.all([
+    sb.from('mfg_sales_orders').select('local_total_centi').eq('doc_no', docNo).maybeSingle(),
+    sb.from('mfg_sales_order_payments').select('amount_centi').eq('so_doc_no', docNo),
+  ]);
+  const totalCenti = Number((totRow as { local_total_centi?: number } | null)?.local_total_centi ?? 0);
+  const paidCenti = ((pays ?? []) as Array<{ amount_centi?: number | null }>)
+    .reduce((s, p) => s + Number(p.amount_centi ?? 0), 0);
+  const ok = meetsProceedGate({
+    hasCustomerName: !!eff.customerName?.trim(),
+    hasEmail: !!eff.email?.trim(),
+    hasAddress: !!eff.address1?.trim(),
+    hasPostcode: !!eff.postcode?.trim(),
+    hasDeliveryDate: !!eff.deliveryDate?.trim(),
+    paid: paidCenti,
+    total: totalCenti,
+  });
+  return ok ? null : SO_PROCEED_GATE_RESPONSE;
+}
+
 /* Owner 2026-05-31 — Identity + value columns a downstream DO / SI snapshots.
    These are frozen on the SO header once a non-cancelled child exists; payment,
    remark and scheduling columns are intentionally NOT in this set so the shop
@@ -4545,6 +4650,13 @@ mfgSalesOrders.patch('/:docNo/status', async (c) => {
   try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid_json' }, 400); }
   if (!body.status) return c.json({ error: 'status_required' }, 400);
 
+  /* FIX 1 (2026-07-16) — normalise the target to UPPERCASE before any check or
+     write. Some clients post lowercase (the V2 list "Confirm" button sends
+     "confirmed"), which the old verbatim writer persisted as-is — a status no
+     `=== 'CONFIRMED'` check would ever match. Normalising fixes that latent
+     lowercase-persist bug and lets the transition table judge a canonical value. */
+  const toStatus = String(body.status).trim().toUpperCase();
+
   /* Audit 2026-06-20 — self-scoped sales (sales / sales_executive) must NOT
      transition or cancel another salesperson's SO by doc_no — a cancel even
      converts that SO's deposit into a customer credit. Mirror the
@@ -4553,6 +4665,7 @@ mfgSalesOrders.patch('/:docNo/status', async (c) => {
 
   const { data: prev } = await sb.from('mfg_sales_orders').select('status').eq('doc_no', docNo).maybeSingle();
   const fromStatus = (prev as { status: string } | null)?.status ?? null;
+  const fromNorm = fromStatus == null ? null : String(fromStatus).toUpperCase();
 
   /* Audit 2026-06-11 C-1/H1 — a CANCELLED SO is FINAL (mirrors do_cancelled_final).
      Un-cancelling left the Edge #B SO_CANCEL_REFUND customer credit standing while
@@ -4560,7 +4673,7 @@ mfgSalesOrders.patch('/:docNo/status', async (c) => {
      (there is no SO_REOPEN_CONTRA claw-back on the SO side). Re-order via a NEW
      SO instead. Re-cancel (CANCELLED→CANCELLED) still rides through below and is
      idempotent (creditFromCancelledSo no-ops on the source pair). */
-  if (fromStatus === 'CANCELLED' && body.status !== 'CANCELLED') {
+  if (fromNorm === 'CANCELLED' && toStatus !== 'CANCELLED') {
     return c.json({
       error: 'so_cancelled_final',
       reason: 'A cancelled Sales Order cannot be reactivated — its deposit was already converted to customer credit. Create a new SO instead.',
@@ -4571,9 +4684,20 @@ mfgSalesOrders.patch('/:docNo/status', async (c) => {
      the GRN cancel guard). Other status transitions (CONFIRMED ↔ READY_TO_SHIP
      ↔ SHIPPED ↔ DELIVERED…) ride through untouched so the existing state
      machine + auto-advance (e.g. all-lines-READY → READY_TO_SHIP) keep working. */
-  if (body.status === 'CANCELLED' && fromStatus !== 'CANCELLED') {
+  if (toStatus === 'CANCELLED' && fromNorm !== 'CANCELLED') {
     const childLock = await soHasDownstream(sb, docNo);
     if (childLock) return c.json(childLock, 409);
+  }
+
+  /* FIX 1 (2026-07-16) — legal-transition guard. Rejects an unknown/garbage
+     target (400 invalid_status) and a clearly-illegal BACKWARD jump
+     (409 illegal_status_transition). CANCELLED targets/sources are owned by the
+     cancel-final + downstream guards above and short-circuit inside the helper;
+     forward moves, idempotent no-ops, ON_HOLD pause/resume and the known stock /
+     delivery-return regressions all pass. */
+  {
+    const txErr = soStatusTransitionError(fromNorm, toStatus);
+    if (txErr) return c.json({ error: txErr.error, reason: txErr.reason }, txErr.code);
   }
 
   /* POS "Proceed" → stamp proceeded_at ONCE, on the first move into
@@ -4581,10 +4705,25 @@ mfgSalesOrders.patch('/:docNo/status', async (c) => {
      (or toggling status back and forth) never overwrites the original Proceed
      date the coordinator sees on the SO detail page. (Merged with main's
      CANCELLED downstream-lock guard above — both apply.) */
-  const patch: Record<string, unknown> = { status: body.status, updated_at: new Date().toISOString() };
-  if (body.status === 'IN_PRODUCTION') {
-    const { data: cur } = await sb.from('mfg_sales_orders').select('proceeded_at').eq('doc_no', docNo).maybeSingle();
-    if (!(cur as { proceeded_at?: string } | null)?.proceeded_at) {
+  const patch: Record<string, unknown> = { status: toStatus, updated_at: new Date().toISOString() };
+  if (toStatus === 'IN_PRODUCTION') {
+    const { data: cur } = await sb.from('mfg_sales_orders')
+      .select('proceeded_at, debtor_name, email, address1, postcode, customer_delivery_date')
+      .eq('doc_no', docNo).maybeSingle();
+    const curRow = cur as {
+      proceeded_at?: string | null; debtor_name?: string | null; email?: string | null;
+      address1?: string | null; postcode?: string | null; customer_delivery_date?: string | null;
+    } | null;
+    if (!curRow?.proceeded_at) {
+      /* FIX 2 (2026-07-16) — gate the FIRST proceed (the stamping moment) on the
+         same ≥50%-paid + full-address rule as CREATE auto-proceed. An already-
+         proceeded SO re-entering IN_PRODUCTION is a no-op and is NOT re-gated. */
+      const gate = await soProceedGateBlocked(sb, docNo, {
+        customerName: curRow?.debtor_name, email: curRow?.email,
+        address1: curRow?.address1, postcode: curRow?.postcode,
+        deliveryDate: curRow?.customer_delivery_date,
+      });
+      if (gate) return c.json(gate, 422);
       patch.proceeded_at = new Date().toISOString();
     }
   }
@@ -4602,7 +4741,7 @@ mfgSalesOrders.patch('/:docNo/status', async (c) => {
     company_id: activeCompanyId(c), // multi-company: match the SO's company
     doc_no: docNo,
     from_status: fromStatus,
-    to_status: body.status,
+    to_status: toStatus,
     changed_by: user.id,
     notes: body.notes ?? null,
   });
@@ -4611,8 +4750,8 @@ mfgSalesOrders.patch('/:docNo/status', async (c) => {
     action: 'UPDATE_STATUS',
     actorId: user.id,
     actorName: (user.user_metadata as { name?: string } | undefined)?.name ?? null,
-    fieldChanges: [{ field: 'status', from: fromStatus, to: body.status }],
-    statusSnapshot: body.status,
+    fieldChanges: [{ field: 'status', from: fromStatus, to: toStatus }],
+    statusSnapshot: toStatus,
     note: body.notes ?? undefined,
   });
 
@@ -4624,7 +4763,7 @@ mfgSalesOrders.patch('/:docNo/status', async (c) => {
 
   /* Edge #B — SO cancel with deposit paid turns the deposit into a customer
      credit. Idempotent on (source_type, source_doc_no). Best-effort. */
-  if (body.status === 'CANCELLED' && fromStatus !== 'CANCELLED' && fromStatus !== 'DRAFT') {
+  if (toStatus === 'CANCELLED' && fromNorm !== 'CANCELLED' && fromNorm !== 'DRAFT') {
     try {
       const { data: so } = await sb.from('mfg_sales_orders').select('debtor_code, debtor_name').eq('doc_no', docNo).maybeSingle();
       const s = so as { debtor_code: string | null; debtor_name: string | null } | null;
@@ -5302,6 +5441,30 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
   if (updates['proceeded_at'] !== undefined && updates['proceeded_at'] !== null
       && before && (before as unknown as Record<string, unknown>)['proceeded_at']) {
     delete updates['proceeded_at'];
+  }
+
+  /* FIX 2 (2026-07-16) — gate a genuine forward Proceed on the header PATCH path
+     too (mobile / API set proceededAt directly here). After the stamp-once drop
+     above, a still-present non-null proceeded_at means the SO had NONE before →
+     this is the first Proceed, so it must pass the SAME ≥50%-paid + full-address
+     gate the /status → IN_PRODUCTION path and CREATE auto-proceed use. An explicit
+     null (un-proceed) and an already-proceeded re-save (dropped above) are
+     unaffected. Effective header values = the patch value when this request sets
+     the field, else the stored `before` value. */
+  if (updates['proceeded_at'] !== undefined && updates['proceeded_at'] !== null) {
+    const beforeProceed = before as unknown as Record<string, unknown> | null;
+    const effOf = (snake: string): string | null => {
+      const v = updates[snake] !== undefined ? updates[snake] : beforeProceed?.[snake];
+      return v == null ? null : String(v);
+    };
+    const gate = await soProceedGateBlocked(sb, docNo, {
+      customerName: effOf('debtor_name'),
+      email: effOf('email'),
+      address1: effOf('address1'),
+      postcode: effOf('postcode'),
+      deliveryDate: effOf('customer_delivery_date'),
+    });
+    if (gate) return c.json(gate, 422);
   }
 
   /* Commander 2026-05-28 / Owner 2026-06-01 — Processing & Delivery Date may
@@ -8544,6 +8707,32 @@ mfgSalesOrders.post('/:docNo/payments', async (c) => {
   const parsed = paymentCreateSchema.safeParse(body);
   if (!parsed.success) return c.json({ error: 'invalid_body', issues: parsed.error.issues }, 400);
   const p = parsed.data;
+
+  /* FIX 3 (2026-07-16) — method ⇒ bank/account mapping, enforced server-side.
+     The desktop New-SO / Payments cascade blocks saving a Merchant payment with
+     no Bank or an Online (transfer) payment with no Sub-Type
+     (missingMethodSubField in PaymentsTable.tsx), but mobile / API POST straight
+     to this route and paymentCreateSchema left every sub-field optional. Mirror
+     the desktop rule for the SERVER-observable part: an amount-bearing Merchant
+     needs a Bank (merchantProvider); an Online/transfer needs a Sub-Type
+     (onlineType); Cash and legacy Installment need nothing. NOTE: the desktop also
+     makes a Merchant pick a Plan, but "One-off" serialises to installmentMonths
+     null — indistinguishable from unset — so requiring it here would reject a
+     legitimate one-shot card payment; the Plan is deliberately NOT gated. Slip
+     stays optional (owner 2026-07-13). Only amount > 0 rows are checked, matching
+     the desktop guard (a zeroed row carries no method commitment). */
+  if (p.amountCenti > 0) {
+    let missing: string | null = null;
+    let methodName = '';
+    if (p.method === 'merchant' && !p.merchantProvider?.trim()) { missing = 'bank'; methodName = 'card / merchant'; }
+    else if (p.method === 'transfer' && !p.onlineType?.trim()) { missing = 'sub-type'; methodName = 'bank transfer / online'; }
+    if (missing) {
+      return c.json({
+        error: 'payment_method_field_required',
+        reason: `A ${methodName} payment needs a ${missing} before it can be recorded.`,
+      }, 400);
+    }
+  }
 
   /* Spec D6 — server-side overpayment guard. The SO total is authoritative;
      Σ(ledger) + this payment may never exceed it. Honest error: the client
