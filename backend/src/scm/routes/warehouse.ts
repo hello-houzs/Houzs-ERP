@@ -179,7 +179,8 @@ async function resolveRackTargets(
   if (body.allWarehouses === true) {
     const { data } = await scopeToCompany(sb.from('warehouses').select('id'), c)
       .eq('is_active', true);
-    return [...new Set((data ?? []).map((w: { id: string }) => w.id))];
+    const ids = ((data ?? []) as Array<{ id: string }>).map((w) => w.id);
+    return [...new Set(ids)];
   }
   if (Array.isArray(body.warehouseIds)) {
     return [...new Set(
