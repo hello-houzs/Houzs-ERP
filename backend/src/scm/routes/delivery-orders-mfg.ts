@@ -186,6 +186,25 @@ const crewSnapshotCols =
    the status is advanced (DISPATCHED step-by-step, or a jump to SIGNED). */
 const SHIPPED_STATES = ['DISPATCHED', 'IN_TRANSIT', 'SIGNED', 'DELIVERED', 'INVOICED'];
 
+/* ── DO status vocabulary + legal-transition guard (audit gap #4) ──────────────
+   The full set of raw delivery_orders.status values (union of DO_STATUS_BUCKETS +
+   SHIPPED_STATES + the create paths). The PATCH /:id/status handler historically
+   wrote body.status VERBATIM (only the CANCELLED edge was guarded), so a caller
+   could post an unknown value, or fall a shipped DO back to a pre-ship status —
+   e.g. DELIVERED→DRAFT — which leaves the stock OUT movement standing (a plain
+   status write never reverses it) while the DO reads un-shipped. */
+const DO_STATUSES = new Set([
+  'DRAFT', 'LOADED', 'DISPATCHED', 'IN_TRANSIT', 'SIGNED', 'DELIVERED', 'INVOICED',
+  'COMPLETED', 'CANCELLED',
+]);
+/* Pre-ship statuses — no stock has left our hands yet. */
+const DO_PRESHIP_STATUSES = new Set(['DRAFT', 'LOADED']);
+/* Statuses in which the inventory OUT has already been written. Once a DO is in
+   any of these, its stock is deducted, so it must NOT drop back to a pre-ship
+   status (the OUT would be orphaned). COMPLETED sits past INVOICED, so goods
+   have certainly shipped — include it alongside SHIPPED_STATES. */
+const DO_STOCK_OUT_STATUSES = new Set([...SHIPPED_STATES, 'COMPLETED']);
+
 const nextNum = async (sb: any, c: any, prefixOverride?: string): Promise<string> => {
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
@@ -1907,6 +1926,48 @@ async function soRemainingByItemId(
   return out;
 }
 
+/* ── SO-must-be-deliverable guard (audit gap #4) ──────────────────────────────
+   A Delivery Order may only be raised against a Sales Order that is committed —
+   i.e. CONFIRMED or beyond. A DRAFT (never-confirmed), CANCELLED, or ON_HOLD SO
+   is NOT committed, so shipping goods against it (writing an OUT stock movement)
+   is wrong. Mirrors the purchasing-side rule that a GRN's parent PO must be
+   SUBMITTED / PARTIALLY_RECEIVED (grns.ts /outstanding-po-items). New SOs are
+   CONFIRMED on insert (only asDraft lands DRAFT), so the normal deliver flow is
+   unaffected — this only blocks a draft / on-hold / cancelled source. The block
+   set is a DENY-list (not an allow-list) so any legitimate forward status
+   (CONFIRMED, IN_PRODUCTION, DELIVERED, …) stays deliverable.
+   OWNER FLAG: ON_HOLD is treated as NOT deliverable — an order paused mid-flight
+   should not ship until it is taken off hold. */
+const SO_UNDELIVERABLE_STATUSES = new Set(['DRAFT', 'CANCELLED', 'ON_HOLD']);
+async function firstUndeliverableSo(
+  sb: any,
+  soDocNos: Array<string | null | undefined>,
+): Promise<{ docNo: string; status: string } | null> {
+  const docNos = [...new Set(soDocNos.filter((d): d is string => !!d))];
+  if (docNos.length === 0) return null;
+  const { data } = await sb.from('mfg_sales_orders').select('doc_no, status').in('doc_no', docNos);
+  for (const r of (data ?? []) as Array<{ doc_no: string; status: string | null }>) {
+    const st = (r.status ?? '').toUpperCase();
+    // A row with no readable status is left to fall through (never over-block);
+    // an unknown doc_no simply isn't returned here (FK rejects it downstream).
+    if (SO_UNDELIVERABLE_STATUSES.has(st)) return { docNo: r.doc_no, status: st };
+  }
+  return null;
+}
+function soNotDeliverableResponse(offender: { docNo: string; status: string }) {
+  const label =
+    offender.status === 'DRAFT' ? 'is still a draft'
+    : offender.status === 'CANCELLED' ? 'has been cancelled'
+    : offender.status === 'ON_HOLD' ? 'is on hold'
+    : `is ${offender.status.toLowerCase()}`;
+  return {
+    error: 'so_not_deliverable',
+    message: `Sales Order ${offender.docNo} ${label}, so a Delivery Order cannot be created from it. Confirm the Sales Order first.`,
+    soDocNo: offender.docNo,
+    soStatus: offender.status,
+  };
+}
+
 /* Filter-pill bucket → the raw delivery_orders.status values it covers. Single
    source of truth for BOTH the status-count queries and the list `status`
    filter. open / in_transit / delivered are MULTI-status buckets; cancelled is
@@ -2256,6 +2317,24 @@ deliveryOrdersMfg.post('/', async (c) => {
     if (!codeCheck.ok) return c.json(unknownItemCodeResponse(codeCheck.unknown), 409);
   }
 
+  /* Audit gap #4 — the source SO must be committed (CONFIRMED or beyond) before a
+     DO can ship against it. Check the header soDocNo AND every SO referenced by a
+     line's soItemId (a line can carry an SO link without a header soDocNo). Purely
+     manual/ad-hoc lines (no SO link at all) skip this — that path is unchanged. */
+  {
+    const refDocNos: Array<string | null | undefined> = [(body.soDocNo as string | undefined) ?? null];
+    const lineSoItemIds = items
+      .map((it) => it.soItemId as string | undefined)
+      .filter((x): x is string => !!x);
+    if (lineSoItemIds.length > 0) {
+      const { data: lineSoRows } = await sb
+        .from('mfg_sales_order_items').select('doc_no').in('id', lineSoItemIds);
+      for (const r of (lineSoRows ?? []) as Array<{ doc_no: string | null }>) refDocNos.push(r.doc_no);
+    }
+    const offender = await firstUndeliverableSo(sb, refDocNos);
+    if (offender) return c.json(soNotDeliverableResponse(offender), 409);
+  }
+
   /* Edge #1+#2 — soft stock check, gated by confirmShortStock. */
   if (items.length > 0 && !body.confirmShortStock) {
     const targetWh = (body.warehouseId as string | undefined) ?? (await defaultWarehouseId(sb));
@@ -2400,6 +2479,34 @@ deliveryOrdersMfg.post('/', async (c) => {
     const { error: iErr } = await sb.from('delivery_order_items').insert(stampCompany(rows, c));
     if (iErr) { await sb.from('delivery_orders').delete().eq('id', h.id); return c.json({ error: 'items_insert_failed', reason: iErr.message }, 500); }
     await recomputeTotals(sb, h.id);
+  }
+
+  /* Audit gap #3 — post-insert race recheck on LINKED lines (mirrors the safe
+     pattern already in /from-sos). The pre-insert remaining-qty guard above is
+     read-before-write, so two concurrent creates on the same SO line could both
+     pass and over-deliver. After inserting (and BEFORE any stock OUT), re-derive
+     the live remaining for each SO-linked line and ROLL BACK the whole DO if any
+     went negative. Ad-hoc (unlinked) lines are not tracked by soDeliverableRemaining,
+     so they never trip this — the intentional manual-delivery path stays uncapped.
+     Skipped for a DRAFT DO (its lines don't count toward remaining until Confirm). */
+  if (body.asDraft !== true && items.length > 0) {
+    const linkedSoItemIds = items
+      .map((it) => it.soItemId as string | undefined)
+      .filter((x): x is string => !!x);
+    if (linkedSoItemIds.length > 0) {
+      const recheck = await soRemainingByItemId(sb, linkedSoItemIds);
+      const overcommitted = [...new Set(linkedSoItemIds)].filter((sid) => (recheck.get(sid) ?? 0) < 0);
+      if (overcommitted.length > 0) {
+        // Undo: delete the DO + its lines. No stock has been deducted yet.
+        await sb.from('delivery_order_items').delete().eq('delivery_order_id', h.id);
+        await sb.from('delivery_orders').delete().eq('id', h.id);
+        return c.json({
+          error: 'race_conflict',
+          message: 'Another operator just delivered overlapping qty from this Sales Order. Refresh and try again.',
+          conflicts: overcommitted,
+        }, 409);
+      }
+    }
   }
 
   /* A DO = goods shipped on creation → deduct stock now (idempotent: the
@@ -2564,6 +2671,14 @@ deliveryOrdersMfg.post('/from-sos', async (c) => {
   if (missing.length > 0) return c.json({ error: 'so_item_not_found', missing }, 404);
 
   const docNos = [...new Set([...idToDoc.values()])];
+
+  /* Audit gap #4 — every source SO must be committed (CONFIRMED or beyond) before
+     its lines can ship into a DO. Blocks a DRAFT / ON_HOLD / CANCELLED SO. */
+  {
+    const offender = await firstUndeliverableSo(sb, docNos);
+    if (offender) return c.json(soNotDeliverableResponse(offender), 409);
+  }
+
   const remainingMap = await soDeliverableRemaining(sb, docNos);
 
   // 2a. Same-customer guard — every picked line must share ONE customer
@@ -3534,6 +3649,16 @@ deliveryOrdersMfg.patch('/:id/status', async (c) => {
   const sb = c.get('supabase'); const id = c.req.param('id'); const user = c.get('user');
   let body: { status?: string; signatureData?: string; podKey?: string }; try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid_json' }, 400); }
   if (!body.status) return c.json({ error: 'status_required' }, 400);
+  /* Audit gap #4 — reject an unknown status value outright. Historically the
+     handler wrote body.status verbatim, so a typo / lowercase value (the SI #77
+     class) or a bogus status persisted to the row. The FE only ever sends the
+     canonical UPPERCASE values below. */
+  if (!DO_STATUSES.has(body.status)) {
+    return c.json({
+      error: 'invalid_status',
+      reason: `"${body.status}" is not a valid Delivery Order status.`,
+    }, 400);
+  }
 
   // Read current status so the CANCELLED reversal is idempotent.
   const { data: cur } = await sb.from('delivery_orders').select('status').eq('id', id).maybeSingle();
@@ -3553,6 +3678,23 @@ deliveryOrdersMfg.patch('/:id/status', async (c) => {
       error: 'do_cancelled_final',
       reason: 'A cancelled Delivery Order cannot be reactivated — its stock was already returned. Create a new DO to deliver again.',
     }, 409);
+  }
+
+  /* Audit gap #4 — legal-transition guard. Once a DO has shipped (an inventory
+     OUT was written), it must NOT fall back to a pre-ship status (DRAFT / LOADED):
+     a plain status write does NOT reverse the OUT movement, so the DO would read
+     un-shipped while its stock stays deducted (e.g. DELIVERED→DRAFT left stock
+     out of balance). Cancel it (which DOES reverse) and raise a new DO instead.
+     Forward + lateral moves among shipped states, the DRAFT/LOADED→shipped
+     confirm, and the CANCELLED transition (handled below) are all unaffected. */
+  {
+    const prevUpper = (prevStatus ?? '').toUpperCase();
+    if (DO_STOCK_OUT_STATUSES.has(prevUpper) && DO_PRESHIP_STATUSES.has(body.status)) {
+      return c.json({
+        error: 'illegal_status_transition',
+        reason: 'This Delivery Order has already shipped, so it cannot be moved back to a not-shipped status. Cancel it and create a new Delivery Order instead.',
+      }, 409);
+    }
   }
 
   /* Tier 2 downstream-lock — only the CANCELLED transition is gated. Other
