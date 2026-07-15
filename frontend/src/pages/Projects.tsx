@@ -233,6 +233,9 @@ interface ProjectDetail {
       canRental: boolean;
       canPayment: boolean;
       canSensitive: boolean;
+      /** Setup & Dismantle section (crew editor + documents). Owner
+       *  2026-07-15: hidden from non-director Sales, even the PIC. */
+      canSetupDismantle: boolean;
       sections: string[];
     };
   };
@@ -4820,7 +4823,16 @@ function ProjectDetailContent({
                 toast={toast}
               />
 
-              {fullAccess && (
+              {/* Setup & Dismantle (crew-per-lorry editor + phase photos).
+                  Owner 2026-07-15: hidden entirely from non-director Sales —
+                  even this project's PIC — via the PMS SETUP_DISMANTLE flag.
+                  Layered ON TOP of the existing fullAccess gate so no other
+                  role's visibility widens; the new flag only SUBTRACTS. When
+                  hidden it renders NOTHING (off, not read-only): the
+                  /api/fleet/staff + /api/scm/lorries + phase-photos fetches
+                  never fire. Falls back to prior behaviour when the backend
+                  omitted pms (older cached response). */}
+              {fullAccess && (pms ? pms.canSetupDismantle : true) && (
                 <>
                   <LogisticsCrewSection project={p} patch={patch} />
                   <PhasePhotosSection projectId={id} />

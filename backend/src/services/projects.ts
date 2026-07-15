@@ -1,7 +1,7 @@
 import type { Env } from "../types";
 import { recomputeAutoCostLines } from "./projectCostRates";
 import { scopeNotExpiredSql } from "./projectAcl";
-import { isSensitiveChecklistItem } from "./pmsAccess";
+import { isSensitiveChecklistItem, isSetupDismantleSection } from "./pmsAccess";
 
 // ── Codes ─────────────────────────────────────────────────────
 // Format: `YYYY-MM-{ORGANIZER}-{STATE}-{VENUE}-{BRAND}` — built from
@@ -1026,6 +1026,85 @@ export function stripSensitiveChecklist<
     });
   return {
     ...detail,
+    checklist,
+    checklist_comments,
+    checklist_attachments,
+    sections,
+    section_progress,
+  };
+}
+
+/**
+ * Server-side backstop for SETUP_DISMANTLE visibility (owner 2026-07-15).
+ * Returns a shallow copy of a project-detail payload with the Setup & Dismantle
+ * section fully removed: the crew JSON + scheduled times NULLed on the project
+ * row, and the "SETUP & DISMANTLE DOCUMENTS" checklist rows — plus their
+ * comments, attachments, sections, and section-progress — stripped. Called for
+ * a caller whose PMS role lacks SETUP_DISMANTLE (pmsAccess `canSetupDismantle`
+ * === false), mirroring how the detail-GET strips finance / payment /
+ * WF_SENSITIVE. The crew fields are NULLed unconditionally (the crew editor is
+ * part of the same hidden section) even when no document rows are present.
+ */
+export function stripSetupDismantle<
+  T extends {
+    project?: any;
+    checklist?: any[];
+    checklist_comments?: any[];
+    checklist_attachments?: any[];
+    sections?: any[];
+    section_progress?: any[];
+  }
+>(detail: T): T {
+  // Crew editor blobs + scheduled times live on the project row — always blank
+  // them (they render only inside the now-hidden Setup & Dismantle panel).
+  const project = detail.project
+    ? {
+        ...detail.project,
+        setup_crew: null,
+        dismantle_crew: null,
+        setup_start_at: null,
+        dismantle_start_at: null,
+      }
+    : detail.project;
+
+  // Document rows are identified by their cloned section NAME, so drop the
+  // whole "SETUP & DISMANTLE DOCUMENTS" section and everything under it.
+  const removedSectionIds = new Set(
+    (detail.sections ?? [])
+      .filter((s: any) => isSetupDismantleSection(s))
+      .map((s: any) => s.id)
+  );
+  const removedItemIds = new Set(
+    (detail.checklist ?? [])
+      .filter((it: any) => it.section_id != null && removedSectionIds.has(it.section_id))
+      .map((it: any) => it.id)
+  );
+
+  const base = detail.project ? { ...detail, project } : detail;
+  if (removedSectionIds.size === 0 && removedItemIds.size === 0) {
+    // No document rows to strip — return only the crew-NULLed copy.
+    return base;
+  }
+
+  const checklist = (detail.checklist ?? []).filter(
+    (it: any) => !removedItemIds.has(it.id)
+  );
+  const checklist_comments = (detail.checklist_comments ?? []).filter(
+    (c: any) => !removedItemIds.has(c.item_id)
+  );
+  const checklist_attachments = (detail.checklist_attachments ?? []).filter(
+    (a: any) => !removedItemIds.has(a.item_id)
+  );
+  const sections = (detail.sections ?? []).filter(
+    (s: any) => !removedSectionIds.has(s.id)
+  );
+  // section_progress rows key off the section id (0 sentinel = uncategorised),
+  // so drop the emptied Setup & Dismantle rows outright.
+  const section_progress = (detail.section_progress ?? []).filter(
+    (sp: any) => !removedSectionIds.has(sp.id)
+  );
+  return {
+    ...base,
     checklist,
     checklist_comments,
     checklist_attachments,

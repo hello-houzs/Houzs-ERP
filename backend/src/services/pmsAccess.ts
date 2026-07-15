@@ -177,6 +177,11 @@ export interface PmsAccess {
   canPayment: boolean;
   /** Agreement / quotation / security deposit (WF_SENSITIVE). */
   canSensitive: boolean;
+  /** Setup & Dismantle (logistics crew-per-lorry editor + the "SETUP &
+   *  DISMANTLE DOCUMENTS" checklist rows). Owner 2026-07-15: hidden from
+   *  every non-director Sales user, even the project's own PIC. Directors /
+   *  Logistics / Drivers / Purchasing keep it. */
+  canSetupDismantle: boolean;
   sections: PmsSection[];
 }
 
@@ -191,6 +196,7 @@ export function getPmsAccess(user: AuthUser | null | undefined, project: Project
     canRental: sections.includes("RENTAL"),
     canPayment: sections.includes("PAYMENT"),
     canSensitive: sections.includes("WF_SENSITIVE"),
+    canSetupDismantle: sections.includes("SETUP_DISMANTLE"),
     sections,
   };
 }
@@ -213,6 +219,31 @@ export function isSensitiveChecklistItem(
   item: { title?: string | null } | null | undefined,
 ): boolean {
   return !!item && SENSITIVE_CHECKLIST_TITLES.has((item.title ?? "").trim());
+}
+
+/**
+ * The project-checklist section(s) governed by SETUP_DISMANTLE — the
+ * "SETUP & DISMANTLE DOCUMENTS" template section (mig 066: Setup Image,
+ * Defect List, Exchange List, Event Complete Image, Dismantle Image, …). A
+ * position whose PMS role lacks SETUP_DISMANTLE (getPmsAccess().canSetupDismantle
+ * === false) must not receive those rows — nor the setup/dismantle crew JSON —
+ * in the project-detail payload; they are stripped server-side, the same way
+ * finance / payment / WF_SENSITIVE are (owner 2026-07-15). Matched by the
+ * cloned section NAME (case-insensitive), the stable identity that survives the
+ * per-project template clone.
+ */
+export const SETUP_DISMANTLE_SECTION_NAMES: ReadonlySet<string> = new Set([
+  "setup & dismantle documents",
+]);
+
+/** True when a checklist SECTION is the SETUP_DISMANTLE (documents) section. */
+export function isSetupDismantleSection(
+  section: { name?: string | null } | null | undefined,
+): boolean {
+  return (
+    !!section &&
+    SETUP_DISMANTLE_SECTION_NAMES.has((section.name ?? "").trim().toLowerCase())
+  );
 }
 
 /**
