@@ -581,9 +581,31 @@ function DataGridInner<T>({
 
   const visibleColumns = useMemo(() => {
     const byKey = new Map(columns.map((c) => [c.key, c]));
-    const order = layout.order.length
-      ? [...layout.order.filter((k) => byKey.has(k)), ...columns.filter((c) => !layout.order.includes(c.key)).map((c) => c.key)]
-      : columns.map((c) => c.key);
+    // Merge the user's saved column order with the current column set. A column
+    // added AFTER the user last customised their layout isn't in `layout.order`;
+    // instead of dumping it at the far-right end (where it's easy to miss), splice
+    // it in at its DEFINITION position — right after its nearest preceding sibling
+    // from `columns` that's already in the order. So a newly-shipped column (e.g.
+    // the Delivery-Planning "Company" column) appears where the developer placed
+    // it, visible, without the user having to Reset layout. Applies to every grid.
+    let order: string[];
+    if (layout.order.length) {
+      const result = layout.order.filter((k) => byKey.has(k));
+      const present = new Set(result);
+      columns.forEach((c, idx) => {
+        if (present.has(c.key)) return;
+        let insertAt = 0;
+        for (let j = idx - 1; j >= 0; j -= 1) {
+          const pos = result.indexOf(columns[j]!.key);
+          if (pos >= 0) { insertAt = pos + 1; break; }
+        }
+        result.splice(insertAt, 0, c.key);
+        present.add(c.key);
+      });
+      order = result;
+    } else {
+      order = columns.map((c) => c.key);
+    }
     const base = order
       .filter((k) => !effectiveHidden.has(k))
       .map((k) => byKey.get(k)!)
