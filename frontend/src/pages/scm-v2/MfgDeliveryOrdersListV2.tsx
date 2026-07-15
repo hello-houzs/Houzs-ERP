@@ -975,6 +975,163 @@ export function MfgDeliveryOrdersListV2() {
         </span>
       ),
     },
+    // ── Re-added columns (Phase 1) — data already on the DoRow payload, ported
+    //    from the legacy MfgDeliveryOrdersList buildColumns (labels/widths). All
+    //    default-hidden so the column chooser exposes them without changing the
+    //    slim default view. disableSort because the DO list is server-sorted and
+    //    these keys aren't in the backend sort whitelist.
+    {
+      key: "salesperson",
+      label: "Salesperson",
+      width: "148px",
+      defaultHidden: true,
+      disableSort: true,
+      getValue: (r) => salespersonNameOf(null, r.salesperson_id, ""),
+      render: (r) => (
+        <span className="text-[12.5px] text-ink-secondary">
+          {salespersonNameOf(null, r.salesperson_id, "—")}
+        </span>
+      ),
+    },
+    {
+      key: "sales_location",
+      label: "Location",
+      width: "120px",
+      defaultHidden: true,
+      disableSort: true,
+      getValue: (r) => r.sales_location ?? "",
+      render: (r) => (
+        <span className="text-[12.5px] text-ink-secondary">{r.sales_location || "—"}</span>
+      ),
+    },
+    {
+      key: "expected_delivery_at",
+      label: "Expected",
+      width: "128px",
+      defaultHidden: true,
+      disableSort: true,
+      getValue: (r) => r.expected_delivery_at ?? "",
+      render: (r) => (
+        <span className="text-[12.5px] text-ink-secondary">
+          {fmtDate(r.expected_delivery_at)}
+        </span>
+      ),
+    },
+    {
+      key: "branding",
+      label: "Branding",
+      width: "130px",
+      defaultHidden: true,
+      disableSort: true,
+      getValue: (r) => brandOf(r),
+      render: (r) => {
+        const b = brandOf(r);
+        return (
+          <Badge tone={brandTone(b)} variant="soft" size="xs">
+            {b}
+          </Badge>
+        );
+      },
+    },
+    {
+      key: "vehicle",
+      label: "Vehicle",
+      width: "120px",
+      defaultHidden: true,
+      disableSort: true,
+      getValue: (r) => r.vehicle ?? "",
+      render: (r) => (
+        <span className="text-[12.5px] text-ink-secondary">{r.vehicle || "—"}</span>
+      ),
+    },
+    {
+      key: "phone",
+      label: "Phone",
+      width: "130px",
+      defaultHidden: true,
+      disableSort: true,
+      getValue: (r) => r.phone ?? "",
+      render: (r) => (
+        <span className="text-[12.5px] text-ink-secondary">{r.phone || "—"}</span>
+      ),
+    },
+    {
+      key: "email",
+      label: "Email",
+      width: "180px",
+      defaultHidden: true,
+      disableSort: true,
+      getValue: (r) => r.email ?? "",
+      render: (r) => (
+        <span className="text-[12.5px] text-ink-secondary">{r.email || "—"}</span>
+      ),
+    },
+    {
+      key: "debtor_code",
+      label: "Customer Code",
+      width: "120px",
+      defaultHidden: true,
+      disableSort: true,
+      getValue: (r) => r.debtor_code ?? "",
+      render: (r) => (
+        <span className="font-mono text-[12px] text-ink-secondary">{r.debtor_code || "—"}</span>
+      ),
+    },
+    {
+      key: "address1",
+      label: "Address 1",
+      width: "180px",
+      defaultHidden: true,
+      disableSort: true,
+      getValue: (r) => r.address1 ?? "",
+      render: (r) => (
+        <span className="text-[12.5px] text-ink-secondary">{r.address1 || "—"}</span>
+      ),
+    },
+    {
+      key: "address2",
+      label: "Address 2",
+      width: "180px",
+      defaultHidden: true,
+      disableSort: true,
+      getValue: (r) => r.address2 ?? "",
+      render: (r) => (
+        <span className="text-[12.5px] text-ink-secondary">{r.address2 || "—"}</span>
+      ),
+    },
+    {
+      key: "city",
+      label: "City",
+      width: "130px",
+      defaultHidden: true,
+      disableSort: true,
+      getValue: (r) => r.city ?? "",
+      render: (r) => (
+        <span className="text-[12.5px] text-ink-secondary">{r.city || "—"}</span>
+      ),
+    },
+    {
+      key: "postcode",
+      label: "Postcode",
+      width: "100px",
+      defaultHidden: true,
+      disableSort: true,
+      getValue: (r) => r.postcode ?? "",
+      render: (r) => (
+        <span className="text-[12.5px] text-ink-secondary">{r.postcode || "—"}</span>
+      ),
+    },
+    {
+      key: "customer_state",
+      label: "State",
+      width: "130px",
+      defaultHidden: true,
+      disableSort: true,
+      getValue: (r) => r.customer_state ?? "",
+      render: (r) => (
+        <span className="text-[12.5px] text-ink-secondary">{r.customer_state || "—"}</span>
+      ),
+    },
   ];
 
   const statusPillOptions: Array<{ value: StatusTab; label: string }> = [
