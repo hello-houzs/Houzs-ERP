@@ -64,7 +64,7 @@ import { monthBoundsMy, rangeBoundsMy, todayMyt, mytDateOf } from '../lib/my-tim
 // (canViewAllSales / isSelfScopedSales removed — replaced by flat permission
 // gates `scm.so.view_all` / `scm.so.attribute_other` against the REAL Houzs
 // caller; see lib/houzs-perms.ts.)
-import { hasHouzsPerm, canViewAllSales, isSalesCaller } from '../lib/houzs-perms';
+import { hasHouzsPerm, canViewAllSales, isSalesCaller, canViewScmFinance } from '../lib/houzs-perms';
 import { resolveSalesScopeIds, salesDocOutOfScope, resolveCallerStaffId } from '../lib/salesScope';
 import { recordSoAudit, diffFields, type FieldChange } from '../lib/so-audit';
 /* TBC sofa exchange PWP re-evaluation (Loo 2026-06-12) — reuse the voucher
@@ -464,6 +464,19 @@ const HEADER =
   /* Delivery fee snapshot (migration 0133) — folded into local_total/revenue/margin. */
   'delivery_fee_centi, ' +
   'created_at, created_by, updated_at';
+/* FINANCE-GATED header keys — cost / margin / per-category revenue+cost
+   subtotals + deposit. These travel in the SO list payload (all are in HEADER)
+   but must reach ONLY a finance-viewer (lib/houzs-perms.canViewScmFinance,
+   mirroring pmsAccess.isFinanceViewer). Stripped from every row for a
+   non-finance caller so cost/margin never leaves the server for them. Order
+   totals shown to everyone (local_total_centi / balance_centi / paid_centi /
+   total_revenue_centi) are deliberately NOT listed here. */
+const SO_FINANCE_KEYS = [
+  'mattress_sofa_centi', 'bedframe_centi', 'accessories_centi', 'others_centi', 'service_centi',
+  'mattress_sofa_cost_centi', 'bedframe_cost_centi', 'accessories_cost_centi', 'others_cost_centi', 'service_cost_centi',
+  'total_cost_centi', 'total_margin_centi', 'margin_pct_basis', 'deposit_centi',
+] as const;
+
 const ITEM =
   'id, doc_no, line_date, debtor_code, debtor_name, agent, item_group, item_code, description, description2, ' +
   'uom, location, qty, unit_price_centi, discount_centi, total_centi, tax_centi, total_inc_centi, balance_centi, ' +
@@ -1137,6 +1150,15 @@ mfgSalesOrders.get('/', async (c) => {
       }
       (r as Record<string, unknown>).ready_categories = ready;
       (r as Record<string, unknown>).is_fully_ready = allReady && perGroup.size > 0;
+    }
+  }
+
+  /* Finance gate — strip cost / margin / per-category subtotals + deposit from
+     every row unless the caller is a finance-viewer. The KPI aggregates above
+     read local_total / balance / paid only, so they are unaffected. */
+  if (!canViewScmFinance(c)) {
+    for (const r of rows) {
+      for (const k of SO_FINANCE_KEYS) delete (r as Record<string, unknown>)[k];
     }
   }
 

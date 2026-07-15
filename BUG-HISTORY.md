@@ -8,6 +8,12 @@ Severity tags: 🔴 critical/high · 🟠 medium · 🟢 low.
 
 ## 2026-07-15
 
+### 🔴 SCM list endpoints leaked cost/margin to non-finance users on the wire (+ Phase 2 columns)
+- **Symptom:** The owner wanted the legacy cost/margin/category-subtotal columns back on the SO/DO/SI/DR lists. Investigating revealed the underlying fields (per-category cost/revenue, total_cost_centi, total_margin_centi, margin_pct_basis, deposit) were ALREADY selected by each list route's shared HEADER and returned to EVERY caller in the JSON — never rendered, but present on the wire — a finance-data leak to non-finance users.
+- **Root cause:** The SCM list routes had NO finance-viewer gate (unlike the PMS finance sections). The Phase-1 premise ("widen the SELECT") was wrong; the fields were there, ungated.
+- **Fix:** New `canViewScmFinance(c)` in `scm/lib/houzs-perms.ts` (wraps `pmsAccess.isFinanceViewer`; strictly stronger than `canViewAllSales`; fails closed). Each list route (mfg-sales-orders / delivery-orders-mfg / sales-invoices / delivery-returns) strips the finance keys from the response rows unless the caller is a finance-viewer. Frontend re-adds the columns (defaultHidden) — finance columns only declared when `user.project_finance_viewer`, non-finance columns (venue/note/customer_type/building_type/current_doc_no/dates/stock_status) for everyone. Detail endpoints + mobile detail still return cost/margin (pre-existing; flagged for a follow-up).
+- **Ref:** `fix/scm-columns-phase2-clean`, 2026-07-15.
+
 ### 🟢 Project TEAM section showed no PIC phone number
 - **Symptom:** The project detail TEAM section PIC picker showed only the PIC's name (e.g. "Sheldon Tan"), never their phone number — even though the frontend already renders `p.pic_phone` under the picker when present.
 - **Root cause:** The project LIST query (`services/projects.ts:610`) selects `pic.phone as pic_phone`, but the project DETAIL query (`:1455`) selected only `pic.name as pic_name` — so `pic_phone` was always null on the detail payload the picker reads.

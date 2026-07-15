@@ -25,7 +25,7 @@ import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { escapeForOr } from '../lib/postgrest-search';
 import { resolveSalesScopeIds, salesDocOutOfScope } from '../lib/salesScope';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix, companyCodeMap } from '../lib/companyScope';
-import { canViewAllSales } from '../lib/houzs-perms';
+import { canViewAllSales, canViewScmFinance } from '../lib/houzs-perms';
 import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item-codes';
 import { checkStockAvailability, shortStockResponse } from '../lib/check-stock-availability';
 import { findSofaLinesWithoutCompleteBatch, sofaNoCompleteBatchResponse, findIncompleteSofaSets, sofaIncompleteSetResponse, detectSofaSoItemIds } from '../lib/sofa-batch-guard';
@@ -143,6 +143,17 @@ const HEADER =
      PATCH must carry it too so the DO drawer can show + save it. */
   'arrives_em_warehouse_date, ' +
   'pod_r2_key, signature_data, status, notes, created_at, created_by, updated_at';
+
+/* FINANCE-GATED header keys — cost / margin / per-category revenue+cost
+   subtotals. All are in HEADER (so they travel in the DO list payload) but must
+   reach ONLY a finance-viewer (lib/houzs-perms.canViewScmFinance). Stripped from
+   every row for a non-finance caller. The DO total shown to everyone
+   (local_total_centi) is deliberately NOT listed here. */
+const DO_FINANCE_KEYS = [
+  'mattress_sofa_centi', 'bedframe_centi', 'accessories_centi', 'others_centi', 'service_centi',
+  'mattress_sofa_cost_centi', 'bedframe_cost_centi', 'accessories_cost_centi', 'others_cost_centi', 'service_cost_centi',
+  'total_cost_centi', 'total_margin_centi', 'margin_pct_basis',
+] as const;
 
 const ITEM =
   'id, delivery_order_id, so_item_id, item_code, item_group, description, description2, ' +
@@ -1848,11 +1859,18 @@ deliveryOrdersMfg.get('/', async (c) => {
       if (s.delivery_order_id) childIds.add(s.delivery_order_id);
     }
   }
-  const deliveryOrders = rows.map((r) => ({
-    ...r,
-    has_children: childIds.has(r.id),
-    lifecycle_state: lifecycleByDo.get(r.id) ?? 'shipped',
-  }));
+  /* Finance gate — cost / margin / per-category subtotals reach ONLY a
+     finance-viewer; stripped from every row otherwise. */
+  const showFinance = canViewScmFinance(c);
+  const deliveryOrders = rows.map((r) => {
+    const row: Record<string, unknown> = {
+      ...r,
+      has_children: childIds.has(r.id),
+      lifecycle_state: lifecycleByDo.get(r.id) ?? 'shipped',
+    };
+    if (!showFinance) for (const k of DO_FINANCE_KEYS) delete row[k];
+    return row;
+  });
   if (paginate) return c.json({ deliveryOrders, total, page, pageSize, statusCounts });
   return c.json({ deliveryOrders });
 });

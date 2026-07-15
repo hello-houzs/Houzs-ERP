@@ -32,7 +32,7 @@ import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { todayMyt } from '../lib/my-time';
 import { resolveSalesScopeIds, salesDocOutOfScope } from '../lib/salesScope';
 import { escapeForOr } from '../lib/postgrest-search';
-import { canViewAllSales } from '../lib/houzs-perms';
+import { canViewAllSales, canViewScmFinance } from '../lib/houzs-perms';
 import { doLineRemaining, doRemainingByItemId, resolveCandidateDoIds, custKeyOf, type DoRemainingLine } from '../lib/do-line-remaining';
 import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item-codes';
 import { applyCustomerCreditToSi, creditFromCancelledSi, reverseCancelledSiCredit, reconcileSiOverpay } from '../lib/customer-credits';
@@ -53,6 +53,28 @@ const HEADER =
   'mattress_sofa_cost_centi, bedframe_cost_centi, accessories_cost_centi, others_cost_centi, service_cost_centi, ' +
   'local_total_centi, total_cost_centi, total_margin_centi, margin_pct_basis, line_count, ' +
   'status, notes, sent_at, paid_at, confirmed_at, created_at, created_by, updated_at';
+
+/* FINANCE-GATED header keys — cost / margin / per-category revenue+cost
+   subtotals. All are in HEADER (so they travel in the SI list payload) but must
+   reach ONLY a finance-viewer (lib/houzs-perms.canViewScmFinance). Stripped from
+   every row for a non-finance caller. Invoice totals shown to everyone
+   (total_centi / local_total_centi / paid_centi) are NOT listed here. */
+const SI_FINANCE_KEYS = [
+  'mattress_sofa_centi', 'bedframe_centi', 'accessories_centi', 'others_centi', 'service_centi',
+  'mattress_sofa_cost_centi', 'bedframe_cost_centi', 'accessories_cost_centi', 'others_cost_centi', 'service_cost_centi',
+  'total_cost_centi', 'total_margin_centi', 'margin_pct_basis',
+] as const;
+
+/* Strip the finance keys from every row in place unless the caller may see
+   finance. Applied to both the legacy and paginated list responses. */
+function gateSiFinance(rows: unknown, showFinance: boolean): void {
+  if (showFinance || !Array.isArray(rows)) return;
+  for (const r of rows) {
+    if (r && typeof r === 'object') {
+      for (const k of SI_FINANCE_KEYS) delete (r as Record<string, unknown>)[k];
+    }
+  }
+}
 
 const ITEM =
   'id, sales_invoice_id, so_item_id, do_item_id, item_code, item_group, description, description2, ' +
@@ -234,6 +256,7 @@ salesInvoices.get('/', async (c) => {
     q = scopeToCompany(q, c); // multi-company: isolate to the active company
     const { data, error } = await q;
     if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
+    gateSiFinance(data, canViewScmFinance(c));
     return c.json({ salesInvoices: data ?? [] });
   }
 
@@ -297,6 +320,7 @@ salesInvoices.get('/', async (c) => {
     cancelled: cancelledC.count ?? 0,
   };
 
+  gateSiFinance(data, canViewScmFinance(c));
   return c.json({ salesInvoices: data ?? [], total, page, pageSize, statusCounts });
 });
 
