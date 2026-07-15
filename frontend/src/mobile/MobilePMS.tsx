@@ -1366,11 +1366,16 @@ function TaskRow({
   // Attach button: full-write users get it on every task; tick-only users
   // (drivers) only on tasks badged for THEIR role — a driver should upload
   // to "Setup Image · DRIVER", not to BD/PURCHASER/SALES PIC tasks
-  // (owner 2026-07-09).
+  // (owner 2026-07-09). Helpers/storekeepers work the same field tasks as
+  // drivers, so they attach on DRIVER-badged rows too (owner 2026-07-13) —
+  // no task is ever badged HELPER/STOREKEEPER.
   const tickOnly = canTick && !can("projects.write");
+  const badge = (it.role_label ?? "").trim().toUpperCase();
+  const userRole = (user?.role_name ?? "").trim().toUpperCase();
   const roleMatchesUser =
-    !!it.role_label && !!user?.role_name &&
-    it.role_label.trim().toUpperCase() === user.role_name.trim().toUpperCase();
+    !!badge && !!userRole &&
+    (badge === userRole ||
+      (badge === "DRIVER" && (userRole === "HELPER" || userRole === "STOREKEEPER")));
   const canAttach = canTick && (!tickOnly || roleMatchesUser);
 
   const cycle = async () => {
