@@ -1616,9 +1616,32 @@ const parseCrewJson = (raw: string | null | undefined): PhaseCrew => {
   }
   return out;
 };
-const crewLabel = (p: CrewPerson): string => (p.phone ? `${p.name} (${p.phone})` : p.name);
+// Normalise Malaysian phone numbers to a consistent "+60 NN-NNN NNNN" shape —
+// input is entered in mixed formats ("60-198426454", "+60 14-569 4569", "016…").
+const fmtPhone = (raw: string | null | undefined): string => {
+  if (!raw) return "";
+  let d = raw.replace(/[^\d+]/g, "");
+  if (d.startsWith("+")) d = d.slice(1);
+  if (d.startsWith("0")) d = "60" + d.slice(1);
+  if (!d.startsWith("60") || d.length < 10) return raw.trim();
+  const rest = d.slice(2);
+  return `+60 ${rest.slice(0, 2)}-${rest.slice(2, -4)} ${rest.slice(-4)}`;
+};
+const crewLabel = (p: CrewPerson): string => (p.phone ? `${p.name} (${fmtPhone(p.phone)})` : p.name);
 const crewIsEmpty = (c: PhaseCrew): boolean =>
   c.lorryCrew.length === 0 && c.outsourced.length === 0 && c.drivers.length === 0 && c.helpers.length === 0 && c.lorries.length === 0;
+// One crew member on its own line: fixed-width role label + name · formatted phone.
+function CrewLine({ role, person }: { role: string; person: CrewPerson }) {
+  return (
+    <div style={{ display: "flex", gap: 7, fontSize: 10.5, lineHeight: 1.45, marginBottom: 3 }}>
+      <span style={{ flex: "none", width: 44, color: "#9aa093", fontWeight: 600 }}>{role}</span>
+      <span style={{ flex: 1, minWidth: 0, color: "#414539" }}>
+        {person.name}
+        {person.phone ? <span style={{ color: "#8a8f82" }}> · {fmtPhone(person.phone)}</span> : null}
+      </span>
+    </div>
+  );
+}
 
 // Best-effort content type from an R2 key's extension — some payloads
 // (finance lines, phase photos) don't carry a stored mime type, and the
@@ -1836,15 +1859,12 @@ function PhaseBlock({
 
   return (
     <>
-      <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: ".1em", textTransform: "uppercase", color: accent, margin: "0 0 8px" }}>
+      <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: ".1em", textTransform: "uppercase", color: accent, margin: "0 0 10px" }}>
         {kind}
-        {kind === "Dismantle" && (
-          <span style={{ color: "#9aa093", fontWeight: 600, textTransform: "none", letterSpacing: 0 }}> · separate from setup</span>
-        )}
       </div>
       {canWrite ? (
         <>
-          <div style={{ display: "flex", gap: 9, marginBottom: 6 }}>
+          <div style={{ display: "flex", gap: 10, marginBottom: 10 }}>
             <label className="fld" style={{ flex: 1.4 }}>
               <span className="fld-l">{kind} date</span>
               <input className="fld-i" type="date" value={date} disabled={busy} onChange={(e) => { setDate(e.target.value); void saveStart(e.target.value, time); }} />
@@ -1872,18 +1892,18 @@ function PhaseBlock({
             </>
           )}
           {!crewIsEmpty(crew) && (
-            <div style={{ margin: "2px 0 8px" }}>
-              <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", color: "#9aa093", marginBottom: 5 }}>Planned crew</div>
+            <div style={{ margin: "0 0 10px" }}>
+              <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", color: "#9aa093", marginBottom: 7 }}>Planned crew</div>
               {crew.lorryCrew.map((l, i) => (
-                <div key={i} style={{ fontSize: 10.5, color: "#414539", lineHeight: 1.55, marginBottom: 5, paddingLeft: 7, borderLeft: "2px solid #cfd4c9" }}>
-                  <div style={{ fontWeight: 700, color: "#2f3329" }}>{l.plate || `Lorry ${i + 1}`}</div>
-                  {l.drivers.length > 0 && <div><span style={{ color: "#9aa093" }}>Drivers:</span> {l.drivers.map(crewLabel).join(", ")}</div>}
-                  {l.helpers.length > 0 && <div><span style={{ color: "#9aa093" }}>Helpers:</span> {l.helpers.map(crewLabel).join(", ")}</div>}
+                <div key={i} style={{ marginBottom: 9, paddingLeft: 9, borderLeft: "2px solid #cfd4c9" }}>
+                  <div style={{ fontSize: 11, fontWeight: 800, color: "#2f3329", marginBottom: 4 }}>{l.plate || `Lorry ${i + 1}`}</div>
+                  {l.drivers.map((p, j) => <CrewLine key={`d${j}`} role="Driver" person={p} />)}
+                  {l.helpers.map((p, j) => <CrewLine key={`h${j}`} role="Helper" person={p} />)}
                 </div>
               ))}
               {crew.outsourced.length > 0 && (
-                <div style={{ fontSize: 10.5, color: "#767b6e", lineHeight: 1.55, paddingLeft: 7 }}>
-                  <span style={{ color: "#9aa093" }}>Outsourced:</span> {crew.outsourced.map(crewLabel).join(", ")}
+                <div style={{ paddingLeft: 9 }}>
+                  {crew.outsourced.map((p, j) => <CrewLine key={`o${j}`} role="Outsrc." person={p} />)}
                 </div>
               )}
             </div>
@@ -1914,12 +1934,14 @@ function PhaseBlock({
         type="button"
         disabled={busy || (!photoKey && !canWrite)}
         onClick={() => { if (photoKey) setPhotoOpen(true); else if (canWrite) fileRef.current?.click(); }}
-        style={{ width: "100%", border: "1px solid #d6d9d2", borderRadius: 11, background: "#fff", display: "flex", alignItems: "center", gap: 10, marginTop: 4, overflow: "hidden", cursor: photoKey || canWrite ? "pointer" : "default", fontFamily: "inherit", padding: 0, textAlign: "left" }}
+        style={{ width: "100%", border: "1px solid #d6d9d2", borderRadius: 11, background: "#fff", display: "flex", alignItems: "center", gap: 10, marginTop: 0, overflow: "hidden", cursor: photoKey || canWrite ? "pointer" : "default", fontFamily: "inherit", padding: 0, textAlign: "left" }}
       >
         {photoKey ? (
           <R2Thumb r2Key={photoKey} style={{ width: 64, height: 54, flex: "none" }} />
         ) : (
-          <div className="ph" style={{ width: 64, height: 54, flex: "none" }} />
+          <div className="ph" style={{ width: 64, height: 54, flex: "none", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#9aa093" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 4h-5L7.5 6.5H4A2 2 0 0 0 2 8.5v9A2 2 0 0 0 4 19.5h16a2 2 0 0 0 2-2v-9a2 2 0 0 0-2-2h-3.5L14.5 4Z" /><circle cx="12" cy="13" r="3.2" /></svg>
+          </div>
         )}
         <div style={{ padding: "7px 0", minWidth: 0 }}>
           <div style={{ fontSize: 11.5, fontWeight: 700, color: "#11140f" }}>{kind} photo{photoKey ? " · tap to view" : canWrite ? " · tap to upload" : ""}</div>
