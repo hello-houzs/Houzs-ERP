@@ -1,3 +1,9 @@
+## 2026-07-16
+
+### 🟡 Hide SCM Customers directory + Dashboard (owner: remove for now)
+- **Change:** Owner asked to hide the Customers directory and the SCM Dashboard (both ported from 2990 in #591) for now. Cut clean per the off-not-hide rule: removed the two Sidebar nav entries and the two `App.tsx` routes (`/scm/customers`, `/scm/dashboard`) + their lazy imports. No nav, no route mount, so no fetch fires. The page components + the backend `/mfg-sales-orders/customers` endpoint stay on disk unreferenced, so re-enabling later is a one-line revert.
+- **Ref:** `fix/hide-customers-dashboard`, 2026-07-16.
+
 # Houzs ERP — BUG HISTORY
 
 **STANDING RULE (owner, 2026-07-14): every bug that is found and fixed MUST be logged here — no exceptions, everyone.** One entry per bug: **Symptom** (what the user saw) → **Root cause** (the actual defect, traced not guessed) → **Fix** (what changed) → **Ref** (PR / commit / date). Keep entries short. This file exists so the same class of bug is never reintroduced — read it before touching a subsystem, and mine it before shipping. Newest first.

@@ -107,8 +107,6 @@ const Overview = lazy(() => import("./pages/Overview").then((m) => ({ default: m
 const ScmHub = lazy(() => import("./pages/ScmHub").then((m) => ({ default: m.ScmHub })));
 const ScmSubgroupHub = lazy(() => import("./pages/ScmSubgroupHub").then((m) => ({ default: m.ScmSubgroupHub })));
 const ScmSalesOrdersV2 = lazy(() => import("./pages/scm-v2/MfgSalesOrdersListV2").then((m) => ({ default: m.MfgSalesOrdersListV2 })));
-const ScmCustomersV2 = lazy(() => import("./pages/scm-v2/Customers").then((m) => ({ default: m.Customers })));
-const ScmDashboardV2 = lazy(() => import("./pages/scm-v2/ScmDashboard").then((m) => ({ default: m.ScmDashboard })));
 const ScmSalesOrderMaintenanceV2 = lazy(() => import("./pages/scm-v2/SalesOrderMaintenance").then((m) => ({ default: m.SalesOrderMaintenance })));
 const ScmSalesOrderNewV2 = lazy(() => import("./pages/scm-v2/SalesOrderNew").then((m) => ({ default: m.SalesOrderNew })));
 const ScmSalesOrderNewGuidedV2 = lazy(() => import("./pages/scm-v2/SalesOrderNewGuided").then((m) => ({ default: m.SalesOrderNewGuided })));
@@ -503,12 +501,6 @@ export default function App() {
             MUST precede /:docNo so 'maintenance' isn't caught as a doc number.
             2990 uses :docNo (not :id) for the SO detail. */}
         <Route path="/scm/sales-orders" element={<ScmGuard area="scm.sales.orders" allowSales><Scm2990Shell><ScmSalesOrdersV2 /></Scm2990Shell></ScmGuard>} />
-        {/* SCM sales-lifecycle KPI dashboard + customer directory (ported from
-            2990). Both read-only, gated on the same scm.sales.orders area as the
-            SO list. Literal paths — declared here alongside the SO list, well
-            before /scm/sales-orders/:docNo, so there's no param collision. */}
-        <Route path="/scm/dashboard" element={<ScmGuard area="scm.sales.orders"><Scm2990Shell><ScmDashboardV2 /></Scm2990Shell></ScmGuard>} />
-        <Route path="/scm/customers" element={<ScmGuard area="scm.sales.orders"><Scm2990Shell><ScmCustomersV2 /></Scm2990Shell></ScmGuard>} />
         {/* SO amendment / revision queue (Phase 1-C). Gated on the amendment
             permission keys (any of create / supplier-confirm / approve-so /
             approve-po) — OR scm.access / Sales-Orders page access, so a full-
