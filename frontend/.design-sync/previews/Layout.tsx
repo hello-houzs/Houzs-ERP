@@ -2,6 +2,7 @@ import {
   AuthProvider,
   NotificationsProvider,
   BreadcrumbsProvider,
+  DialogProvider,
   GlobalSearchProvider,
   QueryClientProvider,
   queryClient,
@@ -179,15 +180,17 @@ const Chrome = () => (
     <MemoryRouter initialEntries={["/"]}>
       <AuthProvider>
         <ToastProvider>
-          <NotificationsProvider>
-            <BreadcrumbsProvider>
-              <GlobalSearchProvider>
-                <Layout>
-                  <DemoPage />
-                </Layout>
-              </GlobalSearchProvider>
-            </BreadcrumbsProvider>
-          </NotificationsProvider>
+          <DialogProvider>
+            <NotificationsProvider>
+              <BreadcrumbsProvider>
+                <GlobalSearchProvider>
+                  <Layout>
+                    <DemoPage />
+                  </Layout>
+                </GlobalSearchProvider>
+              </BreadcrumbsProvider>
+            </NotificationsProvider>
+          </DialogProvider>
         </ToastProvider>
       </AuthProvider>
     </MemoryRouter>

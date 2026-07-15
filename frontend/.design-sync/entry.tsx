@@ -19,6 +19,10 @@ export { queryClient } from '../src/lib/queryClient';
 export { NotifyProvider } from '../src/vendor/scm/components/NotifyDialog';
 // App toast context — PullToRefresh (inside Layout) calls useToast().
 export { ToastProvider } from '../src/hooks/useToast';
+// Promise-based confirm/prompt dialog context — added to source recently;
+// TopNavbar (and anything Layout renders) calls useDialog() and throws
+// without this wrapper. Same single-instance rule as the others.
+export { DialogProvider } from '../src/hooks/useDialog';
 export * from '../src/components/AndroidInstallGuide';
 export * from '../src/components/Avatar';
 export * from '../src/components/Badge';

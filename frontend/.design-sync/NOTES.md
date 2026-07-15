@@ -136,6 +136,22 @@ Triaged 2026-07-09:
   card itself is fully painted — see the review sheet; grades good. A
   legit false-positive, not a blank card.
 
+## DialogProvider provider gap (2026-07-14)
+The source added `useDialog()` calls that transitively reach `Layout` and
+`TopNavbar` (via child components). Their previews rendered empty with
+`Error: useDialog must be used inside DialogProvider` until:
+1. `.design-sync/entry.tsx` was extended to re-export
+   `DialogProvider` from `../src/hooks/useDialog` (same
+   single-instance rule as the other providers).
+2. `.design-sync/previews/Layout.tsx` and
+   `.design-sync/previews/TopNavbar.tsx` both wrap their Chrome trees in
+   `<DialogProvider>` (inside `<ToastProvider>` for Layout; inside
+   `<AuthProvider>` for TopNavbar).
+
+If a NEW context provider ever gets added to the Layout/TopNavbar tree, its
+previews will fail the same way. The fix is always: add re-export in
+entry.tsx, wrap the preview Chrome, re-run cfg.buildCmd, re-run the driver.
+
 ## Conventions-header vocabulary (2026-07-14)
 `bg-err-bg` / `bg-synced-bg` / `font-body` are enumerated in
 `.design-sync/conventions.md` but no in-repo component uses those exact
