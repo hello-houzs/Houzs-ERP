@@ -883,6 +883,69 @@ export async function patchAssrCase(
   return r.meta.changes > 0;
 }
 
+// ── Manual creditor assignment ────────────────────────────────
+// AutoCount can't resolve every item (MainSupplier gaps, creditor sync
+// off), so staff may hand-pick the supplier. creditor_source='manual'
+// shields the choice from the auto-resolver and the bulk stock
+// refresh; the explicit "Resolve now" (force) hands it back to
+// AutoCount. Clearing the link resets the source so auto-resolution
+// applies again.
+export async function setCaseCreditorManual(
+  env: Env,
+  id: number,
+  creditorCode: string | null,
+  userId: number | null
+): Promise<
+  | { ok: true; creditor_name: string | null }
+  | { ok: false; status: 400 | 404; error: string }
+> {
+  const existing = await env.DB.prepare(
+    `SELECT creditor_code FROM assr_cases WHERE id = ? AND archived_at IS NULL`
+  )
+    .bind(id)
+    .first<{ creditor_code: string | null }>();
+  if (!existing) return { ok: false, status: 404, error: "Case not found" };
+
+  let creditorName: string | null = null;
+  if (creditorCode) {
+    const cr = await env.DB.prepare(
+      `SELECT company_name FROM creditors WHERE creditor_code = ?`
+    )
+      .bind(creditorCode)
+      .first<{ company_name: string | null }>();
+    if (!cr) {
+      return {
+        ok: false,
+        status: 400,
+        error: "Unknown supplier code — pick one from the search results or add it first",
+      };
+    }
+    creditorName = cr.company_name ?? null;
+  }
+
+  await env.DB.prepare(
+    `UPDATE assr_cases SET creditor_code = ?, creditor_source = ?, updated_at = datetime('now') WHERE id = ?`
+  )
+    .bind(creditorCode, creditorCode ? "manual" : null, id)
+    .run();
+
+  if ((existing.creditor_code ?? null) !== (creditorCode ?? null)) {
+    await logActivity(
+      env,
+      id,
+      "creditor_set",
+      existing.creditor_code ?? null,
+      creditorCode,
+      creditorCode
+        ? `Supplier set manually${creditorName ? ` (${creditorName})` : ""}`
+        : "Supplier link cleared",
+      userId,
+      { category: "supplier" }
+    );
+  }
+  return { ok: true, creditor_name: creditorName };
+}
+
 // ── Items management ──────────────────────────────────────────
 
 export async function addItems(

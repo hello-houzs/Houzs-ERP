@@ -3689,70 +3689,11 @@ function DetailContent({
                 </div>
               );
             })()}
-            {/* Creditor (AutoCount) — derived from item_code via
-                StockItem.MainSupplier. Read-only; re-resolved when
-                item_code changes. Deep-links into the creditors tab
-                in Purchase Orders. */}
-            <div>
-              <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
-                Supplier
-                {c.creditor_code && (
-                  <Link
-                    to={`/po?view=creditors&focus=${encodeURIComponent(c.creditor_code)}`}
-                    className="ml-auto text-[10px] font-semibold normal-case tracking-normal text-accent hover:underline"
-                  >
-                    Open →
-                  </Link>
-                )}
-              </div>
-              <div className="rounded-md border border-border bg-bg/40 px-3 py-2 text-[12.5px]">
-                {c.creditor_code ? (
-                  <>
-                    <div className="font-semibold text-ink">
-                      {c.creditor_name || c.creditor_code}
-                    </div>
-                    <div className="font-mono text-[10px] text-ink-muted">
-                      {c.creditor_code}
-                    </div>
-                  </>
-                ) : c.item_code ? (
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="text-[11px] text-ink-muted">
-                      Not resolved yet for{" "}
-                      <span className="font-mono text-ink">{c.item_code}</span>.
-                    </div>
-                    <button
-                      onClick={async () => {
-                        try {
-                          const res = await api.post<{
-                            creditor_code: string | null;
-                            message?: string;
-                          }>(`/api/assr/${id}/resolve-creditor`);
-                          if (res.creditor_code) {
-                            toast.success(res.message || "Creditor resolved");
-                          } else {
-                            toast.error(
-                              res.message || "No MainSupplier set on this item in AutoCount"
-                            );
-                          }
-                          detail.reload();
-                          onUpdated();
-                        } catch (e: any) {
-                          toast.error(`Resolve failed: ${e?.message || e}`);
-                        }
-                      }}
-                      className="shrink-0 rounded-md border border-accent/40 bg-accent-soft/40 px-2 py-1 text-[10.5px] font-semibold uppercase tracking-wider text-accent transition-colors hover:bg-accent-soft/70"
-                    >
-                      Resolve now
-                    </button>
-                  </div>
-                ) : (
-                  <div className="text-[11px] text-ink-muted">
-                    Not resolved. Set an item code to auto-link the creditor.
-                  </div>
-                )}
-              </div>
-            </div>
+            {/* Creditor — auto-derived from item_code via
+                StockItem.MainSupplier, or hand-picked / registered when
+                AutoCount has no MainSupplier. Manual picks are shielded
+                from auto re-resolution (creditor_source='manual'). */}
+            <SupplierField c={c} id={id} detail={detail} toast={toast} onUpdated={onUpdated} />
             <InlineEdit
               label="Supplier status update"
               textarea
@@ -7171,6 +7112,260 @@ function LogisticsForm({
           Cancel
         </button>
       </div>
+    </div>
+  );
+}
+
+// ── Supplier (creditor) field with manual assignment ──────────
+// Auto-resolve from AutoCount stays the default; when the item has no
+// MainSupplier (sync gaps), staff search the local creditors mirror or
+// register a new supplier on the spot. Manual picks set
+// creditor_source='manual' so the auto-resolver / bulk stock refresh
+// won't overwrite them; "Resolve now" hands the link back to AutoCount.
+function SupplierField({ c, id, detail, toast, onUpdated }: {
+  c: any;
+  id: number;
+  detail: ReturnType<typeof useQuery>;
+  toast: ReturnType<typeof useToast>;
+  onUpdated: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const [results, setResults] = useState<
+    { creditor_code: string; company_name: string | null; phone1: string | null }[]
+  >([]);
+  const [searching, setSearching] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newCode, setNewCode] = useState("");
+  const [newPhone, setNewPhone] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!open || adding) return;
+    setSearching(true);
+    const handle = setTimeout(async () => {
+      try {
+        const res = await api.get<{ results: typeof results }>(
+          `/api/assr/creditors/search?q=${encodeURIComponent(q.trim())}`
+        );
+        setResults(res.results);
+      } catch {
+        setResults([]);
+      } finally {
+        setSearching(false);
+      }
+    }, 250);
+    return () => clearTimeout(handle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q, open, adding]);
+
+  async function assign(code: string | null) {
+    setSaving(true);
+    try {
+      await api.post(`/api/assr/${id}/set-creditor`, { creditor_code: code });
+      toast.success(code ? "Supplier linked" : "Supplier unlinked");
+      setOpen(false);
+      setAdding(false);
+      detail.reload();
+      onUpdated();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to set supplier");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function createAndAssign() {
+    if (!newName.trim()) {
+      toast.error("Supplier name is required");
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await api.post<{ creditor_code: string }>(`/api/assr/creditors/create`, {
+        company_name: newName.trim(),
+        creditor_code: newCode.trim() || undefined,
+        phone: newPhone.trim() || undefined,
+      });
+      await api.post(`/api/assr/${id}/set-creditor`, { creditor_code: res.creditor_code });
+      toast.success(`Supplier ${res.creditor_code} created & linked`);
+      setOpen(false);
+      setAdding(false);
+      setNewName("");
+      setNewCode("");
+      setNewPhone("");
+      detail.reload();
+      onUpdated();
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to create supplier");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const inputCls =
+    "w-full rounded-md border border-border bg-bg px-2.5 py-1.5 text-[12px] text-ink outline-none focus:border-primary";
+
+  return (
+    <div>
+      <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
+        Supplier
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="ml-auto text-[10px] font-semibold normal-case tracking-normal text-accent hover:underline"
+        >
+          {open ? "Close" : c.creditor_code ? "Change" : "Set manually"}
+        </button>
+      </div>
+      <div className="rounded-md border border-border bg-bg/40 px-3 py-2 text-[12.5px]">
+        {c.creditor_code ? (
+          <>
+            <div className="font-semibold text-ink">
+              {c.creditor_name || c.creditor_code}
+            </div>
+            <div className="font-mono text-[10px] text-ink-muted">
+              {c.creditor_code}
+              {c.creditor_source === "manual" ? " · manual" : ""}
+            </div>
+          </>
+        ) : c.item_code ? (
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-[11px] text-ink-muted">
+              Not resolved yet for{" "}
+              <span className="font-mono text-ink">{c.item_code}</span>.
+            </div>
+            <button
+              onClick={async () => {
+                try {
+                  const res = await api.post<{
+                    creditor_code: string | null;
+                    message?: string;
+                  }>(`/api/assr/${id}/resolve-creditor`);
+                  if (res.creditor_code) {
+                    toast.success(res.message || "Creditor resolved");
+                  } else {
+                    toast.error(
+                      res.message || "No MainSupplier set on this item in AutoCount"
+                    );
+                  }
+                  detail.reload();
+                  onUpdated();
+                } catch (e: any) {
+                  toast.error(`Resolve failed: ${e?.message || e}`);
+                }
+              }}
+              className="shrink-0 rounded-md border border-accent/40 bg-accent-soft/40 px-2 py-1 text-[10.5px] font-semibold uppercase tracking-wider text-accent transition-colors hover:bg-accent-soft/70"
+            >
+              Resolve now
+            </button>
+          </div>
+        ) : (
+          <div className="text-[11px] text-ink-muted">
+            Not resolved. Set an item code to auto-link, or set the supplier manually.
+          </div>
+        )}
+      </div>
+      {open && (
+        <div className="mt-2 rounded-md border border-border bg-surface p-2.5">
+          {!adding ? (
+            <>
+              <input
+                autoFocus
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder="Search supplier name or code…"
+                className={inputCls}
+              />
+              <div className="mt-1.5 max-h-44 overflow-auto">
+                {searching ? (
+                  <div className="px-1 py-2 text-[11px] text-ink-muted">Searching…</div>
+                ) : results.length ? (
+                  results.map((r) => (
+                    <button
+                      key={r.creditor_code}
+                      type="button"
+                      disabled={saving}
+                      onClick={() => assign(r.creditor_code)}
+                      className="flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-[12px] transition-colors hover:bg-accent-soft/30 disabled:opacity-50"
+                    >
+                      <span className="truncate font-medium text-ink">
+                        {r.company_name || r.creditor_code}
+                      </span>
+                      <span className="shrink-0 font-mono text-[10px] text-ink-muted">
+                        {r.creditor_code}
+                      </span>
+                    </button>
+                  ))
+                ) : (
+                  <div className="px-1 py-2 text-[11px] text-ink-muted">
+                    No suppliers match.
+                  </div>
+                )}
+              </div>
+              <div className="mt-1.5 flex items-center justify-between border-t border-border-subtle/60 pt-1.5">
+                <button
+                  type="button"
+                  onClick={() => setAdding(true)}
+                  className="text-[11px] font-semibold text-accent hover:underline"
+                >
+                  + New supplier
+                </button>
+                {c.creditor_code && (
+                  <button
+                    type="button"
+                    disabled={saving}
+                    onClick={() => assign(null)}
+                    className="text-[11px] text-ink-muted transition-colors hover:text-err"
+                  >
+                    Unlink current
+                  </button>
+                )}
+              </div>
+            </>
+          ) : (
+            <div className="space-y-1.5">
+              <input
+                autoFocus
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                placeholder="Supplier name *"
+                className={inputCls}
+              />
+              <input
+                value={newCode}
+                onChange={(e) => setNewCode(e.target.value)}
+                placeholder="Creditor code (optional, e.g. 400-A0001)"
+                className={cn(inputCls, "font-mono")}
+              />
+              <input
+                value={newPhone}
+                onChange={(e) => setNewPhone(e.target.value)}
+                placeholder="Phone (optional)"
+                className={inputCls}
+              />
+              <div className="flex items-center gap-2 pt-0.5">
+                <button
+                  type="button"
+                  onClick={createAndAssign}
+                  disabled={saving}
+                  className="rounded-md bg-accent px-2.5 py-1 text-[11px] font-semibold text-white disabled:opacity-50"
+                >
+                  {saving ? "Saving…" : "Create & link"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAdding(false)}
+                  className="text-[11px] text-ink-muted hover:underline"
+                >
+                  Back to search
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

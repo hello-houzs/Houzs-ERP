@@ -978,17 +978,7 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
               disabled={dis}
               onSave={(v) => patchCase({ resolution_method: v }, "Couldn't save resolution")}
             />
-            <div className="fld-l" style={{ marginTop: 8 }}>Supplier</div>
-            {creditorCode ? (
-              <div style={{ display: "flex", alignItems: "center", gap: 9, border: `1px solid ${DIM}`, borderRadius: 10, padding: "10px 11px", marginTop: 5 }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 12.5, fontWeight: 700, color: INK }}>{String(get(c, "creditorName", "creditor_name") ?? creditorCode)}</div>
-                  <div className="money" style={{ fontSize: 10, color: GREY }}>{String(creditorCode)}</div>
-                </div>
-              </div>
-            ) : (
-              <div style={{ fontSize: 11, color: GREY, marginTop: 5 }}>No supplier linked.</div>
-            )}
+            <MobileSupplierPick c={c} onChanged={refetch} notify={notify} disabled={dis} />
           </>
         );
       case "pending_supplier_pickup":
@@ -2633,6 +2623,131 @@ function PhotoGrid({
         </label>
       </div>
       {hint && <div style={{ fontSize: 10.5, color: GREY, marginTop: 6 }}>{hint}</div>}
+    </>
+  );
+}
+
+// Supplier (creditor) picker — search the local creditors mirror and
+// hand-link a supplier when AutoCount has no MainSupplier, or register
+// a new one. Manual picks set creditor_source='manual' so the
+// auto-resolver won't overwrite them.
+function MobileSupplierPick({ c, onChanged, notify, disabled }: { c: Any; onChanged: () => void; notify: ReturnType<typeof useNotify>; disabled?: boolean }) {
+  const caseId = Number(get(c, "id"));
+  const code = get(c, "creditorCode", "creditor_code");
+  const name = get(c, "creditorName", "creditor_name");
+  const manual = String(get(c, "creditorSource", "creditor_source") ?? "") === "manual";
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const [results, setResults] = useState<Any[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newCode, setNewCode] = useState("");
+
+  useEffect(() => {
+    if (!open || adding) return;
+    const h = setTimeout(async () => {
+      try {
+        const res = await api.get<{ results: Any[] }>(`/api/assr/creditors/search?q=${encodeURIComponent(q.trim())}`);
+        setResults(res.results ?? []);
+      } catch {
+        setResults([]);
+      }
+    }, 250);
+    return () => clearTimeout(h);
+  }, [q, open, adding]);
+
+  const assign = async (v: string | null) => {
+    setBusy(true);
+    try {
+      await api.post(`/api/assr/${caseId}/set-creditor`, { creditor_code: v });
+      setOpen(false);
+      setAdding(false);
+      onChanged();
+    } catch (e: any) {
+      await notify({ title: "Couldn't set supplier", body: e?.message || "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const createAndAssign = async () => {
+    if (!newName.trim()) {
+      await notify({ title: "Supplier name is required", body: "Enter a name before creating.", tone: "error" });
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await api.post<{ creditor_code: string }>(`/api/assr/creditors/create`, {
+        company_name: newName.trim(),
+        creditor_code: newCode.trim() || undefined,
+      });
+      await api.post(`/api/assr/${caseId}/set-creditor`, { creditor_code: res.creditor_code });
+      setOpen(false);
+      setAdding(false);
+      setNewName("");
+      setNewCode("");
+      onChanged();
+    } catch (e: any) {
+      await notify({ title: "Couldn't create supplier", body: e?.message || "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <div className="fld-l" style={{ marginTop: 8, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span>Supplier</span>
+        {!disabled && (
+          <button onClick={() => setOpen((v) => !v)} style={{ border: "none", background: "none", color: TEAL, fontSize: 11, fontWeight: 700, cursor: "pointer", padding: 0 }}>
+            {open ? "Close" : code ? "Change" : "Set supplier"}
+          </button>
+        )}
+      </div>
+      {code ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 9, border: `1px solid ${DIM}`, borderRadius: 10, padding: "10px 11px", marginTop: 5 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 12.5, fontWeight: 700, color: INK }}>{String(name ?? code)}</div>
+            <div className="money" style={{ fontSize: 10, color: GREY }}>{String(code)}{manual ? " · manual" : ""}</div>
+          </div>
+        </div>
+      ) : (
+        <div style={{ fontSize: 11, color: GREY, marginTop: 5 }}>No supplier linked.</div>
+      )}
+      {open && (
+        <div style={{ border: `1px solid ${DIM}`, borderRadius: 10, padding: 10, marginTop: 6, background: FIELD_BG }}>
+          {!adding ? (
+            <>
+              <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search supplier name or code…" className="fld-i" style={{ width: "100%", boxSizing: "border-box" }} />
+              <div className="hz-scroll" style={{ maxHeight: 170, overflowY: "auto", marginTop: 6 }}>
+                {results.map((r, i) => (
+                  <button key={String(get(r, "creditor_code")) + i} disabled={busy} onClick={() => assign(String(get(r, "creditor_code")))} style={{ display: "block", width: "100%", textAlign: "left", border: "none", borderTop: i ? `1px solid ${DIM}` : "none", background: "none", padding: "8px 2px", cursor: "pointer" }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: INK }}>{String(get(r, "company_name") ?? get(r, "creditor_code"))}</div>
+                    <div className="money" style={{ fontSize: 10, color: GREY }}>{String(get(r, "creditor_code"))}</div>
+                  </button>
+                ))}
+                {!results.length && <div style={{ fontSize: 11, color: GREY, padding: "8px 2px" }}>No suppliers match.</div>}
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
+                <button onClick={() => setAdding(true)} style={{ border: "none", background: "none", color: TEAL, fontSize: 11, fontWeight: 700, cursor: "pointer", padding: 0 }}>+ New supplier</button>
+                {code ? <button disabled={busy} onClick={() => assign(null)} style={{ border: "none", background: "none", color: GREY, fontSize: 11, cursor: "pointer", padding: 0 }}>Unlink</button> : null}
+              </div>
+            </>
+          ) : (
+            <>
+              <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Supplier name *" className="fld-i" style={{ width: "100%", boxSizing: "border-box" }} />
+              <input value={newCode} onChange={(e) => setNewCode(e.target.value)} placeholder="Creditor code (optional)" className="fld-i money" style={{ width: "100%", boxSizing: "border-box", marginTop: 6 }} />
+              <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 8 }}>
+                <button disabled={busy} onClick={createAndAssign} style={{ border: "none", borderRadius: 9, background: TEAL, color: "#fff", fontSize: 12, fontWeight: 700, padding: "8px 12px", cursor: "pointer", opacity: busy ? 0.6 : 1 }}>
+                  {busy ? "Saving…" : "Create & link"}
+                </button>
+                <button onClick={() => setAdding(false)} style={{ border: "none", background: "none", color: GREY, fontSize: 11, cursor: "pointer", padding: 0 }}>Back to search</button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
     </>
   );
 }
