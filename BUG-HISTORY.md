@@ -8,6 +8,12 @@ Severity tags: 🔴 critical/high · 🟠 medium · 🟢 low.
 
 ## 2026-07-15
 
+### 🟢 Checklist showed a "Forbidden: requires one of ..." toast on click; Sales Director saw Departments in Team nav
+- **Symptom:** (a) Clicking a project checklist status control a user couldn't tick surfaced a raw backend "Forbidden: requires one of projects.write, projects.checklist.tick" toast instead of the control simply being non-clickable. (b) A Sales Director (scoped Team admin) saw a "Departments" item in the Team nav; owner wants a sales user to see only Members + Org Chart.
+- **Root cause:** (a) The tick + status buttons are already `disabled={!canTick}`, but the shared `setItemStatus` handler could still be reached (e.g. other control paths / gated items) and fired the POST, whose 403 landed as a toast; the per-item `required_perm` client guard also `toast.error`ed. (b) The Team "Departments" nav entry carried `showForSalesDirector: true`.
+- **Fix:** (a) `setItemStatus` now silently no-ops when the user lacks `projects.write`+`projects.checklist.tick`, and the `required_perm` guard returns silently (no toast) — off, not error; controls remain visually disabled. (b) Removed `showForSalesDirector` from the Departments nav entry (Members + Org Chart stay).
+- **Ref:** `fix/team-nav-and-checklist-ux`, 2026-07-15.
+
 ### 🟠 Sales Invoice line items showed no variants; DO detail lacked a Recent-activity card (job-card unification)
 - **Symptom:** The Sales Invoice detail line items showed only code + description with NO variant summary (fabric/gaps/divan/leg/seat/specials), inconsistent with SO/DO; and the DO detail aside lacked the Recent-activity card the SO/SI have. Owner asked for DO/SI/Amendment job cards to follow the SO template.
 - **Root cause:** The V2 detail rewrites diverged from the SO template. `SalesInvoiceDetailV2` rendered its existing line-items section without the variant chips (the `variants` field was in the payload but never rendered). `DeliveryOrderDetailV2` had no Recent-activity aside.

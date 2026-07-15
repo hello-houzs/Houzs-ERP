@@ -511,7 +511,7 @@ export const NAV_TABS: NavTab[] = [
       { to: "/team?tab=members", label: "Members", icon: Users, perm: "users.read", pageAccess: "team", showForSalesDirector: true },
       { to: "/team?tab=positions", label: "Positions", icon: ShieldCheck, perm: "users.manage", pageAccess: "team" },
       { to: "/team?tab=orgchart", label: "Org Chart", icon: Network, perm: "users.read", pageAccess: "team", showForSalesDirector: true },
-      { to: "/team?tab=departments", label: "Departments", icon: Building2, perm: "users.read", pageAccess: "team", showForSalesDirector: true },
+      { to: "/team?tab=departments", label: "Departments", icon: Building2, perm: "users.read", pageAccess: "team" },
       { to: "/team?tab=mail", label: "Mailboxes", icon: Mail, perm: "mail_center.manage", pageAccess: "team" },
     ],
   },
