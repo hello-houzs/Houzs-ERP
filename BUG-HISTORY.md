@@ -8,6 +8,11 @@ Severity tags: 🔴 critical/high · 🟠 medium · 🟢 low.
 
 ## 2026-07-15
 
+### 🟢 Desktop Warehouse (Racks) was a bare table — ported HOOKKA's full rack module (Phase 1)
+- **Symptom:** The desktop Racks page (#557) was a plain CRUD table; HOOKKA has a full Warehouse experience (KPI tiles, visual rack grid, stock-in/out, movement history) the owner wanted on desktop too.
+- **Fix (Phase 1, FE-only — backend already had the endpoints):** Rewrote `WarehouseRacks.tsx` into a 3-tab page: KPI tiles (from `GET /warehouse` summary); Rack Overview with a warehouse selector, colour-coded rack grid (occupied/empty/reserved, up to 3 items per card + "+N more", Floor bucket) and client-side search by SO/customer-PO/customer/product; Stock In/Out tab (stock-in + stock-out forms + recent movements); Movement History tab (type/from/to filters). Added `useStockIn`/`useStockOut`/`useTransfer`/`useMovements` hooks. Adapted to Houzs (per-warehouse racks, product-keyed qty model — NOT HOOKKA's per-piece/packing machinery). QR generation + public camera-scan are Phases 2-4.
+- **Ref:** `fix/rec-warehouse-p1-clean`, 2026-07-15.
+
 ### 🔴 SCM list endpoints leaked cost/margin to non-finance users on the wire (+ Phase 2 columns)
 - **Symptom:** The owner wanted the legacy cost/margin/category-subtotal columns back on the SO/DO/SI/DR lists. Investigating revealed the underlying fields (per-category cost/revenue, total_cost_centi, total_margin_centi, margin_pct_basis, deposit) were ALREADY selected by each list route's shared HEADER and returned to EVERY caller in the JSON — never rendered, but present on the wire — a finance-data leak to non-finance users.
 - **Root cause:** The SCM list routes had NO finance-viewer gate (unlike the PMS finance sections). The Phase-1 premise ("widen the SELECT") was wrong; the fields were there, ungated.
