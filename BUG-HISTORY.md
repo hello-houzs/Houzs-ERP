@@ -8,6 +8,12 @@ Severity tags: 🔴 critical/high · 🟠 medium · 🟢 low.
 
 ## 2026-07-15
 
+### 🟠 SO Amendment had no readable detail — the queue jumped straight into the SO/PO editor (cramped diff)
+- **Symptom:** Opening an amendment from the queue jumped into the SO/PO inline editor; the only "requested changes" view was a cramped modal. No proper amendment job card / before-after layout.
+- **Root cause:** The Amendments queue `openRow` resolved the bound PO and navigated into the editor; the diff data (`useAmendmentDetail`, `old_snapshot` vs `new_*`) existed but nothing composed it into a detail page.
+- **Fix:** New `AmendmentDetailV2` page (route `/scm/amendments/:id`, same guard as the queue) following the SO job-card shell: revision-status hero + 4-stage stepper, per-line before->after diff cards (variants shown on both sides via shared `buildVariantSummary`), an aside with requested-by + permission-gated supplier-confirm / approve-SO actions (the same hooks the mobile flow uses) + an activity timeline derived honestly from the amendment's own audit timestamps. "Open Sales Order / revised PO" hands off to the inline editor for deeper edits. Amendments queue now double-clicks to this page. Mobile keeps its own diff sheet.
+- **Ref:** `fix/amendment-jobcard-clean`, 2026-07-15.
+
 ### 🟠 DO Print PDF slow on sofa/fabric orders (fabric catalog fetched twice, uncached) + dead "Download PDF" button
 - **Symptom:** Printing a DO PDF was slow, but only for sofa/fabric orders; plain DOs were fast. Also the routed DO detail "Download PDF" button did nothing.
 - **Root cause:** `loadCustomerFabricMaps` ran two loaders that EACH fetched the ENTIRE `/fabric-tracking` catalog (no limit, no cache) — two full-catalog fetches per print, and a fresh fetch on every reprint. Plain DOs skip it (no fabric codes), which is why only sofa/fabric was slow. The DO detail "Download PDF" navigated to `?print=1`, which nothing consumes → no-op.

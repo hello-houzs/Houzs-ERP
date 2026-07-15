@@ -3,37 +3,27 @@
 // of every amendment across all Sales Orders, newest first. HOUZS VENDOR port
 // of 2990's apps/backend/src/pages/Amendments.tsx.
 //
-// Row-click routing (Houzs adaptation): an amendment lives on its SO until the
-// SO gate clears, then the bound-PO revision is the live surface. So at/before
-// SO_APPROVED we open the SO editor (/scm/sales-orders/:docNo?edit=1 — the amber
-// amendment-pending banner lives on the legacy inline editor that Detail-V2
-// forwards to on ?edit=1); once the PO gate is reached (PO_APPROVED / SENT) we
-// open the bound PO editor (/scm/purchase-orders/:id?edit=1). The list row
-// carries only the SO doc_no, so the PO-detail hop resolves the bound PO from
-// the amendment detail first, then navigates (falling back to the SO editor if
-// the SO has no bound PO).
+// Row-click routing (Houzs 2026-07-15): a double-click now opens the amendment
+// job card (AmendmentDetailV2, /scm/amendments/:id) — the before/after diff +
+// revision-status hero + gate actions. That detail page hands off into the SO
+// editor (/scm/sales-orders/:docNo?edit=1, which hosts the pending banner + the
+// legacy line editor) or the bound-PO editor for the later gates, so the queue
+// no longer needs to resolve the bound PO itself.
 // ----------------------------------------------------------------------------
 
 import { useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { fmtDateTime } from '@2990s/shared';
-import { authedFetch } from '../../vendor/scm/lib/authed-fetch';
-import { useAmendments, type AmendmentRow, type AmendmentDetail } from '../../vendor/scm/lib/so-amendment-queries';
+import { useAmendments, type AmendmentRow } from '../../vendor/scm/lib/so-amendment-queries';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
 import { StatusPill } from '../../vendor/scm/components/StatusPill';
 import { statusLabel } from '../../vendor/scm/lib/status-pill';
-import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import styles from './Suppliers.module.css';
 
 // so_amendment_status values: REQUESTED / SUPPLIER_PENDING / SO_APPROVED /
 // PO_APPROVED / SENT / REJECTED. Colours + labels come from the canonical
 // lib/status-pill 'soAmendment' map via <StatusPill>.
 const STATUS_CHIPS = ['all', 'REQUESTED', 'SUPPLIER_PENDING', 'SO_APPROVED', 'PO_APPROVED', 'SENT', 'REJECTED'] as const;
-
-/* Statuses that are still "in the SO's court" — the row opens the SO editor.
-   Once the amendment passes the SO gate (PO_APPROVED / SENT) the bound-PO
-   revision is the live surface, so those rows open the PO editor instead. */
-const AT_OR_BEFORE_SO_APPROVED = new Set(['REQUESTED', 'SUPPLIER_PENDING', 'SO_APPROVED', 'REJECTED']);
 
 /* New unique storage key — NEVER reuse another list's key. */
 const AMENDMENT_LIST_STORAGE_KEY = 'so-amendment-list.layout.v1';
@@ -87,7 +77,6 @@ const buildAmendmentColumns = (): DataGridColumn<AmendmentRow>[] => [
 
 export const Amendments = () => {
   const navigate = useNavigate();
-  const notify = useNotify();
   const [searchParams, setSearchParams] = useSearchParams();
   const statusChip = searchParams.get('status') ?? 'all';
   const setStatusChip = (s: string) => {
@@ -105,26 +94,11 @@ export const Amendments = () => {
   );
   const columns = useMemo(() => buildAmendmentColumns(), []);
 
-  /* Row-click routing. At/before SO_APPROVED (incl. REJECTED, which never left
-     the SO) → the SO editor. Once past the SO gate, resolve the bound PO from
-     the amendment detail and open it (fall back to the SO editor if there's no
-     bound PO or the lookup fails). Both surfaces open with ?edit=1 so the
-     legacy inline editor (which hosts the amendment banners) renders. */
-  const openRow = async (a: AmendmentRow) => {
-    if (AT_OR_BEFORE_SO_APPROVED.has(a.status)) {
-      navigate(`/scm/sales-orders/${a.so_doc_no}?edit=1`);
-      return;
-    }
-    try {
-      const detail = await authedFetch<AmendmentDetail>(`/so-amendments/${a.id}`);
-      const po = detail.purchaseOrders?.[0];
-      if (po?.id) { navigate(`/scm/purchase-orders/${po.id}?edit=1`); return; }
-      // No bound PO — fall back to the SO editor (still the correct surface).
-      navigate(`/scm/sales-orders/${a.so_doc_no}?edit=1`);
-    } catch (e) {
-      notify({ title: 'Could not open the revised PO', body: e instanceof Error ? e.message : String(e), tone: 'error' });
-      navigate(`/scm/sales-orders/${a.so_doc_no}?edit=1`);
-    }
+  /* Row-click routing (2026-07-15) — open the amendment job card. The detail
+     page owns the diff + revision-status hero + gate actions, and hands off
+     into the SO / bound-PO editor for the deeper line edits. */
+  const openRow = (a: AmendmentRow) => {
+    navigate(`/scm/amendments/${a.id}`);
   };
 
   return (
@@ -171,7 +145,7 @@ export const Amendments = () => {
         searchPlaceholder="Search amendments…"
         groupBanner={false}
         /* Open on DOUBLE-click (mirrors the GRN / PO list). */
-        onRowDoubleClick={(a) => void openRow(a)}
+        onRowDoubleClick={(a) => openRow(a)}
         /* Closed amendments (SENT / REJECTED) grey out so they read as dead
            (mirrors the GRN list's cancelled/closed treatment). */
         rowStyle={(a) => (a.status === 'REJECTED' || a.status === 'SENT')
