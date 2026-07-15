@@ -26,6 +26,12 @@ import {
 } from '../shared/so-line-display';
 import { recomputePoReceived, resolvePoBatchByItem } from './grns';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
+import {
+  checkStockAvailability,
+  shortStockResponse,
+  type StockLineRequest,
+  type StockShortage,
+} from '../lib/check-stock-availability';
 
 export const purchaseReturns = new Hono<{ Bindings: Env; Variables: Variables }>();
 purchaseReturns.use('*', supabaseAuth);
@@ -357,6 +363,57 @@ async function writePurchaseReturnMovements(sb: any, prId: string, returnNumber:
   return movementErrors;
 }
 
+/* ── checkPrStockAvailability (audit gap #7) ─────────────────────────────────
+   On-hand floor for the supplier-return OUT. A Purchase Return writes an
+   inventory OUT (goods leave to the supplier), so — exactly like the DO ship
+   side (check-stock-availability) — verify the SOURCE warehouse actually holds
+   the returned qty BEFORE the OUT, instead of letting a PR silently drive stock
+   negative with no prompt. Soft-waivable: the caller 409s short_stock unless
+   confirmShortStock is set (the shared FE authedFetch wrapper renders the
+   shortage, asks "return anyway? (stock goes negative)", and retries with the
+   flag) — the same house pattern the DO ship paths use, so a legitimate return
+   of in-stock goods passes straight through with no prompt.
+
+   PR lines can span warehouses (a batched /from-grns pulls from each line's
+   source-GRN warehouse), so resolve each line's warehouse via the SAME
+   resolvePrLineWarehouses the OUT uses, group requests per warehouse, and run
+   the shared checkStockAvailability once per warehouse, combining shortages.
+   Lines whose warehouse can't be resolved are skipped here — the OUT skips them
+   too (writePurchaseReturnMovements drops a null-warehouse line). */
+async function checkPrStockAvailability(
+  sb: any,
+  lines: Array<{
+    id: string; grn_item_id?: string | null; material_code: string;
+    material_name?: string | null; item_group?: string | null;
+    variants?: VariantAttrs | null; qty: number;
+  }>,
+  headerGrnId: string | null,
+): Promise<StockShortage[]> {
+  const active = lines.filter((l) => Number(l.qty) > 0);
+  if (active.length === 0) return [];
+  const lineWh = await resolvePrLineWarehouses(
+    sb, active.map((l) => ({ id: l.id, grn_item_id: l.grn_item_id ?? null })), headerGrnId,
+  );
+  const byWh = new Map<string, StockLineRequest[]>();
+  for (const l of active) {
+    const wh = lineWh.get(l.id) ?? null;
+    if (!wh) continue; // no warehouse resolved → the OUT skips this line too
+    const arr = byWh.get(wh) ?? [];
+    arr.push({
+      itemCode: l.material_code,
+      productName: l.material_name ?? null,
+      variantKey: computeVariantKey(l.item_group ?? null, l.variants ?? null),
+      qty: Number(l.qty),
+    });
+    byWh.set(wh, arr);
+  }
+  const shortages: StockShortage[] = [];
+  for (const [wh, reqs] of byWh) {
+    shortages.push(...(await checkStockAvailability(sb, wh, reqs)));
+  }
+  return shortages;
+}
+
 /* ── writePrLineDeltaMovement (Commander 2026-06-01, audit fix #5) ───────────
    The create path writes the inventory OUT for every initial line, but line
    CRUD after create (add / edit qty / delete) used to touch only
@@ -444,9 +501,12 @@ purchaseReturns.post('/', async (c) => {
 
   const sb = c.get('supabase'); const user = c.get('user');
 
-  /* Audit fix #3 — clamp each GRN-linked line to its remaining
-     (qty_accepted - returned_qty) so a bare create can't over-return (the
-     /from-grns path already clamps; this one didn't). Manual lines uncapped. */
+  /* Audit gap #7 — REJECT a GRN-linked over-return with the SAME 409 the
+     add-line path (`POST /:id/items`) returns, instead of the old silent
+     Math.min clamp. Clamping quietly shrank the operator's number and hid the
+     mistake; the add-line path already 409s `qty_exceeds_remaining`, so the
+     bare-create path now behaves identically. remaining = qty_accepted -
+     returned_qty. Manual lines (no grnItemId) stay uncapped. */
   const preGrnItemIds = [...new Set(items
     .map((it) => (it.grnItemId as string | undefined) ?? null)
     .filter((x): x is string => !!x))];
@@ -458,16 +518,22 @@ purchaseReturns.post('/', async (c) => {
       remainingByGrnItem.set(r.id, Math.max(0, (r.qty_accepted ?? 0) - (r.returned_qty ?? 0)));
     }
   }
+  for (const it of items) {
+    const grnItemId = (it.grnItemId as string | undefined) ?? null;
+    if (!grnItemId || !remainingByGrnItem.has(grnItemId)) continue;
+    const requested = Number(it.qtyReturned ?? 0);
+    const remaining = remainingByGrnItem.get(grnItemId) as number;
+    if (requested > remaining) {
+      return c.json({ error: 'qty_exceeds_remaining', requested, remaining }, 409);
+    }
+  }
 
   let totalRefund = 0;
   const itemRows = items.map((it) => {
     const grnItemId = (it.grnItemId as string | undefined) ?? null;
-    let qty = Number(it.qtyReturned ?? 0);
-    if (grnItemId && remainingByGrnItem.has(grnItemId)) {
-      qty = Math.min(qty, remainingByGrnItem.get(grnItemId) as number);
-    }
+    const qty = Number(it.qtyReturned ?? 0);
     const unit = Number(it.unitPriceCenti ?? 0);
-    // After clamping, refund follows the clamped qty (a return has no discount).
+    // Refund follows the returned qty (a return has no discount).
     const lineRefund = qty * unit;
     totalRefund += lineRefund;
     return {
@@ -494,6 +560,29 @@ purchaseReturns.post('/', async (c) => {
 
   /* PR-DRAFT-removal — PR is created POSTED, inventory OUT written inline. */
   const grnId = (body.grnId as string | undefined) ?? null;
+
+  /* Audit gap #7 — on-hand floor. The PR posts its inventory OUT inline below;
+     verify the source warehouse holds the returned qty FIRST (soft-waivable via
+     confirmShortStock, mirroring the DO ship side) so a return can't silently
+     drive stock negative. Synthetic ids feed the per-line warehouse resolver
+     (rows aren't inserted yet). */
+  if (!(body.confirmShortStock as boolean | undefined)) {
+    const shortages = await checkPrStockAvailability(
+      sb,
+      itemRows.map((r, idx) => ({
+        id: `new-${idx}`,
+        grn_item_id: r.grn_item_id,
+        material_code: String(r.material_code),
+        material_name: (r.material_name as string | null | undefined) ?? null,
+        item_group: r.item_group,
+        variants: r.variants as VariantAttrs | null,
+        qty: Number(r.qty_returned),
+      })),
+      grnId,
+    );
+    if (shortages.length > 0) return c.json(shortStockResponse(shortages), 409);
+  }
+
   const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; return_number: string }>(
     () => nextNum(sb, c),
     (returnNumber) => sb.from('purchase_returns').insert({
@@ -539,7 +628,7 @@ purchaseReturns.post('/', async (c) => {
 // all qty_rejected lines across the selected GRNs (must share a supplier).
 purchaseReturns.post('/from-grns', async (c) => {
   const sb = c.get('supabase'); const user = c.get('user');
-  let body: { grnIds?: string[]; reason?: string; notes?: string };
+  let body: { grnIds?: string[]; reason?: string; notes?: string; confirmShortStock?: boolean };
   try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid_json' }, 400); }
   const grnIds = body.grnIds ?? [];
   if (grnIds.length === 0) return c.json({ error: 'grn_ids_required' }, 400);
@@ -599,6 +688,27 @@ purchaseReturns.post('/from-grns', async (c) => {
   const totalRefund = rejectedItems.reduce((s, it) => s + (it._qty * it.unit_price_centi), 0);
 
   const primaryGrnId = grnList[0]!.id;
+
+  /* Audit gap #7 — on-hand floor before the inventory OUT (soft-waivable via
+     confirmShortStock, mirroring the DO ship side). Each line draws OUT of its
+     source-GRN warehouse (grn_item_id = the rejected line's id). */
+  if (!body.confirmShortStock) {
+    const shortages = await checkPrStockAvailability(
+      sb,
+      rejectedItems.map((it, idx) => ({
+        id: `new-${idx}`,
+        grn_item_id: it.id,
+        material_code: it.material_code,
+        material_name: it.material_name,
+        item_group: it.item_group,
+        variants: (it.variants as VariantAttrs | null) ?? null,
+        qty: it._qty,
+      })),
+      primaryGrnId,
+    );
+    if (shortages.length > 0) return c.json(shortStockResponse(shortages), 409);
+  }
+
   const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; return_number: string }>(
     nextPrtNumber,
     (returnNumber) => sb.from('purchase_returns').insert({
@@ -658,7 +768,7 @@ purchaseReturns.post('/from-grns', async (c) => {
    Body: { grnId, reason?, notes? }  →  201 { id, returnNumber }. */
 purchaseReturns.post('/from-grn', async (c) => {
   const sb = c.get('supabase'); const user = c.get('user');
-  let body: { grnId?: string; reason?: string; notes?: string };
+  let body: { grnId?: string; reason?: string; notes?: string; confirmShortStock?: boolean };
   try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid_json' }, 400); }
   const grnId = body.grnId;
   if (!grnId) return c.json({ error: 'grn_id_required' }, 400);
@@ -686,6 +796,25 @@ purchaseReturns.post('/from-grn', async (c) => {
     .map((it) => ({ ...it, _remaining: (it.qty_accepted ?? 0) - (it.returned_qty ?? 0) }))
     .filter((it) => it._remaining > 0);
   if (lines.length === 0) return c.json({ error: 'nothing_to_return', message: 'GRN is fully returned' }, 400);
+
+  /* Audit gap #7 — on-hand floor before the inventory OUT (soft-waivable via
+     confirmShortStock, mirroring the DO ship side). */
+  if (!body.confirmShortStock) {
+    const shortages = await checkPrStockAvailability(
+      sb,
+      lines.map((it, idx) => ({
+        id: `new-${idx}`,
+        grn_item_id: it.id,
+        material_code: it.material_code,
+        material_name: it.material_name,
+        item_group: it.item_group,
+        variants: (it.variants as VariantAttrs | null) ?? null,
+        qty: it._remaining,
+      })),
+      g.id,
+    );
+    if (shortages.length > 0) return c.json(shortStockResponse(shortages), 409);
+  }
 
   const totalRefund = lines.reduce((s, it) => s + (it._remaining * it.unit_price_centi), 0);
 
