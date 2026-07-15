@@ -1166,6 +1166,119 @@ mfgSalesOrders.get('/', async (c) => {
   return c.json({ salesOrders: rows });
 });
 
+/* ── Customer directory (server-side aggregation) ─────────────────────────────
+   Ported from 2990's backend Customers page, which GROUP BYs the Sales-Order
+   debtor CLIENT-side over the legacy 500-row list. Houzs has no dedicated
+   `customers` table — SOs carry denormalised debtor_name / phone — so the
+   "directory" is a GROUP BY over mfg_sales_orders. We do the aggregation
+   SERVER-side here (paginateAll pages past the 1000-row PostgREST cap) so it
+   scales past 500 rows and stays company + sales-scope scoped like the list.
+
+   Key = phone (trimmed) when present, else `name:<lower(debtor_name)>`, matching
+   2990's aggregate(). CANCELLED + ON_HOLD are excluded from lifetime value and
+   the directory (same exclusion set as 2990). Money is centi (integers); the FE
+   divides by 100. Registered BEFORE '/:docNo' so 'customers' is never a doc-no
+   param, and under the scm.sales.orders area guard (scm/index.ts mounts the whole
+   /mfg-sales-orders/* subtree behind scmAreaGuard('scm.sales.orders')). */
+type CustomerSoRow = {
+  doc_no: string;
+  status: string;
+  debtor_name: string | null;
+  phone: string | null;
+  local_total_centi: number | null;
+  created_at: string | null;
+  so_date: string | null;
+  line_count: number | null;
+};
+type CustomerOrder = {
+  doc_no: string;
+  status: string;
+  so_date: string | null;
+  created_at: string | null;
+  local_total_centi: number;
+  line_count: number;
+};
+type CustomerEntry = {
+  key: string;
+  name: string;
+  phone: string | null;
+  order_count: number;
+  lifetime_value_centi: number;
+  last_order_at: string;
+  orders: CustomerOrder[];
+};
+const customerSoDateOf = (o: { created_at: string | null; so_date: string | null }): string =>
+  o.created_at ?? o.so_date ?? '';
+
+mfgSalesOrders.get('/customers', async (c) => {
+  const sb = c.get('supabase');
+  /* Same row-level visibility scope as the SO list: allowed salesperson ids
+     (self + downline) or null = unrestricted. Pass the REAL Houzs integer user
+     id, NOT the pinned system-staff uuid (the scm.staff-UUID bigint trap). */
+  const scopeIds = await resolveSalesScopeIds(sb, c.env, c.get('houzsUser')?.id, canViewAllSales(c));
+
+  const { data, error } = await paginateAll<CustomerSoRow>((from, to) => {
+    let q = sb
+      .from('mfg_sales_orders')
+      .select('doc_no, status, debtor_name, phone, local_total_centi, created_at, so_date, line_count')
+      .order('so_date', { ascending: false });
+    if (scopeIds) q = q.in('salesperson_id', scopeIds);
+    q = scopeToCompany(q, c); // multi-company: isolate to the active company
+    return q.range(from, to);
+  });
+  if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
+
+  const map = new Map<string, CustomerEntry>();
+  for (const o of (data ?? [])) {
+    // CANCELLED + ON_HOLD don't count toward LTV / the directory (2990 parity).
+    if (o.status === 'CANCELLED' || o.status === 'ON_HOLD') continue;
+    const key = o.phone?.trim() || `name:${(o.debtor_name ?? '').toLowerCase().trim()}`;
+    if (!key || key === 'name:') continue;
+
+    const totalCenti = o.local_total_centi ?? 0;
+    const when = customerSoDateOf(o);
+    const order: CustomerOrder = {
+      doc_no: o.doc_no,
+      status: o.status,
+      so_date: o.so_date,
+      created_at: o.created_at,
+      local_total_centi: totalCenti,
+      line_count: o.line_count ?? 0,
+    };
+
+    const existing = map.get(key);
+    if (existing) {
+      existing.order_count += 1;
+      existing.lifetime_value_centi += totalCenti;
+      existing.orders.push(order);
+      // Denormalised name/phone snapshots can drift — keep the most recent.
+      if (when > existing.last_order_at) {
+        existing.last_order_at = when;
+        existing.name = o.debtor_name || existing.name;
+        existing.phone = o.phone ?? existing.phone;
+      }
+    } else {
+      map.set(key, {
+        key,
+        name: o.debtor_name || 'Walk-in',
+        phone: o.phone ?? null,
+        order_count: 1,
+        lifetime_value_centi: totalCenti,
+        last_order_at: when,
+        orders: [order],
+      });
+    }
+  }
+
+  const customers = Array.from(map.values());
+  for (const cust of customers) {
+    cust.orders.sort((a, b) => (customerSoDateOf(a) < customerSoDateOf(b) ? 1 : -1));
+  }
+  customers.sort((a, b) => (a.last_order_at < b.last_order_at ? 1 : -1));
+
+  return c.json({ customers });
+});
+
 /* Salesperson MTD scoreboard — feeds the mobile Profile v7 tiles
    (Orders MTD / Sales MTD). Self-scoped the same way as '/mine':
    salesperson_id === auth user id, on the caller's RLS-scoped client, so a
