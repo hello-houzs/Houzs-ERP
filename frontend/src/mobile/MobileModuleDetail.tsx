@@ -1,6 +1,8 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
+import { api } from "../api/client";
+import { useAuth } from "../auth/AuthContext";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { MODULE_CONFIGS } from "./MobileModuleList";
@@ -928,6 +930,103 @@ const SIMPLE_DOC_PATHS: Record<string, { path: string; headerKey: string }> = {
   "delivery-returns": { path: "/delivery-returns", headerKey: "deliveryReturn" },
 };
 
+// Member account actions (Team → Members). Desktop Team.tsx exposes Reset
+// password / Resend invitation in the member detail; this mirrors them 1:1 on
+// mobile (single-logic-layer rule) against the SAME endpoints — no new backend.
+// Gated on users.manage (the manage tier the desktop actions use); the endpoints
+// enforce it too, so a stray render still 403s. A pending (status "invited")
+// member gets Resend invitation (+ the returned invite link copied); an active
+// member gets Reset password (link emailed + copied).
+function MemberActions({ row, onDone }: { row: any; onDone: () => void }) {
+  const { can } = useAuth();
+  const notify = useNotify();
+  const confirm = useConfirm();
+  const [busy, setBusy] = useState<null | "reset" | "resend">(null);
+  const id = s(row?.id);
+  const email = s(row?.email);
+  const status = String(row?.status ?? "").toLowerCase();
+  if (!can("users.manage") || !id) return null;
+
+  const copyLink = async (link: string): Promise<boolean> => {
+    if (!link) return false;
+    try {
+      await navigator.clipboard.writeText(link);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const resendInvite = async () => {
+    setBusy("resend");
+    try {
+      const res = await api.post<{
+        ok: boolean;
+        invite_url?: string;
+        email_sent?: boolean;
+        email_status?: string;
+      }>(`/api/users/${id}/resend-invite`);
+      const copied = await copyLink(res.invite_url ?? "");
+      if (res.email_sent) {
+        await notify({ title: "Invitation sent", body: copied ? `Emailed to ${email} — the invite link is also copied.` : `Emailed to ${email}.` });
+      } else if (copied) {
+        await notify({ title: "Invite link copied", body: `Email not sent (${res.email_status || "check Settings, Email"}) — paste the copied link to the member.` });
+      } else {
+        await notify({ title: "Couldn't send", body: `Email not sent (${res.email_status || "check Settings, Email"}).` });
+      }
+      onDone();
+    } catch (e) {
+      await notify({ title: "Couldn't resend", body: e instanceof Error ? e.message : "Please try again." });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const resetPassword = async () => {
+    if (!(await confirm({ title: "Reset password?", body: `Send a password reset link to ${email}? Their current password keeps working until they finish the reset; active sessions are logged out.`, confirmLabel: "Send reset" }))) return;
+    setBusy("reset");
+    try {
+      const res = await api.post<{
+        ok: boolean;
+        reset_path?: string;
+        email_sent?: boolean;
+        email_status?: string;
+      }>(`/api/users/${id}/reset-password`);
+      const link = res.reset_path ? `${window.location.origin}${res.reset_path}` : "";
+      const copied = await copyLink(link);
+      if (res.email_sent) {
+        await notify({ title: "Reset link sent", body: copied ? `Emailed to ${email} — the link is also copied.` : `Emailed to ${email}.` });
+      } else if (copied) {
+        await notify({ title: "Reset link copied", body: `Email not sent (${res.email_status || "check Settings, Email"}) — paste the copied link to the member.` });
+      } else {
+        await notify({ title: "Couldn't send", body: `Email not sent (${res.email_status || "check Settings, Email"}).` });
+      }
+    } catch (e) {
+      await notify({ title: "Couldn't reset", body: e instanceof Error ? e.message : "Please try again." });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const isInvited = status === "invited";
+  return (
+    <>
+      <Eyebrow>Actions</Eyebrow>
+      <div style={{ display: "grid", gap: 8, marginBottom: 13 }}>
+        {isInvited ? (
+          <button className="btn" disabled={busy !== null} onClick={resendInvite} style={{ opacity: busy !== null ? 0.6 : 1 }}>
+            {busy === "resend" ? "Working…" : "Resend invitation"}
+          </button>
+        ) : (
+          <button className="btn" disabled={busy !== null} onClick={resetPassword} style={{ opacity: busy !== null ? 0.6 : 1 }}>
+            {busy === "reset" ? "Working…" : "Reset password"}
+          </button>
+        )}
+      </div>
+    </>
+  );
+}
+
 function SimpleDetail({ moduleKey, row, title, onBack, onEdit }: { moduleKey: string; row: any; title: string; onBack: () => void; onEdit?: () => void }) {
   // Suppliers carries a richer GET /suppliers/:id ({ supplier, bindings }).
   // Merge that over the list row when available; every other simple module just
@@ -1036,6 +1135,10 @@ function SimpleDetail({ moduleKey, row, title, onBack, onEdit }: { moduleKey: st
           <div style={{ ...cardStyle, padding: 13 }}>
             <div style={{ fontSize: 11.5, color: "#9aa093", padding: "9px 0" }}>No details to show.</div>
           </div>
+        )}
+
+        {moduleKey === "members" && (
+          <MemberActions row={effectiveRow} onDone={() => { void qc.invalidateQueries({ queryKey: ["mobile-module"] }); }} />
         )}
 
         </div>

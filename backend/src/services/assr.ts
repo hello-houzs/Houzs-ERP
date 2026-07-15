@@ -1200,6 +1200,14 @@ export interface ListAssrFilters {
    *  undefined = unrestricted (admin `*` / service_cases.manage). An empty
    *  array matches NOTHING (fail closed). */
   visible_to_user_ids?: number[];
+  /** Legacy-case reach (owner ask 2026-07): the lowercased display names of
+   *  the caller's reporting subtree (self + downline). OLD cases carry only a
+   *  free-text `sales_agent` NAME and no created_by/assigned_to id, so id-scope
+   *  alone hides them from the salesperson who owns them. When set, a case is
+   *  ALSO in scope if its `sales_agent` text (case-insensitive) CONTAINS one of
+   *  these names — additive, OR-ed with the id clause; never narrows it.
+   *  Only consulted for the scoped tier (visible_to_user_ids defined). */
+  visible_agent_names?: string[];
   /** Multi-company (CROSS-COMPANY module): the caller's ALLOWED company ids
    *  from companyContext (allowedCompanyIds(c)). When non-empty the list is
    *  widened to `c.company_id IN (...)` — never narrowed to the active pick.
@@ -1225,6 +1233,7 @@ function pushVisibilityScope(
   where: string[],
   binds: any[],
   ids: number[] | undefined,
+  agentNames?: string[],
 ): void {
   if (ids === undefined) return; // unrestricted
   if (ids.length === 0) {
@@ -1232,10 +1241,25 @@ function pushVisibilityScope(
     return;
   }
   const ph = ids.map(() => "?").join(",");
-  where.push(
-    `(c.created_by IN (${ph}) OR c.assigned_to IN (${ph}) OR c.assigned_to_2 IN (${ph}))`
-  );
+  const clauses = [
+    `c.created_by IN (${ph})`,
+    `c.assigned_to IN (${ph})`,
+    `c.assigned_to_2 IN (${ph})`,
+  ];
   binds.push(...ids, ...ids, ...ids);
+  // Legacy reach: OLD cases carry only a free-text `sales_agent` name (no id),
+  // so also admit a case whose agent name matches a subtree member's display
+  // name. Substring match (member name ⊆ agent text) mirrors My Cases so a row
+  // that shows in the list always opens in the detail. Additive — OR-ed in, and
+  // the id clauses above keep new (id-stamped) cases visible unchanged.
+  const names = (agentNames ?? [])
+    .map((n) => n.trim().toLowerCase())
+    .filter(Boolean);
+  for (const n of names) {
+    clauses.push(`LOWER(COALESCE(c.sales_agent, '')) LIKE ?`);
+    binds.push(`%${n}%`);
+  }
+  where.push(`(${clauses.join(" OR ")})`);
 }
 
 // Allow-listed sort columns. Computed aliases (stage_since,
@@ -1351,7 +1375,7 @@ export async function listAssrCases(env: Env, f: ListAssrFilters) {
       binds.push(f.to);
     }
   }
-  pushVisibilityScope(where, binds, f.visible_to_user_ids);
+  pushVisibilityScope(where, binds, f.visible_to_user_ids, f.visible_agent_names);
   pushAllowedCompanies(where, f.allowed_company_ids);
 
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
@@ -1498,7 +1522,7 @@ export async function exportAssrCases(
     const like = `%${f.search.toLowerCase()}%`;
     binds.push(like, like, like, like, like, like, like, like);
   }
-  pushVisibilityScope(where, binds, f.visible_to_user_ids);
+  pushVisibilityScope(where, binds, f.visible_to_user_ids, f.visible_agent_names);
   pushAllowedCompanies(where, f.allowed_company_ids);
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
   const rows = await env.DB.prepare(
