@@ -56,19 +56,60 @@ export type SupplierRecord = {
    buildVariantSummary in packages/shared). */
 const FABRIC_VARIANT_KEYS = ['fabricCode', 'colorCode', 'fabricColor'] as const;
 
+/* ── Shared fabric catalog cache (PERF, owner "Print PDF very slow" 2026-07-15) ─
+   Every customer/supplier PDF resolves fabric codes through the two loaders
+   below. The /fabric-tracking endpoint takes only `category` / a single-term
+   `search` ilike — it has NO code-list filter — so each loader has to pull the
+   whole catalog and filter client-side. Previously EVERY loader call refetched
+   the entire catalog: a single sofa DO print fired it TWICE (supplier + desc
+   map via Promise.all), and each reprint refetched from scratch.
+
+   This module-level cache collapses that to ONE network round per print burst:
+   an in-flight promise dedupes concurrent callers (the DO's Promise.all now
+   shares one request) and a short TTL lets back-to-back reprints reuse the
+   result. Failures are never cached, so a hiccup still falls back to '—' /
+   internal codes on the next attempt. Output is byte-identical — only the fetch
+   count changes. */
+type FabricCatalogRow = {
+  fabric_code: string;
+  supplier_code: string | null;
+  fabric_description: string | null;
+};
+
+const FABRIC_CATALOG_TTL_MS = 60_000;
+let fabricCatalogCache: { at: number; rows: FabricCatalogRow[] } | null = null;
+let fabricCatalogInflight: Promise<FabricCatalogRow[]> | null = null;
+
+async function loadFabricCatalog(): Promise<FabricCatalogRow[]> {
+  const fresh =
+    fabricCatalogCache && Date.now() - fabricCatalogCache.at < FABRIC_CATALOG_TTL_MS;
+  if (fresh) return fabricCatalogCache!.rows;
+  if (fabricCatalogInflight) return fabricCatalogInflight;
+  fabricCatalogInflight = (async () => {
+    try {
+      const res = await authedFetch<{ fabrics: FabricCatalogRow[] }>('/fabric-tracking');
+      const rows = res.fabrics ?? [];
+      fabricCatalogCache = { at: Date.now(), rows };
+      return rows;
+    } finally {
+      fabricCatalogInflight = null; // failures don't poison the cache
+    }
+  })();
+  return fabricCatalogInflight;
+}
+
 /**
  * internal fabric_code → supplier_code, via the same /fabric-tracking endpoint
  * the FabricTracking page queries. Only codes in `fabricCodes` are kept.
+ * Backed by the shared catalog cache so concurrent/repeat prints reuse one fetch.
  */
 export async function loadFabricSupplierMap(fabricCodes: string[]): Promise<Map<string, string>> {
   const wanted = new Set(fabricCodes.map((c) => c.trim()).filter(Boolean));
   if (wanted.size === 0) return new Map();
   try {
-    const res = await authedFetch<{ fabrics: Array<{ fabric_code: string; supplier_code: string | null }> }>(
-      '/fabric-tracking',
-    );
+    const rows = await loadFabricCatalog();
     const map = new Map<string, string>();
-    for (const f of res.fabrics ?? []) {
+    for (const f of rows) {
       const sup = (f.supplier_code ?? '').trim();
       if (sup && wanted.has(f.fabric_code)) map.set(f.fabric_code, sup);
     }
@@ -83,16 +124,15 @@ export async function loadFabricSupplierMap(fabricCodes: string[]): Promise<Map<
  * Used by the CUSTOMER-facing SO PDF so the printed line reads
  * "EZ-001 — Easy Clean Velvet" instead of the bare code. Fail-soft: any
  * fetch hiccup returns an empty map and the PDF prints codes as-is.
+ * Backed by the shared catalog cache so concurrent/repeat prints reuse one fetch.
  */
 export async function loadFabricDescriptionMap(fabricCodes: string[]): Promise<Map<string, string>> {
   const wanted = new Set(fabricCodes.map((c) => c.trim()).filter(Boolean));
   if (wanted.size === 0) return new Map();
   try {
-    const res = await authedFetch<{ fabrics: Array<{ fabric_code: string; fabric_description: string | null }> }>(
-      '/fabric-tracking',
-    );
+    const rows = await loadFabricCatalog();
     const map = new Map<string, string>();
-    for (const f of res.fabrics ?? []) {
+    for (const f of rows) {
       const desc = (f.fabric_description ?? '').trim();
       if (desc && wanted.has(f.fabric_code)) map.set(f.fabric_code, desc);
     }

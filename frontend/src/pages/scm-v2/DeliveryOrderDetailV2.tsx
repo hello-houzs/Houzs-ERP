@@ -55,6 +55,7 @@ import {
 } from "../../vendor/scm/lib/delivery-order-queries";
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
 import { useStaffLookup } from "../../hooks/useStaffLookup";
+import { useNotify } from "../../vendor/scm/components/NotifyDialog";
 import {
   DocumentRelationshipMapModal,
   ModalOverlay,
@@ -653,6 +654,7 @@ export function DeliveryOrderDetailV2() {
   const detail = useMfgDeliveryOrderDetail(id ?? null);
   const updateStatus = useUpdateMfgDeliveryOrderStatus();
   const { nameOf: salespersonNameOf } = useStaffLookup();
+  const notify = useNotify();
 
   const deliveryOrder =
     (detail.data as { deliveryOrder?: DoHeader } | undefined)?.deliveryOrder ??
@@ -753,9 +755,23 @@ export function DeliveryOrderDetailV2() {
     deliveryOrder &&
     navigate(`/scm/sales-invoices/from-do?do=${deliveryOrder.id}`);
 
+  // Render + download the DO PDF via the SAME generator the list's Export PDF
+  // and the V1 detail page use (jspdf, client-side). The old `?print=1`
+  // navigation was dead — nothing consumed that param — so the button did
+  // nothing. Reuse the shared helper instead of re-implementing.
   const doDownloadPdf = () => {
     closeModal();
-    id && navigate(`/scm/delivery-orders/${id}?print=1`);
+    import("../../vendor/scm/lib/delivery-order-pdf")
+      .then(({ generateDeliveryOrderPdf }) =>
+        generateDeliveryOrderPdf(deliveryOrder as never, items as never)
+      )
+      .catch((e) =>
+        notify({
+          title: "PDF generation failed",
+          body: e instanceof Error ? e.message : String(e),
+          tone: "error",
+        })
+      );
   };
   const doPrintNow = () => {
     window.print();
