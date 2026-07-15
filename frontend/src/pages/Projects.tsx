@@ -8468,9 +8468,11 @@ function PhaseCrewEditor({
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         {lorries.map((lorry, li) => (
           <div key={li} className="space-y-1 rounded-lg border border-border bg-bg/30 p-2.5">
-            <div className="flex items-center gap-2">
-              <Truck size={13} className="shrink-0 text-ink-secondary" />
-              <span className="shrink-0 text-[10px] font-bold uppercase tracking-wider text-ink-secondary">Lorry {li + 1}</span>
+            {/* Same icon size / gap / fixed label width as CrewSlotRow so the
+                LORRY label and its select column-align with the crew rows. */}
+            <div className="flex items-center gap-1">
+              <Truck size={12} className="shrink-0 text-ink-secondary" />
+              <span className="w-11 shrink-0 text-[9px] font-bold uppercase tracking-wider text-ink-secondary">Lorry {li + 1}</span>
               <select
                 value={lorry.plate}
                 onChange={(e) => updateLorry(li, { plate: e.target.value })}
