@@ -55,6 +55,37 @@ export async function subtreeUserIds(
 }
 
 /**
+ * The lowercased, trimmed display NAMES of the caller's reporting subtree
+ * (self + full manager_id downline). Used to reach LEGACY service cases that
+ * carry only a free-text `sales_agent` NAME (mirrored from AutoCount) and no
+ * created_by / assigned_to id linkage: matching that text against these names
+ * lets the salesperson — and, per the pyramid rule, everyone above them — see
+ * their own old cases without any data backfill. Empty names are dropped;
+ * result is de-duplicated. Reuses subtreeUserIds so the id-scope and the
+ * name-scope can never resolve to different people.
+ */
+export async function subtreeAgentNames(
+  env: Env,
+  rootUserId: number,
+  maxDepth: number = MAX_CHAIN_DEPTH,
+): Promise<string[]> {
+  const ids = await subtreeUserIds(env, rootUserId, maxDepth);
+  if (ids.length === 0) return [];
+  const placeholders = ids.map(() => "?").join(",");
+  const rows = await env.DB.prepare(
+    `SELECT name FROM users WHERE id IN (${placeholders})`,
+  )
+    .bind(...ids)
+    .all<{ name: string | null }>();
+  const names = new Set<string>();
+  for (const r of rows.results ?? []) {
+    const n = (r.name ?? "").trim().toLowerCase();
+    if (n) names.add(n);
+  }
+  return [...names];
+}
+
+/**
  * Restrict `project_sales_reports` rows to the ones a non-director sales user
  * may see: their OWN sale-amount entries plus their downline's (owner spec
  * 2026-07). Rep identity on a sales-report row is `uploaded_by` — the users.id

@@ -34,7 +34,7 @@ import {
   allowedCompaniesSql,
 } from "../scm/lib/companyScope";
 import { hasPermission } from "../services/permissions";
-import { subtreeUserIds } from "../services/orgScope";
+import { subtreeUserIds, subtreeAgentNames } from "../services/orgScope";
 import { isSalesUser, isDirectorUser } from "../services/pmsAccess";
 import type { AuthUser } from "../services/auth";
 import type { MiddlewareHandler } from "hono";
@@ -89,30 +89,47 @@ function requireServiceCaseAccess(
 
 // ── Row-level visibility (owner spec 2026-07) ─────────────────
 // Full view = `*` wildcard (Owner / IT Admin) or `service_cases.manage`
-// (the existing admin-tier ASSR key — no new permission invented).
-// Everyone else sees only cases they CREATED or are ASSIGNED TO, plus
-// the same for every user under them in the users.manager_id reporting
-// chain (full depth — services/orgScope.ts). Returns undefined for the
-// unrestricted tier, or the allow-listed user ids otherwise.
+// (the existing admin-tier ASSR key — no new permission invented), OR a
+// director by STABLE ORG FIELD (Owner/IT `*`, Super Admin, Sales Director,
+// Finance Manager) — owner rule "Director sees ALL". Everyone else sees only
+// cases they CREATED or are ASSIGNED TO (plus their users.manager_id downline,
+// full depth — services/orgScope.ts), AND legacy cases whose free-text
+// sales_agent matches a downline member's name (assrVisibleAgentNames).
+//
+// This tier predicate is shared by the id-scope and the agent-name-scope
+// resolvers so the two can never disagree on who is unrestricted.
+function assrUnrestricted(user: AuthUser | undefined): boolean {
+  const granted = user?.permissions_set ?? user?.permissions ?? [];
+  return (
+    hasPermission(granted, "*") ||
+    hasPermission(granted, "service_cases.manage") ||
+    isDirectorUser(user)
+  );
+}
+
 async function assrVisibleUserIds(c: {
   get(key: "user"): unknown;
   env: Env;
 }): Promise<number[] | undefined> {
   const user = c.get("user") as AuthUser | undefined;
-  const granted = user?.permissions_set ?? user?.permissions ?? [];
-  // Full-view tier: `*` / service_cases.manage (existing admin key), OR a
-  // director by STABLE ORG FIELD (Owner/IT `*`, Super Admin, Sales Director,
-  // Finance Manager) — owner rule "Director sees ALL". Additive: this only ever
-  // GRANTS the unrestricted tier, never removes an existing pass condition.
-  if (
-    hasPermission(granted, "*") ||
-    hasPermission(granted, "service_cases.manage") ||
-    isDirectorUser(user)
-  ) {
-    return undefined; // unrestricted
-  }
+  if (assrUnrestricted(user)) return undefined; // unrestricted
   if (user?.id == null) return []; // fail closed, never open
   return subtreeUserIds(c.env, Number(user.id));
+}
+
+// Companion to assrVisibleUserIds for the LEGACY free-text `sales_agent` field:
+// the display names of the caller's reporting subtree. OLD cases predate the
+// created_by/assigned_to id linkage, so a scoped salesperson (and their upline)
+// reach their own old cases only by name. undefined = unrestricted (same tier
+// as the id resolver); [] = no resolvable identity (fail closed).
+async function assrVisibleAgentNames(c: {
+  get(key: "user"): unknown;
+  env: Env;
+}): Promise<string[] | undefined> {
+  const user = c.get("user") as AuthUser | undefined;
+  if (assrUnrestricted(user)) return undefined; // unrestricted
+  if (user?.id == null) return []; // fail closed, never open
+  return subtreeAgentNames(c.env, Number(user.id));
 }
 
 /**
@@ -133,21 +150,30 @@ async function caseInCallerScope(
   const visibleIds = await assrVisibleUserIds(c);
   if (visibleIds === undefined) return true; // unrestricted tier
   const row = await c.env.DB.prepare(
-    `SELECT created_by, assigned_to, assigned_to_2 FROM assr_cases WHERE id = ?`,
+    `SELECT created_by, assigned_to, assigned_to_2, sales_agent FROM assr_cases WHERE id = ?`,
   )
     .bind(caseId)
-    .first<{ created_by: number | null; assigned_to: number | null; assigned_to_2: number | null }>();
+    .first<{ created_by: number | null; assigned_to: number | null; assigned_to_2: number | null; sales_agent: string | null }>();
   if (!row) return false;
   const createdBy = Number(row.created_by ?? NaN);
   const assignedTo = Number(row.assigned_to ?? NaN);
   // Co-assignee (assigned_to_2) — the LIST includes it (services/assr.ts), so a
   // co-assignee who sees the case in their list must be able to OPEN it too.
   const assignedTo2 = Number(row.assigned_to_2 ?? NaN);
-  return (
+  if (
     (Number.isFinite(createdBy) && visibleIds.includes(createdBy)) ||
     (Number.isFinite(assignedTo) && visibleIds.includes(assignedTo)) ||
     (Number.isFinite(assignedTo2) && visibleIds.includes(assignedTo2))
-  );
+  ) {
+    return true;
+  }
+  // Legacy agent-name reach — same additive rule as the list scope: a case
+  // whose free-text sales_agent matches a subtree member's name is openable.
+  const agent = (row.sales_agent ?? "").trim().toLowerCase();
+  if (!agent) return false;
+  const names = await assrVisibleAgentNames(c);
+  if (names === undefined) return true;
+  return names.some((n) => agent.includes(n));
 }
 
 // ── Module-level settings (default assignees) ─────────────────
@@ -642,8 +668,10 @@ function stripCreditorFields(row: Record<string, any> | null | undefined): void 
 app.get("/", requireServiceCaseAccess(), async (c) => {
   const assignedToParam = c.req.query("assigned_to");
   const visibleIds = await assrVisibleUserIds(c);
+  const visibleAgentNames = await assrVisibleAgentNames(c);
   const result = await listAssrCases(c.env, {
     visible_to_user_ids: visibleIds,
+    visible_agent_names: visibleAgentNames,
     allowed_company_ids: allowedCompanyIds(c),
     stage: c.req.query("stage"),
     status: c.req.query("status"),
@@ -910,8 +938,10 @@ app.post("/bulk/assign", requirePermission("service_cases.manage"), async (c) =>
 
 app.get("/export.csv", requireServiceCaseAccess(), async (c) => {
   const csvVisibleIds = await assrVisibleUserIds(c);
+  const csvVisibleAgentNames = await assrVisibleAgentNames(c);
   const rows = await exportAssrCases(c.env, {
     visible_to_user_ids: csvVisibleIds,
+    visible_agent_names: csvVisibleAgentNames,
     allowed_company_ids: allowedCompanyIds(c),
     stage: c.req.query("stage"),
     status: c.req.query("status"),
@@ -1091,10 +1121,12 @@ app.post("/resync-so/:docNo", requirePermission("service_cases.write"), async (c
 });
 
 // ── My Cases (sales-side portal) ──────────────────────────────
-// Lists cases where the logged-in user's name substring-matches
-// assr_cases.sales_agent. sales_agent is a free text field
-// mirrored from AutoCount (mig 010), typically the rep's name;
-// this endpoint bridges it to our user account.
+// Lists cases where assr_cases.sales_agent (free text mirrored from
+// AutoCount, mig 010 — typically the rep's name) substring-matches a
+// name in the caller's reporting subtree: their OWN name plus every
+// downline member's (pyramid rule — a manager sees their reps' cases).
+// This bridges the legacy text field to our user accounts without any
+// data backfill.
 app.get("/my-cases", requireServiceCaseAccess(), async (c) => {
   const userId = (c as any).get?.("userId") ?? 0;
   if (!userId) return c.json({ cases: [] });
@@ -1103,21 +1135,28 @@ app.get("/my-cases", requireServiceCaseAccess(), async (c) => {
   )
     .bind(userId)
     .first<{ name: string | null }>();
-  const name = (userRow?.name || "").trim();
-  if (!name) return c.json({ cases: [] });
+  const ownName = (userRow?.name || "").trim();
+  // Self + downline display names (lowercased). subtreeAgentNames always
+  // includes the caller's own name, so a rep with no reports matches exactly
+  // as before — the downline names are purely additive.
+  const names = await subtreeAgentNames(c.env, Number(userId));
+  if (names.length === 0) return c.json({ cases: [], user_name: ownName });
+  const likeClauses = names
+    .map(() => `LOWER(COALESCE(sales_agent, '')) LIKE ?`)
+    .join(" OR ");
   const rows = await c.env.DB.prepare(
     `SELECT id, assr_no, stage, status, priority, doc_no,
             customer_name, phone, complained_date, deadline_at,
             complaint_issue, item_code, sales_agent
        FROM assr_cases
-      WHERE LOWER(COALESCE(sales_agent, '')) LIKE ?
+      WHERE (${likeClauses})
         AND archived_at IS NULL${allowedCompaniesSql(c)}
       ORDER BY complained_date DESC, id DESC
       LIMIT 200`
   )
-    .bind(`%${name.toLowerCase()}%`)
+    .bind(...names.map((n) => `%${n}%`))
     .all();
-  return c.json({ cases: rows.results ?? [], user_name: name });
+  return c.json({ cases: rows.results ?? [], user_name: ownName });
 });
 
 // ── Sales comment ─────────────────────────────────────────────
@@ -1222,10 +1261,21 @@ app.get("/:id{[0-9]+}", requireServiceCaseAccess(), async (c) => {
     // Co-assignee (assigned_to_2) — the LIST scopes on it too (services/assr.ts),
     // so a co-assignee who sees the case in their list must be able to open it.
     const assignedTo2 = Number((row as any).assignedTo2 ?? (row as any).assigned_to_2 ?? NaN);
-    const inScope =
+    let inScope =
       (Number.isFinite(createdBy) && visibleIds.includes(createdBy)) ||
       (Number.isFinite(assignedTo) && visibleIds.includes(assignedTo)) ||
       (Number.isFinite(assignedTo2) && visibleIds.includes(assignedTo2));
+    if (!inScope) {
+      // Legacy agent-name reach — mirrors the list scope so an old case that
+      // shows in the salesperson's list (matched on sales_agent) also opens.
+      const agent = String((row as any).salesAgent ?? (row as any).sales_agent ?? "")
+        .trim()
+        .toLowerCase();
+      if (agent) {
+        const names = await assrVisibleAgentNames(c);
+        inScope = names === undefined || names.some((n) => agent.includes(n));
+      }
+    }
     if (!inScope) return c.json({ error: "Not found" }, 404);
   }
   /* Supplier identity is office + supplier-portal only — see
