@@ -39,6 +39,9 @@ import {
   useMfgDeliveryOrderDetail,
   useUpdateMfgDeliveryOrderStatus,
 } from "../../vendor/scm/lib/delivery-order-queries";
+import { authedFetch } from "../../vendor/scm/lib/authed-fetch";
+import { useNotify } from "../../vendor/scm/components/NotifyDialog";
+import { useChoice } from "../../vendor/scm/components/ChoiceDialog";
 import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "../../lib/utils";
 
@@ -678,6 +681,8 @@ export function MfgDeliveryOrdersListV2() {
   const [params, setParams] = useSearchParams();
   const queryClient = useQueryClient();
   const { nameOf: salespersonNameOf } = useStaffLookup();
+  const notify = useNotify();
+  const askChoice = useChoice();
 
   const status = (params.get("status") ?? "all") as StatusTab;
   const view = (params.get("view") ?? "table") as "table" | "cards";
@@ -689,6 +694,12 @@ export function MfgDeliveryOrdersListV2() {
   const pageSize = 50;
 
   const [selected, setSelected] = useState<DoRow | null>(null);
+  // Multi-select for batch PDF export. The Set owns the ticked DO ids; the
+  // DataTable `selection` prop below drives the leading checkbox column and a
+  // bulk-action bar renders once ≥1 row is ticked. `exporting` guards the
+  // Export button against double-clicks while PDFs generate.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [exporting, setExporting] = useState(false);
   const [sort, setSort] = useState<string | undefined>(undefined);
   const [debouncedSearch, setDebouncedSearch] = useState(search);
   useEffect(() => {
@@ -796,6 +807,68 @@ export function MfgDeliveryOrdersListV2() {
     );
   const doConvertToSi = (r: DoRow) =>
     navigate(`/scm/sales-invoices/from-do?do=${r.id}`);
+
+  // ─── Batch PDF export (ported from MfgDeliveryOrdersList) ─────────────────
+  // One DO's full detail for the PDF generator. Reads via the vendored
+  // authedFetch (→ /api/scm); same endpoint + shape as the single-row path.
+  const fetchDoBundle = async (
+    row: DoRow
+  ): Promise<{ header: unknown; items: unknown[] }> => {
+    const json = await authedFetch<{ deliveryOrder: unknown; items: unknown[] }>(
+      `/delivery-orders-mfg/${row.id}`
+    );
+    return { header: json.deliveryOrder, items: json.items };
+  };
+
+  const clearSelection = () => setSelectedIds(new Set());
+
+  // Batch "Export PDF" — one ticked DO downloads straight; several prompt
+  // "One combined PDF" vs "Separate files", then fetch each bundle and render
+  // into one merged file or one file per DO. Combined filename is date-stamped.
+  const exportSelectedDos = async () => {
+    if (exporting) return;
+    const chosen = rows.filter((r) => selectedIds.has(r.id));
+    if (chosen.length === 0) return;
+    try {
+      const { generateDeliveryOrderPdf, generateCombinedDeliveryOrderPdf } =
+        await import("../../vendor/scm/lib/delivery-order-pdf");
+      if (chosen.length === 1) {
+        setExporting(true);
+        const bundle = await fetchDoBundle(chosen[0]!);
+        await generateDeliveryOrderPdf(bundle.header as never, bundle.items as never);
+        clearSelection();
+        return;
+      }
+      const how = await askChoice({
+        title: `Download ${chosen.length} delivery orders`,
+        options: [
+          { value: "one", label: "One combined PDF" },
+          { value: "many", label: "Separate files", detail: "One PDF per document" },
+        ],
+      });
+      if (how == null) return;
+      setExporting(true);
+      const bundles: Array<{ header: unknown; items: unknown[] }> = [];
+      for (const r of chosen) bundles.push(await fetchDoBundle(r));
+      if (how === "one") {
+        await generateCombinedDeliveryOrderPdf(bundles as never, {
+          fileName: `delivery-orders-${new Date().toISOString().slice(0, 10)}.pdf`,
+        });
+      } else {
+        for (const b of bundles)
+          await generateDeliveryOrderPdf(b.header as never, b.items as never);
+      }
+      clearSelection();
+    } catch (e) {
+      notify({
+        title: "PDF generation failed",
+        body: e instanceof Error ? e.message : String(e),
+        tone: "error",
+      });
+    } finally {
+      setExporting(false);
+    }
+  };
 
   // Table columns
   const columns: Column<DoRow>[] = [
@@ -1047,6 +1120,37 @@ export function MfgDeliveryOrdersListV2() {
       <div className="hidden md:block">
         {view === "table" ? (
           <>
+            {/* Bulk-action bar — appears once ≥1 row is ticked. Mirrors the
+                DeliveryPlanning "Convert N to DO" bar's look/placement (count
+                on the left, primary action + Clear on the right), rendered in
+                Theme C Tailwind instead of the vendored CSS module. */}
+            {selectedIds.size > 0 && (
+              <div className="mb-3 flex items-center gap-3 rounded-lg border border-primary/40 bg-primary-soft px-4 py-2.5 shadow-stone">
+                <span className="text-[13px] font-semibold text-ink">
+                  {selectedIds.size} selected
+                </span>
+                <span className="text-ink-muted">·</span>
+                <span className="text-[12px] text-ink-secondary">
+                  Combine into one PDF or download separately.
+                </span>
+                <div className="flex-1" />
+                <Button
+                  variant="primary"
+                  icon={<Printer size={14} />}
+                  disabled={exporting}
+                  onClick={() => void exportSelectedDos()}
+                >
+                  {exporting ? "Exporting…" : "Export PDF"}
+                </Button>
+                <Button
+                  variant="ghost"
+                  disabled={exporting}
+                  onClick={clearSelection}
+                >
+                  Clear
+                </Button>
+              </div>
+            )}
             <DataTable<DoRow>
               tableId="delivery-orders-v2"
               rows={rows}
@@ -1055,6 +1159,23 @@ export function MfgDeliveryOrdersListV2() {
               columns={columns}
               getRowKey={(r) => r.id}
               onRowClick={(r) => setSelected(r)}
+              selection={{
+                selectedIds,
+                onToggle: (id) =>
+                  setSelectedIds((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(id)) next.delete(id);
+                    else next.add(id);
+                    return next;
+                  }),
+                onToggleAll: (keys, allSelected) =>
+                  setSelectedIds((prev) => {
+                    const next = new Set(prev);
+                    if (allSelected) for (const k of keys) next.delete(k);
+                    else for (const k of keys) next.add(k);
+                    return next;
+                  }),
+              }}
               exportName="delivery-orders"
               serverSort
               onSortChange={setSortAndReset}
