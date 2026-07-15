@@ -8,6 +8,12 @@ Severity tags: 🔴 critical/high · 🟠 medium · 🟢 low.
 
 ## 2026-07-15
 
+### 🟠 Sales Invoice line items showed no variants; DO detail lacked a Recent-activity card (job-card unification)
+- **Symptom:** The Sales Invoice detail line items showed only code + description with NO variant summary (fabric/gaps/divan/leg/seat/specials), inconsistent with SO/DO; and the DO detail aside lacked the Recent-activity card the SO/SI have. Owner asked for DO/SI/Amendment job cards to follow the SO template.
+- **Root cause:** The V2 detail rewrites diverged from the SO template. `SalesInvoiceDetailV2` rendered its existing line-items section without the variant chips (the `variants` field was in the payload but never rendered). `DeliveryOrderDetailV2` had no Recent-activity aside.
+- **Fix:** SI line render now shows variant chips (VariantChip/variantsOf copied verbatim from DeliveryOrderDetailV2); DO gained a Recent-activity AsideCard (ActivityRow copied from SalesOrderDetailV2, built from already-loaded status/origin data — no new fetch). Both variant/activity data already in the payloads. Amendment job card is a separate change.
+- **Ref:** `fix/si-do-variant-jobcard`, 2026-07-15.
+
 ### 🟠 Setup & Dismantle (crew editor + documents) still visible/fetched for non-director Sales, including the project's own PIC
 - **Symptom:** Owner rule 2026-07-15 — the project "Setup & Dismantle" section (both the logistics crew-per-lorry editor AND the "SETUP & DISMANTLE DOCUMENTS" checklist rows) must be COMPLETELY HIDDEN from every non-director Sales user, even the project's own Sales PIC. It was previously only read-only for Sales (the crew editor rendered disabled and still fetched `/api/fleet/staff` + `/api/scm/lorries`, and the document checklist rows + crew JSON still shipped in the detail payload).
 - **Root cause:** PMS section gating (`SECTIONS_BY_ROLE` in `backend/src/services/pmsAccess.ts`) kept `SETUP_DISMANTLE` on the SALES + PIC roles, and there was no `canSetupDismantle` flag or server-side data strip for it — unlike finance / payment / WF_SENSITIVE which are both flag-gated AND stripped on the wire. The desktop crew editor was gated only on `fullAccess` (true for a PIC) and the "SETUP & DISMANTLE DOCUMENTS" checklist rows flowed through untouched; mobile rendered `<SetupDismantle>` unconditionally.
