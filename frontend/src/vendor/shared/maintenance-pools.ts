@@ -66,6 +66,36 @@ export const maintPickerValues = (
   return vals;
 };
 
+/** Per-Model allowed_options restriction (owner 2026-07-15 "options must follow
+ *  the maintenance config, not a backdoor"). Both take an already-active option
+ *  list (global maintenance pool, inactive rows already dropped) and intersect
+ *  it with the SKU's Model `allowed_options` pool for that axis:
+ *    • pool EMPTY / absent  → no restriction (offer every active option) — the
+ *      same opt-out semantics the server allowed-options gate uses.
+ *    • pool NON-EMPTY       → keep only the values the Model permits.
+ *  These are the SINGLE source for the restrict step every variant editor
+ *  (SoLineCard, MobileNewSO, PoLineCard, PcVariantEditor) shares — no editor
+ *  may inline its own copy again. Pass the line's current value as `keep` so a
+ *  saved value the Model no longer permits stays VISIBLE in the dropdown (never
+ *  silently dropped on an edit form) while new picks are pool-only. */
+export const restrictPricedToPool = <T extends { value: string }>(
+  opts: readonly T[],
+  pool?: readonly string[] | null,
+  keep?: string | null,
+): T[] =>
+  Array.isArray(pool) && pool.length > 0
+    ? opts.filter((o) => pool.includes(o.value) || (!!keep && o.value === keep))
+    : [...opts];
+
+export const restrictStringsToPool = (
+  opts: readonly string[],
+  pool?: readonly string[] | null,
+  keep?: string | null,
+): string[] =>
+  Array.isArray(pool) && pool.length > 0
+    ? opts.filter((o) => pool.includes(o) || (!!keep && o === keep))
+    : [...opts];
+
 /** Editor helper — rewrite an entry's value, preserving its active flag. */
 export const maintEntryWithValue = (e: MaintPoolEntry, value: string): MaintPoolEntry =>
   typeof e === 'string' ? value : { ...e, value };

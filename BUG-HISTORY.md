@@ -8,6 +8,12 @@ Severity tags: 🔴 critical/high · 🟠 medium · 🟢 low.
 
 ## 2026-07-15
 
+### 🟠 Variant selectors offered options a SKU's Model disallowed (e.g. 8" leg) on PO/consignment editors
+- **Symptom:** A bedframe LEG dropdown offered 8" even when that SKU shouldn't have it. Owner rule: variant options must follow the maintenance config everywhere, no backdoor.
+- **Root cause:** Options are NOT hardcoded — every editor reads the maintenance-config global pools (`useMaintenanceConfig`), filtered by the `active` flag. The finer per-SKU-Model gate (`product_models.allowed_options`, hook `useModelAllowedOptionsByCode`) was applied by `SoLineCard` (SO/DO/DR) + `MobileNewSO`, but NOT by `PoLineCard` (PO/PI edit) or `PcVariantEditor` (purchase-consignment) — so those offered Model-disallowed options.
+- **Fix:** Added `restrictPricedToPool`/`restrictStringsToPool` to `vendor/shared/maintenance-pools.ts` (intersect active options with the Model pool; empty pool = no restriction, matching the server; `keep` retains the line's saved value so an edit never silently drops a stale value). Wired `useModelAllowedOptionsByCode` into `PoLineCard` + `PcVariantEditor` (gap/divan/leg/seat/sofa-leg), threading `itemCode` from the 5 PC call sites. NOTE: deactivating an option in Products→Maintenance already removes it from ALL sites (they honor the `active` flag) — that's the immediate lever for the 8" leg. Inline (page-level `.map`) editors on PO-New/PI-New/GRN-New still can't apply the per-Model gate (rules-of-hooks) but honor the active flag.
+- **Ref:** `fix/variants-config-clean`, 2026-07-15.
+
 ### 🟠 Mobile Team screens 403'd for a Sales Director (positions/roles); member cards lacked upline
 - **Symptom:** On the mobile app a Sales Director hit 403 on `GET /api/positions` and `GET /api/roles` ("Couldn't load positions"), and member cards showed no Reports-to. (Org Chart + Inbox looked empty but were not bugs.)
 - **Root cause:** The Sales Director department-scoped Team-admin grant (`requirePermissionOrSalesDirector`) was wired onto `/api/users` + `/api/departments` but NOT `/api/positions` (plain `users.read`) or `/api/roles` (plain `roles.read`) — permissions a Sales Director doesn't hold. Desktop hides the Positions tab from a Sales Director so it never fired; mobile's coarse `allowed("/team")` surfaced the Positions row, whose fetch 403'd.
