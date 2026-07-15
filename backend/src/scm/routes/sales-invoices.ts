@@ -368,7 +368,7 @@ salesInvoices.get('/:id', async (c) => {
      Critical now that a scoped salesperson can open their own invoices
      (readInheritsFrom scm.sales.orders): they see the customer-facing invoice
      but never cost or margin. */
-  const items = (i.data ?? []) as Array<Record<string, unknown>>;
+  const items = (i.data ?? []) as unknown as Array<Record<string, unknown>>;
   if (!canViewScmFinance(c)) {
     gateSiFinance([h.data], false);
     for (const it of items) {
