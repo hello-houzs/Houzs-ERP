@@ -1349,6 +1349,7 @@ function TaskRow({
 }) {
   const fileRef = useRef<HTMLInputElement | null>(null);
   const { user } = useAuth();
+  const confirm = useConfirm();
   // Attachment viewer — every user (incl. read-only drivers) can open the
   // task's files fullscreen; MediaLightbox fetches with the bearer token,
   // so this also sidesteps mobile popup-blockers that ate window.open.
@@ -1445,25 +1446,52 @@ function TaskRow({
     }
   };
 
+  const removeAttachment = async (attId: number, name: string | null | undefined) => {
+    if (!(await confirm({ title: `Remove ${name || "this file"}?`, confirmLabel: "Remove", danger: true }))) return;
+    setBusy(true);
+    try {
+      await api.del(`/api/projects/checklist/attachments/${attId}`);
+      reload();
+    } catch (e) {
+      await notify({ title: "Remove failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   // Tappable file chips + fullscreen viewer, shared by both row variants.
   const fileChips = files.length > 0 && (
     <div style={{ display: "flex", flexWrap: "wrap", gap: 6, padding: "0 0 8px 24px" }}>
       {files.map((a, i) => (
-        <button
-          key={a.id}
-          type="button"
-          className="tinybtn"
-          style={{ display: "inline-flex", alignItems: "center", gap: 5, maxWidth: 190 }}
-          onClick={() => setViewIdx(i)}
-          title={a.file_name ?? undefined}
-        >
-          {(a.mime_type || "").startsWith("image/") ? (
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flex: "none" }}><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="9" cy="9" r="2" /><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21" /></svg>
-          ) : (
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flex: "none" }}><path d="M13.2 6.5 7 12.7a4.4 4.4 0 1 0 6.2 6.2l6.5-6.5a2.9 2.9 0 1 0-4.1-4.1l-6.5 6.5a1.5 1.5 0 1 0 2.1 2.1l6.1-6.2" /></svg>
+        <span key={a.id} style={{ display: "inline-flex", alignItems: "stretch", maxWidth: 210 }}>
+          <button
+            type="button"
+            className="tinybtn"
+            style={{ display: "inline-flex", alignItems: "center", gap: 5, minWidth: 0, maxWidth: 190, ...(canAttach ? { borderTopRightRadius: 0, borderBottomRightRadius: 0, borderRight: "none" } : null) }}
+            onClick={() => setViewIdx(i)}
+            title={a.file_name ?? undefined}
+          >
+            {(a.mime_type || "").startsWith("image/") ? (
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flex: "none" }}><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="9" cy="9" r="2" /><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21" /></svg>
+            ) : (
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flex: "none" }}><path d="M13.2 6.5 7 12.7a4.4 4.4 0 1 0 6.2 6.2l6.5-6.5a2.9 2.9 0 1 0-4.1-4.1l-6.5 6.5a1.5 1.5 0 1 0 2.1 2.1l6.1-6.2" /></svg>
+            )}
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.file_name || "File"}</span>
+          </button>
+          {canAttach && (
+            <button
+              type="button"
+              className="tinybtn"
+              disabled={busy}
+              style={{ flex: "none", padding: "0 7px", borderTopLeftRadius: 0, borderBottomLeftRadius: 0, color: "#a13a34", display: "inline-flex", alignItems: "center" }}
+              onClick={() => void removeAttachment(a.id, a.file_name)}
+              title="Remove file"
+              aria-label="Remove file"
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18M6 6l12 12" /></svg>
+            </button>
           )}
-          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.file_name || "File"}</span>
-        </button>
+        </span>
       ))}
     </div>
   );
@@ -1543,7 +1571,7 @@ function TaskRow({
       {canAttach && (
         <>
           <input ref={fileRef} type="file" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void upload(f); }} />
-          <button className="tinybtn" disabled={busy} onClick={() => fileRef.current?.click()} title={attachments.length ? `${attachments.length} file(s)` : "Attach"}>
+          <button className="tinybtn" style={{ minWidth: 76, display: "inline-flex", alignItems: "center", justifyContent: "center", boxSizing: "border-box" }} disabled={busy} onClick={() => fileRef.current?.click()} title={attachments.length ? `${attachments.length} file(s)` : "Attach"}>
             {attachments.length ? `Attach (${attachments.length})` : "Attach"}
           </button>
         </>
