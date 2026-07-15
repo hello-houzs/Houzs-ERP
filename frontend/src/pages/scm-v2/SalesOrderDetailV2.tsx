@@ -55,6 +55,10 @@ import {
 import { cn } from "../../lib/utils";
 import { useAuth } from "../../auth/AuthContext";
 import { buildVariantSummary } from "@2990s/shared";
+import {
+  isLocked as isSoLocked,
+  amendmentEligible as soAmendmentEligible,
+} from "../../vendor/scm/lib/so-detail-gates";
 
 // ─── Row types (subset — see MfgSalesOrdersList.tsx for the full SoRow) ────
 
@@ -88,6 +92,17 @@ type SoHeader = {
   building_type: string | null;
   venue: string | null;
   processing_date: string | null;
+  // The real processing-date column the lock reads (PR #140 label rename); the
+  // detail payload returns it alongside the legacy processing_date snapshot.
+  internal_expected_dd?: string | null;
+  proceeded_at?: string | null;
+  // Server-derived SO-lock / amendment flags (see the /:docNo detail handler).
+  // has_children = a non-cancelled DO/SI references this SO (hard lock);
+  // amendment_eligible = processing-locked but still amendable; has_open_amendment
+  // = an in-flight amendment already exists.
+  has_children?: boolean | null;
+  amendment_eligible?: boolean | null;
+  has_open_amendment?: boolean | null;
   customer_delivery_date: string | null;
   note: string | null;
   currency: string;
@@ -632,10 +647,30 @@ function SalesOrderDetailV2ReadOnly() {
     [items]
   );
 
+  // ── SO lock / amendment gating (shared with the full editor + mobile) ────
+  // A proceeded SO whose processing day has passed is locked: line/field edits
+  // must go through the SO Amendment workflow, not a direct edit. Reflect that
+  // on the PRIMARY Edit affordance here so the button routes to the amendment
+  // flow (or is disabled when the SO is hard-locked by a downstream DO/SI)
+  // instead of always presenting a plain "Edit" that opens editable fields.
+  const hardLocked = salesOrder
+    ? isSoLocked(salesOrder.status, Boolean(salesOrder.has_children))
+    : false;
+  const canAmend = salesOrder ? soAmendmentEligible(salesOrder, hardLocked) : false;
+  const hasOpenAmend = Boolean(salesOrder?.has_open_amendment);
+  const editLabel = canAmend
+    ? hasOpenAmend
+      ? "View amendment"
+      : "Submit SO Amendment"
+    : "Edit";
+
   const goBack = () => {
     if (params.get("from") === "list") navigate("/scm/sales-orders");
     else navigate(-1);
   };
+  // Edit always forwards to the full editor (?edit=1). When the SO is
+  // amendment-eligible the editor opens in amendment mode (Save submits an
+  // amendment request); when hard-locked the button is disabled here.
   const goEdit = () => docNo && navigate(`/scm/sales-orders/${docNo}?edit=1`);
   const doCancel = () => {
     if (!salesOrder) return;
@@ -983,8 +1018,16 @@ function SalesOrderDetailV2ReadOnly() {
               variant="primary"
               icon={<Edit3 size={14} />}
               onClick={goEdit}
+              disabled={hardLocked}
+              title={
+                hardLocked
+                  ? "This order is locked — it already has a downstream Delivery Order / Sales Invoice."
+                  : canAmend
+                    ? "This order is processing-locked — changes go through the SO Amendment workflow."
+                    : undefined
+              }
             >
-              Edit
+              {editLabel}
             </Button>
           </div>
         </div>
@@ -1330,9 +1373,10 @@ function SalesOrderDetailV2ReadOnly() {
           <button
             type="button"
             onClick={goEdit}
-            className="inline-flex h-11 flex-1 items-center justify-center gap-1.5 rounded-lg bg-primary text-[13.5px] font-bold text-white shadow-sm hover:bg-primary-ink"
+            disabled={hardLocked}
+            className="inline-flex h-11 flex-1 items-center justify-center gap-1.5 rounded-lg bg-primary text-[13.5px] font-bold text-white shadow-sm hover:bg-primary-ink disabled:opacity-40"
           >
-            <Edit3 size={16} /> Edit
+            <Edit3 size={16} /> {editLabel}
           </button>
           <button
             type="button"

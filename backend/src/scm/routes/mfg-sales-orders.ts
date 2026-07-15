@@ -174,14 +174,9 @@ const SO_PROCESSING_LOCKED_RESPONSE = {
 } as const;
 
 function soProcessingLocked(
-  header: { internal_expected_dd?: string | null; processing_date?: string | null; proceeded_at?: string | null } | null | undefined,
+  header: { internal_expected_dd?: string | null; processing_date?: string | null; proceeded_at?: string | null; status?: string | null } | null | undefined,
 ): boolean {
   if (!header) return false;
-  /* Owner 2026-07-05 — the lock requires BOTH: the SO was actually PROCEEDED
-     (proceeded_at stamped) AND its processing day has passed. A future-dated
-     or never-proceeded SO whose processing date merely elapsed stays editable
-     — we only PO to the supplier once the sales side has Proceeded. */
-  if (!header.proceeded_at) return false;
   const proc = header.internal_expected_dd ?? header.processing_date ?? null;
   if (!proc) return false;
   const procYmd = String(proc).slice(0, 10);            // 'YYYY-MM-DD' (date or timestamp)
@@ -189,7 +184,21 @@ function soProcessingLocked(
   /* "Today" in Malaysia: shift the UTC clock +8 h, read the calendar date.
      Locked strictly AFTER the processing day — procYmd === today stays open. */
   const todayMY = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
-  return procYmd < todayMY;
+  if (!(procYmd < todayMY)) return false;
+  /* Owner 2026-07-16 — the lock fires once the processing day has passed on a
+     CONFIRMED-or-later order. A Processing Date can only be SET on a ≥30%-paid
+     order and IS production's "ready to build" signal, so once it elapses the
+     order is committed regardless of whether the explicit Proceed (IN_PRODUCTION)
+     toggle was ever pressed. The prior rule ALSO required `proceeded_at` — but
+     that is stamped only at the IN_PRODUCTION transition, so a CONFIRMED SO whose
+     processing date had passed stayed directly editable (a salesperson could
+     change a line's colour after we had already PO'd it). DRAFT (not yet
+     confirmed) and CANCELLED stay editable. When the caller's header select omits
+     `status` we fall back to the `proceeded_at` marker so a status-blind read can
+     never OVER-lock a row. */
+  const status = String(header.status ?? '').toUpperCase();
+  if (status) return status !== 'DRAFT' && status !== 'CANCELLED';
+  return Boolean(header.proceeded_at);
 }
 
 /* Shared route guard — fetches the two date columns and returns the 409 body
@@ -197,9 +206,9 @@ function soProcessingLocked(
    soProcessingLocked directly instead of re-querying. */
 async function soProcessingLockBlocked(sb: any, docNo: string): Promise<typeof SO_PROCESSING_LOCKED_RESPONSE | null> {
   const { data } = await sb.from('mfg_sales_orders')
-    .select('internal_expected_dd, processing_date, proceeded_at')
+    .select('internal_expected_dd, processing_date, proceeded_at, status')
     .eq('doc_no', docNo).maybeSingle();
-  return soProcessingLocked(data as { internal_expected_dd?: string | null; processing_date?: string | null; proceeded_at?: string | null } | null)
+  return soProcessingLocked(data as { internal_expected_dd?: string | null; processing_date?: string | null; proceeded_at?: string | null; status?: string | null } | null)
     ? SO_PROCESSING_LOCKED_RESPONSE
     : null;
 }
@@ -5679,11 +5688,11 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
   /* PR-E — pull customer_delivery_date alongside debtor/agent/venue so a
      line added later still inherits the SO header's delivery date by
      default. Client can override by sending lineDeliveryDate explicitly. */
-  const { data: header } = await sb.from('mfg_sales_orders').select('debtor_code, debtor_name, agent, branding, venue, customer_delivery_date, customer_state, internal_expected_dd, processing_date, proceeded_at, customer_id').eq('doc_no', docNo).maybeSingle();
+  const { data: header } = await sb.from('mfg_sales_orders').select('debtor_code, debtor_name, agent, branding, venue, customer_delivery_date, customer_state, internal_expected_dd, processing_date, proceeded_at, status, customer_id').eq('doc_no', docNo).maybeSingle();
   if (!header) return c.json({ error: 'not_found' }, 404);
-  /* Owner 2026-06-12 — processing-date lock: no line ADD once the SO is
-     proceeded AND the processing day has passed (already PO'd to the supplier). */
-  if (soProcessingLocked(header as { internal_expected_dd?: string | null; processing_date?: string | null; proceeded_at?: string | null })) {
+  /* Owner 2026-06-12 — processing-date lock: no line ADD once a CONFIRMED-or-later
+     SO's processing day has passed (already PO'd to the supplier). */
+  if (soProcessingLocked(header as { internal_expected_dd?: string | null; processing_date?: string | null; proceeded_at?: string | null; status?: string | null })) {
     return c.json(SO_PROCESSING_LOCKED_RESPONSE, 409);
   }
   /* Commander 2026-05-31 — a line added later inherits the SO state's warehouse

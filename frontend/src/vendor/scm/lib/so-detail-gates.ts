@@ -54,14 +54,27 @@ export function isLocked(
   return (LOCKED_STATUSES.includes(upper(status)) && !unlockOverride) || hasChildren;
 }
 
-/* procLockActive — the SO PROCESS lock (owner 2026-07-05): once the SO has been
-   PROCEEDED (proceeded_at stamped) AND its processing day has passed, we have
-   PO'd to the supplier, so the LINE ITEMS + the customer State/Postcode freeze.
+/* procLockActive — the SO PROCESS lock: once a CONFIRMED-or-later SO's processing
+   day has passed we have PO'd to the supplier, so the LINE ITEMS + the customer
+   State/Postcode freeze (direct edits must go through the amendment flow instead).
    Uses todayMyt() (Malaysia calendar day) — NOT the browser-local date — so the
-   lock flips at MYT midnight regardless of the device timezone. */
+   lock flips at MYT midnight regardless of the device timezone.
+
+   Owner 2026-07-16 — the lock now fires on the processing date passing for any
+   non-DRAFT / non-CANCELLED SO. A Processing Date can only be SET on a ≥30%-paid
+   order and IS production's "ready to build" signal, so once it elapses the order
+   is committed whether or not the explicit Proceed (IN_PRODUCTION) toggle was ever
+   pressed. The prior rule ALSO required `proceeded_at` (only stamped at
+   IN_PRODUCTION), which let a CONFIRMED SO past its processing date stay directly
+   editable. DRAFT / CANCELLED stay editable; when status is absent we fall back to
+   the `proceeded_at` marker so we never over-lock a status-blind header. Mirrors
+   the backend soProcessingLocked exactly. */
 export function procLockActive(header: SoDetailGateHeader): boolean {
   const orig = (header.internal_expected_dd ?? '').slice(0, 10);
-  return Boolean(header.proceeded_at) && orig !== '' && orig < todayMyt();
+  if (orig === '' || !(orig < todayMyt())) return false;
+  const status = (header.status ?? '').toUpperCase();
+  if (status) return status !== 'DRAFT' && status !== 'CANCELLED';
+  return Boolean(header.proceeded_at);
 }
 
 /* amendmentEligible — the SO is processing-locked (already PO'd) but still
