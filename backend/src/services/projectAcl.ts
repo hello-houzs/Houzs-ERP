@@ -1,5 +1,5 @@
 import type { AuthUser } from "./auth";
-import { getPmsRole } from "./pmsAccess";
+import { getPmsRole, isSalesUser, isDirectorUser } from "./pmsAccess";
 
 /* Owner 2026-07-05 — a DIRECTOR-level user (Owner/IT `*`, Super Admin, Sales
    Director, Finance Manager — pmsAccess getPmsRole) sees EVERY project's full
@@ -8,6 +8,29 @@ import { getPmsRole } from "./pmsAccess";
    branch of getPmsRole is project-independent, so a throwaway shape is fine. */
 function isProjectDirector(user: AuthUser | null | undefined): boolean {
   return !!user && getPmsRole(user, { pic_id: null }) === "DIRECTOR";
+}
+
+/**
+ * SINGLE source of truth for "is this user row-scoped on projects" — the
+ * predicate every project read-ACL below keys off (getProjectScope /
+ * projectAccessLevel / canSeeProject), so the list, detail, calendar and
+ * notifications all agree.
+ *
+ * Two ways to be scoped:
+ *   1. The role carries the `scope_to_pic` flag (the original mechanism).
+ *   2. Owner 2026-07-15 — the caller is a NON-director Sales user by STABLE ORG
+ *      FIELDS (pmsAccess.isSalesUser && !isDirectorUser). Some Sales positions
+ *      (e.g. "Test Sales Executive") have roles WITHOUT the scope_to_pic flag,
+ *      so getProjectScope returned null and the list query applied no ACL —
+ *      fail-OPENING a non-PIC, non-director rep to EVERY project. Keying the
+ *      scope off the code-driven Sales classification (the owner's model, not
+ *      the configurable matrix) closes that hole while leaving directors
+ *      (see-all) and non-Sales staff untouched.
+ */
+export function isScopedProjectUser(user: AuthUser | null | undefined): boolean {
+  if (!user) return false;
+  if (user.scope_to_pic) return true;
+  return isSalesUser(user) && !isDirectorUser(user);
 }
 
 export interface ProjectScope {
@@ -31,7 +54,7 @@ export interface ProjectScope {
  * in the user's department's brand allow-list.
  */
 export function getProjectScope(user: AuthUser): ProjectScope | null {
-  if (!user.scope_to_pic) return null;
+  if (!isScopedProjectUser(user)) return null;
   const pic_ids: number[] = [];
   if (user.id) pic_ids.push(user.id);
   if (user.manager_id) pic_ids.push(user.manager_id);
@@ -86,7 +109,7 @@ export function projectAccessLevel(
   user: AuthUser,
   project: { pic_id: number | null; created_by?: number | null }
 ): "full" | "limited" {
-  if (!user.scope_to_pic || isProjectDirector(user)) return "full";
+  if (!isScopedProjectUser(user) || isProjectDirector(user)) return "full";
   if (effectivePicId(project) === user.id) return "full";
   return "limited";
 }
@@ -105,7 +128,7 @@ export function canSeeProject(
     end_date?: string | null;
   }
 ): boolean {
-  if (!user.scope_to_pic || isProjectDirector(user)) return true;
+  if (!isScopedProjectUser(user) || isProjectDirector(user)) return true;
   // PIC visibility expires PIC_GRACE_DAYS after the project ends.
   if (!withinPicGrace(project)) return false;
   const pic = effectivePicId(project);

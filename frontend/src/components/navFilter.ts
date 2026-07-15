@@ -4,6 +4,7 @@ import {
   isSalesStaff,
   isSalesDirectorUser,
   isSalesNonDirector,
+  isDirectorUser,
 } from "../auth/salesAccess";
 
 /**
@@ -63,6 +64,7 @@ export function makeNavVisible({ user, can, pageAccess }: NavFilterCtx) {
     const salesBypass =
       (!!t.showForSales && isSalesStaff(user)) ||
       (!!t.showForSalesDirector && isSalesDirectorUser(user)) ||
+      (!!t.showForDirector && isDirectorUser(user)) ||
       (!!t.showForSalesRep && isSalesNonDirector(user)) ||
       (!!t.salesRepOnly && isSalesNonDirector(user));
     if (!salesBypass) {

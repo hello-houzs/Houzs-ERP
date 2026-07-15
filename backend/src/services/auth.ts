@@ -8,6 +8,7 @@ import {
   type PageAccessMeta,
 } from "./pageAccess";
 import { getCachedUser, setCachedUser, bustCachedUser } from "./sessionCache";
+import { isScopedProjectUser } from "./projectAcl";
 
 // ── Crypto helpers ────────────────────────────────────────
 // PBKDF2 via Web Crypto — built into Workers, no WASM needed.
@@ -204,8 +205,22 @@ export async function deleteSession(env: Env, token: string): Promise<void> {
 async function hydrateAuthUser(env: Env, row: any): Promise<AuthUser> {
   const scoped = !!row.scope_to_pic;
   const managerId: number | null = row.manager_id ?? null;
+  const permissions = parsePermissions(row.role_permissions);
+  const permissionsSet = new Set(permissions);
+  // Owner 2026-07-15 — hydrate the brand allow-list not only for `scope_to_pic`
+  // roles but for the whole code-keyed project-scoped cohort (isScopedProjectUser
+  // = scope_to_pic OR a non-director Sales user). Some Sales positions lack the
+  // scope_to_pic flag; without brands the project list's PIC arm can't match and
+  // they'd fall back to attendee-only. Classify off the STABLE ORG FIELDS
+  // already on `row` (position_name / department_name) + the parsed permissions.
+  const brandScoped = isScopedProjectUser({
+    scope_to_pic: scoped,
+    permissions_set: permissionsSet,
+    position_name: row.position_name ?? null,
+    department_name: row.department_name ?? null,
+  } as AuthUser);
   let brandScope: string[] | null = null;
-  if (scoped) {
+  if (brandScoped) {
     const ids = managerId ? [row.id, managerId] : [row.id];
     // env.DB (not getDb): auth must keep working on the D1 fallback used by
     // the test suite and the rollback path, where no DATABASE_URL is bound.
@@ -218,8 +233,6 @@ async function hydrateAuthUser(env: Env, row: any): Promise<AuthUser> {
       .all<{ brand: string }>();
     brandScope = (res.results ?? []).map((r) => r.brand);
   }
-  const permissions = parsePermissions(row.role_permissions);
-  const permissionsSet = new Set(permissions);
   // Wildcard role → full everything. Else the 4-level position matrix when the
   // user has a position; else the legacy role matrix (fallback for users not
   // yet assigned a position during the rollout).

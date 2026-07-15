@@ -243,6 +243,23 @@ function DeliveryReturnsGuard({ children }: { children: React.ReactNode }) {
   return <ScmGuard area="scm.sales.returns">{children}</ScmGuard>;
 }
 
+/**
+ * SO Maintenance route guard — DIRECTOR-only (owner 2026-07-15). The bulk
+ * import / duplicate / renumber tool is reachable ONLY by a director
+ * (Sales Director / Super Admin / Finance Manager / Owner-IT `*` —
+ * auth/salesAccess.isDirectorUser). A non-director Sales user (Sales
+ * Executive/Coordinator) is Forbidden BEFORE the page mounts, so none of the
+ * maintenance data hooks fire (OFF, not hidden). Mirrors the SO-list button
+ * gate (MfgSalesOrdersListV2 `canMaintain`) so nav + route can't drift. A
+ * director is admitted directly (no inner scm-matrix requirement), matching
+ * how the /scm hub uses allowDirector.
+ */
+function SoMaintenanceGuard({ children }: { children: React.ReactNode }) {
+  const { user } = useAuth();
+  if (!isDirectorUser(user)) return <Forbidden page="scm.sales.orders" />;
+  return <>{children}</>;
+}
+
 export default function App() {
   return (
     <GlobalSearchProvider>
@@ -481,7 +498,7 @@ export default function App() {
         {/* Amendment job card — before/after diff detail for one revision. Same
             guard as the queue; reached by double-clicking a queue row. */}
         <Route path="/scm/amendments/:id" element={<Guard perm="scm.access" anyPerm={["scm.amendment.create", "scm.amendment.supplier_confirm", "scm.amendment.approve_so", "scm.amendment.approve_po"]} anyAccess={["scm.sales.orders"]}><Scm2990Shell><ScmAmendmentDetailV2 /></Scm2990Shell></Guard>} />
-        <Route path="/scm/sales-orders/maintenance" element={<ScmGuard area="scm.sales.orders"><Scm2990Shell><ScmSalesOrderMaintenanceV2 /></Scm2990Shell></ScmGuard>} />
+        <Route path="/scm/sales-orders/maintenance" element={<SoMaintenanceGuard><Scm2990Shell><ScmSalesOrderMaintenanceV2 /></Scm2990Shell></SoMaintenanceGuard>} />
         {/* Literal /new + /generate MUST precede /:docNo so they match first.
             All Sales-Orders-area routes carry allowSales so a rep reaches their
             own SO list / create / detail without the matrix page-access. */}

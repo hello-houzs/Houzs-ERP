@@ -44,6 +44,7 @@ import {
   getProjectScope,
   projectAccessLevel,
   canSeeProject,
+  isScopedProjectUser,
 } from "../services/projectAcl";
 import { getPmsAccess, getPmsRole, financeHiddenForUser, isFinanceViewer, isSalesUser } from "../services/pmsAccess";
 import { scopeSalesReportsForUser } from "../services/orgScope";
@@ -1365,7 +1366,7 @@ app.get("/:id", requirePageAccess("projects.list"), async (c) => {
     level: rowLevel,
     level_v2: rowLevel === "limited" ? "partial" : rowLevel,
     is_pic: detail.project.pic_id === user.id,
-    scoped: !!user.scope_to_pic,
+    scoped: isScopedProjectUser(user),
     pms,
   };
   // Defense in depth: hide finance (rental / cost / profit / ledger lines /
@@ -1512,7 +1513,10 @@ app.post("/", requirePermission("projects.write"), async (c) => {
   // Scoped users (sales reps) can only create projects where they or
   // their manager is the PIC. Ignore any other pic_id they submit.
   let picId = body.pic_id ?? null;
-  if (user?.scope_to_pic) {
+  // isScopedProjectUser (not the raw scope_to_pic flag): a non-director Sales
+  // user whose role lacks scope_to_pic is still row-scoped (owner 2026-07-15),
+  // so they can only PIC themselves / their manager here too.
+  if (isScopedProjectUser(user)) {
     const allowed = [user.id, user.manager_id].filter(Boolean);
     if (picId == null || !allowed.includes(picId)) {
       picId = user.id;
@@ -1600,7 +1604,9 @@ app.patch("/:id", requirePermission("projects.write"), async (c) => {
 
   // Gate: scoped users can only patch projects they can see. And
   // they cannot reassign pic_id away from themselves/their manager.
-  if (user?.scope_to_pic) {
+  // isScopedProjectUser covers the code-keyed Sales cohort (owner 2026-07-15),
+  // not just roles carrying the scope_to_pic flag.
+  if (isScopedProjectUser(user)) {
     if (!canSeeProject(user, existing)) return c.json({ error: "Not found" }, 404);
     if ("pic_id" in body) {
       const allowed = [user.id, user.manager_id].filter(Boolean);
@@ -1767,7 +1773,9 @@ app.patch("/:id/finance", requirePermission("projects.write"), async (c) => {
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const user = c.get("user");
   // Only the PIC (or an unscoped role) can write finance for a project.
-  if (user?.scope_to_pic) {
+  // isScopedProjectUser also covers non-director Sales users whose role lacks
+  // the scope_to_pic flag (owner 2026-07-15).
+  if (isScopedProjectUser(user)) {
     const row = await c.env.DB.prepare(
       `SELECT pic_id, created_by FROM projects WHERE id = ?`
     )
