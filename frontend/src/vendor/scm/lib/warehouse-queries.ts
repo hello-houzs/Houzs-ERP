@@ -9,7 +9,7 @@
 // exactly as in the vendored inventory-queries slice. useRacks is copied
 // verbatim, routed through the vendored authedFetch (→ /api/scm/warehouse).
 
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
 
 export type RackStatus = 'OCCUPIED' | 'EMPTY' | 'RESERVED';
@@ -63,5 +63,56 @@ export function useRacks(opts?: { warehouseId?: string }) {
     },
     staleTime: 30_000,
     retry: 1,
+  });
+}
+
+/* ── Rack CRUD ────────────────────────────────────────────────────────────
+   HOUZS VENDOR — Desktop Racks & Bins page (feat/desktop-rack-management). The
+   original slice pulled in only the useRacks() READ hook (the GRN pages never
+   wrote racks). The desktop Racks page is the create surface the GRN per-line
+   picker was missing, so the write mutations are pulled in here, verbatim in
+   shape against the existing backend routes:
+     POST   /warehouse/racks       — single { warehouseId, rack, position?,
+                                       reserved?, notes? } OR seed
+                                       { warehouseId, count, prefix? }
+     PATCH  /warehouse/racks/:id    — { rack?, position?, notes?, reserved? }
+     DELETE /warehouse/racks/:id    — only when the rack is empty (backend 409)
+   Every mutation invalidates the ['warehouse','racks'] query family so the grid
+   + KPI summary refetch. */
+
+export type CreateRackBody =
+  | { warehouseId: string; rack: string; position?: string; reserved?: boolean; notes?: string }
+  | { warehouseId: string; count: number; prefix?: string };
+
+export function useCreateRack() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: CreateRackBody) =>
+      authedFetch<{ rack?: Rack; racks?: Rack[]; created?: number }>(`/warehouse/racks`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['warehouse', 'racks'] }),
+  });
+}
+
+export function useUpdateRack() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...body }: { id: string; rack?: string; position?: string; notes?: string; reserved?: boolean }) =>
+      authedFetch<{ rack: Rack; status: RackStatus }>(`/warehouse/racks/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['warehouse', 'racks'] }),
+  });
+}
+
+export function useDeleteRack() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      authedFetch<{ ok: true }>(`/warehouse/racks/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['warehouse', 'racks'] }),
   });
 }

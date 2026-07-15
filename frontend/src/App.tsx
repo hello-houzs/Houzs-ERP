@@ -59,6 +59,7 @@ const ScmAccountingV2 = lazy(() => import("./pages/scm-v2/Accounting").then((m) 
 const ScmOutstandingV2 = lazy(() => import("./pages/scm-v2/Outstanding").then((m) => ({ default: m.Outstanding })));
 const ScmFabricTrackingV2 = lazy(() => import("./pages/scm-v2/FabricTracking").then((m) => ({ default: m.FabricTracking })));
 const ScmWarehousesV2 = lazy(() => import("./pages/scm-v2/Warehouses").then((m) => ({ default: m.Warehouses })));
+const ScmWarehouseRacksV2 = lazy(() => import("./pages/scm-v2/WarehouseRacks").then((m) => ({ default: m.WarehouseRacks })));
 const ScmCurrenciesV2 = lazy(() => import("./pages/scm-v2/Currencies").then((m) => ({ default: m.Currencies })));
 const ScmProductsV2 = lazy(() => import("./pages/scm-v2/Products").then((m) => ({ default: m.Products })));
 const ScmProductModelsV2 = lazy(() => import("./pages/scm-v2/ProductModels").then((m) => ({ default: m.ProductModels })));
@@ -406,6 +407,7 @@ export default function App() {
         <Route path="/scm/currencies" element={<Guard anyPerm={["*", "scm.currency.manage"]}><Scm2990Shell><ScmCurrenciesV2 /></Scm2990Shell></Guard>} />
         <Route path="/scm/fabric-tracking" element={<ScmGuard area="scm.procurement.products"><Scm2990Shell><ScmFabricTrackingV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/warehouses" element={<ScmGuard area="scm.warehouse.inventory"><Scm2990Shell><ScmWarehousesV2 /></Scm2990Shell></ScmGuard>} />
+        <Route path="/scm/warehouses/racks" element={<ScmGuard area="scm.warehouse.inventory"><Scm2990Shell><ScmWarehouseRacksV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/products" element={<ScmGuard area="scm.procurement.products"><Scm2990Shell><ScmProductsV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/categories" element={<ScmGuard area="scm.procurement.products"><Scm2990Shell><ScmCategoriesV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/product-models" element={<ScmGuard area="scm.procurement.products"><Scm2990Shell><ScmProductModelsV2 /></Scm2990Shell></ScmGuard>} />
