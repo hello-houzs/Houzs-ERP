@@ -30,6 +30,7 @@ import {
   useOutstandingGrnItems,
   type OutstandingGrnItem,
 } from '../../vendor/scm/lib/suppliers-queries';
+import { VariantDescription } from '../../vendor/scm/components/VariantDescription';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import styles from './SalesOrderDetail.module.css';
 
@@ -231,7 +232,14 @@ export const PurchaseInvoiceFromGrn = () => {
                         onChange={() => togglePick(l)}
                       />
                       <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-13)' }}>{l.itemCode}</span>
-                      <span style={{ fontSize: 'var(--fs-13)' }}>{l.description ?? '—'}</span>
+                      <div style={{ fontSize: 'var(--fs-13)' }}>
+                        <VariantDescription
+                          itemCode={l.itemCode}
+                          itemGroup={l.itemGroup}
+                          variants={l.variants}
+                          description={l.description}
+                        />
+                      </div>
                       <span style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-13)' }}>{l.remaining}</span>
                       <input
                         type="number"
