@@ -69,6 +69,7 @@ import type { Env, Variables } from '../env';
 import { getSupabaseService } from '../../db/supabase';
 import { paginateAll } from '../lib/paginate-all';
 import { getBranding } from '../../services/branding';
+import { postPersonalNotice } from '../../services/personalNotice';
 // Background scan job — the DRAFT SO is created through mfg-sales-orders'
 // factored create core (PRICING-CRITICAL; never reimplemented here), and each
 // scanned payment RECEIPT becomes a payments-ledger row through the same
@@ -3183,30 +3184,17 @@ async function postScanNotice(
   },
 ): Promise<void> {
   if (opts.houzsUserId == null) return;
-  try {
-    const id = `ann-${crypto.randomUUID().slice(0, 12).replace(/-/g, '')}`;
-    const nowIso = new Date().toISOString();
-    const expiresIso = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-    await env.DB.prepare(
-      `INSERT INTO announcements
-         (id, title, body, is_active, expires_at, created_by, created_at,
-          translations, attachments, target_type,
-          target_dept_ids, target_position_ids, target_user_ids, category, source)
-       VALUES (?, ?, ?, 1, ?, NULL, ?, NULL, NULL, 'USER_IDS', NULL, NULL, ?, ?, 'scan')`,
-    )
-      .bind(
-        id,
-        opts.title,
-        opts.body,
-        expiresIso,
-        nowIso,
-        JSON.stringify([opts.houzsUserId]),
-        opts.category,
-      )
-      .run();
-  } catch (e) {
-    console.error('[scan-job] scan notice insert failed:', (e as Error).message);
-  }
+  // Delegates to the shared personal-notice path (services/personalNotice.ts)
+  // so there is ONE announcements-insert path for system notices. Behaviour is
+  // unchanged: single-user USER_IDS notice, source='scan', 7-day self-clear.
+  await postPersonalNotice(env, {
+    userIds: [opts.houzsUserId],
+    category: opts.category,
+    title: opts.title,
+    body: opts.body,
+    source: 'scan',
+    expiresDays: 7,
+  });
 }
 
 /* The sofa Leg Height "Default" option (RM 0.00) from the maintenance

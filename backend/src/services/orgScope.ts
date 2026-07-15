@@ -55,6 +55,40 @@ export async function subtreeUserIds(
 }
 
 /**
+ * The caller's own id plus every user ABOVE them in the manager_id chain
+ * (their manager, their manager's manager, … up to the root or
+ * MAX_CHAIN_DEPTH). This is the INVERSE of subtreeUserIds — it walks UP the
+ * reporting line, not down. Used to notify the pyramid: when a service case
+ * lands on a salesperson, that person AND everyone they report to (recursively)
+ * gets the in-app notice (owner "reporting-to = FULL recursive visibility").
+ * Cycle-guarded via a visited set; disabled/archived managers stay in the chain
+ * so an escalation still reaches them.
+ */
+export async function uplineUserIds(
+  env: Env,
+  leafUserId: number,
+  maxDepth: number = MAX_CHAIN_DEPTH,
+): Promise<number[]> {
+  const start = Number(leafUserId);
+  if (!Number.isFinite(start)) return [];
+  const seen = new Set<number>([start]);
+  let currentId: number | null = start;
+  for (let depth = 0; depth < maxDepth && currentId != null; depth++) {
+    const row: { manager_id: number | null } | null = await env.DB.prepare(
+      `SELECT manager_id FROM users WHERE id = ?`,
+    )
+      .bind(currentId)
+      .first<{ manager_id: number | null }>();
+    const managerId = Number(row?.manager_id ?? NaN);
+    if (!Number.isFinite(managerId)) break; // reached the root (no manager)
+    if (seen.has(managerId)) break; // cycle guard
+    seen.add(managerId);
+    currentId = managerId;
+  }
+  return [...seen];
+}
+
+/**
  * The lowercased, trimmed display NAMES of the caller's reporting subtree
  * (self + full manager_id downline). Used to reach LEGACY service cases that
  * carry only a free-text `sales_agent` NAME (mirrored from AutoCount) and no
