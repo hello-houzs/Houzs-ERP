@@ -107,6 +107,9 @@ export type PlanningOrder = {
   stock_status: string;
   stock_remark: string;
   is_main_ready: boolean;
+  /* Multi-company: readable company code for the SHARED cross-company queue
+     (e.g. 'HOUZS' / '2990'). null on ASSR rows or when unresolved. */
+  company_code?: string | null;
   region: RegionCode;   // the order's primary bucket (from customer_state)
   regions: RegionCode[];  // primary + any leg buckets
   warehouse_id: string | null;
@@ -151,6 +154,43 @@ export function useDeliveryPlanning(opts: { region?: string; state?: string }) {
     // Switching region / state tabs keeps the previous board on screen while the
     // next slice loads, instead of flashing an empty table (keepPreviousData).
     placeholderData: (prev) => prev,
+    staleTime: 30_000,
+  });
+}
+
+/* One expand-row line item, as GET /delivery-planning/:docNo/lines emits it
+   (snake_case, no transform). Mirrors the SO-detail item columns the board's
+   drill-down consumes (group / code / description / variants / cancelled). */
+export type PlanningLineItem = {
+  id: string;
+  doc_no: string | null;
+  item_group: string | null;
+  item_code: string | null;
+  description: string | null;
+  description2: string | null;
+  uom: string | null;
+  qty: number | null;
+  unit_price_centi: number | null;
+  discount_centi: number | null;
+  total_centi: number | null;
+  variants: Record<string, unknown> | null;
+  stock_status: string | null;
+  cancelled: boolean | null;
+};
+
+/* Expand-row lines for one SO on the SHARED cross-company board. Uses the
+   dedicated /delivery-planning/:docNo/lines endpoint (scoped to the caller's
+   ALLOWED companies) instead of the PER-COMPANY SO detail — so expanding a
+   cross-company (e.g. 2990) row while browsing as Houzs no longer 404s. Lazy
+   (enabled only when a docNo is set) + cached by docNo. */
+export function useDeliveryPlanningLines(docNo: string | null | undefined) {
+  return useQuery({
+    queryKey: ['delivery-planning', 'lines', docNo],
+    enabled: !!docNo,
+    queryFn: () =>
+      authedFetch<{ items: PlanningLineItem[] }>(
+        `/delivery-planning/${encodeURIComponent(docNo!)}/lines`,
+      ).then((r) => r.items),
     staleTime: 30_000,
   });
 }

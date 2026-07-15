@@ -24,7 +24,7 @@ import { todayMyt } from '../lib/my-time';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { escapeForOr } from '../lib/postgrest-search';
 import { resolveSalesScopeIds, salesDocOutOfScope } from '../lib/salesScope';
-import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
+import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix, companyCodeMap } from '../lib/companyScope';
 import { canViewAllSales } from '../lib/houzs-perms';
 import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item-codes';
 import { checkStockAvailability, shortStockResponse } from '../lib/check-stock-availability';
@@ -170,10 +170,13 @@ const crewSnapshotCols =
    the status is advanced (DISPATCHED step-by-step, or a jump to SIGNED). */
 const SHIPPED_STATES = ['DISPATCHED', 'IN_TRANSIT', 'SIGNED', 'DELIVERED', 'INVOICED'];
 
-const nextNum = async (sb: any, c: any): Promise<string> => {
+const nextNum = async (sb: any, c: any, prefixOverride?: string): Promise<string> => {
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
-  const p = companyDocPrefix(c);
+  // prefixOverride lets the caller mint under a company OTHER than the active one
+  // (Delivery-Planning convert stamps the SOURCE SO's company). Falls back to the
+  // active company's prefix for the normal same-company paths.
+  const p = prefixOverride ?? companyDocPrefix(c);
   const { data: existing } = await sb.from('delivery_orders').select('do_number').like('do_number', `${p}DO-${yymm}-%`);
   return nextMonthlyDocNo(`${p}DO-${yymm}`, ((existing ?? []) as Array<{ do_number: string }>).map((r) => r.do_number));
 };
@@ -2439,7 +2442,7 @@ deliveryOrdersMfg.post('/from-sos', async (c) => {
   // Pull the FIRST SO's header for the DO header snapshot (address / salesperson
   // / branding / venue / contact). Lines carry their own debtor snapshot.
   const SO_HEADER =
-    'doc_no, debtor_code, debtor_name, agent, salesperson_id, ' +
+    'doc_no, company_id, debtor_code, debtor_name, agent, salesperson_id, ' +
     'address1, address2, address3, address4, city, customer_state, postcode, phone, ' +
     'email, customer_type, building_type, branding, venue, venue_id, ref, sales_location, ' +
     'customer_country, customer_delivery_date, ' +
@@ -2459,10 +2462,22 @@ deliveryOrdersMfg.post('/from-sos', async (c) => {
   const emPhoneRaw = head.emergency_contact_phone as string | null;
   const today = todayMyt();
 
+  // Mint the DO number under the SOURCE SO's company prefix (2990 SO → "2990-DO-…"),
+  // matching the company_id stamp below, so a 2990 DO converted while browsing as
+  // Houzs isn't a company-2 row with a Houzs-style bare number. undefined → nextNum
+  // falls back to the active company's prefix (pre-migration SOs without company_id).
+  const srcCode = head.company_id != null ? companyCodeMap(c).get(Number(head.company_id)) : undefined;
+  const srcPrefix = srcCode != null ? (srcCode !== 'HOUZS' ? `${srcCode}-` : '') : undefined;
+
   const { data: doHeader, error: hErr } = await insertWithDocNoRetry<{ id: string; do_number: string }>(
-    () => nextNum(sb, c),
+    () => nextNum(sb, c, srcPrefix),
     (doNumber) => sb.from('delivery_orders').insert({
-    company_id: activeCompanyId(c), // multi-company: stamp the active company
+    /* multi-company: stamp the SOURCE SO's company, NOT the active one. The
+       Delivery Planning board is a SHARED cross-company queue, so a 2990 SO may
+       be converted while browsing as Houzs — the DO must inherit the SO's
+       company (2990) regardless of who converts. Falls back to the active
+       company only when the SO header carries no company_id (pre-migration). */
+    company_id: (head.company_id as number | null) ?? activeCompanyId(c),
     do_number: doNumber,
     /* so_doc_no has a FK to mfg_sales_orders(doc_no) → one valid doc. The full
        set of source SOs is recorded in `ref` below when the picks span >1 SO. */

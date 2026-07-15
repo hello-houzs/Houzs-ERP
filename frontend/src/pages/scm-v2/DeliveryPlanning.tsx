@@ -24,8 +24,11 @@
 //   ../components/* → ../../vendor/scm/components/*
 //   ../lib/category-badges → ../../vendor/scm/lib/category-badges
 //   ../lib/delivery-planning-queries → ../../vendor/scm/lib/delivery-planning-queries
-//   useMfgSalesOrderDetail lives in ../../vendor/scm/lib/sales-order-queries
-//     (Houzs co-locates it with the SO queries; 2990 has it under flow-queries).
+//
+// SHARED-QUEUE NOTE (multi-company): the board reads BOTH companies' SOs. Row
+// expand uses useDeliveryPlanningLines (GET /delivery-planning/:docNo/lines,
+// scoped to ALLOWED companies) — NOT the per-company SO detail hook, which 404s
+// a cross-company row. A default-visible Company column tags each row.
 // ----------------------------------------------------------------------------
 
 import { useMemo, useState, type MouseEvent as ReactMouseEvent } from 'react';
@@ -39,9 +42,9 @@ import { DeliveryFieldsDrawer } from '../../vendor/scm/components/DeliveryFields
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { badgeFor } from '../../vendor/scm/lib/category-badges';
-import { useMfgSalesOrderDetail } from '../../vendor/scm/lib/sales-order-queries';
 import {
   useDeliveryPlanning,
+  useDeliveryPlanningLines,
   useConvertSosToDo,
   useScheduleDelivery,
   DELIVERY_STATES,
@@ -77,6 +80,20 @@ function SubstatusPill({ value }: { value: string | null }) {
 }
 /* A datetime-or-dash cell (TIMESTAMPTZ columns). */
 const dtOrDash = (iso: string | null): string => (iso ? fmtDateTime(iso) : '—');
+
+/* Company badge for the SHARED cross-company queue — a small code chip
+   (HOUZS / 2990). null (e.g. ASSR rows / unresolved) renders a muted dash. */
+function CompanyBadge({ code }: { code: string | null }) {
+  if (!code) return <span style={{ color: 'var(--fg-muted)' }}>—</span>;
+  return (
+    <span style={{
+      display: 'inline-block', padding: '1px 8px', borderRadius: 999,
+      border: '1px solid var(--c-secondary-a)', color: 'var(--c-secondary-a)',
+      fontSize: 'var(--fs-10)', fontWeight: 700, letterSpacing: '0.04em',
+      whiteSpace: 'nowrap',
+    }}>{code}</span>
+  );
+}
 
 /* ── Row-type helpers (SO delivery vs ASSR service-case job) ───────────────────
    The board now mixes SO-delivery rows (the original) with Service-Case (ASSR)
@@ -324,11 +341,13 @@ function DaysLeftCell({ days }: { days: number | null }) {
    `expandable` API) to show that SO's line items — same four columns the SO list
    drill-down shows: Group · Item Code · Description · Description 2.
 
-   Items are sourced EXACTLY the way MfgSalesOrdersList sources them: the shared
-   `useMfgSalesOrderDetail(docNo)` hook, lazy-fetched per row on expand and
-   TanStack-cached by doc_no, so re-expanding the same SO is instant and no new
-   endpoint is introduced. The planning row already carries `so_doc_no`, which
-   keys the fetch.
+   Items are fetched from the SHARED cross-company endpoint
+   `useDeliveryPlanningLines(docNo)` (GET /delivery-planning/:docNo/lines), scoped
+   to the caller's ALLOWED companies — lazy-fetched per row on expand and
+   TanStack-cached by doc_no, so re-expanding the same SO is instant. This
+   deliberately does NOT reuse the per-company SO detail hook: that scopes to the
+   ACTIVE company and 404s a cross-company (e.g. 2990) row on the shared board.
+   The planning row already carries `so_doc_no`, which keys the fetch.
 
    Rendering mirrors the SO list: `CategoryPill` via the shared `badgeFor`
    palette, `buildVariantSummary` for the variant ("Description 2") cell, and the
@@ -400,9 +419,11 @@ const DRILLDOWN_COLUMNS: DataGridColumn<DrillItem>[] = [
 ];
 
 const PlanningExpandedLines = ({ docNo }: { docNo: string }) => {
-  /* SAME hook the SO list uses — lazy on expand, cached by doc_no. No new
-     endpoint. */
-  const q = useMfgSalesOrderDetail(docNo);
+  /* SHARED-QUEUE line fetch — /delivery-planning/:docNo/lines, scoped to the
+     caller's ALLOWED companies (not the active one). Lazy on expand, cached by
+     doc_no. Using the cross-company endpoint (not the per-company SO detail)
+     means a 2990 row opened while browsing as Houzs loads instead of 404ing. */
+  const q = useDeliveryPlanningLines(docNo);
   if (q.isLoading) {
     return (
       <div style={{ padding: '8px 12px', fontSize: 'var(--fs-11)', color: 'var(--fg-muted)' }}>
@@ -417,8 +438,8 @@ const PlanningExpandedLines = ({ docNo }: { docNo: string }) => {
       </div>
     );
   }
-  const allItems = (q.data?.items ?? []) as DrillItem[];
-  /* Filter cancelled lines client-side — the detail endpoint returns them too
+  const allItems = (q.data ?? []) as DrillItem[];
+  /* Filter cancelled lines client-side — the lines endpoint returns them too
      (matches the SO list drill-down). */
   const items = allItems.filter((it) => !it.cancelled);
 
@@ -686,6 +707,16 @@ export const DeliveryPlanning = () => {
       searchValue: (o) => (isAssr(o) ? (o.ref ?? '') : o.so_doc_no),
       exportValue: (o) => (isAssr(o) ? (o.ref ?? '') : o.so_doc_no),
       sortFn: (a, b) => (isAssr(a) ? (a.ref ?? '') : a.so_doc_no).localeCompare(isAssr(b) ? (b.ref ?? '') : b.so_doc_no),
+    },
+    {
+      /* Company — the SHARED cross-company queue serves both HOUZS + 2990, so
+         each row is tagged with its owning company. Default-VISIBLE so the two
+         companies read apart at a glance. ASSR rows have no company (dash). */
+      key: 'company_code', label: 'Company', width: 90, groupable: true,
+      accessor: (o) => <CompanyBadge code={o.company_code ?? null} />,
+      searchValue: (o) => o.company_code ?? '',
+      groupValue: (o) => o.company_code ?? '(none)',
+      exportValue: (o) => o.company_code ?? '',
     },
     {
       key: 'debtor_name', label: 'Customer', width: 200, sortable: true, groupable: true,
