@@ -391,6 +391,11 @@ export const NAV_TABS: NavTab[] = [
         anyAccess: ["scm.sales", "scm.sales.orders", "scm.sales.delivery", "scm.sales.invoices", "scm.sales.returns"],
         children: [
           { to: "/scm/sales-orders", label: "Sales Orders", icon: ShoppingCart, anyPerm: ["*", "scm.access"], anyAccess: ["scm.sales.orders"] },
+          // Read-only sales-lifecycle dashboard + customer directory (ported from
+          // 2990). Both derive from Sales Orders, so they carry the same L2 key
+          // (scm.sales.orders) and are hidden from a trimmed Sales-rep nav.
+          { to: "/scm/dashboard", label: "Dashboard", icon: LayoutDashboard, anyPerm: ["*", "scm.access"], anyAccess: ["scm.sales.orders"], hideForSalesRep: true },
+          { to: "/scm/customers", label: "Customers", icon: Users, anyPerm: ["*", "scm.access"], anyAccess: ["scm.sales.orders"], hideForSalesRep: true },
           { to: "/scm/amendments", label: "Amendments", icon: History, anyPerm: ["*", "scm.access", "scm.amendment.create", "scm.amendment.supplier_confirm", "scm.amendment.approve_so", "scm.amendment.approve_po"], anyAccess: ["scm.sales.orders"], hideForSalesRep: true },
           { to: "/scm/delivery-orders", label: "Delivery Orders", icon: Send, anyPerm: ["*", "scm.access"], anyAccess: ["scm.sales.delivery"], hideForSalesRep: true },
           { to: "/scm/sales-invoices", label: "Sales Invoices", icon: FileText, anyPerm: ["*", "scm.access"], anyAccess: ["scm.sales.invoices"], hideForSalesRep: true },

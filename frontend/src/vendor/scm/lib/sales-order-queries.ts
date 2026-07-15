@@ -64,6 +64,60 @@ export function useMfgSalesOrdersPaged(params: { page: number; pageSize: number;
   });
 }
 
+// Dashboard summary mode (`?summary=1`) — the backend returns only the 6 cols
+// the lifecycle-bucket KPIs need (doc_no, status, proceeded_at, local_total_centi,
+// created_at, so_date), non-DRAFT, company + sales-scope scoped, so the dashboard
+// isn't paying for 500 fully-hydrated rows. Bucketing stays in the FE (single
+// source of truth). Ported from 2990's useMfgSalesOrdersSummary.
+export type SoSummaryRow = {
+  doc_no: string;
+  status: string;
+  proceeded_at: string | null;
+  local_total_centi: number;
+  created_at: string | null;
+  so_date: string | null;
+};
+export const useMfgSalesOrdersSummary = () =>
+  useQuery({
+    queryKey: ['mfg-sales-orders', 'summary'],
+    queryFn: () => authedFetch<{ salesOrders: SoSummaryRow[] }>(`/mfg-sales-orders?summary=1`),
+    placeholderData: (prev) => prev,
+    staleTime: 30_000,
+    retry: 1,
+    retryDelay: 800,
+  });
+
+// Customer directory — server-side GROUP BY over Sales Orders (by phone/name),
+// company + sales-scope scoped. Backend: GET /mfg-sales-orders/customers. Money
+// is centi (divide by 100 in the UI). Ported from 2990's Customers page (which
+// aggregated client-side); Houzs aggregates server-side so it scales past 500.
+export type ScmCustomerOrder = {
+  doc_no: string;
+  status: string;
+  so_date: string | null;
+  created_at: string | null;
+  local_total_centi: number;
+  line_count: number;
+};
+export type ScmCustomer = {
+  key: string;
+  name: string;
+  phone: string | null;
+  order_count: number;
+  lifetime_value_centi: number;
+  last_order_at: string;
+  orders: ScmCustomerOrder[];
+};
+export const useMfgCustomers = () =>
+  useQuery({
+    queryKey: ['mfg-sales-orders', 'customers'],
+    queryFn: () => authedFetch<{ customers: ScmCustomer[] }>(`/mfg-sales-orders/customers`),
+    placeholderData: (prev) => prev,
+    staleTime: 60_000,
+    retry: 1,
+    retryDelay: 800,
+  });
+
 export const useMfgSalesOrderDetail = (docNo: string | null) => useQuery({
   queryKey: ['mfg-sales-order-detail', docNo],
   queryFn: () => authedFetch<{ salesOrder: any; items: any[] }>(`/mfg-sales-orders/${docNo}`),
