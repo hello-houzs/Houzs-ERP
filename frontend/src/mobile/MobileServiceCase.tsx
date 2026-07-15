@@ -691,7 +691,12 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
       const cat = String(get(a, "category") ?? "").toUpperCase();
       if (cat) set.add(cat);
     }
-    return ["ALL", ...Array.from(set)];
+    // Canonical chip order (matches desktop): the four audience
+    // buckets, then SYSTEM; anything unexpected trails.
+    const ORDER = ["SERVICE", "CUSTOMER", "SUPPLIER", "SALES", "SYSTEM"];
+    const known = ORDER.filter((k) => set.has(k));
+    const rest = Array.from(set).filter((k) => !ORDER.includes(k));
+    return ["ALL", ...known, ...rest];
   }, [activity]);
   const shownActivity = useMemo(() => {
     if (tlFilter === "all") return activity;
@@ -2180,6 +2185,7 @@ function catBadge(cat: string): [string, string] {
     // Legacy rows from before mig 0108 (all migrated, but a cached
     // payload may still carry it briefly).
     case "PURCHASING": return ["#16695f1f", TEAL];
+    case "SYSTEM": return ["#5c61661f", GREY];
     default: return ["#16695f1f", TEAL];
   }
 }

@@ -2922,14 +2922,13 @@ function DetailContent({
     "service",
   );
   // Activity timeline filter. 'all' = show everything; the others
-  // narrow to one category. System-emitted events (stage_change,
-  // assigned, etc.) live under 'system'.
-  // Design PR 2 — filter tabs by role, not by legacy activity.category.
-  //   service  = internal staff / stage-changes (not customer/supplier portal)
-  //   customer = anything the customer posted or uploaded on their portal
-  //   supplier = anything the supplier posted / did via /portal/supplier
+  // narrow to one stored category (four buckets + system since mig
+  // 0108): service / customer / supplier / sales cover authored notes
+  // and portal activity; auto-emitted events (stage_change,
+  // assignment, escalation, …) live under 'system'. Channel inference
+  // only backstops legacy rows that predate the category backfill.
   const [activityFilter, setActivityFilter] = useState<
-    "all" | "service" | "customer" | "supplier" | "sales"
+    "all" | "service" | "customer" | "supplier" | "sales" | "system"
   >("all");
   const [transitioning, setTransitioning] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -4348,6 +4347,7 @@ function DetailContent({
                   { value: "customer" as const, label: "Customer" },
                   { value: "supplier" as const, label: "Supplier" },
                   { value: "sales" as const, label: "Sales" },
+                  { value: "system" as const, label: "System" },
                 ]
               ).map((opt) => {
                 const active = activityFilter === opt.value;
@@ -4374,7 +4374,21 @@ function DetailContent({
             {(() => {
               // Design PR 2 — derive an actor role from source_channel /
               // action so the filter tabs and the per-entry pill agree.
-              const roleOf = (a: any): "customer" | "supplier" | "service" | "sales" => {
+              const roleOf = (a: any): "customer" | "supplier" | "service" | "sales" | "system" => {
+                // The stored category is authoritative (four buckets +
+                // system since mig 0108); the channel inference below
+                // only backstops legacy rows without one.
+                const cat = String(a.category || "").toLowerCase();
+                if (cat === "purchasing") return "service";
+                if (
+                  cat === "service" ||
+                  cat === "customer" ||
+                  cat === "supplier" ||
+                  cat === "sales" ||
+                  cat === "system"
+                ) {
+                  return cat;
+                }
                 const ch = a.source_channel;
                 if (a.source === "sales" || a.action === "sales_comment" || a.action === "sales_upload") return "sales";
                 if (ch === "customer_portal" || a.source === "customer" || a.action === "customer_comment") return "customer";
@@ -4559,9 +4573,10 @@ function DetailContent({
                               actorRole === "supplier" && "bg-primary/10 text-primary",
                               actorRole === "sales" && "bg-accent-soft text-accent",
                               actorRole === "service" && "bg-bg text-ink-secondary",
+                              actorRole === "system" && "border border-border-subtle bg-bg text-ink-muted",
                             )}
                           >
-                            {actorRole === "service" ? "Service" : actorRole === "customer" ? "Customer" : actorRole === "supplier" ? "Supplier" : "Sales"}
+                            {{ service: "Service", customer: "Customer", supplier: "Supplier", sales: "Sales", system: "System" }[actorRole]}
                           </span>
                           <span>by {author}</span>
                         </div>
