@@ -44,6 +44,7 @@ import { useNotify } from "../../vendor/scm/components/NotifyDialog";
 import { useChoice } from "../../vendor/scm/components/ChoiceDialog";
 import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "../../lib/utils";
+import { useAuth } from "../../auth/AuthContext";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 // Subset of the full DoRow (see MfgDeliveryOrdersList.tsx for the 40-field
@@ -81,6 +82,26 @@ type DoRow = {
   lifecycle_state?: "shipped" | "invoiced" | "returned";
   is_dropship?: boolean;
   isDropship?: boolean;
+  // ── Phase 2: NON-finance fields already on the DO list payload (HEADER).
+  venue: string | null;
+  note: string | null;
+  customer_type: string | null;
+  building_type: string | null;
+  // ── Phase 2 FINANCE: backend OMITS these keys for non-finance callers
+  //    (canViewScmFinance), so each is optional. margin_pct_basis = basis points.
+  mattress_sofa_centi?: number;
+  bedframe_centi?: number;
+  accessories_centi?: number;
+  others_centi?: number;
+  service_centi?: number;
+  mattress_sofa_cost_centi?: number;
+  bedframe_cost_centi?: number;
+  accessories_cost_centi?: number;
+  others_cost_centi?: number;
+  service_cost_centi?: number;
+  total_cost_centi?: number;
+  total_margin_centi?: number;
+  margin_pct_basis?: number;
 };
 
 type StatusTab = "all" | "open" | "in_transit" | "delivered" | "cancelled";
@@ -92,6 +113,10 @@ const fmtRm = (centi: number): string =>
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
+
+// margin_pct_basis is basis points (margin/total x 10000) → percent string.
+const fmtPctBasis = (basis: number | null | undefined): string =>
+  basis == null ? "—" : `${(basis / 100).toFixed(1)}%`;
 
 const fmtDate = (iso: string | null | undefined): string => {
   if (!iso) return "—";
@@ -683,6 +708,11 @@ export function MfgDeliveryOrdersListV2() {
   const { nameOf: salespersonNameOf } = useStaffLookup();
   const notify = useNotify();
   const askChoice = useChoice();
+  // Finance-viewer gate (auth/me = isFinanceViewer). Finance columns below are
+  // DECLARED only for a finance-viewer; the backend also omits their keys from
+  // the payload for everyone else (canViewScmFinance).
+  const { user } = useAuth();
+  const canFinance = !!user?.project_finance_viewer;
 
   const status = (params.get("status") ?? "all") as StatusTab;
   const view = (params.get("view") ?? "table") as "table" | "cards";
@@ -1132,6 +1162,214 @@ export function MfgDeliveryOrdersListV2() {
         <span className="text-[12.5px] text-ink-secondary">{r.customer_state || "—"}</span>
       ),
     },
+    // ── Re-added columns (Phase 2) — NON-finance fields already on the DO
+    //    payload (HEADER). Default-hidden + disableSort. Safe for everyone.
+    {
+      key: "venue",
+      label: "Venue",
+      width: "150px",
+      defaultHidden: true,
+      disableSort: true,
+      getValue: (r) => r.venue ?? "",
+      render: (r) => (
+        <span className="text-[12.5px] text-ink-secondary">{r.venue || "—"}</span>
+      ),
+    },
+    {
+      key: "note",
+      label: "Note",
+      width: "200px",
+      defaultHidden: true,
+      disableSort: true,
+      getValue: (r) => r.note ?? "",
+      render: (r) => (
+        <span className="text-[12.5px] text-ink-secondary">{r.note || "—"}</span>
+      ),
+    },
+    {
+      key: "customer_type",
+      label: "Customer Type",
+      width: "130px",
+      defaultHidden: true,
+      disableSort: true,
+      getValue: (r) => r.customer_type ?? "",
+      render: (r) => (
+        <span className="text-[12.5px] text-ink-secondary">{r.customer_type || "—"}</span>
+      ),
+    },
+    {
+      key: "building_type",
+      label: "Building Type",
+      width: "130px",
+      defaultHidden: true,
+      disableSort: true,
+      getValue: (r) => r.building_type ?? "",
+      render: (r) => (
+        <span className="text-[12.5px] text-ink-secondary">{r.building_type || "—"}</span>
+      ),
+    },
+    // ── Phase 2 FINANCE columns — cost / margin / per-category subtotals.
+    //    DECLARED ONLY for a finance-viewer (backend also omits the keys).
+    ...(canFinance
+      ? ([
+          {
+            key: "mattress_sofa_centi",
+            label: "Mattress/Sofa",
+            width: "120px",
+            align: "right",
+            defaultHidden: true,
+            disableSort: true,
+            getValue: (r) => r.mattress_sofa_centi ?? 0,
+            render: (r) => (
+              <span className="font-money text-[13px] text-ink">{fmtRm(r.mattress_sofa_centi ?? 0)}</span>
+            ),
+          },
+          {
+            key: "bedframe_centi",
+            label: "Bedframe",
+            width: "110px",
+            align: "right",
+            defaultHidden: true,
+            disableSort: true,
+            getValue: (r) => r.bedframe_centi ?? 0,
+            render: (r) => (
+              <span className="font-money text-[13px] text-ink">{fmtRm(r.bedframe_centi ?? 0)}</span>
+            ),
+          },
+          {
+            key: "accessories_centi",
+            label: "Accessories",
+            width: "110px",
+            align: "right",
+            defaultHidden: true,
+            disableSort: true,
+            getValue: (r) => r.accessories_centi ?? 0,
+            render: (r) => (
+              <span className="font-money text-[13px] text-ink">{fmtRm(r.accessories_centi ?? 0)}</span>
+            ),
+          },
+          {
+            key: "others_centi",
+            label: "Others",
+            width: "110px",
+            align: "right",
+            defaultHidden: true,
+            disableSort: true,
+            getValue: (r) => r.others_centi ?? 0,
+            render: (r) => (
+              <span className="font-money text-[13px] text-ink">{fmtRm(r.others_centi ?? 0)}</span>
+            ),
+          },
+          {
+            key: "service_centi",
+            label: "Service",
+            width: "110px",
+            align: "right",
+            defaultHidden: true,
+            disableSort: true,
+            getValue: (r) => r.service_centi ?? 0,
+            render: (r) => (
+              <span className="font-money text-[13px] text-ink">{fmtRm(r.service_centi ?? 0)}</span>
+            ),
+          },
+          {
+            key: "mattress_sofa_cost_centi",
+            label: "Mattress/Sofa Cost",
+            width: "140px",
+            align: "right",
+            defaultHidden: true,
+            disableSort: true,
+            getValue: (r) => r.mattress_sofa_cost_centi ?? 0,
+            render: (r) => (
+              <span className="font-money text-[13px] text-ink-secondary">{fmtRm(r.mattress_sofa_cost_centi ?? 0)}</span>
+            ),
+          },
+          {
+            key: "bedframe_cost_centi",
+            label: "Bedframe Cost",
+            width: "130px",
+            align: "right",
+            defaultHidden: true,
+            disableSort: true,
+            getValue: (r) => r.bedframe_cost_centi ?? 0,
+            render: (r) => (
+              <span className="font-money text-[13px] text-ink-secondary">{fmtRm(r.bedframe_cost_centi ?? 0)}</span>
+            ),
+          },
+          {
+            key: "accessories_cost_centi",
+            label: "Accessories Cost",
+            width: "140px",
+            align: "right",
+            defaultHidden: true,
+            disableSort: true,
+            getValue: (r) => r.accessories_cost_centi ?? 0,
+            render: (r) => (
+              <span className="font-money text-[13px] text-ink-secondary">{fmtRm(r.accessories_cost_centi ?? 0)}</span>
+            ),
+          },
+          {
+            key: "others_cost_centi",
+            label: "Others Cost",
+            width: "130px",
+            align: "right",
+            defaultHidden: true,
+            disableSort: true,
+            getValue: (r) => r.others_cost_centi ?? 0,
+            render: (r) => (
+              <span className="font-money text-[13px] text-ink-secondary">{fmtRm(r.others_cost_centi ?? 0)}</span>
+            ),
+          },
+          {
+            key: "service_cost_centi",
+            label: "Service Cost",
+            width: "130px",
+            align: "right",
+            defaultHidden: true,
+            disableSort: true,
+            getValue: (r) => r.service_cost_centi ?? 0,
+            render: (r) => (
+              <span className="font-money text-[13px] text-ink-secondary">{fmtRm(r.service_cost_centi ?? 0)}</span>
+            ),
+          },
+          {
+            key: "total_cost_centi",
+            label: "Total Cost",
+            width: "120px",
+            align: "right",
+            defaultHidden: true,
+            disableSort: true,
+            getValue: (r) => r.total_cost_centi ?? 0,
+            render: (r) => (
+              <span className="font-money text-[13px] text-ink-secondary">{fmtRm(r.total_cost_centi ?? 0)}</span>
+            ),
+          },
+          {
+            key: "total_margin_centi",
+            label: "Margin",
+            width: "120px",
+            align: "right",
+            defaultHidden: true,
+            disableSort: true,
+            getValue: (r) => r.total_margin_centi ?? 0,
+            render: (r) => (
+              <span className="font-money text-[13px] text-ink">{fmtRm(r.total_margin_centi ?? 0)}</span>
+            ),
+          },
+          {
+            key: "margin_pct_basis",
+            label: "Margin %",
+            width: "100px",
+            align: "right",
+            defaultHidden: true,
+            disableSort: true,
+            getValue: (r) => r.margin_pct_basis ?? 0,
+            render: (r) => (
+              <span className="font-money text-[13px] text-ink-secondary">{fmtPctBasis(r.margin_pct_basis)}</span>
+            ),
+          },
+        ] satisfies Column<DoRow>[])
+      : ([] satisfies Column<DoRow>[])),
   ];
 
   const statusPillOptions: Array<{ value: StatusTab; label: string }> = [

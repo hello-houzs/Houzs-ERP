@@ -26,9 +26,22 @@ import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item
 import { isServiceLine } from '../shared';
 import { findServiceLineCodes, serviceLinesNotReturnableResponse } from '../lib/service-line-guard';
 import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
+import { canViewScmFinance } from '../lib/houzs-perms';
 
 export const deliveryReturns = new Hono<{ Bindings: Env; Variables: Variables }>();
 deliveryReturns.use('*', supabaseAuth);
+
+/* FINANCE-GATED header keys — cost / margin / per-category revenue+cost
+   subtotals. All are in HEADER (so they travel in the DR list payload) but must
+   reach ONLY a finance-viewer (lib/houzs-perms.canViewScmFinance). Stripped from
+   every row for a non-finance caller. The DR header carries FOUR categories (no
+   service_centi, unlike SO/DO/SI). Refund/total shown to everyone
+   (local_total_centi / refund_centi) are NOT listed here. */
+const DR_FINANCE_KEYS = [
+  'mattress_sofa_centi', 'bedframe_centi', 'accessories_centi', 'others_centi',
+  'mattress_sofa_cost_centi', 'bedframe_cost_centi', 'accessories_cost_centi', 'others_cost_centi',
+  'total_cost_centi', 'total_margin_centi', 'margin_pct_basis',
+] as const;
 
 /* Full DR header — mirrors the editable DO header shape. The pre-rebuild
    columns (delivery_order_id / sales_invoice_id / reason / received-inspected-
@@ -630,6 +643,15 @@ deliveryReturns.get('/', async (c) => {
   q = scopeToCompany(q, c); // multi-company: isolate to the active company
   const { data, error } = await q;
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
+  /* Finance gate — cost / margin / per-category subtotals reach ONLY a
+     finance-viewer; stripped from every row otherwise. */
+  if (!canViewScmFinance(c) && Array.isArray(data)) {
+    for (const r of data) {
+      if (r && typeof r === 'object') {
+        for (const k of DR_FINANCE_KEYS) delete (r as Record<string, unknown>)[k];
+      }
+    }
+  }
   return c.json({ deliveryReturns: data ?? [] });
 });
 
