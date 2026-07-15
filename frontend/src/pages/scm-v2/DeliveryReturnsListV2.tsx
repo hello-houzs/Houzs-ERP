@@ -44,6 +44,9 @@ import {
   useDeliveryReturnDetail,
   useUpdateDeliveryReturnStatus,
 } from "../../vendor/scm/lib/delivery-return-queries";
+import { authedFetch } from "../../vendor/scm/lib/authed-fetch";
+import { useNotify } from "../../vendor/scm/components/NotifyDialog";
+import { useChoice } from "../../vendor/scm/components/ChoiceDialog";
 import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "../../lib/utils";
 import { useAuth } from "../../auth/AuthContext";
@@ -681,6 +684,8 @@ export function DeliveryReturnsListV2() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const queryClient = useQueryClient();
+  const notify = useNotify();
+  const askChoice = useChoice();
   const { nameOf: salespersonNameOf } = useStaffLookup();
   // Finance-viewer gate (auth/me = isFinanceViewer). Finance columns below are
   // DECLARED only for a finance-viewer; the backend also omits their keys from
@@ -693,6 +698,8 @@ export function DeliveryReturnsListV2() {
   const search = params.get("q") ?? "";
 
   const [selected, setSelected] = useState<DrRow | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [printingDocs, setPrintingDocs] = useState(false);
 
   // The backend delivery-returns endpoint accepts a status arg but not our
   // compressed buckets — pull the full set and filter client-side (matches
@@ -804,6 +811,106 @@ export function DeliveryReturnsListV2() {
   const goEdit = (r: DrRow) => navigate(`/scm/delivery-returns/${r.id}?edit=1`);
   const goPrint = (r: DrRow) => navigate(`/scm/delivery-returns/${r.id}?print=1`);
   const goFullPage = (r: DrRow) => navigate(`/scm/delivery-returns/${r.id}`);
+
+  // ─── Multi-select → batch "Print all" ─────────────────────────────────────
+  const toggleSelect = (rowId: string) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(rowId)) next.delete(rowId);
+      else next.add(rowId);
+      return next;
+    });
+  const toggleSelectAll = (keys: string[], allSelected: boolean) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allSelected) for (const k of keys) next.delete(k);
+      else for (const k of keys) next.add(k);
+      return next;
+    });
+  const clearSelection = () => setSelectedIds(new Set());
+
+  // One DR's full detail shaped into the { header, items } bundle the generator
+  // expects — the SAME mapping the DR Detail page's Print PDF uses. Endpoint:
+  // GET /delivery-returns/:id → { deliveryReturn, items }.
+  const fetchDrBundle = async (
+    id: string
+  ): Promise<{ header: unknown; items: unknown[] }> => {
+    const data = await authedFetch<{
+      deliveryReturn: Record<string, unknown>;
+      items: Array<Record<string, unknown>>;
+    }>(`/delivery-returns/${id}`);
+    const h = data.deliveryReturn ?? {};
+    const items = (data.items ?? []).map((it) => ({
+      item_code: it.item_code as string,
+      description: (it.description as string | null) ?? null,
+      qty_returned: it.qty_returned as number,
+      condition: (it.condition as string | null) ?? null,
+      unit_price_centi: it.unit_price_centi as number,
+      refund_centi: it.line_total_centi as number,
+    }));
+    return {
+      header: {
+        return_number: h.return_number as string,
+        status: h.status as string,
+        return_date: h.return_date as string,
+        debtor_code: (h.debtor_code as string | null) ?? null,
+        debtor_name: h.debtor_name as string,
+        reason: (h.reason as string | null) ?? null,
+        refund_centi: h.local_total_centi as number,
+        notes: ((h.note as string | null) ?? (h.notes as string | null)) ?? null,
+        delivery_order_id: (h.delivery_order_id as string | null) ?? null,
+        sales_invoice_id: null,
+      },
+      items,
+    };
+  };
+
+  // Batch "Print all" — one ticked DR downloads straight; several prompt
+  // combined-vs-separate.
+  const printSelectedDrs = async () => {
+    if (printingDocs) return;
+    const chosen = filtered.filter((r) => selectedIds.has(r.id));
+    if (chosen.length === 0) return;
+    try {
+      const { generateDeliveryReturnPdf, generateCombinedDeliveryReturnPdf } =
+        await import("../../vendor/scm/lib/delivery-return-pdf");
+      if (chosen.length === 1) {
+        setPrintingDocs(true);
+        const b = await fetchDrBundle(chosen[0]!.id);
+        await generateDeliveryReturnPdf(b.header as never, b.items as never);
+        clearSelection();
+        return;
+      }
+      const how = await askChoice({
+        title: `Print ${chosen.length} delivery returns`,
+        options: [
+          { value: "one", label: "One combined PDF" },
+          { value: "many", label: "Separate files", detail: "One PDF per document" },
+        ],
+      });
+      if (how == null) return;
+      setPrintingDocs(true);
+      const bundles: Array<{ header: unknown; items: unknown[] }> = [];
+      for (const r of chosen) bundles.push(await fetchDrBundle(r.id));
+      if (how === "one") {
+        await generateCombinedDeliveryReturnPdf(bundles as never, {
+          fileName: `delivery-returns-${new Date().toISOString().slice(0, 10)}.pdf`,
+        });
+      } else {
+        for (const b of bundles)
+          await generateDeliveryReturnPdf(b.header as never, b.items as never);
+      }
+      clearSelection();
+    } catch (e) {
+      notify({
+        title: "PDF generation failed",
+        body: e instanceof Error ? e.message : String(e),
+        tone: "error",
+      });
+    } finally {
+      setPrintingDocs(false);
+    }
+  };
   const doMarkInspected = (r: DrRow) =>
     updateStatus.mutate(
       { id: r.id, status: "INSPECTED" },
@@ -1350,31 +1457,61 @@ export function DeliveryReturnsListV2() {
       {/* Desktop → Table / Cards */}
       <div className="hidden md:block">
         {view === "table" ? (
-          <DataTable<DrRow>
-            tableId="delivery-returns-v2"
-            rows={filtered}
-            loading={isLoading}
-            error={error ? (error as Error).message ?? "Failed to load" : null}
-            columns={columns}
-            getRowKey={(r) => r.id}
-            onRowClick={(r) => setSelected(r)}
-            exportName="delivery-returns"
-            emptyLabel={
-              filtersActive
-                ? "No delivery returns match — try Reset layout to clear filters."
-                : "No delivery returns yet."
-            }
-            search={{
-              value: search,
-              onChange: setSearch,
-              placeholder: "Search return, customer, reason, salesperson…",
-            }}
-            resetFilters={{
-              active: filtersActive,
-              onReset: resetLayout,
-              label: "Reset layout",
-            }}
-          />
+          <>
+            {selectedIds.size > 0 && (
+              <div className="mb-3 flex items-center gap-3 rounded-lg border border-primary/40 bg-primary-soft px-4 py-2.5 shadow-stone">
+                <span className="text-[13px] font-semibold text-ink">
+                  {selectedIds.size} selected
+                </span>
+                <span className="text-ink-muted">·</span>
+                <span className="text-[12px] text-ink-secondary">
+                  Combine into one PDF or download separately.
+                </span>
+                <div className="flex-1" />
+                <Button
+                  variant="primary"
+                  icon={<Printer size={14} />}
+                  disabled={printingDocs}
+                  onClick={() => void printSelectedDrs()}
+                >
+                  {printingDocs ? "Printing…" : `Print all (${selectedIds.size})`}
+                </Button>
+                <Button variant="ghost" disabled={printingDocs} onClick={clearSelection}>
+                  Clear
+                </Button>
+              </div>
+            )}
+            <DataTable<DrRow>
+              tableId="delivery-returns-v2"
+              rows={filtered}
+              loading={isLoading}
+              error={error ? (error as Error).message ?? "Failed to load" : null}
+              columns={columns}
+              getRowKey={(r) => r.id}
+              onRowClick={(r) => setSelected(r)}
+              selection={{
+                selectedIds,
+                onToggle: toggleSelect,
+                onToggleAll: toggleSelectAll,
+              }}
+              exportName="delivery-returns"
+              emptyLabel={
+                filtersActive
+                  ? "No delivery returns match — try Reset layout to clear filters."
+                  : "No delivery returns yet."
+              }
+              search={{
+                value: search,
+                onChange: setSearch,
+                placeholder: "Search return, customer, reason, salesperson…",
+              }}
+              resetFilters={{
+                active: filtersActive,
+                onReset: resetLayout,
+                label: "Reset layout",
+              }}
+            />
+          </>
         ) : (
           <>
             <div className="mb-3 flex items-center justify-between">

@@ -64,6 +64,7 @@ import {
 } from "../../vendor/scm/lib/delivery-return-queries";
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
 import { useStaffLookup } from "../../hooks/useStaffLookup";
+import { useNotify } from "../../vendor/scm/components/NotifyDialog";
 import {
   DocumentRelationshipMapModal,
   type ChainNode,
@@ -473,6 +474,7 @@ export function DeliveryReturnDetailV2() {
   const detail = useDeliveryReturnDetail(id ?? null);
   const updateStatus = useUpdateDeliveryReturnStatus();
   const { nameOf: salespersonNameOf } = useStaffLookup();
+  const notify = useNotify();
 
   const deliveryReturn =
     (detail.data as { deliveryReturn?: DrHeader } | undefined)?.deliveryReturn ??
@@ -522,7 +524,45 @@ export function DeliveryReturnDetailV2() {
   const [relMapOpen, setRelMapOpen] = useState(false);
   const goHistory = () => id && navigate(`/scm/delivery-returns/${id}?tab=history`);
   const goRelationshipMap = () => setRelMapOpen(true);
-  const goPrintPdf = () => id && navigate(`/scm/delivery-returns/${id}?print=1`);
+  // Render + download the DR PDF via the shared jspdf generator (client-side),
+  // mirroring the V1 DeliveryReturnDetail handler (which maps the header + items
+  // into the generator's shape). The old `?print=1` navigation was dead —
+  // nothing consumed that param — so the button did nothing.
+  const goPrintPdf = () => {
+    if (!deliveryReturn) return;
+    import("../../vendor/scm/lib/delivery-return-pdf")
+      .then(({ generateDeliveryReturnPdf }) =>
+        generateDeliveryReturnPdf(
+          {
+            return_number: deliveryReturn.return_number,
+            status: deliveryReturn.status,
+            return_date: deliveryReturn.return_date,
+            debtor_code: deliveryReturn.debtor_code,
+            debtor_name: deliveryReturn.debtor_name,
+            reason: deliveryReturn.reason,
+            refund_centi: deliveryReturn.local_total_centi,
+            notes: deliveryReturn.note ?? deliveryReturn.notes,
+            delivery_order_id: deliveryReturn.delivery_order_id,
+            sales_invoice_id: null,
+          },
+          items.map((it) => ({
+            item_code: it.item_code,
+            description: it.description,
+            qty_returned: it.qty_returned,
+            condition: it.condition,
+            unit_price_centi: it.unit_price_centi,
+            refund_centi: it.line_total_centi,
+          }))
+        )
+      )
+      .catch((e) =>
+        notify({
+          title: "PDF generation failed",
+          body: e instanceof Error ? e.message : String(e),
+          tone: "error",
+        })
+      );
+  };
 
   // Chain nodes for the shared Relationship Map modal — PO → SO → DO → SI →
   // DR (CURRENT). Return branches OFF the DO, so DO is the immediate parent;

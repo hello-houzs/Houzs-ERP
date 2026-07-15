@@ -34,9 +34,13 @@ import {
   usePurchaseOrdersPaged,
   usePurchaseOrderDetail,
   useCancelPurchaseOrder,
+  fetchPurchaseOrderDetail,
   type PoHeaderRow,
   type PoItemRow,
 } from "../../vendor/scm/lib/suppliers-queries";
+import { useWarehouses } from "../../vendor/scm/lib/inventory-queries";
+import { useNotify } from "../../vendor/scm/components/NotifyDialog";
+import { useChoice } from "../../vendor/scm/components/ChoiceDialog";
 import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "../../lib/utils";
 
@@ -565,6 +569,9 @@ export function PurchaseOrdersListV2() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const queryClient = useQueryClient();
+  const notify = useNotify();
+  const askChoice = useChoice();
+  const warehousesQ = useWarehouses({ includeInactive: true });
 
   const status = (params.get("status") ?? "all") as StatusTab;
   const view = (params.get("view") ?? "table") as "table" | "cards";
@@ -577,6 +584,7 @@ export function PurchaseOrdersListV2() {
   // Multi-select → batch-convert N POs into one GRN. State is owned here (the
   // DataTable `selection` prop only renders the checkboxes + reports toggles).
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [printingDocs, setPrintingDocs] = useState(false);
   const [debouncedSearch, setDebouncedSearch] = useState(search);
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search), 300);
@@ -709,6 +717,88 @@ export function PurchaseOrdersListV2() {
     const ids = [...selectedIds];
     clearSelection();
     navigate(`/scm/grns/from-po?poId=${ids.join(",")}`);
+  };
+
+  // Batch "Print all" — fetch each selected PO's full detail, resolve its bound
+  // warehouse name (the PDF can't hit the API), then render into one combined
+  // file or one file per PO. Mirrors the V1 PurchaseOrders list handler.
+  const printSelectedPos = async () => {
+    if (printingDocs) return;
+    const chosen = rows.filter((r) => selectedIds.has(r.id));
+    if (chosen.length === 0) return;
+    const warehouses = warehousesQ.data ?? [];
+    const toPo = (d: { purchaseOrder: PoHeaderRow; items: PoItemRow[] }) => {
+      const wh = warehouses.find(
+        (w) => w.id === d.purchaseOrder.purchase_location_id
+      );
+      return {
+        header: {
+          ...d.purchaseOrder,
+          purchase_location_name: wh ? `${wh.code} · ${wh.name}` : null,
+          delivery_address: wh?.location ?? null,
+          your_ref_no:
+            (d.purchaseOrder as { your_ref_no?: string | null }).your_ref_no ??
+            null,
+          source_so_doc_no:
+            (d.purchaseOrder as { source_so_doc_no?: string | null })
+              .source_so_doc_no ?? null,
+        },
+        items: d.items,
+      };
+    };
+    try {
+      const pdf = await import("../../vendor/scm/lib/purchase-order-pdf");
+      if (chosen.length === 1) {
+        setPrintingDocs(true);
+        const d = await queryClient.fetchQuery({
+          queryKey: ["mfg-purchase-order-detail", chosen[0]!.id],
+          queryFn: () => fetchPurchaseOrderDetail(chosen[0]!.id),
+          staleTime: 30_000,
+        });
+        const po = toPo(d);
+        await pdf.generatePurchaseOrderPdf(po.header as never, po.items as never);
+        clearSelection();
+        return;
+      }
+      const how = await askChoice({
+        title: `Print ${chosen.length} purchase orders`,
+        options: [
+          { value: "one", label: "One combined PDF" },
+          { value: "many", label: "Separate files", detail: "One PDF per document" },
+        ],
+      });
+      if (how == null) return;
+      setPrintingDocs(true);
+      const pos: Array<{ header: unknown; items: unknown[] }> = [];
+      for (const r of chosen) {
+        const d = await queryClient.fetchQuery({
+          queryKey: ["mfg-purchase-order-detail", r.id],
+          queryFn: () => fetchPurchaseOrderDetail(r.id),
+          staleTime: 30_000,
+        });
+        pos.push(toPo(d));
+      }
+      if (how === "one") {
+        await pdf.generateCombinedPurchaseOrderPdf(pos as never, {
+          fileName: `purchase-orders-${new Date().toISOString().slice(0, 10)}.pdf`,
+        });
+      } else {
+        for (const po of pos)
+          await pdf.generatePurchaseOrderPdf(
+            po.header as never,
+            po.items as never
+          );
+      }
+      clearSelection();
+    } catch (e) {
+      notify({
+        title: "PDF generation failed",
+        body: e instanceof Error ? e.message : String(e),
+        tone: "error",
+      });
+    } finally {
+      setPrintingDocs(false);
+    }
   };
 
   const doCancel = (r: PoHeaderRow) => {
@@ -930,6 +1020,16 @@ export function PurchaseOrdersListV2() {
                   <div className="flex items-center gap-2">
                     <Button variant="ghost" onClick={clearSelection}>
                       Clear
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      icon={<Printer size={14} />}
+                      disabled={printingDocs}
+                      onClick={() => void printSelectedPos()}
+                    >
+                      {printingDocs
+                        ? "Printing…"
+                        : `Print all (${selectedIds.size})`}
                     </Button>
                     <Button
                       variant="primary"

@@ -59,6 +59,7 @@ import {
 } from "../../vendor/scm/lib/sales-invoice-queries";
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
 import { useStaffLookup } from "../../hooks/useStaffLookup";
+import { useNotify } from "../../vendor/scm/components/NotifyDialog";
 import {
   DocumentRelationshipMapModal,
   type ChainNode,
@@ -538,6 +539,7 @@ export function SalesInvoiceDetailV2() {
   const detail = useSalesInvoiceDetail(id ?? null);
   const updateStatus = useUpdateSalesInvoiceStatus();
   const { nameOf: salespersonNameOf } = useStaffLookup();
+  const notify = useNotify();
 
   const salesInvoice =
     (detail.data as { salesInvoice?: SiHeader } | undefined)?.salesInvoice ??
@@ -592,7 +594,23 @@ export function SalesInvoiceDetailV2() {
   const [relMapOpen, setRelMapOpen] = useState(false);
   const goHistory = () => id && navigate(`/scm/sales-invoices/${id}?tab=history`);
   const goRelationshipMap = () => setRelMapOpen(true);
-  const goPrintPdf = () => id && navigate(`/scm/sales-invoices/${id}?print=1`);
+  // Render + download the SI PDF via the shared jspdf generator (client-side),
+  // mirroring the V1 SalesInvoiceDetail handler. The old `?print=1` navigation
+  // was dead — nothing consumed that param — so the button did nothing.
+  const goPrintPdf = () => {
+    if (!salesInvoice) return;
+    import("../../vendor/scm/lib/sales-invoice-pdf")
+      .then(({ generateSalesInvoicePdf }) =>
+        generateSalesInvoicePdf(salesInvoice as never, items as never)
+      )
+      .catch((e) =>
+        notify({
+          title: "PDF generation failed",
+          body: e instanceof Error ? e.message : String(e),
+          tone: "error",
+        })
+      );
+  };
 
   // Chain nodes for the shared Relationship Map modal — PO → SO → DO → GRN →
   // SI (CURRENT). The SI is downstream of every other doc so all upstream

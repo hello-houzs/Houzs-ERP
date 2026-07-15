@@ -34,6 +34,9 @@ import {
   usePostGrn,
   useCancelGrn,
 } from "../../vendor/scm/lib/grn-queries";
+import { authedFetch } from "../../vendor/scm/lib/authed-fetch";
+import { useNotify } from "../../vendor/scm/components/NotifyDialog";
+import { useChoice } from "../../vendor/scm/components/ChoiceDialog";
 import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "../../lib/utils";
 
@@ -437,6 +440,8 @@ export function GoodsReceivedListV2() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const queryClient = useQueryClient();
+  const notify = useNotify();
+  const askChoice = useChoice();
 
   const status = (params.get("status") ?? "all") as StatusTab;
   const view = (params.get("view") ?? "table") as "table" | "cards";
@@ -446,6 +451,8 @@ export function GoodsReceivedListV2() {
 
   const [selected, setSelected] = useState<GrnRow | null>(null);
   const [sort, setSort] = useState<string | undefined>(undefined);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [printingDocs, setPrintingDocs] = useState(false);
   const [debouncedSearch, setDebouncedSearch] = useState(search);
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search), 300);
@@ -536,6 +543,83 @@ export function GoodsReceivedListV2() {
   const goFullPage = (r: GrnRow) => navigate(`/scm/grns/${r.id}`);
   const goConvertToPi = (r: GrnRow) => navigate(`/scm/purchase-invoices/from-grn?grn=${r.id}`);
   const goConvertToPr = (r: GrnRow) => navigate(`/scm/purchase-returns/new?fromGrn=${r.id}`);
+
+  // ─── Multi-select → batch "Print all" ─────────────────────────────────────
+  const toggleSelect = (rowId: string) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(rowId)) next.delete(rowId);
+      else next.add(rowId);
+      return next;
+    });
+  const toggleSelectAll = (keys: string[], allSelected: boolean) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allSelected) for (const k of keys) next.delete(k);
+      else for (const k of keys) next.add(k);
+      return next;
+    });
+  const clearSelection = () => setSelectedIds(new Set());
+
+  // One GRN's full detail for the PDF generator, via the vendored authedFetch
+  // (→ /api/scm); same endpoint + shape as the single-row detail page.
+  const fetchGrnBundle = async (
+    row: GrnRow
+  ): Promise<{ header: unknown; items: unknown[] }> => {
+    const json = await authedFetch<{ grn: unknown; items: unknown[] }>(
+      `/grns/${row.id}`
+    );
+    return { header: json.grn, items: json.items };
+  };
+
+  // Batch "Print all" — one ticked GRN downloads straight; several prompt
+  // combined-vs-separate, then render into one merged file or one per GRN.
+  const printSelectedGrns = async () => {
+    if (printingDocs) return;
+    const chosen = rows.filter((r) => selectedIds.has(r.id));
+    if (chosen.length === 0) return;
+    try {
+      const { generateGrnPdf, generateCombinedGrnPdf } = await import(
+        "../../vendor/scm/lib/grn-pdf"
+      );
+      if (chosen.length === 1) {
+        setPrintingDocs(true);
+        const b = await fetchGrnBundle(chosen[0]!);
+        await generateGrnPdf(b.header as never, b.items as never);
+        clearSelection();
+        return;
+      }
+      const how = await askChoice({
+        title: `Print ${chosen.length} goods-received notes`,
+        options: [
+          { value: "one", label: "One combined PDF" },
+          { value: "many", label: "Separate files", detail: "One PDF per document" },
+        ],
+      });
+      if (how == null) return;
+      setPrintingDocs(true);
+      const bundles: Array<{ header: unknown; items: unknown[] }> = [];
+      for (const r of chosen) bundles.push(await fetchGrnBundle(r));
+      if (how === "one") {
+        await generateCombinedGrnPdf(bundles as never, {
+          fileName: `goods-received-${new Date().toISOString().slice(0, 10)}.pdf`,
+        });
+      } else {
+        for (const b of bundles)
+          await generateGrnPdf(b.header as never, b.items as never);
+      }
+      clearSelection();
+    } catch (e) {
+      notify({
+        title: "PDF generation failed",
+        body: e instanceof Error ? e.message : String(e),
+        tone: "error",
+      });
+    } finally {
+      setPrintingDocs(false);
+    }
+  };
+
   const doPost = (r: GrnRow) => {
     if (window.confirm(`Post GRN ${r.grn_number}? Inventory will be received into the warehouse.`)) {
       postGrn.mutate(r.id, { onSuccess: () => setSelected(null) });
@@ -689,6 +773,29 @@ export function GoodsReceivedListV2() {
         <div className="hidden md:block">
           {view === "table" ? (
             <>
+              {selectedIds.size > 0 && (
+                <div className="mb-3 flex items-center gap-3 rounded-lg border border-primary/40 bg-primary-soft px-4 py-2.5 shadow-stone">
+                  <span className="text-[13px] font-semibold text-ink">
+                    {selectedIds.size} selected
+                  </span>
+                  <span className="text-ink-muted">·</span>
+                  <span className="text-[12px] text-ink-secondary">
+                    Combine into one PDF or download separately.
+                  </span>
+                  <div className="flex-1" />
+                  <Button
+                    variant="primary"
+                    icon={<Printer size={14} />}
+                    disabled={printingDocs}
+                    onClick={() => void printSelectedGrns()}
+                  >
+                    {printingDocs ? "Printing…" : `Print all (${selectedIds.size})`}
+                  </Button>
+                  <Button variant="ghost" disabled={printingDocs} onClick={clearSelection}>
+                    Clear
+                  </Button>
+                </div>
+              )}
               <DataTable<GrnRow>
                 tableId="grns-v2"
                 rows={rows}
@@ -697,6 +804,11 @@ export function GoodsReceivedListV2() {
                 columns={columns}
                 getRowKey={(r) => r.id}
                 onRowClick={(r) => setSelected(r)}
+                selection={{
+                  selectedIds,
+                  onToggle: toggleSelect,
+                  onToggleAll: toggleSelectAll,
+                }}
                 exportName="grns"
                 serverSort
                 onSortChange={setSortAndReset}

@@ -27,6 +27,7 @@ import {
   useCancelGrn,
 } from "../../vendor/scm/lib/grn-queries";
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
+import { useNotify } from "../../vendor/scm/components/NotifyDialog";
 import { cn } from "../../lib/utils";
 
 type GrnStatus = "DRAFT" | "POSTED" | "CANCELLED" | string;
@@ -292,6 +293,7 @@ function GoodsReceivedDetailV2ReadOnly() {
   const detail = useGrnDetail(id ?? null);
   const postGrn = usePostGrn();
   const cancelGrn = useCancelGrn();
+  const notify = useNotify();
 
   const grn = (detail.data as { grn?: GrnHeader } | undefined)?.grn ?? null;
   const items: GrnItem[] = useMemo(
@@ -314,7 +316,23 @@ function GoodsReceivedDetailV2ReadOnly() {
   };
   const goEdit = () => id && navigate(`/scm/grns/${id}?edit=1`);
   const goHistory = () => id && navigate(`/scm/grns/${id}?tab=history`);
-  const goPrintPdf = () => id && navigate(`/scm/grns/${id}?print=1`);
+  // Render + download the GRN PDF via the shared jspdf generator (client-side),
+  // mirroring the V1 GoodsReceivedDetail handler. The old `?print=1` navigation
+  // was dead — nothing consumed that param — so the button did nothing.
+  const goPrintPdf = () => {
+    if (!grn) return;
+    import("../../vendor/scm/lib/grn-pdf")
+      .then(({ generateGrnPdf }) =>
+        generateGrnPdf(grn as never, items as never)
+      )
+      .catch((e) =>
+        notify({
+          title: "PDF generation failed",
+          body: e instanceof Error ? e.message : String(e),
+          tone: "error",
+        })
+      );
+  };
   const goConvertToPi = () => id && navigate(`/scm/purchase-invoices/from-grn?grn=${id}`);
   const goConvertToPr = () => id && navigate(`/scm/purchase-returns/new?fromGrn=${id}`);
   const doPost = () => {
