@@ -1,5 +1,6 @@
 import {
   AuthProvider,
+  DialogProvider,
   NotificationsProvider,
   BreadcrumbsProvider,
   GlobalSearchProvider,
@@ -109,15 +110,17 @@ function Bar({ route }: { route: string }) {
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[route]}>
         <AuthProvider>
-          <NotificationsProvider>
-            <BreadcrumbsProvider>
-              <GlobalSearchProvider>
-                <div className="w-[960px] bg-bg pb-10">
-                  <TopNavbar />
-                </div>
-              </GlobalSearchProvider>
-            </BreadcrumbsProvider>
-          </NotificationsProvider>
+          <DialogProvider>
+            <NotificationsProvider>
+              <BreadcrumbsProvider>
+                <GlobalSearchProvider>
+                  <div className="w-[960px] bg-bg pb-10">
+                    <TopNavbar />
+                  </div>
+                </GlobalSearchProvider>
+              </BreadcrumbsProvider>
+            </NotificationsProvider>
+          </DialogProvider>
         </AuthProvider>
       </MemoryRouter>
     </QueryClientProvider>
