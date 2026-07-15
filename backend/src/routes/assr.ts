@@ -18,6 +18,7 @@ import {
   patchLogistics,
   logActivity,
   nextServicePONumber,
+  setCaseCreditorManual,
 } from "../services/assr";
 import { runSlaEscalation } from "../services/assrEscalation";
 import { issueStaffToken, issueSalesToken } from "../services/caseTracking";
@@ -658,7 +659,7 @@ app.post("/:id/resolve-creditor", requirePermission("service_cases.manage"), asy
 
   try {
     const { resolveCreditorForCase } = await import("../services/stockItems");
-    const creditorCode = await resolveCreditorForCase(c.env, id, row.item_code);
+    const creditorCode = await resolveCreditorForCase(c.env, id, row.item_code, { force: true });
     return c.json({
       ok: true,
       item_code: row.item_code,
@@ -671,6 +672,79 @@ app.post("/:id/resolve-creditor", requirePermission("service_cases.manage"), asy
     // Plain-language rule: never surface raw exception text to the user.
     return c.json({ error: "Couldn't reach AutoCount to resolve the supplier. Try again shortly." }, 502);
   }
+});
+
+// ── Creditor search / manual assignment ──────────────────────
+// AutoCount's creditor sync is partial and many items carry no
+// MainSupplier, so staff can search the local creditors mirror and
+// hand-link a supplier — or register one AutoCount doesn't have yet
+// (type='MANUAL'). Hand-picked links set creditor_source='manual' so
+// auto-resolution leaves them alone.
+
+app.get("/creditors/search", requireServiceCaseAccess(), async (c) => {
+  const q = (c.req.query("q") || "").trim().toLowerCase();
+  const like = `%${q}%`;
+  const rows = await c.env.DB.prepare(
+    `SELECT creditor_code, company_name, phone1
+       FROM creditors
+      WHERE LOWER(creditor_code) LIKE ? OR LOWER(COALESCE(company_name, '')) LIKE ?
+      ORDER BY company_name
+      LIMIT 20`
+  )
+    .bind(like, like)
+    .all();
+  return c.json({ results: rows.results ?? [] });
+});
+
+app.post("/creditors/create", requirePermission("service_cases.write"), async (c) => {
+  const body = await c.req.json<{
+    creditor_code?: string;
+    company_name?: string;
+    phone?: string;
+    email?: string;
+  }>();
+  const name = (body.company_name || "").trim();
+  if (!name) return c.json({ error: "Supplier name is required" }, 400);
+
+  let code = (body.creditor_code || "").trim();
+  if (!code) {
+    const row = await c.env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM creditors WHERE creditor_code LIKE 'MAN-%'`
+    ).first<{ n: number }>();
+    code = `MAN-${String(Number(row?.n ?? 0) + 1).padStart(4, "0")}`;
+  }
+
+  const dup = await c.env.DB.prepare(
+    `SELECT creditor_code, company_name FROM creditors WHERE creditor_code = ?`
+  )
+    .bind(code)
+    .first<{ creditor_code: string; company_name: string | null }>();
+  if (dup) {
+    return c.json(
+      { error: `Supplier code ${code} already exists (${dup.company_name || "unnamed"})` },
+      409
+    );
+  }
+
+  await c.env.DB.prepare(
+    `INSERT INTO creditors (creditor_code, company_name, phone1, email, type, type_description, updated_at)
+     VALUES (?, ?, ?, ?, 'MANUAL', 'Added manually from Service Cases', datetime('now'))`
+  )
+    .bind(code, name, (body.phone || "").trim() || null, (body.email || "").trim() || null)
+    .run();
+
+  return c.json({ creditor_code: code, company_name: name }, 201);
+});
+
+app.post("/:id{[0-9]+}/set-creditor", requirePermission("service_cases.write"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  const body = await c.req.json<{ creditor_code?: string | null }>();
+  const userId = (c as any).get?.("userId") ?? null;
+  const code =
+    body.creditor_code == null ? null : String(body.creditor_code).trim() || null;
+  const res = await setCaseCreditorManual(c.env, id, code, userId);
+  if (!res.ok) return c.json({ error: res.error }, res.status);
+  return c.json({ ok: true, creditor_code: code, creditor_name: res.creditor_name });
 });
 
 // ── Cases grouped by creditor ────────────────────────────────

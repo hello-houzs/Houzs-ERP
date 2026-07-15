@@ -151,13 +151,31 @@ export async function getStockItemCached(
  * Called from `createAssrCase` (fire-and-forget — a failed resolve
  * must not block case creation) and from `patchAssrCase` when the
  * item_code changes.
+ *
+ * Manual picks win: a case with creditor_source='manual' (staff chose
+ * the supplier because AutoCount has no MainSupplier) is left alone —
+ * the check runs before the AutoCount lookup so manual rows cost
+ * nothing. The explicit "Resolve now" button passes force=true to hand
+ * the link back to AutoCount.
  */
 export async function resolveCreditorForCase(
   env: Env,
   caseId: number,
-  itemCode: string | null | undefined
+  itemCode: string | null | undefined,
+  opts: { force?: boolean } = {}
 ): Promise<string | null> {
   if (!itemCode) return null;
+
+  const existing = await env.DB.prepare(
+    `SELECT creditor_code, creditor_source FROM assr_cases WHERE id = ? LIMIT 1`
+  )
+    .bind(caseId)
+    .first<{ creditor_code: string | null; creditor_source: string | null }>();
+  if (!existing) return null; // case was deleted
+  if (existing.creditor_source === "manual" && !opts.force) {
+    return existing.creditor_code;
+  }
+
   let creditorCode: string | null = null;
   try {
     const item = await getStockItemCached(env, itemCode);
@@ -170,36 +188,35 @@ export async function resolveCreditorForCase(
     return null;
   }
 
-  // Find the current creditor_code so we only write + log on change.
-  const existing = await env.DB.prepare(
-    `SELECT creditor_code FROM assr_cases WHERE id = ? LIMIT 1`
-  )
-    .bind(caseId)
-    .first<{ creditor_code: string | null }>();
-  if (!existing) return creditorCode; // case was deleted
-  if ((existing.creditor_code ?? null) === (creditorCode ?? null)) return creditorCode;
+  const same = (existing.creditor_code ?? null) === (creditorCode ?? null);
+  // Same value AND already auto-owned → nothing to do. When force
+  // re-resolves a manual row to the same code, still fall through so
+  // ownership flips back to 'auto'.
+  if (same && existing.creditor_source !== "manual") return creditorCode;
 
   await env.DB.prepare(
-    `UPDATE assr_cases SET creditor_code = ?, updated_at = datetime('now') WHERE id = ?`
+    `UPDATE assr_cases SET creditor_code = ?, creditor_source = 'auto', updated_at = datetime('now') WHERE id = ?`
   )
     .bind(creditorCode, caseId)
     .run();
 
-  // Activity trail — mirrors other auto-resolved transitions.
-  await env.DB.prepare(
-    `INSERT INTO assr_activity (assr_id, action, from_value, to_value, note, created_by)
-     VALUES (?, 'creditor_resolved', ?, ?, ?, NULL)`
-  )
-    .bind(
-      caseId,
-      existing.creditor_code ?? null,
-      creditorCode,
-      `Auto-resolved from item ${itemCode}`
+  if (!same) {
+    // Activity trail — mirrors other auto-resolved transitions.
+    await env.DB.prepare(
+      `INSERT INTO assr_activity (assr_id, action, from_value, to_value, note, created_by)
+       VALUES (?, 'creditor_resolved', ?, ?, ?, NULL)`
     )
-    .run()
-    .catch(() => {
-      // assr_activity may not exist in older deployments; don't break.
-    });
+      .bind(
+        caseId,
+        existing.creditor_code ?? null,
+        creditorCode,
+        `Auto-resolved from item ${itemCode}`
+      )
+      .run()
+      .catch(() => {
+        // assr_activity may not exist in older deployments; don't break.
+      });
+  }
 
   return creditorCode;
 }
@@ -264,6 +281,7 @@ export async function runStockItemsRefresh(
               updated_at = datetime('now')
         WHERE item_code IS NOT NULL AND item_code != ''
           AND archived_at IS NULL
+          AND COALESCE(creditor_source, '') != 'manual'
           AND (
             COALESCE(creditor_code, '') != COALESCE(
               (SELECT si.main_supplier FROM stock_items si
