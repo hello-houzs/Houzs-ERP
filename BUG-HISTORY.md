@@ -8,6 +8,12 @@ Severity tags: 🔴 critical/high · 🟠 medium · 🟢 low.
 
 ## 2026-07-15
 
+### 🔴 GRN-from-PO could receive into the wrong (China/transit) warehouse; "Receive into" not required
+- **Symptom:** Creating a GRN from a PO, when the warehouse couldn't be resolved from the picked lines or the PO, silently defaulted to the China/transit warehouse (first by code-sort) instead of the real MY warehouse — MRP for the real warehouse still showed a shortage. The picker also wasn't required, so nothing forced the operator to correct it. (2990 hardened this 2026-07-02; the Houzs V2 rebuild never ported it.)
+- **Root cause:** `GrnNew.tsx` fallback was `pickLoc ?? poLoc ?? warehousesQ.data?.[0]?.id` — `[0]` is China/transit by code-sort. 2990's equivalent used a `safeDefault` (is_default, non-transit). The Houzs `Warehouse` type has `is_default` (no is_transit flag).
+- **Fix:** Fallback now prefers the `is_default` warehouse (`warehouses.find(w => w.is_default)?.id ?? [0]`); still honours the picks' / PO's warehouse first. Made "Receive into" a required field (label `*` + `required`).
+- **Ref:** `fix/grn-warehouse-carryover`, 2026-07-15.
+
 ### 🟢 Desktop Warehouse (Racks) was a bare table — ported HOOKKA's full rack module (Phase 1)
 - **Symptom:** The desktop Racks page (#557) was a plain CRUD table; HOOKKA has a full Warehouse experience (KPI tiles, visual rack grid, stock-in/out, movement history) the owner wanted on desktop too.
 - **Fix (Phase 1, FE-only — backend already had the endpoints):** Rewrote `WarehouseRacks.tsx` into a 3-tab page: KPI tiles (from `GET /warehouse` summary); Rack Overview with a warehouse selector, colour-coded rack grid (occupied/empty/reserved, up to 3 items per card + "+N more", Floor bucket) and client-side search by SO/customer-PO/customer/product; Stock In/Out tab (stock-in + stock-out forms + recent movements); Movement History tab (type/from/to filters). Added `useStockIn`/`useStockOut`/`useTransfer`/`useMovements` hooks. Adapted to Houzs (per-warehouse racks, product-keyed qty model — NOT HOOKKA's per-piece/packing machinery). QR generation + public camera-scan are Phases 2-4.
