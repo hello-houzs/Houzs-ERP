@@ -475,7 +475,12 @@ export const GrnNew = () => {
       ? (picks?.find((p) => p.warehouseLocationId)?.warehouseLocationId ?? null)
       : null;
     const poLoc = (po as { purchase_location_id?: string | null } | undefined)?.purchase_location_id ?? null;
-    const fallback = pickLoc ?? poLoc ?? (warehousesQ.data?.[0]?.id ?? '');
+    // Owner 2026-07-15 (2990 parity): when neither the picks nor the PO resolve a
+    // warehouse, default to the is_default warehouse — NEVER warehousesQ.data[0],
+    // which is the China/transit warehouse by code-sort and silently receives stock
+    // into the wrong place (real MY warehouse still shows the shortage in MRP).
+    const safeDefault = warehousesQ.data?.find((w) => w.is_default)?.id ?? warehousesQ.data?.[0]?.id ?? '';
+    const fallback = pickLoc ?? poLoc ?? safeDefault;
     if (fallback) setWarehouseId(fallback);
   }, [warehouseId, picksResolved, hasPicks, picks, po, warehousesQ.data]);
 
@@ -757,12 +762,13 @@ export const GrnNew = () => {
             {/* Receive into — Warehouse picker (PO's Purchase Location equivalent).
                 Threads into the create payload → inventory-IN lands here. */}
             <label className={styles.field}>
-              <span className={styles.fieldLabel}>Receive into</span>
+              <span className={styles.fieldLabel}>Receive into *</span>
               <select
                 value={warehouseId}
                 onChange={(e) => setWarehouseId(e.target.value)}
                 className={styles.fieldInput}
                 disabled={warehousesQ.isLoading}
+                required
               >
                 <option value="">{warehousesQ.isLoading ? 'Loading warehouses…' : '— Pick a warehouse —'}</option>
                 {sortByText(warehousesQ.data ?? []).map((w) => (
