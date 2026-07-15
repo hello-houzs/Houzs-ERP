@@ -514,6 +514,7 @@ export const PurchaseConsignmentReceiveDetail = () => {
                       <div style={{ fontFamily: 'var(--font-button)', fontSize: 'var(--fs-11)', fontWeight: 700, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'var(--fg-muted)', marginBottom: 'var(--space-2)' }}>{d.itemGroup} Variants</div>
                       <PcVariantEditor
                         category={d.itemGroup ?? ''}
+                        itemCode={it.material_code}
                         variants={(d.variants ?? {}) as Record<string, unknown>}
                         onChange={(k, v) => setVariant(it, k, v)}
                         fabrics={fabrics}

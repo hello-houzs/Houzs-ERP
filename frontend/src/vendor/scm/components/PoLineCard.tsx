@@ -35,8 +35,9 @@
 
 import { Trash2 } from 'lucide-react';
 import type { MfgProductRow, MaintenanceConfig } from '../lib/mfg-products-queries';
+import { useModelAllowedOptionsByCode } from '../lib/mfg-products-queries';
 import type { BindingRow, MaterialKind } from '../lib/suppliers-queries';
-import { activeOptions, maintPickerValues } from '@2990s/shared';
+import { activeOptions, maintPickerValues, restrictPricedToPool, restrictStringsToPool } from '@2990s/shared';
 import { fabricOptionLabel, type FabricTrackingRow } from '../lib/fabric-queries';
 import { sortByText, sortByNumeric, byText } from '../lib/sort-options';
 import type { Warehouse } from '../lib/inventory-queries';
@@ -203,6 +204,11 @@ export const PoLineCard = ({
   identityReadOnly?: boolean;
 }) => {
   const l = line;
+  /* Per-Model allowed_options for this line's SKU — the SAME by-code source
+     SoLineCard reads, so a PO variant dropdown offers ONLY what the SKU's Model
+     permits (owner 2026-07-15 "not a backdoor"). Null for legacy/unknown codes
+     ⇒ no restriction, exactly the SoLineCard fallback. */
+  const allowOpts = useModelAllowedOptionsByCode(l.materialCode || undefined).data ?? null;
   const lineTotalCenti = Math.max(0, l.qty * l.unitPriceCenti - (l.discountCenti ?? 0));
   const categoryLabel = l.category?.toUpperCase() ?? 'UNSET';
   // PR #135 — only sofa / bedframe carry a variant editor (mattress size +
@@ -434,7 +440,7 @@ export const PoLineCard = ({
                     onChange={(e) => onSetVariant('gap', e.target.value)}
                   >
                     <option value="" disabled>Select…</option>
-                    {sortByNumeric(maintPickerValues(maint!.gaps, String(l.variants.gap ?? ''))).map((g) => (<option key={g} value={g}>{g}</option>))}
+                    {sortByNumeric(restrictStringsToPool(maintPickerValues(maint!.gaps, String(l.variants.gap ?? '')), allowOpts?.gaps, String(l.variants.gap ?? ''))).map((g) => (<option key={g} value={g}>{g}</option>))}
                   </select>
                 </label>
                 <label className={styles.field}>
@@ -446,7 +452,7 @@ export const PoLineCard = ({
                     onChange={(e) => onSetVariant('divanHeight', e.target.value)}
                   >
                     <option value="" disabled>Select…</option>
-                    {sortByNumeric(activeOptions(maint!.divanHeights, String(l.variants.divanHeight ?? ''))).map((o) => (<option key={o.value} value={o.value}>{o.value}</option>))}
+                    {sortByNumeric(restrictPricedToPool(activeOptions(maint!.divanHeights, String(l.variants.divanHeight ?? '')), allowOpts?.divan_heights, String(l.variants.divanHeight ?? ''))).map((o) => (<option key={o.value} value={o.value}>{o.value}</option>))}
                   </select>
                 </label>
                 <label className={styles.field}>
@@ -458,7 +464,7 @@ export const PoLineCard = ({
                     onChange={(e) => onSetVariant('legHeight', e.target.value)}
                   >
                     <option value="" disabled>Select…</option>
-                    {sortByNumeric(activeOptions(maint!.legHeights, String(l.variants.legHeight ?? ''))).map((o) => (<option key={o.value} value={o.value}>{o.value}</option>))}
+                    {sortByNumeric(restrictPricedToPool(activeOptions(maint!.legHeights, String(l.variants.legHeight ?? '')), allowOpts?.leg_heights, String(l.variants.legHeight ?? ''))).map((o) => (<option key={o.value} value={o.value}>{o.value}</option>))}
                   </select>
                 </label>
               </div>
@@ -500,7 +506,7 @@ export const PoLineCard = ({
                     onChange={(e) => onSetVariant('seatHeight', e.target.value)}
                   >
                     <option value="" disabled>Select…</option>
-                    {sortByNumeric(maintPickerValues(maint!.sofaSizes, String(l.variants.seatHeight ?? ''))).map((s) => (<option key={s} value={s}>{s}</option>))}
+                    {sortByNumeric(restrictStringsToPool(maintPickerValues(maint!.sofaSizes, String(l.variants.seatHeight ?? '')), allowOpts?.sizes, String(l.variants.seatHeight ?? ''))).map((s) => (<option key={s} value={s}>{s}</option>))}
                   </select>
                 </label>
                 <label className={styles.field}>
@@ -512,7 +518,7 @@ export const PoLineCard = ({
                     onChange={(e) => onSetVariant('legHeight', e.target.value)}
                   >
                     <option value="" disabled>Select…</option>
-                    {sortByNumeric(activeOptions(maint!.sofaLegHeights, String(l.variants.legHeight ?? ''))).map((o) => (<option key={o.value} value={o.value}>{o.value}</option>))}
+                    {sortByNumeric(restrictPricedToPool(activeOptions(maint!.sofaLegHeights, String(l.variants.legHeight ?? '')), allowOpts?.leg_heights, String(l.variants.legHeight ?? ''))).map((o) => (<option key={o.value} value={o.value}>{o.value}</option>))}
                   </select>
                 </label>
                 <span />
