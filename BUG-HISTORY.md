@@ -8,6 +8,12 @@ Severity tags: 🔴 critical/high · 🟠 medium · 🟢 low.
 
 ## 2026-07-15
 
+### 🟠 Mobile Team screens 403'd for a Sales Director (positions/roles); member cards lacked upline
+- **Symptom:** On the mobile app a Sales Director hit 403 on `GET /api/positions` and `GET /api/roles` ("Couldn't load positions"), and member cards showed no Reports-to. (Org Chart + Inbox looked empty but were not bugs.)
+- **Root cause:** The Sales Director department-scoped Team-admin grant (`requirePermissionOrSalesDirector`) was wired onto `/api/users` + `/api/departments` but NOT `/api/positions` (plain `users.read`) or `/api/roles` (plain `roles.read`) — permissions a Sales Director doesn't hold. Desktop hides the Positions tab from a Sales Director so it never fired; mobile's coarse `allowed("/team")` surfaced the Positions row, whose fetch 403'd.
+- **Fix:** `GET /api/positions` → `requirePermissionOrSalesDirector("users.read")` + own-department scoping (mirrors `/api/departments`); `GET /api/roles` → `requirePermissionOrSalesDirector("roles.read")` read-only (writes stay `roles.manage`). Added Reports-to (manager_name) to the mobile member card. Org Chart renders via Profile→My Team; Inbox empty = genuinely no in-scope activity (no gate). No global-admin widening.
+- **Ref:** `fix/mobile-sd-team-403-clean`, 2026-07-15.
+
 ### 🔴 GRN-from-PO could receive into the wrong (China/transit) warehouse; "Receive into" not required
 - **Symptom:** Creating a GRN from a PO, when the warehouse couldn't be resolved from the picked lines or the PO, silently defaulted to the China/transit warehouse (first by code-sort) instead of the real MY warehouse — MRP for the real warehouse still showed a shortage. The picker also wasn't required, so nothing forced the operator to correct it. (2990 hardened this 2026-07-02; the Houzs V2 rebuild never ported it.)
 - **Root cause:** `GrnNew.tsx` fallback was `pickLoc ?? poLoc ?? warehousesQ.data?.[0]?.id` — `[0]` is China/transit by code-sort. 2990's equivalent used a `safeDefault` (is_default, non-transit). The Houzs `Warehouse` type has `is_default` (no is_transit flag).

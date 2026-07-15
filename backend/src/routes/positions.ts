@@ -7,7 +7,9 @@ import {
   loadPageAccessForPosition,
   type AccessLevel,
 } from "../services/pageAccess";
-import { requirePermission } from "../middleware/auth";
+import { requirePermission, requirePermissionOrSalesDirector } from "../middleware/auth";
+import { isSalesDirectorUser } from "../services/pmsAccess";
+import { hasPermission } from "../services/permissions";
 import { setSetting } from "../services/email";
 import { audit } from "../services/audit";
 import { getDb } from "../db/client";
@@ -29,10 +31,23 @@ const slugify = (s: string): string =>
     .replace(/^_+|_+$/g, "");
 
 /** GET /api/positions  (?department_id= to scope the invite-form dropdown) */
-app.get("/", requirePermission("users.read"), async (c) => {
+app.get("/", requirePermissionOrSalesDirector("users.read"), async (c) => {
   const db = getDb(c.env);
   const deptParam = c.req.query("department_id");
   const deptId = deptParam ? parseInt(deptParam, 10) : null;
+
+  // Sales Director (dept-scoped admin, NOT a full users.read admin) → own-dept
+  // positions only, mirroring GET /api/departments ("删掉别部门内容"). This also
+  // scopes the member-form Position picker to the positions a Sales Director may
+  // actually assign (invite/patch already reject cross-dept positions). A full
+  // admin (users.read / `*`) is unaffected; no department assigned → -1 (empty).
+  const user = c.get("user");
+  const granted = user?.permissions_set ?? user?.permissions ?? [];
+  const isFullAdmin =
+    hasPermission(granted, "*") || hasPermission(granted, "users.read");
+  const scopeDeptId =
+    !isFullAdmin && isSalesDirectorUser(user) ? user?.department_id ?? -1 : null;
+  const effectiveDeptId = scopeDeptId !== null ? scopeDeptId : deptId;
 
   const rows = await db
     .select({
@@ -48,7 +63,11 @@ app.get("/", requirePermission("users.read"), async (c) => {
     })
     .from(positions)
     .leftJoin(departments, eq(departments.id, positions.department_id))
-    .where(deptId ? eq(positions.department_id, deptId) : undefined)
+    .where(
+      effectiveDeptId != null
+        ? eq(positions.department_id, effectiveDeptId)
+        : undefined,
+    )
     .orderBy(asc(positions.sort_order), asc(positions.name));
 
   return c.json({
