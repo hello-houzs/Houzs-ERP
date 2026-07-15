@@ -293,7 +293,7 @@ export function Categories() {
   };
 
   return (
-    <div className="mx-auto max-w-[1280px] space-y-4 px-4 py-4 sm:px-6 sm:py-6">
+    <div className="space-y-4 py-4 sm:py-6">
       {/* Header */}
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div className="min-w-0">

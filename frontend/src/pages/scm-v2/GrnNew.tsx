@@ -711,7 +711,7 @@ export const GrnNew = () => {
 
             {/* Supplier — locked from picks / PO, or a manual <select>. */}
             <label className={styles.field}>
-              <span className={styles.fieldLabel}>Supplier *{hasPicks ? ' (from picks)' : ''}</span>
+              <span className={`${styles.fieldLabel} ${styles.fieldLabelReq}`}>Supplier <span className={styles.req}>*</span>{hasPicks ? ' (from picks)' : ''}</span>
               {isManual ? (
                 <select
                   value={manualSupplierId}

@@ -960,7 +960,7 @@ export function DeliveryOrderNewV2() {
       </div>
 
       {/* Body */}
-      <div className="mx-auto flex max-w-[1180px] flex-col gap-5 px-1 py-6 sm:px-3">
+      <div className="flex flex-col gap-5 py-6">
         {/* Document flow */}
         <DocumentFlowStrip soDocNo={soDocNo || null} />
 

@@ -1581,7 +1581,7 @@ export const SalesOrderNew = () => {
         <div className={styles.cardBody}>
           <div className={styles.formGrid4} ref={custGridRef}>
             <label className={styles.field} style={{ gridColumn: 'span 3' }}>
-              <span className={styles.fieldLabel}>Customer Name *</span>
+              <span className={`${styles.fieldLabel} ${styles.fieldLabelReq}`}>Customer Name <span className={styles.req}>*</span></span>
               <input
                 className={`${styles.fieldInput} ${editedClass('debtorName', debtorName)}`}
                 value={debtorName}
@@ -1620,7 +1620,7 @@ export const SalesOrderNew = () => {
               />
             </label>
             <label className={styles.field}>
-              <span className={styles.fieldLabel}>Phone *</span>
+              <span className={`${styles.fieldLabel} ${styles.fieldLabelReq}`}>Phone <span className={styles.req}>*</span></span>
               <PhoneInput
                 className={styles.fieldInput}
                 value={phone}
