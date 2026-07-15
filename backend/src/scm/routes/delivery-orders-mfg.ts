@@ -155,6 +155,11 @@ const DO_FINANCE_KEYS = [
   'total_cost_centi', 'total_margin_centi', 'margin_pct_basis',
 ] as const;
 
+/* FINANCE-GATED line-item keys — per-line cost / margin. Present in ITEM (so the
+   detail's line grid can show them to a finance viewer) but stripped for a
+   non-finance caller in the DETAIL response (the list carries no items). */
+const DO_ITEM_FINANCE_KEYS = ['unit_cost_centi', 'line_cost_centi', 'line_margin_centi'] as const;
+
 const ITEM =
   'id, delivery_order_id, so_item_id, item_code, item_group, description, description2, ' +
   'uom, qty, m3_milli, unit_price_centi, discount_centi, line_total_centi, ' +
@@ -2218,6 +2223,17 @@ deliveryOrdersMfg.get('/:id', async (c) => {
       racks: [...racks],
     };
   });
+  /* Finance gate — the DETAIL leaks cost/margin the same way the list did, so
+     strip the header's DO_FINANCE_KEYS + every line's cost/margin for a
+     non-finance caller (canViewScmFinance fails closed). Critical now that a
+     scoped salesperson can open their own DOs (readInheritsFrom scm.sales.orders):
+     they see the customer-facing DO but never cost or margin. */
+  if (!canViewScmFinance(c)) {
+    for (const k of DO_FINANCE_KEYS) delete (deliveryOrder as Record<string, unknown>)[k];
+    for (const it of items) {
+      for (const k of DO_ITEM_FINANCE_KEYS) delete (it as Record<string, unknown>)[k];
+    }
+  }
   return c.json({ deliveryOrder, items });
 });
 

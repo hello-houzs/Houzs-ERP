@@ -364,6 +364,25 @@ export const NAV_TABS: NavTab[] = [
         icon: ShoppingCart,
         salesRepOnly: true,
       },
+      // Rep-only Delivery Orders + Sales Invoices leaves (owner rule 2026-07-16):
+      // a salesperson must be able to find the DO / invoice generated from their
+      // OWN Sales Orders (e.g. to resend a customer's invoice). The routes carry
+      // allowSales and the backend row-scopes every read to own+downline and
+      // strips cost/margin, so a rep sees only their customers' documents. Hidden
+      // from office/director (salesRepOnly) — they reach these via the Sales Order
+      // subgroup below.
+      {
+        to: "/scm/delivery-orders",
+        label: "Delivery Orders",
+        icon: Send,
+        salesRepOnly: true,
+      },
+      {
+        to: "/scm/sales-invoices",
+        label: "Sales Invoices",
+        icon: FileText,
+        salesRepOnly: true,
+      },
       // 1:1 with 2990's backend Sidebar sectioning + order: Sales Order ->
       // Consignment -> Procurement -> Transportation -> Warehouse (then Finance,
       // which 2990 keeps top-level; Houzs nests it under Supply Chain). MRP +

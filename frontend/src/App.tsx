@@ -206,9 +206,12 @@ function Guard({
  *
  * `allowSales` (owner rule 2026-07) — mirrors PageGuard's allowSales: a
  * Sales-department user (auth/salesAccess.isSalesStaff) is let through even
- * without the matrix page-access. ONLY set on the Sales-Orders-area routes
- * (list + create + SO detail): the backend already scopes a rep's Sales Orders
- * to own + downline (#400/#410), so this is safe and opens NO other SCM area.
+ * without the matrix page-access. Set on the Sales-Orders-area routes
+ * (list + create + SO detail) AND on the Delivery-Order / Sales-Invoice READ
+ * routes (list + detail only, NOT their create routes): the backend row-scopes
+ * every read to own + downline (#400/#410, lib/salesScope) and strips cost/margin
+ * from non-finance callers, so a salesperson sees the DO/SI generated from their
+ * OWN Sales Orders — and nothing else. Safe: opens NO office/finance data.
  */
 function ScmGuard({
   area,
@@ -524,14 +527,17 @@ export default function App() {
         <Route path="/scm/reports/delivery-order-detail-listing" element={<ScmGuard area="scm.sales.delivery"><Scm2990Shell><ScmDoDetailListingV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/reports/sales-invoice-detail-listing" element={<ScmGuard area="scm.sales.invoices"><Scm2990Shell><ScmSiDetailListingV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/reports/delivery-return-detail-listing" element={<DeliveryReturnsGuard><Scm2990Shell><ScmDrDetailListingV2 /></Scm2990Shell></DeliveryReturnsGuard>} />
-        <Route path="/scm/delivery-orders" element={<ScmGuard area="scm.sales.delivery"><Scm2990Shell><ScmDeliveryOrdersV2 /></Scm2990Shell></ScmGuard>} />
+        {/* allowSales — a salesperson READS the DO list/detail generated from
+            their own SOs (backend row-scopes own+downline, strips cost/margin).
+            Create routes below deliberately OMIT allowSales (read-only). */}
+        <Route path="/scm/delivery-orders" element={<ScmGuard area="scm.sales.delivery" allowSales><Scm2990Shell><ScmDeliveryOrdersV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/delivery-orders/new" element={<ScmGuard area="scm.sales.delivery"><Scm2990Shell><ScmDeliveryOrderNewV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/delivery-orders/from-so" element={<ScmGuard area="scm.sales.delivery"><Scm2990Shell><ScmDeliveryOrderFromSoV2 /></Scm2990Shell></ScmGuard>} />
-        <Route path="/scm/delivery-orders/:id" element={<ScmGuard area="scm.sales.delivery"><Scm2990Shell><ScmDeliveryOrderDetailV2 /></Scm2990Shell></ScmGuard>} />
-        <Route path="/scm/sales-invoices" element={<ScmGuard area="scm.sales.invoices"><Scm2990Shell><ScmSalesInvoicesV2 /></Scm2990Shell></ScmGuard>} />
+        <Route path="/scm/delivery-orders/:id" element={<ScmGuard area="scm.sales.delivery" allowSales><Scm2990Shell><ScmDeliveryOrderDetailV2 /></Scm2990Shell></ScmGuard>} />
+        <Route path="/scm/sales-invoices" element={<ScmGuard area="scm.sales.invoices" allowSales><Scm2990Shell><ScmSalesInvoicesV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/sales-invoices/new" element={<ScmGuard area="scm.sales.invoices"><Scm2990Shell><ScmSalesInvoiceNewV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/sales-invoices/from-do" element={<ScmGuard area="scm.sales.invoices"><Scm2990Shell><ScmSalesInvoiceFromDoV2 /></Scm2990Shell></ScmGuard>} />
-        <Route path="/scm/sales-invoices/:id" element={<ScmGuard area="scm.sales.invoices"><Scm2990Shell><ScmSalesInvoiceDetailV2 /></Scm2990Shell></ScmGuard>} />
+        <Route path="/scm/sales-invoices/:id" element={<ScmGuard area="scm.sales.invoices" allowSales><Scm2990Shell><ScmSalesInvoiceDetailV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/delivery-returns" element={<DeliveryReturnsGuard><Scm2990Shell><ScmDeliveryReturnsV2 /></Scm2990Shell></DeliveryReturnsGuard>} />
         <Route path="/scm/delivery-returns/new" element={<DeliveryReturnsGuard><Scm2990Shell><ScmDeliveryReturnNewV2 /></Scm2990Shell></DeliveryReturnsGuard>} />
         <Route path="/scm/delivery-returns/from-do" element={<DeliveryReturnsGuard><Scm2990Shell><ScmDeliveryReturnFromDoV2 /></Scm2990Shell></DeliveryReturnsGuard>} />

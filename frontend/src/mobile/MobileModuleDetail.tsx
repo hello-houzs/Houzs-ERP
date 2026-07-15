@@ -750,6 +750,12 @@ function DocumentDetail({ map, row, moduleKey, onBack, onEdit, onPOD }: { map: D
   const id = docId(row);
   const qc = useQueryClient();
   const detailNotify = useNotify();
+  // Finance-viewer gate — a scoped salesperson can now open their own DO / SI on
+  // mobile (readInheritsFrom scm.sales.orders). The backend already strips
+  // cost/margin from the payload for a non-finance caller (canViewScmFinance);
+  // drop the Cost / Margin stat tiles too so they don't render as RM0.00.
+  const { user: financeUser } = useAuth();
+  const canFinanceStats = !!financeUser?.project_finance_viewer;
   const { data, isLoading, error } = useQuery({
     queryKey: ["mobile-module-detail", map.path, id],
     queryFn: () => authedFetch<Record<string, unknown>>(`${map.path}/${encodeURIComponent(id)}`),
@@ -762,7 +768,11 @@ function DocumentDetail({ map, row, moduleKey, onBack, onEdit, onPOD }: { map: D
   const header = (data?.[map.headerKey] as any) ?? row ?? {};
   const items = (data?.items as any[]) ?? [];
   const meta = map.meta(header).filter(([, v]) => v && v !== "—");
-  const stats = map.stats(header);
+  const stats = map
+    .stats(header)
+    .map((st) =>
+      st && !canFinanceStats && (st[0] === "Cost" || st[0] === "Margin") ? null : st,
+    );
 
   const cancelled = isCancelledDoc(map.status(header));
 

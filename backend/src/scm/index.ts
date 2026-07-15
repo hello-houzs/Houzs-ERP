@@ -182,13 +182,20 @@ scm.route("/so-amendments", soAmendments);
 // state-warehouse-mappings: cross-area lookup (SO/DO warehouse routing) — left
 // on the coarse gate, see SHARED READ HELPERS note above.
 scm.route("/state-warehouse-mappings", stateWarehouseMappings);
-scm.use("/delivery-orders-mfg/*", scmAreaGuard("scm.sales.delivery"));
+// readInheritsFrom scm.sales.orders — a salesperson may READ the DOs generated
+// from their OWN Sales Orders (row-scoped own+downline by the route, cost/margin
+// stripped for non-finance). Writes still require edit on scm.sales.delivery.
+scm.use("/delivery-orders-mfg/*", scmAreaGuard("scm.sales.delivery", { readInheritsFrom: "scm.sales.orders" }));
 scm.route("/delivery-orders-mfg", deliveryOrdersMfg);
 // Ported 2026-06-20 — SI backend (skipped in the earlier sync; the vendored SI
 // pages 404'd on /sales-invoices). NEEDS scm.sales_invoice_payments +
 // scm.customer_credits applied (scripts/scm-schema/0103-0110-si-payments-and-credits.sql)
 // and scm.accounts seeded (codes 1100/4000) for GL posting.
-scm.use("/sales-invoices/*", scmAreaGuard("scm.sales.invoices"));
+// readInheritsFrom scm.sales.orders — a salesperson may READ the Sales Invoices
+// generated from their OWN Sales Orders (so they can find + resend a customer's
+// invoice). Row-scoped own+downline; cost/margin stripped for non-finance.
+// Writes still require edit on scm.sales.invoices.
+scm.use("/sales-invoices/*", scmAreaGuard("scm.sales.invoices", { readInheritsFrom: "scm.sales.orders" }));
 scm.route("/sales-invoices", salesInvoices);
 scm.use("/delivery-returns/*", scmAreaGuard("scm.sales.returns"));
 scm.route("/delivery-returns", deliveryReturns);

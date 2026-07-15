@@ -56,10 +56,20 @@ const isWrite = (method: string): boolean =>
  *   uploads and background OCR that produce the CALLER's own draft (the
  *   pipeline stamps the caller's staff uuid — PR #245); they never mutate an
  *   existing SO. Actual SO create/edit (mfg-sales-orders) keeps 'edit'.
+ *
+ * - `readInheritsFrom` — a SECOND area key whose `view` grant ALSO satisfies a
+ *   GET/HEAD on this area (writes still require `edit` on the NATIVE area).
+ *   Used so a salesperson (scm.sales.orders = view) can READ Delivery Orders +
+ *   Sales Invoices generated from their OWN Sales Orders even without a
+ *   scm.sales.delivery / scm.sales.invoices grant — the DO/SI routes already
+ *   row-scope every read to own+downline (lib/salesScope) and strip cost/margin
+ *   from non-finance callers (canViewScmFinance), so this opens NO office/finance
+ *   data. Reads only; a salesperson still cannot create/edit a DO/SI.
  */
 export interface ScmAreaGuardOpts {
   openRead?: boolean;
   writeLevel?: AccessLevel;
+  readInheritsFrom?: string;
 }
 
 export function scmAreaGuard(area: string, opts?: ScmAreaGuardOpts): MiddlewareHandler<{
@@ -98,6 +108,16 @@ export function scmAreaGuard(area: string, opts?: ScmAreaGuardOpts): MiddlewareH
     const requiredLevel: AccessLevel = write ? (opts?.writeLevel ?? "edit") : "view";
     const level: AccessLevel = (user.page_access?.[area] ?? "none") as AccessLevel;
     if (!meetsLevel(level, requiredLevel)) {
+      // Read-inherit hatch — a GET/HEAD may be satisfied by `view` on a second
+      // area (e.g. a salesperson reading their own SO's Delivery Orders / Sales
+      // Invoices via scm.sales.orders). Writes never inherit.
+      if (!write && opts?.readInheritsFrom) {
+        const inherited = (user.page_access?.[opts.readInheritsFrom] ?? "none") as AccessLevel;
+        if (meetsLevel(inherited, "view")) {
+          await next();
+          return;
+        }
+      }
       return c.json(
         { error: `Forbidden: needs ${requiredLevel} access to ${area}` },
         403,

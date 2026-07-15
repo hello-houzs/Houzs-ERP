@@ -546,9 +546,15 @@ export function SalesInvoiceDetailV2() {
   const { nameOf: salespersonNameOf } = useStaffLookup();
   const notify = useNotify();
   const askConfirm = useConfirm();
-  const { user } = useAuth();
+  const { user, pageAccess } = useAuth();
   // Finance-viewer gate (#574) — non-finance users never see cost / margin.
   const canFinance = !!user?.project_finance_viewer;
+  // Mutation gate — a salesperson opens this invoice read-only via the sales
+  // inherit hatch (allowSales; backend readInheritsFrom scm.sales.orders) and
+  // cannot confirm/cancel/edit or record payments. Hide those controls (owner
+  // off-not-hide rule); Print PDF + Relationship Map stay so the rep can still
+  // find + send the invoice. `*` resolves to "full".
+  const canWriteSi = ["edit", "full"].includes(pageAccess("scm.sales.invoices"));
 
   // ── Payments (shared DRAFT-mode PaymentsTable + manual flush) ──────────
   // Mirrors the vendored ledger SalesInvoiceDetail.tsx: the SAVED PaymentsTable
@@ -1095,7 +1101,7 @@ export function SalesInvoiceDetailV2() {
             >
               Print PDF
             </Button>
-            {isDraft && (
+            {isDraft && canWriteSi && (
               <Button
                 variant="primary"
                 icon={<Check size={14} />}
@@ -1105,7 +1111,7 @@ export function SalesInvoiceDetailV2() {
                 Confirm Invoice
               </Button>
             )}
-            {isCancelled && (
+            {isCancelled && canWriteSi && (
               <Button
                 variant="secondary"
                 icon={<RotateCcw size={14} />}
@@ -1115,7 +1121,7 @@ export function SalesInvoiceDetailV2() {
                 Reopen
               </Button>
             )}
-            {!isCancelled && (
+            {!isCancelled && canWriteSi && (
               <Button
                 variant="danger"
                 icon={<XCircle size={14} />}
@@ -1124,7 +1130,7 @@ export function SalesInvoiceDetailV2() {
                 Cancel SI
               </Button>
             )}
-            {canRecordPayment && (
+            {canRecordPayment && canWriteSi && (
               <Button
                 variant="secondary"
                 icon={<Wallet size={14} />}
@@ -1133,7 +1139,7 @@ export function SalesInvoiceDetailV2() {
                 Record payment
               </Button>
             )}
-            {canMarkPaid && (
+            {canMarkPaid && canWriteSi && (
               <Button
                 variant="secondary"
                 icon={<CheckCircle2 size={14} />}
@@ -1142,13 +1148,15 @@ export function SalesInvoiceDetailV2() {
                 Mark paid
               </Button>
             )}
-            <Button
-              variant="primary"
-              icon={<Edit3 size={14} />}
-              onClick={goEdit}
-            >
-              Edit
-            </Button>
+            {canWriteSi && (
+              <Button
+                variant="primary"
+                icon={<Edit3 size={14} />}
+                onClick={goEdit}
+              >
+                Edit
+              </Button>
+            )}
           </div>
         </div>
       </div>
@@ -1407,7 +1415,7 @@ export function SalesInvoiceDetailV2() {
               <Section
                 title="Payments"
                 actions={
-                  !isDraft && !isCancelled ? (
+                  canWriteSi && !isDraft && !isCancelled ? (
                     editingPayments ? (
                       <>
                         <Button
@@ -1565,30 +1573,35 @@ export function SalesInvoiceDetailV2() {
       {/* ─── Fixed bottom action bar (phone only) ───────────────────── */}
       <div className="fixed inset-x-0 bottom-0 z-20 border-t border-border bg-surface/95 px-3 pb-6 pt-2.5 shadow-slab backdrop-blur-sm md:hidden">
         <div className="flex items-center gap-2">
-          {canRecordPayment ? (
-            <button
-              type="button"
-              onClick={goRecordPayment}
-              className="inline-flex h-11 flex-1 items-center justify-center gap-1.5 rounded-lg bg-primary text-[13.5px] font-bold text-white shadow-sm hover:bg-primary-ink"
-            >
-              <Wallet size={16} /> Record payment
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={goEdit}
-              className="inline-flex h-11 flex-1 items-center justify-center gap-1.5 rounded-lg bg-primary text-[13.5px] font-bold text-white shadow-sm hover:bg-primary-ink"
-            >
-              <Edit3 size={16} /> Edit
-            </button>
-          )}
+          {canWriteSi &&
+            (canRecordPayment ? (
+              <button
+                type="button"
+                onClick={goRecordPayment}
+                className="inline-flex h-11 flex-1 items-center justify-center gap-1.5 rounded-lg bg-primary text-[13.5px] font-bold text-white shadow-sm hover:bg-primary-ink"
+              >
+                <Wallet size={16} /> Record payment
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={goEdit}
+                className="inline-flex h-11 flex-1 items-center justify-center gap-1.5 rounded-lg bg-primary text-[13.5px] font-bold text-white shadow-sm hover:bg-primary-ink"
+              >
+                <Edit3 size={16} /> Edit
+              </button>
+            ))}
           <button
             type="button"
             onClick={goPrintPdf}
-            className="inline-flex h-11 w-11 items-center justify-center rounded-lg bg-surface-2 text-primary-ink hover:bg-primary-soft"
+            className={cn(
+              "inline-flex h-11 items-center justify-center gap-1.5 rounded-lg bg-surface-2 text-primary-ink hover:bg-primary-soft",
+              canWriteSi ? "w-11" : "flex-1 text-[13.5px] font-bold"
+            )}
             aria-label="Print PDF"
           >
             <Printer size={17} />
+            {!canWriteSi && <span>Print PDF</span>}
           </button>
           <button
             type="button"
