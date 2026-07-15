@@ -226,6 +226,44 @@ async function checkSiOverRemaining(
   return offenders.length > 0 ? { error: 'over_remaining', lines: offenders } : null;
 }
 
+/* FIX 3 (fix/si-cancel-revenue-qty) — a from-DO Sales Invoice (its header carries
+   delivery_order_id) must LINK its DO-derived lines via do_item_id, so they count
+   against the DO's Pending pool (do-line-remaining) and respect the
+   remaining-to-invoice ceiling. An UNLINKED line whose item code STILL has Pending
+   qty on the source DO is the double-invoice vector: the link was dropped, so both
+   the ceiling and the pool are bypassed and the same delivered goods can be billed
+   again. Such a line must instead be added through the DO picker so it links.
+
+   Genuinely-new manual lines ride free — the owner's ruling is that a Sales Invoice
+   MAY carry direct/standalone lines. We only block the clear shadow case (item on
+   the DO with Pending qty); a manual line for an item NOT on the DO, or one whose
+   DO line is already fully invoiced (remaining 0), is left alone. Returns the
+   offending item codes (empty = nothing to block, and no DB round-trip when there
+   are no unlinked lines — the common from-DO path is all-linked). */
+async function unlinkedFromDoOffenders(
+  sb: any,
+  doId: string,
+  lines: Array<Record<string, unknown>>,
+): Promise<string[]> {
+  const unlinked = lines.filter((l) => !l.doItemId && l.itemCode);
+  if (unlinked.length === 0) return [];
+  const { data: doItemRows } = await sb.from('delivery_order_items')
+    .select('id, item_code').eq('delivery_order_id', doId);
+  const rows = (doItemRows ?? []) as Array<{ id: string; item_code: string | null }>;
+  if (rows.length === 0) return [];
+  const remainingMap = await doRemainingByItemId(sb, rows.map((r) => r.id));
+  const pendingCodes = new Set<string>();
+  for (const r of rows) {
+    if (r.item_code && (remainingMap.get(r.id) ?? 0) > 0) pendingCodes.add(r.item_code.trim().toUpperCase());
+  }
+  const offenders = new Set<string>();
+  for (const l of unlinked) {
+    const code = String(l.itemCode).trim().toUpperCase();
+    if (pendingCodes.has(code)) offenders.add(String(l.itemCode));
+  }
+  return [...offenders];
+}
+
 /* Filter-pill bucket → the raw sales_invoices.status values it covers. Single
    source of truth for BOTH the status-count queries and the list `status`
    filter. sent / partial / paid are MULTI-status buckets; cancelled is 1:1. The
@@ -237,6 +275,54 @@ const SI_STATUS_BUCKETS: Record<string, string[]> = {
   paid: ['PAID', 'COMPLETED'],
   cancelled: ['CANCELLED'],
 };
+
+/* ── Canonical SI status set + legal /status transitions (fix/si-cancel-revenue-qty) ──
+   The PATCH /:id/status write path persists ONLY the canonical UPPER-CASE values
+   below; any lowercase or aliased input ('cancelled', 'issued', 'partial',
+   'completed', US 'canceled') is folded to its canonical form so it can NEVER be
+   written verbatim. This is what killed the "lowercase cancelled skips the revenue
+   reversal" bug: the reversal is gated on `status === 'CANCELLED'`, and a verbatim
+   'cancelled' slipped straight past it. */
+const SI_STATUS_CANON: Record<string, string> = {
+  DRAFT: 'DRAFT',
+  SENT: 'SENT',
+  ISSUED: 'SENT',
+  PARTIALLY_PAID: 'PARTIALLY_PAID',
+  PARTIAL: 'PARTIALLY_PAID',
+  PAID: 'PAID',
+  COMPLETED: 'PAID',
+  OVERDUE: 'OVERDUE',
+  CANCELLED: 'CANCELLED',
+  CANCELED: 'CANCELLED',
+};
+function canonicalSiStatus(raw: string | null | undefined): string | null {
+  if (!raw || typeof raw !== 'string') return null;
+  return SI_STATUS_CANON[raw.trim().toUpperCase()] ?? null;
+}
+
+/* Legal transitions between canonical states (the SINGLE transition authority for
+   PATCH /:id/status). Self-transitions (X→X) are always allowed (idempotent) and
+   handled by the specific branches below. Rules:
+     - DRAFT confirms to SENT (posts revenue) or cancels.
+     - A CANCELLED invoice may only REOPEN to SENT; its payment status is then
+       re-derived from the ledger.
+     - An active invoice may take any payment-derived state or be cancelled.
+     - NOTHING moves back to DRAFT (draft is a create-only state).
+   An unrecognised PERSISTED status fails open (never brick a legacy row). */
+const SI_LEGAL_TRANSITIONS: Record<string, Set<string>> = {
+  DRAFT:          new Set(['SENT', 'CANCELLED']),
+  SENT:           new Set(['PARTIALLY_PAID', 'PAID', 'OVERDUE', 'CANCELLED']),
+  PARTIALLY_PAID: new Set(['SENT', 'PAID', 'OVERDUE', 'CANCELLED']),
+  PAID:           new Set(['SENT', 'PARTIALLY_PAID', 'OVERDUE', 'CANCELLED']),
+  OVERDUE:        new Set(['SENT', 'PARTIALLY_PAID', 'PAID', 'CANCELLED']),
+  CANCELLED:      new Set(['SENT']),
+};
+function siTransitionReject(prev: string, next: string): string {
+  if (prev === 'CANCELLED') return 'A cancelled invoice can only be reopened to Issued. Reopen it first; its payment status is then re-derived from the payments ledger.';
+  if (next === 'DRAFT') return 'A confirmed invoice cannot be moved back to draft.';
+  if (prev === 'DRAFT') return 'A draft invoice can only be confirmed (Issued) or cancelled.';
+  return `An invoice cannot move from ${prev} to ${next}.`;
+}
 
 // ── List ────────────────────────────────────────────────────────────────
 salesInvoices.get('/', async (c) => {
@@ -396,6 +482,23 @@ salesInvoices.post('/', async (c) => {
   {
     const over = await checkSiOverRemaining(sb, items);
     if (over) return c.json(over, 409);
+  }
+
+  /* FIX 3 — this SI declares a source DO, so its DO-derived lines must stay
+     linked. Block any unlinked line that shadows a still-Pending DO line (dropping
+     the link would let the same delivered goods be invoiced twice). */
+  {
+    const fromDoId = (body.deliveryOrderId as string | undefined) ?? null;
+    if (fromDoId) {
+      const shadow = await unlinkedFromDoOffenders(sb, fromDoId, items);
+      if (shadow.length > 0) {
+        return c.json({
+          error: 'unlinked_do_line',
+          message: `These items are still pending on the source Delivery Order and must be added through "Add from Delivery Order" so the delivered quantity is tracked: ${shadow.join(', ')}.`,
+          itemCodes: shadow,
+        }, 409);
+      }
+    }
   }
 
   const phoneRaw = (body.phone as string | undefined) ?? null;
@@ -846,7 +949,7 @@ salesInvoices.post('/:id/items', async (c) => {
     if (!codeCheck.ok) return c.json(unknownItemCodeResponse(codeCheck.unknown), 409);
   }
 
-  const { data: header } = await sb.from('sales_invoices').select('id, invoice_number, status').eq('id', id).maybeSingle();
+  const { data: header } = await sb.from('sales_invoices').select('id, invoice_number, status, delivery_order_id').eq('id', id).maybeSingle();
   if (!header) return c.json({ error: 'not_found' }, 404);
   if (((header as { status: string }).status ?? '').toUpperCase() === 'CANCELLED') {
     return c.json({ error: 'invoice_cancelled', message: 'This invoice is cancelled — reopen it before adding lines.' }, 409);
@@ -855,6 +958,23 @@ salesInvoices.post('/:id/items', async (c) => {
   {
     const over = await checkSiOverRemaining(sb, [it]);
     if (over) return c.json(over, 409);
+  }
+
+  /* FIX 3 — the invoice was created from a DO, so a manually-added line that
+     shadows a still-Pending DO line must be linked via the DO picker, not added
+     free (which would bypass the ceiling + pool and double-invoice the goods). */
+  {
+    const fromDoId = (header as { delivery_order_id?: string | null }).delivery_order_id ?? null;
+    if (fromDoId && !it.doItemId) {
+      const shadow = await unlinkedFromDoOffenders(sb, fromDoId, [it]);
+      if (shadow.length > 0) {
+        return c.json({
+          error: 'unlinked_do_line',
+          message: `${shadow.join(', ')} is still pending on the source Delivery Order — add it through "Add from Delivery Order" so the delivered quantity is tracked.`,
+          itemCodes: shadow,
+        }, 409);
+      }
+    }
   }
 
   const { data: maxNoRow } = await sb
@@ -1100,17 +1220,48 @@ salesInvoices.patch('/:id/status', async (c) => {
   const sb = c.get('supabase'); const id = c.req.param('id');
   let body: { status?: string }; try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid_json' }, 400); }
   if (!body.status) return c.json({ error: 'status_required' }, 400);
+
+  /* FIX 1 + FIX 2 (fix/si-cancel-revenue-qty) — canonicalise the incoming status
+     to its UPPER-CASE form BEFORE any branch. A lowercase 'cancelled' (or
+     'issued' / 'partial' / 'completed') used to be persisted verbatim and slip
+     past the `status === 'CANCELLED'` gate below, so a SENT invoice was marked
+     cancelled WITHOUT reversing AR/GL revenue, while do-line-remaining (which
+     upper-cases) freed the delivered goods for re-invoicing — a silent finance +
+     double-invoice bug. Canonicalising once here makes 'cancelled' and 'CANCELLED'
+     ONE path and guarantees reverseSiRevenue fires exactly once on cancel
+     regardless of input case (the idempotent .neq('status','CANCELLED') guard on
+     the update still prevents a double reversal). */
+  const status = canonicalSiStatus(body.status);
+  if (!status) {
+    return c.json({ error: 'invalid_status', message: `"${body.status}" is not a recognised invoice status.` }, 400);
+  }
   const now = new Date().toISOString();
   const ts: Record<string, string> = { updated_at: now };
-  if (body.status === 'SENT' || body.status === 'ISSUED') ts.sent_at = now;
-  if (body.status === 'PAID') ts.paid_at = now;
-  const status = body.status === 'ISSUED' ? 'SENT' : body.status;
+  if (status === 'SENT') ts.sent_at = now;
+  if (status === 'PAID') ts.paid_at = now;
 
   const { data: curRow, error: curErr } = await sb.from('sales_invoices')
     .select('status').eq('id', id).maybeSingle();
   if (curErr) return c.json({ error: 'load_failed', reason: curErr.message }, 500);
   if (!curRow) return c.json({ error: 'not_found' }, 404);
   const prevStatus = ((curRow as { status: string }).status ?? '').toUpperCase();
+
+  /* FIX 2 — single legal-transition authority. Unknown targets were rejected
+     above; here we reject clearly-illegal jumps (e.g. any → DRAFT, a payment jump
+     off a draft, reopening a cancelled invoice to anything but SENT). Every
+     currently-legitimate transition is allowed: confirm (DRAFT→SENT), cancel,
+     reopen (CANCELLED→SENT), and the payment-derived states. Self-transitions pass
+     (handled idempotently below). An unrecognised PERSISTED status fails open so a
+     legacy row is never bricked. */
+  const canonPrev = SI_STATUS_CANON[prevStatus];
+  const allowedTargets = canonPrev ? SI_LEGAL_TRANSITIONS[canonPrev] : undefined;
+  if (allowedTargets && canonPrev !== status && !allowedTargets.has(status)) {
+    return c.json({
+      error: 'invalid_transition',
+      message: siTransitionReject(canonPrev as string, status),
+      from: prevStatus, to: status,
+    }, 409);
+  }
 
   /* ── CONFIRM transition (DRAFT → SENT) ─────────────────────────────────
      A DRAFT SI committed nothing on create. Confirming it is where the
@@ -1171,15 +1322,10 @@ salesInvoices.patch('/:id/status', async (c) => {
     return c.json({ salesInvoice: { id, status: 'CANCELLED' } });
   }
 
-  const ACTIVE = new Set(['SENT', 'PARTIALLY_PAID', 'PAID', 'OVERDUE']);
+  /* Reopen = CANCELLED → SENT (the ONLY target the transition table permits from
+     CANCELLED); the qty re-check below guards against the delivered goods having
+     been invoiced elsewhere while this invoice sat cancelled. */
   const isReopen = prevStatus === 'CANCELLED' && status !== 'CANCELLED';
-  if (isReopen && status !== 'SENT') {
-    return c.json({
-      error: 'invalid_transition',
-      message: `Cannot reopen a cancelled invoice straight to ${status}. Reopen to SENT first; payment status is re-derived from the ledger.`,
-      from: prevStatus, to: status,
-    }, 409);
-  }
   if (isReopen && status === 'SENT') {
     const { data: reopenLines } = await sb
       .from('sales_invoice_items')
@@ -1196,13 +1342,6 @@ salesInvoices.patch('/:id/status', async (c) => {
         lines: over.lines,
       }, 409);
     }
-  }
-  if (status !== 'CANCELLED' && status !== 'SENT' && !ACTIVE.has(prevStatus)) {
-    return c.json({
-      error: 'invalid_transition',
-      message: `Cannot move from ${prevStatus} to ${status}. Payment statuses are derived from the payments ledger.`,
-      from: prevStatus, to: status,
-    }, 409);
   }
 
   let data: { id: string; status: string; invoice_number: string; paid_centi: number | null; debtor_code: string | null; debtor_name: string | null } | null;
