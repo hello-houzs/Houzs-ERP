@@ -460,12 +460,13 @@ function sdBlockedFromRow(scope: SdScope, row: AnnouncementRow, userId: number |
 //     the composer's targeting can't be bypassed by a read-only caller.
 // ============================================================
 app.get("/", requirePermissionOrSalesDirector("announcements.read"), async (c) => {
-  // System per-user notices (source='scan') are delivered only through the
+  // System per-user notices (source='scan' slip-scan results, source=
+  // 'service_case' service-case assignments) are delivered only through the
   // /banner + mobile Announcements screen — they must NOT clutter this office
-  // composer list. Human-authored posts have source NULL.
+  // composer list. Human-authored posts have source NULL, so filter to those.
   const res = await c.env.DB
     .prepare(
-      `SELECT * FROM announcements WHERE (source IS NULL OR source <> 'scan') ORDER BY created_at DESC`,
+      `SELECT * FROM announcements WHERE source IS NULL ORDER BY created_at DESC`,
     )
     .all<AnnouncementRow>();
   const user = c.get("user");

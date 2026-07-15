@@ -35,6 +35,7 @@ import {
 } from "../scm/lib/companyScope";
 import { hasPermission } from "../services/permissions";
 import { subtreeUserIds, subtreeAgentNames } from "../services/orgScope";
+import { notifyServiceCaseResponsible } from "../services/assrNotify";
 import { isSalesUser, isDirectorUser } from "../services/pmsAccess";
 import type { AuthUser } from "../services/auth";
 import type { MiddlewareHandler } from "hono";
@@ -930,6 +931,22 @@ app.post("/bulk/assign", requirePermission("service_cases.manage"), async (c) =>
     )
       .bind(id, String(assigneeId ?? ""), userId)
       .run();
+    // Same responsible-change notice as the single PATCH (owner 2026-07-15):
+    // tell the new assignee + their upline. Only on assignment TO someone
+    // (un-assign has nobody new to notify). Best-effort — never throws.
+    if (assigneeId != null) {
+      const row = await c.env.DB.prepare(
+        `SELECT assr_no, customer_name FROM assr_cases WHERE id = ?`,
+      )
+        .bind(id)
+        .first<{ assr_no: string | null; customer_name: string | null }>();
+      await notifyServiceCaseResponsible(c.env, {
+        reason: "reassigned",
+        assrNo: row?.assr_no ?? null,
+        customerName: row?.customer_name ?? null,
+        userIds: [assigneeId],
+      });
+    }
   });
   return c.json(result);
 });
@@ -1426,6 +1443,38 @@ app.post(
     // (single-company safe).
     company_id: houzsCompanyId(c),
   });
+
+  // Notify the responsible person(s) + their recursive upline that a new case
+  // landed (owner 2026-07-15). createAssrCase resolves the effective assignees
+  // (explicit or the admin defaults) and mirrors the SO's sales_agent, so read
+  // the committed row back for the actual values. Best-effort: notify never
+  // throws, and it is awaited so it can't be dropped by isolate suspension —
+  // it adds only one small insert. A raw env.DB read returns snake_case.
+  try {
+    const row = await c.env.DB.prepare(
+      `SELECT assigned_to, assigned_to_2, sales_agent, customer_name
+         FROM assr_cases WHERE id = ?`,
+    )
+      .bind(result.id)
+      .first<{
+        assigned_to: number | null;
+        assigned_to_2: number | null;
+        sales_agent: string | null;
+        customer_name: string | null;
+      }>();
+    if (row) {
+      await notifyServiceCaseResponsible(c.env, {
+        reason: "created",
+        assrNo: result.assr_no,
+        customerName: row.customer_name,
+        userIds: [row.assigned_to, row.assigned_to_2],
+        agentNames: [row.sales_agent],
+      });
+    }
+  } catch (e) {
+    console.error("[assr.create] notify failed:", (e as Error).message);
+  }
+
   return c.json(result, 201);
 });
 
@@ -1453,8 +1502,72 @@ app.patch("/:id{[0-9]+}", requirePermission("service_cases.write"), async (c) =>
   ) {
     return c.json({ error: "Unknown sub-status" }, 400);
   }
+  // Snapshot the responsible fields BEFORE the patch so we notify only on an
+  // ACTUAL change (owner 2026-07-15). A doc_no re-match inside patchAssrCase can
+  // also rewrite sales_agent, so we compare committed before/after values
+  // rather than trusting which keys the caller sent. Raw env.DB read is
+  // snake_case (D1-compat shim).
+  const before = await c.env.DB.prepare(
+    `SELECT assigned_to, assigned_to_2, sales_agent FROM assr_cases WHERE id = ?`,
+  )
+    .bind(id)
+    .first<{ assigned_to: number | null; assigned_to_2: number | null; sales_agent: string | null }>();
+
   const ok = await patchAssrCase(c.env, id, body, userId);
   if (!ok) return c.json({ error: "Not found or no changes" }, 404);
+
+  // Notify newly-responsible people (+ their recursive upline) when an assignee
+  // or the sales_agent changed. Best-effort: never fails the PATCH.
+  try {
+    const after = await c.env.DB.prepare(
+      `SELECT assigned_to, assigned_to_2, sales_agent, customer_name, assr_no
+         FROM assr_cases WHERE id = ?`,
+    )
+      .bind(id)
+      .first<{
+        assigned_to: number | null;
+        assigned_to_2: number | null;
+        sales_agent: string | null;
+        customer_name: string | null;
+        assr_no: string | null;
+      }>();
+    if (after && before) {
+      const changedUserIds: number[] = [];
+      // Only a change TO a non-null assignee is worth a notice (un-assignment
+      // has no new person to tell). NaN != NaN would false-positive when both
+      // are null, but the `!= null` guard suppresses that case.
+      if (
+        after.assigned_to != null &&
+        Number(after.assigned_to) !== Number(before.assigned_to ?? NaN)
+      ) {
+        changedUserIds.push(Number(after.assigned_to));
+      }
+      if (
+        after.assigned_to_2 != null &&
+        Number(after.assigned_to_2) !== Number(before.assigned_to_2 ?? NaN)
+      ) {
+        changedUserIds.push(Number(after.assigned_to_2));
+      }
+      const changedAgents: string[] = [];
+      const beforeAgent = (before.sales_agent ?? "").trim().toLowerCase();
+      const afterAgent = (after.sales_agent ?? "").trim();
+      if (afterAgent && afterAgent.toLowerCase() !== beforeAgent) {
+        changedAgents.push(afterAgent);
+      }
+      if (changedUserIds.length || changedAgents.length) {
+        await notifyServiceCaseResponsible(c.env, {
+          reason: "reassigned",
+          assrNo: after.assr_no,
+          customerName: after.customer_name,
+          userIds: changedUserIds,
+          agentNames: changedAgents,
+        });
+      }
+    }
+  } catch (e) {
+    console.error("[assr.patch] notify failed:", (e as Error).message);
+  }
+
   return c.json({ ok: true });
 });
 
