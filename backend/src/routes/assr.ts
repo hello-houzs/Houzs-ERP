@@ -29,9 +29,9 @@ import { AutoCountClient, routeRegion, isAutoCountSyncDisabled } from "../servic
 import { upsertSalesOrder } from "../services/pull";
 import { requirePermission } from "../middleware/auth";
 import {
-  activeCompanyId,
-  allowedCompanyIds,
-  allowedCompaniesSql,
+  houzsCompanyId,
+  houzsCompanyIds,
+  houzsCompanySql,
 } from "../scm/lib/companyScope";
 import { hasPermission } from "../services/permissions";
 import { subtreeUserIds, subtreeAgentNames } from "../services/orgScope";
@@ -79,13 +79,16 @@ function requireServiceCaseAccess(
   };
 }
 
-// ── Multi-company (CROSS-COMPANY module) ──────────────────────
-// Service Cases are ONE shared queue across companies: list/stat reads widen
-// to the caller's ALLOWED companies (`company_id IN (...)` — not just the
-// active pick) and each row is tagged with its company (listAssrCases already
-// selects c.company_id + companies.code). All fragments returned by
-// allowedCompaniesSql are "" when the company context is unresolved
-// (pre-migration / D1 test mirror / cold-start) so legacy SQL runs unchanged.
+// ── Multi-company (HOUZS-ONLY module) ─────────────────────────
+// Service Cases (ASSR) are a HOUZS-EXCLUSIVE concept — 2990 has zero
+// service-case overlap (owner: "Service pricing CANNOT merge, 0% overlap").
+// So EVERY ASSR read is PINNED to the base company HOUZS (`company_id = <houzs>`)
+// via houzsCompanySql / houzsCompanyIds — NOT widened to the caller's allowed
+// set. A both-company user (the owner, who belongs to HOUZS and 2990) must see
+// only Houzs cases/orders/customers here, never 2990 rows. The pin resolves
+// HOUZS by `companies.code === 'HOUZS'` from the companies master and returns
+// "" / [] when that master is unresolved (pre-migration / D1 test mirror /
+// cold-start), so legacy single-company SQL runs unchanged.
 
 // ── Row-level visibility (owner spec 2026-07) ─────────────────
 // Full view = `*` wildcard (Owner / IT Admin) or `service_cases.manage`
@@ -487,8 +490,8 @@ app.get("/summary", requirePermission("service_cases.read"), async (c) => {
     `AND COALESCE(c.complained_date, c.created_at) >= date('now', '-${sinceDays} days')`;
   // Allowed-companies predicates ("" when unresolved) — one per table alias
   // used below.
-  const coC = allowedCompaniesSql(c, "c.company_id");
-  const coBare = allowedCompaniesSql(c);
+  const coC = houzsCompanySql(c, "c.company_id");
+  const coBare = houzsCompanySql(c);
 
   const totals = await c.env.DB.prepare(
     `SELECT COUNT(*) as total FROM assr_cases WHERE 1=1${coBare}`
@@ -672,7 +675,7 @@ app.get("/", requireServiceCaseAccess(), async (c) => {
   const result = await listAssrCases(c.env, {
     visible_to_user_ids: visibleIds,
     visible_agent_names: visibleAgentNames,
-    allowed_company_ids: allowedCompanyIds(c),
+    allowed_company_ids: houzsCompanyIds(c),
     stage: c.req.query("stage"),
     status: c.req.query("status"),
     search: c.req.query("search"),
@@ -810,7 +813,7 @@ app.post("/:id{[0-9]+}/set-creditor", requirePermission("service_cases.write"), 
 app.get("/by-creditor", requirePermission("service_cases.read"), async (c) => {
   const search = (c.req.query("search") || "").trim();
   const like = search ? `%${search}%` : null;
-  const coC = allowedCompaniesSql(c, "c.company_id");
+  const coC = houzsCompanySql(c, "c.company_id");
 
   const rowsQ = c.env.DB.prepare(
     `SELECT c.creditor_code,
@@ -840,7 +843,7 @@ app.get("/by-creditor", requirePermission("service_cases.read"), async (c) => {
     `SELECT COUNT(*) AS total,
             SUM(CASE WHEN stage != 'completed' THEN 1 ELSE 0 END) AS open
        FROM assr_cases
-      WHERE archived_at IS NULL AND (creditor_code IS NULL OR creditor_code = '')${allowedCompaniesSql(c)}`
+      WHERE archived_at IS NULL AND (creditor_code IS NULL OR creditor_code = '')${houzsCompanySql(c)}`
   ).first<{ total: number; open: number }>();
 
   return c.json({
@@ -942,7 +945,7 @@ app.get("/export.csv", requireServiceCaseAccess(), async (c) => {
   const rows = await exportAssrCases(c.env, {
     visible_to_user_ids: csvVisibleIds,
     visible_agent_names: csvVisibleAgentNames,
-    allowed_company_ids: allowedCompanyIds(c),
+    allowed_company_ids: houzsCompanyIds(c),
     stage: c.req.query("stage"),
     status: c.req.query("status"),
     search: c.req.query("search"),
@@ -1001,15 +1004,15 @@ app.get("/lookup-items/:docNo", requireServiceCaseAccess(), async (c) => {
 // Returns up to 20 SO candidates matched by partial DocNo,
 // reference number, or customer name (case-insensitive).
 //
-// Service is a SHARED cross-company module (assr_cases carry company_id and
-// list/detail widen via allowedCompaniesSql), so the SO lookup must find BOTH
-// companies' orders — otherwise a 2990 order can never be attached to a case.
-// Two sources, merged:
+// Service (ASSR) is a HOUZS-ONLY module, so this SO lookup must surface ONLY
+// Houzs orders — a 2990 order must NEVER be attachable to a service case (owner:
+// a case "只会查到 Houzs 的 order"). Two sources, merged:
 //   (1) public.sales_orders — the Houzs AutoCount mirror (no company_id; Houzs
 //       only). Unchanged legacy behaviour.
-//   (2) scm.mfg_sales_orders — the SCM-native SO table carrying Houzs (company
-//       1) AND mirrored 2990 (company 2) orders, widened to the caller's
-//       allowed companies. This is what adds 2990 findability.
+//   (2) scm.mfg_sales_orders — the SCM-native SO table carrying both companies'
+//       orders, PINNED to HOUZS (`company_id = <houzs>`) so only Houzs-native
+//       SCM SOs surface here (2990 rows are excluded even for a both-company
+//       user). This adds Houzs SCM SOs that never reached the AutoCount mirror.
 // Deduped by doc_no (prefer the SCM row — it carries a company tag), newest
 // first, capped at 20.
 app.get("/search-so", requireServiceCaseAccess(), async (c) => {
@@ -1030,10 +1033,11 @@ app.get("/search-so", requireServiceCaseAccess(), async (c) => {
     .bind(pattern, pattern, pattern)
     .all();
 
-  // (2) SCM-native SOs (Houzs company 1 + mirrored 2990 company 2), widened to
-  // allowed companies. allowedCompaniesSql inlines validated int ids (safe) or
-  // "" when unresolved (then this degrades to all rows, same as legacy).
-  const coFilter = allowedCompaniesSql(c, "so.company_id");
+  // (2) SCM-native SOs, PINNED to HOUZS. houzsCompanySql inlines the validated
+  // int id (safe) or "" when unresolved (then this degrades to all rows, same
+  // as legacy single-company). This is the fix that stops 2990 orders leaking
+  // into the service-case SO picker for a both-company user.
+  const coFilter = houzsCompanySql(c, "so.company_id");
   const scmRows = await c.env.DB.prepare(
     `SELECT so.doc_no, so.ref, so.debtor_name, so.phone,
             so.so_date AS doc_date, so.agent AS sales_agent, co.code AS company_code
@@ -1150,7 +1154,7 @@ app.get("/my-cases", requireServiceCaseAccess(), async (c) => {
             complaint_issue, item_code, sales_agent
        FROM assr_cases
       WHERE (${likeClauses})
-        AND archived_at IS NULL${allowedCompaniesSql(c)}
+        AND archived_at IS NULL${houzsCompanySql(c)}
       ORDER BY complained_date DESC, id DESC
       LIMIT 200`
   )
@@ -1234,17 +1238,18 @@ app.get("/:id{[0-9]+}", requireServiceCaseAccess(), async (c) => {
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const detail = await getAssrDetail(c.env, id);
   if (!detail) return c.json({ error: "Not found" }, 404);
-  /* Multi-company: the case must belong to one of the caller's ALLOWED
-     companies (same widen-not-isolate rule as the list). Skipped when either
-     side is unresolved (pre-migration / D1 test mirror). Out-of-scope answers
+  /* Multi-company: ASSR is Houzs-only, so a case must belong to HOUZS (same
+     pin as the list). A case tagged with any other company (e.g. one wrongly
+     stamped 2990 before this pin shipped) answers 404 here too. Skipped when
+     HOUZS is unresolved (pre-migration / D1 test mirror). Out-of-scope answers
      404, indistinguishable from a nonexistent id. */
-  const allowedCo = allowedCompanyIds(c);
-  if (allowedCo.length > 0) {
+  const houzsCo = houzsCompanyIds(c);
+  if (houzsCo.length > 0) {
     const caseRow = (detail as { case?: Record<string, unknown> }).case ?? {};
     const caseCo = Number(
       (caseRow as any).companyId ?? (caseRow as any).company_id ?? NaN,
     );
-    if (Number.isFinite(caseCo) && !allowedCo.includes(caseCo)) {
+    if (Number.isFinite(caseCo) && !houzsCo.includes(caseCo)) {
       return c.json({ error: "Not found" }, 404);
     }
   }
@@ -1331,7 +1336,7 @@ app.get("/:id/customer-history", requireServiceCaseAccess(), async (c) => {
             c.complaint_issue, c.complained_date, c.created_at, c.item_code,
             c.resolution_method
        FROM assr_cases c
-      WHERE ${where.join(" AND ")}${allowedCompaniesSql(c, "c.company_id")}
+      WHERE ${where.join(" AND ")}${houzsCompanySql(c, "c.company_id")}
       ORDER BY c.id DESC
       LIMIT 25`
   )
@@ -1413,10 +1418,13 @@ app.post(
     service_category: trimOrNull(body.service_category),
     assigned_to: assignedTo,
     created_by: userId,
-    // Multi-company (Phase 0b): stamp the request's active company on the new
-    // case. Undefined pre-migration / cold-start -> createAssrCase falls back
-    // to the Houzs default, else omits the column (single-company safe).
-    company_id: activeCompanyId(c),
+    // ASSR is Houzs-only: ALWAYS stamp the new case with HOUZS, never the
+    // request's active company. A both-company user creating a case while the
+    // top-bar switcher sits on 2990 must still raise a HOUZS case (else it
+    // vanishes from the Houzs-pinned list). Undefined pre-migration / cold-start
+    // -> createAssrCase falls back to the Houzs default, else omits the column
+    // (single-company safe).
+    company_id: houzsCompanyId(c),
   });
   return c.json(result, 201);
 });
@@ -1686,9 +1694,9 @@ app.get("/metrics", requirePermission("service_cases.read"), async (c) => {
     `AND COALESCE(${prefix}complained_date, ${prefix}created_at) >= date('now', '-${sinceDays} days')`;
   const sinceClause = sinceFor();
   // Allowed-companies predicates per table alias ("" when unresolved).
-  const coBare = allowedCompaniesSql(c);
-  const coC = allowedCompaniesSql(c, "c.company_id");
-  const coA = allowedCompaniesSql(c, "a.company_id");
+  const coBare = houzsCompanySql(c);
+  const coC = houzsCompanySql(c, "c.company_id");
+  const coA = houzsCompanySql(c, "a.company_id");
 
   // Headline numbers. avg_resolution_hours filters out legacy rows
   // where julianday(closed_at) <= julianday(created_at) (corrupt
@@ -2018,7 +2026,7 @@ app.get("/metrics/drill", requirePermission("service_cases.read"), async (c) => 
     ? "FROM assr_cases c LEFT JOIN creditors cr ON cr.creditor_code = c.creditor_code JOIN assr_items i ON i.assr_id = c.id"
     : "FROM assr_cases c LEFT JOIN creditors cr ON cr.creditor_code = c.creditor_code";
   const distinct = joinItems ? "DISTINCT" : "";
-  const where = conds.join(" AND ") + allowedCompaniesSql(c, "c.company_id");
+  const where = conds.join(" AND ") + houzsCompanySql(c, "c.company_id");
 
   const rows = await c.env.DB.prepare(
     `SELECT ${distinct} c.id, c.assr_no, c.customer_name, c.stage, c.priority,

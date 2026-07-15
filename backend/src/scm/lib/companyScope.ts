@@ -14,14 +14,20 @@ import type { CompanyRow } from "../../middleware/companyContext";
  *    `.eq('company_id', <active>)`, and stamp `company_id = <active>` on INSERT
  *    via `activeCompanyId(c)`.
  *
- *  • CROSS-COMPANY VIEW modules (TMS: trips / delivery-planning / fleet, and
- *    Service Cases / ASSR): ONE shared queue across both companies, each row
- *    tagged with its company. They call `scopeToAllowedCompanies(query, c)` to
- *    add `.in('company_id', <allowed>)` (WIDEN, don't isolate) and enrich rows
- *    with a company label via `companyCodeMap(c)` / `withCompanyCode(...)` so
- *    the UI can render a company column. On INSERT they still stamp the ACTIVE
- *    company (a trip is created from whichever company you're currently in; it
- *    can still reference the other company's DOs).
+ *  • CROSS-COMPANY VIEW modules (TMS: trips / delivery-planning / fleet): ONE
+ *    shared queue across both companies, each row tagged with its company. They
+ *    call `scopeToAllowedCompanies(query, c)` to add `.in('company_id',
+ *    <allowed>)` (WIDEN, don't isolate) and enrich rows with a company label via
+ *    `companyCodeMap(c)` / `withCompanyCode(...)` so the UI can render a company
+ *    column. On INSERT they still stamp the ACTIVE company (a trip is created
+ *    from whichever company you're currently in; it can still reference the
+ *    other company's DOs).
+ *
+ *  • HOUZS-ONLY module (Service Cases / ASSR): a Houzs-exclusive concept (2990
+ *    has 0% service overlap). Its raw-SQL reads pin to HOUZS via
+ *    `houzsCompanySql(c)` / `houzsCompanyIds(c)` — NOT the caller's allowed set —
+ *    so a both-company user never sees 2990 orders/customers/cases under Service
+ *    Cases. See routes/assr.ts.
  *
  * All helpers NO-OP when the active/allowed company is unresolved (companies
  * master absent pre-migration, or a DB cold-start) — so single-company Houzs
@@ -68,6 +74,44 @@ export function allowedCompaniesSql(c: Context<any>, col = "company_id"): string
  */
 export function activeCompanySql(c: Context<any>, col = "company_id"): string {
   const id = Number(activeCompanyId(c));
+  if (!Number.isInteger(id) || id <= 0) return "";
+  return ` AND ${col} = ${id}`;
+}
+
+/**
+ * HOUZS-ONLY PIN (Service Cases / ASSR). ASSR is a Houzs-exclusive module —
+ * 2990 has zero service-case overlap (owner: "Service pricing CANNOT merge,
+ * 0% overlap"). So ASSR queries pin to the base company HOUZS rather than the
+ * caller's full allowed set: a both-company user (the owner) must NOT see 2990
+ * orders/customers/cases under Service Cases. HOUZS is identified by
+ * `companies.code === 'HOUZS'` from the companies master already on context —
+ * no hardcoded id.
+ *
+ * houzsCompanyId returns the resolved id, or undefined when the companies
+ * master is unresolved (pre-migration / cold-start).
+ */
+export function houzsCompanyId(c: Context<any>): number | undefined {
+  const rows = (c.get("companies") as CompanyRow[] | undefined) ?? [];
+  const houzs = rows.find((r) => r.code === "HOUZS");
+  return houzs?.id != null ? Number(houzs.id) : undefined;
+}
+
+/** houzsCompanyIds — the array flavour for callers that take an id list
+ *  (e.g. the ASSR list/export `allowed_company_ids` param). `[houzsId]` when
+ *  resolved, else `[]` so the callee degrades to single-company (no predicate),
+ *  matching the pre-migration / cold-start behaviour. */
+export function houzsCompanyIds(c: Context<any>): number[] {
+  const id = houzsCompanyId(c);
+  return id != null ? [id] : [];
+}
+
+/** Raw env.DB SQL fragment pinning a query to HOUZS: ` AND <col> = <houzsId>`,
+ *  or "" when HOUZS is unresolved (pre-migration / cold-start) so legacy
+ *  single-company SQL runs unchanged. Same inline-not-bind safety as
+ *  allowedCompaniesSql — the id comes from OUR companies master, re-validated
+ *  as a positive integer here. */
+export function houzsCompanySql(c: Context<any>, col = "company_id"): string {
+  const id = Number(houzsCompanyId(c));
   if (!Number.isInteger(id) || id <= 0) return "";
   return ` AND ${col} = ${id}`;
 }
