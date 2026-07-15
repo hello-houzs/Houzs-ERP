@@ -22,6 +22,41 @@ import { escapeForOr } from '../lib/postgrest-search';
 export const grns = new Hono<{ Bindings: Env; Variables: Variables }>();
 grns.use('*', supabaseAuth);
 
+/* A source PO can only be received against while it is still open for receipt —
+   SUBMITTED (nothing received yet) or PARTIALLY_RECEIVED (some received). A
+   DRAFT / CANCELLED / already-RECEIVED PO must NOT accept a GRN (it would write
+   stock IN against a PO that isn't live). This is the SINGLE predicate the GRN
+   create paths share; `POST /from-po-items` already gated on it inline and the
+   other PO-linked create paths (`POST /`, `POST /from-pos`) now reuse it. */
+const RECEIVABLE_PO_STATUSES = ['SUBMITTED', 'PARTIALLY_RECEIVED'] as const;
+const isReceivablePoStatus = (status: string | null | undefined): boolean =>
+  (RECEIVABLE_PO_STATUSES as readonly string[]).includes(status ?? '');
+
+/* Resolve the receive-into warehouse for a GRN WITHOUT ever silently falling
+   back to the default (first, code-sorted = China/transit) warehouse. Returns
+   the explicit body warehouse when the form sent one; else the single warehouse
+   the PO-linked lines all bind to (the authoritative per-warehouse binding at
+   the PO line — the auto-resolution the post chokepoint also honours); else
+   null so the caller rejects with a plain 400 instead of dumping received stock
+   into the wrong (transit) warehouse. (Owner 2026-07-02 China/transit fix — this
+   is the server-side counterpart to the FE `GrnNew.tsx` required-picker guard;
+   before this a manual / mixed-warehouse GRN with no warehouseId in the body
+   still landed in defaultWarehouseId server-side.) */
+async function resolveReceiveWarehouse(
+  sb: any,
+  explicitWarehouseId: string | null,
+  poItemIds: Array<string | null | undefined>,
+): Promise<string | null> {
+  if (explicitWarehouseId) return explicitWarehouseId;
+  const ids = [...new Set(poItemIds.filter((x): x is string => Boolean(x)))];
+  if (ids.length === 0) return null;
+  const { data: whRows } = await sb.from('purchase_order_items')
+    .select('warehouse_id').in('id', ids);
+  const whs = [...new Set(((whRows ?? []) as Array<{ warehouse_id: string | null }>)
+    .map((r) => r.warehouse_id).filter((x): x is string => Boolean(x)))];
+  return whs.length === 1 ? whs[0]! : null;
+}
+
 /* ── Migration 0120 — resolve the production batch (source PO number) for each
    GRN line, keyed by purchase_order_item_id. A GRN can aggregate lines from
    several POs (the add-PO picker), so we resolve PER LINE, not off the GRN
@@ -1067,7 +1102,19 @@ grns.post('/', async (c) => {
     }
     if (acceptedByPoItem.size > 0) {
       const { data: poItems } = await sb.from('purchase_order_items')
-        .select('id, qty, received_qty').in('id', [...acceptedByPoItem.keys()]);
+        .select('id, qty, received_qty, po:purchase_orders!inner ( status )').in('id', [...acceptedByPoItem.keys()]);
+      /* Receivable-PO guard (audit gap #5) — a PO-linked line may only be
+         received while its source PO is receivable. Only `/from-po-items`
+         enforced this; the manual New-GRN form (this path) could slip PO-linked
+         lines onto a DRAFT / CANCELLED / already-RECEIVED PO and write stock IN.
+         Manual (no-PO) lines never reach here — they carry no
+         purchase_order_item_id, so the intentional manual-GRN flow is unaffected. */
+      for (const r of (poItems ?? []) as Array<{ id: string; po: { status: string } | Array<{ status: string }> | null }>) {
+        const st = Array.isArray(r.po) ? r.po[0]?.status : r.po?.status;
+        if (!isReceivablePoStatus(st)) {
+          return c.json({ error: 'po_not_receivable', poItemId: r.id, status: st ?? null }, 409);
+        }
+      }
       const remByPoItem = new Map<string, number>(
         ((poItems ?? []) as Array<{ id: string; qty: number; received_qty: number }>)
           .map((r) => [r.id, (r.qty ?? 0) - (r.received_qty ?? 0)]),
@@ -1090,11 +1137,24 @@ grns.post('/', async (c) => {
      to do the receipt rollup + inventory IN. */
   /* Commander 2026-05-29 — New GRN now mirrors New PO's header, including a
      "Receive into" Warehouse picker. Persist the chosen warehouse on the grn
-     header so the inventory-IN movement lands in the right warehouse. When the
-     form omits one (legacy / From-PO picks), keep the default-warehouse
-     fallback — postGrnAndRollup reads `warehouse_id ?? defaultWarehouseId`. */
-  const headerWarehouseId =
-    (body.warehouseId as string | undefined) ?? (await defaultWarehouseId(sb)) ?? null;
+     header so the inventory-IN movement lands in the right warehouse.
+     Warehouse-required guard (audit gap #6) — when the form omits a warehouse we
+     no longer silently default to defaultWarehouseId (first, code-sorted =
+     China/transit), which received goods into the wrong warehouse and left MRP
+     for the real (MY) warehouse short. Resolve it from the PO-linked lines'
+     single bound warehouse (the auto-resolution the post chokepoint honours);
+     only if neither an explicit picker value nor a single PO-line warehouse is
+     available do we reject with a plain 400. A manual GRN (no PO lines) must now
+     carry an explicit warehouse — the intentional manual-receipt flow still
+     works, it just can't land stock nowhere-in-particular. */
+  const headerWarehouseId = await resolveReceiveWarehouse(
+    sb,
+    (body.warehouseId as string | undefined) ?? null,
+    items.map((it) => (it.purchaseOrderItemId as string | undefined) ?? null),
+  );
+  if (!headerWarehouseId) {
+    return c.json({ error: 'warehouse_required', message: 'Select a warehouse to receive the goods into.' }, 400);
+  }
   /* Migration 0082 — GRN currency + rate inherit from the source PO (MYR default);
      allocation_method for landed-freight "平摊" (default QTY). MYR ⇒ rate 1, no-op. */
   const grnFx = await resolveGrnFx(sb, (body.purchaseOrderId as string | undefined) ?? null, body.currency, body.exchangeRate);
@@ -1218,6 +1278,15 @@ grns.post('/from-pos', async (c) => {
   const poList = (pos ?? []) as Array<{ id: string; po_number: string; supplier_id: string; status: string; currency?: string | null }>;
   if (poList.length === 0) return c.json({ error: 'pos_not_found' }, 404);
 
+  /* Receivable-PO guard (audit gap #5) — a batch-convert may only receive POs
+     that are still open for receipt. Without this a DRAFT / CANCELLED /
+     already-RECEIVED PO could be converted to a GRN and write stock IN. Mirrors
+     the 409 `/from-po-items` already enforces per pick. */
+  const notReceivable = poList.find((p) => !isReceivablePoStatus(p.status));
+  if (notReceivable) {
+    return c.json({ error: 'po_not_receivable', poId: notReceivable.id, status: notReceivable.status }, 409);
+  }
+
   const supplierIds = new Set(poList.map((p) => p.supplier_id));
   if (supplierIds.size > 1) {
     return c.json({ error: 'mixed_suppliers', message: 'All selected POs must be from the same supplier' }, 400);
@@ -1248,6 +1317,17 @@ grns.post('/from-pos', async (c) => {
 
   if (itemList.length === 0) return c.json({ error: 'nothing_outstanding', message: 'All PO items are already fully received' }, 400);
 
+  /* Warehouse-required guard (audit gap #6) — this batch-convert never set a
+     header warehouse and relied on postGrnAndRollup's defaultWarehouseId
+     fallback, so POs whose lines carry no (or mixed) warehouse binding silently
+     received into the first (China/transit) warehouse. Bind the single warehouse
+     the PO lines resolve to; reject when they don't (there is no picker on this
+     flow — fix the PO line binding or receive per-warehouse instead). */
+  const batchWarehouseId = await resolveReceiveWarehouse(sb, null, itemList.map((it) => it.id));
+  if (!batchWarehouseId) {
+    return c.json({ error: 'warehouse_required', message: 'These purchase orders have no single receive-into warehouse. Set the warehouse on the PO lines, or receive them per warehouse.' }, 400);
+  }
+
   // Generate GRN number using same pattern as the single-POST endpoint.
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
@@ -1277,6 +1357,7 @@ grns.post('/from-pos', async (c) => {
     grn_number: dn,
     purchase_order_id: poList[0]!.id,                    // primary PO ref (first one)
     supplier_id: supplierId,
+    warehouse_id: batchWarehouseId,                      // audit gap #6 — no silent China/transit default
     received_at: todayMyt(),
     delivery_note_ref: body.deliveryNoteRef ?? null,
     currency: batchFx.currency,
@@ -1463,7 +1544,7 @@ grns.post('/from-po-items', async (c) => {
     if (p.qty > remaining) {
       return c.json({ error: 'qty_exceeds_remaining', poItemId: p.poItemId, requested: p.qty, remaining }, 409);
     }
-    if (row.po.status !== 'SUBMITTED' && row.po.status !== 'PARTIALLY_RECEIVED') {
+    if (!isReceivablePoStatus(row.po.status)) {
       return c.json({ error: 'po_not_receivable', poItemId: p.poItemId, status: row.po.status }, 409);
     }
   }
