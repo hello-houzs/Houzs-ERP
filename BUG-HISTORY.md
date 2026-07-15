@@ -8,6 +8,12 @@ Severity tags: 🔴 critical/high · 🟠 medium · 🟢 low.
 
 ## 2026-07-15
 
+### 🟢 Amendments queue had no detail view — double-click jumped straight into the SO/PO editor (job-card unification)
+- **Symptom:** An amendment could only be inspected by double-clicking a queue row, which routed straight into the SO (or bound-PO) inline editor — there was no read-first amendment surface showing the before→after diff, revision status, requester, or activity. The Amendment was the last of the SO/DO/SI/Amendment job cards still not following the SO template.
+- **Root cause:** `pages/scm-v2/Amendments.tsx` `openRow` resolved the bound PO and navigated into `?edit=1`; no `AmendmentDetailV2` page existed. The diff data already lived in `useAmendmentDetail` (`old_snapshot` vs `new_*`) and was rendered by the desktop `AmendmentDiffModal` + mobile `AmendmentDiffSheet`, but nothing composed it into a job card.
+- **Fix:** Added `pages/scm-v2/AmendmentDetailV2.tsx` (route `/scm/amendments/:id`, same guard as the queue) following the SO detail shell (`Section` + `DetailGrid`/`DetailMain`/`DetailAside`, local `AsideCard` clone): a revision-status hero (`resolveStatusPill('soAmendment')` label/tone + a 4-stage stepper), a per-line before→after diff with each side's variants as chips (old side from `old_snapshot.description2`, new side from the shared `buildVariantSummary(new_variants)` — parity with the mobile sheet), and an aside with Requested-by, permission-gated supplier-confirm (modal) / approve-so gates (the vendored `useSupplierConfirm`/`useApproveSo` hooks the mobile flow uses), an editor hand-off for the later PO gates, and a Recent-activity timeline derived from the amendment's own audit timestamps. The queue double-click now opens this page instead of the editor.
+- **Ref:** `feat/amendment-jobcard`, 2026-07-15.
+
 ### 🟠 SCM list column chooser lost 19-32 columns per sales-side list (DataGrid->DataTable rewrite)
 - **Symptom:** The column chooser on the SCM lists offered far fewer columns than before — Sales Orders showed ~9 vs 42 in the old list; Delivery Orders / Sales Invoices / Delivery Returns similarly gutted. Owner: "my columns didn't used to be this few."
 - **Root cause:** The DataGrid->DataTable V2 rewrite hand-slimmed each `COLUMNS` array. `DataTable`/`ColumnsPanel` still support show/hide/reorder/`defaultHidden` — the columns were simply no longer DECLARED. Not a component regression, not UDF.
