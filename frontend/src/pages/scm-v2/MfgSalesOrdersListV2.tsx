@@ -956,6 +956,150 @@ export function MfgSalesOrdersListV2() {
         </span>
       ),
     },
+    // ── Re-added columns (Phase 1) — data already on the SoRow payload, ported
+    //    from the legacy MfgSalesOrdersList buildColumns (labels/widths). All
+    //    default-hidden so the column chooser exposes them without changing the
+    //    slim default view. disableSort because the SO list is server-sorted
+    //    and these keys aren't in the backend sort whitelist.
+    {
+      key: "po_doc_no",
+      label: "PO Doc No.",
+      width: "130px",
+      defaultHidden: true,
+      disableSort: true,
+      getValue: (r) => r.po_doc_no ?? "",
+      render: (r) => (
+        <span className="font-mono text-[12px] text-ink-secondary">{r.po_doc_no || "—"}</span>
+      ),
+    },
+    {
+      key: "phone",
+      label: "Phone",
+      width: "130px",
+      defaultHidden: true,
+      disableSort: true,
+      getValue: (r) => r.phone ?? "",
+      render: (r) => (
+        <span className="text-[12.5px] text-ink-secondary">{r.phone || "—"}</span>
+      ),
+    },
+    {
+      key: "email",
+      label: "Email",
+      width: "180px",
+      defaultHidden: true,
+      disableSort: true,
+      getValue: (r) => r.email ?? "",
+      render: (r) => (
+        <span className="text-[12.5px] text-ink-secondary">{r.email || "—"}</span>
+      ),
+    },
+    {
+      key: "debtor_code",
+      label: "Customer Code",
+      width: "120px",
+      defaultHidden: true,
+      disableSort: true,
+      getValue: (r) => r.debtor_code ?? "",
+      render: (r) => (
+        <span className="font-mono text-[12px] text-ink-secondary">{r.debtor_code || "—"}</span>
+      ),
+    },
+    {
+      key: "address1",
+      label: "Address 1",
+      width: "180px",
+      defaultHidden: true,
+      disableSort: true,
+      getValue: (r) => r.address1 ?? "",
+      render: (r) => (
+        <span className="text-[12.5px] text-ink-secondary">{r.address1 || "—"}</span>
+      ),
+    },
+    {
+      key: "address2",
+      label: "Address 2",
+      width: "180px",
+      defaultHidden: true,
+      disableSort: true,
+      getValue: (r) => r.address2 ?? "",
+      render: (r) => (
+        <span className="text-[12.5px] text-ink-secondary">{r.address2 || "—"}</span>
+      ),
+    },
+    {
+      key: "city",
+      label: "City",
+      width: "130px",
+      defaultHidden: true,
+      disableSort: true,
+      getValue: (r) => r.city ?? "",
+      render: (r) => (
+        <span className="text-[12.5px] text-ink-secondary">{r.city || "—"}</span>
+      ),
+    },
+    {
+      key: "postcode",
+      label: "Postcode",
+      width: "100px",
+      defaultHidden: true,
+      disableSort: true,
+      getValue: (r) => r.postcode ?? "",
+      render: (r) => (
+        <span className="text-[12.5px] text-ink-secondary">{r.postcode || "—"}</span>
+      ),
+    },
+    {
+      key: "customer_state",
+      label: "State",
+      width: "130px",
+      defaultHidden: true,
+      disableSort: true,
+      getValue: (r) => r.customer_state ?? "",
+      render: (r) => (
+        <span className="text-[12.5px] text-ink-secondary">{r.customer_state || "—"}</span>
+      ),
+    },
+    {
+      key: "payment_method",
+      label: "Payment Method",
+      width: "150px",
+      defaultHidden: true,
+      disableSort: true,
+      getValue: (r) =>
+        r.payment_methods_summary ||
+        (r.payment_method ? r.payment_method.toUpperCase() : ""),
+      render: (r) => {
+        const pm =
+          r.payment_methods_summary ||
+          (r.payment_method ? r.payment_method.toUpperCase() : "");
+        return <span className="text-[12.5px] text-ink-secondary">{pm || "—"}</span>;
+      },
+    },
+    {
+      key: "paid",
+      label: "Paid",
+      width: "110px",
+      align: "right",
+      defaultHidden: true,
+      disableSort: true,
+      getValue: (r) => r.paid_centi ?? 0,
+      render: (r) => (
+        <span className="font-money text-[13px] text-ink">{fmtRm(r.paid_centi ?? 0)}</span>
+      ),
+    },
+    {
+      key: "balance",
+      label: "Balance",
+      width: "110px",
+      align: "right",
+      defaultHidden: true,
+      disableSort: true,
+      getValue: (r) => r.balance_centi ?? 0,
+      render: (r) => (
+        <span className="font-money text-[13px] text-ink">{fmtRm(r.balance_centi ?? 0)}</span>
+      ),
+    },
   ];
 
   const statusPillOptions: Array<{ value: StatusTab; label: string }> = [

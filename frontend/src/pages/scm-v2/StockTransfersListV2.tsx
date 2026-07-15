@@ -261,6 +261,20 @@ export function StockTransfersListV2() {
         return <Badge tone={st.tone} size="xs">{st.label}</Badge>;
       },
     },
+    // Re-added from the legacy StockTransfers list (data already on the row).
+    // Default-hidden so the chooser exposes it without changing the default view.
+    {
+      key: "created_by",
+      label: "Created By",
+      width: "120px",
+      defaultHidden: true,
+      getValue: (r) => r.created_by ?? "",
+      render: (r) => (
+        <span className="font-mono text-[12px] text-ink-secondary">
+          {r.created_by ? r.created_by.slice(0, 8) : "—"}
+        </span>
+      ),
+    },
   ];
 
   const statusPillOptions: Array<{ value: StatusTab; label: string }> = [

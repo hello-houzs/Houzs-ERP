@@ -889,6 +889,136 @@ export function DeliveryReturnsListV2() {
         </span>
       ),
     },
+    // ── Re-added columns (Phase 1) — data already on the DrRow payload, ported
+    //    from the legacy DeliveryReturnsList buildColumns (labels/widths). All
+    //    default-hidden so the column chooser exposes them without changing the
+    //    slim default view. This list sorts client-side, so getValue keeps them
+    //    sortable + CSV-exportable without a backend sort key.
+    {
+      key: "sales_location",
+      label: "Location",
+      width: "120px",
+      defaultHidden: true,
+      getValue: (r) => r.sales_location ?? "",
+      render: (r) => (
+        <span className="text-[12.5px] text-ink-secondary">{r.sales_location || "—"}</span>
+      ),
+    },
+    {
+      key: "branding",
+      label: "Branding",
+      width: "130px",
+      defaultHidden: true,
+      getValue: (r) => brandOf(r),
+      render: (r) => {
+        const b = brandOf(r);
+        return (
+          <Badge tone={brandTone(b)} variant="soft" size="xs">
+            {b}
+          </Badge>
+        );
+      },
+    },
+    {
+      key: "venue",
+      label: "Venue",
+      width: "180px",
+      defaultHidden: true,
+      getValue: (r) => r.venue ?? "",
+      render: (r) => (
+        <span className="text-[12.5px] text-ink-secondary">{r.venue || "—"}</span>
+      ),
+    },
+    {
+      key: "phone",
+      label: "Phone",
+      width: "130px",
+      defaultHidden: true,
+      getValue: (r) => r.phone ?? "",
+      render: (r) => (
+        <span className="text-[12.5px] text-ink-secondary">{r.phone || "—"}</span>
+      ),
+    },
+    {
+      key: "email",
+      label: "Email",
+      width: "180px",
+      defaultHidden: true,
+      getValue: (r) => r.email ?? "",
+      render: (r) => (
+        <span className="text-[12.5px] text-ink-secondary">{r.email || "—"}</span>
+      ),
+    },
+    {
+      key: "debtor_code",
+      label: "Customer Code",
+      width: "120px",
+      defaultHidden: true,
+      getValue: (r) => r.debtor_code ?? "",
+      render: (r) => (
+        <span className="font-mono text-[12px] text-ink-secondary">{r.debtor_code || "—"}</span>
+      ),
+    },
+    {
+      key: "address1",
+      label: "Address 1",
+      width: "180px",
+      defaultHidden: true,
+      getValue: (r) => r.address1 ?? "",
+      render: (r) => (
+        <span className="text-[12.5px] text-ink-secondary">{r.address1 || "—"}</span>
+      ),
+    },
+    {
+      key: "address2",
+      label: "Address 2",
+      width: "180px",
+      defaultHidden: true,
+      getValue: (r) => r.address2 ?? "",
+      render: (r) => (
+        <span className="text-[12.5px] text-ink-secondary">{r.address2 || "—"}</span>
+      ),
+    },
+    {
+      key: "city",
+      label: "City",
+      width: "130px",
+      defaultHidden: true,
+      getValue: (r) => r.city ?? "",
+      render: (r) => (
+        <span className="text-[12.5px] text-ink-secondary">{r.city || "—"}</span>
+      ),
+    },
+    {
+      key: "postcode",
+      label: "Postcode",
+      width: "100px",
+      defaultHidden: true,
+      getValue: (r) => r.postcode ?? "",
+      render: (r) => (
+        <span className="text-[12.5px] text-ink-secondary">{r.postcode || "—"}</span>
+      ),
+    },
+    {
+      key: "customer_state",
+      label: "State",
+      width: "130px",
+      defaultHidden: true,
+      getValue: (r) => r.customer_state ?? "",
+      render: (r) => (
+        <span className="text-[12.5px] text-ink-secondary">{r.customer_state || "—"}</span>
+      ),
+    },
+    {
+      key: "note",
+      label: "Note",
+      width: "200px",
+      defaultHidden: true,
+      getValue: (r) => r.note ?? "",
+      render: (r) => (
+        <span className="text-[12.5px] text-ink-secondary">{r.note || "—"}</span>
+      ),
+    },
   ];
 
   const statusPillOptions: Array<{ value: StatusTab; label: string }> = [
