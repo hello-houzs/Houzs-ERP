@@ -6814,8 +6814,8 @@ function DocRow({
             <div className="min-w-0">
               <div className="font-medium text-ink">{item.title}</div>
               {item.role_label && (
-                <span className={cn("mt-1 inline-block whitespace-nowrap rounded-full border px-1.5 py-0.5 text-[8.5px] font-bold uppercase tracking-wider", roleChipClass(item.role_label))}>
-                  {item.role_label}
+                <span className={cn("mt-0.5 inline-block whitespace-nowrap rounded-full border px-1.5 py-0.5 text-[8.5px] font-bold tracking-wide", roleChipClass(item.role_label))}>
+                  {formatRoleLabel(item.role_label)}
                 </span>
               )}
             </div>
@@ -7382,8 +7382,8 @@ function ChecklistRow({
           <div className="min-w-0">
             <div className={cn("text-[12px] font-medium", pillDone && "text-ink-muted")}>{item.title}</div>
             {item.role_label && (
-              <span className={cn("mt-1 inline-block rounded-full border px-1.5 py-0.5 text-[8.5px] font-bold uppercase tracking-wider", roleChipClass(item.role_label))}>
-                {item.role_label}
+              <span className={cn("mt-0.5 inline-block rounded-full border px-1.5 py-0.5 text-[8.5px] font-bold tracking-wide", roleChipClass(item.role_label))}>
+                {formatRoleLabel(item.role_label)}
               </span>
             )}
           </div>
@@ -7473,7 +7473,7 @@ function ChecklistRow({
           )}
         </button>
         <div className="flex-1">
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
             <span
               className={cn(
                 "text-[12px] font-medium",
@@ -7483,13 +7483,13 @@ function ChecklistRow({
               {item.title}
             </span>
             {(item.role_label || item.required_perm || reviewBadge) && (
-              <div className="mt-1 flex basis-full flex-wrap items-center gap-1.5">
+              <div className="flex basis-full flex-wrap items-center gap-1.5">
                 {item.role_label && (
                   <span
-                    className={cn("rounded-full border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider", roleChipClass(item.role_label))}
+                    className={cn("rounded-full border px-1.5 py-0.5 text-[9px] font-bold tracking-wide", roleChipClass(item.role_label))}
                     title="Owner role"
                   >
-                    {item.role_label}
+                    {formatRoleLabel(item.role_label)}
                   </span>
                 )}
                 {item.required_perm && (
@@ -8250,6 +8250,18 @@ function roleChipClass(role: string | null | undefined): string {
     default:
       return "border-border bg-bg/40 text-ink-secondary";
   }
+}
+
+// Owner 2026-07-15: role badges read sentence-case ("Purchaser", "Driver",
+// "Sales PIC") instead of shouting all-caps — genuine acronyms (BD, PIC) stay
+// uppercase, matching how the app writes them elsewhere.
+const ROLE_ACRONYMS = new Set(["BD", "PIC", "PO", "DO", "PPE", "3D", "2D"]);
+function formatRoleLabel(label: string): string {
+  return label
+    .trim()
+    .split(/\s+/)
+    .map((w) => (ROLE_ACRONYMS.has(w.toUpperCase()) ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()))
+    .join(" ");
 }
 
 // ── Setup & Dismantle crew editor (JSON: setup_crew / dismantle_crew) ──

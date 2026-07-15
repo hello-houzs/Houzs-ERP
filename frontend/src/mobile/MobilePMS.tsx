@@ -1182,6 +1182,16 @@ const ROLE_COLOR: Record<string, string> = {
   LOGISTIC: "#2f8a5b",
 };
 const roleColor = (label: string) => ROLE_COLOR[label.toUpperCase()] ?? "#767b6e";
+// Owner 2026-07-15: badges should read sentence-case ("Purchaser", "Driver",
+// "Sales PIC") instead of shouting all-caps — but keep genuine acronyms
+// (BD, PIC) uppercase, matching how the app writes them elsewhere.
+const ROLE_ACRONYMS = new Set(["BD", "PIC", "PO", "DO", "PPE", "3D", "2D"]);
+const formatRoleLabel = (label: string): string =>
+  label
+    .trim()
+    .split(/\s+/)
+    .map((w) => (ROLE_ACRONYMS.has(w.toUpperCase()) ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()))
+    .join(" ");
 
 // Checklist status cycle for the tick control: pending → done → na → pending.
 const NEXT_STATUS: Record<string, "pending" | "done" | "na"> = {
@@ -1529,7 +1539,7 @@ function TaskRow({
         <span style={{ width: 15, height: 15, flex: "none" }} />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 12, fontWeight: 600, color: "#11140f" }}>{it.title}</div>
-          {it.role_label && c && <span className="rbadge" style={{ background: `${c}1f`, color: c, marginTop: 4, display: "inline-flex" }}>{it.role_label}</span>}
+          {it.role_label && c && <span className="rbadge" style={{ background: `${c}1f`, color: c, marginTop: 4, display: "inline-flex" }}>{formatRoleLabel(it.role_label)}</span>}
         </div>
         {opts.map(([v, label]) => {
           const on = v === cur;
@@ -1583,7 +1593,7 @@ function TaskRow({
       </span>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 12, fontWeight: 600, color: na ? "#9aa093" : "#11140f", textDecoration: na ? "line-through" : "none" }}>{it.title}</div>
-        {it.role_label && c && <span className="rbadge" style={{ background: `${c}1f`, color: c, marginTop: 4, display: "inline-flex" }}>{it.role_label}</span>}
+        {it.role_label && c && <span className="rbadge" style={{ background: `${c}1f`, color: c, marginTop: 4, display: "inline-flex" }}>{formatRoleLabel(it.role_label)}</span>}
       </div>
       {it.due_date && <span style={{ fontSize: 9.5, color: "#9aa093", whiteSpace: "nowrap" }}>{dm(it.due_date)}</span>}
       {canAttach && (
