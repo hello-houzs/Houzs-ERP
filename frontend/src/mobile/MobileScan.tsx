@@ -390,6 +390,9 @@ export function MobileScan({
   // <doc no>."). Rendered inside that order's card; cleared when the order's
   // photos change (a retake is a new attempt).
   const [orderErrors, setOrderErrors] = useState<Record<string, string>>({});
+  // The order id currently being re-queued via "Create anyway" (force=1), so
+  // its button shows a busy state without blocking the rest of the screen.
+  const [forcingId, setForcingId] = useState<string | null>(null);
   const [unavailable, setUnavailable] = useState(false);
   // ONE hidden front input + ONE hidden payment input, both re-targeted to the
   // active order right before each capture. capture="environment" opens the rear
@@ -687,12 +690,55 @@ export function MobileScan({
   // order's photos + queues a server-side job and returns 202 {job_id} BEFORE
   // any OCR — the phone can leave this screen (or close the app entirely); the
   // Worker's waitUntil finishes the OCR and mints the DRAFT SO on its own.
-  const enqueueOne = (order: OrderDraft): Promise<{ job_id: string; status: string }> => {
+  const enqueueOne = (order: OrderDraft, force = false): Promise<{ job_id: string; status: string }> => {
     const form = new FormData();
     form.append("file", order.front!.file);
     for (const s of order.payShots) form.append("file", s.file);
     if (salesperson) form.append("salesperson", salesperson);
+    // force=1 = the operator confirmed "create anyway" on a duplicate-slip
+    // warning, so the backend skips its hard reject and queues the order.
+    if (force) form.append("force", "1");
     return authedFetch<{ job_id: string; status: string }>("/scan-so/enqueue", { method: "POST", body: form });
+  };
+
+  // "Create anyway" — re-queue a duplicate-slip-warned order with force=1. Owner
+  // 2026-07-15: a repeat slip only WARNS; whether to open again is the person's
+  // call. On success the card drops off (like a normal queue) and its warning
+  // clears; the background job still marks it as a soft duplicate for the trail.
+  const createAnyway = async (orderId: string) => {
+    const order = orders.find((o) => o.id === orderId);
+    if (!order || !order.front || order.payShots.length === 0 || forcingId) return;
+    setForcingId(orderId);
+    try {
+      await enqueueOne(order, true);
+    } catch {
+      setForcingId(null);
+      void serviceNotify({
+        title: "Couldn't queue the order",
+        body: "The order still couldn't be queued. Please try again.",
+        tone: "error",
+      });
+      return;
+    }
+    setForcingId(null);
+    setOrderErrors((cur) => {
+      const next = { ...cur };
+      delete next[orderId];
+      return next;
+    });
+    setOrders((cur) => {
+      const target = cur.find((o) => o.id === orderId);
+      if (target?.front) URL.revokeObjectURL(target.front.url);
+      if (target) for (const s of target.payShots) URL.revokeObjectURL(s.url);
+      const keep = cur.filter((o) => o.id !== orderId);
+      return keep.length ? keep : [newOrder()];
+    });
+    void refetchJobs();
+    void serviceNotify({
+      title: "Draft queued",
+      body: "The order was queued despite the duplicate slip.",
+      tone: "info",
+    });
   };
 
   /* Legacy on-screen flow — kept VERBATIM as the fallback when /enqueue is not
@@ -788,7 +834,7 @@ export function MobileScan({
           void refetchJobs();
           void serviceNotify({
             title: `${queued} draft${queued === 1 ? "" : "s"} queued`,
-            body: "The other orders were queued. Only the duplicate slip below was not.",
+            body: "The other orders were queued. The slip below may be a duplicate — review it, then Create anyway if you want a new order.",
             tone: "info",
           });
         }
@@ -1062,12 +1108,24 @@ export function MobileScan({
                   1 front slip + {order.payShots.length || 1} payment slip{(order.payShots.length || 1) === 1 ? "" : "s"} · each payment slip = one payment
                 </div>
 
-                {/* Order-level refusal (409 duplicate_slip): this order's slip
-                    already created an SO, so the upload was rejected. Names the
-                    existing order number; retaking/removing a photo clears it. */}
+                {/* Order-level duplicate-slip WARNING (409 duplicate_slip): this
+                    order's slip already created an SO. Owner 2026-07-15: warn,
+                    don't block — the operator decides. Names the existing order
+                    number; "Create anyway" re-queues it (force=1); retaking or
+                    removing a photo also clears it. */}
                 {orderErrors[order.id] && (
-                  <div style={{ marginTop: 10, background: "#f8eaea", border: "1px solid #f0d4d4", borderRadius: 11, padding: "10px 12px", fontSize: 12, color: "#b23a3a", lineHeight: 1.5 }}>
-                    {orderErrors[order.id]}
+                  <div style={{ marginTop: 10, background: "#f3ece0", border: "1px solid #e8dcc5", borderRadius: 11, padding: "10px 12px", fontSize: 12, color: "#6a4a1e", lineHeight: 1.5 }}>
+                    <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                      <svg width="15" height="15" style={{ flex: "none", marginTop: 1 }} viewBox="0 0 24 24" fill="none" stroke="#a16a2e" strokeWidth="2"><circle cx="12" cy="12" r="9" /><path d="M12 8v4M12 16h.01" /></svg>
+                      <span>{orderErrors[order.id]}</span>
+                    </div>
+                    <button
+                      onClick={() => void createAnyway(order.id)}
+                      disabled={forcingId === order.id}
+                      style={{ marginTop: 9, height: 34, width: "100%", border: "1px solid #a16a2e", borderRadius: 9, background: forcingId === order.id ? "#efe6d6" : "#a16a2e", color: forcingId === order.id ? "#a16a2e" : "#fff", fontSize: 12, fontWeight: 700, fontFamily: "inherit", cursor: forcingId === order.id ? "default" : "pointer" }}
+                    >
+                      {forcingId === order.id ? "Creating…" : "Create anyway"}
+                    </button>
                   </div>
                 )}
               </div>

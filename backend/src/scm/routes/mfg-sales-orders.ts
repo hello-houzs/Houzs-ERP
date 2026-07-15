@@ -3661,6 +3661,17 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
     }
   }
 
+  /* Scan-Order receipt as the deposit's Slip (Owner 2026-07-15) — an SO opened
+     from a scanned card-terminal receipt carries `receiptImageKey` (the R2 key
+     of that receipt photo) but NO handover slip / per-row slip session, so the
+     auto-recorded deposit row's slip_key stayed NULL and the receipt only ever
+     showed in the separate "Payment Receipt" card — never in the payment row's
+     Slip column. Owner: "the payment slip should go directly into my Slip." The
+     receipt IS the deposit's proof, so fall it back onto the deposit row's
+     slip_key when no explicit slip was attached. Both are R2 keys in the same
+     bucket, so /payments/:id/slip-url resolves it. */
+  const receiptImageKey = (body.receiptImageKey as string | null | undefined) ?? null;
+
   /* ── POS split payment (Loo 2026-06-06) — optional `payments[]` on create.
      A handover deposit can now arrive as SEVERAL transactions (e.g. half
      cash + half card). Validated STRICTLY (unlike the tolerant single-deposit
@@ -3911,7 +3922,7 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
        card-terminal payment receipt this SO was scanned from, carried over from
        the Scan Order flow so the SO detail page can show it as "Payment Receipt"
        proof. null for manually-keyed orders / scans with no receipt photo. */
-    receipt_image_key: (body.receiptImageKey as string) ?? null,
+    receipt_image_key: receiptImageKey,
     /* PR #148 + #150 — Payment fields on create (mirror PATCH handler).
        Lets commander set payment_method + deposit_centi straight from the
        New SO form, including approval_code for merchant transactions. */
@@ -3976,6 +3987,9 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
         merchant_provider:  merchantProvider,
         installment_months: installmentMonths,
         approval_code:      p.approvalCode ?? null,
+        /* Split rows each carry their OWN uploaded slip (hard-required above),
+           so no scan-receipt fallback is needed here — only the single-deposit
+           scan path (below) inherits `receiptImageKey`. */
         slip_key:           posPaymentSlipKeys![i],
         /* Account Sheet auto-fill (Loo 2026-06-07) — split rows carry no
            onlineType, so transfer falls back to 'Bank transfer'. */
@@ -4054,7 +4068,7 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
         merchant_provider:  merchantProvider,
         installment_months: installmentMonths,
         approval_code:      (body.approvalCode as string) ?? null,
-        slip_key:           slipKey,        // order-level handover slip = the deposit's proof
+        slip_key:           slipKey ?? receiptImageKey,        // handover slip, else the scanned receipt = the deposit's proof
         /* Account Sheet auto-fill (Loo 2026-06-07). */
         account_sheet:      deriveAccountSheet(depositMethod, merchantProvider, null),
         amount_centi:       depositCenti,

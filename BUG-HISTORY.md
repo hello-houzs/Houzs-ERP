@@ -8,6 +8,30 @@ Severity tags: 🔴 critical/high · 🟠 medium · 🟢 low.
 
 ## 2026-07-15
 
+### 🟠 SO quick-view drawer (and V2 detail) hid line variants — showed only Item / Qty / Amount
+- **Symptom:** Opening a sales order's quick-view drawer, the "Order lines" showed only the item name, item code, qty and amount — no colour / fabric / divan / leg / seat / specials. Owner: "order line must show description, colour, divan etc."
+- **Root cause:** The drawer's local line type (`MfgSalesOrdersListV2.tsx` `DetailDrawer`) declared only `item_code/description/qty/unit_price_centi/total_centi`, so it never read the `variants` / `description2` / `item_group` the detail endpoint (`GET /mfg-sales-orders/:docNo`) already returns for every line. The V2 detail page (`SalesOrderDetailV2.tsx`) showed only the STORED `description2` string (which can be stale), not a live summary.
+- **Fix:** Widened the drawer's line type to include `item_group/description2/variants` and rendered a live one-line variant summary under the item via the shared `buildVariantSummary` (same helper the SO full page + mobile use), falling back to `description2` for older rows without a variants blob. Applied the same live-summary + `description2` fallback to `SalesOrderDetailV2.tsx`'s Item column (added `variants` to its `SoItem` type). No backend change — the data was already on the wire.
+- **Ref:** `fix/so-workflow-cluster`, 2026-07-15.
+
+### 🟠 Scanned payment receipt never landed in the payment row's "Slip" field
+- **Symptom:** On an SO created from a scanned card-terminal receipt, the receipt showed only in the separate "Payment Receipt" card — the payment row's Slip column stayed empty. Owner: "the payment slip should go directly into my Slip."
+- **Root cause:** The scan flow writes the receipt to the order header column `receipt_image_key`, but the auto-recorded deposit payment row was inserted with `slip_key = slipKey` (the POS-handover slip session), which is NULL for a scan. The Slip column reads only the row's `slip_key` (then the header's `slip_key`), never `receipt_image_key` — so the deposit row's Slip was blank even though the receipt image existed. (The per-row manual slip upload path already wrote `slip_key` correctly; only the scan-seeded deposit was disconnected.)
+- **Fix:** In `POST /mfg-sales-orders` (`mfg-sales-orders.ts`) the single-deposit auto-payment now inserts `slip_key: slipKey ?? receiptImageKey`, so a scanned receipt becomes the deposit's proof and shows in the Slip column (both are R2 keys in the same bucket, so `/payments/:id/slip-url` resolves it). The split-payment path is unchanged — those rows already hard-require their own uploaded slip.
+- **Ref:** `fix/so-workflow-cluster`, 2026-07-15.
+
+### 🟢 Scan Order hard-blocked a re-used slip instead of warning
+- **Symptom:** Re-scanning a slip that already created an SO refused the upload outright ("This slip was already uploaded — it created SO-2607-017."), with no way to proceed. Owner: "this was already opened; whether to open again is the person's decision — don't be too strict."
+- **Root cause:** `POST /scan-so/enqueue` (`scan-so.ts`) returned a hard `409 duplicate_slip` on an image-hash match (owner 2026-07-04 policy), and both frontends (`MobileScan`, desktop `ScanOrderModal` batch path) only stashed the reason inline with no "proceed" affordance — unlike the desktop single-order EXTRACT duplicate, which already had an "Open New SO anyway" path.
+- **Fix:** Made it a non-blocking WARN. Backend enqueue now reads a `force` form field; `force=1` skips the hard reject and queues the order (the background job's soft duplicate marker still applies). Both frontends turn the inline refusal into an amber warning with a "Create anyway" button that re-sends the same upload with `force=1`; on success the card drops off like a normal queue. Mirrors the existing extract "open anyway" policy; the warning stays visible until the operator acts.
+- **Ref:** `fix/so-workflow-cluster`, 2026-07-15.
+
+### 🟢 "SO still draft but payment can't edit" — traced to the read-only quick-view drawer (not a code block)
+- **Symptom:** Owner reported a draft SO whose payment could not be edited.
+- **Root cause:** Not a real block on the editable paths. Both full-page views already unlock draft payments: desktop `SalesOrderDetail` renders `PaymentsTable` with `locked={!isDraftSo && (...)}` (false for a draft) + `draftUnlocked={isDraftSo}`, and mobile `MobileSODetail` sets `canEditPayments = isDraftSo || ...` (true for a draft) — Add/Edit/Delete all available. The only place a draft's payment "can't be edited" is the SO quick-view DRAWER (`MfgSalesOrdersListV2.tsx` `DetailDrawer`), which never renders the payments editor at all — it shows only a read-only "Payment" summary + Paid/Outstanding totals and defers editing to its "Edit" / "Open full page" buttons. That is by design.
+- **Fix:** None needed — confirmed the editable paths work; the drawer is intentionally view-only and already routes to the full page for editing. Logged to prevent re-investigation.
+- **Ref:** `fix/so-workflow-cluster`, 2026-07-15.
+
 ### 🟠 SO Maintenance open to all sales; non-PIC sales saw every project; Sales Director had no desktop Service Cases board
 - **Symptom:** (1) A Test Sales Executive saw the "SO Maintenance" button; (2) a non-director non-PIC sales user saw every project; (3) a Sales Director saw the Service Cases board on mobile but only "My Cases" on desktop.
 - **Root cause:** (1) SO Maintenance button had no gate + route used `ScmGuard area=scm.sales.orders` (any sales passes). (2) Project row-scope keyed only off the role `scope_to_pic` flag; a sales role with `scope_to_pic=0` returned unscoped → full list. (3) The desktop Service-Cases board nav leaf required `service_cases.read`/page-access a Sales Director lacks; backend already grants a director all cases + mobile already showed it — the gap was the desktop nav.
