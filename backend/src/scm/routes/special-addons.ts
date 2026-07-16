@@ -100,7 +100,29 @@ async function requireWrite(c: AppCtx) {
   return { ok: true as const, userId };
 }
 
-// GET — every authenticated staff role can read.
+// GET — every authenticated staff role can read, cost_price_sen included.
+//
+// NOT finance-gated, and that is CORRECT — do not "fix" this. Audited
+// 2026-07-16 against the assumption that it leaks cost to a non-finance caller:
+//   1. It carries no information the same payload does not already give away.
+//      Owner ruling 2026-06-22 ("ONE price"): a special add-on has a SINGLE
+//      price, and the editor writes that one number to BOTH selling_price_sen
+//      and cost_price_sen (SpecialAddonsTab.withSyncedPrice, mirrored by
+//      Products.tsx). cost_price_sen IS selling_price_sen, and the selling
+//      surcharge is what the customer reads off their own SO line.
+//   2. The SO costing does NOT need it client-side, so a strip would not break
+//      pricing: mfg-pricing-recompute.loadSpecialAddons(sb) reads the column
+//      server-side and buildSpecialsPoolFromAddons prices from that.
+//   3. A strip WOULD break the master editor, which round-trips the row
+//      (SpecialAddonsTab duplicate-row posts costPriceSen back), and would then
+//      DESYNC the two columns — re-creating precisely the divergence the
+//      ONE-price ruling exists to prevent.
+// THE LIMIT, stated so the next reader can re-check rather than re-derive: the
+// equality is an EDITOR convention, not a schema invariant — patchSchema still
+// accepts the two prices independently, so a non-Houzs writer (the un-repointed
+// 2990 POS/admin app) could diverge them. If they ever diverge, cost_price_sen
+// becomes real finance data and this verdict flips: gate it then, and sync or
+// drop the column here in the same change.
 specialAddons.get('/', async (c) => {
   const supabase = c.get('supabase');
   const { data, error } = await scopeToCompany(

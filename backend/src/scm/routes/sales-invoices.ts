@@ -33,6 +33,7 @@ import { todayMyt } from '../lib/my-time';
 import { resolveSalesScopeIds, salesDocOutOfScope } from '../lib/salesScope';
 import { escapeForOr } from '../lib/postgrest-search';
 import { canViewAllSales, canViewScmFinance } from '../lib/houzs-perms';
+import { SO_ITEM_FINANCE_KEYS } from '../lib/finance-keys';
 import { doLineRemaining, doRemainingByItemId, resolveCandidateDoIds, custKeyOf, type DoRemainingLine } from '../lib/do-line-remaining';
 import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item-codes';
 import { applyCustomerCreditToSi, creditFromCancelledSi, reverseCancelledSiCredit, reconcileSiOverpay } from '../lib/customer-credits';
@@ -81,10 +82,15 @@ const ITEM =
   'uom, qty, unit_price_centi, discount_centi, tax_centi, line_total_centi, ' +
   'unit_cost_centi, line_cost_centi, line_margin_centi, variants, notes, created_at';
 
-/* FINANCE-GATED line-item keys — per-line cost / margin. In ITEM (so the detail
-   line grid can show them to a finance viewer) but stripped for a non-finance
-   caller in the DETAIL response (the list carries no items). */
-const SI_ITEM_FINANCE_KEYS = ['unit_cost_centi', 'line_cost_centi', 'line_margin_centi'] as const;
+/* KEPT LOCAL, deliberately — do NOT "converge" SI_FINANCE_KEYS onto
+   SO_FINANCE_KEYS. It is the finance-shaped subset of THIS file's HEADER select.
+   The SI carries service_centi / service_cost_centi (it invoices service lines)
+   but NOT deposit_centi — a deposit is taken on the ORDER, not on the invoice,
+   which is why SO_FINANCE_KEYS gates deposit and this list has nothing to gate.
+   Importing the SO's list would make this gate depend on a vocabulary this
+   document does not speak. The per-LINE keys ARE shared: byte-identical across
+   all seven sales documents, so they live in lib/finance-keys
+   (SO_ITEM_FINANCE_KEYS) and are imported above. */
 
 const PAYMENT_COLS =
   'id, sales_invoice_id, paid_at, method, merchant_provider, installment_months, ' +
@@ -458,7 +464,7 @@ salesInvoices.get('/:id', async (c) => {
   if (!canViewScmFinance(c)) {
     gateSiFinance([h.data], false);
     for (const it of items) {
-      for (const k of SI_ITEM_FINANCE_KEYS) delete it[k];
+      for (const k of SO_ITEM_FINANCE_KEYS) delete it[k];
     }
   }
   return c.json({ salesInvoice: h.data, items });
@@ -1030,7 +1036,18 @@ salesInvoices.patch('/:id/items/:itemId', async (c) => {
   const unitPrice = it.unitPriceCenti !== undefined ? Number(it.unitPriceCenti) : Number(prev.unit_price_centi);
   const discount = it.discountCenti !== undefined ? Number(it.discountCenti) : Number(prev.discount_centi);
   const tax = it.taxCenti !== undefined ? Number(it.taxCenti) : Number(prev.tax_centi ?? 0);
-  const unitCost = it.unitCostCenti !== undefined ? Number(it.unitCostCenti) : Number(prev.unit_cost_centi);
+  /* A caller who cannot READ the cost must not WRITE it. GET /:id strips
+     unit_cost_centi for a non-finance caller (#600), so a client that seeds its
+     line draft off the detail payload and echoes it back would round-trip the
+     stripped field as a genuine 0 and wipe the line's cost basis — the DR bug
+     #632, on the SI. Latent today (the routed SalesInvoiceDetailV2 has no line
+     PATCH at all), but the endpoint accepts any caller's body and the
+     un-repointed 2990 POS/admin app is a live consumer of these APIs. Keep the
+     stored cost instead; a finance caller is unaffected. DO NOT relax this to a
+     bare `!== undefined` — that test IS the trap. */
+  const unitCost = (canViewScmFinance(c) && it.unitCostCenti !== undefined)
+    ? Number(it.unitCostCenti)
+    : Number(prev.unit_cost_centi);
   const lineTotal = (qty * unitPrice) - discount + tax;
   const lineCost = qty * unitCost;
 

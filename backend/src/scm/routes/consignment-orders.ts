@@ -53,7 +53,7 @@ import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
-import { stripAuditFinance } from '../lib/finance-keys';
+import { SO_ITEM_FINANCE_KEYS, stripAuditFinance } from '../lib/finance-keys';
 import type { Env, Variables } from '../env';
 
 export const consignmentOrders = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -163,9 +163,15 @@ const CO_FINANCE_KEYS = [
   'total_cost_centi', 'total_margin_centi', 'margin_pct_basis', 'deposit_centi',
 ] as const;
 
-/* Per-LINE cost/margin (ITEM carries unit_cost_centi / line_cost_centi /
-   line_margin_centi). canViewScmFinance fails closed. */
-const CO_ITEM_FINANCE_KEYS = ['unit_cost_centi', 'line_cost_centi', 'line_margin_centi'] as const;
+/* KEPT LOCAL, deliberately — do NOT "converge" CO_FINANCE_KEYS onto
+   SO_FINANCE_KEYS. It is the finance-shaped subset of THIS file's HEADER select.
+   The CO is a /mfg-sales-orders clone, so it DOES carry deposit_centi (finance-
+   only since #574) — but it has no service_centi / service_cost_centi, because
+   the consignment order carries no service category. It is therefore the closest
+   of the six to the SO's list and still not equal to it; importing the SO's would
+   make this gate depend on a vocabulary this document does not speak. The
+   per-LINE keys ARE shared: byte-identical across all seven sales documents, so
+   they live in lib/finance-keys (SO_ITEM_FINANCE_KEYS) and are imported above. */
 
 /** Strip header + line cost/margin in place for a non-finance caller. */
 function gateCoFinance(
@@ -180,7 +186,7 @@ function gateCoFinance(
     }
   }
   for (const it of (Array.isArray(items) ? items : items ? [items] : []) as Array<Record<string, unknown>>) {
-    for (const k of CO_ITEM_FINANCE_KEYS) delete it[k];
+    for (const k of SO_ITEM_FINANCE_KEYS) delete it[k];
   }
 }
 
