@@ -328,6 +328,16 @@ type Catalog = {
   specialsByModelSku: Map<string, Set<string>>;
   sofaSizes: string[];
   sofaLegHeights: string[];
+  // BEDFRAME variant pools from the SAME Products -> Maintenance master the SO
+  // line editor's dropdowns render (ACTIVE entries only). The OCR reads these
+  // axes as bare INCH NUMBERS off the slip, so they are NOT injected into the
+  // prompt (formatCatalog deliberately omits them — adding them would change
+  // buildCachedPrefix and bust the 1h prompt cache for zero benefit). They exist
+  // purely so buildDraftSoBodyFromSlip can VALIDATE an OCR-read number against
+  // the live config before writing it onto a draft line.
+  legHeights: string[];
+  divanHeights: string[];
+  gaps: string[];
   options: CatalogOptions;
   // Distinct delivery STATES from scm.my_localities — the same vocabulary the
   // New SO form's State <select> renders. Injected as an allowed-values list so
@@ -452,11 +462,17 @@ async function loadCatalog(sb: SupabaseClient): Promise<Catalog> {
 
   let sofaSizes: string[] = [];
   let sofaLegHeights: string[] = [];
+  let legHeights: string[] = [];
+  let divanHeights: string[] = [];
+  let gaps: string[] = [];
   const cfg = (cfgRes.data as { config?: Record<string, unknown> } | null)?.config;
   if (cfg && typeof cfg === 'object') {
     // optionValues filters inactive entries (plain strings = active).
     sofaSizes = optionValues(cfg.sofaSizes);
     sofaLegHeights = optionValues(cfg.sofaLegHeights);
+    legHeights = optionValues(cfg.legHeights);
+    divanHeights = optionValues(cfg.divanHeights);
+    gaps = optionValues(cfg.gaps);
   }
 
   const options = emptyOptions();
@@ -514,7 +530,11 @@ async function loadCatalog(sb: SupabaseClient): Promise<Catalog> {
     if (allowed) specialsByModelSku.set(s.code.toUpperCase(), allowed);
   }
 
-  return { skus, fabrics, specials, specialsByModelSku, sofaSizes, sofaLegHeights, options, states };
+  return {
+    skus, fabrics, specials, specialsByModelSku,
+    sofaSizes, sofaLegHeights, legHeights, divanHeights, gaps,
+    options, states,
+  };
 }
 
 function formatCatalog(c: Catalog): string {
@@ -856,17 +876,21 @@ type ExtractedLine = {
   rawSpec: string | null;
   // BEDFRAME variant numbers. Model-reported first, then OVERRULED by
   // reparseSpec(rawSpec) in validateSlip for non-SOFA/ACCESSORY lines.
+  // These are HINTS, not authority: buildDraftSoBodyFromSlip snaps each one to
+  // the live Maintenance pool and leaves the axis UNSET when the pool has no
+  // such option (owner 2026-07-16 — a slip misread seeded an 8" leg that was
+  // never configured).
   divanHeightInches: number | null;
   legHeightInches: number | null;
   gapInches: number | null;
   noLeg: boolean;
   // SOFA seat-height in inches read from the slip (e.g. "(28")"). Applies to
-  // EVERY compartment of the sofa. buildDraftSoBodyFromSlip maps it to
-  // variants.seatHeight = `${n}"` so a scanned sofa seeds the seat axis the
-  // same way a hand-keyed one does. null when absent or not a sofa row.
-  // PRICING NOTE: itemGroup='sofa' reprices from seat height in the create
-  // core — an OCR'd seat height therefore MOVES the sofa price. Verify against
-  // real slips before trusting the read.
+  // EVERY compartment of the sofa. buildDraftSoBodyFromSlip snaps it to the
+  // sofaSizes pool and maps it to variants.seatHeight, so a scanned sofa seeds
+  // the seat axis the same way a hand-keyed one does. null when absent or not a
+  // sofa row. PRICING NOTE: itemGroup='sofa' reprices from seat height in the
+  // create core — an OCR'd seat height therefore MOVES the sofa price. Verify
+  // against real slips before trusting the read.
   seatHeightInches: number | null;
   qtyGuess: number;
   priceRmGuess: number | null;
@@ -3206,6 +3230,52 @@ function resolveDefaultSofaLeg(catalog: Catalog): string | null {
   return catalog.sofaLegHeights.find((v) => DEFAULT_SOFA_LEG_RE.test(v)) ?? null;
 }
 
+/* The pool's "No Leg" option, matched by NAME (same posture as
+   resolveDefaultSofaLeg). The maintenance value is the words "No Leg", NOT a
+   0" measurement — resolving it from the pool keeps a genuine no-leg read
+   instead of inventing an option that was never configured. */
+const NO_LEG_RE = /^\s*no\s*-?\s*leg\s*$/i;
+function resolveNoLeg(pool: string[]): string | null {
+  return pool.find((v) => NO_LEG_RE.test(v)) ?? null;
+}
+
+/* Snap an OCR-derived variant value to the live Maintenance pool.
+   Owner rule (2026-07-16, the "8\" leg" report): the handwritten slip is a
+   HINT, not authority. The OCR reads these axes as bare inch NUMBERS, so a
+   misread (or a number belonging to another axis) trivially produces a value
+   that was never configured — the reported draft carried legHeight 8" when the
+   BEDFRAME Leg Heights pool only holds No Leg / 1" / 2" / 4" / 5" / 6" / 7".
+
+   Returns the pool's CANONICAL value on a hit (trim + case-insensitive, so a
+   pool value carrying data-entry whitespace still matches — same defensive
+   posture as the specials gate in allowed-options-check), or null when the pool
+   has no such option. null means the caller LEAVES THE AXIS UNSET so the
+   operator picks it against the slip photo. Deliberately NO nearest-value
+   coercion: silently rounding 8" to 7" would invent a price and a spec nobody
+   wrote.
+
+   An EMPTY pool means the config never configured that axis at all — not "allow
+   anything". Return null there too, matching the "never invent" rule the SKU /
+   fabric / specials matches already follow. */
+function snapToMaintPool(value: string, pool: string[]): string | null {
+  const v = value.trim();
+  if (v === '' || pool.length === 0) return null;
+  const exact = pool.find((o) => o.trim() === v);
+  if (exact) return exact;
+  const ci = pool.find((o) => o.trim().toLowerCase() === v.toLowerCase());
+  return ci ?? null;
+}
+
+/* Snap an OCR inch NUMBER to its pool value. The pools are not spelled
+   consistently — legHeights / divanHeights / gaps carry the inch mark (`4"`)
+   while sofaSizes carries the bare number (`28`) — so try BOTH spellings and
+   return whichever the pool actually holds. This is a spelling reconciliation,
+   never a value change: only an exact member of the pool is ever returned, and
+   a number the pool doesn't hold still yields null (axis left unset). */
+function snapInchesToMaintPool(inches: number, pool: string[]): string | null {
+  return snapToMaintPool(`${inches}"`, pool) ?? snapToMaintPool(`${inches}`, pool);
+}
+
 function buildDraftSoBodyFromSlip(
   parsed: ExtractedSlip,
   catalog: Catalog,
@@ -3248,15 +3318,43 @@ function buildDraftSoBodyFromSlip(
     // operator reviews the draft against the order-slip photo (shown on the SO
     // detail). Only genuine structured variant numbers ride along below.
     const variants: Record<string, unknown> = {};
+    const cat = (sku?.category ?? 'OTHERS').toLowerCase();
     // Bedframe numbers (reparseSpec-overruled) -> the same inch-string variant
     // keys the New SO form writes, so the draft's line editor seeds correctly.
     // Only seeded for a MATCHED line — an unmatched line stays a CLEAN empty
     // general item (no product, no attributes) for the operator to fill in.
+    //
+    // EVERY axis is snapped to the live Maintenance pool first (owner
+    // 2026-07-16): an OCR number the config doesn't offer leaves the axis UNSET
+    // for the operator rather than seeding an option that does not exist. PR
+    // #580 closed this hole for the manual selectors (which intersect the master
+    // pool with the Model's allowed_options); the OCR path wrote the raw read
+    // straight through, so it stayed open. The per-Model gate in
+    // allowed-options-check does NOT cover this: an empty allowed_options pool
+    // reads as "no restriction", so an unrestricted Model accepted 8" happily.
+    //
+    // The sofa leg picker renders sofaLegHeights while the bedframe one renders
+    // legHeights, but BOTH write the same `legHeight` key (SoLineCard) — so the
+    // pool is chosen by the line's category, not by the key.
     if (sku) {
-      if (l.divanHeightInches != null) variants.divanHeight = `${l.divanHeightInches}"`;
-      if (l.noLeg) variants.legHeight = '0"';
-      else if (l.legHeightInches != null) variants.legHeight = `${l.legHeightInches}"`;
-      if (l.gapInches != null) variants.gap = `${l.gapInches}"`;
+      const legPool = cat === 'sofa' ? catalog.sofaLegHeights : catalog.legHeights;
+      if (l.divanHeightInches != null) {
+        const snapped = snapInchesToMaintPool(l.divanHeightInches, catalog.divanHeights);
+        if (snapped) variants.divanHeight = snapped;
+      }
+      if (l.noLeg) {
+        // "No Leg" is a configured pool WORD, not a 0" measurement. The old
+        // literal '0"' was itself an un-configured value on every pool.
+        const noLeg = resolveNoLeg(legPool);
+        if (noLeg) variants.legHeight = noLeg;
+      } else if (l.legHeightInches != null) {
+        const snapped = snapInchesToMaintPool(l.legHeightInches, legPool);
+        if (snapped) variants.legHeight = snapped;
+      }
+      if (l.gapInches != null) {
+        const snapped = snapInchesToMaintPool(l.gapInches, catalog.gaps);
+        if (snapped) variants.gap = snapped;
+      }
     }
     // Owner 2026-07-04: a scan line must equal a DESKTOP manual line — itemGroup =
     // the SKU's REAL category (not 'others'), and bedframe/sofa carry the fabric
@@ -3269,20 +3367,25 @@ function buildDraftSoBodyFromSlip(
     // validation rejects a line (an OCR fabric not allowed on that model, an
     // incomplete sofa), runScanJob degrades it to a loose 'others' line so an
     // imperfect read NEVER loses the whole scanned order.
-    const cat = (sku?.category ?? 'OTHERS').toLowerCase();
     if (cat === 'bedframe' || cat === 'sofa') {
       if (l.fabricMatch?.code) variants.fabricCode = l.fabricMatch.code;
       const specialCodes = (l.specialsMatch ?? []).map((s) => s.code).filter(Boolean);
       if (specialCodes.length > 0) variants.specials = specialCodes;
     }
-    // SOFA seat height — the same inch-string key the New SO form's sofa panel
-    // writes (draft.variants.seatHeight). PRICING NOTE: the create core reprices
-    // itemGroup='sofa' from the seat height, so this OCR figure MOVES the sofa
-    // price — verify against real slips. If the stricter category validation
-    // later rejects the sofa line, runScanJob degrades it to a loose 'others'
-    // line (seat height dropped there), so an imperfect read never loses the row.
+    // SOFA seat height — the same key the New SO form's sofa panel writes
+    // (draft.variants.seatHeight), snapped to the live sofaSizes pool.
+    // PRICING NOTE: the create core reprices itemGroup='sofa' from the seat
+    // height, so this OCR figure MOVES the sofa price — an unconfigured read
+    // must never reach the line. Snapping also fixes the SPELLING: sofaSizes is
+    // seeded as bare numbers ("28"), but this seeded `28"` with an inch mark —
+    // a value no sofa pool holds, so it both pinned as `28" (current)` in the
+    // picker and missed the seat-height price lookup. If the stricter category
+    // validation later rejects the sofa line, runScanJob degrades it to a loose
+    // 'others' line (seat height dropped there), so an imperfect read never
+    // loses the row.
     if (cat === 'sofa' && l.seatHeightInches != null) {
-      variants.seatHeight = `${l.seatHeightInches}"`;
+      const snapped = snapInchesToMaintPool(l.seatHeightInches, catalog.sofaSizes);
+      if (snapped) variants.seatHeight = snapped;
     }
     // SOFA leg height — owner 2026-07-13: the sofa Leg Height carries a standing
     // "Default" option (RM 0.00). When the slip didn't spell out a specific leg
