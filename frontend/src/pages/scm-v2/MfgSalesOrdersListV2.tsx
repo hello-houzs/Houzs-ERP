@@ -80,8 +80,19 @@ type SoRow = {
   first_item_branding: string | null;
   status: string;
   local_total_centi: number;
+  /* Stored snapshots — NOT the truth, and never read without the live
+     fallbacks below. `balance_centi` is rewritten to the gross grandTotal by
+     the backend's recomputeTotals on every edit (so it never reflects a
+     payment) and `paid_centi` is a deprecated column no writer maintains. The
+     list payload carries the ledger-derived pair; prefer them. */
   balance_centi: number;
   paid_centi: number;
+  /* Ledger-derived, from mfg_sales_orders_with_payment_totals — already in the
+     backend's LIST_COLS. paid_total_centi = Σ payments, balance_centi_live =
+     local_total − Σ payments. Same source the mobile SO list and Delivery
+     Planning read. Optional so an absent view row falls back, not crashes. */
+  paid_total_centi?: number | null;
+  balance_centi_live?: number | null;
   phone: string | null;
   email: string | null;
   address1: string | null;
@@ -432,7 +443,9 @@ function DetailDrawer({
       ? items.reduce((sum, l) => sum + (l.total_centi ?? (l.qty ?? 0) * (l.unit_price_centi ?? 0)), 0)
       : row?.local_total_centi ?? 0;
   const totalCenti = subtotalCenti;
-  const paidCenti = row?.paid_centi ?? 0;
+  // Ledger-derived paid (Σ payments); the stored paid_centi is a deprecated
+  // column no writer maintains, kept only as the absent-view fallback.
+  const paidCenti = row?.paid_total_centi ?? row?.paid_centi ?? 0;
   const outstandingCenti = totalCenti - paidCenti;
 
   return (
@@ -988,10 +1001,13 @@ export function MfgSalesOrdersListV2() {
     let revenueCenti = 0;
     let outstandingCenti = 0;
     let paidCenti = 0;
+    // Client-side fallback sum (legacy non-paginated path only — the paginated
+    // path uses the server's full-set `aggregates`). Same ledger-derived
+    // columns the server now sums, so both paths agree.
     for (const r of rows) {
       revenueCenti += r.local_total_centi ?? 0;
-      outstandingCenti += r.balance_centi ?? 0;
-      paidCenti += r.paid_centi ?? 0;
+      outstandingCenti += r.balance_centi_live ?? r.balance_centi ?? 0;
+      paidCenti += r.paid_total_centi ?? r.paid_centi ?? 0;
     }
     return { revenueCenti, outstandingCenti, paidCenti, fullSet: false };
   }, [aggregates, rows]);
@@ -1431,9 +1447,9 @@ export function MfgSalesOrdersListV2() {
       align: "right",
       defaultHidden: true,
       disableSort: true,
-      getValue: (r) => r.paid_centi ?? 0,
+      getValue: (r) => r.paid_total_centi ?? r.paid_centi ?? 0,
       render: (r) => (
-        <span className="font-money text-[13px] text-ink">{fmtRm(r.paid_centi ?? 0)}</span>
+        <span className="font-money text-[13px] text-ink">{fmtRm(r.paid_total_centi ?? r.paid_centi ?? 0)}</span>
       ),
     },
     {
@@ -1443,9 +1459,9 @@ export function MfgSalesOrdersListV2() {
       align: "right",
       defaultHidden: true,
       disableSort: true,
-      getValue: (r) => r.balance_centi ?? 0,
+      getValue: (r) => r.balance_centi_live ?? r.balance_centi ?? 0,
       render: (r) => (
-        <span className="font-money text-[13px] text-ink">{fmtRm(r.balance_centi ?? 0)}</span>
+        <span className="font-money text-[13px] text-ink">{fmtRm(r.balance_centi_live ?? r.balance_centi ?? 0)}</span>
       ),
     },
     // ── Re-added columns (Phase 2) — NON-finance fields that already travel on
