@@ -261,7 +261,7 @@ type SetBusy = Dispatch<SetStateAction<boolean>>;
 const PAYMENT_OPTS: Array<[string, string]> = [
   ["not_started", "N/A"],
   ["deposit_paid", "Pending"],
-  ["paid", "Fully Paid"],
+  ["paid", "Fully paid"],
 ];
 
 // POST /api/projects/:id/payment — sets project.payment_status.
@@ -1548,8 +1548,8 @@ function TaskRow({
   if (it.pill_kind) {
     const opts: Array<[string, string]> =
       it.pill_kind === "rental_payment"
-        ? [["none", "N/A"], ["unpaid", "PENDING"], ["fully_paid", "PAID"]]
-        : [["none", "N/A"], ["unpaid", "PENDING"], ["refunded", "REFUNDED"]];
+        ? [["none", "N/A"], ["unpaid", "Pending"], ["fully_paid", "Paid"]]
+        : [["none", "N/A"], ["unpaid", "Pending"], ["refunded", "Refunded"]];
     const cur = it.pill_value || "unpaid";
     return (
       <>

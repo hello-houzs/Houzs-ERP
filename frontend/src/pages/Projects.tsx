@@ -6814,7 +6814,7 @@ function DocRow({
             <div className="min-w-0">
               <div className="font-medium text-ink">{item.title}</div>
               {item.role_label && (
-                <span className={cn("mt-0.5 inline-block whitespace-nowrap rounded-full border px-1.5 py-0.5 text-[8.5px] font-bold tracking-wide", roleChipClass(item.role_label))}>
+                <span className={cn("mt-0.5 inline-block whitespace-nowrap rounded-full border px-1.5 py-0.5 text-[9px] font-bold tracking-wide", roleChipClass(item.role_label))}>
                   {formatRoleLabel(item.role_label)}
                 </span>
               )}
@@ -7076,8 +7076,8 @@ function ThreeDApprovalBlock({
   }
 
   const STAT: [ChecklistStatus, string][] = [
-    ["pending", "PENDING"],
-    ["done", "DONE"],
+    ["pending", "Pending"],
+    ["done", "Done"],
     ["na", "N/A"],
   ];
   const tone = (s: ChecklistStatus, active: boolean) =>
@@ -7140,7 +7140,7 @@ function ThreeDApprovalBlock({
                     onClick={() => onStatus(it, s)}
                     disabled={!canTick}
                     className={cn(
-                      "rounded-md border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide",
+                      "rounded-md border px-2.5 py-1 text-[10px] font-semibold tracking-wide",
                       tone(s, active),
                       !canTick && "cursor-not-allowed opacity-60"
                     )}
@@ -7347,8 +7347,8 @@ function ChecklistRow({
   if (item.pill_kind) {
     const opts: [string, string][] =
       item.pill_kind === "rental_payment"
-        ? [["none", "N/A"], ["unpaid", "PENDING"], ["fully_paid", "FULLY PAID"]]
-        : [["none", "N/A"], ["unpaid", "PENDING"], ["refunded", "REFUNDED"]];
+        ? [["none", "N/A"], ["unpaid", "Pending"], ["fully_paid", "Fully paid"]]
+        : [["none", "N/A"], ["unpaid", "Pending"], ["refunded", "Refunded"]];
     const cur = item.pill_value || "unpaid";
     // Terminal pill values (N/A, FULLY PAID, REFUNDED) = treat the row as done:
     // green check + greyed title. Only PENDING ("unpaid") stays "not done".
@@ -7382,7 +7382,7 @@ function ChecklistRow({
           <div className="min-w-0">
             <div className={cn("text-[12px] font-medium", pillDone && "text-ink-muted")}>{item.title}</div>
             {item.role_label && (
-              <span className={cn("mt-0.5 inline-block rounded-full border px-1.5 py-0.5 text-[8.5px] font-bold tracking-wide", roleChipClass(item.role_label))}>
+              <span className={cn("mt-0.5 inline-block rounded-full border px-1.5 py-0.5 text-[9px] font-bold tracking-wide", roleChipClass(item.role_label))}>
                 {formatRoleLabel(item.role_label)}
               </span>
             )}
@@ -7404,7 +7404,7 @@ function ChecklistRow({
               onClick={() => setPill(v)}
               disabled={!canTick}
               className={cn(
-                "rounded-md border inline-flex items-center justify-center min-w-[42px] whitespace-nowrap px-2 py-1 text-[8.5px] font-semibold uppercase tracking-wide",
+                "rounded-md border inline-flex items-center justify-center min-w-[42px] whitespace-nowrap px-2 py-1 text-[8.5px] font-semibold tracking-wide",
                 v === cur
                   ? selTone(v)
                   : "border-border bg-surface text-ink-muted hover:border-accent/40 hover:text-accent",
@@ -7473,7 +7473,7 @@ function ChecklistRow({
           )}
         </button>
         <div className="flex-1">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-0">
             <span
               className={cn(
                 "text-[12px] font-medium",
@@ -7483,7 +7483,7 @@ function ChecklistRow({
               {item.title}
             </span>
             {(item.role_label || item.required_perm || reviewBadge) && (
-              <div className="flex basis-full flex-wrap items-center gap-1.5">
+              <div className="mt-0.5 flex basis-full flex-wrap items-center gap-1.5">
                 {item.role_label && (
                   <span
                     className={cn("rounded-full border px-1.5 py-0.5 text-[9px] font-bold tracking-wide", roleChipClass(item.role_label))}
@@ -7588,7 +7588,7 @@ function ChecklistRow({
               title="Attach file"
             >
               <Paperclip size={13} />
-              <span className="text-[9px] font-semibold uppercase tracking-wide leading-none">
+              <span className="text-[9px] font-semibold tracking-wide leading-none">
                 {uploading ? "…" : "Attach"}
               </span>
             </button>
@@ -7602,7 +7602,7 @@ function ChecklistRow({
             title="Remark / comments"
           >
             <MessageSquare size={13} />
-            <span className="text-[9px] font-semibold uppercase tracking-wide leading-none">
+            <span className="text-[9px] font-semibold tracking-wide leading-none">
               {comments.length > 0 ? comments.length : "Remark"}
             </span>
           </button>
@@ -7617,7 +7617,7 @@ function ChecklistRow({
             title={item.status === "na" ? "Mark applicable" : "Mark N/A"}
           >
             <Ban size={13} />
-            <span className="text-[9px] font-semibold uppercase tracking-wide leading-none">N/A</span>
+            <span className="text-[9px] font-semibold tracking-wide leading-none">N/A</span>
           </button>
         </div>
       </div>
