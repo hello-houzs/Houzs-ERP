@@ -12,6 +12,9 @@
 //     pins every caller to one super_admin staff row). Replaced with the real
 //     Houzs permission gate: GET needs scm.so.view_all (aggregate across every
 //     salesperson), PUT /targets needs scm.config.write.
+//   • ACCESS gate vs FINANCE gate — two SEPARATE gates, deliberately. Getting
+//     ONTO the page is canViewAllSales (whose orders you may aggregate); seeing
+//     MARGIN is canViewScmFinance (the money tier). See gateSaFinance below.
 //   • is_test — 2990's mfg_sales_orders.is_test column does NOT exist in Houzs.
 //     The `includeTest` query param is parsed for contract compatibility but is
 //     a no-op here (there is no test flag to filter on).
@@ -34,13 +37,14 @@ import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
-import { hasHouzsPerm, canViewAllSales } from '../lib/houzs-perms';
+import { hasHouzsPerm, canViewAllSales, canViewScmFinance } from '../lib/houzs-perms';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 import {
   summarizeOverview, monthlyTrend, collapseToPurchases,
   foldProductUnits, buildProductsSection, classifySofaBuild, isFabricUpgrade,
   type SaOrderRow, type SaCustomerRow, type TargetProfile,
   type SaItemRow, type ProductCtx, type VariantRank, type ModelRank,
+  type OverviewResult, type MonthlyRow,
 } from '../shared/sales-analysis';
 import {
   splitSofaCode, comboChargedPrices,
@@ -58,10 +62,16 @@ salesAnalysis.use('*', supabaseAuth);
  * The shapes Houzs SHIPS — the vendored rows minus the demographic blocks (see
  * the header). Everything they sit on (geographic area, order stats, product
  * rankings) is real and is carried through untouched.
+ *
+ * `marginCenti` is OPTIONAL on these (and grossMarginPct on SaOverviewOut):
+ * present for a finance caller, ABSENT for everyone else — gateSaFinance below
+ * deletes it. Two INDEPENDENT cuts land on one shape: demographics are dropped
+ * for EVERYONE (Houzs captures none), margin only for a NON-FINANCE caller.
  */
-type SaCustomerOut = Omit<SaCustomerRow, 'race' | 'birthday' | 'gender'>;
-type VariantOut = Omit<VariantRank, 'demographics'>;
-type ModelOut = Omit<ModelRank, 'demographics' | 'variants'> & { variants: VariantOut[] };
+type SaCustomerOut = Omit<SaCustomerRow, 'race' | 'birthday' | 'gender' | 'marginCenti'> & { marginCenti?: number };
+type VariantOut = Omit<VariantRank, 'demographics'>;   // VariantRank carries no margin
+type ModelOut = Omit<ModelRank, 'demographics' | 'variants' | 'marginCenti'>
+  & { variants: VariantOut[]; marginCenti?: number };
 
 /**
  * Active-company sofa combos (master scope: B2C default rows only, sales-side).
@@ -97,13 +107,68 @@ async function loadCompanyActiveSofaCombos(sb: any, c: any): Promise<SofaComboRo
   }));
 }
 
+/* ── Finance gate — MARGIN rides canViewScmFinance, not the access gate ───────
+   The page-access gate (canViewAllSales) answers "whose orders may you
+   aggregate"; it is deliberately BROADER than finance — it also admits any
+   position holding the `scm.so.view_all` matrix grant, which services/
+   permissions.ts defines as a per-rep attribution SCOPING bypass ("View every
+   salesperson's My-Orders board"), NOT a money grant. houzs-perms.ts states the
+   rule outright: such a caller "must STILL NOT see cost or margin". So margin
+   gets its OWN gate — canViewScmFinance (isFinanceViewer = DIRECTOR), which
+   fails CLOSED. Owner ruling 2026-07-16: "sales analysis 的毛利 director 可以
+   看到" — the DIRECTOR sees margin, which is exactly isFinanceViewer.
+
+   Mirrors gateSoFinance (#625, mfg-sales-orders.ts) / gateDrFinance (#632,
+   delivery-returns.ts) — the FOURTH leak of that class.
+
+   Margin is OMITTED, never zeroed: the keys are DELETED for a non-finance
+   caller, so the wire carries no margin field at all rather than a `0` / `null`
+   that would read as a genuine "no margin" (#632's lying-zero trap). Safe here
+   because this route is READ-ONLY for margin — PUT /targets accepts only the
+   age/race/gender/area profile keys and scm.analysis_customer_targets holds no
+   cost or margin column, so nothing can round-trip a stripped value back.
+
+   Revenue / AOV / delivery / order counts / geography / targets are NOT finance
+   and stay for everyone who passed the access gate.
+
+   The *Out types keep the vendored core (shared/sales-analysis.ts, verbatim
+   from 2990) untouched: margin becomes optional only on the shape that reaches
+   the response, which is where the Houzs-only gate belongs. SaCustomerOut and
+   ModelOut (declared above, alongside the demographics cut) carry BOTH cuts —
+   one type per shipped shape, not two competing ones. */
+type SaOverviewOut = Omit<OverviewResult, 'grossMarginPct'> & { grossMarginPct?: number | null };
+type SaMonthlyOut = Omit<MonthlyRow, 'marginCenti'> & { marginCenti?: number };
+
+/** Strip every margin path in place for a non-finance caller. Takes the
+ *  ALREADY-demographics-stripped products shape (ModelOut), i.e. exactly what
+ *  c.json ships — gating the raw vendored ProductsSection instead would strip a
+ *  shape the response never sees. */
+function gateSaFinance(
+  c: Parameters<typeof canViewScmFinance>[0],
+  payload: {
+    overview: SaOverviewOut;
+    monthly: SaMonthlyOut[];
+    customers: SaCustomerOut[];
+    products: { byCategory: Record<string, ModelOut[]> };
+  },
+): void {
+  if (canViewScmFinance(c)) return;
+  delete payload.overview.grossMarginPct;
+  for (const m of payload.monthly) delete m.marginCenti;
+  for (const cu of payload.customers) delete cu.marginCenti;
+  for (const models of Object.values(payload.products.byCategory)) {
+    for (const m of models) delete m.marginCenti;
+  }
+}
+
 salesAnalysis.get('/', async (c) => {
   const sb = c.get('supabase');
 
-  // Gate: viewing aggregate sales/margin across EVERY salesperson requires the
+  // ACCESS gate — viewing aggregate sales across EVERY salesperson requires the
   // "view all SOs" permission OR a director position (Sales Director / Super
   // Admin / Finance Manager) — a Director sees all Orders / the Financial
   // Report. canViewAllSales OR-s the two (additive; permission path unchanged).
+  // Passing this does NOT grant margin — that is gateSaFinance's call, below.
   if (!canViewAllSales(c)) {
     return c.json({ error: 'forbidden', reason: 'sales_analysis_requires_scm.so.view_all' }, 403);
   }
@@ -143,7 +208,7 @@ salesAnalysis.get('/', async (c) => {
     serviceCenti: Number(r.service_centi) || 0,
   }));
 
-  const monthly = monthlyTrend(allOrders);
+  const monthly: SaMonthlyOut[] = monthlyTrend(allOrders);
   const scoped = /^\d{4}-\d{2}$/.test(period)
     ? allOrders.filter((row) => row.soDate.slice(0, 7) === period)
     : allOrders;
@@ -174,7 +239,7 @@ salesAnalysis.get('/', async (c) => {
     }
   }
 
-  const overview = summarizeOverview(scoped, deliveryByDoc);
+  const overview: SaOverviewOut = summarizeOverview(scoped, deliveryByDoc);
 
   // Customer Data section — geographic area from the ORDER header. Per-customer
   // order stats are over the scoped window.
@@ -387,7 +452,8 @@ salesAnalysis.get('/', async (c) => {
   // The vendored core hangs a BuyerDemographics block (race / ageBand / gender)
   // off every model and variant. Houzs captures none of it, so it is stripped
   // here rather than shipped as an all-'Unknown' bucket. The rankings it sits on
-  // (units / revenue / margin / combo / fabric-upgrade) are real and ship as-is.
+  // (units / revenue / combo / fabric-upgrade) are real and ship as-is; the
+  // margin beside them is finance-only and is gated separately, below.
   const byCategory: Record<string, ModelOut[]> = {};
   for (const [category, models] of Object.entries(products.byCategory)) {
     byCategory[category] = models.map(({ demographics, variants, ...model }) => ({
@@ -397,6 +463,10 @@ salesAnalysis.get('/', async (c) => {
   }
   const productsOut: { byCategory: Record<string, ModelOut[]> } = { byCategory };
 
+  // Demographics come off for EVERYONE (above); margin comes off only for a
+  // non-finance caller. Gate productsOut — the shape c.json actually ships —
+  // NOT the raw vendored `products`, which the response no longer carries.
+  gateSaFinance(c, { overview, monthly, customers, products: productsOut });
   return c.json({ period, includeTest, overview, monthly, customers, targets, products: productsOut });
 });
 
