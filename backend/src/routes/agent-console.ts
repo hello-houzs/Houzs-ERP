@@ -47,6 +47,8 @@ import {
   retireAgentFeedback,
   listConfigProposals,
   monthLlmUsage,
+  mytDate,
+  mytDayRangeUtc,
   setAgentControl,
   taskFamily,
   type AgentFamily,
@@ -108,7 +110,10 @@ function projectRun(r: RunRow) {
 app.get("/status", async (c) => {
   const db = c.env.DB;
   const nowIso = new Date().toISOString();
-  const today = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10); // MYT
+  // Same MYT day bucket the scheduler counts the daily cap with (taskStats) —
+  // shared so this badge and the cap can never disagree about what "today" is.
+  const today = mytDate();
+  const { startIso, endIso } = mytDayRangeUtc(today);
 
   const [recentRes, errorRes, controls, llm] = await Promise.all([
     db.prepare("SELECT * FROM agent_runs ORDER BY started_at DESC LIMIT 100").all<RunRow>(),
@@ -124,7 +129,8 @@ app.get("/status", async (c) => {
   const todayRunsByFamily = new Map<string, number>();
   for (const r of recent) {
     if (!lastByTask.has(r.agent)) lastByTask.set(r.agent, r);
-    if ((r.startedAt ?? "").slice(0, 10) === today) {
+    const startedAt = r.startedAt ?? "";
+    if (startedAt >= startIso && startedAt < endIso) {
       const fam = taskFamily(r.agent);
       todayRunsByFamily.set(fam, (todayRunsByFamily.get(fam) ?? 0) + 1);
     }

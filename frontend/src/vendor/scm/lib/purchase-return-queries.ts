@@ -12,6 +12,10 @@
 //   • Hooks are copied verbatim, including their query keys
 //     (['purchase-returns'] / ['purchase-return-detail', id]) so list + detail
 //     invalidation stays identical to the source.
+//   • DIVERGENCE from the source: the hooks whose route writes inventory_movements
+//     (create / cancel / line edit + delete) also invalidate ['inventory']. The
+//     source never did, so a PR left every stock view stale until staleTime —
+//     the same defect 2990 carries. Port back rather than re-dropping on sync.
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
@@ -41,7 +45,13 @@ export const useCreatePurchaseReturn = () => {
       authedFetch<{ id: string; returnNumber: string }>(`/purchase-returns`, {
         method: 'POST', body: JSON.stringify(body),
       }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['purchase-returns'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['purchase-returns'] });
+      /* PR-DRAFT-removal: the POST creates the return already POSTED and writes
+         the stock OUT inline, so a create moves stock. (The route's own header
+         comment still says "create draft" — the /post handler's does not.) */
+      qc.invalidateQueries({ queryKey: ['inventory'] });
+    },
   });
 };
 
@@ -49,6 +59,9 @@ export const usePostPurchaseReturn = () => {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => authedFetch(`/purchase-returns/${id}/post`, { method: 'PATCH' }),
+    /* No ['inventory'] here: post-DRAFT-removal this route is a backward-compat
+       no-op — it 200s an already-POSTED return WITHOUT re-writing movements
+       (that would double-debit) or 409s. The create already moved the stock. */
     onSuccess: (_, id) => {
       qc.invalidateQueries({ queryKey: ['purchase-returns'] });
       qc.invalidateQueries({ queryKey: ['purchase-return-detail', id] });
@@ -77,6 +90,8 @@ export const useCancelPurchaseReturn = () => {
     onSuccess: (_, id) => {
       qc.invalidateQueries({ queryKey: ['purchase-returns'] });
       qc.invalidateQueries({ queryKey: ['purchase-return-detail', id] });
+      // Cancel REVERSES this return's stock OUT (an opposite IN per bucket).
+      qc.invalidateQueries({ queryKey: ['inventory'] });
     },
     onError: (err) => {
       serviceNotify({ title: 'Cancel return failed', body: err instanceof Error ? err.message : String(err), tone: 'error' });
@@ -88,7 +103,9 @@ export const useCancelPurchaseReturn = () => {
    PATCH /purchase-returns/:id (header), POST/PATCH/DELETE
    /purchase-returns/:id/items[/:itemId]. Each invalidates the PR detail
    (['purchase-return-detail', id]) + list (['purchase-returns']) — the same
-   query keys usePurchaseReturnDetail + usePurchaseReturns read. */
+   query keys usePurchaseReturnDetail + usePurchaseReturns read. The LINE hooks
+   additionally bump ['inventory']: on an already-POSTED return the backend posts
+   the qty delta as a movement. The header hook does not — it moves no stock. */
 export const useUpdatePurchaseReturnHeader = () => {
   const qc = useQueryClient();
   return useMutation({
@@ -115,6 +132,8 @@ export const useUpdatePurchaseReturnItem = () => {
     onSuccess: (_, vars) => {
       qc.invalidateQueries({ queryKey: ['purchase-return-detail', vars.id] });
       qc.invalidateQueries({ queryKey: ['purchase-returns'] });
+      // Editing a line posts the qty DELTA as a movement on a POSTED return.
+      qc.invalidateQueries({ queryKey: ['inventory'] });
     },
   });
 };
@@ -127,6 +146,8 @@ export const useDeletePurchaseReturnItem = () => {
     onSuccess: (_, vars) => {
       qc.invalidateQueries({ queryKey: ['purchase-return-detail', vars.id] });
       qc.invalidateQueries({ queryKey: ['purchase-returns'] });
+      // Dropping a line reverses that line's stock OUT via a delta movement.
+      qc.invalidateQueries({ queryKey: ['inventory'] });
     },
   });
 };

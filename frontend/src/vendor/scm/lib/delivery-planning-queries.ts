@@ -13,6 +13,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
+import { invalidateSoLists } from './sales-order-queries';
 
 export const DELIVERY_STATES = [
   'PENDING_DELIVERY', 'PENDING_SCHEDULE', 'OVERDUE', 'DELIVERED',
@@ -411,7 +412,7 @@ export function useConvertSosToDo() {
       qc.invalidateQueries({ queryKey: ['delivery-planning'] });
       qc.invalidateQueries({ queryKey: ['mfg-delivery-orders'] });
       qc.invalidateQueries({ queryKey: ['mfg-delivery-orders', 'deliverable-so-lines'], refetchType: 'all' });
-      qc.invalidateQueries({ queryKey: ['mfg-sales-orders'] });
+      invalidateSoLists(qc);
       qc.invalidateQueries({ queryKey: ['inventory'] });
     },
   });

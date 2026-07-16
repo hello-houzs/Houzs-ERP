@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { ShieldAlert } from "lucide-react";
 import { Sidebar } from "./Sidebar";
 import { GlobalSearchTrigger } from "./GlobalSearch";
@@ -23,6 +23,24 @@ export function Layout({ children }: Props) {
   // primes the module-level branding cache that the pure jspdf PDF libs read,
   // so any document generated from inside the app carries the live letterhead.
   useBranding();
+
+  // Warm the few route chunks the office opens most, once per session, while
+  // the browser is idle — Layout wraps every authed page, so this is the one
+  // place that mounts once and outlives every navigation. Without it the first
+  // click into each of the 113 lazy routes waits out a chunk download before
+  // the page can start fetching its data. Self-throttling and failure-proof;
+  // see lib/prefetch-routes.
+  //
+  // Imported dynamically, not statically: the route map holds an import() per
+  // route, so a static import drags the whole table into the initial bundle —
+  // which pushed initial JS to 131.5/130 KB gzip and failed the budget gate.
+  // Nothing here is needed before first paint, so the table rides in its own
+  // chunk, fetched on the same idle tick that uses it.
+  useEffect(() => {
+    void import("../lib/prefetch-routes")
+      .then((m) => m.prefetchTopRoutes())
+      .catch(() => {});
+  }, []);
 
   // AutoCount sync-status poll removed (owner 2026-07-14): there is no
   // /api/sync/status backend route, so it 404'd on every page for every user.

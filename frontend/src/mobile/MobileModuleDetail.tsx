@@ -6,6 +6,7 @@ import { useAuth } from "../auth/AuthContext";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { MODULE_CONFIGS } from "./MobileModuleList";
+import { invalidateModuleShared } from "./sharedInvalidate";
 import { todayMyt } from "../vendor/scm/lib/dates";
 import { fmtCenti } from "../lib/scm";
 import { formatDate } from "../lib/utils";
@@ -683,6 +684,10 @@ function DocActionFooter({ moduleKey, id, header, invalidate, onPOD, onDeleted }
   const refresh = () => {
     invalidate();
     void qc.invalidateQueries({ queryKey: ["mobile-module"] });
+    /* ["mobile-module"] is this screen's own key — the desktop lists these same
+       documents under their vendored roots, and a GRN post / return completion
+       also moves stock, so the shared roots for this module must refetch too. */
+    invalidateModuleShared(qc, moduleKey);
   };
 
   const mutation = useMutation({
@@ -697,6 +702,7 @@ function DocActionFooter({ moduleKey, id, header, invalidate, onPOD, onDeleted }
       // back to it; every other action stays on the (now-updated) detail.
       if (action.removes) {
         void qc.invalidateQueries({ queryKey: ["mobile-module"] });
+        invalidateModuleShared(qc, moduleKey);
         void notify({ title: "Deleted" });
         onDeleted?.();
         return;

@@ -4,7 +4,7 @@
 // letterhead header, the drawInfoColumns info block (BILL TO label-gutter +
 // INVOICE DETAILS colon-aligned), and the consistent footer (doc no · portal ·
 // page n of m). A4 portrait, pure B&W. Totals + signatures unchanged.
-import { COMPANY, drawHeader, drawInfoColumns, drawSignatureBoxes, fmtRm, safeName, fmtDocDate } from './pdf-common';
+import { COMPANY, drawHeader, drawInfoColumns, drawSignatureBoxes, ensurePdfCjkFont, fmtRm, safeName, fmtDocDate } from './pdf-common';
 import { docVariantLine, loadCustomerFabricMaps } from './supplier-doc-data';
 
 type SiHeader = {
@@ -38,6 +38,11 @@ export async function renderSalesInvoiceInto(
   header: SiHeader,
   items: SiItem[],
 ): Promise<void> {
+  /* Before ANY drawing: a customer / supplier name, address or remark that
+     carries CJK needs the font embedded up front, or helvetica silently paints
+     the whole field as mojibake. No-op for a pure-WinAnsi document. */
+  await ensurePdfCjkFont(doc, [header, items]);
+
   const startPage = doc.getNumberOfPages();
   const pageW = doc.internal.pageSize.getWidth();
   const margin = 14;

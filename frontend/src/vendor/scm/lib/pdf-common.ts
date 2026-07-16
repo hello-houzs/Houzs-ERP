@@ -72,6 +72,205 @@ export const COMPANY = {
   },
 };
 
+/* ── CJK-safe text ─────────────────────────────────────────────────────
+   jspdf paints the built-in helvetica through WinAnsiEncoding (jspdf 2.5.2
+   jspdf.node.js:1617). Its Unicode→WinAnsi table (:26984) knows exactly the 27
+   codepoints listed below — and nothing else above U+00FF — folding each down
+   to one byte. For ANY other codepoint above U+00FF, to8bitStream re-encodes
+   the WHOLE STRING to UCS-2BE
+   (:3442-3447 → :3465-3480), which WinAnsi then paints one byte per glyph — so
+   a single character corrupts its ENTIRE field, the English part included:
+   "陈大文 Sdn Bhd" prints as "–HY'e‡" plus a NUL-interleaved tail. This is not
+   theoretical for punctuation either — a fullwidth "（" (U+FF08) is what a
+   Chinese IME emits, and it reaches live delivery addresses.
+
+   jspdf cannot warn: the throw at :3470 needs a codepoint above 16 bits and
+   charCodeAt() never returns one, so the corruption is silent end-to-end.
+
+   Fix: a document that carries such a codepoint embeds a Noto Sans SC subset
+   and is drawn through it. A document that carries none fetches nothing and is
+   byte-identical to before — which is why the 27 must be excluded rather than
+   testing `> 0xFF`: the em dash every "Tax  —" row prints is one of them, so
+   the crude test would make EVERY document pay the download. */
+const WINANSI_ABOVE_LATIN1 = new Set([
+  0x0152, 0x0153, 0x0160, 0x0161, 0x0178, 0x017d, 0x017e, 0x0192, 0x02c6, 0x02dc,
+  0x2013, 0x2014, 0x2018, 0x2019, 0x201a, 0x201c, 0x201d, 0x201e, 0x2020, 0x2021,
+  0x2022, 0x2026, 0x2030, 0x2039, 0x203a, 0x20ac, 0x2122,
+]);
+
+/** Hanzi proper (vs. CJK punctuation) — picks which subset a document needs. */
+const isHanzi = (cp: number): boolean =>
+  (cp >= 0x3400 && cp <= 0x4dbf) ||   // Unified Ideographs Ext. A
+  (cp >= 0x4e00 && cp <= 0x9fff) ||   // Unified Ideographs
+  (cp >= 0xf900 && cp <= 0xfaff);     // Compatibility Ideographs
+
+const CJK_FAMILY = 'NotoSansSC';
+
+/* Two subsets, because the two cases cost 20x apart and the cheap one is the
+   common one. `punct` (~52 kB/face) carries Latin + the 27 above + CJK
+   punctuation — enough for an address that only picked up a stray "（" from an
+   IME. `hanzi` (~1.1 MB/face) adds GB2312 level 1 (3755 hanzi, ~99.5% of modern
+   text) for documents with real Chinese. Both are fetched only when a document
+   needs them, then browser-cached. */
+type CjkTier = 'punct' | 'hanzi';
+const TIER_FACES: Record<CjkTier, Record<'normal' | 'bold', string>> = {
+  punct: { normal: '/fonts/noto-sans-sc-punct-400.ttf', bold: '/fonts/noto-sans-sc-punct-700.ttf' },
+  hanzi: { normal: '/fonts/noto-sans-sc-hanzi-400.ttf', bold: '/fonts/noto-sans-sc-hanzi-700.ttf' },
+};
+
+/* One plain sentence each — these surface to the user verbatim (every caller
+   try/catches the generator and shows e.message). A driver holding a mojibake
+   address is the failure we're removing; do not "recover" by drawing anyway. */
+const CJK_FETCH_FAILED =
+  'This document has Chinese text and the Chinese font could not be loaded — please check your connection and try again.';
+/* Not worded as "Chinese": the same guard catches anything helvetica can't
+   paint that the subset doesn't carry either — a traditional 陳, a rare given
+   name, an emoji someone pasted into a remark. */
+const CJK_GLYPH_MISSING =
+  'This document has a character we cannot print yet, so the PDF was not created.';
+
+const addCodepoints = (s: string, into: Set<number>): void => {
+  for (const ch of s) {
+    const cp = ch.codePointAt(0);
+    if (cp != null && cp > 0xff && !WINANSI_ABOVE_LATIN1.has(cp)) into.add(cp);
+  }
+};
+
+/* Walk the generator's raw payload rather than naming fields: every generator
+   passes the API row verbatim, so a column added later is covered for free —
+   and a field missed here would print as mojibake, which is the whole bug. */
+const collectCodepoints = (value: unknown, into: Set<number>, depth = 0): void => {
+  if (value == null || depth > 8) return;
+  if (typeof value === 'string') { addCodepoints(value, into); return; }
+  if (Array.isArray(value)) { for (const v of value) collectCodepoints(v, into, depth + 1); return; }
+  /* Maps before the plain-object branch: the print-time lookups hand us
+     Map<code, description>, and Object.values() of a Map is []. */
+  if (value instanceof Map) {
+    for (const [k, v] of value) { collectCodepoints(k, into, depth + 1); collectCodepoints(v, into, depth + 1); }
+    return;
+  }
+  if (value instanceof Set) { for (const v of value) collectCodepoints(v, into, depth + 1); return; }
+  if (typeof value === 'object') {
+    for (const v of Object.values(value as Record<string, unknown>)) collectCodepoints(v, into, depth + 1);
+  }
+};
+
+/* base64 for addFileToVFS. Chunked because a 1.1 MB face is ~1.1 M arguments —
+   one spread of that size blows the call stack. */
+const fetchFaceBase64 = async (url: string): Promise<string> => {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${url} → ${res.status}`);
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(binary);
+};
+
+/* Memoized per tier and shared across concurrent prints (a batch export renders
+   many docs). Dropped on failure so the next print retries — unlike the logo
+   memo, a failure here is loud, not a permanent degrade. */
+const tierMemo = new Map<CjkTier, Promise<Record<'normal' | 'bold', string>>>();
+const loadTier = (tier: CjkTier): Promise<Record<'normal' | 'bold', string>> => {
+  let inflight = tierMemo.get(tier);
+  if (!inflight) {
+    inflight = (async () => {
+      const [normal, bold] = await Promise.all([
+        fetchFaceBase64(TIER_FACES[tier].normal),
+        fetchFaceBase64(TIER_FACES[tier].bold),
+      ]);
+      return { normal, bold };
+    })();
+    inflight.catch(() => tierMemo.delete(tier));
+    tierMemo.set(tier, inflight);
+  }
+  return inflight;
+};
+
+/* Per-doc state: a combined export calls this once per document on ONE doc, so
+   registering must not embed the same face twice or re-wrap setFont. */
+const docTiers = new WeakMap<object, Set<CjkTier>>();
+const docShimmed = new WeakSet<object>();
+
+/**
+ * Make `doc` safe for any non-WinAnsi text in `payload` (plus the branding
+ * letterhead, which is owner-editable and read straight from the cache here).
+ *
+ * No-op — and no fetch — when the document is pure WinAnsi, which is almost all
+ * of them. Otherwise embeds the subset the document needs and redirects the
+ * generators' 'helvetica' onto it. THROWS rather than draw text it knows will
+ * come out corrupted.
+ */
+export async function ensurePdfCjkFont(
+  doc: import('jspdf').jsPDF,
+  payload: unknown,
+): Promise<void> {
+  const needed = new Set<number>();
+  for (const s of [COMPANY.name, COMPANY.reg, ...COMPANY.addressLines, COMPANY.phone,
+    COMPANY.email, COMPANY.website, COMPANY.portalLabel]) addCodepoints(s, needed);
+  collectCodepoints(payload, needed);
+  if (needed.size === 0) return;
+
+  const tier: CjkTier = [...needed].some(isHanzi) ? 'hanzi' : 'punct';
+  const seen = docTiers.get(doc) ?? new Set<CjkTier>();
+  if (!seen.has(tier)) {
+    let faces: Record<'normal' | 'bold', string>;
+    try {
+      faces = await loadTier(tier);
+    } catch {
+      throw new Error(CJK_FETCH_FAILED);
+    }
+    /* Both weights, always: jspdf resolves an unregistered style by SILENTLY
+       falling back to times (:3661) — a WinAnsi standard font, i.e. straight
+       back to mojibake — so a bold-only-Latin letterhead over a CJK body would
+       re-corrupt on the very fields we just fixed. */
+    for (const style of ['normal', 'bold'] as const) {
+      const vfs = `${CJK_FAMILY}-${tier}-${style}.ttf`;
+      doc.addFileToVFS(vfs, faces[style]);
+      doc.addFont(vfs, CJK_FAMILY, style);
+    }
+    seen.add(tier);
+    docTiers.set(doc, seen);
+  }
+
+  /* The subset itself is the source of truth for what we can paint: jspdf parses
+     the embedded TTF's cmap, so ask it rather than trusting our charset list. A
+     name outside GB2312 level 1 (a traditional 陳, a rare given name) would
+     otherwise print as a blank box — silent corruption again, just quieter. */
+  doc.setFont(CJK_FAMILY, 'normal');
+  const codeMap = doc.getFont().metadata?.cmap?.unicode?.codeMap as
+    | Record<number, number>
+    | undefined;
+  const missing = [...needed].filter((cp) => codeMap?.[cp] === undefined);
+  if (missing.length > 0) throw new Error(CJK_GLYPH_MISSING);
+
+  if (!docShimmed.has(doc)) {
+    /* The generators ask for 'helvetica' by name in ~50 places, and
+       jspdf-autotable resolves every cell to the literal 'helvetica' from its
+       own defaults (autotable 3.8.4 jspdf.plugin.autotable.js:376 → :665).
+       Redirecting the family here covers both without touching a draw call.
+       Whole-document, not per-field: helvetica and Noto measure ~7% apart, and
+       text wrapped on one font's metrics but painted in the other overflows its
+       column. */
+    const inner = doc.setFont.bind(doc);
+    doc.setFont = (family: string, style?: string, weight?: string | number) => {
+      if (typeof family !== 'string' || family.toLowerCase() !== 'helvetica') {
+        return inner(family, style, weight);
+      }
+      /* Noto Sans SC has no italic — weight is its only axis — so the four
+         generators that set 'italic' for a caption fold onto the upright face.
+         Registering a duplicate face under 'italic' would embed the entire
+         subset a second time in the file; jspdf never reaches a font any other
+         way (setFontStyle doesn't exist in 2.5.2 and autotable guards on it),
+         so normalising here is enough to keep them off the times fallback. */
+      const upright = style === 'italic' ? 'normal' : style === 'bolditalic' ? 'bold' : style;
+      return inner(CJK_FAMILY, upright, weight);
+    };
+    docShimmed.add(doc);
+  }
+}
+
 /* ── Amount in words (AutoCount footer convention) ─────────────────────
    "RINGGIT MALAYSIA ONE THOUSAND TWO HUNDRED THIRTY-FOUR AND SEN
     FIFTY-SIX ONLY" — integer ringgit + sen, both spelled out. */

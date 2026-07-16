@@ -289,6 +289,10 @@ export function useCreateStockTransfer() {
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['stock-transfers'] });
+      // DRAFT was dropped (mig 0078): the row is inserted POSTED and the paired
+      // OUT@from / IN@to movements are written by the create itself, so a create
+      // moves stock and inventory views must refetch.
+      qc.invalidateQueries({ queryKey: ['inventory'] });
     },
   });
 }
@@ -342,6 +346,9 @@ export function useCancelStockTransfer() {
     onSuccess: (_data, id) => {
       qc.invalidateQueries({ queryKey: ['stock-transfers'] });
       qc.invalidateQueries({ queryKey: ['stock-transfers', id] });
+      // Cancel REVERSES the inter-warehouse movement (opposite-direction rows
+      // per original line), so it moves stock just as the create did.
+      qc.invalidateQueries({ queryKey: ['inventory'] });
     },
   });
 }

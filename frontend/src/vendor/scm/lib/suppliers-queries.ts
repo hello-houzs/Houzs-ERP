@@ -8,6 +8,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
+import { invalidateSoLists } from './sales-order-queries';
 
 export type SupplierStatus = 'ACTIVE' | 'INACTIVE' | 'BLOCKED';
 export type Currency = 'MYR' | 'RMB' | 'USD' | 'SGD';
@@ -807,7 +808,7 @@ export function useCreatePosFromSoItems() {
       /* Force picker refetch — refetchType:'all' kicks the query even when
          not currently mounted, so the next view sees only outstanding lines. */
       qc.invalidateQueries({ queryKey: ['mfg-purchase-orders', 'outstanding-so-items'], refetchType: 'all' });
-      qc.invalidateQueries({ queryKey: ['mfg-sales-orders'] });
+      invalidateSoLists(qc);
       if (vars.targetPoId) qc.invalidateQueries({ queryKey: ['mfg-purchase-order-detail', vars.targetPoId] });
     },
   });

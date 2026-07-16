@@ -14,7 +14,7 @@ import {
   orderSofaModuleRowsWithinBuilds,
   sortSoLinesByGroupRank,
 } from '@2990s/shared/so-line-display';
-import { COMPANY, drawHeader, drawInfoColumns, drawSignatureBoxes, fmtRm, safeName, fmtDocDate } from './pdf-common';
+import { COMPANY, drawHeader, drawInfoColumns, drawSignatureBoxes, ensurePdfCjkFont, fmtRm, safeName, fmtDocDate } from './pdf-common';
 import { docVariantLine, loadCustomerFabricMaps } from './supplier-doc-data';
 
 type DrHeader = {
@@ -46,6 +46,11 @@ export async function renderDeliveryReturnInto(
   items: DrItem[],
   opts?: DrOpts,
 ): Promise<void> {
+  /* Before ANY drawing: a customer / supplier name, address or remark that
+     carries CJK needs the font embedded up front, or helvetica silently paints
+     the whole field as mojibake. No-op for a pure-WinAnsi document. */
+  await ensurePdfCjkFont(doc, [header, items]);
+
   const startPage = doc.getNumberOfPages();
   const pageW = doc.internal.pageSize.getWidth();
   const margin = 14;

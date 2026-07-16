@@ -33,6 +33,8 @@ import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { usePrompt } from "../vendor/scm/components/PromptDialog";
 import { useCreateAmendment, type CreateAmendmentLine } from "../vendor/scm/lib/so-amendment-queries";
+import { useCreateMfgSalesOrder } from "../vendor/scm/lib/sales-order-queries";
+import { invalidateSoShared } from "./sharedInvalidate";
 import type { ExtractedSlip } from "../vendor/scm/components/ScanOrderModal";
 import type { MobileScanPrefill } from "./MobileScan";
 import { MobileSkuPicker, type PickedSku } from "./MobileSkuPicker";
@@ -519,6 +521,9 @@ export function MobileNewSO({
      SalesOrderDetail.submitAmendment uses (POST /:docNo/amendments). Reused
      verbatim so the mobile amendment-raise carries no re-implemented API logic. */
   const createAmendment = useCreateAmendment();
+  /* SO CREATE — the SAME vendored mutation the desktop create path uses, so the
+     POST body/route and its shared-key invalidation stay single-sourced. */
+  const createSo = useCreateMfgSalesOrder();
   const staffQ = useStaff();
   const { staff: authStaff } = useAuth();
   /* FIX A — the app-level Houzs auth exposes the permission gate + the signed-in
@@ -1639,6 +1644,9 @@ export function MobileNewSO({
           }
           // A slip-backed payment recorded alongside the amendment still posts.
           await recordSlipBackedPayments(docNo);
+          /* useCreateAmendment invalidated the SO lists already; that raw payment
+             lands after it and moves the list's paid / outstanding aggregates. */
+          invalidateSoShared(qc);
           await qc.invalidateQueries({ queryKey: ["mfg-sales-order-detail", docNo] });
           await qc.invalidateQueries({ queryKey: ["mobile-so-list-paged"] });
           void notify({ title: "Amendment submitted", body: "It now needs supplier confirmation, then approval, before the order is revised." });
@@ -1659,6 +1667,10 @@ export function MobileNewSO({
         }
         await recordSlipBackedPayments(docNo);
 
+        /* The header PATCH + line diff + payments above are raw authedFetch, so
+           nothing has told the desktop SO list its rows moved. Invalidate once
+           HERE, after every part of the composite save has settled. */
+        invalidateSoShared(qc);
         await qc.invalidateQueries({ queryKey: ["mfg-sales-order-detail", docNo] });
         await qc.invalidateQueries({ queryKey: ["mobile-so-list-paged"] });
         if (onSaved) onSaved(docNo);
@@ -1698,15 +1710,16 @@ export function MobileNewSO({
         items,
       };
 
-      const res = await authedFetch<{ docNo: string }>(`/mfg-sales-orders`, {
-        method: "POST",
-        body: JSON.stringify(body),
-      });
+      const res = await createSo.mutateAsync(body);
       if (res?.docNo) {
         await uploadStagedPhotos(res.docNo);
         await recordSlipBackedPayments(res.docNo);
       }
       maybeLearnFromScan();
+      /* useCreateMfgSalesOrder already invalidated the SO lists at POST success,
+         but recordSlipBackedPayments posts RAW (not via useAddSalesOrderPayment)
+         and lands after it, moving the list's paid / outstanding aggregates. */
+      invalidateSoShared(qc);
       await qc.invalidateQueries({ queryKey: ["mobile-so-list-paged"] });
       if (res?.docNo && onSaved) onSaved(res.docNo);
       else onBack();

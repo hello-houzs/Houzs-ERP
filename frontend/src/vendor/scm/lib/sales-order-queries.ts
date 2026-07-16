@@ -200,17 +200,26 @@ export const useSalesOrderPayments = (docNo: string | null) => useQuery({
 
 /* ── SO mutations ────────────────────────────────────────────────────────── */
 
+/* Refresh the SO list caches. TWO keys, because they are siblings rather than
+   nested: ['mfg-sales-orders'] prefix-matches every per-SO sub-query as well
+   (['mfg-sales-orders', docNo], the payments ledger), so a caller never needs to
+   re-list those — but ['mfg-sales-orders-paged', …] is NOT under that prefix,
+   and it is the key the live V2 list (useMfgSalesOrdersPaged) actually reads.
+   Bump only the first and the on-screen list stays stale until staleTime/refocus.
+   Every mutation that changes a LIST row — status, header, lines, line price,
+   stock status, payments (the paged read carries paid/outstanding aggregates) —
+   must call this. */
+export const invalidateSoLists = (qc: ReturnType<typeof useQueryClient>) => {
+  qc.invalidateQueries({ queryKey: ['mfg-sales-orders'] });
+  qc.invalidateQueries({ queryKey: ['mfg-sales-orders-paged'] });
+};
+
 export const useCreateMfgSalesOrder = () => {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (body: unknown) => authedFetch<{ docNo: string }>(`/mfg-sales-orders`, { method: 'POST', body: JSON.stringify(body) }),
-    // Invalidate BOTH the legacy list key AND the paged key the live V2 list
-    // (useMfgSalesOrdersPaged, ['mfg-sales-orders-paged', …]) reads — the
-    // latter is NOT a prefix of ['mfg-sales-orders'], so without it a freshly
-    // created SO didn't appear until staleTime/refocus.
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['mfg-sales-orders'] });
-      qc.invalidateQueries({ queryKey: ['mfg-sales-orders-paged'] });
+      invalidateSoLists(qc);
     },
   });
 };
@@ -249,7 +258,7 @@ export const useUpdateMfgSalesOrderStatus = () => {
       for (const [key, data] of ctx.prevLists) qc.setQueryData(key, data);
     },
     onSettled: (_data, _err, vars) => {
-      qc.invalidateQueries({ queryKey: ['mfg-sales-orders'] });
+      invalidateSoLists(qc);
       qc.invalidateQueries({ queryKey: ['mfg-sales-order-detail', vars.docNo] });
       qc.invalidateQueries({ queryKey: ['mfg-sales-order-status-changes', vars.docNo] });
       qc.invalidateQueries({ queryKey: ['mfg-sales-order-audit-log', vars.docNo] });
@@ -270,7 +279,7 @@ export const useUpdateMfgSalesOrderHeader = () => {
       });
     },
     onSuccess: (_, vars) => {
-      qc.invalidateQueries({ queryKey: ['mfg-sales-orders'] });
+      invalidateSoLists(qc);
       qc.invalidateQueries({ queryKey: ['mfg-sales-order-detail', vars.docNo] });
       qc.invalidateQueries({ queryKey: ['mfg-sales-order-audit-log', vars.docNo] });
     },
@@ -286,7 +295,7 @@ export const useAddMfgSalesOrderItem = () => {
       }),
     onSuccess: (_, vars) => {
       qc.invalidateQueries({ queryKey: ['mfg-sales-order-detail', vars.docNo] });
-      qc.invalidateQueries({ queryKey: ['mfg-sales-orders'] });
+      invalidateSoLists(qc);
       qc.invalidateQueries({ queryKey: ['mfg-sales-order-audit-log', vars.docNo] });
     },
   });
@@ -301,7 +310,7 @@ export const useUpdateMfgSalesOrderItem = () => {
       }),
     onSuccess: (_, vars) => {
       qc.invalidateQueries({ queryKey: ['mfg-sales-order-detail', vars.docNo] });
-      qc.invalidateQueries({ queryKey: ['mfg-sales-orders'] });
+      invalidateSoLists(qc);
       qc.invalidateQueries({ queryKey: ['mfg-sales-order-audit-log', vars.docNo] });
     },
   });
@@ -314,7 +323,7 @@ export const useDeleteMfgSalesOrderItem = () => {
       authedFetch<void>(`/mfg-sales-orders/${docNo}/items/${itemId}`, { method: 'DELETE' }),
     onSuccess: (_, vars) => {
       qc.invalidateQueries({ queryKey: ['mfg-sales-order-detail', vars.docNo] });
-      qc.invalidateQueries({ queryKey: ['mfg-sales-orders'] });
+      invalidateSoLists(qc);
       qc.invalidateQueries({ queryKey: ['mfg-sales-order-audit-log', vars.docNo] });
     },
   });
@@ -336,6 +345,9 @@ export const useOverrideMfgSoLinePrice = () => {
     onSuccess: (_, vars) => {
       qc.invalidateQueries({ queryKey: ['mfg-sales-order-detail', vars.docNo] });
       qc.invalidateQueries({ queryKey: ['mfg-sales-order-price-overrides', vars.docNo] });
+      // An override re-prices the line → the SO total, and the list's revenue
+      // aggregate, move with it.
+      invalidateSoLists(qc);
     },
   });
 };
@@ -350,7 +362,7 @@ export const useUpdateSoItemStockStatus = () => {
       ),
     onSuccess: (_, vars) => {
       qc.invalidateQueries({ queryKey: ['mfg-sales-order-detail', vars.docNo] });
-      qc.invalidateQueries({ queryKey: ['mfg-sales-orders'] });
+      invalidateSoLists(qc);
       qc.invalidateQueries({ queryKey: ['mfg-sales-order-audit-log', vars.docNo] });
     },
     onError: (err) => {
@@ -411,9 +423,11 @@ export const useAddSalesOrderPayment = () => {
       authedFetch<{ payment: SoPayment }>(`/mfg-sales-orders/${docNo}/payments`, {
         method: 'POST', body: JSON.stringify(body),
       }),
-    onSuccess: (_, vars) => {
-      qc.invalidateQueries({ queryKey: ['mfg-sales-orders', vars.docNo, 'payments'] });
-      qc.invalidateQueries({ queryKey: ['mfg-sales-orders', vars.docNo] });
+    // The ['mfg-sales-orders'] root prefix-covers this SO's payments ledger and
+    // header sub-queries; the paged list carries the paid / outstanding
+    // aggregates a payment moves.
+    onSuccess: () => {
+      invalidateSoLists(qc);
     },
   });
 };
@@ -429,9 +443,11 @@ export const useEditSalesOrderPayment = () => {
       authedFetch<{ payment: SoPayment }>(`/mfg-sales-orders/${docNo}/payments/${id}`, {
         method: 'PATCH', body: JSON.stringify(body),
       }),
-    onSuccess: (_, vars) => {
-      qc.invalidateQueries({ queryKey: ['mfg-sales-orders', vars.docNo, 'payments'] });
-      qc.invalidateQueries({ queryKey: ['mfg-sales-orders', vars.docNo] });
+    // The ['mfg-sales-orders'] root prefix-covers this SO's payments ledger and
+    // header sub-queries; the paged list carries the paid / outstanding
+    // aggregates a payment moves.
+    onSuccess: () => {
+      invalidateSoLists(qc);
     },
   });
 };
@@ -441,9 +457,11 @@ export const useDeleteSalesOrderPayment = () => {
   return useMutation({
     mutationFn: ({ docNo, id }: { docNo: string; id: string }) =>
       authedFetch<{ ok: boolean }>(`/mfg-sales-orders/${docNo}/payments/${id}`, { method: 'DELETE' }),
-    onSuccess: (_, vars) => {
-      qc.invalidateQueries({ queryKey: ['mfg-sales-orders', vars.docNo, 'payments'] });
-      qc.invalidateQueries({ queryKey: ['mfg-sales-orders', vars.docNo] });
+    // The ['mfg-sales-orders'] root prefix-covers this SO's payments ledger and
+    // header sub-queries; the paged list carries the paid / outstanding
+    // aggregates a payment moves.
+    onSuccess: () => {
+      invalidateSoLists(qc);
     },
   });
 };

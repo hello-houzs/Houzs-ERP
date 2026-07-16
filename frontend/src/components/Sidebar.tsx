@@ -59,6 +59,18 @@ import { PresencePanel } from "./PresencePanel";
 import { GlobalSearchTrigger } from "./GlobalSearch";
 import { NotificationBell } from "./NotificationBell";
 
+/* Hover prefetch, behind a dynamic import. The route map in lib/prefetch-routes
+   holds an import() per route, so importing it statically drags the whole table
+   into the initial bundle — that put initial JS at 131.5/130 KB gzip and failed
+   the budget gate. Deferring it costs nothing real: the table's own chunk is
+   fetched on Layout's idle warm, long before a hand reaches the rail.
+   Swallow everything — a prefetch must never surface an error, least of all
+   from a mouse-over (RouteFallback treats a chunk error as cause to unregister
+   the SW and reload the page). */
+function prefetchRoute(href: string): void {
+  void import("../lib/prefetch-routes").then((m) => m.prefetchRoute(href)).catch(() => {});
+}
+
 interface Props {
   /** Desktop-only collapsed state (lg+). */
   collapsed: boolean;
@@ -685,6 +697,9 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
     // sidebar keeps the submenu AND the Hub is one click away.
     if (tab.children && tab.children.length > 0) {
       const gid = tab.groupId || tab.label;
+      // Bound once so the hover handlers below close over a narrowed string
+      // (TS drops narrowing on `tab.to` inside a callback).
+      const headerTo = tab.to;
       const hasActiveDescendant = (n: NavTab): boolean =>
         (n.to ? tabIsActive(n.to, n.end) : false) ||
         (n.children?.some(hasActiveDescendant) ?? false);
@@ -696,10 +711,11 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
         // icon as a link to the Hub so it's still reachable.
         return (
           <div key={gid}>
-            {tab.to && (
+            {headerTo && (
               <NavLink
-                to={tab.to}
+                to={headerTo}
                 title={tab.label}
+                onMouseEnter={() => prefetchRoute(headerTo)}
                 className={cn(
                   "group relative my-0.5 flex items-center justify-center rounded-md px-2 py-2 transition-all duration-150",
                   headerActive
@@ -735,10 +751,11 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
             {tab.to && selfActive && (
               <span className="absolute -left-[10px] top-2 bottom-2 w-[2px] rounded-r bg-primary" />
             )}
-            {tab.to ? (
+            {headerTo ? (
               <NavLink
-                to={tab.to}
+                to={headerTo}
                 onClick={() => openGroup(gid)}
+                onMouseEnter={() => prefetchRoute(headerTo)}
                 className="flex min-w-0 flex-1 items-center gap-3 py-2"
               >
                 {headerInner}
@@ -784,6 +801,7 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Prop
         key={to}
         to={to}
         end={tab.end}
+        onMouseEnter={() => prefetchRoute(to)}
         // We compute active state ourselves so query strings match.
         className={() =>
           cn(

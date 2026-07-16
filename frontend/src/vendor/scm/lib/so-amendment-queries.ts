@@ -9,13 +9,15 @@
 //                                    it can reuse that file's SO guards).
 //
 // Every gate mutation invalidates the amendment list + detail AND the SO/PO
-// detail queries the SalesOrderDetail / PurchaseOrderDetail pages read
-// (['mfg-sales-orders'] + ['mfg-sales-order-detail'] + ['mfg-purchase-orders'] +
-// ['mfg-purchase-order-detail']) — an approve re-derives the SO and/or the bound
-// PO server-side, so those pages must refetch to show the revised lines/revision.
+// list + detail queries the SalesOrderDetail / PurchaseOrderDetail pages read
+// (invalidateSoLists — BOTH SO list keys — + ['mfg-sales-order-detail'] +
+// ['mfg-purchase-orders'] + ['mfg-purchase-order-detail']) — an approve re-derives
+// the SO and/or the bound PO server-side, so those pages must refetch to show the
+// revised lines/revision.
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
+import { invalidateSoLists } from './sales-order-queries';
 import type { SoAmendmentHeaderChanges } from './so-amendment-header';
 
 /* ── Row + detail shapes (mirror the API response verbatim) ─────────────────
@@ -91,7 +93,10 @@ const invalidateAmendmentSideEffects = (
 ) => {
   qc.invalidateQueries({ queryKey: ['amendments'] });
   if (id) qc.invalidateQueries({ queryKey: ['amendment-detail', id] });
-  qc.invalidateQueries({ queryKey: ['mfg-sales-orders'] });
+  /* An approve re-derives the SO's lines/revision, so its list row changes —
+     and that means BOTH list keys (the V2 paged key is a sibling of
+     ['mfg-sales-orders'], not nested under it). */
+  invalidateSoLists(qc);
   qc.invalidateQueries({ queryKey: ['mfg-sales-order-detail'] });
   qc.invalidateQueries({ queryKey: ['mfg-purchase-orders'] });
   qc.invalidateQueries({ queryKey: ['mfg-purchase-order-detail'] });
