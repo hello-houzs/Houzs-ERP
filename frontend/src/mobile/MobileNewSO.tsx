@@ -1143,7 +1143,12 @@ export function MobileNewSO({
     return current === base;
   };
 
-  /* ── Edit-gate learning (scan-seeded SO only) ────────────────────────── */
+  /* ── Scan-review learning (scan-seeded SO only) ───────────────────────────
+     `changed` LABELS the sample, it no longer gates the POST: an unchanged scan
+     is the operator confirming the AI read the slip perfectly — a positive
+     example, not a non-event. Mirrors desktop SalesOrderNew.maybeLearnFromScan
+     exactly (single logic layer); the backend keeps corrected vs accepted-as-is
+     apart because they teach different things (scan-so.ts SAMPLE_* header). */
   const maybeLearnFromScan = () => {
     if (!fromScan || !scanSampleId || !scanAiOriginal) return;
     const ai = scanAiOriginal;
@@ -1170,8 +1175,6 @@ export function MobileNewSO({
       const meta = scanLineMeta[l.key];
       if (!meta || norm(l.name) !== norm(meta.seededName)) changed = true;
     }
-
-    if (!changed) return;
 
     const corrected: ExtractedSlip = {
       customerName: name.trim() || null,
@@ -1214,7 +1217,7 @@ export function MobileNewSO({
 
     void authedFetch(`/scan-so/samples/${scanSampleId}/confirm`, {
       method: "POST",
-      body: JSON.stringify({ corrected, salesperson: scanSalesperson || null }),
+      body: JSON.stringify({ corrected, salesperson: scanSalesperson || null, accepted: !changed }),
     }).catch(() => { /* few-shot learning is best-effort — never blocks save */ });
   };
 

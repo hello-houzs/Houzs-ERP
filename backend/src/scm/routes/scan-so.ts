@@ -7,8 +7,11 @@
 //   • input is image(s) (jpeg/png/webp) or a PDF, not PDF-only;
 //   • catalog injection pulls live from Supabase Postgres (mfg_products,
 //     fabric_trackings, maintenance config sofa sizes/leg heights);
-//   • few-shot pool = the 5 most recent operator-CONFIRMED so_scan_samples
-//     rows, filtered to the slip's SALESPERSON first (fall back to global);
+//   • few-shot pool = the 5 most recent operator-REVIEWED so_scan_samples
+//     rows, filtered to the slip's SALESPERSON first (fall back to global),
+//     and RANKED corrected-before-accepted-as-is (see the SAMPLE_* header:
+//     both outcomes are ground truth here, but only corrected rows carry a
+//     diff, so only they feed the distillers);
 //   • per-SALESPERSON learning (vs HOOKKA's per-customer): each rep has
 //     their own handwriting/notation habits that differ per product
 //     category, so a distilled rules block (so_scan_rules, organized by
@@ -27,7 +30,7 @@
 //   GET  /scan-so/jobs/:id                    — poll a background job (status / soDocNo / error)
 //   GET  /scan-so/jobs?salesperson=           — latest 20 background jobs (optionally one rep's)
 //   POST /scan-so/jobs/clear-failed           — delete the caller's failed (status=error) jobs ('*' clears all reps')
-//   POST /scan-so/samples/:id/confirm         — store operator-corrected JSON (+ salesperson); auto-distills rep rules
+//   POST /scan-so/samples/:id/confirm         — store operator-reviewed JSON (+ salesperson, + accepted); auto-distills rep rules
 //   GET  /scan-so/salespeople                 — distinct reps seen across samples + rules (modal datalist)
 //   GET  /scan-so/rules/:salesperson          — view a rep's distilled rules
 //   POST /scan-so/rules/:salesperson/distill  — manually regenerate a rep's rules
@@ -1565,6 +1568,32 @@ const TABLE_MISSING_MSG =
   'scan-so tables missing — apply src/db/migrations-pg/0023_so_scan_samples.sql to this database.';
 
 // ===========================================================================
+// Sample review outcomes (so_scan_samples.status — free-text, NO check
+// constraint, so this vocabulary needs no migration).
+//
+//   EXTRACTED — the AI read it; no human has reviewed it yet.
+//   CONFIRMED — the operator reviewed AND CHANGED something. `corrected` and
+//               `extracted` DIFFER, so the pair carries a teachable diff.
+//   ACCEPTED  — the operator reviewed and took the extraction AS-IS. Ground
+//               truth, but the pair has NO diff.
+//   FAILED    — the extraction itself errored.
+//
+// Why the split matters: the two consumers of this pool want OPPOSITE things.
+// The distillers MINE THE DIFF ("wherever they differ, the AI misread") — a
+// zero-diff pair teaches them nothing and, inside their LIMIT window, would
+// push a real correction out of the pool. The few-shot pool shows the model
+// GOOD OUTPUT — there both outcomes are equally true, and corrected-only was
+// a biased sample of the AI's own failures. So: distill on CONFIRMED, few-shot
+// on both (CONFIRMED first — HOOKKA ae0f7e6d's `ORDER BY isGold DESC` shape).
+//
+// Back-compat: every pre-existing CONFIRMED row was written through the
+// `if (!changed) return` edit-gate, so it IS diff-bearing by construction.
+// The vocabulary classifies history correctly with no backfill.
+// ===========================================================================
+const SAMPLE_CORRECTED = 'CONFIRMED';
+const SAMPLE_ACCEPTED = 'ACCEPTED';
+
+// ===========================================================================
 // Per-SALESPERSON rule distillation — ported from HOOKKA's ocr-distill.ts
 // (per-customer, D1) and adapted to per-salesperson on Supabase, with the
 // rules ORGANIZED BY PRODUCT CATEGORY (each rep's notation differs between
@@ -1746,10 +1775,15 @@ async function distillSalespersonRules(
     };
   }
 
+  // DIFF-BEARING only. This prompt derives rules from extracted→corrected
+  // diffs, so an ACCEPTED (zero-diff) row contributes nothing and would only
+  // consume a slot in the 50-row window. `corrected IS NOT NULL` is kept for
+  // the partial index (idx_so_scan_samples_salesperson).
   const { data: rows, error: selErr } = await svc
     .from('so_scan_samples')
     .select('extracted, corrected')
     .not('corrected', 'is', null)
+    .eq('status', SAMPLE_CORRECTED)
     .ilike('salesperson', ilikeExact(rep))
     .order('created_at', { ascending: false })
     .limit(50);
@@ -1865,10 +1899,14 @@ async function distillGlobalAliases(
     };
   }
 
+  // DIFF-BEARING only — same reason as the per-rep pass: the alias dictionary
+  // is derived from lines the operator RE-CODED, which a zero-diff row has
+  // none of.
   const { data: rows, error: selErr } = await svc
     .from('so_scan_samples')
     .select('extracted, corrected')
     .not('corrected', 'is', null)
+    .eq('status', SAMPLE_CORRECTED)
     .order('created_at', { ascending: false })
     .limit(80);
   if (selErr) {
@@ -1972,10 +2010,13 @@ async function distillGlobalRules(
     };
   }
 
+  // DIFF-BEARING only — this pass looks for "the same KIND of field corrected
+  // the same way across DIFFERENT reps", which requires a correction to exist.
   const { data: rows, error: selErr } = await svc
     .from('so_scan_samples')
     .select('extracted, corrected')
     .not('corrected', 'is', null)
+    .eq('status', SAMPLE_CORRECTED)
     .order('created_at', { ascending: false })
     .limit(80);
   if (selErr) {
@@ -2079,10 +2120,15 @@ export async function distillAllSalespersonRules(
   // aggregate over the REST API, so pull the (small) salesperson column and
   // count client-side, case-insensitively (matching the ilike used by
   // distillSalespersonRules).
+  // Counts DIFF-BEARING rows only, so the ≥2 gate below stays the same
+  // question distillSalespersonRules asks. Without this a rep whose only
+  // samples were ACCEPTED (zero-diff) would be enumerated here and then
+  // cheap-skipped there — work scheduled for a rep with nothing to learn.
   const { data, error } = await paginateAll((from, to) => svc
     .from('so_scan_samples')
     .select('salesperson')
     .not('corrected', 'is', null)
+    .eq('status', SAMPLE_CORRECTED)
     .not('salesperson', 'is', null)
     .order('created_at', { ascending: false })
     .range(from, to));
@@ -2431,37 +2477,64 @@ async function loadPromptInjections(svc: SupabaseClient, repGiven: string): Prom
     }
   }
 
-  // Few-shot pool: 5 most recent operator-confirmed samples — THIS REP's
-  // first, topped up with global recents (deduped by id).
+  // Few-shot pool: 5 most recent operator-REVIEWED samples — THIS REP's first,
+  // topped up with global recents (deduped by id).
+  //
+  // Both review outcomes qualify here. A CONFIRMED (corrected) blob and an
+  // ACCEPTED (as-is) blob are equally operator-verified ground truth, and this
+  // prompt uses them as GOOD-OUTPUT exemplars, never as diffs — so nothing here
+  // needs the pair to differ. Including ACCEPTED also removes a survivorship
+  // bias baked in while the edit-gate was the only writer: the pool could only
+  // ever contain slips the AI got WRONG, so every example of "a slip like
+  // yours" was drawn exclusively from its own failures.
+  //
+  // RANKED, not flattened (HOOKKA ae0f7e6d's `ORDER BY isGold DESC` shape):
+  // rep before global, then CONFIRMED before ACCEPTED, then recency. A
+  // corrected exemplar encodes a resolution the model could NOT reach on its
+  // own, so it carries strictly more information than one it already produces
+  // correctly — it must never be displaced by an as-is sample that is merely
+  // newer.
   let fewShotText = '';
   try {
-    type FewShotRow = { id: string; corrected: unknown };
-    const picked: Array<{ corrected: unknown; mine: boolean }> = [];
+    type FewShotRow = { id: string; corrected: unknown; status: string | null };
+    const picked: Array<{ corrected: unknown; mine: boolean; gold: boolean }> = [];
     const pickedIds = new Set<string>();
+    // Ranked within a fetched page rather than in SQL: PostgREST cannot express
+    // a conditional ORDER BY, and over-fetching a few rows is cheaper on this
+    // hot path than the extra round-trip a status-scoped second query costs.
+    // Stable sort (ES2019+) keeps created_at DESC inside each tier.
+    const goldFirst = (rows: FewShotRow[]): FewShotRow[] =>
+      [...rows].sort(
+        (a, b) =>
+          Number(b.status === SAMPLE_CORRECTED) - Number(a.status === SAMPLE_CORRECTED),
+      );
     if (repGiven) {
       const { data: repRows } = await svc
         .from('so_scan_samples')
-        .select('id, corrected')
+        .select('id, corrected, status')
         .not('corrected', 'is', null)
+        .in('status', [SAMPLE_CORRECTED, SAMPLE_ACCEPTED])
         .ilike('salesperson', ilikeExact(repGiven))
         .order('created_at', { ascending: false })
-        .limit(5);
-      for (const r of (repRows as FewShotRow[] | null) ?? []) {
-        picked.push({ corrected: r.corrected, mine: true });
+        .limit(15);
+      for (const r of goldFirst((repRows as FewShotRow[] | null) ?? [])) {
+        if (picked.length >= 5) break;
+        picked.push({ corrected: r.corrected, mine: true, gold: r.status === SAMPLE_CORRECTED });
         pickedIds.add(r.id);
       }
     }
     if (picked.length < 5) {
       const { data: rows } = await svc
         .from('so_scan_samples')
-        .select('id, corrected')
+        .select('id, corrected, status')
         .not('corrected', 'is', null)
+        .in('status', [SAMPLE_CORRECTED, SAMPLE_ACCEPTED])
         .order('created_at', { ascending: false })
-        .limit(5);
-      for (const r of (rows as FewShotRow[] | null) ?? []) {
+        .limit(15);
+      for (const r of goldFirst((rows as FewShotRow[] | null) ?? [])) {
         if (picked.length >= 5) break;
         if (pickedIds.has(r.id)) continue;
-        picked.push({ corrected: r.corrected, mine: false });
+        picked.push({ corrected: r.corrected, mine: false, gold: r.status === SAMPLE_CORRECTED });
         pickedIds.add(r.id);
       }
     }
@@ -2469,12 +2542,17 @@ async function loadPromptInjections(svc: SupabaseClient, repGiven: string): Prom
       const blocks = picked
         .map((r, i) => {
           const who = repGiven ? (r.mine ? ` — written by ${repGiven}, weigh heavily` : ' — another rep') : '';
-          return `Example ${i + 1} (operator-confirmed${who}):\n${JSON.stringify(r.corrected)}`;
+          // Name the outcome: "corrected" tells the model a human had to fix
+          // this reading; "accepted as-is" that the AI's own reading stood.
+          const how = r.gold ? 'operator-corrected' : 'operator-accepted as-is';
+          return `Example ${i + 1} (${how}${who}):\n${JSON.stringify(r.corrected)}`;
         })
         .join('\n\n');
       fewShotText =
-        `FEW-SHOT EXAMPLES from previous slips, corrected by the operator. ` +
-        `Apply the same field conventions, transcription style, and matching judgement:\n\n${blocks}`;
+        `FEW-SHOT EXAMPLES from previous slips, each reviewed by the operator — ` +
+        `either corrected by them, or accepted exactly as the AI read it. Both are ` +
+        `confirmed truth. Apply the same field conventions, transcription style, and ` +
+        `matching judgement:\n\n${blocks}`;
     }
   } catch {
     /* best-effort */
@@ -4559,39 +4637,53 @@ scanSo.post('/jobs/clear-failed', async (c) => {
 });
 
 // ===========================================================================
-// POST /scan-so/samples/:id/confirm — store the operator-corrected JSON.
-// Called by the modal when the operator clicks "Open in New SO"; the
-// corrected blob becomes a few-shot example for future extractions.
+// POST /scan-so/samples/:id/confirm — store the operator-reviewed JSON.
+// Called on save by the form the operator reviewed the scan in; the reviewed
+// blob becomes a few-shot example for future extractions.
+//
+// `accepted: true` means the operator changed NOTHING — the blob is the AI's
+// own reading, confirmed. It lands as ACCEPTED: a positive example for the
+// few-shot pool, but deliberately OUT of the diff-mining distill pools (see
+// the SAMPLE_* header). Absent/false ⇒ CONFIRMED (operator corrected
+// something), which is also what every pre-existing caller means.
 // ===========================================================================
 scanSo.post('/samples/:id/confirm', async (c) => {
   const id = c.req.param('id');
   if (!id) return c.json({ error: 'bad_request', reason: 'Missing sample id.' }, 400);
 
-  let body: { corrected?: unknown; salesperson?: unknown };
+  let body: { corrected?: unknown; salesperson?: unknown; accepted?: unknown };
   try {
-    body = (await c.req.json()) as { corrected?: unknown; salesperson?: unknown };
+    body = (await c.req.json()) as { corrected?: unknown; salesperson?: unknown; accepted?: unknown };
   } catch {
     return c.json({ error: 'bad_request', reason: 'Invalid JSON body.' }, 400);
   }
   if (body.corrected === undefined || body.corrected === null) {
     return c.json({ error: 'bad_request', reason: 'Missing `corrected`.' }, 400);
   }
+  const acceptedAsIs = body.accepted === true;
+  const sampleStatus = acceptedAsIs ? SAMPLE_ACCEPTED : SAMPLE_CORRECTED;
   // Normalized rep key (trim + single-space) — case/whitespace variants must
   // share one learning pool on write, same as /extract's stamp.
   const repGiven = normalizeRepKey(body.salesperson);
 
   const svc = serviceClient(c.env);
-  const { data: updated, error } = await svc
+  let q = svc
     .from('so_scan_samples')
     .update({
       corrected: body.corrected,
-      status: 'CONFIRMED',
+      status: sampleStatus,
       // Operator-reviewed rep wins over whatever /extract stamped; blank
       // leaves the extract-time value (operator pick or AI detection) alone.
       ...(repGiven ? { salesperson: repGiven } : {}),
     })
-    .eq('id', id)
-    .select('id, salesperson');
+    .eq('id', id);
+  // No-downgrade: an ACCEPTED write must never bury a sample already CONFIRMED
+  // — that would relabel a real correction as "the AI got it right" and drop it
+  // out of the distill pool. The reverse (ACCEPTED then later CORRECTED, e.g.
+  // the operator saves a draft and edits it on a second pass) is an UPGRADE and
+  // rides through.
+  if (acceptedAsIs) q = q.neq('status', SAMPLE_CORRECTED);
+  const { data: updated, error } = await q.select('id, salesperson');
 
   if (error) {
     if (isMissingTable(error)) {
@@ -4600,8 +4692,17 @@ scanSo.post('/samples/:id/confirm', async (c) => {
     return c.json({ error: 'update_failed', reason: error.message }, 500);
   }
   if (!updated || updated.length === 0) {
+    // Either the sample is gone, or the no-downgrade guard held. The latter is
+    // a legitimate no-op, not an error — the correction already on file wins.
+    if (acceptedAsIs) return c.json({ success: true, skipped: 'already_corrected' });
     return c.json({ error: 'not_found', reason: 'Sample not found.' }, 404);
   }
+
+  // An accepted-as-is sample carries no diff, so it is NOT in any distill
+  // pool — re-distilling here would spend Anthropic calls to regenerate the
+  // identical rules from an unchanged pool. It reaches the few-shot pool
+  // directly (read live at extract time), so it still takes effect at once.
+  if (acceptedAsIs) return c.json({ success: true });
 
   // Fire-and-forget rule distillation — REGENERATES so_scan_rules for this
   // rep (latest ≤50 of their corrected samples) AND the '__GLOBAL__' shared

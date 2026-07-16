@@ -1155,14 +1155,19 @@ export const SalesOrderNew = () => {
     return { failed: results.filter((ok) => !ok).length };
   };
 
-  /* ── Edit-gate learning (fromScan only) ────────────────────────────────
+  /* ── Scan-review learning (fromScan only) ──────────────────────────────
      Task #73 — the OCR review now happens in THIS form, so the learning POST
      that used to fire from the modal fires HERE, on save. We rebuild the
      operator's FINAL values into the ExtractedSlip shape and compare against
-     the frozen AI-original; if anything changed, POST
-     /scan-so/samples/:id/confirm so the correction becomes a few-shot example
-     + re-distills the rep's rules. Fire-and-forget — it never blocks or fails
-     the save.
+     the frozen AI-original, then POST /scan-so/samples/:id/confirm so the
+     review becomes a few-shot example (+ re-distills the rep's rules when the
+     operator actually corrected something). Fire-and-forget — it never blocks
+     or fails the save.
+
+     This used to fire ONLY when something changed, which threw away every scan
+     the operator accepted as-is — the strongest evidence extraction was right.
+     It now always fires and sends `accepted` so the backend can tell the two
+     outcomes apart (scan-so.ts SAMPLE_* header).
 
      The corrected blob mirrors the extracted-slip shape the distiller pairs
      against the AI-original (customer block, option matches, per-line
@@ -1178,11 +1183,16 @@ export const SalesOrderNew = () => {
     const phones = phone.trim() ? [phone.trim()] : ai.phones;
     const norm = (s: string | null | undefined) => (s ?? '').trim();
 
-    /* Edit-gate — only learn when the operator GENUINELY corrected something.
-       Compare the operator's final values against the AI's on the dimensions
-       that actually teach the OCR: customer block, the option matches, and
-       per-line SKU/qty/price. (The form reshapes the slip, so a structural
-       stringify diff would always "differ" — we compare field-by-field.) */
+    /* Did the operator GENUINELY correct something? Compare their final values
+       against the AI's on the dimensions that actually teach the OCR: customer
+       block, the option matches, and per-line SKU/qty/price. (The form reshapes
+       the slip, so a structural stringify diff would always "differ" — we
+       compare field-by-field.)
+       This is no longer a GATE — it is the sample's LABEL. An unchanged scan is
+       the operator confirming the AI read the slip perfectly, which is a
+       positive example worth learning from, not a non-event; it POSTs with
+       accepted:true and lands as ACCEPTED. The backend keeps the two apart
+       because they teach different things (see scan-so.ts's SAMPLE_* header). */
     let changed = false;
     const mark = (a: string, b: string) => { if (a !== b) changed = true; };
     mark(norm(debtorName), norm(ai.customerName));
@@ -1205,8 +1215,6 @@ export const SalesOrderNew = () => {
       if (!meta) { changed = true; continue; }
       if (l.itemCode !== meta.seededCode) changed = true;
     }
-
-    if (!changed) return;
 
     const corrected: ExtractedSlip = {
       customerName: debtorName.trim() || null,
@@ -1272,7 +1280,7 @@ export const SalesOrderNew = () => {
 
     void authedFetch(`/scan-so/samples/${scanSampleId}/confirm`, {
       method: 'POST',
-      body: JSON.stringify({ corrected, salesperson: scanSalesperson || null }),
+      body: JSON.stringify({ corrected, salesperson: scanSalesperson || null, accepted: !changed }),
     }).catch(() => { /* few-shot learning is best-effort — never blocks save */ });
   };
 

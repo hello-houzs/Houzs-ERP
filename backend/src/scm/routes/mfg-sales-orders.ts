@@ -78,6 +78,10 @@ import { SESSION_ORIGIN_POS } from '../../services/auth';
 import { SO_FINANCE_KEYS, SO_ITEM_FINANCE_KEYS, stripAuditFinance } from '../lib/finance-keys';
 import { resolveSalesScopeIds, salesDocOutOfScope, resolveCallerStaffId } from '../lib/salesScope';
 import { recordSoAudit, diffFields, type FieldChange } from '../lib/so-audit';
+// OCR self-learning: a DRAFT confirm is the review event the background scan
+// path never reported. Lives in lib/ (not scan-so.ts) — scan-so.ts already
+// imports this route's create core, so the reverse import would be a cycle.
+import { noteScanDraftAccepted } from '../lib/scan-sample-review';
 /* TBC sofa exchange PWP re-evaluation (Loo 2026-06-12) — reuse the voucher
    generator + model-list matcher from the reserve route. */
 import { genCode, inList } from './pwp-codes';
@@ -4972,6 +4976,20 @@ mfgSalesOrders.patch('/:docNo/status', async (c) => {
     statusSnapshot: toStatus,
     note: body.notes ?? undefined,
   });
+
+  /* OCR self-learning — a DRAFT confirmed is the operator's verdict on the
+     scan that produced it. The BACKGROUND scan path (enqueue → DRAFT) stamps
+     scan_jobs.sample_id and had nothing listening for that verdict, so the
+     main scan route never fed the learning pool. This is the listener. No-ops
+     for the ~all SOs that did not come from a scan (one lookup on scan_jobs,
+     one row per scan — see scan-sample-review on the missing so_doc_no index),
+     and for a draft the operator edited (same header).
+     Best-effort — never costs the operator their confirm. */
+  if (fromNorm === 'DRAFT' && toStatus === 'CONFIRMED') {
+    const acceptNote = noteScanDraftAccepted(getSupabaseService(c.env), docNo);
+    try { c.executionCtx.waitUntil(acceptNote); }
+    catch { /* non-Workers runtime (tests) — let the floating promise run */ }
+  }
 
   /* SO status changed → recompute allocation. CANCELLED removes the SO from
      the queue (its claim releases); terminal statuses (SHIPPED/DELIVERED/…)
