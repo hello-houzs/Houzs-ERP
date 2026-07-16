@@ -53,13 +53,23 @@ import {
 import {
   useSoDropdownOptions, optionsOrFallback,
 } from '../lib/so-dropdown-options-queries';
+import { formatDate } from '../../../lib/utils';
 import detailStyles from '../../../pages/scm-v2/SalesOrderDetail.module.css';
 import paymentsStyles from '../../../pages/scm-v2/Payments.module.css';
 
-const fmtRm = (centi: number, currency = 'MYR'): string =>
-  `${currency} ${(centi / 100).toLocaleString('en-MY', {
+/* Bare amount, no currency. The Amount COLUMN carries the currency once in its
+   header: `currency` is a single per-document prop (callers pass
+   `header.currency`) and SoPayment has no currency field of its own, so every
+   row in one table was already printing the same constant. */
+const fmtAmt = (centi: number): string =>
+  (centi / 100).toLocaleString('en-MY', {
     minimumFractionDigits: 2, maximumFractionDigits: 2,
-  })}`;
+  });
+
+/* Currency-prefixed — for the summary totals and the delete confirm, which read
+   outside the Amount column and so cannot lean on its header. */
+const fmtRm = (centi: number, currency = 'MYR'): string =>
+  `${currency} ${fmtAmt(centi)}`;
 
 /* installment_plan "One Shot" option VALUE (spec 1 + 6) — the default plan for
    a Merchant card with no written tenure. Parsed to null months on persist. */
@@ -762,7 +772,7 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
               Payment Method <Tag size={12} strokeWidth={1.75} />
             </span>
             <span className={paymentsStyles.headerCellRight}>
-              Amount <DollarSign size={12} strokeWidth={1.75} />
+              Amount ({currency}) <DollarSign size={12} strokeWidth={1.75} />
             </span>
             <span className={paymentsStyles.headerCell}>
               Account Sheet <FileText size={12} strokeWidth={1.75} />
@@ -799,7 +809,7 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
             {persistedPayments.filter((p) => !isEditingPersisted(p.id)).map((p) => (
               <div className={paymentsStyles.row} key={p.id}>
                 <span className={paymentsStyles.cell} data-label="Date" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                  {p.paid_at}
+                  {formatDate(p.paid_at)}
                 </span>
                 <span className={paymentsStyles.cell} data-label="Method" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 2 }}>
                   <span className={paymentsStyles.methodPill} style={methodPillStyle(p.method)}>
@@ -826,17 +836,16 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
                       {p.installment_months ? `${p.installment_months}m` : ''}
                     </span>
                   )}
-                  {/* Approval code — parity with mobile MobileSODetail. Dual-read
-                      camelCase ?? snake_case. */}
-                  {(((p as unknown as { approvalCode?: string | null }).approvalCode ?? p.approval_code)) && (
-                    <span style={{ fontSize: 'var(--fs-11)', color: 'var(--fg-muted)' }}>
-                      Approval {(p as unknown as { approvalCode?: string | null }).approvalCode ?? p.approval_code}
-                    </span>
-                  )}
+                  {/* NO approval code here — desktop renders it in its own
+                      "Approval Code" COLUMN below. Mobile's PaymentInfoBlock
+                      does print it inline, and that is correct FOR MOBILE: the
+                      card has no columns. Copying that cell here for "parity"
+                      is what printed the same field twice in one row. Parity is
+                      the VALUE, not the placement. */}
                 </span>
                 <span className={paymentsStyles.cellRight} data-label="Amount"
                       style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
-                  {fmtRm(p.amount_centi, currency)}
+                  {fmtAmt(p.amount_centi)}
                 </span>
                 <span className={paymentsStyles.cell} data-label="Account Sheet">
                   {p.account_sheet ?? <span className={detailStyles.muted}>—</span>}
