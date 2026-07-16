@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { lineIdentity } from "@2990s/shared";
 import { invalidateDoShared, invalidateInventoryShared, invalidateSoShared } from "./sharedInvalidate";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { uploadSlipFull, ALLOWED_SLIP_MIMES, MAX_SLIP_SIZE_BYTES } from "../vendor/scm/lib/slip";
@@ -280,9 +281,19 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
                         </svg>
                       )}
                     </span>
+                    {/* Description ONCE, code NOT displayed — the shared rule
+                        (vendor/shared/line-identity.ts). Desktop and mobile are
+                        ONE logic layer, so this POD row follows the same rule as
+                        the desktop DO detail. The QTY is NOT a duplicate and
+                        stays on the second line; only the code (and the "·" that
+                        joined it) is dropped. This row has no variant
+                        vocabulary — no item_group / variants / description2 —
+                        so no variant is passed. */}
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 13, fontWeight: 700, color: "var(--ink)" }}>{it.description || it.item_code || "—"}</div>
-                      <div style={{ fontSize: 11, color: "var(--mut)" }} className="tnum">{it.item_code || "—"} {"·"} {"×"}{it.qty ?? 0}</div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "var(--ink)" }}>
+                        {lineIdentity({ code: it.item_code, description: it.description }).primary || "—"}
+                      </div>
+                      <div style={{ fontSize: 11, color: "var(--mut)" }} className="tnum">{"×"}{it.qty ?? 0}</div>
                     </div>
                   </div>
                 );

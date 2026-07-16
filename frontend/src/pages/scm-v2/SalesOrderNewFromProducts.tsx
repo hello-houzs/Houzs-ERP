@@ -28,6 +28,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { lineIdentity } from "@2990s/shared";
 import {
   ArrowLeft,
   Check,
@@ -574,15 +575,33 @@ function Catalogue({
                   }}
                   aria-hidden
                 />
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-[12.5px] font-semibold text-ink">
-                    {p.name}
-                  </div>
-                  <div className="truncate font-money text-[10.5px] text-ink-muted">
-                    {p.code}
-                    {p.branding && ` · ${p.branding}`}
-                  </div>
-                </div>
+                {/* Description ONCE, code NOT displayed — the shared rule
+                    (vendor/shared/line-identity.ts) and the picker precedent it
+                    encodes (Commander 2026-05-27: "picker rows show description
+                    only — one scannable line per SKU. The code still binds on
+                    click"). The code still BINDS: this card's onClick adds
+                    p.code to the cart. BRANDING is kept and is not a duplicate —
+                    it appears nowhere else on the card — so its line renders
+                    whenever it exists, now without the leading code. */}
+                {(() => {
+                  const { primary, secondary } = lineIdentity({
+                    code: p.code,
+                    description: p.name,
+                    variant: p.branding,
+                  });
+                  return (
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-[12.5px] font-semibold text-ink">
+                        {primary}
+                      </div>
+                      {secondary && (
+                        <div className="truncate font-money text-[10.5px] text-ink-muted">
+                          {secondary}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
                 <div className="shrink-0 font-money text-[12px] font-bold text-ink">
                   {fmtRm(priceSen)}
                 </div>
@@ -701,12 +720,13 @@ function CartCard({
           {cartLines.map((l) => (
             <li key={l.code} className="py-2.5">
               <div className="flex items-start justify-between gap-2">
+                {/* Description ONCE, code NOT displayed — the shared rule
+                    (vendor/shared/line-identity.ts). The code still BINDS: it is
+                    this cart row's key and what onRemove(l.code) acts on. The
+                    code stays the visible fallback for a SKU with no name. */}
                 <div className="min-w-0">
                   <div className="truncate text-[12.5px] font-semibold text-ink">
-                    {l.sku?.name ?? l.code}
-                  </div>
-                  <div className="font-money text-[10.5px] text-ink-muted">
-                    {l.code}
+                    {lineIdentity({ code: l.code, description: l.sku?.name }).primary}
                   </div>
                 </div>
                 <button

@@ -34,7 +34,7 @@ import {
   type MfgFabricTier,
 } from '@2990s/shared/mfg-pricing';
 import { missingVariantAxes } from '@2990s/shared/so-variant-rule';
-import { activeOptions, maintPickerValues } from '@2990s/shared';
+import { activeOptions, lineIdentity, maintPickerValues } from '@2990s/shared';
 import {
   useMfgProducts,
   useMaintenanceConfig,
@@ -677,7 +677,7 @@ const SoLineCardInner = ({
         {/* 1. No # */}
         <span className={styles.lineNo}>{index + 1}</span>
 
-        {/* 2. Item picker (SKU search → code on top, description below) */}
+        {/* 2. Item picker (SKU search → the picked line names itself ONCE) */}
         <div className={styles.pickerWrap} ref={pickerWrapRef}>
           {draft.itemCode && search === draft.description && !showPicker ? (
             <button
@@ -688,9 +688,19 @@ const SoLineCardInner = ({
               onClick={() => { setShowPicker(true); setSearch(''); }}
               title="Click to change product"
             >
+              {/* Description ONCE, code NOT displayed — the shared rule
+                  (vendor/shared/line-identity.ts). The dropdown BELOW this
+                  button has shown description-only since Commander 2026-05-27
+                  ("picker rows show description only — one scannable line per
+                  SKU. The code still binds on click"); the PICKED line kept
+                  showing code-over-description, so the same row contradicted the
+                  list it was chosen from. The code still BINDS — draft.itemCode
+                  is untouched and still travels to the payload; the button's own
+                  gate compares `search` against `description`, not the code. */}
               <div className={styles.pickerInputCol}>
-                <span className={styles.pickerCode}>{draft.itemCode}</span>
-                <span className={styles.pickerDesc}>{draft.description}</span>
+                <span className={styles.pickerCode}>
+                  {lineIdentity({ code: draft.itemCode, description: draft.description }).primary}
+                </span>
               </div>
             </button>
           ) : (

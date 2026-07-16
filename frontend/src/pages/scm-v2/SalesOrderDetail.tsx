@@ -30,7 +30,7 @@ import { Button } from '../../components/Button';
 import { PageHeader } from '../../components/Layout';
 import { useSetBreadcrumbs } from '../../hooks/useBreadcrumbs';
 import { formatPhone } from '@2990s/shared/phone';
-import { buildVariantSummary, canonicalizeVariants, fmtCenti, fmtDate, fmtDateOrDash, fmtDateTime, missingVariantAxes, hasSofaMixConflict, SOFA_MIX_MESSAGE } from '@2990s/shared'; // Commander 2026-05-28
+import { buildVariantSummary, canonicalizeVariants, fmtCenti, fmtDate, fmtDateOrDash, fmtDateTime, lineIdentity, missingVariantAxes, hasSofaMixConflict, SOFA_MIX_MESSAGE } from '@2990s/shared'; // Commander 2026-05-28
 import { PhoneInput } from '../../vendor/scm/components/PhoneInput';
 import { SkeletonDetailPage } from '../../vendor/scm/components/Skeleton';
 import {
@@ -1817,8 +1817,15 @@ export const SalesOrderDetail = () => {
                 return (
                 <tr key={it.id}>
                   <td>
-                    <div className={styles.codeCell}>{it.item_code}</div>
-                    {it.description && <div className={styles.muted}>{it.description}</div>}
+                    {/* Description ONCE, code NOT displayed — the shared rule
+                        (vendor/shared/line-identity.ts). The code still BINDS:
+                        it is this row's key, its search/export value and what
+                        the PO/PDF carry. No variant is passed because this table
+                        gives the variant summary its OWN "Description 2" column
+                        below — feeding it here would re-create the duplicate. */}
+                    <div className={styles.codeCell}>
+                      {lineIdentity({ code: it.item_code, description: it.description }).primary || '—'}
+                    </div>
                     {it.remark && (
                       <div className={styles.muted} style={{ fontStyle: 'italic' }}>
                         Remark: {it.remark}

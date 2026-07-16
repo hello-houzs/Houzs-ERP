@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { lineIdentity } from "@2990s/shared";
 import { formatDate } from "../lib/utils";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
@@ -1246,16 +1247,21 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     placeholder: "Search product · SKU",
     endpoint: "/inventory?showAll=true",
     listKey: "balances",
-    primary: (r) => r.product_name || r.product_code,
+    primary: (r) => lineIdentity({ code: r.product_code, description: r.product_name }).primary,
     secondary: (r) => join(r.product_code, r.category, r.warehouse_name),
     right: (r) => (r.qty == null ? "" : `${r.qty}`),
     search: (r) => join(r.product_name, r.product_code, r.category, r.warehouse_name),
     pill: (r) => stockLevel(pick(r, "qty")),
-    // Spec #inventory: name + stock badge, "SKU {{sku}} · {{warehouse_name}}" sub-
-    // line, 3-KPI footer (On hand / Reserved / Available). v_inventory_all_skus
-    // has only qty → Reserved / Available have no column and render em-dash.
+    // Spec #inventory: name + stock badge, "{{warehouse_name}}" sub-line, 3-KPI
+    // footer (On hand / Reserved / Available). v_inventory_all_skus has only qty
+    // → Reserved / Available have no column and render em-dash.
+    // Description ONCE, code NOT displayed — the shared rule
+    // (vendor/shared/line-identity.ts): the sub-line's "SKU {{sku}}" repeated the
+    // identity `primary` already names. WAREHOUSE is not a duplicate and stays.
+    // The code still BINDS — `search` above still matches on product_code, so a
+    // rep can still find a row by typing its SKU.
     variant: "inventory",
-    subline: (r) => { const sku = pick(r, "productCode", "product_code"); return join(sku ? `SKU ${sku}` : "", pick(r, "warehouseCode", "warehouse_code", "warehouseName", "warehouse_name")); },
+    subline: (r) => join(pick(r, "warehouseCode", "warehouse_code", "warehouseName", "warehouse_name")),
     kpis: (r) => {
       const n = pick(r, "qty");
       return [["On hand", n == null ? "—" : String(n)], ["Reserved", "—"], ["Available", n == null ? "—" : String(n)]];
@@ -1708,17 +1714,22 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     placeholder: "Search name · SKU",
     endpoint: "/mfg-products",
     listKey: "products",
-    primary: (r) => r.name || pick(r, "code", "sku"),
+    primary: (r) => lineIdentity({ code: pick(r, "code", "sku"), description: r.name }).primary,
     secondary: (r) => join(pick(r, "code", "sku"), pick(r, "category"), pick(r, "sizeLabel", "size_label")),
     right: (r) => pick(r, "basePriceSen", "base_price_sen") ?? "",
     rightMoney: true,
     search: (r) => join(r.name, pick(r, "code", "sku"), pick(r, "category"), pick(r, "branding"), pick(r, "barcode")),
     pill: (r) => humanize(pick(r, "category")),
-    // Spec #products: .ph thumbnail + name + "SKU {{sku}} · {{category}}" sub-
-    // line + right "RM {{price_centi}}". base_price_sen is the base selling
-    // price (SEN); uom has no mfg column → omitted.
+    // Spec #products: .ph thumbnail + name + "{{category}}" sub-line + right
+    // "RM {{price_centi}}". base_price_sen is the base selling price (SEN); uom
+    // has no mfg column → omitted.
+    // Description ONCE, code NOT displayed — the shared rule
+    // (vendor/shared/line-identity.ts). This is the browse twin of the
+    // MobileSkuPicker rows converged in #626 ("description only — one scannable
+    // line per SKU"), so it reads the same way. CATEGORY is not a duplicate and
+    // stays. The code still BINDS — `search` still matches code / sku / barcode.
     variant: "product",
-    subline: (r) => { const sku = pick(r, "code", "sku"); return join(sku ? `SKU ${sku}` : "", pick(r, "category")); },
+    subline: (r) => join(pick(r, "category")),
     price: (r) => pick(r, "basePriceSen", "base_price_sen") ?? "",
     priceMoney: true,
     fields: [
@@ -1752,15 +1763,25 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
     placeholder: "Search product · SKU",
     endpoint: "/mrp",
     listKey: "skus",
-    primary: (r) => pick(r, "description", "itemCode", "item_code") ?? "—",
+    primary: (r) =>
+      lineIdentity({
+        code: pick(r, "itemCode", "item_code"),
+        description: pick(r, "description"),
+      }).primary || "—",
     secondary: (r) => join(pick(r, "itemCode", "item_code"), pick(r, "category"), pick(r, "warehouseCode", "warehouse_code", "warehouseName", "warehouse_name")),
     search: (r) => join(pick(r, "description"), pick(r, "itemCode", "item_code"), pick(r, "category")),
     pill: (r) => mrpState(r),
-    // Spec #mrp: name + state badge, "SKU {{sku}}" sub-line, 4-col KPI grid
-    // (Demand / On hand / Incoming / Shortage). Maps to qtyNeeded / stock /
-    // poOutstanding / shortage on the computed MrpSku row.
+    // Spec #mrp: name + state badge, 4-col KPI grid (Demand / On hand /
+    // Incoming / Shortage). Maps to qtyNeeded / stock / poOutstanding /
+    // shortage on the computed MrpSku row.
+    // Description ONCE, code NOT displayed — the shared rule
+    // (vendor/shared/line-identity.ts). The sub-line was ONLY "SKU {{sku}}", the
+    // identity `primary` already names, so it now renders nothing rather than a
+    // duplicate; a row whose description is missing still shows its code,
+    // because `primary` falls back to it. The code still BINDS — `search` above
+    // still matches item_code.
     variant: "mrp",
-    subline: (r) => { const sku = pick(r, "itemCode", "item_code"); return sku ? `SKU ${sku}` : ""; },
+    subline: () => "",
     kpis: (r) => {
       const g = (...k: string[]) => { const n = pick(r, ...k); return n == null ? "—" : String(n); };
       return [["Demand", g("qtyNeeded", "qty_needed")], ["On hand", g("stock")], ["Incoming", g("poOutstanding", "po_outstanding")], ["Shortage", g("shortage")]];

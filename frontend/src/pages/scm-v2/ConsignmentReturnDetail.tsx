@@ -38,7 +38,7 @@ import {
   useDeleteConsignmentReturnItem,
 } from '../../vendor/scm/lib/consignment-return-queries';
 import { SoLineCard, emptySoLine, type SoLineDraft } from '../../vendor/scm/components/SoLineCard';
-import { buildVariantSummary, fmtDateOrDash } from '@2990s/shared';
+import { buildVariantSummary, fmtDateOrDash, lineIdentity } from '@2990s/shared';
 import { useAuth } from '../../auth/AuthContext';
 import {
   useLocalities, distinctStates, citiesInState, postcodesInCity,
@@ -502,11 +502,23 @@ export const ConsignmentReturnDetail = () => {
               {items.map((it) => (
                 <tr key={it.id}>
                   <td>
-                    <div className={styles.codeCell}>{it.item_code}</div>
-                    {it.description && <div className={styles.muted}>{it.description}</div>}
+                    {/* Description ONCE, code NOT displayed, variant KEPT — the
+                        shared rule (vendor/shared/line-identity.ts). The code
+                        still BINDS. Unlike its Note/Order siblings this table
+                        has no "Description 2" column, so the variant IS this
+                        cell's second line and must survive the code's removal. */}
                     {(() => {
-                      const summary = buildVariantSummary(it.item_group, it.variants);
-                      return summary ? <div className={styles.muted}>{summary}</div> : null;
+                      const { primary, secondary } = lineIdentity({
+                        code: it.item_code,
+                        description: it.description,
+                        variant: buildVariantSummary(it.item_group, it.variants),
+                      });
+                      return (
+                        <>
+                          <div className={styles.codeCell}>{primary || '—'}</div>
+                          {secondary && <div className={styles.muted}>{secondary}</div>}
+                        </>
+                      );
                     })()}
                     {it.condition && <div className={styles.muted}>Condition: {it.condition}</div>}
                   </td>

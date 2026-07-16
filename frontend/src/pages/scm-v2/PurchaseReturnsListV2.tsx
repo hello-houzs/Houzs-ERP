@@ -5,6 +5,7 @@
 // side where every other doc is money-out.
 
 import { useMemo, useState, type ReactNode } from "react";
+import { lineIdentity } from "@2990s/shared";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Plus,
@@ -315,16 +316,24 @@ function DetailDrawer({
                 )}
                 {items.map((l, i) => (
                   <div key={l.id ?? i} className="grid grid-cols-[1fr_52px_92px] items-center gap-2 border-b border-border-subtle px-4 py-3 last:border-b-0">
+                    {/* Description ONCE, code NOT displayed — the shared rule
+                        (vendor/shared/line-identity.ts). Swept on SHAPE, not
+                        vocabulary. The CONDITION badge shared the code's line,
+                        is not a duplicate, and survives — its row now renders
+                        only when there is a condition to show. Same treatment as
+                        the DR list drawer. The code still BINDS. */}
                     <div>
                       <div className="text-[13px] font-semibold text-ink">
-                        {l.description || l.material_code || l.item_code || "—"}
+                        {lineIdentity({
+                          code: l.material_code || l.item_code,
+                          description: l.description,
+                        }).primary || "—"}
                       </div>
-                      <div className="mt-0.5 flex items-center gap-2">
-                        {(l.material_code || l.item_code) && (
-                          <span className="font-mono text-[11px] text-ink-muted">{l.material_code || l.item_code}</span>
-                        )}
-                        {l.condition && <Badge tone="warning" variant="soft" size="xs">{l.condition}</Badge>}
-                      </div>
+                      {l.condition && (
+                        <div className="mt-0.5 flex items-center gap-2">
+                          <Badge tone="warning" variant="soft" size="xs">{l.condition}</Badge>
+                        </div>
+                      )}
                     </div>
                     <span className="text-right font-money text-[12.5px] text-ink-secondary">{l.qty_returned ?? l.qty ?? 0}</span>
                     <span className="text-right font-money text-[12.5px] font-semibold text-synced">{fmtRm(l.line_total_centi ?? 0)}</span>

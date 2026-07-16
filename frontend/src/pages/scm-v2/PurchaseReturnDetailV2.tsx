@@ -4,6 +4,7 @@
 // Credit expected (synced/green because it's money coming back).
 
 import { useMemo, type ReactNode } from "react";
+import { lineIdentity } from "@2990s/shared";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -299,15 +300,24 @@ export function PurchaseReturnDetailV2() {
       label: "Item",
       alwaysVisible: true,
       getValue: (l) => l.material_code || l.item_code || "",
+      /* Description ONCE, code NOT displayed — the shared rule
+         (vendor/shared/line-identity.ts). Swept on SHAPE, not vocabulary. The
+         WAREHOUSE pill is not a duplicate and stays — its row is kept when only
+         the pill is present (the #647 DR precedent). The code still BINDS via
+         getValue above. */
       render: (l) => (
         <div className="min-w-0">
           <div className="truncate text-[13px] font-semibold text-ink">
-            {l.description || l.material_code || l.item_code || "—"}
+            {lineIdentity({
+              code: l.material_code || l.item_code,
+              description: l.description,
+            }).primary || "—"}
           </div>
-          <div className="mt-0.5 flex items-center gap-2 font-mono text-[11px] text-ink-muted">
-            <span>{l.material_code || l.item_code}</span>
-            {l.warehouse_code && <span className="inline-flex items-center gap-0.5 rounded bg-primary-soft px-1.5 py-0 text-[10px] font-semibold text-primary-ink">{l.warehouse_code}</span>}
-          </div>
+          {l.warehouse_code && (
+            <div className="mt-0.5 flex items-center gap-2 font-mono text-[11px] text-ink-muted">
+              <span className="inline-flex items-center gap-0.5 rounded bg-primary-soft px-1.5 py-0 text-[10px] font-semibold text-primary-ink">{l.warehouse_code}</span>
+            </div>
+          )}
         </div>
       ),
     },

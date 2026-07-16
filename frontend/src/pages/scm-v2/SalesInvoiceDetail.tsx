@@ -44,7 +44,7 @@ import { StatusPill } from '../../vendor/scm/components/StatusPill';
 import {
   PaymentsTable, labelToApi, draftMethodFields, type PaymentDraft,
 } from '../../vendor/scm/components/PaymentsTable';
-import { buildVariantSummary, fmtDateOrDash } from '@2990s/shared';
+import { buildVariantSummary, fmtDateOrDash, lineIdentity } from '@2990s/shared';
 import {
   useLocalities, distinctStates, citiesInState, postcodesInCity,
 } from '../../vendor/scm/lib/localities-queries';
@@ -590,16 +590,27 @@ export const SalesInvoiceDetail = () => {
               {items.map((it) => (
                 <tr key={it.id}>
                   <td>
-                    <div className={styles.codeCell}>{it.item_code}</div>
-                    {it.description && <div className={styles.muted}>{it.description}</div>}
+                    {/* Description ONCE, code NOT displayed, variant KEPT — the
+                        shared rule (vendor/shared/line-identity.ts). The code
+                        still BINDS. This table has no "Description 2" column, so
+                        the variant IS this cell's second line: live summary
+                        first, falling back to the stored description2 so a line
+                        with no live variants still shows its saved spec instead
+                        of a blank cell (mirrors DO detail). */}
                     {(() => {
-                      // Live variant summary, falling back to the stored
-                      // description2 so a line with no live variants still shows
-                      // its saved spec instead of a blank cell (mirrors DO
-                      // detail — the SI version dropped description2).
-                      const desc2 = buildVariantSummary(it.item_group, it.variants)
-                        || (it.description2 && it.description2.trim()) || '';
-                      return desc2 ? <div className={styles.muted}>{desc2}</div> : null;
+                      const { primary, secondary } = lineIdentity({
+                        code: it.item_code,
+                        description: it.description,
+                        variant:
+                          buildVariantSummary(it.item_group, it.variants)
+                          || (it.description2 ?? ''),
+                      });
+                      return (
+                        <>
+                          <div className={styles.codeCell}>{primary || '—'}</div>
+                          {secondary && <div className={styles.muted}>{secondary}</div>}
+                        </>
+                      );
                     })()}
                   </td>
                   <td className={styles.tableRight}>{it.qty}</td>

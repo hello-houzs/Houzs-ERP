@@ -38,3 +38,9 @@ export * from './service-sku';
 // The ONE switch for cost/margin DISPLAY. Off while the Houzs catalog carries
 // no costs — see costing-enabled.ts for why, and for what turns it back on.
 export * from './costing-enabled';
+// The ONE rule for "how a document line NAMES itself" — description ONCE, the
+// redundant item code NOT displayed, the variant KEPT. Barrelled (not a
+// subpath) so a new surface reaches it from the same `@2990s/shared` import it
+// already has for buildVariantSummary — the rule should be easier to find than
+// to re-invent. See line-identity.ts for the four-report history behind it.
+export * from './line-identity';
