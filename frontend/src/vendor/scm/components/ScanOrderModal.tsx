@@ -68,6 +68,7 @@ import { Button } from '@2990s/design-system';
 import { useAuth } from '../../../auth/AuthContext';
 import { authedFetch } from '../lib/authed-fetch';
 import { sortByText } from '../lib/sort-options';
+import { compressForOcr } from '../../shared/image-compress';
 import {
   normalizeJobs,
   isActiveJob,
@@ -395,10 +396,15 @@ export const ScanOrderModal = ({ onClose }: Props) => {
   // One /scan-so/enqueue POST for an order. force=1 = the operator confirmed
   // "create anyway" on a duplicate-slip warning, so the backend skips its hard
   // reject and queues the order (owner 2026-07-15: duplicate = warn, not block).
-  const enqueueOrder = (order: OrderRow, force = false): Promise<EnqueueResp> => {
+  const enqueueOrder = async (order: OrderRow, force = false): Promise<EnqueueResp> => {
     const fd = new FormData();
-    fd.append('file', order.slip!);                       // file[0] = order slip
-    if (order.receipt) fd.append('file', order.receipt);  // file[1] = payment receipt
+    // Downscale first — same helper mobile uses, so both surfaces send the model
+    // the same shape of image. A PDF drop passes through untouched.
+    const slip = await compressForOcr(order.slip!);
+    fd.append('file', slip);                             // file[0] = order slip
+    if (order.receipt) {
+      fd.append('file', await compressForOcr(order.receipt)); // file[1] = payment receipt
+    }
     const repTyped = salesperson.trim();
     if (repTyped) fd.append('salesperson', repTyped);
     if (force) fd.append('force', '1');
