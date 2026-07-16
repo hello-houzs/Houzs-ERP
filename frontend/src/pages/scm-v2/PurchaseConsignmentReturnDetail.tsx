@@ -150,7 +150,7 @@ export const PurchaseConsignmentReturnDetail = () => {
     }
   }, [isLocked, isEditing]);
 
-  if (detail.isLoading) {
+  if (detail.isPending) {
     return <SkeletonDetailPage />;
   }
   if (detail.isError || !pr) {

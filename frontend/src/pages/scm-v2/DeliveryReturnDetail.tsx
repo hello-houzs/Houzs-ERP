@@ -306,7 +306,7 @@ export const DeliveryReturnDetail = () => {
     });
   };
 
-  if (detail.isLoading) {
+  if (detail.isPending) {
     return <SkeletonDetailPage />;
   }
   if (detail.isError || !header) {

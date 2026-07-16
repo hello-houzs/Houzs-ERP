@@ -255,7 +255,7 @@ export const GoodsReceivedDetail = () => {
     }
   }, [isLocked, isEditing]);
 
-  if (detail.isLoading) {
+  if (detail.isPending) {
     return <SkeletonDetailPage />;
   }
   if (detail.isError || !grn) {

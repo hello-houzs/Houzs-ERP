@@ -9,12 +9,21 @@
 //   - Per-BUILD namespace (bug 1b/2f): the key carries __BUILD_ID__ so a deploy
 //     that changes a list's payload SHAPE can't hydrate the previous build's
 //     shape; old-build snapshots are pruned on boot.
+//   - Per-SESSION namespace (off-not-hide, 2026-07-16): the key also carries a
+//     fingerprint of the bearer TOKEN, so one user's snapshot can never hydrate
+//     into another user's session. Without this the snapshot was keyed by build +
+//     company ONLY, so signing out of an admin account and signing in as a
+//     restricted one on the same browser hydrated the ADMIN's rows — the list
+//     painted them, then the scoped refetch removed them (render-then-hide).
+//   - Logged-out browsers hold NO snapshot: with no token we prune and never
+//     hydrate, so business rows don't sit at rest after sign-out.
 //   - Never trusted as fresh: hydrated data is stamped stale so the first mount
 //     always refetches (cache-while-revalidate).
 //   - Whitelisted to the document LISTS only (not detail / sub-resource queries),
 //     size-capped, and fail-soft on quota / corruption.
 
 import type { QueryClient } from "@tanstack/react-query";
+import { tokenStore } from "../api/client";
 
 // Injected at build time by vite.config `define`. Unique per deploy.
 declare const __BUILD_ID__: string;
@@ -37,8 +46,45 @@ function activeCompany(): string {
     return "0";
   }
 }
+// Identity fingerprint for the CURRENT session. The bearer token is the only
+// identity signal available synchronously at module-init time (hydrate runs
+// before the first render, long before /auth/me resolves), and it already lives
+// in the same storage — so a non-reversible short hash of it adds no exposure
+// while making the namespace change the moment the signed-in user changes.
+// Empty string when signed out.
+function sessionFp(): string {
+  let token = "";
+  try {
+    token = tokenStore.get();
+  } catch {
+    return "";
+  }
+  if (!token) return "";
+  // djb2 — we need a stable bucket per token, not cryptographic strength.
+  let h = 5381;
+  for (let i = 0; i < token.length; i++) h = ((h << 5) + h + token.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36);
+}
+
+/** Prefix owned by the CURRENT build + signed-in session (all companies). */
+function sessionPrefix(): string {
+  return `${BUILD_PREFIX}${sessionFp()}:`;
+}
+
 function snapKey(): string {
-  return `${BUILD_PREFIX}${activeCompany()}`;
+  return `${sessionPrefix()}${activeCompany()}`;
+}
+
+/** Drop every snapshot this module owns, across all builds/sessions/companies. */
+export function clearQuerySnapshots(): void {
+  try {
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(NS_PREFIX)) localStorage.removeItem(k);
+    }
+  } catch {
+    // storage disabled / quota — nothing to clear.
+  }
 }
 
 // The SCM document LIST query entities (first key segment). Detail queries use a
@@ -74,6 +120,9 @@ function isListKey(key: readonly unknown[]): boolean {
 
 /** Serialize the whitelisted list queries to localStorage. */
 function save(qc: QueryClient): void {
+  // Signed out → never write. Otherwise a sign-out mid-debounce would persist the
+  // outgoing user's rows under the anonymous key.
+  if (!sessionFp()) return;
   try {
     const out: Record<string, unknown> = {};
     for (const q of qc.getQueryCache().getAll()) {
@@ -91,13 +140,21 @@ function save(qc: QueryClient): void {
 
 /** Seed the cache from the last snapshot, stamped stale so it revalidates. */
 function hydrate(qc: QueryClient): void {
+  // Signed out → hold nothing at rest and hydrate nothing.
+  if (!sessionFp()) {
+    clearQuerySnapshots();
+    return;
+  }
   try {
-    // Prune snapshots from previous BUILDS (an old payload shape must never
-    // linger). Keep the current build's per-company snapshots so switching
-    // company and back is still instant.
+    // Prune every snapshot not owned by the current BUILD + SESSION: an old
+    // payload shape must never linger, and another user's rows must never be
+    // hydratable. Keep this session's per-company snapshots so switching company
+    // and back is still instant. This also self-heals a browser already carrying
+    // a pre-fix (build+company-only) snapshot — it simply doesn't match.
+    const keep = sessionPrefix();
     for (let i = localStorage.length - 1; i >= 0; i--) {
       const k = localStorage.key(i);
-      if (k && k.startsWith(NS_PREFIX) && !k.startsWith(BUILD_PREFIX)) localStorage.removeItem(k);
+      if (k && k.startsWith(NS_PREFIX) && !k.startsWith(keep)) localStorage.removeItem(k);
     }
     const raw = localStorage.getItem(snapKey());
     if (!raw) return;

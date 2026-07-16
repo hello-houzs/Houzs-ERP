@@ -568,7 +568,7 @@ function PurchaseOrderDetailV2ReadOnly() {
   if (!id) {
     return <div className="p-8 text-center text-ink-muted">No purchase order specified.</div>;
   }
-  if (detail.isLoading) {
+  if (detail.isPending) {
     return (
       <div className="animate-fade-in p-8 text-center text-ink-muted">
         Loading purchase order…

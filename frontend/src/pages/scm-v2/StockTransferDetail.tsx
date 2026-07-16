@@ -105,7 +105,7 @@ export const StockTransferDetail = () => {
   };
 
   // ── Render ───────────────────────────────────────────────────────────
-  if (detail.isLoading) {
+  if (detail.isPending) {
     return <SkeletonDetailPage />;
   }
   if (detail.error || !detail.data) {

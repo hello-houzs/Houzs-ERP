@@ -8,7 +8,29 @@ import {
   type ReactNode,
 } from "react";
 import { api, tokenStore, onUnauthorized } from "../api/client";
+import { clearAll as clearApiCache } from "../api/cache";
+import { queryClient } from "../lib/queryClient";
+import { clearQuerySnapshots } from "../lib/query-persist";
 import type { AccessLevel, AuthUser } from "../types";
+
+/**
+ * A new sign-in must never inherit the previous session's cached reads.
+ * Identity scopes almost every response (own-vs-downline SO rows, finance
+ * fields, page access), but no cache key carries the user — so ['mfg-sales-
+ * orders','all'] is the SAME key for an admin and a restricted rep. Signing out
+ * reloads (see logout), which covers the common path; this covers every other
+ * way a session ends without one — most importantly a 401 expiry, where forcing
+ * a reload would throw away whatever the user was typing.
+ *
+ * Called at the moment a token is accepted and BEFORE /auth/me resolves, which
+ * is the safe window: the login screen is the only thing mounted, so clear()
+ * cannot race a live observer into an immediate refetch.
+ */
+function resetSessionCaches(): void {
+  queryClient.clear();
+  clearApiCache();
+  clearQuerySnapshots();
+}
 
 interface AuthState {
   user: AuthUser | null;
@@ -65,6 +87,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       } catch (e) {
         if ((e as { status?: number })?.status === 401) {
           tokenStore.clear();
+          clearQuerySnapshots();
           setState((prev) => ({ ...prev, user: null, loading: false }));
           return;
         }
@@ -112,6 +135,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     return onUnauthorized(() => {
       tokenStore.clear();
+      clearQuerySnapshots();
       setState((prev) => ({ ...prev, user: null }));
     });
   }, []);
@@ -134,6 +158,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return { kind: "totp", challenge: res.challenge };
       }
       // remember → persist in localStorage (survives close); else session-only.
+      resetSessionCaches();
       tokenStore.set(res.token!, remember);
       await fetchMe();
       await fetchStatus();
@@ -148,6 +173,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         challenge,
         code,
       });
+      resetSessionCaches();
       tokenStore.set(res.token, remember);
       await fetchMe();
       await fetchStatus();
@@ -176,6 +202,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         name,
         password,
       });
+      // A colleague may well be accepting the invite on a shared browser.
+      resetSessionCaches();
       tokenStore.set(res.token);
       await fetchMe();
       await fetchStatus();
@@ -188,7 +216,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       await api.post("/api/auth/logout");
     } catch {}
     tokenStore.clear();
-    setState((prev) => ({ ...prev, user: null }));
+    clearQuerySnapshots();
+    // Signing out is an identity-context change, and identity scopes every read
+    // (own-vs-downline SO rows, finance fields, page access). Nothing from the
+    // outgoing user may survive into the next sign-in. A logout is an SPA state
+    // change with NO page reload, so both in-memory caches — react-query
+    // (gcTime 30min) and the api/cache Map — otherwise persist straight through
+    // it: signing out of an admin account and back in as a restricted one served
+    // the admin's cached rows on first paint, which the scoped refetch then
+    // removed (the render-then-hide the owner reported). Reload for the same
+    // reason the company switcher does (see components/TopNavbar.tsx): clearing
+    // in place can't guarantee it — react-query keys carry no identity and
+    // queryClient.clear() doesn't re-trigger a mounted observer. A full reboot
+    // is the only bulletproof cut, and sign-out is a deliberate, terminal action
+    // where the cost is irrelevant.
+    window.location.reload();
   }, []);
 
   // Pre-compute a Set so every can() / canAny() / canAll() call is

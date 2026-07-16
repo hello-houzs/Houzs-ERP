@@ -249,7 +249,7 @@ export const PurchaseConsignmentOrderDetail = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isEditing, bindings, fabrics, maint, editLines]);
 
-  if (detail.isLoading) {
+  if (detail.isPending) {
     return <SkeletonDetailPage />;
   }
   if (detail.isError || !po) {

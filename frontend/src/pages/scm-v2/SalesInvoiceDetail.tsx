@@ -374,7 +374,7 @@ export const SalesInvoiceDetail = () => {
     });
   };
 
-  if (detail.isLoading) {
+  if (detail.isPending) {
     return <SkeletonDetailPage />;
   }
   if (detail.isError || !header) {

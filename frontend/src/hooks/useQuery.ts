@@ -57,6 +57,15 @@ export function useQuery<T>(
     // A disabled query stays `isPending` in TanStack v5 (status pending,
     // fetchStatus idle). Report loading=false so a hard-gated consumer renders
     // its hidden/empty branch instead of a permanent spinner.
+    //
+    // NOTE for direct TanStack callsites: use `isPending`, NOT `isLoading`.
+    // isLoading is (isPending && isFetching), so it is FALSE while a query is
+    // pending but not actively fetching — i.e. disabled, or PAUSED because the
+    // device is offline. A gate written `if (isLoading) <spinner>; if (error ||
+    // !data) <error>` therefore paints its ERROR branch on a flaky connection
+    // before the fetch ever runs, then swaps to content when it resolves — the
+    // "error first, then it loads" class of bug. This wrapper already uses
+    // isPending for exactly that reason.
     loading: enabled ? q.isPending : false,
     error: q.error ? (q.error as Error).message || String(q.error) : null,
     reload: () => {

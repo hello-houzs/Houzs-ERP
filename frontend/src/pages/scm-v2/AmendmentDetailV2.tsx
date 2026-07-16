@@ -493,7 +493,8 @@ export function AmendmentDetailV2() {
   const askConfirm = useConfirm();
   const notify = useNotify();
 
-  const { data, isLoading, error } = useAmendmentDetail(id ?? null);
+  // isPending, NOT isLoading — see the gate below.
+  const { data, isPending, error } = useAmendmentDetail(id ?? null);
   const approveSo = useApproveSo();
   const [showSupplierModal, setShowSupplierModal] = useState(false);
 
@@ -577,7 +578,10 @@ export function AmendmentDetailV2() {
   // received-floor handling here.
   const pastSoGate = status === "SO_APPROVED" || status === "PO_APPROVED" || status === "SENT";
 
-  if (isLoading) {
+  // isPending covers pending-but-not-fetching (disabled / offline-paused), which
+  // isLoading reports as false — letting those states fall through to the error
+  // branch and paint "Couldn't load this amendment" before any fetch had run.
+  if (isPending) {
     return (
       <div className="animate-fade-in p-8 text-center text-[13px] text-ink-muted">
         Loading amendment…
