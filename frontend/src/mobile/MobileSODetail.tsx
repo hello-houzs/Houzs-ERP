@@ -1,5 +1,6 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { formatDate } from "../lib/utils";
+import { fmtAmt } from "../lib/scm";
 import { useQueryClient } from "@tanstack/react-query";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
@@ -160,8 +161,9 @@ type SoPayment = {
   created_at: string | null;
 };
 
-const rm = (centi: number | null | undefined) =>
-  ((centi ?? 0) / 100).toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+// Bare 2dp amount; callers print their own "RM " prefix. The shared fmtAmt
+// keeps a non-finite from reaching the user as "RM NaN".
+const rm = fmtAmt;
 /* Full date for the locked read-only fields. Numeric DD/MM/YYYY via the shared
    formatter (house rule — no month names), which also UTC-tags bare timestamps. */
 const dl = (d: string | null | undefined) => formatDate(d);

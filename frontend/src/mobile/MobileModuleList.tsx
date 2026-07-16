@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { lineIdentity } from "@2990s/shared";
 import { formatDate } from "../lib/utils";
+import { fmtAmt } from "../lib/scm";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { api } from "../api/client";
@@ -132,8 +133,9 @@ export type ModuleConfig = {
   form?: FormSchema;
 };
 
-const rm = (centi: number | null | undefined) =>
-  ((Number(centi) || 0) / 100).toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+// Bare 2dp amount; callers print their own "RM " prefix. The shared fmtAmt
+// keeps a non-finite from reaching the user as "RM NaN".
+const rm = fmtAmt;
 
 // Numeric DD/MM/YYYY via the shared formatter (house rule — no month names).
 const dm = (d: string | null | undefined) => formatDate(d);
