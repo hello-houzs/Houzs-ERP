@@ -138,11 +138,21 @@ const MAPS: Record<StatusDocType, Record<string, Entry>> = {
 const titleCase = (raw: string): string =>
   raw.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
 
+/** Humanise a raw enum key for a surface that has NO canonical map for its
+ *  document type — `PARTIALLY_RECEIVED` -> "Partially Received". The same
+ *  transform resolveStatusPill already falls back to; exported so a caller
+ *  never has to print the raw key (owner 2026-07-16: 白話文). Prefer
+ *  statusLabel() whenever the docType IS mapped — this is the last resort. */
+export const humaniseStatusKey = (status: string | null | undefined): string =>
+  status ? titleCase(String(status)) : '—';
+
 /** Resolve a raw status to its canonical {label, tone}. Unknown → neutral
- *  with a humanised label, so a new enum value never renders blank or raw. */
+ *  with a humanised label, so a new enum value never renders blank or raw.
+ *  `MAPS[docType]?.` — an unmapped docType must degrade to the humanised
+ *  label, not throw on undefined[s]. */
 export function resolveStatusPill(docType: StatusDocType, status: string | null | undefined): Entry {
   const s = String(status ?? '').toUpperCase();
-  return MAPS[docType][s] ?? { label: status ? titleCase(String(status)) : '—', tone: 'neutral' };
+  return MAPS[docType]?.[s] ?? { label: humaniseStatusKey(status), tone: 'neutral' };
 }
 
 /** Canonical human label only — for DataGrid searchValue / groupValue / filter
