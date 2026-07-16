@@ -579,14 +579,13 @@ function DetailDrawer({
                       className="grid grid-cols-[1fr_52px_92px] items-start gap-2 border-b border-border-subtle px-4 py-3 last:border-b-0"
                     >
                       <div className="min-w-0">
-                        <div className="text-[13px] font-semibold text-ink">
+                        {/* Description only — the item code sub-line was noise next to
+                            it (owner 2026-07-16). Code stays the fallback for a line
+                            that has no description. Weight/size tuned down to sit with
+                            the qty/amount columns instead of shouting over them. */}
+                        <div className="text-[12.5px] font-medium leading-snug text-ink">
                           {l.description || l.item_code || "—"}
                         </div>
-                        {l.item_code && (
-                          <div className="mt-0.5 font-mono text-[11px] text-ink-muted">
-                            {l.item_code}
-                          </div>
-                        )}
                         {variantSummary && (
                           <div className="mt-0.5 text-[11.5px] leading-snug text-ink-secondary">
                             {variantSummary}
