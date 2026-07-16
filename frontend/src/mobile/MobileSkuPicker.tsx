@@ -13,8 +13,10 @@ const RENDER_CAP = 60;
  * Sales Order line editor. Queries the REAL catalog through
  * useMfgProducts({ category, search }) (GET /mfg-products), so a tapped row
  * seeds the line with a genuine item_code + item_group + name (+ the catalog
- * base/selling price shown for reference). The server recomputes the honest
- * price on save — this picker never asserts a price.
+ * selling price, which still BINDS on tap to default the line's unit price —
+ * it is just no longer displayed here; Owner 2026-07-16: "amount 不需要").
+ * The server recomputes the honest price on save — this picker never asserts
+ * a price.
  *
  * Category is a FILTER chip row inside the sheet (never a mandatory pre-select
  * that blocks item selection): "All" shows every SKU, tapping a chip narrows
@@ -34,9 +36,6 @@ const CAT_CHIPS: Array<{ value: MfgCategory | ""; label: string }> = [
   { value: "MATTRESS", label: "Mattress" },
   { value: "ACCESSORY", label: "Accessory" },
 ];
-
-const fromSen = (sen: number | null | undefined): string =>
-  ((sen ?? 0) / 100).toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 /** What a picked SKU hands back to the line: the canonical catalog code, the
  *  lowercase item_group the backend variant rule reads, the display name, and
@@ -161,7 +160,6 @@ export function MobileSkuPicker({
           ) : (
             <>
             {shown.map((p) => {
-              const priceSen = p.sell_price_sen ?? p.base_price_sen ?? 0;
               const skuOf = (): PickedSku => ({
                 itemCode: p.code,
                 itemGroup: p.category.toLowerCase(),
@@ -220,9 +218,6 @@ export function MobileSkuPicker({
                       stays available as the chip filter above. skuOf() still
                       binds p.code / p.category on tap — display-only change. */}
                   <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 700, color: "#11140f", overflowWrap: "anywhere" }}>{p.name}</span>
-                  <span className="money" style={{ flex: "none", fontSize: 12, fontWeight: 700, color: "#0c3f39" }}>
-                    RM {fromSen(priceSen)}
-                  </span>
                 </button>
               );
             })}

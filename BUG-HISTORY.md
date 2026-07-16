@@ -1,5 +1,10 @@
 ## 2026-07-16
 
+### 🟡 Pick a product: amount removed (owner-approved mockup)
+- **Change:** Owner reviewed a mockup and approved: "amount 不需要 如果被擠壓 就是show 在second line". The mobile SKU picker row now shows the product DESCRIPTION only, using the row's full width and wrapping onto a second line; the `RM x.xx` column is gone (it was stealing width and forcing the name to truncate, and every catalog price reads RM 0.00 anyway since SKU prices were never seeded).
+- **Note:** display-only. The catalog selling price still BINDS on tap via `skuOf().unitPriceCenti` to default the line's unit price; the server recompute stays authoritative on save. Follows the same ruling as the code line removed in `fix/batch-display`.
+- **Ref:** `fix/b6-picker-no-amount`, 2026-07-16.
+
 ### 🔴 SO detail shipped Cost / Margin / Margin% to SALES (finance leak)
 - **Symptom:** Owner: "為什麼 sales desktop version 可以看到 margin？電話版本都沒有". A Test Sales Executive opening a Sales Order detail saw the full TOTALS-MARGIN card — Revenue / Cost / Margin / Margin% + the per-category cost breakdown.
 - **Root cause (traced):** `SO_FINANCE_KEYS` was only ever applied in the LIST handler (`GET /` line ~782); its own comment says "These travel in the SO list payload". The DETAIL handler `GET /:docNo` returned `{ salesOrder, items, pwpCodes }` with NO strip, so both halves leaked: the header's cost/margin/category-cost columns AND every line's `unit_cost_centi` / `line_cost_centi` / `line_margin_centi` (the ITEM select carries them). The sibling `GET /:docNo/items` — which the POS calls and which "mirrors the detail handler's items path EXACTLY" — leaked the line half too. Mobile happened not to render the card, which is why only desktop showed it; the DATA was being sent to both. This is the same class as the DO/SI detail leak fixed in #600 — DO and SI detail were hardened there, SO detail was missed.
