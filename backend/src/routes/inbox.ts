@@ -10,13 +10,15 @@ const app = new Hono<{ Bindings: Env }>();
 // those loaders filter by the caller's ALLOWED companies (projects.company_id
 // / assr_cases.company_id, mig-pg 0093 / 0083). Trip lanes stay unfiltered —
 // TMS is a cross-company queue by design. The fragment is "" when the company
-// context is unresolved (pre-migration / D1 test mirror), keeping legacy SQL
-// unchanged. NOTE the allow-list is per-USER (user_companies grants), not
-// per-active-company, so the per-user KV snapshot key stays valid.
-function companiesPred(allowedCo: number[], col: string): string {
-  const ids = allowedCo.map(Number).filter((n) => Number.isInteger(n) && n > 0);
-  if (ids.length === 0) return "";
-  return ` AND ${col} IN (${ids.join(",")})`;
+// context is UNRESOLVED (pre-migration / D1 test mirror), keeping legacy SQL
+// unchanged; `[]` instead means the caller is granted no active company and
+// must see nothing (see the sentinel doc on allowedCompanyIds). NOTE the
+// allow-list is per-USER (user_companies grants), not per-active-company, so
+// the per-user KV snapshot key stays valid.
+function companiesPred(allowedCo: number[] | undefined, col: string): string {
+  if (allowedCo === undefined) return "";
+  if (allowedCo.length === 0) return ` AND 1=0`;
+  return ` AND ${col} IN (${allowedCo.join(",")})`;
 }
 
 /**
@@ -123,7 +125,7 @@ app.get("/", async (c) => {
 // ── My Tasks ──────────────────────────────────────────────────
 // Things explicitly assigned to the user that need action soon.
 
-async function loadMyTasks(env: Env, userId: number, perms: string[], isStar: boolean, allowedCo: number[]) {
+async function loadMyTasks(env: Env, userId: number, perms: string[], isStar: boolean, allowedCo: number[] | undefined) {
   if (!userId) return [];
   const items: InboxItem[] = [];
   // Malaysia calendar "today" for the overdue check + the driver's today-trip
@@ -262,7 +264,7 @@ async function loadMyTasks(env: Env, userId: number, perms: string[], isStar: bo
 // ── Review Queue ──────────────────────────────────────────────
 // Things waiting on *my* approval/decision.
 
-async function loadReviewQueue(env: Env, userId: number, perms: string[], isStar: boolean, allowedCo: number[]) {
+async function loadReviewQueue(env: Env, userId: number, perms: string[], isStar: boolean, allowedCo: number[] | undefined) {
   if (!userId) return [];
   const items: InboxItem[] = [];
 
@@ -352,7 +354,7 @@ async function loadReviewQueue(env: Env, userId: number, perms: string[], isStar
 // Things actively stuck that need unsticking — SLA breaches, stuck
 // stages, unresolved defects.
 
-async function loadBlockers(env: Env, userId: number, perms: string[], isStar: boolean, allowedCo: number[]) {
+async function loadBlockers(env: Env, userId: number, perms: string[], isStar: boolean, allowedCo: number[] | undefined) {
   if (!userId) return [];
   const items: InboxItem[] = [];
 
@@ -482,7 +484,7 @@ async function loadBlockers(env: Env, userId: number, perms: string[], isStar: b
 // Things happening in the next 7 days — useful for context even if
 // they aren't on your plate today.
 
-async function loadThisWeek(env: Env, userId: number, perms: string[], isStar: boolean, allowedCo: number[]) {
+async function loadThisWeek(env: Env, userId: number, perms: string[], isStar: boolean, allowedCo: number[] | undefined) {
   if (!userId) return [];
   const items: InboxItem[] = [];
 

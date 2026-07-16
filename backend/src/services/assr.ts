@@ -1208,24 +1208,34 @@ export interface ListAssrFilters {
    *  these names — additive, OR-ed with the id clause; never narrows it.
    *  Only consulted for the scoped tier (visible_to_user_ids defined). */
   visible_agent_names?: string[];
-  /** Multi-company (HOUZS-ONLY module): the company ids ASSR is pinned to. ASSR
-   *  is Houzs-exclusive, so the route passes houzsCompanyIds(c) — a single
-   *  `[houzsId]` — NOT the caller's full allowed set. The list is therefore
-   *  restricted to `c.company_id IN (<houzs>)`; a both-company user never sees
-   *  2990 cases here. Empty / undefined = HOUZS unresolved (pre-migration, D1
-   *  test mirror, cold-start) → no predicate, single-company behaviour. */
+  /** Multi-company (HOUZS-ONLY module): the company ids ASSR is scoped to. For
+   *  rank-and-file sales the route passes houzsCompanyIds(c) — a single
+   *  `[houzsId]` — NOT the caller's full allowed set, so a both-company user
+   *  never sees 2990 cases here; other roles pass their allowed set (owner
+   *  2026-07-16). `undefined` = unresolved (pre-migration, D1 test mirror,
+   *  cold-start) → no predicate, single-company behaviour. `[]` = the caller is
+   *  granted no active company → matches nothing. NOT interchangeable. */
   allowed_company_ids?: number[];
 }
 
 /** Shared company-scope WHERE fragment for the raw-SQL ASSR readers. ASSR pins
- *  to HOUZS, so this receives `[houzsId]` from the route. The ids come from OUR
- *  companies master (validated integers), so inlining is safe. No-op on an
- *  unresolved ([]) list. */
+ *  to HOUZS for rank-and-file sales, so this receives `[houzsId]` from the
+ *  route; other roles pass their allowed set. The ids come from OUR companies
+ *  master (validated integers), so inlining is safe.
+ *
+ *  THREE STATES (see the sentinel doc on companyScope.allowedCompanyIds):
+ *  `undefined` = unresolved → NO predicate (single-company behaviour, and the
+ *  pre-migration / D1 / cold-start path). `[]` = the caller is granted no active
+ *  company → a predicate that matches NOTHING. Non-empty = scope to those ids.
+ *  Treating `[]` as "no predicate" here would hand a restricted caller every
+ *  company's cases. */
 function pushAllowedCompanies(where: string[], ids: number[] | undefined): void {
-  const clean = (ids ?? [])
-    .map(Number)
-    .filter((n) => Number.isInteger(n) && n > 0);
-  if (clean.length === 0) return;
+  if (ids === undefined) return;
+  const clean = ids.map(Number).filter((n) => Number.isInteger(n) && n > 0);
+  if (clean.length === 0) {
+    where.push(`1=0`);
+    return;
+  }
   where.push(`c.company_id IN (${clean.join(",")})`);
 }
 

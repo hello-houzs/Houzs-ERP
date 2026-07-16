@@ -106,7 +106,11 @@ function assrPinsToHouzs(c: Context<any>): boolean {
 function assrCompanySql(c: Context<any>, col = "company_id"): string {
   return assrPinsToHouzs(c) ? houzsCompanySql(c, col) : allowedCompaniesSql(c, col);
 }
-function assrCompanyIds(c: Context<any>): number[] {
+// `number[] | undefined` — `undefined` = company context unresolved (degrade to
+// no predicate), `[]` = caller granted no active company (match nothing). See
+// the sentinel doc on allowedCompanyIds. The HOUZS-pinned branch never yields
+// `[]`: it is either `[houzsId]` or `undefined` when HOUZS is unresolved.
+function assrCompanyIds(c: Context<any>): number[] | undefined {
   return assrPinsToHouzs(c) ? houzsCompanyIds(c) : allowedCompanyIds(c);
 }
 

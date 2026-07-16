@@ -42,8 +42,44 @@ export function activeCompanyId(c: Context<any>): number | undefined {
   return c.get("companyId") as number | undefined;
 }
 
-export function allowedCompanyIds(c: Context<any>): number[] {
-  return (c.get("allowedCompanyIds") as number[] | undefined) ?? [];
+/**
+ * THE ALLOW-LIST SENTINEL — three states, never two. Read this before touching
+ * any consumer; collapsing the first two together is a cross-company LEAK, and
+ * collapsing the last two together is an app-wide EMPTY-LIST outage.
+ *
+ *  • `undefined` = UNRESOLVED. companyContext never set the var because the
+ *    companies master isn't readable (pre-migration / D1 test mirror /
+ *    Hyperdrive cold-start). Consumers MUST degrade: no company predicate at
+ *    all, so single-company Houzs serves unchanged. Load-bearing — do NOT
+ *    "simplify" this to [].
+ *
+ *  • `[]` = RESOLVED, and the caller is granted NO active company: they hold
+ *    `user_companies` grants, but every one of them points at a company that is
+ *    no longer `is_active = 1`. Consumers MUST filter to NOTHING (empty lists).
+ *    Never fail open here — the DB client is service-role (RLS bypassed), so
+ *    these predicates ARE the isolation boundary.
+ *
+ *  • non-empty = the caller's granted companies. Note this is ALSO the state for
+ *    a user with NO grants at all: companyContext FAILS OPEN to every active
+ *    company, so an unrestricted user is always non-empty and never touches the
+ *    `[]` branch. "Has no grants" and "has grants, none usable" are different.
+ *
+ * Returns a validated copy (positive integers only), so consumers can inline the
+ * ids into raw SQL without re-checking — they come from OUR companies master.
+ */
+export function allowedCompanyIds(c: Context<any>): number[] | undefined {
+  const raw = c.get("allowedCompanyIds") as number[] | undefined;
+  if (!Array.isArray(raw)) return undefined;
+  return raw.map(Number).filter((n) => Number.isInteger(n) && n > 0);
+}
+
+/** True ONLY in the middle state above: the company context resolved, and the
+ *  caller is granted no active company. Lets the PER-COMPANY helpers tell a
+ *  missing active company that means "degrade" (unresolved) from one that means
+ *  "this caller may see nothing". */
+export function isRestrictedToNoCompany(c: Context<any>): boolean {
+  const ids = allowedCompanyIds(c);
+  return ids !== undefined && ids.length === 0;
 }
 
 /**
@@ -57,10 +93,12 @@ export function allowedCompanyIds(c: Context<any>): number[] {
  * interpolate computed fragments readable.
  */
 export function allowedCompaniesSql(c: Context<any>, col = "company_id"): string {
-  const ids = allowedCompanyIds(c)
-    .map(Number)
-    .filter((n) => Number.isInteger(n) && n > 0);
-  if (ids.length === 0) return "";
+  const ids = allowedCompanyIds(c);
+  // UNRESOLVED → no predicate (legacy single-company SQL runs unchanged).
+  if (ids === undefined) return "";
+  // RESTRICTED TO NOTHING → a predicate that matches nothing. `1=0` (not
+  // `false`) so the fragment stays valid on the D1/SQLite test mirror too.
+  if (ids.length === 0) return ` AND 1=0`;
   return ` AND ${col} IN (${ids.join(",")})`;
 }
 
@@ -74,8 +112,12 @@ export function allowedCompaniesSql(c: Context<any>, col = "company_id"): string
  */
 export function activeCompanySql(c: Context<any>, col = "company_id"): string {
   const id = Number(activeCompanyId(c));
-  if (!Number.isInteger(id) || id <= 0) return "";
-  return ` AND ${col} = ${id}`;
+  if (Number.isInteger(id) && id > 0) return ` AND ${col} = ${id}`;
+  // No active company. Two very different reasons — see the sentinel doc on
+  // allowedCompanyIds. Restricted-to-nothing must match nothing; unresolved
+  // must degrade to no predicate.
+  if (isRestrictedToNoCompany(c)) return ` AND 1=0`;
+  return "";
 }
 
 /**
@@ -98,11 +140,14 @@ export function houzsCompanyId(c: Context<any>): number | undefined {
 
 /** houzsCompanyIds — the array flavour for callers that take an id list
  *  (e.g. the ASSR list/export `allowed_company_ids` param). `[houzsId]` when
- *  resolved, else `[]` so the callee degrades to single-company (no predicate),
- *  matching the pre-migration / cold-start behaviour. */
-export function houzsCompanyIds(c: Context<any>): number[] {
+ *  resolved, else `undefined` — NOT `[]` — so the callee degrades to
+ *  single-company (no predicate), matching the pre-migration / cold-start
+ *  behaviour. This feeds the SAME sinks as allowedCompanyIds, where `[]` now
+ *  means "restricted to nothing / match nothing"; returning `[]` for unresolved
+ *  here would blank ASSR for every sales user on a cold start. */
+export function houzsCompanyIds(c: Context<any>): number[] | undefined {
   const id = houzsCompanyId(c);
-  return id != null ? [id] : [];
+  return id != null ? [id] : undefined;
 }
 
 /** Raw env.DB SQL fragment pinning a query to HOUZS: ` AND <col> = <houzsId>`,
@@ -129,8 +174,15 @@ export function companyCodeMap(c: Context<any>): Map<number, string> {
  */
 export function scopeToCompany<Q>(query: Q, c: Context<any>): Q {
   const id = activeCompanyId(c);
-  if (id == null) return query;
-  return (query as unknown as { eq(col: string, val: unknown): Q }).eq("company_id", id);
+  if (id != null) {
+    return (query as unknown as { eq(col: string, val: unknown): Q }).eq("company_id", id);
+  }
+  // No active company. RESTRICTED TO NOTHING → match nothing (an empty `in`
+  // list). UNRESOLVED → no filter, exactly as before.
+  if (isRestrictedToNoCompany(c)) {
+    return (query as unknown as { in(col: string, vals: number[]): Q }).in("company_id", []);
+  }
+  return query;
 }
 
 /**
@@ -140,7 +192,11 @@ export function scopeToCompany<Q>(query: Q, c: Context<any>): Q {
  */
 export function scopeToAllowedCompanies<Q>(query: Q, c: Context<any>): Q {
   const ids = allowedCompanyIds(c);
-  if (ids.length === 0) return query;
+  // UNRESOLVED → no filter. Otherwise `.in` the resolved set — which for the
+  // RESTRICTED-TO-NOTHING state is an empty list, and an empty `in` matches no
+  // rows. Same three-state contract as allowedCompaniesSql; if these two ever
+  // disagree, that is the same bug class again.
+  if (ids === undefined) return query;
   return (query as unknown as { in(col: string, vals: number[]): Q }).in("company_id", ids);
 }
 

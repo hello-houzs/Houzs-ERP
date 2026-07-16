@@ -78,10 +78,17 @@ app.get("/", async (c) => {
   const scopeConds = [];
   // Multi-company: the activity feed is PROJECT-derived, so it follows the
   // caller's ALLOWED companies via projects.company_id (mig-pg 0093). No-op
-  // when the company context is unresolved (pre-migration / D1 test mirror).
+  // when the company context is UNRESOLVED (pre-migration / D1 test mirror).
+  // `[]` is NOT that case — it means the caller is granted no active company
+  // and must see nothing (see the sentinel doc on allowedCompanyIds). That case
+  // is spelled `sql\`1=0\`` rather than `inArray(col, [])`: drizzle's empty-array
+  // handling has changed across versions, and this predicate is an isolation
+  // boundary — it must not depend on which one we resolve to.
   const allowedCo = allowedCompanyIds(c);
-  if (allowedCo.length > 0) {
-    scopeConds.push(inArray(projects.company_id, allowedCo));
+  if (allowedCo !== undefined) {
+    scopeConds.push(
+      allowedCo.length > 0 ? inArray(projects.company_id, allowedCo) : sql`1=0`,
+    );
   }
   if (scope) {
     scopeConds.push(
