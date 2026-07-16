@@ -1536,9 +1536,11 @@ export const SalesOrderNew = () => {
         description="Customer, order info, delivery address, line items and payments — saved as one order."
         actions={
           <>
+            {/* h-9 = the <Button> height — this link shares the rail with
+                Cancel / Create Sales Order / Save as Draft. */}
             <Link
               to="/scm/sales-orders"
-              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-surface px-3 text-[11px] font-semibold uppercase tracking-wider text-ink-secondary transition-colors hover:border-primary/40 hover:bg-primary-soft hover:text-primary"
+              className="inline-flex h-9 items-center gap-1.5 rounded-md border border-border bg-surface px-3 text-[11px] font-semibold uppercase tracking-wider text-ink-secondary transition-colors hover:border-primary/40 hover:bg-primary-soft hover:text-primary"
             >
               <ArrowLeft size={14} /> Sales Orders
             </Link>
