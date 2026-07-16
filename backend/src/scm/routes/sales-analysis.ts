@@ -15,10 +15,15 @@
 //   • is_test — 2990's mfg_sales_orders.is_test column does NOT exist in Houzs.
 //     The `includeTest` query param is parsed for contract compatibility but is
 //     a no-op here (there is no test flag to filter on).
-//   • Customer demographics — Houzs scm.customers has no race/birthday/gender
-//     columns (those are 2990 POS-capture fields). They are passed as null, so
-//     the race/age/gender distributions degrade to 'Unknown'. Geographic buckets
-//     (state/city, sourced from the ORDER header) remain fully populated.
+//   • Customer demographics — CUT, not ported. Houzs scm.customers has no
+//     race/birthday/gender columns (2990 POS-capture fields), so those buckets
+//     could only ever read 'Unknown' — re-add them only together with the
+//     columns and real capture. Geographic buckets (state/city, from the ORDER
+//     header) are real and remain. PUT /targets still stores the race/gender/age
+//     TARGET profile (owner-entered config, not measured data, and its
+//     area targets are live) — its presence is NOT a reason to re-add the
+//     buckets. The vendored core keeps its demographics code untouched so it
+//     stays byte-comparable with 2990, where the capture exists.
 //   • Row-cap safety — reads page through paginateAll/chunkIn (Houzs convention,
 //     mirrors reports.ts) instead of 2990's `.limit(100000)`, which PostgREST
 //     silently truncates at 1000 rows.
@@ -35,7 +40,7 @@ import {
   summarizeOverview, monthlyTrend, collapseToPurchases,
   foldProductUnits, buildProductsSection, classifySofaBuild, isFabricUpgrade,
   type SaOrderRow, type SaCustomerRow, type TargetProfile,
-  type SaItemRow, type ProductCtx,
+  type SaItemRow, type ProductCtx, type VariantRank, type ModelRank,
 } from '../shared/sales-analysis';
 import {
   splitSofaCode, comboChargedPrices,
@@ -48,6 +53,15 @@ import {
 
 export const salesAnalysis = new Hono<{ Bindings: Env; Variables: Variables }>();
 salesAnalysis.use('*', supabaseAuth);
+
+/**
+ * The shapes Houzs SHIPS — the vendored rows minus the demographic blocks (see
+ * the header). Everything they sit on (geographic area, order stats, product
+ * rankings) is real and is carried through untouched.
+ */
+type SaCustomerOut = Omit<SaCustomerRow, 'race' | 'birthday' | 'gender'>;
+type VariantOut = Omit<VariantRank, 'demographics'>;
+type ModelOut = Omit<ModelRank, 'demographics' | 'variants'> & { variants: VariantOut[] };
 
 /**
  * Active-company sofa combos (master scope: B2C default rows only, sales-side).
@@ -162,9 +176,8 @@ salesAnalysis.get('/', async (c) => {
 
   const overview = summarizeOverview(scoped, deliveryByDoc);
 
-  // Customer Data section — geographic area from the ORDER header; race/age/
-  // gender demographics are unavailable in Houzs (see file header) and pass as
-  // null. Per-customer order stats are over the scoped window.
+  // Customer Data section — geographic area from the ORDER header. Per-customer
+  // order stats are over the scoped window.
   const custIdByDoc = new Map<string, string | null>();
   for (const r of ((orderRows ?? []) as Raw[])) custIdByDoc.set(r.doc_no, r.customer_id ?? null);
   const ordersByCustomer = new Map<string, SaOrderRow[]>();
@@ -174,7 +187,7 @@ salesAnalysis.get('/', async (c) => {
     const arr = ordersByCustomer.get(cid);
     if (arr) arr.push(r); else ordersByCustomer.set(cid, [r]);
   }
-  let customers: SaCustomerRow[] = [];
+  let customers: SaCustomerOut[] = [];
   const custIds = [...ordersByCustomer.keys()];
   if (custIds.length) {
     const { data: custRows, error: custErr } = await chunkIn<{ id: string; name: string | null }>(
@@ -201,9 +214,6 @@ salesAnalysis.get('/', async (c) => {
       return {
         id: cid,
         name: nameById.get(cid) ?? '',
-        race: null,      // not captured in Houzs
-        birthday: null,  // not captured in Houzs
-        gender: null,    // not captured in Houzs
         state: area.state,
         city: area.city,
         orderCount: purchases,
@@ -310,10 +320,6 @@ salesAnalysis.get('/', async (c) => {
       loadCompartmentFabricTierOverrides(sb),
     ]);
 
-    // Buyer demographics per docNo — all null in Houzs (no demographic capture).
-    const buyerByDoc = new Map<string, { race: string | null; birthday: string | null; gender: string | null }>();
-    for (const docNo of docNos) buyerByDoc.set(docNo, { race: null, birthday: null, gender: null });
-
     const soDateByDoc = new Map(allOrders.map((o) => [o.docNo, o.soDate]));
 
     const itemRows: SaItemRow[] = rawLines.map((r) => {
@@ -334,11 +340,15 @@ salesAnalysis.get('/', async (c) => {
         legHeight: (v.legHeight as string) ?? null,
         seatHeight,
         isPwp: v.pwp === true,
+        // Inert: the vendored SaItemRow requires these. Houzs captures no
+        // demographics and the response carries none (see the header).
         race: null, birthday: null, gender: null,
       };
     });
 
-    const ctx: ProductCtx = { productByCode, modelById, buyerByDoc };
+    // buyerByDoc stays EMPTY — foldProductUnits falls back to all-null per doc,
+    // so filling it would only rebuild the same nulls under a different name.
+    const ctx: ProductCtx = { productByCode, modelById, buyerByDoc: new Map() };
     const units = foldProductUnits(itemRows, ctx);
     for (const u of units) {
       if (u.category !== 'SOFA' && u.category !== 'BEDFRAME') continue;
@@ -374,7 +384,20 @@ salesAnalysis.get('/', async (c) => {
     products = buildProductsSection(units);
   }
 
-  return c.json({ period, includeTest, overview, monthly, customers, targets, products });
+  // The vendored core hangs a BuyerDemographics block (race / ageBand / gender)
+  // off every model and variant. Houzs captures none of it, so it is stripped
+  // here rather than shipped as an all-'Unknown' bucket. The rankings it sits on
+  // (units / revenue / margin / combo / fabric-upgrade) are real and ship as-is.
+  const byCategory: Record<string, ModelOut[]> = {};
+  for (const [category, models] of Object.entries(products.byCategory)) {
+    byCategory[category] = models.map(({ demographics, variants, ...model }) => ({
+      ...model,
+      variants: variants.map(({ demographics: variantDemographics, ...variant }) => variant),
+    }));
+  }
+  const productsOut: { byCategory: Record<string, ModelOut[]> } = { byCategory };
+
+  return c.json({ period, includeTest, overview, monthly, customers, targets, products: productsOut });
 });
 
 salesAnalysis.put('/targets', async (c) => {
