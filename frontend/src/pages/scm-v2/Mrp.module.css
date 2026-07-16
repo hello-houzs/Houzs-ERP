@@ -8,7 +8,7 @@
    <Button> — all inline in the TSX.
 
    The old grey "framed card" chrome (.page #dcdfd9 canvas + its
-   --c-*/--fg/--line token-override cascade, .headerRow/.title/
+   --c-* / --fg / --line token-override cascade, .headerRow/.title/
    .subtitle/.actions/.utilityGroup/.toolbarDivider, .ghostBtn/
    .primaryBtn, .modeToggle/.modeBtn, .tabBar/.tab/.tabHint, .note,
    .summaryRow/.summaryChip, .chip, .spin) is gone, along with the

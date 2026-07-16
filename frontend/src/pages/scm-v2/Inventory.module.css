@@ -9,7 +9,7 @@
    are the local <Button> — all inline in the TSX.
 
    Deleted from here: the grey "framed card" chrome (.page #dcdfd9
-   canvas + its --c-*/--fg/--line token-override cascade), .headerRow/
+   canvas + its --c-* / --fg / --line token-override cascade), .headerRow/
    .title/.subtitle, .tabRow/.tab, the bespoke KPI tiles (.statGrid/
    .statCard/.statLabel/.statValue/.statCaption) and .bannerWarn.
 

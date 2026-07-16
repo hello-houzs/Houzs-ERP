@@ -10,7 +10,7 @@
    The old grey "framed card" chrome (.page #dcdfd9 canvas + its
    `--c-*` / `--line` token-override cascade, .titleBlock/.title/.subtitle,
    the .statGrid/.statCard KPI tiles, .filterRow/.searchBox/.searchInput,
-   .tableCard/.table/.recordCount and the unused .cat*/.num*/.price
+   .tableCard/.table/.recordCount and the unused .cat* / .num* / .price
    cell classes) is gone.
 
    What survives here are ONLY the cell primitives that
