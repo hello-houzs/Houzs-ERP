@@ -12,7 +12,13 @@
 // Houzs port notes (mirror sofa-quick-picks.ts + the companyScope helpers):
 //   * `supabaseAuth` attaches the scm-scoped service-role client (c.get('supabase'))
 //     whose `.from('quotes')` resolves to scm.quotes (db.schema='scm').
-//   * `c.get('user').id` is the pinned SCM system-staff uuid → used for created_by.
+//   * created_by = the caller's REAL scm.staff uuid via resolveCallerStaffId
+//     (mig-0066 staff.user_id link). NOT `c.get('user').id` — the scm auth
+//     bridge pins that to one shared system staff row, so every quote was
+//     stamped "system" and the list could not answer WHO quoted this customer.
+//     An unresolvable caller degrades to the pinned row (attribution is lost,
+//     but the quote still saves) — created_by is NOT NULL and nothing gates on
+//     it, so this cannot leak a cart the way pos-cart's shared key did.
 //   * EVERY query is company_2-scoped: scopeToCompany on read/update/delete,
 //     stampCompany (via activeCompanyId) on insert. No-op only when the active
 //     company is unresolved (pre-migration / cold-start), keeping single-company
@@ -27,6 +33,7 @@ import { Hono } from 'hono';
 import type { Env, Variables } from '../env';
 import { supabaseAuth } from '../middleware/auth';
 import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
+import { resolveCallerStaffId } from '../lib/salesScope';
 
 export const quotes = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -56,7 +63,10 @@ quotes.get('/', async (c) => {
 // (TEXT PK, no default), mirroring 2990.
 quotes.post('/', async (c) => {
   const supabase = c.get('supabase');
-  const userId = c.get('user').id;
+  // Real per-salesperson attribution; the pinned system row is the last resort
+  // (see the created_by note in the header).
+  const userId =
+    (await resolveCallerStaffId(supabase, c.get('houzsUser')?.id)) ?? c.get('user').id;
 
   // scm.quotes.company_id is NOT NULL with NO default (mig 0101, created after the
   // 0091 default backfill), so an insert with an unresolved company_id (Hyperdrive

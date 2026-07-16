@@ -44,6 +44,18 @@ export interface SoDateGuardInput {
    */
   originalProcessingDate?: string;
   originalDeliveryDate?: string;
+  /**
+   * Remove-Processing-Date gate (Owner 2026-07-09, port of 2990 #717) — false
+   * when the caller LACKS `scm.so.remove_processing_date`. Clearing a set
+   * Processing Date pulls the SO back out of the Proceed lane, so the server
+   * 403s a non-holder; this turns that raw code into a plain sentence BEFORE
+   * the request goes out.
+   *
+   * Defaults to TRUE (permissive): a create form has no original date, so the
+   * rule can't fire, and any surface that forgets to pass it simply degrades to
+   * the server's 403 rather than wrongly blocking a holder.
+   */
+  canRemoveProcessingDate?: boolean;
 }
 
 /** True when `v` is a non-empty date identical to the already-saved original —
@@ -66,6 +78,19 @@ export function soDateGuardError(i: SoDateGuardInput): SoFormError | null {
   const d = i.deliveryDate.trim();
   const hasP = p !== "";
   const hasD = d !== "";
+  /* Runs BEFORE the XOR rule: clearing the Processing Date always trips XOR too
+     (or forces the paired Delivery clear), and "you may not remove this" is the
+     reason the save is blocked — the XOR sentence would misdirect. */
+  if (
+    !hasP &&
+    (i.originalProcessingDate ?? "").trim() !== "" &&
+    !(i.canRemoveProcessingDate ?? true)
+  ) {
+    return {
+      title: "Only a Super Admin can remove the Processing Date.",
+      body: "Removing it pulls the order back out of Proceed — ask a Super Admin to do it.",
+    };
+  }
   if ((i.requireDatesTogether ?? true) && hasP !== hasD) {
     return {
       title: "Processing Date and Delivery Date must be set together.",

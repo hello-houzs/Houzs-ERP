@@ -527,6 +527,12 @@ export function MobileNewSO({
      SalesOrderNew (which reads `can` + `user` from the same context). */
   const { user: currentUser, can } = useHouzsAuth();
   const canChangeSalesperson = can("scm.so.attribute_other");
+  /* Remove-Processing-Date gate (Owner 2026-07-09, port of 2990 #717) — clearing
+     a SET Processing Date pulls the SO back out of Proceed, so it is admin-level
+     only. Same flat permission key the API PATCH enforces (mfg-sales-orders.ts);
+     Owner + IT Admin pass via `*`. Desktop SalesOrderDetail reads the identical
+     key — one rule, both surfaces. */
+  const canRemoveProcessingDate = can("scm.so.remove_processing_date");
   /* Unified special-order price gate (owner-approved) — reuses the SAME
      isAdminLevel gate the desktop SoLineCard uses (lib/auth). A non-admin sales
      role only DESCRIBES the special order; all RM surcharges + the custom
@@ -950,7 +956,12 @@ export function MobileNewSO({
   /* The two schedule dates follow the same rule: frozen on a plain locked SO,
      requestable via the amendment. Delivery Date specifically — owner:
      "delivery date 也要給 amend 也是 subject approval". */
-  const scheduleDatesLocked = procLocked && !amendmentMode;
+  /* ...and a Remove-Processing-Date holder keeps them editable even on a locked
+     SO (Owner 2026-07-09, port of 2990 #717): the API lets that holder CLEAR the
+     pair to pull a locked SO back out of Proceed, so freezing the inputs here
+     would deny the very action the permission grants. Moving (rather than
+     clearing) a locked date still 409s server-side — same as desktop. */
+  const scheduleDatesLocked = procLocked && !amendmentMode && !canRemoveProcessingDate;
 
   /* ── FIX A — Salesperson default (desktop parity) ─────────────────────────
      The creator IS the salesperson: default to the signed-in user. If they have
@@ -1482,6 +1493,7 @@ export function MobileNewSO({
       requireDatesTogether: !asDraft,
       originalProcessingDate: origProcDate,
       originalDeliveryDate: origDelivDate,
+      canRemoveProcessingDate,
     });
     if (dateErr) { setError(soErrorText(dateErr)); return; }
     /* Address becomes required only when this is a firm delivery (both dates set)

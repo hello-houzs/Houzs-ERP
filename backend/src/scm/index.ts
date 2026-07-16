@@ -98,7 +98,11 @@ export const scm = new Hono<{ Bindings: Env }>();
 // the others (e.g. state-warehouse-mappings POST) stay umbrella-gated.
 
 // ── Products & Maintenance (scm.procurement.products) ───────────────────────
-scm.use("/products/*", scmAreaGuard("scm.procurement.products"));
+// openRead (2026-07-16): GET /products is the POS catalog read (sku, name,
+// images, SELLING flat_price / recliner_upgrade_price, stock, visible) — no
+// cost, no margin. Same class as the SO-FLOW REFERENCE READS below; POST stays
+// edit-gated on scm.procurement.products.
+scm.use("/products/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
 scm.route("/products", products);
 scm.use("/admin/categories/*", scmAreaGuard("scm.procurement.products"));
 scm.route("/admin/categories", categoriesApi);
@@ -108,9 +112,15 @@ scm.route("/admin/categories", categoriesApi);
 // inside publicCategoriesApi handle their own gating via supabaseAuth + a
 // flat-perm check (the area guard would block the public proxy too).
 scm.route("/categories", publicCategoriesApi);
-scm.use("/delivery-fees/*", scmAreaGuard("scm.procurement.products"));
+// openRead (2026-07-16): both are SELLING-side pricing config the order flow
+// must read to quote a customer — delivery-fees = the fee the customer pays
+// (+ lead days), fabric-tier-addon = the tier upcharge the customer pays.
+// Neither exposes cost or margin, and both already say "every authenticated
+// staff role can read" in-file. Writes stay double-gated (area `edit` here +
+// scm.config.write inside each route).
+scm.use("/delivery-fees/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
 scm.route("/delivery-fees", deliveryFees);
-scm.use("/fabric-tier-addon/*", scmAreaGuard("scm.procurement.products"));
+scm.use("/fabric-tier-addon/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
 scm.route("/fabric-tier-addon", fabricTierAddonConfig);
 scm.use("/pwp-rules/*", scmAreaGuard("scm.procurement.products"));
 scm.route("/pwp-rules", pwpRules);
@@ -137,9 +147,22 @@ scm.use("/maintenance-config/sofa-compartments/*", scmAreaGuard("scm.procurement
 scm.route("/maintenance-config/sofa-compartments", sofaCompartmentPhotos);
 scm.use("/maintenance-config/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
 scm.route("/maintenance-config", maintenanceConfig);
+// NO openRead — DELIBERATE (2026-07-16). GET /sofa-combos (+ /history) returns
+// `pricesByHeight`, which is the COST side ("COST prices (Backend / PO
+// benchmark)", sofa-combos.ts POST), plus supplierId — i.e. which supplier and
+// at what cost. Opening it would hand supplier cost to any scoped salesperson,
+// the same leak class as #625. Nothing needs it opened: the combo price at SO
+// time is recomputed SERVER-side (lib/mfg-pricing-recompute.ts loads the rows on
+// the service-role client), and the only UI consumers (Products > Combos tab,
+// SupplierDetail) are admin pages already behind their own ScmGuard. If the
+// 2990 POS repoint later needs combo reads, give it a cost-stripped shape
+// (sellingPricesByHeight / pwpPricesByHeight only) rather than openRead.
 scm.use("/sofa-combos/*", scmAreaGuard("scm.procurement.products"));
 scm.route("/sofa-combos", sofaCombos);
-scm.use("/sofa-quick-picks/*", scmAreaGuard("scm.procurement.products"));
+// openRead (2026-07-16): Quick Picks are LAYOUTS — the table stores NO price
+// (see sofa-quick-picks.ts header); the engine prices the card. Curation writes
+// stay double-gated (area `edit` + scm.config.write in-route).
+scm.use("/sofa-quick-picks/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
 scm.route("/sofa-quick-picks", sofaQuickPicks);
 scm.use("/fabric-tracking/*", scmAreaGuard("scm.procurement.products"));
 scm.route("/fabric-tracking", fabricTracking);
