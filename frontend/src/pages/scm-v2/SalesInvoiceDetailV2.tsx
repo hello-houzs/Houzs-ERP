@@ -67,6 +67,7 @@ import {
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
 import { useStaffLookup } from "../../hooks/useStaffLookup";
 import { useNotify } from "../../vendor/scm/components/NotifyDialog";
+import { useCustomerPoNotice } from "./so-relationship-map";
 import { useConfirm } from "../../vendor/scm/components/ConfirmDialog";
 import {
   PaymentsTable,
@@ -545,6 +546,7 @@ export function SalesInvoiceDetailV2() {
   const updateStatus = useUpdateSalesInvoiceStatus();
   const { nameOf: salespersonNameOf } = useStaffLookup();
   const notify = useNotify();
+  const showCustomerPo = useCustomerPoNotice();
   const askConfirm = useConfirm();
   const { user, pageAccess } = useAuth();
   // Finance-viewer gate (#574) — non-finance users never see cost / margin.
@@ -1636,6 +1638,11 @@ export function SalesInvoiceDetailV2() {
               `/scm/delivery-orders/${salesInvoice.delivery_order_id}`
             );
             setRelMapOpen(false);
+          } else if (n.type === "Customer PO" && n.state === "done") {
+            // Paints as Linked, so it must answer when clicked (owner
+            // 2026-07-16). It is a reference string with no file behind it —
+            // say so rather than sit dead. Shared wording with the SO map.
+            showCustomerPo(n.doc);
           }
         }}
       />

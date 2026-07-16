@@ -286,10 +286,18 @@ export function PullToRefresh({
           {label}
         </span>
       </div>
+      {/* At rest this div must carry NO transform. `translateY(0px)` is not
+          `none`, and any transform other than `none` makes an element the
+          containing block for its `position: fixed` descendants — this div wraps
+          every page in the app, so an always-on identity transform silently
+          anchored page-level drawers/dialogs to the content box instead of the
+          viewport (BUG-HISTORY 2026-07-16, SO History drawer). Set it only while
+          the finger is actually pulling; `none` → `translateY(Npx)` still
+          transitions (browsers interpolate `none` as the identity matrix). */}
       <div
         className={className}
         style={{
-          transform: `translateY(${contentTranslate}px)`,
+          transform: contentTranslate ? `translateY(${contentTranslate}px)` : undefined,
           transition: refreshing || pull === 0 ? "transform 200ms ease-out" : "none",
         }}
       >

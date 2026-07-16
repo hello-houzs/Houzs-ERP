@@ -45,14 +45,11 @@ import {
   useUpdateMfgSalesOrderStatus,
   useSalesOrderPayments,
 } from "../../vendor/scm/lib/sales-order-queries";
-import { useDocumentFlow } from "../../vendor/scm/lib/flow-queries";
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
 import { useStaffLookup } from "../../hooks/useStaffLookup";
 import { useNotify } from "../../vendor/scm/components/NotifyDialog";
-import {
-  DocumentRelationshipMapModal,
-  type ChainNode,
-} from "../../components/scm-v2/DocumentRelationshipMapModal";
+import { DocumentRelationshipMapModal } from "../../components/scm-v2/DocumentRelationshipMapModal";
+import { useSoRelationshipMap } from "./so-relationship-map";
 import { cn } from "../../lib/utils";
 import { useAuth } from "../../auth/AuthContext";
 import { buildVariantSummary } from "@2990s/shared";
@@ -719,84 +716,11 @@ function SalesOrderDetailV2ReadOnly() {
       );
   };
 
-  // Build the 5-node document chain for this SO. The SO is CURRENT; upstream
-  // (Customer PO) is "done" when a PO ref exists; downstream (DO / GRN / SI)
-  // are Pending until they're actually generated. Live lookup of downstream
-  // docs would need extra API — for now show them as Pending with a helpful
-  // meta string, matching the design handoff prototype.
-  // Downstream docs generated from this SO — resolves the real Delivery Orders /
-  // Sales Invoices so their relationship-map nodes light up and become clickable
-  // (owner 2026-07-16: a salesperson jumps from their SO to the invoice/DO). The
-  // shared /document-flow read is company-scoped server-side.
-  const flow = useDocumentFlow("so", docNo ?? null);
-  const doNodes = useMemo(
-    () => (flow.data?.nodes ?? []).filter((n) => n.type === "do"),
-    [flow.data]
-  );
-  const siNodes = useMemo(
-    () => (flow.data?.nodes ?? []).filter((n) => n.type === "si"),
-    [flow.data]
-  );
-
-  const chainNodes: ChainNode[] = useMemo(() => {
-    if (!salesOrder) return [];
-    const poRef =
-      salesOrder.po_doc_no || salesOrder.customer_so_no || salesOrder.ref || "";
-    return [
-      {
-        type: "Customer PO",
-        doc: poRef || "Not linked",
-        meta: poRef ? "Customer's own doc" : "—",
-        state: poRef ? "done" : "pending",
-      },
-      {
-        type: "Sales Order",
-        doc: salesOrder.doc_no,
-        meta: "This document",
-        state: "current",
-      },
-      {
-        type: "Delivery Order",
-        doc:
-          doNodes.length === 0
-            ? "Not created"
-            : doNodes.length === 1
-              ? doNodes[0]!.label
-              : `${doNodes.length} delivery orders`,
-        meta:
-          doNodes.length === 0
-            ? "After confirmation"
-            : doNodes.length === 1
-              ? "Tap to open"
-              : "Tap to view all",
-        state: doNodes.length > 0 ? "done" : "pending",
-      },
-      {
-        // GRN is procurement-gated (a salesperson has no GRN route) — kept
-        // static/pending, mirroring the DO detail's relationship map.
-        type: "GRN",
-        doc: "Not created",
-        meta: "After delivery",
-        state: "pending",
-      },
-      {
-        type: "Sales Invoice",
-        doc:
-          siNodes.length === 0
-            ? "Not created"
-            : siNodes.length === 1
-              ? siNodes[0]!.label
-              : `${siNodes.length} invoices`,
-        meta:
-          siNodes.length === 0
-            ? "On completion"
-            : siNodes.length === 1
-              ? "Tap to open"
-              : "Tap to view all",
-        state: siNodes.length > 0 ? "done" : "pending",
-      },
-    ];
-  }, [salesOrder, doNodes, siNodes]);
+  // The 5-node document chain + what each node does when clicked now come from
+  // the shared hook, so this page and the ?edit=1 editor cannot drift again
+  // (they already had — see so-relationship-map.ts).
+  const { nodes: chainNodes, onNodeClick: onChainNodeClick } =
+    useSoRelationshipMap(salesOrder);
 
   // ── Line item columns ────────────────────────────────────────────────
   const lineColumns: Column<SoItem>[] = [
@@ -1441,26 +1365,10 @@ function SalesOrderDetailV2ReadOnly() {
         onClose={() => setRelMapOpen(false)}
         nodes={chainNodes}
         onNodeClick={(n) => {
-          // Jump to the downstream doc generated from this SO. One match → its
-          // detail page; several → the list filtered by this SO's doc no (the
-          // chain has a single DO/SI slot, so a split delivery/invoice lands on
-          // the filtered list). Customer PO (external) / GRN (no sales route) /
-          // the current SO never navigate.
-          if (n.type === "Delivery Order" && doNodes.length > 0) {
-            navigate(
-              doNodes.length === 1
-                ? `/scm/delivery-orders/${doNodes[0]!.id}`
-                : `/scm/delivery-orders?q=${encodeURIComponent(salesOrder?.doc_no ?? "")}`
-            );
-            setRelMapOpen(false);
-          } else if (n.type === "Sales Invoice" && siNodes.length > 0) {
-            navigate(
-              siNodes.length === 1
-                ? `/scm/sales-invoices/${siNodes[0]!.id}`
-                : `/scm/sales-invoices?q=${encodeURIComponent(salesOrder?.doc_no ?? "")}`
-            );
-            setRelMapOpen(false);
-          }
+          // Close only when the click actually navigated away; an in-app notice
+          // (Customer PO / a GRN we may not open) must render OVER the map, not
+          // dismiss it.
+          if (onChainNodeClick(n)) setRelMapOpen(false);
         }}
       />
     </div>

@@ -58,6 +58,7 @@ import { useRacks } from "../../vendor/scm/lib/warehouse-queries";
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
 import { useStaffLookup } from "../../hooks/useStaffLookup";
 import { useNotify } from "../../vendor/scm/components/NotifyDialog";
+import { useCustomerPoNotice } from "./so-relationship-map";
 import {
   DocumentRelationshipMapModal,
   ModalOverlay,
@@ -872,6 +873,7 @@ export function DeliveryOrderDetailV2() {
   const updateStatus = useUpdateMfgDeliveryOrderStatus();
   const { nameOf: salespersonNameOf } = useStaffLookup();
   const notify = useNotify();
+  const showCustomerPo = useCustomerPoNotice();
   // Finance-viewer gate — the Totals·Margin aside card (cost / margin) must
   // never render for a non-finance user. Same rule as the #574 DO list finance
   // columns (canViewScmFinance server-side).
@@ -1682,6 +1684,10 @@ export function DeliveryOrderDetailV2() {
               `/scm/sales-invoices?q=${encodeURIComponent(deliveryOrder.do_number)}`
             );
             closeModal();
+          } else if (n.type === "Customer PO" && n.state === "done") {
+            // Paints as Linked, so it must answer when clicked (owner
+            // 2026-07-16). Reference string, no file behind it — say so.
+            showCustomerPo(n.doc);
           }
         }}
       />
