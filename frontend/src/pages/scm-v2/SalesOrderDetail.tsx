@@ -88,6 +88,12 @@ import {
   type AmendmentLine,
   type SoRevisionRow,
 } from '../../vendor/scm/lib/so-amendment-queries';
+import {
+  amendmentLineChangedFields,
+  amendmentOldSnapshot,
+  amendmentVariantSummaries,
+  visibleAmendmentLines,
+} from '../../vendor/scm/lib/so-amendment-line-diff';
 import { fetchSoSlipUrl, fetchScanSlipImageBlobUrl } from '../../vendor/scm/lib/slip';
 import {
   useLocalities,
@@ -418,6 +424,33 @@ const lineCommitSig = (d: SoLineDraft): string => JSON.stringify({
   lineDeliveryDateOverridden: d.lineDeliveryDateOverridden ?? false,
 });
 
+/* Serialised signature of exactly the fields an AMENDMENT LINE can carry — the
+   four the CreateAmendmentLine payload has room for, and no more.
+
+   Owner 2026-07-16 ("完全看不出有什麼變動申請？"): buildAmendmentLines used to test
+   dirtiness with lineCommitSig, which covers the 13 fields a line PATCH
+   persists. Nine of those (lineDeliveryDate, remark, description, uom,
+   itemGroup, discount, cost, …) have NO channel on an amendment, so a line
+   dirty only in one of them was recorded as a SPEC change whose new_* equalled
+   its own old_snapshot exactly — a card the approver reads as identical on both
+   sides. The mass-producer was the header Delivery Date cascade
+   (cascadeDeliveryDateToLines), which rewrites lineDeliveryDate on EVERY
+   non-overridden line the moment the header date input changes: a header-only
+   edit therefore recorded a phantom SPEC row for every line on the order. That
+   exact cascade-dirt was already carved out of saveEdit (2990 PR #718); the
+   amendment builder never got the same treatment.
+
+   Both sides are draftFromItem output for an untouched line — including the
+   canonicalizeVariants pass — so normalisation never false-positives. Comparing
+   the draft against the raw item instead WOULD: draftFromItem canonicalises
+   POS sofa aliases while the item's stored blob is raw. */
+const amendmentLineSig = (d: SoLineDraft): string => JSON.stringify({
+  itemCode:       d.itemCode,
+  qty:            d.qty,
+  unitPriceCenti: d.unitPriceCenti,
+  variants:       d.variants ?? null,
+});
+
 export const SalesOrderDetail = () => {
   const { docNo } = useParams<{ docNo: string }>();
   const detail = useMfgSalesOrderDetail(docNo ?? null);
@@ -711,18 +744,24 @@ export const SalesOrderDetail = () => {
      copy, which is exactly what this workflow prevents. */
   const buildAmendmentLines = (): CreateAmendmentLine[] => {
     const out: CreateAmendmentLine[] = [];
-    // Existing lines — SPEC / QTY. An item still in editingDrafts whose signature
-    // moved from its pristine seed is a change; classify QTY-only vs SPEC.
+    // Existing lines — SPEC / QTY. An item still in editingDrafts whose AMENDABLE
+    // signature moved from its pristine seed is a change; classify QTY-only vs SPEC.
     for (const it of items) {
       const draft = editingDrafts[it.id];
       if (!draft) continue; // dropped → handled as REMOVE below
-      const orig = originalDraftsRef.current[it.id];
-      if (orig && lineCommitSig(draft) === lineCommitSig(orig)) continue; // untouched
+      /* Fall back to the item's own pristine draft when the seed is missing, so a
+         line can never be recorded just because its snapshot went absent. */
+      const orig = originalDraftsRef.current[it.id] ?? draftFromItem(it);
+      if (amendmentLineSig(draft) === amendmentLineSig(orig)) continue; // nothing amendable moved
+      /* QTY vs SPEC — compared against the same pristine draft the signature
+         used, so both sides are canonicalised alike (an `it`-derived fallback
+         would compare canonicalised drafts to a raw blob and mis-classify a
+         POS-created sofa line as SPEC). */
       const qtyOnly =
-        draft.itemCode === (orig?.itemCode ?? it.item_code)
-        && JSON.stringify(draft.variants ?? null) === JSON.stringify(orig?.variants ?? null)
-        && draft.unitPriceCenti === (orig?.unitPriceCenti ?? it.unit_price_centi)
-        && draft.qty !== (orig?.qty ?? it.qty);
+        draft.itemCode === orig.itemCode
+        && JSON.stringify(draft.variants ?? null) === JSON.stringify(orig.variants ?? null)
+        && draft.unitPriceCenti === orig.unitPriceCenti
+        && draft.qty !== orig.qty;
       out.push({
         salesOrderItemId: it.id,
         changeType: qtyOnly ? 'QTY' : 'SPEC',
@@ -3525,6 +3564,19 @@ const changeTypeLabel = (t: string): string =>
   t === 'ADD' ? 'Added line' :
   t === 'REMOVE' ? 'Removed line' : t;
 
+/* Owner 2026-07-16 — Before / After were two plain columns the approver had to
+   diff character-by-character. The moved field is now struck on the Before side
+   and emphasised on the After side; untouched fields stay plain, so the eye
+   lands on the ask. Inline styles because this table is CSS-modules, not
+   Tailwind (the AmendmentDetailV2 job card does the same with utility classes);
+   #0c3f39 is this stylesheet's own brand-dark (see .codeCell) rather than a
+   var(--ink)-style token — the desktop app defines no such variable, it is
+   scoped to .hz-m in mobile.css, so it would silently resolve to nothing here. */
+const strikeIf = (changed: boolean): CSSProperties | undefined =>
+  changed ? { textDecoration: 'line-through', opacity: 0.7 } : undefined;
+const emphasiseIf = (changed: boolean): CSSProperties | undefined =>
+  changed ? { fontWeight: 700, color: '#0c3f39' } : undefined;
+
 const AmendmentDiffModal = ({
   amendmentId,
   currency,
@@ -3535,7 +3587,12 @@ const AmendmentDiffModal = ({
   onClose: () => void;
 }) => {
   const { data, isLoading, error } = useAmendmentDetail(amendmentId);
-  const lines = (data?.lines ?? []) as AmendmentLine[];
+  /* Only the lines that actually request something — a recorded line whose new_*
+     equals its own old_snapshot is not a change and must not render as one
+     (Owner 2026-07-16). Pre-fix rows are already in the DB, so this filter is
+     what makes them readable, not the builder fix. */
+  const allLines = (data?.lines ?? []) as AmendmentLine[];
+  const lines = visibleAmendmentLines(allLines);
   /* The HEADER half (mig 0119) — without this a Delivery-Date-only amendment
      opened as "no line changes recorded" and the requested change was invisible. */
   const headerDiffs = amendmentHeaderDiffRows(
@@ -3544,8 +3601,7 @@ const AmendmentDiffModal = ({
     formatDate,
   );
 
-  const oldOf = (l: AmendmentLine): { itemCode?: string; qty?: number; unitPriceSen?: number; description2?: string | null } =>
-    (l.old_snapshot as { itemCode?: string; qty?: number; unitPriceSen?: number; description2?: string | null } | null) ?? {};
+  const oldOf = amendmentOldSnapshot;
 
   return (
     <div className={styles.modalBackdrop} onClick={onClose}>
@@ -3570,7 +3626,14 @@ const AmendmentDiffModal = ({
               {error instanceof Error ? error.message : String(error)}
             </div>
           ) : lines.length === 0 && headerDiffs.length === 0 ? (
-            <p className={styles.muted}>This amendment has no changes recorded.</p>
+            /* Distinguish "nothing recorded" from "every recorded line is a
+               no-op" — the latter is a legacy amendment raised before the header
+               half existed (mig 0119), whose real ask only survives in Reason. */
+            <p className={styles.muted}>
+              {allLines.length > 0
+                ? 'No line changes recorded — every line matches the order exactly. This request predates order-detail tracking, so what was asked for is in the Reason below.'
+                : 'This amendment has no changes recorded.'}
+            </p>
           ) : (
             <table className={styles.table}>
               <thead>
@@ -3591,6 +3654,10 @@ const AmendmentDiffModal = ({
                 ))}
                 {lines.map((l) => {
                   const old = oldOf(l);
+                  /* Emphasise the field that actually moved — the two columns
+                     were plain text you had to diff character-by-character. */
+                  const chg = amendmentLineChangedFields(l);
+                  const summary = amendmentVariantSummaries(l).to;
                   return (
                     <tr key={l.id}>
                       <td><strong>{changeTypeLabel(l.change_type)}</strong></td>
@@ -3599,12 +3666,16 @@ const AmendmentDiffModal = ({
                           <span className={styles.muted}>—</span>
                         ) : (
                           <div>
-                            <div className={styles.codeCell}>{old.itemCode ?? '—'}</div>
+                            <div className={styles.codeCell} style={strikeIf(chg.itemCode)}>{old.itemCode ?? '—'}</div>
                             <div className={styles.muted}>
-                              Qty {old.qty ?? '—'}
-                              {typeof old.unitPriceSen === 'number' ? ` · ${fmtRm(old.unitPriceSen, currency)}` : ''}
+                              <span style={strikeIf(chg.qty)}>Qty {old.qty ?? '—'}</span>
+                              {typeof old.unitPriceSen === 'number' ? (
+                                <>{' · '}<span style={strikeIf(chg.unitPrice)}>{fmtRm(old.unitPriceSen, currency)}</span></>
+                              ) : ''}
                             </div>
-                            {old.description2 && <div className={styles.muted}>{old.description2}</div>}
+                            {old.description2 && (
+                              <div className={styles.muted} style={strikeIf(chg.variants)}>{old.description2}</div>
+                            )}
                           </div>
                         )}
                       </td>
@@ -3613,17 +3684,14 @@ const AmendmentDiffModal = ({
                           <span className={styles.muted}>Removed</span>
                         ) : (
                           <div>
-                            <div className={styles.codeCell}>{l.new_item_code ?? old.itemCode ?? '—'}</div>
+                            <div className={styles.codeCell} style={emphasiseIf(chg.itemCode)}>{l.new_item_code ?? old.itemCode ?? '—'}</div>
                             <div className={styles.muted}>
-                              Qty {l.new_qty ?? old.qty ?? '—'}
-                              {typeof l.new_unit_price_sen === 'number' ? ` · ${fmtRm(l.new_unit_price_sen, currency)}` : ''}
+                              <span style={emphasiseIf(chg.qty)}>Qty {l.new_qty ?? old.qty ?? '—'}</span>
+                              {typeof l.new_unit_price_sen === 'number' ? (
+                                <>{' · '}<span style={emphasiseIf(chg.unitPrice)}>{fmtRm(l.new_unit_price_sen, currency)}</span></>
+                              ) : ''}
                             </div>
-                            {(() => {
-                              const summary = buildVariantSummary(
-                                '', l.new_variants as Record<string, unknown> | null,
-                              );
-                              return summary ? <div className={styles.muted}>{summary}</div> : null;
-                            })()}
+                            {summary ? <div className={styles.muted} style={emphasiseIf(chg.variants)}>{summary}</div> : null}
                           </div>
                         )}
                       </td>

@@ -1309,6 +1309,23 @@ export function MobileNewSO({
     return false;
   };
 
+  /* The AMENDMENT half of lineChanged — only the four fields a
+     CreateAmendmentLine can carry. lineChanged above is right for applyLineDiff
+     (a direct PATCH persists all of description / group / line date), but WRONG
+     as an amendment's dirtiness test: a line dirty only in `ddate` — which the
+     header Delivery Date cascade rewrites on every non-overridden line — has
+     nothing to request, so recording it produced a SPEC row whose new_* equalled
+     its own old_snapshot and rendered as an identical Was/Requesting pair
+     (Owner 2026-07-16: "完全看不出有什麼變動申請？"). Desktop had the same defect via
+     lineCommitSig; both now test only what the payload carries. */
+  const amendmentLineChanged = (l: LineItem, snap: SoItem): boolean => {
+    if (l.itemCode !== (snap.item_code ?? "")) return true;
+    if ((num(l.qty) || 1) !== (snap.qty ?? 1)) return true;
+    if (toCenti(l.price) !== (snap.unit_price_centi ?? 0)) return true;
+    if (canonJson(buildVariants(l)) !== canonJson(snap.variants ?? {})) return true;
+    return false;
+  };
+
   async function applyLineDiff(soDocNo: string): Promise<number> {
     const base = `/mfg-sales-orders/${encodeURIComponent(soDocNo)}/items`;
     let failed = 0;
@@ -1355,7 +1372,7 @@ export function MobileNewSO({
       if (!l.itemId) continue; // added line handled below
       const snap = snapById.get(l.itemId);
       if (!snap) continue;
-      if (!lineChanged(l, snap)) continue; // untouched
+      if (!amendmentLineChanged(l, snap)) continue; // nothing amendable moved
       const codeSame = l.itemCode === (snap.item_code ?? "");
       const variantsSame = canonJson(buildVariants(l)) === canonJson(snap.variants ?? {});
       const priceSame = toCenti(l.price) === (snap.unit_price_centi ?? 0);
