@@ -52,7 +52,7 @@ import { DocumentRelationshipMapModal } from "../../components/scm-v2/DocumentRe
 import { useSoRelationshipMap } from "./so-relationship-map";
 import { cn } from "../../lib/utils";
 import { useAuth } from "../../auth/AuthContext";
-import { buildVariantSummary } from "@2990s/shared";
+import { buildVariantSummary, fmtMoneyCenti } from "@2990s/shared";
 import {
   isLocked as isSoLocked,
   amendmentEligible as soAmendmentEligible,
@@ -142,11 +142,11 @@ type SoItem = {
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-const fmtMoney = (centi: number, currency = "MYR"): string =>
-  `${currency} ${(centi / 100).toLocaleString("en-MY", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
+/* Money display delegates to the ONE shared centi formatter (vendor/shared/
+   format.ts). The page-local copy this replaces had no finite guard, so an
+   absent / non-numeric cost rendered the literal "MYR NaN" at the user; the
+   shared helper renders "—" for a number the ERP does not have. */
+const fmtMoney = fmtMoneyCenti;
 
 const fmtDate = (iso: string | null | undefined): string => {
   if (!iso) return "—";
@@ -485,8 +485,14 @@ function TotalsMarginCard({
   categories: Array<{ label: string; rev: number; cost: number }>;
 }) {
   const marginPct = marginPctBasis / 100;
-  const marginTone =
-    margin <= 0
+  /* An unknown margin is NOT a bad margin. Every comparison against NaN is
+     false, so a non-finite margin fell through this chain to "text-err" and
+     painted an unreadable figure red — a verdict the data does not support.
+     Unknown → no tone, and the value renders "—" below. */
+  const marginKnown = Number.isFinite(margin) && Number.isFinite(marginPct);
+  const marginTone = !marginKnown
+    ? undefined
+    : margin <= 0
       ? "text-err"
       : marginPct >= 30
         ? "text-synced"
@@ -506,7 +512,7 @@ function TotalsMarginCard({
         />
         <MarginKpi
           label="Margin %"
-          value={revenue > 0 ? `${marginPct.toFixed(1)}%` : "—"}
+          value={revenue > 0 && marginKnown ? `${marginPct.toFixed(1)}%` : "—"}
           tone={marginTone}
         />
       </div>
@@ -737,19 +743,27 @@ function SalesOrderDetailV2ReadOnly() {
         const variantSummary =
           buildVariantSummary(l.item_group ?? "", l.variants ?? null) ||
           (l.description2 ?? "").trim();
+        /* Description ONCE (owner, standing rule — restated 2026-07-16 on this
+           table): the item CODE still BINDS (getValue above keeps it the sort /
+           search / export value) but is not displayed beside the description it
+           already names. Same rule the desktop SoLineCard picker rows and
+           MobileSkuPicker (#626) follow. The VARIANT summary stays — it is the
+           only place this row shows fabric / divan / leg / seat, and the
+           description carries just the SKU wording + size. Codeless rows still
+           show the code: the bold line falls back to item_code when there is no
+           description, so nothing becomes unidentifiable. */
         return (
           <div className="min-w-0">
             <div className="truncate text-[13px] font-semibold text-ink">
               {l.description || l.item_code}
             </div>
-            <div className="mt-0.5 flex items-center gap-2 font-mono text-[11px] text-ink-muted">
-              <span>{l.item_code}</span>
-              {variantSummary && (
+            {variantSummary && (
+              <div className="mt-0.5 flex items-center gap-2 font-mono text-[11px] text-ink-muted">
                 <span className="truncate text-ink-secondary">
-                  · {variantSummary}
+                  {variantSummary}
                 </span>
-              )}
-            </div>
+              </div>
+            )}
           </div>
         );
       },

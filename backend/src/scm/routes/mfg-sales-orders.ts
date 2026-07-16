@@ -849,13 +849,29 @@ const nextDocNo = async (sb: any, c: any): Promise<string> => {
    Note: Houzs builds cost from a live skusMaster store + variant
    surcharges. We use a server snapshot instead (simpler + tamper-proof)
    per Task #114 spec. ─────────────────────────────────────────────────── */
+/* Money guard (2026-07-16) — every sen figure that enters the totals arithmetic
+   passes through here first. The roll-up accumulators used to take `unitCost *
+   qty` on trust: a single non-finite input (an unknown cost arriving as
+   undefined / NaN, or a 0/0 percentage) poisoned totalCost → total_margin_centi
+   → margin_pct_basis in one go, because NaN is contagious across +, -, * and /.
+   A cost the ERP does not know is 0 — never NaN. Postgres would reject the NaN
+   anyway (these columns are `integer NOT NULL`, and supabase-js serializes NaN
+   to JSON `null`), so an unguarded NaN does not corrupt the row — it 23502s the
+   whole write, taking the customer's order down with it on the create path and
+   silently leaving STALE totals on recomputeTotals (whose UPDATE error is not
+   checked). Guard at the source instead. */
+const senOrZero = (n: unknown): number => {
+  const v = Number(n);
+  return Number.isFinite(v) ? v : 0;
+};
+
 const snapshotUnitCostSen = async (
   sb: any,
   itemCode: string,
   explicit: number,
   c: any,
 ): Promise<number> => {
-  if (explicit > 0) return explicit;
+  if (explicit > 0) return senOrZero(explicit);
   if (!itemCode) return 0;
   const { data } = await scopeToCompany(
     sb
@@ -864,7 +880,7 @@ const snapshotUnitCostSen = async (
       .eq('code', itemCode),
     c,
   ).maybeSingle();
-  return Number((data as { cost_price_sen?: number } | null)?.cost_price_sen ?? 0);
+  return senOrZero((data as { cost_price_sen?: number } | null)?.cost_price_sen ?? 0);
 };
 
 mfgSalesOrders.get('/', async (c) => {
@@ -3587,17 +3603,29 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
       ? 0
       : (recomputed ? recomputed.unit_price_sen : Number(it.unitPriceCenti ?? 0));
     const discount = Number(it.discountCenti ?? 0);
-    const lineTotal = (qty * unit) - discount;
+    /* senOrZero at the DEFINITION, not just at the accumulator: lineTotal also
+       lands on the persisted row (total_centi / total_inc_centi / balance_centi)
+       and feeds the per-category buckets, so guarding only the roll-up would
+       still write a non-finite figure onto the line itself. */
+    const lineTotal = senOrZero((qty * unit) - discount);
     // Commander 2026-05-28 — the server-computed cost (base + Σ backend
     // priceSen surcharges via computeMfgLineCost) is the source of truth.
     // Fall back to mfg_products.cost_price_sen / explicit client cost only
     // when the recompute didn't produce a cost (e.g. product not found).
     const itemCode = String(it.itemCode ?? '');
-    const unitCost = recomputed && recomputed.unit_cost_sen > 0
-      ? recomputed.unit_cost_sen
-      : await snapshotUnitCostSen(sb, itemCode, Number(it.unitCostCenti ?? 0), c);
-    const lineCost = unitCost * qty;
+    const unitCost = senOrZero(
+      recomputed && recomputed.unit_cost_sen > 0
+        ? recomputed.unit_cost_sen
+        : await snapshotUnitCostSen(sb, itemCode, Number(it.unitCostCenti ?? 0), c),
+    );
+    const lineCost = senOrZero(unitCost * qty);
     const group = String(it.itemGroup ?? '').toLowerCase();
+    /* lineTotal / lineCost are senOrZero'd above. recomputeTotals (the
+       re-derive path) has always folded with `it.total_centi || 0` /
+       `it.line_cost_centi || 0`, so a stray non-finite there collapses to 0;
+       this CREATE path folded raw — the one totals accumulator in the file with
+       no guard. The two are now in lockstep: one non-finite line must never
+       decide the whole header. */
     total += lineTotal;
     totalCost += lineCost;
     if (group.includes('mattress') || group.includes('sofa')) {
@@ -3740,8 +3768,8 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
             y: s.y,
             rot: s.rot,
           };
-          const moduleLineTotal = (qty * s.unitPriceSen) - (i === 0 ? discount : 0);
-          const moduleLineCost = qty * s.unitCostSen;
+          const moduleLineTotal = senOrZero((qty * s.unitPriceSen) - (i === 0 ? discount : 0));
+          const moduleLineCost = senOrZero(qty * s.unitCostSen);
           const row = {
             ...baseRow,
             item_code: s.itemCode,
@@ -3975,7 +4003,7 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
     );
   }
   const serviceSpecs = [...feeServiceSpecs, ...addonServiceSpecs];
-  const serviceCenti = serviceSpecs.reduce((s, l) => s + l.totalSen, 0);
+  const serviceCenti = serviceSpecs.reduce((s, l) => s + senOrZero(l.totalSen), 0);
   if (serviceSpecs.length > 0) {
     /* Same Edge #4 contract as goods lines: a SERVICE line's SKU must exist in
        the catalog (seeded by migration 0155). A 409 here means the seed is
@@ -6749,10 +6777,14 @@ mfgSalesOrders.patch('/:docNo/items/:itemId', async (c) => {
   } else if (itemCodeChanged) {
     unitCost = await snapshotUnitCostSen(sb, String(it.itemCode ?? ''), 0, c);
   } else {
-    unitCost = prev.unit_cost_centi;
+    /* Case 4 "keep the prior cost" — a legacy row whose unit_cost_centi was
+       never stamped reads back null/undefined here, and `undefined * qty` is
+       NaN, which then rides into line_cost_centi / line_margin_centi and the
+       header roll-up. Unknown prior cost = 0. */
+    unitCost = senOrZero(prev.unit_cost_centi);
   }
-  const lineTotal = (qty * unit) - discount;
-  const lineCost = unitCost * qty;
+  const lineTotal = senOrZero((qty * unit) - discount);
+  const lineCost = senOrZero(unitCost * qty);
 
   const updates: Record<string, unknown> = {
     qty, unit_price_centi: unit, discount_centi: discount, unit_cost_centi: unitCost,

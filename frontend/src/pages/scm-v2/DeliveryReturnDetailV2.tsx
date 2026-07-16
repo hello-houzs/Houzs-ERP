@@ -71,6 +71,7 @@ import {
   type ChainNode,
 } from "../../components/scm-v2/DocumentRelationshipMapModal";
 import { cn } from "../../lib/utils";
+import { fmtMoneyCenti } from "@2990s/shared";
 import { useAuth } from "../../auth/AuthContext";
 
 // ─── Row shapes (subset — see DeliveryReturnDetail.tsx for full 40-field
@@ -157,11 +158,10 @@ type DrItem = {
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-const fmtMoney = (centi: number, currency = "MYR"): string =>
-  `${currency} ${(centi / 100).toLocaleString("en-MY", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
+/* ONE shared centi formatter (vendor/shared/format.ts) — the page-local copy
+   this replaces had no finite guard, so an absent / non-numeric cost rendered
+   the literal "MYR NaN"; the shared helper renders "—" instead. */
+const fmtMoney = fmtMoneyCenti;
 
 const fmtDate = (iso: string | null | undefined): string => {
   if (!iso) return "—";
@@ -347,8 +347,12 @@ function TotalsMarginCard({
   categories: Array<{ label: string; rev: number; cost: number }>;
 }) {
   const marginPct = marginPctBasis / 100;
-  const marginTone =
-    margin <= 0
+  /* An unknown margin is NOT a bad margin — NaN fails every comparison and
+     fell through to "text-err". Unknown → no tone + "—" (see SO detail). */
+  const marginKnown = Number.isFinite(margin) && Number.isFinite(marginPct);
+  const marginTone = !marginKnown
+    ? undefined
+    : margin <= 0
       ? "text-err"
       : marginPct >= 30
         ? "text-synced"
@@ -368,7 +372,7 @@ function TotalsMarginCard({
         />
         <MarginKpi
           label="Margin %"
-          value={revenue > 0 ? `${marginPct.toFixed(1)}%` : "—"}
+          value={revenue > 0 && marginKnown ? `${marginPct.toFixed(1)}%` : "—"}
           tone={marginTone}
         />
       </div>
@@ -779,20 +783,25 @@ export function DeliveryReturnDetailV2() {
           <div className="truncate text-[13px] font-semibold text-ink">
             {l.description || l.item_code}
           </div>
-          <div className="mt-0.5 flex items-center gap-2 font-mono text-[11px] text-ink-muted">
-            <span>{l.item_code}</span>
-            {l.description2 && (
-              <span className="truncate text-ink-secondary">
-                · {l.description2}
-              </span>
-            )}
-            {l.warehouse_code && (
-              <span className="inline-flex items-center gap-0.5 rounded bg-primary-soft px-1.5 py-0 text-[10px] font-semibold text-primary-ink">
-                <Warehouse size={9} />
-                {l.warehouse_code}
-              </span>
-            )}
-          </div>
+          {/* Description ONCE (owner standing rule) — the code still BINDS via
+              getValue above, it just isn't printed next to the description that
+              already names it. description2 (the variant) and the warehouse pill
+              stay: this row shows them nowhere else. See SO detail for the rule. */}
+          {(l.description2 || l.warehouse_code) && (
+            <div className="mt-0.5 flex items-center gap-2 font-mono text-[11px] text-ink-muted">
+              {l.description2 && (
+                <span className="truncate text-ink-secondary">
+                  {l.description2}
+                </span>
+              )}
+              {l.warehouse_code && (
+                <span className="inline-flex items-center gap-0.5 rounded bg-primary-soft px-1.5 py-0 text-[10px] font-semibold text-primary-ink">
+                  <Warehouse size={9} />
+                  {l.warehouse_code}
+                </span>
+              )}
+            </div>
+          )}
         </div>
       ),
     },
