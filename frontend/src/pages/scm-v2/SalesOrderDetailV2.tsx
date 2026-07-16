@@ -52,7 +52,7 @@ import { DocumentRelationshipMapModal } from "../../components/scm-v2/DocumentRe
 import { useSoRelationshipMap } from "./so-relationship-map";
 import { cn } from "../../lib/utils";
 import { useAuth } from "../../auth/AuthContext";
-import { buildVariantSummary, fmtMoneyCenti } from "@2990s/shared";
+import { buildVariantSummary, fmtMoneyCenti, COSTING_DISPLAY_ENABLED } from "@2990s/shared";
 import {
   isLocked as isSoLocked,
   amendmentEligible as soAmendmentEligible,
@@ -610,7 +610,11 @@ function SalesOrderDetailV2ReadOnly() {
   // must never render for a non-finance user. Same rule as the #574 SO list
   // finance columns (canViewScmFinance server-side).
   const { user } = useAuth();
-  const canFinance = !!user?.project_finance_viewer;
+  /* Cost/margin display is OFF: the Houzs catalog carries no costs, so every
+     margin computed from it is an artifact (it reported a green "100.0%" on
+     every order). ANDed with the finance-viewer gate rather than replacing it —
+     both must pass. Flip COSTING_DISPLAY_ENABLED once costs are seeded. */
+  const canFinance = COSTING_DISPLAY_ENABLED && !!user?.project_finance_viewer;
   // Followup #81 — the printed SO reads payments from the ledger, not the
   // deprecated header columns; fetch them for the Print PDF handler.
   const printPaymentsQ = useSalesOrderPayments(docNo ?? null);

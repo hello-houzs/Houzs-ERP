@@ -71,7 +71,7 @@ import {
   type ChainNode,
 } from "../../components/scm-v2/DocumentRelationshipMapModal";
 import { cn } from "../../lib/utils";
-import { fmtMoneyCenti } from "@2990s/shared";
+import { fmtMoneyCenti, COSTING_DISPLAY_ENABLED } from "@2990s/shared";
 import { useAuth } from "../../auth/AuthContext";
 
 // ─── Row shapes (subset — see DeliveryReturnDetail.tsx for full 40-field
@@ -631,7 +631,11 @@ export function DeliveryReturnDetailV2() {
   // Line cost / Margin hit sub-lines) must never render for a non-finance user.
   // Same rule as the #574 DR list finance columns (canViewScmFinance server-side).
   const { user } = useAuth();
-  const canFinance = !!user?.project_finance_viewer;
+  /* Cost/margin display is OFF: the Houzs catalog carries no costs, so every
+     margin computed from it is an artifact (it reported a green "100.0%" on
+     every order). ANDed with the finance-viewer gate rather than replacing it —
+     both must pass. Flip COSTING_DISPLAY_ENABLED once costs are seeded. */
+  const canFinance = COSTING_DISPLAY_ENABLED && !!user?.project_finance_viewer;
 
   const deliveryReturn =
     (detail.data as { deliveryReturn?: DrHeader } | undefined)?.deliveryReturn ??

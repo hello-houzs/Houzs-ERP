@@ -81,7 +81,7 @@ import {
   type ChainNode,
 } from "../../components/scm-v2/DocumentRelationshipMapModal";
 import { cn } from "../../lib/utils";
-import { fmtMoneyCenti } from "@2990s/shared";
+import { fmtMoneyCenti, COSTING_DISPLAY_ENABLED } from "@2990s/shared";
 
 // ─── Row shapes (subset — see SalesInvoiceDetail.tsx for the full 40-field
 // header) ───────────────────────────────────────────────────────────────
@@ -550,7 +550,11 @@ export function SalesInvoiceDetailV2() {
   const askConfirm = useConfirm();
   const { user, pageAccess } = useAuth();
   // Finance-viewer gate (#574) — non-finance users never see cost / margin.
-  const canFinance = !!user?.project_finance_viewer;
+  /* Cost/margin display is OFF: the Houzs catalog carries no costs, so every
+     margin computed from it is an artifact (it reported a green "100.0%" on
+     every order). ANDed with the finance-viewer gate rather than replacing it —
+     both must pass. Flip COSTING_DISPLAY_ENABLED once costs are seeded. */
+  const canFinance = COSTING_DISPLAY_ENABLED && !!user?.project_finance_viewer;
   // Mutation gate — a salesperson opens this invoice read-only via the sales
   // inherit hatch (allowSales; backend readInheritsFrom scm.sales.orders) and
   // cannot confirm/cancel/edit or record payments. Hide those controls (owner
