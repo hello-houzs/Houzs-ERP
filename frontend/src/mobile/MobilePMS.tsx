@@ -750,7 +750,13 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
     const title = (it.title ?? "").trim().toLowerCase();
     const label = (it.role_label ?? "").trim().toUpperCase();
     // Field/sales cohort: whole tasklist sections removed (kept: OPERATION etc.).
-    if (cohort5 && cohortHiddenSection(sectionNameById.get(it.section_id ?? -1) ?? "")) return true;
+    // Owner 2026-07-16 (2nd pass): sales executives/managers must still get
+    // their OWN deliverables — anything badged SALES PIC (Setup Image, Defect
+    // List, Event Complete Image, Filled Floorplan) stays visible for them in
+    // every section; the rest of the simplified view is unchanged.
+    if (cohort5 && cohortHiddenSection(sectionNameById.get(it.section_id ?? -1) ?? "")) {
+      if (!(isSalesExecMgr && label === "SALES PIC")) return true;
+    }
     // License / Stamp Duty → only BD, management, owner. (Titles carry suffixes
     // like "License (from Majlis)", so match by prefix.)
     if (title.startsWith("license") || title.startsWith("stamp duty")) return !seeAllTasks;
