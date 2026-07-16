@@ -686,14 +686,33 @@ app.get("/", requirePageAccess("projects.list"), async (c) => {
   if (c.req.query("my_pending") === "1" && user) {
     // Owner 2026-07-13 — staged "My Pending". Approvers (anyone holding a
     // checklist approval permission, or `*`) see ONLY the items awaiting
-    // their approval (Peter=stock, Kingsley=stock+agreement, Lim/owner=all).
-    // Everyone else is mapped to their role's task scope. listProjects then
-    // time-gates every lane (a task only surfaces once its due date is
-    // reached) and applies the stage prerequisites.
+    // their approval. Everyone else is mapped to their role's task scope.
+    // listProjects then time-gates every lane (a task only surfaces once its
+    // due date is reached) and applies the stage prerequisites.
     const granted = user.permissions_set ?? user.permissions;
-    const APPROVE_PERMS = ["agreement.approve", "stock_transfer.approve", "projects.approve"];
-    // hasPermission handles the `*` wildcard, so admins/owner match every one.
-    const held = APPROVE_PERMS.filter((p) => hasPermission(granted, p));
+    /* ONLY permissions that a checklist item can actually CARRY as
+       required_perm belong in this list — taking the approver branch replaces
+       the role fallback below, so a permission that gates nothing makes the
+       EXISTS on pc.required_perm match zero rows and empties the holder's
+       "My Pending" instead of showing them their role's tasks. Granting the
+       permission BROKE the person (reported live: Peter, 2026-07-16).
+
+       `projects.approve` is the ONLY value ever written to
+       project_checklist.required_perm: migrations 021/050/066 seed it and
+       nothing else, and instantiateChecklistFromEventType
+       (services/projects.ts) derives it from requires_review. Every other row
+       is NULL.
+
+       `agreement.approve` and `stock_transfer.approve` are DECLARED in
+       services/permissions.ts and stay toggleable in Team > Positions (owner
+       2026-07-16 — keep the switches, the feature is "暂时没用"), but no
+       checklist item carries them, so they were only ever able to subtract.
+       DO NOT re-add a key here until an item actually seeds it as
+       required_perm: the switch existing is not the same as the gate
+       existing. */
+    const GATING_APPROVE_PERMS = ["projects.approve"];
+    // hasPermission handles the `*` wildcard, so admins/owner still match.
+    const held = GATING_APPROVE_PERMS.filter((p) => hasPermission(granted, p));
     if (held.length > 0) {
       pendingApprove = held;
     } else {
