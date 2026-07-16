@@ -9,6 +9,8 @@ import { ConfirmProvider, useConfirm } from "../vendor/scm/components/ConfirmDia
 import { PromptProvider } from "../vendor/scm/components/PromptDialog";
 import { ChoiceProvider } from "../vendor/scm/components/ChoiceDialog";
 import { registerDialogService } from "../vendor/scm/lib/dialog-service";
+import { IosInstallGuide } from "../components/IosInstallGuide";
+import { AndroidInstallGuide } from "../components/AndroidInstallGuide";
 // Heavy mobile screens are lazy-loaded so the initial mobile chunk stays small
 // (desktop routes were already lazy — this closes the mobile gap that made the
 // first mobile paint download/parse a ~10k-line monolith). Rendered under the
@@ -213,6 +215,14 @@ export function MobileApp() {
         <PromptProvider>
           <ChoiceProvider>
             <MobileDialogBridge />
+            {/* Manual install coaches. Previously mounted only in the desktop
+                App shell, so phone users whose browser never fires
+                beforeinstallprompt (iOS Safari, Samsung Internet, in-app
+                webviews, Chrome post-decline) got NO install path at all —
+                the guides self-guard on platform/standalone/cool-off, and
+                the Android one defers to PwaBanners' one-tap Install. */}
+            <IosInstallGuide />
+            <AndroidInstallGuide />
             <MobileAppInner />
           </ChoiceProvider>
         </PromptProvider>
