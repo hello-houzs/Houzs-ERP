@@ -3,6 +3,7 @@ import { canViewScmCosting } from "../auth/salesAccess";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { lineIdentity } from "@2990s/shared";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
+import { idempotentInit, useIdempotencyKey } from "../lib/idempotency";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
@@ -604,6 +605,11 @@ function PaymentSheet({ kind, id, header, onClose, onDone }: {
   const [date, setDate] = useState(() => todayMyt());
   const [ref, setRef] = useState("");
   const [error, setError] = useState<string | null>(null);
+  /* One key for the one payment this sheet is open to record (lib/idempotency.ts).
+     The parent mounts the sheet behind `payOpen` and onSuccess closes it, so the
+     MOUNT is the intent: every retry of THIS submit reuses this key, and
+     recording a second payment means re-opening, i.e. a new mount and a new key. */
+  const idemKey = useIdempotencyKey();
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -612,11 +618,18 @@ function PaymentSheet({ kind, id, header, onClose, onDone }: {
       if (kind === "si") {
         const body: Record<string, unknown> = { paidAt: date, method, amountCenti };
         if (ref.trim()) body.approvalCode = ref.trim();
-        await authedFetch(`/sales-invoices/${encodeURIComponent(id)}/payments`, { method: "POST", body: JSON.stringify(body) });
+        await authedFetch(`/sales-invoices/${encodeURIComponent(id)}/payments`,
+          idempotentInit(idemKey, { method: "POST", body: JSON.stringify(body) }));
       } else {
         const body: Record<string, unknown> = { amountCenti };
         if (ref.trim()) body.notes = ref.trim();
-        await authedFetch(`/purchase-invoices/${encodeURIComponent(id)}/payment`, { method: "PATCH", body: JSON.stringify(body) });
+        /* The PI payment PATCH is ADDITIVE — purchase-invoices.ts:644 computes
+           `newPaid = c0.paid_centi + amount`, so a double-fire pays the supplier
+           twice on paper. Its optimistic-concurrency loop gates on the paid_centi
+           it just read, which stops a concurrent write from being LOST; it does
+           nothing about the same payment arriving twice. Hence the key. */
+        await authedFetch(`/purchase-invoices/${encodeURIComponent(id)}/payment`,
+          idempotentInit(idemKey, { method: "PATCH", body: JSON.stringify(body) }));
       }
     },
     onSuccess: () => { onDone(); onClose(); void notify({ title: "Payment recorded" }); },

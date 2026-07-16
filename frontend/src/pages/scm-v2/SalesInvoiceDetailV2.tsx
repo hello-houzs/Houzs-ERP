@@ -804,6 +804,10 @@ export function SalesInvoiceDetailV2() {
         accountSheet: d.accountSheet || null,
         approvalCode: d.approvalCode || null,
         collectedBy: d.collectedBy || null,
+        // Per-draft key (lib/idempotency.ts). This flush posts rows one by one
+        // and aborts on the first throw, so a re-press of Save re-posts the ones
+        // that already landed — the key replays them instead of duplicating.
+        idempotencyKey: d.idempotencyKey,
       };
       Object.assign(body, draftMethodFields(method, d));
       await addPayment.mutateAsync(body);

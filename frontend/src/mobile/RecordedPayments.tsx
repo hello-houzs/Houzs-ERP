@@ -44,6 +44,7 @@ import {
 import { paymentMethodCodeForValue } from "../vendor/scm/lib/payment-methods";
 import { missingMethodSubField } from "../vendor/scm/components/PaymentsTable";
 import { fmtCenti } from "../lib/scm";
+import { useIdempotencyKey } from "../lib/idempotency";
 import { PaymentInfoBlock, type RecordedPaymentLike } from "./PaymentInfoBlock";
 
 /* A persisted payment as either mobile surface holds it. Superset of
@@ -219,6 +220,11 @@ export function AddPaymentSheet({
   const addPaymentMut = useAddSalesOrderPayment();
   const editPaymentMut = useEditSalesOrderPayment();
   const isEdit = Boolean(editPayment);
+  /* One key for the one payment this sheet is open to record (lib/idempotency.ts).
+     The sheet's MOUNT is the intent: both parents render it behind `payOpen` /
+     `editPay` and close it in onSaved, so re-opening always starts a new intent
+     with a new key, while every retry of THIS submit reuses this one. */
+  const idemKey = useIdempotencyKey();
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [method, setMethod] = useState<PayMethodLabel>(
     () => (editPayment ? CODE_TO_PAY_METHOD[editPayment.method ?? "cash"] ?? "Cash" : "Cash"),
@@ -321,9 +327,12 @@ export function AddPaymentSheet({
       /* The shared vendored mutations — mobile shares the desktop payment write
          path (they invalidate the payments ledger key useSalesOrderPayments reads). */
       if (isEdit && editPayment) {
+        /* No key on the EDIT path, deliberately: a PATCH sets named fields on ONE
+           row addressed by id, so firing it twice writes the same row the same
+           way. It cannot duplicate money; only the POST below creates a row. */
         await editPaymentMut.mutateAsync({ docNo, id: editPayment.id, ...body });
       } else {
-        await addPaymentMut.mutateAsync({ docNo, ...body });
+        await addPaymentMut.mutateAsync({ docNo, ...body, idempotencyKey: idemKey });
       }
       await onSaved();
     } catch (e) {

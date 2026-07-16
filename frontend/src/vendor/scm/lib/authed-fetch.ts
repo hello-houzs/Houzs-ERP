@@ -262,6 +262,16 @@ export async function authedFetch<T>(path: string, init?: RequestInit): Promise<
  *  server's own reason ONLY when it's already a plain sentence; otherwise maps
  *  the HTTP status to plain words. Never leaks JSON / SQL / status codes. */
 const ERROR_CODE_MESSAGES: Record<string, string> = {
+  // The idempotency middleware's in-flight 409 (backend/src/middleware/
+  // idempotency.ts): the SAME key is already running, i.e. this exact payment is
+  // mid-write. That is NOT an error and must never read like one — without this
+  // entry it fell through to the generic 409 ("That clashes with something
+  // already in the system"), which reads as "it failed, do it again" and invites
+  // the very double-submit the key exists to stop. Wording says "payment"
+  // because only the money call sites send a key today (see lib/idempotency.ts
+  // SCOPE); widen it if a non-money endpoint ever opts in.
+  idempotency_in_flight:
+    "This payment is already going through — give it a moment, then refresh to check. Please don't send it again.",
   duplicate_code:   'That code is already in use. Please choose a different one.',
   phone_required:   'A phone number is required.',
   not_found:        'That item could no longer be found. Please refresh.',

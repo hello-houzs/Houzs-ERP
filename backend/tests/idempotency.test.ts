@@ -125,4 +125,26 @@ describe("idempotency middleware", () => {
     expect(a.json.id).not.toBe(b.json.id);
     expect(await projectCount()).toBe(2);
   });
+
+  test("a key whose original request is still in flight → 409 carrying a mappable CODE", async () => {
+    // A claim with status_code NULL is exactly what the middleware leaves while
+    // the original request is running; seeding it makes the race deterministic.
+    await env.DB.prepare(
+      `INSERT INTO idempotency_keys (key, scope, user_id) VALUES (?, ?, NULL)`,
+    )
+      .bind("key-inflight", "POST /api/projects")
+      .run();
+
+    const res = await createProject(adminBearer, "key-inflight");
+    expect(res.status).toBe(409);
+    // The contract the frontend depends on: `error` must stay a CODE. The
+    // plain-language mappers (humanApiError / humanHttpMessage) look it up in a
+    // curated table, so a bare English sentence here silently falls through to
+    // the generic 409 ("That clashes with something already in the system"),
+    // which tells the operator their payment failed at the one moment it is
+    // actually going through — and invites the double-submit the key prevents.
+    expect(res.json.error).toBe("idempotency_in_flight");
+    // The in-flight collision must not run the handler a second time.
+    expect(await projectCount()).toBe(0);
+  });
 });

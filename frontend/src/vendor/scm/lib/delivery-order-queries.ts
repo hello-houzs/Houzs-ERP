@@ -20,6 +20,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
+import { idempotentInit } from '../../../lib/idempotency';
 import { serviceNotify } from './dialog-service';
 import { invalidateSoLists } from './sales-order-queries';
 
@@ -257,13 +258,14 @@ export const useDeliveryOrderPayments = (id: string | null) => useQuery({
   retryDelay: 800,
 });
 
+/* `idempotencyKey` — optional, destructured OUT of the body. See
+   useAddSalesOrderPayment / lib/idempotency.ts for the one-key-per-intent rule. */
 export const useAddDeliveryOrderPayment = () => {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, ...body }: { id: string } & Record<string, unknown>) =>
-      authedFetch<{ payment: DoPayment }>(`/delivery-orders-mfg/${id}/payments`, {
-        method: 'POST', body: JSON.stringify(body),
-      }),
+    mutationFn: ({ id, idempotencyKey, ...body }: { id: string; idempotencyKey?: string } & Record<string, unknown>) =>
+      authedFetch<{ payment: DoPayment }>(`/delivery-orders-mfg/${id}/payments`,
+        idempotentInit(idempotencyKey, { method: 'POST', body: JSON.stringify(body) })),
     onSuccess: (_, vars) => {
       qc.invalidateQueries({ queryKey: ['mfg-delivery-orders', vars.id, 'payments'] });
       qc.invalidateQueries({ queryKey: ['mfg-delivery-order-detail', vars.id] });

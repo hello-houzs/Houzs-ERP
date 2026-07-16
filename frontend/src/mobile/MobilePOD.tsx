@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { lineIdentity } from "@2990s/shared";
 import { fmtAmt } from "../lib/scm";
+import { idempotentInit, useIdempotencyKey } from "../lib/idempotency";
 import { invalidateDoShared, invalidateInventoryShared, invalidateSoShared } from "./sharedInvalidate";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { uploadSlipFull, ALLOWED_SLIP_MIMES, MAX_SLIP_SIZE_BYTES } from "../vendor/scm/lib/slip";
@@ -132,6 +133,19 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
+  /* One key for the balance this delivery collects (lib/idempotency.ts).
+     This screen is the sharpest case in the app: confirmDelivered records the
+     payment FIRST and only then uploads the photo + PATCHes the status, so a
+     failure in that tail (bad signal in a customer's driveway is the norm, not
+     the exception) leaves the money booked and the DO still undelivered — and
+     the driver's only move is to press Confirm again, which posted a SECOND
+     payment for the same balance. With the key the re-press replays the first
+     payment's stored response and carries on to the status PATCH.
+     The key is retired by leaving the screen. Re-using this screen for a
+     DIFFERENT DO cannot collide even without a remount: the middleware's key is
+     scoped by "METHOD /path", and the doId is in the path. */
+  const idemKey = useIdempotencyKey();
+
   const delivered = h ? isDelivered(h.status) : false;
   const cancelled = h ? isCancelled(h.status) : false;
 
@@ -160,14 +174,15 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
       // failure aborts before we flip the DO delivered. Amount = full
       // outstanding balance; method mapped from the design toggle.
       if (willCollect) {
-        await authedFetch(`/delivery-orders-mfg/${encodeURIComponent(doId)}/payments`, {
-          method: "POST",
-          body: JSON.stringify({
-            paidAt: todayMyt(),
-            method: PAY_METHOD_API[payMethod],
-            amountCenti: balance,
-          }),
-        });
+        await authedFetch(`/delivery-orders-mfg/${encodeURIComponent(doId)}/payments`,
+          idempotentInit(idemKey, {
+            method: "POST",
+            body: JSON.stringify({
+              paidAt: todayMyt(),
+              method: PAY_METHOD_API[payMethod],
+              amountCenti: balance,
+            }),
+          }));
       }
       // Deliver action — the DO status endpoint persists the POD signature
       // (base64 PNG) onto delivery_orders.signature_data and the delivery

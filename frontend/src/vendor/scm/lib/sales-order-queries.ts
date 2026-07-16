@@ -19,6 +19,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
+import { idempotentInit } from '../../../lib/idempotency';
 import { serviceNotify } from './dialog-service';
 
 // The vendored authedFetch already handles FormData correctly (it omits the
@@ -416,13 +417,17 @@ export const useDeleteSoItemPhoto = () => {
   });
 };
 
+/* `idempotencyKey` is OPTIONAL and must be destructured OUT of the body — the
+   rest-spread would otherwise post it as a payment field. Pass one per payment
+   INTENT (see lib/idempotency.ts): the server then de-dupes a double-fire
+   instead of booking the money twice. Omitting it is exactly today's behaviour
+   (the middleware no-ops), so an un-migrated caller still compiles and works. */
 export const useAddSalesOrderPayment = () => {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ docNo, ...body }: { docNo: string } & Record<string, unknown>) =>
-      authedFetch<{ payment: SoPayment }>(`/mfg-sales-orders/${docNo}/payments`, {
-        method: 'POST', body: JSON.stringify(body),
-      }),
+    mutationFn: ({ docNo, idempotencyKey, ...body }: { docNo: string; idempotencyKey?: string } & Record<string, unknown>) =>
+      authedFetch<{ payment: SoPayment }>(`/mfg-sales-orders/${docNo}/payments`,
+        idempotentInit(idempotencyKey, { method: 'POST', body: JSON.stringify(body) })),
     // The ['mfg-sales-orders'] root prefix-covers this SO's payments ledger and
     // header sub-queries; the paged list carries the paid / outstanding
     // aggregates a payment moves.
