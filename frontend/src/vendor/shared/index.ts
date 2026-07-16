@@ -35,3 +35,6 @@ export { buildComboLabel, type SofaPriceTier } from './sofa-combo-pricing';
 // allocation preview needs the SERVICE-line predicate. Verbatim from 2990's
 // packages/shared/src/service-sku.ts.
 export * from './service-sku';
+// The ONE switch for cost/margin DISPLAY. Off while the Houzs catalog carries
+// no costs — see costing-enabled.ts for why, and for what turns it back on.
+export * from './costing-enabled';
