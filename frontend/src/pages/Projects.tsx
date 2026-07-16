@@ -6951,14 +6951,19 @@ function DocRow({
                 if (files.length && reviewable) await onReview(item, "submit", {});
               }}
             />
-            {attachments.length > 0 && (
-              <button
-                onClick={() => setOpen((x) => !x)}
-                className="rounded-md border border-border bg-surface inline-flex items-center justify-center min-w-[42px] whitespace-nowrap px-2 py-1 text-[8.5px] font-semibold text-ink hover:border-accent/40 hover:text-accent"
-              >
-                View
-              </button>
-            )}
+            <button
+              onClick={() => setOpen((x) => !x)}
+              disabled={attachments.length === 0}
+              className={cn(
+                "rounded-md border border-border bg-surface inline-flex items-center justify-center min-w-[42px] whitespace-nowrap px-2 py-1 text-[8.5px] font-semibold",
+                attachments.length > 0
+                  ? "text-ink hover:border-accent/40 hover:text-accent"
+                  : "text-ink-muted opacity-50 cursor-not-allowed"
+              )}
+              title={attachments.length > 0 ? "View files" : "No files yet"}
+            >
+              View
+            </button>
             {canManage && (
               <button
                 onClick={() => fileRef.current?.click()}
