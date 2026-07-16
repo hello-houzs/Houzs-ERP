@@ -52,8 +52,14 @@ export interface SofaModuleLineSpec {
  *  put the rounding residue on the LAST entry (D3), so the sum is exact.
  *  All-zero weights → equal split. Negative totals distribute symmetrically. */
 export function distributeProportionally(totalSen: number, weights: number[]): number[] {
+  /* The WEIGHTS were already finite-guarded below; the TOTAL was not, so a
+     non-finite build cost (an unpriced / unknown module cost reaching this as
+     undefined or NaN) propagated straight through Math.floor into every share
+     and on into the header roll-up. A cost we cannot compute is 0, never NaN —
+     money must be a number at every step, or it stops being money. */
+  const total = Number.isFinite(totalSen) ? totalSen : 0;
   if (weights.length === 0) return [];
-  if (weights.length === 1) return [totalSen];
+  if (weights.length === 1) return [total];
   const positive = weights.map((w) => (Number.isFinite(w) && w > 0 ? w : 0));
   const sum = positive.reduce((s, w) => s + w, 0);
   const effective = sum > 0 ? positive : weights.map(() => 1);
@@ -61,11 +67,11 @@ export function distributeProportionally(totalSen: number, weights: number[]): n
   const out: number[] = [];
   let allocated = 0;
   for (let i = 0; i < effective.length - 1; i++) {
-    const share = Math.floor((totalSen * effective[i]!) / effSum);
+    const share = Math.floor((total * effective[i]!) / effSum);
     out.push(share);
     allocated += share;
   }
-  out.push(totalSen - allocated); // residue lands on the last line (D3)
+  out.push(total - allocated); // residue lands on the last line (D3)
   return out;
 }
 

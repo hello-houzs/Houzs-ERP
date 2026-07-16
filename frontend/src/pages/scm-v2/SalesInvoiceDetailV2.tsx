@@ -81,6 +81,7 @@ import {
   type ChainNode,
 } from "../../components/scm-v2/DocumentRelationshipMapModal";
 import { cn } from "../../lib/utils";
+import { fmtMoneyCenti } from "@2990s/shared";
 
 // ─── Row shapes (subset — see SalesInvoiceDetail.tsx for the full 40-field
 // header) ───────────────────────────────────────────────────────────────
@@ -169,11 +170,10 @@ type SiItem = {
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-const fmtMoney = (centi: number, currency = "MYR"): string =>
-  `${currency} ${(centi / 100).toLocaleString("en-MY", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
+/* ONE shared centi formatter (vendor/shared/format.ts) — the page-local copy
+   this replaces had no finite guard, so an absent / non-numeric cost rendered
+   the literal "MYR NaN"; the shared helper renders "—" instead. */
+const fmtMoney = fmtMoneyCenti;
 
 const fmtDate = (iso: string | null | undefined): string => {
   if (!iso) return "—";
@@ -839,19 +839,22 @@ export function SalesInvoiceDetailV2() {
       alwaysVisible: true,
       getValue: (l) => l.item_code,
       render: (l) => {
+        /* Description ONCE (owner standing rule) — the code still BINDS via
+           getValue above, it just isn't printed next to the description that
+           already names it. description2 (the variant summary) stays: it is the
+           only place this row shows the variant. See SO detail for the rule. */
         return (
           <div className="min-w-0">
             <div className="text-[13px] font-semibold text-ink">
               {l.description || l.item_code}
             </div>
-            <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-ink-muted">
-              <span>{l.item_code}</span>
-              {l.description2 && (
+            {l.description2 && (
+              <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-ink-muted">
                 <span className="truncate text-ink-secondary">
-                  · {l.description2}
+                  {l.description2}
                 </span>
-              )}
-            </div>
+              </div>
+            )}
           </div>
         );
       },
@@ -1681,8 +1684,12 @@ function MarginCard({
   const cost = header.total_cost_centi ?? 0;
   const margin = header.total_margin_centi ?? revenue - cost;
   const marginPct = (header.margin_pct_basis ?? 0) / 100;
-  const marginTone =
-    margin <= 0
+  /* An unknown margin is NOT a bad margin — NaN fails every comparison and
+     fell through to "text-err". Unknown → no tone + "—" (see SO detail). */
+  const marginKnown = Number.isFinite(margin) && Number.isFinite(marginPct);
+  const marginTone = !marginKnown
+    ? undefined
+    : margin <= 0
       ? "text-err"
       : marginPct >= 30
         ? "text-synced"
@@ -1755,7 +1762,11 @@ function MarginCard({
               costPending ? "text-ink-muted" : marginTone
             )}
           >
-            {costPending ? "—" : revenue > 0 ? `${marginPct.toFixed(1)}%` : "—"}
+            {costPending || !marginKnown
+              ? "—"
+              : revenue > 0
+                ? `${marginPct.toFixed(1)}%`
+                : "—"}
           </div>
         </div>
       </div>
