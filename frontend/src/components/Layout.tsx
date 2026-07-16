@@ -204,7 +204,11 @@ export function PageHeader({
       {hasActions && (
         <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 md:shrink-0">
           {actions}
-          {/* Desktop (sm+): secondary actions render as inline buttons */}
+          {/* Desktop (sm+): secondary actions render as inline buttons.
+              h-9 matches <Button> — actions / secondary / primaryAction all land
+              in THIS one flex row, so this chrome must share the Button height or
+              the rail renders at two sizes. The 11px uppercase label is what
+              keeps it reading as secondary; the height is not. */}
           {hasSecondary && (
             <div className="hidden items-center gap-1.5 sm:flex sm:gap-2">
               {secondary.map((it, i) => {
@@ -214,7 +218,7 @@ export function PageHeader({
                     key={i}
                     type="button"
                     onClick={it.onClick}
-                    className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-surface px-3 text-[11px] font-semibold uppercase tracking-wider text-ink-secondary transition-colors hover:border-accent/40 hover:bg-accent-soft/50 hover:text-accent"
+                    className="inline-flex h-9 items-center gap-1.5 rounded-md border border-border bg-surface px-3 text-[11px] font-semibold uppercase tracking-wider text-ink-secondary transition-colors hover:border-accent/40 hover:bg-accent-soft/50 hover:text-accent"
                   >
                     <Icon size={13} />
                     {it.label}

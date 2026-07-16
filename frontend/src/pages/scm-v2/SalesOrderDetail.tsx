@@ -1276,9 +1276,11 @@ export const SalesOrderDetail = () => {
             : '')
         }
         primaryAction={
+          /* h-9 = the <Button> height — PageHeader renders primaryAction into
+             the same flex row as the History / Print / Edit action rail. */
           <Link
             to="/scm/sales-orders"
-            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-surface px-3 text-[11px] font-semibold uppercase tracking-wider text-ink-secondary transition-colors hover:border-primary/40 hover:bg-primary-soft hover:text-primary"
+            className="inline-flex h-9 items-center gap-1.5 rounded-md border border-border bg-surface px-3 text-[11px] font-semibold uppercase tracking-wider text-ink-secondary transition-colors hover:border-primary/40 hover:bg-primary-soft hover:text-primary"
           >
             <ArrowLeft size={14} />
             <span>Back</span>
