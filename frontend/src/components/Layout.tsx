@@ -7,7 +7,6 @@ import { MobileTabBar } from "./MobileTabBar";
 import { PullToRefresh, PullToRefreshGuardProvider } from "./PullToRefresh";
 import { RowActionsMenu, type MenuItem } from "./RowActionsMenu";
 import { useBranding } from "../hooks/useBranding";
-import { prefetchTopRoutes } from "../lib/prefetch-routes";
 import { CompanyMark } from "./CompanyMark";
 
 interface Props {
@@ -31,8 +30,16 @@ export function Layout({ children }: Props) {
   // click into each of the 113 lazy routes waits out a chunk download before
   // the page can start fetching its data. Self-throttling and failure-proof;
   // see lib/prefetch-routes.
+  //
+  // Imported dynamically, not statically: the route map holds an import() per
+  // route, so a static import drags the whole table into the initial bundle —
+  // which pushed initial JS to 131.5/130 KB gzip and failed the budget gate.
+  // Nothing here is needed before first paint, so the table rides in its own
+  // chunk, fetched on the same idle tick that uses it.
   useEffect(() => {
-    prefetchTopRoutes();
+    void import("../lib/prefetch-routes")
+      .then((m) => m.prefetchTopRoutes())
+      .catch(() => {});
   }, []);
 
   // AutoCount sync-status poll removed (owner 2026-07-14): there is no

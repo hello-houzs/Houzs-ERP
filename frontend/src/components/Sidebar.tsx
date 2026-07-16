@@ -51,7 +51,6 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
-import { prefetchRoute } from "../lib/prefetch-routes";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useAuth } from "../auth/AuthContext";
 import { makeNavFilter } from "./navFilter";
@@ -59,6 +58,18 @@ import { CompanyMark } from "./CompanyMark";
 import { PresencePanel } from "./PresencePanel";
 import { GlobalSearchTrigger } from "./GlobalSearch";
 import { NotificationBell } from "./NotificationBell";
+
+/* Hover prefetch, behind a dynamic import. The route map in lib/prefetch-routes
+   holds an import() per route, so importing it statically drags the whole table
+   into the initial bundle — that put initial JS at 131.5/130 KB gzip and failed
+   the budget gate. Deferring it costs nothing real: the table's own chunk is
+   fetched on Layout's idle warm, long before a hand reaches the rail.
+   Swallow everything — a prefetch must never surface an error, least of all
+   from a mouse-over (RouteFallback treats a chunk error as cause to unregister
+   the SW and reload the page). */
+function prefetchRoute(href: string): void {
+  void import("../lib/prefetch-routes").then((m) => m.prefetchRoute(href)).catch(() => {});
+}
 
 interface Props {
   /** Desktop-only collapsed state (lg+). */
