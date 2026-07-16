@@ -65,6 +65,7 @@ import {
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
 import { useStaffLookup } from "../../hooks/useStaffLookup";
 import { useNotify } from "../../vendor/scm/components/NotifyDialog";
+import { useCustomerPoNotice } from "./so-relationship-map";
 import {
   DocumentRelationshipMapModal,
   type ChainNode,
@@ -621,6 +622,7 @@ export function DeliveryReturnDetailV2() {
   const updateStatus = useUpdateDeliveryReturnStatus();
   const { nameOf: salespersonNameOf } = useStaffLookup();
   const notify = useNotify();
+  const showCustomerPo = useCustomerPoNotice();
   // Finance-viewer gate — cost / margin (the Totals·Margin card AND the hero's
   // Line cost / Margin hit sub-lines) must never render for a non-finance user.
   // Same rule as the #574 DR list finance columns (canViewScmFinance server-side).
@@ -1427,6 +1429,10 @@ export function DeliveryReturnDetailV2() {
               `/scm/delivery-orders/${deliveryReturn.delivery_order_id}`
             );
             setRelMapOpen(false);
+          } else if (n.type === "Customer PO" && n.state === "done") {
+            // Paints as Linked, so it must answer when clicked (owner
+            // 2026-07-16). Reference string, no file behind it — say so.
+            showCustomerPo(n.doc);
           }
         }}
       />

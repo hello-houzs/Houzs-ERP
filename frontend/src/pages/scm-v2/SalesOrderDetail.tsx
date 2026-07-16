@@ -73,7 +73,8 @@ import { todayMyt } from '../../vendor/scm/lib/dates';
 import { formatDate } from '../../lib/utils';
 import { SoLineCard, emptySoLine, missingRequiredVariants, type SoLineDraft } from '../../vendor/scm/components/SoLineCard';
 import { PaymentsTable } from '../../vendor/scm/components/PaymentsTable';
-import { DocumentRelationshipMapModal, type ChainNode } from '../../components/scm-v2/DocumentRelationshipMapModal';
+import { DocumentRelationshipMapModal } from '../../components/scm-v2/DocumentRelationshipMapModal';
+import { useSoRelationshipMap } from './so-relationship-map';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { usePrompt } from '../../vendor/scm/components/PromptDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
@@ -588,6 +589,11 @@ export const SalesOrderDetail = () => {
     editSearchParams.get('edit') === '1',
   );
   const [relMapOpen, setRelMapOpen] = useState(false);
+  /* Relationship-map chain + destinations — SHARED with SalesOrderDetailV2 so the
+     two SO detail surfaces can't drift again. Called here (not at the render site)
+     because the early returns below would otherwise make the hook conditional. */
+  const { nodes: chainNodes, onNodeClick: onChainNodeClick } =
+    useSoRelationshipMap(header);
   const [saveError, setSaveError] = useState<string | null>(null);
   const customerCardRef = useRef<CustomerCardHandle | null>(null);
 
@@ -2078,22 +2084,20 @@ export const SalesOrderDetail = () => {
         <HistoryPanel docNo={header.doc_no} onClose={closeHistory} />
       )}
 
-      {/* Nick 2026-07-09 — Relationship Map (5-node chain, same as V2). */}
+      {/* Nick 2026-07-09 — Relationship Map (5-node chain). Chain + destinations
+          come from the SHARED hook, same as the V2 read-only page: this copy used
+          to hard-code every downstream node to "Not created" and no-op every
+          click, so on the page an operator amends an order from, the map lied and
+          nothing responded. */}
       <DocumentRelationshipMapModal
         open={relMapOpen}
         onClose={() => setRelMapOpen(false)}
-        nodes={((): ChainNode[] => {
-          const h = header as unknown as { customer_so_no?: string; ref?: string };
-          const poRef = h.customer_so_no || h.ref || '';
-          return [
-            { type: 'Customer PO',    doc: poRef || 'Not linked', meta: poRef ? "Customer's own doc" : '—', state: poRef ? 'done' : 'pending' },
-            { type: 'Sales Order',    doc: header.doc_no,         meta: 'This document',                    state: 'current' },
-            { type: 'Delivery Order', doc: 'Not created',         meta: 'After confirmation',               state: 'pending' },
-            { type: 'GRN',            doc: 'Not created',         meta: 'After delivery',                   state: 'pending' },
-            { type: 'Sales Invoice',  doc: 'Not created',         meta: 'On completion',                    state: 'pending' },
-          ];
-        })()}
-        onNodeClick={(n) => void n}
+        nodes={chainNodes}
+        onNodeClick={(n) => {
+          // Close only when the click actually navigated away; an in-app notice
+          // must render OVER the map, not dismiss it.
+          if (onChainNodeClick(n)) setRelMapOpen(false);
+        }}
       />
     </div>
   );
@@ -3364,7 +3368,18 @@ const HistoryPanel = memo(({
   const entries = q.data ?? [];
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
-  return (
+  /* Portal-anchored to <body> so the drawer's `position: fixed` latches to the
+     VIEWPORT. Rendered in place it did not: Layout wraps every page in
+     <PullToRefresh className="… animate-rise">, whose content div carries BOTH an
+     inline `transform: translateY(0px)` and the filled `rise` animation — and a
+     transform other than `none` makes an element the containing block for its
+     fixed descendants. The drawer therefore anchored to the page content box
+     instead of the screen: it parked over the sticky PageHeader, scrolled away
+     with the page, and its inset:0 backdrop dimmed only the content box. Same
+     hazard ModalOverlay's portal already documents. (The transform trap itself is
+     fixed at source in PullToRefresh + the rise keyframe; this portal is the
+     drawer's own guarantee, and matches how every other modal here is mounted.) */
+  return createPortal(
     <>
       <div className={styles.historyBackdrop} onClick={onClose} />
       <aside className={styles.historyPanel} role="dialog" aria-label="Sales order history">
@@ -3469,7 +3484,8 @@ const HistoryPanel = memo(({
           )}
         </div>
       </aside>
-    </>
+    </>,
+    document.body,
   );
 });
 HistoryPanel.displayName = 'HistoryPanel';

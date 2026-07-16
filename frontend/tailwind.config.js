@@ -145,7 +145,21 @@ export default {
         },
       },
       animation: {
-        rise: "rise 420ms cubic-bezier(0.16, 1, 0.3, 1) both",
+        /* `backwards`, NOT `both` — deliberate. `both` also fills FORWARDS, which
+           leaves the 100% keyframe's `transform: translateY(0)` applied to the
+           element forever. A transform other than `none` makes an element the
+           containing block for every `position: fixed` descendant, so `both` made
+           each page's wrapper (Layout renders `animate-rise` around the whole page)
+           silently capture any fixed child — drawers/dialogs anchored to the page
+           box instead of the viewport (see BUG-HISTORY 2026-07-16, SO History
+           drawer). `backwards` keeps the pre-start fill (no flash at 0%) and drops
+           the forwards fill, so transform returns to `none` when the animation
+           ends. Visually identical: the 100% keyframe (opacity 1 / translateY 0)
+           IS the element's natural resting state. Verified in Chrome: with `both`
+           the finished element computes `matrix(1,0,0,1,0,0)` and captures a fixed
+           child; with `backwards` it computes `none` and the child latches to the
+           viewport. */
+        rise: "rise 420ms cubic-bezier(0.16, 1, 0.3, 1) backwards",
         "fade-in": "fadeIn 600ms ease both",
         shimmer: "shimmer 1.6s linear infinite",
         "toast-in": "toastIn 220ms cubic-bezier(0.16, 1, 0.3, 1) both",
