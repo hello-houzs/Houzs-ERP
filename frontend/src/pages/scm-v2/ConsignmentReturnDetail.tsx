@@ -17,6 +17,7 @@ import {
   forwardRef, memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState,
   type CSSProperties,
 } from 'react';
+import { canViewScmCosting } from "../../auth/salesAccess";
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { RelationshipMapButton } from '../../vendor/scm/components/RelationshipMapButton';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
@@ -160,7 +161,7 @@ export const ConsignmentReturnDetail = () => {
      Totals·Margin card) must never render for a non-finance user. Same rule as
      DeliveryReturnDetailV2 (#589); canViewScmFinance strips them server-side. */
   const { user } = useAuth();
-  const canFinance = !!user?.project_finance_viewer;
+  const canFinance = canViewScmCosting(user);
   const [searchParams] = useSearchParams();
   const detail = useConsignmentReturnDetail(id ?? null);
   const updateHeader = useUpdateConsignmentReturnHeader();

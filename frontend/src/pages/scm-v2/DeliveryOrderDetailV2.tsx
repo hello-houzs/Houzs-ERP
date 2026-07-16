@@ -23,6 +23,7 @@
 // useUpdateMfgDeliveryOrderStatus (unchanged from prior V2).
 
 import { useMemo, useState, type ReactNode } from "react";
+import { canViewScmCosting } from "../../auth/salesAccess";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -65,7 +66,7 @@ import {
   type ChainNode,
 } from "../../components/scm-v2/DocumentRelationshipMapModal";
 import { cn } from "../../lib/utils";
-import { fmtMoneyCenti, COSTING_DISPLAY_ENABLED } from "@2990s/shared";
+import { fmtMoneyCenti } from "@2990s/shared";
 import { useAuth } from "../../auth/AuthContext";
 
 // ─── Header + item shapes (subset — full 40-field row lives in the list V2) ─
@@ -888,11 +889,10 @@ export function DeliveryOrderDetailV2() {
   // never render for a non-finance user. Same rule as the #574 DO list finance
   // columns (canViewScmFinance server-side).
   const { user, pageAccess } = useAuth();
-  /* Cost/margin display is OFF: the Houzs catalog carries no costs, so every
-     margin computed from it is an artifact (it reported a green "100.0%" on
-     every order). ANDed with the finance-viewer gate rather than replacing it —
-     both must pass. Flip COSTING_DISPLAY_ENABLED once costs are seeded. */
-  const canFinance = COSTING_DISPLAY_ENABLED && !!user?.project_finance_viewer;
+  /* SCM costing is dark — the catalog carries no costs, so every margin it
+     produces is an artifact. The gate lives in auth/salesAccess so the PMS
+     project P&L (real data) stays up while this stays off. */
+  const canFinance = canViewScmCosting(user);
   // Mutation gate — a salesperson opens this DO read-only via the sales inherit
   // hatch (allowSales; backend readInheritsFrom scm.sales.orders) and cannot
   // edit/cancel/convert it. Hide those controls (owner off-not-hide rule); Print

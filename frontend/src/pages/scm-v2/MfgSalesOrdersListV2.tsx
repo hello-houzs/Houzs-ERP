@@ -57,7 +57,7 @@ import { useConfirm } from "../../vendor/scm/components/ConfirmDialog";
 import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "../../lib/utils";
 import { useAuth } from "../../auth/AuthContext";
-import { isDirectorUser } from "../../auth/salesAccess";
+import { isDirectorUser, canViewScmCosting } from "../../auth/salesAccess";
 import { buildVariantSummary } from "@2990s/shared";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -905,7 +905,7 @@ export function MfgSalesOrdersListV2() {
   // always-empty finance column for a non-finance user (the backend also omits
   // those keys from the payload — see canViewScmFinance).
   const { user } = useAuth();
-  const canFinance = !!user?.project_finance_viewer;
+  const canFinance = canViewScmCosting(user);
   // SO Maintenance (bulk import / duplicate / renumber) is DIRECTOR-only —
   // Sales Director / Super Admin / Finance Manager / Owner-IT `*`
   // (auth/salesAccess.isDirectorUser). Owner 2026-07-15: a non-director Sales

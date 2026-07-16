@@ -12,6 +12,7 @@
 // UNIQUE localStorage key ('pr-g.crn-list.layout.v1') — never reuse the DR/DO/SO keys.
 
 import { useEffect, useMemo, useState } from 'react';
+import { canViewScmCosting } from "../../auth/salesAccess";
 import type { JSX } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Plus, Search } from 'lucide-react';
@@ -300,7 +301,7 @@ export const ConsignmentReturns = () => {
   /* Finance-viewer gate — same signal the SO/DO/SI/DR surfaces use
      (auth/me = isFinanceViewer, #574 / #589). */
   const { user } = useAuth();
-  const canFinance = !!user?.project_finance_viewer;
+  const canFinance = canViewScmCosting(user);
   const [searchParams, setSearchParams] = useSearchParams();
   const statusChip = searchParams.get('status') ?? 'all';
 

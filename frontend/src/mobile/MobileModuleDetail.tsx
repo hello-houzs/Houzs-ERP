@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { canViewScmCosting } from "../auth/salesAccess";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { api } from "../api/client";
@@ -761,7 +762,7 @@ function DocumentDetail({ map, row, moduleKey, onBack, onEdit, onPOD }: { map: D
   // cost/margin from the payload for a non-finance caller (canViewScmFinance);
   // drop the Cost / Margin stat tiles too so they don't render as RM0.00.
   const { user: financeUser } = useAuth();
-  const canFinanceStats = !!financeUser?.project_finance_viewer;
+  const canFinanceStats = canViewScmCosting(financeUser);
   const { data, isLoading, error } = useQuery({
     queryKey: ["mobile-module-detail", map.path, id],
     queryFn: () => authedFetch<Record<string, unknown>>(`${map.path}/${encodeURIComponent(id)}`),

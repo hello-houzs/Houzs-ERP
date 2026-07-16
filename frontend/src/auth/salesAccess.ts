@@ -1,4 +1,5 @@
 import type { AuthUser, AccessLevel } from "../types";
+import { COSTING_DISPLAY_ENABLED } from "@2990s/shared";
 
 /**
  * Sales-access model — CODE-KEYED off STABLE ORG FIELDS (position_name /
@@ -109,4 +110,32 @@ export function quickActionAccess(
       can("service_cases.write") ||
       pageAccess("service_cases") !== "none",
   };
+}
+
+/**
+ * SCM COSTING gate — "may this user see cost/margin on a SUPPLY-CHAIN surface".
+ *
+ * Deliberately NOT the same question as {@link isDirectorUser} / the PMS
+ * `project_finance_viewer` check, even though it is built from it. Two
+ * different costing systems live in this app and only one of them has data:
+ *
+ *   - PMS / Projects P&L — fee + actual logistics cost, `cogs` / `transport`
+ *     slugs, entered per project. REAL. Keeps rendering for a finance viewer.
+ *   - SCM / document costing — derived from `mfg_products.cost_price_sen`,
+ *     which is EMPTY across the whole ~1326-SKU catalog (prices were
+ *     deliberately deferred, owner 2026-06-22 "不需要價格先"). Every margin it
+ *     produces is an artifact: cost 0 -> margin = revenue -> "100.0%" in green,
+ *     on every order, shown only to the finance viewer who acts on it.
+ *
+ * Owner 2026-07-16: "那個costing 應該是整個remove 掉啊 不是show naan", then
+ * "全關" — off everywhere, not dressed up. Gating the SCM surfaces through THIS
+ * helper rather than the raw `project_finance_viewer` flag is what keeps the
+ * PMS P&L alive while the SCM costing is dark; a blanket switch would have
+ * taken working project finances down with it.
+ *
+ * Turning it back on = seed the costs, flip COSTING_DISPLAY_ENABLED. One line.
+ */
+export function canViewScmCosting(user: AuthUser | null | undefined): boolean {
+  if (!COSTING_DISPLAY_ENABLED) return false;
+  return !!user?.project_finance_viewer;
 }

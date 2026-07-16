@@ -12,6 +12,7 @@
 //         chrome only.)
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { canViewScmCosting } from "../../auth/salesAccess";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Plus,
@@ -755,7 +756,7 @@ export function SalesInvoicesListV2() {
   // DECLARED only for a finance-viewer; the backend also omits their keys from
   // the payload for everyone else (canViewScmFinance).
   const { user, pageAccess } = useAuth();
-  const canFinance = !!user?.project_finance_viewer;
+  const canFinance = canViewScmCosting(user);
   // Write gate — a salesperson reaches this list read-only via the sales inherit
   // hatch (App.tsx allowSales; backend readInheritsFrom scm.sales.orders) and
   // cannot create/edit an invoice or record payments. Hide the create + row

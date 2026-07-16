@@ -12,6 +12,7 @@
 // 'pr-g.cn-list.filters.v1') — never reuse the DO/SO/DR keys.
 
 import { useEffect, useMemo, useState } from 'react';
+import { canViewScmCosting } from "../../auth/salesAccess";
 import type { JSX } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Plus, Search } from 'lucide-react';
@@ -306,7 +307,7 @@ export const ConsignmentNotes = () => {
      the three consignment routes declared no finance keys at all and all six
      consignment pages rendered cost/margin to everyone. */
   const { user } = useAuth();
-  const canFinance = !!user?.project_finance_viewer;
+  const canFinance = canViewScmCosting(user);
 
   const PAGE_SIZE = 50;
   const [page, setPage] = useState(0);
