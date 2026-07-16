@@ -210,12 +210,16 @@ export function MobileSkuPicker({
                       )}
                     </span>
                   )}
-                  <span style={{ flex: 1, minWidth: 0 }}>
-                    <span style={{ display: "block", fontSize: 13, fontWeight: 700, color: "#11140f", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
-                    <span style={{ display: "block", fontSize: 10.5, color: "#767b6e", marginTop: 2 }}>
-                      <span style={{ fontWeight: 700 }}>{p.code}</span> {"·"} {p.category}
-                    </span>
-                  </span>
+                  {/* Description only — desktop parity (SoLineCard picker rows,
+                      Commander 2026-05-27: "picker rows show description only —
+                      one scannable line per SKU. The code still binds on click").
+                      Owner 2026-07-16: mobile still stacked a redundant
+                      "<code> · <CATEGORY>" line under the name and squeezed the
+                      name into a nowrap/ellipsis column. The name now takes the
+                      row's full width and WRAPS instead of truncating; category
+                      stays available as the chip filter above. skuOf() still
+                      binds p.code / p.category on tap — display-only change. */}
+                  <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 700, color: "#11140f", overflowWrap: "anywhere" }}>{p.name}</span>
                   <span className="money" style={{ flex: "none", fontSize: 12, fontWeight: 700, color: "#0c3f39" }}>
                     RM {fromSen(priceSen)}
                   </span>

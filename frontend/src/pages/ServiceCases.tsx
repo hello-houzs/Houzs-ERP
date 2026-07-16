@@ -79,7 +79,7 @@ import { ServiceMetrics } from "./ServiceMetrics";
 import { ServiceSettingsView } from "./ServiceSettings";
 import { ServiceLeadTimePortal } from "./ServiceLeadTimePortal";
 import { ServiceProgressTracker } from "../components/ServiceProgressTracker";
-import { resolutionRoute, isStageActive, assrSubStatus, assrSubStatusLabel, ASSR_SUB_STATUSES } from "../vendor/scm/lib/assr/stages";
+import { resolutionRoute, isStageActive, assrSubStatus, assrSubStatusAddsInfo, assrSubStatusLabel, ASSR_SUB_STATUSES } from "../vendor/scm/lib/assr/stages";
 import type {
   Paginated,
   AssrCase,
@@ -507,7 +507,15 @@ function CasesView({
         // Sub-status detail (Nick 2026-07-15: the list must show e.g.
         // "Pending Inspection" under Verification rows) — second muted
         // line so the stage name + badges stay single-line above it.
+        //
+        // Owner 2026-07-16 ("duplicate 了"): the stage is shown ONCE. The sub
+        // line renders only when it ADDS information — a sub-status that just
+        // restates the stage ("Supplier Pickup" over "Pending Supplier Pickup")
+        // is suppressed; a distinguishing one ("Pending Supplier Return") stays.
+        const stageText = caseStageLabel(r.stage);
         const sub = assrSubStatus(r.stage, r.sub_status ?? null);
+        const subText =
+          sub && assrSubStatusAddsInfo(stageText, sub.label) ? sub.label : null;
         return (
           <div>
             <div className="flex items-center gap-1.5">
@@ -525,7 +533,7 @@ function CasesView({
                     ? "error"
                     : stageVariant(r.stage)
                 }
-                label={caseStageLabel(r.stage)}
+                label={stageText}
               />
               {r.stage !== "completed" && (r.is_breached === 1 || r.escalated_at) && (
                 // One SLA badge: solid red = breached, outline = escalated
@@ -544,9 +552,9 @@ function CasesView({
                 </Badge>
               )}
             </div>
-            {sub && (
+            {subText && (
               <div className="mt-0.5 pl-4 text-[10px] font-medium text-ink-muted">
-                {sub.label}
+                {subText}
               </div>
             )}
           </div>

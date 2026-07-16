@@ -134,6 +134,32 @@ export function assrSubStatus(
   return opts.find((o) => o.key === stored) ?? opts[0];
 }
 
+/**
+ * Does a sub-status label ADD information next to its stage label, or does it
+ * merely restate it? Owner 2026-07-16 ("為什麼這裡 duplicate 了"): the Cases
+ * list stacked "Supplier Pickup" over "Pending Supplier Pickup", which reads as
+ * a duplicate. "Pending Supplier Return" under the same stage is NOT a
+ * duplicate — it names which leg the case is on.
+ *
+ * Rule: strip a leading "Pending" and every non-alphanumeric, casefold, then
+ * compare. Sub-status restates the stage → false (caller hides it). Comparing
+ * the LABELS (not the keys) keeps the rule true for any wording the stage /
+ * sub-status tables grow later, without a hand-maintained duplicate list.
+ */
+const normalizeStageLabel = (s: string): string =>
+  s
+    .replace(/^\s*pending\s+/i, "")
+    .replace(/[^a-z0-9]+/gi, " ")
+    .trim()
+    .toLowerCase();
+
+export function assrSubStatusAddsInfo(
+  stageLabel: string,
+  subStatusLabel: string,
+): boolean {
+  return normalizeStageLabel(subStatusLabel) !== normalizeStageLabel(stageLabel);
+}
+
 /** Human label for a sub-status key (timeline rendering). */
 export function assrSubStatusLabel(key: string | null | undefined): string {
   for (const opts of Object.values(ASSR_SUB_STATUSES)) {
