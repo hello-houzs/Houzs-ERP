@@ -168,6 +168,46 @@ const PO_STATUS_BUCKETS: Record<string, string[]> = {
 const VALID_CURRENCIES = new Set(['MYR', 'RMB', 'USD', 'SGD']);
 const VALID_KINDS = new Set(['mfg_product', 'fabric', 'raw']);
 
+/* ── PO/MRP source-SO gate (mirror of the DO create-gate) ────────────────────
+   Owner ruling: PO and MRP are built ONLY from a CONFIRMED Sales Order. A PO
+   line sourced from an SO is allowed only when that SO's status is NOT in the
+   deny-list below (i.e. CONFIRMED or beyond). New SOs are CONFIRMED on insert
+   (only asDraft lands DRAFT), so the normal flow is unaffected. A purely manual
+   PO line (no SO link) skips this entirely — a PO can be raised with no SO.
+   Deny-list (not allow-list) so any legitimate forward status stays orderable.
+   This is the SAME threshold the DO side uses (SO_UNDELIVERABLE_STATUSES in
+   delivery-orders-mfg.ts) — ON_HOLD is blocked: a paused order should not be
+   ordered until it is taken off hold. */
+const SO_UNORDERABLE_STATUSES = new Set(['DRAFT', 'CANCELLED', 'ON_HOLD']);
+async function firstUnorderableSo(
+  sb: any,
+  soDocNos: Array<string | null | undefined>,
+): Promise<{ docNo: string; status: string } | null> {
+  const docNos = [...new Set(soDocNos.filter((d): d is string => !!d))];
+  if (docNos.length === 0) return null;
+  const { data } = await sb.from('mfg_sales_orders').select('doc_no, status').in('doc_no', docNos);
+  for (const r of (data ?? []) as Array<{ doc_no: string; status: string | null }>) {
+    const st = (r.status ?? '').toUpperCase();
+    // A row with no readable status falls through (never over-block); an unknown
+    // doc_no simply isn't returned here (FK rejects it downstream anyway).
+    if (SO_UNORDERABLE_STATUSES.has(st)) return { docNo: r.doc_no, status: st };
+  }
+  return null;
+}
+function soNotOrderableResponse(offender: { docNo: string; status: string }) {
+  const label =
+    offender.status === 'DRAFT' ? 'is not confirmed yet'
+    : offender.status === 'CANCELLED' ? 'has been cancelled'
+    : offender.status === 'ON_HOLD' ? 'is on hold'
+    : `is ${offender.status.toLowerCase()}`;
+  return {
+    error: 'so_not_orderable',
+    message: `This sales order (${offender.docNo}) ${label} — a purchase order can only be raised from a confirmed order.`,
+    soDocNo: offender.docNo,
+    soStatus: offender.status,
+  };
+}
+
 const HEADER_COLS =
   'id, po_number, supplier_id, status, po_date, expected_at, currency, ' +
   'subtotal_centi, tax_centi, total_centi, notes, submitted_at, received_at, ' +
@@ -446,7 +486,7 @@ mfgPurchaseOrders.get('/outstanding-so-items', async (c) => {
   }
 
   const outstanding = ((items ?? []) as unknown as Row[])
-    .filter((r) => r.so.status !== 'CANCELLED' && r.so.status !== 'DRAFT')
+    .filter((r) => r.so.status !== 'CANCELLED' && r.so.status !== 'DRAFT' && r.so.status !== 'ON_HOLD')
     .filter((r) => (pooledOk ? (shortageBySoItem.get(r.id) ?? 0) > 0 : r.qty - r.po_qty_picked > 0))
     .map((r) => {
       const remaining = pooledOk ? (shortageBySoItem.get(r.id) ?? 0) : (r.qty - r.po_qty_picked);
@@ -774,6 +814,27 @@ mfgPurchaseOrders.post('/', async (c) => {
   // Generate human-readable PO number. Format: PO-YYMM-NNN (counts within month).
   const supabase = c.get('supabase');
   const user = c.get('user');
+
+  /* PO/MRP only from CONFIRMED orders — a PO line sourced from an SO (carries a
+     soItemId, e.g. the From-SO / MRP convert POSTing here) may only be raised
+     when that SO is committed (CONFIRMED or beyond). Resolve every referenced
+     SO line → its doc_no and reject if any source SO is not orderable. Purely
+     manual lines (no soItemId) skip this — a PO can be raised with no SO link,
+     unchanged. Mirror of the DO create-gate. */
+  {
+    const lineSoItemIds = items
+      .map((it) => it.soItemId as string | undefined)
+      .filter((x): x is string => !!x);
+    if (lineSoItemIds.length > 0) {
+      const { data: lineSoRows } = await supabase
+        .from('mfg_sales_order_items').select('doc_no').in('id', lineSoItemIds);
+      const offender = await firstUnorderableSo(
+        supabase,
+        ((lineSoRows ?? []) as Array<{ doc_no: string | null }>).map((r) => r.doc_no),
+      );
+      if (offender) return c.json(soNotOrderableResponse(offender), 409);
+    }
+  }
 
   const yymm = (() => {
     const d = new Date();
@@ -1182,6 +1243,18 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
   }
 
   if (pickedItems.length === 0) return c.json({ error: 'no_pickable_lines' }, 400);
+
+  /* PO/MRP only from CONFIRMED orders — every source SO must be committed
+     (CONFIRMED or beyond) before its lines can be converted to a PO. Deny-list
+     mirror of the DO create-gate; covers the general picker, the MRP convert
+     (fromMrp) and the append-to-existing-PO (targetPoId) — all flow through
+     pickedItems. The legacy soItems path fabricates rows for unknown docs;
+     firstUnorderableSo only returns a match for a real, non-orderable SO, so a
+     fabricated/unknown doc never over-blocks. */
+  {
+    const offender = await firstUnorderableSo(supabase, pickedItems.map((p) => p.row.doc_no));
+    if (offender) return c.json(soNotOrderableResponse(offender), 409);
+  }
 
   // Re-project into the legacy soItems shape for the rest of the handler.
   // Commander 2026-05-28 — carry the per-line derived warehouse + delivery
