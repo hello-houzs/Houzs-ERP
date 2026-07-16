@@ -27,7 +27,7 @@ import { isServiceLine } from '../shared';
 import { findServiceLineCodes, serviceLinesNotReturnableResponse } from '../lib/service-line-guard';
 import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { canViewAllSales, canViewScmFinance } from '../lib/houzs-perms';
-import { resolveSalesScopeIds, salesDocOutOfScope } from '../lib/salesScope';
+import { resolveSalesScopeIds, salesDocOutOfScope, resolveCallerStaffId } from '../lib/salesScope';
 
 export const deliveryReturns = new Hono<{ Bindings: Env; Variables: Variables }>();
 deliveryReturns.use('*', supabaseAuth);
@@ -757,6 +757,28 @@ deliveryReturns.get('/:id', async (c) => {
 async function insertHeader(sb: any, userId: string, body: Record<string, unknown>, c: any) {
   const phoneRaw = (body.phone as string | undefined) ?? null;
   const emPhoneRaw = (body.emergencyContactPhone as string | undefined) ?? null;
+  /* Owner ruling 2026-07-16 — "要自動標記create order的人": with the picker left
+     blank the DR landed unattributed, and now that the DR list/detail are
+     row-scoped by salesperson_id the rep who created it could not see their own
+     return. Fall back to the CREATOR's real scm.staff uuid, mirroring SO create
+     (mfg-sales-orders.ts createSalesOrderCore). Lives in insertHeader so BOTH
+     create paths get it: POST / (blank picker) and POST /from-do, which copies
+     salesperson_id off the source DO header and yields NULL whenever that DO
+     carries none.
+
+     resolveCallerStaffId takes the REAL Houzs integer id from houzsUser —
+     NEVER c.get('user').id, which inside /api/scm/* is the bridge's pinned
+     system staff uuid (the documented 500 / mis-attribution trap).
+
+     UNRESOLVABLE CALLER → NULL, deliberately NOT the pinned system row (this is
+     where SO create differs: it degrades to user.id). Stamping the shared system
+     uuid would attribute every such DR to one identity — the pos-cart bug (#633)
+     — and, under the scoping this backstops, hand them to nobody while looking
+     attributed. NULL stays honest: invisible to a scoped rep, visible to every
+     view-all caller, who can assign the salesperson via PATCH /:id. */
+  const salespersonId =
+    (body.salespersonId as string | null | undefined) ??
+    (await resolveCallerStaffId(sb, c.get('houzsUser')?.id));
   return insertWithDocNoRetry<{ id: string; return_number: string }>(
     () => nextNum(sb, c),
     (returnNumber) => sb.from('delivery_returns').insert({
@@ -777,7 +799,7 @@ async function insertHeader(sb: any, userId: string, body: Record<string, unknow
     customer_country: (body.customerCountry as string) ?? null,
     postcode: (body.postcode as string) ?? null,
     phone: phoneRaw ? (normalizePhone(phoneRaw) ?? phoneRaw) : null,
-    salesperson_id: (body.salespersonId as string) ?? null,
+    salesperson_id: salespersonId,
     agent: (body.agent as string) ?? null,
     email: (body.email as string) ?? null,
     customer_type: (body.customerType as string) ?? null,
