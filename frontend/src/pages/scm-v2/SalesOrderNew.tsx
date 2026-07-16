@@ -1128,6 +1128,11 @@ export const SalesOrderNew = () => {
         const { method } = labelToApi(d.methodLabel);
         const body: { docNo: string } & Record<string, unknown> = {
           docNo,
+          /* The draft IS the intent — newPaymentDraft minted this key when the
+             operator added the row, and it survives a failed submit, so a
+             re-pressed Save replays rather than books twice. The hook
+             destructures it OUT of the body into the header. */
+          idempotencyKey:  d.idempotencyKey,
           paidAt:          d.paidAt,
           method,
           amountCenti:     d.amountCenti,
