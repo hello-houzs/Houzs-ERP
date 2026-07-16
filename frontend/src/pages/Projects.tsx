@@ -2978,6 +2978,14 @@ function ProjectsCalendarView() {
       // still be scrolled by dragging over its content. Works in both modes.
       const target = e.target as HTMLElement | null;
       if (target && target.closest(".cal-bar,[data-cal-content]")) return;
+      /* Owner 2026-07-16 — never hijack the wheel when the page can actually
+         scroll. The .cal-bar/[data-cal-content] escape hatches above only exist
+         on cells that HAVE content, so on an empty calendar (a scoped Sales rep
+         with no in-scope projects) every wheel event flipped the month and the
+         page could not be scrolled at all. This is the behaviour the note below
+         has always claimed but never implemented. */
+      const scroller = el.closest("main");
+      if (scroller && scroller.scrollHeight > scroller.clientHeight + 1) return;
       e.preventDefault();
       const now = Date.now();
       if (now - wheelTsRef.current < 380) return;

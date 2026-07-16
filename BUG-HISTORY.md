@@ -1,5 +1,17 @@
 ## 2026-07-16
 
+### 🟠 Projects Calendar: wheel hijacked on an empty grid — months flipped, page could not scroll
+- **Symptom:** Owner ("為什麼 sales 的 calender UI 好像不一樣") saw the Calendar as a Sales Executive parked on an empty month=2026-09 grid with ghosted chrome, and could not scroll it away.
+- **Root cause (traced):** `Projects.tsx` month-wheel handler only lets the page scroll when the wheel is over `.cal-bar` / `[data-cal-content]`; those exist ONLY on cells that have content. A scoped Sales rep's calendar is empty (correct by scope), so EVERY wheel event hit `e.preventDefault()` and flipped the month (380ms throttle) — the operator could never scroll. An admin's grid is full of bars, so their wheel behaves normally: this, not any role branch, is why it "looked different" for sales. The calendar renders zero role-gated controls. The in-code note claiming the flip is disabled on overflow was never implemented.
+- **Fix:** never hijack the wheel when the scroll container can actually scroll (`scrollHeight > clientHeight`) — the behaviour the note always promised. Month-flip still works on a non-scrolling viewport.
+- **Ref:** `fix/b3-calendar-wheel-ghost`, 2026-07-16.
+
+### 🟡 Sticky PageHeader ghosted the toolbar scrolling underneath it
+- **Symptom:** Controls (month nav / view toggle / filters) appeared faded and double-drawn behind the page title while scrolling.
+- **Root cause:** `PageHeader` is `sticky` with `bg-bg/95` (5% transparent) + `backdrop-blur-sm`; non-sticky toolbars slide underneath and bleed through the 5% + blur.
+- **Fix:** header background is now fully opaque (`bg-bg`) — a sticky header must not show content passing under it. Shared change: affects every page header.
+- **Ref:** `fix/b3-calendar-wheel-ghost`, 2026-07-16.
+
 ### 🟠 SO detail header "歪了" — wide action rail crushed the PageHeader title to a per-character column
 - **Symptom:** On SO detail (SalesOrderDetail.tsx, full editor) in edit mode, the title block rendered as a ~1-character-wide vertical column ("SO-
 2607-
