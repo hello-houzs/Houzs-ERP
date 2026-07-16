@@ -26,6 +26,7 @@ import { escapeForOr } from '../lib/postgrest-search';
 import { resolveSalesScopeIds, salesDocOutOfScope } from '../lib/salesScope';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix, companyCodeMap } from '../lib/companyScope';
 import { canViewAllSales, canViewScmFinance } from '../lib/houzs-perms';
+import { SO_ITEM_FINANCE_KEYS } from '../lib/finance-keys';
 import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item-codes';
 import { checkStockAvailability, shortStockResponse } from '../lib/check-stock-availability';
 import { findSofaLinesWithoutCompleteBatch, sofaNoCompleteBatchResponse, findIncompleteSofaSets, sofaIncompleteSetResponse, detectSofaSoItemIds } from '../lib/sofa-batch-guard';
@@ -155,10 +156,15 @@ const DO_FINANCE_KEYS = [
   'total_cost_centi', 'total_margin_centi', 'margin_pct_basis',
 ] as const;
 
-/* FINANCE-GATED line-item keys — per-line cost / margin. Present in ITEM (so the
-   detail's line grid can show them to a finance viewer) but stripped for a
-   non-finance caller in the DETAIL response (the list carries no items). */
-const DO_ITEM_FINANCE_KEYS = ['unit_cost_centi', 'line_cost_centi', 'line_margin_centi'] as const;
+/* KEPT LOCAL, deliberately — do NOT "converge" DO_FINANCE_KEYS onto
+   SO_FINANCE_KEYS. It is the finance-shaped subset of THIS file's HEADER select.
+   The DO carries service_centi / service_cost_centi (it delivers service lines)
+   but NOT deposit_centi — a deposit is taken on the ORDER, not on the delivery,
+   which is why SO_FINANCE_KEYS gates deposit and this list has nothing to gate.
+   Importing the SO's list would make this gate depend on a vocabulary this
+   document does not speak. The per-LINE keys ARE shared: byte-identical across
+   all seven sales documents, so they live in lib/finance-keys
+   (SO_ITEM_FINANCE_KEYS) and are imported above. */
 
 const ITEM =
   'id, delivery_order_id, so_item_id, item_code, item_group, description, description2, ' +
@@ -2292,7 +2298,7 @@ deliveryOrdersMfg.get('/:id', async (c) => {
   if (!canViewScmFinance(c)) {
     for (const k of DO_FINANCE_KEYS) delete (deliveryOrder as Record<string, unknown>)[k];
     for (const it of items) {
-      for (const k of DO_ITEM_FINANCE_KEYS) delete (it as Record<string, unknown>)[k];
+      for (const k of SO_ITEM_FINANCE_KEYS) delete (it as Record<string, unknown>)[k];
     }
   }
   return c.json({ deliveryOrder, items });
@@ -3457,7 +3463,18 @@ deliveryOrdersMfg.patch('/:id/items/:itemId', async (c) => {
   }
   const unitPrice = it.unitPriceCenti !== undefined ? Number(it.unitPriceCenti) : Number(prev.unit_price_centi);
   const discount = it.discountCenti !== undefined ? Number(it.discountCenti) : Number(prev.discount_centi);
-  const unitCost = it.unitCostCenti !== undefined ? Number(it.unitCostCenti) : Number(prev.unit_cost_centi);
+  /* A caller who cannot READ the cost must not WRITE it. GET /:id strips
+     unit_cost_centi for a non-finance caller (#600), so a client that seeds its
+     line draft off the detail payload and echoes it back would round-trip the
+     stripped field as a genuine 0 and wipe the line's cost basis — the DR bug
+     #632, on the DO. Latent today (the routed DeliveryOrderDetailV2 sends only
+     rackId on this PATCH), but the endpoint accepts any caller's body and the
+     un-repointed 2990 POS/admin app is a live consumer of these APIs. Keep the
+     stored cost instead; a finance caller is unaffected. DO NOT relax this to a
+     bare `!== undefined` — that test IS the trap. */
+  const unitCost = (canViewScmFinance(c) && it.unitCostCenti !== undefined)
+    ? Number(it.unitCostCenti)
+    : Number(prev.unit_cost_centi);
   // Audit 2026-06-20 — clamp like the PO create path (negative-money guard).
   const lineTotal = Math.max(0, (qty * unitPrice) - discount);
   const lineCost = qty * unitCost;

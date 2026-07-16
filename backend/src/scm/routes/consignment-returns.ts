@@ -35,6 +35,8 @@ import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { escapeForOr } from '../lib/postgrest-search';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { canViewScmFinance } from '../lib/houzs-perms';
+import { SO_ITEM_FINANCE_KEYS } from '../lib/finance-keys';
+import { sourceUnitCostByItemId } from '../lib/source-cost';
 
 export const consignmentReturns = new Hono<{ Bindings: Env; Variables: Variables }>();
 consignmentReturns.use('*', supabaseAuth);
@@ -74,8 +76,14 @@ const CRN_FINANCE_KEYS = [
   'total_cost_centi', 'total_margin_centi', 'margin_pct_basis',
 ] as const;
 
-/* Per-LINE cost/margin. canViewScmFinance fails closed. */
-const CRN_ITEM_FINANCE_KEYS = ['unit_cost_centi', 'line_cost_centi', 'line_margin_centi'] as const;
+/* KEPT LOCAL, deliberately — do NOT "converge" CRN_FINANCE_KEYS onto
+   SO_FINANCE_KEYS. It is the finance-shaped subset of THIS file's HEADER select,
+   and the consignment return speaks a narrower money vocabulary than the SO: no
+   service_centi / service_cost_centi and no deposit_centi (a return takes no
+   deposit). refund_centi is in HEADER and deliberately NOT here — the refund is
+   what the customer is owed and everyone who passes the access gate may see it,
+   the same line #625 (SO) and #632 (DR) drew. The per-LINE keys ARE shared —
+   see the SO_ITEM_FINANCE_KEYS import. */
 
 /** Strip header + line cost/margin in place for a non-finance caller. Accepts a
  *  single header or an array (the list passes rows). */
@@ -91,7 +99,7 @@ function gateCrnFinance(
     }
   }
   for (const it of (Array.isArray(items) ? items : items ? [items] : []) as Array<Record<string, unknown>>) {
-    for (const k of CRN_ITEM_FINANCE_KEYS) delete it[k];
+    for (const k of SO_ITEM_FINANCE_KEYS) delete it[k];
   }
 }
 
@@ -341,12 +349,26 @@ async function resyncReturnInventory(sb: any, returnId: string, performedBy: str
 }
 
 /* Build one consignment_delivery_return_items insert row from a client line
-   payload. Shared by POST / (bulk create) and POST /:id/items (single add). */
-function buildItemRow(returnId: string, it: Record<string, unknown>) {
+   payload. Shared by POST / (bulk create) and POST /:id/items (single add).
+
+   `sourceCostByNoteItem` (lib/source-cost) is the server's own read of the
+   SOURCE consignment-note line's unit_cost_centi. When the line is note-linked it
+   WINS over the client's `unitCostCenti` unconditionally — the return must be
+   booked at the cost the note shipped at, which is history, not a catalog lookup.
+   Ignoring the client is what makes stripping the cost off /returnable-note-lines
+   safe (the #632 trap, disarmed at its root). A free-hand line has no source row
+   and keeps the client value. */
+function buildItemRow(
+  returnId: string,
+  it: Record<string, unknown>,
+  sourceCostByNoteItem?: Map<string, number>,
+) {
   const qty = Number(it.qtyReturned ?? it.qty ?? 1);
   const unitPrice = Number(it.unitPriceCenti ?? 0);
   const discount = Number(it.discountCenti ?? 0);
-  const unitCost = Number(it.unitCostCenti ?? 0);
+  const noteItemId = ((it.doItemId as string | undefined) ?? (it.consignmentDoItemId as string | undefined)) ?? undefined;
+  const sourceCost = noteItemId ? sourceCostByNoteItem?.get(noteItemId) : undefined;
+  const unitCost = sourceCost !== undefined ? sourceCost : Number(it.unitCostCenti ?? 0);
   const lineTotal = (qty * unitPrice) - discount;
   const lineCost = qty * unitCost;
   const itemGroup = (it.itemGroup as string) ?? null;
@@ -458,13 +480,16 @@ consignmentReturns.get('/', async (c) => {
 // are pickable. Mirrors the DO→DR /returnable-do-lines endpoint. MUST be
 // registered before /:id so 'returnable-note-lines' isn't read as an id.
 //
-// DELIBERATELY NOT FINANCE-GATED — it carries unitCostCenti, but that value is
-// LOAD-BEARING, not display: ConsignmentReturnFromNote / ConsignmentReturnNew
-// feed it straight back into the create payload and buildItemRow writes it as
-// the new line's cost. Stripping it would book every converted return at cost 0.
-// Gating it needs the cost re-derived SERVER-side from the referenced note line,
-// and is left as a separate change. Same ruling, same reason, as the DR's
-// /returnable-do-lines (#632).
+// FINANCE-GATED (was not — see below). Each descriptor carries the source note
+// line's unitCostCenti, so this picker shipped every delivered line's unit cost
+// to any caller who could reach it. It was left open deliberately, because
+// ConsignmentReturnFromNote / ConsignmentReturnNew fed the value straight back
+// into the create payload and buildItemRow trusted it — a strip alone would have
+// booked every converted return at cost 0. That echo is now dead: buildItemRow
+// re-reads the cost from the source consignment_delivery_order_items row and
+// ignores the client, so the strip is safe. camelCase is why no existing list
+// matched this — SO_ITEM_FINANCE_KEYS is snake_case PostgREST vocabulary, and
+// lib/finance-keys warns that a camelCasing surface must strip in its own.
 consignmentReturns.get('/returnable-note-lines', async (c) => {
   const sb = c.get('supabase');
   const { data: notes, error: nErr } = await paginateAll<{ id: string; do_number: string; debtor_code: string | null; debtor_name: string | null }>((from, to) => sb
@@ -530,6 +555,9 @@ consignmentReturns.get('/returnable-note-lines', async (c) => {
     };
   }).filter((l) => l.remaining > 0);
 
+  if (!canViewScmFinance(c)) {
+    for (const l of lines) delete (l as unknown as Record<string, unknown>).unitCostCenti;
+  }
   return c.json({ lines });
 });
 
@@ -633,7 +661,15 @@ consignmentReturns.post('/', async (c) => {
   if (hErr) return c.json({ error: 'insert_failed', reason: hErr.message }, 500);
   const h = header as unknown as { id: string; return_number: string };
 
-  const rows = items.map((it) => buildItemRow(h.id, it));
+  /* Re-derive every note-linked line's cost from the SOURCE note line,
+     server-side — the New-Return form seeds its drafts off
+     /returnable-note-lines and posts the cost back, and trusting that echo is
+     what a finance strip would have turned into "book at cost 0" (#632). */
+  const sourceCostByNoteItem = await sourceUnitCostByItemId(
+    sb, 'consignment_delivery_order_items',
+    items.map((it: Record<string, unknown>) => (it.doItemId ?? it.consignmentDoItemId) as string | undefined),
+  );
+  const rows = items.map((it) => buildItemRow(h.id, it, sourceCostByNoteItem));
   const { error: iErr } = await sb.from('consignment_delivery_return_items').insert(stampCompany(rows, c));
   if (iErr) { await sb.from('consignment_delivery_returns').delete().eq('id', h.id); return c.json({ error: 'items_insert_failed', reason: iErr.message }, 500); }
   await recomputeTotals(sb, h.id);
@@ -718,7 +754,9 @@ consignmentReturns.post('/:id/items', async (c) => {
   const { data: header } = await sb.from('consignment_delivery_returns').select('id').eq('id', id).maybeSingle();
   if (!header) return c.json({ error: 'not_found' }, 404);
 
-  const row = buildItemRow(id, it);
+  const row = buildItemRow(id, it, await sourceUnitCostByItemId(
+    sb, 'consignment_delivery_order_items', [(it.doItemId ?? it.consignmentDoItemId) as string | undefined],
+  ));
   const { data, error } = await sb.from('consignment_delivery_return_items').insert({ ...row, company_id: activeCompanyId(c) }).select(ITEM).single();
   if (error) return c.json({ error: 'insert_failed', reason: error.message }, 500);
   /* The ITEM select echoes the stored line back — cost/margin included. A

@@ -27,6 +27,8 @@ import { isServiceLine } from '../shared';
 import { findServiceLineCodes, serviceLinesNotReturnableResponse } from '../lib/service-line-guard';
 import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { canViewAllSales, canViewScmFinance } from '../lib/houzs-perms';
+import { SO_ITEM_FINANCE_KEYS } from '../lib/finance-keys';
+import { sourceUnitCostByItemId } from '../lib/source-cost';
 import { resolveSalesScopeIds, salesDocOutOfScope, resolveCallerStaffId } from '../lib/salesScope';
 
 export const deliveryReturns = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -44,13 +46,15 @@ const DR_FINANCE_KEYS = [
   'total_cost_centi', 'total_margin_centi', 'margin_pct_basis',
 ] as const;
 
-/* Per-LINE cost/margin (ITEM carries unit_cost_centi / line_cost_centi /
-   line_margin_centi). The header strip above was written for the LIST only, so
-   the DETAIL shipped BOTH halves to every viewer — the file declared these keys
-   finance-only and then sent them. Same class as the DO/SI detail leak (#600)
-   and the SO detail leak (#625); DR was the one sales doc neither touched.
-   canViewScmFinance fails closed. */
-const DR_ITEM_FINANCE_KEYS = ['unit_cost_centi', 'line_cost_centi', 'line_margin_centi'] as const;
+/* KEPT LOCAL, deliberately — do NOT "converge" DR_FINANCE_KEYS onto
+   SO_FINANCE_KEYS. It is the finance-shaped subset of THIS file's HEADER select,
+   and the delivery return speaks a narrower money vocabulary than the SO: no
+   service_centi / service_cost_centi and no deposit_centi (a return takes no
+   deposit). refund_centi is in HEADER and deliberately NOT here — the refund is
+   what the customer is owed and everyone who passes the access gate may see it,
+   the same line #625 drew and #632 kept. The per-LINE keys ARE shared: they are
+   byte-identical across all seven sales documents, so they live in
+   lib/finance-keys (SO_ITEM_FINANCE_KEYS) and are imported above. */
 
 /** Strip header + line cost/margin in place for a non-finance caller. */
 function gateDrFinance(
@@ -63,7 +67,7 @@ function gateDrFinance(
     for (const k of DR_FINANCE_KEYS) delete (deliveryReturn as Record<string, unknown>)[k];
   }
   for (const it of (Array.isArray(items) ? items : []) as Array<Record<string, unknown>>) {
-    for (const k of DR_ITEM_FINANCE_KEYS) delete it[k];
+    for (const k of SO_ITEM_FINANCE_KEYS) delete it[k];
   }
 }
 
@@ -625,12 +629,27 @@ async function checkDrOverRemaining(
 /* Build one delivery_return_items insert row from a client line payload.
    Shared by POST / (bulk create), POST /:id/items (single add), and the
    convert-from-DO copy. Computes line_total / line_cost / margin so
-   recomputeTotals can roll them up. */
-function buildItemRow(deliveryReturnId: string, it: Record<string, unknown>) {
+   recomputeTotals can roll them up.
+
+   `sourceCostByDoItem` (lib/source-cost) is the server's own read of the SOURCE
+   DO line's unit_cost_centi. When the line is DO-linked it WINS over the
+   client's `unitCostCenti` unconditionally — a return must be booked at the cost
+   the DO actually shipped at, and that is a historical snapshot, not a catalog
+   lookup. Ignoring the client here is what makes stripping the cost off
+   /returnable-do-lines safe: a non-finance caller now echoes nothing that can
+   reach the column (the #632 trap, disarmed at its root rather than trusted not
+   to fire). A free-hand line has no source row, so it keeps the client value. */
+function buildItemRow(
+  deliveryReturnId: string,
+  it: Record<string, unknown>,
+  sourceCostByDoItem?: Map<string, number>,
+) {
   const qty = Number(it.qtyReturned ?? it.qty ?? 1);
   const unitPrice = Number(it.unitPriceCenti ?? 0);
   const discount = Number(it.discountCenti ?? 0);
-  const unitCost = Number(it.unitCostCenti ?? 0);
+  const doItemId = (it.doItemId as string | undefined) ?? undefined;
+  const sourceCost = doItemId ? sourceCostByDoItem?.get(doItemId) : undefined;
+  const unitCost = sourceCost !== undefined ? sourceCost : Number(it.unitCostCenti ?? 0);
   // Audit 2026-06-20 — clamp like the PO create path (negative-money guard).
   const lineTotal = Math.max(0, (qty * unitPrice) - discount);
   const lineCost = qty * unitCost;
@@ -702,13 +721,29 @@ deliveryReturns.get('/', async (c) => {
    ?doIds= it scopes to those DOs; without it, every non-cancelled DO.
 
    IMPORTANT (route ordering): this STATIC path MUST be registered BEFORE the
-   `/:id` param route below, or Hono tries to cast it to an id. */
+   `/:id` param route below, or Hono tries to cast it to an id.
+
+   FINANCE: each descriptor carries the source DO line's `unitCostCenti`, so this
+   picker shipped every delivered line's unit cost to any caller who could reach
+   it — #632 named it and correctly declined to strip it, because the New-Return
+   form echoed the value back and the create path trusted it, so a strip alone
+   would have booked every converted return at cost 0. That echo is now dead:
+   buildItemRow re-reads the cost from the source DO line server-side and ignores
+   the client. The strip is therefore safe, and it is done HERE at the response
+   rather than inside doLineRemaining — that helper is shared with the SI/DR
+   server-side convert paths, which legitimately need the real cost. camelCase is
+   why no existing list matched this: SO_ITEM_FINANCE_KEYS is snake_case
+   PostgREST vocabulary, and lib/finance-keys warns that a camelCasing surface
+   must strip in ITS OWN vocabulary. This is that surface. */
 deliveryReturns.get('/returnable-do-lines', async (c) => {
   const sb = c.get('supabase');
   const doIds = await resolveCandidateDoIds(sb, c.req.query('doIds'));
   if (doIds.length === 0) return c.json({ lines: [] });
   const remainingMap = await doReturnableRemaining(sb, doIds);
   const lines = [...remainingMap.values()].filter((l) => l.remaining > 0);
+  if (!canViewScmFinance(c)) {
+    for (const l of lines) delete (l as unknown as Record<string, unknown>).unitCostCenti;
+  }
   return c.json({ lines });
 });
 
@@ -884,7 +919,14 @@ deliveryReturns.post('/', async (c) => {
   if (hErr) return c.json({ error: 'insert_failed', reason: hErr.message }, 500);
   const h = header as unknown as { id: string; return_number: string };
 
-  const rows = items.map((it) => buildItemRow(h.id, it));
+  /* Re-derive every DO-linked line's cost from the SOURCE DO line, server-side.
+     The New-Return form seeds its drafts off /returnable-do-lines and posts the
+     cost back; trusting that echo is what a finance strip would have turned into
+     a silent "book at cost 0" (#632). */
+  const sourceCostByDoItem = await sourceUnitCostByItemId(
+    sb, 'delivery_order_items', items.map((it: Record<string, unknown>) => it.doItemId as string | undefined),
+  );
+  const rows = items.map((it) => buildItemRow(h.id, it, sourceCostByDoItem));
   const { error: iErr } = await sb.from('delivery_return_items').insert(stampCompany(rows, c));
   if (iErr) { await sb.from('delivery_returns').delete().eq('id', h.id); return c.json({ error: 'items_insert_failed', reason: iErr.message }, 500); }
   await recomputeTotals(sb, h.id);
@@ -1233,7 +1275,9 @@ deliveryReturns.post('/:id/items', async (c) => {
     if (over) return c.json(over, 409);
   }
 
-  const row = buildItemRow(id, it);
+  const row = buildItemRow(id, it, await sourceUnitCostByItemId(
+    sb, 'delivery_order_items', [it.doItemId as string | undefined],
+  ));
   const { data, error } = await sb.from('delivery_return_items').insert({ ...row, company_id: activeCompanyId(c) }).select(ITEM).single();
   if (error) return c.json({ error: 'insert_failed', reason: error.message }, 500);
   await recomputeTotals(sb, id);
