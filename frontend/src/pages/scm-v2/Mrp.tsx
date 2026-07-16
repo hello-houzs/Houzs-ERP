@@ -34,9 +34,17 @@ import { useCreatePosFromSoItems } from '../../vendor/scm/lib/suppliers-queries'
 import { fmtDateOrDash } from '@2990s/shared';
 import { DateField } from '../../vendor/scm/components/DateField';
 import { sortByText } from '../../vendor/scm/lib/sort-options';
+import { Button } from '../../components/Button';
+import { PageHeader } from '../../components/Layout';
 import styles from './Mrp.module.css';
 
 const ICON = { size: 14, strokeWidth: 1.75 } as const;
+
+/* Toolbar utility button — matches the shared <PageHeader> secondaryActions
+   button so the MRP toolbar reads as native header chrome (the page's own
+   .ghostBtn / .primaryBtn only resolved via the removed .page cascade). */
+const TOOLBAR_BTN =
+  'inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-surface px-3 text-[11px] font-semibold uppercase tracking-wider text-ink-secondary transition-colors hover:border-primary/40 hover:bg-primary-soft hover:text-primary disabled:cursor-default disabled:opacity-50';
 
 // Canonical date format (Commander 2026-05-29) — shared @2990s/shared helper.
 const fmtDate = (iso: string | null): string => fmtDateOrDash(iso);
@@ -121,17 +129,17 @@ function LeadTimesDialog({ onClose, warehouses }: { onClose: () => void; warehou
                 value={valueFor(cat)}
                 onChange={(e) => setDraft((s) => ({ ...s, [cat]: e.target.value }))}
               />
-              <span style={{ color: 'var(--fg-muted)', whiteSpace: 'nowrap' }}>days early</span>
-              <button
-                type="button" className={styles.primaryBtn}
+              <span className="whitespace-nowrap text-ink-muted">days early</span>
+              <Button
+                type="button" variant="primary"
                 disabled={update.isPending || !dirty(cat)}
                 onClick={() => save(cat)}
-              >Save</button>
+              >Save</Button>
             </span>
           </label>
         ))}
         <div className={styles.dialogActions}>
-          <button type="button" className={styles.ghostBtn} onClick={onClose}>Close</button>
+          <Button type="button" variant="secondary" onClick={onClose}>Close</Button>
         </div>
       </div>
     </div>
@@ -757,50 +765,71 @@ export const Mrp = () => {
   const windowLabel = hasWindow ? `${basisLabel} ${dateFrom || '…'} → ${dateTo || '…'}` : '';
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div>
-          <h1 className={styles.title}>MRP · Stock Status Report</h1>
-        </div>
-        <div className={styles.actions}>
-          {/* Group 1 — VIEW SWITCH: segmented toggle, one connected control with
-              the active option highlighted (same semantics as Create-PO-from-SO). */}
-          <div className={styles.modeToggle} role="group" aria-label="PO generation mode">
-            <button type="button" className={styles.modeBtn} data-active={poMode === 'combined'}
-              onClick={() => setPoMode('combined')} title="One PO per supplier">Combined</button>
-            <button type="button" className={styles.modeBtn} data-active={poMode === 'per-so'}
-              onClick={() => setPoMode('per-so')} title="One PO per SO (sofa / bedframe)">Per SO</button>
-          </div>
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Planning"
+        title="MRP · Stock Status Report"
+        actions={
+          <>
+            {/* Group 1 — VIEW SWITCH: segmented toggle, one connected control with
+                the active option highlighted (same semantics as Create-PO-from-SO).
+                Reskinned to the reference FilterPills slab. */}
+            <div
+              className="inline-flex items-center gap-0.5 rounded-md border border-border bg-surface p-1 shadow-stone"
+              role="group"
+              aria-label="PO generation mode"
+            >
+              {([
+                { mode: 'combined' as const, label: 'Combined', title: 'One PO per supplier' },
+                { mode: 'per-so' as const, label: 'Per SO', title: 'One PO per SO (sofa / bedframe)' },
+              ]).map(({ mode, label, title }) => (
+                <button
+                  key={mode}
+                  type="button"
+                  data-active={poMode === mode}
+                  onClick={() => setPoMode(mode)}
+                  title={title}
+                  className={
+                    poMode === mode
+                      ? 'whitespace-nowrap rounded bg-primary px-3.5 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-white shadow-sm transition-all duration-150'
+                      : 'whitespace-nowrap rounded px-3.5 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-ink-secondary transition-all duration-150 hover:bg-primary-soft hover:text-primary'
+                  }
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
 
-          <span className={styles.toolbarDivider} aria-hidden="true" />
+            <span className="hidden h-5 w-px self-center bg-border sm:block" aria-hidden="true" />
 
-          {/* Group 2 — UTILITIES: lighter, ghost/secondary buttons grouped together. */}
-          <div className={styles.utilityGroup} role="group" aria-label="Table utilities">
-            <button type="button" className={styles.ghostBtn} onClick={collapseAll}>Collapse</button>
-            <button type="button" className={styles.ghostBtn} onClick={expandAll}>Expand</button>
-            <button type="button" className={styles.ghostBtn} onClick={() => void q.refetch()} disabled={q.isFetching}>
-              <RefreshCw {...ICON} className={q.isFetching ? styles.spin : undefined} /> Refresh
-            </button>
-            {isAdmin && (
-              <button type="button" className={styles.ghostBtn} onClick={onBackfillWarehouses} disabled={backfilling}
-                title="Bind a warehouse to older SOs that have none, derived from each SO's State">
-                {backfilling ? 'Re-binding…' : 'Re-bind WH'}
+            {/* Group 2 — UTILITIES: lighter, secondary buttons grouped together. */}
+            <div className="inline-flex items-center gap-1.5" role="group" aria-label="Table utilities">
+              <button type="button" className={TOOLBAR_BTN} onClick={collapseAll}>Collapse</button>
+              <button type="button" className={TOOLBAR_BTN} onClick={expandAll}>Expand</button>
+              <button type="button" className={TOOLBAR_BTN} onClick={() => void q.refetch()} disabled={q.isFetching}>
+                <RefreshCw {...ICON} className={q.isFetching ? 'animate-spin' : undefined} /> Refresh
               </button>
-            )}
-            {isAdmin && (
-              <button type="button" className={styles.ghostBtn} onClick={() => setShowLeadTimes(true)}
-                title="Set how many days early each category's PO is ordered (applied when you Proceed PO)">
-                <Clock {...ICON} /> Lead Times
-              </button>
-            )}
-          </div>
-
-          <span className={styles.toolbarDivider} aria-hidden="true" />
-
-          {/* Group 3 — PRIMARY CTA: the strongest action, far right. */}
-          <button
+              {isAdmin && (
+                <button type="button" className={TOOLBAR_BTN} onClick={onBackfillWarehouses} disabled={backfilling}
+                  title="Bind a warehouse to older SOs that have none, derived from each SO's State">
+                  {backfilling ? 'Re-binding…' : 'Re-bind WH'}
+                </button>
+              )}
+              {isAdmin && (
+                <button type="button" className={TOOLBAR_BTN} onClick={() => setShowLeadTimes(true)}
+                  title="Set how many days early each category's PO is ordered (applied when you Proceed PO)">
+                  <Clock {...ICON} /> Lead Times
+                </button>
+              )}
+            </div>
+          </>
+        }
+        primaryAction={
+          /* Group 3 — PRIMARY CTA: the strongest action, far right. */
+          <Button
             type="button"
-            className={styles.primaryBtn}
+            variant="primary"
+            icon={<ShoppingCart {...ICON} />}
             disabled={createPos.isPending || shortCount === 0}
             onClick={onProceed}
             title={
@@ -809,7 +838,6 @@ export const Mrp = () => {
               : view === 'sofa' ? 'Order all sofa sets still to order' : 'Order all shortage SKUs'
             }
           >
-            <ShoppingCart {...ICON} />
             {createPos.isPending
               ? 'Processing…'
               : selectedShortCount > 0
@@ -817,15 +845,22 @@ export const Mrp = () => {
                 : hasWindow
                   ? `Proceed PO · window (${shortCount})`
                   : `Proceed PO (${shortCount})`}
-          </button>
-        </div>
-      </div>
+          </Button>
+        }
+      />
 
-      {/* Tabs — Commander 2026-06-15: one tab per category (Service excluded). */}
-      <div className={styles.tabBar} role="tablist">
+      {/* Tabs — Commander 2026-06-15: one tab per category (Service excluded).
+          Underline strip matching the shared <TabStrip>; hand-rolled so the
+          tablist/tab/aria-selected semantics this page already had survive. */}
+      <div className="no-scrollbar -mx-4 flex items-center gap-1 overflow-x-auto border-b border-border px-4 sm:mx-0 sm:px-0 [&>*]:shrink-0" role="tablist">
         {VIEW_TABS.map((t) => (
           <button key={t.value} type="button" role="tab" aria-selected={view === t.value}
-            className={styles.tab} data-active={view === t.value} onClick={() => switchView(t.value)}>
+            data-active={view === t.value} onClick={() => switchView(t.value)}
+            className={
+              view === t.value
+                ? 'relative -mb-px flex items-center gap-2 whitespace-nowrap border-b-2 border-primary px-4 py-2.5 text-[12px] font-semibold text-primary transition-colors'
+                : 'relative -mb-px flex items-center gap-2 whitespace-nowrap border-b-2 border-transparent px-4 py-2.5 text-[12px] font-semibold text-ink-secondary transition-colors hover:text-ink'
+            }>
             {t.label}
           </button>
         ))}
@@ -834,17 +869,19 @@ export const Mrp = () => {
       {/* Summary pills removed (Commander 2026-06-15 — "那个不需要,删掉"); the
           active date-window chip stays since it reflects the live filter. */}
       {data && hasWindow && (
-        <div className={styles.summaryRow}>
-          <span className={styles.summaryChip}><CalendarRange {...ICON} /> Window {windowLabel}</span>
+        <div className="flex flex-wrap gap-3">
+          <span className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-border bg-surface px-3 py-2 text-[13px] font-semibold text-ink shadow-stone">
+            <CalendarRange {...ICON} /> Window {windowLabel}
+          </span>
         </div>
       )}
 
       {/* Sofa is ordered as a colour-matched SET, one PO per SO. */}
       {view === 'sofa' && (
-        <div className={styles.note}>
-          <Info {...ICON} />
+        <div className="flex items-start gap-2 rounded-lg border border-primary/30 bg-primary-soft px-4 py-2.5 text-[12.5px] leading-relaxed text-ink-secondary">
+          <Info {...ICON} className="mt-0.5 shrink-0 text-primary" />
           <span>
-            Expand a sofa model to see its colour <strong>variants</strong>, then
+            Expand a sofa model to see its colour <strong className="font-semibold text-primary">variants</strong>, then
             which Sales Orders need each. A sofa is colour-matched and ordered as
             a whole set — selecting one selects the whole same-SO set. Orange rows
             still need ordering.
@@ -854,10 +891,10 @@ export const Mrp = () => {
 
       {/* Bedframe flattened (BF-FLAT): one row per colour variant. */}
       {view === 'bedframe' && (
-        <div className={styles.note}>
-          <Info {...ICON} />
+        <div className="flex items-start gap-2 rounded-lg border border-primary/30 bg-primary-soft px-4 py-2.5 text-[12.5px] leading-relaxed text-ink-secondary">
+          <Info {...ICON} className="mt-0.5 shrink-0 text-primary" />
           <span>
-            Each row is one bedframe <strong>colour / variant</strong> (its
+            Each row is one bedframe <strong className="font-semibold text-primary">colour / variant</strong> (its
             Description 2). Expand a row to see which Sales Orders need it. Orange
             rows still need ordering.
           </span>
@@ -887,7 +924,7 @@ export const Mrp = () => {
           <DateField value={dateTo} onChange={setDateTo} aria-label="To date" />
         </label>
         {hasWindow && (
-          <button type="button" className={styles.ghostBtn}
+          <button type="button" className={TOOLBAR_BTN}
             onClick={() => { setDateFrom(''); setDateTo(''); }}>Clear window</button>
         )}
         <label className={styles.filterField} title="Show SO lines that have no delivery date (not ready to order)">
@@ -1009,10 +1046,10 @@ export const Mrp = () => {
               />
             </label>
             <div className={styles.dialogActions}>
-              <button type="button" className={styles.ghostBtn} onClick={() => setDialog(null)}>Cancel</button>
-              <button
+              <Button type="button" variant="secondary" onClick={() => setDialog(null)}>Cancel</Button>
+              <Button
                 type="button"
-                className={styles.primaryBtn}
+                variant="primary"
                 disabled={createPos.isPending}
                 onClick={() => {
                   const { picks, orderedCodes } = dialog;
@@ -1021,7 +1058,7 @@ export const Mrp = () => {
                 }}
               >
                 {createPos.isPending ? 'Processing…' : 'Confirm'}
-              </button>
+              </Button>
             </div>
           </div>
         </div>
@@ -1034,13 +1071,13 @@ export const Mrp = () => {
             <div className={styles.dialogActions}>
               {dialog.kind === 'created' ? (
                 <>
-                  <button type="button" className={styles.ghostBtn} onClick={() => setDialog(null)}>Stay here</button>
-                  <button type="button" className={styles.primaryBtn} onClick={() => { setDialog(null); navigate('/scm/purchase-orders'); }}>
+                  <Button type="button" variant="secondary" onClick={() => setDialog(null)}>Stay here</Button>
+                  <Button type="button" variant="primary" onClick={() => { setDialog(null); navigate('/scm/purchase-orders'); }}>
                     Open Purchase Orders
-                  </button>
+                  </Button>
                 </>
               ) : (
-                <button type="button" className={styles.primaryBtn} onClick={() => setDialog(null)}>OK</button>
+                <Button type="button" variant="primary" onClick={() => setDialog(null)}>OK</Button>
               )}
             </div>
           </div>

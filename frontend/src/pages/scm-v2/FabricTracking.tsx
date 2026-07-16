@@ -19,7 +19,8 @@
 
 import { useMemo, useRef, useState } from 'react';
 import { Search, Plus, X, Download, Upload } from 'lucide-react';
-import { Button } from '@2990s/design-system';
+import { Button, IconButton } from '../../components/Button';
+import { PageHeader } from '../../components/Layout';
 import {
   useFabricTrackings,
   useCreateFabric,
@@ -29,9 +30,15 @@ import {
 import { FabricsTable } from '../../vendor/scm/components/FabricsTable';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { toCsv, parseCsv, triggerDownload, type ParsedImport } from '../../vendor/scm/lib/fabric-csv';
-import styles from './FabricTracking.module.css';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
+
+/* Shared field chrome for the two dialogs — the design-system input slab.
+   Was `styles.searchInput` from the bespoke module, whose colours only
+   resolved through the deleted `.page` token-override cascade. */
+const FIELD =
+  'h-9 w-full rounded-md border border-border bg-surface px-3 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20';
+const FIELD_LABEL = 'mb-1 block text-[11px] font-semibold uppercase tracking-wider text-ink-muted';
 
 export const FabricTracking = () => {
   const notify = useNotify();
@@ -67,34 +74,42 @@ export const FabricTracking = () => {
   };
 
   return (
-    <div className={styles.page}>
-      <div className={styles.titleBlock}>
-        <h1 className={styles.title}>Fabric Converter</h1>
-      </div>
+    <div>
+      {/* ── Header — shared PageHeader (full-bleed, design-system) ─── */}
+      <PageHeader
+        eyebrow="Reference data"
+        title="Fabric Converter"
+        primaryAction={
+          <div className="flex items-stretch gap-2">
+            <Button variant="secondary" icon={<Download {...ICON} />} onClick={onExport}>
+              Export CSV
+            </Button>
+            <Button variant="secondary" icon={<Upload {...ICON} />} onClick={onPickFile}>
+              Import CSV
+            </Button>
+            <Button variant="primary" icon={<Plus {...ICON} />} onClick={() => setCreating(true)}>
+              New Fabric
+            </Button>
+          </div>
+        }
+      />
 
-      <div className={styles.filterRow}>
-        <div className={styles.searchBox}>
-          <Search size={16} strokeWidth={1.75} className={styles.searchIcon} />
+      {/* ── Filter row — search only; the CTAs moved into the header ── */}
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <div className="relative min-w-[320px] flex-1">
+          <Search
+            size={16}
+            strokeWidth={1.75}
+            className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-muted"
+          />
           <input
             type="search"
-            className={styles.searchInput}
+            className="h-9 w-full rounded-md border border-border bg-surface pl-9 pr-3.5 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20"
             placeholder="Search by code or description…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
         </div>
-        <Button variant="ghost" size="md" onClick={onExport}>
-          <Download {...ICON} />
-          <span>Export CSV</span>
-        </Button>
-        <Button variant="ghost" size="md" onClick={onPickFile}>
-          <Upload {...ICON} />
-          <span>Import CSV</span>
-        </Button>
-        <Button variant="primary" size="md" onClick={() => setCreating(true)}>
-          <Plus {...ICON} />
-          <span>New Fabric</span>
-        </Button>
         <input ref={fileInputRef} type="file" accept=".csv,text/csv"
           style={{ display: 'none' }} onChange={onFileChosen} />
       </div>
@@ -160,81 +175,73 @@ const NewFabricDialog = ({ onClose }: { onClose: () => void }) => {
   return (
     <div
       onClick={onClose}
-      style={{
-        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 50,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-      }}>
+      className="fixed inset-0 z-50 flex items-center justify-center bg-ink/30 p-4">
       <div onClick={(e) => e.stopPropagation()}
-        style={{
-          width: 520, maxWidth: '95vw', background: 'var(--c-cream)',
-          padding: 'var(--space-5)', borderRadius: 'var(--radius-xl)',
-          boxShadow: 'var(--shadow-3)',
-        }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h2 className={styles.title} style={{ fontSize: 'var(--fs-22)' }}>New Fabric</h2>
-          <button type="button" className={styles.searchInput} style={{ width: 32, height: 32, padding: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }} onClick={onClose}>
-            <X {...ICON} />
-          </button>
+        className="w-[520px] max-w-[95vw] animate-modal-in rounded-lg border border-border bg-surface p-5 shadow-slab">
+        <div className="flex items-center justify-between">
+          <h2 className="font-display text-[19px] font-extrabold leading-tight tracking-tight text-ink">New Fabric</h2>
+          <IconButton icon={<X {...ICON} />} variant="ghost" size="sm" onClick={onClose} aria-label="Close" />
         </div>
 
-
-        <label style={{ display: 'block', marginBottom: 'var(--space-3)' }}>
-          <div style={{ fontSize: 'var(--fs-12)', color: 'var(--fg-muted)', marginBottom: 4 }}>Fabric Code *</div>
-          <input className={styles.searchInput} style={{ width: '100%' }}
-            value={form.fabricCode} placeholder="AVANI 09 / AH-2 / NEW-FABRIC-001"
-            autoFocus
-            onChange={(e) => set('fabricCode', e.target.value)} />
-        </label>
-
-        <label style={{ display: 'block', marginBottom: 'var(--space-3)' }}>
-          <div style={{ fontSize: 'var(--fs-12)', color: 'var(--fg-muted)', marginBottom: 4 }}>Description</div>
-          <input className={styles.searchInput} style={{ width: '100%' }}
-            value={form.fabricDescription} placeholder="e.g. IVORY / FABRIC"
-            onChange={(e) => set('fabricDescription', e.target.value)} />
-        </label>
-
-        <label style={{ display: 'block', marginBottom: 'var(--space-3)' }}>
-          <div style={{ fontSize: 'var(--fs-12)', color: 'var(--fg-muted)', marginBottom: 4 }}>Series (collection name)</div>
-          <input className={styles.searchInput} style={{ width: '100%' }}
-            value={form.series} placeholder="e.g. KOONA VELVET H2O"
-            onChange={(e) => set('series', e.target.value)} />
-        </label>
-
-        <label style={{ display: 'block', marginBottom: 'var(--space-3)' }}>
-          <div style={{ fontSize: 'var(--fs-12)', color: 'var(--fg-muted)', marginBottom: 4 }}>Colours (comma-separated — makes the fabric pickable on POS)</div>
-          <input className={styles.searchInput} style={{ width: '100%' }}
-            value={form.colours} placeholder="e.g. Sand, Charcoal, Ivory"
-            onChange={(e) => set('colours', e.target.value)} />
-        </label>
-
-        {/* Commander 2026-05-27 (Fix 6): only Price 1 and Price 2 are in
-            commercial use today. PRICE_3 dropped from the dropdown but
-            retained in the enum so historical rows still render their
-            tier; click-cycle on the table collapses to a 2-state toggle. */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-3)' }}>
-          <label>
-            <div style={{ fontSize: 'var(--fs-12)', color: 'var(--fg-muted)', marginBottom: 4 }}>Sofa Tier</div>
-            <select className={styles.searchInput} style={{ width: '100%' }}
-              value={form.sofaPriceTier}
-              onChange={(e) => set('sofaPriceTier', e.target.value as FabricTier)}>
-              <option value="PRICE_1">Price 1</option>
-              <option value="PRICE_2">Price 2</option>
-            </select>
+        <div className="mt-4">
+          <label className="mb-3 block">
+            <div className={FIELD_LABEL}>Fabric Code *</div>
+            <input className={FIELD}
+              value={form.fabricCode} placeholder="AVANI 09 / AH-2 / NEW-FABRIC-001"
+              autoFocus
+              onChange={(e) => set('fabricCode', e.target.value)} />
           </label>
-          <label>
-            <div style={{ fontSize: 'var(--fs-12)', color: 'var(--fg-muted)', marginBottom: 4 }}>Bedframe Tier</div>
-            <select className={styles.searchInput} style={{ width: '100%' }}
-              value={form.bedframePriceTier}
-              onChange={(e) => set('bedframePriceTier', e.target.value as FabricTier)}>
-              <option value="PRICE_1">Price 1</option>
-              <option value="PRICE_2">Price 2</option>
-            </select>
+
+          <label className="mb-3 block">
+            <div className={FIELD_LABEL}>Description</div>
+            <input className={FIELD}
+              value={form.fabricDescription} placeholder="e.g. IVORY / FABRIC"
+              onChange={(e) => set('fabricDescription', e.target.value)} />
           </label>
+
+          <label className="mb-3 block">
+            <div className={FIELD_LABEL}>Series (collection name)</div>
+            <input className={FIELD}
+              value={form.series} placeholder="e.g. KOONA VELVET H2O"
+              onChange={(e) => set('series', e.target.value)} />
+          </label>
+
+          <label className="mb-3 block">
+            <div className={FIELD_LABEL}>Colours (comma-separated — makes the fabric pickable on POS)</div>
+            <input className={FIELD}
+              value={form.colours} placeholder="e.g. Sand, Charcoal, Ivory"
+              onChange={(e) => set('colours', e.target.value)} />
+          </label>
+
+          {/* Commander 2026-05-27 (Fix 6): only Price 1 and Price 2 are in
+              commercial use today. PRICE_3 dropped from the dropdown but
+              retained in the enum so historical rows still render their
+              tier; click-cycle on the table collapses to a 2-state toggle. */}
+          <div className="grid grid-cols-2 gap-3">
+            <label>
+              <div className={FIELD_LABEL}>Sofa Tier</div>
+              <select className={FIELD}
+                value={form.sofaPriceTier}
+                onChange={(e) => set('sofaPriceTier', e.target.value as FabricTier)}>
+                <option value="PRICE_1">Price 1</option>
+                <option value="PRICE_2">Price 2</option>
+              </select>
+            </label>
+            <label>
+              <div className={FIELD_LABEL}>Bedframe Tier</div>
+              <select className={FIELD}
+                value={form.bedframePriceTier}
+                onChange={(e) => set('bedframePriceTier', e.target.value as FabricTier)}>
+                <option value="PRICE_1">Price 1</option>
+                <option value="PRICE_2">Price 2</option>
+              </select>
+            </label>
+          </div>
         </div>
 
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--space-3)', marginTop: 'var(--space-5)' }}>
-          <Button variant="ghost" size="md" onClick={onClose}>Cancel</Button>
-          <Button variant="primary" size="md" onClick={submit} disabled={create.isPending}>
+        <div className="mt-5 flex justify-end gap-3">
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button variant="primary" onClick={submit} disabled={create.isPending}>
             {create.isPending ? 'Saving…' : 'Create Fabric'}
           </Button>
         </div>
@@ -271,44 +278,34 @@ const ImportPreviewDialog = ({
 
   return (
     <div onClick={onClose}
-      style={{
-        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.32)', zIndex: 50,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-      }}>
+      className="fixed inset-0 z-50 flex items-center justify-center bg-ink/30 p-4">
       <div onClick={(e) => e.stopPropagation()}
-        style={{
-          width: 560, maxWidth: '95vw', background: 'var(--c-cream)',
-          padding: 'var(--space-5)', borderRadius: 'var(--radius-xl)',
-          boxShadow: 'var(--shadow-3)',
-        }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h2 className={styles.title} style={{ fontSize: 'var(--fs-22)' }}>Import CSV</h2>
-          <button type="button" className={styles.searchInput} style={{ width: 32, height: 32, padding: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }} onClick={onClose}>
-            <X {...ICON} />
-          </button>
+        className="w-[560px] max-w-[95vw] animate-modal-in rounded-lg border border-border bg-surface p-5 shadow-slab">
+        <div className="flex items-center justify-between">
+          <h2 className="font-display text-[19px] font-extrabold leading-tight tracking-tight text-ink">Import CSV</h2>
+          <IconButton icon={<X {...ICON} />} variant="ghost" size="sm" onClick={onClose} aria-label="Close" />
         </div>
 
-
-        <div style={{ background: 'var(--bg-surface, #fff)', borderRadius: 'var(--radius-md)', padding: 'var(--space-3)', marginBottom: 'var(--space-3)' }}>
-          <div style={{ fontSize: 'var(--fs-14)' }}>
-            <strong>{rows.length}</strong> row{rows.length === 1 ? '' : 's'} ready to upsert.
+        <div className="mb-3 mt-4 rounded-lg border border-border-subtle bg-surface-2 p-3">
+          <div className="text-[13px] text-ink">
+            <strong className="font-semibold">{rows.length}</strong> row{rows.length === 1 ? '' : 's'} ready to upsert.
           </div>
           {warnings.length > 0 && (
-            <div style={{ marginTop: 8, color: 'var(--fg-muted)', fontSize: 'var(--fs-12)' }}>
+            <div className="mt-2 text-[12px] text-ink-muted">
               {warnings.map((w, i) => <div key={i}>⚠ {w}</div>)}
             </div>
           )}
           {errors.length > 0 && (
-            <div style={{ marginTop: 8, color: 'var(--c-error, #b34)', fontSize: 'var(--fs-12)', maxHeight: 200, overflowY: 'auto' }}>
+            <div className="mt-2 max-h-[200px] overflow-y-auto text-[12px] text-err">
               {errors.slice(0, 30).map((e, i) => <div key={i}>✗ {e}</div>)}
               {errors.length > 30 && <div>…and {errors.length - 30} more.</div>}
             </div>
           )}
         </div>
 
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--space-3)' }}>
-          <Button variant="ghost" size="md" onClick={onClose}>Cancel</Button>
-          <Button variant="primary" size="md" onClick={commit} disabled={!canCommit || upsert.isPending}>
+        <div className="flex justify-end gap-3">
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button variant="primary" onClick={commit} disabled={!canCommit || upsert.isPending}>
             {upsert.isPending ? 'Importing…' : `Upsert ${rows.length} row${rows.length === 1 ? '' : 's'}`}
           </Button>
         </div>

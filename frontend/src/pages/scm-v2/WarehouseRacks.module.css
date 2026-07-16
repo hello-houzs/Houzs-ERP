@@ -1,108 +1,39 @@
-/* Warehouse (Rack/REC) page — desktop rich experience (feat/rec-warehouse-
-   desktop-p1). Ported UX from HOOKKA's warehouse.tsx, restyled to the Houzs
-   scm-v2 Ink & Petrol token cascade (mirrors Inventory.module.css). */
+/* ====================================================================
+   Warehouse (Rack/REC) page · design-system reskin (2026-07-16)
 
-.page {
-  --c-orange:        #16695f;
-  --c-burnt:         #0c3f39;
-  --c-cream:         #f4f6f3;
-  --c-paper:         #fcfdfb;
-  --c-ink:           #11140f;
-  --c-ink-secondary: #767b6e;
-  --c-ink-muted:     #9aa093;
-  --fg:              #11140f;
-  --fg-muted:        #767b6e;
-  --line:            #d6d9d2;
-  --line-strong:     #c2c6bd;
-  --c-accent-soft:   #eff6f4;
+   The page frame is now FULL-BLEED and matches the shipped
+   SalesOrderMaintenance / SO-cluster reskin: the sticky header is the
+   shared <PageHeader>, the KPI tiles are the shared <StatCard>, the tab
+   strip + action buttons are Tailwind token utilities inline in the TSX,
+   and the buttons are the LOCAL <Button>.
 
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-5);
-  padding: var(--space-5) var(--space-6) var(--space-7);
-  background: #dcdfd9;
-  min-height: 100%;
-}
+   The old grey inset "framed card" look (#dcdfd9 canvas, the .page
+   token-override cascade, the bespoke .headerRow / .title / .subtitle /
+   .tabRow / .statCard slabs) is gone.
 
-.headerRow {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-4);
-  flex-wrap: wrap;
-}
+   IMPORTANT — the removed .page block was the ONLY declaration site for
+   this file's --c-* / --line cascade, so every colour below is now pinned
+   to its literal Ink & Petrol hex. (The global vendor tokens.css declares
+   the same names with DIFFERENT values — e.g. --c-cream #ffffff, --c-paper
+   #f4f6f3, --line rgba(34,31,32,0.12) — so leaving them as var() would have
+   silently re-coloured the whole page.) Structural tokens (--space-*,
+   --fs-*, --font-*, --shadow-*, --radius-*) still resolve globally and stay
+   as var().
 
-.title {
-  font-family: var(--font-sans, system-ui);
-  font-size: 18px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-  line-height: 1.15;
-  color: var(--c-ink);
-  margin: 0;
-}
-
-.subtitle {
-  font-family: var(--font-sans);
-  font-size: var(--fs-12);
-  color: var(--fg-muted);
-  margin: 4px 0 0;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  text-decoration: none;
-}
-
-.actionsRow {
-  display: flex;
-  gap: var(--space-2);
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-/* ── Tabs ─────────────────────────────────────────────────────────────── */
-.tabRow {
-  display: inline-flex;
-  background: var(--c-paper);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-pill);
-  padding: 4px;
-  gap: 2px;
-}
-.tab {
-  font-family: var(--font-sans, system-ui);
-  font-size: 12.5px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  padding: 6px 14px;
-  border-radius: var(--radius-pill);
-  border: none;
-  background: transparent;
-  color: var(--fg-muted);
-  cursor: pointer;
-  white-space: nowrap;
-}
-.tab:hover { color: var(--c-ink); }
-.tab[data-active='true'] {
-  background: #16695f;
-  color: #fff;
-  box-shadow: var(--shadow-1);
-}
+     border  #d6d9d2   border-subtle #e3e6e0   border-strong #c2c6bd
+     surface #fff      surface-2     #f4f6f3
+     ink     #11140f   ink-muted     #767b6e
+     primary #16695f   primary-ink   #0c3f39
+   ==================================================================== */
 
 /* ── Warehouse selector ───────────────────────────────────────────────── */
-.selectorRow {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  flex-wrap: wrap;
-}
 .eyebrow {
   font-family: var(--font-button);
   font-size: var(--fs-10);
   font-weight: 600;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--fg-muted);
+  color: #767b6e;
   margin: 0;
 }
 .selectWrap {
@@ -113,57 +44,25 @@
 .fieldSelect {
   font-family: var(--font-sans);
   font-size: var(--fs-13);
-  background: var(--c-paper);
-  border: 1px solid var(--line);
+  background: #fff;
+  border: 1px solid #d6d9d2;
   border-radius: var(--radius-md);
   padding: 6px 32px 6px 10px;
-  color: var(--c-ink);
+  color: #11140f;
   outline: none;
   width: 100%;
   appearance: none;
   -webkit-appearance: none;
   -moz-appearance: none;
 }
-.fieldSelect:focus { border-color: var(--line-strong); background: var(--c-cream); }
+.fieldSelect:focus { border-color: #16695f; background: #fff; }
 .selectChevron {
   position: absolute;
   right: 10px;
   top: 50%;
   transform: translateY(-50%);
-  color: var(--fg-muted);
+  color: #767b6e;
   pointer-events: none;
-}
-
-/* ── KPI stat tiles ───────────────────────────────────────────────────── */
-.statGrid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: var(--space-4);
-}
-.statCard {
-  background: var(--c-paper);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  padding: var(--space-4) var(--space-5);
-  box-shadow: var(--shadow-1);
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.statLabel {
-  font-family: var(--font-button);
-  font-size: var(--fs-11);
-  font-weight: 600;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--fg-muted);
-}
-.statValue {
-  font-family: var(--font-mark);
-  font-size: var(--fs-24);
-  font-weight: 800;
-  font-stretch: 80%;
-  color: var(--c-ink);
 }
 
 /* ── Legend + search ──────────────────────────────────────────────────── */
@@ -174,7 +73,7 @@
   flex-wrap: wrap;
   font-family: var(--font-sans);
   font-size: var(--fs-12);
-  color: var(--fg-muted);
+  color: #767b6e;
 }
 .legendItem {
   display: inline-flex;
@@ -201,21 +100,21 @@
   left: var(--space-3);
   top: 50%;
   transform: translateY(-50%);
-  color: var(--fg-muted);
+  color: #767b6e;
   pointer-events: none;
 }
 .searchInput {
   width: 100%;
   font-family: var(--font-sans);
   font-size: var(--fs-14);
-  background: var(--c-paper);
-  border: 1px solid var(--line);
+  background: #fff;
+  border: 1px solid #d6d9d2;
   border-radius: var(--radius-md);
   padding: var(--space-2) var(--space-3) var(--space-2) var(--space-7);
-  color: var(--c-ink);
+  color: #11140f;
   outline: none;
 }
-.searchInput:focus { border-color: var(--line-strong); background: var(--c-cream); }
+.searchInput:focus { border-color: #16695f; background: #fff; }
 
 .filterRow {
   display: flex;
@@ -226,7 +125,7 @@
 .hint {
   font-family: var(--font-sans);
   font-size: var(--fs-12);
-  color: var(--fg-muted);
+  color: #767b6e;
   margin: 0;
 }
 
@@ -320,8 +219,8 @@
 
 /* ── Cards / sections ─────────────────────────────────────────────────── */
 .panel {
-  background: var(--c-paper);
-  border: 1px solid var(--line);
+  background: #fff;
+  border: 1px solid #d6d9d2;
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-1);
   padding: var(--space-4) var(--space-5);
@@ -333,7 +232,7 @@
   font-family: var(--font-sans);
   font-size: var(--fs-14);
   font-weight: 700;
-  color: var(--c-ink);
+  color: #11140f;
   margin: 0;
   display: inline-flex;
   align-items: center;
@@ -358,33 +257,33 @@
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--fg-soft, var(--fg-muted));
+  color: #767b6e;
 }
 .fieldInput,
 .fieldTextarea {
   font-family: var(--font-sans);
   font-size: var(--fs-13);
-  background: var(--c-paper);
-  border: 1px solid var(--line);
+  background: #fff;
+  border: 1px solid #d6d9d2;
   border-radius: var(--radius-md);
   padding: 6px 10px;
-  color: var(--c-ink);
+  color: #11140f;
   outline: none;
   width: 100%;
 }
 .fieldInput:focus,
-.fieldTextarea:focus { border-color: var(--line-strong); background: var(--c-cream); }
+.fieldTextarea:focus { border-color: #16695f; background: #fff; }
 .fieldTextarea { resize: vertical; min-height: 52px; }
 
 /* ── Callout preview boxes ────────────────────────────────────────────── */
 .previewBox {
-  background: var(--c-cream);
-  border: 1px solid var(--line);
+  background: #f4f6f3;
+  border: 1px solid #d6d9d2;
   border-radius: var(--radius-md);
   padding: var(--space-3);
   font-family: var(--font-sans);
   font-size: var(--fs-12);
-  color: var(--c-ink);
+  color: #11140f;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -392,8 +291,8 @@
 
 /* ── Table ────────────────────────────────────────────────────────────── */
 .tableCard {
-  background: var(--c-paper);
-  border: 1px solid var(--line);
+  background: #fff;
+  border: 1px solid #d6d9d2;
   border-radius: var(--radius-sm, 6px);
   overflow: hidden;
 }
@@ -414,30 +313,30 @@
   font-weight: 600;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: var(--fg-muted);
+  color: #767b6e;
   text-align: left;
   padding: var(--space-2) var(--space-3);
-  background: var(--c-cream);
-  border-bottom: 1px solid var(--line);
+  background: #f4f6f3;
+  border-bottom: 1px solid #d6d9d2;
   white-space: nowrap;
 }
 .table tbody td {
   padding: var(--space-2) var(--space-3);
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid #d6d9d2;
   font-family: var(--font-sans);
   font-size: var(--fs-13);
-  color: var(--c-ink);
+  color: #11140f;
 }
 .table tbody tr:last-child td { border-bottom: none; }
-.table tbody tr:hover { background: var(--c-cream); }
+.table tbody tr:hover { background: #f4f6f3; }
 
 .codeChip {
   display: inline-block;
   font-family: var(--font-mono);
   font-size: var(--fs-12);
-  background: var(--c-cream);
-  color: var(--c-ink);
-  border: 1px solid var(--line);
+  background: #f4f6f3;
+  color: #11140f;
+  border: 1px solid #d6d9d2;
   padding: 1px 8px;
   border-radius: var(--radius-pill);
 }
@@ -454,13 +353,16 @@
   border-radius: var(--radius-pill);
   white-space: nowrap;
 }
-.movementIn  { background: rgba(47, 93, 79, 0.12);  color: var(--c-secondary-a, #2f5d4f); }
-.movementOut { background: rgba(184, 51, 31, 0.10); color: var(--c-festive-b, #b8331f); }
-.movementTransfer { background: rgba(166, 71, 30, 0.12); color: var(--c-burnt); }
+/* Tints aligned to the palette: success stays the forest green, OUT is the
+   err token (err/10 + err), TRANSFER is primary-soft + primary-ink (was a
+   leftover burnt-orange tint under petrol text). */
+.movementIn  { background: rgba(47, 93, 79, 0.12);  color: #2f5d4f; }
+.movementOut { background: rgba(178, 58, 58, 0.10); color: #b23a3a; }
+.movementTransfer { background: #e1efed; color: #0c3f39; }
 
 .emptyRow {
   text-align: center;
-  color: var(--fg-muted);
+  color: #767b6e;
   padding: var(--space-6);
   font-family: var(--font-sans);
   font-size: var(--fs-13);
@@ -477,12 +379,14 @@
   justify-content: center;
   padding: var(--space-4);
 }
+/* Modal = a white surface (was the grey #f4f6f3 "framed card"); the nested
+   .detailItem rows drop to surface-2 so the hierarchy still reads. */
 .modalCard {
   width: min(560px, 95vw);
   max-height: 84vh;
   overflow-y: auto;
-  background: var(--c-cream);
-  border: 1px solid var(--line-strong);
+  background: #fff;
+  border: 1px solid #c2c6bd;
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-3);
   padding: var(--space-5);
@@ -500,24 +404,24 @@
   font-family: var(--font-sans);
   font-size: var(--fs-16, 16px);
   font-weight: 700;
-  color: var(--c-ink);
+  color: #11140f;
   margin: 0;
 }
 .closeBtn {
   background: transparent;
   border: none;
-  color: var(--fg-muted);
+  color: #767b6e;
   cursor: pointer;
   padding: 4px;
   border-radius: var(--radius-sm);
   display: inline-flex;
 }
-.closeBtn:hover { background: var(--c-paper); color: var(--c-ink); }
+.closeBtn:hover { background: #f4f6f3; color: #11140f; }
 
 .detailItem {
-  border: 1px solid var(--line);
+  border: 1px solid #e3e6e0;
   border-radius: var(--radius-md);
-  background: var(--c-paper);
+  background: #f4f6f3;
   padding: var(--space-3);
   display: flex;
   flex-direction: column;
@@ -527,19 +431,17 @@
   font-family: var(--font-sans);
   font-size: var(--fs-13);
   font-weight: 600;
-  color: var(--c-ink);
+  color: #11140f;
 }
 .detailItemMeta {
   font-family: var(--font-sans);
   font-size: var(--fs-12);
-  color: var(--fg-muted);
+  color: #767b6e;
 }
 
-/* Phone clamp. */
+/* Phone clamp. (.page / .statGrid / .statValue rules dropped with the frame —
+   the KPI grid is now a Tailwind responsive grid and StatCard self-clamps.) */
 @media (max-width: 600px) {
-  .page { padding: var(--space-3) var(--space-3) var(--space-5); }
-  .statGrid { grid-template-columns: repeat(2, 1fr); gap: var(--space-2); }
-  .statValue { font-size: var(--fs-20); }
   .rackGrid { grid-template-columns: repeat(2, 1fr); }
   .stockGrid { grid-template-columns: 1fr; }
   .tableCard { overflow-x: auto; }
