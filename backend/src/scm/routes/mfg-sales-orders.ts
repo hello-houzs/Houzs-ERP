@@ -65,6 +65,11 @@ import { monthBoundsMy, rangeBoundsMy, todayMyt, mytDateOf } from '../lib/my-tim
 // gates `scm.so.view_all` / `scm.so.attribute_other` against the REAL Houzs
 // caller; see lib/houzs-perms.ts.)
 import { hasHouzsPerm, canViewAllSales, isSalesCaller, canViewScmFinance } from '../lib/houzs-perms';
+/* The POS session-origin sentinel (mig 0120). Imported rather than re-typed as
+   a literal so the value the POS door WRITES and the value this route READS
+   cannot drift apart — a typo on either side would silently disarm the pricing
+   envelope, and no test would fail. */
+import { SESSION_ORIGIN_POS } from '../../services/auth';
 import { SO_FINANCE_KEYS, SO_ITEM_FINANCE_KEYS, stripAuditFinance } from '../lib/finance-keys';
 import { resolveSalesScopeIds, salesDocOutOfScope, resolveCallerStaffId } from '../lib/salesScope';
 import { recordSoAudit, diffFields, type FieldChange } from '../lib/so-audit';
@@ -402,50 +407,66 @@ function norm(v: unknown): string {
    revived against the real caller either:
      · The SCM auth bridge pins every caller's `user.id` to ONE super_admin
        system staff row (scm/middleware/auth.ts), so the role read super_admin
-       for everybody and the gate fired for nobody. The old hardcoded `false`
-       was therefore BEHAVIOUR-PRESERVING, not a regression — re-arming is a
-       genuinely new behaviour, not a restoration.
+       for everybody and the gate fired for nobody.
      · Gating on the REAL caller (houzsUser position/department) CANNOT work:
        2990 could assume role ⇒ device (a `sales` role only ever touched the POS
-       tablet). Houzs breaks that mapping. routes/pos.ts /pin-login mints an
-       ORDINARY Houzs session for the SAME public.users row the person signs
-       into desktop and mobile with, and the mobile SO form lets a salesperson
-       TYPE any selling price (MobileNewSO.tsx — the price is a free input).
-       Position-gating would drift-reject live Sales staff on mobile; worse,
+       tablet). Houzs breaks that mapping. routes/pos.ts /pin-login mints a
+       session for the SAME public.users row the person signs into desktop and
+       mobile with, and the mobile SO form lets a salesperson TYPE any selling
+       price (MobileNewSO.tsx — the price is a free input). Position-gating
+       would drift-reject live Sales staff on mobile; worse,
        pmsAccess.SALES_POSITION (/^sales/i) also matches OFFICE authors such as
        "Sales Director" and "Sales Coordinator" on the desktop SO form.
 
-   So the only thing separating a POS write from a desktop/mobile write is the
-   CLIENT, and the client must declare itself:  `X-Client: pos-tablet`.
+   ONE PRINCIPAL, THREE DEVICES: the person is identical across all of them, so
+   the POS-ness of a write is a property of the SESSION and nothing else. That
+   is what `sessionOrigin` is (services/auth.ts SessionOrigin, mig 0120): the
+   DOOR the token was minted at, stamped server-side at /api/pos/pin-login.
 
    ── THREAT MODEL — READ THIS BEFORE TRUSTING THE GATE ──────────────────────
-   The header is SELF-ASSERTED. This is an ANTI-DRIFT guard, NOT an anti-tamper
-   one. It catches the HONEST failure — a tablet holding a stale cached price
-   after a catalog change submits the old figure — and it CANNOT catch a hostile
-   client, which simply OMITS the header and is then treated as an office author
-   who may price freely. Anything stronger needs an UNFORGEABLE POS-origin
-   signal minted at /api/pos/pin-login (a session-origin flag, or a prefixed
-   session token — `sessions` has no origin column today, so that is a migration
-   and a separate change). Do NOT describe this gate as satisfying the
-   anti-tamper non-negotiable until that lands.
+   DEFENDS (the 2990 anti-tamper non-negotiable — a tampered POS must never
+   submit a doctored low total): every request bearing a POS-minted token is
+   price-checked, unconditionally. Patching the tablet's JS, replaying its token
+   from curl, or hand-rolling the payload all still carry that token, and the
+   origin rides the session row, not the request — there is no field to strip,
+   spoof or omit. The predecessor of this gate read a self-asserted
+   `X-Client: pos-tablet` header, which a hostile client escaped by simply not
+   sending it. That escape is now closed: a caller cannot shed what it never
+   sent.
+
+   DOES NOT DEFEND — and this is a POLICY boundary, not an oversight: a person
+   who knows their own Houzs PASSWORD can log in at the desktop/mobile door,
+   get an origin-less session, and price freely. That is the owner's explicit
+   ruling (selling price varies per order; the mobile SO form is a free price
+   input), not a hole this gate leaks. The gate binds the DEVICE, which is what
+   2990 ever promised; it does not and cannot bind the HUMAN. If office/mobile
+   authoring should also be price-checked, that is a separate owner ruling with
+   a much larger blast radius — do not smuggle it in here.
+
+   Also undefended, unchanged and out of scope: anyone who can write the
+   `sessions` table or hold the DASHBOARD_API_KEY is already past every gate in
+   this app.
 
    ── FAIL-OPEN, deliberately ────────────────────────────────────────────────
-   No header — or a headless context with no header accessor (the background
-   scan job) — reads as NOT-POS, so no drift check. Fail-closed is not an
-   option: every caller that exists today (desktop SO form, mobile SO form, OCR
-   scan draft) is an operator-authored price surface that would 400 on a
-   perfectly legitimate price. Blast radius is therefore exactly the set of
-   callers that send the header — today: none. */
-const POS_CLIENT_HEADER = 'X-Client';
-const POS_CLIENT_VALUE  = 'pos-tablet';
+   Any session WITHOUT origin='pos' reads as NOT-POS, so no drift check. That
+   covers: every session minted before mig 0120, every desktop/mobile/invite/
+   TOTP login, the DASHBOARD_API_KEY service caller, and the headless scan job.
+   Fail-closed is not an option: each of those is an operator-authored price
+   surface that would 400 on a perfectly legitimate price. Blast radius is
+   therefore exactly the set of callers holding a POS-minted session — until
+   the 2990 POS actually repoints here, that set is EMPTY and this gate is
+   inert by construction. */
 
 /* Structural caller source — satisfied by the real Hono context AND by
-   SoCreateContext, whose `header` is OPTIONAL: the headless scan job supplies
-   no accessor, so an OCR draft can never read as POS. */
-type PosCallerSource = { req: { header?(name: string): string | undefined } };
+   mfg-sales-orders' SoCreateContext (the headless scan job), exactly like
+   lib/houzs-perms' HouzsUserSource. Only `get('sessionOrigin')` is required:
+   the origin is the ONE fact this gate may consult, and narrowing the
+   parameter to it is what stops a later edit from quietly reaching for a
+   self-asserted header again. */
+type PosCallerSource = { get(key: 'sessionOrigin'): Variables['sessionOrigin'] };
 
 async function isPosTabletCaller(c: PosCallerSource): Promise<boolean> {
-  return c.req.header?.(POS_CLIENT_HEADER)?.trim().toLowerCase() === POS_CLIENT_VALUE;
+  return c.get('sessionOrigin') === SESSION_ORIGIN_POS;
 }
 
 /* SO-SKU spec P4 (D4, Loo 2026-06-05) — the SELLING price is locked to the
@@ -2578,17 +2599,18 @@ mfgSalesOrders.post('/backfill-warehouses', async (c) => {
    outcome object; the HTTP route re-emits it as the real JSON response. */
 export type SoCreateOutcome = { status: number; body: Record<string, unknown> };
 export type SoCreateContext = {
-  /* `header` is OPTIONAL and read ONLY by isPosTabletCaller. The HTTP route
-     wires the real accessor through; the headless scan job deliberately omits
-     it, so an OCR-created draft can never read as a POS caller and can never
-     be drift-rejected (its prices come off a handwritten slip). */
-  req: { json(): Promise<unknown>; header?(name: string): string | undefined };
+  req: { json(): Promise<unknown> };
   /* supabase keeps the REAL client type — the core body relies on the typed
      query builders for callback inference (an `any` here turns every
      `.map((r) => ...)` inside the body into an implicit-any TS7006). */
   get(key: 'supabase'): Variables['supabase'];
   get(key: 'user'): { id: string; user_metadata?: unknown };
   get(key: 'houzsUser'): Variables['houzsUser'];
+  /* Session origin (mig 0120) — read ONLY by isPosTabletCaller. The HTTP route
+     forwards the real context var; the headless scan job returns undefined, so
+     an OCR-created draft can never read as a POS caller and can never be
+     drift-rejected (its prices come off a handwritten slip). */
+  get(key: 'sessionOrigin'): string | undefined;
   /* Multi-company (mig 0061): active company from companyContext. Undefined pre-
      migration / cold-start / headless (scan) so the stamping no-ops. */
   get(key: 'companyId'): number | undefined;
@@ -4664,10 +4686,10 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
    contentful JSON status the old inline c.json calls already used. */
 mfgSalesOrders.post('/', async (c) => {
   const out = await createSalesOrderCore({
-    /* header: the POS-tablet declaration (X-Client) the pricing trust boundary
-       reads — see isPosTabletCaller. */
-    req: { json: () => c.req.json(), header: (n: string) => c.req.header(n) },
-    get: ((key: 'supabase' | 'user' | 'houzsUser' | 'companyId') => c.get(key as 'supabase')) as unknown as SoCreateContext['get'],
+    req: { json: () => c.req.json() },
+    /* Forwards every key verbatim — including `sessionOrigin`, which the
+       pricing trust boundary reads (see isPosTabletCaller). */
+    get: ((key: 'supabase' | 'user' | 'houzsUser' | 'companyId' | 'sessionOrigin') => c.get(key as 'supabase')) as unknown as SoCreateContext['get'],
     env: c.env,
     json: (b, status) => ({ status: status ?? 200, body: b as Record<string, unknown> }),
   });
@@ -4701,12 +4723,18 @@ export async function createDraftSalesOrder(
   },
 ): Promise<SoCreateOutcome> {
   const svc = getSupabaseService(env);
-  const syntheticGet = (key: 'supabase' | 'user' | 'houzsUser' | 'companyId'): unknown => {
+  const syntheticGet = (key: 'supabase' | 'user' | 'houzsUser' | 'companyId' | 'sessionOrigin'): unknown => {
     if (key === 'supabase') return svc;
     // Headless scan job — replay the company captured on the scan_jobs row at
     // enqueue time so the draft (header + lines + payments + audit) lands under
     // the uploader's company, not the 0091 HOUZS default.
     if (key === 'companyId') return opts.companyId ?? undefined;
+    // There is no session here at all (this runs after the HTTP response, off
+    // waitUntil), so the draft is NOT-POS and is never drift-rejected — its
+    // prices come off a handwritten slip. EXPLICIT branch, not a fallthrough:
+    // the default below returns houzsUser, so an unhandled key would hand
+    // isPosTabletCaller the wrong object entirely.
+    if (key === 'sessionOrigin') return undefined;
     if (key === 'user') {
       return {
         id: opts.salespersonId,

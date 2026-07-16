@@ -104,6 +104,28 @@ export function isoIn(seconds: number): string {
 // ── Session helpers ──────────────────────────────────────
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
 
+/* Session ORIGIN (mig 0120) — the DOOR a session was minted at. It is NOT a
+   property of the person: the same salesperson simultaneously holds a 'pos'
+   session on the showroom tablet and an origin-less one on their own phone,
+   both for the SAME public.users row. That is precisely why the POS pricing
+   envelope (scm/routes/mfg-sales-orders.ts isPosTabletCaller) cannot be
+   derived from the user, their position, or their scm.staff role — only from
+   the session.
+
+   WHY IT IS UNFORGEABLE: the value is chosen server-side by whichever route
+   calls createSession, and stored on the session row. It never appears in a
+   request, so a caller can no more assert its origin than it can assert its
+   own user_id. Holding a 'pos' session requires passing the PIN gate at
+   /api/pos/pin-login; a client cannot opt OUT of one either, because omitting
+   something it never sent changes nothing. This is the property the
+   self-asserted `X-Client` header it replaced never had.
+
+   `undefined` (every non-POS door) stores NULL, which reads as not-POS — the
+   pre-migration behaviour, and the safe direction. Keep this a closed union:
+   a new origin must be a deliberate edit here, not a string a route invents. */
+export type SessionOrigin = "pos";
+export const SESSION_ORIGIN_POS: SessionOrigin = "pos";
+
 export interface AuthUser {
   id: number;
   email: string;
@@ -165,6 +187,25 @@ export interface AuthUser {
    * Owner (`*`) bypasses the guard entirely, so this stays false for them.
    */
   scm_l2_configured: boolean;
+  /**
+   * Origin of the SESSION this user was loaded from — 'pos' or null (mig
+   * 0120, see SessionOrigin above). It rides AuthUser ONLY because AuthUser is
+   * what the per-token KV cache serialises; the cache is keyed by token, so
+   * this is cached at exactly the right granularity and never bleeds between a
+   * person's devices. It is NOT a fact about the user.
+   *
+   * DO NOT read this field to gate anything: inside /api/scm/* the SCM auth
+   * bridge overwrites `user` wholesale with a pinned system staff row, so it
+   * is not even reachable there. Read the `sessionOrigin` context var that
+   * middleware/auth republishes — that is the one channel the bridge leaves
+   * alone.
+   *
+   * Null on any AuthUser not built from a session row (getUserById, the
+   * SERVICE_USER literal) and on any session cached by a pre-0120 isolate —
+   * all of which read as not-POS, the safe direction. Optional so hand-built
+   * AuthUser literals don't need to set it.
+   */
+  session_origin?: string | null;
   joined_at?: string | null;
   last_login_at?: string | null;
   // Houzs Points (mig 055) — small per-user counters.
@@ -175,13 +216,20 @@ export interface AuthUser {
   profile_pic_r2_key?: string | null;
 }
 
-export async function createSession(env: Env, userId: number): Promise<string> {
+/** Mint a session. `origin` defaults to undefined -> NULL = an ordinary
+ *  office/desktop session that may price freely. Pass SESSION_ORIGIN_POS ONLY
+ *  from the POS PIN door; see the SessionOrigin note above. */
+export async function createSession(
+  env: Env,
+  userId: number,
+  origin?: SessionOrigin,
+): Promise<string> {
   const token = generateToken();
   const expires = isoIn(SESSION_TTL_SECONDS);
   await env.DB.prepare(
-    `INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)`
+    `INSERT INTO sessions (token, user_id, expires_at, origin) VALUES (?, ?, ?, ?)`
   )
-    .bind(token, userId, expires)
+    .bind(token, userId, expires, origin ?? null)
     .run();
   return token;
 }
@@ -267,6 +315,11 @@ async function hydrateAuthUser(env: Env, row: any): Promise<AuthUser> {
     brand_scope: brandScope,
     page_access: pageAccess,
     scm_l2_configured: scmMeta.explicitScm,
+    // sessions.origin — present only on the getUserBySession row (that SELECT
+    // already joins `sessions`, so this costs no extra round-trip). getUserById
+    // has no session, so `row.origin` is absent there and this lands null =
+    // not-POS.
+    session_origin: row.origin ?? null,
     joined_at: row.joined_at ?? null,
     last_login_at: row.last_login_at ?? null,
     points_balance: row.points_balance ?? 0,
@@ -291,7 +344,7 @@ export async function getUserBySession(env: Env, token: string): Promise<AuthUse
             r.scope_to_pic,
             p.name as position_name,
             d.name as department_name,
-            s.expires_at
+            s.expires_at, s.origin
      FROM sessions s
      JOIN users u ON u.id = s.user_id
      JOIN roles r ON r.id = u.role_id

@@ -271,11 +271,18 @@ pwpCodes.delete('/reserve', async (c) => {
   const supabase = c.get('supabase');
   const cartLineKey = c.req.query('cartLineKey');
   if (!cartLineKey) return c.json({ error: 'cart_line_key_required' }, 400);
-  const { error } = await supabase
-    .from('pwp_codes')
-    .delete()
-    .eq('cart_line_key', cartLineKey)
-    .eq('status', 'RESERVED');
+  // cart_line_key is POS-client-supplied and carries no authority; the client is
+  // service-role, so this ACTIVE-company filter — mirroring the stamp /reserve
+  // inserts with — is the only thing keeping one company's cart from destroying
+  // the other's RESERVED codes. Freeing stays idempotent (a cart cleared twice,
+  // a key from the other company): nothing matches, still ok.
+  const { error } = await scopeToCompany(
+    supabase
+      .from('pwp_codes')
+      .delete()
+      .eq('cart_line_key', cartLineKey),
+    c,
+  ).eq('status', 'RESERVED');
   if (error) return c.json({ error: 'free_failed', reason: error.message }, 500);
   return c.json({ ok: true });
 });

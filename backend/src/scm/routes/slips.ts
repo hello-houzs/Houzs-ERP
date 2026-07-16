@@ -133,11 +133,19 @@ slips.post('/:session/upload', async (c) => {
   try { bindings = slipBindings(c.env); }
   catch (e) { return c.json({ error: 'r2_not_configured', reason: (e as Error).message }, 500); }
 
-  const { data: row, error: fetchErr } = await sb
+  // The session id is an unguessable random uuid, but that is obscurity, not an
+  // authorization boundary — it travels to the client and rides in SO-create
+  // bodies. The client is service-role, so this ACTIVE-company filter (matching
+  // /init's stamp) is the real one. All three legs of uploadSlipFull send the
+  // same X-Company-Id, so a legitimate upload always matches; a session from the
+  // other company falls into the existing session_not_found 404 and reveals
+  // nothing more than an unknown id already did.
+  let rowQ = sb
     .from('pending_slip_uploads')
     .select('id, r2_key, content_type, content_hash, content_size, status, expires_at')
-    .eq('upload_session_id', sessionId)
-    .maybeSingle();
+    .eq('upload_session_id', sessionId);
+  rowQ = scopeToCompany(rowQ, c);
+  const { data: row, error: fetchErr } = await rowQ.maybeSingle();
   if (fetchErr) return c.json({ error: 'db_fetch_failed', reason: fetchErr.message }, 500);
   if (!row) return c.json({ error: 'session_not_found' }, 404);
 
@@ -188,11 +196,15 @@ slips.post('/:session/confirm', async (c) => {
   try { bindings = slipBindings(c.env); }
   catch (e) { return c.json({ error: 'r2_not_configured', reason: (e as Error).message }, 500); }
 
-  const { data: row, error: fetchErr } = await sb
+  // Same isolation boundary as /upload — see the note there. The status UPDATEs
+  // below stay keyed on upload_session_id alone: they are reachable only through
+  // this scoped fetch, which has already proved the row is the active company's.
+  let rowQ = sb
     .from('pending_slip_uploads')
     .select('id, r2_key, content_size, status')
-    .eq('upload_session_id', sessionId)
-    .maybeSingle();
+    .eq('upload_session_id', sessionId);
+  rowQ = scopeToCompany(rowQ, c);
+  const { data: row, error: fetchErr } = await rowQ.maybeSingle();
   if (fetchErr) return c.json({ error: 'db_fetch_failed', reason: fetchErr.message }, 500);
   if (!row) return c.json({ error: 'session_not_found' }, 404);
 

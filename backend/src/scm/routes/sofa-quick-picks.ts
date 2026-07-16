@@ -170,11 +170,18 @@ sofaQuickPicks.delete('/:id', async (c) => {
 
   const id = c.req.param('id');
   const supabase = c.get('supabase');
-  const { error } = await supabase
+  // The company filter IS the isolation boundary: the client is service-role, so
+  // RLS never re-checks it. ACTIVE company (same predicate as GET /), so a
+  // both-company curator reaches only the picks the list in front of them shows.
+  // An id from the other company matches nothing and still 204s — the same
+  // answer an unknown id already gave, so the response can't be used to prove a
+  // pick exists over there.
+  const query = supabase
     .from('sofa_quick_picks')
     .update({ deleted_at: new Date().toISOString() })
     .eq('id', id);
 
+  const { error } = await scopeToCompany(query, c);
   if (error) {
     if (error.code === '42501' || /permission denied/i.test(error.message)) {
       return c.json({ error: 'forbidden', reason: error.message }, 403);

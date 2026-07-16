@@ -49,6 +49,18 @@ declare module "hono" {
      *  The audit trail stamps it on each event so a logged action can
      *  be correlated back to its access-log line. */
     requestId: string;
+    /** The DOOR this request's session was minted at — 'pos' (POS PIN login)
+     *  or undefined (every other door, and every session minted before mig
+     *  0120). Server-assigned at mint time and never accepted from the
+     *  request, so unlike the `X-Client` header it replaced, a caller can
+     *  neither claim nor shed it. Read by the SO pricing envelope
+     *  (scm/routes/mfg-sales-orders.ts isPosTabletCaller).
+     *
+     *  This is the ONLY channel the origin may be read from inside
+     *  /api/scm/*: the SCM auth bridge overwrites `user` with a pinned system
+     *  staff row but leaves this var alone. Undefined = not-POS, always the
+     *  safe direction. */
+    sessionOrigin?: string;
   }
 }
 
@@ -87,7 +99,10 @@ export const auth: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
     return c.json({ error: "Unauthorized" }, 401);
   }
 
-  // Legacy shared key — service-tier access for tooling and cron.
+  // Legacy shared key — service-tier access for tooling and cron. No session
+  // row exists, so `sessionOrigin` is deliberately left unset: the shared key
+  // is a trusted backend caller, never a POS tablet, and must keep pricing
+  // freely.
   if (c.env.DASHBOARD_API_KEY && token === c.env.DASHBOARD_API_KEY) {
     c.set("user", SERVICE_USER);
     c.set("userId", (SERVICE_USER as any).id ?? null);
@@ -106,6 +121,12 @@ export const auth: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
   // `user` so those 15+ callsites don't all need to be rewritten —
   // and so `verified_by` no longer ends up as NULL on every patch.
   c.set("userId", user.id);
+  // Republish the session's origin as a first-class request fact (mig 0120).
+  // It must NOT be read off `user` downstream — the SCM auth bridge replaces
+  // that object entirely — so this var is the single reader-facing channel.
+  // `?? undefined` collapses the DB's NULL onto the same "not-POS" value an
+  // absent var already has, so every consumer has ONE falsy case to handle.
+  c.set("sessionOrigin", user.session_origin ?? undefined);
   await next();
 };
 
