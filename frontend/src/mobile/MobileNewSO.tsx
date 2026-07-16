@@ -51,6 +51,12 @@ import { useFabricColoursSearch, type FabricColourRow } from "../vendor/scm/lib/
    (MobileSODetail) renders. It was a local read-only copy, which is why
    entering "Edit Draft" REMOVED the pencil + trash the previous screen showed. */
 import { RecordedPaymentsList, type RecordedPayment } from "./RecordedPayments";
+/* The method ⇒ sub-field cascade rule, imported from the SHARED desktop source
+   (PaymentsTable) rather than re-implemented — the same import RecordedPayments
+   makes. This screen owns the only OTHER payment editor (the pre-create PayCard
+   below), so it is the one surface a rule landing on the shared/detail ledger
+   keeps missing (#583, then again in fix/b3-pay). */
+import { missingMethodSubField } from "../vendor/scm/components/PaymentsTable";
 import { useFabricLibrary } from "../vendor/scm/lib/queries";
 import { useDebouncedValue } from "../vendor/scm/lib/hooks";
 import { activeOptions, maintPickerValues } from "../vendor/shared/maintenance-pools";
@@ -262,14 +268,11 @@ const LINE_CATS: Array<{ value: LineCat; label: string }> = [
   { value: "bedframe", label: "Bedframe" },
   { value: "mattress", label: "Mattress" },
 ];
-/* Payment method-aware sub-field option lists (payment-terminal metadata, not
-   product variants — no product-config table, so they stay literal). */
-// Single-sourced from the shared FALLBACK_OPTIONS (payment-terminal catalog) —
-// was "Maybank"/"One Shot"/"TNG eWallet" which don't match the DB values the
-// desktop writes ("MBB"/"One-off"/"TNG"), corrupting reporting/PDF.
-const BANK_OPTS = FALLBACK_OPTIONS.payment_merchant.map((o) => o.value);
-const PLAN_OPTS = FALLBACK_OPTIONS.installment_plan.map((o) => o.value);
-const ONLINE_OPTS = FALLBACK_OPTIONS.online_type.map((o) => o.value);
+/* The BANK_OPTS / PLAN_OPTS / ONLINE_OPTS lists that used to live here existed
+   ONLY to seed a new payment row's L2 picks, which is exactly what invented a
+   bank nobody chose. The picks now seed blank (newPayment) and PayCard renders
+   the LIVE catalog via useSoDropdownOptions/optionsOrFallback, so there is no
+   remaining reader — and no static list left to drift from the DB values. */
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 const num = (s: string) => parseFloat(String(s).replace(/,/g, "")) || 0;
@@ -460,7 +463,14 @@ function newPayment(): Payment {
   const today = todayMyt();
   return {
     key: uid(), method: "Cash", date: today, amount: "0.00", account: "", approval: "", collectedBy: "",
-    bank: BANK_OPTS[0], plan: PLAN_OPTS[0], online: ONLINE_OPTS[0],
+    /* The method's L2 picks seed BLANK — desktop parity (newPaymentDraft seeds
+       merchantProvider / installmentMonthsLabel / onlineType as ''). Seeding
+       BANK_OPTS[0] here INVENTED a bank: a Merchant payment the operator never
+       assigned one to was silently booked to "MBB", and the invented value also
+       satisfied every guard, so nothing could ever catch it. Same defect, same
+       reason, as the one fix/b3-pay removed from the payment detail sheet ("no
+       bank is ever invented"); this screen's own editor was missed. */
+    bank: "", plan: "", online: "",
     slipName: "", slipSession: "", slipPhase: "",
   };
 }
@@ -1490,6 +1500,34 @@ export function MobileNewSO({
       pays.map((p) => ({ amountCenti: toCenti(p.amount), hasSlip: !!p.slipSession })),
     );
     if (sliplessErr) { setError(soErrorText(sliplessErr)); return; }
+    /* Cascade guard — a chosen method needs its sub-field(s): Merchant → Bank +
+       Plan, Online → Sub-Type, Cash → none. Uses the SHARED desktop rule
+       (missingMethodSubField) at the SAME point desktop runs it: BEFORE the SO is
+       created. Without it, save() passed every check, the SO was created, and
+       recordSlipBackedPayments then POSTed the incomplete row — the server 400s
+       payment_method_field_required, which is caught below and surfaced only as
+       the generic "record them again" toast, AFTER the order already exists. The
+       payment never books and the SO reads unpaid. Only amount-bearing rows are
+       checked (a zeroed row is dropped at flush), mirroring desktop. */
+    const methodGaps = pays
+      .map((p, i) => ({
+        row: i + 1,
+        method: p.method,
+        missing: toCenti(p.amount) > 0
+          ? missingMethodSubField({
+              methodLabel: p.method,
+              merchantProvider: p.bank,
+              installmentMonthsLabel: p.plan,
+              onlineType: p.online,
+            })
+          : null,
+      }))
+      .filter((x) => x.missing !== null);
+    if (methodGaps.length > 0) {
+      const g = methodGaps[0]!;
+      setError(`Payment ${g.row} (${g.method}) needs a ${g.missing}. Pick the required sub-field for each payment method before saving.`);
+      return;
+    }
     setError(null);
     setSubmitting(true);
     try {
@@ -3040,17 +3078,19 @@ function PayCard({ pay, staff, onChange, onRemove }: { pay: Payment; staff: Arra
             <input className="fld-i money" value={pay.amount} onChange={(e) => onChange({ amount: e.target.value })} />
           </Field>
         </div>
+        {/* Merchant needs BOTH (missingMethodSubField); marked required now that
+            they seed blank instead of inventing "MBB" / "One-off". */}
         {pay.method === "Merchant" && (
           <div style={{ display: "flex", gap: 9 }}>
-            <SpecSel label="Bank" value={pay.bank} opts={bankOpts} onChange={(vv) => onChange({ bank: vv })} />
-            <SpecSel label="Plan" value={pay.plan} opts={planOpts} onChange={(vv) => onChange({ plan: vv })} />
+            <SpecSel label="Bank" required value={pay.bank} opts={bankOpts} onChange={(vv) => onChange({ bank: vv })} />
+            <SpecSel label="Plan" required value={pay.plan} opts={planOpts} onChange={(vv) => onChange({ plan: vv })} />
           </div>
         )}
         {pay.method === "Installment" && (
           <SpecSel label="Installment plan" value={pay.plan} opts={planOpts} onChange={(vv) => onChange({ plan: vv })} />
         )}
         {pay.method === "Online" && (
-          <SpecSel label="Sub-type" value={pay.online} opts={onlineOpts} onChange={(vv) => onChange({ online: vv })} />
+          <SpecSel label="Sub-type" required value={pay.online} opts={onlineOpts} onChange={(vv) => onChange({ online: vv })} />
         )}
         <div style={{ display: "flex", gap: 9 }}>
           <Field label="Account Sheet" style={{ flex: 1 }}>
