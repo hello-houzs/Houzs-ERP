@@ -295,6 +295,14 @@
 //   (Overview / Stage / Info / Timeline), Status Cards list, 8-stage
 //   workflow (Pending Inspection retired into Under Verification).
 //   (v168 was taken by the multicompany/cutover release on main.)
+// v185 (2026-07-16) — THE fix for the frequent "Something went wrong loading
+//   this page." panel: cacheFirst() answered a hashed /assets/*.js request with
+//   the cached index.html whenever its network fetch threw (and cached the SPA
+//   catch-all's 200-HTML under the .js key after a deploy). A code request is
+//   now never answered with, cached as, or served from HTML — it fails cleanly
+//   so ChunkReloadBoundary can self-heal. The one-shot purge this v-bump used
+//   to be relied on for is already guaranteed by __SW_BUILD_ID__ below; the
+//   bump is documentation, and it does clear any already-poisoned entry.
 // Auto-versioned per deploy: the build replaces the __SW_BUILD_ID__ token below
 // with a unique build id (vite.config `sw-build-version` plugin), so every deploy
 // yields a new VERSION → a new cache namespace → the activate step purges the old
@@ -304,7 +312,7 @@
 // only as a human-readable baseline; the appended build id is what guarantees
 // uniqueness. If the build plugin somehow didn't run the token stays literal —
 // still a valid (if non-unique) string, so it degrades gracefully.
-const VERSION = "houzs-erp-v184-__SW_BUILD_ID__";
+const VERSION = "houzs-erp-v185-__SW_BUILD_ID__";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 
@@ -437,7 +445,8 @@ async function navigationNetworkFirst(req) {
     const fresh = await fetchWithTimeout(req, 4000);
     if (fresh && fresh.ok) {
       // Mirror the shell into cache under both the requested URL and
-      // /index.html so the SPA fallback path below always finds it.
+      // /index.html so the offline fallback below finds it for a deep link
+      // (/scm/sales-orders/SO-...) that was never cached under its own URL.
       cache.put(req, fresh.clone()).catch(() => {});
       cache.put("/index.html", fresh.clone()).catch(() => {});
       return fresh;
@@ -451,27 +460,69 @@ async function navigationNetworkFirst(req) {
   }
 }
 
+// INVARIANT (do not weaken): a request for CODE is never answered with — or
+// served from — the HTML app shell. The browser strict-MIME-checks module
+// scripts, so an index.html body under an /assets/*.js URL fails the import
+// with "Failed to fetch dynamically imported module: <url>", which surfaces as
+// the route's "Something went wrong loading this page." panel. Two real
+// sources of an HTML body on a .js URL:
+//   • a transient network failure — we used to hand back the cached shell;
+//   • Cloudflare Pages' SPA catch-all, which answers ANY unrecognised path
+//     with 200 + index.html, including an /assets/<name>-<hash>.js whose hash
+//     died in a redeploy (an open tab on the old shell still asks for it).
+// Both must fail honestly instead: a clean error lets ChunkReloadBoundary
+// self-heal onto the live build, and — critically — is never cached.
+function isCodeRequest(req) {
+  if (req.destination === "script" || req.destination === "style") return true;
+  // destination is empty for some preloads/older engines — fall back to path.
+  return /\.(?:js|mjs|css)$/i.test(new URL(req.url).pathname);
+}
+
+function isHtml(res) {
+  return (res.headers.get("content-type") || "").includes("text/html");
+}
+
+// An honest failure: no body, never cached. import() rejects with the
+// stale-chunk message the boundary already recognises; an <img>/manifest just
+// fails as it would have with an HTML body anyway.
+function notAvailable() {
+  return new Response("", {
+    status: 504,
+    headers: { "Cache-Control": "no-store" },
+  });
+}
+
 async function cacheFirst(req) {
   const cache = await caches.open(SHELL_CACHE);
+  const code = isCodeRequest(req);
   const cached = await cache.match(req);
-  if (cached) {
+  // Ignore (don't serve) a poisoned entry — HTML stored under a .js/.css key
+  // by a pre-fix build. The VERSION purge clears these on the next deploy
+  // anyway; this makes the cache-hit path unable to return HTML for code even
+  // if one survives.
+  if (cached && !(code && isHtml(cached))) {
     // Background revalidate — keep the shell fresh for next time.
     fetch(req)
       .then((r) => {
-        if (r && r.ok) cache.put(req, r.clone()).catch(() => {});
+        // A dead-hash SPA-catch-all 200 is `ok` — without this check the
+        // revalidate would OVERWRITE good cached JS with the HTML shell and
+        // brick the asset for every later load.
+        if (r && r.ok && !(code && isHtml(r))) cache.put(req, r.clone()).catch(() => {});
       })
       .catch(() => {});
     return cached;
   }
   try {
     const r = await fetch(req);
+    if (code && r && isHtml(r)) return notAvailable();
     if (r && r.ok) cache.put(req, r.clone()).catch(() => {});
     return r;
   } catch {
-    // SPA fallback: any unknown route returns the cached index.html
-    // so React Router can take over once the JS evaluates.
-    const indexCached = await cache.match("/index.html");
-    return indexCached || new Response("Offline", { status: 503 });
+    // Network failed. Every request reaching cacheFirst is a SUBRESOURCE — the
+    // fetch handler routes navigations to navigationNetworkFirst above and
+    // returns before this — so the old "SPA fallback: return index.html" here
+    // could only ever mis-answer a script/style/image. Fail cleanly instead.
+    return notAvailable();
   }
 }
 
