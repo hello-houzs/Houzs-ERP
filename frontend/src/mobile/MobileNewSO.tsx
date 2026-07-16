@@ -10,6 +10,7 @@ import { useStateWarehouseMappings } from "../vendor/scm/lib/state-warehouse-que
 import { todayMyt } from "../vendor/scm/lib/dates";
 import { paymentMethodCodeForValue } from "../vendor/scm/lib/payment-methods";
 import { soDateGuardError, soSliplessPaymentError, soErrorText } from "../vendor/scm/lib/so-form-validate";
+import { newIdempotencyKey, idempotentInit } from "../lib/idempotency";
 import {
   buildAmendmentHeaderChanges,
   hasAmendmentHeaderChanges,
@@ -142,7 +143,14 @@ type LineItem = {
 };
 
 type Payment = {
+  /** React list key. NOT usable as an idempotency key: uid() is 8 base36
+   *  chars and carries no money semantics. */
   key: string;
+  /** Money idempotency key — minted ONCE per payment row and reused by every
+   *  retry of that row, so a re-submitted create cannot book it twice.
+   *  recordSlipBackedPayments has two call sites and the rows survive a failed
+   *  submit, which is exactly the double-fire this closes. */
+  idempotencyKey: string;
   method: string; // Cash / Merchant / Online / Installment
   date: string;
   amount: string; // RM as typed
@@ -464,7 +472,8 @@ function lineFromItem(it: SoItem): LineItem {
 function newPayment(): Payment {
   const today = todayMyt();
   return {
-    key: uid(), method: "Cash", date: today, amount: "0.00", account: "", approval: "", collectedBy: "",
+    key: uid(), idempotencyKey: newIdempotencyKey(),
+    method: "Cash", date: today, amount: "0.00", account: "", approval: "", collectedBy: "",
     /* The method's L2 picks seed BLANK — desktop parity (newPaymentDraft seeds
        merchantProvider / installmentMonthsLabel / onlineType as ''). Seeding
        BANK_OPTS[0] here INVENTED a bank: a Merchant payment the operator never
@@ -1243,9 +1252,8 @@ export function MobileNewSO({
       else if (code === "installment") { body.installmentMonths = planToMonths(p.plan); }
       else if (code === "transfer") { body.onlineType = p.online || null; }
       try {
-        await authedFetch(`/mfg-sales-orders/${encodeURIComponent(createdDocNo)}/payments`, {
-          method: "POST", body: JSON.stringify(body),
-        });
+        await authedFetch(`/mfg-sales-orders/${encodeURIComponent(createdDocNo)}/payments`,
+          idempotentInit(p.idempotencyKey, { method: "POST", body: JSON.stringify(body) }));
       } catch (e) {
         failed += 1;
         if (!firstError && e instanceof Error && e.message) firstError = e.message;
