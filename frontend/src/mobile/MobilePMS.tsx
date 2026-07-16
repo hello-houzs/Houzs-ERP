@@ -79,6 +79,7 @@ type ChecklistItem = {
   pill_kind?: string | null; // "rental_payment" | "security_deposit" | null
   pill_value?: string | null; // none | unpaid | fully_paid | refunded
   review_status?: string | null; // drives the approve/reject gate
+  notes?: string | null; // item-level remark (Deco/Coffee Table, Weekend Activity)
 };
 
 // Per-task attachment (mig 050). Grouped by item_id.
@@ -1401,6 +1402,49 @@ function AttachRemark({ att, canEdit }: { att: TaskAttachment; canEdit: boolean 
   );
 }
 
+// Item-level remark box (owner 2026-07-16): Deco/Coffee Table & Weekend Activity
+// get a standalone remark you can fill WITHOUT uploading a file. Saved to the
+// item's `notes` via PATCH /checklist/:id.
+function ItemRemark({ it, canEdit }: { it: ChecklistItem; canEdit: boolean }) {
+  const [val, setVal] = useState(it.notes ?? "");
+  const [saved, setSaved] = useState(it.notes ?? "");
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    const v = val.trim();
+    if (v === saved.trim()) return;
+    setSaving(true);
+    try {
+      await api.patch(`/api/projects/checklist/${it.id}`, { notes: v });
+      setSaved(v);
+    } catch {
+      /* keep the text so the user can retry on next blur */
+    } finally {
+      setSaving(false);
+    }
+  };
+  if (!canEdit) {
+    return (it.notes ?? "").trim() ? (
+      <div style={{ padding: "0 0 8px 24px", fontSize: 11.5, color: "#6b6f63" }}>
+        <b style={{ color: "#8c968a" }}>Remark:</b> {it.notes}
+      </div>
+    ) : null;
+  }
+  return (
+    <div style={{ padding: "0 0 8px 24px" }}>
+      <input
+        className="fld-i"
+        value={val}
+        disabled={saving}
+        onChange={(e) => setVal(e.target.value)}
+        onBlur={() => void save()}
+        onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+        placeholder="Add remark…"
+        style={{ fontSize: 12, padding: "6px 9px" }}
+      />
+    </div>
+  );
+}
+
 // One checklist row. Tick cycles status (POST /checklist/:id/status); the
 // paperclip uploads a per-task attachment (PUT /checklist/:id/attachments) and
 // the "…" opens remark / approval. Payment-pill rows (mig 090) render N/A /
@@ -1570,7 +1614,7 @@ function TaskRow({
               </button>
             )}
           </span>
-          <AttachRemark att={a} canEdit={canAttach} />
+          {(it.title || "").trim().toLowerCase() === "defect list" && <AttachRemark att={a} canEdit={canAttach} />}
         </div>
       ))}
     </div>
@@ -1693,6 +1737,8 @@ function TaskRow({
       )}
     </div>
     {fileChips}
+    {/* Deco/Coffee Table & Weekend Activity: standalone remark box (no file needed). */}
+    {/^(deco|weekend)/i.test((it.title || "").trim()) && <ItemRemark it={it} canEdit={canTick} />}
     {reviewStatus && reviewStatus !== "approved" && (
       <div style={{ padding: "0 0 6px 24px" }}>
         <span className="rbadge" style={{ background: reviewStatus === "rejected" ? "#f7e7e5" : "#f6efd9", color: reviewStatus === "rejected" ? "#a13a34" : "#6e4d12" }}>{humanize(reviewStatus).toUpperCase()}</span>

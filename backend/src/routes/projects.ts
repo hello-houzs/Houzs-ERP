@@ -2596,11 +2596,20 @@ app.post("/:id/checklist", requirePermission("projects.write"), async (c) => {
   return c.json(result, 201);
 });
 
-app.patch("/checklist/:itemId", requirePermission("projects.write"), async (c) => {
+app.patch("/checklist/:itemId", requireAnyPermission(["projects.write", "projects.checklist.tick"]), async (c) => {
   const itemId = parseInt(c.req.param("itemId"), 10);
   if (isNaN(itemId)) return c.json({ error: "Invalid ID" }, 400);
   const user = c.get("user");
   const body = await c.req.json<Record<string, any>>();
+  // Notes-only edits (the mobile item remark box on Deco/Coffee Table &
+  // Weekend Activity) are open to tick-holders; any other field change still
+  // requires projects.write.
+  const keys = Object.keys(body);
+  const notesOnly = keys.length > 0 && keys.every((k) => k === "notes");
+  const granted = user?.permissions_set ?? user?.permissions;
+  if (!notesOnly && !hasPermission(granted, "projects.write")) {
+    return c.json({ error: "Requires projects.write" }, 403);
+  }
   const ok = await patchChecklistItem(c.env, itemId, body, user?.id ?? 0);
   if (!ok) return c.json({ error: "No changes" }, 400);
   return c.json({ ok: true });
