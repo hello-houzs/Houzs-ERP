@@ -43,6 +43,29 @@ const DR_FINANCE_KEYS = [
   'total_cost_centi', 'total_margin_centi', 'margin_pct_basis',
 ] as const;
 
+/* Per-LINE cost/margin (ITEM carries unit_cost_centi / line_cost_centi /
+   line_margin_centi). The header strip above was written for the LIST only, so
+   the DETAIL shipped BOTH halves to every viewer — the file declared these keys
+   finance-only and then sent them. Same class as the DO/SI detail leak (#600)
+   and the SO detail leak (#625); DR was the one sales doc neither touched.
+   canViewScmFinance fails closed. */
+const DR_ITEM_FINANCE_KEYS = ['unit_cost_centi', 'line_cost_centi', 'line_margin_centi'] as const;
+
+/** Strip header + line cost/margin in place for a non-finance caller. */
+function gateDrFinance(
+  c: Parameters<typeof canViewScmFinance>[0],
+  deliveryReturn: unknown,
+  items: unknown,
+): void {
+  if (canViewScmFinance(c)) return;
+  if (deliveryReturn && typeof deliveryReturn === 'object') {
+    for (const k of DR_FINANCE_KEYS) delete (deliveryReturn as Record<string, unknown>)[k];
+  }
+  for (const it of (Array.isArray(items) ? items : []) as Array<Record<string, unknown>>) {
+    for (const k of DR_ITEM_FINANCE_KEYS) delete it[k];
+  }
+}
+
 /* Full DR header — mirrors the editable DO header shape. The pre-rebuild
    columns (delivery_order_id / sales_invoice_id / reason / received-inspected-
    refunded timestamps / inspection_notes) stay; the DO-clone fields added in
@@ -693,6 +716,10 @@ deliveryReturns.get('/:id', async (c) => {
     const wid = lineWh.get(it.id) ?? null;
     return { ...it, warehouse_id: wid, warehouse_code: wid ? (codeMap.get(wid) ?? null) : null };
   });
+  /* Finance gate — cost / margin (header + per line) reach ONLY a finance-viewer.
+     The refund/total everyone is meant to see (local_total_centi / refund_centi /
+     line_total_centi) are deliberately NOT stripped. */
+  gateDrFinance(c, h.data, items);
   return c.json({ deliveryReturn: h.data, items });
 });
 
@@ -1212,7 +1239,19 @@ deliveryReturns.patch('/:id/items/:itemId', async (c) => {
 
   const unitPrice = it.unitPriceCenti !== undefined ? Number(it.unitPriceCenti) : Number(prev.unit_price_centi);
   const discount = it.discountCenti !== undefined ? Number(it.discountCenti) : Number(prev.discount_centi);
-  const unitCost = it.unitCostCenti !== undefined ? Number(it.unitCostCenti) : Number(prev.unit_cost_centi);
+  /* A caller who cannot READ the cost must not WRITE it. The detail GET now
+     strips unit_cost_centi for a non-finance caller, and DeliveryReturnDetail
+     seeds each line draft straight off that payload (`unit_cost_centi ?? 0`) and
+     posts the value back here on save — so trusting the client would let the
+     stripped field round-trip as a genuine 0 and wipe the line's cost basis
+     (recomputeTotals would then roll the DR's cost to 0 and its margin to the
+     full refund). This route accepts ANY defined value, unlike the SO PATCH,
+     whose `explicitCost > 0` precedence makes a 0 fall through to the stored
+     cost — which is why the same strip was safe there (#625). Keep the stored
+     cost for a non-finance caller; a finance caller is unaffected. */
+  const unitCost = (canViewScmFinance(c) && it.unitCostCenti !== undefined)
+    ? Number(it.unitCostCenti)
+    : Number(prev.unit_cost_centi);
   // Audit 2026-06-20 — clamp like the PO create path (negative-money guard).
   const lineTotal = Math.max(0, (qty * unitPrice) - discount);
   const lineCost = qty * unitCost;
