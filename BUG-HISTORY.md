@@ -1,5 +1,16 @@
 ## 2026-07-16
 
+### 🟠 SO detail header "歪了" — wide action rail crushed the PageHeader title to a per-character column
+- **Symptom:** On SO detail (SalesOrderDetail.tsx, full editor) in edit mode, the title block rendered as a ~1-character-wide vertical column ("SO-
+2607-
+015 
+— 
+NICO 
+TEST") with the meta line likewise crushed, while the action rail sat across the right.
+- **Root cause (traced, shared component):** `PageHeader` (components/Layout.tsx) lays out `md:flex-row md:justify-between` with the title block as `min-w-0` (no `flex-1`) and the actions wrapper as `md:shrink-0`. Default flex is `0 1 auto`, so the title was the ONLY shrinkable item and `min-w-0` removed its floor — when the rail is wide (Total + status pill + History + Relationship Map + Print PDF + Cancel + the long "Submit amendment request"), 100% of the shrink landed on the title, collapsing it to zero. Pre-existing latent bug; #599 exposed it by broadening the processing-lock so the long amendment button actually renders.
+- **Fix:** title block → `min-w-0 md:flex-1 md:basis-72` (claims space + keeps a basis floor); container → `md:flex-wrap` so an over-wide rail wraps to its own row instead of squeezing the title. Shared fix — benefits every page using PageHeader; small rails are unaffected (title simply grows to fill).
+- **Ref:** `fix/pageheader-title-crush`, 2026-07-16.
+
 ### 🔴 A PO could be raised against a Sales Order in ANY header status — a DRAFT / never-confirmed / ON_HOLD SO could be purchased (supplier PO cut)
 - **Symptom:** `POST /mfg-purchase-orders` (the create path that carries per-line `soItemId`, used by the From-SO / MRP convert) and `POST /mfg-purchase-orders/from-sos` never re-read `mfg_sales_orders.status`, so a PO line sourced from a DRAFT (never-confirmed), ON_HOLD, or CANCELLED SO could be committed to a supplier. Owner ruling: "PO and MRP are built ONLY from CONFIRMED sales orders." Only the picker LIST (`/outstanding-so-items`) filtered SO status; the CREATE handlers had no precondition, so a stale/direct/API call could still cut a PO from a non-orderable order.
 - **Root cause:** Neither create path had an SO-header-status guard — `/from-sos` resolved SO items by id/(doc_no,item_code) and `POST /` passed `soItemId` straight through to the line insert, neither joining the parent SO status. This mirrors the same gap the DO side had before `fix/do-status-soconfirm-qty` (audit gap #4) closed it there.
