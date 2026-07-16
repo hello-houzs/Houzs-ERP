@@ -8,8 +8,9 @@
 //
 //   1. Header — "Sales Order Details · Line-item view · N items · drag to
 //      reorder columns" (single-line)
-//   2. 6 KPI tiles — Total Lines · Unique Orders · Revenue · Cost ·
-//      Margin (RM + %) · Outstanding (deduped per docNo)
+//   2. KPI tiles — Total Lines · Unique Orders · Revenue · [Cost] ·
+//      [Margin (RM + %)] · Outstanding (deduped per docNo). 6 for a
+//      finance-viewer, 4 otherwise (see the finance gate below).
 //   3. Compact horizontal filter row — funnel icon · global search ·
 //      All Brands ▼ · All Groups ▼ · All Agents ▼ · All Venues ▼ ·
 //      All Payment ▼ · Date from – to
@@ -20,6 +21,18 @@
 //      always rendered '—'. Restore when the schema gains an equivalent.)
 //      Storage key: `so-detail-listing-grid.v2.houzs` (bump from v1 so the
 //      column reorder + hide layout starts fresh on the new layout).
+//
+// ── Finance gate (fix/c1-reports) ─────────────────────────────────────────
+// Line Cost / Margin RM / Margin % and the Cost + Margin KPI tiles are
+// FINANCE-ONLY — `user.project_finance_viewer` (auth/me = isFinanceViewer),
+// the same flag #574's list columns and #589's TotalsMarginCard use, and the
+// caller-for-caller mirror of the server's canViewScmFinance. This page sits
+// behind ScmGuard area="scm.sales.orders" — the area a Sales Executive needs
+// to do their job — so without the gate it showed every salesperson's cost and
+// margin, company-wide, to any of them. The columns are not DECLARED for a
+// non-finance viewer (off, not hidden): no '—' placeholder, no RM 0.00, and
+// the column chooser never lists them. The server omits the keys too, so a
+// rendered column would have painted cost 0 / margin 100% — a lie, not a blank.
 //
 // Auto-inquiry on mount — Houzs shows data immediately. We still let the
 // user narrow via filters; the query refetches on filter change. PDF
@@ -48,6 +61,7 @@ import {
   type SoDetailListingFilters,
   type SoDetailListingRow,
 } from '../../vendor/scm/lib/reports-queries';
+import { useAuth } from '../../auth/AuthContext';
 import styles from './SalesOrderDetailListing.module.css';
 
 /* Bump the storage key when migrating to the Houzs layout — the previous
@@ -140,12 +154,16 @@ const heightSortValue = (v: number | string | null): number =>
   typeof v === 'number' ? v : v == null ? -Infinity : Infinity;
 
 /* ─────────────────────────────────────────────────────────────────────────
-   Column factory — 47 columns total (33 visible by default + 14 hidden).
+   Column factory — 47 columns for a finance-viewer (33 visible by default +
+   14 hidden), 44 otherwise: cols 12-14 (Line Cost · Margin RM · Margin %) are
+   only DECLARED when `canFinance`, so a non-finance viewer can't see them and
+   the column chooser can't offer them.
    Order mirrors the Houzs reference shot column-for-column. Houzs col 23
    "Actions" dropped in the 2026-05-27 audit (no schema field; always '—').
      1. Doc.No (orange) 2. Date 3. Debtor Name 4. Agent 5. Item Group (pill)
      6. Item Code (bold) 7. Description 8. Location 9. Qty 10. Unit Price
-     11. Total 12. Line Cost 13. Margin RM 14. Margin % 15. Balance
+     11. Total [12. Line Cost 13. Margin RM 14. Margin % — finance only]
+     15. Balance
      16. Payment (pill) 17. Venue 18. Branding (pill) 19. Fabric
      20. Divan Height 21. Leg Height 22. Specials
      23. Order Remarks 24. Status (pill) 25. Status 2 26. Processing Date
@@ -156,7 +174,7 @@ const heightSortValue = (v: number | string | null): number =>
    total ex · plus 2990-extras (customer_delivery_date · internal_expected_dd ·
    customer_state · payment_method).
    ───────────────────────────────────────────────────────────────────────── */
-const buildColumns = (): DataGridColumn<SoDetailListingRow>[] => {
+const buildColumns = (canFinance: boolean): DataGridColumn<SoDetailListingRow>[] => {
   /* Read-out helper for the "may exist on the row but not on the type"
      fields — the API flattens the SO header onto every line, so anything
      in mfg_sales_orders is reachable via (r as Record<string, unknown>)[k]. */
@@ -259,46 +277,53 @@ const buildColumns = (): DataGridColumn<SoDetailListingRow>[] => {
       sortFn: (a, b) => (a.total_centi ?? 0) - (b.total_centi ?? 0),
       filterType: 'number', numberValue: (r) => r.total_centi ?? 0,
     },
-    /* 12 */ {
-      key: 'line_cost', label: 'Line Cost', width: 110, align: 'right', sortable: true,
-      accessor: (r) => (r.line_cost_centi ?? 0) > 0 ? fmtRm(r.line_cost_centi) : <span style={{ color: 'var(--fg-muted)' }}>—</span>,
-      searchValue: (r) => fmtRm(r.line_cost_centi ?? 0),
-      sortFn: (a, b) => (a.line_cost_centi ?? 0) - (b.line_cost_centi ?? 0),
-    },
-    /* 13 */ {
-      key: 'line_margin', label: 'Margin RM', width: 110, align: 'right', sortable: true,
-      accessor: (r) => {
-        const m = r.line_margin_centi ?? 0;
-        if ((r.total_centi ?? 0) <= 0) return <span style={{ color: 'var(--fg-muted)' }}>—</span>;
-        const color = m > 0 ? 'var(--c-secondary-a, #2F5D4F)' : m < 0 ? 'var(--c-festive-b, #B8331F)' : 'var(--fg-muted)';
-        return <span style={{ color, fontWeight: 600 }}>{fmtRm(m)}</span>;
+    /* 12-14 — FINANCE ONLY (fix/c1-reports). Declared only for a
+       finance-viewer. The server strips line_cost_centi / line_margin_centi
+       for everyone else (canViewScmFinance), so rendering these for a
+       non-finance viewer would not read blank — it would read cost RM 0.00 and
+       margin 100%, a confident lie. Cut, not blanked: off, not hidden. */
+    ...(canFinance ? ([
+      /* 12 */ {
+        key: 'line_cost', label: 'Line Cost', width: 110, align: 'right', sortable: true,
+        accessor: (r) => (r.line_cost_centi ?? 0) > 0 ? fmtRm(r.line_cost_centi) : <span style={{ color: 'var(--fg-muted)' }}>—</span>,
+        searchValue: (r) => fmtRm(r.line_cost_centi ?? 0),
+        sortFn: (a, b) => (a.line_cost_centi ?? 0) - (b.line_cost_centi ?? 0),
       },
-      searchValue: (r) => fmtRm(r.line_margin_centi ?? 0),
-      sortFn: (a, b) => (a.line_margin_centi ?? 0) - (b.line_margin_centi ?? 0),
-    },
-    /* 14 */ {
-      key: 'margin_pct', label: 'Margin %', width: 90, align: 'right', sortable: true,
-      accessor: (r) => {
-        const rev = r.total_centi ?? 0;
-        if (rev <= 0) return <span style={{ color: 'var(--fg-muted)' }}>—</span>;
-        const pct = ((r.line_margin_centi ?? 0) / rev) * 100;
-        const color = pct >= 50 ? 'var(--c-secondary-a, #2F5D4F)'
-          : pct >= 30 ? 'var(--c-festive-a, #C77F3E)'
-          : pct > 0   ? 'var(--c-burnt)'
-          : 'var(--c-festive-b, #B8331F)';
-        return <span style={{ color, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{pct.toFixed(1)}%</span>;
+      /* 13 */ {
+        key: 'line_margin', label: 'Margin RM', width: 110, align: 'right', sortable: true,
+        accessor: (r) => {
+          const m = r.line_margin_centi ?? 0;
+          if ((r.total_centi ?? 0) <= 0) return <span style={{ color: 'var(--fg-muted)' }}>—</span>;
+          const color = m > 0 ? 'var(--c-secondary-a, #2F5D4F)' : m < 0 ? 'var(--c-festive-b, #B8331F)' : 'var(--fg-muted)';
+          return <span style={{ color, fontWeight: 600 }}>{fmtRm(m)}</span>;
+        },
+        searchValue: (r) => fmtRm(r.line_margin_centi ?? 0),
+        sortFn: (a, b) => (a.line_margin_centi ?? 0) - (b.line_margin_centi ?? 0),
       },
-      searchValue: (r) => {
-        const rev = r.total_centi ?? 0;
-        if (rev <= 0) return '';
-        return `${(((r.line_margin_centi ?? 0) / rev) * 100).toFixed(1)}%`;
+      /* 14 */ {
+        key: 'margin_pct', label: 'Margin %', width: 90, align: 'right', sortable: true,
+        accessor: (r) => {
+          const rev = r.total_centi ?? 0;
+          if (rev <= 0) return <span style={{ color: 'var(--fg-muted)' }}>—</span>;
+          const pct = ((r.line_margin_centi ?? 0) / rev) * 100;
+          const color = pct >= 50 ? 'var(--c-secondary-a, #2F5D4F)'
+            : pct >= 30 ? 'var(--c-festive-a, #C77F3E)'
+            : pct > 0   ? 'var(--c-burnt)'
+            : 'var(--c-festive-b, #B8331F)';
+          return <span style={{ color, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{pct.toFixed(1)}%</span>;
+        },
+        searchValue: (r) => {
+          const rev = r.total_centi ?? 0;
+          if (rev <= 0) return '';
+          return `${(((r.line_margin_centi ?? 0) / rev) * 100).toFixed(1)}%`;
+        },
+        sortFn: (a, b) => {
+          const aPct = (a.total_centi ?? 0) > 0 ? (a.line_margin_centi ?? 0) / a.total_centi! : 0;
+          const bPct = (b.total_centi ?? 0) > 0 ? (b.line_margin_centi ?? 0) / b.total_centi! : 0;
+          return aPct - bPct;
+        },
       },
-      sortFn: (a, b) => {
-        const aPct = (a.total_centi ?? 0) > 0 ? (a.line_margin_centi ?? 0) / a.total_centi! : 0;
-        const bPct = (b.total_centi ?? 0) > 0 ? (b.line_margin_centi ?? 0) / b.total_centi! : 0;
-        return aPct - bPct;
-      },
-    },
+    ] as DataGridColumn<SoDetailListingRow>[]) : []),
     /* 15 */ {
       key: 'balance', label: 'Balance', width: 110, align: 'right', sortable: true,
       accessor: (r) => fmtRm(r.balance_centi ?? 0),
@@ -553,11 +578,24 @@ const buildColumns = (): DataGridColumn<SoDetailListingRow>[] => {
    equivalent on this screen.
 
    Static columns at module scope so DataGrid's React.memo can hit
-   (Task #99). The columns hold no per-page state. */
-const COLUMNS: DataGridColumn<SoDetailListingRow>[] = buildColumns();
+   (Task #99). The columns hold no per-page state.
+
+   Built ONCE per finance tier rather than per render: the finance flag is the
+   only input, so two frozen sets keep the reference stable and the memo hit
+   intact (a useMemo(buildColumns) would have been rebuilt on every mount). A
+   layout saved while the finance columns were visible is safe — DataGrid drops
+   saved order/hidden keys it can't resolve against the current column set. */
+const COLUMNS_FINANCE: DataGridColumn<SoDetailListingRow>[] = buildColumns(true);
+const COLUMNS_NO_FINANCE: DataGridColumn<SoDetailListingRow>[] = buildColumns(false);
 
 export const SalesOrderDetailListing = () => {
   const navigate = useNavigate();
+  /* Finance-viewer gate — the same signal the PMS finance sections and the SO
+     list columns (#574) use (auth/me = isFinanceViewer), and the client-side
+     mirror of the server's canViewScmFinance. */
+  const { user } = useAuth();
+  const canFinance = !!user?.project_finance_viewer;
+  const columns = canFinance ? COLUMNS_FINANCE : COLUMNS_NO_FINANCE;
   /* Task #120 — `?outstanding=1` URL param applied to the row set. The
      line-flat report repeats outstanding per line, so we filter lines from
      docs whose (local_total − paid) > 0. Same param used on the L1 list
@@ -593,10 +631,15 @@ export const SalesOrderDetailListing = () => {
   // strip reflects the active funnel filters (was the ColumnFilterBar output).
   const [visibleRows, setVisibleRows] = useState<SoDetailListingRow[]>(baseRows);
 
-  /* ── 6 KPI tiles — computed off the filtered row set, NOT rawRows, so
+  /* ── KPI tiles — computed off the filtered row set, NOT rawRows, so
         narrowing the filters re-scopes the headline numbers (matches
         Houzs's interactive feel). Outstanding is deduped per docNo since
-        the line-flat row format repeats it per line. */
+        the line-flat row format repeats it per line.
+
+        cost / margin / marginPct are NULL for a non-finance viewer, not 0:
+        the server omits line_cost_centi for them, so summing it would total
+        zero and paint margin as 100% of revenue. Returning null makes the
+        absence explicit — a tile added later can't silently inherit the lie. */
   const kpis = useMemo(() => {
     const totalLines = visibleRows.length;
     const uniqueDocs = new Set<string>();
@@ -606,7 +649,7 @@ export const SalesOrderDetailListing = () => {
     for (const r of visibleRows) {
       uniqueDocs.add(r.doc_no);
       revenue += r.total_centi ?? 0;
-      cost    += r.line_cost_centi ?? 0;
+      if (canFinance) cost += r.line_cost_centi ?? 0;
       if (!outstandingByDoc.has(r.doc_no)) {
         const ltc = r.local_total_centi ?? 0;
         const ptc = r.paid_total_centi ?? 0;
@@ -615,9 +658,16 @@ export const SalesOrderDetailListing = () => {
     }
     const outstanding = [...outstandingByDoc.values()].reduce((s, v) => s + v, 0);
     const margin = revenue - cost;
-    const marginPct = revenue > 0 ? (margin / revenue) * 100 : 0;
-    return { totalLines, uniqueOrders: uniqueDocs.size, revenue, cost, margin, marginPct, outstanding };
-  }, [visibleRows]);
+    return {
+      totalLines,
+      uniqueOrders: uniqueDocs.size,
+      revenue,
+      outstanding,
+      cost:      canFinance ? cost : null,
+      margin:    canFinance ? margin : null,
+      marginPct: canFinance ? (revenue > 0 ? (margin / revenue) * 100 : 0) : null,
+    };
+  }, [visibleRows, canFinance]);
 
   /* ── PDF preview (retained from the AutoCount layout) ──────────────── */
   const [findNonce, setFindNonce] = useState(0);
@@ -674,19 +724,26 @@ export const SalesOrderDetailListing = () => {
         </div>
       )}
 
-      {/* ── 6 KPI tiles (always rendered, scoped to current filters) ─ */}
-      <div className="mb-5 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
+      {/* ── KPI tiles (scoped to current filters). Cost + Margin are omitted
+             entirely for a non-finance viewer — no tile, no placeholder — and
+             the track narrows from 6 to 4 so the row stays full-width rather
+             than leaving two dead slots where the finance tiles used to sit. */}
+      <div className={`mb-5 grid grid-cols-2 gap-3 md:grid-cols-3 ${canFinance ? 'lg:grid-cols-6' : 'lg:grid-cols-4'}`}>
         {(
           [
             { label: 'Total Lines',    value: kpis.totalLines.toString() },
             { label: 'Unique Orders',  value: kpis.uniqueOrders.toString() },
             { label: 'Revenue (RM)',   value: fmtRm(kpis.revenue) },
-            { label: 'Cost (RM)',      value: fmtRm(kpis.cost) },
-            {
-              label: 'Margin (RM + %)',
-              value: `${fmtRm(kpis.margin)}${kpis.revenue > 0 ? ` (${kpis.marginPct.toFixed(1)}%)` : ''}`,
-              tone: kpis.margin > 0 ? ('success' as const) : kpis.margin < 0 ? ('error' as const) : undefined,
-            },
+            ...(kpis.cost !== null
+              ? [{ label: 'Cost (RM)', value: fmtRm(kpis.cost) }]
+              : []),
+            ...(kpis.margin !== null
+              ? [{
+                  label: 'Margin (RM + %)',
+                  value: `${fmtRm(kpis.margin)}${kpis.revenue > 0 ? ` (${(kpis.marginPct ?? 0).toFixed(1)}%)` : ''}`,
+                  tone: kpis.margin > 0 ? ('success' as const) : kpis.margin < 0 ? ('error' as const) : undefined,
+                }]
+              : []),
             {
               label: 'Outstanding (RM)',
               value: fmtRm(kpis.outstanding),
@@ -703,7 +760,7 @@ export const SalesOrderDetailListing = () => {
         <DataGrid<SoDetailListingRow>
           rows={baseRows}
           onFilteredRowsChange={setVisibleRows}
-          columns={COLUMNS}
+          columns={columns}
           storageKey={STORAGE_KEY}
           rowKey={(r) => r.id}
           searchPlaceholder="Search rows…"
@@ -725,5 +782,8 @@ export const SalesOrderDetailListing = () => {
   );
 };
 
-// Re-export the visible column-key list (for tests / debug).
-export const COL_KEYS: string[] = COLUMNS.map((c) => c.key);
+// Re-export the visible column-key list (for tests / debug). This is the
+// FINANCE-tier superset — a non-finance viewer gets COLUMNS_NO_FINANCE, which
+// omits line_cost / line_margin / margin_pct. Not a permission surface: no
+// runtime code reads it.
+export const COL_KEYS: string[] = COLUMNS_FINANCE.map((c) => c.key);

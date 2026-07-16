@@ -65,6 +65,7 @@ import { monthBoundsMy, rangeBoundsMy, todayMyt, mytDateOf } from '../lib/my-tim
 // gates `scm.so.view_all` / `scm.so.attribute_other` against the REAL Houzs
 // caller; see lib/houzs-perms.ts.)
 import { hasHouzsPerm, canViewAllSales, isSalesCaller, canViewScmFinance } from '../lib/houzs-perms';
+import { SO_FINANCE_KEYS, SO_ITEM_FINANCE_KEYS } from '../lib/finance-keys';
 import { resolveSalesScopeIds, salesDocOutOfScope, resolveCallerStaffId } from '../lib/salesScope';
 import { recordSoAudit, diffFields, type FieldChange } from '../lib/so-audit';
 /* TBC sofa exchange PWP re-evaluation (Loo 2026-06-12) — reuse the voucher
@@ -602,25 +603,12 @@ const HEADER =
   /* Delivery fee snapshot (migration 0133) — folded into local_total/revenue/margin. */
   'delivery_fee_centi, ' +
   'created_at, created_by, updated_at';
-/* FINANCE-GATED header keys — cost / margin / per-category revenue+cost
-   subtotals + deposit. These travel in the SO list payload (all are in HEADER)
-   but must reach ONLY a finance-viewer (lib/houzs-perms.canViewScmFinance,
-   mirroring pmsAccess.isFinanceViewer). Stripped from every row for a
-   non-finance caller so cost/margin never leaves the server for them. Order
-   totals shown to everyone (local_total_centi / balance_centi / paid_centi /
-   total_revenue_centi) are deliberately NOT listed here. */
-const SO_FINANCE_KEYS = [
-  'mattress_sofa_centi', 'bedframe_centi', 'accessories_centi', 'others_centi', 'service_centi',
-  'mattress_sofa_cost_centi', 'bedframe_cost_centi', 'accessories_cost_centi', 'others_cost_centi', 'service_cost_centi',
-  'total_cost_centi', 'total_margin_centi', 'margin_pct_basis', 'deposit_centi',
-] as const;
-
-/* Per-LINE cost/margin (ITEM carries unit_cost_centi / line_cost_centi /
-   line_margin_centi). The header strip above was written for the LIST only, so
-   the DETAIL shipped both halves to everyone — a Sales Executive could read
-   Cost / Margin / Margin% straight off the SO detail. Same class as the DO/SI
-   detail leak (#600); canViewScmFinance fails closed. */
-const SO_ITEM_FINANCE_KEYS = ['unit_cost_centi', 'line_cost_centi', 'line_margin_centi'] as const;
+/* FINANCE-GATED keys — cost / margin / per-category revenue+cost subtotals +
+   deposit (header) and unit/line cost+margin (line). The lists moved to
+   lib/finance-keys.ts so /reports shares this EXACT vocabulary: it had no copy
+   at all and shipped the whole book's cost/margin to any Sales Executive
+   (fix/c1-reports). Four routes re-declaring the list is what let #574 / #600 /
+   #625 / #632 drift apart — one list now gates every surface. */
 
 /** Strip header + line cost/margin in place for a non-finance caller. */
 function gateSoFinance(
