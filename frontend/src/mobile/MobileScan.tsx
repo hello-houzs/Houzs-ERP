@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { useAuth } from "../auth/AuthContext";
 import { splitE164 } from "../vendor/shared/phone";
+import { compressAllForOcr } from "../vendor/shared/image-compress";
 import type { ExtractedSlip } from "../vendor/scm/components/ScanOrderModal";
 import {
   reconcileScanPrefill,
@@ -644,10 +645,13 @@ export function MobileScan({
   // single payment, so one call per payment slip yields one payment per slip. The
   // order's front slip rides EVERY call (order fields are read identically each
   // time; we keep the FIRST response's order + this call's single payment).
-  const extractOne = (front: Shot, payFile: File): Promise<ExtractResp> => {
+  const extractOne = async (front: Shot, payFile: File): Promise<ExtractResp> => {
     const form = new FormData();
-    form.append("file", front.file);
-    form.append("file", payFile);
+    // Downscale first: the raw camera file can clear the backend's 20MB gate and
+    // still exceed the model's per-image cap, which returns a NON-retryable 400.
+    const [frontFile, slipFile] = await compressAllForOcr([front.file, payFile]);
+    form.append("file", frontFile);
+    form.append("file", slipFile);
     if (salesperson) form.append("salesperson", salesperson);
     // authedFetch handles the FormData content-type + bearer + long scan
     // timeout. A non-ok reason throws a plain-language message we catch below.
@@ -690,10 +694,13 @@ export function MobileScan({
   // order's photos + queues a server-side job and returns 202 {job_id} BEFORE
   // any OCR — the phone can leave this screen (or close the app entirely); the
   // Worker's waitUntil finishes the OCR and mints the DRAFT SO on its own.
-  const enqueueOne = (order: OrderDraft, force = false): Promise<{ job_id: string; status: string }> => {
+  const enqueueOne = async (order: OrderDraft, force = false): Promise<{ job_id: string; status: string }> => {
     const form = new FormData();
-    form.append("file", order.front!.file);
-    for (const s of order.payShots) form.append("file", s.file);
+    // Downscale before the upload, not after: this POST is the whole point of
+    // the background path (the phone may leave the screen the moment it
+    // returns), so the bytes that ride it are the bytes the model will read.
+    const files = await compressAllForOcr([order.front!.file, ...order.payShots.map((s) => s.file)]);
+    for (const f of files) form.append("file", f);
     if (salesperson) form.append("salesperson", salesperson);
     // force=1 = the operator confirmed "create anyway" on a duplicate-slip
     // warning, so the backend skips its hard reject and queues the order.
