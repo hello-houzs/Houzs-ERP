@@ -24,6 +24,7 @@ import type { SearchNav } from "./MobileSearch";
 import type { MobileScanPrefill } from "./MobileScan";
 import type { ConvertTarget } from "./MobileConvertWizard";
 const MobileSalesOrders = lazy(() => import("./MobileSalesOrders").then((m) => ({ default: m.MobileSalesOrders })));
+const MobileNewProject = lazy(() => import("./MobileNewProject").then((m) => ({ default: m.MobileNewProject })));
 const MobileAmendments = lazy(() => import("./MobileAmendments").then((m) => ({ default: m.MobileAmendments })));
 const MobileSODetail = lazy(() => import("./MobileSODetail").then((m) => ({ default: m.MobileSODetail })));
 const MobileNewSO = lazy(() => import("./MobileNewSO").then((m) => ({ default: m.MobileNewSO })));
@@ -71,6 +72,7 @@ type Screen =
   | { t: "service"; startNew?: boolean }
   | { t: "delivery-planning" }
   | { t: "pms"; projectId?: number }
+  | { t: "new-project" }
   | { t: "mail" }
   | { t: "announcements" }
   | { t: "inbox" }
@@ -455,6 +457,7 @@ function MobileAppInner() {
   else if (screen.t === "service") overlay = <MobileServiceCase onBack={back} startNew={screen.startNew} />;
   else if (screen.t === "delivery-planning") overlay = <MobileDeliveryPlanning onBack={back} onOpen={(doc) => setScreen({ t: "so-detail", docNo: doc })} />;
   else if (screen.t === "pms") overlay = <MobilePMS onBack={back} initialProjectId={screen.projectId} />;
+  else if (screen.t === "new-project") overlay = <MobileNewProject onBack={back} onCreated={(id) => setScreen({ t: "pms", projectId: id })} />;
   else if (screen.t === "mail") overlay = <MobileMailCenter onBack={back} />;
   else if (screen.t === "announcements") overlay = <MobileAnnouncements onBack={back} />;
   else if (screen.t === "inbox") overlay = <MobileInbox onBack={back} onOpen={(n) => { const doc = (n as { doc_no?: string }).doc_no; if (doc) setScreen({ t: "so-detail", docNo: doc }); }} />;
@@ -481,6 +484,7 @@ function MobileAppInner() {
               // FAB "+" second action — open the service-case create sheet on the
               // Service screen (parity with the desktop QuickActionsFAB two-choice).
               onNewCase={() => setScreen({ t: "service", startNew: true })}
+              onNewProject={() => setScreen({ t: "new-project" })}
             />
           ) : <TabLocked title="Sales Orders" />)}
           {tab === "service" && (canService

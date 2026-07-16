@@ -129,7 +129,7 @@ function statusToParam(s: StatusFilter): string | null {
 /** Sales Orders list — 1:1 with the owner's mobile prototype (`#so-list`), wired
  *  to the same /api/scm/mfg-sales-orders the desktop uses (row-scoped +
  *  permission-gated by the backend). Summary bar + period chips + card + FAB. */
-export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan: () => void; onOpen: (docNo: string) => void; onNew: () => void; onNewCase?: () => void }) {
+export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase, onNewProject }: { onScan: () => void; onOpen: (docNo: string) => void; onNew: () => void; onNewCase?: () => void; onNewProject?: () => void }) {
   const qc = useQueryClient();
   const notify = useNotify();
   const { user, can, pageAccess } = useAuth();
@@ -149,6 +149,8 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
   // Shared rule with the desktop QuickActionsFAB (auth/salesAccess) — a Sales
   // user always gets the case option; others only with the matrix grant.
   const canNewCase = !!onNewCase && quickActionAccess(user, can, pageAccess).canNewCase;
+  // New Project — gated on project write access (owner/director/mgt create events).
+  const canNewProject = !!onNewProject && can("projects.write");
   const [status, setStatus] = useState<StatusFilter>("all");
   const [range, setRange] = useState<Range>("all");
   const [filterOpen, setFilterOpen] = useState(false);
@@ -614,8 +616,8 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
           a two-choice sheet (New Sales Order / New Service Case), matching the
           desktop QuickActionsFAB; otherwise it opens New Sales Order directly. */}
       <button
-        onClick={() => { if (canNewCase) setFabOpen(true); else onNew(); }}
-        aria-label={canNewCase ? "Create" : "New sales order"}
+        onClick={() => { if (canNewCase || canNewProject) setFabOpen(true); else onNew(); }}
+        aria-label={canNewCase || canNewProject ? "Create" : "New sales order"}
         className="fab"
       >
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.6" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
@@ -653,6 +655,16 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#a16a2e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flex: "none" }}><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76Z" /></svg>
                 <span className="ml">New Service Case</span>
               </button>
+              {canNewProject && (
+                <button
+                  className="mcard"
+                  onClick={() => { setFabOpen(false); onNewProject?.(); }}
+                  style={{ justifyContent: "flex-start", gap: 10 }}
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#7a5c86" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flex: "none" }}><path d="M3 7V5a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /><path d="M12 11v4M10 13h4" /></svg>
+                  <span className="ml">New Project</span>
+                </button>
+              )}
             </div>
           </div>
         </div>
