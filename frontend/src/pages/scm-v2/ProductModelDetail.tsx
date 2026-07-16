@@ -21,8 +21,9 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
 import { Link } from 'react-router-dom';
-import { ArrowLeft, ImagePlus, Layers, Save, Store, Trash2, Wand2, X, Power, PowerOff } from 'lucide-react';
-import { Button } from '@2990s/design-system';
+import { ArrowLeft, ImagePlus, Save, Store, Trash2, Wand2, X, Power, PowerOff } from 'lucide-react';
+import { Button } from '../../components/Button';
+import { PageHeader } from '../../components/Layout';
 import { maintActiveValues } from '@2990s/shared';
 import {
   useProductModel, useUpdateProductModel, useDeleteProductModel, useGenerateModelSkus,
@@ -47,6 +48,25 @@ const AssignSupplierDialog = lazy(() =>
   import('./ProductModels').then((m) => ({ default: m.ModularAssignSupplierDialog })));
 
 const ICON = { size: 14, strokeWidth: 1.75 } as const;
+
+/* Section card — replaces the bespoke .card, whose white/hairline/shadow
+   only resolved through the removed .page token cascade. Same slab the
+   Inventory / WarehouseRacks reskin uses. */
+const CARD = 'flex flex-col gap-4 rounded-lg border border-border bg-surface p-5 shadow-stone';
+
+/* Error banners — err tokens (were the bespoke .errorBanner / .photoError,
+   which painted --c-festive-b on a raw rgba tint). */
+const BANNER_ERR =
+  'rounded-lg border border-err/40 bg-err/10 px-4 py-3 text-[14px] text-err';
+const BANNER_ERR_SM =
+  'rounded-lg border border-err/40 bg-err/10 px-3 py-2 text-[12px] text-err';
+
+/* Back link / Close — the detail page's escape hatch. Same compact
+   secondary-button recipe PageHeader gives its own secondaryActions (and
+   the shape WarehouseRacks' "← Warehouses" link uses), so the link reads as
+   part of the action rail instead of floating above the title. */
+const BACK_LINK =
+  'inline-flex h-9 items-center gap-1.5 rounded-md border border-border bg-surface px-3 text-[11px] font-semibold uppercase tracking-wider text-ink-secondary transition-colors hover:border-primary/40 hover:bg-primary-soft hover:text-primary';
 
 /* Resolve a Model photo URL for <img src>. Two upload paths coexist:
    · bulk / API upload (POST /product-models/:id/photo) → R2 proxy path,
@@ -209,12 +229,12 @@ export const ProductModelDetail = ({
   if (isLoading) return <SkeletonDetailPage />;
   if (error) {
     return (
-      <div className={styles.errorBanner}>
+      <div className={BANNER_ERR}>
         Failed to load model. {error instanceof Error ? error.message : String(error)}
       </div>
     );
   }
-  if (!data?.model) return <div className={styles.loading}>Model not found.</div>;
+  if (!data?.model) return <div className="p-6 text-[14px] text-ink-secondary">Model not found.</div>;
 
   const model = data.model;
 
@@ -299,42 +319,54 @@ export const ProductModelDetail = ({
   };
 
   return (
-    <div className={styles.page}>
+    <div className="space-y-4">
       {/* Header --------------------------------------------------------- */}
-      <header className={styles.header}>
-        {embedded ? (
-          <button type="button" className={styles.back} onClick={onClose} style={{ background: 'transparent', border: 'none', cursor: 'pointer', padding: 0 }}>
-            <X {...ICON} /> Close
-          </button>
-        ) : (
-          <Link to="/scm/product-models" className={styles.back}>
-            <ArrowLeft {...ICON} /> Product Models
-          </Link>
-        )}
-        <div className={styles.titleRow}>
-          <Layers size={20} strokeWidth={1.75} />
-          <h1 className="t-h2">{model.model_code}</h1>
-          <span className={styles.titleName}>· {model.name}</span>
-          <span className={styles.catPill}>{model.category}</span>
-          <span className={`${styles.statusPill} ${model.active ? styles.active : styles.inactive}`}>
-            {model.active ? 'ACTIVE' : 'INACTIVE'}
-          </span>
-        </div>
-        <div className={styles.headerActions}>
-          <Button variant="ghost" size="sm" onClick={() => setAssigning(true)}>
-            <Store {...ICON} /> Assign supplier
-          </Button>
-          <Button variant="ghost" size="sm" onClick={onToggleActive}>
-            {model.active ? 'Deactivate' : 'Activate'}
-          </Button>
-          <Button variant="ghost" size="sm" onClick={onDelete}>
-            <Trash2 {...ICON} /> Delete
-          </Button>
-          <Button variant="primary" size="sm" onClick={onSave} disabled={updateMut.isPending}>
-            <Save {...ICON} /> {updateMut.isPending ? 'Saving…' : 'Save changes'}
-          </Button>
-        </div>
-      </header>
+      <PageHeader
+        eyebrow="Product Model"
+        title={model.model_code}
+        description={model.name}
+        actions={
+          /* Category + ACTIVE/INACTIVE pills — the old .titleRow chrome,
+             reseated in the header's always-rendered actions slot. (The
+             decorative <Layers> glyph went away with the bespoke title row;
+             PageHeader's eyebrow rail carries that job now.) */
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={styles.catPill}>{model.category}</span>
+            <span className={`${styles.statusPill} ${model.active ? styles.active : styles.inactive}`}>
+              {model.active ? 'ACTIVE' : 'INACTIVE'}
+            </span>
+          </div>
+        }
+        primaryAction={
+          /* Every control stays an inline Button/Link rather than
+             `secondaryActions`: MenuItem has no `disabled`, and Save changes
+             must keep its `disabled={updateMut.isPending}` guard — moving it
+             to a MenuItem would silently drop the in-flight lock. */
+          <div className="flex flex-wrap items-stretch gap-2">
+            {embedded ? (
+              <button type="button" className={BACK_LINK} onClick={onClose}>
+                <X {...ICON} /> Close
+              </button>
+            ) : (
+              <Link to="/scm/product-models" className={BACK_LINK}>
+                <ArrowLeft {...ICON} /> Product Models
+              </Link>
+            )}
+            <Button variant="secondary" icon={<Store {...ICON} />} onClick={() => setAssigning(true)}>
+              Assign supplier
+            </Button>
+            <Button variant="secondary" onClick={onToggleActive}>
+              {model.active ? 'Deactivate' : 'Activate'}
+            </Button>
+            <Button variant="danger" icon={<Trash2 {...ICON} />} onClick={onDelete}>
+              Delete
+            </Button>
+            <Button variant="primary" icon={<Save {...ICON} />} onClick={onSave} disabled={updateMut.isPending}>
+              {updateMut.isPending ? 'Saving…' : 'Save changes'}
+            </Button>
+          </div>
+        }
+      />
 
       {assigning && id && (
         <Suspense fallback={null}>
@@ -347,13 +379,13 @@ export const ProductModelDetail = ({
       )}
 
       {updateMut.isError && (
-        <div className={styles.errorBanner}>
+        <div className={BANNER_ERR}>
           Save failed: {updateMut.error instanceof Error ? updateMut.error.message : 'unknown'}
         </div>
       )}
 
       {/* Info card ------------------------------------------------------ */}
-      <section className={styles.card}>
+      <section className={CARD}>
         <h2 className={styles.cardTitle}>Model info</h2>
         <div className={styles.fieldGrid}>
           <label className={styles.field}>
@@ -418,7 +450,7 @@ export const ProductModelDetail = ({
       </section>
 
       {/* Photo card (PR #97) ------------------------------------------- */}
-      <section className={styles.card}>
+      <section className={CARD}>
         <div className={styles.photoRow}>
           {model.photo_url ? (
             <div className={styles.photoPreview}>
@@ -450,27 +482,27 @@ export const ProductModelDetail = ({
             />
             <div className={styles.photoActions}>
               <Button
-                variant="ghost"
-                size="sm"
+                variant="secondary"
                 type="button"
+                icon={<ImagePlus {...ICON} />}
                 onClick={() => photoInputRef.current?.click()}
                 disabled={photoUploading}
               >
-                <ImagePlus {...ICON} /> {model.photo_url ? 'Replace photo' : 'Upload photo'}
+                {model.photo_url ? 'Replace photo' : 'Upload photo'}
               </Button>
               {model.photo_url && (
                 <Button
-                  variant="ghost"
-                  size="sm"
+                  variant="danger"
                   type="button"
+                  icon={<Trash2 {...ICON} />}
                   onClick={onPhotoRemove}
                   disabled={photoUploading || updateMut.isPending}
                 >
-                  <Trash2 {...ICON} /> Remove
+                  Remove
                 </Button>
               )}
             </div>
-            {photoError && <div className={styles.photoError}>{photoError}</div>}
+            {photoError && <div className={BANNER_ERR_SM}>{photoError}</div>}
           </div>
         </div>
       </section>
@@ -480,13 +512,13 @@ export const ProductModelDetail = ({
           "Not yet wired · Setup notes" state until BACKEND-CHECKLIST A1 lands.
           The legacy single photo above is unaffected. */}
       {id && (
-        <section className={styles.card} style={{ padding: 0 }}>
+        <section className={CARD} style={{ padding: 0 }}>
           <ProductModelPhotoGallery modelId={id} modelName={model.name} />
         </section>
       )}
 
       {/* Allowed options ------------------------------------------------ */}
-      <section className={styles.card}>
+      <section className={CARD}>
         <h2 className={styles.cardTitle}>Allowed options</h2>
         <p className={styles.cardSub}>
           Every variant from the global Maintenance pool starts ticked on. Toggle
@@ -556,13 +588,18 @@ export const ProductModelDetail = ({
                 setAllowed(next);
               }}
               placeholder="e.g. 31 (for AKKA-FIRM)"
+              /* Hex-pinned: --line-strong / --c-paper only resolved through
+                 the removed .page cascade (:root has them as
+                 rgba(34,31,32,.28) / #f4f6f3 — this input would have gained a
+                 dark border on a grey fill). Now border + surface tokens. */
               style={{
                 fontFamily: 'var(--font-mono)',
                 fontSize: 'var(--fs-14)',
                 padding: 'var(--space-2) var(--space-3)',
-                border: '1px solid var(--line-strong)',
+                border: '1px solid #d6d9d2',
                 borderRadius: 'var(--radius-sm)',
-                background: 'var(--c-paper)',
+                background: '#fff',
+                color: '#11140f',
                 width: '160px',
               }}
             />
@@ -578,19 +615,21 @@ export const ProductModelDetail = ({
       </section>
 
       {/* SKU variants list --------------------------------------------- */}
-      <section className={styles.card}>
-        <div className={styles.cardHeadRow}>
+      <section className={CARD}>
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className={styles.cardTitle}>SKU variants ({data.skus.length})</h2>
           <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center' }}>
             {/* PR #87 — Commander 2026-05-26: "正常 default 都是全开的，但也
                 要有一个关掉的 button". Bulk-toggle every variant in this Model
                 so a discontinued line can be parked off the SO/PO picker in
-                one click without losing its row / history / pricing. */}
+                one click without losing its row / history / pricing.
+                Both stay inline <Button>s (not PageHeader secondaryActions):
+                their `disabled` all-on/all-off guard has no MenuItem field. */}
             {data.skus.length > 0 && (
               <>
                 <Button
-                  variant="ghost"
-                  size="sm"
+                  variant="secondary"
+                  icon={<Power {...ICON} />}
                   disabled={statusMut.isPending || data.skus.every((s) => s.status === 'ACTIVE')}
                   onClick={() => {
                     const inactive = data.skus.filter((s) => s.status !== 'ACTIVE');
@@ -599,11 +638,11 @@ export const ProductModelDetail = ({
                   }}
                   title="Activate every SKU under this Model"
                 >
-                  <Power {...ICON} /> All on
+                  All on
                 </Button>
                 <Button
-                  variant="ghost"
-                  size="sm"
+                  variant="secondary"
+                  icon={<PowerOff {...ICON} />}
                   disabled={statusMut.isPending || data.skus.every((s) => s.status !== 'ACTIVE')}
                   onClick={async () => {
                     const active = data.skus.filter((s) => s.status === 'ACTIVE');
@@ -617,16 +656,16 @@ export const ProductModelDetail = ({
                   }}
                   title="Deactivate every SKU under this Model"
                 >
-                  <PowerOff {...ICON} /> All off
+                  All off
                 </Button>
               </>
             )}
             <Button
-              variant="ghost"
-              size="sm"
+              variant="secondary"
+              icon={<Wand2 {...ICON} />}
               onClick={() => setAddCodesOpen(true)}
             >
-              <Wand2 {...ICON} /> Add codes…
+              Add codes…
             </Button>
           </div>
         </div>
@@ -671,7 +710,10 @@ export const ProductModelDetail = ({
                     <button
                       type="button"
                       className={`${styles.statusPill} ${sku.status === 'ACTIVE' ? styles.active : styles.inactive}`}
-                      style={{ cursor: 'pointer', border: '1px solid var(--line)' }}
+                      /* border hex-pinned — var(--line) resolved to #d6d9d2
+                         only via the removed .page cascade (:root has it as
+                         rgba(34,31,32,.12)). */
+                      style={{ cursor: 'pointer', border: '1px solid #d6d9d2' }}
                       disabled={statusMut.isPending}
                       onClick={() => statusMut.mutate({
                         id: sku.id,
@@ -692,7 +734,7 @@ export const ProductModelDetail = ({
                         <button
                           type="button"
                           className={`${styles.statusPill} ${styles.inactive}`}
-                          style={{ cursor: 'pointer', border: '1px solid var(--line)' }}
+                          style={{ cursor: 'pointer', border: '1px solid #d6d9d2' }}
                           disabled={activateOneShotMut.isPending}
                           onClick={() => activateOneShotMut.mutate({ id: sku.id })}
                           title="Activate this one-shot SKU in POS"
@@ -960,11 +1002,28 @@ function AddCodesModal({
   };
 
   return (
-    <div className={styles.modalBackdrop} onClick={onClose}>
-      <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
-        <header className={styles.modalHead}>
-          <h2 className={styles.modalTitle}>Add codes to {modelCode}</h2>
-          <button type="button" className={styles.modalClose} onClick={onClose} aria-label="Close">
+    /* Modal chrome is Tailwind token markup now (was .modalBackdrop /
+       .modal / .modalHead / .modalTitle / .modalClose) — same recipe as the
+       Inventory drawer header. The list rows below stay in the module.css
+       as repeated content primitives. */
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="flex max-h-[90vh] w-[min(640px,100%)] flex-col gap-3 rounded-lg border border-border bg-surface p-5 shadow-slab"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="flex items-center justify-between gap-3">
+          <h2 className="font-display text-[18px] font-extrabold leading-tight tracking-tight text-ink">
+            Add codes to {modelCode}
+          </h2>
+          <button
+            type="button"
+            className="rounded p-1 text-ink-muted transition-colors hover:bg-surface-2 hover:text-ink"
+            onClick={onClose}
+            aria-label="Close"
+          >
             <X {...ICON} />
           </button>
         </header>
@@ -1004,15 +1063,14 @@ function AddCodesModal({
           </div>
         )}
 
-        <footer className={styles.modalFoot}>
+        <footer className="flex items-center justify-between gap-3 border-t border-border pt-2">
           <span className={styles.modalCount}>
             {existingCount} existing · {newCount} new · {picked.size} ticked
           </span>
           <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-            <Button variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
+            <Button variant="secondary" onClick={onClose}>Cancel</Button>
             <Button
               variant="primary"
-              size="sm"
               onClick={submit}
               disabled={generateMut.isPending || picked.size === 0}
             >

@@ -1,124 +1,81 @@
-/* ProductModelDetail — matches the visual language of SupplierDetail / SO
-   detail pages: cream page, white cards, chip-style option toggles. */
+/* ====================================================================
+   ProductModelDetail — design-system reskin (2026-07-16)
 
-.page {
-  /* Ink & Petrol token overrides — same cascade as SalesOrderNew.module.css. */
-  --c-orange:        #16695f;
-  --c-burnt:         #0c3f39;
-  --c-cream:         #f4f6f3;
-  --c-paper:         #fcfdfb;
-  --c-ink:           #11140f;
-  --c-ink-secondary: #767b6e;
-  --c-ink-muted:     #9aa093;
-  --fg:              #11140f;
-  --fg-muted:        #767b6e;
-  --line:            #d6d9d2;
-  --line-strong:     #c2c6bd;
-  --c-accent-soft:   #eff6f4;
+   The page frame is now FULL-BLEED and matches the shipped batch-2 pages
+   (Inventory / Mrp / WarehouseRacks): the header is the shared
+   <PageHeader> — the back link ("Product Models" / "Close" when the page
+   is embedded as the Modular-tab drawer) plus every action ride in its
+   primaryAction slot, the category + ACTIVE / INACTIVE pills in its
+   always-rendered actions slot. The section cards, the "Add codes" modal
+   shell and the error banners are Tailwind token markup, and the buttons
+   are the local <Button> — all inline in the TSX.
 
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-5);
-  padding: var(--space-5);
-  max-width: 1280px;
-}
+   Deleted from here: the framed page canvas (.page and its --c-* / --fg /
+   --line token-override cascade), .header / .back / .titleRow /
+   .titleName / .headerActions, .card / .cardHeadRow, .loading, the two
+   bespoke error banners (.errorBanner / .photoError — now err-token
+   markup), the modal chrome (.modalBackdrop / .modal / .modalHead /
+   .modalTitle / .modalClose / .modalFoot) and the dead .photoSideHint.
 
-.loading {
-  padding: var(--space-6);
-  font-family: var(--font-sans);
-  color: var(--fg-muted);
-}
+   What survives is the CONTENT layer — the pills, the section title +
+   sub-copy, the field grid, the photo card, the option groups and their
+   chips, the SKU table, and the modal's list rows. Those used to read
+   their colours from the .page override cascade, so every var(--c-...),
+   var(--line...), var(--fg...) and var(--bg) reference is now written as
+   its Ink & Petrol hex — the :root fallbacks in
+   vendor/design-system/tokens.css DIFFER (--c-cream #ffffff, --c-paper
+   #f4f6f3, --line rgba(34,31,32,.12), --line-strong rgba(34,31,32,.28))
+   and --c-ink-secondary / --c-ink-muted / --c-accent-soft are not
+   defined at :root AT ALL, so they would have silently reskinned this
+   page. Mapping used (same as Inventory.module.css):
+     primary      #16695f   primary-dark  #0c3f39
+     ink          #11140f   ink-muted     #767b6e   ink-soft #9aa093
+     border       #d6d9d2   border-strong #c2c6bd   border-subtle #e3e6e0
+     surface      #ffffff   surface-2     #f4f6f3   primary-soft  #e1efed
+     success      #2f8a5b   err           #b23a3a
+   Structural tokens (--space-*, --fs-*, --font-*, --shadow-*,
+   --radius-*) are :root-global and stay as var().
+   ==================================================================== */
 
-.errorBanner {
-  padding: var(--space-3) var(--space-4);
-  background: rgba(184, 51, 31, 0.08);
-  color: var(--c-festive-b);
-  border-radius: var(--radius-sm);
-  font-family: var(--font-sans);
-  font-size: var(--fs-14);
-}
-
-/* ─── Header ──────────────────────────────────────────────────────────── */
-.header {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-
-.back {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  color: var(--fg-muted);
-  font-family: var(--font-sans);
-  font-size: var(--fs-13);
-  text-decoration: none;
-  width: max-content;
-}
-.back:hover { color: var(--fg); }
-
-.titleRow {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  flex-wrap: wrap;
-}
-.titleRow h1 { margin: 0; }
-.titleName {
-  color: var(--fg-muted);
-  font-family: var(--font-sans);
-  font-size: var(--fs-15);
-}
-
+/* ── Pills — category + ACTIVE / INACTIVE status ────────────────────── */
 .catPill, .statusPill {
   font-family: var(--font-mono);
   font-size: var(--fs-12);
   padding: 2px 8px;
   border-radius: 999px;
-  border: 1px solid var(--line);
-  background: var(--c-paper);
+  border: 1px solid #d6d9d2;
+  background: #fff;
   letter-spacing: 0.04em;
 }
+/* ACTIVE — success tokens, matching Inventory's Active warehouse pill
+   (was --c-evergreen #265F49, off-system). */
 .statusPill.active {
-  background: rgba(38, 95, 73, 0.12);
-  color: var(--c-evergreen, #265F49);
-  border-color: rgba(38, 95, 73, 0.3);
+  background: rgba(47, 138, 91, 0.12);
+  color: #2f8a5b;
+  border-color: rgba(47, 138, 91, 0.3);
 }
+/* INACTIVE — quiet surface-2 slab (was a raw rgba(150,150,150,.12) grey). */
 .statusPill.inactive {
-  background: rgba(150, 150, 150, 0.12);
-  color: var(--fg-muted);
+  background: #f4f6f3;
+  color: #767b6e;
 }
 
-.headerActions {
-  display: flex;
-  gap: var(--space-2);
-  align-items: center;
-}
-
-/* ─── Card ────────────────────────────────────────────────────────────── */
-.card {
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  padding: var(--space-5);
-  box-shadow: var(--shadow-1);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-}
-.cardTitle {
+/* ── Section header + sub-copy ──────────────────────────────────────── */
+.cardTitle, .photoSideTitle {
   /* SECTION HEADER — bring into line with SalesOrderDetail so every detail
      page's section header reads the same: brand emphasis colour, uppercase,
      heavy weight. (Wei Siang 2026-06-04 — consistent visual hierarchy.)
-     This card has no separate header bar, so the recipe is applied to the
-     title text only; the surrounding .card / .cardHeadRow layout is unchanged. */
+     The card has no separate header bar, so the recipe is applied to the
+     title text only. The Photo card's title joined this selector in the
+     2026-07-16 reskin — it used to render as a plain 15 px sans heading
+     while every sibling section read as a petrol eyebrow. */
   margin: 0;
   font-family: var(--font-button);
   font-size: var(--fs-13, 13px);
   font-weight: 800;
   letter-spacing: 0.05em;
   text-transform: uppercase;
-  color: var(--c-burnt);
+  color: #0c3f39;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -127,20 +84,14 @@
   width: 15px;
   height: 15px;
 }
-.cardHeadRow {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: var(--space-3);
-}
 .cardSub {
   margin: 0;
-  color: var(--fg-muted);
+  color: #767b6e;
   font-family: var(--font-sans);
   font-size: var(--fs-13);
 }
 
-/* ─── Field grid ──────────────────────────────────────────────────────── */
+/* ── Field grid ─────────────────────────────────────────────────────── */
 .fieldGrid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -156,23 +107,26 @@
   font-family: var(--font-sans);
   font-size: var(--fs-14);
   padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--line-strong);
+  border: 1px solid #d6d9d2;
   border-radius: var(--radius-sm);
-  background: var(--c-paper);
-  color: var(--fg);
+  background: #fff;
+  color: #11140f;
   resize: vertical;
 }
+/* Petrol border + soft ring — the same focus recipe the shared
+   <SearchInput> uses (focus:border-primary focus:ring-2 ring-primary/20). */
 .field input:focus, .field textarea:focus {
   outline: none;
-  border-color: var(--c-orange);
+  border-color: #16695f;
+  box-shadow: 0 0 0 2px rgba(22, 105, 95, 0.2);
 }
 .readonly {
-  background: var(--c-cream) !important;
-  color: var(--fg-muted) !important;
+  background: #f4f6f3 !important;
+  color: #767b6e !important;
   cursor: not-allowed;
 }
 
-/* ─── Photo card (PR #97 — Commander: 可以放照片的啊) ─────────────────── */
+/* ── Photo card (PR #97 — Commander: 可以放照片的啊) ─────────────────── */
 .photoRow {
   display: grid;
   grid-template-columns: 220px 1fr;
@@ -184,8 +138,8 @@
   width: 220px;
   height: 220px;
   border-radius: var(--radius-md);
-  background: var(--c-cream);
-  border: 1px solid var(--line);
+  background: #f4f6f3;
+  border: 1px solid #d6d9d2;
   overflow: hidden;
   display: flex;
   align-items: center;
@@ -202,42 +156,30 @@
   width: 220px;
   height: 220px;
   border-radius: var(--radius-md);
-  border: 1px dashed var(--line-strong);
-  background: var(--c-cream);
+  border: 1px dashed #c2c6bd;
+  background: #f4f6f3;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: var(--space-2);
-  color: var(--fg-muted);
+  color: #767b6e;
   font-family: var(--font-sans);
   font-size: var(--fs-13);
   cursor: pointer;
-  transition: border-color 120ms ease, color 120ms ease;
+  transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
   flex-shrink: 0;
 }
 .photoEmpty:hover {
-  border-color: var(--c-orange);
-  color: var(--c-orange);
+  border-color: #16695f;
+  color: #16695f;
+  background: #e1efed;
 }
 .photoSide {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
   align-self: flex-start;
-}
-.photoSideTitle {
-  font-family: var(--font-sans);
-  font-size: var(--fs-15);
-  font-weight: 600;
-  margin: 0;
-}
-.photoSideHint {
-  margin: 0;
-  color: var(--fg-muted);
-  font-family: var(--font-sans);
-  font-size: var(--fs-13);
-  line-height: 1.5;
 }
 .photoActions {
   display: flex;
@@ -253,15 +195,7 @@
   justify-content: center;
   font-family: var(--font-sans);
   font-size: var(--fs-13);
-  color: var(--fg-muted);
-}
-.photoError {
-  padding: var(--space-2) var(--space-3);
-  background: rgba(184, 51, 31, 0.08);
-  color: var(--c-festive-b);
-  border-radius: var(--radius-sm);
-  font-family: var(--font-sans);
-  font-size: var(--fs-12);
+  color: #767b6e;
 }
 .hiddenInput {
   position: absolute;
@@ -274,7 +208,7 @@
   border: 0;
 }
 
-/* ─── Option groups + chips ───────────────────────────────────────────── */
+/* ── Option groups + chips ──────────────────────────────────────────── */
 .optGroup {
   display: flex;
   flex-direction: column;
@@ -286,7 +220,7 @@
   gap: var(--space-3);
 }
 .optHint {
-  color: var(--fg-muted);
+  color: #767b6e;
   font-family: var(--font-sans);
   font-size: var(--fs-12);
 }
@@ -307,15 +241,15 @@
   text-transform: uppercase;
   padding: 2px 8px;
   border-radius: 999px;
-  border: 1px solid var(--line);
-  background: var(--c-paper);
-  color: var(--fg-muted);
+  border: 1px solid #d6d9d2;
+  background: #fff;
+  color: #767b6e;
   cursor: pointer;
   transition: all 120ms ease-out;
 }
 .optBulkBtn:hover {
-  border-color: var(--c-orange);
-  color: var(--c-orange);
+  border-color: #16695f;
+  color: #16695f;
 }
 .chipRow {
   display: flex;
@@ -327,20 +261,29 @@
   font-size: var(--fs-12);
   padding: 4px 12px;
   border-radius: 999px;
-  border: 1px solid var(--line-strong);
-  background: var(--c-paper);
-  color: var(--fg);
+  border: 1px solid #d6d9d2;
+  background: #fff;
+  color: #11140f;
   cursor: pointer;
   transition: all 120ms ease-out;
 }
-.chip:hover { border-color: var(--c-orange); }
+.chip:hover {
+  border-color: #16695f;
+  background: #e1efed;
+}
 .chipOn {
-  background: var(--c-orange);
-  color: var(--bg);
-  border-color: var(--c-orange);
+  background: #16695f;
+  color: #fff;
+  border-color: #16695f;
+}
+/* Must out-specify .chip:hover (same 0,2,0 weight, declared later) or an
+   already-on chip would flash primary-soft under the cursor. */
+.chipOn:hover {
+  background: #0c3f39;
+  border-color: #0c3f39;
 }
 
-/* ─── SKU table ───────────────────────────────────────────────────────── */
+/* ── SKU table ──────────────────────────────────────────────────────── */
 .skuTable {
   width: 100%;
   border-collapse: collapse;
@@ -349,79 +292,47 @@
 }
 .skuTable th, .skuTable td {
   padding: var(--space-2) var(--space-3);
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid #d6d9d2;
   text-align: left;
 }
+/* Head row now matches the system-wide table head (Inventory .table thead
+   th): surface-2 slab, mono-ish button face, wide tracking. */
 .skuTable th {
-  font-family: var(--font-sans);
-  font-size: var(--fs-12);
+  font-family: var(--font-button);
+  font-size: var(--fs-11);
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--fg-muted);
-  font-weight: 500;
+  letter-spacing: 0.18em;
+  color: #767b6e;
+  background: #f4f6f3;
 }
+.skuTable tbody tr:hover { background: #f4f6f3; }
+.skuTable tbody tr:last-child td { border-bottom: none; }
 .skuTable code {
   font-family: var(--font-mono);
   font-size: var(--fs-12);
-  background: var(--c-cream);
+  background: #f4f6f3;
+  /* Hairline keeps the chip readable once the row hover paints the same
+     surface-2 behind it. */
+  border: 1px solid #d6d9d2;
   padding: 1px 6px;
   border-radius: 4px;
 }
 
-/* ─── + Add codes modal ───────────────────────────────────────────────── */
-.modalBackdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.4);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 100;
-  padding: var(--space-4);
-}
-.modal {
-  background: var(--c-cream);
-  border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-3);
-  width: min(640px, 100%);
-  max-height: 90vh;
-  padding: var(--space-5);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-.modalHead {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-.modalTitle {
-  margin: 0;
-  font-family: var(--font-sans);
-  font-size: var(--fs-17);
-  font-weight: 600;
-}
+/* ── + Add codes modal — list rows (the shell is Tailwind in the TSX) ─ */
 .modalSub {
   margin: 0;
   font-family: var(--font-sans);
   font-size: var(--fs-13);
-  color: var(--fg-muted);
+  color: #767b6e;
 }
-.modalClose {
-  border: none;
-  background: transparent;
-  cursor: pointer;
-  color: var(--fg-muted);
-  padding: 4px;
-}
-.modalClose:hover { color: var(--fg); }
 .modalEmpty {
   padding: var(--space-5);
   text-align: center;
-  background: var(--bg);
-  border: 1px dashed var(--line);
+  background: #f4f6f3;
+  border: 1px dashed #d6d9d2;
   border-radius: var(--radius-md);
-  color: var(--fg-muted);
+  color: #767b6e;
   font-family: var(--font-sans);
   font-size: var(--fs-13);
 }
@@ -439,58 +350,57 @@
   gap: var(--space-3);
   align-items: center;
   padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--line);
+  border: 1px solid #d6d9d2;
   border-radius: var(--radius-sm);
-  background: var(--bg);
+  background: #fff;
   cursor: pointer;
 }
-.modalRow:hover { border-color: var(--c-orange); }
+.modalRow:hover {
+  border-color: #16695f;
+  background: #e1efed;
+}
 .modalRowExisting {
   opacity: 0.55;
-  background: var(--c-cream);
+  background: #f4f6f3;
   cursor: not-allowed;
 }
-.modalRowExisting:hover { border-color: var(--line); }
+/* Declared after .modalRow:hover so an already-existing row stays inert. */
+.modalRowExisting:hover {
+  border-color: #d6d9d2;
+  background: #f4f6f3;
+}
 .modalCode {
   font-family: var(--font-mono);
   font-size: var(--fs-13);
-  background: var(--c-paper);
+  background: #f4f6f3;
   padding: 2px 8px;
   border-radius: 999px;
-  border: 1px solid var(--line);
+  border: 1px solid #d6d9d2;
 }
 .modalName {
   font-family: var(--font-sans);
   font-size: var(--fs-13);
-  color: var(--fg);
+  color: #11140f;
 }
 .modalExistsPill {
   font-family: var(--font-mono);
   font-size: var(--fs-11);
   padding: 2px 8px;
   border-radius: 999px;
-  background: rgba(150, 150, 150, 0.12);
-  color: var(--fg-muted);
+  background: #f4f6f3;
+  color: #767b6e;
   letter-spacing: 0.04em;
-}
-.modalFoot {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding-top: var(--space-2);
-  border-top: 1px solid var(--line);
 }
 .modalCount {
   font-family: var(--font-sans);
   font-size: var(--fs-12);
-  color: var(--fg-muted);
+  color: #767b6e;
 }
 
-/* Phone (Houzs 2026-06-24) — element-level overflow clamp. */
+/* Phone (Houzs 2026-06-24) — element-level overflow clamp. (The .page
+   padding rule that used to live here went away with the class; the page is
+   full-bleed now and inherits the app shell's responsive padding.) */
 @media (max-width: 600px) {
-  .page {
-    padding: var(--space-3);
-  }
   .fieldGrid {
     grid-template-columns: 1fr;
   }
