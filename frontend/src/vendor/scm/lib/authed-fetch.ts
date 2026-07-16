@@ -275,6 +275,14 @@ const ERROR_CODE_MESSAGES: Record<string, string> = {
   processing_date_remove_forbidden:
     'Only a Super Admin can remove the Processing Date. Removing it pulls the order back out of Proceed — ask a Super Admin to do it.',
   so_sofa_no_other_main:  "A sofa order can't be mixed with bedframe or mattress items — use a separate order.",
+  // 2990-owned orders. The live mirror re-applies 2990's version of the order on
+  // every sync, so a change saved here would be undone within seconds with
+  // nothing shown to the operator — the backend refuses instead of letting them
+  // believe it saved.
+  so_owned_by_2990:
+    'This order belongs to 2990 and can only be changed in 2990. Any change made here would be undone automatically.',
+  so_create_blocked_2990:
+    'New orders for 2990 have to be created in 2990. An order created here would take a number 2990 is about to use, and would be overwritten.',
 };
 
 export function humanApiError(status: number, body: string): string {

@@ -42,7 +42,7 @@ import {
   deriveSalesLocationFromState,
   deriveWarehouseIdFromState,
 } from '../routes/mfg-sales-orders';
-import { activeCompanyId } from './companyScope';
+import { activeCompanyId, isMirroredDocNo } from './companyScope';
 
 /* The Supabase client threaded through the routes is loosely typed (`any` in
    every sibling helper — see mfg-pricing-recompute.ts / so-audit callers). Keep
@@ -57,6 +57,25 @@ type AmendmentRow = {
      for the frozen columns only. NULL on a line-only amendment. */
   header_changes?: Record<string, string | null> | null;
 };
+
+/* ── assertNotMirrored — the last gate before either engine mutates ─────────
+   Both engines below rewrite a Sales Order and its bound PO from an amendment
+   id. If that SO is 2990's, the next 2990 mirror drain re-applies 2990's
+   version over the top — header upsert plus delete-then-reinsert of every line
+   — so the whole re-derivation vanishes with no error and no alarm, and the
+   operator is left believing an approval landed that did not (see the
+   MIRRORED_COMPANY_CODE block in lib/companyScope.ts).
+
+   The route gate in routes/so-amendments.ts already refuses these, so this is
+   defence in depth — but it belongs HERE too, because these are exported
+   library functions reachable from any future caller, and because the doc-no
+   marker needs no Context: the guard still holds on the `c`-less call the
+   signature allows, where a company_id lookup would silently no-op. */
+function assertNotMirrored(docNo: string, fn: string): void {
+  if (isMirroredDocNo(docNo)) {
+    throw new Error(`${fn}: ${docNo} belongs to 2990 and cannot be revised from Houzs`);
+  }
+}
 
 /* The frozen header columns an amendment may carry, keyed by the camelCase
    payload name -> column. MIRRORS AMENDABLE_HEADER_FIELDS in
@@ -170,6 +189,7 @@ export async function applySoAmendment(
   if (!amdRow) throw new Error('applySoAmendment: amendment not found');
   const amendment = amdRow as AmendmentRow;
   const docNo = amendment.so_doc_no;
+  assertNotMirrored(docNo, 'applySoAmendment');
 
   const { data: lineRows, error: lineErr } = await sb
     .from('so_amendment_lines')
@@ -587,6 +607,7 @@ export async function reviseBoundPo(
   if (amdErr) throw new Error(`reviseBoundPo: amendment load failed: ${amdErr.message}`);
   if (!amdRow) throw new Error('reviseBoundPo: amendment not found');
   const docNo = (amdRow as AmendmentRow).so_doc_no;
+  assertNotMirrored(docNo, 'reviseBoundPo');
 
   // (2) Resolve the bound PO(s): SO line ids → purchase_order_items.so_item_id →
   //     distinct non-cancelled purchase_orders. Empty ⇒ light branch (no-op).
