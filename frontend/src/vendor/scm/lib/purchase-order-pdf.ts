@@ -43,7 +43,7 @@ import {
 } from '@2990s/shared/so-line-display';
 import { buildDefaultSofaCells, findModule, SOFA_MODULES, type Cell, type Depth } from '@2990s/shared';
 import { drawSofaLayout } from './sofa-layout-pdf';
-import { COMPANY, amountInWordsMyr, drawInfoColumns, fmtDocDate, fmtDocStamp } from './pdf-common';
+import { COMPANY, amountInWordsMyr, drawInfoColumns, ensurePdfCjkFont, fmtDocDate, fmtDocStamp } from './pdf-common';
 import {
   loadSupplierDocData,
   supplierCodeFor,
@@ -219,6 +219,12 @@ async function renderPurchaseOrderInto(
      Converter colour map + the FULL supplier master record (the PO detail
      endpoint embeds only 7 fields — no fax / attention / payment_terms). */
   const { skuMap, fabricMap, supplier: fullSupplier } = await loadSupplierDocData(header.supplier_id, items);
+
+  /* Before ANY drawing, and after the supplier lookup so its name / address
+     count too (a China supplier's are the likely CJK on this document): text
+     carrying CJK needs the font embedded up front, or helvetica silently paints
+     the whole field as mojibake. No-op for a pure-WinAnsi PO. */
+  await ensurePdfCjkFont(doc, [header, items, fullSupplier, skuMap, fabricMap]);
 
   // ── Company letterhead (centered, AutoCount style) ────────────────
   let y = margin;

@@ -33,9 +33,13 @@ import {
   isAutoApproveOn,
   isKillSwitchOn,
   llmKeyIfBudgetAllows,
+  mytDate,
+  mytDayRangeUtc,
   readAgentSetting,
+  reapStaleAgentRuns,
   recordAgentRun,
   AGENT_SCHEDULE_SETTING_KEY,
+  MYT_OFFSET_MS,
 } from "./agent-console";
 
 // Structural bounds — an agent can never talk itself past these.
@@ -137,19 +141,35 @@ interface TaskStats {
   runsToday: number;
 }
 
+/**
+ * Last run + runs-so-far-today for one task.
+ *
+ * `today` is bucketed by the UTC instant range the MYT day covers, NOT by
+ * substr(started_at, 1, 10): started_at is UTC, todayMyt is the Malaysian date,
+ * and the two disagree from 16:00 UTC onward. PMS (07:00 MYT) and DELIVERY
+ * (07:30 MYT) fire inside that gap, so their runs were stamped with the
+ * previous UTC date and counted as zero — and since decideAgentRuns treats
+ * runsToday === 0 as "first run of the day" without ever reaching the min-gap
+ * check, they re-fired every beat until 08:00 MYT, each one burning an LLM key.
+ *
+ * status <> 'error' stays: a live 'running' row is the de-facto mutex that
+ * stops two overlapping heartbeats firing one agent twice. It must keep
+ * counting; only the reaper retires it (see reapStaleAgentRuns).
+ */
 async function taskStats(
   db: D1Database,
   task: string,
   todayMyt: string,
 ): Promise<TaskStats> {
+  const { startIso, endIso } = mytDayRangeUtc(todayMyt);
   try {
     const row = await db
       .prepare(
         `SELECT MAX(started_at) AS last,
-                SUM(CASE WHEN substr(started_at, 1, 10) = ? THEN 1 ELSE 0 END) AS today
+                SUM(CASE WHEN started_at >= ? AND started_at < ? THEN 1 ELSE 0 END) AS today
            FROM agent_runs WHERE agent = ? AND status <> 'error'`,
       )
-      .bind(todayMyt, task)
+      .bind(startIso, endIso, task)
       .first<{ last?: string | null; today?: number | string | null }>();
     return {
       lastRunIso: row?.last ?? null,
@@ -176,8 +196,8 @@ export async function decideAgentRuns(
   now: Date = new Date(),
 ): Promise<HeartbeatDecisions> {
   const nowMs = now.getTime();
-  const myt = new Date(nowMs + 8 * 60 * 60 * 1000); // MYT = UTC+8
-  const todayMyt = myt.toISOString().slice(0, 10);
+  const myt = new Date(nowMs + MYT_OFFSET_MS);
+  const todayMyt = mytDate(now);
   const hourMyt = myt.getUTCHours() + myt.getUTCMinutes() / 60;
 
   const decisions: AgentRunDecision[] = [];
@@ -284,13 +304,21 @@ export async function executeAgentTask(
 }
 
 /**
- * One heartbeat: honour the kill switch, decide, execute. One agent's failure
- * never blocks another's beat (the error row is already in agent_runs via
- * recordAgentRun). Safe to call every 30 min — the scheduler's own >=1h
+ * One heartbeat: reap, honour the kill switch, decide, execute. One agent's
+ * failure never blocks another's beat (the error row is already in agent_runs
+ * via recordAgentRun). Safe to call every 30 min — the scheduler's own >=1h
  * min-gap makes it an effective hourly heartbeat.
+ *
+ * The reap runs FIRST and ahead of every guard: decideAgentRuns counts open
+ * runs against the daily cap, so a killed run must be closed before taskStats
+ * reads it or it holds a slot until midnight. It precedes the kill switch and
+ * the registry check because closing a dead row is bookkeeping, not running an
+ * agent — the console should stop showing a run that never ends even while the
+ * fleet is stopped, and the quota is then already clean when it restarts.
  */
 export async function runAgentHeartbeat(env: Env): Promise<HeartbeatResult> {
   const db = env.DB;
+  await reapStaleAgentRuns(db);
   if (REGISTRY.size === 0) {
     return { ran: [], skipped: [{ task: "ALL", reason: "no agents registered" }] };
   }

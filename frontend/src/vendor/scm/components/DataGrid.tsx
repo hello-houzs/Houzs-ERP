@@ -29,6 +29,7 @@ import {
   memo,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -994,17 +995,37 @@ function DataGridInner<T>({
   const totalCols = visibleColumns.length;
   const groupedCount = layout.groupBy.length;
 
-  /* Windowed rendering for large FLAT lists only. Skipped when grouped or
-     expandable (variable row heights) or when the list is small — in those
-     cases the normal full map renders, byte-identical to before. So at today's
-     list sizes this is a no-op; it only kicks in past VIRTUAL_THRESHOLD rows. */
+  /* Windowed rendering for large FLAT lists only. Skipped when grouped, when
+     the list is small, or while ≥1 row is actually expanded — an open expansion
+     panel is variable-height and the virtualizer sizes every row uniformly, so
+     its spacers would mis-reserve the scroll height.
+     The gate keys off `expandedRows`, NOT off the `expandable` prop: a grid that
+     merely OFFERS a chevron still renders uniform rows while collapsed, which is
+     how it sits nearly all the time (Inventory Balances = ~1100 SKUs). Keying off
+     the prop dropped every such grid to a full unwindowed render permanently. */
   const scrollRef = useRef<HTMLDivElement>(null);
+  const tbodyRef = useRef<HTMLTableSectionElement>(null);
   const VIRTUAL_THRESHOLD = 25;
-  const canVirtualize = !isLoading && !embedded && groupedCount === 0 && !expandable && renderList.length > VIRTUAL_THRESHOLD;
+  const ROW_HEIGHT_ESTIMATE = 30;
+  const canVirtualize = !isLoading && !embedded && groupedCount === 0 && expandedRows.size === 0 && renderList.length > VIRTUAL_THRESHOLD;
+  /* Row height is measured off a real row rather than assumed (same reason as
+     components/DataTable: assumed heights let the spacers drift). Here it also
+     carries the expand/collapse flip: an exact height makes the windowed and the
+     full render reserve identical scroll height, so toggling a chevron keeps
+     scrollTop pointing at the same row instead of jumping. Measured once per
+     mount — feeding a re-measure back into the spacers that position the row
+     being measured can oscillate on subpixel rounding. */
+  const rowHeightMeasured = useRef(false);
+  const [rowHeight, setRowHeight] = useState(ROW_HEIGHT_ESTIMATE);
+  useLayoutEffect(() => {
+    if (!canVirtualize || rowHeightMeasured.current) return;
+    const h = tbodyRef.current?.querySelector<HTMLElement>('tr[data-vrow]')?.offsetHeight ?? 0;
+    if (h > 0) { rowHeightMeasured.current = true; setRowHeight(h); }
+  });
   const rowVirtualizer = useVirtualizer({
     count: canVirtualize ? renderList.length : 0,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => 30,
+    estimateSize: () => rowHeight,
     overscan: 14,
   });
   const virtualItems = canVirtualize ? rowVirtualizer.getVirtualItems() : [];
@@ -1034,6 +1055,9 @@ function DataGridInner<T>({
     return (
       <Fragment key={`f-${key}-${idx}`}>
         <tr
+          /* Marks a plain data row as the row-height measuring sample — group
+             banners and the virtual spacers are deliberately not tagged. */
+          data-vrow=""
           className={`${styles.tr} ${selectedKey === key ? styles.trSelected : ''}`}
           style={{ ...(rowStyle?.(row)), ...((selectable || onRowClick || expandKey != null) ? { cursor: 'pointer' } : {}) }}
           /* Row-click = multi-select (Commander rule: "点行=multi-select"); L2
@@ -1343,12 +1367,12 @@ function DataGridInner<T>({
               })}
             </tr>
           </thead>
-          <tbody className={styles.tbody}>
+          <tbody ref={tbodyRef} className={styles.tbody}>
             {isLoading && <SkeletonRows cols={totalCols || 1} rows={12} />}
             {!isLoading && renderList.length === 0 && (
               <tr><td className={styles.empty} colSpan={totalCols || 1}>{emptyMessage}</td></tr>
             )}
-            {/* Small / grouped / expandable lists: render every row (unchanged). */}
+            {/* Small / grouped lists, and any list with a row expanded: render every row. */}
             {!isLoading && !canVirtualize && renderList.map((item, idx) => renderGridRow(item, idx))}
             {/* Large flat lists: windowed — only the visible slice is in the DOM,
                with spacer rows reserving the scroll height above and below. */}

@@ -9,6 +9,7 @@ import { ConfirmProvider, useConfirm } from "../vendor/scm/components/ConfirmDia
 import { PromptProvider } from "../vendor/scm/components/PromptDialog";
 import { ChoiceProvider } from "../vendor/scm/components/ChoiceDialog";
 import { registerDialogService } from "../vendor/scm/lib/dialog-service";
+import { invalidateSoShared } from "./sharedInvalidate";
 import { IosInstallGuide } from "../components/IosInstallGuide";
 import { AndroidInstallGuide } from "../components/AndroidInstallGuide";
 // Heavy mobile screens are lazy-loaded so the initial mobile chunk stays small
@@ -311,13 +312,20 @@ function MobileAppInner() {
      leaves via Cancel/back whenever. This handler only nudges the Orders-list
      query (so the drafts surface when he does go back) and toasts. */
   const onScanDrafted = (count: number) => {
-    void qc.invalidateQueries({ queryKey: ["mobile-so-list-paged"] });
+    /* The minted draft is an ordinary SO, so the desktop SO lists must refetch
+       alongside the phone's own list — the job creates it server-side, where no
+       mutation hook runs to invalidate anything. */
+    const bumpSoLists = () => {
+      void qc.invalidateQueries({ queryKey: ["mobile-so-list-paged"] });
+      invalidateSoShared(qc);
+    };
+    bumpSoLists();
     // The scan runs as a BACKGROUND job now (upload returns before the OCR),
     // so refetch again on the OCR's typical timescale — a slow job still
     // surfaces its draft without the operator reloading.
-    window.setTimeout(() => { void qc.invalidateQueries({ queryKey: ["mobile-so-list-paged"] }); }, 2500);
-    window.setTimeout(() => { void qc.invalidateQueries({ queryKey: ["mobile-so-list-paged"] }); }, 45_000);
-    window.setTimeout(() => { void qc.invalidateQueries({ queryKey: ["mobile-so-list-paged"] }); }, 120_000);
+    window.setTimeout(bumpSoLists, 2500);
+    window.setTimeout(bumpSoLists, 45_000);
+    window.setTimeout(bumpSoLists, 120_000);
     void notify({
       title: count > 1 ? `${count} orders uploaded` : "Order uploaded",
       body: count > 1

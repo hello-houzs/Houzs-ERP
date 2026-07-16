@@ -6,6 +6,7 @@ import { useAuth } from "../auth/AuthContext";
 import { quickActionAccess } from "../auth/salesAccess";
 import { normalizeJobs, type ScanJobsResp } from "./MobileScan";
 import { MobileVirtualList } from "./MobileVirtualList";
+import { invalidateSoShared } from "./sharedInvalidate";
 import { fmtCenti } from "../lib/scm";
 import { formatDate } from "../lib/utils";
 import "./mobile.css";
@@ -392,7 +393,11 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
       }
       setConfirmProgress((p) => p + 1);
     }
-    // Refresh the list + any open detail caches so statuses reflect the change.
+    /* Refresh the list + any open detail caches so statuses reflect the change.
+       The single-confirm twin (MobileSODetail) goes through the vendored status
+       hook, which invalidates the shared SO lists; this loop PATCHes raw, so it
+       owes them the same invalidation — once, after the whole batch. */
+    invalidateSoShared(qc);
     await Promise.all([
       refetch(),
       qc.invalidateQueries({ queryKey: ["mfg-sales-order-detail"] }),

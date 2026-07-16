@@ -21,6 +21,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
 import { serviceNotify } from './dialog-service';
+import { invalidateSoLists } from './sales-order-queries';
 
 // Re-export the SO-side prefill hooks the New-DO page pulls from this module in
 // the source (they live in the vendored SO slice — single source of truth).
@@ -79,7 +80,9 @@ export const useDeliverableSoLinesForDoc = (docNo: string | null) => useQuery({
    too — otherwise a released qty looks stuck and the menu stays hidden until a
    hard refresh. Mirrors the explicit refetch useConvertSoLinesToDo already does. */
 const releaseSoSideQueries = (qc: ReturnType<typeof useQueryClient>) => {
-  qc.invalidateQueries({ queryKey: ['mfg-sales-orders'] });
+  // Both list keys: the "still has undelivered" flag above lives on the V2 paged
+  // list, which is a sibling key of ['mfg-sales-orders'], not nested under it.
+  invalidateSoLists(qc);
   qc.invalidateQueries({ queryKey: ['mfg-sales-order-detail'] });
   qc.invalidateQueries({ queryKey: ['mfg-delivery-orders', 'deliverable-so-lines'], refetchType: 'all' });
 };

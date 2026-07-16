@@ -35,6 +35,67 @@ export const AGENT_FAMILIES: AgentFamily[] = [
   "PMS",
 ];
 
+// ── MYT calendar buckets ─────────────────────────────────────────────────────
+//
+// agent_runs.started_at is UTC ISO text, but every window the owner reasons
+// about is a MALAYSIAN calendar bucket: the daily run cap, the monthly LLM
+// budget. Slicing the stored string (substr(started_at, 1, 10)) buckets by UTC,
+// which disagrees with MYT for the 8 hours from 16:00 UTC — and the fleet's own
+// first-run hours sit inside that gap (PMS 07:00, DELIVERY 07:30 MYT = 23:00 /
+// 23:30 UTC the day before). A UTC-sliced bucket compared against a MYT date
+// therefore misses those runs entirely.
+//
+// So a bucket is expressed as the UTC instant RANGE it covers, computed here
+// and bound as ISO text: `started_at >= start AND started_at < end`. That is a
+// plain lexicographic compare over fixed-width ISO-8601 UTC (what the reaper
+// cutoff relies on), needs no ::timestamptz cast, and still rides
+// idx_agent_runs_agent (agent, started_at DESC). Half-open so the rollover
+// instant belongs to exactly one bucket — never both, never neither.
+//
+// Never datetime('now', ...) for any of this: d1-compat rewrites it to
+// to_char(..., 'YYYY-MM-DD HH24:MI:SS'), whose space where the 'T' belongs
+// cannot be compared against an ISO string.
+
+export const MYT_OFFSET_MS = 8 * 60 * 60 * 1000; // MYT = UTC+8, no DST
+
+/** The MYT calendar date (YYYY-MM-DD) at an instant. */
+export function mytDate(now: Date = new Date()): string {
+  return new Date(now.getTime() + MYT_OFFSET_MS).toISOString().slice(0, 10);
+}
+
+/** The MYT calendar month (YYYY-MM) at an instant. */
+export function mytMonth(now: Date = new Date()): string {
+  return new Date(now.getTime() + MYT_OFFSET_MS).toISOString().slice(0, 7);
+}
+
+export interface UtcRange {
+  startIso: string;
+  endIso: string;
+}
+
+/** The UTC instant range [start, end) covering one MYT day ('YYYY-MM-DD'). */
+export function mytDayRangeUtc(dateMyt: string): UtcRange {
+  const [y, m, d] = dateMyt.split("-").map(Number);
+  // Date.UTC rolls day/month/year over for us, so d + 1 is safe on any date.
+  const startMs = Date.UTC(y, m - 1, d) - MYT_OFFSET_MS;
+  const endMs = Date.UTC(y, m - 1, d + 1) - MYT_OFFSET_MS;
+  return {
+    startIso: new Date(startMs).toISOString(),
+    endIso: new Date(endMs).toISOString(),
+  };
+}
+
+/** The UTC instant range [start, end) covering one MYT month ('YYYY-MM'). */
+export function mytMonthRangeUtc(monthMyt: string): UtcRange {
+  const [y, m] = monthMyt.split("-").map(Number);
+  const startMs = Date.UTC(y, m - 1, 1) - MYT_OFFSET_MS;
+  const endMs = Date.UTC(y, m, 1) - MYT_OFFSET_MS; // month index m = the next month
+  return {
+    startIso: new Date(startMs).toISOString(),
+    endIso: new Date(endMs).toISOString(),
+  };
+}
+
 // ── Run logging ──────────────────────────────────────────────────────────────
 
 export interface AgentRunHandle {
@@ -86,8 +147,11 @@ export async function recordAgentRun<T>(
     const result = await fn(handle);
     await db
       .prepare(
+        // error = NULL: a run the reaper called stale can still finish (see
+        // reapStaleAgentRuns) — its own verdict wins, message and all.
         `UPDATE agent_runs
-            SET finished_at = ?, status = 'ok', summary = ?, tokens_in = ?, tokens_out = ?
+            SET finished_at = ?, status = 'ok', summary = ?, tokens_in = ?, tokens_out = ?,
+                error = NULL
           WHERE id = ?`,
       )
       .bind(new Date().toISOString(), summary || null, tokensIn, tokensOut, id)
@@ -110,6 +174,82 @@ export async function recordAgentRun<T>(
         console.warn(`[agent-runs] failed to record error for ${id}:`, e),
       );
     throw err;
+  }
+}
+
+// ── Stale-run reaper ─────────────────────────────────────────────────────────
+//
+// recordAgentRun closes its row from a catch — so anything that kills the
+// isolate outright (the platform's CPU/subrequest ceiling, an eviction, a
+// deploy landing mid-beat) never reaches it and strands the row at 'running'.
+// That row then lies twice: the console shows a run that never ends, and
+// taskStats counts every non-'error' row toward runsToday, so ONE killed run
+// silently burns a daily slot until MYT midnight rolls the date. PMS runs
+// once a day — one killed run means PMS does not run again that day.
+
+/**
+ * How long a run may sit 'running' before it is presumed killed.
+ *
+ * 15 min, and the margin is deliberate. Nothing in the fleet bounds a run in
+ * code — there is no AbortSignal anywhere in the agents or in agent-brain, so
+ * the real ceiling is the platform's own scheduled-invocation limit, far below
+ * this. A live run is DB reads plus at most three brain calls capped at 700
+ * tokens: seconds, not minutes. The window also sits under both scheduling
+ * clocks that matter — HARD_MIN_GAP_HOURS (1h), so a freed slot is usable on
+ * the very next beat, and the 30-min heartbeat, so any row a later beat still
+ * finds 'running' belongs to an invocation that ended long ago.
+ */
+const STALE_RUN_MINUTES = 15;
+
+const STALE_RUN_ERROR =
+  "This run stopped before it finished, so it was marked failed and the agent can run again.";
+
+/**
+ * Close runs abandoned mid-flight, freeing the daily slot they were holding.
+ * Returns how many rows were reaped. Fail-soft — a reaper error must never
+ * stop the beat.
+ *
+ * The cutoff is computed here and bound as text, NEVER datetime('now', ...):
+ * started_at is a TEXT column holding new Date().toISOString()
+ * ('2026-07-16T03:12:45.123Z'), while d1-compat rewrites datetime('now') to
+ * to_char(..., 'YYYY-MM-DD HH24:MI:SS'). The space where the 'T' belongs sorts
+ * above every same-day row and below every older one, which would reap nothing
+ * today and everything from yesterday. Bound ISO text compares
+ * lexicographically, same as the MYT bucket ranges above.
+ *
+ * This is an ELAPSED-TIME cutoff, not a calendar bucket — an instant minus 15
+ * minutes — so MYT never enters into it.
+ *
+ * The UPDATE is guarded by status = 'running' rather than read-then-write, so
+ * overlapping heartbeats cannot double-reap, and a run that finishes mid-reap
+ * keeps its own verdict.
+ */
+export async function reapStaleAgentRuns(
+  db: D1Database,
+  now: Date = new Date(),
+): Promise<number> {
+  const cutoffIso = new Date(
+    now.getTime() - STALE_RUN_MINUTES * 60_000,
+  ).toISOString();
+  try {
+    const res = await db
+      .prepare(
+        `UPDATE agent_runs
+            SET status = 'error', finished_at = ?, error = ?
+          WHERE status = 'running' AND started_at < ?`,
+      )
+      .bind(now.toISOString(), STALE_RUN_ERROR, cutoffIso)
+      .run();
+    const reaped = Number(res.meta?.changes) || 0;
+    if (reaped > 0) {
+      console.warn(
+        `[agent-runs] reaped ${reaped} run(s) still open after ${STALE_RUN_MINUTES} min`,
+      );
+    }
+    return reaped;
+  } catch (e) {
+    console.warn("[agent-runs] stale-run reaper failed:", e);
+    return 0;
   }
 }
 
@@ -316,7 +456,13 @@ export interface LlmMonthUsage {
 }
 
 export async function monthLlmUsage(db: D1Database): Promise<LlmMonthUsage> {
-  const month = new Date().toISOString().slice(0, 7);
+  // MYT month, not UTC. Both sides of the old comparison were UTC, so it never
+  // misfired — but a UTC month ends at 08:00 MYT on the 1st, and the only runs
+  // that spend tokens (firstOfDay) fire at 07:00-07:30 MYT. That charged the
+  // 1st's briefs to the month just gone: if it was spent, the family opened the
+  // new month with no AI at all.
+  const month = mytMonth();
+  const { startIso, endIso } = mytMonthRangeUtc(month);
 
   let budgetMyr = DEFAULT_LLM_MONTHLY_BUDGET_MYR;
   const sched = await readAgentSetting<{ llmMonthlyBudgetMyr?: unknown }>(
@@ -339,11 +485,11 @@ export async function monthLlmUsage(db: D1Database): Promise<LlmMonthUsage> {
                 SUM(COALESCE(tokens_in, 0)) AS tokens_in,
                 SUM(COALESCE(tokens_out, 0)) AS tokens_out
            FROM agent_runs
-          WHERE substr(started_at, 1, 7) = ?
+          WHERE started_at >= ? AND started_at < ?
           GROUP BY agent
           ORDER BY agent`,
       )
-      .bind(month)
+      .bind(startIso, endIso)
       .all<{
         agent: string;
         runs: number | string;

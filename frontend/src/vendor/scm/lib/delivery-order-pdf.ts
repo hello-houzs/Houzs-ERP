@@ -16,6 +16,7 @@ import {
   drawHeader,
   drawInfoColumns,
   drawSignatureBoxes,
+  ensurePdfCjkFont,
   fmtDocDate,
   safeName,
 } from './pdf-common';
@@ -74,6 +75,10 @@ export async function renderDeliveryOrderInto(
   items: DoItem[],
   opts?: { docTitle?: string; docNoLabel?: string; showPicking?: boolean },
 ): Promise<void> {
+  /* Before ANY drawing — the delivery address is the field that strands a
+     driver when it prints as mojibake. No-op for a pure-WinAnsi DO. */
+  await ensurePdfCjkFont(doc, [header, items]);
+
   // Source PO + Rack picking columns are a DELIVERY-ORDER aid; the Consignment
   // Note reuses this renderer but opts out (showPicking: false).
   const showPicking = opts?.showPicking !== false;

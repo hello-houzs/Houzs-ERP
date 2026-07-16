@@ -13,6 +13,7 @@ import {
   drawHeader,
   drawInfoColumns,
   amountInWordsMyr,
+  ensurePdfCjkFont,
   fmtDocDate,
   fmtRm,
   safeName,
@@ -325,6 +326,12 @@ export async function renderSalesOrderInto(
      the SO shows both like the supplier docs: "EZ-001 (KN390-1) — <desc>"
      (Commander 2026-06-16 — Fabric internal + external on the SO too). */
   const fabricExtMap = await loadFabricSupplierMap(collectFabricCodes(items));
+
+  /* Before ANY drawing, and after the print-time lookups so their text counts
+     too: a customer name / delivery address / remark carrying CJK needs the
+     font embedded up front, or helvetica paints the whole field as mojibake.
+     No-op for a pure-WinAnsi SO. */
+  await ensurePdfCjkFont(doc, [header, items, payments, fabricDescMap, fabricExtMap]);
 
   const pageW = doc.internal.pageSize.getWidth();
   const margin = 14;

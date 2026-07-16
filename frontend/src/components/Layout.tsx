@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { ShieldAlert } from "lucide-react";
 import { Sidebar } from "./Sidebar";
 import { GlobalSearchTrigger } from "./GlobalSearch";
@@ -7,6 +7,7 @@ import { MobileTabBar } from "./MobileTabBar";
 import { PullToRefresh, PullToRefreshGuardProvider } from "./PullToRefresh";
 import { RowActionsMenu, type MenuItem } from "./RowActionsMenu";
 import { useBranding } from "../hooks/useBranding";
+import { prefetchTopRoutes } from "../lib/prefetch-routes";
 import { CompanyMark } from "./CompanyMark";
 
 interface Props {
@@ -23,6 +24,16 @@ export function Layout({ children }: Props) {
   // primes the module-level branding cache that the pure jspdf PDF libs read,
   // so any document generated from inside the app carries the live letterhead.
   useBranding();
+
+  // Warm the few route chunks the office opens most, once per session, while
+  // the browser is idle — Layout wraps every authed page, so this is the one
+  // place that mounts once and outlives every navigation. Without it the first
+  // click into each of the 113 lazy routes waits out a chunk download before
+  // the page can start fetching its data. Self-throttling and failure-proof;
+  // see lib/prefetch-routes.
+  useEffect(() => {
+    prefetchTopRoutes();
+  }, []);
 
   // AutoCount sync-status poll removed (owner 2026-07-14): there is no
   // /api/sync/status backend route, so it 404'd on every page for every user.
