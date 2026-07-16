@@ -2952,10 +2952,32 @@ app.put(
 
 app.delete(
   "/checklist/attachments/:attId",
-  requirePermission("projects.write"),
+  // Crew (tick-only: drivers/helpers/storekeepers) may remove files from the
+  // DRIVER-badged Setup/Dismantle tasks they upload to — mirrors the attach
+  // gate above (owner 2026-07-16). Everything else stays projects.write-only.
+  requireAnyPermission(["projects.write", "projects.checklist.tick"]),
   async (c) => {
     const attId = parseInt(c.req.param("attId"), 10);
     if (isNaN(attId)) return c.json({ error: "Invalid ID" }, 400);
+    const user = c.get("user");
+    const granted = user?.permissions_set ?? user?.permissions;
+    if (!hasPermission(granted, "projects.write")) {
+      const row = await c.env.DB.prepare(
+        `SELECT pc.role_label
+           FROM project_checklist_attachments a
+           JOIN project_checklist pc ON pc.id = a.item_id
+          WHERE a.id = ?`
+      )
+        .bind(attId)
+        .first<{ role_label: string | null }>();
+      if (!row) return c.json({ error: "Not found" }, 404);
+      if (!roleLabelAdmits(row.role_label, user?.role_name)) {
+        return c.json(
+          { error: "You can only remove files from tasks assigned to your role" },
+          403,
+        );
+      }
+    }
     // Soft archive — keep the row + R2 object so an accidental delete
     // can be reversed if anyone notices in time.
     await c.env.DB.prepare(
