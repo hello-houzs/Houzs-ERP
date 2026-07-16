@@ -258,13 +258,21 @@
 /* ── Two-column body (Commander 2026-05-27) ──────────────────────────
    Below the single-line header row, the card splits into a left column
    (variants + special orders) and a right column (price summary +
-   photos). On narrow viewports the columns stack vertically again. */
+   photos). On narrow viewports the columns stack vertically again.
+
+   Owner 2026-07-16 ("這些長行的 UI upload photo 為什麼不要放右邊") — the
+   right column is a RAIL: it holds the same track on EVERY line, whether
+   or not that line has variants, so the photo affordance lines up down
+   the right edge of the whole document instead of some lines sprawling a
+   full-width photo block underneath themselves. `align-items: stretch`
+   (was `start`) is load-bearing: the rail's hairline must span the row,
+   not just the height of its own content. */
 
 .body {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(220px, 320px);
   gap: var(--space-3);
-  align-items: start;
+  align-items: stretch;
 }
 
 .bodyLeft,
@@ -275,9 +283,25 @@
   min-width: 0;
 }
 
+/* Pinned to track 2 so the rail holds the right edge even on a line with
+   no variants (bodyLeft isn't rendered at all there — without this the
+   rail would flow into track 1 and go full-width). */
+.bodyRight {
+  grid-column: 2;
+  border-left: 1px solid var(--line);
+  padding-left: var(--space-3);
+}
+
 @media (max-width: 900px) {
   .body {
     grid-template-columns: 1fr;
+  }
+  /* Stacked: no rail, so no hairline and no track pin (a `grid-column: 2`
+     against a single-column grid would mint a phantom second column). */
+  .bodyRight {
+    grid-column: auto;
+    border-left: none;
+    padding-left: 0;
   }
 }
 
@@ -630,13 +654,14 @@
    In DRAFT mode (no docNo/itemId yet) the photos are staged client-side
    as File objects and previewed via URL.createObjectURL(). The parent
    pulls them off `draft.pendingPhotoFiles` after save and uploads them
-   to R2 against the freshly-minted item IDs. */
+   to R2 against the freshly-minted item IDs.
+
+   Owner 2026-07-16 — no card chrome of its own: the rail's hairline is
+   what separates the photos from the line, so a bordered box inside a
+   ruled column would draw the same boundary twice. */
 
 .photosCard {
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  background: var(--c-paper);
+  padding: 0;
 }
 
 .photoPendingMark {

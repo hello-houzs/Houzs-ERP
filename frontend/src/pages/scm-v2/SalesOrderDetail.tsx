@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import { Button } from '../../components/Button';
 import { PageHeader } from '../../components/Layout';
+import { useSetBreadcrumbs } from '../../hooks/useBreadcrumbs';
 import { formatPhone } from '@2990s/shared/phone';
 import { buildVariantSummary, canonicalizeVariants, fmtCenti, fmtDate, fmtDateOrDash, fmtDateTime, missingVariantAxes, hasSofaMixConflict, SOFA_MIX_MESSAGE } from '@2990s/shared'; // Commander 2026-05-28
 import { PhoneInput } from '../../vendor/scm/components/PhoneInput';
@@ -480,6 +481,26 @@ export const SalesOrderDetail = () => {
 
   const header = (detail.data?.salesOrder as SoHeader | undefined) ?? null;
   const items = useMemo(() => (detail.data?.items as SoItem[] | undefined) ?? [], [detail.data]);
+  /* current_doc_no isn't on SoHeader — same cast this file has always used for
+     it, kept inside a null guard so the shape TS sees is unchanged. */
+  const currentDocNo = header
+    ? ((header as { current_doc_no?: string | null }).current_doc_no ?? null)
+    : null;
+
+  /* Owner 2026-07-16 — the breadcrumb is this page's Back (the rail no longer
+     carries one). VERBATIM the crumbs SalesOrderDetailV2ReadOnly pushes, and
+     it has to be repeated here rather than inherited: SalesOrderDetailV2 is a
+     thin router that renders EITHER the read-only body OR this editor on
+     `?edit=1`, so on the edit route that component never mounts and its
+     useSetBreadcrumbs never runs. Without this the top bar fell back to
+     labelForPath's single, UNCLICKABLE "Sales Order" crumb — there was no
+     breadcrumb back to move Back onto. Declared above the isPending / isError
+     early returns (Rules of Hooks) and falls back to the route param so the
+     crumb never flashes while the detail loads. */
+  useSetBreadcrumbs([
+    { label: 'Sales Orders', to: '/scm/sales-orders' },
+    { label: header?.doc_no ?? docNo ?? 'Sales Order' },
+  ]);
 
   /* Fix 2 (micro-perf) — Variant-completeness check memoized; derives only
      when items or the processing-date toggle changes. 2026-06-04: delegates
@@ -1265,22 +1286,43 @@ export const SalesOrderDetail = () => {
       {/* ── Header (shared PageHeader — full-bleed, design-system) ── */}
       <PageHeader
         eyebrow="Sales Order"
+        /* Owner 2026-07-16 — 17px document title (see PageHeader.titleSize).
+           Scoped to this page; every other page keeps the default h1. */
+        titleSize="sm"
         title={`${header.doc_no} — ${header.debtor_name}`}
+        /* Owner 2026-07-16 — one meta line, no redundancy: the bare date (the
+           "SO date" label said nothing the date didn't), and the "Current
+           SO-…" echo only when the SO actually HAS been superseded by a
+           different doc no — when it equals this SO it just repeated the
+           title. */
         description={
-          `SO date ${fmtDateOrDash(header.so_date)} · ${header.line_count} ${header.line_count === 1 ? 'line' : 'lines'}`
-          + ` · Current ${(header as { current_doc_no?: string | null }).current_doc_no ?? header.doc_no}`
+          `${fmtDateOrDash(header.so_date)} · ${header.line_count} ${header.line_count === 1 ? 'line' : 'lines'}`
+          + (currentDocNo && currentDocNo !== header.doc_no ? ` · Current ${currentDocNo}` : '')
           + (header.po_doc_no ? ` · Customer PO ${header.po_doc_no}` : '')
-          + (header.customer_so_no ? ` · Customer SO Ref ${header.customer_so_no}` : '')
+          + (header.customer_so_no ? ` · Ref ${header.customer_so_no}` : '')
           + (Number((header as { customer_credit_centi?: number }).customer_credit_centi ?? 0) > 0
             ? ` · Customer credit balance: ${fmtCenti(Number((header as { customer_credit_centi?: number }).customer_credit_centi ?? 0))}`
             : '')
         }
         primaryAction={
-          /* h-9 = the <Button> height — PageHeader renders primaryAction into
-             the same flex row as the History / Print / Edit action rail. */
+          /* Owner 2026-07-16 — Back is OUT of the desktop action rail: the
+             breadcrumb above ("Sales Orders › SO-…", pushed by the
+             useSetBreadcrumbs call at the top of this component) is the back
+             affordance there, so a Back button in the rail was the same
+             navigation twice.
+
+             It survives BELOW lg because TopNavbar — and with it the whole
+             breadcrumb — is `hidden … lg:flex`. `lg:hidden` here is the exact
+             complement of that rule, so Back renders precisely where the
+             breadcrumb does not. This is NOT dead code on a phone: HOUZS
+             swaps to the mobile app under 1024px, but the 2990 host does not
+             ("2990 手机关闭" — AuthGate gates mobileEnabled on the company),
+             so a 2990 user on a narrow viewport gets this desktop page with
+             no breadcrumb and would otherwise have no way back to the list.
+             h-9 = the <Button> height (the rail is one flex row — #624). */
           <Link
             to="/scm/sales-orders"
-            className="inline-flex h-9 items-center gap-1.5 rounded-md border border-border bg-surface px-3 text-[11px] font-semibold uppercase tracking-wider text-ink-secondary transition-colors hover:border-primary/40 hover:bg-primary-soft hover:text-primary"
+            className="inline-flex h-9 items-center gap-1.5 rounded-md border border-border bg-surface px-3 text-[11px] font-semibold uppercase tracking-wider text-ink-secondary transition-colors hover:border-primary/40 hover:bg-primary-soft hover:text-primary lg:hidden"
           >
             <ArrowLeft size={14} />
             <span>Back</span>
@@ -1313,14 +1355,17 @@ export const SalesOrderDetail = () => {
               <span>History</span>
             </Button>
             {/* Nick 2026-07-09 — shared 5-node Relationship Map (Customer PO
-                → SO → DO → GRN → SI), same chain the read-only Detail V2 uses. */}
+                → SO → DO → GRN → SI), same chain the read-only Detail V2 uses.
+                Owner 2026-07-16 — label shortened to "Map"; each of these
+                buttons keeps its icon, which is what carries the meaning in a
+                7-control rail. */}
             <Button variant="ghost" onClick={() => setRelMapOpen(true)}>
               <Share2 {...ICON} />
-              <span>Relationship Map</span>
+              <span>Map</span>
             </Button>
             <Button variant="ghost" onClick={handlePrint}>
               <Printer {...ICON} />
-              <span>Print PDF</span>
+              <span>Print</span>
             </Button>
             {/* Cancel SO (Commander 2026-05-29) — stops proceeding; final. */}
             {!isCancelled && canCancel && !isEditing ? (
@@ -1902,35 +1947,37 @@ export const SalesOrderDetail = () => {
         </section>
       )}
 
-      {/* ── ORIGINAL SLIP + PAYMENT RECEIPT (migrations 0033 + 0034) — the
-          handwritten order-slip photo (and, when the scan carried one, the
-          printed card-terminal payment receipt) this SO was scanned from, kept
-          as proof. Dual-read camelCase ?? snake_case (the pg driver camelCases
-          result columns). Each card is shown only when its key is present, so
-          the operator can View original on whichever images exist. */}
+      {/* ── ORIGINAL SLIP (migration 0033) — the handwritten order-slip photo
+          this SO was scanned from, kept as proof. Dual-read camelCase ??
+          snake_case (the pg driver camelCases result columns).
+
+          Owner 2026-07-16 ("payment receipt 已經在第二章照片了 第一個照片可以
+          delete了") — the standalone PAYMENT RECEIPT card (receipt_image_key,
+          mig 0034) that used to sit beside this one is GONE. It rendered the
+          same card-terminal image the Payments table above already shows in
+          its Slip column: since 2026-07-15 the scan-seeded deposit is inserted
+          with `slip_key: slipKey ?? receiptImageKey`, so the receipt IS the
+          payment row's proof, and split-payment rows each carry their own
+          uploaded slip. Showing it twice on one page was the duplicate.
+
+          This is a DESKTOP-ONLY fix: mobile already made exactly this call on
+          2026-07-04 — MobileSODetail's scanned-photos card is hard-wired to
+          `receiptKey={null}` with the note "the payment RECEIPT does NOT
+          belong in this card -- it lives on its payment row's slip". Desktop
+          was the drift; it now follows.
+
+          The ORDER SLIP stays: it is the customer's handwritten slip, a
+          different document that appears nowhere else on the page. */}
       {(() => {
         const slipImageKey =
           (header as unknown as { slipImageKey?: string | null }).slipImageKey ?? header.slip_image_key;
-        const receiptImageKey =
-          (header as unknown as { receiptImageKey?: string | null }).receiptImageKey ?? header.receipt_image_key;
-        if (!slipImageKey && !receiptImageKey) return null;
+        if (!slipImageKey) return null;
         return (
-          <>
-            {slipImageKey && (
-              <ScannedImageCard
-                imageKey={slipImageKey}
-                title="Order Slip"
-                alt="Original handwritten sale-order slip"
-              />
-            )}
-            {receiptImageKey && (
-              <ScannedImageCard
-                imageKey={receiptImageKey}
-                title="Payment Receipt"
-                alt="Scanned card-terminal payment receipt"
-              />
-            )}
-          </>
+          <ScannedImageCard
+            imageKey={slipImageKey}
+            title="Order Slip"
+            alt="Original handwritten sale-order slip"
+          />
         );
       })()}
 
