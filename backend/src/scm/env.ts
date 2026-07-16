@@ -12,9 +12,13 @@ export interface Variables {
   // scm-scoped supabase-js client (service-role), attached by middleware/auth.
   supabase: SupabaseClient<any, any, any>;
   // The REAL Houzs session user (integer id), stashed by middleware/auth BEFORE
-  // `user` is overwritten with the scm.staff system identity. Lets handlers do
-  // per-user lookups into the PUBLIC schema (e.g. the salesperson's active
-  // exhibition project) without the (unbuilt) scm.staff identity bridge.
+  // `user` is overwritten with the scm.staff system identity. It is the ONLY
+  // per-person identity inside /api/scm/* — `user.id` is the pinned system staff
+  // uuid, shared by every caller. Use it for PUBLIC-schema lookups (e.g. the
+  // salesperson's active exhibition project) AND as the input to the scm.staff
+  // identity bridge, which is BUILT: migration 0066 links every non-disabled user
+  // to a deterministic staff row via staff.user_id, read by
+  // resolveCallerStaffId / resolveSalesScopeIds (scm/lib/salesScope.ts).
   // `permissions` / `permissions_set` are mirrored from the AuthUser so SCM
   // route handlers can gate on flat-key permissions (e.g. scm.config.write)
   // against the REAL caller — never against scm.staff.role which the bridge

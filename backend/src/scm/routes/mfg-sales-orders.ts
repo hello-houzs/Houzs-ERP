@@ -2783,18 +2783,30 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
     resolvedVenueName = (venueRow as { name?: string } | null)?.name ?? null;
   }
 
-  /* Houzs venue-by-project (owner 2026-06-25) — scm.staff is unused in Houzs, so
-     the home-venue logic above always leaves venue NULL. Fall back to the
-     LOGGED-IN salesperson's currently-active exhibition project: the latest
-     project (by start_date, <= the SO date) they are the PIC of OR a Sales
-     Attending rep of (owner 2026-06-25: "PIC 或 Sales Attending 都算"). The
+  /* Houzs venue-by-project (owner 2026-06-25) — LAST resort, and only when the
+     home-venue logic above resolved nothing.
+     DO NOT DELETE THAT LOGIC: it is LIVE, not dead. This comment used to claim
+     "scm.staff is unused in Houzs, so the home-venue logic above always leaves
+     venue NULL" — both halves are false. scm.staff is the salesperson vocabulary
+     (migration 0066 syncs every non-disabled user into it; salesperson_id IS a
+     staff uuid; `callerStaff` is read from it ~60 lines above and its `role`
+     drives the POS-role venue branch). And the home-venue chain does stamp:
+     staff.venue_id -> venueIdToStamp -> venues.name -> resolvedVenueName, plus
+     venue_id itself via venueIdUuid below. It resolves nothing TODAY only for two
+     DATA reasons — nothing in Houzs writes scm.staff.venue_id (0066 does not set
+     it; /api/scm/staff only reads it), and scm.venues has no rows — so the moment
+     a staff row carries a real scm.venues venue_id, that path stamps the venue and
+     this fallback correctly stands down. Deleting it would silently re-attribute
+     every venue-assigned salesperson's SO to their project instead of their venue.
+     Fall back to the LOGGED-IN salesperson's currently-active exhibition project:
+     the latest project (by start_date, <= the SO date) they are the PIC of OR a
+     Sales Attending rep of (owner 2026-06-25: "PIC 或 Sales Attending 都算"). The
      over-assigned PICs in Houzs data are NON-salespeople (user 1 = the HOUZS
      CENTURY system account; orphan pic_ids with no users row) who never log in
      to create SOs, so they don't mis-resolve; real salesperson-PICs are clean.
-     Stamps the venue
-     TEXT only (the project venue isn't a scm.venues row, so venue_id stays
-     NULL); an explicit body.venue still wins. Reads the PUBLIC schema via
-     c.env.DB — the scm supabase client can't reach public. */
+     Stamps the venue TEXT only (the project venue isn't a scm.venues row, so
+     venue_id stays NULL); an explicit body.venue still wins. Reads the PUBLIC
+     schema via c.env.DB — the scm supabase client can't reach public. */
   if (!resolvedVenueName) {
     const houzsUser = c.get('houzsUser');
     const uid = houzsUser?.id != null ? Number(houzsUser.id) : NaN;

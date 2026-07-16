@@ -355,9 +355,12 @@ scm.route("/reports", reports);
 // scm.so_scan_samples + scm.so_scan_rules (migration 0023) and the scm catalog
 // tables (mfg_products / fabric_trackings / maintenance_config_history /
 // so_dropdown_options). ANTHROPIC_API_KEY optional — /scan-so/extract returns
-// 503 anthropic_key_missing when absent. FOLLOW-UP: weekly distill cron
-// (distillAllSalespersonRules) not yet wired to a scheduled trigger; the
-// per-confirm fire-and-forget distill is the live learning path.
+// 503 anthropic_key_missing when absent. Learning runs on TWO live paths, both
+// already wired — do not "finish" either: the per-confirm fire-and-forget
+// distill, and the WEEKLY distill (distillAllSalespersonRules), which
+// src/index.ts:420-436 runs from the scheduled handler off the daily 02:00 slot
+// gated to Sundays (no dedicated cron trigger, by design). Adding a second
+// trigger would double-run a Claude-API-billed distill every week.
 // scan-so / scan-payment / slips feed SO creation → gated as scm.sales.orders.
 // writeLevel 'view' (2026-07-04): their POSTs (warm / enqueue / extract /
 // slip-upload init+confirm) only stage uploads + background OCR producing the

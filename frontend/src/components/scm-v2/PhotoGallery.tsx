@@ -1,15 +1,18 @@
 // ----------------------------------------------------------------------------
-// PhotoGallery — multi-photo grid for product models. Wires to the EXPECTED
-// gallery endpoint shape that backend PR 4b will land:
+// PhotoGallery — multi-photo grid for product models. The backend SHIPPED; all
+// four endpoints are live (backend/src/scm/routes/product-models.ts:997-1102,
+// migration 0060 scm.product_model_photos), mounted at scm/index.ts:154:
 //
 //   GET    /scm/product-models/:id/photos          → { photos: PhotoRow[] }
 //   POST   /scm/product-models/:id/photos          (multipart `file`) → { photo }
 //   DELETE /scm/product-models/:id/photos/:photoId
 //   PATCH  /scm/product-models/:id/photos/:photoId (body: { is_primary?, order? })
 //
-// Until backend ships, the list endpoint will 404 (route not registered) or
-// 500 photo_bucket_not_configured (bucket unbound). Both render the same
-// "Not yet wired · Setup notes" treatment so the UI stays shippable today.
+// The R2 bucket is bound too (SO_ITEM_PHOTOS -> houzs-erp, prod + staging, keys
+// under product-model-photos/). So a 404 or a 500 photo_bucket_not_configured
+// here is a REGRESSION to debug, NOT the expected pre-backend state this header
+// used to describe — start at the route + the binding, not at this component.
+// The "Not yet wired · Setup notes" treatment is retained as the failure state.
 //
 // Layout (Final design · Batch 2 gallery variant):
 //   · Dashed primary drop zone — drag-and-drop OR click to choose files
