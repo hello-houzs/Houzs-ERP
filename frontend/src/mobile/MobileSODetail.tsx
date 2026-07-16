@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { formatDate } from "../lib/utils";
 import { useQueryClient } from "@tanstack/react-query";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
@@ -26,6 +26,12 @@ import {
   amendmentHeaderDiffRows,
   type SoAmendmentHeaderChanges,
 } from "../vendor/scm/lib/so-amendment-header";
+import {
+  amendmentLineChangedFields,
+  amendmentOldSnapshot,
+  amendmentVariantSummaries,
+  visibleAmendmentLines,
+} from "../vendor/scm/lib/so-amendment-line-diff";
 import {
   useAmendmentDetail,
   useSupplierConfirm,
@@ -1200,11 +1206,22 @@ function SupplierConfirmSheet({
    line change as a Before → After pair — the SAME data as the desktop
    AmendmentDiffModal (old_snapshot vs new_item_code / new_variants / new_qty /
    new_unit_price_sen), laid out mobile-first as stacked cards. */
+/* Owner 2026-07-16 — the moved field is struck on the Was side and emphasised on
+   the Requesting side, so the ask is visible without reading both columns
+   character-by-character. Desktop does the same on its table + job card. */
+const mStrikeIf = (changed: boolean): CSSProperties =>
+  changed ? { textDecoration: "line-through", opacity: 0.7 } : {};
+const mEmphIf = (changed: boolean): CSSProperties =>
+  changed ? { fontWeight: 800, color: "var(--ink)" } : {};
+
 function AmendmentDiffSheet({ amendmentId, onClose }: { amendmentId: string; onClose: () => void }) {
   const { data, isLoading, error } = useAmendmentDetail(amendmentId);
-  const lines = (data?.lines ?? []) as AmendmentLine[];
-  const oldOf = (l: AmendmentLine): { itemCode?: string; qty?: number; unitPriceSen?: number; description2?: string | null } =>
-    (l.old_snapshot as { itemCode?: string; qty?: number; unitPriceSen?: number; description2?: string | null } | null) ?? {};
+  /* Only the lines that actually request something — a recorded line whose new_*
+     equals its own old_snapshot is not a change and must not render as one
+     (Owner 2026-07-16). Same shared filter as desktop; one logic layer. */
+  const allLines = (data?.lines ?? []) as AmendmentLine[];
+  const lines = visibleAmendmentLines(allLines);
+  const oldOf = amendmentOldSnapshot;
   const amNo = data?.amendment?.amendment_no != null ? String(data.amendment.amendment_no) : "";
   const reason = typeof data?.amendment?.reason === "string" ? data.amendment.reason : "";
   /* The HEADER half of the request (mig 0119) — Delivery / Processing Date,
@@ -1235,7 +1252,14 @@ function AmendmentDiffSheet({ amendmentId, onClose }: { amendmentId: string; onC
           ) : error ? (
             <div style={{ fontSize: 11.5, color: "var(--red)", padding: "8px 0" }}>{error instanceof Error ? error.message : "Couldn't load the changes."}</div>
           ) : lines.length === 0 && headerDiffs.length === 0 ? (
-            <div style={{ fontSize: 11.5, color: "var(--mut2)", padding: "8px 0" }}>This amendment has no changes recorded.</div>
+            /* "Nothing recorded" vs "every recorded line is a no-op" — the
+               latter is a legacy amendment raised before the header half existed
+               (mig 0119); its real ask only survives in the Reason below. */
+            <div style={{ fontSize: 11.5, color: "var(--mut2)", padding: "8px 0", lineHeight: 1.45 }}>
+              {allLines.length > 0
+                ? "No line changes recorded — every line matches the order exactly. This request predates order-detail tracking, so what was asked for is in the Reason below."
+                : "This amendment has no changes recorded."}
+            </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
               {/* Order details (dates / delivery location) first, then the lines. */}
@@ -1256,7 +1280,10 @@ function AmendmentDiffSheet({ amendmentId, onClose }: { amendmentId: string; onC
               ))}
               {lines.map((l) => {
                 const old = oldOf(l);
-                const newSummary = buildVariantSummary("", (l.new_variants as Record<string, unknown> | null) ?? null);
+                const newSummary = amendmentVariantSummaries(l).to;
+                /* Emphasise the field that actually moved — Was / Requesting
+                   were two plain columns you had to diff by eye. */
+                const chg = amendmentLineChangedFields(l);
                 return (
                   <div key={l.id} style={{ border: "1px solid var(--line2, #e3e6e0)", borderRadius: 11, overflow: "hidden" }}>
                     <div style={{ padding: "7px 11px", background: "#f4f6f3", fontSize: 10.5, fontWeight: 800, letterSpacing: ".06em", textTransform: "uppercase", color: "#5c6156" }}>{amendmentChangeLabel(l.change_type)}</div>
@@ -1268,11 +1295,14 @@ function AmendmentDiffSheet({ amendmentId, onClose }: { amendmentId: string; onC
                           <div style={{ fontSize: 11.5, color: "var(--mut2)" }}>—</div>
                         ) : (
                           <>
-                            <div className="money" style={{ fontSize: 12.5, fontWeight: 700, color: "var(--ink)" }}>{old.itemCode ?? "—"}</div>
+                            <div className="money" style={{ fontSize: 12.5, fontWeight: 700, color: "var(--ink)", ...mStrikeIf(chg.itemCode) }}>{old.itemCode ?? "—"}</div>
                             <div className="money" style={{ fontSize: 11, color: "var(--mut)", marginTop: 2 }}>
-                              Qty {old.qty ?? "—"}{typeof old.unitPriceSen === "number" ? ` · RM ${rm(old.unitPriceSen)}` : ""}
+                              <span style={mStrikeIf(chg.qty)}>Qty {old.qty ?? "—"}</span>
+                              {typeof old.unitPriceSen === "number" ? (
+                                <>{" · "}<span style={mStrikeIf(chg.unitPrice)}>RM {rm(old.unitPriceSen)}</span></>
+                              ) : ""}
                             </div>
-                            {old.description2 ? <div style={{ fontSize: 10.5, color: "var(--mut2)", marginTop: 2 }}>{old.description2}</div> : null}
+                            {old.description2 ? <div style={{ fontSize: 10.5, color: "var(--mut2)", marginTop: 2, ...mStrikeIf(chg.variants) }}>{old.description2}</div> : null}
                           </>
                         )}
                       </div>
@@ -1283,11 +1313,14 @@ function AmendmentDiffSheet({ amendmentId, onClose }: { amendmentId: string; onC
                           <div style={{ fontSize: 11.5, color: "#b23a3a", fontWeight: 600 }}>Removed</div>
                         ) : (
                           <>
-                            <div className="money" style={{ fontSize: 12.5, fontWeight: 700, color: "#0c3f39" }}>{l.new_item_code ?? old.itemCode ?? "—"}</div>
+                            <div className="money" style={{ fontSize: 12.5, fontWeight: 700, color: "#0c3f39", ...mEmphIf(chg.itemCode) }}>{l.new_item_code ?? old.itemCode ?? "—"}</div>
                             <div className="money" style={{ fontSize: 11, color: "var(--mut)", marginTop: 2 }}>
-                              Qty {l.new_qty ?? old.qty ?? "—"}{typeof l.new_unit_price_sen === "number" ? ` · RM ${rm(l.new_unit_price_sen)}` : ""}
+                              <span style={mEmphIf(chg.qty)}>Qty {l.new_qty ?? old.qty ?? "—"}</span>
+                              {typeof l.new_unit_price_sen === "number" ? (
+                                <>{" · "}<span style={mEmphIf(chg.unitPrice)}>RM {rm(l.new_unit_price_sen)}</span></>
+                              ) : ""}
                             </div>
-                            {newSummary ? <div style={{ fontSize: 10.5, color: "var(--mut2)", marginTop: 2 }}>{newSummary}</div> : null}
+                            {newSummary ? <div style={{ fontSize: 10.5, color: "var(--mut2)", marginTop: 2, ...mEmphIf(chg.variants) }}>{newSummary}</div> : null}
                           </>
                         )}
                       </div>

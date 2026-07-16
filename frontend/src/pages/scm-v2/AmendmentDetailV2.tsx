@@ -30,7 +30,7 @@ import {
   ExternalLink,
   GitBranch,
 } from "lucide-react";
-import { buildVariantSummary, fmtDateTime } from "@2990s/shared";
+import { fmtDateTime } from "@2990s/shared";
 import { Button } from "../../components/Button";
 import {
   DetailGrid,
@@ -56,6 +56,12 @@ import {
   amendmentHeaderDiffRows,
   type SoAmendmentHeaderChanges,
 } from "../../vendor/scm/lib/so-amendment-header";
+import {
+  amendmentLineChangedFields,
+  amendmentOldSnapshot,
+  amendmentVariantSummaries,
+  visibleAmendmentLines,
+} from "../../vendor/scm/lib/so-amendment-line-diff";
 import { useAuth as useHouzsAuth } from "../../auth/AuthContext";
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
 import { cn, formatDate } from "../../lib/utils";
@@ -88,15 +94,9 @@ const asStr = (v: unknown): string | null => {
 };
 
 
-/* old_snapshot shape (mirrors the diff readers in SalesOrderDetail / mobile). */
-type OldSnap = {
-  itemCode?: string;
-  qty?: number;
-  unitPriceSen?: number;
-  description2?: string | null;
-};
-const oldOf = (l: AmendmentLine): OldSnap =>
-  (l.old_snapshot as OldSnap | null) ?? {};
+/* old_snapshot reader — shared with the desktop modal + mobile sheet, so the
+   three surfaces can never drift on what "before" means. */
+const oldOf = amendmentOldSnapshot;
 
 // ─── Revision-status stepper (4 stages; SO/PO approved collapse into one) ────
 
@@ -243,13 +243,20 @@ function RevisionHero({
 
 // ─── Per-line before -> after diff card ─────────────────────────────────────
 
+/* Owner 2026-07-16 — WAS / REQUESTING used to be two plain columns you had to
+   diff character-by-character. The changed field is now emphasised on the
+   Requesting side and struck through on the Was side: the SAME idiom the header
+   diff rows above already use, so the card gains a signal, not a redesign.
+   Unchanged fields stay muted on both sides — they are context, not the ask. */
+const wasCls = (changed: boolean, base: string): string =>
+  cn(base, changed && "line-through decoration-ink-muted/60");
+const nowCls = (changed: boolean, base: string): string =>
+  cn(base, changed ? "font-semibold text-primary-ink" : "text-ink-muted");
+
 function DiffCard({ line }: { line: AmendmentLine }) {
   const old = oldOf(line);
-  const newSummary = buildVariantSummary(
-    "",
-    (line.new_variants as Record<string, unknown> | null) ?? null
-  );
-  const oldSummary = (old.description2 ?? "").trim();
+  const { to: newSummary, from: oldSummary } = amendmentVariantSummaries(line);
+  const changed = amendmentLineChangedFields(line);
   const isAdd = line.change_type === "ADD";
   const isRemove = line.change_type === "REMOVE";
 
@@ -268,15 +275,20 @@ function DiffCard({ line }: { line: AmendmentLine }) {
             <div className="mt-1 text-[12px] text-ink-muted">New line — nothing before</div>
           ) : (
             <>
-              <div className="mt-1 font-mono text-[13px] font-semibold text-ink">
+              <div className={wasCls(changed.itemCode, "mt-1 font-mono text-[13px] font-semibold text-ink")}>
                 {old.itemCode ?? "—"}
               </div>
               <div className="mt-0.5 font-money text-[11.5px] text-ink-muted">
-                Qty {old.qty ?? "—"}
-                {typeof old.unitPriceSen === "number" ? ` · ${fmtSen(old.unitPriceSen)}` : ""}
+                <span className={wasCls(changed.qty, "")}>Qty {old.qty ?? "—"}</span>
+                {typeof old.unitPriceSen === "number" ? (
+                  <>
+                    {" · "}
+                    <span className={wasCls(changed.unitPrice, "")}>{fmtSen(old.unitPriceSen)}</span>
+                  </>
+                ) : ""}
               </div>
               {oldSummary && (
-                <div className="mt-1.5 text-[11px] font-semibold text-ink-secondary">
+                <div className={wasCls(changed.variants, "mt-1.5 text-[11px] font-semibold text-ink-secondary")}>
                   {oldSummary}
                 </div>
               )}
@@ -292,15 +304,20 @@ function DiffCard({ line }: { line: AmendmentLine }) {
             <div className="mt-1 text-[12px] font-semibold text-err">Removed</div>
           ) : (
             <>
-              <div className="mt-1 font-mono text-[13px] font-semibold text-primary-ink">
+              <div className={nowCls(changed.itemCode, "mt-1 font-mono text-[13px]")}>
                 {line.new_item_code ?? old.itemCode ?? "—"}
               </div>
-              <div className="mt-0.5 font-money text-[11.5px] text-ink-muted">
-                Qty {line.new_qty ?? old.qty ?? "—"}
-                {typeof line.new_unit_price_sen === "number" ? ` · ${fmtSen(line.new_unit_price_sen)}` : ""}
+              <div className="mt-0.5 font-money text-[11.5px]">
+                <span className={nowCls(changed.qty, "")}>Qty {line.new_qty ?? old.qty ?? "—"}</span>
+                {typeof line.new_unit_price_sen === "number" ? (
+                  <>
+                    <span className="text-ink-muted">{" · "}</span>
+                    <span className={nowCls(changed.unitPrice, "")}>{fmtSen(line.new_unit_price_sen)}</span>
+                  </>
+                ) : ""}
               </div>
               {newSummary && (
-                <div className="mt-1.5 text-[11px] font-semibold text-ink-secondary">
+                <div className={nowCls(changed.variants, "mt-1.5 text-[11px]")}>
                   {newSummary}
                 </div>
               )}
@@ -506,7 +523,18 @@ export function AmendmentDetailV2() {
     created_at?: string | null;
     so_doc_no?: string;
   }) | null;
-  const lines = useMemo(() => (data?.lines ?? []) as AmendmentLine[], [data]);
+  /* Owner 2026-07-16 — only lines that ACTUALLY request something. A recorded
+     line whose new_* equals its own old_snapshot is not a change: it must not
+     render as a card and must not count. Pre-fix rows are already in the DB, so
+     the filter stays regardless of the builder fix. */
+  const lines = useMemo(
+    () => visibleAmendmentLines((data?.lines ?? []) as AmendmentLine[]),
+    [data],
+  );
+  /* How many line rows were RECORDED, before the delta filter. When this is
+     non-zero but `lines` is empty, every recorded line is a no-op — say so
+     rather than showing nothing (a legacy pre-fix amendment reads this way). */
+  const recordedLineCount = (data?.lines ?? []).length;
   const salesOrder = data?.salesOrder ?? null;
   const boundPo = data?.purchaseOrders?.[0] ?? null;
 
@@ -523,6 +551,7 @@ export function AmendmentDetailV2() {
     [amendment],
   );
 
+  const changeCount = headerDiffs.length + lines.length;
   const status = String(amendment?.status ?? "");
   const soDocNo = String(amendment?.so_doc_no ?? "");
   const amendmentNo =
@@ -632,8 +661,12 @@ export function AmendmentDetailV2() {
               <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12.5px] text-ink-secondary">
                 <span className="font-mono font-semibold text-primary-ink">{soDocNo}</span>
                 <span className="text-ink-muted/50">·</span>
+                {/* The honest total — header fields + genuinely-changed lines.
+                    It used to count every RECORDED line, so an amendment whose
+                    lines were all no-ops advertised "4 changes" and showed four
+                    identical cards. */}
                 <span>
-                  {lines.length} change{lines.length === 1 ? "" : "s"}
+                  {changeCount} change{changeCount === 1 ? "" : "s"}
                 </span>
                 {asStr(amendment.created_at) && (
                   <>
@@ -691,7 +724,15 @@ export function AmendmentDetailV2() {
                 <div className="text-[12px] text-ink-muted">
                   {headerDiffs.length > 0
                     ? "No line changes — this amendment only changes the order details above."
-                    : "This amendment has no line changes recorded."}
+                    : recordedLineCount > 0
+                      /* Every recorded line matches the order exactly, and there
+                         is no header delta either — a legacy amendment raised
+                         before the header half existed (mig 0119), whose real
+                         request was a header field that had nowhere to go. Say
+                         so and point at the Reason, which is the only place the
+                         ask survives. */
+                      ? "No line changes recorded — every line matches the order exactly. This request predates order-detail tracking, so what was asked for is in the Reason below."
+                      : "This amendment has no line changes recorded."}
                 </div>
               ) : (
                 <div className="space-y-2.5">
