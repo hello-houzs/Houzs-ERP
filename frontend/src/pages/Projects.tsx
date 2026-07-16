@@ -6677,8 +6677,8 @@ function DocumentTable({
   onStatus: (it: ChecklistItem, s: ChecklistStatus) => void;
   onReview: (
     it: ChecklistItem,
-    action: "submit" | "reject" | "approve",
-    payload: { reason?: string }
+    action: "submit" | "reject" | "approve" | "comment",
+    payload: { reason?: string; note?: string }
   ) => void | Promise<void>;
   onReload: () => void;
   toast?: ReturnType<typeof useToast>;
@@ -6743,8 +6743,8 @@ function DocRow({
   onStatus: (it: ChecklistItem, s: ChecklistStatus) => void;
   onReview: (
     it: ChecklistItem,
-    action: "submit" | "reject" | "approve",
-    payload: { reason?: string }
+    action: "submit" | "reject" | "approve" | "comment",
+    payload: { reason?: string; note?: string }
   ) => void | Promise<void>;
   onReload: () => void;
   toast?: ReturnType<typeof useToast>;
@@ -6754,6 +6754,11 @@ function DocRow({
   const [uploading, setUploading] = useState(false);
   const [rejectOpen, setRejectOpen] = useState(false);
   const [reason, setReason] = useState("");
+  const [remarkOpen, setRemarkOpen] = useState(false);
+  const [remark, setRemark] = useState("");
+  const [postingRemark, setPostingRemark] = useState(false);
+  // Free-text remark notes on this document (excludes the review decision trail).
+  const remarkNotes = comments.filter((c) => c.kind !== "submit" && c.kind !== "reject" && c.kind !== "approve" && c.kind !== "amend" && c.body);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const reviewable = REVIEWABLE_TITLES.has(item.title);
   const latest = attachments[0];
@@ -6802,6 +6807,21 @@ function DocRow({
       onReload();
     } catch (e: any) {
       toast?.error(e?.message || "Failed");
+    }
+  }
+
+  async function postRemark() {
+    const t = remark.trim();
+    if (!t) return;
+    setPostingRemark(true);
+    try {
+      await onReview(item, "comment", { note: t });
+      setRemark("");
+      setRemarkOpen(false);
+    } catch (e: any) {
+      toast?.error(e?.message || "Failed");
+    } finally {
+      setPostingRemark(false);
     }
   }
 
@@ -6950,6 +6970,20 @@ function DocRow({
             )}
             {canManage && (
               <button
+                onClick={() => setRemarkOpen((x) => !x)}
+                className={cn(
+                  "rounded-md border inline-flex items-center justify-center min-w-[42px] whitespace-nowrap px-2 py-1 text-[8.5px] font-semibold",
+                  remarkNotes.length > 0
+                    ? "border-accent/40 bg-accent/5 text-accent"
+                    : "border-border bg-surface text-ink-muted hover:border-accent/40 hover:text-accent"
+                )}
+                title="Add a remark"
+              >
+                {remarkNotes.length > 0 ? `Remark (${remarkNotes.length})` : "Remark"}
+              </button>
+            )}
+            {canManage && (
+              <button
                 onClick={() => onStatus(item, naActive ? "pending" : "na")}
                 className={cn(
                   "rounded-md border inline-flex items-center justify-center min-w-[42px] whitespace-nowrap px-2 py-1 text-[8.5px] font-semibold",
@@ -6964,6 +6998,50 @@ function DocRow({
           </div>
         </td>
       </tr>
+      {remarkOpen && (
+        <tr>
+          <td colSpan={6} className="px-3 pb-2">
+            <div className="rounded-md border border-border bg-bg/40 p-2">
+              {remarkNotes.length > 0 && (
+                <div className="mb-1.5 space-y-0.5">
+                  {remarkNotes
+                    .slice()
+                    .sort((a, b) => (a.created_at < b.created_at ? -1 : 1))
+                    .map((c) => (
+                      <div key={c.id} className="text-[10px] leading-snug text-ink-secondary">
+                        <span className="text-ink-muted">{c.user_name || "—"} · {formatDateTime(c.created_at)}:</span>{" "}
+                        {c.body}
+                      </div>
+                    ))}
+                </div>
+              )}
+              <div className="flex items-center gap-2">
+                <input
+                  value={remark}
+                  onChange={(e) => setRemark(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void postRemark(); } }}
+                  placeholder="Add a remark…"
+                  autoFocus
+                  className="flex-1 rounded-md border border-border bg-surface px-2 py-1.5 text-[11px] outline-none focus:border-primary"
+                />
+                <button
+                  onClick={() => void postRemark()}
+                  disabled={!remark.trim() || postingRemark}
+                  className="rounded-md bg-accent px-2.5 py-1 text-[10px] font-semibold text-white disabled:opacity-40"
+                >
+                  {postingRemark ? "…" : "Post"}
+                </button>
+                <button
+                  onClick={() => { setRemarkOpen(false); setRemark(""); }}
+                  className="rounded-md border border-border bg-surface px-2 py-1 text-[10px] font-semibold text-ink-muted"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </td>
+        </tr>
+      )}
       {rejectOpen && (
         <tr>
           <td colSpan={6} className="px-3 pb-2">
