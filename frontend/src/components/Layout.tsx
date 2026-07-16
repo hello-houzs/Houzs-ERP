@@ -176,11 +176,14 @@ export function PageHeader({
            · bg-bg/95 + backdrop-blur keeps the header legible over any
              content that would otherwise show through. */
         (dense
-          ? "sticky top-12 z-20 -mx-3 sm:-mx-4 lg:-mx-4 px-3 sm:px-4 lg:px-4 bg-bg/95 backdrop-blur-sm mb-3 flex flex-col gap-2 border-b border-border pt-3 pb-2 sm:mb-4 sm:pt-4 sm:pb-3 md:flex-row md:items-end md:justify-between"
-          : "sticky top-12 z-20 -mx-3 sm:-mx-4 lg:-mx-4 px-3 sm:px-4 lg:px-4 bg-bg/95 backdrop-blur-sm mb-4 flex flex-col gap-3 border-b border-border pt-3 pb-3 sm:mb-8 sm:pt-4 sm:gap-3 sm:pb-6 md:flex-row md:items-end md:justify-between")
+          ? "sticky top-12 z-20 -mx-3 sm:-mx-4 lg:-mx-4 px-3 sm:px-4 lg:px-4 bg-bg/95 backdrop-blur-sm mb-3 flex flex-col gap-2 border-b border-border pt-3 pb-2 sm:mb-4 sm:pt-4 sm:pb-3 md:flex-row md:flex-wrap md:items-end md:justify-between"
+          : "sticky top-12 z-20 -mx-3 sm:-mx-4 lg:-mx-4 px-3 sm:px-4 lg:px-4 bg-bg/95 backdrop-blur-sm mb-4 flex flex-col gap-3 border-b border-border pt-3 pb-3 sm:mb-8 sm:pt-4 sm:gap-3 sm:pb-6 md:flex-row md:flex-wrap md:items-end md:justify-between")
       }
     >
-      <div className="min-w-0">
+      {/* md:flex-1 + a basis floor so a wide action rail (md:shrink-0) can
+          never squeeze the title to a per-character column — the rail wraps
+          to its own row instead (container is md:flex-wrap). */}
+      <div className="min-w-0 md:flex-1 md:basis-72">
         {eyebrow && (
           <div className="mb-1.5 flex items-center gap-2 sm:mb-2">
             <span className="h-px w-5 bg-accent sm:w-6" />
