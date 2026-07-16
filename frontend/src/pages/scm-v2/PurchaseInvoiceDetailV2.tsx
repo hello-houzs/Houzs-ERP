@@ -3,6 +3,7 @@
 // Outstanding-as-hero, but flipped — this is what WE owe to the supplier.
 
 import { lazy, Suspense, useMemo, type ReactNode } from "react";
+import { lineIdentity } from "@2990s/shared";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -431,18 +432,26 @@ function PurchaseInvoiceDetailV2ReadOnly() {
       label: "Item",
       alwaysVisible: true,
       getValue: (l) => l.material_code || l.item_code || "",
+      /* Description ONCE, code NOT displayed, variant KEPT — the shared rule
+         (vendor/shared/line-identity.ts). Swept on SHAPE, not vocabulary: this
+         was the pre-#647 SalesOrderDetailV2 cell exactly. The code still BINDS
+         via getValue above. */
       render: (l) => {
+        const { primary, secondary } = lineIdentity({
+          code: l.material_code || l.item_code,
+          description: l.description,
+          variant: l.description2,
+        });
         return (
           <div className="min-w-0">
             <div className="truncate text-[13px] font-semibold text-ink">
-              {l.description || l.material_code || l.item_code || "—"}
+              {primary || "—"}
             </div>
-            <div className="mt-0.5 flex flex-wrap items-center gap-2 font-mono text-[11px] text-ink-muted">
-              <span>{l.material_code || l.item_code}</span>
-              {l.description2 && (
-                <span className="truncate text-ink-secondary">· {l.description2}</span>
-              )}
-            </div>
+            {secondary && (
+              <div className="mt-0.5 flex flex-wrap items-center gap-2 font-mono text-[11px] text-ink-muted">
+                <span className="truncate text-ink-secondary">{secondary}</span>
+              </div>
+            )}
           </div>
         );
       },

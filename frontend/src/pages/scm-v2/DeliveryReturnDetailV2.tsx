@@ -72,7 +72,7 @@ import {
   type ChainNode,
 } from "../../components/scm-v2/DocumentRelationshipMapModal";
 import { cn } from "../../lib/utils";
-import { fmtMoneyCenti } from "@2990s/shared";
+import { fmtMoneyCenti, lineIdentity } from "@2990s/shared";
 import { useAuth } from "../../auth/AuthContext";
 
 // ─── Row shapes (subset — see DeliveryReturnDetail.tsx for full 40-field
@@ -782,20 +782,28 @@ export function DeliveryReturnDetailV2() {
       label: "Item",
       alwaysVisible: true,
       getValue: (l) => l.item_code,
-      render: (l) => (
+      /* Description ONCE, code NOT displayed, variant KEPT — the shared rule
+         (vendor/shared/line-identity.ts). Converged onto the helper from this
+         page's own #647 copy: same behaviour, one source. The variant and the
+         warehouse pill stay — this row shows them nowhere else — and their row
+         is kept when only the pill is present. The code still BINDS via
+         getValue above. */
+      render: (l) => {
+        const { primary, secondary } = lineIdentity({
+          code: l.item_code,
+          description: l.description,
+          variant: l.description2,
+        });
+        return (
         <div className="min-w-0">
           <div className="truncate text-[13px] font-semibold text-ink">
-            {l.description || l.item_code}
+            {primary}
           </div>
-          {/* Description ONCE (owner standing rule) — the code still BINDS via
-              getValue above, it just isn't printed next to the description that
-              already names it. description2 (the variant) and the warehouse pill
-              stay: this row shows them nowhere else. See SO detail for the rule. */}
-          {(l.description2 || l.warehouse_code) && (
+          {(secondary || l.warehouse_code) && (
             <div className="mt-0.5 flex items-center gap-2 font-mono text-[11px] text-ink-muted">
-              {l.description2 && (
+              {secondary && (
                 <span className="truncate text-ink-secondary">
-                  {l.description2}
+                  {secondary}
                 </span>
               )}
               {l.warehouse_code && (
@@ -807,7 +815,8 @@ export function DeliveryReturnDetailV2() {
             </div>
           )}
         </div>
-      ),
+        );
+      },
     },
     {
       key: "condition",

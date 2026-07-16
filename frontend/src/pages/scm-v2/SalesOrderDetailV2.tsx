@@ -53,7 +53,7 @@ import { DocumentRelationshipMapModal } from "../../components/scm-v2/DocumentRe
 import { useSoRelationshipMap } from "./so-relationship-map";
 import { cn } from "../../lib/utils";
 import { useAuth } from "../../auth/AuthContext";
-import { buildVariantSummary, fmtMoneyCenti } from "@2990s/shared";
+import { buildVariantSummary, fmtMoneyCenti, lineIdentity } from "@2990s/shared";
 import {
   isLocked as isSoLocked,
   amendmentEligible as soAmendmentEligible,
@@ -740,32 +740,27 @@ function SalesOrderDetailV2ReadOnly() {
       alwaysVisible: true,
       getValue: (l) => l.item_code,
       render: (l) => {
-        // Live variant summary (colour / fabric / divan / leg / seat / specials)
-        // computed from the line's variants blob — same helper the SO full page
-        // and mobile use. Fall back to the stored description2 for older rows
-        // that carry no variants object (which can be stale, so live wins).
-        const variantSummary =
-          buildVariantSummary(l.item_group ?? "", l.variants ?? null) ||
-          (l.description2 ?? "").trim();
-        /* Description ONCE (owner, standing rule — restated 2026-07-16 on this
-           table): the item CODE still BINDS (getValue above keeps it the sort /
-           search / export value) but is not displayed beside the description it
-           already names. Same rule the desktop SoLineCard picker rows and
-           MobileSkuPicker (#626) follow. The VARIANT summary stays — it is the
-           only place this row shows fabric / divan / leg / seat, and the
-           description carries just the SKU wording + size. Codeless rows still
-           show the code: the bold line falls back to item_code when there is no
-           description, so nothing becomes unidentifiable. */
+        /* Description ONCE, code NOT displayed, variant KEPT — the shared rule
+           (vendor/shared/line-identity.ts, which carries the four-report history
+           this table was the fourth of). The item CODE still BINDS: getValue
+           above keeps it the sort / search / export value. Live variant summary
+           wins over the stored description2, which can be stale on older rows
+           that carry no variants blob. */
+        const { primary, secondary } = lineIdentity({
+          code: l.item_code,
+          description: l.description,
+          variant:
+            buildVariantSummary(l.item_group ?? "", l.variants ?? null) ||
+            (l.description2 ?? ""),
+        });
         return (
           <div className="min-w-0">
             <div className="truncate text-[13px] font-semibold text-ink">
-              {l.description || l.item_code}
+              {primary}
             </div>
-            {variantSummary && (
+            {secondary && (
               <div className="mt-0.5 flex items-center gap-2 font-mono text-[11px] text-ink-muted">
-                <span className="truncate text-ink-secondary">
-                  {variantSummary}
-                </span>
+                <span className="truncate text-ink-secondary">{secondary}</span>
               </div>
             )}
           </div>

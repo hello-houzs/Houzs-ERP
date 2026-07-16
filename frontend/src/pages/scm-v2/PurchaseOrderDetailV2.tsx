@@ -11,6 +11,7 @@
 
 import { Suspense, lazy, useMemo, type ReactNode } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { lineIdentity } from "@2990s/shared";
 import {
   ArrowLeft,
   History,
@@ -479,19 +480,39 @@ function PurchaseOrderDetailV2ReadOnly() {
       label: "Item",
       alwaysVisible: true,
       getValue: (l) => l.material_code,
-      render: (l) => (
-        <div className="min-w-0">
-          <div className="truncate text-[13px] font-semibold text-ink">
-            {l.description || l.material_name || l.material_code}
-          </div>
-          <div className="mt-0.5 flex items-center gap-2 font-mono text-[11px] text-ink-muted">
-            <span>{l.material_code}</span>
-            {l.description2 && (
-              <span className="truncate text-ink-secondary">· {l.description2}</span>
+      /* Description ONCE, code NOT displayed, variant KEPT — the shared rule
+         (vendor/shared/line-identity.ts). JUDGEMENT CALL, stated rather than
+         silently taken: this is PURCHASE vocabulary (material_code), and every
+         owner precedent for the rule is sales-side, so it is not covered by the
+         letter of any report. It is swept because the SHAPE is identical, not
+         the vocabulary — this render was byte-for-byte the pre-#647
+         SalesOrderDetailV2 line-item cell (bold description, then the code and
+         `· description2` sharing one muted line), i.e. the exact thing the owner
+         reported. The operator already reads the description on the bold line;
+         the code beneath it is the same identity twice. The V1 purchase detail
+         tables are deliberately NOT swept — there the code is the BOLD PRIMARY
+         line and dropping it would leave the row identified only by a variant
+         summary. The code still BINDS: getValue above keeps it the sort /
+         search / export value. */
+      render: (l) => {
+        const { primary, secondary } = lineIdentity({
+          code: l.material_code,
+          description: l.description || l.material_name,
+          variant: l.description2,
+        });
+        return (
+          <div className="min-w-0">
+            <div className="truncate text-[13px] font-semibold text-ink">
+              {primary}
+            </div>
+            {secondary && (
+              <div className="mt-0.5 flex items-center gap-2 font-mono text-[11px] text-ink-muted">
+                <span className="truncate text-ink-secondary">{secondary}</span>
+              </div>
             )}
           </div>
-        </div>
-      ),
+        );
+      },
     },
     {
       key: "qty",

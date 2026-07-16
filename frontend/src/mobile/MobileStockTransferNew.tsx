@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { lineIdentity } from "@2990s/shared";
 import { todayMyt } from "../vendor/scm/lib/dates";
 import { useWarehouses } from "../vendor/scm/lib/inventory-queries";
 import {
@@ -141,9 +142,16 @@ export function MobileStockTransferNew({
           return (
             <div key={l._key} className="st-line">
               <div className="lh">
+                {/* Description ONCE, code NOT displayed — the shared rule
+                    (vendor/shared/line-identity.ts). This page's OWN picker
+                    (MobileSkuPicker) was converged to description-only in #626;
+                    the line it produced kept repeating the code underneath, so
+                    the two halves of the same screen disagreed. The code still
+                    BINDS — productCode is the line key and the saved payload. */}
                 <div>
-                  <div className="sku">{l.productName || l.productCode}</div>
-                  <div className="code tnum">{l.productCode}</div>
+                  <div className="sku">
+                    {lineIdentity({ code: l.productCode, description: l.productName }).primary}
+                  </div>
                 </div>
                 <button className="x" onClick={() => removeLine(l._key)} aria-label="Remove line">×</button>
               </div>

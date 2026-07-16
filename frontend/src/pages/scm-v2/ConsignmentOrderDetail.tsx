@@ -32,7 +32,7 @@ import {
 } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { formatPhone } from '@2990s/shared/phone';
-import { buildVariantSummary, fmtDateOrDash } from '@2990s/shared';
+import { buildVariantSummary, fmtDateOrDash, lineIdentity } from '@2990s/shared';
 import { PhoneInput } from '../../vendor/scm/components/PhoneInput';
 import { SkeletonDetailPage } from '../../vendor/scm/components/Skeleton';
 import {
@@ -629,8 +629,14 @@ export const ConsignmentOrderDetail = () => {
                 return (
                   <tr key={it.id}>
                     <td>
-                      <div className={styles.codeCell}>{it.item_code}</div>
-                      {it.description && <div className={styles.muted}>{it.description}</div>}
+                      {/* Description ONCE, code NOT displayed — the shared rule
+                          (vendor/shared/line-identity.ts). Sales vocabulary,
+                          same shape as SO/DO/DR/SI detail. The code still BINDS.
+                          No variant passed: it has its OWN "Description 2"
+                          column below. */}
+                      <div className={styles.codeCell}>
+                        {lineIdentity({ code: it.item_code, description: it.description }).primary || '—'}
+                      </div>
                     </td>
                     <td>
                       {(() => {

@@ -147,17 +147,18 @@
   line-height: 1.2;
 }
 
+/* The picked line's ONE identity line — the description (falling back to the
+   code only when a line has none). Carries the truncation guard that used to
+   live on the now-deleted .pickerDesc: the description moved up into this slot
+   when the redundant code line was dropped (see SoLineCard.tsx and
+   vendor/shared/line-identity.ts), and it is the longer of the two strings, so
+   the ellipsis has to come with it. It now has the whole button to itself
+   instead of sharing with a code line. */
 .pickerCode {
   font-family: var(--font-sans);
   font-size: var(--fs-12);
   font-weight: 600;
   color: var(--c-burnt);
-}
-
-.pickerDesc {
-  font-family: var(--font-sans);
-  font-size: var(--fs-11);
-  color: var(--fg-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

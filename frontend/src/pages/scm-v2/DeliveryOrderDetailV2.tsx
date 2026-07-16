@@ -66,7 +66,7 @@ import {
   type ChainNode,
 } from "../../components/scm-v2/DocumentRelationshipMapModal";
 import { cn } from "../../lib/utils";
-import { fmtMoneyCenti } from "@2990s/shared";
+import { fmtMoneyCenti, lineIdentity } from "@2990s/shared";
 import { useAuth } from "../../auth/AuthContext";
 
 // ─── Header + item shapes (subset — full 40-field row lives in the list V2) ─
@@ -1027,20 +1027,25 @@ export function DeliveryOrderDetailV2() {
       label: "Item",
       alwaysVisible: true,
       getValue: (l) => l.item_code,
+      /* Description ONCE, code NOT displayed, variant KEPT — the shared rule
+         (vendor/shared/line-identity.ts). Converged onto the helper from this
+         page's own #647 copy: same behaviour, one source. The code still BINDS
+         via getValue above. */
       render: (l) => {
-        /* Description ONCE (owner standing rule) — the code still BINDS via
-           getValue above, it just isn't printed next to the description that
-           already names it. description2 (the variant summary) stays: it is the
-           only place this row shows the variant. See SO detail for the rule. */
+        const { primary, secondary } = lineIdentity({
+          code: l.item_code,
+          description: l.description,
+          variant: l.description2,
+        });
         return (
           <div className="min-w-0">
             <div className="text-[13px] font-semibold text-ink">
-              {l.description || l.item_code}
+              {primary}
             </div>
-            {l.description2 && (
+            {secondary && (
               <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-ink-muted">
                 <span className="truncate text-ink-secondary">
-                  {l.description2}
+                  {secondary}
                 </span>
               </div>
             )}

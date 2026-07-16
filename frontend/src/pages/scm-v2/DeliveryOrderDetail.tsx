@@ -47,7 +47,7 @@ import {
   PaymentsTable, labelToApi, draftMethodFields,
   newPaymentDraft, type PaymentDraft,
 } from '../../vendor/scm/components/PaymentsTable';
-import { buildVariantSummary, canonicalizeVariants, fmtDateOrDash } from '@2990s/shared';
+import { buildVariantSummary, canonicalizeVariants, fmtDateOrDash, lineIdentity } from '@2990s/shared';
 import {
   useLocalities, distinctStates, citiesInState, postcodesInCity,
 } from '../../vendor/scm/lib/localities-queries';
@@ -780,8 +780,13 @@ export const DeliveryOrderDetail = () => {
               {items.map((it) => (
                 <tr key={it.id}>
                   <td>
-                    <div className={styles.codeCell}>{it.item_code}</div>
-                    {it.description && <div className={styles.muted}>{it.description}</div>}
+                    {/* Description ONCE, code NOT displayed — the shared rule
+                        (vendor/shared/line-identity.ts). The code still BINDS.
+                        No variant passed: it has its OWN "Description 2" column
+                        below, so feeding it here would duplicate it. */}
+                    <div className={styles.codeCell}>
+                      {lineIdentity({ code: it.item_code, description: it.description }).primary || '—'}
+                    </div>
                   </td>
                   {/* "Description 2": variant/spec summary in its own column.
                       Prefers the stored description2, falls back to the computed

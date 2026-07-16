@@ -58,7 +58,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "../../lib/utils";
 import { useAuth } from "../../auth/AuthContext";
 import { isDirectorUser, canViewScmCosting } from "../../auth/salesAccess";
-import { buildVariantSummary } from "@2990s/shared";
+import { buildVariantSummary, lineIdentity } from "@2990s/shared";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 // Minimal row shape the listing needs. The full SoRow (in MfgSalesOrdersList
@@ -567,28 +567,31 @@ function DetailDrawer({
                 )}
                 {items.map((l, i) => {
                   const amt = l.total_centi ?? (l.qty ?? 0) * (l.unit_price_centi ?? 0);
-                  // Live variant summary (colour / fabric / divan / leg / seat /
-                  // specials) off the line's variants blob; fall back to the
-                  // stored description2 for older rows with no variants object.
-                  const variantSummary =
-                    buildVariantSummary(l.item_group ?? "", l.variants ?? null) ||
-                    (l.description2 ?? "").trim();
+                  /* Description ONCE, code NOT displayed, variant KEPT — the
+                     shared rule (vendor/shared/line-identity.ts). Live variant
+                     summary wins over the stored description2, which can be
+                     stale on older rows with no variants blob. */
+                  const { primary, secondary } = lineIdentity({
+                    code: l.item_code,
+                    description: l.description,
+                    variant:
+                      buildVariantSummary(l.item_group ?? "", l.variants ?? null) ||
+                      (l.description2 ?? ""),
+                  });
                   return (
                     <div
                       key={i}
                       className="grid grid-cols-[1fr_52px_92px] items-start gap-2 border-b border-border-subtle px-4 py-3 last:border-b-0"
                     >
                       <div className="min-w-0">
-                        {/* Description only — the item code sub-line was noise next to
-                            it (owner 2026-07-16). Code stays the fallback for a line
-                            that has no description. Weight/size tuned down to sit with
-                            the qty/amount columns instead of shouting over them. */}
+                        {/* Weight/size tuned down to sit with the qty/amount
+                            columns instead of shouting over them. */}
                         <div className="text-[12.5px] font-medium leading-snug text-ink">
-                          {l.description || l.item_code || "—"}
+                          {primary || "—"}
                         </div>
-                        {variantSummary && (
+                        {secondary && (
                           <div className="mt-0.5 text-[11.5px] leading-snug text-ink-secondary">
-                            {variantSummary}
+                            {secondary}
                           </div>
                         )}
                       </div>
@@ -850,9 +853,19 @@ function SoLinesExpansion({ docNo }: { docNo: string }) {
       </div>
       {items.map((l, i) => {
         const amt = l.total_centi ?? (l.qty ?? 0) * (l.unit_price_centi ?? 0);
-        const variantSummary =
-          buildVariantSummary(l.item_group ?? "", l.variants ?? null) ||
-          (l.description2 ?? "").trim();
+        /* Description ONCE, code NOT displayed, variant KEPT — the shared rule
+           (vendor/shared/line-identity.ts). This drill-down row is the TWIN of
+           the quick-view drawer above in this same file: the drawer was fixed
+           for #616 and this copy, twenty lines away, kept rendering the code on
+           a muted second line for another four weeks. That is the whole reason
+           the rule now lives in one shared module instead of in a comment. */
+        const { primary, secondary } = lineIdentity({
+          code: l.item_code,
+          description: l.description,
+          variant:
+            buildVariantSummary(l.item_group ?? "", l.variants ?? null) ||
+            (l.description2 ?? ""),
+        });
         return (
           <div
             key={i}
@@ -860,16 +873,11 @@ function SoLinesExpansion({ docNo }: { docNo: string }) {
           >
             <div className="min-w-0">
               <div className="text-[12.5px] font-semibold text-ink">
-                {l.description || l.item_code || "—"}
+                {primary || "—"}
               </div>
-              {l.item_code && (
-                <div className="mt-0.5 font-mono text-[10.5px] text-ink-muted">
-                  {l.item_code}
-                </div>
-              )}
-              {variantSummary && (
+              {secondary && (
                 <div className="mt-0.5 text-[11px] leading-snug text-ink-secondary">
-                  {variantSummary}
+                  {secondary}
                 </div>
               )}
             </div>

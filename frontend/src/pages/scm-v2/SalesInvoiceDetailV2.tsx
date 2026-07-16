@@ -82,7 +82,7 @@ import {
   type ChainNode,
 } from "../../components/scm-v2/DocumentRelationshipMapModal";
 import { cn } from "../../lib/utils";
-import { fmtMoneyCenti } from "@2990s/shared";
+import { fmtMoneyCenti, lineIdentity } from "@2990s/shared";
 
 // ─── Row shapes (subset — see SalesInvoiceDetail.tsx for the full 40-field
 // header) ───────────────────────────────────────────────────────────────
@@ -842,21 +842,23 @@ export function SalesInvoiceDetailV2() {
       label: "Item",
       alwaysVisible: true,
       getValue: (l) => l.item_code,
+      /* Description ONCE, code NOT displayed, variant KEPT — the shared rule
+         (vendor/shared/line-identity.ts). Converged onto the helper from this
+         page's own #647 copy: same behaviour, but the rule now comes from the
+         one module instead of a per-page comment that the next sibling would
+         have to remember to copy. The code still BINDS via getValue above. */
       render: (l) => {
-        /* Description ONCE (owner standing rule) — the code still BINDS via
-           getValue above, it just isn't printed next to the description that
-           already names it. description2 (the variant summary) stays: it is the
-           only place this row shows the variant. See SO detail for the rule. */
+        const { primary, secondary } = lineIdentity({
+          code: l.item_code,
+          description: l.description,
+          variant: l.description2,
+        });
         return (
           <div className="min-w-0">
-            <div className="text-[13px] font-semibold text-ink">
-              {l.description || l.item_code}
-            </div>
-            {l.description2 && (
+            <div className="text-[13px] font-semibold text-ink">{primary}</div>
+            {secondary && (
               <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-ink-muted">
-                <span className="truncate text-ink-secondary">
-                  {l.description2}
-                </span>
+                <span className="truncate text-ink-secondary">{secondary}</span>
               </div>
             )}
           </div>

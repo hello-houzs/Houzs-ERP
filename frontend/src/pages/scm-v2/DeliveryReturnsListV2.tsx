@@ -18,6 +18,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { canViewScmCosting } from "../../auth/salesAccess";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { lineIdentity } from "@2990s/shared";
 import {
   Plus,
   ChevronDown,
@@ -536,21 +537,24 @@ function DetailDrawer({
                       className="grid grid-cols-[1fr_52px_92px] items-center gap-2 border-b border-border-subtle px-4 py-3 last:border-b-0"
                     >
                       <div>
+                        {/* Description ONCE, code NOT displayed — the shared
+                            rule (vendor/shared/line-identity.ts). The code still
+                            BINDS. No variant is passed because this drawer's row
+                            shape carries no variant vocabulary at all (no
+                            item_group / variants / description2). The CONDITION
+                            badge shared the code's line and is NOT a duplicate —
+                            it survives, and its row now renders only when there
+                            is a condition to show. */}
                         <div className="text-[13px] font-semibold text-ink">
-                          {l.description || l.item_code || "—"}
+                          {lineIdentity({ code: l.item_code, description: l.description }).primary || "—"}
                         </div>
-                        <div className="mt-0.5 flex items-center gap-2">
-                          {l.item_code && (
-                            <span className="font-mono text-[11px] text-ink-muted">
-                              {l.item_code}
-                            </span>
-                          )}
-                          {l.condition && (
+                        {l.condition && (
+                          <div className="mt-0.5 flex items-center gap-2">
                             <Badge tone="warning" variant="soft" size="xs">
                               {l.condition}
                             </Badge>
-                          )}
-                        </div>
+                          </div>
+                        )}
                       </div>
                       <span className="text-right font-money text-[12.5px] text-ink-secondary">
                         {l.qty_returned ?? 0}

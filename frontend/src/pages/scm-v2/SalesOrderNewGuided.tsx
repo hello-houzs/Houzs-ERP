@@ -23,6 +23,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { lineIdentity } from "@2990s/shared";
 import {
   ArrowLeft,
   Check,
@@ -804,11 +805,29 @@ function StepModules({
                     onClick={() => toggle(sku.code)}
                     className="min-w-0 flex-1 text-left"
                   >
-                    <div className="text-[12.5px] font-bold text-ink">{sku.name}</div>
-                    <div className="font-money text-[10.5px] text-ink-muted">
-                      {sku.code}
-                      {sku.size_label && ` · ${sku.size_label}`}
-                    </div>
+                    {/* Description ONCE, code NOT displayed — the shared rule
+                        (vendor/shared/line-identity.ts) and the picker precedent
+                        (Commander 2026-05-27). The code still BINDS:
+                        toggle(sku.code) on this very button. SIZE_LABEL is kept
+                        and is not a duplicate — it appears nowhere else on the
+                        tile — so its line renders whenever it exists. */}
+                    {(() => {
+                      const { primary, secondary } = lineIdentity({
+                        code: sku.code,
+                        description: sku.name,
+                        variant: sku.size_label,
+                      });
+                      return (
+                        <>
+                          <div className="text-[12.5px] font-bold text-ink">{primary}</div>
+                          {secondary && (
+                            <div className="font-money text-[10.5px] text-ink-muted">
+                              {secondary}
+                            </div>
+                          )}
+                        </>
+                      );
+                    })()}
                   </button>
                   <button
                     type="button"

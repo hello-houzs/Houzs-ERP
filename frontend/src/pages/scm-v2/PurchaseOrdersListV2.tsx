@@ -8,6 +8,7 @@
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { lineIdentity } from "@2990s/shared";
 import {
   Plus,
   ChevronDown,
@@ -402,15 +403,22 @@ function DetailDrawer({
                     key={l.id}
                     className="grid grid-cols-[1fr_52px_92px] items-center gap-2 border-b border-border-subtle px-4 py-3 last:border-b-0"
                   >
+                    {/* Description ONCE, code NOT displayed — the shared rule
+                        (vendor/shared/line-identity.ts). Same judgement as
+                        PurchaseOrderDetailV2: purchase vocabulary, swept because
+                        the SHAPE is identical to the four reports (bold
+                        description the operator reads, muted code echoing it
+                        beneath). This row had the sharpest version of it — with
+                        no description AND no material_name the two lines both
+                        printed material_code, the same string twice. The code
+                        still BINDS as this row's key and search value. */}
                     <div>
                       <div className="text-[13px] font-semibold text-ink">
-                        {l.description || l.material_name || l.material_code}
+                        {lineIdentity({
+                          code: l.material_code,
+                          description: l.description || l.material_name,
+                        }).primary}
                       </div>
-                      {l.material_code && (
-                        <div className="mt-0.5 font-mono text-[11px] text-ink-muted">
-                          {l.material_code}
-                        </div>
-                      )}
                     </div>
                     <span className="text-right font-money text-[12.5px] text-ink-secondary">
                       {l.qty}

@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { canViewScmCosting } from "../auth/salesAccess";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { lineIdentity } from "@2990s/shared";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
@@ -253,9 +254,13 @@ const DOC_MODULES: Record<string, DocMap> = {
       ["Cost", money(h.total_cost_centi), "#a16a2e"],
       ["Margin", money(h.total_margin_centi), "#2f8a5b"],
     ],
+    /* Description ONCE, code NOT displayed — the shared rule
+       (vendor/shared/line-identity.ts). `name` already preferred the
+       description; the code was then repeated on `sub`, which is the reported
+       shape. WAREHOUSE and DELIVERY DATE are NOT duplicates and stay on `sub`. */
     line: (it) => ({
-      name: firstOf(it.description, it.item_code),
-      sub: join(it.item_code, it.warehouse_code, dmy(it.line_delivery_date) !== "—" ? dmy(it.line_delivery_date) : ""),
+      name: lineIdentity({ code: it.item_code, description: it.description }).primary,
+      sub: join(it.warehouse_code, dmy(it.line_delivery_date) !== "—" ? dmy(it.line_delivery_date) : ""),
       qty: it.qty,
       unitCenti: it.unit_price_centi,
       amountCenti: it.line_total_centi,
@@ -287,13 +292,27 @@ const DOC_MODULES: Record<string, DocMap> = {
         ["Balance", money(bal), bal > 0 ? "#a16a2e" : "var(--ink)"],
       ];
     },
-    line: (it) => ({
-      name: firstOf(it.description, it.item_code),
-      sub: join(it.item_code, it.description2),
-      qty: it.qty,
-      unitCenti: it.unit_price_centi,
-      amountCenti: it.line_total_centi,
-    }),
+    /* Description ONCE, code NOT displayed, variant KEPT — the shared rule
+       (vendor/shared/line-identity.ts). This adapter is the one place in the
+       mobile set where the code and the VARIANT shared a line
+       (`join(it.item_code, it.description2)`), so dropping `sub` wholesale would
+       have deleted the variant — the row's only display of fabric / divan / leg
+       / seat — rather than a duplicate. The helper splits them: code out,
+       description2 stays. */
+    line: (it) => {
+      const { primary, secondary } = lineIdentity({
+        code: it.item_code,
+        description: it.description,
+        variant: it.description2,
+      });
+      return {
+        name: primary,
+        sub: secondary ?? "",
+        qty: it.qty,
+        unitCenti: it.unit_price_centi,
+        amountCenti: it.line_total_centi,
+      };
+    },
   },
 
   grns: {
