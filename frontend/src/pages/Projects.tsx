@@ -306,6 +306,7 @@ interface TaskAttachment {
   uploaded_by: number | null;
   uploader_name: string | null;
   uploaded_at: string;
+  caption: string | null;
 }
 
 type PaymentStatus =
@@ -5723,6 +5724,24 @@ function TaskAttachmentRow({
   const isImage = (attachment.content_type ?? "").startsWith("image/");
   const [thumbUrl, setThumbUrl] = useState<string | null>(null);
   const [previewing, setPreviewing] = useState(false);
+  // Per-photo remark (owner 2026-07-16): each attachment carries its own caption.
+  const [caption, setCaption] = useState(attachment.caption ?? "");
+  const [lastSavedCaption, setLastSavedCaption] = useState(attachment.caption ?? "");
+  const [savingCaption, setSavingCaption] = useState(false);
+
+  async function saveCaption() {
+    const v = caption.trim();
+    if (v === lastSavedCaption.trim()) return;
+    setSavingCaption(true);
+    try {
+      await api.patch(`/api/projects/checklist/attachments/${attachment.id}`, { caption: v });
+      setLastSavedCaption(v);
+    } catch (e: any) {
+      toast?.error(e?.message || "Failed to save remark");
+    } finally {
+      setSavingCaption(false);
+    }
+  }
 
   useEffect(() => {
     if (!isImage) return;
@@ -5820,6 +5839,24 @@ function TaskAttachmentRow({
             </button>
           )}
         </div>
+        {canManage ? (
+          <input
+            value={caption}
+            onChange={(e) => setCaption(e.target.value)}
+            onBlur={() => void saveCaption()}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); (e.target as HTMLInputElement).blur(); } }}
+            onClick={(e) => e.stopPropagation()}
+            disabled={savingCaption}
+            placeholder="Add a remark for this photo…"
+            className="mt-1.5 w-full rounded-md border border-border bg-surface px-2 py-1 text-[10.5px] outline-none focus:border-primary disabled:opacity-60"
+          />
+        ) : (
+          caption.trim() && (
+            <div className="mt-1.5 text-[10.5px] text-ink-secondary">
+              <span className="font-semibold text-ink-muted">Remark:</span> {caption}
+            </div>
+          )
+        )}
       </div>
       {previewing && (
         <MediaLightbox

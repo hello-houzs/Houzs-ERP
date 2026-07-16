@@ -542,6 +542,9 @@ export const project_checklist_attachments = pgTable(
     uploaded_by: integer("uploaded_by"),
     uploaded_at: text("uploaded_at").default(nowText),
     archived_at: text("archived_at"),
+    // Per-attachment remark (owner 2026-07-16): each uploaded photo can carry
+    // its own caption, editable from the Defect List / photo checklist rows.
+    caption: text("caption"),
   },
 );
 

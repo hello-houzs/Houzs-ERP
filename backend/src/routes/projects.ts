@@ -2991,6 +2991,47 @@ app.delete(
   }
 );
 
+// Per-attachment remark (owner 2026-07-16): each uploaded photo carries its own
+// caption, edited inline from the Defect List / photo checklist rows. Same
+// permission gate as delete — tick-only users may only edit files on tasks
+// badged for their role.
+app.patch(
+  "/checklist/attachments/:attId",
+  requireAnyPermission(["projects.write", "projects.checklist.tick"]),
+  async (c) => {
+    const attId = parseInt(c.req.param("attId"), 10);
+    if (isNaN(attId)) return c.json({ error: "Invalid ID" }, 400);
+    const user = c.get("user");
+    const granted = user?.permissions_set ?? user?.permissions;
+    const body = await c.req.json<{ caption?: string | null }>();
+    const row = await c.env.DB.prepare(
+      `SELECT pc.role_label
+         FROM project_checklist_attachments a
+         JOIN project_checklist pc ON pc.id = a.item_id
+        WHERE a.id = ?`
+    )
+      .bind(attId)
+      .first<{ role_label: string | null }>();
+    if (!row) return c.json({ error: "Not found" }, 404);
+    if (!hasPermission(granted, "projects.write")) {
+      if (!roleLabelAdmits(row.role_label, user?.role_name)) {
+        return c.json(
+          { error: "You can only edit files on tasks assigned to your role" },
+          403,
+        );
+      }
+    }
+    const caption =
+      typeof body.caption === "string" ? body.caption.slice(0, 2000) : null;
+    await c.env.DB.prepare(
+      `UPDATE project_checklist_attachments SET caption = ? WHERE id = ?`
+    )
+      .bind(caption, attId)
+      .run();
+    return c.json({ ok: true });
+  }
+);
+
 // ── Template sections + requires_review (mig 050) ───────────
 // Used by the Project Maintenance template editor (Phase B in the
 // frontend rollout). The clone-on-create path in

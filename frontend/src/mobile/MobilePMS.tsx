@@ -91,6 +91,7 @@ type TaskAttachment = {
   uploader_name?: string | null;
   uploaded_at?: string | null;
   archived_at?: string | null;
+  caption?: string | null;
 };
 
 type TasklistSection = {
@@ -1359,6 +1360,47 @@ function TasklistSectionView({
   );
 }
 
+// Per-photo remark (owner 2026-07-16): each attachment carries its own caption,
+// edited inline under its file chip and saved via PATCH /checklist/attachments/:id.
+// Owns its state so a parent re-render doesn't clobber an in-progress edit.
+function AttachRemark({ att, canEdit }: { att: TaskAttachment; canEdit: boolean }) {
+  const [cap, setCap] = useState(att.caption ?? "");
+  const [saved, setSaved] = useState(att.caption ?? "");
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    const v = cap.trim();
+    if (v === saved.trim()) return;
+    setSaving(true);
+    try {
+      await api.patch(`/api/projects/checklist/attachments/${att.id}`, { caption: v });
+      setSaved(v);
+    } catch {
+      /* keep the text so the user can retry on next blur */
+    } finally {
+      setSaving(false);
+    }
+  };
+  if (!canEdit) {
+    return cap.trim() ? (
+      <div style={{ fontSize: 11.5, color: "#6b6f63", paddingLeft: 2 }}>
+        <b style={{ color: "#8c968a" }}>Remark:</b> {cap}
+      </div>
+    ) : null;
+  }
+  return (
+    <input
+      className="fld-i"
+      value={cap}
+      disabled={saving}
+      onChange={(e) => setCap(e.target.value)}
+      onBlur={() => void save()}
+      onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+      placeholder="Add remark…"
+      style={{ fontSize: 12, padding: "5px 8px" }}
+    />
+  );
+}
+
 // One checklist row. Tick cycles status (POST /checklist/:id/status); the
 // paperclip uploads a per-task attachment (PUT /checklist/:id/attachments) and
 // the "…" opens remark / approval. Payment-pill rows (mig 090) render N/A /
@@ -1495,37 +1537,40 @@ function TaskRow({
 
   // Tappable file chips + fullscreen viewer, shared by both row variants.
   const fileChips = files.length > 0 && (
-    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, padding: "0 0 8px 24px" }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 9, padding: "0 0 8px 24px" }}>
       {files.map((a, i) => (
-        <span key={a.id} style={{ display: "inline-flex", alignItems: "stretch", maxWidth: 210 }}>
-          <button
-            type="button"
-            className="tinybtn"
-            style={{ display: "inline-flex", alignItems: "center", gap: 5, minWidth: 0, maxWidth: 190, ...(canAttach ? { borderTopRightRadius: 0, borderBottomRightRadius: 0, borderRight: "none" } : null) }}
-            onClick={() => setViewIdx(i)}
-            title={a.file_name ?? undefined}
-          >
-            {(a.mime_type || "").startsWith("image/") ? (
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flex: "none" }}><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="9" cy="9" r="2" /><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21" /></svg>
-            ) : (
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flex: "none" }}><path d="M13.2 6.5 7 12.7a4.4 4.4 0 1 0 6.2 6.2l6.5-6.5a2.9 2.9 0 1 0-4.1-4.1l-6.5 6.5a1.5 1.5 0 1 0 2.1 2.1l6.1-6.2" /></svg>
-            )}
-            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.file_name || "File"}</span>
-          </button>
-          {canAttach && (
+        <div key={a.id} style={{ display: "flex", flexDirection: "column", gap: 4, maxWidth: 340 }}>
+          <span style={{ display: "inline-flex", alignItems: "stretch", maxWidth: 210 }}>
             <button
               type="button"
               className="tinybtn"
-              disabled={busy}
-              style={{ flex: "none", padding: "0 7px", borderTopLeftRadius: 0, borderBottomLeftRadius: 0, color: "#a13a34", display: "inline-flex", alignItems: "center" }}
-              onClick={() => void removeAttachment(a.id, a.file_name)}
-              title="Remove file"
-              aria-label="Remove file"
+              style={{ display: "inline-flex", alignItems: "center", gap: 5, minWidth: 0, maxWidth: 190, ...(canAttach ? { borderTopRightRadius: 0, borderBottomRightRadius: 0, borderRight: "none" } : null) }}
+              onClick={() => setViewIdx(i)}
+              title={a.file_name ?? undefined}
             >
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18M6 6l12 12" /></svg>
+              {(a.mime_type || "").startsWith("image/") ? (
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flex: "none" }}><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="9" cy="9" r="2" /><path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21" /></svg>
+              ) : (
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flex: "none" }}><path d="M13.2 6.5 7 12.7a4.4 4.4 0 1 0 6.2 6.2l6.5-6.5a2.9 2.9 0 1 0-4.1-4.1l-6.5 6.5a1.5 1.5 0 1 0 2.1 2.1l6.1-6.2" /></svg>
+              )}
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.file_name || "File"}</span>
             </button>
-          )}
-        </span>
+            {canAttach && (
+              <button
+                type="button"
+                className="tinybtn"
+                disabled={busy}
+                style={{ flex: "none", padding: "0 7px", borderTopLeftRadius: 0, borderBottomLeftRadius: 0, color: "#a13a34", display: "inline-flex", alignItems: "center" }}
+                onClick={() => void removeAttachment(a.id, a.file_name)}
+                title="Remove file"
+                aria-label="Remove file"
+              >
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18M6 6l12 12" /></svg>
+              </button>
+            )}
+          </span>
+          <AttachRemark att={a} canEdit={canAttach} />
+        </div>
       ))}
     </div>
   );
