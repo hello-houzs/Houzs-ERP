@@ -36,7 +36,12 @@ import {
 } from './mfg-pricing-recompute';
 import { recordSoAudit } from './so-audit';
 import { deriveMfgPoUnitCost } from './po-pricing';
-import { rederiveDeliveryFee } from '../routes/mfg-sales-orders';
+import {
+  rederiveDeliveryFee,
+  deriveCountryFromState,
+  deriveSalesLocationFromState,
+  deriveWarehouseIdFromState,
+} from '../routes/mfg-sales-orders';
 import { activeCompanyId } from './companyScope';
 
 /* The Supabase client threaded through the routes is loosely typed (`any` in
@@ -48,6 +53,22 @@ type AmendmentRow = {
   id: string;
   so_doc_no: string;
   status: string;
+  /* mig 0119 — the HEADER half of the request: { camelCaseKey: newValue|null }
+     for the frozen columns only. NULL on a line-only amendment. */
+  header_changes?: Record<string, string | null> | null;
+};
+
+/* The frozen header columns an amendment may carry, keyed by the camelCase
+   payload name -> column. MIRRORS AMENDABLE_HEADER_FIELDS in
+   routes/mfg-sales-orders.ts (the create-time trust boundary that already
+   rejected any unlisted key). Re-checked here so a row written before/outside
+   that validation can never write an arbitrary column on approve — this is the
+   LAST gate before the value lands on the SO. */
+const AMENDABLE_HEADER_FIELDS: Record<string, string> = {
+  internalExpectedDd:   'internal_expected_dd',
+  customerDeliveryDate: 'customer_delivery_date',
+  customerState:        'customer_state',
+  postcode:             'postcode',
 };
 
 type AmendmentLineRow = {
@@ -142,7 +163,7 @@ export async function applySoAmendment(
   // (1) Load amendment + lines + SO header.
   const { data: amdRow, error: amdErr } = await sb
     .from('so_amendments')
-    .select('id, so_doc_no, status')
+    .select('id, so_doc_no, status, header_changes')
     .eq('id', amendmentId)
     .maybeSingle();
   if (amdErr) throw new Error(`applySoAmendment: amendment load failed: ${amdErr.message}`);
@@ -310,6 +331,102 @@ export async function applySoAmendment(
     touched.push({ change, itemCode, qty });
   }
 
+  /* (4b) Apply the HEADER half of the amendment (mig 0119, Owner 2026-07-16).
+     These are the columns the processing lock FREEZES, so the direct header
+     PATCH refuses them once the SO is locked — approving the amendment is the
+     only way they ever change, and this is where that happens.
+
+     Runs BEFORE rederiveDeliveryFee below because the delivery fee is computed
+     from the SO's state/location: a state change must be on the row before the
+     fee is re-derived, or the SO would keep a fee priced for the old state.
+
+     Every key is re-checked against AMENDABLE_HEADER_FIELDS — the create route
+     already rejects an unlisted key, this is defence in depth on the last step
+     before the write. */
+  const headerChanges = amendment.header_changes ?? null;
+  const headerApplied: string[] = [];
+  if (headerChanges && Object.keys(headerChanges).length > 0) {
+    const headerUpdates: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(headerChanges)) {
+      // hasOwnProperty, NOT `in` / a bare lookup — a stored key of "constructor"
+      // would otherwise resolve to an inherited value and write a garbage column.
+      if (!Object.prototype.hasOwnProperty.call(AMENDABLE_HEADER_FIELDS, key)) continue;
+      const col = AMENDABLE_HEADER_FIELDS[key];
+      headerUpdates[col] = value === '' ? null : value;
+      headerApplied.push(`${col}=${value ?? 'cleared'}`);
+    }
+
+    /* State cascade — mirrors the header PATCH (mfg-sales-orders.ts) exactly:
+       customer_country + sales_location follow the new State. Reuses the SAME
+       exported derive helpers rather than re-deriving, so the mapping can't
+       drift between the two write paths. */
+    if ('customerState' in headerChanges) {
+      const newState = headerChanges['customerState'] ?? null;
+      headerUpdates['customer_country'] = await deriveCountryFromState(sb, newState);
+      /* `c` is optional on this function's signature (it threads the active
+         company into the scoped reads) — the only caller, the approve-so route,
+         always passes it, but deriveSalesLocationFromState dereferences it, so
+         guard rather than throw mid-apply. */
+      if (c) {
+        const derivedLocation = await deriveSalesLocationFromState(sb, newState, c);
+        if (derivedLocation) headerUpdates['sales_location'] = derivedLocation;
+      }
+    }
+
+    if (Object.keys(headerUpdates).length > 0) {
+      const { error: hUpdErr } = await sb
+        .from('mfg_sales_orders')
+        .update(headerUpdates)
+        .eq('doc_no', docNo);
+      if (hUpdErr) throw new Error(`applySoAmendment: header change apply failed: ${hUpdErr.message}`);
+    }
+
+    /* Delivery-date master-follower cascade — mirrors the header PATCH: when the
+       header's customer_delivery_date moves, EVERY line takes the new date and
+       its per-line override flag clears, so MRP's order-by derivation (which
+       reads line_delivery_date) stays accurate. Without this an approved date
+       amendment would move the header but leave every line on the old date. */
+    if ('customerDeliveryDate' in headerChanges) {
+      const { error: cascErr } = await sb.from('mfg_sales_order_items')
+        .update({
+          line_delivery_date: headerChanges['customerDeliveryDate'] ?? null,
+          line_delivery_date_overridden: false,
+        })
+        .eq('doc_no', docNo);
+      if (cascErr) {
+        // eslint-disable-next-line no-console
+        console.error('[so-amendment] delivery-date line cascade failed (non-fatal):', cascErr.message);
+      }
+    }
+
+    /* State -> per-line warehouse rebind. The State is frozen by the lock
+       PRECISELY because it drives each line's warehouse_id and that warehouse is
+       what the PO ships from (Owner 2026-06-16) — so an APPROVED state change
+       must move the lines too, otherwise approving it would produce the exact
+       warehouse/PO desync the lock exists to prevent. The bound PO is then
+       re-derived from these lines at the approve-po gate.
+
+       NOTE this is deliberately BROADER than the header PATCH's rebind, which
+       only backfills lines whose warehouse_id is NULL (it must not clobber a
+       per-line override during a routine edit). Here the change has passed a
+       supplier confirmation + an explicit approval, so every non-cancelled line
+       follows the approved address. FLAGGED in BUG-HISTORY for owner review. */
+    if ('customerState' in headerChanges && c) {
+      const reboundWh = await deriveWarehouseIdFromState(sb, headerChanges['customerState'] ?? null, c);
+      if (reboundWh) {
+        const { error: whErr } = await sb
+          .from('mfg_sales_order_items')
+          .update({ warehouse_id: reboundWh })
+          .eq('doc_no', docNo)
+          .eq('cancelled', false);
+        if (whErr) {
+          // eslint-disable-next-line no-console
+          console.error('[so-amendment] warehouse rebind failed (non-fatal):', whErr.message);
+        }
+      }
+    }
+  }
+
   /* (4-continued) Re-derive the delivery fee (rebuilds SVC-DELIVERY* lines on
      the authoritative computeSoDeliveryFee) AND fold header totals — the same
      helper the create + add-line paths call after a line change; it internally
@@ -337,8 +454,12 @@ export async function applySoAmendment(
       { field: 'amendment_id', to: amendmentId },
       { field: 'revision', from: nextRevision - 1, to: nextRevision },
       { field: 'lines_applied', to: touched.length },
+      ...(headerApplied.length > 0 ? [{ field: 'header_applied', to: headerApplied.join(', ') }] : []),
     ],
-    note: `Amendment applied: ${touched.map((t) => `${t.change} ${t.itemCode}`).join('; ') || 'no line diffs'}`,
+    note: `Amendment applied: ${[
+      touched.map((t) => `${t.change} ${t.itemCode}`).join('; ') || null,
+      headerApplied.length > 0 ? `header ${headerApplied.join(', ')}` : null,
+    ].filter(Boolean).join('; ') || 'no diffs'}`,
   });
 
   return { soDocNo: docNo, revision: nextRevision };
