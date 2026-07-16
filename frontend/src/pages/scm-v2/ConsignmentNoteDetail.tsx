@@ -114,9 +114,16 @@ type CnItem = {
   unit_price_centi: number;
   discount_centi: number;
   line_total_centi: number;
-  unit_cost_centi: number;
-  line_cost_centi: number;
-  line_margin_centi: number;
+  /* FINANCE-gated (CN_ITEM_FINANCE_KEYS server-side) — OMITTED from the detail
+     payload for a non-finance caller (canViewScmFinance), hence optional. This
+     page renders no cost/margin, so there is nothing to cut here. NOTE:
+     draftFromItem below collapses a missing unit_cost_centi to 0 and the save
+     echoes it back — the route's line PATCH therefore IGNORES a client cost
+     from a non-finance caller and keeps the stored one, which is what stops the
+     strip from wiping the line's cost basis (#632; see consignment-notes.ts). */
+  unit_cost_centi?: number;
+  line_cost_centi?: number;
+  line_margin_centi?: number;
   variants: Record<string, unknown> | null;
   remark: string | null;
 };

@@ -25,7 +25,7 @@ import {
 import { supabaseAuth } from '../middleware/auth';
 import { escapeForOr } from '../lib/postgrest-search';
 import { resolveSalesScopeIds, salesDocOutOfScope, resolveCallerStaffId } from '../lib/salesScope';
-import { canViewAllSales } from '../lib/houzs-perms';
+import { canViewAllSales, canViewScmFinance } from '../lib/houzs-perms';
 import { todayMyt } from '../lib/my-time';
 import { recordSoAudit, diffFields, type FieldChange } from '../lib/so-audit';
 import { signSoItemPhotoUrl, soItemPhotoBindings } from '../lib/r2';
@@ -141,6 +141,47 @@ const ITEM =
   'line_delivery_date, line_delivery_date_overridden, ' +
   'photo_urls, ' +
   'created_at';
+
+/* FINANCE-GATED header keys — cost / margin / per-category revenue+cost
+   subtotals + deposit. All are in HEADER (so they travel in the CO list AND
+   detail payloads) but must reach ONLY a finance-viewer
+   (lib/houzs-perms.canViewScmFinance). Mirrors SO_FINANCE_KEYS — the CO is a
+   /mfg-sales-orders clone — minus service_centi / service_cost_centi, which the
+   consignment header does not carry. Order money everyone is meant to see
+   (local_total_centi / balance_centi / paid_centi / total_revenue_centi) is
+   deliberately NOT listed here — the same line #625 (SO) and #632 (DR) drew.
+
+   Consignment got the SCOPE fix (#417 — salesDocOutOfScope on every detail /
+   sub-read) but never the FINANCE fix: canViewScmFinance appeared ZERO times in
+   this file, so it declared no finance keys at all while HEADER + ITEM selected
+   cost and margin for every caller. Same class as the DO/SI detail leak (#600),
+   the SO detail leak (#625) and the DR detail leak (#632). */
+const CO_FINANCE_KEYS = [
+  'mattress_sofa_centi', 'bedframe_centi', 'accessories_centi', 'others_centi',
+  'mattress_sofa_cost_centi', 'bedframe_cost_centi', 'accessories_cost_centi', 'others_cost_centi',
+  'total_cost_centi', 'total_margin_centi', 'margin_pct_basis', 'deposit_centi',
+] as const;
+
+/* Per-LINE cost/margin (ITEM carries unit_cost_centi / line_cost_centi /
+   line_margin_centi). canViewScmFinance fails closed. */
+const CO_ITEM_FINANCE_KEYS = ['unit_cost_centi', 'line_cost_centi', 'line_margin_centi'] as const;
+
+/** Strip header + line cost/margin in place for a non-finance caller. */
+function gateCoFinance(
+  c: Parameters<typeof canViewScmFinance>[0],
+  salesOrder: unknown,
+  items: unknown,
+): void {
+  if (canViewScmFinance(c)) return;
+  for (const h of (Array.isArray(salesOrder) ? salesOrder : [salesOrder]) as Array<unknown>) {
+    if (h && typeof h === 'object') {
+      for (const k of CO_FINANCE_KEYS) delete (h as Record<string, unknown>)[k];
+    }
+  }
+  for (const it of (Array.isArray(items) ? items : items ? [items] : []) as Array<Record<string, unknown>>) {
+    for (const k of CO_ITEM_FINANCE_KEYS) delete it[k];
+  }
+}
 
 /* ── Country auto-derive — look up my_localities for the state's country.
    Falls back to 'Malaysia' for any non-empty-but-unmatched state (2990 is
@@ -422,6 +463,12 @@ consignmentOrders.get('/', async (c) => {
     }
   }
 
+  /* Strip the header finance keys for a non-finance caller (list half). The
+     `aggregates` block is Revenue / Outstanding / Paid only — no cost or margin
+     — so it needs no gate (unlike the Consignment Note / Return lists, whose
+     aggregates DO carry cost + margin). */
+  gateCoFinance(c, rows, null);
+
   if (paginate) return c.json({ salesOrders: rows, total: count ?? rows.length, page, pageSize, aggregates });
   return c.json({ salesOrders: rows });
 });
@@ -559,6 +606,7 @@ consignmentOrders.get('/:docNo', async (c) => {
   const itemRows = (i.data ?? []) as unknown as Array<Record<string, unknown> & { id: string }>;
   const deliveriesMap = await coLineDeliveries(sb, itemRows.map((it) => it.id));
   const items = itemRows.map((it) => ({ ...it, deliveries: deliveriesMap.get(it.id) ?? [] }));
+  gateCoFinance(c, salesOrder, items);
   return c.json({ salesOrder, items });
 });
 
@@ -1014,7 +1062,27 @@ consignmentOrders.get('/:docNo/audit-log', async (c) => {
     .eq('so_doc_no', docNo)
     .order('created_at', { ascending: false });
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
-  return c.json({ entries: data ?? [] });
+  /* The audit HISTORY is a finance read too — the line PATCH records
+     `cmp('unitCostCenti', prev.unit_cost_centi, unitCost)`, so field_changes
+     carries the old AND new unit cost in plain sight. Stripping the detail
+     while leaving the history would just move the leak one endpoint over (this
+     is the "one path gets missed" shape #600 / #625 / #632 each repeated).
+     Drop the finance field_changes entries for a non-finance caller and keep
+     the entry itself — who changed what, when, is not finance data. Note the
+     camelCase escape hatch: field_changes is keyed by the API's camelCase field
+     names, so it never matched the snake_case strip lists. */
+  const entries = (data ?? []) as Array<Record<string, unknown>>;
+  if (!canViewScmFinance(c)) {
+    const AUDIT_FINANCE_FIELDS = new Set(['unitCostCenti', 'lineCostCenti', 'lineMarginCenti', 'depositCenti']);
+    for (const e of entries) {
+      const fc = e.field_changes;
+      if (!Array.isArray(fc)) continue;
+      e.field_changes = (fc as Array<{ field?: string }>).filter(
+        (ch) => !AUDIT_FINANCE_FIELDS.has(String(ch?.field ?? '')),
+      );
+    }
+  }
+  return c.json({ entries });
 });
 
 // POST — override the price on a single line item.
@@ -1115,9 +1183,19 @@ consignmentOrders.patch('/:docNo', async (c) => {
     ['paidCenti', 'paid_centi'],
   ];
   const PHONE_FIELDS = new Set(['phone', 'emergencyContactPhone']);
+  /* A caller who cannot READ deposit must not WRITE it. gateCoFinance now strips
+     deposit_centi from the detail payload, and this map accepts ANY defined
+     value — so a client that seeded its header draft off that payload would
+     round-trip the stripped field as a genuine 0 and wipe the deposit (the #632
+     trap, which bit the DR line PATCH for real). No Houzs caller sends
+     depositCenti on PATCH today — ConsignmentOrderDetail never renders or echoes
+     it — so this is defence-in-depth that keeps the strip safe by construction
+     rather than by the frontend's current shape. A finance caller is unaffected. */
+  const canFinance = canViewScmFinance(c);
   const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
   for (const [from, to] of map) {
     if (body[from] === undefined) continue;
+    if (from === 'depositCenti' && !canFinance) continue;
     if (PHONE_FIELDS.has(from) && typeof body[from] === 'string') {
       const raw = body[from] as string;
       updates[to] = normalizePhone(raw) ?? raw;
@@ -1493,6 +1571,10 @@ consignmentOrders.post('/:docNo/items', async (c) => {
   };
   const { data, error } = await sb.from('consignment_sales_order_items').insert({ company_id: activeCompanyId(c), ...row }).select('*').single();
   if (error) return c.json({ error: 'insert_failed', reason: error.message }, 500);
+  /* select('*') echoes the stored line back verbatim — cost/margin included. A
+     non-finance caller must not read it off the create response either (this is
+     the "fourth path" this class of bug keeps hiding in). */
+  gateCoFinance(c, null, data);
   await recomputeTotals(sb, docNo);
 
   await recordSoAudit(sb, {
@@ -1603,6 +1685,15 @@ consignmentOrders.patch('/:docNo/items/:itemId', async (c) => {
      saves silently (no POS path). */
   const unit = recomputedPatch ? recomputedPatch.unit_price_sen : clientUnit;
   let unitCost: number;
+  /* DO NOT relax this to `it.unitCostCenti !== undefined ? … : prev` — the
+     `explicitCost > 0` precedence below is load-bearing SECURITY, not style.
+     gateCoFinance strips unit_cost_centi from the detail payload, and
+     ConsignmentOrderDetail seeds each line draft off it (`unit_cost_centi ?? 0`)
+     and posts the value back here on save; the `> 0` test makes that stripped
+     0 fall through to the recompute / stored cost instead of wiping the line's
+     cost basis. The Consignment Note + Return line PATCHes took ANY defined
+     value and had to be guarded explicitly (#632's DR trap). Same reason
+     gateSoFinance was safe on the SO (#625). */
   const explicitCost = it.unitCostCenti !== undefined ? Number(it.unitCostCenti) : 0;
   const itemCodeChanged = it.itemCode !== undefined && it.itemCode !== prev.item_code;
   if (explicitCost > 0) {

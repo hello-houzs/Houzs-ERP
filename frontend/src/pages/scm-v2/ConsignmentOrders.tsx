@@ -47,6 +47,7 @@ import { generateSalesOrderPdf } from '../../vendor/scm/lib/sales-order-pdf';
 import { authedFetch } from '../../vendor/scm/lib/authed-fetch';
 import { BrandingPill, badgeFor } from '../../vendor/scm/lib/category-badges';
 import { soStatusDisplay, type DeliveryState, type SoLifecycle } from '../../vendor/scm/lib/so-status';
+import { useAuth } from '../../auth/AuthContext';
 import styles from './MfgSalesOrdersList.module.css';
 import soDetailStyles from './SalesOrderDetail.module.css';
 
@@ -139,13 +140,18 @@ type SoRow = {
   balance_centi_live?: number | null;
   paid_total_centi?: number | null;
   paid_centi: number;
-  deposit_centi: number | null;
+  /* FINANCE-gated (in CO_FINANCE_KEYS server-side, mirroring the SO list where
+     #574 ruled Deposit a finance column) — OMITTED for a non-finance caller,
+     hence optional. Only the canFinance-gated Deposit column reads it. */
+  deposit_centi?: number | null;
   status: string;
   currency: string;
   /* Task #114 — Per-category REVENUE + COST + overall cost/margin from the
      SO header. All four cost columns added in migration 0079; pre-existing
      rows backfill on next item mutation (recomputeTotals). Optional on the
-     row type so the list still renders if the API hasn't been redeployed. */
+     row type so the list still renders if the API hasn't been redeployed —
+     AND because the server now strips them for a non-finance caller
+     (CO_FINANCE_KEYS / canViewScmFinance). */
   mattress_sofa_centi?: number;
   bedframe_centi?: number;
   accessories_centi?: number;
@@ -413,8 +419,15 @@ const stockLabelOf = (it: SoItem): string => {
 
    The delivery column is labelled "Status" — Wei Siang 2026-05-31: "delivered
    就是 status 的意思", so the header reads "Status" while the cell shows which
-   DO took how much + the live balance (which IS the delivery status). */
-const buildDrilldownColumns = (paymentRefs: string): DataGridColumn<SoItem>[] => [
+   DO took how much + the live balance (which IS the delivery status).
+
+   canFinance — the finance-viewer gate (auth/me = isFinanceViewer, the same
+   signal the SO/DO/SI/DR surfaces use, #574/#589). The cost/margin columns are
+   only DECLARED for a finance-viewer: off, not hidden — no column, no "—", no
+   RM 0.00. The backend also omits the keys from the payload
+   (canViewScmFinance), so rendering them for a non-finance user could only ever
+   print zeros. */
+const buildDrilldownColumns = (paymentRefs: string, canFinance: boolean): DataGridColumn<SoItem>[] => [
   {
     key: 'group', label: 'Group', width: 90, groupable: true,
     accessor: (it) => <CategoryPill group={it.item_group} />,
@@ -497,28 +510,32 @@ const buildDrilldownColumns = (paymentRefs: string): DataGridColumn<SoItem>[] =>
     searchValue: (it) => String(it.total_centi ?? 0),
     sortFn: (a, b) => Number(a.total_centi ?? 0) - Number(b.total_centi ?? 0),
   },
-  {
-    key: 'unit_cost', label: 'Unit Cost', width: 100, align: 'right',
-    accessor: (it) => fmtRm(Number(it.unit_cost_centi ?? 0)),
-    searchValue: (it) => String(it.unit_cost_centi ?? 0),
-    sortFn: (a, b) => Number(a.unit_cost_centi ?? 0) - Number(b.unit_cost_centi ?? 0),
-  },
-  {
-    key: 'line_cost', label: 'Line Cost', width: 100, align: 'right',
-    accessor: (it) => fmtRm(lineCostOf(it)),
-    searchValue: (it) => String(lineCostOf(it)),
-    sortFn: (a, b) => lineCostOf(a) - lineCostOf(b),
-  },
-  {
-    key: 'margin', label: 'Margin', width: 100, align: 'right',
-    accessor: (it) => {
-      const m = lineMarginOf(it);
-      const c = m > 0 ? 'var(--c-secondary-a, #2F5D4F)' : m < 0 ? 'var(--c-festive-b, #B8331F)' : 'var(--fg-muted)';
-      return <span style={{ color: c, fontWeight: 600 }}>{fmtRm(m)}</span>;
-    },
-    searchValue: (it) => String(lineMarginOf(it)),
-    sortFn: (a, b) => lineMarginOf(a) - lineMarginOf(b),
-  },
+  ...(canFinance
+    ? ([
+        {
+          key: 'unit_cost', label: 'Unit Cost', width: 100, align: 'right',
+          accessor: (it) => fmtRm(Number(it.unit_cost_centi ?? 0)),
+          searchValue: (it) => String(it.unit_cost_centi ?? 0),
+          sortFn: (a, b) => Number(a.unit_cost_centi ?? 0) - Number(b.unit_cost_centi ?? 0),
+        },
+        {
+          key: 'line_cost', label: 'Line Cost', width: 100, align: 'right',
+          accessor: (it) => fmtRm(lineCostOf(it)),
+          searchValue: (it) => String(lineCostOf(it)),
+          sortFn: (a, b) => lineCostOf(a) - lineCostOf(b),
+        },
+        {
+          key: 'margin', label: 'Margin', width: 100, align: 'right',
+          accessor: (it) => {
+            const m = lineMarginOf(it);
+            const c = m > 0 ? 'var(--c-secondary-a, #2F5D4F)' : m < 0 ? 'var(--c-festive-b, #B8331F)' : 'var(--fg-muted)';
+            return <span style={{ color: c, fontWeight: 600 }}>{fmtRm(m)}</span>;
+          },
+          searchValue: (it) => String(lineMarginOf(it)),
+          sortFn: (a, b) => lineMarginOf(a) - lineMarginOf(b),
+        },
+      ] as DataGridColumn<SoItem>[])
+    : []),
   {
     key: 'stock', label: 'Stock', width: 100, groupable: true,
     accessor: (it) => {
@@ -560,7 +577,7 @@ const buildDrilldownColumns = (paymentRefs: string): DataGridColumn<SoItem>[] =>
   },
 ];
 
-const ExpandedSoLines = ({ docNo }: { docNo: string }) => {
+const ExpandedSoLines = ({ docNo, canFinance }: { docNo: string; canFinance: boolean }) => {
   const q = useConsignmentOrderDetail(docNo);
   /* Parallel payments fetch — Houzs PAYMENT column shows
      `(approvalCode/customer_so_ref)` per receipt. Failure is non-fatal:
@@ -624,7 +641,7 @@ const ExpandedSoLines = ({ docNo }: { docNo: string }) => {
     ? 'var(--c-secondary-a, #2F5D4F)'
     : marginCenti < 0 ? 'var(--c-festive-b, #B8331F)' : 'var(--fg-muted)';
 
-  const columns = buildDrilldownColumns(paymentRefs);
+  const columns = buildDrilldownColumns(paymentRefs, canFinance);
 
   return (
     <div style={{
@@ -658,8 +675,8 @@ const ExpandedSoLines = ({ docNo }: { docNo: string }) => {
           letterSpacing: '0.06em', textTransform: 'uppercase',
         }}>Subtotal</span>
         <span>Total <strong style={{ color: 'var(--c-burnt)' }}>{fmtRm(totalCenti)}</strong></span>
-        <span>Line Cost <strong style={{ color: 'var(--c-ink)' }}>{fmtRm(costCenti)}</strong></span>
-        <span>Margin <strong style={{ color: marginColor }}>{fmtRm(marginCenti)}</strong></span>
+        {canFinance && <span>Line Cost <strong style={{ color: 'var(--c-ink)' }}>{fmtRm(costCenti)}</strong></span>}
+        {canFinance && <span>Margin <strong style={{ color: marginColor }}>{fmtRm(marginCenti)}</strong></span>}
       </div>
     </div>
   );
@@ -669,6 +686,10 @@ export const ConsignmentOrders = () => {
   const navigate = useNavigate();
   const askConfirm = useConfirm();
   const notify = useNotify();
+  /* Finance-viewer gate — same signal the SO/DO/SI/DR surfaces use
+     (auth/me = isFinanceViewer, #574 / #589). Consignment never got this gate. */
+  const { user } = useAuth();
+  const canFinance = !!user?.project_finance_viewer;
   const [searchParams, setSearchParams] = useSearchParams();
   /* Task #120 — Outstanding filter overlay. `?outstanding=1` narrows the list
      to rows with live balance > 0; now applied SERVER-SIDE (so it stays correct
@@ -762,7 +783,7 @@ export const ConsignmentOrders = () => {
     }
     return m;
   }, [staffQ.data]);
-  const COLUMNS = useMemo(() => buildColumns(staffById), [staffById]);
+  const COLUMNS = useMemo(() => buildColumns(staffById, canFinance), [staffById, canFinance]);
 
   const updateStatus = useUpdateConsignmentOrderStatus();
 
@@ -998,7 +1019,7 @@ export const ConsignmentOrders = () => {
         isLoading={isLoading}
         emptyMessage='No consignment orders yet — click "+ New Consignment Order" to start.'
         expandable={{
-          renderExpansion: (row) => <ExpandedSoLines docNo={row.doc_no} />,
+          renderExpansion: (row) => <ExpandedSoLines docNo={row.doc_no} canFinance={canFinance} />,
           rowExpansionKey: (row) => row.doc_no,
         }}
         contextMenu={(row) => {
@@ -1131,7 +1152,20 @@ const STORAGE_KEY = 'pr-g.so-list.layout.v1';
      12. Accessories subtotal  13. Mattress/Sofa Cost  14. Bedframe Cost
      15. Accessories Cost  16. Phone  17. Address 1  18. PO Doc No.
      19. (Account Sheet — not in our schema; omitted) */
-const buildColumns = (
+/* FINANCE column keys — the exact CO_FINANCE_KEYS the server strips for a
+   non-finance caller (consignment-orders.ts). Unlike the SO list's contiguous
+   finance block, these are interleaved with non-finance columns here, so
+   buildColumns filters by this set rather than spreading a conditional block —
+   same outcome: the column is never DECLARED, so the column chooser never lists
+   an always-empty finance column (off, not hidden). Keep in sync with
+   CO_FINANCE_KEYS. */
+const CO_FINANCE_COL_KEYS = new Set<string>([
+  'mattress_sofa_centi', 'bedframe_centi', 'accessories_centi', 'others_centi',
+  'mattress_sofa_cost_centi', 'bedframe_cost_centi', 'accessories_cost_centi', 'others_cost_centi',
+  'total_cost_centi', 'total_margin_centi', 'margin_pct_basis', 'deposit_centi',
+]);
+
+const buildAllColumns = (
   staffById: Map<string, string>,
 ): DataGridColumn<SoRow>[] => [
   /* ── HOUZS default-visible 18 ─────────────────────────────────────── */
@@ -1588,3 +1622,11 @@ const buildColumns = (
     sortFn: (a, b) => (a.status ?? '').localeCompare(b.status ?? ''),
   },
 ];
+
+/* Drop the finance columns entirely for a non-finance viewer — they are never
+   DECLARED, so the column chooser never lists them (off, not hidden). */
+const buildColumns = (
+  staffById: Map<string, string>,
+  canFinance: boolean,
+): DataGridColumn<SoRow>[] =>
+  buildAllColumns(staffById).filter((col) => canFinance || !CO_FINANCE_COL_KEYS.has(col.key));

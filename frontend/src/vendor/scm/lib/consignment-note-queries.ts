@@ -42,8 +42,11 @@ export const useConsignmentNotes = (status?: string) => useQuery({
    { do_date, do_number, debtor_name, status, local_total_centi } (default
    do_date:desc). placeholderData keepPrevious so paging doesn't flash empty. */
 /* Full-set money KPIs returned by the paginated CN list (mirrors the SO list
-   `aggregates` contract) — summed over the SAME filters as the page. */
-export type ConsignmentNoteAggregates = { revenueCenti: number; costCenti: number; marginCenti: number };
+   `aggregates` contract) — summed over the SAME filters as the page.
+   costCenti / marginCenti are FINANCE-ONLY: the server omits them for a
+   non-finance caller (canViewScmFinance), so they are optional here and the
+   Cost / Margin tiles are not rendered for such a viewer. */
+export type ConsignmentNoteAggregates = { revenueCenti: number; costCenti?: number; marginCenti?: number };
 export const useConsignmentNotesPaged = (params: {
   page: number;
   pageSize: number;
