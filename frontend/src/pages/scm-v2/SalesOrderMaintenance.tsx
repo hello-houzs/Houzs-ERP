@@ -20,7 +20,8 @@ import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowLeft, Plus, Trash2, ChevronDown, ChevronRight, MapPin, Lock } from 'lucide-react';
 import { isCorePaymentMethodRow } from '@2990s/shared/payment-methods';
-import { Button } from '@2990s/design-system';
+import { Button } from '../../components/Button';
+import { PageHeader } from '../../components/Layout';
 import { useAuth as useHouzsAuth } from '../../auth/AuthContext';
 import { useToast } from '../../vendor/scm/components/Toast';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
@@ -62,8 +63,6 @@ import {
 } from '../../vendor/scm/lib/so-dropdown-options-queries';
 import styles from './SalesOrderMaintenance.module.css';
 
-const ICON = { size: 16, strokeWidth: 1.75 } as const;
-
 export const SalesOrderMaintenance = () => {
   // Houzs-flavoured: gate on the flat permission key `scm.config.write` (the
   // 2990 staff_role bridge always reports either super_admin or sales). Owner
@@ -72,34 +71,38 @@ export const SalesOrderMaintenance = () => {
   const canEdit = can('scm.config.write');
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
-          <Link to="/scm/sales-orders" className={styles.backBtn}>
-            <ArrowLeft {...ICON} /> <span>Sales Orders</span>
+    <div>
+      <PageHeader
+        eyebrow="Reference data"
+        title="Sales Order Maintenance"
+        description="Reference data behind SO forms — venues, warehouses, geo, dropdowns."
+        primaryAction={
+          <Link
+            to="/scm/sales-orders"
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-surface px-3 text-[11px] font-semibold uppercase tracking-wider text-ink-secondary transition-colors hover:border-primary/40 hover:bg-primary-soft hover:text-primary"
+          >
+            <ArrowLeft size={14} /> Sales Orders
           </Link>
-          <div>
-            <h1 className={styles.title}>Sales Order Maintenance</h1>
-            <div className={styles.subtitle}>
-              Reference data behind SO forms — venues, warehouses, geo, dropdowns.
-            </div>
-          </div>
-        </div>
-      </div>
+        }
+      />
 
       {/* Section-jump sub-nav — Nick 2026-07-09 "帮我整理容易看和修改的".
-          The page is a scroll-tower of five distinct config surfaces; these
-          anchor pills park under the sticky header so the operator can jump
-          directly to the section they want to edit without hunting. */}
-      <nav className={styles.subNav} aria-label="Sections">
-        <a href="#venues"    className={styles.subNavItem}>Venues</a>
-        <a href="#geo"       className={styles.subNavItem}>Geo &amp; Warehouses</a>
-        <a href="#dropdowns" className={styles.subNavItem}>Dropdowns</a>
+          The page is a scroll-tower of distinct config surfaces; these anchor
+          pills let the operator jump directly to the section they want to
+          edit. Styled as the reference FilterPills slab (inactive state) so
+          the page reads like the PO/DO lists. */}
+      <nav
+        className="mb-4 inline-flex max-w-full items-center gap-0.5 overflow-x-auto rounded-md border border-border bg-surface p-1 shadow-stone"
+        aria-label="Sections"
+      >
+        <a href="#venues" className="whitespace-nowrap rounded px-3.5 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-ink-secondary transition-all duration-150 hover:bg-primary-soft hover:text-primary">Venues</a>
+        <a href="#geo" className="whitespace-nowrap rounded px-3.5 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-ink-secondary transition-all duration-150 hover:bg-primary-soft hover:text-primary">Geo &amp; Warehouses</a>
+        <a href="#dropdowns" className="whitespace-nowrap rounded px-3.5 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-ink-secondary transition-all duration-150 hover:bg-primary-soft hover:text-primary">Dropdowns</a>
       </nav>
 
       {!canEdit && (
-        <div className={styles.readOnlyBanner}>
-          <strong>Read-only view.</strong> Maintenance changes are admin/coordinator-only.
+        <div className="mb-4 rounded-lg border border-primary/30 bg-primary-soft px-4 py-2.5 text-[12.5px] text-ink-secondary">
+          <strong className="font-semibold text-primary">Read-only view.</strong> Maintenance changes are admin/coordinator-only.
         </div>
       )}
 
@@ -373,7 +376,7 @@ const MaintenanceBody = ({ canEdit }: { canEdit: boolean }) => {
   const drillIntoCity    = (c: string) => { setSelectedCity(c);    setGeoView('postcode'); };
 
   return (
-    <>
+    <div className="space-y-4">
       {/* ── Venues CRUD (Migration 0086) ───────────────────────────────
           Parallel-to-warehouses master list. Sales-side staff get a
           venue_id; every POS-created SO is stamped with the salesperson's
@@ -398,7 +401,7 @@ const MaintenanceBody = ({ canEdit }: { canEdit: boolean }) => {
 
           Each level also has its own Add form at the bottom. */}
       <div id="geo" style={{ scrollMarginTop: 96 }}>
-        <div className={styles.sectionHead}>
+        <div className="mb-2.5 flex items-center gap-2.5 border-l-[3px] border-primary pl-2.5 font-mono text-[11px] font-semibold uppercase tracking-[0.1em] text-ink">
           <span>Geo &amp; Warehouses</span>
         </div>
       </div>
@@ -491,7 +494,7 @@ const MaintenanceBody = ({ canEdit }: { canEdit: boolean }) => {
             <input className={styles.input} placeholder="Country (Singapore)"
               value={newCountry} onChange={(e) => setNewCountry(e.target.value)} />
             <Button
-              variant="primary" size="md"
+              variant="primary"
               disabled={createLoc.isPending}
               onClick={async () => {
                 const country = newCountry.trim();
@@ -745,7 +748,6 @@ const MaintenanceBody = ({ canEdit }: { canEdit: boolean }) => {
             </select>
             <Button
               variant="primary"
-              size="md"
               disabled={createLoc.isPending || upsert.isPending}
               onClick={async () => {
                 const state = newState.trim();
@@ -869,7 +871,7 @@ const MaintenanceBody = ({ canEdit }: { canEdit: boolean }) => {
               value={newCity} onChange={(e) => setNewCity(e.target.value)} />
             <input className={styles.input} placeholder="Postcode (47600)" maxLength={10}
               value={newPostcode} onChange={(e) => setNewPostcode(e.target.value)} />
-            <Button variant="primary" size="md" onClick={addLocality} disabled={createLoc.isPending}>
+            <Button variant="primary" onClick={addLocality} disabled={createLoc.isPending}>
               <Plus size={14} strokeWidth={1.75} /> Add
             </Button>
           </div>
@@ -933,7 +935,7 @@ const MaintenanceBody = ({ canEdit }: { canEdit: boolean }) => {
           <div className={styles.addRowGrid} style={{ gridTemplateColumns: '180px auto' }}>
             <input className={styles.input} placeholder="Postcode (47301)" maxLength={10}
               value={newPostcode} onChange={(e) => setNewPostcode(e.target.value)} />
-            <Button variant="primary" size="md" onClick={addLocality} disabled={createLoc.isPending}>
+            <Button variant="primary" onClick={addLocality} disabled={createLoc.isPending}>
               <Plus size={14} strokeWidth={1.75} /> Add
             </Button>
           </div>
@@ -952,7 +954,7 @@ const MaintenanceBody = ({ canEdit }: { canEdit: boolean }) => {
           used to drive customer type / building type / relationship /
           payment method dropdowns. */}
       <DropdownsSection canEdit={canEdit} />
-    </>
+    </div>
   );
 };
 
@@ -1024,7 +1026,7 @@ const DropdownsSection = ({ canEdit }: { canEdit: boolean }) => {
   return (
     <>
       <div id="dropdowns" style={{ scrollMarginTop: 96 }}>
-        <div className={styles.sectionHead}>
+        <div className="mb-2.5 flex items-center gap-2.5 border-l-[3px] border-primary pl-2.5 font-mono text-[11px] font-semibold uppercase tracking-[0.1em] text-ink">
           <span>Dropdowns</span>
         </div>
       </div>
@@ -1141,47 +1143,26 @@ const DropdownCategoryCard = ({
   };
 
   return (
-    <div className={styles.tableCard} style={{ marginBottom: 'var(--space-3)' }}>
-      {/* Header styled to match .addRowEyebrow / .table thead — uppercase
-          Raleway letter-spaced. Commander 2026-05-27 "字体 standardize". */}
+    <div className={styles.tableCard}>
+      {/* Collapsible category header — mono uppercase eyebrow on a surface-2
+          strip, matching the .table thead / add-row eyebrow rhythm. */}
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
-        style={{
-          display: 'flex', alignItems: 'center', gap: 8,
-          width: '100%',
-          background: 'var(--bg-alt)',
-          border: 'none',
-          borderBottom: '1px solid var(--line)',
-          padding: 'var(--space-3) var(--space-4)',
-          cursor: 'pointer',
-          textAlign: 'left',
-          fontFamily: 'var(--font-button)',
-          fontWeight: 'var(--w-semibold)',
-          fontSize: 'var(--fs-12)',
-          letterSpacing: 'var(--tk-loud)',
-          textTransform: 'uppercase',
-          color: 'var(--fg-soft)',
-        }}
+        className="flex w-full items-center gap-2 border-b border-border-subtle bg-surface-2 px-4 py-3 text-left font-mono text-[11px] font-semibold uppercase tracking-[0.16em] text-ink-secondary"
       >
         {expanded
           ? <ChevronDown  size={14} strokeWidth={1.75} />
           : <ChevronRight size={14} strokeWidth={1.75} />}
         <span>{title}</span>
-        <span style={{ color: 'var(--fg-muted)', fontWeight: 400, fontSize: 'var(--fs-12)', textTransform: 'none', letterSpacing: 0 }}>
+        <span className="text-[11px] font-normal normal-case tracking-normal text-ink-muted">
           · {rows.length} {rows.length === 1 ? 'option' : 'options'}
         </span>
       </button>
 
       {expanded && (
         <>
-          <div style={{
-            padding: 'var(--space-2) var(--space-4)',
-            fontSize: 'var(--fs-12)',
-            color: 'var(--fg-muted)',
-            background: 'var(--c-cream)',
-            borderBottom: '1px solid var(--line)',
-          }}>
+          <div className="border-b border-border-subtle bg-surface-2 px-4 py-2 text-[11.5px] leading-relaxed text-ink-muted">
             {help}
           </div>
 
@@ -1255,7 +1236,7 @@ const DropdownCategoryCard = ({
                             disabled={!canEdit || updateOpt.isPending || lockedRow}
                             onChange={() => toggleActive(row)}
                           />
-                          <span style={{ fontSize: 'var(--fs-12)', color: 'var(--fg-muted)' }}>
+                          <span className="text-[11.5px] text-ink-muted">
                             {row.active ? 'Yes' : 'No'}
                           </span>
                         </label>
@@ -1277,7 +1258,7 @@ const DropdownCategoryCard = ({
                             <span
                               title={lockHint}
                               aria-label={lockHint}
-                              style={{ display: 'inline-flex', padding: 4, color: 'var(--fg-muted)' }}
+                              className="inline-flex p-1 text-ink-muted"
                             >
                               <Lock size={14} strokeWidth={1.75} />
                             </span>
@@ -1304,14 +1285,11 @@ const DropdownCategoryCard = ({
           {/* 2026-06-06 payment-method unify — no Add for the locked
               category; a hint explains why instead of hiding silently. */}
           {category === 'payment_method' && (
-            <div style={{
-              display: 'flex', alignItems: 'center', gap: 8,
-              padding: 'var(--space-3) var(--space-4)',
-              background: 'var(--bg-alt)',
-              borderTop: rows.length > 0 ? '1px solid var(--line)' : undefined,
-              fontSize: 'var(--fs-12)',
-              color: 'var(--fg-muted)',
-            }}>
+            <div
+              className={`flex items-center gap-2 bg-surface-2 px-4 py-3 text-[11.5px] text-ink-muted${
+                rows.length > 0 ? ' border-t border-border-subtle' : ''
+              }`}
+            >
               <Lock size={14} strokeWidth={1.75} />
               <span>
                 These four are core methods wired to order logic — rename or
@@ -1322,16 +1300,13 @@ const DropdownCategoryCard = ({
             </div>
           )}
           {canEdit && category !== 'payment_method' && (
-            <div style={{
-              display: 'grid',
-              /* Sort input removed — commander 2026-05-27. New rows auto-
-                 append to the end (sort_order = rows.length + 1). */
-              gridTemplateColumns: '1fr 1.5fr auto',
-              gap: 'var(--space-2)',
-              padding: 'var(--space-3) var(--space-4)',
-              background: 'var(--bg-alt)',
-              borderTop: rows.length > 0 ? '1px solid var(--line)' : undefined,
-            }}>
+            /* Sort input removed — commander 2026-05-27. New rows auto-append
+               to the end (sort_order = rows.length + 1). */
+            <div
+              className={`grid grid-cols-[1fr_1.5fr_auto] gap-2 bg-surface-2 px-4 py-3${
+                rows.length > 0 ? ' border-t border-border-subtle' : ''
+              }`}
+            >
               <input
                 className={styles.input}
                 placeholder="Value (e.g. NEW)"
@@ -1346,7 +1321,6 @@ const DropdownCategoryCard = ({
               />
               <Button
                 variant="primary"
-                size="md"
                 onClick={addRow}
                 disabled={createOpt.isPending}
               >
@@ -1377,7 +1351,7 @@ const VenuesSection = (_props: { canEdit: boolean }) => {
 
   return (
     <section id="venues" style={{ scrollMarginTop: 96 }}>
-      <div className={styles.sectionHead}>
+      <div className="mb-2.5 flex items-center gap-2.5 border-l-[3px] border-primary pl-2.5 font-mono text-[11px] font-semibold uppercase tracking-[0.1em] text-ink">
         <MapPin size={12} strokeWidth={2} />
         <span>Venues · {venues.data?.length ?? 0}</span>
       </div>
@@ -1404,17 +1378,16 @@ const VenuesSection = (_props: { canEdit: boolean }) => {
             )}
             {(venues.data ?? []).map((v) => (
               <tr key={v.id}>
-                <td><strong style={{ color: '#11140f', fontWeight: 600 }}>{v.name}</strong></td>
+                <td><strong className="font-semibold text-ink">{v.name}</strong></td>
                 <td>{v.state ?? '—'}</td>
                 <td>
-                  <span style={{
-                    display: 'inline-block', padding: '2px 8px',
-                    borderRadius: 20, fontSize: 10, fontWeight: 700,
-                    letterSpacing: '0.08em', textTransform: 'uppercase',
-                    fontFamily: 'var(--font-mono, ui-monospace, monospace)',
-                    background: v.active ? 'rgba(22, 105, 95, 0.12)' : 'rgba(17, 20, 15, 0.06)',
-                    color: v.active ? '#0c3f39' : '#767b6e',
-                  }}>
+                  <span
+                    className={`inline-flex items-center rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider ${
+                      v.active
+                        ? 'bg-primary-soft text-primary-ink'
+                        : 'bg-surface-2 text-ink-muted'
+                    }`}
+                  >
                     {v.active ? 'Active' : 'Inactive'}
                   </span>
                 </td>
