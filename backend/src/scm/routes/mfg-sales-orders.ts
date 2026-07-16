@@ -391,19 +391,61 @@ function norm(v: unknown): string {
    office author may set ANY selling price: the server still recomputes COST,
    but it PERSISTS the operator's selling figure and never drift-rejects it.
 
-   The POS tablet roles (sales / sales_executive / outlet_manager) stay on the
-   server-authoritative selling price + >0.5% drift reject — this preserves the
-   CLAUDE.md anti-tamper non-negotiable (a tampered POS must never submit a
-   doctored low total). Returns true ONLY for those POS tablet callers; every
-   Backend / office role (admin, super_admin, sales_director, coordinator, …)
-   returns false and is trusted to author the price. */
-// Houzs has no POS tablet — every SCM caller hits this backend via the same
-// Houzs session auth. The 2990 staff_role lookup is dead here (the SCM bridge
-// pins every caller to one super_admin row) so this gate trivially passed for
-// nobody. Hardcode false; price-drift checks become office-trusted everywhere.
-// Signature kept for call-site compatibility — args ignored.
-async function isPosTabletCaller(_sb: any, _userId: string | null | undefined): Promise<boolean> {
-  return false;
+   The POS tablet stays on the server-authoritative selling price + >0.5% drift
+   reject — the CLAUDE.md anti-tamper non-negotiable (a tampered POS must never
+   submit a doctored low total). Returns true ONLY for a POS-tablet caller;
+   every Backend / office author returns false and is trusted to price freely.
+
+   ── HOUZS IDENTIFICATION (POS cutover, 2026-07) ────────────────────────────
+   2990 keyed this on `scm.staff.role` (POS_TABLET_ROLES = sales /
+   sales_executive / outlet_manager). That lookup is DEAD here, and must NOT be
+   revived against the real caller either:
+     · The SCM auth bridge pins every caller's `user.id` to ONE super_admin
+       system staff row (scm/middleware/auth.ts), so the role read super_admin
+       for everybody and the gate fired for nobody. The old hardcoded `false`
+       was therefore BEHAVIOUR-PRESERVING, not a regression — re-arming is a
+       genuinely new behaviour, not a restoration.
+     · Gating on the REAL caller (houzsUser position/department) CANNOT work:
+       2990 could assume role ⇒ device (a `sales` role only ever touched the POS
+       tablet). Houzs breaks that mapping. routes/pos.ts /pin-login mints an
+       ORDINARY Houzs session for the SAME public.users row the person signs
+       into desktop and mobile with, and the mobile SO form lets a salesperson
+       TYPE any selling price (MobileNewSO.tsx — the price is a free input).
+       Position-gating would drift-reject live Sales staff on mobile; worse,
+       pmsAccess.SALES_POSITION (/^sales/i) also matches OFFICE authors such as
+       "Sales Director" and "Sales Coordinator" on the desktop SO form.
+
+   So the only thing separating a POS write from a desktop/mobile write is the
+   CLIENT, and the client must declare itself:  `X-Client: pos-tablet`.
+
+   ── THREAT MODEL — READ THIS BEFORE TRUSTING THE GATE ──────────────────────
+   The header is SELF-ASSERTED. This is an ANTI-DRIFT guard, NOT an anti-tamper
+   one. It catches the HONEST failure — a tablet holding a stale cached price
+   after a catalog change submits the old figure — and it CANNOT catch a hostile
+   client, which simply OMITS the header and is then treated as an office author
+   who may price freely. Anything stronger needs an UNFORGEABLE POS-origin
+   signal minted at /api/pos/pin-login (a session-origin flag, or a prefixed
+   session token — `sessions` has no origin column today, so that is a migration
+   and a separate change). Do NOT describe this gate as satisfying the
+   anti-tamper non-negotiable until that lands.
+
+   ── FAIL-OPEN, deliberately ────────────────────────────────────────────────
+   No header — or a headless context with no header accessor (the background
+   scan job) — reads as NOT-POS, so no drift check. Fail-closed is not an
+   option: every caller that exists today (desktop SO form, mobile SO form, OCR
+   scan draft) is an operator-authored price surface that would 400 on a
+   perfectly legitimate price. Blast radius is therefore exactly the set of
+   callers that send the header — today: none. */
+const POS_CLIENT_HEADER = 'X-Client';
+const POS_CLIENT_VALUE  = 'pos-tablet';
+
+/* Structural caller source — satisfied by the real Hono context AND by
+   SoCreateContext, whose `header` is OPTIONAL: the headless scan job supplies
+   no accessor, so an OCR draft can never read as POS. */
+type PosCallerSource = { req: { header?(name: string): string | undefined } };
+
+async function isPosTabletCaller(c: PosCallerSource): Promise<boolean> {
+  return c.req.header?.(POS_CLIENT_HEADER)?.trim().toLowerCase() === POS_CLIENT_VALUE;
 }
 
 /* SO-SKU spec P4 (D4, Loo 2026-06-05) — the SELLING price is locked to the
@@ -2536,7 +2578,11 @@ mfgSalesOrders.post('/backfill-warehouses', async (c) => {
    outcome object; the HTTP route re-emits it as the real JSON response. */
 export type SoCreateOutcome = { status: number; body: Record<string, unknown> };
 export type SoCreateContext = {
-  req: { json(): Promise<unknown> };
+  /* `header` is OPTIONAL and read ONLY by isPosTabletCaller. The HTTP route
+     wires the real accessor through; the headless scan job deliberately omits
+     it, so an OCR-created draft can never read as a POS caller and can never
+     be drift-rejected (its prices come off a handwritten slip). */
+  req: { json(): Promise<unknown>; header?(name: string): string | undefined };
   /* supabase keeps the REAL client type — the core body relies on the typed
      query builders for callback inference (an `any` here turns every
      `.map((r) => ...)` inside the body into an implicit-any TS7006). */
@@ -3403,7 +3449,7 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
   /* Pricing trust boundary (Owner 2026-05-31, see isPosTabletCaller). Only the
      untrusted POS tablet roles are drift-rejected; a Backend / office author
      sets the selling price freely (the owner ruled it varies per order). */
-  const posTablet = await isPosTabletCaller(sb, user.id);
+  const posTablet = await isPosTabletCaller(c);
   if (posTablet) {
     for (let i = 0; i < recomputes.length; i++) {
       const r = recomputes[i];
@@ -3411,7 +3457,7 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
         await rollbackPwpClaims();  // don't burn a voucher on a rejected order
         return c.json({
           error:    'pricing_drift',
-          reason:   'Client unitPriceCenti differs >0.5% from server compute.',
+          reason:   'The price for this item is out of date — please refresh and try again.',
           lineIdx:  i,
           itemCode: r.itemCode,
           client:   Number(items[i]?.unitPriceCenti ?? 0),
@@ -4618,7 +4664,9 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
    contentful JSON status the old inline c.json calls already used. */
 mfgSalesOrders.post('/', async (c) => {
   const out = await createSalesOrderCore({
-    req: { json: () => c.req.json() },
+    /* header: the POS-tablet declaration (X-Client) the pricing trust boundary
+       reads — see isPosTabletCaller. */
+    req: { json: () => c.req.json(), header: (n: string) => c.req.header(n) },
     get: ((key: 'supabase' | 'user' | 'houzsUser' | 'companyId') => c.get(key as 'supabase')) as unknown as SoCreateContext['get'],
     env: c.env,
     json: (b, status) => ({ status: status ?? 200, body: b as Record<string, unknown> }),
@@ -6108,13 +6156,13 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
      Free Item Campaign (Task 4) — drift check is SKIPPED for a validated free
      line (unit will be forced to 0 below; client always submits 0, so there is
      no meaningful drift to gate on — and the cap check already enforced qty). */
-  const posTablet = await isPosTabletCaller(sb, user.id);
+  const posTablet = await isPosTabletCaller(c);
   if (posTablet && recomputed.drift && !addLineFreeItem) {
     /* Rollback any PWP claim before rejecting — must not burn a code on drift. */
     if (addLinePwpClaimed) await rollbackSinglePwpClaim(sb, addLinePwpClaimed);
     return c.json({
       error:    'pricing_drift',
-      reason:   'Client unitPriceCenti differs >0.5% from server compute.',
+      reason:   'The price for this item is out of date — please refresh and try again.',
       itemCode: itemCodeStr,
       client:   Number(it.unitPriceCenti ?? 0),
       server:   recomputed.unit_price_sen,
@@ -6424,7 +6472,7 @@ mfgSalesOrders.patch('/:docNo/items/:itemId', async (c) => {
   }
 
   /* Pricing trust boundary (Owner 2026-05-31, see isPosTabletCaller). */
-  const posTablet = await isPosTabletCaller(sb, user.id);
+  const posTablet = await isPosTabletCaller(c);
 
   // Re-derive totals if qty/price/discount changed. PR-D — also pull the
   // human-facing columns (item_code, description, uom) for the audit diff.
@@ -6584,7 +6632,7 @@ mfgSalesOrders.patch('/:docNo/items/:itemId', async (c) => {
     if (!isFreeItemLine(prev.variants) && !prevIsReward && posTablet && recomputedPatch.drift) {
       return c.json({
         error:    'pricing_drift',
-        reason:   'Client unitPriceCenti differs >0.5% from server compute.',
+        reason:   'The price for this item is out of date — please refresh and try again.',
         itemCode: itemCodeAfter,
         client:   clientUnit,
         server:   recomputedPatch.unit_price_sen,
@@ -6816,7 +6864,7 @@ mfgSalesOrders.delete('/:docNo/items/:itemId', async (c) => {
      below the original sales order total, so POS sales callers may not
      delete one (a cancelled / zero line is fine). Backend roles stay free. */
   if (prevTyped && !prevTyped.cancelled && prevTyped.total_centi > 0
-      && await isPosTabletCaller(sb, user.id)) {
+      && await isPosTabletCaller(c)) {
     return c.json({
       error:    'so_total_below_original',
       reason:   'Removing a line would reduce the bill below the original sales order total.',
@@ -7040,7 +7088,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-update', async (c) => {
      Also skip the POS floor check — a zero-priced line can never lower the
      bill further; the check is meaningless and would compare 0 vs 0. */
   const isFreeItemGrandfathered = isFreeItemLine(prevVariants);
-  const posTablet = await isPosTabletCaller(sb, user.id);
+  const posTablet = await isPosTabletCaller(c);
   if (!isFreeItemGrandfathered && posTablet && sellingDeltaCenti < 0) {
     return c.json({
       error:    'so_total_below_original',
@@ -7351,7 +7399,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap', async (c) => {
   const discount = Number(prev.discount_centi ?? 0);
   const newTotal = (qty * unitSen) - discount;
   const prevTotal = Number(prev.total_centi ?? ((qty * Number(prev.unit_price_centi)) - discount));
-  if (newTotal < prevTotal && await isPosTabletCaller(sb, user.id)) {
+  if (newTotal < prevTotal && await isPosTabletCaller(c)) {
     return c.json({
       error:    'so_total_below_original',
       reason:   'Changes cannot reduce the bill below the original sales order total.',
@@ -7816,7 +7864,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
     rewardComboMatch && rewardCtx ? rewardCtx.comboIds : null,
     specialDefs, moduleCostRows, modelOverridesSwap,
   );
-  const posTablet = await isPosTabletCaller(sb, user.id);
+  const posTablet = await isPosTabletCaller(c);
   /* Reward swaps skip the drift COMPARISON (the POS configurator prices the
      build at normal selling — it has no voucher awareness); the persisted
      figure is the server's authoritative PWP price either way, so a client
@@ -7824,7 +7872,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
   if (posTablet && recomputed.drift && !rewardCtx) {
     return c.json({
       error: 'pricing_drift',
-      reason: 'Client unitPriceCenti differs >0.5% from server compute.',
+      reason: 'The price for this item is out of date — please refresh and try again.',
       itemCode: newCode,
       client: clientUnit,
       server: recomputed.unit_price_sen,

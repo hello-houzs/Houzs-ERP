@@ -19,7 +19,16 @@ import type { Env } from "../types";
  *       not-allowed pick is IGNORED (falls through to the default), never 403'd.
  *   (b) login hostname default — erp.2990shome.com -> '2990';
  *       erp.houzscentury.com / staging / localhost / anything else -> 'HOUZS'.
+ *       ALSO validated against `allowedCompanyIds`: the host's company is used
+ *       only when the caller is granted it, else their FIRST allowed company —
+ *       never a company they don't hold. A header-less request from a restricted
+ *       user must not resolve the host's company just because it asked quietly.
  * The code is then resolved to companies.id.
+ *
+ * INVARIANT: the active company is ALWAYS one of `allowedCompanyIds` whenever
+ * both are set — via (a) or (b), header or no header. Every route that reads
+ * `companyId` / `scopeToCompany` / `activeCompanyId` leans on this; the DB
+ * client is service-role, so nothing downstream re-checks it.
  *
  * The pick may be a company id (preferred) OR a company code — both are matched
  * so the frontend can send whichever it holds.
@@ -175,10 +184,41 @@ export const companyContext = createMiddleware<{ Bindings: Env }>(async (c, next
           (co.id === pickId || co.code.toLowerCase() === rawPick.toLowerCase()),
       );
     }
-    // (b) hostname default.
+    // (b) hostname default — CONSTRAINED TO `allowed`, exactly like the pick in
+    // (a). Resolving the host's code against the FULL companies list would hand a
+    // user who is granted ONLY company B the company-A context on any request
+    // that omits X-Company-Id (allowedCompanyIds stayed correct, so the
+    // scopeToAllowedCompanies routes hid this; the scopeToCompany /
+    // activeCompanyId routes read the wrong company's books). The desktop
+    // frontend always sends the header, but a client that doesn't — the POS —
+    // would land straight on it. The DB client is service-role (RLS bypassed),
+    // so this app-layer resolution IS the isolation boundary.
     if (!active) {
       const code = defaultCompanyCodeForHost(c.req.header("host") ?? "");
-      active = companies.find((co) => co.code === code) ?? companies[0];
+      // FAIL OPEN, unchanged: `allowed` is ALREADY the full company list for a
+      // user with no user_companies grants (or when that table is absent), so
+      // `pool` is `companies` and this resolves byte-identically to before for
+      // every user today. It only narrows once a user is actually restricted.
+      const pool = companies.filter((co) => allowed.includes(co.id));
+      // `?? pool[0]` last resort: fires when the hostname's company is not in
+      // the caller's allowed set — e.g. a 2990-only user hitting the Houzs host
+      // via a bookmark or an emailed link. Their FIRST allowed company (lowest
+      // id — `companies` is ORDER BY id, so this is deterministic) is the right
+      // answer: it is their own data, and it beats both a lockout (this
+      // middleware never 403s a company decision — an unroutable pick has always
+      // fallen through, never rejected) and a wrong-company read. It also still
+      // fires on a companies master with no HOUZS row, as before.
+      //
+      // `pool` is EMPTY only when the caller holds grants that all point at
+      // companies that are no longer is_active=1. `active` then stays undefined
+      // — deliberately. It must NOT fall back to the full list: the caller is
+      // granted none of those, so serving the hostname default would be the very
+      // cross-company read this block exists to prevent. Undefined here is safe
+      // ONLY because the scoping helpers distinguish "unresolved" (degrade, no
+      // predicate) from "restricted to nothing" (match nothing) via
+      // allowedCompanyIds — which is `[]`, not undefined, in exactly this case.
+      // See the sentinel doc in scm/lib/companyScope.ts; the two are a pair.
+      active = pool.find((co) => co.code === code) ?? pool[0];
     }
 
     c.set("companies", companies);

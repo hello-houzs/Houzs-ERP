@@ -305,13 +305,17 @@ function readTargetCompanyIds(r: AnnouncementRow): number[] {
 
 // Company gate: an announcement is visible to a reader whose granted companies
 // are `allowed` IFF its target_company_ids is empty (= all companies) OR
-// intersects `allowed`. Fail-open when the reader's allow-list is unresolved
+// intersects `allowed`. Fail-open when the reader's allow-list is UNRESOLVED
 // (single-company Houzs / D1 test mirror / cold-start) — matches the
 // allowedCompaniesSql idiom so legacy single-company reads run unchanged.
-function companyCanSee(r: AnnouncementRow, allowed: number[]): boolean {
+// `allowed === []` is NOT that case: it means the reader is granted no active
+// company, so a company-TARGETED notice must stay hidden (see the sentinel doc
+// on allowedCompanyIds). A notice targeting ALL companies stays visible either
+// way — that gate is the notice's audience, not the company boundary.
+function companyCanSee(r: AnnouncementRow, allowed: number[] | undefined): boolean {
   const targets = readTargetCompanyIds(r);
   if (targets.length === 0) return true;
-  if (!allowed || allowed.length === 0) return true;
+  if (allowed === undefined) return true;
   return targets.some((id) => allowed.includes(id));
 }
 

@@ -23,10 +23,14 @@ app.get("/", (c) => {
   // X-Company-Id and serves the hostname default, so the header would say one
   // company while the data is another. No data leak (backend enforces), but a
   // confusing mislabel — so we don't offer what we won't honour.
+  // Three states (see the sentinel doc on companyScope.allowedCompanyIds):
+  // undefined = unresolved → offer the full list (pre-activation behaviour);
+  // otherwise offer exactly the granted set — including `[]`, where the caller
+  // is granted no active company and the switcher must offer nothing rather
+  // than every company.
   const all = (c.get("companies") as { id: number }[] | undefined) ?? [];
   const allowed = c.get("allowedCompanyIds") as number[] | undefined;
-  const companies =
-    allowed && allowed.length ? all.filter((co) => allowed.includes(co.id)) : all;
+  const companies = allowed ? all.filter((co) => allowed.includes(co.id)) : all;
   return c.json({
     companies,
     activeCompanyId: c.get("companyId") ?? null,
