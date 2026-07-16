@@ -29,6 +29,10 @@ import {
 import { useSoDropdownOptions, optionsOrFallback, FALLBACK_OPTIONS } from "../vendor/scm/lib/so-dropdown-options-queries";
 import { paymentMethodCodeForValue } from "../vendor/scm/lib/payment-methods";
 import {
+  amendmentHeaderDiffRows,
+  type SoAmendmentHeaderChanges,
+} from "../vendor/scm/lib/so-amendment-header";
+import {
   useAmendmentDetail,
   useSupplierConfirm,
   useApproveSo,
@@ -1604,6 +1608,16 @@ function AmendmentDiffSheet({ amendmentId, onClose }: { amendmentId: string; onC
     (l.old_snapshot as { itemCode?: string; qty?: number; unitPriceSen?: number; description2?: string | null } | null) ?? {};
   const amNo = data?.amendment?.amendment_no != null ? String(data.amendment.amendment_no) : "";
   const reason = typeof data?.amendment?.reason === "string" ? data.amendment.reason : "";
+  /* The HEADER half of the request (mig 0119) — Delivery / Processing Date,
+     State, Postcode. Same shared builder the desktop job card uses, so a
+     header-only amendment isn't invisible here either. `dl` is the shared
+     TZ-aware date formatter (see its definition — delegates to lib/utils
+     formatDate, which formats a bare YYYY-MM-DD verbatim). */
+  const headerDiffs = amendmentHeaderDiffRows(
+    data?.amendment?.header_changes as SoAmendmentHeaderChanges | null | undefined,
+    data?.amendment?.old_header_snapshot as SoAmendmentHeaderChanges | null | undefined,
+    dl,
+  );
 
   return (
     <div className="hz-m sheet-bd" onClick={onClose}>
@@ -1621,10 +1635,26 @@ function AmendmentDiffSheet({ amendmentId, onClose }: { amendmentId: string; onC
             <div style={{ fontSize: 11.5, color: "var(--mut2)", padding: "8px 0" }}>Loading changes{"…"}</div>
           ) : error ? (
             <div style={{ fontSize: 11.5, color: "var(--red)", padding: "8px 0" }}>{error instanceof Error ? error.message : "Couldn't load the changes."}</div>
-          ) : lines.length === 0 ? (
-            <div style={{ fontSize: 11.5, color: "var(--mut2)", padding: "8px 0" }}>This amendment has no line changes recorded.</div>
+          ) : lines.length === 0 && headerDiffs.length === 0 ? (
+            <div style={{ fontSize: 11.5, color: "var(--mut2)", padding: "8px 0" }}>This amendment has no changes recorded.</div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+              {/* Order details (dates / delivery location) first, then the lines. */}
+              {headerDiffs.map((d) => (
+                <div key={d.key} style={{ border: "1px solid var(--line2, #e3e6e0)", borderRadius: 11, overflow: "hidden" }}>
+                  <div style={{ padding: "7px 11px", background: "#f4f6f3", fontSize: 10.5, fontWeight: 800, letterSpacing: ".06em", textTransform: "uppercase", color: "#5c6156" }}>{d.label}</div>
+                  <div style={{ display: "flex", gap: 0 }}>
+                    <div style={{ flex: 1, minWidth: 0, padding: "9px 11px", borderRight: "1px solid var(--line2, #e3e6e0)" }}>
+                      <div className="fld-l" style={{ marginBottom: 3 }}>Was</div>
+                      <div style={{ fontSize: 12.5, color: "var(--mut)" }}>{d.from}</div>
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0, padding: "9px 11px" }}>
+                      <div className="fld-l" style={{ marginBottom: 3 }}>Requesting</div>
+                      <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--ink)" }}>{d.to}</div>
+                    </div>
+                  </div>
+                </div>
+              ))}
               {lines.map((l) => {
                 const old = oldOf(l);
                 const newSummary = buildVariantSummary("", (l.new_variants as Record<string, unknown> | null) ?? null);

@@ -56,7 +56,20 @@ import {
   amendmentEligible as soAmendmentEligible,
 } from '../../vendor/scm/lib/so-detail-gates';
 import { soDateGuardError, soErrorText } from '../../vendor/scm/lib/so-form-validate';
+import {
+  buildAmendmentHeaderChanges,
+  hasAmendmentHeaderChanges,
+  withFrozenHeaderFieldsReverted,
+  amendmentHeaderDiffRows,
+  type SoAmendmentHeaderChanges,
+} from '../../vendor/scm/lib/so-amendment-header';
 import { todayMyt } from '../../vendor/scm/lib/dates';
+/* lib/utils formatDate (NOT the vendored fmtDate) for the amendment's header
+   dates: these are bare YYYY-MM-DD strings, and fmtDate's `new Date(d)` parses
+   those as UTC midnight then renders in the DEVICE zone — the documented
+   off-by-one on an off-GMT+8 phone. formatDate formats a date-only string
+   verbatim and pins the rest to Asia/Kuala_Lumpur. */
+import { formatDate } from '../../lib/utils';
 import { SoLineCard, emptySoLine, missingRequiredVariants, type SoLineDraft } from '../../vendor/scm/components/SoLineCard';
 import { PaymentsTable } from '../../vendor/scm/components/PaymentsTable';
 import { DocumentRelationshipMapModal, type ChainNode } from '../../components/scm-v2/DocumentRelationshipMapModal';
@@ -735,17 +748,54 @@ export const SalesOrderDetail = () => {
     return out;
   };
 
+  /* Owner 2026-07-16 — an edit on a processing-locked SO has TWO halves and this
+     used to ship only one of them:
+
+       * FROZEN header fields (Delivery / Processing Date, State, Postcode) +
+         line changes  -> ride the amendment, need approval.
+       * everything else (customer name / phone / email / address lines / note)
+         -> save DIRECTLY via the header PATCH. They never reach the supplier, so
+         they never needed an amendment ("有些東西原本不需要 SO amendment 都可以
+         edit 的 例如顧客名字 電話號碼").
+
+     Previously this handler called neither the header validate nor handle.save(),
+     so in amendment mode EVERY header edit the operator made in the same session
+     was silently discarded on submit — and an edit that touched only header
+     fields hit `lines.length === 0` and never created an amendment at all ("我
+     amend 了東西不給 approval"). Now: validate the header, save the direct half,
+     and send the frozen half + the line diffs as the amendment. */
   const submitAmendment = async () => {
-    if (!header || savingOrder) return;
+    const handle = customerCardRef.current;
+    if (!handle || !header || savingOrder) return;
     setSaveError(null);
     // Guard: an open add-draft must have a product picked.
     if (addingDraft && !addingDraft.itemCode.trim()) {
       setSaveError('Pick a product for the new line, or remove it before submitting.');
       return;
     }
+    /* Owner 2026-06-03 — phone is COMPULSORY on every SO. Mirrors saveEdit: the
+       header PATCH below carries the phone, so an amendment submit must not be a
+       back door to blanking it. */
+    if (!handle.getPhone().trim()) {
+      setSaveError('Phone number is required — every sales order must have a contact number.');
+      return;
+    }
+    /* Header date sanity BEFORE anything is written. With the shared guard's
+       original-date carve-out this no longer trips on the SO's own unchanged
+       past processing date — which is exactly the state every amendable SO is
+       in, and is what used to make this unreachable. */
+    const headerErr = handle.validate();
+    if (headerErr) {
+      setSaveError(headerErr);
+      return;
+    }
+
+    const { changes: headerChanges } = handle.getLockedHeaderChanges();
     const lines = buildAmendmentLines();
-    if (lines.length === 0) {
-      setSaveError('No changes to submit — edit a line first, then submit the amendment.');
+    if (lines.length === 0 && !hasAmendmentHeaderChanges(headerChanges)) {
+      setSaveError(
+        'No changes to submit — edit a line, a date or the delivery location first, then submit the amendment.',
+      );
       return;
     }
     const reason = await askPrompt({
@@ -760,10 +810,21 @@ export const SalesOrderDetail = () => {
     if (reason == null) return; // cancelled the prompt
     setSavingOrder(true);
     try {
+      /* 1. The directly-editable half. keepLockedColsAsOriginal reverts every
+            frozen column to its saved value so this PATCH can't 409
+            so_locked_processing on the very change we're about to request. */
+      await new Promise<void>((resolve, reject) => {
+        handle.save(
+          { onSuccess: () => resolve(), onError: (msg) => reject(new Error(msg)) },
+          { keepLockedColsAsOriginal: true },
+        );
+      });
+      /* 2. The approval half — frozen header fields + line diffs. */
       await createAmendment.mutateAsync({
         docNo: header.doc_no,
         reason: reason.trim() || undefined,
         lines,
+        headerChanges,
       });
       setSavingOrder(false);
       setIsEditing(false);
@@ -1082,9 +1143,6 @@ export const SalesOrderDetail = () => {
      still in an otherwise-editable status. Shared gate uses todayMyt() (Malaysia
      calendar day) so the lock flips at MYT midnight, not the device's midnight. */
   const procLockActive = soProcLockActive(header);
-  /* Line editing is locked by EITHER the status/downstream lock OR the process
-     lock — both mean the lines are no longer ours to change. */
-  const linesLocked = isLocked || procLockActive;
 
   /* Phase 1-C — SO-amendment gating (server-derived flags on the header). When
      amendment_eligible is true the SO is processing-locked (already PO'd) but not
@@ -1100,6 +1158,27 @@ export const SalesOrderDetail = () => {
   // page reverts to the normal (direct) Save so the operator isn't blocked from
   // fixing a still-editable field, and the amendment work happens in the banner.
   const amendmentMode = amendmentEligible && !hasOpenAmendment;
+
+  /* Line editing is locked by EITHER the status/downstream lock OR the process
+     lock — both mean the lines are no longer ours to change directly.
+
+     ...UNLESS the SO is in amendment mode. This was a deadlock (Owner 2026-07-16
+     "我 amend 了東西不給 approval"): the process lock rendered every SoLineCard
+     read-only AND disabled Add Line, while the page's primary button was "Submit
+     amendment request" — which builds its payload by diffing those very line
+     drafts. So buildAmendmentLines() could only ever return [], and the submit
+     always answered "No changes to submit — edit a line first" with no line the
+     operator was able to edit. The amendment was unreachable on desktop.
+
+     Mobile already had this right (`lineEditingBlocked = lineLocked ||
+     (procLocked && !amendmentMode)`); this brings desktop onto the same rule.
+     Nothing is written directly — submitAmendment routes the diff through the
+     approval flow, and the server's line routes still 409 a direct write. */
+  const linesLocked = isLocked || (procLockActive && !amendmentMode);
+  /* The raw lock, for the few per-line actions that still write DIRECTLY to the
+     server (price override) rather than through the amendment diff — those must
+     stay disabled on a locked SO or they render-then-409. */
+  const overrideLocked = isLocked || procLockActive;
   // Houzs perm gates (mirror the server-side scm.amendment.* keys): the server
   // 403 stays the real gate (its plain-language message is humanised by
   // authed-fetch); these just hide the affordance from users who can't use it.
@@ -1396,9 +1475,10 @@ export const SalesOrderDetail = () => {
           fontSize: 'var(--fs-13)',
         }}>
           <Lock {...ICON} />
-          <span>This SO is already ordered from the supplier. Edit the lines as usual — your
-            {' '}<strong>Save</strong> submits an <strong>amendment request</strong> that the
-            coordinator and supplier confirm before the order is revised.</span>
+          <span>This SO is already ordered from the supplier. Edit the lines, dates or delivery
+            location as usual — your {' '}<strong>Submit amendment request</strong> sends those
+            changes for the coordinator and supplier to confirm before the order is revised.
+            Contact details and address lines save straight away.</span>
         </div>
       )}
 
@@ -1491,6 +1571,7 @@ export const SalesOrderDetail = () => {
         saving={updateHeader.isPending}
         locked={isLocked}
         isEditing={isEditing}
+        amendmentMode={amendmentMode}
         onDeliveryDateChange={cascadeDeliveryDateToLines}
       />
 
@@ -1542,9 +1623,15 @@ export const SalesOrderDetail = () => {
                       single-line audited operation that the inline card
                       doesn't expose, so it stays in this small action bar. */}
                   <div className={styles.actionsCell} style={{ marginBottom: 'var(--space-2)' }}>
+                    {/* Override price writes DIRECTLY to the per-line override
+                        route, which the server 409s on a processing-locked SO —
+                        so it stays gated on the raw lock, not on `linesLocked`
+                        (which now opens in amendment mode). A price change on a
+                        locked SO goes through the amendment's line diff instead,
+                        which carries newUnitPriceSen. Off, not render-then-deny. */}
                     <button type="button" className={styles.iconBtn} title="Override price"
-                      disabled={linesLocked}
-                      onClick={() => !linesLocked && setOverriding(it)}>
+                      disabled={overrideLocked}
+                      onClick={() => !overrideLocked && setOverriding(it)}>
                       <DollarSign {...SM_ICON} />
                     </button>
                   </div>
@@ -1929,12 +2016,27 @@ type CustomerCardHandle = {
       when the header is OK. Called by the page Save BEFORE any line is written
       so a bad date never half-commits the order. */
   validate: () => string | null;
-  save: (cb: { onSuccess: () => void; onError: (msg: string) => void }) => void;
+  /** `keepLockedColsAsOriginal` (amendment mode) — send every FROZEN header
+      column at its ORIGINAL value so this direct PATCH stays inside the server's
+      field-scoped processing lock, while the customer's contact details / address
+      lines / note in the same payload still save immediately. The changed frozen
+      values ride the amendment instead (getLockedHeaderChanges below). */
+  save: (
+    cb: { onSuccess: () => void; onError: (msg: string) => void },
+    opts?: { keepLockedColsAsOriginal?: boolean },
+  ) => void;
   reset: () => void;
   /** Owner 2026-06-03 — current (possibly edited) phone value, so the page
       Save can enforce the compulsory-phone rule before any write, mirroring
       the New SO guard. */
   getPhone: () => string;
+  /** Owner 2026-07-16 — the FROZEN header fields this edit changed (Delivery
+      Date / Processing Date / State / Postcode), for the amendment payload.
+      Empty when the operator only touched directly-editable fields. */
+  getLockedHeaderChanges: () => {
+    changes: SoAmendmentHeaderChanges;
+    oldSnapshot: SoAmendmentHeaderChanges;
+  };
 };
 
 type CustomerCardProps = {
@@ -1956,6 +2058,13 @@ type CustomerCardProps = {
       card is disabled and the per-card Save button is hidden — the parent
       page renders Edit/Save/Cancel in its own header. */
   isEditing?: boolean;
+  /** Owner 2026-07-16 — the SO is processing-locked but amendment-eligible, so
+      the page's primary action SUBMITS AN AMENDMENT. The frozen fields
+      (Processing Date / State / Postcode) must therefore be EDITABLE here: an
+      amendment is precisely the sanctioned way to change them, and disabling
+      the input made the one supported channel unusable. They don't save
+      directly — submitAmendment routes them through the approval flow. */
+  amendmentMode?: boolean;
   /** Fix A — Live header→line cascade. Fires on every keystroke of the
       Delivery Date input (not just Save) so the parent can immediately push
       the new date into every line that hasn't been manually overridden. The
@@ -1977,6 +2086,7 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
   saving: _saving,
   locked = false,
   isEditing = false,
+  amendmentMode = false,
   onDeliveryDateChange,
 }, ref) => {
   // PR #39 — POS-aligned customer + address form. Maps:
@@ -2246,7 +2356,13 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
      rejected. */
   const originalProcessing = header.internal_expected_dd ?? '';
   const originalDelivery = header.customer_delivery_date ?? '';
-  const processingLocked = originalProcessing !== '' && originalProcessing < today;
+  /* ...EXCEPT in amendment mode: an amendment is the sanctioned channel for
+     changing exactly these frozen fields, so read-only-ing the input there left
+     the operator with a change they were told to request and no way to type it
+     (Owner 2026-07-16). The value still can't be written directly — the page's
+     primary action routes it through the approval flow. */
+  const processingLocked =
+    originalProcessing !== '' && originalProcessing < today && !amendmentMode;
 
   /* Owner 2026-07-05 — the SO PROCESS lock fires only once the SO has been
      PROCEEDED (proceeded_at stamped) AND its processing day has passed. That is
@@ -2256,8 +2372,14 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
      This is stricter than `processingLocked` (which grandfather-locks the past
      Processing-Date input alone, proceeded or not) — keep the two separate.
      Shared gate (vendor/scm/lib/so-detail-gates) uses todayMyt() so the lock is
-     computed against the Malaysia calendar day, not the device's local day. */
+     computed against the Malaysia calendar day, not the device's local day.
+
+     `stateLocked` is what the State/Postcode inputs read: the process lock UNLESS
+     the SO is amendment-eligible, in which case those fields are editable and
+     their new values ride the amendment for approval (Owner 2026-07-16 — every
+     frozen field must be requestable). */
   const procLockActive = soProcLockActive(header);
+  const stateLocked = procLockActive && !amendmentMode;
 
   /* Returns the first blocking date error, or null when the dates are valid.
      Shared by the imperative validate() (page-level Save runs this BEFORE
@@ -2269,35 +2391,56 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
 
      GRANDFATHER (Owner 2026-06-01) — an already-saved past date that this edit
      does NOT change is a historical record, not a fresh past-date entry, and
-     must never block a Save. The shared helper has no such carve-out (it rejects
-     every past date), so we present a grandfathered-unchanged past date to the
-     guard AS `today`: its not-in-past rule then passes it exactly as the old
-     `!== original` check did, while the XOR + processing≤delivery comparisons
-     still run on the real values (a freshly-typed past date, or a changed date,
-     keeps its own value and is still rejected). */
+     must never block a Save. That rule now lives IN the shared guard: we hand it
+     the real values plus the originals, and it skips the not-in-past check on an
+     unchanged date while still running the XOR + processing<=delivery rules on
+     the real values (a freshly-typed or moved past date is still rejected).
+
+     This replaces the earlier workaround of passing the ORIGINAL date in AS
+     `today` — that lied to the guard about the current date, which also skewed
+     the processing<=delivery comparison, and it could not be reused by mobile
+     (whose amendment submit was hard-blocked by its own unchanged past date). */
   const validateDates = (): string | null => {
-    const grandfathered = (v: string, original: string): boolean =>
-      v !== '' && v < today && v === original;
-    const guardProcessing = grandfathered(form.processingDate, originalProcessing)
-      ? today : form.processingDate;
-    const guardDelivery = grandfathered(form.customerDeliveryDate, originalDelivery)
-      ? today : form.customerDeliveryDate;
     const err = soDateGuardError({
-      processingDate: guardProcessing,
-      deliveryDate: guardDelivery,
+      processingDate: form.processingDate,
+      deliveryDate: form.customerDeliveryDate,
       today,
+      originalProcessingDate: originalProcessing,
+      originalDeliveryDate: originalDelivery,
     });
     return err ? soErrorText(err) : null;
   };
 
-  const trySave = (cb?: { onSuccess?: () => void; onError?: (msg: string) => void }) => {
+  /* The FROZEN header fields as this form currently holds them, and as the SO
+     had them. Fed to the SHARED so-amendment-header helpers so desktop + mobile
+     agree on what needs approval and what saves directly. */
+  const lockedHeaderNow = {
+    internalExpectedDd:   form.processingDate,
+    customerDeliveryDate: form.customerDeliveryDate,
+    customerState:        form.state,
+    postcode:             form.postcode,
+  };
+  const lockedHeaderOriginal = {
+    internalExpectedDd:   header.internal_expected_dd ?? '',
+    customerDeliveryDate: header.customer_delivery_date ?? '',
+    customerState:        header.customer_state ?? '',
+    postcode:             header.postcode ?? header.address4 ?? '',
+  };
+
+  const trySave = (
+    cb?: { onSuccess?: () => void; onError?: (msg: string) => void },
+    opts?: { keepLockedColsAsOriginal?: boolean },
+  ) => {
     const err = validateDates();
     if (err) {
       if (cb?.onError) cb.onError(err);
       else notify({ title: 'Check the dates', body: err, tone: 'error' });
       return;
     }
-    onSave(buildPayload(), cb);
+    const payload = opts?.keepLockedColsAsOriginal
+      ? withFrozenHeaderFieldsReverted(buildPayload(), lockedHeaderOriginal)
+      : buildPayload();
+    onSave(payload, cb);
   };
 
   /* PR-A — Expose imperative save()/reset() so the page-level Edit/Save/
@@ -2306,9 +2449,11 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
      `save` always closes over the latest form snapshot. */
   useImperativeHandle(ref, () => ({
     validate: () => validateDates(),
-    save: (cb) => trySave(cb),
+    save: (cb, opts) => trySave(cb, opts),
     reset: () => setForm(initialFormFor(header)),
     getPhone: () => form.phone ?? '',
+    getLockedHeaderChanges: () =>
+      buildAmendmentHeaderChanges(lockedHeaderNow, lockedHeaderOriginal),
   }));
 
   /* PR-A — Inputs are read-only when the page isn't in edit mode OR the
@@ -2631,8 +2776,8 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
               <span className={styles.selectWrap}>
                 <select className={styles.fieldSelect} value={form.state}
                   onChange={(e) => setForm((s) => ({ ...s, state: e.target.value, city: '', postcode: '' }))}
-                  disabled={inputsDisabled || procLockActive || localities.isLoading}
-                  title={procLockActive ? 'Processing has passed — State is locked (it drives the PO delivery location).' : undefined}>
+                  disabled={inputsDisabled || stateLocked || localities.isLoading}
+                  title={stateLocked ? 'Processing has passed — State is locked (it drives the PO delivery location).' : undefined}>
                   <option value="">{localities.isLoading ? 'Loading…' : 'Pick state'}</option>
                   {sortByText(states).map((s) => <option key={s} value={s}>{s}</option>)}
                 </select>
@@ -2656,8 +2801,8 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
               <span className={styles.selectWrap}>
                 <select className={styles.fieldSelect} value={form.postcode}
                   onChange={(e) => set('postcode', e.target.value)}
-                  disabled={inputsDisabled || procLockActive || !form.city}
-                  title={procLockActive ? 'Processing has passed — Postcode is locked (it drives the PO delivery location).' : undefined}>
+                  disabled={inputsDisabled || stateLocked || !form.city}
+                  title={stateLocked ? 'Processing has passed — Postcode is locked (it drives the PO delivery location).' : undefined}>
                   <option value="">{form.city ? 'Pick postcode' : '— pick city first'}</option>
                   {sortByNumeric(postcodes).map((p) => <option key={p} value={p}>{p}</option>)}
                 </select>
@@ -3335,6 +3480,13 @@ const AmendmentDiffModal = ({
 }) => {
   const { data, isLoading, error } = useAmendmentDetail(amendmentId);
   const lines = (data?.lines ?? []) as AmendmentLine[];
+  /* The HEADER half (mig 0119) — without this a Delivery-Date-only amendment
+     opened as "no line changes recorded" and the requested change was invisible. */
+  const headerDiffs = amendmentHeaderDiffRows(
+    data?.amendment?.header_changes as SoAmendmentHeaderChanges | null | undefined,
+    data?.amendment?.old_header_snapshot as SoAmendmentHeaderChanges | null | undefined,
+    formatDate,
+  );
 
   const oldOf = (l: AmendmentLine): { itemCode?: string; qty?: number; unitPriceSen?: number; description2?: string | null } =>
     (l.old_snapshot as { itemCode?: string; qty?: number; unitPriceSen?: number; description2?: string | null } | null) ?? {};
@@ -3361,8 +3513,8 @@ const AmendmentDiffModal = ({
               <strong>Could not load the changes.</strong>{' '}
               {error instanceof Error ? error.message : String(error)}
             </div>
-          ) : lines.length === 0 ? (
-            <p className={styles.muted}>This amendment has no line changes recorded.</p>
+          ) : lines.length === 0 && headerDiffs.length === 0 ? (
+            <p className={styles.muted}>This amendment has no changes recorded.</p>
           ) : (
             <table className={styles.table}>
               <thead>
@@ -3373,6 +3525,14 @@ const AmendmentDiffModal = ({
                 </tr>
               </thead>
               <tbody>
+                {/* Order details (dates / delivery location) first, then lines. */}
+                {headerDiffs.map((d) => (
+                  <tr key={d.key}>
+                    <td><strong>{d.label}</strong></td>
+                    <td><span className={styles.muted}>{d.from}</span></td>
+                    <td>{d.to}</td>
+                  </tr>
+                ))}
                 {lines.map((l) => {
                   const old = oldOf(l);
                   return (

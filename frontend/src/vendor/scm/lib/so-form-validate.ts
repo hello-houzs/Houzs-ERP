@@ -31,16 +31,41 @@ export interface SoDateGuardInput {
    * it for a draft (it strips both dates), so pass false there.
    */
   requireDatesTogether?: boolean;
+  /**
+   * GRANDFATHER (Owner 2026-06-01) — the value ALREADY SAVED on this SO, for an
+   * EDIT flow. Omit / '' on a create form (every date is then a fresh entry).
+   *
+   * The not-in-past rule exists to stop someone SETTING a date in the past. An
+   * already-saved past date that this edit does not touch is a historical record
+   * — re-submitting it unchanged is not "setting a past date", it is leaving it
+   * alone, so the rule must not fire on it. Without this, an SO that needs an
+   * amendment (which by definition has a PAST processing date) could never have
+   * that amendment submitted: its own unchanged date blocked the save.
+   */
+  originalProcessingDate?: string;
+  originalDeliveryDate?: string;
 }
+
+/** True when `v` is a non-empty date identical to the already-saved original —
+    i.e. this edit is leaving it exactly as it was. */
+const unchanged = (v: string, original: string | undefined): boolean =>
+  v !== "" && original != null && v === original.trim();
 
 /**
  * Date sanity for an SO: dates set together, not in the past, and processing
  * (factory start) not after delivery. Mirrors desktop `SalesOrderNew.onSave`
  * (Commander 2026-05-28 / Owner 2026-06-03) verbatim.
+ *
+ * The not-in-past rule applies ONLY to a date this edit CHANGED (see
+ * originalProcessingDate / originalDeliveryDate). The XOR (set-together) and
+ * processing<=delivery rules always run against the REAL submitted values, so a
+ * newly-typed past date, or a date moved to another past day, is still rejected.
  */
 export function soDateGuardError(i: SoDateGuardInput): SoFormError | null {
-  const hasP = i.processingDate.trim() !== "";
-  const hasD = i.deliveryDate.trim() !== "";
+  const p = i.processingDate.trim();
+  const d = i.deliveryDate.trim();
+  const hasP = p !== "";
+  const hasD = d !== "";
   if ((i.requireDatesTogether ?? true) && hasP !== hasD) {
     return {
       title: "Processing Date and Delivery Date must be set together.",
@@ -48,13 +73,13 @@ export function soDateGuardError(i: SoDateGuardInput): SoFormError | null {
         "Either fill in BOTH dates, or leave BOTH empty — partial dates cause scheduling issues.",
     };
   }
-  if (hasP && i.processingDate < i.today) {
+  if (hasP && p < i.today && !unchanged(p, i.originalProcessingDate)) {
     return { title: "Processing Date cannot be in the past — pick today or a future date." };
   }
-  if (hasD && i.deliveryDate < i.today) {
+  if (hasD && d < i.today && !unchanged(d, i.originalDeliveryDate)) {
     return { title: "Delivery Date cannot be in the past — pick today or a future date." };
   }
-  if (hasP && hasD && i.processingDate > i.deliveryDate) {
+  if (hasP && hasD && p > d) {
     return { title: "Processing Date cannot be later than the Delivery Date." };
   }
   return null;

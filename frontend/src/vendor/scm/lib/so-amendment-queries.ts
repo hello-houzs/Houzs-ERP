@@ -16,6 +16,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
+import type { SoAmendmentHeaderChanges } from './so-amendment-header';
 
 /* ── Row + detail shapes (mirror the API response verbatim) ─────────────────
    List rows are loosely typed (accessors read by name), matching the GRN/SO
@@ -44,7 +45,13 @@ export type AmendmentLine = {
 };
 
 export type AmendmentDetail = {
-  amendment: AmendmentRow & Record<string, unknown>;
+  amendment: AmendmentRow & Record<string, unknown> & {
+    /* mig 0119 — the HEADER half of the request (Delivery Date / Processing Date
+       / State / Postcode: the columns the processing lock freezes) + the values
+       they replace. NULL/absent on a line-only amendment. */
+    header_changes?: SoAmendmentHeaderChanges | null;
+    old_header_snapshot?: SoAmendmentHeaderChanges | null;
+  };
   lines: AmendmentLine[];
   salesOrder: { doc_no: string; status: string; revision: number } | null;
   purchaseOrders: Array<{ id: string; po_number: string; status: string }>;
@@ -142,7 +149,18 @@ export const usePoRevisions = (poId: string | null) => useQuery({
 export const useCreateAmendment = () => {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ docNo, ...body }: { docNo: string; reason?: string; lines: CreateAmendmentLine[] }) =>
+    /* `headerChanges` carries the FROZEN header fields (Delivery Date etc.) the
+       processing lock refuses on a direct PATCH — without it those changes had
+       nowhere to go and were silently dropped (Owner 2026-07-16). Optional: a
+       line-only amendment omits it. The server 400s `amendment_empty` when both
+       halves are empty, so a no-op submit can no longer create a blank
+       amendment in the approval queue. */
+    mutationFn: ({ docNo, ...body }: {
+      docNo: string;
+      reason?: string;
+      lines: CreateAmendmentLine[];
+      headerChanges?: SoAmendmentHeaderChanges;
+    }) =>
       authedFetch<{ amendment: AmendmentRow }>(
         `/mfg-sales-orders/${docNo}/amendments`,
         { method: 'POST', body: JSON.stringify(body) },

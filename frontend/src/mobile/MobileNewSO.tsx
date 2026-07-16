@@ -10,6 +10,11 @@ import { useStateWarehouseMappings } from "../vendor/scm/lib/state-warehouse-que
 import { todayMyt } from "../vendor/scm/lib/dates";
 import { paymentMethodCodeForValue } from "../vendor/scm/lib/payment-methods";
 import { soDateGuardError, soSliplessPaymentError, soErrorText } from "../vendor/scm/lib/so-form-validate";
+import {
+  buildAmendmentHeaderChanges,
+  hasAmendmentHeaderChanges,
+  withFrozenHeaderFieldsReverted,
+} from "../vendor/scm/lib/so-amendment-header";
 import { LOCKED_STATUSES, procLockActive } from "../vendor/scm/lib/so-detail-gates";
 import {
   useSoDropdownOptions,
@@ -630,6 +635,15 @@ export function MobileNewSO({
      processing-date lock. Kept separate from the editable procDate form value so
      the lock reflects what the backend has, not an in-flight edit. */
   const [origProcDate, setOrigProcDate] = useState<string>("");
+  /* The PERSISTED delivery date — the pair of origProcDate. Needed for the same
+     two reasons: the shared date guard must know which dates this edit actually
+     CHANGED (an unchanged past date must not block the save), and the amendment
+     needs a before-value for the frozen-field diff. */
+  const [origDelivDate, setOrigDelivDate] = useState<string>("");
+  /* PERSISTED State / Postcode — the other two columns the processing lock
+     freezes. Needed to diff what an amendment is actually requesting. */
+  const [origState, setOrigState] = useState<string>("");
+  const [origPostcode, setOrigPostcode] = useState<string>("");
   /* PERSISTED SO status — feeds the SHARED procLockActive() so the processing
      lock keeps a DRAFT / CANCELLED SO editable (status guard), matching the
      mobile detail screen + desktop instead of the old status-blind copy. */
@@ -698,6 +712,7 @@ export function MobileNewSO({
         setProcDate((h.internal_expected_dd ?? "").slice(0, 10));
         setOrigProcDate((h.internal_expected_dd ?? "").slice(0, 10));
         setDelivDate((h.customer_delivery_date ?? "").slice(0, 10));
+        setOrigDelivDate((h.customer_delivery_date ?? "").slice(0, 10));
         setNote(h.note ?? "");
         setEcName(h.emergency_contact_name ?? "");
         setEcRel(h.emergency_contact_relationship ?? "");
@@ -707,6 +722,8 @@ export function MobileNewSO({
         setState(h.customer_state ?? "");
         setCity(h.city ?? "");
         setPostcode(h.postcode ?? "");
+        setOrigState(h.customer_state ?? "");
+        setOrigPostcode(h.postcode ?? "");
         const liveItems = (detail.items ?? []).filter((it) => !it.cancelled);
         setOrigItems(liveItems);
         const editable = liveItems.map(lineFromItem);
@@ -882,8 +899,15 @@ export function MobileNewSO({
      read-only — a second amendment can't be raised while one is in flight. */
   const lineEditingBlocked = lineLocked || (procLocked && !amendmentMode);
   /* Identity address columns (State/City/Postcode) freeze on the processing
-     lock (State drives each line's warehouse → the supplier PO). */
-  const addressIdentityLocked = procLocked;
+     lock (State drives each line's warehouse → the supplier PO) — EXCEPT in
+     amendment mode, where changing them is exactly what an amendment is for, so
+     they stay editable and their new values ride the request for approval
+     (Owner 2026-07-16: "應該是全部可以 request 啊 然後看有沒有 approval"). */
+  const addressIdentityLocked = procLocked && !amendmentMode;
+  /* The two schedule dates follow the same rule: frozen on a plain locked SO,
+     requestable via the amendment. Delivery Date specifically — owner:
+     "delivery date 也要給 amend 也是 subject approval". */
+  const scheduleDatesLocked = procLocked && !amendmentMode;
 
   /* ── FIX A — Salesperson default (desktop parity) ─────────────────────────
      The creator IS the salesperson: default to the signed-in user. If they have
@@ -1384,15 +1408,23 @@ export function MobileNewSO({
     }
     const procOut = asDraft ? "" : procDate;
     const delivOut = asDraft ? "" : delivDate;
-    // Date sanity (set-together / not-past / processing≤delivery) — SHARED with
-    // desktop via soDateGuardError so the rule can't drift. Validates only what
-    // will actually be saved (a draft strips both dates → procOut/delivOut "").
-    // Draft skips the both-or-neither rule (mobile parity); a firm SO enforces it.
+    /* Date sanity (set-together / not-past / processing≤delivery) — SHARED with
+       desktop via soDateGuardError so the rule can't drift. Validates only what
+       will actually be saved (a draft strips both dates → procOut/delivOut "").
+       Draft skips the both-or-neither rule (mobile parity); a firm SO enforces it.
+
+       The originals are passed so the not-in-past rule fires only on a date this
+       edit CHANGED. Without them this guard made the whole EDIT SHEET unusable on
+       any SO that needed an amendment: such an SO ALWAYS has a past processing
+       date, so its own unchanged date failed the not-in-past check and the submit
+       was rejected before it ever reached the amendment (Owner 2026-07-16). */
     const dateErr = soDateGuardError({
       processingDate: procOut,
       deliveryDate: delivOut,
       today: todayMyt(),
       requireDatesTogether: !asDraft,
+      originalProcessingDate: origProcDate,
+      originalDeliveryDate: origDelivDate,
     });
     if (dateErr) { setError(soErrorText(dateErr)); return; }
     /* Address becomes required only when this is a firm delivery (both dates set)
@@ -1441,22 +1473,53 @@ export function MobileNewSO({
           emergencyContactRelationship: ecRel || null,
           salespersonId: outgoingSalespersonId,
         };
+        /* AMENDMENT MODE (Phase 1-C, desktop SalesOrderDetail.submitAmendment
+           parity) — the SO is processing-locked but amendment_eligible. The edit
+           splits in two:
+             * directly-editable fields (contact / address lines / note) -> the
+               header PATCH below, saved immediately, no approval needed.
+             * FROZEN fields (Delivery / Processing Date, State, Postcode) + line
+               changes -> the amendment request, approval decides.
+           The PATCH must therefore send every frozen column at its ORIGINAL value
+           or the server 409s so_locked_processing on the very change we're about
+           to request. Shared helpers with desktop (so-amendment-header) so the
+           split can't drift. */
+        const { changes: headerChanges } = buildAmendmentHeaderChanges(
+          {
+            internalExpectedDd:   procOut,
+            customerDeliveryDate: delivOut,
+            customerState:        state,
+            postcode:             postcode.trim(),
+          },
+          {
+            internalExpectedDd:   origProcDate,
+            customerDeliveryDate: origDelivDate,
+            customerState:        origState,
+            postcode:             origPostcode,
+          },
+        );
+        const outgoingPatch = amendmentMode
+          ? withFrozenHeaderFieldsReverted(patch, {
+              internalExpectedDd:   origProcDate,
+              customerDeliveryDate: origDelivDate,
+              customerState:        origState,
+              postcode:             origPostcode,
+            })
+          : patch;
+
         await authedFetch(`/mfg-sales-orders/${encodeURIComponent(docNo)}`, {
           method: "PATCH",
-          body: JSON.stringify(patch),
+          body: JSON.stringify(outgoingPatch),
         });
 
-        /* AMENDMENT MODE (Phase 1-C, desktop SalesOrderDetail.submitAmendment
-           parity) — the SO is processing-locked but amendment_eligible, so the
-           header PATCH above still saves the still-editable fields (note / address
-           lines / contact) while LINE changes go out as an amendment request
-           rather than a direct item write. Reuses buildAmendmentLines +
-           createAmendment; the server recomputes pricing on approve. */
         if (amendmentMode) {
           const amLines = buildAmendmentLines();
-          if (amLines.length === 0) {
+          /* An amendment may now be header-only (e.g. just a new Delivery Date) —
+             previously a header-only edit hit this empty check and NEVER created
+             an amendment, so nothing ever reached the approval queue. */
+          if (amLines.length === 0 && !hasAmendmentHeaderChanges(headerChanges)) {
             setSubmitting(false);
-            setError("No line changes to submit — edit, add or remove a line first, then submit the amendment.");
+            setError("No changes to submit — edit a line, a date or the delivery location first, then submit the amendment.");
             return;
           }
           const reason = await prompt({
@@ -1468,7 +1531,9 @@ export function MobileNewSO({
           });
           if (reason == null) { setSubmitting(false); return; } // cancelled the prompt
           try {
-            await createAmendment.mutateAsync({ docNo, reason: reason.trim() || undefined, lines: amLines });
+            await createAmendment.mutateAsync({
+              docNo, reason: reason.trim() || undefined, lines: amLines, headerChanges,
+            });
           } catch (e) {
             setSubmitting(false);
             // authed-fetch already humanises the API error to one plain sentence.
@@ -1619,8 +1684,11 @@ export function MobileNewSO({
 
             {/* FIX D2/D3 — processing-date lock notice. The SO is on order to the
                 supplier, so line items + State/City/Postcode are frozen; the rest
-                of the customer info + address lines + note stay editable. */}
-            {procLocked && (
+                of the customer info + address lines + note stay editable.
+                NOT shown in amendment mode — there the lines + frozen fields ARE
+                editable (they ride an amendment), so this banner would contradict
+                the form. The amendment banner on the Items card says it instead. */}
+            {procLocked && !amendmentMode && (
               <div style={{ display: "flex", alignItems: "flex-start", gap: 9, marginBottom: 11, padding: "10px 12px", background: "#fbf3e6", border: "1px solid #ecd9b6", borderRadius: 12 }}>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#a16a2e" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flex: "none", marginTop: 1 }}><rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg>
                 <div style={{ fontSize: 11.5, color: "#8a5a22", lineHeight: 1.5 }}>
@@ -1749,15 +1817,22 @@ export function MobileNewSO({
                 )}
                 <div style={{ display: "flex", gap: 9 }}>
                   {/* FIX D3 — once the processing date has passed the SO is locked
-                      (it's what we PO to the supplier); the date inputs freeze. */}
+                      (it's what we PO to the supplier); the date inputs freeze.
+                      Owner 2026-07-16 — UNLESS the order is amendment-eligible:
+                      then both dates are editable and go out as an amendment
+                      request for approval instead of saving directly. */}
                   <Field label="Processing Date" style={{ flex: 1 }} error={touched && dateXorErr} scanned={scanned("procDate", procDate)}>
-                    <input className="fld-i" type="date" value={procDate} disabled={procLocked} onChange={(e) => setProcDate(e.target.value)} />
+                    <input className="fld-i" type="date" value={procDate} disabled={scheduleDatesLocked} onChange={(e) => setProcDate(e.target.value)} />
                   </Field>
                   <Field label="Delivery Date" style={{ flex: 1 }} error={touched && dateXorErr} scanned={scanned("delivDate", delivDate)}>
-                    <input className="fld-i" type="date" value={delivDate} disabled={procLocked} onChange={(e) => setDelivDate(e.target.value)} />
+                    <input className="fld-i" type="date" value={delivDate} disabled={scheduleDatesLocked} onChange={(e) => setDelivDate(e.target.value)} />
                   </Field>
                 </div>
-                <div style={{ fontSize: 10, color: "#9aa093", marginTop: -3 }}>Set both dates together, or leave both empty to keep this a draft.</div>
+                <div style={{ fontSize: 10, color: "#9aa093", marginTop: -3 }}>
+                  {amendmentMode
+                    ? "Changing a date here submits an amendment request — it applies once approved."
+                    : "Set both dates together, or leave both empty to keep this a draft."}
+                </div>
                 <Field label="Note" scanned={scanned("note", note)}>
                   <input className="fld-i" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Internal notes — SO detail only" />
                 </Field>
@@ -1864,9 +1939,14 @@ export function MobileNewSO({
                         )}
                       </Field>
                     </div>
-                    {addressIdentityLocked && (
+                    {addressIdentityLocked ? (
                       <div style={{ fontSize: 10, color: "#a16a2e", marginTop: -3 }}>
                         State, City and Postcode are locked — this order&apos;s processing date has passed and it is now on order to the supplier. Address lines can still be updated.
+                      </div>
+                    ) : null}
+                    {amendmentMode && (
+                      <div style={{ fontSize: 10, color: "#a16a2e", marginTop: -3 }}>
+                        Changing the State or Postcode submits an amendment request — it applies once approved. Address lines save straight away.
                       </div>
                     )}
               </div>
@@ -1883,7 +1963,7 @@ export function MobileNewSO({
                 {amendmentMode && (
                   <div style={{ display: "flex", alignItems: "flex-start", gap: 8, background: "rgba(232,107,58,0.08)", border: "1px solid var(--c-orange, #e86b3a)", borderRadius: 10, padding: "9px 11px", fontSize: 11, color: "#8a4a24", lineHeight: 1.45 }}>
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#c66a34" strokeWidth="2" strokeLinecap="round" style={{ flexShrink: 0, marginTop: 1 }}><rect x="4" y="10" width="16" height="10" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /></svg>
-                    <span>This order is already ordered from the supplier. Edit the lines as usual — your <b>Save</b> submits an <b>amendment request</b> that the coordinator and supplier confirm before the order is revised.</span>
+                    <span>This order is already ordered from the supplier. Edit the lines, dates or delivery location as usual — your <b>Save</b> submits an <b>amendment request</b> that the coordinator and supplier confirm before the order is revised. Contact details and address lines save straight away.</span>
                   </div>
                 )}
                 {lineEditingBlocked ? (

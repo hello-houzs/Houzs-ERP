@@ -52,9 +52,13 @@ import {
   useApproveSo,
   type AmendmentLine,
 } from "../../vendor/scm/lib/so-amendment-queries";
+import {
+  amendmentHeaderDiffRows,
+  type SoAmendmentHeaderChanges,
+} from "../../vendor/scm/lib/so-amendment-header";
 import { useAuth as useHouzsAuth } from "../../auth/AuthContext";
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
-import { cn } from "../../lib/utils";
+import { cn, formatDate } from "../../lib/utils";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -505,6 +509,19 @@ export function AmendmentDetailV2() {
   const salesOrder = data?.salesOrder ?? null;
   const boundPo = data?.purchaseOrders?.[0] ?? null;
 
+  /* The HEADER half of the request (mig 0119) — the frozen fields this amendment
+     asks to change, paired with the values they replace. Shared builder so this
+     job card, the desktop SO-detail diff modal and the mobile sheet all render
+     it identically. Empty on a line-only amendment. */
+  const headerDiffs = useMemo(
+    () => amendmentHeaderDiffRows(
+      amendment?.header_changes as SoAmendmentHeaderChanges | null | undefined,
+      amendment?.old_header_snapshot as SoAmendmentHeaderChanges | null | undefined,
+      formatDate,
+    ),
+    [amendment],
+  );
+
   const status = String(amendment?.status ?? "");
   const soDocNo = String(amendment?.so_doc_no ?? "");
   const amendmentNo =
@@ -640,10 +657,37 @@ export function AmendmentDetailV2() {
       <div className="py-5">
         <DetailGrid>
           <DetailMain>
+            {/* Owner 2026-07-16 — an amendment can now also request HEADER
+                changes (Delivery Date / Processing Date / State / Postcode: the
+                columns the processing lock freezes, mig 0119). Render them
+                FIRST: a header-only amendment would otherwise show "no changes
+                recorded" and the approver would be approving something invisible. */}
+            {headerDiffs.length > 0 && (
+              <Section title={`Requested order changes · ${headerDiffs.length}`}>
+                <div className="space-y-2.5">
+                  {headerDiffs.map((d) => (
+                    <div
+                      key={d.key}
+                      className="rounded-md border border-line px-3 py-2.5 text-[12px]"
+                    >
+                      <div className="font-medium text-ink">{d.label}</div>
+                      <div className="mt-1 flex flex-wrap items-center gap-2 text-ink-muted">
+                        <span className="line-through">{d.from}</span>
+                        <span aria-hidden>&rarr;</span>
+                        <span className="font-medium text-ink">{d.to}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </Section>
+            )}
+
             <Section title={`Requested changes · ${lines.length}`}>
               {lines.length === 0 ? (
                 <div className="text-[12px] text-ink-muted">
-                  This amendment has no line changes recorded.
+                  {headerDiffs.length > 0
+                    ? "No line changes — this amendment only changes the order details above."
+                    : "This amendment has no line changes recorded."}
                 </div>
               ) : (
                 <div className="space-y-2.5">

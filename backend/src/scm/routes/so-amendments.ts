@@ -86,7 +86,12 @@ soAmendments.get('/:id', async (c) => {
       .select('id, so_doc_no, amendment_no, status, reason, requested_by, ' +
         'supplier_confirmed_by, supplier_confirmation_ref, supplier_confirmation_note, ' +
         'supplier_confirmation_attachment_key, so_approved_by, so_approved_at, ' +
-        'po_approved_by, po_approved_at, sent_at, created_at, updated_at')
+        'po_approved_by, po_approved_at, sent_at, created_at, updated_at, ' +
+        // mig 0119 — the HEADER half of the request (Delivery Date / Processing
+        // Date / State / Postcode) + its before-snapshot. NULL on a line-only
+        // amendment. Without these the approver could not SEE a requested date
+        // change, only line diffs.
+        'header_changes, old_header_snapshot')
       .eq('id', id), c).maybeSingle(),
     sb.from('so_amendment_lines')
       .select('id, amendment_id, sales_order_item_id, change_type, new_item_code, ' +

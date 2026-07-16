@@ -354,6 +354,30 @@ const SO_PROCESSING_LOCK_COLS = new Set<string>([
   'customer_state', 'sales_location', 'postcode',
 ]);
 
+/* ── Amendable header fields (Owner 2026-07-16) ─────────────────────────────
+   Every column SO_PROCESSING_LOCK_COLS freezes above is rejected by the header
+   PATCH once the SO is locked. The amendment workflow is the sanctioned channel
+   for changing a locked SO — so this is EXACTLY the set an amendment must be
+   able to carry, or a field would be frozen with no way to request it at all
+   (owner: "應該是全部可以 request 啊 然後看有沒有 approval"; the Delivery Date was
+   the concrete casualty).
+
+   Keyed by the camelCase payload name the header PATCH already accepts, mapped
+   to its column. `sales_location` is in the lock Set but NOT amendable directly:
+   it is DERIVED from customer_state, and applySoAmendment re-derives it exactly
+   as the header PATCH does. Mirrors the frontend AMENDABLE_HEADER_KEYS
+   (vendor/scm/lib/so-amendment-header.ts) — keep the two in step.
+
+   This allow-list is the trust boundary: an amendment's header_changes jsonb is
+   client-authored, so any key not listed here is REJECTED at create rather than
+   written through to the SO on approve. */
+const AMENDABLE_HEADER_FIELDS: Record<string, string> = {
+  internalExpectedDd:   'internal_expected_dd',
+  customerDeliveryDate: 'customer_delivery_date',
+  customerState:        'customer_state',
+  postcode:             'postcode',
+};
+
 /* Loose equality for the lock diff — null / undefined / '' all collapse so a
    UI re-sending an empty field as '' does not read as a change from null. */
 function norm(v: unknown): string {
@@ -610,7 +634,9 @@ const ITEM =
    default. Cheap single-row lookup; the read is on the indexed `state`
    column so it stays under a millisecond even with the full ~7k MY
    postcode set. ─────────────────────────────────────────────────────── */
-const deriveCountryFromState = async (
+/* Exported (2026-07-16) so the amendment apply engine (lib/so-revision.ts) runs
+   the SAME State cascade the header PATCH does, instead of re-deriving it. */
+export const deriveCountryFromState = async (
   sb: any,
   state: string | null | undefined,
 ): Promise<string | null> => {
@@ -638,7 +664,7 @@ const deriveCountryFromState = async (
    that set a State but no salesLocation (e.g. API/import) so Location is bound
    to the address everywhere, not only through the form. Returns the warehouse
    code for the state, or null when unmapped. */
-const deriveSalesLocationFromState = async (
+export const deriveSalesLocationFromState = async (
   sb: any,
   state: string | null | undefined,
   c: any,
@@ -670,7 +696,7 @@ const deriveSalesLocationFromState = async (
    per-warehouse. It defaults from the SO's customer_state (same mapping the
    text sales_location uses) and is editable per line. Returns the warehouse
    UUID for the state, or null when unmapped/no state. */
-const deriveWarehouseIdFromState = async (
+export const deriveWarehouseIdFromState = async (
   sb: any,
   state: string | null | undefined,
   c: any,
@@ -9203,6 +9229,7 @@ mfgSalesOrders.post('/:docNo/amendments', async (c) => {
 
   let body: {
     reason?: string;
+    headerChanges?: Record<string, unknown> | null;
     lines?: Array<{
       salesOrderItemId?: string | null;
       changeType?: string;
@@ -9215,10 +9242,12 @@ mfgSalesOrders.post('/:docNo/amendments', async (c) => {
   };
   try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid_json' }, 400); }
 
-  // Guard 1 — SO exists. Pull the lock columns (processing-date + proceeded_at)
-  // plus salesperson_id for the ownership scope check below.
+  // Guard 1 — SO exists. Pull the lock columns (processing-date + proceeded_at
+  // + status) plus salesperson_id for the ownership scope check below, plus the
+  // amendable header columns for the header-change snapshot / date checks.
   const { data: soRow } = await scopeToCompany(sb.from('mfg_sales_orders')
-    .select('doc_no, status, revision, internal_expected_dd, processing_date, proceeded_at, salesperson_id')
+    .select('doc_no, status, revision, internal_expected_dd, processing_date, proceeded_at, salesperson_id, ' +
+      'customer_delivery_date, customer_state, postcode')
     .eq('doc_no', docNo), c).maybeSingle();
   if (!soRow) return c.json({ error: 'not_found' }, 404);
 
@@ -9240,7 +9269,7 @@ mfgSalesOrders.post('/:docNo/amendments', async (c) => {
 
   // Guard 2 — an amendment only makes sense once the SO is processing-locked;
   // an unlocked SO is still directly editable, so no amendment is needed.
-  if (!soProcessingLocked(soRow as { internal_expected_dd?: string | null; processing_date?: string | null; proceeded_at?: string | null })) {
+  if (!soProcessingLocked(soRow as { internal_expected_dd?: string | null; processing_date?: string | null; proceeded_at?: string | null; status?: string | null })) {
     return c.json({
       error: 'not_locked_no_amendment_needed',
       reason: 'This Sales Order is not processing-locked yet — edit it directly instead of raising an amendment.',
@@ -9270,11 +9299,108 @@ mfgSalesOrders.post('/:docNo/amendments', async (c) => {
     }, 409);
   }
 
+  /* Guard 5 (Owner 2026-07-16) — an amendment must actually REQUEST something.
+     Validate the client-authored header_changes against AMENDABLE_HEADER_FIELDS
+     (the trust boundary — an unlisted key would otherwise be written straight to
+     the SO on approve), then reject a wholly-empty amendment. Previously `lines`
+     could be [] with no header channel at all, so an operator who changed only a
+     header field created an EMPTY amendment that went to the approval queue with
+     nothing in it — or, on the frontend, was silently dropped. Both halves are
+     optional; at least ONE must be present. */
+  const rawHeaderChanges = (body.headerChanges ?? null) as Record<string, unknown> | null;
+  const headerChanges: Record<string, string | null> = {};
+  if (rawHeaderChanges && typeof rawHeaderChanges === 'object') {
+    /* hasOwnProperty, NOT `in` — `in` walks the prototype chain, so a payload key
+       of "constructor" / "toString" would pass an `in` allow-list check and then
+       resolve to an inherited value. Own-keys only. */
+    const isAmendable = (k: string): boolean =>
+      Object.prototype.hasOwnProperty.call(AMENDABLE_HEADER_FIELDS, k);
+    const unknownKeys = Object.keys(rawHeaderChanges).filter((k) => !isAmendable(k));
+    if (unknownKeys.length > 0) {
+      return c.json({
+        error: 'header_field_not_amendable',
+        reason: `These fields cannot be changed by an amendment: ${unknownKeys.join(', ')}.`,
+      }, 400);
+    }
+    for (const [k, v] of Object.entries(rawHeaderChanges)) {
+      if (v !== null && typeof v !== 'string') {
+        return c.json({
+          error: 'header_field_invalid',
+          reason: `The requested value for ${k} is not valid.`,
+        }, 400);
+      }
+      const val = v === null ? null : v.trim();
+      headerChanges[k] = val === '' ? null : val;
+    }
+  }
+  const hasHeaderChanges = Object.keys(headerChanges).length > 0;
+  const submittedLines = Array.isArray(body.lines) ? body.lines : [];
+  if (!hasHeaderChanges && submittedLines.length === 0) {
+    return c.json({
+      error: 'amendment_empty',
+      reason: 'There are no changes to request — edit a line, a date or the delivery location first, then submit the amendment.',
+    }, 400);
+  }
+
+  /* Date sanity on a requested schedule change (mirrors the create/edit form's
+     shared soDateGuardError). The pair is resolved against the SO's CURRENT
+     values so changing ONE date is still checked against the other; an unchanged
+     already-past date is NOT re-rejected (it is what the amendment exists to
+     fix), but a NEWLY-requested past date is. */
+  if (hasHeaderChanges) {
+    const cur = soRow as { internal_expected_dd?: string | null; customer_delivery_date?: string | null };
+    const ymd = (v: string | null | undefined): string => (v == null ? '' : String(v).slice(0, 10));
+    const curProc = ymd(cur.internal_expected_dd);
+    const curDeliv = ymd(cur.customer_delivery_date);
+    const nextProc = 'internalExpectedDd' in headerChanges ? ymd(headerChanges['internalExpectedDd']) : curProc;
+    const nextDeliv = 'customerDeliveryDate' in headerChanges ? ymd(headerChanges['customerDeliveryDate']) : curDeliv;
+    const todayMY = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+    if ((nextProc !== '') !== (nextDeliv !== '')) {
+      return c.json({
+        error: 'amendment_dates_xor',
+        reason: 'Processing Date and Delivery Date must be set together — request both, or clear both.',
+      }, 400);
+    }
+    if ('internalExpectedDd' in headerChanges && nextProc !== '' && nextProc !== curProc && nextProc < todayMY) {
+      return c.json({
+        error: 'amendment_date_in_past',
+        reason: 'The new Processing Date cannot be in the past — pick today or a future date.',
+      }, 400);
+    }
+    if ('customerDeliveryDate' in headerChanges && nextDeliv !== '' && nextDeliv !== curDeliv && nextDeliv < todayMY) {
+      return c.json({
+        error: 'amendment_date_in_past',
+        reason: 'The new Delivery Date cannot be in the past — pick today or a future date.',
+      }, 400);
+    }
+    if (nextProc !== '' && nextDeliv !== '' && nextProc > nextDeliv) {
+      return c.json({
+        error: 'amendment_dates_order',
+        reason: 'The Processing Date cannot be later than the Delivery Date.',
+      }, 400);
+    }
+  }
+
   // Mint amendment_no = `${docNo}/A${n}`, n = (prior amendments for this SO) + 1.
   const amendmentNo = `${docNo}/A${prior.length + 1}`;
 
   // Insert the amendment header (status REQUESTED, requested_by = current staff).
   // company_id: stamp the active company (mig 0080 nullable column); no-op pre-activation.
+  /* Header half (mig 0119) — the REQUESTED values plus a snapshot of what they
+     replace, so the approver sees a before/after without re-reading the SO (by
+     approval time the SO may have moved on). Snapshot only the keys actually
+     being changed, read off the SO row we already hold. NULL when the amendment
+     is line-only, which is exactly the pre-0119 shape. */
+  const oldHeaderSnapshot: Record<string, string | null> = {};
+  if (hasHeaderChanges) {
+    const curRow = soRow as unknown as Record<string, unknown>;
+    for (const key of Object.keys(headerChanges)) {
+      const col = AMENDABLE_HEADER_FIELDS[key];
+      const cur = curRow[col];
+      oldHeaderSnapshot[key] = cur == null ? null : String(cur);
+    }
+  }
+
   const { data: created, error: insErr } = await sb.from('so_amendments').insert({
     so_doc_no:    docNo,
     amendment_no: amendmentNo,
@@ -9282,7 +9408,9 @@ mfgSalesOrders.post('/:docNo/amendments', async (c) => {
     reason:       body.reason ?? null,
     requested_by: user.id,
     company_id:   activeCompanyId(c),
-  }).select('id, so_doc_no, amendment_no, status, reason, requested_by, created_at').single();
+    header_changes:      hasHeaderChanges ? headerChanges : null,
+    old_header_snapshot: hasHeaderChanges ? oldHeaderSnapshot : null,
+  }).select('id, so_doc_no, amendment_no, status, reason, requested_by, created_at, header_changes, old_header_snapshot').single();
   if (insErr) return c.json({ error: 'create_failed', reason: insErr.message }, 500);
   const amendment = created as {
     id: string; so_doc_no: string; amendment_no: string; status: string;
@@ -9290,8 +9418,10 @@ mfgSalesOrders.post('/:docNo/amendments', async (c) => {
   };
 
   // Insert the amendment lines from the submitted diff (SPEC/QTY/ADD/REMOVE +
-  // an old-values snapshot for display).
-  const lines = Array.isArray(body.lines) ? body.lines : [];
+  // an old-values snapshot for display). May legitimately be empty now that a
+  // header-only amendment is a first-class case (Guard 5 already rejected the
+  // no-lines-AND-no-header-changes case).
+  const lines = submittedLines;
   if (lines.length > 0) {
     const lineRows = lines.map((l) => ({
       amendment_id:        amendment.id,
@@ -9318,7 +9448,16 @@ mfgSalesOrders.post('/:docNo/amendments', async (c) => {
     action: 'AMENDMENT_REQUESTED',
     actorId: user.id,
     actorName: (user.user_metadata as { name?: string } | undefined)?.name ?? null,
-    fieldChanges: [{ field: 'amendment', from: null, to: amendmentNo }],
+    fieldChanges: [
+      { field: 'amendment', from: null, to: amendmentNo },
+      // Requested header changes are audited at REQUEST time (not just at apply)
+      // so the History timeline shows what was asked for even if it's rejected.
+      ...Object.keys(headerChanges).map((k) => ({
+        field: `requested_${AMENDABLE_HEADER_FIELDS[k]}`,
+        from:  oldHeaderSnapshot[k],
+        to:    headerChanges[k],
+      })),
+    ],
     note: body.reason ?? undefined,
   });
 
