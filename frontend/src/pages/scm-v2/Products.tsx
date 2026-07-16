@@ -95,6 +95,7 @@ import {
   type SpecialAddonGroup,
   type SpecialAddonsHistoryRow,
 } from '../../vendor/scm/lib/mfg-products-queries';
+import { useStaffLookup } from '../../hooks/useStaffLookup';
 import { useFabricTrackings } from '../../vendor/scm/lib/fabric-queries';
 import { sortByText } from '../../vendor/scm/lib/sort-options';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
@@ -4750,7 +4751,10 @@ const SpecialsHistoryDialog = ({
   category: 'BEDFRAME' | 'SOFA';
   history: SpecialAddonsHistoryRow[];
   onClose: () => void;
-}) => (
+}) => {
+  // createdBy is a scm.staff uuid — resolve it, never print the id.
+  const { actorNameOf } = useStaffLookup();
+  return (
   <div className={styles.drawerBackdrop} onClick={onClose}>
     <div
       onClick={(e) => e.stopPropagation()}
@@ -4775,7 +4779,7 @@ const SpecialsHistoryDialog = ({
                 )}
               </div>
               <div style={{ marginTop: 4, fontSize: 'var(--fs-12)', color: '#767b6e' }}>
-                Created {fmtDateTime(entry.createdAt)}{entry.createdBy ? ` by ${entry.createdBy.slice(0, 8)}` : ''}
+                Created {fmtDateTime(entry.createdAt)}{entry.createdBy ? ` by ${actorNameOf(entry.createdBy)}` : ''}
               </div>
               {entry.notes && <p style={{ marginTop: 6, fontSize: 'var(--fs-13)', color: '#11140f' }}>Notes: {entry.notes}</p>}
               <pre style={{ marginTop: 8, padding: 'var(--space-2)', background: '#f4f6f3', border: '1px solid #d6d9d2', borderRadius: 'var(--radius-sm)', fontSize: 'var(--fs-11)', overflow: 'auto', maxHeight: 200 }}>
@@ -4790,7 +4794,8 @@ const SpecialsHistoryDialog = ({
       </footer>
     </div>
   </div>
-);
+  );
+};
 
 /* ════════════════════════════════════════════════════════════════════════
    Maintenance History dialog — shows config snapshots over time
@@ -4806,7 +4811,10 @@ const MaintenanceHistoryDialog = ({
   activeKey: MaintenanceListKey;
   history: import('../../vendor/scm/lib/mfg-products-queries').MaintenanceHistoryRow[];
   onClose: () => void;
-}) => (
+}) => {
+  // createdBy is a scm.staff uuid — resolve it, never print the id.
+  const { actorNameOf } = useStaffLookup();
+  return (
   <div className={styles.drawerBackdrop} onClick={onClose}>
     <div
       onClick={(e) => e.stopPropagation()}
@@ -4852,7 +4860,7 @@ const MaintenanceHistoryDialog = ({
                 )}
               </div>
               <div style={{ marginTop: 4, fontSize: 'var(--fs-12)', color: '#767b6e' }}>
-                Created {fmtDateTime(entry.createdAt)}{entry.createdBy ? ` by ${entry.createdBy.slice(0, 8)}` : ''}
+                Created {fmtDateTime(entry.createdAt)}{entry.createdBy ? ` by ${actorNameOf(entry.createdBy)}` : ''}
               </div>
               {entry.notes && (
                 <p style={{ marginTop: 6, fontSize: 'var(--fs-13)', color: '#11140f' }}>Notes: {entry.notes}</p>
@@ -4878,7 +4886,8 @@ const MaintenanceHistoryDialog = ({
       </footer>
     </div>
   </div>
-);
+  );
+};
 
 /* ════════════════════════════════════════════════════════════════════════
    CSV Export + Import

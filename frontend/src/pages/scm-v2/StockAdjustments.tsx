@@ -26,6 +26,7 @@ import { StatCard } from "../../components/StatCard";
 import { Badge } from "../../components/Badge";
 import { DataTable, type Column } from "../../components/DataTable";
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
+import { useStaffLookup } from "../../hooks/useStaffLookup";
 import { cn } from "../../lib/utils";
 
 /* Warehouse pill tone — the handoff prescribes a coloured status dot per
@@ -73,6 +74,8 @@ export function StockAdjustments() {
   ]);
 
   const warehouses = useWarehouses();
+  // performed_by is a scm.staff uuid — resolve it, never print the id.
+  const { actorNameOf } = useStaffLookup();
   const { data, isLoading, error } = useInventoryMovements({
     docType: "ADJUSTMENT",
     warehouseId: warehouseId ?? undefined,
@@ -232,10 +235,10 @@ export function StockAdjustments() {
     {
       key: "performedBy",
       label: "Performed By",
-      getValue: (m) => m.performed_by ?? "",
+      getValue: (m) => actorNameOf(m.performed_by, ""),
       render: (m) => (
-        <span className="font-mono text-[11px] text-ink-secondary">
-          {m.performed_by ? m.performed_by.slice(0, 8) : "—"}
+        <span className="text-[11px] text-ink-secondary">
+          {actorNameOf(m.performed_by)}
         </span>
       ),
     },

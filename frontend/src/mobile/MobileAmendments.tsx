@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useAmendments, type AmendmentRow } from "../vendor/scm/lib/so-amendment-queries";
 import { resolveStatusPill, statusLabel, type StatusTone } from "../vendor/scm/lib/status-pill";
 import { formatDate } from "../lib/utils";
+import { useStaffLookup } from "../hooks/useStaffLookup";
 import "./mobile.css";
 
 /* ------------------------------------------------------------------ *
@@ -54,6 +55,8 @@ export function MobileAmendments({
 }) {
   const [chip, setChip] = useState<string>("all");
   const { data, isLoading, error } = useAmendments();
+  // requested_by is a bare scm.staff uuid — same roster resolve as desktop.
+  const { actorNameOf } = useStaffLookup();
 
   const allRows = useMemo<AmendmentRow[]>(() => data?.amendments ?? [], [data]);
   const rows = useMemo<AmendmentRow[]>(
@@ -114,7 +117,7 @@ export function MobileAmendments({
                     </div>
                   )}
                   <div className="foot">
-                    <span>Requested by {a.requested_by || "—"}</span>
+                    <span>Requested by {actorNameOf(a.requested_by)}</span>
                     <span className="tnum">{formatDate(a.created_at)}</span>
                   </div>
                 </button>

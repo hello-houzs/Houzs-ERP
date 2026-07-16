@@ -23,7 +23,7 @@ import type { Env, Variables } from '../env';
 import { canTransition, nextStatus, type AmendStatus, type AmendAction } from '../shared';
 import { applySoAmendment, reviseBoundPo, ReceivedFloorError } from '../lib/so-revision';
 import { hasHouzsPerm, canViewAllSales } from '../lib/houzs-perms';
-import { resolveSalesScopeIds, salesDocOutOfScope } from '../lib/salesScope';
+import { resolveSalesScopeIds, salesDocOutOfScope, resolveCallerStaffId } from '../lib/salesScope';
 import { recordSoAudit } from '../lib/so-audit';
 import { scopeToCompany } from '../lib/companyScope';
 
@@ -34,6 +34,20 @@ soAmendments.use('*', supabaseAuth);
    pinned system row; user_metadata.name is the real Houzs caller). */
 function actorName(user: { user_metadata?: { name?: string } } | undefined): string | null {
   return user?.user_metadata?.name ?? null;
+}
+
+/* The gate columns (supplier_confirmed_by / so_approved_by / po_approved_by)
+   are scm.staff FKs the UI renders as "who did this". `user.id` is the bridge's
+   pinned system row shared by EVERY caller, so stamping it made all three read
+   as one system identity — the same defect the salesperson_id / requested_by
+   stamps carried. Resolve the caller's real mig-0066 staff row; fall back to
+   the pinned row when the sync row is missing so the FK stays valid. */
+async function gateActorStaffId(
+  sb: any,
+  houzsUserId: number | null | undefined,
+  fallbackStaffId: string,
+): Promise<string> {
+  return (await resolveCallerStaffId(sb, houzsUserId)) ?? fallbackStaffId;
 }
 
 /* ── GET / — amendment list (newest first) ─────────────────────────────────
@@ -176,7 +190,7 @@ soAmendments.patch('/:id/supplier-confirm', async (c) => {
 
   const { data: updated, error: updErr } = await sb.from('so_amendments').update({
     status:                               to,
-    supplier_confirmed_by:                user.id,
+    supplier_confirmed_by:                await gateActorStaffId(sb, c.get('houzsUser')?.id, user.id),
     supplier_confirmation_ref:            ref,
     supplier_confirmation_note:           body.note ?? null,
     supplier_confirmation_attachment_key: body.attachmentKey ?? null,
@@ -247,7 +261,7 @@ soAmendments.patch('/:id/approve-so', async (c) => {
 
   const { data: updated, error: updErr } = await sb.from('so_amendments').update({
     status:         to,
-    so_approved_by: user.id,
+    so_approved_by: await gateActorStaffId(sb, c.get('houzsUser')?.id, user.id),
     so_approved_at: new Date().toISOString(),
     updated_at:     new Date().toISOString(),
   }).eq('id', id).select('id, so_doc_no, amendment_no, status').single();
@@ -313,7 +327,7 @@ soAmendments.patch('/:id/approve-po', async (c) => {
 
   const { data: updated, error: updErr } = await sb.from('so_amendments').update({
     status:         to,
-    po_approved_by: user.id,
+    po_approved_by: await gateActorStaffId(sb, c.get('houzsUser')?.id, user.id),
     po_approved_at: new Date().toISOString(),
     updated_at:     new Date().toISOString(),
   }).eq('id', id).select('id, so_doc_no, amendment_no, status').single();

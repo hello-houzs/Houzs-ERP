@@ -693,6 +693,12 @@ function HistoryModal({
   header: DoHeader;
   itemsCount: number;
 }) {
+  /* `created_by` is a scm.staff uuid and `issued_by_name` is never actually
+     sent by the DO detail endpoint, so the fallback chain printed the raw uuid
+     in the Change-history modal (owner 2026-07-16, same class as the Amendments
+     leak). Resolve through the shared roster; "System" stays the last resort. */
+  const { actorNameOf } = useStaffLookup();
+
   // Derived timeline from the header's timestamps + status. A future backend
   // history endpoint can replace this with a proper audit log; for now the
   // detail endpoint doesn't return one, so we synthesize from what we know.
@@ -704,7 +710,7 @@ function HistoryModal({
           ? `DO created from ${header.so_doc_no}`
           : "DO created",
         at: fmtDate(header.created_at || header.do_date),
-        by: header.issued_by_name || header.created_by || "System",
+        by: header.issued_by_name || actorNameOf(header.created_by, "System"),
         dot: "success",
       });
       if (header.driver_name) {
@@ -736,7 +742,7 @@ function HistoryModal({
         dot: "muted",
       });
       return list;
-    }, [header, itemsCount]);
+    }, [header, itemsCount, actorNameOf]);
 
   const DOT_CLS: Record<"success" | "primary" | "muted", string> = {
     success: "bg-synced",
