@@ -732,6 +732,16 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
   const isPurchaser = /purchas|procurement/i.test(_pos);
   const isSalesStaff = /sales/i.test(_dept) || /^sales/i.test(_pos);
   const seeAllTasks = isOwnerAdmin || isMgt || isBD;
+  // Field/sales cohort (owner 2026-07-16): driver, helper, storekeeper, sales
+  // executive/manager get a SIMPLIFIED mobile view — Project + Team + OPERATION
+  // tasks + the Floor Plans & Setup/Dismantle cards; the pipeline bar, payment
+  // card, and the payment/closeout/booth/setup-dismantle-docs/expo tasklist
+  // sections are hidden.
+  const isSalesExecMgr = isSalesStaff && !isMgt;
+  const cohort5 = isDriverCrew || isStorekeeper || isSalesExecMgr;
+  const cohortHiddenSection = (name: string) =>
+    /payment|closeout|booth layout|setup\s*&?\s*dismantle documents|expo map/i.test(name);
+  const sectionNameById = new Map((data?.sections ?? []).map((s) => [s.id, s.name] as const));
   // Section ids for "SETUP & DISMANTLE DOCUMENTS" (used for per-role part filtering).
   const sdSectionIds = new Set(
     (data?.sections ?? []).filter((s) => /setup\s*&?\s*dismantle/i.test(s.name)).map((s) => s.id)
@@ -739,6 +749,8 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
   const itemHidden = (it: ChecklistItem): boolean => {
     const title = (it.title ?? "").trim().toLowerCase();
     const label = (it.role_label ?? "").trim().toUpperCase();
+    // Field/sales cohort: whole tasklist sections removed (kept: OPERATION etc.).
+    if (cohort5 && cohortHiddenSection(sectionNameById.get(it.section_id ?? -1) ?? "")) return true;
     // License / Stamp Duty → only BD, management, owner. (Titles carry suffixes
     // like "License (from Majlis)", so match by prefix.)
     if (title.startsWith("license") || title.startsWith("stamp duty")) return !seeAllTasks;
@@ -756,7 +768,9 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
     return false;
   };
   const visibleChecklist = (data?.checklist ?? []).filter((it) => !itemHidden(it));
-  const hideFilledPlan = isDriverCrew || isStorekeeper;
+  // Reversed 2026-07-16: crew (driver/helper/storekeeper) now VIEW+DOWNLOAD the
+  // Filled floorplan (previously hidden). Keep the prop for future per-role use.
+  const hideFilledPlan = false;
   // A sales PIC (canEdit=false) sees Team as read-only, matching the desktop
   // ProjectTeamSection/ProjectSpecStrip gate. Falls back to canWrite when the
   // backend omitted pms.
@@ -839,8 +853,8 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
 
         {!isLoading && !error && data && p && (
           <>
-            {/* stage pipeline (design "Pipeline" card) */}
-            <StagePipeline stage={p.stage} sections={data.section_progress} />
+            {/* stage pipeline (design "Pipeline" card) — hidden from the field/sales cohort */}
+            {!cohort5 && <StagePipeline stage={p.stage} sections={data.section_progress} />}
 
             {/* project detail */}
             <details className="pacc" open>
@@ -970,7 +984,7 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
             {/* setup & dismantle (logistic) — hidden entirely from non-director
                 Sales, even the PIC (owner 2026-07-15). Same PMS SETUP_DISMANTLE
                 gate as the desktop Projects.tsx crew editor. */}
-            {canSetupDismantle && (
+            {(canSetupDismantle || cohort5) && (
               <SetupDismantle
                 projectId={id}
                 project={p}
@@ -1000,7 +1014,7 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
             />
 
             {/* rental & payment (PMS PAYMENT-gated) */}
-            {paymentVisible && (
+            {paymentVisible && !cohort5 && (
               <RentalPayment
                 status={p.payment_status ?? null}
                 canWrite={canWrite && !archived}
