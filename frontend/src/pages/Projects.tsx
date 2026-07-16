@@ -5713,11 +5713,13 @@ function formatBytes(n: number | null | undefined): string {
 function TaskAttachmentRow({
   attachment,
   canManage,
+  showRemark,
   onDelete,
   toast,
 }: {
   attachment: TaskAttachment;
   canManage?: boolean;
+  showRemark?: boolean;
   onDelete: () => void;
   toast?: ReturnType<typeof useToast>;
 }) {
@@ -5839,7 +5841,8 @@ function TaskAttachmentRow({
             </button>
           )}
         </div>
-        {canManage ? (
+        {/* Per-photo remark: hidden until the row's Remark button is toggled on. */}
+        {showRemark && (canManage ? (
           <input
             value={caption}
             onChange={(e) => setCaption(e.target.value)}
@@ -5856,7 +5859,7 @@ function TaskAttachmentRow({
               <span className="font-semibold text-ink-muted">Remark:</span> {caption}
             </div>
           )
-        )}
+        ))}
       </div>
       {previewing && (
         <MediaLightbox
@@ -6988,19 +6991,7 @@ function DocRow({
                 if (files.length && reviewable) await onReview(item, "submit", {});
               }}
             />
-            <button
-              onClick={() => setOpen((x) => !x)}
-              disabled={attachments.length === 0}
-              className={cn(
-                "rounded-md border border-border bg-surface inline-flex items-center justify-center min-w-[42px] whitespace-nowrap px-2 py-1 text-[8.5px] font-semibold",
-                attachments.length > 0
-                  ? "text-ink hover:border-accent/40 hover:text-accent"
-                  : "text-ink-muted opacity-50 cursor-not-allowed"
-              )}
-              title={attachments.length > 0 ? "View files" : "No files yet"}
-            >
-              View
-            </button>
+            {/* View button removed (owner 2026-07-16): the FILES paperclip already opens the gallery. */}
             {canManage && (
               <button
                 onClick={() => fileRef.current?.click()}
@@ -7126,6 +7117,7 @@ function DocRow({
                   key={a.id}
                   attachment={a}
                   canManage={canManage}
+                  showRemark={remarkOpen}
                   onDelete={() => removeAtt(a.id)}
                   toast={toast}
                 />
@@ -7696,6 +7688,7 @@ function ChecklistRow({
                         key={a.id}
                         attachment={a}
                         canManage={canManage}
+                        showRemark={expanded}
                         onDelete={() => deleteAttachment(a.id)}
                         toast={toast}
                       />
