@@ -2606,6 +2606,21 @@ app.patch("/checklist/:itemId", requirePermission("projects.write"), async (c) =
   return c.json({ ok: true });
 });
 
+// Does the task's role badge admit this user's role? Exact match, plus:
+// DRIVER-badged field tasks (Setup/Dismantle Image) are worked by the whole
+// crew interchangeably — helpers/storekeepers are not individually assigned
+// to events (last-minute swaps), so they edit the driver part too (owner
+// 2026-07-16). Tasks are never badged HELPER/STOREKEEPER.
+function roleLabelAdmits(
+  label: string | null | undefined,
+  roleName: string | null | undefined,
+): boolean {
+  const l = (label ?? "").trim().toUpperCase();
+  const r = (roleName ?? "").trim().toUpperCase();
+  if (!l || !r) return false;
+  return l === r || (l === "DRIVER" && (r === "HELPER" || r === "STOREKEEPER"));
+}
+
 // Status transitions (pending/done/na/blocked). Enforces required_perm
 // — if the item specifies one (e.g. 'projects.approve' for the
 // 3D-final-approval step), only users with that permission can tick
@@ -2642,9 +2657,7 @@ app.post("/checklist/:itemId/status", requireAnyPermission(["projects.write", "p
   {
     const granted = user?.permissions_set ?? user?.permissions;
     if (!hasPermission(granted, "projects.write")) {
-      const label = (item.role_label ?? "").trim().toUpperCase();
-      const roleName = (user?.role_name ?? "").trim().toUpperCase();
-      if (!label || !roleName || label !== roleName) {
+      if (!roleLabelAdmits(item.role_label, user?.role_name)) {
         return c.json({ error: "You can only update tasks assigned to your role" }, 403);
       }
     }
@@ -2686,9 +2699,7 @@ app.post("/checklist/:itemId/review", requireAnyPermission(["projects.write", "p
   if (action !== "comment") {
     const granted = user?.permissions_set ?? user?.permissions;
     if (!hasPermission(granted, "projects.write")) {
-      const label = (item.role_label ?? "").trim().toUpperCase();
-      const roleName = (user?.role_name ?? "").trim().toUpperCase();
-      if (!label || !roleName || label !== roleName) {
+      if (!roleLabelAdmits(item.role_label, user?.role_name)) {
         return c.json({ error: "You can only update tasks assigned to your role" }, 403);
       }
     }
@@ -2872,9 +2883,7 @@ app.put(
     // tasks badged for THEIR role (item.role_label vs the user's role name).
     // Mirrors the mobile UI rule; owner 2026-07-09.
     if (!hasPermission(granted, "projects.write")) {
-      const label = (item.role_label ?? "").trim().toUpperCase();
-      const roleName = (user?.role_name ?? "").trim().toUpperCase();
-      if (!label || !roleName || label !== roleName) {
+      if (!roleLabelAdmits(item.role_label, user?.role_name)) {
         return c.json({ error: "You can only attach files to tasks assigned to your role" }, 403);
       }
     }
