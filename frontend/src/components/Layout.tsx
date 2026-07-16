@@ -139,8 +139,19 @@ interface PageHeaderProps {
   eyebrow?: string;
   /** Tightens the header's bottom margin/padding for dense pages (e.g. the
    *  Calendar, where the grid should sit high). Default keeps the roomy
-   *  spacing every other page uses. */
+   *  spacing every other page uses. NOTE: `dense` is SPACING ONLY — it does
+   *  not touch the title size. See `titleSize` for that. */
   dense?: boolean;
+  /** Title scale. Default = the roomy 19/26/28 brochure h1 every list and
+   *  landing page uses.
+   *
+   *  `"sm"` (owner 2026-07-16, "header的UI 可以排版一下 可能字體小一點") is the
+   *  17px DOCUMENT title: a detail page whose h1 is just a doc number + a
+   *  customer name doesn't need brochure sizing, and the tall h1 was pushing
+   *  an already-long page longer. OPT-IN on purpose — PageHeader is shared by
+   *  every page in the app, so shrinking the default here would silently
+   *  reskin all of them. Only pass this where the owner approved it. */
+  titleSize?: "default" | "sm";
 }
 
 export function PageHeader({
@@ -151,6 +162,7 @@ export function PageHeader({
   secondaryActions,
   eyebrow,
   dense,
+  titleSize = "default",
 }: PageHeaderProps) {
   const secondary = secondaryActions ?? [];
   const hasSecondary = secondary.length > 0;
@@ -192,7 +204,15 @@ export function PageHeader({
             </span>
           </div>
         )}
-        <h1 className="font-display text-[19px] font-extrabold leading-tight tracking-tight text-ink max-[359px]:text-[17px] sm:text-[26px] lg:text-[28px]">
+        {/* Two literal class strings, not an interpolated one — Tailwind only
+            emits classes it can see whole in the source. */}
+        <h1
+          className={
+            titleSize === "sm"
+              ? "font-display text-[15px] font-extrabold leading-tight tracking-tight text-ink max-[359px]:text-[14px] sm:text-[16px] lg:text-[17px]"
+              : "font-display text-[19px] font-extrabold leading-tight tracking-tight text-ink max-[359px]:text-[17px] sm:text-[26px] lg:text-[28px]"
+          }
+        >
           {title}
         </h1>
         {description && (

@@ -872,14 +872,20 @@ const SoLineCardInner = ({
           card with no SKU picked yet we collapse to just the header row.
 
           Commander 2026-05-27 (Fix 2): mattress / accessory / others have no
-          per-line variants — render only the right rail (pricing + photos)
-          so the row stays compact. We collapse the grid by skipping bodyLeft
-          when there's no variant UI to show. */}
+          per-line variants, so bodyLeft is skipped entirely for them.
+
+          Owner 2026-07-16 ("這些長行的 UI upload photo 為什麼不要放右邊 可以
+          重新mockup 協調") — the grid NO LONGER collapses to a single `1fr`
+          track when there are no variants. That collapse is exactly what made
+          a variant-less line (e.g. a mattress) render its PHOTOS block
+          full-width UNDERNEATH the row while a bedframe line put the same
+          block in a tidy right rail: with one track and bodyLeft skipped, the
+          rail was the only child and took the whole width. The two-track grid
+          is now unconditional and bodyRight is pinned to track 2 (see the
+          module CSS), so the photo rail holds the right edge on EVERY line and
+          the left of a variant-less line is simply the empty track. */}
       {(picked || hasVariants || hasMattressSpecials || canShowPhotos) && (
-      <div
-        className={styles.body}
-        style={(hasVariants || hasMattressSpecials) ? undefined : { gridTemplateColumns: '1fr' }}
-      >
+      <div className={styles.body}>
         {(hasVariants || hasMattressSpecials) && <div className={styles.bodyLeft}>
       {hasVariants && category === 'bedframe' && (
         <div className={styles.variants}>
