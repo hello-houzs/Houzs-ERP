@@ -342,11 +342,30 @@ type Catalog = {
   // Distinct delivery STATES from scm.my_localities — the same vocabulary the
   // New SO form's State <select> renders. Injected as an allowed-values list so
   // the OCR's address parse snaps STATE to a real catalog state (never a free
-  // text string the form's dropdown can't select). City/postcode stay free-text
-  // here: they cascade off the chosen state on the form, so the frontend
-  // reconciles them against the live my_localities list.
+  // text string the form's dropdown can't select).
   states: string[];
+  // The rest of the SAME my_localities master, keyed by the step ABOVE it in
+  // the form's cascade (State -> City -> Postcode):
+  //   citiesByState        : STATE(upper)             -> CITY(upper)     -> canonical city
+  //   postcodesByStateCity : STATE(upper)|CITY(upper) -> the 5-digit postcodes
+  // City/postcode used to be treated as free text here on the theory that "the
+  // frontend reconciles them against the live my_localities list" — true for the
+  // interactive form, FALSE for the background scan job, which persists the draft
+  // with no form in the loop (owner 2026-07-16). Like the variant pools above
+  // these are deliberately NOT injected into the prompt (formatCatalog omits
+  // them): the model already gets STATES, and ~2.9k city/postcode rows would
+  // change buildCachedPrefix and bust the 1h prompt cache. They exist purely so
+  // validateSlip can VALIDATE the OCR/geocoder's city+postcode against the live
+  // master before either reaches a draft.
+  citiesByState: Map<string, Map<string, string>>;
+  postcodesByStateCity: Map<string, Set<string>>;
 };
+
+/* Cascade key for postcodesByStateCity — STATE|CITY, case/whitespace-normalised
+   on both the build and the lookup side. */
+function localityKey(state: string, city: string): string {
+  return `${state.trim().toUpperCase()}|${city.trim().toUpperCase()}`;
+}
 
 // MaintenanceConfig option entries are either plain strings or
 // { value, priceSen?, active? } objects — accept both (mirrors @2990s/shared
@@ -415,13 +434,15 @@ async function loadCatalog(sb: SupabaseClient): Promise<Catalog> {
       .order('sort_order', { ascending: true })
       .order('label', { ascending: true })
       .range(from, to)),
-    // Delivery STATES — the same scm.my_localities master the New SO form's
-    // State <select> renders. We only need the distinct state names for the
-    // OCR's allowed-values list; city/postcode cascade off the state on the
-    // form so they're reconciled there, not here.
+    // Delivery STATE / CITY / POSTCODE — the same scm.my_localities master the
+    // New SO form's cascading State -> City -> Postcode selects render. Only the
+    // distinct state names reach the OCR's allowed-values list; city + postcode
+    // are loaded so validateSlip can snap them to the master too (the background
+    // scan job persists a draft with no form in the loop, so "the frontend
+    // reconciles them" never happens on that path).
     paginateAll((from, to) => sb
       .from('my_localities')
-      .select('state')
+      .select('state, city, postcode')
       .order('state', { ascending: true })
       .range(from, to)),
     // Configured Special Add-ons (migration 0134) — ACTIVE rows only (a
@@ -485,16 +506,37 @@ async function loadCatalog(sb: SupabaseClient): Promise<Catalog> {
   }
 
   // Distinct, de-duped state names (the my_localities table has one row per
-  // postcode, so the same state repeats thousands of times).
+  // postcode, so the same state repeats thousands of times) + the city /
+  // postcode pools hanging off each cascade step.
   const stateSeen = new Set<string>();
   const states: string[] = [];
-  for (const row of (locRes.data as Array<{ state: string | null }> | null) ?? []) {
+  const citiesByState = new Map<string, Map<string, string>>();
+  const postcodesByStateCity = new Map<string, Set<string>>();
+  for (const row of (locRes.data as Array<{
+    state: string | null; city: string | null; postcode: string | null;
+  }> | null) ?? []) {
     const st = (row.state ?? '').trim();
     if (!st) continue;
-    const key = st.toUpperCase();
-    if (stateSeen.has(key)) continue;
-    stateSeen.add(key);
-    states.push(st);
+    const stKey = st.toUpperCase();
+    if (!stateSeen.has(stKey)) {
+      stateSeen.add(stKey);
+      states.push(st);
+    }
+    const ct = (row.city ?? '').trim();
+    if (!ct) continue;
+    let cityPool = citiesByState.get(stKey);
+    if (!cityPool) { cityPool = new Map(); citiesByState.set(stKey, cityPool); }
+    // First spelling in wins — the read is ordered, and a duplicate city row
+    // only differs by postcode.
+    if (!cityPool.has(ct.toUpperCase())) cityPool.set(ct.toUpperCase(), ct);
+    // Postcodes are stored as 5 digits; strip any stray separator so the
+    // membership test matches what validateSlip normalises the OCR read to.
+    const pc = (row.postcode ?? '').replace(/[^\d]/g, '');
+    if (pc.length !== 5) continue;
+    const lk = localityKey(st, ct);
+    let pcPool = postcodesByStateCity.get(lk);
+    if (!pcPool) { pcPool = new Set(); postcodesByStateCity.set(lk, pcPool); }
+    pcPool.add(pc);
   }
   states.sort((a, b) => a.localeCompare(b));
 
@@ -533,7 +575,7 @@ async function loadCatalog(sb: SupabaseClient): Promise<Catalog> {
   return {
     skus, fabrics, specials, specialsByModelSku,
     sofaSizes, sofaLegHeights, legHeights, divanHeights, gaps,
-    options, states,
+    options, states, citiesByState, postcodesByStateCity,
   };
 }
 
@@ -1306,6 +1348,69 @@ function validateSlip(slip: ExtractedSlip, catalog: Catalog): Warning[] {
         message: 'Suggested delivery state not in the localities list — cleared; pick manually.',
       });
       slip.addressStateMatch = null;
+    }
+  }
+
+  /* Delivery CITY + POSTCODE — the same never-invent enforcement, walked down
+     the form's own cascade (State -> City -> Postcode, every step sourced from
+     scm.my_localities).
+
+     Owner 2026-07-16 ("其他的OCR 都不是跟著維護裏面去做篩選"): STATE was snapped
+     here but city/postcode rode through as free text on the theory that the
+     frontend reconciles them against the live list. That holds for the
+     INTERACTIVE modal — it does not hold for the BACKGROUND scan job, which
+     builds the draft and persists it with no form in the loop. postProcessSlip
+     only reconciles the pair when the GEOCODER returned a postcode; on a geocode
+     miss (no API key, network error, no result, an address Google can't place)
+     the model's own city/postcode landed on the draft unchecked. Both columns
+     then FREEZE on the SO header under SO_IDENTITY_LOCK_COLS once a DO/SI
+     exists, and the form's cascading City/Postcode selects cannot even render a
+     value the master doesn't hold — the same class as the 8" leg #615 closed.
+
+     No nearest-value coercion (the #615 rule): a value the master doesn't hold
+     is CLEARED so the operator picks it against the slip photo. City is scoped
+     to the RESOLVED state — an unresolved state means the form's city select has
+     nothing to cascade from, so the city cannot be validated OR selected and is
+     cleared too. address1 still carries the full street address either way, and
+     the slip photo rides on the SO detail. */
+  const cascadeState = slip.addressStateMatch?.value ?? null;
+  if (slip.city) {
+    const cityPool = cascadeState
+      ? catalog.citiesByState.get(cascadeState.toUpperCase())
+      : undefined;
+    const hit = cityPool?.get(slip.city.trim().toUpperCase()) ?? null;
+    if (hit) {
+      slip.city = hit;
+    } else {
+      warnings.push({
+        field: 'city',
+        value: slip.city,
+        message: cascadeState
+          ? `Suggested city is not in the localities list for ${cascadeState} — cleared; pick manually.`
+          : 'Suggested city could not be checked without a delivery state — cleared; pick manually.',
+      });
+      slip.city = null;
+    }
+  }
+  if (slip.postcode) {
+    // Only a postcode the master actually files under the resolved state+city
+    // survives; anything else (including a plausible-looking 5-digit misread)
+    // is cleared rather than guessed onto the draft.
+    const pcPool = cascadeState && slip.city
+      ? catalog.postcodesByStateCity.get(localityKey(cascadeState, slip.city))
+      : undefined;
+    const pc = slip.postcode.replace(/[^\d]/g, '');
+    if (pcPool && pc.length === 5 && pcPool.has(pc)) {
+      slip.postcode = pc;
+    } else {
+      warnings.push({
+        field: 'postcode',
+        value: slip.postcode,
+        message: slip.city
+          ? `Suggested postcode is not in the localities list for ${slip.city} — cleared; pick manually.`
+          : 'Suggested postcode could not be checked without a delivery city — cleared; pick manually.',
+      });
+      slip.postcode = null;
     }
   }
   return warnings;
@@ -3470,7 +3575,15 @@ function buildDraftSoBodyFromSlip(
     // POST /:docNo/payments route uses.
     paymentMethod,
     merchantProvider: paymentMethod === 'Merchant' ? (parsed.bankMatch?.value ?? null) : null,
-    installmentMonths: planMonths,
+    // Method ⇒ sub-field mapping (owner 2026-07-16). The PLAN value itself is
+    // already pool-validated (installment_plan), but it was written to the
+    // header UNGATED while the bank next to it was gated on 'Merchant' — so a
+    // slip read as Cash/Online with an instalment note anywhere on it seeded an
+    // SO header carrying "12 months" against a method that cannot instalment,
+    // and contradicted the ledger row booked from the SAME parse
+    // (ledgerMethodFromSlip only carries the plan on a merchant-like method,
+    // and recordSoPaymentRow nulls it otherwise). One rule, both writers.
+    installmentMonths: paymentMethod === 'Merchant' ? planMonths : null,
     approvalCode: (parsed.approvalCode ?? '').trim() || null,
     depositCenti: parsed.depositRm && parsed.depositRm > 0 ? Math.round(parsed.depositRm * 100) : 0,
     // Provenance — the SO detail page serves these back as Order Slip /
