@@ -1475,7 +1475,7 @@ function TaskRow({
     }
   };
 
-  const upload = async (file: File) => {
+  const upload = async (file: File, caption?: string) => {
     if (file.size > 10 * 1024 * 1024) {
       await notify({ title: "File too large", body: "Max 10MB.", tone: "error" });
       return;
@@ -1488,8 +1488,9 @@ function TaskRow({
     setBusy(true);
     try {
       const buf = await file.arrayBuffer();
+      const capParam = caption && caption.trim() ? `&caption=${encodeURIComponent(caption.trim())}` : "";
       await api.putBinary(
-        `/api/projects/checklist/${it.id}/attachments?ext=${encodeURIComponent(ext)}&name=${encodeURIComponent(file.name)}`,
+        `/api/projects/checklist/${it.id}/attachments?ext=${encodeURIComponent(ext)}&name=${encodeURIComponent(file.name)}${capParam}`,
         buf,
         file.type || "application/octet-stream",
       );
@@ -1635,6 +1636,23 @@ function TaskRow({
 
   const reviewStatus = (it.review_status ?? "").toLowerCase();
   const awaitingReview = reviewStatus === "pending_review" || reviewStatus === "amended";
+  // Defect List (owner 2026-07-16): a remark is COMPULSORY before each photo —
+  // tapping Attach opens a required-remark prompt first, then the file picker,
+  // and the photo uploads carrying that remark.
+  const isDefectList = (it.title || "").trim().toLowerCase() === "defect list";
+  const pendingCaptionRef = useRef<string | undefined>(undefined);
+  const startAttach = async () => {
+    if (isDefectList) {
+      const remark = await prompt({
+        title: "Remark for this photo",
+        placeholder: "Describe the defect (required)",
+        validate: (v) => (v.trim() ? null : "Please write a remark before uploading."),
+      });
+      if (remark == null || !remark.trim()) return;
+      pendingCaptionRef.current = remark.trim();
+    }
+    fileRef.current?.click();
+  };
   return (
     <div style={{ borderTop: "1px solid #eceee9" }}>
     <div className="docrow" style={{ flexWrap: "wrap", borderTop: "none", alignItems: "flex-start" }}>
@@ -1661,9 +1679,9 @@ function TaskRow({
       {it.due_date && <span style={{ fontSize: 9.5, color: "#9aa093", whiteSpace: "nowrap" }}>{dm(it.due_date)}</span>}
       {canAttach && (
         <>
-          <input ref={fileRef} type="file" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void upload(f); }} />
-          <button className="tinybtn" style={{ minWidth: 76, display: "inline-flex", alignItems: "center", justifyContent: "center", boxSizing: "border-box" }} disabled={busy} onClick={() => fileRef.current?.click()} title={attachments.length ? `${attachments.length} file(s)` : "Attach"}>
-            {attachments.length ? `Attach (${attachments.length})` : "Attach"}
+          <input ref={fileRef} type="file" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; const cap = pendingCaptionRef.current; pendingCaptionRef.current = undefined; if (f) void upload(f, cap); }} />
+          <button className="tinybtn" style={{ minWidth: 76, display: "inline-flex", alignItems: "center", justifyContent: "center", boxSizing: "border-box" }} disabled={busy} onClick={() => void startAttach()} title={isDefectList ? "Write a remark, then upload" : attachments.length ? `${attachments.length} file(s)` : "Attach"}>
+            {attachments.length ? `Attach (${attachments.length})` : isDefectList ? "Add photo" : "Attach"}
           </button>
         </>
       )}

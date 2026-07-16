@@ -2889,6 +2889,8 @@ app.put(
     }
     const ext = (c.req.query("ext") || "").toLowerCase();
     const fileName = c.req.query("name") || `attachment.${ext}`;
+    // Optional remark supplied at upload time (Defect List requires it up front).
+    const caption = (c.req.query("caption") || "").slice(0, 2000) || null;
     if (!TASK_ATTACH_ALLOWED.has(ext)) {
       return c.json({ error: `Extension '${ext}' not allowed` }, 400);
     }
@@ -2913,10 +2915,10 @@ app.put(
     await c.env.POD_BUCKET.put(key, body, { httpMetadata: { contentType } });
     const r = await c.env.DB.prepare(
       `INSERT INTO project_checklist_attachments
-         (item_id, r2_key, file_name, content_type, size_bytes, uploaded_by)
-       VALUES (?, ?, ?, ?, ?, ?)`
+         (item_id, r2_key, file_name, content_type, size_bytes, uploaded_by, caption)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
     )
-      .bind(itemId, key, fileName, contentType, body.byteLength, user?.id ?? null)
+      .bind(itemId, key, fileName, contentType, body.byteLength, user?.id ?? null, caption)
       .run();
     // Audit trail — log the upload to the project activity feed.
     const owner = await c.env.DB.prepare(

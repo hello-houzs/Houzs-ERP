@@ -7405,8 +7405,28 @@ function ChecklistRow({
   const [note, setNote] = useState("");
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  // Defect List (owner 2026-07-16): a remark is COMPULSORY before each photo —
+  // Attach opens a required-remark prompt first, then the file picker, and the
+  // photo uploads carrying that remark.
+  const isDefectList = (item.title || "").trim().toLowerCase() === "defect list";
+  const pendingCaptionRef = useRef<string | undefined>(undefined);
+  async function startAttach() {
+    if (isDefectList) {
+      const remark = await dialog.prompt({
+        title: "Remark for this photo",
+        message: "Write a remark before uploading (required).",
+        placeholder: "Describe the defect",
+        required: true,
+        multiline: true,
+        confirmLabel: "Choose photo…",
+      });
+      if (remark == null || !remark.trim()) return;
+      pendingCaptionRef.current = remark.trim();
+    }
+    fileInputRef.current?.click();
+  }
 
-  async function uploadAttachment(file: File) {
+  async function uploadAttachment(file: File, caption?: string) {
     if (!file) return;
     const ext = (file.name.split(".").pop() || "").toLowerCase();
     if (!ext) {
@@ -7416,9 +7436,10 @@ function ChecklistRow({
     setUploading(true);
     try {
       const buf = await file.arrayBuffer();
+      const capParam = caption && caption.trim() ? `&caption=${encodeURIComponent(caption.trim())}` : "";
       const url = `/api/projects/checklist/${item.id}/attachments?ext=${encodeURIComponent(
         ext
-      )}&name=${encodeURIComponent(file.name)}`;
+      )}&name=${encodeURIComponent(file.name)}${capParam}`;
       await api.putBinary(url, buf, file.type || "application/octet-stream");
       toast?.success("Uploaded");
       // Reviewable items auto-submit on upload so the approver's
@@ -7510,7 +7531,7 @@ function ChecklistRow({
           <span className="flex-1" />
           {canManage && (
             <button
-              onClick={() => fileInputRef.current?.click()}
+              onClick={() => void startAttach()}
               disabled={uploading}
               className="rounded-md border border-border bg-surface p-1.5 text-ink-muted hover:border-accent/40 hover:text-accent disabled:opacity-50"
               title={attachments && attachments.length ? `${attachments.length} file(s)` : "Attach"}
@@ -7697,12 +7718,14 @@ function ChecklistRow({
             hidden
             onChange={(e) => {
               const f = e.target.files?.[0];
-              if (f) uploadAttachment(f);
+              const cap = pendingCaptionRef.current;
+              pendingCaptionRef.current = undefined;
+              if (f) uploadAttachment(f, cap);
             }}
           />
           {canManage && !readOnlyAttach && (
             <button
-              onClick={() => fileInputRef.current?.click()}
+              onClick={() => void startAttach()}
               disabled={uploading}
               className="inline-flex flex-col items-center gap-0.5 rounded px-1.5 py-1 text-ink-muted hover:text-accent disabled:opacity-50"
               title="Attach file"
