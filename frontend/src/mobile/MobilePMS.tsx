@@ -2034,17 +2034,24 @@ function PhaseBlock({
           <div><div className="pkv-l">Start time</div><div className="pkv-v">{tOnly(startAt)}</div></div>
           {crewIsEmpty(crew) && <div><div className="pkv-l">{kind} driver</div><div className="pkv-v">{driverDisplay}</div></div>}
           {crewIsEmpty(crew) && <div><div className="pkv-l">Lorry / vehicle</div><div className="pkv-v">{lorryDisplay}</div></div>}
-          {crew.lorryCrew.length > 0 && (
-            <div style={{ gridColumn: "1 / -1" }}>
-              <div className="pkv-l">Crew per lorry</div>
+          {/* Read-only crew: same structured "Planned crew" layout as the
+              editable view (owner 2026-07-16) — per-lorry plate header with
+              Driver / Helper rows, so the helper portal matches the owner's. */}
+          {!crewIsEmpty(crew) && (
+            <div style={{ gridColumn: "1 / -1", marginTop: 2 }}>
+              <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", color: "#9aa093", marginBottom: 7 }}>Planned crew</div>
               {crew.lorryCrew.map((l, i) => (
-                <div key={i} className="pkv-v" style={{ lineHeight: 1.5, marginTop: i ? 3 : 0 }}>
-                  <b>{l.plate || `Lorry ${i + 1}`}</b>
-                  {l.drivers.length > 0 && ` — ${l.drivers.map(crewLabel).join(", ")}`}
-                  {l.helpers.length > 0 && ` · Helpers: ${l.helpers.map(crewLabel).join(", ")}`}
+                <div key={i} style={{ marginBottom: 9, paddingLeft: 9, borderLeft: "2px solid #cfd4c9" }}>
+                  <div style={{ fontSize: 11, fontWeight: 800, color: "#2f3329", marginBottom: 4 }}>{l.plate || `Lorry ${i + 1}`}</div>
+                  {l.drivers.map((p, j) => <CrewLine key={`d${j}`} role="Driver" person={p} />)}
+                  {l.helpers.map((p, j) => <CrewLine key={`h${j}`} role="Helper" person={p} />)}
                 </div>
               ))}
-              {crew.outsourced.length > 0 && <div className="pkv-v" style={{ marginTop: 3 }}>Outsourced: {crew.outsourced.map(crewLabel).join(", ")}</div>}
+              {crew.outsourced.length > 0 && (
+                <div style={{ paddingLeft: 9 }}>
+                  {crew.outsourced.map((p, j) => <CrewLine key={`o${j}`} role="Outsrc." person={p} />)}
+                </div>
+              )}
             </div>
           )}
         </div>
