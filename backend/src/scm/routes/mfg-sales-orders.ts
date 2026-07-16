@@ -615,6 +615,28 @@ const SO_FINANCE_KEYS = [
   'total_cost_centi', 'total_margin_centi', 'margin_pct_basis', 'deposit_centi',
 ] as const;
 
+/* Per-LINE cost/margin (ITEM carries unit_cost_centi / line_cost_centi /
+   line_margin_centi). The header strip above was written for the LIST only, so
+   the DETAIL shipped both halves to everyone — a Sales Executive could read
+   Cost / Margin / Margin% straight off the SO detail. Same class as the DO/SI
+   detail leak (#600); canViewScmFinance fails closed. */
+const SO_ITEM_FINANCE_KEYS = ['unit_cost_centi', 'line_cost_centi', 'line_margin_centi'] as const;
+
+/** Strip header + line cost/margin in place for a non-finance caller. */
+function gateSoFinance(
+  c: Parameters<typeof canViewScmFinance>[0],
+  salesOrder: unknown,
+  items: unknown,
+): void {
+  if (canViewScmFinance(c)) return;
+  if (salesOrder && typeof salesOrder === 'object') {
+    for (const k of SO_FINANCE_KEYS) delete (salesOrder as Record<string, unknown>)[k];
+  }
+  for (const it of (Array.isArray(items) ? items : []) as Array<Record<string, unknown>>) {
+    for (const k of SO_ITEM_FINANCE_KEYS) delete it[k];
+  }
+}
+
 const ITEM =
   'id, doc_no, line_date, debtor_code, debtor_name, agent, item_group, item_code, description, description2, ' +
   'uom, location, qty, unit_price_centi, discount_centi, total_centi, tax_centi, total_inc_centi, balance_centi, ' +
@@ -2309,6 +2331,7 @@ mfgSalesOrders.get('/:docNo', async (c) => {
   } catch {
     pwpCodes = [];
   }
+  gateSoFinance(c, salesOrder, items);
   return c.json({ salesOrder, items, pwpCodes });
 });
 
@@ -2390,6 +2413,7 @@ mfgSalesOrders.get('/:docNo/items', async (c) => {
       shipped_source_pos: shippedPos,
     };
   });
+  gateSoFinance(c, null, items);
   return c.json({ items });
 });
 
