@@ -355,7 +355,7 @@ export function PurchaseReturnDetailV2() {
   if (!id) {
     return <div className="p-8 text-center text-ink-muted">No purchase return specified.</div>;
   }
-  if (detail.isLoading) {
+  if (detail.isPending) {
     return <div className="animate-fade-in p-8 text-center text-ink-muted">Loading purchase return…</div>;
   }
   if (detail.error || !purchaseReturn) {

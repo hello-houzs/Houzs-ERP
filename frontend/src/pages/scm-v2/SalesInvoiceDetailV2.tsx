@@ -926,7 +926,7 @@ export function SalesInvoiceDetailV2() {
       </div>
     );
   }
-  if (detail.isLoading) {
+  if (detail.isPending) {
     return (
       <div className="animate-fade-in p-8 text-center text-ink-muted">
         Loading sales invoice…

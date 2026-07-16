@@ -1107,7 +1107,14 @@ export const SalesOrderDetail = () => {
   // CLOSED + INVOICED are terminal; SHIPPED is the earliest locked state (once
   // goods leave our hands the header is no longer editable).
 
-  if (detail.isLoading) {
+  // isPending, NOT isLoading: isLoading is (isPending && isFetching), so it is
+  // FALSE whenever the query is pending but not actively fetching — i.e. while
+  // it is disabled, or PAUSED because the device is briefly offline. Gating on
+  // isLoading let those states fall through to the error branch below and paint
+  // "Sales order not found." before the fetch had ever run, then swap to the real
+  // order once it resolved (the "error 先然後再 loading" the owner reported).
+  // isPending covers all three, so the skeleton holds until the query settles.
+  if (detail.isPending) {
     return <SkeletonDetailPage />;
   }
   if (detail.isError || !header) {

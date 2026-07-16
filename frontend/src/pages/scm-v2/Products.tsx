@@ -1805,8 +1805,12 @@ export const MaintenanceTab = ({
   // master config so commander can see what's there before deciding to
   // override. Save still writes back to the prop scope, never to master —
   // the fallback never silently mutates the global config.
+  // Hoisted so the loading gate below can tell "the fallback is still coming"
+  // apart from "there is genuinely no config" — see the gate for why.
+  const wantMasterFallback =
+    scope !== 'master' && !resolved.data?.data && !resolved.isLoading;
   const masterFallback = useMaintenanceConfig('master', {
-    enabled: scope !== 'master' && !resolved.data?.data && !resolved.isLoading,
+    enabled: wantMasterFallback,
   });
 
   // PR #208 — sectionFilter restricts which sections show on the left rail.
@@ -1977,7 +1981,19 @@ export const MaintenanceTab = ({
     );
   };
 
-  if (resolved.isLoading) {
+  // The master fallback is a DEPENDENT query: it can only be enabled once
+  // `resolved` has settled with no row. On that first settled render it is
+  // enabled but has not fetched yet, so its data is undefined — and since
+  // isLoading is (isPending && isFetching) it reports FALSE, not true. Gating on
+  // `resolved` alone therefore let that frame fall through to the `!config`
+  // branch and paint "No maintenance config baseline found" before the fallback
+  // had run, then swap to the real config a moment later — the "error first,
+  // then it loads" the owner reported on Supplier > Maintenance. Hold the
+  // loading state while the fallback is genuinely still coming. Guarding
+  // isPending behind wantMasterFallback matters: isPending is also true while a
+  // query is DISABLED, so an unguarded check would hang this spinner forever on
+  // the master scope, where the fallback is permanently disabled.
+  if (resolved.isLoading || (wantMasterFallback && masterFallback.isPending)) {
     return <p className={styles.eyebrow}>Loading maintenance config…</p>;
   }
 

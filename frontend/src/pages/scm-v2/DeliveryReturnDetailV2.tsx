@@ -855,7 +855,7 @@ export function DeliveryReturnDetailV2() {
       </div>
     );
   }
-  if (detail.isLoading) {
+  if (detail.isPending) {
     return (
       <div className="animate-fade-in p-8 text-center text-ink-muted">
         Loading delivery return…

@@ -34,9 +34,12 @@ import {
 import { Avatar } from "../../components/Avatar";
 import { Button } from "../../components/Button";
 import { api } from "../../api/client";
+import { useAuth } from "../../auth/AuthContext";
+import { usePageAccess } from "../../auth/PageGuard";
+import { isDirectorUser, isSalesStaff } from "../../auth/salesAccess";
 import { classifyLoadError, errMsg } from "../../components/scm-v2/PhotoGallery";
 import { cn } from "../../lib/utils";
-import type { TeamMember } from "../../types";
+import { ACCESS_RANK, type TeamMember } from "../../types";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -109,22 +112,43 @@ export function MemberOrgPerformance({
     .slice()
     .sort((a, b) => (a.name || a.email).localeCompare(b.name || b.email));
 
+  // These three panels are sales-performance reads: a rep's attainment/targets
+  // and the ORG-WIDE leaderboard (every rep's numbers). Gate the fetch on the
+  // same capability the /api/sales/* routes enforce server-side
+  // (requirePageAccessOrSalesView("sales")) — matrix "sales" >= partial OR a
+  // code-keyed Sales-staff / director — mirroring the Projects.tsx sales section
+  // verbatim so the two can't drift. Off, not hide: a user who can't access
+  // sales neither renders these panels (see the canViewSales branch below) nor
+  // fires the request, so there is no fetch-then-hide and no render-then-403.
+  // The endpoints are not built yet (BACKEND-CHECKLIST C2), so this is
+  // pre-emptive today — but it must be in place BEFORE C2 makes the leaderboard
+  // return real cross-rep numbers.
+  const auth = useAuth();
+  const salesLevel = usePageAccess("sales");
+  const canViewSales =
+    ACCESS_RANK[salesLevel] >= ACCESS_RANK["partial"] ||
+    isSalesStaff(auth.user) ||
+    isDirectorUser(auth.user);
+
   // Data queries — gracefully degrade to not-configured.
   const perfQ = useQuery<TeamPerf>({
     queryKey: ["team-perf", user.id],
     queryFn: () => api.get(`/api/sales/team-perf/${user.id}`),
+    enabled: canViewSales,
     retry: false,
     staleTime: 60_000,
   });
   const monthlyQ = useQuery<MonthlySales>({
     queryKey: ["team-monthly", user.id, 6],
     queryFn: () => api.get(`/api/sales/by-rep/${user.id}?months=6`),
+    enabled: canViewSales,
     retry: false,
     staleTime: 60_000,
   });
   const leaderboardQ = useQuery<{ rows: LeaderboardRow[] }>({
     queryKey: ["team-leaderboard"],
     queryFn: () => api.get(`/api/sales/team-leaderboard`),
+    enabled: canViewSales,
     retry: false,
     staleTime: 60_000,
   });
@@ -311,25 +335,34 @@ export function MemberOrgPerformance({
             </div>
           </section>
 
-          {/* 6-month sales bar chart */}
-          <MonthlySalesCard q={monthlyQ} onOpenSetup={() => setShowSetup(true)} />
+          {/* 6-month sales bar chart — sales-performance data (off, not hide). */}
+          {canViewSales && (
+            <MonthlySalesCard q={monthlyQ} onOpenSetup={() => setShowSetup(true)} />
+          )}
         </div>
 
-        {/* RIGHT */}
+        {/* RIGHT — attainment + leaderboard are sales-performance data. Absent
+            entirely for a user who can't view sales; their queries are disabled
+            in step with this, so nothing renders and nothing fetches. The
+            reporting tree on the LEFT is org-chart data and stays visible. */}
         <div className="space-y-4">
-          <AttainmentHero
-            perf={perfQ.data ?? null}
-            loading={perfQ.isLoading}
-            error={perfQ.error ?? null}
-            onRetry={() => perfQ.refetch()}
-            onOpenSetup={() => setShowSetup(true)}
-          />
-          <LeaderboardCard
-            q={leaderboardQ}
-            currentUserId={user.id}
-            onOpenMember={onOpenMember}
-            onOpenSetup={() => setShowSetup(true)}
-          />
+          {canViewSales && (
+            <AttainmentHero
+              perf={perfQ.data ?? null}
+              loading={perfQ.isPending}
+              error={perfQ.error ?? null}
+              onRetry={() => perfQ.refetch()}
+              onOpenSetup={() => setShowSetup(true)}
+            />
+          )}
+          {canViewSales && (
+            <LeaderboardCard
+              q={leaderboardQ}
+              currentUserId={user.id}
+              onOpenMember={onOpenMember}
+              onOpenSetup={() => setShowSetup(true)}
+            />
+          )}
         </div>
       </div>
     </div>
@@ -528,10 +561,13 @@ function MonthlySalesCard({
   q,
   onOpenSetup,
 }: {
-  q: { data?: MonthlySales; isLoading: boolean; error: unknown; refetch: () => void };
+  q: { data?: MonthlySales; isPending: boolean; error: unknown; refetch: () => void };
   onOpenSetup: () => void;
 }) {
-  if (q.isLoading) {
+  // isPending, not isLoading — isLoading is false while a query is pending but
+  // not fetching (offline-paused), which would drop through to the
+  // "not configured" branch below before the request had ever run.
+  if (q.isPending) {
     return (
       <section className="rounded-xl border border-border bg-surface p-4 shadow-stone">
         <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
@@ -644,7 +680,7 @@ function LeaderboardCard({
 }: {
   q: {
     data?: { rows: LeaderboardRow[] };
-    isLoading: boolean;
+    isPending: boolean;
     error: unknown;
     refetch: () => void;
   };
@@ -652,7 +688,8 @@ function LeaderboardCard({
   onOpenMember: (id: number) => void;
   onOpenSetup: () => void;
 }) {
-  if (q.isLoading) {
+  // isPending, not isLoading — see MonthlySalesCard.
+  if (q.isPending) {
     return (
       <section className="rounded-xl border border-border bg-surface p-4 shadow-stone">
         <div className="text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
