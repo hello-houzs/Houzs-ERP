@@ -1046,16 +1046,28 @@ mfgSalesOrders.get('/', async (c) => {
       cancelled: cancelledC.count ?? 0,
     };
 
-    /* Full-set money KPIs — sum local_total_centi / balance_centi / paid_centi
-       over the SAME scope + company + status + search (+ optional so_date window)
-       filters as the page query, but WITHOUT `.range()`/pagination. This is
-       byte-identical to the OLD pre-pagination client sum (which summed those
-       three view columns over the whole filtered set). paginateAll pages the 3
-       int cols so the 1000-row PostgREST cap can't truncate the total. */
-    const moneyRes = await paginateAll<{ local_total_centi: number | null; balance_centi: number | null; paid_centi: number | null }>((mfrom, mto) => {
+    /* Full-set money KPIs — sum local_total_centi / balance_centi_live /
+       paid_total_centi over the SAME scope + company + status + search (+
+       optional so_date window) filters as the page query, but WITHOUT
+       `.range()`/pagination. paginateAll pages the int cols so the 1000-row
+       PostgREST cap can't truncate the total.
+
+       Paid + Outstanding read the view's LEDGER-DERIVED columns, not the stored
+       `paid_centi` / `balance_centi` this used to sum. Those two are not the
+       truth: `paid_centi` has no writer that maintains it (it is deprecated and
+       scheduled for drop), and `balance_centi` is set to the GROSS grandTotal
+       by recomputeTotals on every edit, so it never reflects a payment — the
+       old Outstanding tile was just Revenue restated. paid_total_centi
+       (= Σ payments) and balance_centi_live (= local_total − Σ payments) are
+       the same source-of-truth the row grid, the mobile SO list and
+       delivery-planning.ts already read. Both are view-COMPUTED columns, so
+       this select stays VIEW-TRAP safe (see backend/docs/scm-view-trap-coe.md);
+       `balance_centi` is kept in the select only as the absent-view fallback,
+       mirroring delivery-planning's. */
+    const moneyRes = await paginateAll<{ local_total_centi: number | null; balance_centi: number | null; balance_centi_live: number | null; paid_total_centi: number | null }>((mfrom, mto) => {
       let moneyQ = sb
         .from('mfg_sales_orders_with_payment_totals')
-        .select('local_total_centi, balance_centi, paid_centi');
+        .select('local_total_centi, balance_centi, balance_centi_live, paid_total_centi');
       if (scopeIds) moneyQ = moneyQ.in('salesperson_id', scopeIds);
       moneyQ = scopeToCompany(moneyQ, c);
       if (status) moneyQ = moneyQ.eq('status', status);
@@ -1071,8 +1083,8 @@ mfgSalesOrders.get('/', async (c) => {
     let revenueCenti = 0, outstandingCenti = 0, paidCenti = 0;
     for (const m of (moneyRes.data ?? [])) {
       revenueCenti += m.local_total_centi ?? 0;
-      outstandingCenti += m.balance_centi ?? 0;
-      paidCenti += m.paid_centi ?? 0;
+      outstandingCenti += m.balance_centi_live ?? m.balance_centi ?? 0;
+      paidCenti += m.paid_total_centi ?? 0;
     }
     aggregates = { revenueCenti, outstandingCenti, paidCenti };
   }
@@ -4417,7 +4429,12 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
     // Split payment (Loo 2026-06-06): with payments[] the deposit IS the sum
     // of the validated rows (each positive by schema), not the legacy field.
     deposit_centi:      posPaymentsTotalCenti ?? Math.max(0, typeof body.depositCenti === 'number' ? body.depositCenti : 0),
-    paid_centi:         typeof body.paidCenti === 'number' ? body.paidCenti : 0,
+    /* SERVER-OWNED — never the client's number. Paid is derived from the
+       payments ledger (the view's paid_total_centi); taking body.paidCenti here
+       let a create book an order as already-paid with zero payment rows. A
+       deposit does NOT belong here either: it posts an is_deposit ledger row
+       below, which is what the rollups read. Always 0 at birth. */
+    paid_centi:         0,
     /* PR #154 — Commander 2026-05-27: "我们的整个系统是没有 Draft 功能的，
        把 Draft 的功能去除掉, 我们 create 的全部都是 confirm 的". 2990 is a
        trading company; we don't need a DRAFT staging step. Every new SO is
@@ -5453,18 +5470,42 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
     ['approvalCode', 'approval_code'],
     ['paymentDate', 'payment_date'],
     ['depositCenti', 'deposit_centi'],
-    ['paidCenti', 'paid_centi'],
+    /* `paidCenti` is deliberately NOT mapped — paid is SERVER-OWNED. It is
+       derived from the mfg_sales_order_payments ledger (the view's
+       paid_total_centi); the stored `paid_centi` column has no writer that
+       keeps it true and is already documented deprecated + scheduled for drop
+       (see the /:docNo/payments PAYMENT_COLS note and the list rollup). While
+       it was mapped here, a self-scoped salesperson could PATCH
+       {paidCenti: <order total>} onto their OWN order and book it fully paid
+       with zero payment rows. Record a payment; never set a total. */
   ];
   /* Task #91 — phone columns get normalized to E.164 storage form before any
      UPDATE. UI sends the storage form already (PhoneInput blur), but a
      misbehaving client could still PATCH a raw "+60 12 345 6789". */
   const PHONE_FIELDS = new Set(['phone', 'emergencyContactPhone']);
+  /* A caller who cannot READ deposit must not WRITE it. gateSoFinance strips
+     deposit_centi (an SO_FINANCE_KEY since #574) from the detail payload, and
+     this map accepts ANY defined value — so a client that seeded its header
+     draft off that stripped payload would round-trip the missing field as a
+     genuine 0 and wipe the deposit (the #632 trap). consignment-orders.ts
+     already carries this exact guard; the SO it was CLONED FROM never got it.
+     No Houzs caller sends depositCenti on PATCH today (SalesOrderNew posts it
+     on CREATE only), so this is defence-in-depth that keeps the strip safe by
+     construction rather than by the frontend's current shape. A finance caller
+     is unaffected. */
+  const canFinance = canViewScmFinance(c);
   const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
   for (const [from, to] of map) {
     if (body[from] === undefined) continue;
+    if (from === 'depositCenti' && !canFinance) continue;
     if (PHONE_FIELDS.has(from) && typeof body[from] === 'string') {
       const raw = body[from] as string;
       updates[to] = normalizePhone(raw) ?? raw;
+    } else if (from === 'depositCenti') {
+      /* Clamp >= 0, matching the create path: the header deposit is still added
+         on top of the ledger for legacy SOs whose deposit never landed as an
+         is_deposit row, so a negative value would deflate that paid rollup. */
+      updates[to] = Math.max(0, typeof body[from] === 'number' ? (body[from] as number) : 0);
     } else {
       updates[to] = body[from];
     }

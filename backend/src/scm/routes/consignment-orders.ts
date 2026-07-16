@@ -965,8 +965,15 @@ consignmentOrders.post('/', async (c) => {
     merchant_provider:  (body.merchantProvider as string) ?? null,
     approval_code:      (body.approvalCode as string) ?? null,
     payment_date:       (body.paymentDate as string) ?? null,
-    deposit_centi:      typeof body.depositCenti === 'number' ? body.depositCenti : 0,
-    paid_centi:         typeof body.paidCenti === 'number' ? body.paidCenti : 0,
+    /* Clamp >= 0 (the /mfg-sales-orders create path this was cloned from does;
+       this copy didn't) — the header deposit is added on top of the ledger in
+       the CO list's paid rollup, so a negative value would deflate it. */
+    deposit_centi:      Math.max(0, typeof body.depositCenti === 'number' ? body.depositCenti : 0),
+    /* SERVER-OWNED — never the client's number. Same back-door the SO create
+       carried: paid is derived from the payments ledger, and taking
+       body.paidCenti here let a create book a CO as already-paid with zero
+       payment rows. Always 0 at birth. */
+    paid_centi:         0,
     /* Every new CO is CONFIRMED on insert (2990 has no DRAFT step). */
     status: 'CONFIRMED',
     created_by: user.id,
@@ -1178,7 +1185,10 @@ consignmentOrders.patch('/:docNo', async (c) => {
     ['approvalCode', 'approval_code'],
     ['paymentDate', 'payment_date'],
     ['depositCenti', 'deposit_centi'],
-    ['paidCenti', 'paid_centi'],
+    /* `paidCenti` is deliberately NOT mapped — paid is SERVER-OWNED, derived
+       from the payments ledger (the CO list rollup sums it). Mapping it let a
+       caller PATCH {paidCenti: <order total>} and book the CO paid with zero
+       payment rows. Mirrors /mfg-sales-orders. Record a payment, not a total. */
   ];
   const PHONE_FIELDS = new Set(['phone', 'emergencyContactPhone']);
   /* A caller who cannot READ deposit must not WRITE it. gateCoFinance now strips
@@ -1197,6 +1207,10 @@ consignmentOrders.patch('/:docNo', async (c) => {
     if (PHONE_FIELDS.has(from) && typeof body[from] === 'string') {
       const raw = body[from] as string;
       updates[to] = normalizePhone(raw) ?? raw;
+    } else if (from === 'depositCenti') {
+      /* Clamp >= 0, matching the create path — the header deposit feeds the
+         list's paid rollup, so a negative value would deflate it. */
+      updates[to] = Math.max(0, typeof body[from] === 'number' ? (body[from] as number) : 0);
     } else {
       updates[to] = body[from];
     }
