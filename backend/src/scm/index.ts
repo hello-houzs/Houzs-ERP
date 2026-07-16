@@ -96,6 +96,16 @@ export const scm = new Hono<{ Bindings: Env }>();
 // the coarse scm.access gate (NO scmAreaGuard) rather than pick an arbitrary L2
 // owner. reports + document-flow are read-only by construction; the few writes on
 // the others (e.g. state-warehouse-mappings POST) stay umbrella-gated.
+//
+// ⚠ "not sensitive" IS TRUE OF document-flow / outstanding / staff / localities.
+// IT WAS NOT TRUE OF reports (fix/c1-reports): those listings return the sales
+// book line by line, and this comment read as a ruling that they were harmless
+// — so nobody gated them, and they shipped every salesperson's cost + margin,
+// company-wide, to any Sales Executive. READ-ONLY IS NOT THE SAME AS SAFE. The
+// coarse gate is still the right MOUNT for reports (it is cross-area), but the
+// row/column rules now live IN routes/reports.ts: finance keys behind
+// canViewScmFinance, rows behind resolveSalesScopeIds. Anything mounted here in
+// future must justify "not sensitive" on WHAT IT RETURNS, not on being a GET.
 
 // ── Products & Maintenance (scm.procurement.products) ───────────────────────
 // openRead (2026-07-16): GET /products is the POS catalog read (sku, name,

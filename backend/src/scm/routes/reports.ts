@@ -19,6 +19,22 @@
 // / *_items / delivery_returns / *_items — all confirmed present in
 // scripts/scm-schema/2990s-full-schema.sql). Read-only: this route never
 // writes. Mounted at '/reports' in scm/index.ts.
+//
+// ── THESE LISTINGS ARE SALES DOCUMENTS, NOT NEUTRAL LOOKUPS (fix/c1-reports) ─
+// The mount comment in scm/index.ts calls the shared read helpers "read-mostly
+// and not sensitive" and leaves them on the coarse scm.access gate. That is
+// true of document-flow / outstanding / staff. It was NEVER true here: this
+// file returns the SO book line by line. Being read-only does not make a
+// payload safe — WHAT it reads is the question. Two rules therefore apply to
+// every sales-doc listing below, and a report must never be a way around the
+// rule its own module enforces:
+//   1. FINANCE — cost / margin / deposit reach only canViewScmFinance (fails
+//      closed). Mirrors gateSoFinance (#625) / gateDrFinance (#632); the key
+//      lists are SHARED from lib/finance-keys.ts, not re-declared here.
+//   2. SCOPE — rows are row-scoped to the caller's own + downline salespeople
+//      via resolveSalesScopeIds, the same source of truth the SO / DO / SI list
+//      handlers use. Without it a scoped rep read every other rep's documents
+//      through the report while being correctly blocked on the module page.
 // ----------------------------------------------------------------------------
 
 import { Hono } from 'hono';
@@ -26,6 +42,27 @@ import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { scopeToCompany } from '../lib/companyScope';
+import { canViewAllSales, canViewScmFinance } from '../lib/houzs-perms';
+import { resolveSalesScopeIds } from '../lib/salesScope';
+import { SO_FINANCE_KEYS, SO_ITEM_FINANCE_KEYS } from '../lib/finance-keys';
+
+/* Strip cost / margin / deposit from every FLAT report row for a non-finance
+   caller. The listing denormalises the SO header onto each line, so one row
+   carries BOTH halves of the vocabulary — strip both from the same object.
+   canViewScmFinance fails closed (no houzsUser / no director position → not
+   finance), so a mis-classified caller loses the columns rather than gaining
+   them. Applied AFTER the flatten, so no header key can slip through under its
+   own name. */
+const gateReportFinance = (
+  c: Parameters<typeof canViewScmFinance>[0],
+  rows: Array<Record<string, unknown>>,
+): void => {
+  if (canViewScmFinance(c)) return;
+  for (const r of rows) {
+    for (const k of SO_FINANCE_KEYS) delete r[k];
+    for (const k of SO_ITEM_FINANCE_KEYS) delete r[k];
+  }
+};
 
 export const reports = new Hono<{ Bindings: Env; Variables: Variables }>();
 reports.use('*', supabaseAuth);
@@ -41,6 +78,16 @@ reports.get('/sales-order-detail-listing', async (c) => {
   const deliveryDateFrom = c.req.query('deliveryDateFrom');
   const deliveryDateTo   = c.req.query('deliveryDateTo');
   const sortBy           = (c.req.query('sortBy') ?? 'date') as 'date' | 'doc_no' | 'item_code';
+
+  /* Row-level visibility scope — the SAME rule and the SAME source of truth as
+     the SO list handler (lib/salesScope): view-all callers (`scm.so.view_all`
+     or a director position via canViewAllSales) are unrestricted; everyone else
+     sees SELF + their full manager_id downline. Resolved ONCE, outside the
+     pager, so every page of a wide date range uses one scope.
+     NOTE: must pass the REAL Houzs integer user id (houzsUser) — user.id here
+     is the bridge's pinned system staff uuid, and feeding that to the scope
+     lookup is the documented non-admin 500. */
+  const scopeIds = await resolveSalesScopeIds(sb, c.env, c.get('houzsUser')?.id, canViewAllSales(c));
 
   // Pull SO header + items as nested join. supabase-js renders the nested
   // table as a property on the item row — we flatten it back out below so
@@ -74,6 +121,10 @@ reports.get('/sales-order-detail-listing', async (c) => {
     if (docNo)      q = q.ilike('doc_no', `%${docNo}%`);
     if (itemCode)   q = q.ilike('item_code', `%${itemCode}%`);
     if (debtorCode) q = q.eq('debtor_code', debtorCode);
+    /* salesperson_id lives on the HEADER — filter the EMBEDDED table. The
+       `!inner` join makes an embedded filter narrow the parent rows (same
+       mechanism the DO/SI listings below already use for docNo/debtorCode). */
+    if (scopeIds) q = q.in('mfg_sales_orders.salesperson_id', scopeIds);
     q = scopeToCompany(q, c); // multi-company: isolate to the active company
     // Sort: line-level for item_code, header-level (joined) for date/doc_no.
     if (sortBy === 'item_code') {
@@ -254,6 +305,12 @@ reports.get('/sales-order-detail-listing', async (c) => {
       return true;
     });
 
+  /* Cost / margin / deposit leave the server ONLY for a finance-viewer. This
+     listing is the widest finance surface in the app — every line of every
+     salesperson's every order — and it carried no gate at all. Revenue, order
+     totals, balance and the paid ledger stay for everyone who passes access. */
+  gateReportFinance(c, rows);
+
   return c.json({ rows });
 });
 
@@ -268,6 +325,20 @@ reports.get('/sales-order-detail-listing', async (c) => {
 //
 // Delivery Return has a `refund_centi` instead of revenue — surfaced as
 // `total_centi` so the column reuse is straightforward.
+//
+// FINANCE: none of these three SELECT a cost or margin column (DO/SI carry
+// unit_price/discount/tax/line_total, DR carries unit_price/refund) — all
+// selling-side money the customer's own document shows them. Audited row by row
+// against lib/finance-keys.ts; no strip is needed. Add one the moment a cost
+// column joins a SELECT here.
+//
+// SCOPE: DO + SI ARE row-scoped below, because delivery-orders-mfg.ts and
+// sales-invoices.ts row-scope their own list handlers — leaving the report open
+// would let a rep read through the report exactly what the module page denies
+// them. DR is deliberately NOT scoped: delivery-returns.ts does not row-scope
+// its own list either, so scoping only the report would invent a rule the DR
+// module does not have. That module-level gap is real and flagged in
+// BUG-HISTORY (fix/c1-reports) rather than half-fixed here.
 // ----------------------------------------------------------------------------
 
 type AnyRow = Record<string, unknown>;
@@ -297,6 +368,10 @@ reports.get('/delivery-order-detail-listing', async (c) => {
   const debtorCode  = c.req.query('debtorCode');
   const itemCode    = c.req.query('itemCode');
 
+  /* Same own+downline scope the DO list handler applies (delivery-orders-mfg.ts
+     `.in('salesperson_id', scopeIds)`); resolved once, outside the pager. */
+  const scopeIds = await resolveSalesScopeIds(sb, c.env, c.get('houzsUser')?.id, canViewAllSales(c));
+
   // PostgREST's 1000-row cap silently truncated this listing — page through.
   const { data, error } = await paginateAll((pFrom, pTo) => {
     let q = sb
@@ -315,6 +390,7 @@ reports.get('/delivery-order-detail-listing', async (c) => {
     if (docNo)      q = q.ilike('delivery_orders.do_number', `%${docNo}%`);
     if (itemCode)   q = q.ilike('item_code', `%${itemCode}%`);
     if (debtorCode) q = q.eq('delivery_orders.debtor_code', debtorCode);
+    if (scopeIds)   q = q.in('delivery_orders.salesperson_id', scopeIds);
     q = scopeToCompany(q, c); // multi-company: isolate to the active company
     return q.range(pFrom, pTo);
   });
@@ -348,6 +424,10 @@ reports.get('/sales-invoice-detail-listing', async (c) => {
   const debtorCode  = c.req.query('debtorCode');
   const itemCode    = c.req.query('itemCode');
 
+  /* Same own+downline scope the SI list handler applies (sales-invoices.ts
+     `.in('salesperson_id', scopeIds)`); resolved once, outside the pager. */
+  const scopeIds = await resolveSalesScopeIds(sb, c.env, c.get('houzsUser')?.id, canViewAllSales(c));
+
   // PostgREST's 1000-row cap silently truncated this listing — page through.
   const { data, error } = await paginateAll((pFrom, pTo) => {
     let q = sb
@@ -366,6 +446,7 @@ reports.get('/sales-invoice-detail-listing', async (c) => {
     if (docNo)      q = q.ilike('sales_invoices.invoice_number', `%${docNo}%`);
     if (itemCode)   q = q.ilike('item_code', `%${itemCode}%`);
     if (debtorCode) q = q.eq('sales_invoices.debtor_code', debtorCode);
+    if (scopeIds)   q = q.in('sales_invoices.salesperson_id', scopeIds);
     q = scopeToCompany(q, c); // multi-company: isolate to the active company
     return q.range(pFrom, pTo);
   });
