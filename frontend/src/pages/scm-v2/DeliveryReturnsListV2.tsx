@@ -16,6 +16,7 @@
 // about when triaging a return.
 
 import { useMemo, useState, type ReactNode } from "react";
+import { canViewScmCosting } from "../../auth/salesAccess";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Plus,
@@ -710,7 +711,7 @@ export function DeliveryReturnsListV2() {
   // DECLARED only for a finance-viewer; the backend also omits their keys from
   // the payload for everyone else (canViewScmFinance).
   const { user } = useAuth();
-  const canFinance = !!user?.project_finance_viewer;
+  const canFinance = canViewScmCosting(user);
 
   const status = (params.get("status") ?? "all") as StatusTab;
   const view = (params.get("view") ?? "table") as "table" | "cards";

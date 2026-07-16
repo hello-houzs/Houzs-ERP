@@ -48,6 +48,7 @@
 // ----------------------------------------------------------------------------
 
 import { useEffect, useMemo, useState } from 'react';
+import { canViewScmCosting } from "../../auth/salesAccess";
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Printer, Plus } from 'lucide-react';
 import { Button } from '../../components/Button';
@@ -594,7 +595,7 @@ export const SalesOrderDetailListing = () => {
      list columns (#574) use (auth/me = isFinanceViewer), and the client-side
      mirror of the server's canViewScmFinance. */
   const { user } = useAuth();
-  const canFinance = !!user?.project_finance_viewer;
+  const canFinance = canViewScmCosting(user);
   const columns = canFinance ? COLUMNS_FINANCE : COLUMNS_NO_FINANCE;
   /* Task #120 — `?outstanding=1` URL param applied to the row set. The
      line-flat report repeats outstanding per line, so we filter lines from

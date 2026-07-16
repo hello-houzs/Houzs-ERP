@@ -26,6 +26,7 @@
 // per-row context menu gated by current status.
 
 import { useEffect, useMemo, useState } from 'react';
+import { canViewScmCosting } from "../../auth/salesAccess";
 import type { JSX } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate, useSearchParams } from 'react-router-dom';
@@ -689,7 +690,7 @@ export const ConsignmentOrders = () => {
   /* Finance-viewer gate — same signal the SO/DO/SI/DR surfaces use
      (auth/me = isFinanceViewer, #574 / #589). Consignment never got this gate. */
   const { user } = useAuth();
-  const canFinance = !!user?.project_finance_viewer;
+  const canFinance = canViewScmCosting(user);
   const [searchParams, setSearchParams] = useSearchParams();
   /* Task #120 — Outstanding filter overlay. `?outstanding=1` narrows the list
      to rows with live balance > 0; now applied SERVER-SIDE (so it stays correct
