@@ -24,14 +24,15 @@
 // download-all, and the public camera-scan stock-in flow.
 // ----------------------------------------------------------------------------
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeft, ChevronDown, Plus, Layers, Search, X,
-  Grid3x3, Package, MapPin, LayoutGrid, Warehouse as WarehouseIcon,
   ArrowDownToLine, ArrowUpFromLine, History,
 } from 'lucide-react';
-import { Button } from '@2990s/design-system';
+import { Button } from '../../components/Button';
+import { PageHeader } from '../../components/Layout';
+import { StatCard } from '../../components/StatCard';
 import { fmtDate, fmtQty } from '@2990s/shared';
 import { useWarehouses } from '../../vendor/scm/lib/inventory-queries';
 import {
@@ -185,84 +186,115 @@ export const WarehouseRacks = () => {
   const [stockInRackId, setStockInRackId] = useState<string>('');
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div>
-          <h1 className={styles.title}>Warehouse</h1>
-          <Link to="/scm/warehouses" className={styles.subtitle}>
-            <ArrowLeft size={12} strokeWidth={1.75} /> Back to Warehouses
-          </Link>
+    <div>
+      <PageHeader
+        eyebrow="Inventory"
+        title="Warehouse"
+        description="Rack overview, stock in / out and the full movement ledger for the selected warehouse."
+        primaryAction={
+          /* All three stay inline Buttons/Link rather than `secondaryActions`:
+             MenuItem has no `disabled`, and Seed racks / New rack must keep
+             their `disabled={!warehouseId}` guard. */
+          <div className="flex items-stretch gap-2">
+            <Link
+              to="/scm/warehouses"
+              className="inline-flex h-9 items-center gap-1.5 rounded-md border border-border bg-surface px-3 text-[11px] font-semibold uppercase tracking-wider text-ink-secondary transition-colors hover:border-primary/40 hover:bg-primary-soft hover:text-primary"
+            >
+              <ArrowLeft size={14} /> Warehouses
+            </Link>
+            <Button
+              variant="secondary"
+              icon={<Layers size={14} />}
+              onClick={() => { setEditing(null); setCreatingMode('seed'); }}
+              disabled={!warehouseId}
+            >
+              Seed racks
+            </Button>
+            <Button
+              variant="primary"
+              icon={<Plus size={14} />}
+              onClick={() => { setEditing(null); setCreatingMode('single'); }}
+              disabled={!warehouseId}
+            >
+              New rack
+            </Button>
+          </div>
+        }
+      />
+
+      <div className="space-y-4">
+        {/* Warehouse selector — Houzs racks are per-warehouse, so it's required. */}
+        <div className="flex flex-wrap items-center gap-3">
+          <span className={styles.eyebrow}>Warehouse</span>
+          <span className={styles.selectWrap}>
+            <select
+              className={styles.fieldSelect}
+              value={warehouseId}
+              onChange={(e) => selectWarehouse(e.target.value)}
+            >
+              {(warehouses.data ?? []).map((w) => (
+                <option key={w.id} value={w.id}>{w.code} — {w.name}</option>
+              ))}
+            </select>
+            <ChevronDown className={styles.selectChevron} size={14} strokeWidth={1.75} />
+          </span>
         </div>
-        <div className={styles.actionsRow}>
-          <Button variant="ghost" size="md" onClick={() => { setEditing(null); setCreatingMode('seed'); }} disabled={!warehouseId}>
-            <Layers {...ICON} />
-            <span>Seed racks</span>
-          </Button>
-          <Button variant="primary" size="md" onClick={() => { setEditing(null); setCreatingMode('single'); }} disabled={!warehouseId}>
-            <Plus {...ICON} />
-            <span>New rack</span>
-          </Button>
+
+        {/* KPI tiles */}
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-5">
+          <StatCard label="Total Slots" value={String(summary.total)} />
+          <StatCard label="Occupied" value={String(summary.occupied)} />
+          <StatCard label="Empty" value={String(summary.empty)} />
+          <StatCard label="Reserved" value={String(summary.reserved)} />
+          <StatCard label="Occupancy" value={`${summary.occupancyRate}%`} />
         </div>
+
+        {/* Tabs */}
+        <nav
+          className="inline-flex max-w-full items-center gap-0.5 overflow-x-auto rounded-md border border-border bg-surface p-1 shadow-stone"
+          aria-label="Warehouse views"
+        >
+          {TABS.map((t) => (
+            <button
+              key={t.key}
+              type="button"
+              data-active={tab === t.key}
+              onClick={() => selectTab(t.key)}
+              className={
+                tab === t.key
+                  ? 'whitespace-nowrap rounded bg-primary px-3.5 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-white transition-all duration-150'
+                  : 'whitespace-nowrap rounded px-3.5 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-ink-secondary transition-all duration-150 hover:bg-primary-soft hover:text-primary'
+              }
+            >
+              {t.label}
+            </button>
+          ))}
+        </nav>
+
+        {tab === 'overview' && (
+          <OverviewTab
+            racks={rackList}
+            warehouseId={warehouseId}
+            isLoading={racks.isLoading}
+            summary={summary}
+            onEditRack={(r) => { setEditing(r); setCreatingMode(null); }}
+            onStockInHere={(rackId) => { setStockInRackId(rackId); selectTab('stockio'); }}
+          />
+        )}
+
+        {tab === 'stockio' && (
+          <StockIoTab
+            racks={rackList}
+            warehouseId={warehouseId}
+            initialRackId={stockInRackId}
+            onConsumeInitialRack={() => setStockInRackId('')}
+          />
+        )}
+
+        {tab === 'history' && (
+          <HistoryTab warehouseId={warehouseId} />
+        )}
       </div>
-
-      {/* Warehouse selector — Houzs racks are per-warehouse, so it's required. */}
-      <div className={styles.selectorRow}>
-        <span className={styles.eyebrow}>Warehouse</span>
-        <span className={styles.selectWrap}>
-          <select
-            className={styles.fieldSelect}
-            value={warehouseId}
-            onChange={(e) => selectWarehouse(e.target.value)}
-          >
-            {(warehouses.data ?? []).map((w) => (
-              <option key={w.id} value={w.id}>{w.code} — {w.name}</option>
-            ))}
-          </select>
-          <ChevronDown className={styles.selectChevron} size={14} strokeWidth={1.75} />
-        </span>
-      </div>
-
-      {/* KPI tiles */}
-      <div className={styles.statGrid}>
-        <StatTile icon={<Grid3x3 {...ICON} />} label="Total Slots" value={String(summary.total)} />
-        <StatTile icon={<Package {...ICON} />} label="Occupied" value={String(summary.occupied)} />
-        <StatTile icon={<MapPin {...ICON} />} label="Empty" value={String(summary.empty)} />
-        <StatTile icon={<LayoutGrid {...ICON} />} label="Reserved" value={String(summary.reserved)} />
-        <StatTile icon={<WarehouseIcon {...ICON} />} label="Occupancy" value={`${summary.occupancyRate}%`} />
-      </div>
-
-      {/* Tabs */}
-      <div className={styles.tabRow}>
-        {TABS.map((t) => (
-          <button key={t.key} type="button" className={styles.tab} data-active={tab === t.key} onClick={() => selectTab(t.key)}>
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {tab === 'overview' && (
-        <OverviewTab
-          racks={rackList}
-          warehouseId={warehouseId}
-          isLoading={racks.isLoading}
-          summary={summary}
-          onEditRack={(r) => { setEditing(r); setCreatingMode(null); }}
-          onStockInHere={(rackId) => { setStockInRackId(rackId); selectTab('stockio'); }}
-        />
-      )}
-
-      {tab === 'stockio' && (
-        <StockIoTab
-          racks={rackList}
-          warehouseId={warehouseId}
-          initialRackId={stockInRackId}
-          onConsumeInitialRack={() => setStockInRackId('')}
-        />
-      )}
-
-      {tab === 'history' && (
-        <HistoryTab warehouseId={warehouseId} />
-      )}
 
       {(creatingMode === 'single' || editing) && warehouseId && (
         <RackFormDrawer
@@ -283,18 +315,6 @@ export const WarehouseRacks = () => {
     </div>
   );
 };
-
-/* ── KPI tile ───────────────────────────────────────────────────────────── */
-function StatTile({ icon, label, value }: { icon: ReactNode; label: string; value: string }) {
-  return (
-    <div className={styles.statCard}>
-      <span className={styles.statLabel} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-        {icon}{label}
-      </span>
-      <span className={styles.statValue}>{value}</span>
-    </div>
-  );
-}
 
 /* ════════════════════════════════════════════════════════════════════════
    Tab 1 — Rack Overview: legend + search + visual rack grid + detail popup.
@@ -527,14 +547,14 @@ function RackDetailModal({
 
         <div style={{ display: 'flex', gap: 'var(--space-2)', justifyContent: 'space-between', flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-            <Button variant="ghost" size="sm" onClick={onEdit}>Edit</Button>
-            <Button variant="ghost" size="sm" onClick={removeRack} disabled={items.length > 0 || del.isPending}>Delete</Button>
+            <Button variant="ghost" onClick={onEdit}>Edit</Button>
+            <Button variant="ghost" onClick={removeRack} disabled={items.length > 0 || del.isPending}>Delete</Button>
           </div>
           <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-            <Button variant="secondary" size="sm" onClick={onStockInHere}>
+            <Button variant="secondary" onClick={onStockInHere}>
               <ArrowDownToLine {...ICON} /><span>Stock in here</span>
             </Button>
-            <Button variant="primary" size="sm" onClick={onClose}>Close</Button>
+            <Button variant="primary" onClick={onClose}>Close</Button>
           </div>
         </div>
       </div>
@@ -674,7 +694,7 @@ function StockIoTab({
             <textarea className={styles.fieldTextarea} value={siNotes}
               onChange={(e) => setSiNotes(e.target.value)} />
           </label>
-          <Button variant="primary" size="md" fullWidth disabled={stockIn.isPending} onClick={submitStockIn}>
+          <Button variant="primary" className="w-full" disabled={stockIn.isPending} onClick={submitStockIn}>
             <ArrowDownToLine {...ICON} /><span>{stockIn.isPending ? 'Saving…' : 'Confirm Stock In'}</span>
           </Button>
         </div>
@@ -726,7 +746,7 @@ function StockIoTab({
               placeholder="e.g. Delivered to customer, Transferred, Damaged…"
               onChange={(e) => setSoReason(e.target.value)} />
           </label>
-          <Button variant="secondary" size="md" fullWidth disabled={stockOut.isPending} onClick={submitStockOut}>
+          <Button variant="secondary" className="w-full" disabled={stockOut.isPending} onClick={submitStockOut}>
             <ArrowUpFromLine {...ICON} /><span>{stockOut.isPending ? 'Saving…' : 'Confirm Stock Out'}</span>
           </Button>
         </div>
@@ -773,7 +793,7 @@ function HistoryTab({ warehouseId }: { warehouseId: string }) {
           <input className={styles.fieldInput} style={{ width: 150 }} type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
           <input className={styles.fieldInput} style={{ width: 150 }} type="date" value={to} onChange={(e) => setTo(e.target.value)} />
           {(type || from || to) && (
-            <Button variant="ghost" size="sm" onClick={() => { setType(''); setFrom(''); setTo(''); }}>Clear</Button>
+            <Button variant="ghost" onClick={() => { setType(''); setFrom(''); setTo(''); }}>Clear</Button>
           )}
         </div>
       </div>
@@ -926,8 +946,8 @@ function RackFormDrawer({
           )}
         </div>
         <div className={formStyles.drawerFooter}>
-          <Button variant="ghost" size="md" onClick={onClose}>Cancel</Button>
-          <Button variant="primary" size="md" onClick={submit} disabled={busy}>
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button variant="primary" onClick={submit} disabled={busy}>
             {busy ? 'Saving…' : 'Save'}
           </Button>
         </div>
@@ -1001,8 +1021,8 @@ function SeedRacksModal({
           />
         </div>
         <div className={formStyles.drawerFooter}>
-          <Button variant="ghost" size="md" onClick={onClose}>Cancel</Button>
-          <Button variant="primary" size="md" onClick={submit} disabled={create.isPending}>
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button variant="primary" onClick={submit} disabled={create.isPending}>
             {create.isPending ? 'Creating…' : 'Create racks'}
           </Button>
         </div>

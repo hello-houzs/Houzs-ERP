@@ -16,14 +16,19 @@
 // the queried range). Range + fleet live in the URL (useSearchParams) so a
 // link / refresh keeps the view.
 //
-// Style: 2990 cream brand (CSS module + design-system tokens). Utilisation is
-// tinted (low → red-ish, healthy → green-ish), like Houzs. Money is integer
-// cents from the API → fmtCenti for the RM display. Every number is rounded.
+// Style: app design system (2026-07-16 reskin) — shared <PageHeader>, <StatCard>
+// KPI tiles and Tailwind "Ink & Petrol" tokens; only the dense metric table
+// keeps a CSS module. Utilisation is tinted (low → red-ish, healthy → green-ish),
+// like Houzs. Money is integer cents from the API → fmtCenti for the RM display.
+// Every number is rounded.
 // ----------------------------------------------------------------------------
 
 import { useMemo, useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { fmtCenti, fmtDate } from '@2990s/shared';
+import { PageHeader } from '../../components/Layout';
+import { StatCard } from '../../components/StatCard';
+import { cn } from '../../lib/utils';
 import {
   useLorryCapacity,
   useToggleLorryInHouse,
@@ -33,6 +38,46 @@ import {
 } from '../../vendor/scm/lib/lorry-capacity-queries';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import styles from './LorryCapacity.module.css';
+
+/* Custom-range date field — the design-system input slab. */
+const DATE_INPUT =
+  'h-[30px] rounded-md border border-border bg-surface px-2 text-[12px] text-ink outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/20';
+
+/* Segmented control — the FilterPills / ViewToggle slab from the reference
+   list pages (PurchaseOrdersListV2). Replaces the bespoke `.segment` pill. */
+function SegmentedControl<T extends string>({
+  options, value, onChange, label,
+}: {
+  options: ReadonlyArray<{ key: T; label: string }>;
+  value: T;
+  onChange: (v: T) => void;
+  label: string;
+}) {
+  return (
+    <div
+      className="inline-flex items-center gap-0.5 rounded-md border border-border bg-surface p-1 shadow-stone"
+      role="group"
+      aria-label={label}
+    >
+      {options.map((o) => (
+        <button
+          key={o.key}
+          type="button"
+          aria-pressed={value === o.key}
+          className={cn(
+            'whitespace-nowrap rounded px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider transition-colors',
+            value === o.key
+              ? 'bg-primary text-white shadow-sm'
+              : 'text-ink-secondary hover:bg-primary-soft hover:text-primary',
+          )}
+          onClick={() => onChange(o.key)}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 /* ── Range presets ──────────────────────────────────────────────────────────
    Compute a {from,to} ISO range (YYYY-MM-DD, UTC-anchored so it matches the
@@ -136,79 +181,67 @@ export const LorryCapacity = () => {
   const workingDays = data?.workingDays ?? 0;
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div>
-          <h1 className={styles.title}>Lorry Capacity</h1>
-          <p className={styles.subtitle}>
-            Working days Mon–Sat · {workingDays} in range
-            {' · '}{fmtDate(from)} – {fmtDate(to)}
-          </p>
-        </div>
-        <div className={styles.controls}>
-          {/* Date-range segment */}
-          <div className={styles.segment}>
-            {RANGE_TABS.map((r) => (
-              <button
-                key={r.key}
-                type="button"
-                className={`${styles.segBtn} ${activePreset === r.key ? styles.segBtnActive : ''}`}
-                onClick={() => setPreset(r.key)}
-              >
-                {r.label}
-              </button>
-            ))}
+    <div>
+      {/* ── Header — shared PageHeader (full-bleed, design-system) ─── */}
+      <PageHeader
+        dense
+        eyebrow="Delivery · TMS"
+        title="Lorry Capacity"
+        description={`Working days Mon–Sat · ${workingDays} in range · ${fmtDate(from)} – ${fmtDate(to)}`}
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Date-range segment */}
+            <SegmentedControl
+              label="Date range"
+              options={RANGE_TABS}
+              value={activePreset}
+              onChange={setPreset}
+            />
+            {activePreset === 'custom' && (
+              <div className="inline-flex items-center gap-1.5">
+                <input
+                  type="date" className={DATE_INPUT} value={customFrom}
+                  max={customTo} onChange={(e) => setCustom('from', e.target.value)}
+                />
+                <span className="text-[12px] text-ink-muted">–</span>
+                <input
+                  type="date" className={DATE_INPUT} value={customTo}
+                  min={customFrom} onChange={(e) => setCustom('to', e.target.value)}
+                />
+              </div>
+            )}
+            {/* Fleet segment */}
+            <SegmentedControl
+              label="Fleet"
+              options={FLEET_TABS}
+              value={fleet}
+              onChange={setFleet}
+            />
           </div>
-          {activePreset === 'custom' && (
-            <div className={styles.customRange}>
-              <input
-                type="date" className={styles.dateInput} value={customFrom}
-                max={customTo} onChange={(e) => setCustom('from', e.target.value)}
-              />
-              <span className={styles.rangeDash}>–</span>
-              <input
-                type="date" className={styles.dateInput} value={customTo}
-                min={customFrom} onChange={(e) => setCustom('to', e.target.value)}
-              />
-            </div>
-          )}
-          {/* Fleet segment */}
-          <div className={styles.segment}>
-            {FLEET_TABS.map((f) => (
-              <button
-                key={f.key}
-                type="button"
-                className={`${styles.segBtn} ${fleet === f.key ? styles.segBtnActive : ''}`}
-                onClick={() => setFleet(f.key)}
-              >
-                {f.label}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
+        }
+      />
 
       {error && !isLoading && (
-        <div className={styles.bannerWarn}>
-          <strong>Failed to load lorry capacity.</strong>{' '}
+        <div className="mb-4 rounded-lg border border-err/40 bg-err/10 px-4 py-2.5 text-[12.5px] text-err">
+          <strong className="font-semibold">Failed to load lorry capacity.</strong>{' '}
           {error instanceof Error ? error.message : String(error)}
         </div>
       )}
 
-      {/* Summary metric cards */}
-      <div className={styles.cards}>
-        <MetricCard label="Lorries" value={numOrDash(totals?.lorries)} />
-        <MetricCard label="Total Trips" value={numOrDash(totals?.total_trips)} />
-        <MetricCard label="Available Days" value={numOrDash(totals?.available_days)} />
-        <MetricCard label="Utilisation" value={pctOrDash(totals?.utilisation)} />
-        <MetricCard label="Orders/Delivery Trip" value={numOrDash(totals?.orders_per_delivery_trip, 2)} />
-        <MetricCard label="Delivery Revenue" value={centiOrDash(totals?.delivery_revenue_centi)} />
-        <MetricCard label="Revenue/Order" value={centiOrDash(totals?.revenue_per_order_centi)} />
-        <MetricCard label="Revenue/Trip" value={centiOrDash(totals?.revenue_per_trip_centi)} />
+      {/* Summary metric tiles */}
+      <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4">
+        <StatCard label="Lorries" value={numOrDash(totals?.lorries)} />
+        <StatCard label="Total Trips" value={numOrDash(totals?.total_trips)} />
+        <StatCard label="Available Days" value={numOrDash(totals?.available_days)} />
+        <StatCard label="Utilisation" value={pctOrDash(totals?.utilisation)} />
+        <StatCard label="Orders/Delivery Trip" value={numOrDash(totals?.orders_per_delivery_trip, 2)} />
+        <StatCard label="Delivery Revenue" value={centiOrDash(totals?.delivery_revenue_centi)} />
+        <StatCard label="Revenue/Order" value={centiOrDash(totals?.revenue_per_order_centi)} />
+        <StatCard label="Revenue/Trip" value={centiOrDash(totals?.revenue_per_trip_centi)} />
       </div>
 
       {/* Per-lorry metric table */}
-      <div className={styles.tableWrap}>
+      <section className="overflow-x-auto rounded-lg border border-border bg-surface shadow-stone">
         <table className={styles.table}>
           <thead>
             <tr>
@@ -274,17 +307,10 @@ export const LorryCapacity = () => {
             </tfoot>
           )}
         </table>
-      </div>
+      </section>
     </div>
   );
 };
-
-const MetricCard = ({ label, value }: { label: string; value: string }) => (
-  <div className={styles.card}>
-    <span className={styles.cardLabel}>{label}</span>
-    <span className={styles.cardValue}>{value}</span>
-  </div>
-);
 
 /* One lorry row. The Repair Days input is locally controlled so typing doesn't
    thrash the query; it commits on blur / Enter only when the value changed. */

@@ -1,151 +1,34 @@
-/* Lorry Capacity — STAGE 5B (final) of the Delivery / TMS module.
-   The fleet performance dashboard: a date-range segment + a fleet segment, a
-   row of summary metric cards, and the per-lorry metric table (utilisation
-   tinted, In-house inline checkbox, Repair Days inline number). 2990 cream
-   brand styling — CSS variables + design-system tokens only, no raw palette. */
+/* ====================================================================
+   Lorry Capacity — design-system reskin (2026-07-16)
 
-.page {
-  /* Ink & Petrol token overrides — same cascade as SalesOrderNew.module.css. */
-  --c-orange:        #16695f;
-  --c-burnt:         #0c3f39;
-  --c-cream:         #f4f6f3;
-  --c-paper:         #fcfdfb;
-  --c-ink:           #11140f;
-  --c-ink-secondary: #767b6e;
-  --c-ink-muted:     #9aa093;
-  --fg:              #11140f;
-  --fg-muted:        #767b6e;
-  --line:            #d6d9d2;
-  --line-strong:     #c2c6bd;
-  --c-accent-soft:   #eff6f4;
+   The page frame is now FULL-BLEED and matches the PO/SO V2 pages
+   (PurchaseOrdersListV2 / SalesOrderMaintenance / SalesOrderDetailListing):
+   the header is the shared <PageHeader> (with the date-range + fleet
+   segmented controls as its `actions`), the summary metrics are <StatCard>
+   tiles, and the table card is a plain Tailwind token slab — all inline
+   in the TSX.
 
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-4) var(--space-4);
-  background: #dcdfd9;
-  min-height: 100%;
-}
+   The old grey "framed card" chrome (.page #dcdfd9 canvas + its `--c-*` /
+   `--line` token-override cascade, .headerRow/.title/.subtitle, the
+   .controls/.segment/.segBtn/.segBtnActive segmented pills, the
+   .customRange/.dateInput/.rangeDash date row, the .cards/.card/.cardLabel/
+   .cardValue KPI tiles, .tableWrap, .bannerWarn and the unused .muted) is
+   gone.
 
-.headerRow {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: var(--space-4);
-  flex-wrap: wrap;
-}
-
-.title {
-  font-family: var(--font-title);
-  font-size: var(--fs-15, 15px);
-  font-weight: 600;
-  color: var(--c-ink);
-  margin: 0;
-}
-
-.subtitle {
-  font-family: var(--font-sans);
-  font-size: var(--fs-11);
-  color: var(--fg-muted);
-  margin: 2px 0 0;
-}
-
-/* ── Segmented controls (date range + fleet) ──────────────────────────────── */
-.controls {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  flex-wrap: wrap;
-}
-
-.segment {
-  display: inline-flex;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-pill);
-  background: var(--c-paper);
-  overflow: hidden;
-}
-
-.segBtn {
-  height: 30px;
-  padding: 0 14px;
-  background: transparent;
-  border: none;
-  border-right: 1px solid var(--line);
-  font-family: var(--font-button);
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--fg-muted);
-  cursor: pointer;
-  white-space: nowrap;
-}
-.segBtn:last-child { border-right: none; }
-.segBtn:hover { color: var(--c-ink); }
-
-.segBtnActive {
-  background: rgba(22, 105, 95, 0.10);
-  color: var(--c-burnt);
-}
-
-/* Custom-range date inputs (shown when the Custom segment is active). */
-.customRange {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-.dateInput {
-  height: 30px;
-  padding: 0 8px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm, 6px);
-  background: var(--c-paper);
-  font-family: var(--font-sans);
-  font-size: 12px;
-  color: var(--c-ink);
-}
-.rangeDash { color: var(--fg-muted); font-size: 12px; }
-
-/* ── Summary metric cards ─────────────────────────────────────────────────── */
-.cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: var(--space-2);
-}
-
-.card {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: var(--space-3);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  background: var(--c-paper);
-}
-
-.cardLabel {
-  font-family: var(--font-button);
-  font-size: var(--fs-9, 9px);
-  font-weight: 600;
-  letter-spacing: 0.10em;
-  text-transform: uppercase;
-  color: var(--fg-muted);
-}
-
-.cardValue {
-  font-family: var(--font-mark);
-  font-size: 19px;
-  font-weight: 700;
-  color: var(--c-ink);
-  font-variant-numeric: tabular-nums;
-}
+   What survives is the DENSE per-lorry metric table — a genuine content
+   primitive with no design-system equivalent (16 numeric columns, sticky
+   head, tinted utilisation pill, inline edit affordances). Its colours used
+   to resolve through the deleted `.page` cascade, so they are hardcoded to
+   the Tailwind "Ink & Petrol" tokens:
+     primary  #16695f   primary-dark #0c3f39
+     ink      #11140f   ink-muted    #767b6e
+     border   #d6d9d2   surface      #ffffff   surface-2 #f4f6f3
+     err      #b23a3a   synced       #2f8a5b
+   Structural tokens (--space-*, --fs-*, --font-*, --radius-*) stay as
+   var() — those are global and unaffected by the removed cascade.
+   ==================================================================== */
 
 /* ── Per-lorry metric table ───────────────────────────────────────────────── */
-.tableWrap {
-  overflow-x: auto;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  background: var(--c-paper);
-}
 
 .table {
   width: 100%;
@@ -158,7 +41,7 @@
 .table thead th {
   position: sticky;
   top: 0;
-  background: var(--c-paper);
+  background: #f4f6f3;
   text-align: right;
   padding: 8px 10px;
   font-family: var(--font-button);
@@ -166,8 +49,8 @@
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--fg-muted);
-  border-bottom: 1px solid var(--line);
+  color: #767b6e;
+  border-bottom: 1px solid #d6d9d2;
 }
 .table thead th.left { text-align: left; }
 .table thead th.center { text-align: center; }
@@ -175,27 +58,25 @@
 .table tbody td {
   padding: 7px 10px;
   text-align: right;
-  color: var(--c-ink);
-  border-bottom: 1px solid var(--line);
+  color: #11140f;
+  border-bottom: 1px solid #e3e6e0;
   font-variant-numeric: tabular-nums;
 }
 .table tbody td.left { text-align: left; }
 .table tbody td.center { text-align: center; }
 .table tbody tr:last-child td { border-bottom: none; }
-.table tbody tr:hover td { background: rgba(34, 31, 32, 0.02); }
+.table tbody tr:hover td { background: #f4f6f3; }
 
 .plate {
   font-family: var(--font-mark);
   font-weight: 700;
-  color: var(--c-burnt);
+  color: #0c3f39;
 }
 .lorryType {
   font-size: 10px;
-  color: var(--fg-muted);
+  color: #767b6e;
   margin-left: 6px;
 }
-
-.muted { color: var(--fg-muted); }
 
 /* In-house inline checkbox cell. */
 .checkCell {
@@ -211,18 +92,18 @@
   height: 26px;
   padding: 0 6px;
   text-align: right;
-  border: 1px solid var(--line);
+  border: 1px solid #d6d9d2;
   border-radius: var(--radius-sm, 6px);
-  background: var(--c-cream);
+  background: #f4f6f3;
   font-family: var(--font-mark);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
-  color: var(--c-ink);
+  color: #11140f;
 }
 .repairInput:focus {
   outline: none;
-  border-color: var(--c-burnt);
-  background: var(--c-paper);
+  border-color: #16695f;
+  background: #ffffff;
 }
 
 /* Utilisation tint — low utilisation reads red-ish, healthy reads green-ish.
@@ -236,38 +117,29 @@
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
-.utilLow  { background: rgba(184, 51, 31, 0.12); color: var(--c-festive-b, #B8331F); }
-.utilMid  { background: rgba(22, 105, 95, 0.12); color: var(--c-burnt); }
-.utilHigh { background: rgba(47, 93, 79, 0.12);  color: var(--c-secondary-a); }
+.utilLow  { background: rgba(178, 58, 58, 0.12); color: #b23a3a; }
+.utilMid  { background: rgba(22, 105, 95, 0.12); color: #0c3f39; }
+.utilHigh { background: rgba(47, 138, 91, 0.12); color: #2f8a5b; }
 
-/* Money cells — mark face, burnt when non-zero. */
+/* Money cells — mark face. */
 .money { font-family: var(--font-mark); font-weight: 600; }
 
 /* Totals footer row. */
 .table tfoot td {
   padding: 8px 10px;
   text-align: right;
-  border-top: 2px solid var(--line);
+  border-top: 2px solid #d6d9d2;
   font-family: var(--font-mark);
   font-weight: 700;
-  color: var(--c-ink);
+  color: #11140f;
   background: rgba(22, 105, 95, 0.04);
   font-variant-numeric: tabular-nums;
 }
-.table tfoot td.left { text-align: left; text-transform: uppercase; font-family: var(--font-button); font-size: var(--fs-9, 9px); letter-spacing: 0.06em; color: var(--fg-muted); }
+.table tfoot td.left { text-align: left; text-transform: uppercase; font-family: var(--font-button); font-size: var(--fs-9, 9px); letter-spacing: 0.06em; color: #767b6e; }
 
 .emptyState {
   padding: var(--space-5) var(--space-4);
   text-align: center;
-  color: var(--fg-muted);
-  font-size: var(--fs-12);
-}
-
-.bannerWarn {
-  background: rgba(22, 105, 95, 0.08);
-  border: 1px solid var(--c-orange);
-  color: var(--c-burnt);
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-md);
+  color: #767b6e;
   font-size: var(--fs-12);
 }

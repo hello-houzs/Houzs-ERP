@@ -21,7 +21,9 @@ import {
   Search, ArrowUpRight, ArrowDownLeft, DollarSign, Star, X, Plus,
   Warehouse as WarehouseIcon, ChevronRight, ChevronDown,
 } from 'lucide-react';
-import { Button } from '@2990s/design-system';
+import { Button } from '../../components/Button';
+import { PageHeader } from '../../components/Layout';
+import { StatCard } from '../../components/StatCard';
 import { formatVariantKey, fmtCenti, fmtDate, fmtQty } from '@2990s/shared';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
@@ -64,6 +66,19 @@ import styles from './Inventory.module.css';
 const ICON = { size: 14, strokeWidth: 1.75 } as const;
 const ICON_MD = { size: 16, strokeWidth: 1.75 } as const;
 
+/* KPI tile grid — replaces the bespoke .statGrid (auto-fit minmax(220px)).
+   Mirrors the SalesOrderDetailListing reskin: a plain Tailwind grid that
+   holds the shared <StatCard>s, 2-up on a phone (the old 600px media rule). */
+const STAT_GRID = 'grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4';
+
+/* Same grid, capped at 3 columns for the 3-tile clusters. */
+const STAT_GRID_3 = 'grid grid-cols-2 gap-3 md:grid-cols-3';
+
+/* "Failed to load" banner — err tokens (was the bespoke .bannerWarn, whose
+   colours only resolved via the removed .page cascade). */
+const BANNER_ERR =
+  'rounded-lg border border-err/40 bg-err/10 px-4 py-3 text-[13px] text-err';
+
 type Tab = 'balances' | 'batches' | 'warehouses' | 'analytics';
 type Category = 'all' | 'ACCESSORY' | 'BEDFRAME' | 'SOFA' | 'MATTRESS' | 'SERVICE';
 
@@ -98,26 +113,38 @@ export const Inventory = () => {
   const [breakdownFor, setBreakdownFor] = useState<{ code: string; name: string } | null>(null);
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div>
-          <h1 className={styles.title}>Inventory</h1>
-        </div>
-        <div className={styles.tabRow}>
-          <button type="button" className={styles.tab} data-active={tab === 'balances'} onClick={() => setTab('balances')}>
-            Balances
-          </button>
-          <button type="button" className={styles.tab} data-active={tab === 'batches'} onClick={() => setTab('batches')}>
-            Batches
-          </button>
-          <button type="button" className={styles.tab} data-active={tab === 'warehouses'} onClick={() => setTab('warehouses')}>
-            Warehouses
-          </button>
-          <button type="button" className={styles.tab} data-active={tab === 'analytics'} onClick={() => setTab('analytics')}>
-            Analytics
-          </button>
-        </div>
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Stock"
+        title="Inventory"
+        actions={
+          /* Tab rail — reskinned to the reference FilterPills slab. Rides in
+             the header's actions slot, the same seat the bespoke .tabRow had
+             inside the old sticky .headerRow (PageHeader is sticky too). */
+          <div className="inline-flex max-w-full items-center gap-0.5 overflow-x-auto rounded-md border border-border bg-surface p-1 shadow-stone [&>*]:shrink-0">
+            {([
+              { value: 'balances' as const, label: 'Balances' },
+              { value: 'batches' as const, label: 'Batches' },
+              { value: 'warehouses' as const, label: 'Warehouses' },
+              { value: 'analytics' as const, label: 'Analytics' },
+            ]).map((t) => (
+              <button
+                key={t.value}
+                type="button"
+                data-active={tab === t.value}
+                onClick={() => setTab(t.value)}
+                className={
+                  tab === t.value
+                    ? 'whitespace-nowrap rounded bg-primary px-3.5 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-white shadow-sm transition-all duration-150'
+                    : 'whitespace-nowrap rounded px-3.5 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-ink-secondary transition-all duration-150 hover:bg-primary-soft hover:text-primary'
+                }
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+        }
+      />
 
       {/* Category chips — only for Balances tab */}
       {tab === 'balances' && (
@@ -211,24 +238,15 @@ const AnalyticsTab = ({ warehouseId }: { warehouseId: string | null }) => {
         ))}
       </div>
 
-      {/* KPI cards */}
-      <div className={styles.statGrid}>
-        <div className={styles.statCard}>
-          <span className={styles.statLabel}>Inventory Value</span>
-          <span className={styles.statValue}>{fmtRm(data.totalValueSen)}</span>
-        </div>
-        <div className={styles.statCard}>
-          <span className={styles.statLabel}>Distinct SKUs in stock</span>
-          <span className={styles.statValue}>{fmtQty(data.distinctSkus)}</span>
-        </div>
-        <div className={styles.statCard}>
-          <span className={styles.statLabel}>Stock Turn (annualised)</span>
-          <span className={styles.statValue}>{turns > 0 ? `${turns.toFixed(1)}×` : '—'}</span>
-        </div>
-        <div className={styles.statCard}>
-          <span className={styles.statLabel}>Days of Stock on Hand</span>
-          <span className={styles.statValue}>{data.turnover.daysOnHand != null ? `${Math.round(data.turnover.daysOnHand)}d` : '—'}</span>
-        </div>
+      {/* KPI cards — shared <StatCard> */}
+      <div className={STAT_GRID}>
+        <StatCard label="Inventory Value" value={fmtRm(data.totalValueSen)} />
+        <StatCard label="Distinct SKUs in stock" value={fmtQty(data.distinctSkus)} />
+        <StatCard label="Stock Turn (annualised)" value={turns > 0 ? `${turns.toFixed(1)}×` : '—'} />
+        <StatCard
+          label="Days of Stock on Hand"
+          value={data.turnover.daysOnHand != null ? `${Math.round(data.turnover.daysOnHand)}d` : '—'}
+        />
       </div>
 
       {/* Stock aging */}
@@ -250,8 +268,8 @@ const AnalyticsTab = ({ warehouseId }: { warehouseId: string | null }) => {
                 <td className={`${styles.numCell} ${b.qty > 0 ? styles.numCellPos : styles.numCellZero}`}>{fmtQty(b.qty)}</td>
                 <td className={styles.numCell} style={{ fontWeight: 700 }}>{b.valueSen > 0 ? fmtRm(b.valueSen) : '—'}</td>
                 <td>
-                  <div style={{ height: 10, borderRadius: 5, background: 'var(--c-paper)', overflow: 'hidden' }}>
-                    <div style={{ height: '100%', width: `${(b.valueSen / agingMax) * 100}%`, background: 'var(--c-burnt)' }} />
+                  <div className="h-2.5 overflow-hidden rounded-full bg-surface-2">
+                    <div className="h-full bg-primary" style={{ width: `${(b.valueSen / agingMax) * 100}%` }} />
                   </div>
                 </td>
               </tr>
@@ -262,15 +280,14 @@ const AnalyticsTab = ({ warehouseId }: { warehouseId: string | null }) => {
 
       {/* ABC classification */}
       <p className={styles.eyebrow}>ABC Classification — by sales value over the window</p>
-      <div className={styles.statGrid}>
+      <div className={STAT_GRID}>
         {(['A', 'B', 'C'] as const).map((cls) => (
-          <div key={cls} className={styles.statCard}>
-            <span className={styles.statLabel}>
-              Class {cls} {cls === 'A' ? '· top sellers' : cls === 'B' ? '· steady' : '· slow / idle'}
-            </span>
-            <span className={styles.statValue}>{data.abc.summary[cls].count}</span>
-            <span className={styles.statLabel}>{fmtRm(data.abc.summary[cls].valueSen)} on hand</span>
-          </div>
+          <StatCard
+            key={cls}
+            label={`Class ${cls} ${cls === 'A' ? '· top sellers' : cls === 'B' ? '· steady' : '· slow / idle'}`}
+            value={data.abc.summary[cls].count}
+            subtitle={`${fmtRm(data.abc.summary[cls].valueSen)} on hand`}
+          />
         ))}
       </div>
 
@@ -330,19 +347,10 @@ const BalancesTab = ({
 
   return (
     <>
-      <div className={styles.statGrid}>
-        <div className={styles.statCard}>
-          <span className={styles.statLabel}>Total Qty</span>
-          <span className={styles.statValue}>{fmtQty(stats.totalQty)}</span>
-        </div>
-        <div className={styles.statCard}>
-          <span className={styles.statLabel}>Distinct SKUs</span>
-          <span className={styles.statValue}>{stats.distinctSku}</span>
-        </div>
-        <div className={styles.statCard}>
-          <span className={styles.statLabel}>Inventory Value</span>
-          <span className={styles.statValue}>{fmtRm(stats.totalValue)}</span>
-        </div>
+      <div className={STAT_GRID_3}>
+        <StatCard label="Total Qty" value={fmtQty(stats.totalQty)} />
+        <StatCard label="Distinct SKUs" value={stats.distinctSku} />
+        <StatCard label="Inventory Value" value={fmtRm(stats.totalValue)} />
       </div>
 
       <p className={styles.eyebrow}>
@@ -350,8 +358,8 @@ const BalancesTab = ({
       </p>
 
       {error && !isLoading && (
-        <div className={styles.bannerWarn}>
-          <strong>Failed to load.</strong>{' '}
+        <div className={BANNER_ERR}>
+          <strong className="font-semibold">Failed to load.</strong>{' '}
           {error instanceof Error ? error.message : String(error)}
         </div>
       )}
@@ -575,7 +583,7 @@ const SkuVariantPanel = ({ code }: { code: string }) => {
     return <div className={styles.numCellZero} style={{ padding: '8px 16px' }}>No stock buckets yet.</div>;
   }
   return (
-    <table className={styles.table} style={{ background: 'var(--c-cream)' }}>
+    <table className={`${styles.table} bg-surface-2`}>
       <tbody>
         {variants.map((v) => {
           const qtyClass = v.qty > 0 ? styles.numCellPos : v.qty < 0 ? styles.numCellNeg : styles.numCellZero;
@@ -674,19 +682,10 @@ const BatchesTab = ({
         </div>
       </div>
 
-      <div className={styles.statGrid}>
-        <div className={styles.statCard}>
-          <span className={styles.statLabel}>Open Batches</span>
-          <span className={styles.statValue}>{stats.batchCount}</span>
-        </div>
-        <div className={styles.statCard}>
-          <span className={styles.statLabel}>Modules On Hand</span>
-          <span className={styles.statValue}>{fmtQty(stats.totalQty)}</span>
-        </div>
-        <div className={styles.statCard}>
-          <span className={styles.statLabel}>Distinct SKUs</span>
-          <span className={styles.statValue}>{stats.skuCount}</span>
-        </div>
+      <div className={STAT_GRID_3}>
+        <StatCard label="Open Batches" value={stats.batchCount} />
+        <StatCard label="Modules On Hand" value={fmtQty(stats.totalQty)} />
+        <StatCard label="Distinct SKUs" value={stats.skuCount} />
       </div>
 
       <p className={styles.eyebrow}>
@@ -694,8 +693,8 @@ const BatchesTab = ({
       </p>
 
       {error && !isLoading && (
-        <div className={styles.bannerWarn}>
-          <strong>Failed to load.</strong>{' '}
+        <div className={BANNER_ERR}>
+          <strong className="font-semibold">Failed to load.</strong>{' '}
           {error instanceof Error ? error.message : String(error)}
         </div>
       )}
@@ -791,7 +790,7 @@ const BATCH_COLUMNS: DataGridColumn<InventoryBatch>[] = [
 /* Component SKUs inside a batch — rendered in the row's DataGrid expansion
    (was inline cream <tr>s pre-DataGrid). */
 const BatchComponentsPanel = ({ batch }: { batch: InventoryBatch }) => (
-  <table className={styles.table} style={{ background: 'var(--c-cream)' }}>
+  <table className={`${styles.table} bg-surface-2`}>
     <tbody>
       {batch.components.map((c) => (
         <tr key={`${c.productCode}|${c.variantKey ?? ''}`}>
@@ -881,14 +880,11 @@ const ProductBreakdownDrawer = ({
         display: 'flex', justifyContent: 'flex-end',
       }}>
       <div onClick={(e) => e.stopPropagation()}
-        style={{
-          width: 720, maxWidth: '95vw', background: 'var(--c-cream)',
-          padding: 'var(--space-5)', overflow: 'auto',
-        }}>
-        <div className={styles.headerRow}>
+        className="w-[720px] max-w-[95vw] overflow-auto bg-bg p-5">
+        <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-3">
           <div>
-            <h2 className={styles.title} style={{ fontSize: 'var(--fs-22)' }}>Stock Breakdown</h2>
-            <p className={styles.subtitle}>
+            <h2 className="font-display text-[20px] font-extrabold leading-tight tracking-tight text-ink">Stock Breakdown</h2>
+            <p className="mt-1 text-[12px] text-ink-secondary">
               <span className={styles.codeChip}>{code}</span> {name}
             </p>
           </div>
@@ -898,15 +894,9 @@ const ProductBreakdownDrawer = ({
           </button>
         </div>
 
-        <div className={styles.statGrid} style={{ marginTop: 'var(--space-4)' }}>
-          <div className={styles.statCard}>
-            <span className={styles.statLabel}>Total Qty</span>
-            <span className={styles.statValue}>{fmtQty(totalQty)}</span>
-          </div>
-          <div className={styles.statCard}>
-            <span className={styles.statLabel}>Total Value</span>
-            <span className={styles.statValue}>{fmtRm(totalVal)}</span>
-          </div>
+        <div className={`${STAT_GRID_3} mt-4`}>
+          <StatCard label="Total Qty" value={fmtQty(totalQty)} />
+          <StatCard label="Total Value" value={fmtRm(totalVal)} />
         </div>
 
         {/* Per-warehouse × attribute-composition breakdown. One row per
@@ -1149,8 +1139,8 @@ const MovementsTab = ({
       </p>
 
       {error && !isLoading && (
-        <div className={styles.bannerWarn}>
-          <strong>Failed to load.</strong>{' '}
+        <div className={BANNER_ERR}>
+          <strong className="font-semibold">Failed to load.</strong>{' '}
           {error instanceof Error ? error.message : String(error)}
         </div>
       )}
@@ -1244,12 +1234,12 @@ const CogsTab = ({
 
   return (
     <>
-      <div className={styles.statGrid}>
-        <div className={styles.statCard}>
-          <span className={styles.statLabel}>Total COGS</span>
-          <span className={styles.statValue}>{fmtRm(totalCogs)}</span>
-          <span className={styles.statCaption}>{cogs.length} consumptions</span>
-        </div>
+      <div className={STAT_GRID_3}>
+        <StatCard
+          label="Total COGS"
+          value={fmtRm(totalCogs)}
+          subtitle={`${cogs.length} consumptions`}
+        />
       </div>
 
       <p className={styles.eyebrow}>{isLoading ? 'Loading…' : `${cogs.length} consumption entries`}</p>
@@ -1312,12 +1302,12 @@ const WarehousesTab = () => {
   return (
     <>
       <div className={styles.filterRow} style={{ justifyContent: 'space-between' }}>
-        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-13)' }}>
+        <label className="inline-flex items-center gap-1.5 text-[13px] text-ink">
           <input type="checkbox" checked={includeInactive}
             onChange={(e) => setIncludeInactive(e.target.checked)} />
           Show inactive
         </label>
-        <Button variant="primary" size="md" onClick={() => setCreating(true)}>
+        <Button variant="primary" onClick={() => setCreating(true)}>
           <Plus {...ICON_MD} />
           <span>New Warehouse</span>
         </Button>
@@ -1351,14 +1341,14 @@ const WarehousesTab = () => {
                 <td>{w.name}</td>
                 <td className={styles.numCellZero}>{w.location ?? '—'}</td>
                 <td>{w.is_default ? <Star size={12} strokeWidth={2}
-                  style={{ color: 'var(--c-orange)', fill: 'var(--c-orange)' }} /> : '—'}</td>
+                  className="fill-primary text-primary" /> : '—'}</td>
                 <td>
                   <span className={`${styles.movementPill} ${w.is_active ? styles.movementIn : styles.movementAdj}`}>
                     {w.is_active ? 'Active' : 'Inactive'}
                   </span>
                 </td>
                 <td>
-                  <Button variant="ghost" size="sm" onClick={() => setEditing(w)}>Edit</Button>
+                  <Button variant="ghost" onClick={() => setEditing(w)}>Edit</Button>
                 </td>
               </tr>
             ))}
@@ -1421,12 +1411,9 @@ const WarehouseDrawer = ({
         display: 'flex', justifyContent: 'flex-end',
       }}>
       <div onClick={(e) => e.stopPropagation()}
-        style={{
-          width: 480, maxWidth: '95vw', background: 'var(--c-cream)',
-          padding: 'var(--space-5)', overflow: 'auto',
-        }}>
-        <div className={styles.headerRow}>
-          <h2 className={styles.title} style={{ fontSize: 'var(--fs-22)' }}>
+        className="w-[480px] max-w-[95vw] overflow-auto bg-bg p-5">
+        <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border pb-3">
+          <h2 className="font-display text-[20px] font-extrabold leading-tight tracking-tight text-ink">
             {editing ? 'Edit Warehouse' : 'New Warehouse'}
           </h2>
           <button type="button" className={styles.chip} onClick={onClose}>
@@ -1468,8 +1455,8 @@ const WarehouseDrawer = ({
         </div>
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--space-3)', marginTop: 'var(--space-5)' }}>
-          <Button variant="ghost" size="md" onClick={onClose}>Cancel</Button>
-          <Button variant="primary" size="md" onClick={submit} disabled={create.isPending || update.isPending}>
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button variant="primary" onClick={submit} disabled={create.isPending || update.isPending}>
             {(create.isPending || update.isPending) ? 'Saving…' : 'Save'}
           </Button>
         </div>

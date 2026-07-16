@@ -5,14 +5,19 @@
 //   OUR `material_code` (mfg_products.code / fabrics.code)
 //     ↔ THEIR `supplier_sku` (whatever the supplier calls it)
 //
-// UI: 2990s tokens throughout. List page → right-side drawer for detail
-// + inline bindings table inside the drawer.
+// UI: design-system reskin (2026-07-16) — full-bleed on the app background,
+// shared <PageHeader>, local <Button>, Ink & Petrol Tailwind tokens for the
+// chips / search / banner / pagination. The right-side drawer + modal still
+// use the shared Suppliers.module.css content primitives (that module is
+// imported by ~20 scm-v2 pages, so its classes are deliberately left intact).
 // ----------------------------------------------------------------------------
 
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { Search, Plus, X } from 'lucide-react';
-import { Button } from '@2990s/design-system';
+import { Button } from '../../components/Button';
+import { PageHeader } from '../../components/Layout';
+import { cn } from '../../lib/utils';
 import { formatPhone } from '@2990s/shared/phone';
 import { PhoneInput } from '../../vendor/scm/components/PhoneInput';
 import {
@@ -213,103 +218,108 @@ export const Suppliers = () => {
   ], [pool]);
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div>
-          <h1 className={styles.title}>Suppliers</h1>
-        </div>
-        <div className={styles.actionsRow}>
-          {selectedIds.size > 0 && (
-            <Button variant="secondary" size="md" onClick={() => setBatchOpen(true)}>
-              <span>Batch edit ({selectedIds.size})</span>
+    <div>
+      <PageHeader
+        eyebrow="Purchasing"
+        title="Suppliers"
+        description={
+          isLoading ? 'Loading suppliers…' : `${total} supplier${total === 1 ? '' : 's'}`
+        }
+        primaryAction={
+          <div className="flex items-stretch gap-2">
+            {selectedIds.size > 0 && (
+              <Button variant="secondary" onClick={() => setBatchOpen(true)}>
+                Batch edit ({selectedIds.size})
+              </Button>
+            )}
+            <Button variant="primary" icon={<Plus size={14} />} onClick={() => setCreating(true)}>
+              New Supplier
             </Button>
-          )}
-          <Button variant="primary" size="md" onClick={() => setCreating(true)}>
-            <Plus {...ICON} />
-            <span>New Supplier</span>
-          </Button>
-        </div>
-      </div>
+          </div>
+        }
+      />
 
-      <div className={styles.headerRow}>
-        <div className={styles.statusChips}>
-          {STATUS_CHIPS.map((c) => (
+      <div className="space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap gap-1.5">
+            {STATUS_CHIPS.map((c) => (
+              <StatusChip
+                key={c.value}
+                active={status === c.value}
+                onClick={() => setStatus(c.value)}
+              >
+                {c.label}
+              </StatusChip>
+            ))}
+          </div>
+
+          <div className="relative min-w-[240px] flex-1">
+            <Search
+              size={16}
+              strokeWidth={1.75}
+              className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-muted"
+            />
+            <input
+              type="search"
+              className="h-9 w-full rounded-md border border-border bg-surface pl-9 pr-3 text-[13px] text-ink outline-none transition-colors placeholder:text-ink-muted focus:border-primary focus:ring-2 focus:ring-primary/20"
+              placeholder="Search by code / name / contact…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+        </div>
+
+        {/* Supply Category filter chips — rendered from the maintained pool +
+            "Mixed / Other". Client-side filter on the in-memory list (small
+            dataset). Hides nothing when "All supply categories" is on. */}
+        <div className="flex flex-wrap gap-1.5">
+          {categoryChips.map((c) => (
             <StatusChip
               key={c.value}
-              active={status === c.value}
-              onClick={() => setStatus(c.value)}
+              active={category === c.value}
+              onClick={() => setCategory(c.value)}
             >
               {c.label}
             </StatusChip>
           ))}
         </div>
 
-        <div className={styles.searchBox}>
-          <Search {...ICON} className={styles.searchIcon} />
-          <input
-            type="search"
-            className={styles.searchInput}
-            placeholder="Search by code / name / contact…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-        </div>
+        {error && !isLoading && (
+          <div className="rounded-lg border border-err/40 bg-err/10 px-4 py-2.5 text-[12.5px] text-err">
+            <strong className="font-semibold">Failed to load suppliers.</strong>{' '}
+            {error instanceof Error ? error.message : String(error)}
+            <span className="mt-1 block text-[12px] text-ink-secondary">
+              If this keeps happening, sign out and back in — your session may have expired — or let IT know.
+            </span>
+          </div>
+        )}
+
+        {/* Search + Supply-Category + status are all driven SERVER-SIDE from the
+            page-level controls above, so the grid's own client search box is
+            hidden (`hideSearch`) — it would otherwise only filter the loaded page
+            and silently hide matches on other pages. Column sort / filters /
+            show-hide still operate on the loaded page. */}
+        <DataGrid
+          rows={rows}
+          columns={columns}
+          storageKey="dg-suppliers"
+          rowKey={(r) => r.id}
+          hideSearch
+          groupBanner={false}
+          isLoading={isLoading}
+          emptyMessage="No suppliers yet."
+          onRowClick={(r) => navigate(`/scm/suppliers/${r.id}`)}
+          selectable={{ selectedKeys: selectedIds, onToggle: toggle, onToggleAll: toggleAll }}
+        />
+
+        <PaginationFooter
+          page={page}
+          pageSize={PAGE_SIZE}
+          total={total}
+          onPrev={() => setPage((p) => Math.max(0, p - 1))}
+          onNext={() => setPage((p) => p + 1)}
+        />
       </div>
-
-      {/* Supply Category filter chips — rendered from the maintained pool +
-          "Mixed / Other". Client-side filter on the in-memory list (small
-          dataset). Hides nothing when "All supply categories" is on. */}
-      <div className={styles.statusChips} style={{ marginTop: 'var(--space-2)' }}>
-        {categoryChips.map((c) => (
-          <StatusChip
-            key={c.value}
-            active={category === c.value}
-            onClick={() => setCategory(c.value)}
-          >
-            {c.label}
-          </StatusChip>
-        ))}
-      </div>
-
-      <p className={styles.eyebrow}>
-        {isLoading ? 'Loading suppliers…' : `${total} supplier${total === 1 ? '' : 's'}`}
-      </p>
-
-      {error && !isLoading && (
-        <div className={styles.bannerWarn}>
-          <strong>Failed to load suppliers.</strong>{' '}
-          {error instanceof Error ? error.message : String(error)}
-          <span style={{ color: 'var(--fg-muted)', fontSize: 'var(--fs-12)' }}>
-            If this keeps happening, sign out and back in — your session may have expired — or let IT know.
-          </span>
-        </div>
-      )}
-
-      {/* Search + Supply-Category + status are all driven SERVER-SIDE from the
-          page-level controls above, so the grid's own client search box is
-          hidden (`hideSearch`) — it would otherwise only filter the loaded page
-          and silently hide matches on other pages. Column sort / filters /
-          show-hide still operate on the loaded page. */}
-      <DataGrid
-        rows={rows}
-        columns={columns}
-        storageKey="dg-suppliers"
-        rowKey={(r) => r.id}
-        hideSearch
-        groupBanner={false}
-        isLoading={isLoading}
-        emptyMessage="No suppliers yet."
-        onRowClick={(r) => navigate(`/scm/suppliers/${r.id}`)}
-        selectable={{ selectedKeys: selectedIds, onToggle: toggle, onToggleAll: toggleAll }}
-      />
-
-      <PaginationFooter
-        page={page}
-        pageSize={PAGE_SIZE}
-        total={total}
-        onPrev={() => setPage((p) => Math.max(0, p - 1))}
-        onNext={() => setPage((p) => p + 1)}
-      />
 
       {creating && (
         <SupplierCreateDrawer onClose={() => setCreating(false)} />
@@ -338,18 +348,12 @@ const StatusChip = ({
   <button
     type="button"
     onClick={onClick}
-    style={{
-      fontFamily: 'var(--font-button)',
-      fontSize: 'var(--fs-13)',
-      fontWeight: 600,
-      letterSpacing: '0.02em',
-      padding: 'var(--space-2) var(--space-4)',
-      borderRadius: 'var(--radius-pill)',
-      border: active ? '1px solid var(--c-ink)' : '1px solid var(--line)',
-      background: active ? 'var(--c-ink)' : 'var(--c-paper)',
-      color: active ? 'var(--c-cream)' : 'var(--c-ink)',
-      cursor: 'pointer',
-    }}
+    className={cn(
+      'h-7 rounded-full border px-3 text-[11px] font-semibold transition-colors',
+      active
+        ? 'border-primary bg-primary-soft text-primary'
+        : 'border-border bg-surface text-ink-secondary hover:border-primary/40 hover:text-primary',
+    )}
   >
     {children}
   </button>
@@ -376,21 +380,13 @@ const PaginationFooter = ({
   const atStart = page === 0;
   const atEnd = (page + 1) * pageSize >= total;
   return (
-    <div
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: 'var(--space-3)',
-        marginTop: 'var(--space-3)',
-      }}
-    >
-      <span style={{ color: 'var(--fg-muted)', fontSize: 'var(--fs-12)' }}>
+    <div className="flex items-center justify-between gap-3">
+      <span className="text-[12px] text-ink-secondary">
         {total === 0 ? 'No suppliers' : `Showing ${from}${to > from ? `–${to}` : ''} of ${total}`}
       </span>
-      <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-        <Button variant="secondary" size="md" onClick={onPrev} disabled={atStart}>Prev</Button>
-        <Button variant="secondary" size="md" onClick={onNext} disabled={atEnd}>Next</Button>
+      <div className="flex gap-2">
+        <Button variant="secondary" onClick={onPrev} disabled={atStart}>Prev</Button>
+        <Button variant="secondary" onClick={onNext} disabled={atEnd}>Next</Button>
       </div>
     </div>
   );
@@ -527,8 +523,8 @@ const BatchEditModal = ({
         </div>
 
         <footer className={styles.drawerFooter}>
-          <Button variant="ghost" size="md" onClick={onClose} disabled={applying}>Cancel</Button>
-          <Button variant="primary" size="md" onClick={apply} disabled={applying}>
+          <Button variant="ghost" onClick={onClose} disabled={applying}>Cancel</Button>
+          <Button variant="primary" onClick={apply} disabled={applying}>
             {applying ? 'Applying…' : `Apply (${ids.length})`}
           </Button>
         </footer>
@@ -613,8 +609,8 @@ const CreateForm = ({ onClose }: { onClose: () => void }) => {
         <SupplierFields form={form} onChange={onChange} />
       </div>
       <footer className={styles.drawerFooter}>
-        <Button variant="ghost" size="md" onClick={onClose}>Cancel</Button>
-        <Button variant="primary" size="md" onClick={submit} disabled={create.isPending}>
+        <Button variant="ghost" onClick={onClose}>Cancel</Button>
+        <Button variant="primary" onClick={submit} disabled={create.isPending}>
           {create.isPending ? 'Creating…' : 'Create'}
         </Button>
       </footer>

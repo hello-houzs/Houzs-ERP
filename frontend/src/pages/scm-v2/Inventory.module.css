@@ -1,91 +1,36 @@
-/* Inventory page — uses the new (post UI-density tightening) 2990s tokens. */
+/* ====================================================================
+   Inventory — design-system reskin (2026-07-16)
 
-.page {
-  /* Ink & Petrol token overrides — same cascade as SalesOrderNew.module.css. */
-  --c-orange:        #16695f;
-  --c-burnt:         #0c3f39;
-  --c-cream:         #f4f6f3;
-  --c-paper:         #fcfdfb;
-  --c-ink:           #11140f;
-  --c-ink-secondary: #767b6e;
-  --c-ink-muted:     #9aa093;
-  --fg:              #11140f;
-  --fg-muted:        #767b6e;
-  --line:            #d6d9d2;
-  --line-strong:     #c2c6bd;
-  --c-accent-soft:   #eff6f4;
+   The page frame is now FULL-BLEED and matches the PO/SO V2 pages
+   (PurchaseOrdersListV2 / SalesOrderDetailListing): the header is the
+   shared <PageHeader> (tabs ride in its actions slot), every KPI tile
+   is the shared <StatCard>, the drawer / modal headers and the
+   "Failed to load" banners are Tailwind token markup, and the buttons
+   are the local <Button> — all inline in the TSX.
 
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-5);
-  padding: var(--space-5) var(--space-6) var(--space-7);
-  background: #dcdfd9;
-  min-height: 100%;
-}
+   Deleted from here: the grey "framed card" chrome (.page #dcdfd9
+   canvas + its --c-*/--fg/--line token-override cascade), .headerRow/
+   .title/.subtitle, .tabRow/.tab, the bespoke KPI tiles (.statGrid/
+   .statCard/.statLabel/.statValue/.statCaption) and .bannerWarn.
 
-.headerRow {
-  /* Nick 2026-07-09 — sticky top:48 (below TopNavbar) so title + Back
-     + primary CTA stay visible on scroll, matches SO New / Detail. */
-  position: sticky;
-  top: 48px;
-  z-index: 20;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-4);
-  flex-wrap: wrap;
-  padding: var(--space-3) 0 var(--space-2);
-  background: #dcdfd9;
-  border-bottom: 1px solid #cdd1c8;
-}
+   What survives is the CONTENT layer — the filter strip + search box,
+   the warehouse/category chip rail, the section eyebrow, the tables
+   and their cell primitives. Those used to read their colours from the
+   .page override cascade, so every var(--c-*)/--fg/--line reference is
+   now written as its Ink & Petrol hex (the :root fallbacks in
+   vendor/design-system/tokens.css differ: --c-cream #ffffff, --c-paper
+   #f4f6f3, --line rgba(34,31,32,.12) — they would have silently
+   reskinned these tables). Mapping used:
+     primary      #16695f   primary-dark #0c3f39
+     ink          #11140f   ink-muted    #767b6e   ink-soft #9aa093
+     border       #d6d9d2   border-strong #c2c6bd
+     surface      #ffffff   surface-2    #f4f6f3   primary-soft #e1efed
+     success      #2f8a5b   err          #b23a3a
+   Structural tokens (--space-*, --fs-*, --font-*, --shadow-*,
+   --radius-*) are :root-global and stay as var().
+   ==================================================================== */
 
-.title {
-  /* Ink & Petrol admin form — sans 18 px with tight tracking. */
-  font-family: var(--font-sans, system-ui);
-  font-size: 18px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-  line-height: 1.15;
-  color: var(--c-ink);
-  margin: 0;
-}
-
-.subtitle {
-  font-family: var(--font-sans);
-  font-size: var(--fs-12);
-  color: var(--fg-muted);
-  margin: 4px 0 0;
-}
-
-.tabRow {
-  display: inline-flex;
-  background: var(--c-paper);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-pill);
-  padding: 4px;
-  gap: 2px;
-}
-
-.tab {
-  font-family: var(--font-sans, system-ui);
-  font-size: 12.5px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  padding: 6px 14px;
-  border-radius: var(--radius-pill);
-  border: none;
-  background: transparent;
-  color: var(--fg-muted);
-  cursor: pointer;
-  white-space: nowrap;
-}
-.tab:hover { color: var(--c-ink); }
-.tab[data-active='true'] {
-  background: #16695f;
-  color: #fff;
-  box-shadow: var(--shadow-1);
-}
-
+/* ── Filter strip + search ─────────────────────────────────────────── */
 .filterRow {
   display: flex;
   align-items: center;
@@ -93,6 +38,34 @@
   flex-wrap: wrap;
 }
 
+.searchBox {
+  position: relative;
+  flex: 1;
+  min-width: 280px;
+  max-width: 460px;
+}
+.searchIcon {
+  position: absolute;
+  left: var(--space-3);
+  top: 50%;
+  transform: translateY(-50%);
+  color: #767b6e;
+  pointer-events: none;
+}
+.searchInput {
+  width: 100%;
+  font-family: var(--font-sans);
+  font-size: var(--fs-14);
+  background: #fff;
+  border: 1px solid #d6d9d2;
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3) var(--space-2) var(--space-7);
+  color: #11140f;
+  outline: none;
+}
+.searchInput:focus { border-color: #c2c6bd; background: #f4f6f3; }
+
+/* ── Warehouse / category chip rail ────────────────────────────────── */
 .warehouseChips {
   /* Nick 2026-07-09 — "这个设计太丑了". Warehouse names run 40+ chars
      ("KL SERVICE · BALAKONG RETURNED TO SUPPLIER FOR SERVICE") so the
@@ -125,14 +98,14 @@
   letter-spacing: 0.06em;
   text-transform: uppercase;
   border-radius: 20px;
-  border: 1px solid var(--line);
-  background: var(--c-paper);
-  color: var(--fg-muted);
+  border: 1px solid #d6d9d2;
+  background: #fff;
+  color: #767b6e;
   cursor: pointer;
   transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 .chip:hover {
-  background: #eff6f4;
+  background: #e1efed;
   color: #11140f;
   border-color: #bcdcd6;
 }
@@ -142,34 +115,7 @@
   color: #fff;
 }
 
-.searchBox {
-  position: relative;
-  flex: 1;
-  min-width: 280px;
-  max-width: 460px;
-}
-.searchIcon {
-  position: absolute;
-  left: var(--space-3);
-  top: 50%;
-  transform: translateY(-50%);
-  color: var(--fg-muted);
-  pointer-events: none;
-}
-.searchInput {
-  width: 100%;
-  font-family: var(--font-sans);
-  font-size: var(--fs-14);
-  background: var(--c-paper);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  padding: var(--space-2) var(--space-3) var(--space-2) var(--space-7);
-  color: var(--c-ink);
-  outline: none;
-}
-.searchInput:focus { border-color: var(--line-strong); background: var(--c-cream); }
-
-/* Section label — burnt left-accent title to match the system-wide
+/* Section label — petrol left-accent title to match the system-wide
    section hierarchy (SUPPLIER INFO / LINE ITEMS etc). Wei Siang 2026-06-04. */
 .eyebrow {
   font-family: var(--font-button);
@@ -177,54 +123,17 @@
   font-weight: 800;
   letter-spacing: 0.05em;
   text-transform: uppercase;
-  color: var(--c-burnt);
+  color: #0c3f39;
   margin: 0;
   padding-left: var(--space-2);
-  border-left: 3px solid var(--c-burnt);
+  border-left: 3px solid #16695f;
   line-height: 1.25;
 }
 
-.statGrid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: var(--space-4);
-}
-
-.statCard {
-  background: var(--c-paper);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  padding: var(--space-4) var(--space-5);
-  box-shadow: var(--shadow-1);
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.statLabel {
-  font-family: var(--font-button);
-  font-size: var(--fs-11);
-  font-weight: 600;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--fg-muted);
-}
-.statValue {
-  font-family: var(--font-mark);
-  font-size: var(--fs-24);
-  font-weight: 800;
-  font-stretch: 80%;
-  color: var(--c-ink);
-}
-.statCaption {
-  font-family: var(--font-sans);
-  font-size: var(--fs-12);
-  color: var(--fg-soft);
-}
-
+/* ── Tables ────────────────────────────────────────────────────────── */
 .tableCard {
-  background: var(--c-paper);
-  border: 1px solid var(--line);
+  background: #fff;
+  border: 1px solid #d6d9d2;
   border-radius: var(--radius-sm, 6px);
   box-shadow: none;
   overflow: hidden;
@@ -242,31 +151,31 @@
   font-weight: 600;
   letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: var(--fg-muted);
+  color: #767b6e;
   text-align: left;
   padding: var(--space-2) var(--space-3);
-  background: var(--c-paper);
-  border-bottom: 1px solid var(--line);
+  background: #f4f6f3;
+  border-bottom: 1px solid #d6d9d2;
 }
 
 .table tbody td {
   padding: var(--space-2) var(--space-3);
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid #d6d9d2;
   font-family: var(--font-sans);
   font-size: var(--fs-13);
-  color: var(--c-ink);
+  color: #11140f;
 }
 
 .table tbody tr:last-child td { border-bottom: none; }
-.table tbody tr:hover { background: var(--c-cream); }
+.table tbody tr:hover { background: #f4f6f3; }
 
 .codeChip {
   display: inline-block;
   font-family: var(--font-mono);
   font-size: var(--fs-12);
-  background: var(--c-cream);
-  color: var(--c-ink);
-  border: 1px solid var(--line);
+  background: #f4f6f3;
+  color: #11140f;
+  border: 1px solid #d6d9d2;
   padding: 2px 8px;
   border-radius: var(--radius-pill);
 }
@@ -276,20 +185,12 @@
   font-size: var(--fs-13);
   text-align: right;
   font-weight: 600;
-  color: var(--c-ink);
+  color: #11140f;
 }
 
-.numCellPos {
-  color: var(--c-secondary-a);
-}
-
-.numCellNeg {
-  color: var(--c-festive-b, #B8331F);
-}
-
-.numCellZero {
-  color: var(--fg-soft);
-}
+.numCellPos { color: #2f8a5b; }
+.numCellNeg { color: #b23a3a; }
+.numCellZero { color: #9aa093; }
 
 .movementPill {
   display: inline-flex;
@@ -303,38 +204,30 @@
   border-radius: var(--radius-pill);
 }
 
-.movementIn  { background: rgba(47, 93, 79, 0.12);  color: var(--c-secondary-a); }
-.movementOut { background: rgba(184, 51, 31, 0.10); color: var(--c-festive-b, #B8331F); }
-.movementAdj { background: rgba(166, 71, 30, 0.12); color: var(--c-burnt); }
+.movementIn  { background: rgba(47, 138, 91, 0.12); color: #2f8a5b; }
+.movementOut { background: rgba(178, 58, 58, 0.10); color: #b23a3a; }
+.movementAdj { background: #e1efed;                 color: #0c3f39; }
 
 .docLink {
   font-family: var(--font-mono);
   font-size: var(--fs-12);
-  color: var(--c-burnt);
+  color: #16695f;
   text-decoration: none;
 }
 .docLink:hover { text-decoration: underline; }
 
 .emptyRow {
   text-align: center;
-  color: var(--fg-muted);
+  color: #767b6e;
   padding: var(--space-6);
 }
 
-.bannerWarn {
-  background: rgba(232, 107, 58, 0.08);
-  border: 1px solid var(--c-orange);
-  color: var(--c-burnt);
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-md);
-  font-size: var(--fs-13);
-}
-
-/* Phone (Houzs 2026-06-24) — element-level overflow clamp: stack filters, contain wide tables in their own scroll box, 2-col stat grid. */
+/* Phone (Houzs 2026-06-24) — element-level overflow clamp: stack filters,
+   contain wide tables in their own scroll box. (The .page padding, .tabRow
+   and .statGrid/.statCard rules that used to live here went away with those
+   classes — the header tabs and the <StatCard> grid now carry their own
+   Tailwind responsive classes in the TSX.) */
 @media (max-width: 600px) {
-  .page {
-    padding: var(--space-3) var(--space-3) var(--space-5);
-  }
   .filterRow {
     flex-direction: column;
     align-items: stretch;
@@ -347,20 +240,6 @@
   }
   .warehouseChips {
     flex-wrap: wrap;
-  }
-  .tabRow {
-    max-width: 100%;
-    overflow-x: auto;
-  }
-  .statGrid {
-    grid-template-columns: repeat(2, 1fr);
-    gap: var(--space-2);
-  }
-  .statCard {
-    padding: var(--space-3) var(--space-4);
-  }
-  .statValue {
-    font-size: var(--fs-20);
   }
   .tableCard {
     overflow-x: auto;

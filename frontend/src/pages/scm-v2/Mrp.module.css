@@ -1,218 +1,37 @@
-/* MRP · Stock Status Report — uses the shared 2990s density tokens. */
+/* ====================================================================
+   MRP · Stock Status Report — design-system reskin (2026-07-16)
 
-.page {
-  /* Ink & Petrol token overrides — same cascade as SalesOrderNew.module.css. */
-  --c-orange:        #16695f;
-  --c-burnt:         #0c3f39;
-  --c-cream:         #f4f6f3;
-  --c-paper:         #fcfdfb;
-  --c-ink:           #11140f;
-  --c-ink-secondary: #767b6e;
-  --c-ink-muted:     #9aa093;
-  --fg:              #11140f;
-  --fg-muted:        #767b6e;
-  --line:            #d6d9d2;
-  --line-strong:     #c2c6bd;
-  --c-accent-soft:   #eff6f4;
+   The page frame is now FULL-BLEED and matches the PO/SO V2 pages
+   (PurchaseOrdersListV2 / SalesOrderMaintenance): the header is the
+   shared <PageHeader>, the toolbar / tabs / notes / window chip are
+   Tailwind token markup, and the dialog buttons are the local
+   <Button> — all inline in the TSX.
 
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  padding: var(--space-5) var(--space-6) var(--space-7);
-  background: #dcdfd9;
-  min-height: 100%;
-}
+   The old grey "framed card" chrome (.page #dcdfd9 canvas + its
+   --c-*/--fg/--line token-override cascade, .headerRow/.title/
+   .subtitle/.actions/.utilityGroup/.toolbarDivider, .ghostBtn/
+   .primaryBtn, .modeToggle/.modeBtn, .tabBar/.tab/.tabHint, .note,
+   .summaryRow/.summaryChip, .chip, .spin) is gone, along with the
+   already-dead .filterSpacer/.filterStack/.orderByCell/
+   .summaryChipWarn.
 
-.headerRow {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-4);
-  flex-wrap: wrap;
-}
+   What survives is the CONTENT layer — the filter strip, the report
+   table, the drilldown child tables, the pills and the dialogs. Those
+   used to read their colours from the .page override cascade, so every
+   var(--c-*)/--fg/--line reference is now written as its Ink & Petrol
+   hex (the :root fallbacks in vendor/design-system/tokens.css differ:
+   --c-cream #ffffff, --c-paper #f4f6f3, --line rgba(34,31,32,.12) —
+   they would have silently reskinned this table). Mapping used:
+     primary      #16695f   primary-dark #0c3f39
+     ink          #11140f   ink-muted    #767b6e
+     border       #d6d9d2   border-strong #c2c6bd
+     surface      #ffffff   surface-2    #f4f6f3
+   Structural tokens (--space-*, --fs-*, --font-*, --shadow-*,
+   --radius-*) are :root-global and stay as var().
+   ==================================================================== */
 
-.title {
-  /* Nick 2026-07-09 Option C — sans 18 px matches SO New / Maintenance
-     admin-form density; drops the display serif so this reads like a
-     dense report title, not a marketing headline. */
-  font-family: var(--font-title, var(--font-sans, system-ui));
-  font-size: 18px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-  line-height: 1.15;
-  color: var(--c-ink);
-  margin: 0;
-}
-
-.subtitle {
-  font-family: var(--font-sans);
-  font-size: var(--fs-12);
-  color: var(--fg-muted);
-  margin: 4px 0 0;
-  max-width: 60ch;
-}
-
-/* Toolbar reads as three clusters: [view toggle] · [utilities] · [primary CTA].
-   align-items:center keeps the segmented toggle, ghost group and CTA on one
-   baseline; the CTA is pushed to the far right by the trailing divider + the
-   header row's space-between. */
-.actions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-}
-
-/* Cluster 2 — utilities kept tight together so they read as one group, set
-   apart from the view toggle and the primary CTA by the dividers around them. */
-.utilityGroup {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-}
-
-/* Thin vertical rule separating the three toolbar clusters. */
-.toolbarDivider {
-  width: 1px;
-  align-self: stretch;
-  min-height: 22px;
-  background: var(--line);
-}
-
-/* Secondary / ghost utilities — intentionally lighter than the CTA: subtle
-   outline on a transparent fill, muted label that only firms up on hover. */
-.ghostBtn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-family: var(--font-button);
-  font-size: var(--fs-13);
-  font-weight: 600;
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--line);
-  background: transparent;
-  color: var(--fg-muted);
-  cursor: pointer;
-}
-.ghostBtn:hover { border-color: var(--line-strong); color: var(--c-ink); background: var(--c-paper); }
-.ghostBtn:disabled { opacity: 0.5; cursor: default; }
-
-/* Primary CTA — the strongest control: filled burnt orange, heavier weight and
-   a touch more horizontal padding so it clearly out-weights the ghost group. */
-.primaryBtn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-family: var(--font-button);
-  font-size: var(--fs-13);
-  font-weight: 700;
-  padding: var(--space-2) var(--space-5);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--c-orange);
-  background: var(--c-orange);
-  color: #fff;
-  box-shadow: 0 1px 2px rgba(12, 63, 57, 0.25);
-  cursor: pointer;
-}
-.primaryBtn:hover:not(:disabled) { filter: brightness(0.95); }
-.primaryBtn:disabled { opacity: 0.4; cursor: default; box-shadow: none; }
-
-/* PO generation mode toggle */
-.modeToggle {
-  display: inline-flex;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-pill);
-  overflow: hidden;
-  background: var(--c-paper);
-}
-.modeBtn {
-  font-family: var(--font-button);
-  font-size: var(--fs-12);
-  font-weight: 600;
-  padding: 6px var(--space-3);
-  border: none;
-  background: transparent;
-  color: var(--fg-muted);
-  cursor: pointer;
-  white-space: nowrap;
-}
-.modeBtn + .modeBtn { border-left: 1px solid var(--line); }
-.modeBtn:hover { color: var(--c-ink); }
-.modeBtn[data-active='true'] { background: var(--c-ink); color: var(--c-cream); }
-
-.spin { animation: spin 0.8s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
-
-/* Tabs — General (non-sofa) vs Sofa. */
-.tabBar {
-  display: flex;
-  gap: var(--space-1);
-  border-bottom: 1px solid var(--line);
-}
-.tab {
-  /* Category tabs — sans compact, matches SO Maintenance sub-nav rhythm. */
-  font-family: var(--font-sans, system-ui);
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--fg-muted);
-  background: transparent;
-  border: none;
-  border-bottom: 2px solid transparent;
-  padding: var(--space-2) var(--space-3);
-  margin-bottom: -1px;
-  cursor: pointer;
-}
-.tab:hover { color: var(--c-ink); }
-.tab[data-active='true'] { color: var(--c-ink); border-bottom-color: var(--c-orange); }
-.tabHint {
-  font-weight: 500;
-  font-size: var(--fs-11);
-  color: var(--fg-muted);
-}
-
-/* Sofa stop-gap note. */
-.note {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-2);
-  font-family: var(--font-sans);
-  font-size: var(--fs-12);
-  color: var(--c-ink);
-  background: rgba(60, 110, 200, 0.06);
-  border: 1px solid rgba(60, 110, 200, 0.25);
-  border-radius: var(--radius-md);
-  padding: var(--space-2) var(--space-3);
-  line-height: 1.45;
-}
-.note svg { flex: none; margin-top: 2px; color: #2f5fb3; }
-
-/* Summary badges */
-.summaryRow {
-  display: flex;
-  gap: var(--space-3);
-  flex-wrap: wrap;
-}
-.summaryChip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-family: var(--font-sans);
-  font-size: var(--fs-13);
-  font-weight: 600;
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--line);
-  background: var(--c-paper);
-  color: var(--c-ink);
-}
-.summaryChipWarn {
-  border-color: var(--c-orange);
-  background: rgba(22, 105, 95, 0.08);
-  color: var(--c-orange);
-}
-
-/* Filters — compact dropdowns, aligned right (Commander 2026-05-29). */
+/* ── Filter strip — repeated primitive; .filterLabel / .filterSelect
+      are also the dialogs' label + input styling. ─────────────────── */
 .filterRow {
   display: flex;
   align-items: center;
@@ -220,16 +39,6 @@
   gap: var(--space-4);
   flex-wrap: wrap;
 }
-.filterSpacer { flex: 1 1 auto; }
-/* Warehouse-over-Category vertical stack on the right. */
-.filterStack {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  align-items: flex-end;
-}
-.filterStack .filterField { justify-content: flex-end; }
-.filterStack .filterSelect { min-width: 200px; }
 .filterField {
   display: inline-flex;
   align-items: center;
@@ -242,44 +51,28 @@
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--fg-muted);
+  color: #767b6e;
 }
 .filterSelect {
   font-family: var(--font-sans);
   font-size: var(--fs-13);
   font-weight: 600;
-  color: var(--c-ink);
-  background: var(--c-paper);
-  border: 1px solid var(--line);
+  color: #11140f;
+  background: #fff;
+  border: 1px solid #d6d9d2;
   border-radius: var(--radius-md);
   padding: 6px var(--space-3);
   cursor: pointer;
   min-width: 160px;
 }
-.filterSelect:hover { border-color: var(--line-strong); }
-.filterSelect:focus { outline: none; border-color: var(--c-ink); }
-.chip {
-  font-family: var(--font-button);
-  font-size: var(--fs-13);
-  font-weight: 600;
-  padding: 4px var(--space-3);
-  border-radius: var(--radius-pill);
-  border: 1px solid var(--line);
-  background: var(--c-paper);
-  color: var(--c-ink);
-  cursor: pointer;
-}
-.chip[data-active='true'] {
-  border-color: var(--c-ink);
-  background: var(--c-ink);
-  color: var(--c-cream);
-}
+.filterSelect:hover { border-color: #c2c6bd; }
+.filterSelect:focus { outline: none; border-color: #16695f; }
 
-/* Table */
+/* ── Report table ──────────────────────────────────────────────────── */
 .tableWrap {
-  border: 1px solid var(--line);
+  border: 1px solid #d6d9d2;
   border-radius: var(--radius-lg);
-  background: var(--c-paper);
+  background: #fff;
   /* Commander 2026-05-29 — "右边卡到了": the table is wider than the page on
      smaller screens, and overflow:hidden cut off the right columns (Main
      Supplier) + made the expanded SO/date rows unreachable. Scroll instead. */
@@ -291,14 +84,6 @@
   font-family: var(--font-sans);
   font-size: var(--fs-13);
 }
-/* Commander 2026-05-29 — the "order-by date" cell is the headline number
-   (最迟下单日); highlight it so it reads at a glance. */
-.orderByCell {
-  font-family: var(--font-mono);
-  font-weight: 700;
-  color: var(--c-burnt);
-  white-space: nowrap;
-}
 .table thead th {
   /* Ink & Petrol section-head look — mono uppercase 10.5 px with a wider
      tracking, matches the SO New / Maintenance table header rhythm. */
@@ -308,10 +93,10 @@
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--fg-muted);
+  color: #767b6e;
   padding: var(--space-2) var(--space-3);
-  border-bottom: 1px solid var(--line-strong);
-  background: var(--c-cream);
+  border-bottom: 1px solid #c2c6bd;
+  background: #f4f6f3;
   white-space: nowrap;
 }
 .num {
@@ -326,22 +111,22 @@
 
 .skuRow {
   cursor: pointer;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid #d6d9d2;
 }
-.skuRow:hover { background: var(--c-cream); }
+.skuRow:hover { background: #f4f6f3; }
 .skuRow > td {
   padding: var(--space-2) var(--space-3);
-  color: var(--c-ink);
+  color: #11140f;
   vertical-align: middle;
 }
 .skuRowShort {
   background: rgba(22, 105, 95, 0.05);
-  box-shadow: inset 3px 0 0 var(--c-orange);
+  box-shadow: inset 3px 0 0 #16695f;
 }
 .skuRowShort:hover { background: rgba(22, 105, 95, 0.1); }
 
 .codeCell { font-weight: 700; white-space: nowrap; }
-.descCell { color: var(--fg-muted); }
+.descCell { color: #767b6e; }
 
 /* Per-warehouse MRP (Commander 2026-05-31) — each Model row is scoped to one
    warehouse; the tag makes the binding visible at a glance. */
@@ -350,25 +135,25 @@
   display: inline-block;
   padding: 1px 8px;
   border-radius: var(--radius-pill);
-  background: var(--c-cream);
-  border: 1px solid var(--line);
-  color: var(--c-ink);
+  background: #f4f6f3;
+  border: 1px solid #d6d9d2;
+  color: #11140f;
   font-size: var(--fs-11);
   font-weight: 700;
   white-space: nowrap;
 }
-.whNone { color: var(--fg-muted); }
+.whNone { color: #767b6e; }
 
 /* Variant sub-rows (3-level General view: Model → Variant → orders). */
 .variantRow {
   cursor: pointer;
-  border-bottom: 1px solid var(--line);
-  background: var(--c-cream);
+  border-bottom: 1px solid #d6d9d2;
+  background: #f4f6f3;
 }
 .variantRow:hover { background: rgba(0, 0, 0, 0.03); }
 .variantRow > td {
   padding: var(--space-1) var(--space-3);
-  color: var(--c-ink);
+  color: #11140f;
   vertical-align: middle;
 }
 .variantRowShort {
@@ -381,7 +166,7 @@
   align-items: center;
   gap: var(--space-2);
 }
-.variantBranch { color: var(--fg-muted); font-weight: 700; }
+.variantBranch { color: #767b6e; font-weight: 700; }
 
 /* Single-variant model — spec label shown above the SO orders (2-level). */
 .singleSpec {
@@ -397,25 +182,26 @@
   margin-left: var(--space-2);
   padding: 1px 8px;
   border-radius: var(--radius-pill);
-  background: var(--c-cream);
-  border: 1px solid var(--line);
-  color: var(--fg-muted);
+  background: #f4f6f3;
+  border: 1px solid #d6d9d2;
+  color: #767b6e;
   font-size: var(--fs-11);
   font-weight: 700;
   white-space: nowrap;
 }
+/* Variant / module label pill — petrol soft (was a blue outlier). */
 .variantTag {
   display: inline-block;
   margin-left: var(--space-2);
   padding: 1px 8px;
   border-radius: var(--radius-pill);
-  background: rgba(60, 110, 200, 0.10);
-  color: #2f5fb3;
+  background: #e1efed;
+  color: #0c3f39;
   font-size: var(--fs-11);
   font-weight: 700;
   white-space: nowrap;
 }
-.shortNum { color: var(--c-orange); font-weight: 800; }
+.shortNum { color: #16695f; font-weight: 800; }
 
 .supplierCell span {
   display: inline-flex;
@@ -423,7 +209,7 @@
   gap: 5px;
   white-space: nowrap;
 }
-.noSupplier { color: var(--c-orange); font-weight: 600; }
+.noSupplier { color: #b23a3a; font-weight: 600; }
 /* Read-only supplier on a covered (already-PO'd) SO line — a raised PO's
    supplier can't change, so it's shown as plain text, not a dropdown. */
 .poSupplierRO {
@@ -432,25 +218,25 @@
   gap: 5px;
   font-size: var(--fs-12);
   font-weight: 600;
-  color: var(--fg-muted);
+  color: #767b6e;
   white-space: nowrap;
 }
 .supplierSelect {
   font-family: var(--font-sans);
   font-size: var(--fs-12);
   font-weight: 600;
-  color: var(--c-ink);
-  background: var(--c-cream);
-  border: 1px solid var(--line);
+  color: #11140f;
+  background: #f4f6f3;
+  border: 1px solid #d6d9d2;
   border-radius: var(--radius-md);
   padding: 3px var(--space-2);
   cursor: pointer;
   max-width: 160px;
 }
-.supplierSelect:hover { border-color: var(--c-orange); }
+.supplierSelect:hover { border-color: #16695f; }
 
-/* Child detail */
-.detailRow > td { padding: 0 0 var(--space-3) 0; background: var(--c-cream); }
+/* ── Child detail (drilldown) ──────────────────────────────────────── */
+.detailRow > td { padding: 0 0 var(--space-3) 0; background: #f4f6f3; }
 .childTable {
   width: 100%;
   border-collapse: collapse;
@@ -463,16 +249,17 @@
   font-weight: 700;
   letter-spacing: 0.03em;
   text-transform: uppercase;
-  color: var(--fg-muted);
+  color: #767b6e;
   padding: var(--space-2) var(--space-3);
 }
 .childTable tbody td {
   padding: 5px var(--space-3);
-  border-top: 1px solid var(--line);
-  color: var(--c-ink);
+  border-top: 1px solid #d6d9d2;
+  color: #11140f;
 }
 .childShort { background: rgba(22, 105, 95, 0.07); }
 
+/* ── Coverage pills ────────────────────────────────────────────────── */
 .tag {
   display: inline-flex;
   align-items: center;
@@ -494,17 +281,17 @@
   background: currentColor;
   flex: none;
 }
-.tagStock { background: rgba(34, 139, 94, 0.08); color: #1f7a52; border-color: rgba(34, 139, 94, 0.25); }
-.tagPo    { background: rgba(60, 110, 200, 0.08); color: #2f5fb3; border-color: rgba(60, 110, 200, 0.25); }
-.tagShort { background: rgba(22, 105, 95, 0.10); color: var(--c-orange); border-color: rgba(22, 105, 95, 0.35); }
+.tagStock { background: rgba(47, 138, 91, 0.10); color: #2f8a5b; border-color: rgba(47, 138, 91, 0.30); }
+.tagPo    { background: #e1efed; color: #0c3f39; border-color: rgba(22, 105, 95, 0.30); }
+.tagShort { background: rgba(178, 58, 58, 0.10); color: #b23a3a; border-color: rgba(178, 58, 58, 0.35); }
 
 .stateCell {
   text-align: center;
-  color: var(--fg-muted);
+  color: #767b6e;
   padding: var(--space-6);
 }
 
-/* In-app result dialog (replaces browser alert/confirm). */
+/* ── In-app result dialog (replaces browser alert/confirm) ─────────── */
 .dialogBackdrop {
   position: fixed;
   inset: 0;
@@ -516,8 +303,8 @@
   padding: var(--space-4);
 }
 .dialog {
-  background: var(--c-paper);
-  border: 1px solid var(--line-strong);
+  background: #fff;
+  border: 1px solid #c2c6bd;
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-3);
   width: min(440px, 95vw);
@@ -527,13 +314,13 @@
   font-family: var(--font-title);
   font-weight: 700;
   font-size: var(--fs-18, 18px);
-  color: var(--c-ink);
+  color: #11140f;
   margin: 0 0 var(--space-2);
 }
 .dialogBody {
   font-family: var(--font-sans);
   font-size: var(--fs-13);
-  color: var(--c-ink);
+  color: #11140f;
   margin: 0 0 var(--space-4);
   white-space: pre-wrap;
   line-height: 1.5;
@@ -559,18 +346,10 @@
    WAREHOUSE) overflowed and the WAREHOUSE dropdown was clipped on the right.
    Stack the filter controls vertically full-width and make every select / date
    input fill its row. The results table already scrolls inside .tableWrap
-   (overflow-x:auto), so it stays contained — it never pushes the page. */
+   (overflow-x:auto), so it stays contained — it never pushes the page.
+   (The toolbar / tab / summary-chip rules that used to live here moved to the
+   TSX as Tailwind responsive classes when those classes were deleted.) */
 @media (max-width: 600px) {
-  /* Toolbar actions wrap and the primary CTA spans the row so it's tappable. */
-  .actions { width: 100%; }
-  .toolbarDivider { display: none; }
-  .primaryBtn { flex: 1 1 100%; justify-content: center; }
-
-  /* Tabs may overflow the narrow viewport — let them scroll within their bar
-     instead of pushing the page. */
-  .tabBar { overflow-x: auto; flex-wrap: nowrap; }
-  .tab { white-space: nowrap; }
-
   /* Filter row → one control per line, each full-width. */
   .filterRow {
     flex-direction: column;
@@ -595,10 +374,6 @@
     max-width: 100%;
     min-width: 0;
   }
-
-  /* Summary chips wrap full-width. */
-  .summaryRow { width: 100%; }
-  .summaryChip { max-width: 100%; }
 
   /* Keep the table contained inside its own scroll box (belt-and-braces). */
   .tableWrap { max-width: 100%; }
