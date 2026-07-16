@@ -19,6 +19,7 @@ import { LOCKED_STATUSES, procLockActive } from "../vendor/scm/lib/so-detail-gat
 import {
   useSoDropdownOptions,
   optionsOrFallback,
+  preferredCustomerTypeValue,
   FALLBACK_OPTIONS,
 } from "../vendor/scm/lib/so-dropdown-options-queries";
 import {
@@ -964,19 +965,16 @@ export function MobileNewSO({
     else if (selfDisplayName) setSalespersonId((prev) => prev || SELF_SALESPERSON);
   }, [isEdit, selfStaffMatch, selfDisplayName]);
 
-  /* Customer Type default (owner 2026-07-03) — a NEW SO defaults to the real
-     DB option whose label reads "New Customer" (matched case-insensitively);
-     if the API has no such option, fall back to the first option. Never on
-     EDIT (keeps the persisted value) and never once a value is already picked
-     (a scan-provided customerType wins). Fed by useSoDropdownOptions —
-     no fabricated option list. */
+  /* Customer Type default (owner 2026-07-03, re-stated 2026-07-16) — a NEW SO
+     defaults to the real DB option whose label reads "New Customer". The pick
+     itself lives in the SHARED preferredCustomerTypeValue so desktop
+     (SalesOrderNew) applies the identical rule. Never on EDIT (keeps the
+     persisted value) and never once a value is already picked (a scan-provided
+     customerType wins). Fed by useSoDropdownOptions — no fabricated list. */
   useEffect(() => {
     if (isEdit) return;
-    if (customerTypeOpts.length === 0) return;
-    const preferred =
-      customerTypeOpts.find((o) => o.label.trim().toLowerCase() === "new customer") ??
-      customerTypeOpts[0];
-    if (preferred) setCustType((prev) => prev || preferred.value);
+    const preferred = preferredCustomerTypeValue(customerTypeOpts);
+    if (preferred) setCustType((prev) => prev || preferred);
   }, [isEdit, customerTypeOpts]);
 
   /* When State changes, clear a now-invalid City / Postcode (the cascade only

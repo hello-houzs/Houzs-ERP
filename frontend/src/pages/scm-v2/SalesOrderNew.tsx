@@ -61,7 +61,7 @@ import {
   countryForState,
 } from '../../vendor/scm/lib/localities-queries';
 import {
-  useSoDropdownOptions, optionsOrFallback,
+  useSoDropdownOptions, optionsOrFallback, preferredCustomerTypeValue,
 } from '../../vendor/scm/lib/so-dropdown-options-queries';
 import { useStateWarehouseMappings } from '../../vendor/scm/lib/state-warehouse-queries';
 import { SoLineCard, emptySoLine, missingRequiredVariants, type SoLineDraft } from '../../vendor/scm/components/SoLineCard';
@@ -335,6 +335,25 @@ export const SalesOrderNew = () => {
     setCopySeeded(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [copyFromDocNo, copySeeded, copySource.data]);
+
+  /* Customer Type default (owner 2026-07-16: "customer type default new
+     customer") — this page is CREATE-only, so a blank select just costs the
+     operator a pick on every SO. Defaults to the live catalog's "New Customer"
+     option via the SHARED preferredCustomerTypeValue, the same rule mobile
+     (MobileNewSO) applies — one logic layer, no per-platform drift. Editing a
+     saved SO lives in SalesOrderDetail and is untouched.
+
+     Only ever fills a BLANK (`prev || preferred`), so it never overwrites a
+     real value: a ?copyFrom= source's customer type and a scan-matched
+     customerType both win. Waits for a pending copy to seed first — that seed
+     sets the field unconditionally (`h.customer_type ?? ''`), so defaulting
+     ahead of it would be clobbered back to blank when the source SO carries no
+     customer type. */
+  useEffect(() => {
+    if (copyFromDocNo && !copySeeded) return;
+    const preferred = preferredCustomerTypeValue(customerTypeOpts);
+    if (preferred) setCustomerType((prev) => prev || preferred);
+  }, [copyFromDocNo, copySeeded, customerTypeOpts]);
 
   /* Scan-Order prefill — ?fromScan=1 + sessionStorage handoff from
      ScanOrderModal ("Scan Order" on the SO list). Same one-shot seeding

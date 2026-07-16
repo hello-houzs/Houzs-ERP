@@ -164,3 +164,18 @@ export function optionsOrFallback(
   if (!data || data.length === 0) return FALLBACK_OPTIONS[category];
   return data;
 }
+
+/* HOUZS ADDITION (not in the 2990 original — keep when re-syncing this file).
+   The Customer Type default for a NEW SO, owned in ONE place so desktop
+   (SalesOrderNew) and mobile (MobileNewSO) can never drift apart. Owner
+   2026-07-16: "customer type default new customer".
+
+   Resolves against the LIVE so_dropdown_options catalog rather than asserting a
+   literal 'NEW' — the option list is maintenance-editable, so we match the real
+   row whose label reads "New Customer" (case-insensitively) and fall back to the
+   first option when the catalog has no such row. Never fabricates a value. */
+export function preferredCustomerTypeValue(opts: SoDropdownOption[]): string {
+  const preferred =
+    opts.find((o) => o.label.trim().toLowerCase() === 'new customer') ?? opts[0];
+  return preferred?.value ?? '';
+}
