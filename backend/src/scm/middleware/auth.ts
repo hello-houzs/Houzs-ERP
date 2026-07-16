@@ -14,12 +14,29 @@ import { getSupabaseService } from "../../db/supabase";
 // The ported 2990's routes stamp `created_by` (uuid, FK -> scm.staff) and look up
 // the caller's `staff.role` by `user.id` (also a scm.staff uuid). Houzs users are
 // INTEGERS, so passing the raw Houzs id makes Postgres reject "1" as a uuid
-// ("invalid input syntax for type uuid"). Since /api/scm/* is owner-gated
-// (requirePermission("*")) at the Houzs layer, every caller here is an admin —
-// so we map them all to ONE seeded super_admin system staff row. This gives a
-// valid uuid identity that satisfies the FK + role lookups. Seed it with
-// backend/scripts/scm-schema/seed-scm-staff.mjs. (Per-user attribution would need
-// a Houzs-user -> scm.staff sync — a later enhancement.)
+// ("invalid input syntax for type uuid"). We therefore pin `user` to ONE seeded
+// super_admin system staff row — a valid uuid identity that satisfies the FK +
+// role lookups. Seed it with backend/scripts/scm-schema/seed-scm-staff.mjs.
+//
+// THE PIN IS A TYPE SHIM, NOT AN AUTHORIZATION OR IDENTITY STATEMENT. Two claims
+// that used to sit here were false, and each one manufactured a bug:
+//   · "every caller here is an admin (/api/scm/* is owner-gated)" — NOT TRUE.
+//     src/index.ts:250 gates the tree with requireScmAccess, which also admits any
+//     position granted a scm* page-access area, and scm/middleware/area-guard.ts
+//     admits scoped salespeople per area. Ordinary users reach these routes.
+//     So NEVER gate on `user` or staff.role — the pinned row reports super_admin
+//     for everybody. Gate on the REAL caller via lib/houzs-perms (hasHouzsPerm /
+//     canViewAllSales / canViewScmFinance).
+//   · "per-user attribution would need a Houzs-user -> scm.staff sync — a later
+//     enhancement" — THAT BRIDGE IS BUILT. Migration 0066 gives every non-disabled
+//     user a deterministic staff row (md5('houzs-user:'||id)::uuid) linked by
+//     staff.user_id. Resolve the caller's REAL staff uuid with
+//     resolveCallerStaffId(sb, c.get('houzsUser')?.id) (lib/salesScope.ts), and
+//     their row scope with resolveSalesScopeIds / salesDocOutOfScope.
+// Trusting the first claim shipped the pos-cart leak (#633): the cart keyed on
+// c.get('user').id, so every salesperson shared ONE row. Anything per-person —
+// attribution, ownership, a cart, a visibility scope — reads `houzsUser` and the
+// 0066 bridge, never the pinned `user`.
 const SCM_SYSTEM_STAFF_ID = "00000000-0000-4000-8000-000000000001";
 
 export const supabaseAuth = createMiddleware<{ Bindings: Env; Variables: Variables }>(

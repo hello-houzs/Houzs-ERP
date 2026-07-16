@@ -26,7 +26,8 @@ import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item
 import { isServiceLine } from '../shared';
 import { findServiceLineCodes, serviceLinesNotReturnableResponse } from '../lib/service-line-guard';
 import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
-import { canViewScmFinance } from '../lib/houzs-perms';
+import { canViewAllSales, canViewScmFinance } from '../lib/houzs-perms';
+import { resolveSalesScopeIds, salesDocOutOfScope } from '../lib/salesScope';
 
 export const deliveryReturns = new Hono<{ Bindings: Env; Variables: Variables }>();
 deliveryReturns.use('*', supabaseAuth);
@@ -661,7 +662,23 @@ function buildItemRow(deliveryReturnId: string, it: Record<string, unknown>) {
 // ── List ────────────────────────────────────────────────────────────────
 deliveryReturns.get('/', async (c) => {
   const sb = c.get('supabase');
+  /* Row-level visibility scope — the SAME rule and the SAME source of truth as
+     the SO / DO / SI list handlers (lib/salesScope): view-all callers
+     (`scm.so.view_all` or a director position via canViewAllSales) are
+     unrestricted; everyone else sees SELF + their full manager_id downline.
+     DR was the one sales document that row-scoped NOBODY, so every salesperson
+     read every other salesperson's returns while the sibling lists denied them.
+     A NULL salesperson_id row is NOT visible to a scoped caller — `.in()` never
+     matches NULL, the same way SO/DO/SI already behave, and salesScope's
+     salesDocOutOfScope rules null out-of-scope explicitly. An unattributed
+     return stays visible to every view-all caller, who can assign its
+     salesperson via PATCH /:id and hand it back to the rep's list.
+     NOTE: must pass the REAL Houzs integer user id (houzsUser) — user.id here
+     is the bridge's pinned system staff uuid, and feeding that to the scope
+     lookup is the documented non-admin 500. */
+  const scopeIds = await resolveSalesScopeIds(sb, c.env, c.get('houzsUser')?.id, canViewAllSales(c));
   let q = sb.from('delivery_returns').select(HEADER).order('return_date', { ascending: false }).limit(500);
+  if (scopeIds) q = q.in('salesperson_id', scopeIds);
   const status = c.req.query('status'); if (status) q = q.eq('status', status);
   q = scopeToCompany(q, c); // multi-company: isolate to the active company
   const { data, error } = await q;
@@ -704,6 +721,18 @@ deliveryReturns.get('/:id', async (c) => {
   ]);
   if (h.error) return c.json({ error: 'load_failed', reason: h.error.message }, 500);
   if (!h.data) return c.json({ error: 'not_found' }, 404);
+  /* Own/downline sales scope (lib/salesScope.ts) — mirror the list scope above,
+     exactly as the DO and SI details do. A scoped seller must not read another
+     salesperson's return by enumerating ids; out-of-scope → 404, indistinguishable
+     from a missing one. Directors/view-all bypass. HEADER carries salesperson_id
+     already. Runs BEFORE the warehouse resolution so an out-of-scope id costs no
+     extra queries. */
+  {
+    const sp = (h.data as { salesperson_id?: number | string | null }).salesperson_id;
+    if (await salesDocOutOfScope(sb, c.env, c.get('houzsUser')?.id, canViewAllSales(c), sp)) {
+      return c.json({ error: 'not_found' }, 404);
+    }
+  }
   /* Per-line Warehouse column (Agent D, TASK #32): resolve the SAME warehouse
      the return IN puts stock back into (DO/SO line → DO header → DR header →
      default) so the operator sees which warehouse each line restocks.
