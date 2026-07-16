@@ -132,9 +132,16 @@ type ConsignmentItem = {
   unit_price_centi: number;
   discount_centi: number;
   total_centi: number;
-  unit_cost_centi: number;
-  line_cost_centi: number;
-  line_margin_centi: number;
+  /* FINANCE-gated (CO_ITEM_FINANCE_KEYS server-side) — OMITTED from the detail
+     payload for a non-finance caller (canViewScmFinance), hence optional. This
+     page renders no cost/margin, so there is nothing to cut here. NOTE:
+     draftFromItem below collapses a missing unit_cost_centi to 0 and the save
+     echoes it back — safe because the CO line PATCH only takes an explicit cost
+     when it is > 0 and otherwise falls through to the recompute / stored cost
+     (#625's precedence chain; see consignment-orders.ts). */
+  unit_cost_centi?: number;
+  line_cost_centi?: number;
+  line_margin_centi?: number;
   variants: Record<string, unknown> | null;
   remark: string | null;
   cancelled: boolean;

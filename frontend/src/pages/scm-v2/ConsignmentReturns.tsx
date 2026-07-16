@@ -26,6 +26,7 @@ import {
 } from '../../vendor/scm/lib/consignment-return-queries';
 import { useDebouncedValue } from '../../vendor/scm/lib/hooks';
 import { useStaff } from '../../vendor/scm/lib/admin-queries';
+import { useAuth } from '../../auth/AuthContext';
 import { BrandingPill, badgeFor } from '../../vendor/scm/lib/category-badges';
 import styles from './MfgSalesOrdersList.module.css';
 import soDetailStyles from './SalesOrderDetail.module.css';
@@ -145,7 +146,13 @@ const crnLineMarginOf = (it: CrnItem): number =>
     ? Number(it.line_margin_centi)
     : crnLineTotalOf(it) - crnLineCostOf(it);
 
-const buildCrnDrilldownColumns = (): DataGridColumn<CrnItem>[] => [
+/* canFinance — the finance-viewer gate (auth/me = isFinanceViewer, the same
+   signal the SO/DO/SI/DR surfaces use, #574/#589). The cost/margin columns are
+   only DECLARED for a finance-viewer: off, not hidden — no column, no "—"
+   placeholder, no RM 0.00. The backend also omits the keys from the payload
+   (canViewScmFinance), so rendering them for a non-finance user could only ever
+   print zeros. */
+const buildCrnDrilldownColumns = (canFinance: boolean): DataGridColumn<CrnItem>[] => [
   {
     key: 'group', label: 'Group', width: 90, groupable: true,
     accessor: (it) => <CategoryPill group={it.item_group} />,
@@ -202,31 +209,35 @@ const buildCrnDrilldownColumns = (): DataGridColumn<CrnItem>[] => [
     searchValue: (it) => String(crnLineTotalOf(it)),
     sortFn: (a, b) => crnLineTotalOf(a) - crnLineTotalOf(b),
   },
-  {
-    key: 'unit_cost', label: 'Unit Cost', width: 100, align: 'right',
-    accessor: (it) => fmtRm(Number(it.unit_cost_centi ?? 0)),
-    searchValue: (it) => String(it.unit_cost_centi ?? 0),
-    sortFn: (a, b) => Number(a.unit_cost_centi ?? 0) - Number(b.unit_cost_centi ?? 0),
-  },
-  {
-    key: 'line_cost', label: 'Line Cost', width: 100, align: 'right',
-    accessor: (it) => fmtRm(crnLineCostOf(it)),
-    searchValue: (it) => String(crnLineCostOf(it)),
-    sortFn: (a, b) => crnLineCostOf(a) - crnLineCostOf(b),
-  },
-  {
-    key: 'margin', label: 'Margin', width: 100, align: 'right',
-    accessor: (it) => {
-      const m = crnLineMarginOf(it);
-      const c = m > 0 ? 'var(--c-secondary-a, #2F5D4F)' : m < 0 ? 'var(--c-festive-b, #B8331F)' : 'var(--fg-muted)';
-      return <span style={{ color: c, fontWeight: 600 }}>{fmtRm(m)}</span>;
-    },
-    searchValue: (it) => String(crnLineMarginOf(it)),
-    sortFn: (a, b) => crnLineMarginOf(a) - crnLineMarginOf(b),
-  },
+  ...(canFinance
+    ? ([
+        {
+          key: 'unit_cost', label: 'Unit Cost', width: 100, align: 'right',
+          accessor: (it) => fmtRm(Number(it.unit_cost_centi ?? 0)),
+          searchValue: (it) => String(it.unit_cost_centi ?? 0),
+          sortFn: (a, b) => Number(a.unit_cost_centi ?? 0) - Number(b.unit_cost_centi ?? 0),
+        },
+        {
+          key: 'line_cost', label: 'Line Cost', width: 100, align: 'right',
+          accessor: (it) => fmtRm(crnLineCostOf(it)),
+          searchValue: (it) => String(crnLineCostOf(it)),
+          sortFn: (a, b) => crnLineCostOf(a) - crnLineCostOf(b),
+        },
+        {
+          key: 'margin', label: 'Margin', width: 100, align: 'right',
+          accessor: (it) => {
+            const m = crnLineMarginOf(it);
+            const c = m > 0 ? 'var(--c-secondary-a, #2F5D4F)' : m < 0 ? 'var(--c-festive-b, #B8331F)' : 'var(--fg-muted)';
+            return <span style={{ color: c, fontWeight: 600 }}>{fmtRm(m)}</span>;
+          },
+          searchValue: (it) => String(crnLineMarginOf(it)),
+          sortFn: (a, b) => crnLineMarginOf(a) - crnLineMarginOf(b),
+        },
+      ] as DataGridColumn<CrnItem>[])
+    : []),
 ];
 
-const ExpandedCrnLines = ({ id }: { id: string }) => {
+const ExpandedCrnLines = ({ id, canFinance }: { id: string; canFinance: boolean }) => {
   const q = useConsignmentReturnDetail(id);
   if (q.isLoading) {
     return <div style={{ padding: '8px 12px', fontSize: 'var(--fs-11)', color: 'var(--fg-muted)' }}>Loading lines…</div>;
@@ -251,7 +262,7 @@ const ExpandedCrnLines = ({ id }: { id: string }) => {
   const marginColor = marginCenti > 0 ? 'var(--c-secondary-a, #2F5D4F)'
     : marginCenti < 0 ? 'var(--c-festive-b, #B8331F)' : 'var(--fg-muted)';
 
-  const columns = buildCrnDrilldownColumns();
+  const columns = buildCrnDrilldownColumns(canFinance);
 
   return (
     <div style={{ padding: 'var(--space-2) var(--space-3) var(--space-2) 40px', background: 'var(--c-cream)' }}>
@@ -273,8 +284,8 @@ const ExpandedCrnLines = ({ id }: { id: string }) => {
           letterSpacing: '0.06em', textTransform: 'uppercase',
         }}>Subtotal</span>
         <span>Total <strong style={{ color: 'var(--c-burnt)' }}>{fmtRm(totalCenti)}</strong></span>
-        <span>Line Cost <strong style={{ color: 'var(--c-ink)' }}>{fmtRm(costCenti)}</strong></span>
-        <span>Margin <strong style={{ color: marginColor }}>{fmtRm(marginCenti)}</strong></span>
+        {canFinance && <span>Line Cost <strong style={{ color: 'var(--c-ink)' }}>{fmtRm(costCenti)}</strong></span>}
+        {canFinance && <span>Margin <strong style={{ color: marginColor }}>{fmtRm(marginCenti)}</strong></span>}
       </div>
     </div>
   );
@@ -286,6 +297,10 @@ export const ConsignmentReturns = () => {
   const navigate = useNavigate();
   const askConfirm = useConfirm();
   const notify = useNotify();
+  /* Finance-viewer gate — same signal the SO/DO/SI/DR surfaces use
+     (auth/me = isFinanceViewer, #574 / #589). */
+  const { user } = useAuth();
+  const canFinance = !!user?.project_finance_viewer;
   const [searchParams, setSearchParams] = useSearchParams();
   const statusChip = searchParams.get('status') ?? 'all';
 
@@ -329,10 +344,13 @@ export const ConsignmentReturns = () => {
 
   /* KPI tiles — FULL-SET via the server `aggregates` (summed over the same
      status + search filters as the page). Defensive fallback: if aggregates is
-     absent (old backend / mid-deploy) sum the loaded page and flag it. */
+     absent (old backend / mid-deploy) sum the loaded page and flag it.
+     Cost / Margin resolve to 0 for a non-finance viewer (the server omits both
+     the aggregate and the row keys) — their tiles are not rendered at all, so
+     the zeros never reach the page. */
   const kpis = useMemo(() => {
     const agg = data?.aggregates;
-    if (agg) return { revenue: agg.revenueCenti, cost: agg.costCenti, margin: agg.marginCenti, fullSet: true };
+    if (agg) return { revenue: agg.revenueCenti, cost: agg.costCenti ?? 0, margin: agg.marginCenti ?? 0, fullSet: true };
     let revenue = 0, cost = 0, margin = 0;
     for (const r of rows) {
       revenue += r.local_total_centi ?? 0;
@@ -348,7 +366,7 @@ export const ConsignmentReturns = () => {
     for (const s of (staffQ.data ?? [])) if (s.id) m.set(s.id, s.name ?? s.staffCode ?? s.id);
     return m;
   }, [staffQ.data]);
-  const COLUMNS = useMemo(() => buildColumns(staffById), [staffById]);
+  const COLUMNS = useMemo(() => buildColumns(staffById, canFinance), [staffById, canFinance]);
 
   const updateStatus = useUpdateConsignmentReturnStatus();
 
@@ -402,10 +420,13 @@ export const ConsignmentReturns = () => {
       )}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 'var(--space-2)' }}>
+        {/* Cost / Margin tiles are CUT for a non-finance viewer (off, not
+            hidden). The server also omits costCenti / marginCenti from
+            `aggregates` for such a caller, so they could only read zero. */}
         {kpiTile('Total Returns', fmtQty(total))}
         {kpiTile('Returned Value (RM)', fmtRm(kpis.revenue))}
-        {kpiTile('Cost (RM)', fmtRm(kpis.cost))}
-        {kpiTile('Margin (RM)', fmtRm(kpis.margin), kpis.margin > 0 ? 'good' : kpis.margin < 0 ? 'bad' : undefined)}
+        {canFinance && kpiTile('Cost (RM)', fmtRm(kpis.cost))}
+        {canFinance && kpiTile('Margin (RM)', fmtRm(kpis.margin), kpis.margin > 0 ? 'good' : kpis.margin < 0 ? 'bad' : undefined)}
       </div>
 
       {/* Status chips + page-level search. Both drive the SERVER query (the
@@ -464,7 +485,7 @@ export const ConsignmentReturns = () => {
         isLoading={isLoading}
         emptyMessage='No consignment returns yet — click "New Consignment Return" to start.'
         expandable={{
-          renderExpansion: (row) => <ExpandedCrnLines id={row.id} />,
+          renderExpansion: (row) => <ExpandedCrnLines id={row.id} canFinance={canFinance} />,
           rowExpansionKey: (row) => row.id,
         }}
         contextMenu={(row) => {
@@ -534,7 +555,7 @@ const PaginationFooter = ({
 };
 
 /* ── Columns — mirrors the DR list set, minus the DO transfer-from column. ── */
-const buildColumns = (staffById: Map<string, string>): DataGridColumn<CrnRow>[] => [
+const buildColumns = (staffById: Map<string, string>, canFinance: boolean): DataGridColumn<CrnRow>[] => [
   {
     key: 'return_number', label: 'Return No.', width: 150, sortable: true,
     accessor: (r) => (
@@ -671,6 +692,12 @@ const buildColumns = (staffById: Map<string, string>): DataGridColumn<CrnRow>[] 
     accessor: (r) => r.note ?? '',
     searchValue: (r) => r.note ?? '',
   },
+  /* FINANCE columns — DECLARED ONLY for a finance-viewer so the column chooser
+     never lists an always-empty finance column for a non-finance user; the
+     backend also omits these keys from the payload (canViewScmFinance). Same
+     rule + shape as the SO list (#574 / #589). */
+  ...(canFinance
+    ? ([
   {
     key: 'total_cost_centi', label: 'Cost Total', width: 120, sortable: true, align: 'right', defaultHidden: true,
     accessor: (r) => <span className={styles.money}>{fmtRm(r.total_cost_centi ?? 0)}</span>,
@@ -690,4 +717,6 @@ const buildColumns = (staffById: Map<string, string>): DataGridColumn<CrnRow>[] 
     exportValue: (r) => (r.total_margin_centi ?? 0) / 100,
     sortFn: (a, b) => (a.total_margin_centi ?? 0) - (b.total_margin_centi ?? 0),
   },
+      ] as DataGridColumn<CrnRow>[])
+    : []),
 ];

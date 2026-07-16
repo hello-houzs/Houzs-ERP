@@ -34,6 +34,7 @@ import { todayMyt } from '../lib/my-time';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { escapeForOr } from '../lib/postgrest-search';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
+import { canViewScmFinance } from '../lib/houzs-perms';
 
 export const consignmentReturns = new Hono<{ Bindings: Env; Variables: Variables }>();
 consignmentReturns.use('*', supabaseAuth);
@@ -55,6 +56,44 @@ const ITEM =
   'id, consignment_delivery_return_id, consignment_do_item_id, item_code, item_group, description, description2, ' +
   'uom, qty_returned, condition, unit_price_centi, discount_centi, line_total_centi, ' +
   'unit_cost_centi, line_cost_centi, line_margin_centi, refund_centi, variants, notes, created_at';
+
+/* FINANCE-GATED header keys — cost / margin / per-category revenue+cost
+   subtotals. All are in HEADER (so they travel in the return LIST and DETAIL
+   payloads) but must reach ONLY a finance-viewer
+   (lib/houzs-perms.canViewScmFinance). The refund/totals everyone is meant to
+   see (local_total_centi / refund_centi / line_total_centi) are deliberately NOT
+   listed — the same line #625 (SO) and #632 (DR) drew.
+
+   Consignment got the SCOPE fix (#417) but never the FINANCE fix:
+   canViewScmFinance appeared ZERO times in this file, so it declared no finance
+   keys at all while HEADER + ITEM selected cost and margin for every caller.
+   Same class as #600 (DO/SI detail), #625 (SO detail), #632 (DR detail). */
+const CRN_FINANCE_KEYS = [
+  'mattress_sofa_centi', 'bedframe_centi', 'accessories_centi', 'others_centi',
+  'mattress_sofa_cost_centi', 'bedframe_cost_centi', 'accessories_cost_centi', 'others_cost_centi',
+  'total_cost_centi', 'total_margin_centi', 'margin_pct_basis',
+] as const;
+
+/* Per-LINE cost/margin. canViewScmFinance fails closed. */
+const CRN_ITEM_FINANCE_KEYS = ['unit_cost_centi', 'line_cost_centi', 'line_margin_centi'] as const;
+
+/** Strip header + line cost/margin in place for a non-finance caller. Accepts a
+ *  single header or an array (the list passes rows). */
+function gateCrnFinance(
+  c: Parameters<typeof canViewScmFinance>[0],
+  deliveryReturn: unknown,
+  items: unknown,
+): void {
+  if (canViewScmFinance(c)) return;
+  for (const h of (Array.isArray(deliveryReturn) ? deliveryReturn : [deliveryReturn]) as Array<unknown>) {
+    if (h && typeof h === 'object') {
+      for (const k of CRN_FINANCE_KEYS) delete (h as Record<string, unknown>)[k];
+    }
+  }
+  for (const it of (Array.isArray(items) ? items : items ? [items] : []) as Array<Record<string, unknown>>) {
+    for (const k of CRN_ITEM_FINANCE_KEYS) delete it[k];
+  }
+}
 
 const nextNum = async (sb: any, c: any): Promise<string> => {
   const d = new Date();
@@ -355,6 +394,7 @@ consignmentReturns.get('/', async (c) => {
     q = scopeToCompany(q, c); // multi-company: isolate to the active company
     const { data, error } = await q;
     if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
+    gateCrnFinance(c, data ?? [], null);
     return c.json({ deliveryReturns: data ?? [] });
   }
 
@@ -399,7 +439,15 @@ consignmentReturns.get('/', async (c) => {
     costCenti += m.total_cost_centi ?? 0;
     marginCenti += m.total_margin_centi ?? 0;
   }
-  const aggregates = { revenueCenti, costCenti, marginCenti };
+  /* Strip the header finance keys for a non-finance caller (list half) AND drop
+     the full-set Cost / Margin KPIs — `aggregates` is derived from
+     total_cost_centi / total_margin_centi, so shipping it would hand back over
+     the whole filtered set exactly what the row strip just removed. Returned
+     Value (local_total_centi) stays: it is the refund total everyone may see. */
+  gateCrnFinance(c, data ?? [], null);
+  const aggregates = canViewScmFinance(c)
+    ? { revenueCenti, costCenti, marginCenti }
+    : { revenueCenti };
   return c.json({ deliveryReturns: data ?? [], total: count ?? (data?.length ?? 0), page, pageSize, aggregates });
 });
 
@@ -409,6 +457,14 @@ consignmentReturns.get('/', async (c) => {
 // linked to that note line via consignment_do_item_id). Only remaining > 0 lines
 // are pickable. Mirrors the DO→DR /returnable-do-lines endpoint. MUST be
 // registered before /:id so 'returnable-note-lines' isn't read as an id.
+//
+// DELIBERATELY NOT FINANCE-GATED — it carries unitCostCenti, but that value is
+// LOAD-BEARING, not display: ConsignmentReturnFromNote / ConsignmentReturnNew
+// feed it straight back into the create payload and buildItemRow writes it as
+// the new line's cost. Stripping it would book every converted return at cost 0.
+// Gating it needs the cost re-derived SERVER-side from the referenced note line,
+// and is left as a separate change. Same ruling, same reason, as the DR's
+// /returnable-do-lines (#632).
 consignmentReturns.get('/returnable-note-lines', async (c) => {
   const sb = c.get('supabase');
   const { data: notes, error: nErr } = await paginateAll<{ id: string; do_number: string; debtor_code: string | null; debtor_name: string | null }>((from, to) => sb
@@ -494,6 +550,7 @@ consignmentReturns.get('/:id', async (c) => {
     const wid = lineWh.get(it.id) ?? null;
     return { ...it, warehouse_id: wid, warehouse_code: wid ? (codeMap.get(wid) ?? null) : null };
   });
+  gateCrnFinance(c, h.data, items);
   return c.json({ deliveryReturn: h.data, items });
 });
 
@@ -664,6 +721,9 @@ consignmentReturns.post('/:id/items', async (c) => {
   const row = buildItemRow(id, it);
   const { data, error } = await sb.from('consignment_delivery_return_items').insert({ ...row, company_id: activeCompanyId(c) }).select(ITEM).single();
   if (error) return c.json({ error: 'insert_failed', reason: error.message }, 500);
+  /* The ITEM select echoes the stored line back — cost/margin included. A
+     non-finance caller must not read it off the create response either. */
+  gateCrnFinance(c, null, data);
   await recomputeTotals(sb, id);
   /* Adding a return line books its IN too (self-healing resync). Best-effort. */
   try { await resyncReturnInventory(sb, id, user?.id ?? null); } catch { /* best-effort */ }
@@ -690,7 +750,20 @@ consignmentReturns.patch('/:id/items/:itemId', async (c) => {
   const qty = (it.qtyReturned ?? it.qty) !== undefined ? Number(it.qtyReturned ?? it.qty) : Number(prev.qty_returned);
   const unitPrice = it.unitPriceCenti !== undefined ? Number(it.unitPriceCenti) : Number(prev.unit_price_centi);
   const discount = it.discountCenti !== undefined ? Number(it.discountCenti) : Number(prev.discount_centi);
-  const unitCost = it.unitCostCenti !== undefined ? Number(it.unitCostCenti) : Number(prev.unit_cost_centi);
+  /* A caller who cannot READ the cost must not WRITE it. The detail GET now
+     strips unit_cost_centi for a non-finance caller, and ConsignmentReturnDetail
+     seeds each line draft straight off that payload (`unit_cost_centi ?? 0`) and
+     posts the value back here on save — so trusting the client would let the
+     stripped field round-trip as a genuine 0 and wipe the line's cost basis
+     (recomputeTotals would then roll the return's cost to 0 and its margin to
+     the full refund). This route accepted ANY defined value, exactly like the DR
+     line PATCH did (#632) and unlike the SO / Consignment ORDER PATCH, whose
+     `explicitCost > 0` precedence makes a 0 fall through to the stored cost —
+     which is why the same strip was safe there (#625). Keep the stored cost for
+     a non-finance caller; a finance caller is unaffected. */
+  const unitCost = (canViewScmFinance(c) && it.unitCostCenti !== undefined)
+    ? Number(it.unitCostCenti)
+    : Number(prev.unit_cost_centi);
   const lineTotal = (qty * unitPrice) - discount;
   const lineCost = qty * unitCost;
 

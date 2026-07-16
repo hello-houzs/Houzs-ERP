@@ -56,8 +56,11 @@ export const useConsignmentReturns = (status?: string) => useQuery({
    (default return_date:desc). placeholderData keepPrevious so paging doesn't
    flash empty. */
 /* Full-set money KPIs returned by the paginated CRN list (mirrors the SO list
-   `aggregates` contract) — summed over the SAME filters as the page. */
-export type ConsignmentReturnAggregates = { revenueCenti: number; costCenti: number; marginCenti: number };
+   `aggregates` contract) — summed over the SAME filters as the page.
+   costCenti / marginCenti are FINANCE-ONLY: the server omits them for a
+   non-finance caller (canViewScmFinance), so they are optional here and the
+   Cost / Margin tiles are not rendered for such a viewer. */
+export type ConsignmentReturnAggregates = { revenueCenti: number; costCenti?: number; marginCenti?: number };
 export const useConsignmentReturnsPaged = (params: {
   page: number;
   pageSize: number;

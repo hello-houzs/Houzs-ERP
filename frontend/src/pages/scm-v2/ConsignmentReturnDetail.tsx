@@ -38,6 +38,7 @@ import {
 } from '../../vendor/scm/lib/consignment-return-queries';
 import { SoLineCard, emptySoLine, type SoLineDraft } from '../../vendor/scm/components/SoLineCard';
 import { buildVariantSummary, fmtDateOrDash } from '@2990s/shared';
+import { useAuth } from '../../auth/AuthContext';
 import {
   useLocalities, distinctStates, citiesInState, postcodesInCity,
 } from '../../vendor/scm/lib/localities-queries';
@@ -93,18 +94,22 @@ type CrnHeader = {
   emergency_contact_name: string | null;
   emergency_contact_phone: string | null;
   emergency_contact_relationship: string | null;
-  mattress_sofa_centi: number;
-  bedframe_centi: number;
-  accessories_centi: number;
-  others_centi: number;
+  /* FINANCE-gated (CRN_FINANCE_KEYS server-side) — the detail payload OMITS
+     every one of these for a non-finance caller (canViewScmFinance), so they
+     are optional on the wire. Only the finance-gated TotalsCard reads them.
+     local_total_centi is NOT finance: the returned value is shown to everyone. */
+  mattress_sofa_centi?: number;
+  bedframe_centi?: number;
+  accessories_centi?: number;
+  others_centi?: number;
   mattress_sofa_cost_centi?: number;
   bedframe_cost_centi?: number;
   accessories_cost_centi?: number;
   others_cost_centi?: number;
   local_total_centi: number;
-  total_cost_centi: number;
-  total_margin_centi: number;
-  margin_pct_basis: number;
+  total_cost_centi?: number;
+  total_margin_centi?: number;
+  margin_pct_basis?: number;
   line_count: number;
   currency: string;
 };
@@ -122,9 +127,14 @@ type CrnItem = {
   unit_price_centi: number;
   discount_centi: number;
   line_total_centi: number;
-  unit_cost_centi: number;
-  line_cost_centi: number;
-  line_margin_centi: number;
+  /* FINANCE-gated (CRN_ITEM_FINANCE_KEYS server-side) — OMITTED from the detail
+     payload for a non-finance caller, hence optional. NOTE: draftFromItem
+     collapses a missing unit_cost_centi to 0 and the save echoes it back — the
+     route's line PATCH therefore IGNORES a client cost from a non-finance
+     caller and keeps the stored one (#632's trap; see consignment-returns.ts). */
+  unit_cost_centi?: number;
+  line_cost_centi?: number;
+  line_margin_centi?: number;
   variants: Record<string, unknown> | null;
   notes: string | null;
 };
@@ -146,6 +156,11 @@ export const ConsignmentReturnDetail = () => {
   const { id } = useParams<{ id: string }>();
   const askConfirm = useConfirm();
   const notify = useNotify();
+  /* Finance-viewer gate — cost / margin (the line columns AND the whole
+     Totals·Margin card) must never render for a non-finance user. Same rule as
+     DeliveryReturnDetailV2 (#589); canViewScmFinance strips them server-side. */
+  const { user } = useAuth();
+  const canFinance = !!user?.project_finance_viewer;
   const [searchParams] = useSearchParams();
   const detail = useConsignmentReturnDetail(id ?? null);
   const updateHeader = useUpdateConsignmentReturnHeader();
@@ -473,9 +488,13 @@ export const ConsignmentReturnDetail = () => {
                 <th className={styles.tableRight}>Unit</th>
                 <th className={styles.tableRight}>Disc</th>
                 <th className={styles.tableRight}>Total</th>
-                <th className={styles.tableRight}>Unit Cost</th>
-                <th className={styles.tableRight}>Line Cost</th>
-                <th className={styles.tableRight}>Margin</th>
+                {/* Cost / Margin columns are CUT for a non-finance viewer (off,
+                    not hidden — no column, no "—"). The server also strips
+                    unit_cost_centi / line_cost_centi / line_margin_centi from
+                    the detail payload for such a caller (canViewScmFinance). */}
+                {canFinance && <th className={styles.tableRight}>Unit Cost</th>}
+                {canFinance && <th className={styles.tableRight}>Line Cost</th>}
+                {canFinance && <th className={styles.tableRight}>Margin</th>}
               </tr>
             </thead>
             <tbody>
@@ -494,20 +513,26 @@ export const ConsignmentReturnDetail = () => {
                   <td className={styles.tableRight}>{fmtRm(it.unit_price_centi, header.currency)}</td>
                   <td className={styles.tableRight}>{it.discount_centi > 0 ? fmtRm(it.discount_centi, header.currency) : '—'}</td>
                   <td className={styles.priceCell}>{fmtRm(it.line_total_centi, header.currency)}</td>
-                  <td className={styles.tableRight}>
-                    <span className={styles.muted}>{it.unit_cost_centi > 0 ? fmtRm(it.unit_cost_centi, header.currency) : '—'}</span>
-                  </td>
-                  <td className={styles.tableRight}>
-                    <span className={styles.muted}>{it.line_cost_centi > 0 ? fmtRm(it.line_cost_centi, header.currency) : '—'}</span>
-                  </td>
-                  <td className={styles.tableRight}>
-                    {it.line_total_centi > 0 ? (
-                      <span className={it.line_margin_centi > 0 ? styles.marginGood : it.line_margin_centi < 0 ? styles.marginBad : styles.muted}
-                        style={{ fontWeight: 600 }}>
-                        {fmtRm(it.line_margin_centi, header.currency)}
-                      </span>
-                    ) : <span className={styles.muted}>—</span>}
-                  </td>
+                  {canFinance && (
+                    <td className={styles.tableRight}>
+                      <span className={styles.muted}>{(it.unit_cost_centi ?? 0) > 0 ? fmtRm(it.unit_cost_centi ?? 0, header.currency) : '—'}</span>
+                    </td>
+                  )}
+                  {canFinance && (
+                    <td className={styles.tableRight}>
+                      <span className={styles.muted}>{(it.line_cost_centi ?? 0) > 0 ? fmtRm(it.line_cost_centi ?? 0, header.currency) : '—'}</span>
+                    </td>
+                  )}
+                  {canFinance && (
+                    <td className={styles.tableRight}>
+                      {it.line_total_centi > 0 ? (
+                        <span className={(it.line_margin_centi ?? 0) > 0 ? styles.marginGood : (it.line_margin_centi ?? 0) < 0 ? styles.marginBad : styles.muted}
+                          style={{ fontWeight: 600 }}>
+                          {fmtRm(it.line_margin_centi ?? 0, header.currency)}
+                        </span>
+                      ) : <span className={styles.muted}>—</span>}
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
@@ -515,7 +540,7 @@ export const ConsignmentReturnDetail = () => {
         )}
       </section>
 
-      <TotalsCard header={header} />
+      {canFinance && <TotalsCard header={header} />}
     </div>
   );
 };
@@ -836,21 +861,28 @@ CustomerCardInner.displayName = 'ConsignmentReturnCustomerCardInner';
 const CustomerCard = memo(CustomerCardInner) as typeof CustomerCardInner;
 
 /* ════════════════════════════════════════════════════════════════════════
-   Totals card (mirror of DeliveryReturnDetail's TotalsCard)
+   Totals card (mirror of DeliveryReturnDetail's TotalsCard) — FINANCE-GATED.
+   Cost / margin never render for a non-finance viewer: the caller gates the
+   WHOLE card behind user.project_finance_viewer, exactly as
+   DeliveryReturnDetailV2 does (#589). The card is Cost/Margin end-to-end —
+   there is no non-finance half worth keeping, so it is cut whole (off, not
+   hidden). The server also strips every key it reads (canViewScmFinance).
    ════════════════════════════════════════════════════════════════════════ */
 const TotalsCard = ({ header }: { header: CrnHeader }) => {
-  const marginPct = header.margin_pct_basis / 100;
+  const totalCost = header.total_cost_centi ?? 0;
+  const totalMargin = header.total_margin_centi ?? 0;
+  const marginPct = (header.margin_pct_basis ?? 0) / 100;
   const marginCls =
-    header.total_margin_centi <= 0 ? styles.marginBad
+    totalMargin <= 0 ? styles.marginBad
     : marginPct >= 30 ? styles.marginGood
     : marginPct >= 15 ? styles.marginWarn
     : styles.marginBad;
 
   const categories: Array<{ label: string; rev: number; cost: number }> = [
-    { label: 'Mattress / Sofa', rev: header.mattress_sofa_centi, cost: header.mattress_sofa_cost_centi ?? 0 },
-    { label: 'Bedframe',        rev: header.bedframe_centi,      cost: header.bedframe_cost_centi      ?? 0 },
-    { label: 'Accessories',     rev: header.accessories_centi,   cost: header.accessories_cost_centi   ?? 0 },
-    { label: 'Others',          rev: header.others_centi,        cost: header.others_cost_centi        ?? 0 },
+    { label: 'Mattress / Sofa', rev: header.mattress_sofa_centi ?? 0, cost: header.mattress_sofa_cost_centi ?? 0 },
+    { label: 'Bedframe',        rev: header.bedframe_centi      ?? 0, cost: header.bedframe_cost_centi      ?? 0 },
+    { label: 'Accessories',     rev: header.accessories_centi   ?? 0, cost: header.accessories_cost_centi   ?? 0 },
+    { label: 'Others',          rev: header.others_centi        ?? 0, cost: header.others_cost_centi        ?? 0 },
   ];
 
   const fmtMarginClass = (rev: number, marginCenti: number) => {
@@ -871,11 +903,11 @@ const TotalsCard = ({ header }: { header: CrnHeader }) => {
           </div>
           <div>
             <div className={styles.totalLabel}>Cost</div>
-            <div className={styles.totalValue} style={TOTALS_KPI_VALUE_STYLE}>{fmtRm(header.total_cost_centi, header.currency)}</div>
+            <div className={styles.totalValue} style={TOTALS_KPI_VALUE_STYLE}>{fmtRm(totalCost, header.currency)}</div>
           </div>
           <div>
             <div className={styles.totalLabel}>Margin</div>
-            <div className={`${styles.totalValue} ${marginCls}`} style={TOTALS_KPI_VALUE_STYLE}>{fmtRm(header.total_margin_centi, header.currency)}</div>
+            <div className={`${styles.totalValue} ${marginCls}`} style={TOTALS_KPI_VALUE_STYLE}>{fmtRm(totalMargin, header.currency)}</div>
           </div>
           <div>
             <div className={styles.totalLabel}>Margin %</div>

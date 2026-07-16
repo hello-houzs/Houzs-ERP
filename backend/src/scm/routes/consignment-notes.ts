@@ -36,6 +36,7 @@ import { todayMyt } from '../lib/my-time';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { escapeForOr } from '../lib/postgrest-search';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
+import { canViewScmFinance } from '../lib/houzs-perms';
 
 export const consignmentNotes = new Hono<{ Bindings: Env; Variables: Variables }>();
 consignmentNotes.use('*', supabaseAuth);
@@ -79,6 +80,44 @@ const PAYMENT_COLS =
   'id, consignment_delivery_order_id, paid_at, method, merchant_provider, installment_months, ' +
   'online_type, approval_code, amount_centi, account_sheet, collected_by, note, ' +
   'created_at, created_by';
+
+/* FINANCE-GATED header keys — cost / margin / per-category revenue+cost
+   subtotals. All are in HEADER (so they travel in the note LIST and DETAIL
+   payloads) but must reach ONLY a finance-viewer
+   (lib/houzs-perms.canViewScmFinance). The note total everyone is meant to see
+   (local_total_centi) is deliberately NOT listed — the same line #625 (SO) and
+   #632 (DR) drew.
+
+   Consignment got the SCOPE fix (#417) but never the FINANCE fix:
+   canViewScmFinance appeared ZERO times in this file, so it declared no finance
+   keys at all while HEADER + ITEM selected cost and margin for every caller.
+   Same class as #600 (DO/SI detail), #625 (SO detail), #632 (DR detail). */
+const CN_FINANCE_KEYS = [
+  'mattress_sofa_centi', 'bedframe_centi', 'accessories_centi', 'others_centi',
+  'mattress_sofa_cost_centi', 'bedframe_cost_centi', 'accessories_cost_centi', 'others_cost_centi',
+  'total_cost_centi', 'total_margin_centi', 'margin_pct_basis',
+] as const;
+
+/* Per-LINE cost/margin. canViewScmFinance fails closed. */
+const CN_ITEM_FINANCE_KEYS = ['unit_cost_centi', 'line_cost_centi', 'line_margin_centi'] as const;
+
+/** Strip header + line cost/margin in place for a non-finance caller. Accepts a
+ *  single header or an array (the list passes rows). */
+function gateCnFinance(
+  c: Parameters<typeof canViewScmFinance>[0],
+  deliveryOrder: unknown,
+  items: unknown,
+): void {
+  if (canViewScmFinance(c)) return;
+  for (const h of (Array.isArray(deliveryOrder) ? deliveryOrder : [deliveryOrder]) as Array<unknown>) {
+    if (h && typeof h === 'object') {
+      for (const k of CN_FINANCE_KEYS) delete (h as Record<string, unknown>)[k];
+    }
+  }
+  for (const it of (Array.isArray(items) ? items : items ? [items] : []) as Array<Record<string, unknown>>) {
+    for (const k of CN_ITEM_FINANCE_KEYS) delete it[k];
+  }
+}
 
 /* Statuses that count as "shipped" — the loaner has left our shipping warehouse,
    so it has been transferred to the consignment warehouse. The FIRST transition
@@ -420,7 +459,16 @@ consignmentNotes.get('/', async (c) => {
     }
   }
   const consignmentNotesOut = rows.map((r) => ({ ...r, has_children: childIds.has(r.id) }));
-  if (paginate) return c.json({ deliveryOrders: consignmentNotesOut, total: count ?? consignmentNotesOut.length, page, pageSize, aggregates });
+  /* Strip the header finance keys for a non-finance caller (list half) AND drop
+     the full-set Cost / Margin KPIs — `aggregates` is derived from
+     total_cost_centi / total_margin_centi, so shipping it would hand back over
+     the whole filtered set exactly what the row strip just removed. Revenue
+     (local_total_centi) stays: it is the note total everyone may see. */
+  gateCnFinance(c, consignmentNotesOut, null);
+  const aggregatesOut = canViewScmFinance(c)
+    ? aggregates
+    : (aggregates ? { revenueCenti: aggregates.revenueCenti } : undefined);
+  if (paginate) return c.json({ deliveryOrders: consignmentNotesOut, total: count ?? consignmentNotesOut.length, page, pageSize, aggregates: aggregatesOut });
   return c.json({ deliveryOrders: consignmentNotesOut });
 });
 
@@ -429,6 +477,14 @@ consignmentNotes.get('/', async (c) => {
 // already-noted (sum of qty across non-cancelled Consignment Notes linked to
 // that order line via consignment_so_item_id). Only outstanding > 0 lines are
 // pickable. Mirrors the SO→DO from-so picker. MUST precede /:id.
+//
+// DELIBERATELY NOT FINANCE-GATED — it carries unitCostCenti, but that value is
+// LOAD-BEARING, not display: ConsignmentNoteFromOrder / ConsignmentNoteNew feed
+// it straight back into the create payload and buildItemRow writes it as the new
+// line's cost. Stripping it would book every converted note at cost 0. Gating it
+// needs the cost re-derived SERVER-side from the referenced consignment order
+// line, and is left as a separate change. Same ruling, same reason, as the DR's
+// /returnable-do-lines (#632).
 consignmentNotes.get('/deliverable-order-lines', async (c) => {
   const sb = c.get('supabase');
   const { data: orders, error: oErr } = await paginateAll<{ doc_no: string; debtor_code: string | null; debtor_name: string | null }>((from, to) => sb
@@ -520,6 +576,7 @@ consignmentNotes.get('/:id', async (c) => {
     const wid = lineWh.get(it.id) ?? null;
     return { ...it, warehouse_id: wid, warehouse_code: wid ? (codeMap.get(wid) ?? null) : null };
   });
+  gateCnFinance(c, consignmentNote, items);
   return c.json({ deliveryOrder: consignmentNote, items });
 });
 
@@ -687,6 +744,9 @@ consignmentNotes.post('/:id/items', async (c) => {
   const row = buildItemRow(id, it);
   const { data, error } = await sb.from('consignment_delivery_order_items').insert({ company_id: activeCompanyId(c), ...row }).select(ITEM).single();
   if (error) return c.json({ error: 'insert_failed', reason: error.message }, 500);
+  /* The ITEM select echoes the stored line back — cost/margin included. A
+     non-finance caller must not read it off the create response either. */
+  gateCnFinance(c, null, data);
   await recomputeTotals(sb, id);
   /* Reconcile inventory for the added line — resync writes the new line's OUT
      when the note has already shipped, and is a no-op otherwise. Idempotent. */
@@ -717,7 +777,20 @@ consignmentNotes.patch('/:id/items/:itemId', async (c) => {
   const qty = it.qty !== undefined ? Number(it.qty) : Number(prev.qty);
   const unitPrice = it.unitPriceCenti !== undefined ? Number(it.unitPriceCenti) : Number(prev.unit_price_centi);
   const discount = it.discountCenti !== undefined ? Number(it.discountCenti) : Number(prev.discount_centi);
-  const unitCost = it.unitCostCenti !== undefined ? Number(it.unitCostCenti) : Number(prev.unit_cost_centi);
+  /* A caller who cannot READ the cost must not WRITE it. The detail GET now
+     strips unit_cost_centi for a non-finance caller, and ConsignmentNoteDetail
+     seeds each line draft straight off that payload (`unit_cost_centi ?? 0`) and
+     posts the value back here on save — so trusting the client would let the
+     stripped field round-trip as a genuine 0 and wipe the line's cost basis
+     (recomputeTotals would then roll the note's cost to 0 and its margin to the
+     full line total). This route accepted ANY defined value, exactly like the DR
+     line PATCH did (#632) and unlike the SO / Consignment ORDER PATCH, whose
+     `explicitCost > 0` precedence makes a 0 fall through to the stored cost —
+     which is why the same strip was safe there (#625). Keep the stored cost for
+     a non-finance caller; a finance caller is unaffected. */
+  const unitCost = (canViewScmFinance(c) && it.unitCostCenti !== undefined)
+    ? Number(it.unitCostCenti)
+    : Number(prev.unit_cost_centi);
   // Audit 2026-06-20 — clamp like the PO create path (negative-money guard).
   const lineTotal = Math.max(0, (qty * unitPrice) - discount);
   const lineCost = qty * unitCost;
