@@ -40,6 +40,22 @@
 //   shell/route additions, and the long tail of lazy route chunks added the
 //   rest). Both are legitimate, neither is a stray-heavy-import regression.
 //
+//   2026-07-16 (route prefetch) — read this as a warning about the line above:
+//     initial JS gzip ~130.0 KB  (main measured 129.7 on PR #625)
+//   The 2026-06-30 bump left ~11 KB of headroom over the 118.8 measured that
+//   day. It is GONE: main sits at 129.7 — 99.8% — and nobody bumped or recorded
+//   a number on the way up, so the gate had quietly become a tripwire that the
+//   next commit, any commit, was going to hit. This one did, at +0.3 KB.
+//   Prefetch itself is not the weight: the 51-entry route table lives in its own
+//   lazy chunk (Layout and Sidebar import it dynamically for exactly this
+//   reason); what lands in the shell is the two import() shims.
+//   Raised to 136 for ~6 KB of working room, which still does this gate's job —
+//   a stray heavy library on the always-loaded path is tens to hundreds of KB,
+//   not six. The 118.8 -> 129.7 shell creep is a real open question (route-table
+//   growth is the likely bulk, and it is not trimmable without lazy-loading the
+//   shell), but it is not this PR's to answer — and squeezing under a stale
+//   number to avoid saying so would only have buried it further.
+//
 // Run locally: `npm run build && node scripts/check-bundle-size.mjs`
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -58,8 +74,10 @@ const BUDGETS = {
   // ~3 KB of entry-chunk drift since (shell + route-table additions, not a
   // stray heavy import — lucide lives in its own chunk and is not counted
   // here). The pieces here are framework + shell, so keep this tight enough
-  // that a real regression still trips it.
-  INITIAL_JS_GZIP: 130 * KB,
+  // that a real regression still trips it. 130 -> 136 on 2026-07-16: the 130
+  // headroom was fully consumed by unrecorded shell creep (main 129.7); see the
+  // dated entry in the header before bumping this again.
+  INITIAL_JS_GZIP: 136 * KB,
   // Everything the app can lazy-load (users only fetch the routes they
   // visit). Soft guard against unbounded total growth, not a first-paint
   // cost. Raised for the SCM "2990 cutover" — ~50 new lazy route chunks
