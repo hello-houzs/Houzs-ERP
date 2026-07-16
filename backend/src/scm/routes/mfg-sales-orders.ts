@@ -65,7 +65,7 @@ import { monthBoundsMy, rangeBoundsMy, todayMyt, mytDateOf } from '../lib/my-tim
 // gates `scm.so.view_all` / `scm.so.attribute_other` against the REAL Houzs
 // caller; see lib/houzs-perms.ts.)
 import { hasHouzsPerm, canViewAllSales, isSalesCaller, canViewScmFinance } from '../lib/houzs-perms';
-import { SO_FINANCE_KEYS, SO_ITEM_FINANCE_KEYS } from '../lib/finance-keys';
+import { SO_FINANCE_KEYS, SO_ITEM_FINANCE_KEYS, stripAuditFinance } from '../lib/finance-keys';
 import { resolveSalesScopeIds, salesDocOutOfScope, resolveCallerStaffId } from '../lib/salesScope';
 import { recordSoAudit, diffFields, type FieldChange } from '../lib/so-audit';
 /* TBC sofa exchange PWP re-evaluation (Loo 2026-06-12) — reuse the voucher
@@ -4830,7 +4830,14 @@ mfgSalesOrders.get('/:docNo/audit-log', async (c) => {
     .eq('so_doc_no', docNo)
     .order('created_at', { ascending: false });
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
-  return c.json({ entries: data ?? [] });
+  /* The audit HISTORY is a finance read too — this route's own line PATCH does
+     `cmp('unitCostCenti', prev.unit_cost_centi, unitCost)`, so field_changes
+     carries the old AND new unit cost. gateSoFinance strips the DETAIL, so
+     leaving this open just moves the leak one endpoint over. Shared vocabulary
+     (lib/finance-keys) — the consignment audit-log reads this SAME table. */
+  const entries = (data ?? []) as Array<Record<string, unknown>>;
+  if (!canViewScmFinance(c)) stripAuditFinance(entries);
+  return c.json({ entries });
 });
 
 // GET — list status change history for the SO detail timeline.

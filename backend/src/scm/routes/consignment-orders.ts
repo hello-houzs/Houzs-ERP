@@ -53,6 +53,7 @@ import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
+import { stripAuditFinance } from '../lib/finance-keys';
 import type { Env, Variables } from '../env';
 
 export const consignmentOrders = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -1072,16 +1073,7 @@ consignmentOrders.get('/:docNo/audit-log', async (c) => {
      camelCase escape hatch: field_changes is keyed by the API's camelCase field
      names, so it never matched the snake_case strip lists. */
   const entries = (data ?? []) as Array<Record<string, unknown>>;
-  if (!canViewScmFinance(c)) {
-    const AUDIT_FINANCE_FIELDS = new Set(['unitCostCenti', 'lineCostCenti', 'lineMarginCenti', 'depositCenti']);
-    for (const e of entries) {
-      const fc = e.field_changes;
-      if (!Array.isArray(fc)) continue;
-      e.field_changes = (fc as Array<{ field?: string }>).filter(
-        (ch) => !AUDIT_FINANCE_FIELDS.has(String(ch?.field ?? '')),
-      );
-    }
-  }
+  if (!canViewScmFinance(c)) stripAuditFinance(entries);
   return c.json({ entries });
 });
 
