@@ -1,142 +1,25 @@
-/* Sales Order detail page — HOUZS-style layout, 2990s tokens. */
+/* ====================================================================
+   Sales Order Detail — design-system reskin (2026-07-16)
 
-/* Nick 2026-07-09 "edit 页面要和 create sales order 一样": Ink & Petrol
-   token overrides + sticky headerRow so the edit-mode Detail matches the
-   New SO form. Same cascade trick used in SalesOrderNew.module.css — the
-   descendants keep reading `var(--c-orange)` etc. and now resolve to
-   petrol green + warm off-white when they're inside this .page. */
-.page {
-  --c-orange:        #16695f;
-  --c-burnt:         #0c3f39;
-  --c-cream:         #f4f6f3;
-  --c-paper:         #fcfdfb;
-  --c-ink:           #11140f;
-  --c-ink-secondary: #767b6e;
-  --c-ink-muted:     #9aa093;
-  --fg-muted:        #767b6e;
-  --line:            #d6d9d2;
-  --line-strong:     #c2c6bd;
-  --c-accent-soft:   #eff6f4;
+   FULL-BLEED on the app background, matching SalesOrderMaintenance +
+   PurchaseOrdersListV2. The old grey framed .page wrapper (the
+   `#eef0ec` canvas + the `.page` token-override cascade + the sticky
+   .headerRow / .title / .subtitle / .actions / .totalRail chrome) is
+   GONE — the page header is now the shared <PageHeader> component and
+   the header actions are inline Tailwind utilities in the TSX.
 
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  padding: var(--space-3) 0 var(--space-4);
-  background: #eef0ec;
-  min-height: 100%;
-}
-
-/* Sticky title row — sits UNDER TopNavbar (h-12 = 48 px) so it doesn't
-   get occluded when the scroll starts. Same z-index recipe as the SO
-   Detail V2 read-only page (top-12 z-20 in Tailwind land). */
-.headerRow {
-  position: sticky;
-  top: 48px;
-  z-index: 20;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-4);
-  flex-wrap: wrap;
-  padding: var(--space-3) 0;
-  background: #eef0ec;
-  border-bottom: 1px solid #cdd1c8;
-}
-
-.titleBlock {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-}
-
-.backBtn {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  font-family: var(--font-button);
-  font-size: var(--fs-13);
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  padding: var(--space-2) var(--space-3);
-  background: var(--c-paper);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  color: var(--c-ink);
-  text-decoration: none;
-  cursor: pointer;
-}
-.backBtn:hover { background: var(--c-cream); }
-
-.title {
-  /* PR — commander 2026-05-27: "字体小一点 走系统风格".
-     Step the page title down to fs-15 (was fs-16) so the SO-XXXX header
-     reads like a list-row anchor rather than a hero. Total badge moves out
-     of the title via TITLE_TOTAL_STYLE override below — we shrink it to
-     match. */
-  font-family: var(--font-title);
-  font-size: var(--fs-15, 15px);
-  font-weight: 700;
-  color: var(--c-ink);
-  margin: 0;
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.subtitle {
-  font-family: var(--font-sans);
-  font-size: var(--fs-11);
-  color: var(--fg-muted);
-  margin: 2px 0 0;
-}
-
-.actions {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  /* Phone (Houzs 2026-06-24) — the action group (Total rail + status pill +
-     History + RelationshipMap + Print) is wider than a phone viewport and was
-     overflowing the right edge. Allow it to wrap so the extra buttons drop onto
-     a new line under the title instead of pushing the page sideways. Harmless
-     on desktop — there's always enough width there for one row. */
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  /* Nick 2026-07-09 — "整个画面占全部, 目前只有一半". When .actions wraps to
-     its own row inside .headerRow, `space-between` collapses to flex-start
-     for a single-item row → actions ended up left-aligned with 400+ px of
-     dead space on the right. margin-left: auto keeps it flush right even
-     after wrap so the header uses the full page width. */
-  margin-left: auto;
-}
-
-/* PR — commander 2026-05-27 followup. Total badge moved out of the page
-   title <h1> into its own right-rail meta block sitting next to the action
-   group. Renders as a small "eyebrow" label above the amount so it reads
-   like a KPI tile, not another headline. */
-.totalRail {
-  display: inline-flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 1px;
-  line-height: 1.1;
-  margin-right: var(--space-2);
-}
-.totalRailLabel {
-  font-family: var(--font-button);
-  font-size: var(--fs-10);
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--fg-muted);
-}
-.totalRailValue {
-  font-family: var(--font-mark);
-  font-size: var(--fs-15);
-  font-weight: 600;
-  font-stretch: 80%;
-  color: var(--c-burnt);
-  font-variant-numeric: tabular-nums;
-}
+   Only the repeated CONTENT primitives that would be noisy as per-cell
+   Tailwind (the customer form grid, the line-items table, the totals
+   card, the line-editor modal, the History drawer, banners, badges)
+   live here, rewritten to the Tailwind "Ink & Petrol" token hexes so
+   the page reads as one system with the reference pages:
+     border #d6d9d2  border-subtle #e3e6e0  border-strong #c2c6bd
+     surface #fff    surface-2 #f4f6f3
+     ink #11140f     ink-secondary #414539  ink-muted #767b6e
+     primary #16695f primary-ink #0c3f39
+   Structural tokens (--space-*, --fs-*, --font-*, --shadow-*) stay as
+   var() — they're global and unaffected by the .page removal.
+   ==================================================================== */
 
 .statusPill {
   display: inline-flex;
@@ -149,18 +32,18 @@
   padding: 2px 10px;
   border-radius: var(--radius-pill);
   background: rgba(34, 31, 32, 0.08);
-  color: var(--c-ink);
+  color: #11140f;
 }
 
-.statusDraft     { background: rgba(34, 31, 32, 0.08);  color: var(--fg-muted); }
-.statusConfirmed { background: rgba(166, 71, 30, 0.12); color: var(--c-burnt); }
-.statusInProd    { background: rgba(166, 71, 30, 0.18); color: var(--c-burnt); }
-.statusReady     { background: rgba(47, 93, 79, 0.12);  color: var(--c-secondary-a, #2F5D4F); }
-.statusShipped   { background: rgba(47, 93, 79, 0.20);  color: var(--c-secondary-a, #2F5D4F); }
-.statusDelivered { background: rgba(47, 93, 79, 0.28);  color: var(--c-secondary-a, #2F5D4F); }
-.statusInvoiced  { background: rgba(34, 31, 32, 0.18);  color: var(--c-ink); }
-.statusClosed    { background: rgba(34, 31, 32, 0.18);  color: var(--c-ink); }
-.statusCancelled { background: rgba(184, 51, 31, 0.10); color: var(--c-festive-b, #B8331F); }
+.statusDraft     { background: rgba(34, 31, 32, 0.08);  color: #767b6e; }
+.statusConfirmed { background: rgba(166, 71, 30, 0.12); color: #0c3f39; }
+.statusInProd    { background: rgba(166, 71, 30, 0.18); color: #0c3f39; }
+.statusReady     { background: rgba(47, 93, 79, 0.12);  color: #2F5D4F; }
+.statusShipped   { background: rgba(47, 93, 79, 0.20);  color: #2F5D4F; }
+.statusDelivered { background: rgba(47, 93, 79, 0.28);  color: #2F5D4F; }
+.statusInvoiced  { background: rgba(34, 31, 32, 0.18);  color: #11140f; }
+.statusClosed    { background: rgba(34, 31, 32, 0.18);  color: #11140f; }
+.statusCancelled { background: rgba(184, 51, 31, 0.10); color: #B8331F; }
 .statusReturned  { background: rgba(214, 158, 46, 0.18); color: #8a5a00; }
 
 /* Costing Pending pill (Commander 2026-06-01) — a shipped line whose actual
@@ -182,9 +65,9 @@
 /* ── Cards ──────────────────────────────────────────────────────────── */
 
 .card {
-  background: var(--c-paper);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
+  background: #fff;
+  border: 1px solid #d6d9d2;
+  border-radius: 10px;
   box-shadow: var(--shadow-1);
   overflow: hidden;
 }
@@ -197,9 +80,9 @@
   justify-content: space-between;
   gap: var(--space-2);
   padding: 8px var(--space-3);
-  border-bottom: 1px solid var(--line);
-  border-left: 3px solid var(--c-burnt);
-  background: var(--c-cream);
+  border-bottom: 1px solid #d6d9d2;
+  border-left: 3px solid #0c3f39;
+  background: #f4f6f3;
 }
 
 .cardTitle {
@@ -213,7 +96,7 @@
   font-weight: 800;
   letter-spacing: 0.05em;
   text-transform: uppercase;
-  color: var(--c-burnt);
+  color: #0c3f39;
   margin: 0;
   display: flex;
   align-items: center;
@@ -326,7 +209,7 @@
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--fg-soft);
+  color: #767b6e;
   line-height: 1.3;
 }
 
@@ -334,13 +217,13 @@
    louder than the optional (soft-grey) ones. Pairs with .req below. Theme C
    tokens (not hardcoded hex) since this stylesheet is token-bound. */
 .fieldLabelReq {
-  color: var(--c-ink);
+  color: #11140f;
   font-weight: 700;
 }
 
 /* Required marker (*) — Theme C error red, bold + a touch larger. */
 .req {
-  color: var(--c-error);
+  color: #B71C1C;
   font-weight: 800;
   font-size: 11px;
   margin-left: 3px;
@@ -355,19 +238,19 @@
      Padding bumps from 3px → 6px so text doesn't crowd the border. */
   font-family: var(--font-sans);
   font-size: var(--fs-12);
-  background: var(--c-paper);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
+  background: #fff;
+  border: 1px solid #d6d9d2;
+  border-radius: 8px;
   padding: 6px 10px;
-  color: var(--c-ink);
+  color: #11140f;
   outline: none;
   width: 100%;
   line-height: 1.3;
 }
 .fieldInput:focus,
 .fieldSelect:focus {
-  border-color: var(--c-burnt);
-  background: var(--c-paper);
+  border-color: #0c3f39;
+  background: #fff;
   box-shadow: 0 0 0 2px rgba(232, 107, 58, 0.16);
 }
 /* Scan blue-diff — a field whose value the operator changed from the
@@ -389,9 +272,9 @@
 .fieldInput:disabled,
 .fieldSelect:disabled,
 .fieldInput[readonly] {
-  background: var(--c-cream);
-  border-color: var(--line);
-  color: var(--fg-muted);
+  background: #f4f6f3;
+  border-color: #d6d9d2;
+  color: #767b6e;
   cursor: not-allowed;
 }
 /* PR — commander 2026-05-27 followup: native UA chevron varies wildly
@@ -423,7 +306,7 @@
   right: 10px;
   top: 50%;
   transform: translateY(-50%);
-  color: var(--c-ink-60, var(--fg-muted));
+  color: #767b6e;
   pointer-events: none;
 }
 
@@ -434,9 +317,9 @@
   top: 100%;
   left: 0;
   right: 0;
-  background: var(--c-paper);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-md);
+  background: #fff;
+  border: 1px solid #c2c6bd;
+  border-radius: 10px;
   box-shadow: var(--shadow-2);
   max-height: 260px;
   overflow-y: auto;
@@ -449,16 +332,16 @@
   cursor: pointer;
   font-family: var(--font-sans);
   font-size: var(--fs-12);
-  color: var(--c-ink);
-  border-bottom: 1px solid var(--line);
+  color: #11140f;
+  border-bottom: 1px solid #d6d9d2;
 }
 .suggestItem:last-child { border-bottom: none; }
-.suggestItem:hover { background: var(--c-cream); }
+.suggestItem:hover { background: #f4f6f3; }
 
 .suggestCode {
   font-family: var(--font-mono);
   font-size: var(--fs-12);
-  color: var(--fg-muted);
+  color: #767b6e;
 }
 
 /* ── Line items table ───────────────────────────────────────────────── */
@@ -480,11 +363,11 @@
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--fg-muted);
+  color: #767b6e;
   text-align: left;
   padding: 4px var(--space-2);
-  background: var(--c-cream);
-  border-bottom: 1px solid var(--line);
+  background: #f4f6f3;
+  border-bottom: 1px solid #d6d9d2;
   white-space: nowrap;
 }
 /* PR — Tight + predictable widths for the right-side numeric cluster + the
@@ -515,10 +398,10 @@
 
 .table tbody td {
   padding: 6px var(--space-2);
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid #d6d9d2;
   font-family: var(--font-sans);
   font-size: var(--fs-12);
-  color: var(--c-ink);
+  color: #11140f;
   vertical-align: top;
 }
 
@@ -529,17 +412,17 @@
 .codeCell {
   font-family: var(--font-sans);
   font-size: var(--fs-12);
-  color: var(--c-burnt);
+  color: #0c3f39;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
 
-.muted { color: var(--fg-muted); }
+.muted { color: #767b6e; }
 
 .variantBlock {
   margin-top: 4px;
   font-size: var(--fs-11);
-  color: var(--fg-muted);
+  color: #767b6e;
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -550,11 +433,11 @@
   align-items: center;
   font-family: var(--font-sans);
   font-size: var(--fs-11);
-  background: var(--c-cream);
-  border: 1px solid var(--line);
+  background: #f4f6f3;
+  border: 1px solid #d6d9d2;
   padding: 1px 8px;
   border-radius: var(--radius-pill);
-  color: var(--c-ink);
+  color: #11140f;
   font-variant-numeric: tabular-nums;
 }
 
@@ -567,7 +450,7 @@
   font-size: var(--fs-12);
   font-weight: 700;
   font-stretch: 80%;
-  color: var(--c-burnt);
+  color: #0c3f39;
   text-align: right;
   white-space: nowrap;
 }
@@ -575,14 +458,14 @@
 .iconBtn {
   background: transparent;
   border: none;
-  color: var(--fg-muted);
+  color: #767b6e;
   cursor: pointer;
   padding: 4px;
-  border-radius: var(--radius-sm);
+  border-radius: 8px;
   display: inline-flex;
 }
-.iconBtn:hover { background: var(--c-cream); color: var(--c-ink); }
-.iconBtnDanger:hover { background: rgba(184, 51, 31, 0.10); color: var(--c-festive-b, #B8331F); }
+.iconBtn:hover { background: #f4f6f3; color: #11140f; }
+.iconBtnDanger:hover { background: rgba(184, 51, 31, 0.10); color: #B8331F; }
 
 .actionsCell {
   display: inline-flex;
@@ -593,14 +476,14 @@
 
 .emptyRow {
   text-align: center;
-  color: var(--fg-muted);
+  color: #767b6e;
   padding: var(--space-6);
   font-style: italic;
 }
 
 .addLineRow {
   padding: var(--space-3) var(--space-4);
-  border-top: 1px solid var(--line);
+  border-top: 1px solid #d6d9d2;
   display: flex;
   justify-content: flex-end;
 }
@@ -624,7 +507,7 @@
   gap: var(--space-3);
   margin-bottom: var(--space-3);
   padding-bottom: var(--space-3);
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid #d6d9d2;
 }
 
 .totalRow {
@@ -640,20 +523,20 @@
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--fg-muted);
+  color: #767b6e;
 }
 
 .totalValue {
   font-family: var(--font-sans);
   font-size: var(--fs-13);
-  color: var(--c-ink);
+  color: #11140f;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
 
 .grandTotalRow {
   grid-column: 1 / -1;
-  border-top: 1px solid var(--line);
+  border-top: 1px solid #d6d9d2;
   padding-top: var(--space-3);
   margin-top: var(--space-2);
 }
@@ -666,12 +549,12 @@
   font-size: var(--fs-20, 20px);
   font-weight: 700;
   font-stretch: 80%;
-  color: var(--c-burnt);
+  color: #0c3f39;
 }
 
-.marginGood { color: var(--c-secondary-a, #2F5D4F); }
-.marginWarn { color: var(--c-festive-a, #C77F3E); }
-.marginBad  { color: var(--c-festive-b, #B8331F); }
+.marginGood { color: #2F5D4F; }
+.marginWarn { color: #C77F3E; }
+.marginBad  { color: #B8331F; }
 
 /* ── Status transition strip ────────────────────────────────────────── */
 
@@ -695,9 +578,9 @@
 }
 
 .modal {
-  background: var(--c-cream);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-xl);
+  background: #f4f6f3;
+  border: 1px solid #c2c6bd;
+  border-radius: 14px;
   box-shadow: var(--shadow-3);
   width: min(720px, 95vw);
   max-height: 90vh;
@@ -711,17 +594,17 @@
   align-items: center;
   justify-content: space-between;
   padding: var(--space-4) var(--space-5);
-  border-bottom: 1px solid var(--line);
-  background: var(--c-paper);
-  border-top-left-radius: var(--radius-xl);
-  border-top-right-radius: var(--radius-xl);
+  border-bottom: 1px solid #d6d9d2;
+  background: #fff;
+  border-top-left-radius: 14px;
+  border-top-right-radius: 14px;
 }
 
 .modalTitle {
   font-family: var(--font-title);
   font-size: var(--fs-18);
   font-weight: 700;
-  color: var(--c-ink);
+  color: #11140f;
   margin: 0;
 }
 
@@ -739,10 +622,10 @@
   justify-content: flex-end;
   gap: var(--space-3);
   padding: var(--space-4) var(--space-5);
-  border-top: 1px solid var(--line);
-  background: var(--c-paper);
-  border-bottom-left-radius: var(--radius-xl);
-  border-bottom-right-radius: var(--radius-xl);
+  border-top: 1px solid #d6d9d2;
+  background: #fff;
+  border-bottom-left-radius: 14px;
+  border-bottom-right-radius: 14px;
 }
 
 .bannerWarn {
@@ -750,10 +633,10 @@
   flex-direction: column;
   gap: 4px;
   background: rgba(232, 107, 58, 0.08);
-  border: 1px solid var(--c-orange);
-  color: var(--c-burnt);
+  border: 1px solid #16695f;
+  color: #0c3f39;
   padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-md);
+  border-radius: 10px;
   font-size: var(--fs-13);
 }
 
@@ -766,7 +649,7 @@
   border: 1px solid #2f9e5e;
   color: #1d6b40;
   padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-md);
+  border-radius: 10px;
   font-size: var(--fs-13);
 }
 
@@ -791,10 +674,10 @@
 .previewLine {
   font-family: var(--font-sans);
   font-size: var(--fs-13);
-  color: var(--c-ink);
-  background: var(--c-paper);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
+  color: #11140f;
+  background: #fff;
+  border: 1px solid #d6d9d2;
+  border-radius: 10px;
   padding: var(--space-2) var(--space-3);
   display: flex;
   justify-content: space-between;
@@ -807,7 +690,7 @@
   font-size: var(--fs-14);
   font-weight: 800;
   font-stretch: 80%;
-  color: var(--c-burnt);
+  color: #0c3f39;
 }
 
 /* ── Sub-section header ─────────────────────────────────────────────── */
@@ -818,7 +701,7 @@
   font-weight: 700;
   letter-spacing: 0.10em;
   text-transform: uppercase;
-  color: var(--fg-muted);
+  color: #767b6e;
   margin: 0 0 6px;
 }
 
@@ -828,7 +711,7 @@
 .subSection {
   padding-top: var(--space-3);
   margin-top: var(--space-3);
-  border-top: 1px solid var(--line);
+  border-top: 1px solid #d6d9d2;
 }
 .subSection:first-child {
   padding-top: 0;
@@ -848,8 +731,8 @@
   right: 0;
   width: min(420px, 92vw);
   height: 100vh;
-  background: var(--c-paper);
-  border-left: 1px solid var(--line);
+  background: #fff;
+  border-left: 1px solid #d6d9d2;
   box-shadow: var(--shadow-3);
   z-index: 60;
   display: flex;
@@ -862,7 +745,7 @@
   justify-content: space-between;
   gap: var(--space-2);
   padding: var(--space-3) var(--space-4);
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid #d6d9d2;
 }
 
 .historyPanelTitle {
@@ -871,7 +754,7 @@
   font-weight: 700;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: var(--fg-muted);
+  color: #767b6e;
   margin: 0;
   display: inline-flex;
   align-items: center;
@@ -889,10 +772,10 @@
   grid-template-columns: 24px 1fr;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-2);
-  border-radius: var(--radius-md);
+  border-radius: 10px;
 }
 .historyItem + .historyItem {
-  border-top: 1px solid var(--line);
+  border-top: 1px solid #d6d9d2;
 }
 
 .historyAvatar {
@@ -914,7 +797,7 @@
 .historyLine {
   font-family: var(--font-sans);
   font-size: var(--fs-12);
-  color: var(--c-ink);
+  color: #11140f;
   line-height: 1.4;
 }
 
@@ -925,7 +808,7 @@
 .historyMeta {
   font-family: var(--font-sans);
   font-size: var(--fs-10);
-  color: var(--fg-muted);
+  color: #767b6e;
   margin-top: 2px;
   font-variant-numeric: tabular-nums;
 }
@@ -939,7 +822,7 @@
   text-transform: uppercase;
   background: none;
   border: none;
-  color: var(--c-burnt);
+  color: #0c3f39;
   cursor: pointer;
   padding: 2px 0;
 }
@@ -948,9 +831,9 @@
 .historyChanges {
   margin-top: 6px;
   padding: var(--space-2);
-  background: var(--c-cream);
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--line);
+  background: #f4f6f3;
+  border-radius: 8px;
+  border: 1px solid #d6d9d2;
   font-size: var(--fs-11);
   display: flex;
   flex-direction: column;
@@ -971,24 +854,24 @@
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--fg-muted);
+  color: #767b6e;
 }
 
 .historyChangeDiff {
   font-family: var(--font-sans);
   font-size: var(--fs-11);
-  color: var(--c-ink);
+  color: #11140f;
   word-break: break-word;
 }
 
 .historyChangeFrom {
-  color: var(--fg-muted);
+  color: #767b6e;
   text-decoration: line-through;
 }
 
 .historyChangeArrow {
   margin: 0 6px;
-  color: var(--fg-muted);
+  color: #767b6e;
 }
 
 .historyBackdrop {
@@ -1001,10 +884,10 @@
 /* PO-from-SO generation mode toggle (Commander 2026-05-28). */
 .modeToggle {
   display: inline-flex;
-  border: 1px solid var(--line);
+  border: 1px solid #d6d9d2;
   border-radius: var(--radius-pill);
   overflow: hidden;
-  background: var(--c-paper);
+  background: #fff;
 }
 .modeBtn {
   font-family: var(--font-button);
@@ -1013,15 +896,15 @@
   padding: 6px var(--space-3);
   border: none;
   background: transparent;
-  color: var(--fg-muted);
+  color: #767b6e;
   cursor: pointer;
   white-space: nowrap;
 }
-.modeBtn + .modeBtn { border-left: 1px solid var(--line); }
-.modeBtn:hover { color: var(--c-ink); }
+.modeBtn + .modeBtn { border-left: 1px solid #d6d9d2; }
+.modeBtn:hover { color: #11140f; }
 .modeBtn[data-active='true'] {
-  background: var(--c-ink);
-  color: var(--c-cream);
+  background: #11140f;
+  color: #f4f6f3;
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -1063,9 +946,9 @@
   }
   /* Each row → a card. */
   .table tbody tr {
-    border: 1px solid var(--line);
-    border-radius: var(--radius-md);
-    background: var(--c-paper);
+    border: 1px solid #d6d9d2;
+    border-radius: 10px;
+    background: #fff;
     padding: var(--space-3);
     margin: 0 0 var(--space-2);
   }
@@ -1098,7 +981,7 @@
     font-weight: 600;
     letter-spacing: 0.18em;
     text-transform: uppercase;
-    color: var(--fg-muted);
+    color: #767b6e;
     line-height: 1.3;
     align-self: start;
   }
@@ -1107,7 +990,7 @@
     display: block;
     padding-bottom: var(--space-2);
     margin-bottom: var(--space-2);
-    border-bottom: 1px solid var(--line);
+    border-bottom: 1px solid #d6d9d2;
   }
   /* Numeric cells were right-aligned in the table — read left-aligned in the
      value column now. The Total cell uses .priceCell (text-align:right +

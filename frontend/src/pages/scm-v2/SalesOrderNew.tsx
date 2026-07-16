@@ -34,7 +34,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery as useTanstackQuery } from '@tanstack/react-query';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Camera, ChevronDown, Plus, Save, X } from 'lucide-react';
-import { Button } from '@2990s/design-system';
+import { Button } from '../../components/Button';
+import { PageHeader } from '../../components/Layout';
 import { api } from '../../api/client';
 import type { Department, TeamMember } from '../../types';
 import { PhoneInput } from '../../vendor/scm/components/PhoneInput';
@@ -1500,68 +1501,62 @@ export const SalesOrderNew = () => {
   };
 
   return (
-    <div className={styles.page}>
-      {/* Top bar */}
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
-          <Link to="/scm/sales-orders" className={styles.backBtn}>
-            <ArrowLeft {...ICON} /> <span>Sales Orders</span>
-          </Link>
-          <h1 className={styles.title}>New Sales Order</h1>
-        </div>
-        <div className={styles.actions}>
-          <Button variant="ghost" size="md" onClick={() => navigate('/scm/sales-orders')}>
-            <X {...ICON} /> Cancel
-          </Button>
-          {/* DRAFT flow — two create actions. Both run the SAME create + the
-              same post-create payment/photo flush + navigation; only the
-              `asDraft` flag differs. From a scan handoff (fromScan) the
-              scanned order should default to DRAFT for operator review, so
-              "Save as Draft" is the PRIMARY button and "Create" the secondary
-              one. For a normal New SO, "Create" stays primary. The buttons stay
-              CLICKABLE even when fields are missing (only blocked while a save
-              is in flight) — onSave validates and tells the operator EXACTLY
-              what's missing. (Wei Siang 2026-06-03) */}
-          <Button
-            variant={fromScan ? 'secondary' : 'primary'} size="md"
-            onClick={() => onSave(false)}
-            disabled={create.isPending}
-          >
-            <Save {...ICON} />
-            {create.isPending ? 'Saving…' : 'Create Sales Order'}
-          </Button>
-          <Button
-            variant={fromScan ? 'primary' : 'secondary'} size="md"
-            onClick={() => onSave(true)}
-            disabled={create.isPending}
-          >
-            <Save {...ICON} />
-            {create.isPending ? 'Saving…' : 'Save as Draft'}
-          </Button>
-        </div>
-      </div>
+    <div>
+      {/* Shared sticky page header — full-bleed, matches SalesOrderMaintenance
+          + the PO/DO V2 lists. DRAFT flow: two create actions run the SAME
+          create + post-create payment/photo flush + navigation; only the
+          `asDraft` flag differs. From a scan handoff (fromScan) the scanned
+          order defaults to DRAFT for operator review, so "Save as Draft" is
+          the PRIMARY button and "Create" the secondary one; for a normal New
+          SO, "Create" stays primary. The buttons stay CLICKABLE even when
+          fields are missing (only blocked while a save is in flight) — onSave
+          validates and tells the operator EXACTLY what's missing. */}
+      <PageHeader
+        eyebrow="Sales order"
+        title="New Sales Order"
+        description="Customer, order info, delivery address, line items and payments — saved as one order."
+        actions={
+          <>
+            <Link
+              to="/scm/sales-orders"
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-surface px-3 text-[11px] font-semibold uppercase tracking-wider text-ink-secondary transition-colors hover:border-primary/40 hover:bg-primary-soft hover:text-primary"
+            >
+              <ArrowLeft size={14} /> Sales Orders
+            </Link>
+            <Button variant="ghost" onClick={() => navigate('/scm/sales-orders')}>
+              <X {...ICON} /> Cancel
+            </Button>
+            <Button
+              variant={fromScan ? 'secondary' : 'primary'}
+              onClick={() => onSave(false)}
+              disabled={create.isPending}
+            >
+              <Save {...ICON} />
+              {create.isPending ? 'Saving…' : 'Create Sales Order'}
+            </Button>
+            <Button
+              variant={fromScan ? 'primary' : 'secondary'}
+              onClick={() => onSave(true)}
+              disabled={create.isPending}
+            >
+              <Save {...ICON} />
+              {create.isPending ? 'Saving…' : 'Save as Draft'}
+            </Button>
+          </>
+        }
+      />
 
+      <div className="space-y-3">
       {/* ── SCAN BANNER (fromScan only) ───────────────────────────────
           Task #73 — the OCR review happens in THIS form now. Tell the operator
           to check every dropdown-bound field before saving. Changed fields show
           a blue highlight; each scanned line shows a "scanned · NN%" chip. */}
       {fromScan && (
-        <div
-          style={{
-            display: 'flex', alignItems: 'flex-start', gap: 'var(--space-3)',
-            background: 'rgba(43, 108, 176, 0.08)',
-            border: '1px solid #2B6CB0',
-            borderRadius: 'var(--radius-md)',
-            padding: 'var(--space-3)',
-            marginBottom: 'var(--space-3)',
-            color: '#1A4E8A',
-            fontSize: 'var(--fs-13)',
-          }}
-        >
-          <Camera size={18} strokeWidth={1.75} style={{ flexShrink: 0, marginTop: 1 }} />
+        <div className="flex items-start gap-3 rounded-lg border border-learning/40 bg-learning/5 px-4 py-3 text-[13px] text-learning">
+          <Camera size={18} strokeWidth={1.75} className="mt-0.5 shrink-0" />
           <div>
-            <div style={{ fontWeight: 600 }}>Prefilled from a scanned slip — check every dropdown before saving.</div>
-            <div style={{ marginTop: 2, color: '#2B6CB0' }}>
+            <div className="font-semibold">Prefilled from a scanned slip — check every dropdown before saving.</div>
+            <div className="mt-0.5 text-learning/80">
               Confirm the venue, SKU, fabric, size and payment selections, then Create the Sales Order.
               Fields you change from the scan are highlighted in blue.
             </div>
@@ -1783,18 +1778,7 @@ export const SalesOrderNew = () => {
             </label>
           </div>
           {datesXor && (
-            <div
-              style={{
-                background: 'rgba(184, 51, 31, 0.08)',
-                border: '1px solid var(--c-festive-b, #B8331F)',
-                color: 'var(--c-festive-b, #B8331F)',
-                padding: '4px var(--space-2)',
-                borderRadius: 'var(--radius-sm)',
-                fontSize: 'var(--fs-11)',
-                fontWeight: 600,
-                marginTop: 'var(--space-2)',
-              }}
-            >
+            <div className="mt-2 rounded-md border border-err/40 bg-err-bg px-2 py-1 text-[11px] font-semibold text-err">
               ⚠ Processing Date and Delivery Date must be set together — Save is blocked.
             </div>
           )}
@@ -2093,7 +2077,7 @@ export const SalesOrderNew = () => {
         collectedByAllowedIds={paymentsCollectedByAllowedIds}
         defaultCollectedBy={selfStaffMatch?.id ?? ''}
       />
-
+      </div>
     </div>
   );
 };

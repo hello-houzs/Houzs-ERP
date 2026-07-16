@@ -18,7 +18,8 @@ import { useAmendments, type AmendmentRow } from '../../vendor/scm/lib/so-amendm
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
 import { StatusPill } from '../../vendor/scm/components/StatusPill';
 import { statusLabel } from '../../vendor/scm/lib/status-pill';
-import styles from './Suppliers.module.css';
+import { PageHeader } from '../../components/Layout';
+import { cn } from '../../lib/utils';
 
 // so_amendment_status values: REQUESTED / SUPPLIER_PENDING / SO_APPROVED /
 // PO_APPROVED / SENT / REJECTED. Colours + labels come from the canonical
@@ -102,41 +103,48 @@ export const Amendments = () => {
   };
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div>
-          <h1 className={styles.title}>Amendments</h1>
+    <div>
+      <PageHeader
+        eyebrow="Revision inbox"
+        title="Amendments"
+        description={
+          isLoading
+            ? 'Loading amendments…'
+            : `${rows.length} sales order amendment${rows.length === 1 ? '' : 's'}`
+        }
+      />
+
+      <div className="space-y-4">
+        {error && !isLoading && (
+          <div className="rounded-lg border border-err/40 bg-err/10 px-4 py-2.5 text-[12.5px] text-err">
+            <strong className="font-semibold">Failed to load amendments.</strong>{' '}
+            {error instanceof Error ? error.message : String(error)}
+          </div>
+        )}
+
+        {/* Status chips — matches the GRN / DR / SI list filter style. */}
+        <div className="flex flex-wrap gap-1.5">
+          {STATUS_CHIPS.map((s) => {
+            const active = statusChip === s;
+            return (
+              <button
+                key={s}
+                type="button"
+                onClick={() => setStatusChip(s)}
+                className={cn(
+                  'h-7 rounded-full border px-3 text-[11px] font-semibold transition-colors',
+                  active
+                    ? 'border-primary bg-primary-soft text-primary'
+                    : 'border-border bg-surface text-ink-secondary hover:border-primary/40 hover:text-primary',
+                )}
+              >
+                {s === 'all' ? 'All' : statusLabel('soAmendment', s)}
+              </button>
+            );
+          })}
         </div>
-      </div>
 
-      <p className={styles.eyebrow}>
-        {isLoading ? 'Loading amendments…' : `${rows.length} sales order amendment${rows.length === 1 ? '' : 's'}`}
-      </p>
-
-      {error && !isLoading && (
-        <div className={styles.bannerWarn}>
-          <strong>Failed to load amendments.</strong>{' '}
-          {error instanceof Error ? error.message : String(error)}
-        </div>
-      )}
-
-      {/* Status chips — matches the GRN / DR / SI list filter style. */}
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-        {STATUS_CHIPS.map((s) => (
-          <button key={s} type="button" onClick={() => setStatusChip(s)}
-            style={{
-              height: 28, padding: '0 12px', borderRadius: 999, cursor: 'pointer',
-              fontSize: 11, fontWeight: 600,
-              border: '1px solid ' + (statusChip === s ? 'var(--c-burnt)' : '#DDE5E5'),
-              background: statusChip === s ? 'rgba(232, 107, 58, 0.10)' : '#FFFFFF',
-              color: statusChip === s ? 'var(--c-burnt)' : 'var(--fg-muted)',
-            }}>
-            {s === 'all' ? 'All' : statusLabel('soAmendment', s)}
-          </button>
-        ))}
-      </div>
-
-      <DataGrid<AmendmentRow>
+        <DataGrid<AmendmentRow>
         rows={rows}
         columns={columns}
         storageKey={AMENDMENT_LIST_STORAGE_KEY}
@@ -153,7 +161,8 @@ export const Amendments = () => {
           : undefined}
         isLoading={isLoading}
         emptyMessage="No amendments yet — raise one from a processing-locked Sales Order."
-      />
+        />
+      </div>
     </div>
   );
 };

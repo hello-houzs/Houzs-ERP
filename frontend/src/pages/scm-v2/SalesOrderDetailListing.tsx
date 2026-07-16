@@ -36,10 +36,10 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import {
-  ArrowLeft, ClipboardList, Printer, X, Plus,
-} from 'lucide-react';
-import { Button } from '@2990s/design-system';
+import { ArrowLeft, Printer, Plus } from 'lucide-react';
+import { Button } from '../../components/Button';
+import { PageHeader } from '../../components/Layout';
+import { StatCard } from '../../components/StatCard';
 import { buildVariantSummary } from '@2990s/shared'; // Commander 2026-05-28
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
 import { ItemGroupPill, BrandingPill, badgeFor } from '../../vendor/scm/lib/category-badges';
@@ -49,9 +49,6 @@ import {
   type SoDetailListingRow,
 } from '../../vendor/scm/lib/reports-queries';
 import styles from './SalesOrderDetailListing.module.css';
-
-const ICON = { size: 16, strokeWidth: 1.75 } as const;
-const SM_ICON = { size: 14, strokeWidth: 1.75 } as const;
 
 /* Bump the storage key when migrating to the Houzs layout — the previous
    key (`so-detail-listing-grid`) held the AutoCount column order, which
@@ -635,86 +632,74 @@ export const SalesOrderDetailListing = () => {
   }, [kpis.totalLines]);
 
   return (
-    <div className={styles.page}>
-      {/* ── Header ───────────────────────────────────────────────── */}
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
-          <button type="button" className={styles.backBtn} onClick={() => navigate(-1)}>
-            <ArrowLeft {...ICON} />
-            <span>Back</span>
-          </button>
-          <div>
-            <h1 className={styles.title}>
-              <ClipboardList size={20} strokeWidth={1.75} style={{ color: 'var(--c-burnt)' }} />
-              Sales Order Details
-              {outstandingOnly && <span style={{ color: 'var(--c-burnt)', marginLeft: 8 }}>· Outstanding only</span>}
-            </h1>
-            {outstandingOnly && (
-              <p className={styles.subtitle}>
-                <button type="button" onClick={clearOutstanding}
-                  style={{ background: 'transparent', border: 'none', color: 'var(--c-burnt)',
-                    cursor: 'pointer', textDecoration: 'underline', font: 'inherit', padding: 0 }}>
-                  Clear outstanding filter
-                </button>
-              </p>
-            )}
+    <div>
+      {/* ── Header — shared PageHeader (full-bleed, design-system) ─── */}
+      <PageHeader
+        eyebrow="Reports"
+        title="Sales Order Details"
+        description="Line-item view — one row per sales-order line, with the order header repeated on every line."
+        secondaryActions={[{ label: 'Back', icon: ArrowLeft, onClick: () => navigate(-1) }]}
+        primaryAction={
+          <div className="flex items-stretch gap-2">
+            <Button variant="secondary" icon={<Printer size={14} />} onClick={runPrint}>
+              Print
+            </Button>
+            {/* Task #63 — restore the "New Line Item" CTA stripped from
+                the prior Houzs port. Line items only exist inside an SO,
+                so this routes to the Create SO page; the user adds lines
+                there and they show up here on next load. */}
+            <Button
+              variant="primary"
+              icon={<Plus size={14} />}
+              onClick={() => navigate('/scm/sales-orders/new')}
+            >
+              Add Line Item
+            </Button>
           </div>
+        }
+      />
+
+      {/* ── Outstanding-only overlay notice (?outstanding=1) ───────── */}
+      {outstandingOnly && (
+        <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-primary/30 bg-primary-soft px-4 py-2.5 text-[12.5px] text-ink-secondary">
+          <span className="font-semibold text-primary">Outstanding only</span>
+          <span>Showing lines from orders with a balance still due.</span>
+          <button
+            type="button"
+            onClick={clearOutstanding}
+            className="ml-auto text-[12px] font-semibold text-primary hover:underline"
+          >
+            Clear outstanding filter
+          </button>
         </div>
-        <div style={{ display: 'inline-flex', gap: 'var(--space-2)' }}>
-          <Button variant="ghost" size="sm" onClick={runPrint}>
-            <Printer {...SM_ICON} />
-            <span>Print</span>
-          </Button>
-          {/* Task #63 — restore the "New Line Item" CTA stripped from
-              the prior Houzs port. Line items only exist inside an SO,
-              so this routes to the Create SO page; the user adds lines
-              there and they show up here on next load. */}
-          <Button variant="primary" size="sm" onClick={() => navigate('/scm/sales-orders/new')}>
-            <Plus {...SM_ICON} />
-            <span>Add Line Item</span>
-          </Button>
-        </div>
-      </div>
+      )}
 
       {/* ── 6 KPI tiles (always rendered, scoped to current filters) ─ */}
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
-        gap: 'var(--space-2)',
-      }}>
-        {([
-          { label: 'Total Lines',    value: kpis.totalLines.toString() },
-          { label: 'Unique Orders',  value: kpis.uniqueOrders.toString() },
-          { label: 'Revenue (RM)',   value: fmtRm(kpis.revenue) },
-          { label: 'Cost (RM)',      value: fmtRm(kpis.cost) },
-          { label: 'Margin (RM + %)', value: `${fmtRm(kpis.margin)}${kpis.revenue > 0 ? ` (${kpis.marginPct.toFixed(1)}%)` : ''}`,
-            accent: kpis.margin > 0 ? 'good' as const : kpis.margin < 0 ? 'bad' as const : null },
-          { label: 'Outstanding (RM)', value: fmtRm(kpis.outstanding),
-            accent: kpis.outstanding > 0 ? 'bad' as const : null },
-        ]).map(({ label, value, accent }) => (
-          <div key={label} className={styles.card} style={{
-            padding: 'var(--space-2) var(--space-3)',
-          }}>
-            <div className={styles.cardTitle} style={{ borderBottom: 'none', padding: 0, fontSize: 'var(--fs-10)' }}>
-              {label}
-            </div>
-            <div style={{
-              fontFamily: 'var(--font-sans)',
-              fontWeight: 700,
-              fontSize: 'var(--fs-14)',
-              fontVariantNumeric: 'tabular-nums',
-              color: accent === 'good' ? 'var(--c-secondary-a, #2F5D4F)'
-                : accent === 'bad' ? 'var(--c-festive-b, #B8331F)'
-                : 'var(--c-ink)',
-            }}>
-              {value}
-            </div>
-          </div>
+      <div className="mb-5 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
+        {(
+          [
+            { label: 'Total Lines',    value: kpis.totalLines.toString() },
+            { label: 'Unique Orders',  value: kpis.uniqueOrders.toString() },
+            { label: 'Revenue (RM)',   value: fmtRm(kpis.revenue) },
+            { label: 'Cost (RM)',      value: fmtRm(kpis.cost) },
+            {
+              label: 'Margin (RM + %)',
+              value: `${fmtRm(kpis.margin)}${kpis.revenue > 0 ? ` (${kpis.marginPct.toFixed(1)}%)` : ''}`,
+              tone: kpis.margin > 0 ? ('success' as const) : kpis.margin < 0 ? ('error' as const) : undefined,
+            },
+            {
+              label: 'Outstanding (RM)',
+              value: fmtRm(kpis.outstanding),
+              tone: kpis.outstanding > 0 ? ('error' as const) : undefined,
+            },
+          ] as Array<{ label: string; value: string; tone?: 'success' | 'error' }>
+        ).map(({ label, value, tone }) => (
+          <StatCard key={label} label={label} value={value} tone={tone} />
         ))}
       </div>
 
-      {/* ── DataGrid — 34 visible columns + 10 hidden by default ─── */}
-      <section className={styles.resultCard}>
+      {/* ── DataGrid — 33 visible columns + 14 hidden by default ───── */}
+      <section className="overflow-hidden rounded-lg border border-border bg-surface shadow-stone">
         <DataGrid<SoDetailListingRow>
           rows={baseRows}
           onFilteredRowsChange={setVisibleRows}
