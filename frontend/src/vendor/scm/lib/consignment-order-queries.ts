@@ -24,6 +24,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
+import { idempotentInit } from '../../../lib/idempotency';
 import { serviceNotify } from './dialog-service';
 
 /* ── List ────────────────────────────────────────────────────────────── */
@@ -275,13 +276,14 @@ export const useConsignmentOrderPayments = (docNo: string | null) => useQuery({
   retryDelay: 800,
 });
 
+/* `idempotencyKey` — optional, destructured OUT of the body. See
+   useAddSalesOrderPayment / lib/idempotency.ts for the one-key-per-intent rule. */
 export const useAddConsignmentOrderPayment = () => {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ docNo, ...body }: { docNo: string } & Record<string, unknown>) =>
-      authedFetch<{ payment: ConsignmentPayment }>(`/consignment-orders/${docNo}/payments`, {
-        method: 'POST', body: JSON.stringify(body),
-      }),
+    mutationFn: ({ docNo, idempotencyKey, ...body }: { docNo: string; idempotencyKey?: string } & Record<string, unknown>) =>
+      authedFetch<{ payment: ConsignmentPayment }>(`/consignment-orders/${docNo}/payments`,
+        idempotentInit(idempotencyKey, { method: 'POST', body: JSON.stringify(body) })),
     onSuccess: (_, vars) => {
       qc.invalidateQueries({ queryKey: ['consignment-order', vars.docNo, 'payments'] });
       qc.invalidateQueries({ queryKey: ['consignment-order', vars.docNo] });

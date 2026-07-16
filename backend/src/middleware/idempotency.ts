@@ -11,8 +11,22 @@ function isUniqueViolation(e: unknown): boolean {
   return /duplicate key value violates unique constraint|UNIQUE constraint failed/i.test(m);
 }
 
+// `error` carries a CODE, not a sentence. The frontend's plain-language mappers
+// (humanApiError / humanHttpMessage) look `error` up in a curated code table and
+// otherwise fall through to a generic per-status sentence — so an English
+// sentence here resolved to the generic 409 ("That clashes with something
+// already in the system. Please refresh and check."), which tells the operator
+// their payment FAILED at the exact moment it is going through. `message` is a
+// plain fallback sentence, never internals, for any surface that shows it raw.
 const inFlight = (c: { json: (b: unknown, s: 409) => Response }) =>
-  c.json({ error: "A request with this Idempotency-Key is still being processed" }, 409);
+  c.json(
+    {
+      error: "idempotency_in_flight",
+      message:
+        "This request is already being processed. Please wait a moment and refresh — do not send it again.",
+    },
+    409,
+  );
 
 /**
  * Opt-in request idempotency.

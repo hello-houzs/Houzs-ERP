@@ -409,6 +409,9 @@ export const ConsignmentOrderNew = () => {
           accountSheet: d.accountSheet || null,
           approvalCode: d.approvalCode || null,
           collectedBy:  d.collectedBy  || null,
+          // Per-draft key — see lib/idempotency.ts. The order is created first
+          // and the payments posted after, so a retry of the save re-posts these.
+          idempotencyKey: d.idempotencyKey,
         };
         Object.assign(body, draftMethodFields(method, d));
         try {

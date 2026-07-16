@@ -54,6 +54,7 @@ import {
   useSoDropdownOptions, optionsOrFallback,
 } from '../lib/so-dropdown-options-queries';
 import { formatDate } from '../../../lib/utils';
+import { newIdempotencyKey } from '../../../lib/idempotency';
 import detailStyles from '../../../pages/scm-v2/SalesOrderDetail.module.css';
 import paymentsStyles from '../../../pages/scm-v2/Payments.module.css';
 
@@ -190,10 +191,21 @@ export type PaymentDraft = {
      POSTing a new one, and the persisted row is hidden while the draft edits it.
      Undefined for a normal new-payment draft. SAVED mode only. */
   editingPersistedId?:      string;
+  /* Idempotency-Key for the ONE payment this draft will become (2026-07-17).
+     The draft IS the intent: minted by newPaymentDraft when the operator adds
+     the row, carried through every failed-and-retried commit, and destroyed
+     with the draft on success (removeDraft) — so a double-fire de-dupes while
+     two genuinely separate RM100 rows keep two different keys and both book.
+     Do NOT derive this from the payload; see lib/idempotency.ts for why that
+     silently swallows the second of two identical payments.
+     OPTIONAL because a draft built as a read-only VIEW of an already-persisted
+     row (SalesInvoiceDetailV2.apiToDraft) is never posted and needs no key. */
+  idempotencyKey?:          string;
 };
 
 export const newPaymentDraft = (defaultStaffId = ''): PaymentDraft => ({
   uid: Math.random().toString(36).slice(2, 10),
+  idempotencyKey: newIdempotencyKey(),
   paidAt: todayMyt(),
   methodLabel: 'Cash',
   merchantProvider:       '',
@@ -650,6 +662,11 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
       approvalCode:    d.approvalCode || null,
       collectedBy:     d.collectedBy  || null,
       uploadSessionId: d.slipUploadSessionId,
+      /* This row's own key — the hook lifts it into the Idempotency-Key header
+         rather than the body. A commit that fails leaves the draft (and so the
+         key) in place, so the operator's retry de-dupes against the first
+         attempt instead of booking the payment twice. */
+      idempotencyKey:  d.idempotencyKey,
       ...draftMethodFields(method, d),
     };
     addPayment.mutate(body as { docNo: string } & Record<string, unknown>, {

@@ -18,6 +18,7 @@
 // ----------------------------------------------------------------------------
 
 import { todayMyt } from '../../vendor/scm/lib/dates';
+import { newIdempotencyKey } from '../../lib/idempotency';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, ArrowRightLeft, ChevronDown, Plus, Save, X } from 'lucide-react';
@@ -228,6 +229,10 @@ export const SalesInvoiceNew = () => {
           collectedBy: p.collected_by ?? '',
           // Copied DO payments become fresh SI drafts; SI route needs no slip.
           slipUploadSessionId: null,
+          /* These drafts are built here rather than by newPaymentDraft, so mint
+             their key here or they would post with no protection. The `prefilled`
+             guard makes this effect run once, so the key is stable from then on. */
+          idempotencyKey: newIdempotencyKey(),
         };
       }));
     }
@@ -268,6 +273,10 @@ export const SalesInvoiceNew = () => {
           accountSheet: d.accountSheet || null,
           approvalCode: d.approvalCode || null,
           collectedBy: d.collectedBy || null,
+          // Per-draft key (lib/idempotency.ts) — the invoice is created first and
+          // the payments posted after, so a re-save after a partial failure
+          // re-posts these rows; the key makes that replay instead of duplicate.
+          idempotencyKey: d.idempotencyKey,
         };
         Object.assign(body, draftMethodFields(method, d));
         try { await addPayment.mutateAsync(body); return true; }
