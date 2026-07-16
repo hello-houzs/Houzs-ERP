@@ -9472,12 +9472,20 @@ mfgSalesOrders.post('/:docNo/amendments', async (c) => {
     }
   }
 
+  /* Requester = the caller's REAL scm.staff uuid (mig 0066 sync row), NOT
+     user.id — the bridge pins user.id to ONE shared system staff row, so
+     stamping it made EVERY amendment read as requested by the same system
+     identity and "Requested by" could not answer who raised it (same defect
+     class as the salesperson_id stamp at ~2738). Fall back to the system row
+     when the sync row is missing so the FK stays valid. */
+  const requesterStaffId = (await resolveCallerStaffId(sb, c.get('houzsUser')?.id)) ?? user.id;
+
   const { data: created, error: insErr } = await sb.from('so_amendments').insert({
     so_doc_no:    docNo,
     amendment_no: amendmentNo,
     status:       'REQUESTED',
     reason:       body.reason ?? null,
-    requested_by: user.id,
+    requested_by: requesterStaffId,
     company_id:   activeCompanyId(c),
     header_changes:      hasHeaderChanges ? headerChanges : null,
     old_header_snapshot: hasHeaderChanges ? oldHeaderSnapshot : null,

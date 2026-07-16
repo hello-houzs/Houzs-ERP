@@ -642,12 +642,21 @@ export const PurchaseOrderDetail = () => {
              raw JSON. Any other error falls back to its humanised message. */
           const body = (e as { body?: Record<string, unknown> }).body ?? null;
           if (body && body.code === 'received_floor') {
-            const line = String(body.poItemId ?? '').slice(0, 8);
+            /* Name the line by its MATERIAL, not by `poItemId.slice(0,8)` — a
+               truncated uuid is still a uuid, and the operator cannot match
+               "4bb54684" to anything on the page (owner 2026-07-16: 白話文).
+               The PO's items are already loaded, so resolve it; if the id
+               somehow isn't among them, say "One PO line" rather than print
+               the id. */
+            const hit = items.find((it) => it.id === String(body.poItemId ?? ''));
+            const lineName = (hit?.material_name || hit?.material_code || '').trim();
             const revised = Number(body.revisedQty ?? 0);
             const received = Number(body.receivedQty ?? 0);
             notify({
               title: 'Cannot approve — quantity already received',
-              body: `PO line ${line} would be revised down to ${revised}, but ${received} have already been received. `
+              body: (lineName
+                ? `The line for ${lineName} would be revised down to ${revised}, but ${received} have already been received. `
+                : `One PO line would be revised down to ${revised}, but ${received} have already been received. `)
                 + 'Raise a Purchase Return for the excess first, then approve the amendment again.',
               tone: 'error',
             });

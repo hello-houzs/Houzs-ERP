@@ -40,6 +40,7 @@ import {
 } from "../../components/DetailLayout";
 import { ModalOverlay } from "../../components/scm-v2/DocumentRelationshipMapModal";
 import { StatusPill } from "../../vendor/scm/components/StatusPill";
+import { useStaffLookup } from "../../hooks/useStaffLookup";
 import {
   resolveStatusPill,
   type StatusTone,
@@ -443,12 +444,18 @@ function SupplierConfirmModal({
 
 type TimelineEvent = { title: string; meta: string };
 
-function buildTimeline(amendment: Record<string, unknown>): TimelineEvent[] {
+/* Every `*_by` on an amendment is a bare scm.staff uuid. `actorNameOf` resolves
+   it through the shared staff roster; an unresolvable id reads "Unknown user"
+   so the timeline never prints a uuid at a person's place (owner 2026-07-16). */
+function buildTimeline(
+  amendment: Record<string, unknown>,
+  actorNameOf: (id: string | null | undefined, empty?: string) => string,
+): TimelineEvent[] {
   const events: TimelineEvent[] = [];
   const push = (title: string, at: unknown, by?: unknown) => {
     const ts = asStr(at);
     if (!ts) return;
-    const who = asStr(by);
+    const who = actorNameOf(asStr(by), "");
     events.push({
       title,
       meta: who ? `${fmtDateTime(ts)} · ${who}` : fmtDateTime(ts),
@@ -459,7 +466,7 @@ function buildTimeline(amendment: Record<string, unknown>): TimelineEvent[] {
     const ref = asStr(amendment.supplier_confirmation_ref);
     events.push({
       title: "Supplier confirmed",
-      meta: [asStr(amendment.supplier_confirmed_by), ref ? `ref ${ref}` : null]
+      meta: [actorNameOf(asStr(amendment.supplier_confirmed_by), ""), ref ? `ref ${ref}` : null]
         .filter(Boolean)
         .join(" · ") || "Recorded",
     });
@@ -509,6 +516,7 @@ export function AmendmentDetailV2() {
   const { can } = useHouzsAuth();
   const askConfirm = useConfirm();
   const notify = useNotify();
+  const { actorNameOf } = useStaffLookup();
 
   // isPending, NOT isLoading — see the gate below.
   const { data, isPending, error } = useAmendmentDetail(id ?? null);
@@ -563,8 +571,8 @@ export function AmendmentDetailV2() {
   ]);
 
   const timeline = useMemo(
-    () => (amendment ? buildTimeline(amendment) : []),
-    [amendment]
+    () => (amendment ? buildTimeline(amendment, actorNameOf) : []),
+    [amendment, actorNameOf]
   );
 
   const canSupplierConfirm = can("scm.amendment.supplier_confirm");
@@ -762,7 +770,7 @@ export function AmendmentDetailV2() {
                 <div className="flex items-center justify-between">
                   <span className="text-ink-muted">Requested by</span>
                   <span className="font-semibold text-ink">
-                    {asStr(amendment.requested_by) ?? "—"}
+                    {actorNameOf(asStr(amendment.requested_by))}
                   </span>
                 </div>
                 <div className="flex items-center justify-between">

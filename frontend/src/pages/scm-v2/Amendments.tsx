@@ -19,6 +19,7 @@ import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataG
 import { StatusPill } from '../../vendor/scm/components/StatusPill';
 import { statusLabel } from '../../vendor/scm/lib/status-pill';
 import { PageHeader } from '../../components/Layout';
+import { useStaffLookup } from '../../hooks/useStaffLookup';
 import { cn } from '../../lib/utils';
 
 // so_amendment_status values: REQUESTED / SUPPLIER_PENDING / SO_APPROVED /
@@ -29,7 +30,14 @@ const STATUS_CHIPS = ['all', 'REQUESTED', 'SUPPLIER_PENDING', 'SO_APPROVED', 'PO
 /* New unique storage key — NEVER reuse another list's key. */
 const AMENDMENT_LIST_STORAGE_KEY = 'so-amendment-list.layout.v1';
 
-const buildAmendmentColumns = (): DataGridColumn<AmendmentRow>[] => [
+/* `requested_by` is a bare scm.staff uuid (so_amendments.requested_by, FK ->
+   scm.staff.id) — the list endpoint sends no name with it. Resolve through the
+   shared staff roster exactly as the SO / DO / SI lists resolve salesperson_id;
+   search / group / sort all key off the RESOLVED name so the column behaves as
+   the person column it presents itself to be. */
+const buildAmendmentColumns = (
+  actorNameOf: (id: string | null | undefined, empty?: string) => string,
+): DataGridColumn<AmendmentRow>[] => [
   {
     key: 'so_doc_no', label: 'SO No.', width: 140, sortable: true, groupable: true,
     accessor: (a) => <span style={{ fontWeight: 700, color: 'var(--c-burnt)', fontVariantNumeric: 'tabular-nums' }}>{a.so_doc_no}</span>,
@@ -48,10 +56,12 @@ const buildAmendmentColumns = (): DataGridColumn<AmendmentRow>[] => [
   },
   {
     key: 'requested_by', label: 'Requested by', width: 200, sortable: true, groupable: true,
-    accessor: (a) => a.requested_by ?? '—',
-    searchValue: (a) => a.requested_by ?? '',
-    groupValue: (a) => a.requested_by ?? '(none)',
-    sortFn: (a, b) => (a.requested_by ?? '').localeCompare(b.requested_by ?? ''),
+    accessor: (a) => actorNameOf(a.requested_by),
+    searchValue: (a) => actorNameOf(a.requested_by, ''),
+    exportValue: (a) => actorNameOf(a.requested_by),
+    groupValue: (a) => actorNameOf(a.requested_by, '(none)'),
+    sortFn: (a, b) =>
+      actorNameOf(a.requested_by, '').localeCompare(actorNameOf(b.requested_by, '')),
   },
   {
     key: 'reason', label: 'Reason', width: 240, minWidth: 160, sortable: true, defaultHidden: true,
@@ -87,13 +97,16 @@ export const Amendments = () => {
   };
 
   const { data, isLoading, error } = useAmendments();
+  const { actorNameOf } = useStaffLookup();
 
   const allRows = useMemo<AmendmentRow[]>(() => (data?.amendments ?? []) as AmendmentRow[], [data]);
   const rows = useMemo<AmendmentRow[]>(
     () => (statusChip === 'all' ? allRows : allRows.filter((a) => a.status === statusChip)),
     [allRows, statusChip],
   );
-  const columns = useMemo(() => buildAmendmentColumns(), []);
+  // actorNameOf identity changes when the staff roster lands — rebuild so the
+  // column re-renders with real names instead of staying on the loading dash.
+  const columns = useMemo(() => buildAmendmentColumns(actorNameOf), [actorNameOf]);
 
   /* Row-click routing (2026-07-15) — open the amendment job card. The detail
      page owns the diff + revision-status hero + gate actions, and hands off

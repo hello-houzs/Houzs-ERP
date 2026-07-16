@@ -14,8 +14,24 @@ import {
   type FlowNodeType,
   type FlowEdgeKind,
 } from '../lib/flow-queries';
+import { statusLabel, humaniseStatusKey, type StatusDocType } from '../lib/status-pill';
 
 type Props = { type: FlowNodeType; id: string; open: boolean; onClose: () => void };
+
+/* Every node on the relationship map printed its RAW db status, so the operator
+   read `PARTIALLY_RECEIVED` / `IN_PRODUCTION` / `PARTIALLY_PAID` (owner
+   2026-07-16: 白話文). Route the 8 node types that HAVE a canonical map through
+   statusLabel; the consignment / payment types have none, so they fall back to
+   the same humaniser resolveStatusPill uses. Never the raw key.
+   NB: a plain statusLabel(n.type, ...) does not typecheck AND would throw —
+   FlowNodeType is wider than StatusDocType. */
+const FLOW_STATUS_DOC_TYPE: Partial<Record<FlowNodeType, StatusDocType>> = {
+  so: 'so', do: 'do', si: 'si', po: 'po', grn: 'grn', pi: 'pi', dr: 'dr', pr: 'pr',
+};
+const flowStatusLabel = (n: FlowNode): string => {
+  const docType = FLOW_STATUS_DOC_TYPE[n.type];
+  return docType ? statusLabel(docType, n.status) : humaniseStatusKey(n.status);
+};
 
 const NODE_W = 196;
 const NODE_H = 86;
@@ -202,7 +218,7 @@ export function DocumentFlowModal({ type, id, open, onClose }: Props) {
                   >
                     <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', color: m.accent }}>{m.title}</div>
                     <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--c-ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textDecoration: cancelled ? 'line-through' : 'none' }}>{n.label}</div>
-                    {n.status && <div style={{ fontSize: 11, color: 'var(--fg-muted)' }}>{n.status}</div>}
+                    {n.status && <div style={{ fontSize: 11, color: 'var(--fg-muted)' }}>{flowStatusLabel(n)}</div>}
                   </div>
                 );
               })}

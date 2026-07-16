@@ -20,6 +20,7 @@ import { DataTable, type Column } from "../../components/DataTable";
 import { Badge } from "../../components/Badge";
 import { Button } from "../../components/Button";
 import { PullToRefresh } from "../../components/PullToRefresh";
+import { useStaffLookup } from "../../hooks/useStaffLookup";
 import {
   useStockTransfers,
   useCancelStockTransfer,
@@ -131,6 +132,8 @@ export function StockTransfersListV2() {
 
   const { data, isLoading, error } = useStockTransfers();
   const cancelTransfer = useCancelStockTransfer();
+  // created_by is a scm.staff uuid — resolve it, never print the id.
+  const { actorNameOf } = useStaffLookup();
 
   const allRows = useMemo<StockTransferRow[]>(() => data ?? [], [data]);
 
@@ -268,10 +271,10 @@ export function StockTransfersListV2() {
       label: "Created By",
       width: "120px",
       defaultHidden: true,
-      getValue: (r) => r.created_by ?? "",
+      getValue: (r) => actorNameOf(r.created_by, ""),
       render: (r) => (
-        <span className="font-mono text-[12px] text-ink-secondary">
-          {r.created_by ? r.created_by.slice(0, 8) : "—"}
+        <span className="text-[12px] text-ink-secondary">
+          {actorNameOf(r.created_by)}
         </span>
       ),
     },

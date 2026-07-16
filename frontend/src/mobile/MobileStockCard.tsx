@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { adjustmentReasonLabel } from "@2990s/shared";
 import { formatDate } from "../lib/utils";
 import {
   useInventoryMovements,
@@ -115,7 +116,16 @@ export function MobileStockCard({
                   <span className={`sc-mp ${pill.cls}`}>{pill.label(m)}</span>
                   <div className="md">
                     <div className="dt tnum">{formatDate(m.created_at)}</div>
-                    <div className="rf">{m.source_doc_no || m.reason_code || m.notes || "—"}</div>
+                    {/* An ADJUSTMENT has no source_doc_no, so the raw reason_code
+                        (WRITEOFF / COUNT / DAMAGE / THEFT) was reaching the screen.
+                        Desktop already labels it (StockAdjustments.tsx) — same
+                        helper here so the two can't drift. */}
+                    <div className="rf">
+                      {m.source_doc_no ||
+                        (m.reason_code ? adjustmentReasonLabel(m.reason_code) : "") ||
+                        m.notes ||
+                        "—"}
+                    </div>
                   </div>
                   <span className={`sc-mq tnum${sq < 0 ? " neg" : ""}`}>{sq > 0 ? `+${sq}` : sq}</span>
                   <span className="sc-mb tnum">{m.runningBalance}</span>
