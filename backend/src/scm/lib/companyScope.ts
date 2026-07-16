@@ -253,3 +253,70 @@ export function companyDocPrefix(c: Context<any>): string {
   if (typeof code !== "string" || !code || code === "HOUZS") return "";
   return `${code}-`;
 }
+
+/**
+ * MIRRORED-SYSTEM OWNERSHIP — 2990 owns what 2990 originates.
+ *
+ * routes/so-mirror.ts is a LIVE one-way receiver: every 2990 outbox drain
+ * re-applies that SO's current 2990 state — it upserts the header
+ * `ON CONFLICT (doc_no) DO UPDATE` and DELETE-then-INSERTs the whole item and
+ * payment set. So a Houzs-side write to a mirrored SO is reverted within
+ * seconds, with no error, no conflict and no alarm: the drift sentinel counts
+ * rows, and delete-then-reinsert leaves the row count unchanged. Houzs is not
+ * the writer of these records and must refuse to act like one.
+ *
+ * The authoritative marker is the DOC-NUMBER PREFIX, not company_id:
+ *
+ *  • so-mirror.ts prefixDoc() stamps `2990-` on every mirrored doc number
+ *    unconditionally, so no mirrored row can lack it.
+ *
+ *  • company_id alone is NOT sufficient, and the difference is reachable: the
+ *    headless scan job (createDraftSalesOrder) reaches createSalesOrderCore
+ *    through a reconstructed context that carries companyId but NOT
+ *    companyCode, so it stamps the 2990 company_id while companyDocPrefix
+ *    above correctly falls back to BARE numbering. That SO is Houzs-native and
+ *    Houzs MUST stay able to write it.
+ *
+ *  • the prefix needs no companies-master lookup, so a guard built on it works
+ *    in a reconstructed context and in a library called without a Context —
+ *    exactly where a company_id lookup would silently no-op.
+ */
+export const MIRRORED_COMPANY_CODE = "2990";
+
+/** True for a document number minted by the mirrored system (see above). */
+export function isMirroredDocNo(docNo: unknown): boolean {
+  return typeof docNo === "string" && docNo.startsWith(`${MIRRORED_COMPANY_CODE}-`);
+}
+
+/**
+ * True when THIS request's minters would mint into the mirrored system's
+ * doc-number namespace. Derived from companyDocPrefix so the guard and the
+ * minters read one rule and cannot drift apart.
+ *
+ * Why minting there is unsafe: a minter's `.like('2990-SO-2607-%')` fetch reads
+ * the MIRRORED rows — which are a copy of 2990's own set — so max+1 returns the
+ * exact number 2990's own minter will hand out next. The collision is not a
+ * race, it is a certainty, and the mirror's upsert then overwrites the
+ * Houzs-native order in place.
+ */
+export function mintsIntoMirroredNamespace(c: Context<any>): boolean {
+  return companyDocPrefix(c) === `${MIRRORED_COMPANY_CODE}-`;
+}
+
+/** One wording for the read-only refusal, so every writer refuses identically.
+ *  Plain language: the reader is a salesperson, not an engineer. The `error`
+ *  code is curated to the same sentence in the SCM client's ERROR_CODE_MESSAGES
+ *  (frontend/src/vendor/scm/lib/authed-fetch.ts), which reads `error` before
+ *  `message` — a code with no entry there would surface to the operator raw. */
+export const MIRRORED_SO_READONLY: { error: string; message: string } = {
+  error: "so_owned_by_2990",
+  message:
+    "This order belongs to 2990 and can only be changed in 2990. Any change made here would be undone automatically.",
+};
+
+/** One wording for the create refusal (see mintsIntoMirroredNamespace). */
+export const MIRRORED_SO_CREATE_BLOCKED: { error: string; message: string } = {
+  error: "so_create_blocked_2990",
+  message:
+    "New orders for 2990 have to be created in 2990. An order created here would take a number 2990 is about to use, and would be overwritten.",
+};

@@ -2,6 +2,7 @@
 // Separate from retail `orders` (POS) — different lifecycle, different ID format.
 
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import { z } from 'zod';
 import { createClient } from '@supabase/supabase-js';
 import { normalizePhone } from '../shared/phone';
@@ -56,7 +57,11 @@ import { orderSofaModuleRowsWithinBuilds, sortSoLinesByGroupRank } from '../shar
    charge (gated by so_settings.pos_remark_extra_auto_sku). Pure code-resolution
    + row-build lives in the lib; this route batches the DB collision check. */
 import { buildOneShotMints, type OneShotMintReq } from '../lib/one-shot-mint';
-import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
+import {
+  scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix,
+  isMirroredDocNo, mintsIntoMirroredNamespace,
+  MIRRORED_SO_READONLY, MIRRORED_SO_CREATE_BLOCKED,
+} from '../lib/companyScope';
 import { supabaseAuth } from '../middleware/auth';
 import { escapeForOr } from '../lib/postgrest-search';
 import { paginateAll } from '../lib/paginate-all';
@@ -136,6 +141,37 @@ import { getSupabaseService } from '../../db/supabase';
 
 export const mfgSalesOrders = new Hono<{ Bindings: Env; Variables: Variables }>();
 mfgSalesOrders.use('*', supabaseAuth);
+
+/* ── Mirrored SOs are READ-ONLY here (originating-system ownership) ─────────
+   2990 owns every SO it originates; the live mirror re-applies 2990's version
+   of that SO on every drain, so an edit made here is silently reverted seconds
+   later — see the MIRRORED_COMPANY_CODE block in lib/companyScope.ts for why
+   this is invisible to both the operator and the drift sentinel.
+
+   Guarded at the ROUTER rather than per handler because this file holds ~28
+   separate write sites against the SO trio, and every one of them reaches its
+   SO through the :docNo path segment. A per-writer guard would leave the next
+   writer added to this file unguarded by default — the "the twin never got it"
+   shape #600 / #625 / #632 already cost us three times.
+
+   Reads pass untouched: seeing a 2990 order in Houzs is the entire point of
+   the mirror.
+
+   The path is scanned segment-wise instead of via c.req.param('docNo') so the
+   guard cannot silently no-op if a route's param name changes or a future
+   writer nests the doc number differently — a doc number is the only path
+   segment that can carry the mirror's prefix. A guard that fails open without
+   saying so is worse than no guard. */
+mfgSalesOrders.use('*', async (c, next) => {
+  if (c.req.method === 'GET') return next();
+  const touchesMirrored = c.req.path.split('/').some((seg) => {
+    let s = seg;
+    try { s = decodeURIComponent(seg); } catch { /* not encoded — test the raw segment */ }
+    return isMirroredDocNo(s);
+  });
+  if (touchesMirrored) return c.json(MIRRORED_SO_READONLY, 409);
+  return next();
+});
 
 /* ── SO child-lock guard (Tier 2 — downstream lock) ─────────────────────────
    An SO locks (read-only — no line edit / no CANCELLED transition) once it has
@@ -2614,6 +2650,17 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
   const companyId = c.get('companyId');
   const stampCo = <T extends Record<string, unknown>>(rows: T[]): Array<T & { company_id?: number }> =>
     companyId != null ? rows.map((r) => ({ company_id: companyId, ...r })) : rows;
+  /* Houzs must not mint into 2990's doc-number namespace. nextDocNo below reads
+     the month's existing numbers with `.like('${prefix}SO-YYMM-%')` — under the
+     2990 company that pattern matches the MIRRORED rows, which are a copy of
+     2990's own set, so max+1 returns precisely the number 2990's own minter
+     hands out next. The mirror's `ON CONFLICT (doc_no) DO UPDATE` then
+     overwrites this order's header and delete-then-reinserts its lines as 2990's
+     — a real order, silently gone. Refuse the create instead: the collision has
+     to be impossible, not merely detected. */
+  if (mintsIntoMirroredNamespace(c as unknown as Context<any>)) {
+    return c.json(MIRRORED_SO_CREATE_BLOCKED, 409);
+  }
   /* PR #46 — accept customerName as alias for debtorName (rename in flight).
      Commander 2026-05-26: "Debtor Name 其实可以换成 Customer Name". */
   const customerName = (body.debtorName ?? body.customerName) as string | undefined;

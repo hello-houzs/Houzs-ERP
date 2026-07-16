@@ -25,7 +25,8 @@ import { applySoAmendment, reviseBoundPo, ReceivedFloorError } from '../lib/so-r
 import { hasHouzsPerm, canViewAllSales } from '../lib/houzs-perms';
 import { resolveSalesScopeIds, salesDocOutOfScope, resolveCallerStaffId } from '../lib/salesScope';
 import { recordSoAudit } from '../lib/so-audit';
-import { scopeToCompany } from '../lib/companyScope';
+import { scopeToCompany, isMirroredDocNo, MIRRORED_SO_READONLY } from '../lib/companyScope';
+import type { Context } from 'hono';
 
 export const soAmendments = new Hono<{ Bindings: Env; Variables: Variables }>();
 soAmendments.use('*', supabaseAuth);
@@ -48,6 +49,50 @@ async function gateActorStaffId(
   fallbackStaffId: string,
 ): Promise<string> {
   return (await resolveCallerStaffId(sb, houzsUserId)) ?? fallbackStaffId;
+}
+
+type AmendmentForWrite = { id: string; so_doc_no: string; status: AmendStatus };
+type AmendmentWriteLoad =
+  | { ok: true; amendment: AmendmentForWrite }
+  | { ok: false; reason: 'not_found' | 'mirrored' };
+
+/* ── loadAmendmentForWrite — the guard load every mutation gate shares ──────
+   The list (GET /) and detail (GET /:id) reads above are company-scoped; the
+   five mutation gates below used to load with a bare `.eq('id', id)`, so a
+   caller whose active company was HOUZS could drive a 2990 amendment through
+   its whole state machine by id alone. approve-so / approve-po are not status
+   flips — they re-derive the SO's lines and the bound PO's lines and totals —
+   so the unscoped load handed one company's user a financial rewrite of the
+   other's document. Scope the mutation the way the reads are scoped, and 404
+   rather than 403 so an out-of-company id is indistinguishable from a
+   nonexistent one (the convention salesDocOutOfScope already set).
+
+   Second gate, independent of the first: refuse outright when the bound SO is
+   2990's. The company scope above stops a HOUZS-active caller, but a caller who
+   simply SWITCHES to 2990 passes it — and applySoAmendment would then rewrite a
+   mirrored SO that the next 2990 drain silently reverts (see the
+   MIRRORED_COMPANY_CODE block in lib/companyScope.ts). Approving a 2990
+   amendment has to happen in 2990. */
+async function loadAmendmentForWrite(
+  sb: any,
+  id: string,
+  c: Context<any>,
+): Promise<AmendmentWriteLoad> {
+  const { data } = await scopeToCompany(
+    sb.from('so_amendments').select('id, so_doc_no, status').eq('id', id),
+    c,
+  ).maybeSingle();
+  if (!data) return { ok: false, reason: 'not_found' };
+  const amendment = data as AmendmentForWrite;
+  if (isMirroredDocNo(amendment.so_doc_no)) return { ok: false, reason: 'mirrored' };
+  return { ok: true, amendment };
+}
+
+/* One refusal shape for all five gates, so they cannot drift apart. */
+function amendmentWriteBlocked(c: Context<any>, reason: 'not_found' | 'mirrored') {
+  return reason === 'mirrored'
+    ? c.json(MIRRORED_SO_READONLY, 409)
+    : c.json({ error: 'not_found' }, 404);
 }
 
 /* ── GET / — amendment list (newest first) ─────────────────────────────────
@@ -173,10 +218,9 @@ soAmendments.patch('/:id/supplier-confirm', async (c) => {
   const ref = typeof body.ref === 'string' ? body.ref.trim() : '';
   if (!ref) return c.json({ error: 'ref_required', reason: 'A supplier confirmation reference is required.' }, 400);
 
-  const { data: amdRow } = await sb.from('so_amendments')
-    .select('id, so_doc_no, status').eq('id', id).maybeSingle();
-  if (!amdRow) return c.json({ error: 'not_found' }, 404);
-  const amendment = amdRow as { id: string; so_doc_no: string; status: AmendStatus };
+  const loaded = await loadAmendmentForWrite(sb, id, c);
+  if (!loaded.ok) return amendmentWriteBlocked(c, loaded.reason);
+  const { amendment } = loaded;
 
   const action: AmendAction = 'supplier-confirm';
   if (!canTransition(amendment.status, action)) {
@@ -229,10 +273,9 @@ soAmendments.patch('/:id/approve-so', async (c) => {
     }, 403);
   }
 
-  const { data: amdRow } = await sb.from('so_amendments')
-    .select('id, so_doc_no, status').eq('id', id).maybeSingle();
-  if (!amdRow) return c.json({ error: 'not_found' }, 404);
-  const amendment = amdRow as { id: string; so_doc_no: string; status: AmendStatus };
+  const loaded = await loadAmendmentForWrite(sb, id, c);
+  if (!loaded.ok) return amendmentWriteBlocked(c, loaded.reason);
+  const { amendment } = loaded;
 
   const action: AmendAction = 'approve-so';
   if (!canTransition(amendment.status, action)) {
@@ -288,10 +331,9 @@ soAmendments.patch('/:id/approve-po', async (c) => {
     }, 403);
   }
 
-  const { data: amdRow } = await sb.from('so_amendments')
-    .select('id, so_doc_no, status').eq('id', id).maybeSingle();
-  if (!amdRow) return c.json({ error: 'not_found' }, 404);
-  const amendment = amdRow as { id: string; so_doc_no: string; status: AmendStatus };
+  const loaded = await loadAmendmentForWrite(sb, id, c);
+  if (!loaded.ok) return amendmentWriteBlocked(c, loaded.reason);
+  const { amendment } = loaded;
 
   const action: AmendAction = 'approve-po';
   if (!canTransition(amendment.status, action)) {
@@ -366,10 +408,9 @@ soAmendments.patch('/:id/send', async (c) => {
     }, 403);
   }
 
-  const { data: amdRow } = await sb.from('so_amendments')
-    .select('id, so_doc_no, status').eq('id', id).maybeSingle();
-  if (!amdRow) return c.json({ error: 'not_found' }, 404);
-  const amendment = amdRow as { id: string; so_doc_no: string; status: AmendStatus };
+  const loaded = await loadAmendmentForWrite(sb, id, c);
+  if (!loaded.ok) return amendmentWriteBlocked(c, loaded.reason);
+  const { amendment } = loaded;
 
   const action: AmendAction = 'send';
   if (!canTransition(amendment.status, action)) {
@@ -419,10 +460,9 @@ soAmendments.patch('/:id/reject', async (c) => {
   let body: { reason?: string } = {};
   try { body = (await c.req.json()) as typeof body; } catch { /* reason is optional */ }
 
-  const { data: amdRow } = await sb.from('so_amendments')
-    .select('id, so_doc_no, status').eq('id', id).maybeSingle();
-  if (!amdRow) return c.json({ error: 'not_found' }, 404);
-  const amendment = amdRow as { id: string; so_doc_no: string; status: AmendStatus };
+  const loaded = await loadAmendmentForWrite(sb, id, c);
+  if (!loaded.ok) return amendmentWriteBlocked(c, loaded.reason);
+  const { amendment } = loaded;
 
   const action: AmendAction = 'reject';
   if (!canTransition(amendment.status, action)) {
