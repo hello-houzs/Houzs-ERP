@@ -293,6 +293,16 @@ type CatalogSpecial = {
 // option groups the SO Maintenance page edits. ACTIVE rows only; injected
 // into the cached prompt prefix as allowed-values lists so the OCR can map
 // handwritten payment notes ("mbb 12 EPP") to exact maintenance values.
+//
+// VENUE IS NOT HERE — deliberately (owner 2026-07-16: "看我的maintenance SO 的
+// venue是真理"). so_dropdown_options carries a `venue` category, but it is NOT
+// the venue master any picker binds to: the SO form's Venue dropdown, the SO
+// Maintenance VENUES section and the venue-by-active-project autofill all read
+// public.project_venues (see Catalog.venues below). This list validated against
+// the WRONG vocabulary, which is exactly the drift the 2026-07-04 audit
+// predicted — "if they drift, a scan could seed a venue the picker can't
+// select". The `venue` category rows are left in the table and still served by
+// /so-dropdown-options; the scan simply no longer reads them.
 const OPTION_CATEGORIES = [
   'payment_method',     // L1 method — locked three: Merchant / Online / Cash
   'payment_merchant',   // L2 merchant banks (MBB / CIMB / Public / …)
@@ -300,7 +310,6 @@ const OPTION_CATEGORIES = [
   'installment_plan',   // L2 plans (One Shot / 3 / 6 / 12 / 24 / 36 months)
   'customer_type',      // New / Existing
   'building_type',      // Condo / Landed / …
-  'venue',              // showroom / roadshow venues
 ] as const;
 type OptionCategory = (typeof OPTION_CATEGORIES)[number];
 type CatalogOption = { value: string; label: string };
@@ -313,7 +322,6 @@ const emptyOptions = (): CatalogOptions => ({
   installment_plan: [],
   customer_type:    [],
   building_type:    [],
-  venue:            [],
 });
 
 type Catalog = {
@@ -339,6 +347,26 @@ type Catalog = {
   divanHeights: string[];
   gaps: string[];
   options: CatalogOptions;
+  /* ACTIVE venue NAMES from public.project_venues — the ONE venue master
+     (owner ruling 2026-07-16: "看我的maintenance SO 的venue是真理", i.e. the list
+     SO Maintenance shows is the authority). That page's VENUES section is a
+     read-only view of useVenues() → GET /api/projects/venues → project_venues,
+     and the New-SO Venue dropdown renders the SAME useVenues() master. The scan
+     used to validate against scm.so_dropdown_options.venue instead — a SECOND
+     vocabulary nothing binds to — so a scan could seed a venue the picker
+     cannot select and the operator cannot clear from the dropdown.
+
+     Unlike the variant / city / postcode pools this one IS injected into
+     formatCatalog: the prompt's locationMatch rule needs the list in front of
+     the model to match against, and VENUES was already in the prompt (sourced
+     from the wrong table). Swapping the source therefore changes
+     buildCachedPrefix — a ONE-TIME prompt-cache re-create, not a regression.
+
+     Names only: mfg_sales_orders.venue_id is a uuid FK to the empty scm.venues
+     table and the create core nulls a project_venues integer id (see the
+     venueIdUuid guard in mfg-sales-orders.ts), so the venue TEXT column is what
+     actually carries the value. */
+  venues: string[];
   // Distinct delivery STATES from scm.my_localities — the same vocabulary the
   // New SO form's State <select> renders. Injected as an allowed-values list so
   // the OCR's address parse snaps STATE to a real catalog state (never a free
@@ -389,12 +417,50 @@ function optionValues(arr: unknown): string[] {
     .filter(Boolean);
 }
 
-async function loadCatalog(sb: SupabaseClient): Promise<Catalog> {
+/* ACTIVE venue names from public.project_venues — the venue master (see
+   Catalog.venues). Reads through env.DB, NOT the supabase client: project_venues
+   lives in the PUBLIC schema, which the scm-scoped client cannot reach (the same
+   reason /api/scm/venues and the venue-by-project autofill both use env.DB).
+
+   Deliberately NOT company-scoped, matching every other read in loadCatalog (see
+   the mig-0089 note there): this feeds buildCachedPrefix, which must stay
+   byte-identical across /extract, /warm and the headless cron + queue job — none
+   of which carry a request scope. Per-company OCR catalogs need their own
+   cached-prefix design first.
+
+   FAILS SOFT to an empty pool rather than throwing, mirroring the create core's
+   "non-fatal — leave venue NULL if the project lookup fails" precedent. env.DB is
+   Hyperdrive-backed and can cold-start (see BUG-HISTORY "DB cold-start 503"); a
+   blip must not turn a scan into a hard failure. An empty pool clears the venue
+   axis, and a null venue is the SELF-HEALING state — the create core's
+   venue-by-active-project autofill resolves it from the salesperson's current
+   exhibition project. */
+async function loadVenueNames(db: D1Database): Promise<string[]> {
+  try {
+    const rows = await db
+      .prepare(`SELECT name FROM project_venues WHERE active = 1 ORDER BY name`)
+      .all<{ name?: string | null }>();
+    const seen = new Set<string>();
+    const names: string[] = [];
+    for (const r of rows.results ?? []) {
+      const n = (r.name ?? '').trim();
+      if (!n || seen.has(n.toUpperCase())) continue;
+      seen.add(n.toUpperCase());
+      names.push(n);
+    }
+    return names;
+  } catch (e) {
+    console.error('[scan-so] project_venues load failed', e);
+    return [];
+  }
+}
+
+async function loadCatalog(sb: SupabaseClient, db: D1Database): Promise<Catalog> {
   // PostgREST's default 1000-row cap silently truncates the OCR validation
   // catalogue (mfg_products is 1141 ACTIVE SKUs live, my_localities 2933) — a
   // truncated catalogue makes the OCR reject valid SKUs/states as "unknown".
   // Page each list read with .range(); cfgRes stays a single .maybeSingle().
-  const [prodRes, fabRes, cfgRes, optRes, locRes, spcRes, modRes] = await Promise.all([
+  const [prodRes, fabRes, cfgRes, optRes, locRes, spcRes, modRes, venueNames] = await Promise.all([
     paginateAll((from, to) => sb
       .from('mfg_products')
       .select('code, name, category, base_model')
@@ -463,6 +529,8 @@ async function loadCatalog(sb: SupabaseClient): Promise<Catalog> {
       .select('model_code, allowed_options')
       .eq('category', 'SOFA')
       .range(from, to)),
+    // The venue master (public.project_venues, ACTIVE) — env.DB, not `sb`.
+    loadVenueNames(db),
   ]);
 
   const skus: CatalogSku[] = ((prodRes.data as Array<{
@@ -575,7 +643,7 @@ async function loadCatalog(sb: SupabaseClient): Promise<Catalog> {
   return {
     skus, fabrics, specials, specialsByModelSku,
     sofaSizes, sofaLegHeights, legHeights, divanHeights, gaps,
-    options, states, citiesByState, postcodesByStateCity,
+    options, venues: venueNames, states, citiesByState, postcodesByStateCity,
   };
 }
 
@@ -643,7 +711,20 @@ function formatCatalog(c: Catalog): string {
   optionSection('INSTALLMENT PLANS', 'installment_plan');
   optionSection('CUSTOMER TYPES',    'customer_type');
   optionSection('BUILDING TYPES',    'building_type');
-  optionSection('VENUES',            'venue');
+
+  /* VENUES allowed-values list — the venue MASTER (public.project_venues), the
+     same list SO Maintenance shows and the New-SO Venue dropdown renders (owner
+     ruling 2026-07-16). This section used to be emitted by optionSection over
+     so_dropdown_options.venue; re-sourcing it is a ONE-TIME cached-prefix change
+     (see Catalog.venues). Kept under the SAME "VENUES" heading the prompt's
+     locationMatch rule already names, so no prompt rule moves.
+
+     One name per line, not comma-joined like DELIVERY STATES: a venue name is
+     free text from Project Maintenance and may itself contain a comma. */
+  lines.push('=== VENUES (allowed values) ===');
+  if (c.venues.length === 0) lines.push('—');
+  for (const v of c.venues) lines.push(v);
+  lines.push('');
 
   return lines.join('\n').trimEnd();
 }
@@ -669,13 +750,14 @@ export function buildCachedPrefix(catalog: Catalog, companyName: string): string
 type WarmResult = { ok: boolean; reason?: string; cacheCreated?: boolean; cacheRead?: boolean };
 async function warmCatalogCache(
   sb: SupabaseClient,
+  db: D1Database,
   apiKey: string | undefined,
   companyName: string,
 ): Promise<WarmResult> {
   if (!apiKey) return { ok: false, reason: 'no_key' };
   let catalog: Catalog;
   try {
-    catalog = await loadCatalog(sb);
+    catalog = await loadCatalog(sb, db);
   } catch (e) {
     return { ok: false, reason: `catalog_load_failed: ${(e as Error).message}` };
   }
@@ -736,9 +818,13 @@ async function warmCatalogCache(
 // client scan-so uses internally — RLS-bypass is fine for a read-only catalog
 // load. Exported for index.ts's scheduled handler so the cron and the endpoint
 // share ONE Claude call.
+//
+// env.DB carries the venue master read (project_venues). The scheduled handler
+// wraps its env in withPgDb() before calling this, so DB points at Postgres here
+// exactly as it does on the request path — the cached prefix stays byte-identical.
 export async function warmCatalogCacheForCron(env: Env): Promise<WarmResult> {
   const branding = await getBranding(env);
-  return warmCatalogCache(getSupabaseService(env), env.ANTHROPIC_API_KEY, branding.companyName);
+  return warmCatalogCache(getSupabaseService(env), env.DB, env.ANTHROPIC_API_KEY, branding.companyName);
 }
 
 // ===========================================================================
@@ -977,6 +1063,9 @@ type ExtractedSlip = {
   installmentPlanMatch: OptionMatch | null;
   customerTypeMatch: OptionMatch | null;
   buildingTypeMatch: OptionMatch | null;
+  // NOT a so_dropdown_options value — validateSlip snaps this to an ACTIVE
+  // public.project_venues NAME (the venue master the pickers bind to; owner
+  // ruling 2026-07-16) and clears it when the slip's venue isn't on that list.
   locationMatch: OptionMatch | null;
   // Per-input-image classification (order_slip vs payment_receipt). Used only
   // by /extract to decide which uploaded buffer to store under image_key vs
@@ -1305,7 +1394,7 @@ function validateSlip(slip: ExtractedSlip, catalog: Catalog): Warning[] {
   const optionFields: Array<{
     field: keyof Pick<ExtractedSlip,
       'paymentMethodMatch' | 'bankMatch' | 'onlineTypeMatch' | 'installmentPlanMatch' |
-      'customerTypeMatch' | 'buildingTypeMatch' | 'locationMatch'>;
+      'customerTypeMatch' | 'buildingTypeMatch'>;
     category: OptionCategory;
   }> = [
     { field: 'paymentMethodMatch',   category: 'payment_method' },
@@ -1314,7 +1403,8 @@ function validateSlip(slip: ExtractedSlip, catalog: Catalog): Warning[] {
     { field: 'installmentPlanMatch', category: 'installment_plan' },
     { field: 'customerTypeMatch',    category: 'customer_type' },
     { field: 'buildingTypeMatch',    category: 'building_type' },
-    { field: 'locationMatch',        category: 'venue' },
+    // locationMatch is NOT here — it validates against the venue MASTER
+    // (project_venues), not so_dropdown_options. See the block below.
   ];
   for (const { field, category } of optionFields) {
     const m = slip[field];
@@ -1330,6 +1420,39 @@ function validateSlip(slip: ExtractedSlip, catalog: Catalog): Warning[] {
         message: `Suggested ${category.replace(/_/g, ' ')} not in the SO Maintenance list — cleared; pick manually.`,
       });
       slip[field] = null;
+    }
+  }
+
+  /* VENUE — same never-invent enforcement, against the venue MASTER
+     (public.project_venues, ACTIVE) rather than so_dropdown_options.venue.
+
+     Owner ruling 2026-07-16 ("看我的maintenance SO 的venue是真理"): the list SO
+     Maintenance shows IS the authority, and that section is a read-only view of
+     the same useVenues() master the New-SO Venue dropdown renders. Validating
+     against so_dropdown_options.venue — a second vocabulary nothing binds to —
+     is the drift the 2026-07-04 audit predicted: "a scan could seed a venue the
+     picker can't select".
+
+     No match ⇒ CLEARED, never snapped to a near neighbour (the #615 rule — the
+     venue is where the sale is booked, and a guessed venue is a wrong one). A
+     null venue is the SELF-HEALING state, not a hole: the create core's
+     venue-by-active-project autofill (owner 2026-06-25) fills it from the
+     salesperson's current exhibition project, and that autofill only fires when
+     the venue is null. The raw written text still rides on `location`, which the
+     interactive modal's resolveVenueId falls back to and which the operator
+     reviews against the slip photo either way. */
+  if (slip.locationMatch) {
+    const venueCanon = new Map(catalog.venues.map((v) => [v.toUpperCase(), v]));
+    const hit = venueCanon.get(slip.locationMatch.value.trim().toUpperCase());
+    if (hit) {
+      slip.locationMatch.value = hit;
+    } else {
+      warnings.push({
+        field: 'locationMatch',
+        value: slip.locationMatch.value,
+        message: 'Suggested venue not in the venue list — cleared; pick manually.',
+      });
+      slip.locationMatch = null;
     }
   }
 
@@ -2118,7 +2241,7 @@ scanSo.get('/slip-image', async (c) => {
 scanSo.post('/warm', async (c) => {
   const sb = c.get('supabase');
   const branding = await getBranding(c.env);
-  const result = await warmCatalogCache(sb, c.env.ANTHROPIC_API_KEY, branding.companyName);
+  const result = await warmCatalogCache(sb, c.env.DB, c.env.ANTHROPIC_API_KEY, branding.companyName);
   return c.json(result);
 });
 
@@ -2708,9 +2831,10 @@ scanSo.post('/extract', async (c) => {
   const repGiven = normalizeRepKey(formData.get('salesperson'));
 
   // Catalog via the user-scoped client (RLS applies, same visibility the
-  // operator already has on the SKU master screens).
+  // operator already has on the SKU master screens). env.DB carries the venue
+  // master read (public.project_venues — unreachable by the scm client).
   const sb = c.get('supabase');
-  const catalog = await loadCatalog(sb);
+  const catalog = await loadCatalog(sb, c.env.DB);
 
   // Company name for the prompt anchor comes from the central Branding config
   // (stable → the cached prefix below stays byte-identical to /warm + cron).
@@ -3563,9 +3687,13 @@ function buildDraftSoBodyFromSlip(
     emergencyContactPhone: (parsed.phones[1] ?? '').trim()
       ? `+60${(parsed.phones[1] ?? '').replace(/\s+/g, '')}`
       : null,
-    // Validated venue only — free-text slip location would bypass the venue
-    // master; when null the create core's venue-by-active-project autofill
-    // resolves it from the salesperson's current exhibition project.
+    /* Validated venue only — free-text slip location would bypass the venue
+       master. validateSlip has already snapped this to an ACTIVE
+       public.project_venues NAME (the master SO Maintenance shows and the
+       New-SO Venue dropdown renders, per the owner ruling 2026-07-16) or
+       cleared it. When null the create core's venue-by-active-project autofill
+       resolves it from the salesperson's current exhibition project — which is
+       why a no-match must stay null rather than be coerced. */
     venue: parsed.locationMatch?.value ?? null,
     // Payment header fields (validated matches; the operator reviews the
     // draft before it becomes a real order). No payments[] in the create
@@ -3659,7 +3787,7 @@ async function runScanJob(
     // EXACT /extract machinery, service-client flavoured (no request scope in
     // waitUntil; catalog reads are the same data RLS shows any signed-in
     // operator — same precedent as warmCatalogCacheForCron).
-    const catalog = await loadCatalog(svc);
+    const catalog = await loadCatalog(svc, env.DB);
     const branding = await getBranding(env);
     const cachedPrefix = buildCachedPrefix(catalog, branding.companyName);
     const inj = await loadPromptInjections(svc, job.salesperson);
