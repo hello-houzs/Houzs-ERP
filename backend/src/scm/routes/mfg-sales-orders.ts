@@ -8927,11 +8927,58 @@ mfgSalesOrders.patch('/:docNo/payments/:id', async (c) => {
   const nextPaidAt = p.paidAt ?? before.paid_at;
   const nextApproval = p.approvalCode !== undefined ? (p.approvalCode ?? null) : before.approval_code;
   const nextCollectedBy = p.collectedBy !== undefined ? (p.collectedBy ?? null) : before.collected_by;
-  // Account Sheet: a hand-typed value wins; an explicit blank falls back to the
-  // method-derived default. Untouched when the field wasn't sent.
-  const nextAccountSheet = p.accountSheet !== undefined
-    ? (p.accountSheet?.trim() || deriveAccountSheet(nextMethod, nextMerchantProvider, nextOnline))
-    : before.account_sheet;
+  /* Account Sheet on EDIT (owner 2026-07-16, "Acc sheet 亂填?") — the sheet is
+     DERIVED from the payment's own method + bank / online sub-type, and a
+     hand-typed value wins. Both editors (desktop PaymentsTable.beginEditPersisted,
+     mobile AddPaymentSheet) seed the STORED sheet into an editable box and send
+     it back verbatim, so changing only the Bank re-sent the OLD derived sheet
+     ("PBB") next to the NEW bank ("MBB") and the hand-typed-wins branch happily
+     persisted a row whose Account Sheet contradicted its own Bank. Nothing was
+     "randomly filled": the stale auto-derived value simply outlived the bank it
+     was derived from.
+     Fix here rather than in each client (single logic layer — desktop + mobile +
+     API all get it): if the incoming/stored sheet is EXACTLY what the PREVIOUS
+     method/bank/online would have derived, it was auto-filled, not typed — so
+     when those inputs change, re-derive it. A sheet that differs from the prior
+     derived value is a genuine operator entry and is left alone. */
+  const priorDerived = deriveAccountSheet(before.method, before.merchant_provider, before.online_type);
+  const nextDerived = () => deriveAccountSheet(nextMethod, nextMerchantProvider, nextOnline);
+  const derivedInputsChanged =
+    nextMethod !== before.method
+    || (nextMerchantProvider ?? null) !== (before.merchant_provider ?? null)
+    || (nextOnline ?? null) !== (before.online_type ?? null);
+  /* `staleAutoFill` = the sheet we'd keep is verbatim what the OLD method/bank
+     derived, and that method/bank just changed ⇒ it was auto-filled and is now
+     wrong. Anything else is either blank or an operator's own text. */
+  const staleAutoFill = (sheet: string | null): boolean =>
+    derivedInputsChanged && (sheet ?? '') === priorDerived;
+  // undefined = field absent from the PATCH body; '' = explicitly cleared.
+  const sentSheet = p.accountSheet === undefined ? undefined : (p.accountSheet ?? '').trim();
+  const nextAccountSheet = sentSheet !== undefined
+    // Sent: blank → derive (unchanged); stale auto-fill → re-derive; else hand-typed wins.
+    ? (!sentSheet || staleAutoFill(sentSheet) ? nextDerived() : sentSheet)
+    // Not sent: untouched (unchanged) UNLESS the stored value is a stale auto-fill.
+    : (staleAutoFill(before.account_sheet) ? nextDerived() : before.account_sheet);
+
+  /* Method ⇒ sub-field mapping on EDIT (2026-07-16) — the same rule POST enforces
+     (payment_method_field_required), applied to the EFFECTIVE post-edit values.
+     POST was hardened earlier the same day but PATCH was not, so an edit could
+     still strip the Bank off a card payment (or the Sub-Type off a transfer) and
+     leave the row with no mapping — the exact state the POST guard exists to
+     prevent. Amount-bearing rows only, matching POST + the desktop guard; the
+     Plan stays un-gated for the same reason (One-off ⇒ installmentMonths null). */
+  if (nextAmount > 0) {
+    let missing: string | null = null;
+    let methodName = '';
+    if (nextMethod === 'merchant' && !nextMerchantProvider?.trim()) { missing = 'bank'; methodName = 'card / merchant'; }
+    else if (nextMethod === 'transfer' && !nextOnline?.trim()) { missing = 'sub-type'; methodName = 'bank transfer / online'; }
+    if (missing) {
+      return c.json({
+        error: 'payment_method_field_required',
+        reason: `A ${methodName} payment needs a ${missing} before it can be saved.`,
+      }, 400);
+    }
+  }
 
   /* Overpayment guard (mirror POST) — Σ(other rows) + this row's new amount may
      not exceed the SO total. Excludes THIS payment from the prior sum. */

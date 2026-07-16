@@ -45,12 +45,15 @@ import {
   type SpecialAddonRow,
 } from "../vendor/scm/lib/mfg-products-queries";
 import { useFabricColoursSearch, type FabricColourRow } from "../vendor/scm/lib/fabric-queries";
-import { PaymentInfoBlock } from "./PaymentInfoBlock";
+/* Owner 2026-07-16 — the recorded-payment ledger is the SHARED
+   RecordedPaymentsList, the SAME component the scan-draft review screen
+   (MobileSODetail) renders. It was a local read-only copy, which is why
+   entering "Edit Draft" REMOVED the pencil + trash the previous screen showed. */
+import { RecordedPaymentsList, type RecordedPayment } from "./RecordedPayments";
 import { useFabricLibrary } from "../vendor/scm/lib/queries";
 import { useDebouncedValue } from "../vendor/scm/lib/hooks";
 import { activeOptions, maintPickerValues } from "../vendor/shared/maintenance-pools";
 import { missingVariantAxes, hasSofaMixConflict, SOFA_MIX_MESSAGE } from "../vendor/shared/so-variant-rule";
-import { fmtCenti } from "../lib/scm";
 import "./mobile.css";
 
 /* ---------------------------------------------------------------------------
@@ -227,6 +230,15 @@ type SoPayment = {
   merchantProvider?: string | null;
   installmentMonths?: number | null;
   onlineType?: string | null;
+  /* Owner 2026-07-16 — the recorded rows are now EDITABLE here (shared
+     RecordedPaymentsList), so carry the columns the ledger row needs: the slip
+     thumbnail, the same-day EDIT lock instant, and the Collected By the edit
+     sheet rehydrates. GET /:docNo/payments already returns all three. */
+  collected_by?: string | null;
+  slip_key?: string | null;
+  slipKey?: string | null;
+  created_at?: string | null;
+  createdAt?: string | null;
 };
 type PaymentsResp = { payments: SoPayment[] };
 
@@ -623,6 +635,20 @@ export function MobileNewSO({
   const scanSlipFilesRef = useRef<Record<string, File>>(scanSlipFilesInit);
   const [origItems, setOrigItems] = useState<SoItem[]>([]);
   const [existingPays, setExistingPays] = useState<SoPayment[]>([]);
+  /* Re-read the persisted ledger after the shared RecordedPaymentsList edits or
+     deletes a row. This screen loads payments with a one-shot authedFetch (not a
+     TanStack query), so the list's cache invalidation can't refresh it — pull the
+     ledger again from the same endpoint the prefill uses. A failed refresh leaves
+     the current rows on screen rather than blanking the card. */
+  const reloadExistingPays = async () => {
+    if (!docNo) return;
+    try {
+      const r = await authedFetch<PaymentsResp>(`/mfg-sales-orders/${encodeURIComponent(docNo)}/payments`);
+      setExistingPays(r.payments ?? []);
+    } catch {
+      /* keep what's on screen */
+    }
+  };
   const [lineLocked, setLineLocked] = useState(false);
   /* SO-amendment flags captured from the detail GET (Phase 1-C). When
      `amendEligible` the SO is processing-locked but still editable via the
@@ -648,6 +674,12 @@ export function MobileNewSO({
      lock keeps a DRAFT / CANCELLED SO editable (status guard), matching the
      mobile detail screen + desktop instead of the old status-blind copy. */
   const [soStatus, setSoStatus] = useState<string>("");
+  /* Owner 2026-07-16 ("payment draft著的時候為什麼還是不能edit？講了很多次了") — a
+     DRAFT SO is never confirmed, so its payments stay fully editable (and are
+     never same-day-locked). Same rule as the mobile detail screen + desktop
+     SalesOrderDetail; the server matches it too (the PATCH same-day lock exempts
+     DRAFT). setSoStatus stores the status upper-cased. */
+  const isDraftSo = soStatus === "DRAFT";
   // Prefill venue (edit) — used to seed the manual venue pick.
   const [prefillVenueId, setPrefillVenueId] = useState<string | null>(null);
   const [prefillVenueName, setPrefillVenueName] = useState<string>("");
@@ -2035,20 +2067,29 @@ export function MobileNewSO({
                 {isEdit && existingPays.length > 0 && (
                   <>
                     <div className="fld-l" style={{ marginBottom: 2 }}>Recorded</div>
-                    {/* Owner 2026-07-13 — render recorded payments through the
-                        SAME PaymentInfoBlock the confirmed SO detail uses, so a
-                        "Recorded" payment looks identical in both views (method
-                        label + account + collected-by + bank/tenure + online +
-                        approval). Read-only here: slip + delete live on the SO
-                        detail screen. */}
-                    {existingPays.map((p) => (
-                      <div key={p.id} style={roItemBox}>
-                        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
-                          <PaymentInfoBlock payment={p} />
-                          <span className="money" style={{ fontSize: 12.5, fontWeight: 700, color: "#0c3f39" }}>{fmtCenti(p.amount_centi)}</span>
-                        </div>
-                      </div>
-                    ))}
+                    {/* Owner 2026-07-16 ("我還沒有點 edit draft 可以 edit payment,
+                        反而點了 edit draft 不給 edit") — recorded payments render
+                        through the SHARED RecordedPaymentsList, the SAME component
+                        the SO detail / scan-draft review screen uses, so entering
+                        Edit keeps the pencil + trash instead of dropping to a
+                        read-only box. This block used to be a second, read-only
+                        copy of the row (info only) — the drift that inverted
+                        editability. `inset` is layout only (rows sit inside this
+                        padded card body); the gates below are desktop-verbatim. */}
+                    <RecordedPaymentsList
+                      docNo={docNo ?? ""}
+                      payments={existingPays as RecordedPayment[]}
+                      staff={staffQ.data ?? []}
+                      /* Desktop parity (SalesOrderDetail renders PaymentsTable with
+                         locked={!isDraftSo && (isLocked || !isEditing)}): inside the
+                         editor isEditing is always true, so the rule collapses to
+                         DRAFT ⇒ always editable, otherwise editable unless the SO is
+                         terminal / has downstream children. */
+                      canEdit={isDraftSo || !lineLocked}
+                      draftUnlocked={isDraftSo}
+                      inset
+                      onChanged={reloadExistingPays}
+                    />
                     <div style={{ height: 4 }} />
                   </>
                 )}

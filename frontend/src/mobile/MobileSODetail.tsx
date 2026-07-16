@@ -1,24 +1,20 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { formatDate } from "../lib/utils";
 import { useQueryClient } from "@tanstack/react-query";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
-import { fetchPaymentSlipUrl, fetchScanSlipImageBlobUrl, uploadSlipFull } from "../vendor/scm/lib/slip";
+import { fetchScanSlipImageBlobUrl } from "../vendor/scm/lib/slip";
 import { useStaff } from "../vendor/scm/lib/admin-queries";
 import { useAuth as useHouzsAuth } from "../auth/AuthContext";
 import {
   useMfgSalesOrderDetail,
   useSalesOrderPayments,
   useUpdateMfgSalesOrderStatus,
-  useAddSalesOrderPayment,
-  useEditSalesOrderPayment,
-  useDeleteSalesOrderPayment,
   useSalesOrderAuditLog,
   type SoAuditEntry,
   type SoAuditFieldChange,
 } from "../vendor/scm/lib/sales-order-queries";
 import { buildVariantSummary } from "../vendor/shared/variant-summary";
-import { todayMyt, isCreatedTodayMyt } from "../vendor/scm/lib/dates";
 import {
   CANCELLABLE_STATUSES,
   isLocked as isSoLocked,
@@ -26,8 +22,6 @@ import {
   amendmentEligible as soAmendmentEligible,
   deriveBalance,
 } from "../vendor/scm/lib/so-detail-gates";
-import { useSoDropdownOptions, optionsOrFallback, FALLBACK_OPTIONS } from "../vendor/scm/lib/so-dropdown-options-queries";
-import { paymentMethodCodeForValue } from "../vendor/scm/lib/payment-methods";
 import {
   amendmentHeaderDiffRows,
   type SoAmendmentHeaderChanges,
@@ -38,7 +32,12 @@ import {
   useApproveSo,
   type AmendmentLine,
 } from "../vendor/scm/lib/so-amendment-queries";
-import { PaymentInfoBlock, type RecordedPaymentLike } from "./PaymentInfoBlock";
+/* Owner 2026-07-16 — the persisted-payment ledger (rows + slip + amount + edit
+   + delete + the edit sheet) is the SHARED RecordedPayments module, rendered
+   identically by the Edit Sales Order sheet (MobileNewSO). This screen no longer
+   owns any payment-row markup: that second, read-only copy is exactly what made
+   Edit Draft offer LESS than the screen it was opened from. */
+import { AddPaymentSheet, RecordedPaymentsList, type RecordedPayment } from "./RecordedPayments";
 import "./mobile.css";
 
 /* Shapes are the subset of the /mfg-sales-orders/:docNo + /:docNo/payments
@@ -195,7 +194,6 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
   const [supplierConfirmOpen, setSupplierConfirmOpen] = useState(false);
   const approveSo = useApproveSo();
   const updateStatus = useUpdateMfgSalesOrderStatus();
-  const deletePaymentMut = useDeleteSalesOrderPayment();
 
   /* Reads route through the SHARED vendored hooks (vendor/scm/lib/
      sales-order-queries) so mobile lives in the SAME query-key namespace as the
@@ -343,9 +341,6 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
   const canEditPayments = isDraftSo || (canOfferPayEdit && payEditing);
   const canAddPayment = canEditPayments;
   const [payOpen, setPayOpen] = useState(false);
-  /* Same-day EDIT (owner 2026-07-13) — the payment row being edited (null = the
-     Add-Payment sheet is in create mode / closed). */
-  const [editPay, setEditPay] = useState<SoPayment | null>(null);
 
   /* Collected By default = the logged-in user (owner option B). The detail
      header has no staff id for the viewer, so resolve it by matching the Houzs
@@ -368,25 +363,6 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
      one key here so the KPIs update live. */
   const refreshAfterPayment = () =>
     qc.invalidateQueries({ queryKey: ["mfg-sales-order-detail", docNo] });
-
-  /* Delete a persisted payment — parity with the desktop PaymentsTable trash
-     action. In-app confirm, then the shared useDeleteSalesOrderPayment mutation
-     (invalidates the payments ledger); refreshAfterPayment then refreshes the
-     header KPIs. */
-  const deletePayment = async (paymentId: string) => {
-    if (busy) return;
-    if (!(await confirm({ title: "Delete this payment?", body: "This removes the recorded payment and re-opens the balance.", confirmLabel: "Delete", danger: true }))) return;
-    setActionError(null);
-    setBusy(true);
-    try {
-      await deletePaymentMut.mutateAsync({ docNo, id: paymentId });
-      await refreshAfterPayment();
-    } catch (e) {
-      setActionError(e instanceof Error ? e.message : "Couldn't delete the payment. Please try again.");
-    } finally {
-      setBusy(false);
-    }
-  };
 
   return (
     <div className="hz-m" style={{ display: "flex", flexDirection: "column", height: "100%", background: "var(--app-bg)" }}>
@@ -652,50 +628,18 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
               </span>
             </div>
               {paymentsQ.isLoading && <div style={{ padding: "11px 13px", borderTop: "1px solid var(--line2)", fontSize: 11.5, color: "var(--mut2)" }}>Loading{"…"}</div>}
-              {!paymentsQ.isLoading && (payments.length ? payments.map((p, i) => (
-                <div key={p.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "11px 13px", borderTop: i ? "1px solid var(--line2)" : "none", alignItems: "center" }}>
-                  {/* Owner 2026-07-13 — recorded-payment info now renders through
-                      the shared PaymentInfoBlock so the draft SO edit view
-                      (MobileNewSO) presents it identically. */}
-                  <PaymentInfoBlock payment={p as RecordedPaymentLike} />
-                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    {/* Slip present — dual-read camelCase ?? snake_case. */}
-                    {((p as unknown as { slipKey?: string | null }).slipKey ?? p.slip_key) ? <SlipLink docNo={docNo} paymentId={p.id} /> : null}
-                    <span className="money-row">RM {rm(p.amount_centi)}</span>
-                    {/* Same-day EDIT (owner 2026-07-13) — pencil requires the
-                        payments Edit mode (or a DRAFT SO) AND, for a submitted SO,
-                        that the row was recorded today (after MYT midnight it
-                        locks). A DRAFT's rows are never same-day-locked. */}
-                    {canEditPayments && (isDraftSo || isCreatedTodayMyt((p as unknown as { createdAt?: string | null }).createdAt ?? p.created_at)) && (
-                      <button
-                        type="button"
-                        onClick={() => setEditPay(p)}
-                        disabled={busy}
-                        title="Edit payment (same-day only)"
-                        aria-label="Edit payment"
-                        style={{ border: "none", background: "transparent", cursor: "pointer", padding: "0 4px", display: "flex", alignItems: "center", opacity: busy ? 0.4 : 1 }}
-                      >
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2f5d4f" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>
-                      </button>
-                    )}
-                    {/* Delete payment — parity with desktop PaymentsTable. Shown
-                        only in the payments Edit mode (or on a DRAFT SO); the
-                        read-only view exposes no delete control. */}
-                    {canEditPayments && (
-                      <button
-                        type="button"
-                        onClick={() => void deletePayment(p.id)}
-                        disabled={busy}
-                        title="Delete payment"
-                        aria-label="Delete payment"
-                        style={{ border: "none", background: "transparent", cursor: "pointer", padding: "0 4px", display: "flex", alignItems: "center", opacity: busy ? 0.4 : 1 }}
-                      >
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#b23a3a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" /></svg>
-                      </button>
-                    )}
-                  </div>
-                </div>
-              )) : <div style={{ padding: "11px 13px", borderTop: "1px solid var(--line2)", fontSize: 11.5, color: "var(--mut2)" }}>No payments recorded.</div>)}
+              {!paymentsQ.isLoading && (
+                <RecordedPaymentsList
+                  docNo={docNo}
+                  payments={payments as RecordedPayment[]}
+                  staff={staffQ.data ?? []}
+                  defaultCollectedBy={defaultCollectedBy}
+                  canEdit={canEditPayments}
+                  draftUnlocked={isDraftSo}
+                  busy={busy}
+                  onChanged={refreshAfterPayment}
+                />
+              )}
             </div>
 
             {/* History — owner requirement (Inistate-style audit timeline): WHO
@@ -711,20 +655,20 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
         )}
       </div>
 
-      {/* Standalone Add-Payment sheet — reuses uploadSlipFull + the SAME
-          POST /:docNo/payments body the Edit flow uses (recordSlipBackedPayments).
-          Reachable even when the SO is edit-locked, because payment is never
-          lock-gated (only status/downstream via canAddPayment). */}
-      {(payOpen || editPay) && h && (
+      {/* Standalone ADD-Payment sheet (the card-header "+ Add Payment"). Editing
+          an EXISTING row is owned by RecordedPaymentsList, which mounts the same
+          sheet in edit mode — so the affordance exists wherever the ledger is
+          rendered, including inside Edit Sales Order. Reachable even when the SO
+          is edit-locked, because payment is never lock-gated (only
+          status/downstream via canAddPayment). */}
+      {payOpen && h && (
         <AddPaymentSheet
           docNo={docNo}
           staff={staffQ.data ?? []}
           defaultCollectedBy={defaultCollectedBy}
-          editPayment={editPay}
-          onClose={() => { setPayOpen(false); setEditPay(null); }}
+          onClose={() => setPayOpen(false)}
           onSaved={async () => {
             setPayOpen(false);
-            setEditPay(null);
             await refreshAfterPayment();
           }}
         />
@@ -840,351 +784,6 @@ function composeEmergency(h: SoHeader): string {
    for older rows that never stamped it. */
 const lineTotalCenti = (it: SoItem): number =>
   it.total_centi ?? Math.round((it.unit_price_centi ?? 0) * (it.qty ?? 0));
-
-/* Slip link on a persisted payment row — blob-fetches the slip on demand
-   (GET /:docNo/payments/:id/slip-url, Worker-proxied) and opens the object
-   URL in a new tab. */
-function SlipLink({ docNo, paymentId }: { docNo: string; paymentId: string }) {
-  const [busy, setBusy] = useState(false);
-  const notify = useNotify();
-  const open = async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      const { url } = await fetchPaymentSlipUrl(docNo, paymentId);
-      window.open(url, "_blank", "noopener");
-    } catch (e) {
-      void notify({ title: "Couldn't open slip", body: e instanceof Error ? e.message : String(e), tone: "error" });
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <button
-      type="button"
-      onClick={open}
-      title="Open payment slip"
-      style={{ border: "none", background: "transparent", cursor: "pointer", padding: "0 6px", display: "flex", alignItems: "center", opacity: busy ? 0.5 : 1 }}
-    >
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#16695f" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3Z" /><circle cx="12" cy="13" r="3" /></svg>
-    </button>
-  );
-}
-
-/* Existing-slip preview for the Edit Payment sheet — blob-fetches the persisted
-   payment's slip (same GET /:docNo/payments/:id/slip-url the read-view SlipLink
-   uses) and shows it as a thumbnail the operator taps to open full-size, so they
-   SEE which slip is attached while editing. PDFs (no <img> render) fall back to a
-   "View slip" link. The slip itself is never changed by an edit. */
-function PaymentSlipPreview({ docNo, paymentId }: { docNo: string; paymentId: string }) {
-  const [url, setUrl] = useState<string | null>(null);
-  const [contentType, setContentType] = useState<string>("");
-  const [state, setState] = useState<"loading" | "ready" | "error">("loading");
-  useEffect(() => {
-    let live = true;
-    let objUrl: string | null = null;
-    (async () => {
-      try {
-        const res = await fetchPaymentSlipUrl(docNo, paymentId);
-        if (!live) { URL.revokeObjectURL(res.url); return; }
-        objUrl = res.url;
-        setUrl(res.url);
-        setContentType(res.contentType);
-        setState("ready");
-      } catch {
-        if (live) setState("error");
-      }
-    })();
-    return () => { live = false; if (objUrl) URL.revokeObjectURL(objUrl); };
-  }, [docNo, paymentId]);
-  const isPdf = contentType.includes("pdf");
-  return (
-    <div className="fld">
-      <span className="fld-l">Attached slip</span>
-      {state === "loading" ? (
-        <div style={{ fontSize: 11.5, color: "var(--mut)", padding: "6px 0" }}>Loading slip…</div>
-      ) : state === "error" || !url ? (
-        <div style={{ fontSize: 11.5, color: "var(--mut)", padding: "6px 0" }}>Couldn't load the attached slip.</div>
-      ) : isPdf ? (
-        <button
-          type="button"
-          onClick={() => window.open(url, "_blank", "noopener")}
-          style={{ width: "100%", boxSizing: "border-box", height: 40, borderRadius: 9, cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, border: "1px solid #bcdcd7", background: "#e1efed", color: "#16695f" }}
-        >
-          View attached slip (PDF)
-        </button>
-      ) : (
-        <button
-          type="button"
-          onClick={() => window.open(url, "_blank", "noopener")}
-          title="Open slip full-size"
-          style={{ padding: 0, border: "1px solid #d6d9d2", borderRadius: 9, background: "#f4f6f3", cursor: "pointer", overflow: "hidden", display: "block", width: "fit-content" }}
-        >
-          <img src={url} alt="Payment slip" style={{ display: "block", maxHeight: 120, maxWidth: "100%", objectFit: "contain" }} />
-        </button>
-      )}
-    </div>
-  );
-}
-
-/* ── Add Payment sheet ───────────────────────────────────────────────────────
-   Standalone payment-recording flow for a LOCKED (or unlocked) submitted SO.
-   Records ONE slip-backed payment through POST /:docNo/payments — the SAME
-   endpoint + body shape MobileNewSO.recordSlipBackedPayments uses — and reuses
-   uploadSlipFull for the slip. The SO payments route REQUIRES a slip, so Save
-   stays disabled until an amount > 0 AND a confirmed slip upload session exist
-   (mirrors desktop PaymentsTable.commitDraft's gate). No pricing logic lives
-   here; the backend recomputes the balance. Design = the shared .hz-m bottom
-   sheet + fld / fld-i / fld-l classes. */
-
-const PAY_METHODS = ["Cash", "Merchant", "Online", "Installment"] as const;
-type PayMethodLabel = (typeof PAY_METHODS)[number];
-/* Payment-row method label → backend enum: SHARED map
-   (paymentMethodCodeForValue, payment-methods.ts) — same source MobileNewSO +
-   desktop use, so the method codes can't drift. "Online" → "transfer" code. */
-// Offline fallback + parsing seed only; the rendered dropdowns below read the
-// LIVE maintenance catalog via useSoDropdownOptions. Single-sourced from
-// FALLBACK_OPTIONS so it can't drift ("Maybank" -> "MBB", "One Shot" -> "One-off").
-const BANK_OPTS = FALLBACK_OPTIONS.payment_merchant.map((o) => o.value);
-const PLAN_OPTS = FALLBACK_OPTIONS.installment_plan.map((o) => o.value);
-const ONLINE_OPTS = FALLBACK_OPTIONS.online_type.map((o) => o.value);
-/* 'One Shot' → null (no installment term); 'N months' → N. Same as MobileNewSO. */
-const planToMonths = (label: string): number | null => {
-  const m = /^(\d+)\s*month/i.exec(String(label).trim());
-  return m ? Number(m[1]) : null;
-};
-/* Reverse of the shared method map (backend enum → sheet label) — rehydrates
-   the Method select when editing a persisted payment. Kept local because it is
-   typed to the mobile PayMethodLabel union. */
-const CODE_TO_PAY_METHOD: Record<string, PayMethodLabel> = {
-  cash: "Cash", transfer: "Online", merchant: "Merchant", installment: "Installment",
-};
-/* installment_months (int|null) → the Plan option label to rehydrate the select
-   when editing. null / unmatched → "One Shot". */
-const monthsToPlan = (months: number | null | undefined): string => {
-  if (!months) return PLAN_OPTS[0];
-  return PLAN_OPTS.find((p) => planToMonths(p) === months) ?? `${months} months`;
-};
-const toCenti = (s: string) => Math.round((parseFloat(String(s).replace(/,/g, "")) || 0) * 100);
-
-function AddPaymentSheet({
-  docNo,
-  staff,
-  defaultCollectedBy = "",
-  editPayment = null,
-  onClose,
-  onSaved,
-}: {
-  docNo: string;
-  staff: Array<{ id: string; name: string }>;
-  /* Collected By default for a NEW payment = logged-in user's staff id. */
-  defaultCollectedBy?: string;
-  /* When set, the sheet EDITS this persisted payment (PATCH) instead of adding
-     a new one (POST). Same fields, seeded from the row. */
-  editPayment?: SoPayment | null;
-  onClose: () => void;
-  onSaved: () => void | Promise<void>;
-}) {
-  const notify = useNotify();
-  const addPaymentMut = useAddSalesOrderPayment();
-  const editPaymentMut = useEditSalesOrderPayment();
-  const isEdit = Boolean(editPayment);
-  const fileRef = useRef<HTMLInputElement | null>(null);
-  const [method, setMethod] = useState<PayMethodLabel>(
-    () => (editPayment ? CODE_TO_PAY_METHOD[editPayment.method ?? "cash"] ?? "Cash" : "Cash"),
-  );
-  const [date, setDate] = useState<string>(
-    () => (editPayment?.paid_at ?? "").slice(0, 10) || todayMyt(),
-  );
-  const [amount, setAmount] = useState(
-    () => (editPayment ? ((editPayment.amount_centi ?? 0) / 100).toFixed(2) : "0.00"),
-  );
-  const [account, setAccount] = useState(editPayment?.account_sheet ?? "");
-  const [approval, setApproval] = useState(editPayment?.approval_code ?? "");
-  const [collectedBy, setCollectedBy] = useState(editPayment?.collected_by ?? defaultCollectedBy);
-  const [bank, setBank] = useState(editPayment?.merchant_provider || BANK_OPTS[0]);
-  const [plan, setPlan] = useState(() => (editPayment ? monthsToPlan(editPayment.installment_months) : PLAN_OPTS[0]));
-  const [online, setOnline] = useState(editPayment?.online_type || ONLINE_OPTS[0]);
-  /* Live payment dropdowns from the maintenance catalog (same API as desktop) —
-     the module arrays above are only the offline fallback / parsing seed. */
-  const bankOpts = optionsOrFallback("payment_merchant", useSoDropdownOptions("payment_merchant").data);
-  const planOpts = optionsOrFallback("installment_plan", useSoDropdownOptions("installment_plan").data);
-  const onlineOpts = optionsOrFallback("online_type", useSoDropdownOptions("online_type").data);
-  const [slipName, setSlipName] = useState("");
-  const [slipSession, setSlipSession] = useState("");
-  const [slipPhase, setSlipPhase] = useState<"" | "uploading" | "done" | "error">("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const onPickSlip = async (f: File | null) => {
-    if (!f) return;
-    setSlipName(f.name); setSlipSession(""); setSlipPhase("uploading");
-    try {
-      const { uploadSessionId } = await uploadSlipFull({ file: f });
-      setSlipSession(uploadSessionId); setSlipPhase("done");
-    } catch {
-      setSlipPhase("error");
-    }
-  };
-
-  const amtOk = toCenti(amount) > 0;
-  /* Owner 2026-07-13 — the slip is OPTIONAL now; recording needs only an
-     amount > 0 (+ method/date). The slip upload stays available for when one IS
-     on hand. */
-  const canSave = amtOk && !busy && slipPhase !== "uploading";
-
-  const save = async () => {
-    if (!canSave) return;
-    setError(null);
-    setBusy(true);
-    /* Same body MobileNewSO.recordSlipBackedPayments POSTs — do NOT reimplement
-       pricing; the backend recomputes the balance from the amount. In EDIT mode
-       the same fields PATCH the existing row (slip untouched). */
-    const code = paymentMethodCodeForValue(method) ?? "cash";
-    const body: Record<string, unknown> = {
-      paidAt: date,
-      method: code,
-      amountCenti: toCenti(amount),
-      accountSheet: account.trim() || null,
-      approvalCode: approval.trim() || null,
-      collectedBy: collectedBy || null,
-    };
-    // Slip is optional — only send the session when one was actually uploaded.
-    if (!isEdit && slipSession) body.uploadSessionId = slipSession;
-    if (code === "merchant") { body.merchantProvider = bank || null; body.installmentMonths = planToMonths(plan); }
-    else if (code === "installment") { body.installmentMonths = planToMonths(plan); }
-    else if (code === "transfer") { body.onlineType = online || null; }
-    try {
-      /* Same body shape as before — just swap the raw transport for the shared
-         vendored mutations so mobile shares the desktop payment write path (they
-         invalidate the payments ledger key useSalesOrderPayments reads). */
-      if (isEdit && editPayment) {
-        await editPaymentMut.mutateAsync({ docNo, id: editPayment.id, ...body });
-      } else {
-        await addPaymentMut.mutateAsync({ docNo, ...body });
-      }
-      await onSaved();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Couldn't record the payment. Please try again.");
-      void notify({ title: isEdit ? "Changes not saved" : "Payment not recorded", body: e instanceof Error ? e.message : String(e), tone: "error" });
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="hz-m sheet-bd" onClick={() => { if (!busy) onClose(); }}>
-      <div className="sheet" onClick={(e) => e.stopPropagation()}>
-        <div className="grab" />
-        <div className="sheet-head">
-          <div>
-            <div className="card-t" style={{ fontSize: 15 }}>{isEdit ? "Edit payment" : "Add payment"}</div>
-            <div style={{ fontSize: 11, color: "var(--mut)", marginTop: 2 }}>{docNo}</div>
-          </div>
-          <button type="button" className="sheet-x" onClick={() => { if (!busy) onClose(); }} aria-label="Close">{"✕"}</button>
-        </div>
-        <div className="sheet-scroll">
-          <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-            <div className="fld">
-              <span className="fld-l">Method</span>
-              <select className="fld-i" value={method} onChange={(e) => setMethod(e.target.value as PayMethodLabel)}>
-                {PAY_METHODS.map((m) => <option key={m} value={m}>{m}</option>)}
-              </select>
-            </div>
-            <div style={{ display: "flex", gap: 9 }}>
-              <label className="fld" style={{ flex: 1.1 }}>
-                <span className="fld-l">Date</span>
-                <input className="fld-i" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-              </label>
-              <label className="fld" style={{ flex: 1.1 }}>
-                <span className="fld-l">Amount</span>
-                <input className="fld-i money" value={amount} onChange={(e) => setAmount(e.target.value)} inputMode="decimal" />
-              </label>
-            </div>
-            {method === "Merchant" && (
-              <div style={{ display: "flex", gap: 9 }}>
-                <div className="fld" style={{ flex: 1 }}>
-                  <span className="fld-l">Bank</span>
-                  <select className="fld-i" value={bank} onChange={(e) => setBank(e.target.value)}>{bankOpts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select>
-                </div>
-                <div className="fld" style={{ flex: 1 }}>
-                  <span className="fld-l">Plan</span>
-                  <select className="fld-i" value={plan} onChange={(e) => setPlan(e.target.value)}>{planOpts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select>
-                </div>
-              </div>
-            )}
-            {method === "Installment" && (
-              <div className="fld">
-                <span className="fld-l">Installment plan</span>
-                <select className="fld-i" value={plan} onChange={(e) => setPlan(e.target.value)}>{planOpts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select>
-              </div>
-            )}
-            {method === "Online" && (
-              <div className="fld">
-                <span className="fld-l">Sub-type</span>
-                <select className="fld-i" value={online} onChange={(e) => setOnline(e.target.value)}>{onlineOpts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select>
-              </div>
-            )}
-            <div style={{ display: "flex", gap: 9 }}>
-              <label className="fld" style={{ flex: 1 }}>
-                <span className="fld-l">Account Sheet</span>
-                <input className="fld-i" value={account} onChange={(e) => setAccount(e.target.value)} placeholder="Sheet ref" />
-              </label>
-              <label className="fld" style={{ flex: 1 }}>
-                <span className="fld-l">Approval Code</span>
-                <input className="fld-i" value={approval} onChange={(e) => setApproval(e.target.value)} placeholder="Terminal no" />
-              </label>
-            </div>
-            <div className="fld">
-              <span className="fld-l">Collected By</span>
-              <select className="fld-i" value={collectedBy} onChange={(e) => setCollectedBy(e.target.value)}>
-                <option value="">—</option>
-                {staff.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-              </select>
-            </div>
-            {/* Edit mode — show the EXISTING attached slip so the operator can
-                see what's on the row while editing (owner request). The slip is
-                not changed by an edit; this is view-only. */}
-            {isEdit && editPayment?.slip_key && (
-              <PaymentSlipPreview docNo={docNo} paymentId={editPayment.id} />
-            )}
-            {/* Owner 2026-07-13 — slip is OPTIONAL. Uploader stays available for
-                when a receipt IS on hand; no "required" gate. Hidden in edit
-                mode (the slip isn't changed by an edit). */}
-            {!isEdit && (
-              <div className="fld">
-                <span className="fld-l" style={{ color: "#9aa093" }}>Slip (optional)</span>
-                <input ref={fileRef} type="file" accept="image/*,application/pdf" style={{ display: "none" }} onChange={(e) => { void onPickSlip(e.target.files?.[0] ?? null); e.target.value = ""; }} />
-                <button
-                  type="button"
-                  onClick={() => fileRef.current?.click()}
-                  disabled={slipPhase === "uploading" || busy}
-                  title={slipName || "Attach a payment slip"}
-                  style={{
-                    width: "100%", boxSizing: "border-box", height: 40, borderRadius: 9, cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700,
-                    border: slipPhase === "done" ? "1px solid #bcdcd7" : "1px solid #d6d9d2",
-                    background: slipPhase === "done" ? "#e1efed" : "#f4f6f3",
-                    color: slipPhase === "done" ? "#16695f" : "#414539",
-                    display: "flex", alignItems: "center", justifyContent: "center", gap: 6, overflow: "hidden",
-                  }}
-                >
-                  {slipPhase === "uploading" ? "Uploading…"
-                    : slipPhase === "done" ? "Slip attached ✓"
-                    : slipPhase === "error" ? "Retry upload"
-                    : "Upload slip"}
-                </button>
-              </div>
-            )}
-            {error && <div style={{ fontSize: 11.5, color: "var(--red)", textAlign: "center" }}>{error}</div>}
-          </div>
-        </div>
-        <div className="sheet-foot">
-          <button type="button" className="btn-ghost" style={{ flex: 1, opacity: busy ? 0.55 : 1 }} disabled={busy} onClick={() => onClose()}>Cancel</button>
-          <button type="button" className="btn" style={{ flex: 1.3, opacity: canSave ? 1 : 0.5 }} disabled={!canSave} onClick={() => void save()}>{busy ? (isEdit ? "Saving…" : "Recording…") : (isEdit ? "Save changes" : "Record Payment")}</button>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 /* ── Scanned photos card (mobile port of desktop's ScannedImageCard pair) ────
    Order slip (slip_image_key, mig 0033) + payment receipt (receipt_image_key,

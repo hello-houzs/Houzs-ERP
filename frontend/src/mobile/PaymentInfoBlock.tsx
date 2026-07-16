@@ -1,15 +1,21 @@
 // ----------------------------------------------------------------------------
 // PaymentInfoBlock — the ONE presentation of a recorded (persisted) payment's
-// details, shared by the confirmed SO detail (MobileSODetail) and the draft SO
-// edit view (MobileNewSO).
+// details (the left-hand info column of a ledger row).
 //
 // Owner 2026-07-13: a "Recorded" payment used to render DIFFERENTLY in the
 // draft-edit view (a thin "date · raw-enum · amount" box) versus the confirmed
 // SO detail (method label + account + collected-by + bank/tenure + online type
 // + approval code). This component is the single source for that left-hand info
-// block so the two surfaces can never drift again. The amount, slip thumbnail
-// and delete affordance stay OUTSIDE this block — they are the same on detail
-// and (intentionally read-only) on the draft edit view, which owns their layout.
+// block so the two surfaces can never drift again.
+//
+// Owner 2026-07-16: converging only the INFO half was not enough — the two
+// screens still owned their own row chrome, and the draft-edit copy shipped
+// WITHOUT the edit/delete affordances, so entering "Edit Draft" REMOVED the
+// pencil + trash the previous screen offered. The whole row (this block + slip +
+// amount + edit + delete + the edit sheet) now lives in RecordedPayments.tsx,
+// which is the only caller of this component. Render a payment through
+// <RecordedPaymentsList>, never by hand — a second row renderer is what inverted
+// editability in the first place.
 //
 // Uses the shared `.hz-m` theme CSS vars (mobile.css), available under both
 // screens' `.hz-m` root, so the block looks identical in either context.
