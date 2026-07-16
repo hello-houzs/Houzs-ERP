@@ -19,7 +19,12 @@ import { Hono, type Context } from "hono";
 import type { Env } from "../types";
 import { auth } from "../middleware/auth";
 import { companyContext } from "../middleware/companyContext";
-import { createSession, verifyPassword, hashPassword } from "../services/auth";
+import {
+  createSession,
+  verifyPassword,
+  hashPassword,
+  SESSION_ORIGIN_POS,
+} from "../services/auth";
 
 type Vars = { user?: { id: number }; companyId?: number };
 const pos = new Hono<{ Bindings: Env; Variables: Vars }>();
@@ -62,9 +67,17 @@ pos.post("/pin-login", async (c) => {
     return c.json({ error: "bad_pin" }, 401);
   }
 
-  // 3) success → clear the counter, mint a Houzs session for the linked user
+  // 3) success → clear the counter, mint a Houzs session for the linked user.
+  //
+  // SESSION_ORIGIN_POS is the anti-tamper hinge and this is its ONLY writer.
+  // It marks the SESSION, not the user: the same person's desktop and mobile
+  // sessions stay origin-less and keep pricing freely, while everything done
+  // with THIS token is held to the server's price by the SO pricing envelope
+  // (scm/routes/mfg-sales-orders.ts isPosTabletCaller). The tablet is not
+  // asked to declare itself and cannot decline to — it is stamped here, on
+  // the way through the PIN gate, by the server.
   try { await DB.prepare(`SELECT scm.pin_attempt_reset(?)`).bind(staffId).run(); } catch {}
-  const token = await createSession(c.env, Number(row!.user_id));
+  const token = await createSession(c.env, Number(row!.user_id), SESSION_ORIGIN_POS);
   return c.json({ token, userId: Number(row!.user_id), staffId });
 });
 

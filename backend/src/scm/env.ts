@@ -44,6 +44,15 @@ export interface Variables {
     permissions?: string[];
     permissions_set?: Set<string>;
   } | undefined;
+  // The DOOR this request's session was minted at (mig 0120) — 'pos' when it
+  // came from the POS PIN login, undefined otherwise. Set by the GLOBAL
+  // middleware/auth (which runs before this sub-app) and, unlike `user`, NOT
+  // overwritten by the SCM auth bridge — which is the whole point: it is the
+  // only per-REQUEST provenance fact that survives into /api/scm/*, and the
+  // only thing here a caller cannot assert about itself. Read by the SO
+  // pricing envelope (routes/mfg-sales-orders.ts isPosTabletCaller). Optional:
+  // undefined = not-POS, the safe direction on every legacy / non-POS session.
+  sessionOrigin?: string;
   // Multi-company context (Phase 0b) — resolved by middleware/companyContext.ts
   // and consumed by scm/lib/companyScope.ts. companyId is the ACTIVE company for
   // this request; allowedCompanyIds is what the caller may see (Phase 0b = all).
