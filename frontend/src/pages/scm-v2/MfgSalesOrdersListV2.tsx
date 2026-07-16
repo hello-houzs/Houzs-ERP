@@ -936,9 +936,10 @@ export function MfgSalesOrdersListV2() {
     const t = setTimeout(() => setDebouncedSearch(search), 300);
     return () => clearTimeout(t);
   }, [search]);
-  // Scan Order — handwritten slip OCR → prefilled New SO (ScanOrderModal).
-  // The modal owns its own extract → sessionStorage → navigate(new?fromScan=1)
-  // flow; we only toggle its visibility (mirrors MfgSalesOrdersList V1).
+  // Scan Order — handwritten slip OCR → DRAFT SO (ScanOrderModal). The modal
+  // owns the whole flow: it enqueues a BACKGROUND job per slip (the same
+  // /scan-so/enqueue path the mobile Scan screen uses) and the draft lands in
+  // this list on its own. We only toggle its visibility.
   const [showScan, setShowScan] = useState(false);
   // Multi-select → batch "Print all". Keys are doc_no (the DataTable rowKey).
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
