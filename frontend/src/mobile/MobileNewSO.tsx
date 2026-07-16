@@ -61,7 +61,7 @@ import { RecordedPaymentsList, type RecordedPayment } from "./RecordedPayments";
 import { missingMethodSubField } from "../vendor/scm/components/PaymentsTable";
 import { useFabricLibrary } from "../vendor/scm/lib/queries";
 import { useDebouncedValue } from "../vendor/scm/lib/hooks";
-import { activeOptions, maintPickerValues } from "../vendor/shared/maintenance-pools";
+import { activeOptions, maintPickerValues, restrictPricedToPool, restrictStringsToPool } from "../vendor/shared/maintenance-pools";
 import { missingVariantAxes, hasSofaMixConflict, SOFA_MIX_MESSAGE } from "../vendor/shared/so-variant-rule";
 import "./mobile.css";
 
@@ -2392,12 +2392,14 @@ function ScannedTag() {
 }
 
 /* ── Variant pool → option list builders (REAL sources) ─────────────────── */
-function restrictS(opts: string[], pool?: string[] | null): string[] {
-  return Array.isArray(pool) && pool.length > 0 ? opts.filter((o) => pool.includes(o)) : opts;
-}
-function restrictP<T extends { value: string }>(opts: T[], pool?: string[] | null): T[] {
-  return Array.isArray(pool) && pool.length > 0 ? opts.filter((o) => pool.includes(o.value)) : opts;
-}
+/* The restrict step is the SHARED restrictStringsToPool / restrictPricedToPool
+   (the same helpers PoLineCard and PcVariantEditor call), not a private copy —
+   a per-editor copy is how the allowed_options rule drifted before.
+   `keep` is deliberately NOT passed here: desktop needs it because its raw
+   <select> can only show what its <option> list holds, whereas SpecSel below
+   re-adds an off-pool stored value as "<value> (current)" at the render layer.
+   So the rule — a saved value the Model no longer permits stays VISIBLE — holds
+   on both platforms; only the presentation differs, which is mobile's to own. */
 function sortNumeric<T extends { value: string }>(opts: T[]): T[] {
   return [...opts].sort((a, b) => {
     const na = parseInches(a.value), nb = parseInches(b.value);
@@ -2489,21 +2491,21 @@ function LineCard({
 
   // Sofa pools (real): seat = sofaSizes (string), leg = sofaLegHeights (priced)
   const sofaSeatOpts = maint
-    ? restrictS(maintPickerValues(maint.sofaSizes, String(v.seatHeight ?? "")), allow?.sizes).map((s) => ({ value: s, label: s }))
+    ? restrictStringsToPool(maintPickerValues(maint.sofaSizes, String(v.seatHeight ?? "")), allow?.sizes).map((s) => ({ value: s, label: s }))
     : [];
   const sofaLegOpts = maint
-    ? sortNumeric(restrictP(activeOptions(maint.sofaLegHeights, String(v.legHeight ?? "")), allow?.leg_heights)).map((o) => ({ value: o.value, label: o.value }))
+    ? sortNumeric(restrictPricedToPool(activeOptions(maint.sofaLegHeights, String(v.legHeight ?? "")), allow?.leg_heights)).map((o) => ({ value: o.value, label: o.value }))
     : [];
 
   // Bedframe pools (real): gap (string), divan + leg (priced)
   const bfGapOpts = maint
-    ? restrictS(maintPickerValues(maint.gaps, String(v.gap ?? "")), allow?.gaps).map((g) => ({ value: g, label: g }))
+    ? restrictStringsToPool(maintPickerValues(maint.gaps, String(v.gap ?? "")), allow?.gaps).map((g) => ({ value: g, label: g }))
     : [];
   const bfDivanOpts = maint
-    ? sortNumeric(restrictP(activeOptions(maint.divanHeights, String(v.divanHeight ?? "")), allow?.divan_heights)).map((o) => ({ value: o.value, label: o.value }))
+    ? sortNumeric(restrictPricedToPool(activeOptions(maint.divanHeights, String(v.divanHeight ?? "")), allow?.divan_heights)).map((o) => ({ value: o.value, label: o.value }))
     : [];
   const bfLegOpts = maint
-    ? sortNumeric(restrictP(activeOptions(maint.legHeights, String(v.legHeight ?? "")), allow?.leg_heights)).map((o) => ({ value: o.value, label: o.value }))
+    ? sortNumeric(restrictPricedToPool(activeOptions(maint.legHeights, String(v.legHeight ?? "")), allow?.leg_heights)).map((o) => ({ value: o.value, label: o.value }))
     : [];
 
   const missing = new Set(missingVariantAxes(line.itemGroup, line.variants).map((a) => a.key));

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { lineIdentity } from "@2990s/shared";
+import { fmtAmt } from "../lib/scm";
 import { invalidateDoShared, invalidateInventoryShared, invalidateSoShared } from "./sharedInvalidate";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { uploadSlipFull, ALLOWED_SLIP_MIMES, MAX_SLIP_SIZE_BYTES } from "../vendor/scm/lib/slip";
@@ -53,8 +54,9 @@ type ListResp = { deliveryOrders: DoHeader[] };
 type DetailResp = { deliveryOrder: DoHeader; items: DoItem[] };
 type PaymentsResp = { payments: DoPayment[] };
 
-const rm = (centi: number | null | undefined) =>
-  ((centi ?? 0) / 100).toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+// Bare 2dp amount; callers print their own "RM " prefix. The shared fmtAmt
+// keeps a non-finite from reaching the user as "RM NaN".
+const rm = fmtAmt;
 
 /* A DO whose status is already a terminal delivered/invoiced state is done —
    the primary action is hidden and the header pill reads accordingly. */
@@ -223,8 +225,14 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
     );
   };
 
-  const loading = listQ.isLoading || (!!doId && detailQ.isLoading);
-  const notFound = !listQ.isLoading && !doId;
+  // isPending, not isLoading: isLoading is (isPending && isFetching), so it is
+  // FALSE while a query is pending-but-not-fetching — which is exactly what a
+  // driver's phone does when it drops off the carrier for a moment (the query
+  // PAUSES). On isLoading the notFound branch then painted "could not be found"
+  // in red before any fetch had run. detailQ is enabled:!!doId, and a disabled
+  // query stays isPending forever, so its check must stay behind the doId guard.
+  const loading = listQ.isPending || (!!doId && detailQ.isPending);
+  const notFound = !listQ.isPending && !doId;
   const loadError = listQ.error || detailQ.error;
   const pillLabel = cancelled ? "Cancelled" : delivered ? "Delivered" : "Arrived";
   // Header status badge → canonical .badge variant (spec: DISPATCHED/arrived =

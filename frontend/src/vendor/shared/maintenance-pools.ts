@@ -75,9 +75,15 @@ export const maintPickerValues = (
  *    • pool NON-EMPTY       → keep only the values the Model permits.
  *  These are the SINGLE source for the restrict step every variant editor
  *  (SoLineCard, MobileNewSO, PoLineCard, PcVariantEditor) shares — no editor
- *  may inline its own copy again. Pass the line's current value as `keep` so a
- *  saved value the Model no longer permits stays VISIBLE in the dropdown (never
- *  silently dropped on an edit form) while new picks are pool-only. */
+ *  may inline its own copy again.
+ *  The RULE both platforms must keep: a saved value the Model no longer permits
+ *  stays VISIBLE on an edit form (never silently dropped) while new picks are
+ *  pool-only. WHERE that grandfather runs differs by surface, and both are
+ *  correct: desktop passes the line's current value as `keep` here, because a
+ *  raw <select> can only render what its <option> list holds; mobile's SpecSel
+ *  re-adds an off-pool stored value as "<value> (current)" at the render layer
+ *  and so calls these without `keep`. Check the caller's render before assuming
+ *  a missing `keep` is a bug. */
 export const restrictPricedToPool = <T extends { value: string }>(
   opts: readonly T[],
   pool?: readonly string[] | null,

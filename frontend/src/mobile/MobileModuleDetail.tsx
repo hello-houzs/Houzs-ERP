@@ -34,8 +34,11 @@ import "./mobile.css";
 // ---------------------------------------------------------------------------
 
 // Money is stored as integer *_centi — delegate display to the shared SCM
-// formatter (fmtCenti). Keep the local coercion/guard so a stray string or NaN
-// still renders "RM 0.00" rather than "RM NaN".
+// formatter (fmtCenti). The local Number() coercion is what this adds: the
+// callers hand in `unknown` (raw payload fields), which fmtCenti does not take.
+// The non-finite guard now also lives INSIDE fmtCenti/fmtAmt, so this one is
+// belt-and-braces — do not read it as the only thing standing between a stray
+// NaN and the user.
 const money = (centi: unknown) => {
   const n = Number(centi);
   return fmtCenti(Number.isFinite(n) ? n : 0);
