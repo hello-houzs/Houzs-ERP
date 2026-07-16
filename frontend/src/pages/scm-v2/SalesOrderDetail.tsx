@@ -26,7 +26,8 @@ import {
   ArrowLeft, FileText, Pencil, Plus, X, Printer, Save,
   DollarSign, Lock, History, ChevronDown, ChevronRight, Ban, Share2, Check,
 } from 'lucide-react';
-import { Button } from '@2990s/design-system';
+import { Button } from '../../components/Button';
+import { PageHeader } from '../../components/Layout';
 import { formatPhone } from '@2990s/shared/phone';
 import { buildVariantSummary, canonicalizeVariants, fmtCenti, fmtDate, fmtDateOrDash, fmtDateTime, missingVariantAxes, hasSofaMixConflict, SOFA_MIX_MESSAGE } from '@2990s/shared'; // Commander 2026-05-28
 import { PhoneInput } from '../../vendor/scm/components/PhoneInput';
@@ -102,7 +103,6 @@ const SM_ICON = { size: 14, strokeWidth: 1.75 } as const;
    Module-level style constants (micro-perf: hoisted out of render so React
    keeps stable referential identity on host elements between renders).
    ────────────────────────────────────────────────────────────────────────── */
-const TITLE_ICON_STYLE: CSSProperties = { color: 'var(--c-burnt)' };
 /* PR — commander 2026-05-27 followup #2. Total was previously inline in
    the <h1> title; relocated into a right-rail meta block (.totalRail) sit-
    ting beside the action group so the title stays compact. Style now lives
@@ -1051,8 +1051,11 @@ export const SalesOrderDetail = () => {
   }
   if (detail.isError || !header) {
     return (
-      <div className={styles.page}>
-        <Link to="/scm/sales-orders" className={styles.backBtn}>
+      <div className="space-y-4">
+        <Link
+          to="/scm/sales-orders"
+          className="inline-flex h-8 w-fit items-center gap-1.5 rounded-md border border-border bg-surface px-3 text-[11px] font-semibold uppercase tracking-wider text-ink-secondary transition-colors hover:border-primary/40 hover:bg-primary-soft hover:text-primary"
+        >
           <ArrowLeft {...ICON} />
           <span>Back</span>
         </Link>
@@ -1172,134 +1175,107 @@ export const SalesOrderDetail = () => {
     /* Commander 2026-05-29 — a CANCELLED SO greys the whole page so it reads
        as dead/inactive. The Cancel/Reopen buttons + banner stay clickable
        (a CSS filter doesn't block pointer events). */
-    <div className={styles.page} style={isCancelled ? { filter: 'grayscale(0.7)' } : undefined}>
-      {/* ── Header ──────────────────────────────────────────────── */}
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
-          <Link to="/scm/sales-orders" className={styles.backBtn}>
-            <ArrowLeft {...ICON} />
+    <div className="space-y-4" style={isCancelled ? { filter: 'grayscale(0.7)' } : undefined}>
+      {/* ── Header (shared PageHeader — full-bleed, design-system) ── */}
+      <PageHeader
+        eyebrow="Sales Order"
+        title={`${header.doc_no} — ${header.debtor_name}`}
+        description={
+          `SO date ${fmtDateOrDash(header.so_date)} · ${header.line_count} ${header.line_count === 1 ? 'line' : 'lines'}`
+          + ` · Current ${(header as { current_doc_no?: string | null }).current_doc_no ?? header.doc_no}`
+          + (header.po_doc_no ? ` · Customer PO ${header.po_doc_no}` : '')
+          + (header.customer_so_no ? ` · Customer SO Ref ${header.customer_so_no}` : '')
+          + (Number((header as { customer_credit_centi?: number }).customer_credit_centi ?? 0) > 0
+            ? ` · Customer credit balance: ${fmtCenti(Number((header as { customer_credit_centi?: number }).customer_credit_centi ?? 0))}`
+            : '')
+        }
+        primaryAction={
+          <Link
+            to="/scm/sales-orders"
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-surface px-3 text-[11px] font-semibold uppercase tracking-wider text-ink-secondary transition-colors hover:border-primary/40 hover:bg-primary-soft hover:text-primary"
+          >
+            <ArrowLeft size={14} />
             <span>Back</span>
           </Link>
-          <div>
-            <h1 className={styles.title}>
-              <FileText size={16} strokeWidth={1.75} style={TITLE_ICON_STYLE} />
-              {header.doc_no} — {header.debtor_name}
-              {/* PR — commander 2026-05-27 followup: total badge moved out
-                  of the title into a right-rail .totalRail meta block down
-                  in the .actions group so this <h1> reads compact again. */}
-            </h1>
-            <p className={styles.subtitle}>
-              SO date {fmtDateOrDash(header.so_date)} · {header.line_count} {header.line_count === 1 ? 'line' : 'lines'}
-              {' · Current '}
-              <span style={{ color: 'var(--c-burnt)', fontWeight: 600 }}>
-                {(header as { current_doc_no?: string | null }).current_doc_no ?? header.doc_no}
+        }
+        actions={
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {/* Total KPI rail — eyebrow label + KPI-sized value */}
+            <div className="mr-1 flex flex-col items-end leading-none">
+              <span className="font-mono text-[10px] font-semibold uppercase tracking-wider text-ink-muted">Total</span>
+              <span className="text-[15px] font-semibold tabular-nums text-primary-ink">
+                {fmtRm(header.local_total_centi, header.currency)}
               </span>
-              {header.po_doc_no && ` · Customer PO ${header.po_doc_no}`}
-              {header.customer_so_no && ` · Customer SO Ref ${header.customer_so_no}`}
-              {(() => {
-                const credit = Number((header as { customer_credit_centi?: number }).customer_credit_centi ?? 0);
-                if (credit <= 0) return null;
-                return (
-                  <span style={{ color: 'var(--c-burnt)', fontWeight: 600 }}>
-                    {' · Customer credit balance: '}
-                    {fmtCenti(credit)}
-                  </span>
-                );
-              })()}
-            </p>
-          </div>
-        </div>
-        <div className={styles.actions}>
-          {/* PR — commander 2026-05-27 followup: Total relocated from the
-              <h1> into this right-rail meta tile. Renders as a small eyebrow
-              label + KPI-sized value alongside the status pill / actions.
-              Brand burnt-orange retained; size = fs-15/600 (KPI-ish). */}
-          <div className={styles.totalRail}>
-            <span className={styles.totalRailLabel}>Total</span>
-            <span className={styles.totalRailValue}>
-              {fmtRm(header.local_total_centi, header.currency)}
-            </span>
-          </div>
-          {(() => {
-            const eff = soStatusDisplay(
-              header.status,
-              (header as { delivery_state?: DeliveryState }).delivery_state,
-              (header as { lifecycle_state?: SoLifecycle }).lifecycle_state,
-            );
-            return (
-              <span className={`${styles.statusPill} ${STATUS_CLASS[eff.classKey as SoStatus] ?? ''}`}>
-                {eff.label ?? SO_STATUS_LABEL[header.status] ?? header.status.replace(/_/g, ' ')}
-              </span>
-            );
-          })()}
-          {/* PR-D — History drawer toggle. Commander 2026-05-27 wants a
-              HOOKKA-style timeline showing who did what, when, and what
-              changed. Reads from mfg_so_audit_log via useSalesOrderAuditLog. */}
-          <Button variant="ghost" size="md" onClick={() => setHistoryOpen(true)}>
-            <History {...ICON} />
-            <span>History</span>
-          </Button>
-          {/* Nick 2026-07-09 "after edit 后的 relation map 还没配上":
-              swapped the old SAP-B1 flow modal for the shared 5-node
-              graph the read-only Detail V2 uses (Customer PO → SO → DO
-              → GRN → SI). Same chain shape both pages share so the map
-              is consistent whether Nick views or edits the SO. */}
-          <Button variant="ghost" size="md" onClick={() => setRelMapOpen(true)}>
-            <Share2 {...ICON} />
-            <span>Relationship Map</span>
-          </Button>
-          <Button variant="ghost" size="md" onClick={handlePrint}>
-            <Printer {...ICON} />
-            <span>Print PDF</span>
-          </Button>
-          {/* Cancel SO (Commander 2026-05-29). A cancelled SO stops proceeding
-              (greys out, no MRP/PO/DO). Reopen was REMOVED (Commander 2026-06-22)
-              — the backend treats a cancelled SO as final (so_cancelled_final);
-              to revive, create a new SO. */}
-          {!isCancelled && canCancel && !isEditing ? (
-            <Button variant="ghost" size="md"
-              onClick={handleCancelSo} disabled={updateStatus.isPending}
-              style={{ color: 'var(--c-festive-b, #B8331F)' }}>
-              <Ban {...ICON} />
-              <span>Cancel SO</span>
+            </div>
+            {(() => {
+              const eff = soStatusDisplay(
+                header.status,
+                (header as { delivery_state?: DeliveryState }).delivery_state,
+                (header as { lifecycle_state?: SoLifecycle }).lifecycle_state,
+              );
+              return (
+                <span className={`${styles.statusPill} ${STATUS_CLASS[eff.classKey as SoStatus] ?? ''}`}>
+                  {eff.label ?? SO_STATUS_LABEL[header.status] ?? header.status.replace(/_/g, ' ')}
+                </span>
+              );
+            })()}
+            {/* PR-D — History drawer toggle (HOOKKA-style timeline). */}
+            <Button variant="ghost" onClick={() => setHistoryOpen(true)}>
+              <History {...ICON} />
+              <span>History</span>
             </Button>
-          ) : null}
-          {/* PR-A — Page-level Edit/Save/Cancel. Default view is read-only
-              (Edit shown). In edit mode, Edit is replaced by Save + Cancel.
-              Edit is disabled while the SO is locked (e.g. SHIPPED+) unless
-              the override is in effect. */}
-          {!isEditing ? (
-            <Button variant="primary" size="md"
-              onClick={enterEdit} disabled={isLocked}>
-              <Pencil {...ICON} />
-              <span>Edit</span>
+            {/* Nick 2026-07-09 — shared 5-node Relationship Map (Customer PO
+                → SO → DO → GRN → SI), same chain the read-only Detail V2 uses. */}
+            <Button variant="ghost" onClick={() => setRelMapOpen(true)}>
+              <Share2 {...ICON} />
+              <span>Relationship Map</span>
             </Button>
-          ) : (
-            <>
-              <Button variant="ghost" size="md"
-                onClick={cancelEdit} disabled={updateHeader.isPending || savingOrder}>
-                <span>Cancel</span>
+            <Button variant="ghost" onClick={handlePrint}>
+              <Printer {...ICON} />
+              <span>Print PDF</span>
+            </Button>
+            {/* Cancel SO (Commander 2026-05-29) — stops proceeding; final. */}
+            {!isCancelled && canCancel && !isEditing ? (
+              <Button variant="ghost"
+                onClick={handleCancelSo} disabled={updateStatus.isPending}
+                style={{ color: 'var(--c-festive-b, #B8331F)' }}>
+                <Ban {...ICON} />
+                <span>Cancel SO</span>
               </Button>
-              {/* Phase 1-C — on a processing-locked (PO'd) SO the primary Save
-                  SUBMITS AN AMENDMENT instead of writing the lines directly.
-                  Same edit view, same drafts — only the commit path changes. */}
-              {amendmentMode ? (
-                <Button variant="primary" size="md"
-                  onClick={submitAmendment} disabled={savingOrder || createAmendment.isPending}>
-                  <Save {...ICON} />
-                  <span>{savingOrder || createAmendment.isPending ? 'Submitting…' : 'Submit amendment request'}</span>
+            ) : null}
+            {/* PR-A — Page-level Edit/Save/Cancel. */}
+            {!isEditing ? (
+              <Button variant="primary"
+                onClick={enterEdit} disabled={isLocked}>
+                <Pencil {...ICON} />
+                <span>Edit</span>
+              </Button>
+            ) : (
+              <>
+                <Button variant="ghost"
+                  onClick={cancelEdit} disabled={updateHeader.isPending || savingOrder}>
+                  <span>Cancel</span>
                 </Button>
-              ) : (
-                <Button variant="primary" size="md"
-                  onClick={saveEdit} disabled={updateHeader.isPending || savingOrder}>
-                  <Save {...ICON} />
-                  <span>{updateHeader.isPending || savingOrder ? 'Saving…' : 'Save'}</span>
-                </Button>
-              )}
-            </>
-          )}
-        </div>
-      </div>
+                {/* Phase 1-C — on a processing-locked (PO'd) SO the primary Save
+                    SUBMITS AN AMENDMENT instead of writing the lines directly. */}
+                {amendmentMode ? (
+                  <Button variant="primary"
+                    onClick={submitAmendment} disabled={savingOrder || createAmendment.isPending}>
+                    <Save {...ICON} />
+                    <span>{savingOrder || createAmendment.isPending ? 'Submitting…' : 'Submit amendment request'}</span>
+                  </Button>
+                ) : (
+                  <Button variant="primary"
+                    onClick={saveEdit} disabled={updateHeader.isPending || savingOrder}>
+                    <Save {...ICON} />
+                    <span>{updateHeader.isPending || savingOrder ? 'Saving…' : 'Save'}</span>
+                  </Button>
+                )}
+              </>
+            )}
+          </div>
+        }
+      />
 
       {/* PR-A — Inline error from the page-level Save. Cleared on Edit /
           Cancel / next successful Save. */}
@@ -1350,7 +1326,7 @@ export const SalesOrderDetail = () => {
               Review and Confirm to make it a live order (it stays out of MRP / PO / DO until then).
             </span>
           </span>
-          <Button variant="primary" size="sm"
+          <Button variant="primary"
             onClick={async () => {
               if (!(await askConfirm({
                 title: `Confirm ${header.doc_no}?`,
@@ -1381,7 +1357,7 @@ export const SalesOrderDetail = () => {
               ? <strong>Edit-lock overridden — changes are tracked in the status timeline below.</strong>
               : <>This SO is <strong>{header.status.replace(/_/g, ' ')}</strong>. Line item edits + addresses are locked. Click <em>Override</em> if you must change something.</>}
           </span>
-          <Button variant={unlockOverride ? 'ghost' : 'primary'} size="sm"
+          <Button variant={unlockOverride ? 'ghost' : 'primary'}
             onClick={async () => {
               if (!unlockOverride) {
                 const reason = await askPrompt({
@@ -1457,7 +1433,7 @@ export const SalesOrderDetail = () => {
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
             {/* Record supplier confirmation — only at REQUESTED, gated on perm */}
             {openAmendment.status === 'REQUESTED' && canSupplierConfirm && (
-              <Button variant="primary" size="sm"
+              <Button variant="primary"
                 onClick={() => setShowSupplierForm((v) => !v)}
                 disabled={supplierConfirm.isPending}>
                 <Check {...ICON} />
@@ -1466,7 +1442,7 @@ export const SalesOrderDetail = () => {
             )}
             {/* Approve SO revision — only at SUPPLIER_PENDING, gated on perm */}
             {openAmendment.status === 'SUPPLIER_PENDING' && canApproveSo && (
-              <Button variant="primary" size="sm"
+              <Button variant="primary"
                 onClick={handleApproveSo} disabled={approveSo.isPending}>
                 <Check {...ICON} />
                 <span>Approve SO revision</span>
@@ -1534,7 +1510,7 @@ export const SalesOrderDetail = () => {
               bottom of the table (no more modal). Button hides itself
               while a draft is open to avoid stacking two add-cards. */}
           {isEditing && !addingDraft && (
-            <Button variant="primary" size="sm" onClick={startAddLine} disabled={linesLocked}>
+            <Button variant="primary" onClick={startAddLine} disabled={linesLocked}>
               <Plus {...ICON} />
               <span>Add Line Item</span>
             </Button>
@@ -3024,8 +3000,8 @@ const OverridePriceModal = ({
         </div>
 
         <footer className={styles.modalFooter}>
-          <Button variant="ghost" size="md" onClick={onClose}>Cancel</Button>
-          <Button variant="primary" size="md" onClick={submit} disabled={override.isPending}>
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button variant="primary" onClick={submit} disabled={override.isPending}>
             {override.isPending ? 'Saving…' : 'Override + Audit'}
           </Button>
         </footer>
@@ -3160,7 +3136,7 @@ const HistoryPanel = memo(({
               ({entries.length})
             </span>
           </h3>
-          <Button variant="ghost" size="sm" onClick={onClose}>
+          <Button variant="ghost" onClick={onClose}>
             <X {...SM_ICON} />
           </Button>
         </header>
@@ -3329,8 +3305,8 @@ const SupplierConfirmForm = ({
         </label>
       </div>
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 'var(--space-2)' }}>
-        <Button variant="ghost" size="sm" onClick={onDone} disabled={supplierConfirm.isPending}>Cancel</Button>
-        <Button variant="primary" size="sm" onClick={submit} disabled={supplierConfirm.isPending}>
+        <Button variant="ghost" onClick={onDone} disabled={supplierConfirm.isPending}>Cancel</Button>
+        <Button variant="primary" onClick={submit} disabled={supplierConfirm.isPending}>
           {supplierConfirm.isPending ? 'Recording…' : 'Record confirmation'}
         </Button>
       </div>
@@ -3449,7 +3425,7 @@ const AmendmentDiffModal = ({
         </div>
 
         <footer className={styles.modalFooter}>
-          <Button variant="primary" size="md" onClick={onClose}>Close</Button>
+          <Button variant="primary" onClick={onClose}>Close</Button>
         </footer>
       </div>
     </div>
