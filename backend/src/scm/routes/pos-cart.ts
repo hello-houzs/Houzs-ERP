@@ -15,20 +15,20 @@
 // company_id = activeCompanyId(c) (= 2 for the 2990 POS). See migration
 // 0100_pos_cart.sql (adds scm.pos_carts.company_id) and scm/lib/companyScope.ts.
 //
-// ⚠️ IDENTITY (Houzs bridge limitation): inside /api/scm/* the scm auth bridge
-// (scm/middleware/auth.ts) pins EVERY caller's `user.id` to one seeded system
-// staff uuid — the per-user scm.staff identity is not yet bridged (houzsUser.id
-// is an INTEGER and staff_id is a uuid column, so it can't key this table
-// as-is). We therefore key by `user.id` to stay faithful to the 2990 contract
-// and the imported uuid PK. /api/scm/* is owner-gated today, so this is
-// acceptable for the port; true per-salesperson carts land with the 2990 POS
-// auth bridge (which will supply each caller's real scm.staff uuid). See
-// MEMORY "SCM staff-UUID bigint trap".
+// IDENTITY: key by the caller's REAL scm.staff uuid, resolved from the Houzs
+// user id via resolveCallerStaffId (lib/salesScope) — the mig-0066 staff.user_id
+// sync link. NEVER `c.get('user').id`: inside /api/scm/* the scm auth bridge
+// (scm/middleware/auth.ts) pins EVERY caller to one seeded system staff uuid, so
+// keying on it collapses all salespeople onto ONE row — they overwrite each
+// other's cart, which is the exact bleed this feature exists to prevent.
+// An unresolvable caller fails safe (empty cart / clean save error) rather than
+// falling back to the shared system row. See MEMORY "SCM staff-UUID bigint trap".
 // ----------------------------------------------------------------------------
 
 import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
+import { resolveCallerStaffId } from '../lib/salesScope';
 import type { Env, Variables } from '../env';
 
 export const posCart = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -46,12 +46,18 @@ type Row = {
 // The caller's single cart row (empty cart if none yet).
 posCart.get('/', async (c) => {
   const supabase = c.get('supabase');
-  const userId = c.get('user').id;
+  const staffId = await resolveCallerStaffId(supabase, c.get('houzsUser')?.id);
+  // No staff link → the caller HAS no cart. Answer empty (never the shared
+  // system row) instead of erroring: a read must not break POS load, and an
+  // empty cart is the truthful answer. The PUT below reports the problem in
+  // plain language the moment they try to save.
+  if (!staffId) return c.json({ lines: [], sourceQuoteId: null });
+
   const { data, error } = await scopeToCompany(
     supabase
       .from('pos_carts')
       .select('staff_id, lines, source_quote_id, updated_at')
-      .eq('staff_id', userId),
+      .eq('staff_id', staffId),
     c,
   ).maybeSingle();
 
@@ -73,11 +79,24 @@ posCart.put('/', async (c) => {
   if (!Array.isArray(body.lines)) return c.json({ error: 'lines_required' }, 400);
 
   const supabase = c.get('supabase');
-  const userId = c.get('user').id;
+  const staffId = await resolveCallerStaffId(supabase, c.get('houzsUser')?.id);
+  // Fail SAFE. Writing to the shared system staff row would hand this caller's
+  // cart to every other salesperson (and overwrite theirs) — worse than not
+  // saving. Tell them plainly instead.
+  if (!staffId) {
+    return c.json(
+      {
+        error: 'staff_unlinked',
+        message:
+          'Your account is not linked to a sales profile yet, so the cart cannot be saved. Ask IT to link your account.',
+      },
+      409,
+    );
+  }
 
   const { error } = await supabase.from('pos_carts').upsert(
     {
-      staff_id: userId,
+      staff_id: staffId,
       lines: body.lines,
       source_quote_id: body.sourceQuoteId ?? null,
       updated_at: new Date().toISOString(),

@@ -2216,6 +2216,13 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
   // (the 2990 bridge always reports either super_admin or sales). Owner + IT
   // Admin pass via `*`; grant to other positions via Team > Positions.
   const canChangeSalesperson = can('scm.so.attribute_other');
+  /* Remove-Processing-Date gate (Owner 2026-07-09, port of 2990 #717) —
+     clearing a SET Processing Date pulls the SO back out of the Proceed lane,
+     so it is admin-level only. 2990 gates on staff.role === 'super_admin';
+     Houzs has no live staff_role (the SCM bridge pins every caller to one
+     super_admin row), so mirror the API and gate on the flat permission key
+     the PATCH enforces (mfg-sales-orders.ts). Owner + IT Admin pass via `*`. */
+  const canRemoveProcessingDate = can('scm.so.remove_processing_date');
 
   /* Task #118 — DB-backed dropdowns (was hardcoded). Falls back to the
      migration 0081 seed list when loading or when the DB has zero rows
@@ -2460,8 +2467,14 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
      the operator with a change they were told to request and no way to type it
      (Owner 2026-07-16). The value still can't be written directly — the page's
      primary action routes it through the approval flow. */
+  /* ...and EXCEPT for a Remove-Processing-Date holder (Owner 2026-07-09, port of
+     2990 #717): clearing an ELAPSED Processing Date is the one sanctioned way to
+     pull a locked SO back out of Proceed, and the API explicitly allows it. With
+     the input read-only they could not perform the very action the permission
+     exists to grant — the past-date lock must not apply to them. */
   const processingLocked =
-    originalProcessing !== '' && originalProcessing < today && !amendmentMode;
+    originalProcessing !== '' && originalProcessing < today && !amendmentMode &&
+    !canRemoveProcessingDate;
 
   /* Owner 2026-07-05 — the SO PROCESS lock fires only once the SO has been
      PROCEEDED (proceeded_at stamped) AND its processing day has passed. That is
@@ -2506,6 +2519,7 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
       today,
       originalProcessingDate: originalProcessing,
       originalDeliveryDate: originalDelivery,
+      canRemoveProcessingDate,
     });
     return err ? soErrorText(err) : null;
   };
@@ -2763,6 +2777,14 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
                 min={processingLocked ? undefined : today}
                 onChange={(e) => set('processingDate', e.target.value)}
                 style={datesXor && !form.processingDate ? { borderColor: 'var(--c-festive-b, #B8331F)' } : undefined} />
+              {/* Remove-Processing-Date gate (Owner 2026-07-09) — the server 403s
+                  a non-holder's clear; surface the rule up front instead of
+                  letting them find out on Save. */}
+              {originalProcessing !== '' && !inputsDisabled && !processingLocked && !canRemoveProcessingDate && (
+                <span style={{ fontSize: 'var(--fs-11)', color: 'var(--fg-muted)', marginTop: 2 }}>
+                  Only a Super Admin can remove this date.
+                </span>
+              )}
             </label>
             <label className={styles.field}>
               <span className={styles.fieldLabel}>Delivery Date</span>

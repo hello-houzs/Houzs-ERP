@@ -270,6 +270,10 @@ const ERROR_CODE_MESSAGES: Record<string, string> = {
   // SO gates — curate the code so the operator never sees the raw sentence's
   // wording drift (owner 2026-07-14: Houzs Processing Date needs only 30%).
   processing_date_unpaid: 'A Processing Date needs at least 30% of the order total collected first.',
+  // Defence-in-depth: the SO form blocks this before the request (shared
+  // soDateGuardError), so this fires only if a surface forgets the client gate.
+  processing_date_remove_forbidden:
+    'Only a Super Admin can remove the Processing Date. Removing it pulls the order back out of Proceed — ask a Super Admin to do it.',
   so_sofa_no_other_main:  "A sofa order can't be mixed with bedframe or mattress items — use a separate order.",
 };
 
