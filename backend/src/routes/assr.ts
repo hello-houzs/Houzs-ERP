@@ -1283,11 +1283,14 @@ app.get("/:id{[0-9]+}", requireServiceCaseAccess(), async (c) => {
      (same rule as the list). Rank-and-file SALES are pinned to HOUZS; office /
      backend / directors get their allowed set. A case tagged with a company
      outside that scope (e.g. one wrongly stamped 2990 before the Houzs pin
-     shipped, viewed by a sales rep) answers 404 here too. Skipped when the
-     scope is empty (pre-migration / D1 test mirror). Out-of-scope answers 404,
-     indistinguishable from a nonexistent id. */
+     shipped, viewed by a sales rep) answers 404 here too. Out-of-scope answers
+     404, indistinguishable from a nonexistent id.
+     Skipped only when the scope is UNRESOLVED (undefined — pre-migration / D1
+     test mirror). An EMPTY scope is not the same thing: it means the caller is
+     granted no active company, and every company-stamped case must 404. Those
+     two states used to share `[]` and the merged state failed open. */
   const allowedCo = assrCompanyIds(c);
-  if (allowedCo.length > 0) {
+  if (allowedCo) {
     const caseRow = (detail as { case?: Record<string, unknown> }).case ?? {};
     const caseCo = Number(
       (caseRow as any).companyId ?? (caseRow as any).company_id ?? NaN,

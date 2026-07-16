@@ -7723,7 +7723,7 @@ async function planSofaRewardRevert(
    Floor rule: the new build total may not sit below the old one (sales).
    PWP reward sofa builds stay coordinator-only (the reward is combo-bound). */
 mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
-  const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const itemId = c.req.param('itemId');
+  const sb = c.get('supabase'); const docNo = c.req.param('docNo'); const itemId = c.req.param('itemId'); const user = c.get('user');
   let body: Record<string, unknown>;
   try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
   const item = (body.item ?? null) as { itemCode?: unknown; qty?: unknown; unitPriceCenti?: unknown; description?: unknown; variants?: Record<string, unknown> | null } | null;
