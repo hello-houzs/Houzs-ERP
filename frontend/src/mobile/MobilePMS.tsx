@@ -563,7 +563,7 @@ function ProjectListView({ onOpen, onBack }: { onOpen: (id: number) => void; onB
 
 // ── Detail ──
 function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
-  const { pageAccess, can } = useAuth();
+  const { pageAccess, can, user } = useAuth();
   // Finance-gate key mirrors the desktop Projects page (usePageAccess).
   const canSeeFinance = pageAccess("projects.finances") !== "none";
   // Sales quick-log gate (the Sales page-access, mirrors desktop).
@@ -714,6 +714,49 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
   // when pms/canPayment is absent (older cached response); backend enforces
   // the POST /:id/payment either way.
   const paymentVisible = pms ? pms.canPayment ?? true : true;
+  // ── Mobile role-based checklist visibility (owner 2026-07-16) ──────────────
+  // Gate specific items/sections by the viewer's org role. Keyed off stable org
+  // fields (position_name / department_name / role_name), mirroring
+  // salesAccess.ts. "mgt" = Management department or a director position; "BD" =
+  // the BD Exec role; owner = the `*` wildcard.
+  const _pos = (user?.position_name ?? "").trim();
+  const _dept = (user?.department_name ?? "").trim();
+  const _roleName = (user?.role_name ?? "").trim();
+  const isOwnerAdmin = !!user?.permissions?.includes("*");
+  const isDirectorPos = /\b(Super Admin|Sales Director|Finance Manager)\b/i.test(_pos);
+  const isMgt = isOwnerAdmin || isDirectorPos || /^management$/i.test(_dept);
+  const isBD = /bd\s*exec|business\s*develop/i.test(_roleName);
+  const isDriverCrew = /\b(Driver|Helper)\b/i.test(_pos);
+  const isStorekeeper = /storekeeper/i.test(_pos);
+  const isLogistic = /logistic/i.test(_pos);
+  const isPurchaser = /purchas|procurement/i.test(_pos);
+  const isSalesStaff = /sales/i.test(_dept) || /^sales/i.test(_pos);
+  const seeAllTasks = isOwnerAdmin || isMgt || isBD;
+  // Section ids for "SETUP & DISMANTLE DOCUMENTS" (used for per-role part filtering).
+  const sdSectionIds = new Set(
+    (data?.sections ?? []).filter((s) => /setup\s*&?\s*dismantle/i.test(s.name)).map((s) => s.id)
+  );
+  const itemHidden = (it: ChecklistItem): boolean => {
+    const title = (it.title ?? "").trim().toLowerCase();
+    const label = (it.role_label ?? "").trim().toUpperCase();
+    // License / Stamp Duty → only BD, management, owner. (Titles carry suffixes
+    // like "License (from Majlis)", so match by prefix.)
+    if (title.startsWith("license") || title.startsWith("stamp duty")) return !seeAllTasks;
+    // Weekend Activity → hidden from helper, driver, logistic, purchaser.
+    if (title.startsWith("weekend")) return isDriverCrew || isLogistic || isPurchaser;
+    // Setup & Dismantle documents → each role sees only its own part.
+    if (it.section_id != null && sdSectionIds.has(it.section_id)) {
+      if (seeAllTasks) return false;
+      if (isDriverCrew || isStorekeeper) return label !== "DRIVER";
+      if (isPurchaser) return label !== "PURCHASER";
+      if (isLogistic) return !(label === "SALES PIC" || label === "DRIVER");
+      if (isSalesStaff) return label !== "SALES PIC";
+      return false;
+    }
+    return false;
+  };
+  const visibleChecklist = (data?.checklist ?? []).filter((it) => !itemHidden(it));
+  const hideFilledPlan = isDriverCrew || isStorekeeper;
   // A sales PIC (canEdit=false) sees Team as read-only, matching the desktop
   // ProjectTeamSection/ProjectSpecStrip gate. Falls back to canWrite when the
   // backend omitted pms.
@@ -909,7 +952,7 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
             {/* tasklist */}
             <TasklistSectionView
               sections={data.sections}
-              items={data.checklist}
+              items={visibleChecklist}
               progress={data.section_progress}
               attachments={data.checklist_attachments}
               projectStart={p.start_date}
@@ -949,6 +992,7 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
               stockTransfers={data.stock_transfers}
               attachments={data.attachments}
               canWrite={canWrite && !archived}
+              hideFilledPlan={hideFilledPlan}
               busy={busy}
               setBusy={setBusy}
               notify={notify}
@@ -2164,12 +2208,13 @@ function PhaseBlock({
 // record is uploaded via PUT /:id/stock-transfers/upload → POST
 // /:id/stock-transfers. Existing rows are listed read-only.
 function FloorPlans({
-  projectId, stockTransfers, attachments, canWrite, busy, setBusy, notify, reload,
+  projectId, stockTransfers, attachments, canWrite, hideFilledPlan, busy, setBusy, notify, reload,
 }: {
   projectId: number;
   stockTransfers?: StockTransfer[];
   attachments?: ProjectAttachment[];
   canWrite: boolean;
+  hideFilledPlan?: boolean;
   busy: boolean;
   setBusy: SetBusy;
   notify: NotifyFn;
@@ -2247,9 +2292,10 @@ function FloorPlans({
           <span style={{ color: "#8c968a" }}>›</span>
         </div>
 
-        {/* Unfilled / Filled plan tiles — tap to view the stored floorplan */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 9 }}>
-          {([["Unfilled", plans[0], "DRAFT", "#f6efd9", "#6e4d12"], ["Filled", plans[1], "PLACED", "#e2f0e9", "#2f8a5b"]] as const).map(([label, att, badge, badgeBg, badgeCol]) => {
+        {/* Unfilled / Filled plan tiles — tap to view the stored floorplan.
+            Filled plan is hidden from driver/helper/storekeeper (owner 2026-07-16). */}
+        <div style={{ display: "grid", gridTemplateColumns: hideFilledPlan ? "1fr" : "1fr 1fr", gap: 9 }}>
+          {([["Unfilled", plans[0], "DRAFT", "#f6efd9", "#6e4d12"], ["Filled", plans[1], "PLACED", "#e2f0e9", "#2f8a5b"]] as const).filter(([label]) => !(hideFilledPlan && label === "Filled")).map(([label, att, badge, badgeBg, badgeCol]) => {
             const key = att ? pick(att.r2_key, att.r2Key) : undefined;
             return (
               <div
