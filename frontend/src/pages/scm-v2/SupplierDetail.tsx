@@ -22,7 +22,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import {
-  ArrowLeft, Building2, Clock, AlertTriangle, CheckCircle2,
+  ArrowLeft,
   TrendingUp, Package, Plus, Pencil, Trash2, Star, X, Save, Search,
   Tag, ChevronDown, ChevronRight, Download, Upload, Anchor,
 } from 'lucide-react';
@@ -32,7 +32,9 @@ import {
 import { MaintenanceTab, type MaintenanceSection } from './Products';
 import { SofaComboTab } from '../../vendor/scm/components/SofaComboTab';
 import { FabricTracking } from './FabricTracking';
-import { Button } from '@2990s/design-system';
+import { Button } from '../../components/Button';
+import { PageHeader } from '../../components/Layout';
+import { StatCard } from '../../components/StatCard';
 import {
   useSupplierDetail,
   useSupplierScorecard,
@@ -78,10 +80,29 @@ const ICON = { size: 16, strokeWidth: 1.75 } as const;
 const SM_ICON = { size: 14, strokeWidth: 1.75 } as const;
 const LG_ICON = { size: 20, strokeWidth: 1.75 } as const;
 
+/* KPI tone — the StatCard tone vocabulary (was .kpiValueOk / Warn / Bad). */
+type KpiTone = 'default' | 'success' | 'warning' | 'error';
+
+/* Back link — the shared toolbar-link treatment used by the other reskinned
+   scm-v2 detail pages (WarehouseRacks / SalesOrderDetail). Replaces .backBtn. */
+const BACK_LINK_CLASS =
+  'inline-flex h-9 w-fit items-center gap-1.5 rounded-md border border-border bg-surface px-3 text-[11px] font-semibold uppercase tracking-wider text-ink-secondary transition-colors hover:border-primary/40 hover:bg-primary-soft hover:text-primary';
+
+/* Count / category badge riding inside a tab button. One static treatment for
+   both tab states — a light pill reads on the surface tab and on the petrol
+   active tab alike. */
+const TAB_COUNT_CLASS =
+  'ml-1.5 inline-flex items-center rounded-full bg-surface-2 px-1.5 text-[10px] font-semibold text-ink-secondary';
+
+/* Status pill — design-system tones (was the bespoke .statusPill + .statusActive
+   / .statusInactive / .statusBlocked block in the module.css). */
+const STATUS_PILL_BASE =
+  'inline-flex items-center rounded-full px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider';
+
 const STATUS_CLASS: Record<SupplierStatus, string> = {
-  ACTIVE: styles.statusActive ?? '',
-  INACTIVE: styles.statusInactive ?? '',
-  BLOCKED: styles.statusBlocked ?? '',
+  ACTIVE: 'bg-synced-bg text-synced',
+  INACTIVE: 'bg-surface-dim text-ink-muted',
+  BLOCKED: 'bg-err/10 text-err',
 };
 
 const fmtCurrency = (centi: number, currency: Currency): string => {
@@ -239,19 +260,20 @@ export const SupplierDetail = () => {
   const showCombo  = supplierCategory == null || supplierCategory === 'SOFA' || supplierCategory === 'MIXED';
   const showFabric = supplierCategory == null || supplierCategory === 'SOFA' || supplierCategory === 'BEDFRAME' || supplierCategory === 'MIXED';
 
-  // KPI tone selection — same thresholds as HOOKKA.
-  const otrTone = useMemo(() => {
+  // KPI tone selection — same thresholds as HOOKKA. Now StatCard tones
+  // (success / warning / error) rather than the retired .kpiValue* classes.
+  const otrTone = useMemo<KpiTone>(() => {
     const v = score?.onTimeRate ?? 0;
-    if (v >= 90) return styles.kpiValueOk;
-    if (v >= 75) return styles.kpiValueWarn;
-    return styles.kpiValueBad;
+    if (v >= 90) return 'success';
+    if (v >= 75) return 'warning';
+    return 'error';
   }, [score]);
 
-  const defectTone = useMemo(() => {
+  const defectTone = useMemo<KpiTone>(() => {
     const v = score?.defectRate ?? 0;
-    if (v <= 1) return styles.kpiValueOk;
-    if (v <= 3) return styles.kpiValueWarn;
-    return styles.kpiValueBad;
+    if (v <= 1) return 'success';
+    if (v <= 3) return 'warning';
+    return 'error';
   }, [score]);
 
   // SKU dialog state — modal for create / edit.
@@ -266,7 +288,7 @@ export const SupplierDetail = () => {
 
   if (detail.isLoading) {
     return (
-      <div className={styles.page}>
+      <div className="space-y-4">
         <p className={styles.infoLabel}>Loading supplier…</p>
       </div>
     );
@@ -274,12 +296,12 @@ export const SupplierDetail = () => {
 
   if (detail.isError || !supplier) {
     return (
-      <div className={styles.page}>
-        <Link to="/scm/suppliers" className={styles.backBtn}>
+      <div className="space-y-4">
+        <Link to="/scm/suppliers" className={BACK_LINK_CLASS}>
           <ArrowLeft {...ICON} />
           <span>Back to Suppliers</span>
         </Link>
-        <div className={styles.bannerWarn}>
+        <div className="flex flex-col gap-1 rounded-md border border-err/40 bg-err/10 px-4 py-3 text-[13px] text-err">
           <strong>Supplier not found or failed to load.</strong>
           {detail.error instanceof Error ? ` ${detail.error.message}` : null}
         </div>
@@ -288,31 +310,26 @@ export const SupplierDetail = () => {
   }
 
   return (
-    <div className={styles.page}>
-      {/* ── Header ──────────────────────────────────────────────────── */}
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
-          <Link to="/scm/suppliers" className={styles.backBtn}>
-            <ArrowLeft {...ICON} />
+    <div>
+      {/* ── Header (shared PageHeader — full-bleed, design-system) ── */}
+      <PageHeader
+        eyebrow="Supplier"
+        title={`${supplier.code} — ${supplier.name}`}
+        description="Supplier scorecard, SKU mappings and recent purchase order history."
+        primaryAction={
+          <Link to="/scm/suppliers" className={BACK_LINK_CLASS}>
+            <ArrowLeft size={14} />
             <span>Back</span>
           </Link>
-          <div>
-            <h1 className={styles.title}>
-              {/* PR — Commander 2026-05-27: shrink from LG_ICON (20px) → 14px
-                  to balance the fs-15 title. */}
-              <Building2 size={14} strokeWidth={1.75} style={{ color: 'var(--c-burnt)' }} />
-              {supplier.code} — {supplier.name}
-            </h1>
-            <p className={styles.subtitle}>
-              Supplier scorecard, SKU mappings and recent purchase order history.
-            </p>
-          </div>
-        </div>
-        <span className={`${styles.statusPill} ${STATUS_CLASS[supplier.status]}`}>
-          {supplier.status}
-        </span>
-      </div>
+        }
+        actions={
+          <span className={`${STATUS_PILL_BASE} ${STATUS_CLASS[supplier.status]}`}>
+            {supplier.status}
+          </span>
+        }
+      />
 
+      <div className="space-y-4">
       {/* ── Supplier Info ──────────────────────────────────────────── */}
       <SupplierInfoCard
         supplier={supplier}
@@ -324,12 +341,7 @@ export const SupplierDetail = () => {
       {/* ── Tab strip: Overview / SKU Pricing / Maintenance / Combo ── */}
       <div
         role="tablist"
-        style={{
-          display: 'flex',
-          gap: 0,
-          borderBottom: '1px solid var(--line)',
-          marginTop: 'var(--space-4)',
-        }}
+        className="inline-flex max-w-full items-center gap-0.5 overflow-x-auto rounded-md border border-border bg-surface p-1 shadow-stone"
       >
         <SupplierTabButton
           active={activeTab === 'overview'}
@@ -342,17 +354,7 @@ export const SupplierDetail = () => {
           onClick={() => setActiveTab('sku-pricing')}
         >
           SKU Pricing
-          <span
-            style={{
-              marginLeft: 'var(--space-2)',
-              padding: '0 var(--space-2)',
-              borderRadius: 'var(--radius-pill)',
-              background: 'var(--c-paper)',
-              border: '1px solid var(--line)',
-              fontSize: 'var(--fs-11)',
-              color: 'var(--fg-muted)',
-            }}
-          >
+          <span className={TAB_COUNT_CLASS}>
             {bindings.length}
           </span>
         </SupplierTabButton>
@@ -362,17 +364,7 @@ export const SupplierDetail = () => {
         >
           Maintenance
           {supplierCategory && (
-            <span
-              style={{
-                marginLeft: 'var(--space-2)',
-                padding: '0 var(--space-2)',
-                borderRadius: 'var(--radius-pill)',
-                background: 'var(--c-paper)',
-                border: '1px solid var(--line)',
-                fontSize: 'var(--fs-11)',
-                color: 'var(--fg-muted)',
-              }}
-            >
+            <span className={TAB_COUNT_CLASS}>
               {SUPPLIER_CATEGORY_LABEL[supplierCategory]}
             </span>
           )}
@@ -421,10 +413,10 @@ export const SupplierDetail = () => {
         />
       )}
       {activeTab === 'combos' && showCombo && (
-        <section className={styles.card} style={{ marginTop: 'var(--space-3)' }}>
+        <section className={styles.card}>
           <header className={styles.cardHeader}>
             <h2 className={styles.cardTitle}>
-              <Tag {...ICON} style={{ color: 'var(--c-burnt)' }} />
+              <Tag {...ICON} style={{ color: '#0c3f39' }} />
               Combo Pricing · {supplier.name}
             </h2>
           </header>
@@ -437,6 +429,7 @@ export const SupplierDetail = () => {
           FabricTracking renders its own page header, so mount it bare (no
           card wrapper) to avoid a doubled "Fabric Converter" title. */}
       {activeTab === 'fabric' && showFabric && <FabricTracking />}
+      </div>
 
       {/* ── SKU dialogs (modals) ──────────────────────────────────── */}
       {skuDialog.mode === 'multi' && (
@@ -482,20 +475,13 @@ const SupplierTabButton = ({
     type="button"
     role="tab"
     aria-selected={active}
+    data-active={active}
     onClick={onClick}
-    style={{
-      padding: 'var(--space-3) var(--space-4)',
-      background: 'transparent',
-      border: 'none',
-      borderBottom: active ? '2px solid var(--c-burnt)' : '2px solid transparent',
-      color: active ? 'var(--c-ink)' : 'var(--fg-muted)',
-      fontFamily: 'var(--font-button)',
-      fontSize: 'var(--fs-14)',
-      fontWeight: 600,
-      cursor: 'pointer',
-      display: 'inline-flex',
-      alignItems: 'center',
-    }}
+    className={
+      active
+        ? 'inline-flex items-center whitespace-nowrap rounded bg-primary px-3.5 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-white transition-all duration-150'
+        : 'inline-flex items-center whitespace-nowrap rounded px-3.5 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-ink-secondary transition-all duration-150 hover:bg-primary-soft hover:text-primary'
+    }
   >
     {children}
   </button>
@@ -507,54 +493,41 @@ const SupplierOverviewPanel = ({
   defectTone,
 }: {
   score: ReturnType<typeof useSupplierScorecard>['data'];
-  otrTone: string | undefined;
-  defectTone: string | undefined;
+  otrTone: KpiTone;
+  defectTone: KpiTone;
 }) => {
   return (
   <>
-    {/* ── KPI tiles ──────────────────────────────────────────────── */}
-    <section className={styles.kpiGrid}>
-        <div className={styles.kpiCard}>
-          <div className={styles.kpiHead}>
-            <span className={styles.kpiLabel}>On-Time Rate</span>
-            <CheckCircle2 {...ICON} style={{ color: 'var(--c-secondary-a, #2F5D4F)' }} />
-          </div>
-          <p className={`${styles.kpiValue} ${(score?.receivedPOs ?? 0) > 0 ? otrTone : ''}`}>
-            {(score?.receivedPOs ?? 0) > 0 ? `${(score?.onTimeRate ?? 0).toFixed(1)}%` : '—'}
-          </p>
-          <p className={styles.kpiCaption}>
-            {(score?.receivedPOs ?? 0) > 0
+    {/* ── KPI tiles (shared StatCard — no icon slot) ─────────────── */}
+    <section className="grid grid-cols-1 gap-3 md:grid-cols-3">
+        <StatCard
+          label="On-Time Rate"
+          tone={(score?.receivedPOs ?? 0) > 0 ? otrTone : 'default'}
+          value={(score?.receivedPOs ?? 0) > 0 ? `${(score?.onTimeRate ?? 0).toFixed(1)}%` : '—'}
+          subtitle={
+            (score?.receivedPOs ?? 0) > 0
               ? `${score?.onTimeCount ?? 0} of ${score?.receivedPOs ?? 0} received POs on time`
-              : 'No received POs yet'}
-          </p>
-        </div>
+              : 'No received POs yet'
+          }
+        />
 
-        <div className={styles.kpiCard}>
-          <div className={styles.kpiHead}>
-            <span className={styles.kpiLabel}>Defect Rate</span>
-            <AlertTriangle {...ICON} style={{ color: 'var(--c-festive-b, #B8331F)' }} />
-          </div>
-          <p className={`${styles.kpiValue} ${(score?.receivedPOs ?? 0) > 0 ? defectTone : ''}`}>
-            {(score?.receivedPOs ?? 0) > 0 ? `${(score?.defectRate ?? 0).toFixed(2)}%` : '—'}
-          </p>
-        </div>
+        <StatCard
+          label="Defect Rate"
+          tone={(score?.receivedPOs ?? 0) > 0 ? defectTone : 'default'}
+          value={(score?.receivedPOs ?? 0) > 0 ? `${(score?.defectRate ?? 0).toFixed(2)}%` : '—'}
+        />
 
-        <div className={styles.kpiCard}>
-          <div className={styles.kpiHead}>
-            <span className={styles.kpiLabel}>Avg Lead Days</span>
-            <Clock {...ICON} style={{ color: 'var(--c-burnt)' }} />
-          </div>
-          <p className={styles.kpiValue}>
-            {(score?.receivedPOs ?? 0) > 0 ? (score?.averageLeadDays ?? 0).toFixed(1) : '—'}
-          </p>
-        </div>
+        <StatCard
+          label="Avg Lead Days"
+          value={(score?.receivedPOs ?? 0) > 0 ? (score?.averageLeadDays ?? 0).toFixed(1) : '—'}
+        />
       </section>
 
     {/* ── Last 10 POs ───────────────────────────────────────────── */}
     <section className={styles.card}>
       <header className={styles.cardHeader}>
         <h2 className={styles.cardTitle}>
-          <TrendingUp {...ICON} style={{ color: 'var(--c-burnt)' }} />
+          <TrendingUp {...ICON} style={{ color: '#0c3f39' }} />
           Last 10 Purchase Orders
           <span className={styles.cardTitleCount}>({score?.totalPOs ?? 0} total)</span>
         </h2>
@@ -676,7 +649,7 @@ const SupplierSkuPricingPanel = ({
   const [open, toggleOpen] = usePersistedOpen('panel-supplier-sku-mappings');
 
   return (
-    <section className={styles.card} style={{ marginTop: 'var(--space-3)' }}>
+    <section className={styles.card}>
       <header
         className={styles.cardHeader}
         onClick={toggleOpen}
@@ -686,9 +659,9 @@ const SupplierSkuPricingPanel = ({
       >
         <h2 className={styles.cardTitle}>
           {open
-            ? <ChevronDown {...SM_ICON} style={{ color: 'var(--fg-muted)' }} />
-            : <ChevronRight {...SM_ICON} style={{ color: 'var(--fg-muted)' }} />}
-          <Package {...ICON} style={{ color: 'var(--c-burnt)' }} />
+            ? <ChevronDown {...SM_ICON} style={{ color: '#767b6e' }} />
+            : <ChevronRight {...SM_ICON} style={{ color: '#767b6e' }} />}
+          <Package {...ICON} style={{ color: '#0c3f39' }} />
           SKU Mappings
           <span className={styles.cardTitleCount}>
             {bindings.length === 0
@@ -711,8 +684,7 @@ const SupplierSkuPricingPanel = ({
               internal_code matches (unknown codes skip — won't auto-create
               bindings to avoid wiring N missing SKUs by accident). */}
           <Button
-            variant="ghost"
-            size="sm"
+            variant="secondary"
             onClick={() => exportBindingsCsv(bindings, supplierCode, sofaHeights, products.data ?? [])}
             disabled={bindings.length === 0}
             title="Download CSV of every SKU mapping for this supplier"
@@ -721,15 +693,14 @@ const SupplierSkuPricingPanel = ({
             <span>Export Bindings</span>
           </Button>
           <Button
-            variant="ghost"
-            size="sm"
+            variant="secondary"
             onClick={() => setImporting(true)}
             title="Update existing bindings from a CSV (rows matched by internal_code)"
           >
             <Upload {...ICON} />
             <span>Import Bindings</span>
           </Button>
-          <Button variant="primary" size="sm" onClick={() => setSkuDialog({ mode: 'multi' })}>
+          <Button variant="primary" onClick={() => setSkuDialog({ mode: 'multi' })}>
             <Plus {...ICON} />
             <span>Add SKU Mappings</span>
           </Button>
@@ -788,10 +759,10 @@ const SupplierPricingPanel = ({
   const sectionFilter: MaintenanceSection[] =
     maintenanceSectionsForCategory(supplierCategory) ?? ['Bedframe', 'Sofa', 'Common'];
   return (
-    <section className={styles.card} style={{ marginTop: 'var(--space-3)' }}>
+    <section className={styles.card}>
       <header className={styles.cardHeader}>
         <h2 className={styles.cardTitle}>
-          <Tag {...ICON} style={{ color: 'var(--c-burnt)' }} />
+          <Tag {...ICON} style={{ color: '#0c3f39' }} />
           Maintenance · {supplierName}
           {supplierCategory && (
             <span className={styles.cardTitleCount}>
@@ -851,17 +822,17 @@ const CategorySection = ({
      to the .subGroupHead class (fs-9/700 letter-spacing 0.12em). Matches the
      other card eyebrows on this page. */
   return (
-    <div style={{ borderTop: '1px solid var(--line)' }}>
+    <div style={{ borderTop: '1px solid #d6d9d2' }}>
       <button
         type="button"
         onClick={toggleOpen}
         aria-expanded={open}
         className={styles.subGroupHead}
-        style={{ borderBottom: open ? '1px solid var(--line)' : 'none' }}
+        style={{ borderBottom: open ? '1px solid #d6d9d2' : 'none' }}
       >
         {open
-          ? <ChevronDown size={10} strokeWidth={1.75} style={{ color: 'var(--fg-muted)' }} />
-          : <ChevronRight size={10} strokeWidth={1.75} style={{ color: 'var(--fg-muted)' }} />}
+          ? <ChevronDown size={10} strokeWidth={1.75} style={{ color: '#767b6e' }} />
+          : <ChevronRight size={10} strokeWidth={1.75} style={{ color: '#767b6e' }} />}
         <span>{label}</span>
         <span className={styles.subGroupHeadCount}>
           {count} {count === 1 ? 'code' : 'codes'}
@@ -1239,11 +1210,11 @@ const SofaSkuMappingsTable = ({
           alignItems: 'center',
           gap: 'var(--space-2)',
           padding: '4px var(--space-3)',
-          borderBottom: '1px solid var(--line)',
-          background: 'var(--c-paper)',
+          borderBottom: '1px solid #d6d9d2',
+          background: '#fff',
         }}
       >
-        <span style={{ fontSize: 'var(--fs-9)', fontWeight: 700, color: 'var(--fg-muted)', textTransform: 'uppercase', letterSpacing: '0.12em' }}>
+        <span style={{ fontSize: 'var(--fs-9)', fontWeight: 700, color: '#767b6e', textTransform: 'uppercase', letterSpacing: '0.12em' }}>
           Fabric tier
         </span>
         {SOFA_TIER_CHIPS.map((c) => (
@@ -1257,9 +1228,9 @@ const SofaSkuMappingsTable = ({
               fontWeight: 600,
               padding: '1px 10px',
               borderRadius: 'var(--radius-pill)',
-              border: selectedTier === c.value ? '1px solid var(--c-ink)' : '1px solid var(--line)',
-              background: selectedTier === c.value ? 'var(--c-ink)' : 'var(--c-paper)',
-              color: selectedTier === c.value ? 'var(--c-cream)' : 'var(--c-ink)',
+              border: selectedTier === c.value ? '1px solid #11140f' : '1px solid #d6d9d2',
+              background: selectedTier === c.value ? '#11140f' : '#fff',
+              color: selectedTier === c.value ? '#f4f6f3' : '#11140f',
               cursor: 'pointer',
             }}
           >
@@ -1385,7 +1356,7 @@ const MainStarCell = ({
         size={16}
         strokeWidth={1.75}
         fill={binding.is_main_supplier ? 'currentColor' : 'none'}
-        style={{ color: binding.is_main_supplier ? 'var(--c-burnt)' : 'var(--fg-muted)' }}
+        style={{ color: binding.is_main_supplier ? '#0c3f39' : '#767b6e' }}
       />
     </button>
     {binding.is_main_supplier && <span className={styles.mainPill}>Main</span>}
@@ -1466,7 +1437,7 @@ const AnchorCell = ({
           size={16}
           strokeWidth={1.75}
           fill={anchored ? 'currentColor' : 'none'}
-          style={{ color: anchored ? 'var(--c-burnt)' : 'var(--fg-muted)' }}
+          style={{ color: anchored ? '#0c3f39' : '#767b6e' }}
         />
       </button>
       {anchored && <span className={styles.mainPill}>Anchor</span>}
@@ -1799,7 +1770,7 @@ const AutoSuffixButton = ({
   };
 
   return (
-    <Button variant="ghost" size="sm" onClick={onClick} disabled={running}>
+    <Button variant="secondary" onClick={onClick} disabled={running}>
       <span>
         {running
           ? 'Auto-suffixing…'
@@ -2373,7 +2344,7 @@ const ImportBindingsDialog = ({
           </button>
         </header>
         <div className={styles.modalBody}>
-          <p style={{ fontSize: 'var(--fs-12)', color: 'var(--fg-muted)', marginBottom: 'var(--space-3)' }}>
+          <p style={{ fontSize: 'var(--fs-12)', color: '#767b6e', marginBottom: 'var(--space-3)' }}>
             Upload a CSV or Excel file exported via <strong>Export Bindings</strong>. Both the
             current <strong>long</strong> layout (one row per price-point:
             <code> category / height / tier / price_rm</code>) and older
@@ -2390,17 +2361,17 @@ const ImportBindingsDialog = ({
             style={{ marginBottom: 'var(--space-3)' }}
           />
           {progress.total > 0 && (
-            <p style={{ fontSize: 'var(--fs-12)', color: 'var(--fg-muted)' }}>
+            <p style={{ fontSize: 'var(--fs-12)', color: '#767b6e' }}>
               Updating {progress.done} / {progress.total}…
             </p>
           )}
           {summary && (
             <p style={{
               fontSize: 'var(--fs-13)',
-              color: 'var(--c-ink)',
+              color: '#11140f',
               padding: 'var(--space-2) var(--space-3)',
-              background: 'var(--c-paper)',
-              border: '1px solid var(--line)',
+              background: '#fff',
+              border: '1px solid #d6d9d2',
               borderRadius: 'var(--radius-md)',
               marginTop: 'var(--space-2)',
             }}>
@@ -2409,10 +2380,10 @@ const ImportBindingsDialog = ({
           )}
         </div>
         <footer className={styles.modalFooter}>
-          <Button variant="ghost" size="md" onClick={onClose} disabled={running}>
+          <Button variant="ghost" onClick={onClose} disabled={running}>
             {summary ? 'Close' : 'Cancel'}
           </Button>
-          <Button variant="primary" size="md" onClick={run} disabled={!file || running}>
+          <Button variant="primary" onClick={run} disabled={!file || running}>
             {running ? 'Importing…' : 'Import'}
           </Button>
         </footer>
@@ -2718,17 +2689,17 @@ const SkuFormDialog = ({
               <div
                 className={styles.formGridFull}
                 style={{
-                  fontSize: 'var(--fs-11)', color: 'var(--fg-muted)',
+                  fontSize: 'var(--fs-11)', color: '#767b6e',
                   padding: '6px 2px', lineHeight: 1.5,
                 }}
               >
                 <span style={{
                   fontFamily: 'var(--font-button)', fontSize: 'var(--fs-10)',
-                  letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--c-burnt)',
+                  letterSpacing: '0.06em', textTransform: 'uppercase', color: '#0c3f39',
                 }}>Supplier SKU → </span>
-                <code style={{ fontWeight: 700, color: 'var(--c-ink)' }}>{skuPreview.composed}</code>
+                <code style={{ fontWeight: 700, color: '#11140f' }}>{skuPreview.composed}</code>
                 {skuPreview.overridden && (
-                  <span> · overridden (using <code style={{ fontWeight: 700, color: 'var(--c-ink)' }}>{skuPreview.current}</code>)</span>
+                  <span> · overridden (using <code style={{ fontWeight: 700, color: '#11140f' }}>{skuPreview.current}</code>)</span>
                 )}
               </div>
             )}
@@ -2790,8 +2761,8 @@ const SkuFormDialog = ({
         </div>
 
         <footer className={styles.modalFooter}>
-          <Button variant="ghost" size="md" onClick={onClose}>Cancel</Button>
-          <Button variant="primary" size="md" onClick={submit} disabled={pending}>
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button variant="primary" onClick={submit} disabled={pending}>
             {pending ? 'Saving…' : editing ? 'Save Changes' : 'Add Mapping'}
           </Button>
         </footer>
@@ -2881,22 +2852,22 @@ const SupplierInfoCard = ({
       >
         <h2 className={styles.cardTitle}>
           {bodyVisible
-            ? <ChevronDown {...SM_ICON} style={{ color: 'var(--fg-muted)' }} />
-            : <ChevronRight {...SM_ICON} style={{ color: 'var(--fg-muted)' }} />}
+            ? <ChevronDown {...SM_ICON} style={{ color: '#767b6e' }} />
+            : <ChevronRight {...SM_ICON} style={{ color: '#767b6e' }} />}
           Supplier Info
         </h2>
         {/* stopPropagation so the Edit / Save / Cancel buttons don't also
             toggle the collapse state. */}
         <span onClick={(e) => e.stopPropagation()} style={{ display: 'inline-flex', gap: 'var(--space-2)' }}>
           {!editing ? (
-            <Button variant="ghost" size="sm" onClick={onEdit}>
+            <Button variant="secondary" onClick={onEdit}>
               <Pencil {...ICON} />
               <span>Edit</span>
             </Button>
           ) : (
             <>
-              <Button variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
-              <Button variant="primary" size="sm" onClick={save} disabled={update.isPending}>
+              <Button variant="secondary" onClick={onClose}>Cancel</Button>
+              <Button variant="primary" onClick={save} disabled={update.isPending}>
                 <Save {...ICON} />
                 <span>{update.isPending ? 'Saving…' : 'Save'}</span>
               </Button>
@@ -3354,7 +3325,7 @@ const ModelSkuPickerDialog = ({
             <label
               style={{
                 display: 'inline-flex', alignItems: 'center', gap: 6,
-                fontSize: 'var(--fs-12)', color: 'var(--fg-muted)', cursor: 'pointer',
+                fontSize: 'var(--fs-12)', color: '#767b6e', cursor: 'pointer',
               }}
               title="Switch to per-SKU picker (for Models needing different codes per size)"
             >
@@ -3384,9 +3355,9 @@ const ModelSkuPickerDialog = ({
                       fontFamily: 'var(--font-button)', fontSize: 'var(--fs-13)', fontWeight: 600,
                       padding: 'var(--space-2) var(--space-3)',
                       borderRadius: 'var(--radius-pill)',
-                      border: category === c.value ? '1px solid var(--c-ink)' : '1px solid var(--line)',
-                      background: category === c.value ? 'var(--c-ink)' : 'var(--c-paper)',
-                      color: category === c.value ? 'var(--c-cream)' : 'var(--c-ink)',
+                      border: category === c.value ? '1px solid #11140f' : '1px solid #d6d9d2',
+                      background: category === c.value ? '#11140f' : '#fff',
+                      color: category === c.value ? '#f4f6f3' : '#11140f',
                       cursor: 'pointer',
                     }}
                   >
@@ -3394,7 +3365,7 @@ const ModelSkuPickerDialog = ({
                   </button>
                 ))}
                 <div style={{ position: 'relative', flex: 1, minWidth: 200 }}>
-                  <Search {...ICON} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--fg-muted)', pointerEvents: 'none' }} />
+                  <Search {...ICON} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: '#767b6e', pointerEvents: 'none' }} />
                   <input
                     type="search"
                     placeholder="Search Model code / name / branding…"
@@ -3402,7 +3373,7 @@ const ModelSkuPickerDialog = ({
                     onChange={(e) => setSearch(e.target.value)}
                     style={{
                       width: '100%', fontFamily: 'var(--font-sans)', fontSize: 'var(--fs-14)',
-                      background: 'var(--c-paper)', border: '1px solid var(--line)',
+                      background: '#fff', border: '1px solid #d6d9d2',
                       borderRadius: 'var(--radius-md)',
                       padding: 'var(--space-2) var(--space-3) var(--space-2) var(--space-7)',
                       outline: 'none',
@@ -3410,7 +3381,7 @@ const ModelSkuPickerDialog = ({
                   />
                 </div>
               </div>
-              <div style={{ maxHeight: '50vh', overflowY: 'auto', border: '1px solid var(--line)', borderRadius: 'var(--radius-md)' }}>
+              <div style={{ maxHeight: '50vh', overflowY: 'auto', border: '1px solid #d6d9d2', borderRadius: 'var(--radius-md)' }}>
                 <table className={styles.table}>
                   <thead>
                     <tr>
@@ -3468,7 +3439,7 @@ const ModelSkuPickerDialog = ({
                           <td>
                             {model.name}
                             {inactive && (
-                              <span style={{ marginLeft: 6, fontSize: 'var(--fs-11)', fontWeight: 700, color: 'var(--c-burnt)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                              <span style={{ marginLeft: 6, fontSize: 'var(--fs-11)', fontWeight: 700, color: '#0c3f39', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
                                 · Inactive
                               </span>
                             )}
@@ -3484,8 +3455,8 @@ const ModelSkuPickerDialog = ({
                                   status.tone === 'all'
                                     ? 'var(--c-secondary-a, #2F5D4F)'
                                     : status.tone === 'mixed'
-                                      ? 'var(--c-burnt)'
-                                      : 'var(--fg-muted)',
+                                      ? '#0c3f39'
+                                      : '#767b6e',
                               }}
                             >
                               {status.label}
@@ -3499,8 +3470,8 @@ const ModelSkuPickerDialog = ({
               </div>
             </div>
             <footer className={styles.modalFooter}>
-              <Button variant="ghost" size="md" onClick={onClose}>Cancel</Button>
-              <Button variant="primary" size="md" onClick={goNext} disabled={pickedCount === 0}>
+              <Button variant="ghost" onClick={onClose}>Cancel</Button>
+              <Button variant="primary" onClick={goNext} disabled={pickedCount === 0}>
                 <span>Next · Fill supplier codes ({pickedCount})</span>
               </Button>
             </footer>
@@ -3514,7 +3485,7 @@ const ModelSkuPickerDialog = ({
               <p className={styles.infoLabel} style={{ marginBottom: 'var(--space-2)' }}>
                 Fill each Model's supplier code + note. Save binds every active SKU under it (same code + price). Prices here are COST, not selling.
               </p>
-              <div style={{ maxHeight: '50vh', overflowY: 'auto', border: '1px solid var(--line)', borderRadius: 'var(--radius-md)' }}>
+              <div style={{ maxHeight: '50vh', overflowY: 'auto', border: '1px solid #d6d9d2', borderRadius: 'var(--radius-md)' }}>
                 <table className={styles.table}>
                   <thead>
                     <tr>
@@ -3562,7 +3533,7 @@ const ModelSkuPickerDialog = ({
                                   marginTop: 2,
                                   fontSize: 'var(--fs-12)',
                                   cursor: d.skus.length === 0 ? 'default' : 'pointer',
-                                  color: expanded ? 'var(--c-burnt)' : 'var(--fg-muted)',
+                                  color: expanded ? '#0c3f39' : '#767b6e',
                                   textDecoration: 'underline',
                                   textUnderlineOffset: 2,
                                 }}
@@ -3586,16 +3557,16 @@ const ModelSkuPickerDialog = ({
                                   to expand the SKU list below. */}
                               {previewMap && toMap.length > 0 && (
                                 <div style={{
-                                  marginTop: 4, fontSize: 'var(--fs-11)', color: 'var(--fg-muted)',
+                                  marginTop: 4, fontSize: 'var(--fs-11)', color: '#767b6e',
                                   lineHeight: 1.4,
                                 }}>
                                   <span style={{
                                     fontFamily: 'var(--font-button)', fontSize: 'var(--fs-10)',
-                                    letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--c-burnt)',
+                                    letterSpacing: '0.06em', textTransform: 'uppercase', color: '#0c3f39',
                                   }}>becomes → </span>
                                   {toMap.slice(0, 2).map((c, i) => (
                                     <span key={c}>
-                                      <code style={{ fontWeight: 700, color: 'var(--c-ink)' }}>{previewMap[c]}</code>
+                                      <code style={{ fontWeight: 700, color: '#11140f' }}>{previewMap[c]}</code>
                                       {i < Math.min(2, toMap.length) - 1 ? ', ' : ''}
                                     </span>
                                   ))}
@@ -3646,9 +3617,9 @@ const ModelSkuPickerDialog = ({
                           {expanded && d.skus.length > 0 && (
                             <tr>
                               <td colSpan={7} style={{
-                                background: 'var(--c-cream)',
+                                background: '#f4f6f3',
                                 padding: 'var(--space-2) var(--space-3)',
-                                borderTop: '1px dashed var(--line)',
+                                borderTop: '1px dashed #d6d9d2',
                               }}>
                                 <SkuPreviewStrip
                                   toMap={toMap}
@@ -3666,8 +3637,8 @@ const ModelSkuPickerDialog = ({
               </div>
             </div>
             <footer className={styles.modalFooter}>
-              <Button variant="ghost" size="md" onClick={() => setStep(1)}>← Back</Button>
-              <Button variant="primary" size="md" onClick={submit} disabled={batch.isPending}>
+              <Button variant="ghost" onClick={() => setStep(1)}>← Back</Button>
+              <Button variant="primary" onClick={submit} disabled={batch.isPending}>
                 {batch.isPending
                   ? 'Saving…'
                   : `Save ${pickedCount} Model${pickedCount === 1 ? '' : 's'}`}
@@ -3837,9 +3808,9 @@ const MultiSkuPickerDialog = ({
                       fontFamily: 'var(--font-button)', fontSize: 'var(--fs-13)', fontWeight: 600,
                       padding: 'var(--space-2) var(--space-3)',
                       borderRadius: 'var(--radius-pill)',
-                      border: category === c.value ? '1px solid var(--c-ink)' : '1px solid var(--line)',
-                      background: category === c.value ? 'var(--c-ink)' : 'var(--c-paper)',
-                      color: category === c.value ? 'var(--c-cream)' : 'var(--c-ink)',
+                      border: category === c.value ? '1px solid #11140f' : '1px solid #d6d9d2',
+                      background: category === c.value ? '#11140f' : '#fff',
+                      color: category === c.value ? '#f4f6f3' : '#11140f',
                       cursor: 'pointer',
                     }}
                   >
@@ -3847,7 +3818,7 @@ const MultiSkuPickerDialog = ({
                   </button>
                 ))}
                 <div style={{ position: 'relative', flex: 1, minWidth: 200 }}>
-                  <Search {...ICON} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--fg-muted)', pointerEvents: 'none' }} />
+                  <Search {...ICON} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: '#767b6e', pointerEvents: 'none' }} />
                   <input
                     type="search"
                     placeholder="Search code / name / description…"
@@ -3855,7 +3826,7 @@ const MultiSkuPickerDialog = ({
                     onChange={(e) => setSearch(e.target.value)}
                     style={{
                       width: '100%', fontFamily: 'var(--font-sans)', fontSize: 'var(--fs-14)',
-                      background: 'var(--c-paper)', border: '1px solid var(--line)',
+                      background: '#fff', border: '1px solid #d6d9d2',
                       borderRadius: 'var(--radius-md)',
                       padding: 'var(--space-2) var(--space-3) var(--space-2) var(--space-7)',
                       outline: 'none',
@@ -3863,7 +3834,7 @@ const MultiSkuPickerDialog = ({
                   />
                 </div>
               </div>
-              <div style={{ maxHeight: '50vh', overflowY: 'auto', border: '1px solid var(--line)', borderRadius: 'var(--radius-md)' }}>
+              <div style={{ maxHeight: '50vh', overflowY: 'auto', border: '1px solid #d6d9d2', borderRadius: 'var(--radius-md)' }}>
                 <table className={styles.table}>
                   <thead>
                     <tr>
@@ -3928,8 +3899,8 @@ const MultiSkuPickerDialog = ({
               </div>
             </div>
             <footer className={styles.modalFooter}>
-              <Button variant="ghost" size="md" onClick={onClose}>Cancel</Button>
-              <Button variant="primary" size="md" onClick={goNext} disabled={pickedCount === 0}>
+              <Button variant="ghost" onClick={onClose}>Cancel</Button>
+              <Button variant="primary" onClick={goNext} disabled={pickedCount === 0}>
                 <span>Next · Fill supplier codes ({pickedCount})</span>
               </Button>
             </footer>
@@ -3940,7 +3911,7 @@ const MultiSkuPickerDialog = ({
               <p className={styles.infoLabel} style={{ marginBottom: 'var(--space-3)' }}>
                 Fill in each product's supplier-side code + price + lead time. Leave Supplier SKU blank to use our internal code.
               </p>
-              <div style={{ maxHeight: '50vh', overflowY: 'auto', border: '1px solid var(--line)', borderRadius: 'var(--radius-md)' }}>
+              <div style={{ maxHeight: '50vh', overflowY: 'auto', border: '1px solid #d6d9d2', borderRadius: 'var(--radius-md)' }}>
                 <table className={styles.table}>
                   <thead>
                     <tr>
@@ -4005,8 +3976,8 @@ const MultiSkuPickerDialog = ({
               </div>
             </div>
             <footer className={styles.modalFooter}>
-              <Button variant="ghost" size="md" onClick={() => setStep(1)}>← Back</Button>
-              <Button variant="primary" size="md" onClick={submit} disabled={batch.isPending}>
+              <Button variant="ghost" onClick={() => setStep(1)}>← Back</Button>
+              <Button variant="primary" onClick={submit} disabled={batch.isPending}>
                 {batch.isPending ? 'Saving…' : `Save ${pickedCount} mapping${pickedCount === 1 ? '' : 's'}`}
               </Button>
             </footer>
@@ -4042,7 +4013,7 @@ export function SkuPreviewStrip({
     }}>
       <span style={{
         fontSize: 'var(--fs-11)',
-        color: 'var(--fg-muted)',
+        color: '#767b6e',
         textTransform: 'uppercase',
         letterSpacing: '0.04em',
         marginRight: 8,
@@ -4050,7 +4021,7 @@ export function SkuPreviewStrip({
         Will bulk-map →
       </span>
       {toMap.length === 0 ? (
-        <span style={{ color: 'var(--fg-muted)', fontSize: 'var(--fs-12)' }}>
+        <span style={{ color: '#767b6e', fontSize: 'var(--fs-12)' }}>
           All SKUs already mapped.
         </span>
       ) : toMap.map((c) => {
@@ -4061,17 +4032,17 @@ export function SkuPreviewStrip({
             style={{
               fontFamily: 'var(--font-mono)',
               fontSize: 'var(--fs-12)',
-              background: 'var(--c-paper)',
-              border: '1px solid var(--line)',
+              background: '#fff',
+              border: '1px solid #d6d9d2',
               borderRadius: 'var(--radius-sm)',
               padding: '2px 8px',
             }}
           >
             {c}
             {resolved && (
-              <span style={{ color: 'var(--fg-muted)' }}>
+              <span style={{ color: '#767b6e' }}>
                 {' → '}
-                <span style={{ color: 'var(--c-burnt)', fontWeight: 600 }}>{resolved}</span>
+                <span style={{ color: '#0c3f39', fontWeight: 600 }}>{resolved}</span>
               </span>
             )}
           </code>
@@ -4081,7 +4052,7 @@ export function SkuPreviewStrip({
         <>
           <span style={{
             fontSize: 'var(--fs-11)',
-            color: 'var(--fg-muted)',
+            color: '#767b6e',
             textTransform: 'uppercase',
             letterSpacing: '0.04em',
             margin: '0 8px',
@@ -4094,11 +4065,11 @@ export function SkuPreviewStrip({
               style={{
                 fontFamily: 'var(--font-mono)',
                 fontSize: 'var(--fs-12)',
-                background: 'var(--c-cream)',
-                border: '1px dashed var(--line)',
+                background: '#f4f6f3',
+                border: '1px dashed #d6d9d2',
                 borderRadius: 'var(--radius-sm)',
                 padding: '2px 8px',
-                color: 'var(--fg-muted)',
+                color: '#767b6e',
                 textDecoration: 'line-through',
               }}
             >
@@ -4114,8 +4085,8 @@ export function SkuPreviewStrip({
 const smallInputStyle: React.CSSProperties = {
   fontFamily: 'var(--font-mono)',
   fontSize: 'var(--fs-13)',
-  background: 'var(--c-cream)',
-  border: '1px solid var(--line)',
+  background: '#f4f6f3',
+  border: '1px solid #d6d9d2',
   borderRadius: 'var(--radius-sm)',
   padding: '4px 8px',
   outline: 'none',

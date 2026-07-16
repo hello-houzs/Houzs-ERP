@@ -1,94 +1,38 @@
-/* Delivery Planning — STAGE 4 of the Delivery / TMS module.
-   Two tab rows: the 4 state tabs (Pending Delivery / Pending Schedule /
-   Overdue / Delivered, with counts) and a region chip row (All · PJ·KL ·
-   Penang · Sabah · Sarawak · Singapore). Ink & Petrol admin form styling.
-   The drawer / field scaffolding is reused from Suppliers.module.css. */
+/* ====================================================================
+   Delivery Planning — design-system reskin (2026-07-16)
 
-/* Ink & Petrol token overrides — same cascade as SalesOrderNew.module.css.
-   The .page class was previously unused (JSX read styles.page ?? ''); now
-   it establishes the palette every descendant that reads var(--c-orange)
-   etc. resolves against, and provides the warm sage page bg. */
-.page {
-  --c-orange:        #16695f;
-  --c-burnt:         #0c3f39;
-  --c-cream:         #f4f6f3;
-  --c-paper:         #fcfdfb;
-  --c-ink:           #11140f;
-  --c-ink-secondary: #767b6e;
-  --c-ink-muted:     #9aa093;
-  --fg:              #11140f;
-  --fg-muted:        #767b6e;
-  --line:            #d6d9d2;
-  --line-strong:     #c2c6bd;
-  --c-accent-soft:   #eff6f4;
-  background: #dcdfd9;
-}
+   STAGE 4 of the Delivery / TMS module. The page frame is now FULL-BLEED
+   and matches the PO/SO V2 pages (PurchaseOrdersListV2 / Inventory / Mrp):
+   the header is the shared <PageHeader>, and the state-tab rail + the
+   "Failed to load" banner are Tailwind token markup inline in the TSX.
 
-/* ── State tab row (the 4 delivery-state tabs) ────────────────────────────── */
-.stateTabs {
-  display: flex;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-  border-bottom: 1px solid var(--line);
-  padding-bottom: 2px;
-}
+   Deleted from here:
+     · .page — the grey "framed card" chrome (#dcdfd9 canvas) and its
+       --c-* / --fg / --line token-override cascade.
+     · .stateTabs / .stateTab / .stateTabActive / .stateTabOverdue /
+       .tabCount — the bespoke underline tab rail, now Tailwind in the TSX.
+     · .sgRow, .dstatePendingDelivery, .dstatePendingSchedule,
+       .dstateOverdue, .dstateDelivered — ALREADY-DEAD code (nothing read
+       them: the SG row accent comes from the DataGrid `rowStyle` prop and
+       the state tones from the DSTATE_TONE map, both inline in the TSX).
 
-.stateTab {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  height: 34px;
-  padding: 0 var(--space-3);
-  background: transparent;
-  border: none;
-  border-bottom: 2px solid transparent;
-  font-family: var(--font-button);
-  font-size: var(--fs-12);
-  font-weight: 600;
-  color: var(--fg-muted);
-  cursor: pointer;
-  white-space: nowrap;
-}
-
-.stateTab:hover { color: var(--c-ink); }
-
-.stateTabActive {
-  color: var(--c-burnt);
-  border-bottom-color: var(--c-burnt);
-}
-
-/* Count badge inside a state tab. */
-.tabCount {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
-  border-radius: var(--radius-pill);
-  background: rgba(34, 31, 32, 0.08);
-  color: var(--fg-muted);
-  font-family: var(--font-mark);
-  font-size: 11px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-}
-
-.stateTabActive .tabCount {
-  background: rgba(22, 105, 95, 0.16);
-  color: var(--c-burnt);
-}
-
-/* Tone the OVERDUE tab so an overdue backlog reads at a glance. */
-.stateTabOverdue { color: var(--c-festive-b, #B8331F); }
-.stateTabOverdue.stateTabActive {
-  color: var(--c-festive-b, #B8331F);
-  border-bottom-color: var(--c-festive-b, #B8331F);
-}
-.stateTabOverdue.stateTabActive .tabCount {
-  background: rgba(184, 51, 31, 0.12);
-  color: var(--c-festive-b, #B8331F);
-}
+   What survives is the CONTENT layer — the region chip rail, the inline
+   Excel-style cell editors, the days-left tones, the state pill and the
+   bulk-edit bar. Those used to read their colours from the .page override
+   cascade, so every var(--c-*) / --fg / --line reference is now written as
+   its Ink & Petrol hex. This matters: the :root fallbacks in
+   vendor/design-system/tokens.css DIFFER (--c-cream #ffffff, --c-paper
+   #f4f6f3, --line rgba(34,31,32,.12)) and --c-ink-secondary /
+   --c-ink-muted / --c-accent-soft are not defined at :root AT ALL — they
+   would have gone undefined. Mapping used:
+     primary      #16695f   primary-ink  #0c3f39
+     ink          #11140f   ink-muted    #767b6e
+     border       #d6d9d2   border-strong #c2c6bd
+     surface      #ffffff   surface-2    #f4f6f3   primary-soft #e1efed
+     secondary-a  #2f5d4f   festive-b    #b8331f
+   Structural tokens (--space-*, --fs-*, --font-*, --shadow-*, --radius-*)
+   are :root-global and stay as var().
+   ==================================================================== */
 
 /* ── Region chip row ──────────────────────────────────────────────────────── */
 .regionChips {
@@ -105,31 +49,45 @@
   font-family: var(--font-button);
   font-size: 11px;
   font-weight: 600;
-  border: 1px solid var(--line);
-  background: var(--c-paper);
-  color: var(--fg-muted);
+  border: 1px solid #d6d9d2;
+  background: #fff;
+  color: #767b6e;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.regionChip:hover {
+  background: #e1efed;
+  color: #11140f;
+  border-color: #bcdcd6;
 }
 
 .regionChipActive {
-  border-color: var(--c-burnt);
-  background: rgba(22, 105, 95, 0.10);
-  color: var(--c-burnt);
+  border-color: #16695f;
+  background: #16695f;
+  color: #fff;
 }
 
 /* Singapore region visually distinct (no MY warehouse — cross-border). A teal
    tint + dashed border sets it apart from the MY warehouse regions. */
 .regionChipSg {
   border-style: dashed;
-  border-color: var(--c-secondary-a);
-  color: var(--c-secondary-a);
+  border-color: #2f5d4f;
+  color: #2f5d4f;
+}
+.regionChipSg:hover {
+  background: rgba(47, 93, 79, 0.08);
+  border-color: #2f5d4f;
+  color: #2f5d4f;
 }
 .regionChipSg.regionChipActive {
-  border-color: var(--c-secondary-a);
-  background: rgba(47, 93, 79, 0.12);
-  color: var(--c-secondary-a);
+  border-color: #2f5d4f;
+  background: #2f5d4f;
+  color: #fff;
 }
 
 /* ── Inline delivery-state pill (DataGrid cell) ───────────────────────────── */
+/* Shape only — the per-state tint is applied inline from the DSTATE_TONE map
+   in the TSX (that is why the old .dstate* tone classes were dead). */
 .dstatePill {
   display: inline-flex;
   align-items: center;
@@ -143,27 +101,16 @@
   white-space: nowrap;
 }
 
-.dstatePendingDelivery { background: rgba(34, 31, 32, 0.06); color: var(--fg-muted); }
-.dstatePendingSchedule { background: rgba(22, 105, 95, 0.12); color: var(--c-burnt); }
-.dstateOverdue         { background: rgba(184, 51, 31, 0.12); color: var(--c-festive-b, #B8331F); }
-.dstateDelivered       { background: rgba(47, 93, 79, 0.12);  color: var(--c-secondary-a); }
-
-/* Singapore row marker — a thin teal left accent so an SG order stands out in
-   the grid even under the "All" region. */
-.sgRow {
-  box-shadow: inset 3px 0 0 var(--c-secondary-a);
-}
-
-/* days_left tone — overdue (negative) reads red, due-soon (<=3) burnt. */
-.daysOverdue  { color: var(--c-festive-b, #B8331F); font-weight: 700; }
-.daysSoon     { color: var(--c-burnt); font-weight: 700; }
-.daysOk       { color: var(--c-ink); }
+/* days_left tone — overdue (negative) reads red, due-soon (<=3) petrol. */
+.daysOverdue  { color: #b8331f; font-weight: 700; }
+.daysSoon     { color: #0c3f39; font-weight: 700; }
+.daysOk       { color: #11140f; }
 
 /* ── Inline Excel-style cell editors (native select / date, styled like the
       grid so they read as plain cells until focused) ─────────────────────────
    Used by the editable Status / Delivery date / Driver / Lorry columns and by
    the bulk-edit bar's value control. Transparent until hover/focus so the grid
-   stays calm; a burnt focus ring signals editability. */
+   stays calm; a petrol focus ring signals editability. */
 .inlineEdit {
   width: 100%;
   max-width: 100%;
@@ -175,18 +122,18 @@
   background: transparent;
   font-family: var(--font-sans);
   font-size: var(--fs-12);
-  color: var(--c-ink);
+  color: #11140f;
   cursor: pointer;
   appearance: auto;
 }
 .inlineEdit:hover {
-  border-color: var(--line);
-  background: var(--c-paper);
+  border-color: #d6d9d2;
+  background: #f4f6f3;
 }
 .inlineEdit:focus {
   outline: none;
-  border-color: var(--c-burnt);
-  background: var(--c-paper);
+  border-color: #0c3f39;
+  background: #f4f6f3;
 }
 .inlineEdit:disabled { opacity: 0.6; cursor: default; }
 
@@ -197,27 +144,26 @@
   gap: var(--space-2);
   flex-wrap: wrap;
   padding: var(--space-2) var(--space-3);
-  background: rgba(22, 105, 95, 0.06);
-  border: 1px solid var(--c-orange);
+  background: #e1efed;
+  border: 1px solid #16695f;
   border-radius: var(--radius-md);
 }
-.bulkCount { font-weight: 600; color: var(--c-burnt); white-space: nowrap; }
-.bulkSep { color: var(--fg-muted); }
-.bulkLabel { font-size: var(--fs-12); color: var(--fg-muted); }
+.bulkCount { font-weight: 600; color: #0c3f39; white-space: nowrap; }
+.bulkSep { color: #767b6e; }
+.bulkLabel { font-size: var(--fs-12); color: #767b6e; }
 /* The bar's own field / value controls — bordered (they sit on tint, not in a
    cell), but share the inlineEdit type ramp. */
 .bulkControl {
   height: 26px;
   min-width: 120px;
   padding: 0 6px;
-  border: 1px solid var(--line);
+  border: 1px solid #d6d9d2;
   border-radius: var(--radius-sm, 4px);
-  background: var(--c-paper);
+  background: #fff;
   font-family: var(--font-sans);
   font-size: var(--fs-12);
-  color: var(--c-ink);
+  color: #11140f;
   cursor: pointer;
 }
-.bulkControl:focus { outline: none; border-color: var(--c-burnt); }
+.bulkControl:focus { outline: none; border-color: #0c3f39; }
 .bulkSpacer { flex: 1 1 auto; }
-

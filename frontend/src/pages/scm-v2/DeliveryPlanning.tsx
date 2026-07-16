@@ -34,7 +34,8 @@
 import { useMemo, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { MapPinned, Truck } from 'lucide-react';
-import { Button } from '@2990s/design-system';
+import { Button } from '../../components/Button';
+import { PageHeader } from '../../components/Layout';
 import { fmtCenti, fmtDateOrDash, fmtDateTime, buildVariantSummary } from '@2990s/shared';
 import { formatPhone } from '@2990s/shared/phone';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
@@ -59,17 +60,17 @@ import styles from './DeliveryPlanning.module.css';
 /* HC "Remark 4" delivery sub-status → a small pill class (reuse the cream
    palette; unknown/blank → muted). Default-shown column. */
 const SUBSTATUS_TONE: Record<string, string> = {
-  'Pending Pickup': 'var(--fg-muted)',
-  'Done Shipout': 'var(--c-secondary-a)',
-  'Arrives EM Warehouse': 'var(--c-secondary-a)',
-  'Done Delivered': 'var(--c-green, #2e7d32)',
-  'Confirm': 'var(--c-secondary-a)',
-  'House Not Ready': 'var(--c-burnt)',
-  'Request Hold': 'var(--c-burnt)',
+  'Pending Pickup': '#767b6e',
+  'Done Shipout': '#2f5d4f',
+  'Arrives EM Warehouse': '#2f5d4f',
+  'Done Delivered': '#2e7d32',
+  'Confirm': '#2f5d4f',
+  'House Not Ready': '#0c3f39',
+  'Request Hold': '#0c3f39',
 };
 function SubstatusPill({ value }: { value: string | null }) {
-  if (!value) return <span style={{ color: 'var(--fg-muted)' }}>—</span>;
-  const tone = SUBSTATUS_TONE[value] ?? 'var(--fg-muted)';
+  if (!value) return <span style={{ color: '#767b6e' }}>—</span>;
+  const tone = SUBSTATUS_TONE[value] ?? '#767b6e';
   return (
     <span style={{
       display: 'inline-block', padding: '1px 8px', borderRadius: 999,
@@ -84,11 +85,11 @@ const dtOrDash = (iso: string | null): string => (iso ? fmtDateTime(iso) : '—'
 /* Company badge for the SHARED cross-company queue — a small code chip
    (HOUZS / 2990). null (e.g. ASSR rows / unresolved) renders a muted dash. */
 function CompanyBadge({ code }: { code: string | null }) {
-  if (!code) return <span style={{ color: 'var(--fg-muted)' }}>—</span>;
+  if (!code) return <span style={{ color: '#767b6e' }}>—</span>;
   return (
     <span style={{
       display: 'inline-block', padding: '1px 8px', borderRadius: 999,
-      border: '1px solid var(--c-secondary-a)', color: 'var(--c-secondary-a)',
+      border: '1px solid #2f5d4f', color: '#2f5d4f',
       fontSize: 'var(--fs-10)', fontWeight: 700, letterSpacing: '0.04em',
       whiteSpace: 'nowrap',
     }}>{code}</span>
@@ -112,16 +113,16 @@ const rowIdOf = (o: PlanningOrder): string => (isAssr(o) ? `assr:${o.assr_id ?? 
    SubstatusPill use, so it reads consistently across the board. */
 function TypeChip({ order }: { order: PlanningOrder }) {
   let label = 'SO delivery';
-  let tone = 'var(--fg-muted)';
+  let tone = '#767b6e';
   let bg = 'rgba(34, 31, 32, 0.06)';
   if (isAssr(order)) {
     if (order.job_kind === 'customer_pickup') {
       label = 'Cust. pickup';
-      tone = 'var(--c-burnt)';
+      tone = '#0c3f39';
       bg = 'rgba(232, 107, 58, 0.12)';
     } else {
       label = 'Delivery';
-      tone = 'var(--c-secondary-a)';
+      tone = '#2f5d4f';
       bg = 'rgba(47, 93, 79, 0.12)';
     }
   }
@@ -141,7 +142,7 @@ function TypeChip({ order }: { order: PlanningOrder }) {
 
 /* A muted em-dash cell — the shared "not applicable" render for columns that
    don't apply to an ASSR row (stock, driver, lorry). */
-const NotApplicable = () => <span style={{ color: 'var(--fg-muted)' }}>—</span>;
+const NotApplicable = () => <span style={{ color: '#767b6e' }}>—</span>;
 
 /* Region chips — CONFIG-DRIVEN buckets (migration 0198) classified by customer
    STATE. The bucket list now comes from the API's `regions` master (owner-
@@ -159,10 +160,10 @@ const STATE_TABS = DELIVERY_STATES;
    the old inline pill used, applied as the select's text/background so an
    overridden state still reads at a glance. */
 const DSTATE_TONE: Record<DeliveryState, { bg: string; fg: string }> = {
-  PENDING_DELIVERY: { bg: 'rgba(34, 31, 32, 0.06)', fg: 'var(--fg-muted)' },
-  PENDING_SCHEDULE: { bg: 'rgba(232, 107, 58, 0.12)', fg: 'var(--c-burnt)' },
-  OVERDUE:          { bg: 'rgba(184, 51, 31, 0.12)', fg: 'var(--c-festive-b, #B8331F)' },
-  DELIVERED:        { bg: 'rgba(47, 93, 79, 0.12)', fg: 'var(--c-secondary-a)' },
+  PENDING_DELIVERY: { bg: 'rgba(34, 31, 32, 0.06)', fg: '#767b6e' },
+  PENDING_SCHEDULE: { bg: 'rgba(232, 107, 58, 0.12)', fg: '#0c3f39' },
+  OVERDUE:          { bg: 'rgba(184, 51, 31, 0.12)', fg: '#b8331f' },
+  DELIVERED:        { bg: 'rgba(47, 93, 79, 0.12)', fg: '#2f5d4f' },
 };
 
 /* ── Inline (Excel-style) cell editors ────────────────────────────────────────
@@ -330,7 +331,7 @@ const liveBalance = (o: PlanningOrder): number =>
 
 /* days_left cell — overdue (<0) red, due-soon (0..3) burnt, else plain. */
 function DaysLeftCell({ days }: { days: number | null }) {
-  if (days == null) return <span style={{ color: 'var(--fg-muted)' }}>—</span>;
+  if (days == null) return <span style={{ color: '#767b6e' }}>—</span>;
   const cls = days < 0 ? styles.daysOverdue : days <= 3 ? styles.daysSoon : styles.daysOk;
   const label = days < 0 ? `${Math.abs(days)}d overdue` : days === 0 ? 'today' : `${days}d`;
   return <span className={cls}>{label}</span>;
@@ -394,7 +395,7 @@ const DRILLDOWN_COLUMNS: DataGridColumn<DrillItem>[] = [
   },
   {
     key: 'item_code', label: 'Item Code', width: 130,
-    accessor: (it) => <span style={{ fontWeight: 700, color: 'var(--c-burnt)' }}>{it.item_code ?? '—'}</span>,
+    accessor: (it) => <span style={{ fontWeight: 700, color: '#0c3f39' }}>{it.item_code ?? '—'}</span>,
     searchValue: (it) => it.item_code ?? '',
     sortFn: (a, b) => (a.item_code ?? '').localeCompare(b.item_code ?? ''),
   },
@@ -412,7 +413,7 @@ const DRILLDOWN_COLUMNS: DataGridColumn<DrillItem>[] = [
     key: 'description2', label: 'Description 2', width: 220, minWidth: 160,
     accessor: (it) => {
       const summary = buildVariantSummary(it.item_group, it.variants);
-      return summary ? <div>{summary}</div> : <span style={{ color: 'var(--fg-muted)' }}>—</span>;
+      return summary ? <div>{summary}</div> : <span style={{ color: '#767b6e' }}>—</span>;
     },
     searchValue: (it) => buildVariantSummary(it.item_group, it.variants),
   },
@@ -426,14 +427,14 @@ const PlanningExpandedLines = ({ docNo }: { docNo: string }) => {
   const q = useDeliveryPlanningLines(docNo);
   if (q.isLoading) {
     return (
-      <div style={{ padding: '8px 12px', fontSize: 'var(--fs-11)', color: 'var(--fg-muted)' }}>
+      <div style={{ padding: '8px 12px', fontSize: 'var(--fs-11)', color: '#767b6e' }}>
         Loading lines for {docNo}…
       </div>
     );
   }
   if (q.error) {
     return (
-      <div style={{ padding: '8px 12px', fontSize: 'var(--fs-11)', color: 'var(--c-festive-b, #B8331F)' }}>
+      <div style={{ padding: '8px 12px', fontSize: 'var(--fs-11)', color: '#b8331f' }}>
         Failed to load lines: {q.error instanceof Error ? q.error.message : String(q.error)}
       </div>
     );
@@ -445,7 +446,7 @@ const PlanningExpandedLines = ({ docNo }: { docNo: string }) => {
 
   if (items.length === 0) {
     return (
-      <div style={{ padding: '8px 12px', fontSize: 'var(--fs-11)', color: 'var(--fg-muted)' }}>
+      <div style={{ padding: '8px 12px', fontSize: 'var(--fs-11)', color: '#767b6e' }}>
         No line items.
       </div>
     );
@@ -454,7 +455,7 @@ const PlanningExpandedLines = ({ docNo }: { docNo: string }) => {
   return (
     <div style={{
       padding: 'var(--space-2) var(--space-3) var(--space-2) 40px',
-      background: 'var(--c-cream)',
+      background: '#fff',
     }}>
       <DataGrid<DrillItem>
         rows={items}
@@ -700,7 +701,7 @@ export const DeliveryPlanning = () => {
       /* SO No. for SO rows; the ASSR ref (assr_no) for service-case rows. */
       key: 'so_doc_no', label: 'SO / Ref', width: 150, sortable: true,
       accessor: (o) => (
-        <span style={{ display: 'inline-flex', alignItems: 'center', fontWeight: 700, color: 'var(--c-burnt)', fontVariantNumeric: 'tabular-nums' }}>
+        <span style={{ display: 'inline-flex', alignItems: 'center', fontWeight: 700, color: '#0c3f39', fontVariantNumeric: 'tabular-nums' }}>
           {isAssr(o) ? (o.ref ?? '—') : o.so_doc_no}
         </span>
       ),
@@ -866,7 +867,7 @@ export const DeliveryPlanning = () => {
       key: 'stock_remark', label: 'Stock', width: 150, groupable: true,
       /* ASSR rows carry no stock/DO data → non-applicable. */
       accessor: (o) => (isAssr(o) ? <NotApplicable /> : (
-        <span style={{ fontSize: 'var(--fs-12)', color: o.stock_status === 'PENDING' ? 'var(--fg-muted)' : 'var(--c-secondary-a)' }}>
+        <span style={{ fontSize: 'var(--fs-12)', color: o.stock_status === 'PENDING' ? '#767b6e' : '#2f5d4f' }}>
           {o.stock_remark || o.stock_status}
         </span>
       )),
@@ -968,27 +969,27 @@ export const DeliveryPlanning = () => {
     },
     {
       key: 'driver_ic', label: 'Driver IC', width: 140, defaultHidden: true,
-      accessor: (o) => o.crew?.driver_1_ic || <span style={{ color: 'var(--fg-muted)' }}>—</span>,
+      accessor: (o) => o.crew?.driver_1_ic || <span style={{ color: '#767b6e' }}>—</span>,
       searchValue: (o) => o.crew?.driver_1_ic ?? '',
     },
     {
       key: 'driver_contact', label: 'Driver Contact', width: 150, defaultHidden: true,
-      accessor: (o) => (o.crew?.driver_1_contact ? formatPhone(o.crew.driver_1_contact) || o.crew.driver_1_contact : <span style={{ color: 'var(--fg-muted)' }}>—</span>),
+      accessor: (o) => (o.crew?.driver_1_contact ? formatPhone(o.crew.driver_1_contact) || o.crew.driver_1_contact : <span style={{ color: '#767b6e' }}>—</span>),
       searchValue: (o) => o.crew?.driver_1_contact ?? '',
     },
     {
       key: 'driver_2', label: 'Driver 2', width: 150, defaultHidden: true,
-      accessor: (o) => o.crew?.driver_2_name || <span style={{ color: 'var(--fg-muted)' }}>—</span>,
+      accessor: (o) => o.crew?.driver_2_name || <span style={{ color: '#767b6e' }}>—</span>,
       searchValue: (o) => o.crew?.driver_2_name ?? '',
     },
     {
       key: 'helper_1', label: 'Helper 1', width: 150, defaultHidden: true,
-      accessor: (o) => o.crew?.helper_1_name || <span style={{ color: 'var(--fg-muted)' }}>—</span>,
+      accessor: (o) => o.crew?.helper_1_name || <span style={{ color: '#767b6e' }}>—</span>,
       searchValue: (o) => o.crew?.helper_1_name ?? '',
     },
     {
       key: 'helper_2', label: 'Helper 2', width: 150, defaultHidden: true,
-      accessor: (o) => o.crew?.helper_2_name || <span style={{ color: 'var(--fg-muted)' }}>—</span>,
+      accessor: (o) => o.crew?.helper_2_name || <span style={{ color: '#767b6e' }}>—</span>,
       searchValue: (o) => o.crew?.helper_2_name ?? '',
     },
     {
@@ -1001,7 +1002,7 @@ export const DeliveryPlanning = () => {
     {
       key: 'balance_centi', label: 'Balance', width: 130, align: 'right', sortable: true,
       accessor: (o) => (
-        <span style={{ fontFamily: 'var(--font-mark)', fontWeight: 700, color: liveBalance(o) > 0 ? 'var(--c-burnt)' : 'var(--fg-muted)' }}>
+        <span style={{ fontFamily: 'var(--font-mark)', fontWeight: 700, color: liveBalance(o) > 0 ? '#0c3f39' : '#767b6e' }}>
           {fmtCenti(liveBalance(o))}
         </span>
       ),
@@ -1033,52 +1034,65 @@ export const DeliveryPlanning = () => {
   ], [activeRegion, regionLabel, sched, drivers, lorries]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <div className={styles.page ?? ''} style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)', padding: 'var(--space-3) var(--space-4) var(--space-4)', background: '#dcdfd9', minHeight: '100%' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--space-4)', flexWrap: 'wrap' }}>
-        <div>
-          <h1 style={{ fontFamily: 'var(--font-title)', fontSize: 'var(--fs-15, 15px)', fontWeight: 600, color: 'var(--c-ink)', margin: 0 }}>
-            Delivery Planning
-          </h1>
-          <p style={{ fontFamily: 'var(--font-sans)', fontSize: 'var(--fs-11)', color: 'var(--fg-muted)', margin: '2px 0 0' }}>
-            Orders that need delivering · grouped by region (customer state) · {counts.ALL} in {activeRegionLabel}
-          </p>
-        </div>
-        {/* Secondary header control — open the owner-maintained region-bucket
-            master (formerly a standalone sidebar line; now reached from here). */}
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={() => navigate('/scm/delivery-planning-regions')}
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
-        >
-          <MapPinned size={16} strokeWidth={1.75} />
-          Manage regions
-        </Button>
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Delivery"
+        title="Delivery Planning"
+        description={`Orders that need delivering · grouped by region (customer state) · ${counts.ALL} in ${activeRegionLabel}`}
+        primaryAction={
+          /* Secondary header control — open the owner-maintained region-bucket
+             master (formerly a standalone sidebar line; now reached from here).
+             Kept as an inline <Button> rather than a `secondaryActions` MenuItem
+             so it keeps its MapPinned icon. */
+          <Button variant="secondary" onClick={() => navigate('/scm/delivery-planning-regions')}>
+            <MapPinned size={16} strokeWidth={1.75} />
+            Manage regions
+          </Button>
+        }
+      />
 
-      {/* 4 STATE TABS (top row) — Pending Delivery / Pending Schedule / Overdue / Delivered, with counts. */}
-      <div className={styles.stateTabs}>
-        <button
-          type="button"
-          className={`${styles.stateTab} ${activeState === 'ALL' ? styles.stateTabActive : ''}`}
-          onClick={() => setState('ALL')}
-        >
-          All <span className={styles.tabCount}>{counts.ALL}</span>
-        </button>
-        {STATE_TABS.map((s) => (
-          <button
-            key={s}
-            type="button"
-            className={[
-              styles.stateTab,
-              s === 'OVERDUE' ? styles.stateTabOverdue : '',
-              activeState === s ? styles.stateTabActive : '',
-            ].filter(Boolean).join(' ')}
-            onClick={() => setState(s)}
-          >
-            {DELIVERY_STATE_LABEL[s]} <span className={styles.tabCount}>{counts[s]}</span>
-          </button>
-        ))}
+      {/* 4 STATE TABS (top row) — Pending Delivery / Pending Schedule / Overdue / Delivered, with counts.
+          Reskinned to the design-system underline rail (was the bespoke
+          .stateTabs/.stateTab, whose colours only resolved via the removed
+          .page cascade). OVERDUE keeps its red tone so a backlog reads at a
+          glance; the count badge tints with the active/overdue state. */}
+      <div className="flex flex-wrap items-center gap-2 border-b border-border pb-0.5">
+        {([{ key: 'ALL' as const, label: 'All' },
+           ...STATE_TABS.map((s) => ({ key: s, label: DELIVERY_STATE_LABEL[s] }))]
+        ).map((t) => {
+          const active = activeState === t.key;
+          const overdue = t.key === 'OVERDUE';
+          return (
+            <button
+              key={t.key}
+              type="button"
+              className={[
+                'inline-flex h-[34px] items-center gap-2 whitespace-nowrap border-b-2 px-3 text-[12px] font-semibold transition-colors duration-150',
+                overdue
+                  ? 'text-err'
+                  : active
+                    ? 'text-primary-ink'
+                    : 'text-ink-muted hover:text-ink',
+                active
+                  ? (overdue ? 'border-err' : 'border-primary-ink')
+                  : 'border-transparent',
+              ].join(' ')}
+              onClick={() => setState(t.key)}
+            >
+              {t.label}
+              <span
+                className={[
+                  'inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full px-[5px] font-mono text-[11px] font-bold tabular-nums',
+                  active
+                    ? (overdue ? 'bg-err/10 text-err' : 'bg-primary-soft text-primary-ink')
+                    : 'bg-surface-dim text-ink-muted',
+                ].join(' ')}
+              >
+                {counts[t.key]}
+              </span>
+            </button>
+          );
+        })}
       </div>
 
       {/* REGION chip row — the CONFIG-DRIVEN buckets from the API master (All +
@@ -1102,7 +1116,7 @@ export const DeliveryPlanning = () => {
       </div>
 
       {error && !isLoading && (
-        <div style={{ background: 'rgba(232, 107, 58, 0.08)', border: '1px solid var(--c-orange)', color: 'var(--c-burnt)', padding: 'var(--space-3) var(--space-4)', borderRadius: 'var(--radius-md)', fontSize: 'var(--fs-12)' }}>
+        <div className="rounded-lg border border-err/40 bg-err/10 px-4 py-3 text-[13px] text-err">
           <strong>Failed to load delivery planning.</strong>{' '}
           {error instanceof Error ? error.message : String(error)}
         </div>
@@ -1187,7 +1201,6 @@ export const DeliveryPlanning = () => {
           )}
           <Button
             variant="primary"
-            size="sm"
             disabled={bulkBusy || (bulkField === 'STATUS' && !bulkValue)}
             onClick={() => void applyBulk()}
           >
@@ -1196,11 +1209,11 @@ export const DeliveryPlanning = () => {
 
           <span className={styles.bulkSpacer} />
 
-          <Button variant="secondary" size="sm" disabled={convertSos.isPending} onClick={() => void convertSelected()}>
+          <Button variant="secondary" disabled={convertSos.isPending} onClick={() => void convertSelected()}>
             <Truck size={14} strokeWidth={1.75} />
             <span>{convertSos.isPending ? 'Converting…' : `Convert ${sel.size} to DO`}</span>
           </Button>
-          <Button variant="ghost" size="sm" onClick={() => setSel(new Set())} title="Clear selection">x</Button>
+          <Button variant="ghost" onClick={() => setSel(new Set())} title="Clear selection">x</Button>
         </div>
       )}
 
@@ -1237,7 +1250,7 @@ export const DeliveryPlanning = () => {
           /* Falsy key suppresses the expand chevron for ASSR rows. */
           rowExpansionKey: (row) => (isAssr(row) ? '' : row.so_doc_no),
         }}
-        rowStyle={(o) => (o.region === 'SG' ? { boxShadow: 'inset 3px 0 0 var(--c-secondary-a)' } : undefined)}
+        rowStyle={(o) => (o.region === 'SG' ? { boxShadow: 'inset 3px 0 0 #2f5d4f' } : undefined)}
         contextMenu={(row) => (isAssr(row)
           ? [
               { label: 'Open Service Case', onClick: () => openRow(row) },
