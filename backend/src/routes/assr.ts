@@ -159,6 +159,73 @@ async function assrVisibleAgentNames(c: {
   return subtreeAgentNames(c.env, Number(user.id));
 }
 
+// Raw-SQL twin of pushVisibilityScope (services/assr.ts), which serves the
+// paginated list + CSV export through their bind arrays. The AGGREGATE queries
+// below build their WHERE by interpolation, so they need the same rule as a
+// fragment. Both express ONE rule and MUST be changed together: a new
+// assigned_to_3, a changed legacy-name match, a new tier — if it lands in one
+// and not the other, the list and its own totals disagree again, which is the
+// defect this pass exists to close. They live apart because services/assr.ts
+// cannot import from routes/assr.ts (routes already imports services).
+//
+// Three states, deliberately the same shape as allowedCompaniesSql so the two
+// scope fragments compose in one WHERE:
+//   undefined -> ""          unrestricted (`*` / service_cases.manage /
+//                            director). Emits NOTHING, so their SQL stays
+//                            byte-identical to today's.
+//   []        -> " AND 1=0"  scoped caller with no resolvable identity. Fail
+//                            closed: `1=0` (not `false`) stays valid on the
+//                            D1/SQLite test mirror.
+//   else      -> the OR-set  self + downline by id, plus the legacy free-text
+//                            agent-name reach.
+//
+// `prefix` is the table alias — "" for a bare `assr_cases`, "c." / "ca." where
+// the query aliases it.
+//
+// Ids are INLINED, agent NAMES are BOUND, and the split is not cosmetic: ids
+// come from our own users master (subtreeUserIds) and are re-validated as
+// positive integers right here, which is the same justification
+// allowedCompaniesSql states for inlining company ids. Agent names are
+// user-controlled text and never touch the SQL string. The caller must splice
+// `binds` into its own bind list AT THE POSITION the fragment appears — binds
+// are positional.
+function assrVisibilitySql(
+  ids: number[] | undefined,
+  agentNames: string[] | undefined,
+  prefix = "c.",
+): { sql: string; binds: string[] } {
+  if (ids === undefined) return { sql: "", binds: [] };
+  const clean = ids.map(Number).filter((n) => Number.isInteger(n) && n > 0);
+  if (clean.length === 0) return { sql: ` AND 1=0`, binds: [] };
+  const idList = clean.join(",");
+  const clauses = [
+    `${prefix}created_by IN (${idList})`,
+    `${prefix}assigned_to IN (${idList})`,
+    `${prefix}assigned_to_2 IN (${idList})`,
+  ];
+  const binds: string[] = [];
+  const names = (agentNames ?? [])
+    .map((n) => n.trim().toLowerCase())
+    .filter(Boolean);
+  for (const n of names) {
+    clauses.push(`LOWER(COALESCE(${prefix}sales_agent, '')) LIKE ?`);
+    binds.push(`%${n}%`);
+  }
+  return { sql: ` AND (${clauses.join(" OR ")})`, binds };
+}
+
+/** Both halves of the row-level scope for the aggregate endpoints, resolved
+ *  once per request. Returns a builder because the same scope has to be
+ *  rendered against several table aliases within one handler. */
+async function assrVisibilityScope(c: {
+  get(key: "user"): unknown;
+  env: Env;
+}): Promise<(prefix?: string) => { sql: string; binds: string[] }> {
+  const ids = await assrVisibleUserIds(c);
+  const names = await assrVisibleAgentNames(c);
+  return (prefix = "c.") => assrVisibilitySql(ids, names, prefix);
+}
+
 /**
  * True when the case identified by `caseId` is within the caller's
  * assrVisibleUserIds scope (self + downline; directors/admins unrestricted).
@@ -516,10 +583,19 @@ app.get("/summary", requirePermission("service_cases.read"), async (c) => {
   // used below.
   const coC = assrCompanySql(c, "c.company_id");
   const coBare = assrCompanySql(c);
+  // Row-level visibility, the SAME scope the list applies. Without it every
+  // tile below counted the whole company for a caller whose list showed only
+  // their own subtree. "" for the unrestricted tier, so a director's SQL is
+  // unchanged.
+  const vis = await assrVisibilityScope(c);
+  const visC = vis("c.");
+  const visBare = vis("");
 
   const totals = await c.env.DB.prepare(
-    `SELECT COUNT(*) as total FROM assr_cases WHERE 1=1${coBare}`
-  ).first<{ total: number }>();
+    `SELECT COUNT(*) as total FROM assr_cases WHERE 1=1${coBare}${visBare.sql}`
+  )
+    .bind(...visBare.binds)
+    .first<{ total: number }>();
 
   // Active backlog: cases still in progress (not completed) and not
   // archived — "how many cases are open right now". Deliberately NOT
@@ -528,44 +604,56 @@ app.get("/summary", requirePermission("service_cases.read"), async (c) => {
   // definition the breach / aging queries use).
   const active = await c.env.DB.prepare(
     `SELECT COUNT(*) as count FROM assr_cases
-      WHERE stage != 'completed' AND archived_at IS NULL${coBare}`
-  ).first<{ count: number }>();
+      WHERE stage != 'completed' AND archived_at IS NULL${coBare}${visBare.sql}`
+  )
+    .bind(...visBare.binds)
+    .first<{ count: number }>();
 
   const byStage = await c.env.DB.prepare(
-    `SELECT stage, COUNT(*) as count FROM assr_cases WHERE 1=1${coBare} GROUP BY stage`
-  ).all();
+    `SELECT stage, COUNT(*) as count FROM assr_cases WHERE 1=1${coBare}${visBare.sql} GROUP BY stage`
+  )
+    .bind(...visBare.binds)
+    .all();
 
   const byStatus = await c.env.DB.prepare(
-    `SELECT status, COUNT(*) as count FROM assr_cases WHERE 1=1${coBare} GROUP BY status`
-  ).all();
+    `SELECT status, COUNT(*) as count FROM assr_cases WHERE 1=1${coBare}${visBare.sql} GROUP BY status`
+  )
+    .bind(...visBare.binds)
+    .all();
 
   const byLocation = await c.env.DB.prepare(
     `SELECT location, COUNT(*) as count FROM assr_cases
-     WHERE location IS NOT NULL${coBare}
+     WHERE location IS NOT NULL${coBare}${visBare.sql}
      GROUP BY location ORDER BY count DESC LIMIT 5`
-  ).all();
+  )
+    .bind(...visBare.binds)
+    .all();
 
   // Group by issue_category. The intake form now captures this on
   // every new case (replacing the older service_category-driven flow),
   // so this gives dispatchers a live view of what's coming in.
   const byCategory = await c.env.DB.prepare(
     `SELECT issue_category as name, COUNT(*) as count FROM assr_cases
-     WHERE issue_category IS NOT NULL${coBare}
+     WHERE issue_category IS NOT NULL${coBare}${visBare.sql}
      GROUP BY issue_category ORDER BY count DESC LIMIT 5`
-  ).all();
+  )
+    .bind(...visBare.binds)
+    .all();
 
   const recent = await c.env.DB.prepare(
     `SELECT COUNT(*) as count FROM assr_cases
      WHERE complained_date IS NOT NULL
-       AND complained_date >= date('now', '-30 days')${coBare}`
-  ).first<{ count: number }>();
+       AND complained_date >= date('now', '-30 days')${coBare}${visBare.sql}`
+  )
+    .bind(...visBare.binds)
+    .first<{ count: number }>();
 
   // Aging: cases still open that have been in their current stage >3 days
   const aging = await c.env.DB.prepare(
     `SELECT COUNT(*) as count
        FROM assr_cases c
       WHERE c.stage != 'completed'
-        ${periodAnd}${coC}
+        ${periodAnd}${coC}${visC.sql}
         AND julianday('now') - julianday(
               COALESCE(
                 (SELECT MAX(a.created_at)
@@ -576,7 +664,9 @@ app.get("/summary", requirePermission("service_cases.read"), async (c) => {
                 c.created_at
               )
             ) > 3`
-  ).first<{ count: number }>();
+  )
+    .bind(...visC.binds)
+    .first<{ count: number }>();
 
   // SLA breach: open cases whose CURRENT stage has crossed 100% of its
   // snapshotted per-stage target. Uses the SAME stage-level definition as
@@ -591,17 +681,21 @@ app.get("/summary", requirePermission("service_cases.read"), async (c) => {
               ON h.assr_id = c.id AND h.exited_at IS NULL
       WHERE c.stage != 'completed'
         AND c.archived_at IS NULL
-        ${periodAnd}${coC}
+        ${periodAnd}${coC}${visC.sql}
         AND h.target_days IS NOT NULL AND h.target_days > 0
         AND (julianday('now') - julianday(h.entered_at)) / h.target_days >= 1`
-  ).first<{ count: number }>();
+  )
+    .bind(...visC.binds)
+    .first<{ count: number }>();
 
   // v3.1 — Pending Review tile
   const pendingReview = await c.env.DB.prepare(
     `SELECT COUNT(*) as count FROM assr_cases c
       WHERE c.stage = 'pending_review' AND c.archived_at IS NULL
-        ${periodAnd}${coC}`
-  ).first<{ count: number }>();
+        ${periodAnd}${coC}${visC.sql}`
+  )
+    .bind(...visC.binds)
+    .first<{ count: number }>();
 
   // v3.1 — Avg end-to-end lead time (days), completed cases only.
   // Filter out rows where closed_at < created_at — legacy data has
@@ -616,8 +710,10 @@ app.get("/summary", requirePermission("service_cases.read"), async (c) => {
         AND closed_at IS NOT NULL
         AND julianday(closed_at) > julianday(created_at)
         AND (julianday(closed_at) - julianday(created_at)) < 365
-        AND closed_at >= date('now', '-${sinceDays} days')${coBare}`
-  ).first<{ avg_days: number | null }>();
+        AND closed_at >= date('now', '-${sinceDays} days')${coBare}${visBare.sql}`
+  )
+    .bind(...visBare.binds)
+    .first<{ avg_days: number | null }>();
 
   // v3.1 — Stage funnel: count by 9-stage enum, in canonical order,
   // with breach-aware fill colour (% of cases in this stage that have
@@ -633,9 +729,11 @@ app.get("/summary", requirePermission("service_cases.read"), async (c) => {
        LEFT JOIN assr_stage_history h
               ON h.assr_id = c.id AND h.exited_at IS NULL
       WHERE c.archived_at IS NULL
-        ${periodAnd}${coC}
+        ${periodAnd}${coC}${visC.sql}
       GROUP BY c.stage`
-  ).all<{ stage: string; total: number; breached: number }>();
+  )
+    .bind(...visC.binds)
+    .all<{ stage: string; total: number; breached: number }>();
 
   // v3.1 — CSAT 13-week rolling trend (weekly average ratings)
   const csatTrend = await c.env.DB.prepare(
@@ -645,10 +743,12 @@ app.get("/summary", requirePermission("service_cases.read"), async (c) => {
        FROM assr_cases
       WHERE stage = 'completed'
         AND satisfaction_rating IS NOT NULL
-        AND closed_at >= date('now', '-91 days')${coBare}
+        AND closed_at >= date('now', '-91 days')${coBare}${visBare.sql}
       GROUP BY week
       ORDER BY week`
-  ).all<{ week: string; avg_rating: number; n: number }>();
+  )
+    .bind(...visBare.binds)
+    .all<{ week: string; avg_rating: number; n: number }>();
 
   return c.json({
     total: totals?.total || 0,
@@ -838,6 +938,9 @@ app.get("/by-creditor", requirePermission("service_cases.read"), async (c) => {
   const search = (c.req.query("search") || "").trim();
   const like = search ? `%${search}%` : null;
   const coC = assrCompanySql(c, "c.company_id");
+  const vis = await assrVisibilityScope(c);
+  const visC = vis("c.");
+  const visBare = vis("");
 
   const rowsQ = c.env.DB.prepare(
     `SELECT c.creditor_code,
@@ -854,21 +957,25 @@ app.get("/by-creditor", requirePermission("service_cases.read"), async (c) => {
        FROM assr_cases c
        LEFT JOIN creditors cr ON cr.creditor_code = c.creditor_code
       WHERE c.archived_at IS NULL
-        AND c.creditor_code IS NOT NULL${coC}
+        AND c.creditor_code IS NOT NULL${coC}${visC.sql}
         ${like ? "AND (cr.company_name LIKE ? OR c.creditor_code LIKE ?)" : ""}
       GROUP BY c.creditor_code
       ORDER BY total DESC, creditor_name ASC`
   );
+  // Binds are positional and the visibility fragment sits BEFORE the search
+  // clause in the SQL above, so its binds must lead here too.
   const rows = like
-    ? await rowsQ.bind(like, like).all()
-    : await rowsQ.all();
+    ? await rowsQ.bind(...visC.binds, like, like).all()
+    : await rowsQ.bind(...visC.binds).all();
 
   const unassigned = await c.env.DB.prepare(
     `SELECT COUNT(*) AS total,
             SUM(CASE WHEN stage != 'completed' THEN 1 ELSE 0 END) AS open
        FROM assr_cases
-      WHERE archived_at IS NULL AND (creditor_code IS NULL OR creditor_code = '')${assrCompanySql(c)}`
-  ).first<{ total: number; open: number }>();
+      WHERE archived_at IS NULL AND (creditor_code IS NULL OR creditor_code = '')${assrCompanySql(c)}${visBare.sql}`
+  )
+    .bind(...visBare.binds)
+    .first<{ total: number; open: number }>();
 
   return c.json({
     rows: rows.results ?? [],
@@ -1844,6 +1951,14 @@ app.get("/metrics", requirePermission("service_cases.read"), async (c) => {
   const coBare = assrCompanySql(c);
   const coC = assrCompanySql(c, "c.company_id");
   const coA = assrCompanySql(c, "a.company_id");
+  // Row-level visibility, per alias — the SAME scope the list applies. The
+  // repeat_customers roll-up below is the reason this is not cosmetic: it
+  // ships customer_name + phone, so an unscoped GROUP BY handed a caller the
+  // contact details of cases outside their reporting chain.
+  const vis = await assrVisibilityScope(c);
+  const visBare = vis("");
+  const visC = vis("c.");
+  const visA = vis("a.");
 
   // Headline numbers. avg_resolution_hours filters out legacy rows
   // where julianday(closed_at) <= julianday(created_at) (corrupt
@@ -1865,8 +1980,10 @@ app.get("/metrics", requirePermission("service_cases.read"), async (c) => {
                   END) as avg_resolution_hours,
         AVG(CASE WHEN satisfaction_rating IS NOT NULL THEN satisfaction_rating END) as avg_satisfaction
       FROM assr_cases
-     WHERE 1=1 ${sinceClause}${coBare}`
-  ).first();
+     WHERE 1=1 ${sinceClause}${coBare}${visBare.sql}`
+  )
+    .bind(...visBare.binds)
+    .first();
 
   // NCR category breakdown — engineering taxonomy (material_defect /
   // workmanship / transit_damage / …). Used for quality root-cause
@@ -1875,10 +1992,12 @@ app.get("/metrics", requirePermission("service_cases.read"), async (c) => {
   const ncr = await c.env.DB.prepare(
     `SELECT COALESCE(ncr_category, 'unclassified') as category, COUNT(*) as count
        FROM assr_cases
-      WHERE 1=1 ${sinceClause}${coBare}
+      WHERE 1=1 ${sinceClause}${coBare}${visBare.sql}
       GROUP BY ncr_category
       ORDER BY count DESC`
-  ).all();
+  )
+    .bind(...visBare.binds)
+    .all();
 
   // Customer-facing issue category — what the dashboards in the legacy
   // Excel called "Service issues category". One row per ISSUE_CATEGORIES
@@ -1887,10 +2006,12 @@ app.get("/metrics", requirePermission("service_cases.read"), async (c) => {
   const issueCategories = await c.env.DB.prepare(
     `SELECT COALESCE(issue_category, 'Other') as category, COUNT(*) as count
        FROM assr_cases
-      WHERE 1=1 ${sinceClause}${coBare}
+      WHERE 1=1 ${sinceClause}${coBare}${visBare.sql}
       GROUP BY issue_category
       ORDER BY count DESC`
-  ).all();
+  )
+    .bind(...visBare.binds)
+    .all();
 
   // Case Duration buckets — mirrors the legacy Excel "Case Duration"
   // tile. All counts are *open* cases (stage != 'completed') bucketed by
@@ -1917,28 +2038,34 @@ app.get("/metrics", requirePermission("service_cases.read"), async (c) => {
                   AND julianday('now') - julianday(complained_date) < 21
                  THEN 1 ELSE 0 END) AS over_2_weeks
        FROM assr_cases
-      WHERE 1=1${coBare}`
-  ).first<{
-    opening_count: number;
-    over_1_month: number;
-    over_3_weeks: number;
-    over_2_weeks: number;
-  }>();
+      WHERE 1=1${coBare}${visBare.sql}`
+  )
+    .bind(...visBare.binds)
+    .first<{
+      opening_count: number;
+      over_1_month: number;
+      over_3_weeks: number;
+      over_2_weeks: number;
+    }>();
 
   const avgPerMonth = await c.env.DB.prepare(
     `SELECT CAST(COUNT(*) AS REAL) / 4.0 AS avg_per_month
        FROM assr_cases
-      WHERE COALESCE(complained_date, created_at) >= date('now', '-4 months')${coBare}`
-  ).first<{ avg_per_month: number | null }>();
+      WHERE COALESCE(complained_date, created_at) >= date('now', '-4 months')${coBare}${visBare.sql}`
+  )
+    .bind(...visBare.binds)
+    .first<{ avg_per_month: number | null }>();
 
   // Resolution method mix
   const resolutions = await c.env.DB.prepare(
     `SELECT COALESCE(resolution_method, 'unset') as method, COUNT(*) as count
        FROM assr_cases
-      WHERE 1=1 ${sinceClause}${coBare}
+      WHERE 1=1 ${sinceClause}${coBare}${visBare.sql}
       GROUP BY resolution_method
       ORDER BY count DESC`
-  ).all();
+  )
+    .bind(...visBare.binds)
+    .all();
 
   // Repeat offenders — items with >= 2 cases in window
   const repeatItems = await c.env.DB.prepare(
@@ -1947,12 +2074,14 @@ app.get("/metrics", requirePermission("service_cases.read"), async (c) => {
             MAX(c.complained_date) as latest
        FROM assr_items i
        JOIN assr_cases c ON c.id = i.assr_id
-      WHERE 1=1 ${sinceFor("c.")}${coC}
+      WHERE 1=1 ${sinceFor("c.")}${coC}${visC.sql}
       GROUP BY i.item_code
       HAVING COUNT(DISTINCT i.assr_id) >= 2
       ORDER BY cases DESC, latest DESC
       LIMIT 20`
-  ).all();
+  )
+    .bind(...visC.binds)
+    .all();
 
   // Repeat customers — customers with >= 2 cases in window
   const repeatCustomers = await c.env.DB.prepare(
@@ -1961,12 +2090,14 @@ app.get("/metrics", requirePermission("service_cases.read"), async (c) => {
             MAX(complained_date) as latest
        FROM assr_cases
       WHERE customer_name IS NOT NULL
-        ${sinceClause}${coBare}
+        ${sinceClause}${coBare}${visBare.sql}
       GROUP BY customer_name, phone
       HAVING COUNT(*) >= 2
       ORDER BY cases DESC, latest DESC
       LIMIT 20`
-  ).all();
+  )
+    .bind(...visBare.binds)
+    .all();
 
   // Creditor performance (within window). Joined against the
   // creditors mirror via a.creditor_code rather than the old
@@ -1988,11 +2119,13 @@ app.get("/metrics", requirePermission("service_cases.read"), async (c) => {
        FROM assr_cases a
        LEFT JOIN creditors cr ON cr.creditor_code = a.creditor_code
       WHERE a.creditor_code IS NOT NULL
-        ${sinceFor("a.")}${coA}
+        ${sinceFor("a.")}${coA}${visA.sql}
       GROUP BY a.creditor_code, cr.company_name
       ORDER BY total_cases DESC
       LIMIT 15`
-  ).all();
+  )
+    .bind(...visA.binds)
+    .all();
 
   // Monthly trend (last 12 months of case opens). Use complained_date
   // when populated, fall back to created_at — legacy rows imported
@@ -2005,11 +2138,13 @@ app.get("/metrics", requirePermission("service_cases.read"), async (c) => {
             COUNT(*) as opened,
             SUM(CASE WHEN stage = 'completed' THEN 1 ELSE 0 END) as closed
        FROM assr_cases
-      WHERE COALESCE(complained_date, created_at) >= date('now', '-12 months')${coBare}
+      WHERE COALESCE(complained_date, created_at) >= date('now', '-12 months')${coBare}${visBare.sql}
       GROUP BY month
       HAVING strftime('%Y-%m', COALESCE(complained_date, created_at)) IS NOT NULL
       ORDER BY month`
-  ).all();
+  )
+    .bind(...visBare.binds)
+    .all();
 
   return c.json({
     since_days: sinceDays,
@@ -2173,7 +2308,14 @@ app.get("/metrics/drill", requirePermission("service_cases.read"), async (c) => 
     ? "FROM assr_cases c LEFT JOIN creditors cr ON cr.creditor_code = c.creditor_code JOIN assr_items i ON i.assr_id = c.id"
     : "FROM assr_cases c LEFT JOIN creditors cr ON cr.creditor_code = c.creditor_code";
   const distinct = joinItems ? "DISTINCT" : "";
-  const where = conds.join(" AND ") + assrCompanySql(c, "c.company_id");
+  // Row-level visibility. This endpoint returns the CASES behind a tile, so an
+  // unscoped drill handed the caller the rows themselves, not just a count —
+  // and `total` below is the length of this fetch, so scoping here fixes both.
+  // Appended last, and its binds go last, because binds are positional.
+  const visDrill = (await assrVisibilityScope(c))("c.");
+  const where =
+    conds.join(" AND ") + assrCompanySql(c, "c.company_id") + visDrill.sql;
+  binds.push(...visDrill.binds);
 
   const rows = await c.env.DB.prepare(
     `SELECT ${distinct} c.id, c.assr_no, c.customer_name, c.stage, c.priority,
@@ -2633,7 +2775,17 @@ app.get("/logistics/all", requirePermission("service_cases.read"), async (c) => 
     where.push("(ca.assr_no LIKE ? OR ca.customer_name LIKE ? OR l.notes LIKE ?)");
     binds.push(`%${search}%`, `%${search}%`, `%${search}%`);
   }
-  const whereSql = `WHERE ${where.join(" AND ")}`;
+  // Row-level visibility + the company pin, both keyed off the joined case.
+  // This feed had NEITHER: it is the one ASSR read `fix/assr-scope-creator2`
+  // missed when it swapped the company helper across the module, so it was the
+  // only place a logistics row could cross both the company and the reporting
+  // boundary. Appended last; binds are positional and follow in the same order.
+  const visLog = (await assrVisibilityScope(c))("ca.");
+  const whereSql =
+    `WHERE ${where.join(" AND ")}` +
+    assrCompanySql(c, "ca.company_id") +
+    visLog.sql;
+  binds.push(...visLog.binds);
 
   const totalRow = await c.env.DB.prepare(
     `SELECT COUNT(*) as n
