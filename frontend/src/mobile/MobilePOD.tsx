@@ -108,10 +108,64 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
 
   const h = detailQ.data?.deliveryOrder as DoHeader | undefined;
   const items = (detailQ.data?.items ?? []) as DoItem[];
-  const payments = paymentsQ.data ?? [];
 
-  const paid = payments.reduce((sum, p) => sum + (p.amount_centi ?? 0), 0);
-  const balance = Math.max(0, (h?.local_total_centi ?? 0) - paid);
+  /* MONEY IS EITHER KNOWN OR UNKNOWN — never "assume zero".
+     `paymentsQ.data ?? []` folded a FAILED payments read into "no payments"
+     → paid 0 → balance = the FULL order total. That number was not only shown,
+     it was WRITTEN as the collected amount, so one Hyperdrive cold-start (a
+     documented RECURRING condition here — project_houzs_db_coldstart_503) could
+     tell a driver an already-paid order still owed RM 3,888 and book it a second
+     time. This is reference_houzs_nullish_hides_ignorance exactly: "the read
+     failed" became "nothing was paid".
+
+     HOW "UNKNOWN" IS TOLD APART FROM A GENUINE ZERO — the whole point, because
+     a fully-paid order legitimately shows 0 and the driver correctly collects
+     nothing. `data` is set ONLY by a successful fetch; react-query leaves it
+     undefined while pending and on a failure with no prior success. So:
+       • error !== null  → we asked and did not learn      → UNKNOWN
+       • data not an array (pending) → we have not finished asking → UNKNOWN
+       • data === []     → we asked and LEARNED there are no payments
+                           → GENUINELY ZERO PAID → balance = the full total,
+                             and collecting it is CORRECT.
+     An empty array is an ANSWER. Absence of an array is not. */
+  const paidCenti: number | null = (() => {
+    if (paymentsQ.error !== null) return null;
+    const rows = paymentsQ.data;
+    if (!Array.isArray(rows)) return null;
+    let sum = 0;
+    for (const p of rows) {
+      /* A row whose amount is not a real number makes the SUM indefensible.
+         `?? 0` here would silently under-count what was paid and over-state the
+         balance — the same double-collection, one layer down. */
+      if (typeof p.amount_centi !== "number" || !Number.isFinite(p.amount_centi)) return null;
+      sum += p.amount_centi;
+    }
+    return sum;
+  })();
+
+  /* The order total is the other half of the subtraction and gets the SAME rule.
+     `?? 0` on a null total renders "No balance — fully paid" in green and sends
+     the driver home without collecting — the owner's other loss, not a safe
+     default. Unknown total → unknown balance. */
+  const totalCenti: number | null =
+    h && typeof h.local_total_centi === "number" && Number.isFinite(h.local_total_centi)
+      ? h.local_total_centi
+      : null;
+
+  const balanceCenti: number | null =
+    totalCenti === null || paidCenti === null ? null : Math.max(0, totalCenti - paidCenti);
+
+  /* "Still asking" and "asked and failed" are different things to say to a
+     driver: one is a spinner, the other is a decision he has to act on. Any read
+     in flight (including a Try-again refetch, which leaves status 'error' while
+     it runs) reads as checking. */
+  const moneyFetching = paymentsQ.isFetching || detailQ.isFetching;
+  const balanceUnknown: "checking" | "failed" | null =
+    balanceCenti !== null ? null : moneyFetching ? "checking" : "failed";
+  const retryMoney = () => {
+    void paymentsQ.refetch();
+    void detailQ.refetch();
+  };
 
   // Checklist — which line items the driver has ticked as delivered.
   const [ticked, setTicked] = useState<Record<string, boolean>>({});
@@ -157,9 +211,18 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
   const delivered = h ? isDelivered(h.status) : false;
   const cancelled = h ? isCancelled(h.status) : false;
 
-  // Only record a collection when the driver explicitly says they took the
-  // balance, there IS a balance, and a positive amount would post.
-  const willCollect = collectBalance && balance > 0;
+  /* THE COLLECTABLE AMOUNT, OR NULL — the single gate on recording money.
+     Carrying the AMOUNT (not a boolean "will collect") is what makes an
+     indefensible balance unsubmittable BY CONSTRUCTION: the POST body reads
+     this binding, and TypeScript only narrows it to `number` inside an explicit
+     `!== null` check, so there is no path that posts an amount derived from a
+     read that failed or never landed. A boolean would have left `balance` in
+     scope at the call site for the next person to reach for.
+     `collectBalance` can also be left ticked from BEFORE a refetch went unknown
+     (the checkbox unmounts, its state does not) — that stale tick cannot post
+     anything, because the amount, not the tick, is what this resolves. */
+  const collectableCenti: number | null =
+    collectBalance && balanceCenti !== null && balanceCenti > 0 ? balanceCenti : null;
 
   const confirmDelivered = async () => {
     if (busy || !doId || !h) return;
@@ -167,13 +230,13 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
     if (deliveredCount < items.length) {
       notes.push(`Only ${deliveredCount} of ${items.length} items are ticked.`);
     }
-    if (willCollect) {
-      notes.push(`This will record a ${payMethod.toLowerCase()} payment of RM ${rm(balance)} against this delivery.`);
+    if (collectableCenti !== null) {
+      notes.push(`This will record a ${payMethod.toLowerCase()} payment of RM ${rm(collectableCenti)} against this delivery.`);
     }
     if (!(await confirm({
       title: `Mark ${h.do_number ?? docNo} delivered?`,
       body: notes.length ? notes.join(" ") : undefined,
-      confirmLabel: willCollect ? "Confirm & record payment" : "Confirm delivered",
+      confirmLabel: collectableCenti !== null ? "Confirm & record payment" : "Confirm delivered",
     }))) return;
     setActionError(null);
     setBusy(true);
@@ -181,14 +244,18 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
       // Record the collected balance FIRST (real endpoint) so a payment
       // failure aborts before we flip the DO delivered. Amount = full
       // outstanding balance; method mapped from the design toggle.
-      if (willCollect) {
+      // `collectableCenti !== null` is the ONLY way in here, and it is what
+      // narrows the amount to a `number` we can defend — see its definition.
+      // Delivery itself is deliberately NOT gated on it: an unknown balance
+      // must never stop a driver handing over the goods.
+      if (collectableCenti !== null) {
         await authedFetch(`/delivery-orders-mfg/${encodeURIComponent(doId)}/payments`,
           idempotentInit(idemKey, {
             method: "POST",
             body: JSON.stringify({
               paidAt: todayMyt(),
               method: PAY_METHOD_API[payMethod],
-              amountCenti: balance,
+              amountCenti: collectableCenti,
             }),
           }));
       }
@@ -414,40 +481,76 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
             {/* Collect balance — order total minus payments recorded so far (design balance row). */}
             <div className="fld-l" style={{ margin: "18px 0 8px" }}>Collect balance</div>
             <div style={{ background: "var(--card)", border: "1px solid var(--line-card)", borderRadius: 13, padding: "13px 14px" }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: balance > 0 ? 11 : 0 }}>
-                <span style={{ fontSize: 12.5, color: "var(--ink2)" }}>Balance due</span>
-                <span className="money" style={{ fontSize: 17, fontWeight: 800, color: balance > 0 ? "var(--gold)" : "var(--green)" }}>{balance > 0 ? `RM ${rm(balance)}` : "No balance — fully paid"}</span>
-              </div>
-              {balance > 0 && (
+              {/* ONLY the money line changes when the read fails — the items, the
+                  customer, the address, the photo, the signature and Confirm all
+                  stay exactly as they are, because only the AMOUNT is unknown.
+                  Withholding the delivery would be the worst outcome of the
+                  three (owner's ruling — see BUG-HISTORY, fix/pod-balance). */}
+              {balanceCenti === null ? (
                 <>
-                  <div style={{ display: "flex", gap: 7 }}>
-                    {(["Cash", "Online", "Card"] as const).map((m) => {
-                      const on = payMethod === m;
-                      return (
-                        <span
-                          key={m}
-                          onClick={() => setPayMethod(m)}
-                          style={{ fontSize: 11.5, fontWeight: on ? 700 : 600, color: on ? "#fff" : "var(--ink2)", background: on ? "var(--brand)" : "var(--bg)", border: on ? "none" : "1px solid var(--line-card)", padding: "6px 13px", borderRadius: 9, cursor: "pointer" }}
-                        >
-                          {m}
-                        </span>
-                      );
-                    })}
-                  </div>
-                  {/* Explicit opt-in — a payment is recorded ONLY when the driver
-                      ticks this. Without it the toggle just picks the method and
-                      nothing is posted. */}
-                  <label style={{ display: "flex", alignItems: "center", gap: 9, marginTop: 12, cursor: "pointer" }}>
-                    <input
-                      type="checkbox"
-                      checked={collectBalance}
-                      onChange={(e) => setCollectBalance(e.target.checked)}
-                      style={{ width: 18, height: 18, accentColor: "#16695f" }}
-                    />
-                    <span style={{ fontSize: 12, color: "var(--ink2)" }}>
-                      Record RM {rm(balance)} collected by {payMethod.toLowerCase()} now
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                    <span style={{ fontSize: 12.5, color: "var(--ink2)" }}>Balance due</span>
+                    <span className="money" style={{ fontSize: 17, fontWeight: 800, color: "var(--mut)" }}>
+                      {balanceUnknown === "checking" ? "Checking…" : "Can't confirm"}
                     </span>
-                  </label>
+                  </div>
+                  {balanceUnknown === "failed" && (
+                    <>
+                      {/* Plain language, and the action is "try again" — not a
+                          code, not a status. The driver is not an engineer. */}
+                      <div style={{ fontSize: 11.5, color: "var(--ink2)", marginTop: 9, lineHeight: 1.45 }}>
+                        We couldn{"'"}t check what this customer has already paid, so we can{"'"}t show the balance yet.
+                        Go ahead and deliver as normal. Tap Try again for the balance — if it still won{"'"}t show,
+                        call the office before taking any money.
+                      </div>
+                      <button
+                        type="button"
+                        onClick={retryMoney}
+                        style={{ marginTop: 11, width: "100%", border: "1px solid var(--brand)", background: "var(--card)", color: "var(--brand)", borderRadius: 9, padding: "9px 13px", fontFamily: "inherit", fontSize: 12, fontWeight: 700, cursor: "pointer" }}
+                      >
+                        Try again
+                      </button>
+                    </>
+                  )}
+                </>
+              ) : (
+                <>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: balanceCenti > 0 ? 11 : 0 }}>
+                    <span style={{ fontSize: 12.5, color: "var(--ink2)" }}>Balance due</span>
+                    <span className="money" style={{ fontSize: 17, fontWeight: 800, color: balanceCenti > 0 ? "var(--gold)" : "var(--green)" }}>{balanceCenti > 0 ? `RM ${rm(balanceCenti)}` : "No balance — fully paid"}</span>
+                  </div>
+                  {balanceCenti > 0 && (
+                    <>
+                      <div style={{ display: "flex", gap: 7 }}>
+                        {(["Cash", "Online", "Card"] as const).map((m) => {
+                          const on = payMethod === m;
+                          return (
+                            <span
+                              key={m}
+                              onClick={() => setPayMethod(m)}
+                              style={{ fontSize: 11.5, fontWeight: on ? 700 : 600, color: on ? "#fff" : "var(--ink2)", background: on ? "var(--brand)" : "var(--bg)", border: on ? "none" : "1px solid var(--line-card)", padding: "6px 13px", borderRadius: 9, cursor: "pointer" }}
+                            >
+                              {m}
+                            </span>
+                          );
+                        })}
+                      </div>
+                      {/* Explicit opt-in — a payment is recorded ONLY when the driver
+                          ticks this. Without it the toggle just picks the method and
+                          nothing is posted. */}
+                      <label style={{ display: "flex", alignItems: "center", gap: 9, marginTop: 12, cursor: "pointer" }}>
+                        <input
+                          type="checkbox"
+                          checked={collectBalance}
+                          onChange={(e) => setCollectBalance(e.target.checked)}
+                          style={{ width: 18, height: 18, accentColor: "#16695f" }}
+                        />
+                        <span style={{ fontSize: 12, color: "var(--ink2)" }}>
+                          Record RM {rm(balanceCenti)} collected by {payMethod.toLowerCase()} now
+                        </span>
+                      </label>
+                    </>
+                  )}
                 </>
               )}
             </div>
