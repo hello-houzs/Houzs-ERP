@@ -8,18 +8,23 @@ name: Mirror drift sentinel (2990 -> Houzs, read-only)
 #
 # Alarm conditions (see backend/scripts/mirror-drift-sentinel.mjs):
 #   - outbox rows stuck (status <> 'done' and enqueued > 15 min ago)
-#   - persisted drift: source SO count != mirrored count AND stuck rows exist
-#     (a transient in-flight delta with no stuck rows is normal, no alarm)
+#   - persisted drift: source SO count != mirrored count, once the delta has
+#     outlived a drain cycle (stuck rows, or an empty pending+sent queue)
 #   - no successful delivery for > 1 hour while rows are pending
 #
-# REQUIRED SECRETS (owner must add these two repo secrets before this runs;
-# until then the script prints SKIP and exits 0 -- the workflow is inert):
-#   SENTINEL_2990_DB_URL   2990 Supabase Postgres connection string
-#                          (postgresql://...pooler... from the 2990 project's
-#                          Connect dialog, ref dolvxrchzbnqvahocwsu)
-#   SENTINEL_HOUZS_DB_URL  Houzs Supabase Postgres connection string
-#                          (postgresql://...pooler... from the Houzs project's
-#                          Connect dialog, ref anogrigyjbduyzclzjgn)
+# CREDENTIALS -- it now runs with the secrets this repo ALREADY has.
+# This workflow asked for SENTINEL_2990_DB_URL + SENTINEL_HOUZS_DB_URL, two
+# secrets nobody ever set, so every scheduled run since it landed printed SKIP
+# and exited 0: green every 30 minutes, checking nothing. On 2026-07-17 the
+# mirror was found at source=63 mirrored=62 -- one SO stuck for days, and the
+# alarm built to catch exactly that had been reporting healthy throughout.
+#
+# It was never missing credentials, it was asking for the wrong ones:
+# diag-2990.yml already reaches 2990 via SOURCE_SUPABASE_URL +
+# SOURCE_SERVICE_ROLE_KEY and Houzs via DATABASE_URL, and a prod run the same
+# day proved both live. Those are now passed as fallbacks, so this alarms today
+# with no owner action. The SENTINEL_* pair still wins if ever set (a direct
+# Postgres URL does the outbox aggregate in one query instead of four).
 #
 # NOTE: scheduled runs only fire from the repo's DEFAULT branch. To test on a
 # feature branch first, use "Run workflow" (workflow_dispatch) and pick it.
@@ -49,5 +54,11 @@ jobs:
       - run: npm ci
       - run: node scripts/mirror-drift-sentinel.mjs
         env:
+          # Preferred (unset today): direct Postgres, one aggregate per side.
           SENTINEL_2990_DB_URL: ${{ secrets.SENTINEL_2990_DB_URL }}
           SENTINEL_HOUZS_DB_URL: ${{ secrets.SENTINEL_HOUZS_DB_URL }}
+          # Fallbacks: the credentials diag-2990.yml already uses and that are
+          # proven live against prod. These are what make the sentinel work now.
+          SOURCE_SUPABASE_URL: ${{ secrets.SOURCE_SUPABASE_URL }}
+          SOURCE_SERVICE_ROLE_KEY: ${{ secrets.SOURCE_SERVICE_ROLE_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
