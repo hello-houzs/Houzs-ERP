@@ -32,6 +32,8 @@ import {
 } from '../../vendor/scm/lib/product-models-queries';
 import { useMaintenanceConfig, useUpdateMfgProductStatus, useSpecialAddons } from '../../vendor/scm/lib/mfg-products-queries';
 import { useFabricLibrary } from '../../vendor/scm/lib/queries';
+import { useAuth } from '../../auth/AuthContext';
+import { canViewProductCost } from '../../auth/salesAccess';
 import { resolveSizeInfo } from '../../vendor/scm/lib/size-info';
 import styles from './ProductModelDetail.module.css';
 import { SkeletonDetailPage } from '../../vendor/scm/components/Skeleton';
@@ -118,6 +120,14 @@ export const ProductModelDetail = ({
   const { id: paramId } = useParams<{ id: string }>();
   const id = modelId ?? paramId;
   const embedded = Boolean(modelId);
+  /* Owner 2026-07-17 — cost price is director-only; see canViewProductCost.
+     Until now this page carried NO auth of any kind (no useAuth, no pageAccess,
+     no costing gate): every SKU's cost_price_sen printed to anyone who could
+     reach the route. Same column exists on mobile (MobileModuleList products
+     browse) and is gated by the same helper there, so the two platforms answer
+     identically — the ruling's other half. */
+  const { user: costUser } = useAuth();
+  const showCost = canViewProductCost(costUser);
   const navigate = useNavigate();
   const { data, isLoading, error } = useProductModel(id);
   const updateMut = useUpdateProductModel();
@@ -690,7 +700,7 @@ export const ProductModelDetail = ({
                 <th>Size</th>
                 <th>Status</th>
                 <th>POS</th>
-                <th style={{ textAlign: 'right' }}>Cost</th>
+                {showCost && <th style={{ textAlign: 'right' }}>Cost</th>}
                 <th style={{ textAlign: 'right' }}>Price 2</th>
               </tr>
             </thead>
@@ -750,7 +760,9 @@ export const ProductModelDetail = ({
                       <span className={styles.statusPill}>—</span>
                     )}
                   </td>
-                  <td style={{ textAlign: 'right' }}>{formatRM(sku.cost_price_sen)}</td>
+                  {showCost && (
+                    <td style={{ textAlign: 'right' }}>{formatRM(sku.cost_price_sen)}</td>
+                  )}
                   <td style={{ textAlign: 'right' }}>{formatRM(sku.base_price_sen ?? 0)}</td>
                 </tr>
               ))}

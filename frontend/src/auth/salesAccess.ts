@@ -151,3 +151,50 @@ export function canViewScmCosting(user: AuthUser | null | undefined): boolean {
   if (!COSTING_DISPLAY_ENABLED) return false;
   return !!user?.project_finance_viewer;
 }
+
+/**
+ * PRODUCT COST gate — "may this user see a SKU's cost price".
+ *
+ * Owner 2026-07-17: "全部對sales person 除了sales director 關閉 就是直接看不到
+ * 這個portion" + "電腦版本也是不要看到 電話電腦的權限應該一樣的".
+ *
+ * Deliberately NOT {@link canViewScmCosting}, and the difference is the whole
+ * point. That helper answers "may we DISPLAY a derived margin", and it is wired
+ * to COSTING_DISPLAY_ENABLED — a DATA-QUALITY switch, currently false because
+ * `mfg_products.cost_price_sen` is empty catalog-wide so every margin renders
+ * "100.0%". Reusing it here would gate cost entry on the emptiness of cost
+ * entry: nobody, not even the Owner, could ever type a cost in, and the switch
+ * could never be flipped back on. The circularity is the bug.
+ *
+ * `cost_price_sen` is not derived and is not an artifact — whatever is in that
+ * column is exactly what someone typed. It is simply CONFIDENTIAL. So this gate
+ * is about IDENTITY only: the same cohort DIRECTOR_POSITIONS admits (Super
+ * Admin / Sales Director / Finance Manager, plus the `*` wildcard) via the
+ * backend's isFinanceViewer -> getPmsRole -> DIRECTOR chain
+ * (services/pmsAccess.ts:79,154,256). A plain "Sales *" position routes to
+ * PIC/SALES there and never reaches DIRECTOR, so it resolves false — which is
+ * the ruling, enforced by the same flag the SO/DO/SI margin surfaces already
+ * use. One cohort, one answer, phone and desktop.
+ *
+ * Callers must make the element ABSENT, not blank it ("off, not hide") — a
+ * "Cost: —" column still tells a salesperson the field exists and invites the
+ * question.
+ */
+export function canViewProductCost(user: AuthUser | null | undefined): boolean {
+  return !!user?.project_finance_viewer;
+}
+
+/** Drop the confidential fields a user may not see from a mobile card's field
+ *  list. The mobile module cards are driven by one shared MODULE_CONFIGS table
+ *  consumed in TWO places (MobileModuleList's ListCard and MobileModuleDetail's
+ *  field grid), so the filter lives here rather than at either call site — a
+ *  gate applied at one consumer and not the other is the same bug as gating
+ *  desktop but not phone. Tuple slot 2 marks confidentiality; see FieldDef. */
+export function visibleFields<T extends readonly [unknown, string, ("cost" | undefined)?]>(
+  fields: readonly T[] | undefined,
+  user: AuthUser | null | undefined,
+): T[] {
+  if (!fields?.length) return [];
+  if (canViewProductCost(user)) return [...fields];
+  return fields.filter((f) => f[2] !== "cost");
+}
