@@ -1830,6 +1830,38 @@ app.post("/:id/supplier-link", requirePermission("service_cases.write"), async (
   return c.json({ token, path: `/portal/supplier/${token}` }, 201);
 });
 
+// ── Revoke the supplier portal links for a case ───────────────
+//
+// The counterpart to the issuer above, and what finally makes
+// resolveSupplierToken's revoked_at check reachable — it had no caller
+// since the portal shipped, so a supplier link could only end by
+// hitting its 30-day TTL. Needed most when a case is re-assigned: the
+// previous supplier's token stays valid otherwise.
+app.delete("/:id/supplier-link", requirePermission("service_cases.write"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+  const exists = await c.env.DB.prepare(
+    `SELECT id FROM assr_cases WHERE id = ?`
+  )
+    .bind(id)
+    .first();
+  if (!exists) return c.json({ error: "Not found" }, 404);
+  const { revokeSupplierTokensForCase } = await import("../services/supplierPortal");
+  await revokeSupplierTokensForCase(c.env, id);
+  const userId = (c as any).get?.("userId") ?? null;
+  await logActivity(
+    c.env,
+    id,
+    "supplier_links_revoked",
+    null,
+    null,
+    "Supplier portal links revoked — previously shared links no longer open this case.",
+    userId,
+    "system",
+  );
+  return c.json({ ok: true });
+});
+
 // ── Generate satisfaction survey token ────────────────────────
 
 app.post("/:id/survey-token", requirePermission("service_cases.write"), async (c) => {

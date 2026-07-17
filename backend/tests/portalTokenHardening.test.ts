@@ -8,7 +8,10 @@ import {
   resolveTrackToken,
   revokeCaseTokens,
 } from "../src/services/caseTracking";
-import { issueSupplierToken } from "../src/services/supplierPortal";
+import {
+  issueSupplierToken,
+  revokeSupplierTokensForCase,
+} from "../src/services/supplierPortal";
 import { issueSurveyToken } from "../src/services/assr";
 
 /* The four unauthenticated portal surfaces are gated by their token and nothing
@@ -325,5 +328,53 @@ describe("supplier portal — internal photos are not the supplier's business", 
   test("no token is a 401 — the filter is not the only thing standing there", async () => {
     const res = await app.request("/api/supplier-portal/case", {}, env);
     expect(res.status).toBe(401);
+  });
+
+  /* Driven through app.request rather than resolveSupplierToken directly:
+     resolveSupplierToken fires an unawaited `last_seen_at` UPDATE
+     (`.run().catch(() => {})`), and calling it bare lets that write land after
+     the test returns — which trips vitest-pool-workers' isolated-storage
+     teardown. Going through the router is the surface a supplier actually hits
+     anyway, so this tests more, not less. */
+  const openPortal = (token: string) =>
+    app.request(
+      "/api/supplier-portal/case",
+      { headers: { Authorization: `Bearer ${token}` } },
+      env,
+    );
+
+  test("revoking a case's supplier links shuts the portal", async () => {
+    const token = await issueSupplierToken(env as any, caseId, null);
+    expect((await openPortal(token)).status).toBe(200);
+
+    await revokeSupplierTokensForCase(env as any, caseId);
+
+    // resolveSupplierToken has always had a `revoked_at` check; until now
+    // nothing could set the column, so the branch was unreachable.
+    expect((await openPortal(token)).status).toBe(401);
+  });
+
+  test("supplier revoke does not leak across cases", async () => {
+    const otherId = await makeCase(`ASSR-${Math.random().toString(36).slice(2, 10)}`);
+    const mine = await issueSupplierToken(env as any, caseId, null);
+    const theirs = await issueSupplierToken(env as any, otherId, null);
+
+    await revokeSupplierTokensForCase(env as any, caseId);
+
+    expect((await openPortal(mine)).status).toBe(401);
+    // Revoking one case must not lock an unrelated supplier out.
+    expect((await openPortal(theirs)).status).toBe(200);
+  });
+
+  test("re-issuing after revoke mints a fresh supplier token", async () => {
+    const first = await issueSupplierToken(env as any, caseId, null);
+    await revokeSupplierTokensForCase(env as any, caseId);
+    const second = await issueSupplierToken(env as any, caseId, null);
+
+    // issueSupplierToken's reuse branch already excluded revoked rows, so
+    // this pins that revoke is rotation here too.
+    expect(second).not.toBe(first);
+    expect((await openPortal(second)).status).toBe(200);
+    expect((await openPortal(first)).status).toBe(401);
   });
 });

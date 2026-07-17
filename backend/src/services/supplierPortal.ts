@@ -95,10 +95,32 @@ export async function issueSupplierToken(
   return token;
 }
 
-export async function revokeSupplierToken(env: Env, tokenId: number): Promise<void> {
+/**
+ * Kill every live portal link for a case's suppliers.
+ *
+ * Supersedes revokeSupplierToken(tokenId), which was exported with zero
+ * callers since the portal shipped — so resolveSupplierToken's
+ * `revoked_at` check above could never fire, and the 30-day TTL was the
+ * only way a supplier link ever ended. The bare-tokenId signature is why
+ * it went unused: nothing upstream holds a token id. Staff act on a
+ * CASE ("stop that supplier seeing this job"), which is what this takes.
+ *
+ * Scoped by assr_id and not by creditor_code: the button lives on the
+ * case, a case resolves to one creditor at a time, and a re-assigned
+ * case leaves the previous supplier's token behind — which is precisely
+ * the one that should stop working.
+ *
+ * Void for the same reason revokeCaseTokens is (see caseTracking.ts):
+ * a count invites a "revoked 0, so 404" branch, and revoking a case with
+ * no live links is a legitimate no-op.
+ */
+export async function revokeSupplierTokensForCase(env: Env, assrId: number): Promise<void> {
   await env.DB.prepare(
-    `UPDATE assr_supplier_tokens SET revoked_at = datetime('now') WHERE id = ?`
+    `UPDATE assr_supplier_tokens
+        SET revoked_at = datetime('now')
+      WHERE assr_id = ?
+        AND revoked_at IS NULL`
   )
-    .bind(tokenId)
+    .bind(assrId)
     .run();
 }
