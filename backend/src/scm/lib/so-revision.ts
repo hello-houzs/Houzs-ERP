@@ -43,6 +43,7 @@ import {
   deriveWarehouseIdFromState,
 } from '../routes/mfg-sales-orders';
 import { activeCompanyId, isMirroredDocNo } from './companyScope';
+import { todayMyt } from './my-time';
 
 /* The Supabase client threaded through the routes is loosely typed (`any` in
    every sibling helper — see mfg-pricing-recompute.ts / so-audit callers). Keep
@@ -271,7 +272,7 @@ export async function applySoAmendment(
       const { error: insErr } = await sb.from('mfg_sales_order_items').insert({
         ...(soCompanyId != null ? { company_id: soCompanyId } : {}),
         doc_no:                  docNo,
-        line_date:              new Date().toISOString().slice(0, 10),
+        line_date:              todayMyt(),
         item_group:             itemGroup,
         item_code:              itemCode,
         uom:                    'UNIT',

@@ -9,7 +9,7 @@ import { useAuth } from "../auth/AuthContext";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { usePrompt } from "../vendor/scm/components/PromptDialog";
-import { formatCurrency, formatDate } from "../lib/utils";
+import { formatCurrency, formatDate, todayInAppTz } from "../lib/utils";
 import { pmsStageLabel, pmsStageVariant, type PmsStageVariant } from "../vendor/scm/lib/pms-status";
 import "./mobile.css";
 
@@ -2735,7 +2735,7 @@ function FinancialSnapshot({
     if (amtStr == null) return;
     const ref = await prompt({ title: "Reference no. (optional)", placeholder: "e.g. INV-123" });
     if (ref == null) return;
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayInAppTz();
     setBusy(true);
     try {
       await api.post(`/api/sales/entries`, {

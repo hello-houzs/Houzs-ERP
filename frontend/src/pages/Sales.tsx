@@ -12,7 +12,7 @@ import { useStickyFilters } from "../hooks/useStickyFilters";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { usePageAccess } from "../auth/PageGuard";
-import { formatCurrency, formatDate, formatDateTime, cn } from "../lib/utils";
+import { formatCurrency, formatDate, formatDateTime, cn, todayInAppTz } from "../lib/utils";
 import { DataTable, type Column } from "../components/DataTable";
 import { EmptyState } from "../components/EmptyState";
 import { Pagination } from "../components/Pagination";
@@ -683,7 +683,7 @@ export function EntryPanel({
 }) {
   const toast = useToast();
   const auth = useAuth();
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayInAppTz();
   // Quick-log rows carry the literal "(quick log)" sentinel in
   // customer_name. Strip it so the rep sees an empty input and types
   // a real name into it; the gating below blocks Save & submit until
