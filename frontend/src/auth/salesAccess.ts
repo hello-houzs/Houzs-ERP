@@ -1,4 +1,4 @@
-import type { AuthUser, AccessLevel } from "../types";
+import { ACCESS_RANK, type AuthUser, type AccessLevel } from "../types";
 import { COSTING_DISPLAY_ENABLED } from "@2990s/shared";
 
 /**
@@ -104,7 +104,19 @@ export function quickActionAccess(
   pageAccess: (page: string) => AccessLevel,
 ): { canNewSo: boolean; canNewCase: boolean } {
   return {
-    canNewSo: can("scm.access") || pageAccess("scm.sales.orders") !== "none",
+    /* `edit`, not "not none" — the backend's area guard requires it and this
+       gate must not promise what that will refuse. `scm/middleware/area-guard`
+       is explicit: GET/HEAD need `view`, POST/PATCH/PUT/DELETE need `edit`,
+       "else 403 (ENFORCED)". A view-level Sales Executive could therefore open
+       the New SO form and reach "Create Sales Order", and the confirm PATCH
+       /:docNo/status came back 403 with the button still sitting there — the
+       owner hit exactly that on 2026-07-17.
+       ACCESS_RANK already existed (types.ts, and PageGuard has compared through
+       it since it was written) and mirrors the backend's levelRank rank-for-rank.
+       Nobody called it here; `!== "none"` was the improvisation. */
+    canNewSo:
+      can("scm.access") ||
+      ACCESS_RANK[pageAccess("scm.sales.orders")] >= ACCESS_RANK.edit,
     canNewCase:
       isSalesStaff(user) ||
       can("service_cases.write") ||
