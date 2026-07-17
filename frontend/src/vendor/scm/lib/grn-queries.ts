@@ -245,13 +245,49 @@ export const usePurchaseInvoiceFromGrn = () => {
   });
 };
 
+/* The arg widened from a bare `grnId: string` to an object on 2026-07-17 so a
+   key could travel with it — the bare string was the whole reason
+   fix/doc-idempotency deferred this one. `idempotencyKey` is OPTIONAL and is NOT
+   part of the body (the body is built explicitly here, so there is no rest-spread
+   to leak it as a document field).
+
+   WHAT THE KEY IS FOR, and it is not the case the deferral assumed. This is a
+   context-menu action on a LIST row (GoodsReceived.tsx) with NO pending guard —
+   no disabled state, no spinner, no visual feedback of any kind. The premise
+   under the other 17 ("the mechanism is NOT the double-tap — every form disables
+   on submit") is simply FALSE here, so BOTH halves are live: the double-tap AND
+   the retry after an apparent failure. Two in-flight posts each read
+   remaining = qty_accepted - returned_qty BEFORE either has written, so both
+   copy the full remaining and both create a PR — stock OUT twice and the refund
+   booked twice. adjustGrnReturnedQty then CLAMPS returned_qty to qty_accepted
+   (purchase-returns.ts:126), so the GRN reads "fully returned" while twice the
+   goods left. The clamp hides the duplicate from every downstream gate; on-hand
+   is the only witness, at the next stock count.
+
+   WHY per-GRN IS safe here, given more than one return per GRN IS valid.
+   purchase-returns.ts:806-807 is explicit — "a GRN can be returned across
+   multiple PRs (0106)" — so a key bound to the grnId FOREVER would swallow a
+   real second return, which is worse than the duplicate. It is not bound
+   forever. /from-grn always copies ALL remaining and drains returned_qty to
+   qty_accepted (:873-876), so the ONLY way to reach a legitimate second return
+   is to trim PR-1 first, which RELEASES the qty (:1270) — and trimming means
+   opening the PR, i.e. leaving the list. The caller's ref dies with that mount
+   and the next visit mints a fresh key, so the second return runs for real.
+   Within ONE mount, two clicks on the SAME GRN are always one intent.
+
+   The sequential retry is already domain-guarded (the second post finds
+   remaining = 0 and 400s "GRN is fully returned"), so the key does not save the
+   document there — it upgrades a confusing 400 into a replay of the original
+   201, landing the operator on the PR that actually exists. The duplicate it
+   genuinely PREVENTS is the concurrent one above. */
 export const usePurchaseReturnFromGrn = () => {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (grnId: string) =>
-      authedFetch<{ id: string; returnNumber: string }>(`/purchase-returns/from-grn`, {
-        method: 'POST', body: JSON.stringify({ grnId }),
-      }),
+    mutationFn: ({ grnId, idempotencyKey }: { grnId: string; idempotencyKey?: string }) =>
+      authedFetch<{ id: string; returnNumber: string }>(`/purchase-returns/from-grn`,
+        idempotentInit(idempotencyKey, {
+          method: 'POST', body: JSON.stringify({ grnId }),
+        })),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['purchase-returns'] });
       qc.invalidateQueries({ queryKey: ['grns'] });

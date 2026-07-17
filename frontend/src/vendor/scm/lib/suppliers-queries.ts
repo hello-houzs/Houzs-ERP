@@ -763,32 +763,42 @@ export function useCreatePisFromGrnItems() {
     PR #157 — expectedAt + purchaseLocationId now required (applied to every
     PO created from the batch).
 
-    DELIBERATELY NOT idempotency-keyed (fix/doc-idempotency, 2026-07-17), and
-    this is the reasoning rather than an omission — it reads like a gap next to
-    the mobile convert wizard, which sends a key to THIS SAME endpoint.
+    `idempotencyKey` is OPTIONAL and destructured OUT of the body — the
+    rest-spread would otherwise post it as a PO field. fix/doc-idempotency
+    (2026-07-17) left this hook bare on the reasoning that its only live caller
+    was Mrp.tsx, a long-lived page with no bindable intent. That reasoning had a
+    factual error under it and one real half:
 
-    It is not drift: it is one rule (lib/idempotency.ts — bind the key to the
-    INTENT) giving two answers because the two surfaces have different mount
-    semantics. The wizard is mounted per convert run and unmounts on success, so
-    its mount IS one intent. This hook's live caller is Mrp.tsx, a long-lived
-    planning page that stays mounted and runs convert after convert — a per-mount
-    key there would make runs 2..N replay run 1 and silently raise NOTHING while
-    reporting POs created, which is worse than the duplicate it would prevent
-    (the same reason fix/so-idempotency skipped SoFromProducts).
+    THE ERROR — this hook has TWO live callers, not one. PurchaseOrderFromSo.tsx
+    (routed at /scm/purchase-orders/from-so) is the "Convert from SO" / "Add Line
+    Item" picker, and it is an ordinary route-level form: ONE post per mount, and
+    it navigates to the PO on success. Its mount IS one intent, so a per-mount
+    useIdempotencyKey() is correct there — the same shape as the other 17. That
+    caller is the one that most needs a key: it does NOT send fromMrp, so its
+    lines are capped by remaining, and a double-fire appends the SAME picked
+    lines to the SAME PO twice whenever remaining >= 2x the pick. Missing it is
+    the "a hook is not a call site" lesson repeating in the very PR that wrote it
+    down.
 
-    Nor is there a safe payload-derived key: `fromMrp: true` makes MRP converts
-    reference-only and INFINITE by design (see the flag below) — the same picks
-    converted twice are two LEGITIMATE POs, so keying on the payload is exactly
-    lib/idempotency.ts rule (2), and would drop the second.
+    THE REAL HALF — Mrp.tsx genuinely has no per-MOUNT intent, and a per-mount
+    key there really would make runs 2..N replay run 1 and silently raise NOTHING
+    while reporting POs created. But "no per-mount intent" is not "no intent":
+    the MRP run (the committed pick selection, from first submit until the run
+    LANDS) is a real, bindable object, and Mrp.tsx now binds to it. The key is
+    minted per run and retired the moment ANY 2xx arrives — see the ref there for
+    why retiring on landing is mandatory rather than the module's usual sin.
 
-    No optional param was added either: no caller could pass one, and a param
-    nobody sends is the precise disease this line of work exists to fix — a
-    mechanism that ships without an opt-in and reads as coverage. Wire it IN the
-    PR that gives this flow a real per-run intent to bind to. */
+    fromMrp does NOT make a key unsafe, and it is why the MRP caller is the more
+    dangerous of the two: reference-only converts bypass qty_exceeds_remaining,
+    so a double-fire has NO server-side backstop and duplicate-orders the whole
+    shortage from the supplier. `fromMrp` makes a PAYLOAD-derived key unsafe
+    (identical picks twice are two legitimate POs) — which is an argument against
+    hashing the body, not against binding to the run. */
 export function useCreatePosFromSoItems() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: {
+    mutationFn: ({ idempotencyKey, ...body }: {
+      idempotencyKey?: string;
       /* Commander 2026-05-31 — each pick now carries its own chosen supplier
          (MRP picks supplier per shortage SO line). NULL = let the server fall
          back to the SKU's main supplier. The backend groups by
@@ -825,7 +835,7 @@ export function useCreatePosFromSoItems() {
         added?: number;
       }>(
         `/mfg-purchase-orders/from-sos`,
-        { method: 'POST', body: JSON.stringify(body) },
+        idempotentInit(idempotencyKey, { method: 'POST', body: JSON.stringify(body) }),
       ),
     onSuccess: (_, vars) => {
       qc.invalidateQueries({ queryKey: ['mfg-purchase-orders'] });

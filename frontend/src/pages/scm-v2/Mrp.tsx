@@ -20,7 +20,7 @@
 // Backed by GET /mrp (apps/api/src/routes/mrp.ts).
 // ----------------------------------------------------------------------------
 
-import { useState, type ReactNode } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router';
 import { ChevronRight, ChevronDown, RefreshCw, Truck, ShoppingCart, CalendarRange, Info, Clock } from 'lucide-react';
 import {
@@ -31,6 +31,7 @@ import {
 import { authedFetch } from '../../vendor/scm/lib/authed-fetch';
 import { useAuth, isAdminLevel } from '../../vendor/scm/lib/auth';
 import { useCreatePosFromSoItems } from '../../vendor/scm/lib/suppliers-queries';
+import { newIdempotencyKey } from '../../lib/idempotency';
 import { fmtDateOrDash } from '@2990s/shared';
 import { DateField } from '../../vendor/scm/components/DateField';
 import { sortByText } from '../../vendor/scm/lib/sort-options';
@@ -445,6 +446,41 @@ export const Mrp = () => {
   const data = q.data;
   const createPos = useCreatePosFromSoItems();
 
+  /* One key per convert RUN — the intent this page DOES have, and the reason
+     fix/doc-idempotency's "no bindable intent here" was half right. The MOUNT is
+     not the intent (this page stays open and runs convert after convert; a
+     per-mount key would make runs 2..N replay run 1 and silently raise NOTHING
+     while reporting POs created) and neither is the PAYLOAD (fromMrp converts
+     are reference-only and infinite BY DESIGN, so identical picks twice are two
+     legitimate POs). The RUN is: it begins when the operator commits a pick
+     selection through the Proceed → confirm dialog, and it ends when the server
+     answers. A ref, not state — nothing renders from it.
+
+     Why the key must be RETIRED ON LANDING, which lib/idempotency.ts normally
+     forbids ("retired by the intent ENDING, never by the write succeeding").
+     Both 2xx branches force it:
+       · total > 0 → the run landed, onSuccess CLEARS the selection and names the
+         POs. The selection IS the intent's representation, so clearing it ends
+         the intent — the sanctioned "dies with the row on success" shape, not the
+         forbidden rotate(). Keeping the key would make the operator's NEXT,
+         genuinely different selection replay this run's response.
+       · total === 0 → mfg-purchase-orders.ts:1831 answers 201 { created: [], total: 0 }
+         when every bucket's line-insert failed and its header was rolled back.
+         NOTHING was created, but the 201 IS claimed. Keeping the key would replay
+         that empty answer forever and the operator could never order these lines.
+     The module's no-rotate reasoning does not bite here: it guards the case where
+     a step AFTER a successful post fails and invites a re-press. Nothing here can
+     — setDialog runs synchronously after the (unawaited) refetch, so a stalled
+     refetch still shows "Successfully created N POs" with the numbers.
+
+     On ERROR the key is deliberately KEPT. A non-2xx already deletes the claim
+     server-side (idempotency.ts:103-108), so a genuinely failed run re-claims and
+     re-runs; the key only bites when the post COMMITTED and the response was lost
+     — the 4G case — where the selection is still on screen, "Order failed" invites
+     the re-press, and fromMrp means the server has NO qty backstop to stop it
+     duplicate-ordering the whole shortage. That is the bug this exists for. */
+  const runKeyRef = useRef<string | null>(null);
+
   /* Four category tabs (Commander 2026-06-15): Sofa is fed from the per-SO sofa
      SETS; the other three filter the SKU payload to their own category so a
      stray category can't leak across tabs. */
@@ -542,8 +578,13 @@ export const Mrp = () => {
        SO gets its own PO. fromMrp tags every PO line as reference-only so it
        never locks the source SO line (infinite-convert). */
     const body = { picks, mode: poMode, fromMrp: true, ...(expectedAt ? { expectedAt } : {}) };
-    createPos.mutate(body, {
+    const runKey = runKeyRef.current ?? newIdempotencyKey();
+    runKeyRef.current = runKey;
+    createPos.mutate({ ...body, idempotencyKey: runKey }, {
       onSuccess: (res) => {
+        // The run landed (either branch below) — end it, so the next Proceed is a
+        // new run with a new key. See runKeyRef for why this is mandatory.
+        runKeyRef.current = null;
         if (!res.total) {
           setDialog({
             kind: 'info',
