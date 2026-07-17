@@ -15,6 +15,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
+import { idempotentInit } from '../../../lib/idempotency';
 import { serviceNotify } from './dialog-service';
 
 /* ── Purchase Invoice ────────────────────────────────────────────────── */
@@ -93,10 +94,20 @@ export const useCancelPurchaseInvoice = () => {
   });
 };
 
+/* `idempotencyKey` is OPTIONAL and must be destructured OUT of the body — the
+   rest-spread would otherwise post it as a PI field. Pass one per PI intent (see
+   lib/idempotency.ts): the middleware replays the first response — the SAME
+   invoiceNumber — instead of booking the supplier's bill twice. Omitting it is
+   exactly today's behaviour (the middleware no-ops).
+
+   A duplicate PI is a payable the company does not owe; usePostPurchaseInvoice
+   above then posts it to the accounts. */
 export const useCreatePurchaseInvoice = () => {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: unknown) => authedFetch<{ id: string; invoiceNumber: string }>(`/purchase-invoices`, { method: 'POST', body: JSON.stringify(body) }),
+    mutationFn: ({ idempotencyKey, ...body }: { idempotencyKey?: string } & Record<string, unknown>) =>
+      authedFetch<{ id: string; invoiceNumber: string }>(`/purchase-invoices`,
+        idempotentInit(idempotencyKey, { method: 'POST', body: JSON.stringify(body) })),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['purchase-invoices'] }),
   });
 };

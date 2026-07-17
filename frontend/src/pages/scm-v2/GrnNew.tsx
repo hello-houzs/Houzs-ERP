@@ -33,6 +33,7 @@ import { ArrowLeft, Plus, Save, Trash2, X, ArrowRightLeft, ChevronDown } from 'l
 import { Button } from '@2990s/design-system';
 import { activeOptions, buildVariantSummary, fmtDateOrDash, isServiceLine, maintPickerValues } from '@2990s/shared';
 import { useCreateGrn, usePostGrn } from '../../vendor/scm/lib/grn-queries';
+import { useIdempotencyKey } from '../../lib/idempotency';
 import { useActiveCurrencies, rateFor } from '../../vendor/scm/lib/currencies-queries';
 import { CurrencySelect } from '../../vendor/scm/components/CurrencySelect';
 import { usePurchaseOrderDetail, usePurchaseOrders, useSuppliers, useSupplierDetail } from '../../vendor/scm/lib/suppliers-queries';
@@ -181,6 +182,35 @@ export const GrnNew = () => {
   );
 
   const create = useCreateGrn();
+  /* One key for the one receipt this page is open to raise (lib/idempotency.ts).
+     Minted once by useState's lazy init, so it is stable across re-renders and
+     across a re-press after a stalled submit.
+
+     This page is the one create surface in the set that does NOT navigate on
+     success — it shows ActionResultDialog and stays mounted — so the reasoning
+     is spelled out rather than inherited:
+
+     WHY STABLE IS RIGHT HERE. The submit is TWO calls: create, then (non-draft)
+     `post.mutateAsync(createRes.id)` — both inside one try. If the POST fails,
+     the catch shows "Save failed" WHILE THE GRN ALREADY EXISTS, so a re-press is
+     not hypothetical, it is invited by the copy. With a stable key that re-press
+     REPLAYS the first grnNumber and re-runs post on the SAME id (itself an
+     idempotent no-op when already POSTED — see usePostGrn); without one it books
+     the stock IN a second time. This is exactly the case lib/idempotency.ts
+     refuses to rotate a key for, and it is live here rather than theoretical.
+
+     THE RESIDUAL, STATED. Because the mount outlives the document, an operator
+     who closes the success dialog, re-authors the lines and submits AGAIN gets
+     the first GRN replayed — one document, not two. Accepted, not overlooked:
+     the lines are not reset on success, so a re-press submits the SAME goods and
+     replay is the correct answer; raising a genuinely different receipt goes
+     through the picker route (/scm/grns/from-po), which remounts this page and
+     mints a new key. It is also not silent — the dialog names the FIRST GRN's
+     number. Fixing the residual properly means retiring the key only after the
+     whole create+post sequence lands, which needs a rotate() that
+     lib/idempotency.ts deliberately does not have; not worth inventing here for
+     a path the picker already covers. */
+  const idemKey = useIdempotencyKey();
   const post   = usePostGrn();
   const saving = create.isPending || post.isPending;
 
@@ -580,6 +610,7 @@ export const GrnNew = () => {
     }
     try {
       const createRes = await create.mutateAsync({
+        idempotencyKey: idemKey,
         purchaseOrderId: headerPoId,
         supplierId,
         // Draft/Confirmed — when true the server lands the GRN at DRAFT and

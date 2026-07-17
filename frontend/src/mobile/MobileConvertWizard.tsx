@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invalidateConvertShared } from "./sharedInvalidate";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
+import { idempotentInit, useIdempotencyKey } from "../lib/idempotency";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { fmtCenti } from "../lib/scm";
 import { formatDate } from "../lib/utils";
@@ -149,6 +150,33 @@ export function MobileConvertWizard({
   const meta = META[target];
   const qc = useQueryClient();
   const notify = useNotify();
+  /* One key for the one convert this wizard is open to run (lib/idempotency.ts).
+     This is the MOBILE half of the same fix the desktop *New pages carry — a
+     document protected on one side only is a new divergence, and this wizard is
+     the ONLY mobile create surface for DO / SI / GRN / PO. It posts through a
+     bare authedFetch rather than the vendored hooks, which is exactly why the
+     desktop-side hook fix does not reach it.
+
+     MobileApp mounts this behind `screen.t === "convert"` and both onBack and
+     onCreated switch screens (MobileApp.tsx:436-444), so the MOUNT is exactly
+     one convert run: minted once by useState's lazy init (stable across every
+     re-render), the same on a re-press after a stalled 4G submit — the phone in
+     a customer's driveway is the whole reason this exists — and gone on remount,
+     so the next convert is a new key. `target` is fixed for the life of a mount,
+     so one mount performs exactly one POST to one pathname.
+
+     ALL FOUR branches share this key, INCLUDING the po branch that raises N
+     POs, and that is deliberate rather than an oversight of the SoFromProducts
+     rule. The rule is about N REQUESTS, not N documents: SoFromProducts loops
+     `await createSo.mutateAsync(...)` per spec, so one key across that loop
+     makes orders 2..N replay order 1 and silently collapse into one. Here the
+     N POs are raised INSIDE ONE request — /mfg-purchase-orders/from-sos groups
+     the picks server-side and answers `{ created: [...], total }` — so the
+     middleware's claim covers the whole batch and a replay returns all N
+     poNumbers verbatim. One request, one claim, one response: nothing to
+     collapse. Same for the grn branch, where N selected POs converge into ONE
+     grnNumber (poCount counts SOURCES, not documents raised). */
+  const idemKey = useIdempotencyKey();
 
   // step 1 → source picked ; step 2 → lines/qty (or GRN supplier confirm) ; step 3 handled by submit.
   // A single-source target (SO→DO/PO, DO→SI) seeds selectedSourceId from
@@ -292,26 +320,35 @@ export function MobileConvertWizard({
       if (target === "do") {
         const body = { picks: picks.map((l) => ({ soItemId: l.lineId, qty: clampQty(l.qty, l.remaining) })) };
         // authedFetch handles the short_stock 409 in-app (Ship anyway? → replay).
-        const res = await authedFetch<{ doNumber?: string }>("/delivery-orders-mfg/from-sos", {
-          method: "POST",
-          body: JSON.stringify(body),
-        });
+        /* The short_stock 409 replay authedFetch runs internally re-sends this
+           SAME key with confirmShortStock:true — correct and load-bearing: the
+           middleware DELETES the claim on any non-2xx (idempotency.ts:103-108),
+           so the 409'd first attempt leaves nothing to replay and the confirmed
+           retry runs for real. */
+        const res = await authedFetch<{ doNumber?: string }>("/delivery-orders-mfg/from-sos",
+          idempotentInit(idemKey, {
+            method: "POST",
+            body: JSON.stringify(body),
+          }));
         newDocNo = str(res?.doNumber);
         await qc.invalidateQueries({ queryKey: ["mobile-module"] });
       } else if (target === "si") {
         const body = { picks: picks.map((l) => ({ doItemId: l.lineId, qty: clampQty(l.qty, l.remaining) })) };
-        const res = await authedFetch<{ invoiceNumber?: string }>("/sales-invoices/from-dos", {
-          method: "POST",
-          body: JSON.stringify(body),
-        });
+        const res = await authedFetch<{ invoiceNumber?: string }>("/sales-invoices/from-dos",
+          idempotentInit(idemKey, {
+            method: "POST",
+            body: JSON.stringify(body),
+          }));
         newDocNo = str(res?.invoiceNumber);
         await qc.invalidateQueries({ queryKey: ["mobile-module"] });
       } else if (target === "po") {
         const body = { picks: picks.map((l) => ({ soItemId: l.lineId, qty: clampQty(l.qty, l.remaining) })) };
-        const res = await authedFetch<{ created?: Array<{ poNumber?: string }> }>("/mfg-purchase-orders/from-sos", {
-          method: "POST",
-          body: JSON.stringify(body),
-        });
+        /* N POs from ONE request — safe under one key; see the mint above. */
+        const res = await authedFetch<{ created?: Array<{ poNumber?: string }> }>("/mfg-purchase-orders/from-sos",
+          idempotentInit(idemKey, {
+            method: "POST",
+            body: JSON.stringify(body),
+          }));
         const created = res?.created ?? [];
         newDocNo = created.map((p) => str(p.poNumber)).filter(Boolean).join(", ");
         await qc.invalidateQueries({ queryKey: ["mobile-module"] });
@@ -320,10 +357,11 @@ export function MobileConvertWizard({
         const body: Record<string, unknown> = { purchaseOrderIds: selectedPoIds };
         if (deliveryNoteRef.trim()) body.deliveryNoteRef = deliveryNoteRef.trim();
         if (notes.trim()) body.notes = notes.trim();
-        const res = await authedFetch<{ grnNumber?: string }>("/grns/from-pos", {
-          method: "POST",
-          body: JSON.stringify(body),
-        });
+        const res = await authedFetch<{ grnNumber?: string }>("/grns/from-pos",
+          idempotentInit(idemKey, {
+            method: "POST",
+            body: JSON.stringify(body),
+          }));
         newDocNo = str(res?.grnNumber);
         await qc.invalidateQueries({ queryKey: ["mobile-module"] });
       }

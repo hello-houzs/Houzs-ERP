@@ -28,6 +28,7 @@ import {
   useCreateMfgDeliveryOrder, useAddDeliveryOrderPayment,
   useMfgSalesOrderDetail, useSalesOrderPayments,
 } from '../../vendor/scm/lib/delivery-order-queries';
+import { useIdempotencyKey } from '../../lib/idempotency';
 import { useStaff } from '../../vendor/scm/lib/admin-queries';
 import { useDrivers } from '../../vendor/scm/lib/drivers-queries';
 import { sortByText, sortByNumeric } from '../../vendor/scm/lib/sort-options';
@@ -64,6 +65,19 @@ export const DeliveryOrderNew = () => {
   const fromPicks = searchParams.get('fromPicks') === '1';
 
   const create = useCreateMfgDeliveryOrder();
+  /* One key for the one DO this page is open to raise (lib/idempotency.ts).
+     Route-level form; onSuccess navigates to the DO detail unconditionally, so
+     the MOUNT is exactly one DO: minted once by useState's lazy init (stable
+     across every re-render), the same on a re-press after a stalled 4G submit —
+     so the retry REPLAYS the first doNumber instead of shipping the goods twice
+     — and fresh on the next mount, so a genuinely new DO is new.
+
+     Both buttons (Save as Draft / Create) share this key, which is correct: they
+     are one operator raising ONE DO, and asDraft only picks its landing status.
+     A draft that SUCCEEDS always navigates away, so pressing the other button
+     afterwards is unreachable; if onSuccess ever threw before navigate, the
+     replay hands back the DO that already exists rather than raising a second. */
+  const idemKey = useIdempotencyKey();
   const addPayment = useAddDeliveryOrderPayment();
   const staffQ = useStaff();
   const driversQ = useDrivers();
@@ -289,6 +303,7 @@ export const DeliveryOrderNew = () => {
 
     create.mutate(
       {
+        idempotencyKey: idemKey,
         /* DRAFT flow (2026-06-24) — asDraft lands the DO as DRAFT (no stock OUT,
            no SO-delivered sync) so the operator can review before shipping. */
         asDraft: asDraft || undefined,

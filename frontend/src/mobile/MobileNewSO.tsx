@@ -452,7 +452,17 @@ export async function createDraftFromPrefill(prefill: MobileScanPrefill, idempot
 
   const res = await authedFetch<{ docNo: string }>(`/mfg-sales-orders`,
     idempotentInit(idempotencyKey, { method: "POST", body: JSON.stringify(body) }));
-  return res?.docNo ?? "";
+  /* Was `return res?.docNo ?? ""` — flagged by fix/so-idempotency and taken here
+     (reference_houzs_nullish_hides_ignorance). The `?? ""` turned "the server
+     answered 2xx with a body I don't understand" into a confident empty docNo:
+     the ONLY caller is MobileScan's `void createDraftFromPrefill(...).catch(...)`,
+     so a "" return silently skipped the .catch and the operator was told nothing
+     while their scanned slip produced no order — the same silence this whole PR
+     is about. Throwing is not a new contract, it is THIS function's documented
+     one ("Throws on failure so the caller can show a plain-language notify"),
+     which the `??` quietly broke. */
+  if (!res?.docNo) throw new Error("The order was not saved. Scan it again.");
+  return res.docNo;
 }
 
 /* Map a persisted SoItem (edit prefill) back into an editable LineItem. */

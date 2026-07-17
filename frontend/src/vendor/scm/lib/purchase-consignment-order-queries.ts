@@ -28,6 +28,7 @@ import type {
   NewPoItem,
 } from './suppliers-queries';
 import { authedFetch } from './authed-fetch';
+import { idempotentInit } from '../../../lib/idempotency';
 
 /* ── List ────────────────────────────────────────────────────────────── */
 export function usePurchaseConsignmentOrders(opts?: { status?: PoStatus; supplierId?: string }) {
@@ -61,10 +62,22 @@ export function usePurchaseConsignmentOrderDetail(id: string | null) {
 }
 
 /* ── Create ──────────────────────────────────────────────────────────── */
+/* `idempotencyKey` is OPTIONAL and is destructured OUT of the body — the
+   rest-spread would otherwise post it as an order field. Pass one per order
+   intent (see lib/idempotency.ts): the middleware replays the first response —
+   the SAME poNumber — instead of committing the company to the consignment
+   twice. Omitting it is exactly today's behaviour (the middleware no-ops).
+
+   NOT on fix/so-idempotency's list of remaining creates (it named the PC Receive
+   and PC Return but not the ORDER those two hang off), and covered here for the
+   same reason the SO was: the source document is the one that must not double.
+   The omission is itself the pattern — the list was written by reading the
+   files, and this hook lives in a file of its own. */
 export function useCreatePurchaseConsignmentOrder() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: {
+    mutationFn: ({ idempotencyKey, ...body }: {
+      idempotencyKey?: string;
       supplierId: string;
       currency?: Currency;
       poDate?: string;
@@ -73,10 +86,11 @@ export function useCreatePurchaseConsignmentOrder() {
       items?: NewPoItem[];
       purchaseLocationId?: string | null;
     }) =>
-      authedFetch<{ id: string; poNumber: string }>(`/purchase-consignment-orders`, {
-        method: 'POST',
-        body: JSON.stringify(body),
-      }),
+      authedFetch<{ id: string; poNumber: string }>(`/purchase-consignment-orders`,
+        idempotentInit(idempotencyKey, {
+          method: 'POST',
+          body: JSON.stringify(body),
+        })),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['pc-order'] }),
   });
 }

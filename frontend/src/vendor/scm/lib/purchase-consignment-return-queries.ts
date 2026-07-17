@@ -22,6 +22,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { serviceNotify } from './dialog-service';
 import { authedFetch } from './authed-fetch';
+import { idempotentInit } from '../../../lib/idempotency';
 
 /* ── List ────────────────────────────────────────────────────────────── */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -71,13 +72,19 @@ export const useReturnablePcReceiveLines = () => useQuery({
 });
 
 /* ── Create + post ───────────────────────────────────────────────────── */
+/* `idempotencyKey` is OPTIONAL and must be destructured OUT of the body — the
+   rest-spread would otherwise post it as a return field. Pass one per return
+   intent (see lib/idempotency.ts): the middleware replays the first response —
+   the SAME returnNumber — instead of returning the consigned goods twice.
+   Omitting it is exactly today's behaviour (the middleware no-ops). */
 export const useCreatePurchaseConsignmentReturn = () => {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: unknown) =>
-      authedFetch<{ id: string; returnNumber: string }>(`/purchase-consignment-returns`, {
-        method: 'POST', body: JSON.stringify(body),
-      }),
+    mutationFn: ({ idempotencyKey, ...body }: { idempotencyKey?: string } & Record<string, unknown>) =>
+      authedFetch<{ id: string; returnNumber: string }>(`/purchase-consignment-returns`,
+        idempotentInit(idempotencyKey, {
+          method: 'POST', body: JSON.stringify(body),
+        })),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['pc-return'] }),
   });
 };
