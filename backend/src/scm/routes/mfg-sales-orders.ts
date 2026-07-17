@@ -367,6 +367,20 @@ async function soProceedGateBlocked(
   return ok ? null : SO_PROCEED_GATE_RESPONSE;
 }
 
+/* The venue MASTER is public.project_venues (INTEGER ids, stringified by the FE
+   venue-queries mapper). mfg_sales_orders.venue_id is a uuid FK to scm.venues —
+   the vendored 2990 table, which carries no Houzs rows. Writing a project_venues
+   id into that uuid column is not a mismatch that resolves to NULL, it is a hard
+   500 ("invalid input syntax for type uuid"), so any path that accepts a caller's
+   venueId must pass it through here: a real uuid rides, anything else becomes
+   NULL. The venue TEXT column is what actually carries the venue. */
+function venueIdUuidOrNull(v: unknown): string | null {
+  return typeof v === 'string' &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v)
+    ? v
+    : null;
+}
+
 /* Owner 2026-05-31 — Identity + value columns a downstream DO / SI snapshots.
    These are frozen on the SO header once a non-cancelled child exists; payment,
    remark and scheduling columns are intentionally NOT in this set so the shop
@@ -2978,12 +2992,19 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
      staff uuid; `callerStaff` is read from it ~60 lines above and its `role`
      drives the POS-role venue branch). And the home-venue chain does stamp:
      staff.venue_id -> venueIdToStamp -> venues.name -> resolvedVenueName, plus
-     venue_id itself via venueIdUuid below. It resolves nothing TODAY only for two
-     DATA reasons — nothing in Houzs writes scm.staff.venue_id (0066 does not set
-     it; /api/scm/staff only reads it), and scm.venues has no rows — so the moment
-     a staff row carries a real scm.venues venue_id, that path stamps the venue and
-     this fallback correctly stands down. Deleting it would silently re-attribute
+     venue_id itself via venueIdUuid below. Deleting it would silently re-attribute
      every venue-assigned salesperson's SO to their project instead of their venue.
+     But do not over-read it either (the correction that cost two audits): the
+     home-venue tier is 2990's MODEL, not a Houzs feature waiting on a backfill.
+     Houzs cannot reach it BY CONSTRUCTION, not "for two data reasons" — the only
+     venue master Houzs administers is public.project_venues (both /api/projects/
+     venues and the POS-facing /api/scm/venues write THAT table), so no surface in
+     this system can mint the scm.venues row a staff.venue_id would have to point
+     at. And the owner already ruled Houzs does not want the model: "houzs 的 venue
+     是 manually 選的" (2026-06-22, see SalesOrderNew.tsx) — venue is picked by hand
+     and pre-filled from the active project, which is exactly this fallback. The
+     tier stays because the 2990 mirror is the case that lights it up, and there
+     it is correct. It is dormant on purpose; it is not a gap to close.
      Fall back to the LOGGED-IN salesperson's currently-active exhibition project:
      the latest project (by start_date, <= the SO date) they are the PIC of OR a
      Sales Attending rep of (owner 2026-06-25: "PIC 或 Sales Attending 都算"). The
@@ -3029,18 +3050,11 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
     }
   }
 
-  /* Houzs venue_id guard — the New-SO Venue dropdown is sourced from
-     public.project_venues (INTEGER ids, mapped to string in the FE), but
-     mfg_sales_orders.venue_id is a UUID FK to the (empty/unused) scm.venues.
-     Writing a project_venues integer id into the uuid column 500s the insert
-     ("invalid input syntax for type uuid"). So only stamp venue_id when it is a
-     real uuid (a legacy scm.venues id); else NULL it — the venue TEXT column
-     (resolvedVenueName) is the source of truth for the venue. */
-  const venueIdUuid =
-    typeof venueIdToStamp === 'string' &&
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(venueIdToStamp)
-      ? venueIdToStamp
-      : null;
+  /* See venueIdUuidOrNull: the New-SO Venue dropdown is sourced from the
+     project_venues master (INTEGER ids), so its id can never be a valid
+     scm.venues uuid — venue_id NULLs and the venue TEXT (resolvedVenueName)
+     carries the value. */
+  const venueIdUuid = venueIdUuidOrNull(venueIdToStamp);
 
   // Compute totals + category breakdown
   let mattressSofa = 0, bedframe = 0, accessories = 0, others = 0, total = 0, totalCost = 0;
@@ -5503,6 +5517,15 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
      gate is bypassable by PATCHing a dirty value in afterwards. */
   const dropdownErr = await validateSoDropdownFields(sb, body, activeCompanyId(c));
   if (dropdownErr) return c.json(dropdownErr, 409);
+
+  /* The create path has guarded venue_id since the project_venues/scm.venues id
+     spaces diverged, but this map wrote the caller's venueId through RAW — and an
+     edit takes venueId from the same project_venues-backed picker the create does
+     (MobileNewSO's edit branch sends it today). It survives only because every
+     upstream venue_id is already NULL, so nothing non-uuid has reached it yet; the
+     first caller to send a picked venue on an edit would 500 the UPDATE. Same
+     rule as the create: uuid rides, anything else NULLs, venue TEXT carries it. */
+  if (body.venueId !== undefined) body.venueId = venueIdUuidOrNull(body.venueId);
 
   const map: Array<[string, string]> = [
     ['debtorCode', 'debtor_code'], ['debtorName', 'debtor_name'], ['agent', 'agent'],
