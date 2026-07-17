@@ -573,15 +573,21 @@ async function reversePvAccounting(
   sb: any,
   pvNumber: string,
 ): Promise<{ ok: boolean; status: string; jeNo?: string; jeId?: string; reason?: string }> {
-  const { data: origRows } = await sb.from('journal_entries')
+  /* A failed read used to return { ok:true, 'nothing_to_reverse' }: the PV is
+     cancelled, the caller logs nothing, and the payment stays posted to the GL —
+     money recorded as paid out on a voucher that was voided. */
+  const { data: origRows, error: origErr } = await sb.from('journal_entries')
     .select('id, je_no, entry_date, reversed, total_debit_sen, total_credit_sen, company_id')
     .eq('source_type', 'PV').eq('source_doc_no', pvNumber);
+  if (origErr) return { ok: false, status: 'reversal_read_failed', reason: `origRows: ${origErr.message}` };
   const orig = ((origRows ?? []) as Array<{ id: string; je_no: string; entry_date: string; reversed: boolean; total_debit_sen: number; total_credit_sen: number; company_id: number | null }>)
     .find((r) => !r.reversed);
   if (!orig) return { ok: true, status: 'nothing_to_reverse' };
 
-  const { data: revExisting } = await sb.from('journal_entries')
+  /* Idempotency guard — a blip defeats it and contras the voucher twice. */
+  const { data: revExisting, error: revExistErr } = await sb.from('journal_entries')
     .select('id, je_no').eq('source_type', 'PV_REVERSAL').eq('reversed_by_je', orig.id).limit(1);
+  if (revExistErr) return { ok: false, status: 'reversal_read_failed', reason: `revExisting: ${revExistErr.message}` };
   if (revExisting && revExisting.length > 0) {
     await sb.from('journal_entries').update({ reversed: true, reversed_by_je: revExisting[0].id }).eq('id', orig.id);
     return { ok: true, status: 'already_reversed' };
@@ -593,9 +599,18 @@ async function reversePvAccounting(
     return { ok: true, status: 'reversed', jeNo: orig.je_no, jeId: orig.id };
   }
 
-  const { data: origLines } = await sb.from('journal_entry_lines')
+  /* Worst of the three copies here, because a PV JE's legs are DYNAMIC (the
+     voucher's own debit accounts + chosen credit account), so unlike the SI/PI
+     mirrors there is no canonical 2-line fallback to guess with — `swapped` folds
+     to [] and the block below simply skips the insert. The reversing JE is then
+     written with total_debit_sen/total_credit_sen set to the full amount, marked
+     posted, and the original flagged reversed: an unbalanced JE header carrying a
+     total against ZERO lines, standing in the ledger as the record of a reversal
+     that reversed nothing. Pre-write — abort is free. */
+  const { data: origLines, error: origLinesErr } = await sb.from('journal_entry_lines')
     .select('account_code, debit_sen, credit_sen, party_type, party_code, party_name, notes')
     .eq('journal_entry_id', orig.id).order('line_no');
+  if (origLinesErr) return { ok: false, status: 'reversal_read_failed', reason: `origLines: ${origLinesErr.message}` };
   const oLines = (origLines ?? []) as Array<{
     account_code: string; debit_sen: number; credit_sen: number;
     party_type: string | null; party_code: string | null; party_name: string | null; notes: string | null;
