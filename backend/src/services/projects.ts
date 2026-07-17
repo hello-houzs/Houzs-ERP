@@ -1067,17 +1067,32 @@ export function stripSetupDismantle<
       }
     : detail.project;
 
-  // Document rows are identified by their cloned section NAME, so drop the
-  // whole "SETUP & DISMANTLE DOCUMENTS" section and everything under it.
-  const removedSectionIds = new Set(
+  // Document rows are identified by their cloned section NAME. Owner
+  // 2026-07-16: the sales PIC's OWN deliverables — the rows badged
+  // "SALES PIC" (Setup Image / Defect List / Event Complete Image) — stay
+  // on the wire for the stripped caller (this strip only ever runs for
+  // sales-role callers); the DRIVER / PURCHASER document rows and the crew
+  // editor stay hidden. A Setup & Dismantle section is dropped outright
+  // only when nothing under it survives.
+  const sdSectionIds = new Set(
     (detail.sections ?? [])
       .filter((s: any) => isSetupDismantleSection(s))
       .map((s: any) => s.id)
   );
-  const removedItemIds = new Set(
-    (detail.checklist ?? [])
-      .filter((it: any) => it.section_id != null && removedSectionIds.has(it.section_id))
-      .map((it: any) => it.id)
+  const removedItems = (detail.checklist ?? []).filter(
+    (it: any) =>
+      it.section_id != null &&
+      sdSectionIds.has(it.section_id) &&
+      String(it.role_label ?? "").trim().toUpperCase() !== "SALES PIC"
+  );
+  const removedItemIds = new Set(removedItems.map((it: any) => it.id));
+  const removedSectionIds = new Set(
+    [...sdSectionIds].filter(
+      (sid) =>
+        !(detail.checklist ?? []).some(
+          (it: any) => it.section_id === sid && !removedItemIds.has(it.id)
+        )
+    )
   );
 
   const base = detail.project ? { ...detail, project } : detail;
@@ -1098,11 +1113,26 @@ export function stripSetupDismantle<
   const sections = (detail.sections ?? []).filter(
     (s: any) => !removedSectionIds.has(s.id)
   );
-  // section_progress rows key off the section id (0 sentinel = uncategorised),
-  // so drop the emptied Setup & Dismantle rows outright.
-  const section_progress = (detail.section_progress ?? []).filter(
-    (sp: any) => !removedSectionIds.has(sp.id)
-  );
+  // section_progress rows key off the section id (0 sentinel = uncategorised).
+  // Drop rows for fully-removed sections; recompute counts for sections that
+  // keep their SALES PIC rows so the totals don't leak the hidden items.
+  const section_progress = (detail.section_progress ?? [])
+    .filter((sp: any) => !removedSectionIds.has(sp.id))
+    .map((sp: any) => {
+      const rm = removedItems.filter((r: any) => (r.section_id ?? 0) === sp.id);
+      if (rm.length === 0) return sp;
+      const total = Math.max(0, (sp.total ?? 0) - rm.length);
+      const done = Math.max(
+        0,
+        (sp.done ?? 0) - rm.filter((r: any) => r.status === "done").length
+      );
+      const na = Math.max(
+        0,
+        (sp.na ?? 0) - rm.filter((r: any) => r.status === "na").length
+      );
+      const denom = total - na;
+      return { ...sp, total, done, na, complete: denom > 0 && done === denom ? 1 : 0 };
+    });
   return {
     ...base,
     checklist,
