@@ -2261,19 +2261,26 @@ function PhaseBlock({
 // "+ Add" to upload — Defect List keeps its compulsory per-photo remark).
 // Tiles map to checklist items by title prefix; "Setup Image" exists twice,
 // so that tile pins to the SALES PIC-badged variant.
+// Arrangement per the owner's Card-Editor screenshot (2026-07-17): Weekend
+// full-width on top, Permit+Deco side by side, Setup Image+Defect List side
+// by side, Event Complete Image full-width at the bottom.
 const SALES_DOC_TILES: ReadonlyArray<{
   label: string;
   match: RegExp;
   salesPicOnly?: boolean;
   remarkTile?: boolean;
   requirePhotoRemark?: boolean;
+  /** Full-width tile (spans both grid columns). */
+  fullWidth?: boolean;
+  /** Media area height in px (default 80). */
+  mediaH?: number;
 }> = [
-  { label: "Weekend Activity", match: /^weekend/i, remarkTile: true },
+  { label: "Weekend Activity", match: /^weekend/i, remarkTile: true, fullWidth: true },
   { label: "Permit", match: /permit/i },
   { label: "Deco / Coffee Table", match: /^deco/i },
   { label: "Setup Image", match: /^setup image/i, salesPicOnly: true },
   { label: "Defect List", match: /^defect list/i, requirePhotoRemark: true },
-  { label: "Event Complete Image", match: /^event complete image/i },
+  { label: "Event Complete Image", match: /^event complete image/i, fullWidth: true, mediaH: 108 },
 ];
 
 function SalesDocsCard({
@@ -2401,8 +2408,9 @@ function SalesDocsCard({
           {tiles.map((t) => {
             const latest = t.files[t.files.length - 1];
             const hasContent = t.remarkTile ? !!(t.item?.notes ?? "").trim() : t.files.length > 0;
+            const mediaH = t.mediaH ?? 80;
             return (
-              <div key={t.label} style={{ border: "1px solid #d6d9d2", borderRadius: 11, overflow: "hidden", background: "#fff" }}>
+              <div key={t.label} style={{ border: "1px solid #d6d9d2", borderRadius: 11, overflow: "hidden", background: "#fff", ...(t.fullWidth ? { gridColumn: "1 / -1" } : {}) }}>
                 <div
                   role="button"
                   tabIndex={0}
@@ -2411,13 +2419,13 @@ function SalesDocsCard({
                   style={{ cursor: "pointer" }}
                 >
                   {t.remarkTile ? (
-                    <div style={{ height: 80, padding: "8px 10px", fontSize: 11, lineHeight: 1.45, color: (t.item?.notes ?? "").trim() ? "#414539" : "#9aa093", overflow: "hidden", background: "#faf9f5" }}>
+                    <div style={{ height: mediaH, padding: "8px 10px", fontSize: 11, lineHeight: 1.45, color: (t.item?.notes ?? "").trim() ? "#414539" : "#9aa093", overflow: "hidden", background: "#faf9f5" }}>
                       {(t.item?.notes ?? "").trim() || (canTick ? "Tap to write the remark…" : "No remark yet.")}
                     </div>
                   ) : latest && /^image\//.test(latest.content_type ?? "") ? (
-                    <R2Thumb r2Key={latest.r2_key} style={{ width: "100%", height: 80 }} />
+                    <R2Thumb r2Key={latest.r2_key} style={{ width: "100%", height: mediaH }} />
                   ) : (
-                    <div className="ph" style={{ height: 80 }} />
+                    <div className="ph" style={{ height: mediaH }} />
                   )}
                   <div style={{ padding: "7px 9px 4px" }}>
                     <div style={{ fontSize: 11, fontWeight: 700, color: "#11140f" }}>{t.label}</div>
