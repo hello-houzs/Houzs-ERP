@@ -130,6 +130,29 @@ async function read2990() {
   };
 }
 
+/** The stuck rows themselves, capped. "6 rows stuck" is a number to worry about;
+ *  the doc_no and last_error are what someone can act on at 2am. */
+async function stuckRows(limit = 10) {
+  const cutoff = new Date(Date.now() - STUCK_MINUTES * 60_000).toISOString();
+  const cols = "entity_key, op, status, enqueued_at, attempts, last_error";
+  if (src) {
+    return src`
+      SELECT entity_key, op, status, enqueued_at, attempts, last_error
+        FROM sync_outbox
+       WHERE status <> 'done' AND enqueued_at < ${cutoff}
+       ORDER BY enqueued_at ASC LIMIT ${limit}`;
+  }
+  const { data, error } = await rest
+    .from("sync_outbox")
+    .select(cols)
+    .neq("status", "done")
+    .lt("enqueued_at", cutoff)
+    .order("enqueued_at", { ascending: true })
+    .limit(limit);
+  if (error) throw new Error(`stuck rows: ${error.message}`);
+  return data ?? [];
+}
+
 async function main() {
   const { sourceCount, pending, sent, done, stuck, lastDelivery } = await read2990();
 
@@ -177,6 +200,17 @@ async function main() {
 
   if (alarms.length > 0) {
     console.error(`ALARM: ${alarms.join("; ")}`);
+    if (stuck > 0) {
+      const rows = await stuckRows();
+      console.error(`stuck rows (oldest ${rows.length}):`);
+      for (const r of rows) {
+        console.error(
+          `  ${r.entity_key}  op=${r.op}  status=${r.status}  enqueued=${
+            r.enqueued_at ? new Date(r.enqueued_at).toISOString() : "?"
+          }  attempts=${r.attempts}  last_error=${r.last_error ?? "(none)"}`,
+        );
+      }
+    }
     return 1;
   }
   console.log("OK: mirror healthy (no stuck rows, no persisted drift, deliveries current).");
