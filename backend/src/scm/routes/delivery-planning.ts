@@ -70,6 +70,7 @@ import { summariseReadiness, type ReadinessLine } from '../lib/so-readiness';
 import { soDeliverableRemaining } from './delivery-orders-mfg';
 import { activeCompanyId, scopeToAllowedCompanies, companyCodeMap } from '../lib/companyScope';
 import { recordSoAudit, type FieldChange } from '../lib/so-audit';
+import { computeReleaseGate } from '../../services/agents/release-gate';
 
 export const deliveryPlanning = new Hono<{ Bindings: Env; Variables: Variables }>();
 deliveryPlanning.use('*', supabaseAuth);
@@ -705,6 +706,29 @@ deliveryPlanning.get('/', async (c) => {
       balance_centi: Number(r.balance_centi ?? 0),
       balance_centi_live: liveBalanceByDoc.has(docNo) ? liveBalanceByDoc.get(docNo)! : null,
       local_total_centi: Number(r.local_total_centi ?? 0),
+      /* AR-005 delivery-release gate (docs/agents/operating-spec.md §7.10 —
+         "provides payment gate to Fulfilment and Delivery"). ADVISORY + read-only:
+         it reports RELEASE / RELEASE_WITH_COLLECTION (what POD must collect) / HOLD
+         from the balance already computed above; it does NOT block the board or the
+         DO path (that stays owner-gated). Default policy has a zero pre-dispatch
+         floor, so a normal outstanding balance surfaces as a collection amount, not
+         a hold. Live balance = GREEN; only the base-table fallback = AMBER. */
+      release_gate: (() => {
+        const total = Number(r.local_total_centi ?? 0);
+        const live = liveBalanceByDoc.has(docNo) ? liveBalanceByDoc.get(docNo)! : null;
+        const bal = live != null ? live : Number(r.balance_centi ?? 0);
+        const g = computeReleaseGate({
+          totalCenti: total,
+          paidCenti: Math.max(0, total - bal),
+          dataQuality: live != null ? 'GREEN' : 'AMBER',
+        });
+        return {
+          decision: g.decision,
+          remaining_centi: g.remainingCenti,
+          collect_on_delivery_centi: g.collectOnDeliveryCenti,
+          reason: g.reason,
+        };
+      })(),
       // dates
       so_date: r.so_date ?? null,
       processing_date: r.processing_date ?? null,
@@ -848,6 +872,19 @@ deliveryPlanning.get('/', async (c) => {
           balance_centi: 0,
           balance_centi_live: null,
           local_total_centi: 0,
+          /* Service cases carry no order balance, so the release gate is a plain
+             RELEASE — parity with the SO row's field (the board unions the two
+             shapes). Computed, not a literal, so the shape can never drift from
+             the SO side. */
+          release_gate: (() => {
+            const g = computeReleaseGate({ totalCenti: 0, paidCenti: 0 });
+            return {
+              decision: g.decision,
+              remaining_centi: g.remainingCenti,
+              collect_on_delivery_centi: g.collectOnDeliveryCenti,
+              reason: 'service case — no order balance',
+            };
+          })(),
           so_date: null,
           processing_date: null,
           // The trigger date maps into the board date fields so it lands in the
