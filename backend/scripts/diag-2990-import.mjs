@@ -23,9 +23,23 @@ if (!SUPA_URL || !SUPA_KEY || !DST) {
   process.exit(2);
 }
 const src = createClient(SUPA_URL, SUPA_KEY, { auth: { persistSession: false } });
-const dst = postgres(DST, { ssl: "require", prepare: false, max: 1 });
+// bigint -> Number, the same transform db/pg.ts applies. Without it postgres.js
+// hands back user_id as a STRING, a Map keyed on it never matches a numeric
+// users.id, and every user reads as "no grant" -- which is the exact shape of
+// the `?? 0` class: a lookup miss rendering as a confident answer.
+const dst = postgres(DST, {
+  ssl: "require",
+  prepare: false,
+  max: 1,
+  types: { bigint: { to: 20, from: [20], serialize: String, parse: Number } },
+});
 
 const norm = (e) => (e ?? "").trim().toLowerCase();
+// 2990 has shuihor00@gmail.com; Houzs has suihor00@gmail.com -- one letter
+// apart, same person. An exact-match delta would report him missing and invite
+// a duplicate account. Compare a squashed local-part too, and SHOW the near
+// misses rather than silently resolving them.
+const squash = (e) => norm(e).split("@")[0].replace(/[^a-z0-9]/g, "");
 
 async function main() {
   // --- 2990 staff ---
@@ -76,18 +90,32 @@ async function main() {
 
   // --- the delta, matched on email ---
   const houzsEmails = new Set(users.map((u) => norm(u.email)).filter(Boolean));
+  const houzsSquash = new Map();
+  for (const u of users) if (u.email) houzsSquash.set(squash(u.email), u);
+
   console.log("");
-  console.log("=== 2990 staff NOT in Houzs users (matched on email) ===");
+  console.log("=== 2990 staff vs Houzs users ===");
   let missing = 0;
+  let near = 0;
   for (const s of staff) {
     const e = norm(s.email);
     if (e && houzsEmails.has(e)) continue;
+    const nm = e ? houzsSquash.get(squash(e)) : null;
+    if (nm) {
+      near++;
+      console.log(
+        `  NEAR-MATCH  ${String(s.staff_code ?? "-").padEnd(10)} ${String(s.name ?? "-").padEnd(16)} 2990=${e}  vs  Houzs id=${nm.id} ${nm.email}  -- same person? do NOT create a duplicate`,
+      );
+      continue;
+    }
     missing++;
+    const posLocal = /\+pos@2990s\.local$/i.test(e);
     console.log(
-      `  ${String(s.staff_code ?? "-").padEnd(12)} ${String(s.name ?? "-").padEnd(18)} ${String(s.role ?? "-").padEnd(16)} ${s.email ?? "(NO EMAIL -- cannot be a Houzs user without one)"}`,
+      `  MISSING     ${String(s.staff_code ?? "-").padEnd(10)} ${String(s.name ?? "-").padEnd(16)} ${String(s.role ?? "-").padEnd(15)} ${s.email ?? "(no email)"}${posLocal ? "   <- synthetic POS-only address, not a real mailbox" : ""}`,
     );
   }
-  if (!missing) console.log("  (none -- every 2990 staff email already exists in Houzs)");
+  if (!missing && !near) console.log("  (none -- every 2990 staff email already exists in Houzs)");
+  console.log(`  totals: ${missing} missing, ${near} near-match`);
 
   console.log("");
   console.log("=== Houzs departments + positions (the targets for the both-company marking) ===");
