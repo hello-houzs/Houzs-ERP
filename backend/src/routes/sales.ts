@@ -6,6 +6,7 @@ import { sales_entries, users, projects } from "../db/schema";
 import { and, desc, eq, gte, isNull, lte, like, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { syncFinanceRollup } from "../services/projects";
+import { isScopedProjectUser } from "../services/projectAcl";
 import {
   nextSalesEntryDocNo,
   replaceItems,
@@ -103,15 +104,21 @@ async function logSalesActivity(
 }
 
 // ── Scoping helper ───────────────────────────────────────────
-// Reps (role.scope_to_pic=1) without sales.manage only see entries
-// they created. Anyone with sales.manage, or any unscoped role, sees
-// everything.
+// Scoped reps without sales.manage only see entries they created.
+// Anyone with sales.manage, or any unscoped role, sees everything.
 // Returns a single WHERE-fragment (no leading/trailing AND) that the
 // caller stitches into the final clause via " AND ". Returning a leading
 // AND here used to double up with the join — `WHERE x AND AND y`.
+//
+// isScopedProjectUser, NOT the raw scope_to_pic flag (owner 2026-07-15, the
+// same conversion projects.ts already made): some Sales positions — e.g.
+// "Test Sales Executive" — carry roles WITHOUT scope_to_pic, so the raw flag
+// was false and this returned an EMPTY predicate, fail-OPENING every sales
+// entry in the company to a rep. That reached SUM(s.amount) via fullWhere,
+// so the header tile restated the whole book's money as the rep's own.
 function buildOwnershipWhere(user: any, canManage: boolean) {
   if (canManage) return { sql: "", binds: [] as any[] };
-  if (user?.scope_to_pic) {
+  if (isScopedProjectUser(user)) {
     return { sql: "s.created_by = ?", binds: [user.id] };
   }
   return { sql: "", binds: [] as any[] };
@@ -124,8 +131,11 @@ function buildOwnershipWhere(user: any, canManage: boolean) {
 // page's Sales section used to render (page authorised by the org-position
 // tier) and then 403 here. requirePageAccessOrSalesView admits them by code
 // and sets access_level (director → full = sees every entry; sales staff →
-// partial = own+downline via buildOwnershipWhere) without weakening any
-// non-sales caller. WRITE routes below keep requirePageAccess("sales","full").
+// partial, narrowed to OWN entries by buildOwnershipWhere) without weakening
+// any non-sales caller. WRITE routes below keep requirePageAccess("sales","full").
+// "own+downline" is what this comment used to claim; there is no downline
+// resolver in this file and never has been (subtreeUserIds is not imported).
+// The claim mattered because it described the fail-open as if it were a rule.
 app.get("/entries", requirePageAccessOrSalesView("sales"), async (c) => {
   const user = c.get("user");
   const canManage = c.get("access_level") === "full";
@@ -317,8 +327,10 @@ app.get("/entries/export", requirePageAccess("sales"), async (c) => {
     );
   }
   // Reps without sales.manage only export their own rows. Same rule as
-  // the list endpoint's buildOwnershipWhere.
-  if (!canManage && user?.scope_to_pic) {
+  // the list endpoint's buildOwnershipWhere — and keyed off the same
+  // isScopedProjectUser predicate, so an export can never be wider than the
+  // list it exports (the raw scope_to_pic flag left both fail-open).
+  if (!canManage && isScopedProjectUser(user)) {
     conds.push(eq(sales_entries.created_by, user.id));
   }
 
@@ -564,8 +576,9 @@ app.get("/entries/:id", requirePageAccess("sales"), async (c) => {
     .first<any>();
   if (!row) return c.json({ error: "Not found" }, 404);
 
-  // Scoped rep can only see own entries.
-  if (!canManage && user?.scope_to_pic && row.created_by !== user.id) {
+  // Scoped rep can only see own entries. Same isScopedProjectUser predicate as
+  // the list / export above, so a rep cannot open by id what the list hides.
+  if (!canManage && isScopedProjectUser(user) && row.created_by !== user.id) {
     return c.json({ error: "Not found" }, 404);
   }
 
