@@ -50,6 +50,7 @@ import { computeMrp } from '../../scm/routes/mrp';
 import {
   PROCUREMENT_AGENT_SETTING_KEY,
   loadReceiptSamples,
+  loadLeadBuffers,
   learnSupplierBuffers,
   learnSeasonBuffers,
   type BufferFinding,
@@ -205,7 +206,7 @@ export async function runProcurementAgent(
   const nowIso = new Date().toISOString();
 
   const sb = getSupabaseService(env);
-  const mrp = await computeMrp(sb, { catFilter: null, whFilter: null, includeUndated: false });
+  const mrp = await computeMrp(sb, { catFilter: null, whFilter: null, includeUndated: false, leadBuffers: await loadLeadBuffers(db) });
 
   const shortageSkus = mrp.skus.filter((k) => k.shortage > 0);
   const shortageUnits = shortageSkus.reduce((sum, k) => sum + num(k.shortage), 0);
@@ -389,7 +390,6 @@ async function runProcurementLearning(
   db: D1Database,
   sb: unknown,
 ): Promise<BufferFinding[]> {
-  const cfg = await readAgentSetting<Record<string, unknown>>(db, PROCUREMENT_AGENT_SETTING_KEY);
   const sinceIso = new Date(Date.now() - LEARNING_WINDOW_DAYS * 86_400_000).toISOString();
 
   const samples = await loadReceiptSamples(sb as never, {
@@ -402,24 +402,14 @@ async function runProcurementLearning(
   });
   if (samples.length === 0) return [];
 
-  const supplierBuffers = asNumberMap(cfg?.supplierBufferDays);
-  const seasonBuffers = asNumberMap(cfg?.seasonBufferDays);
+  /* The CURRENT buffers, read through the same loader the PO convert uses — so
+     the learner always compares against the value that is actually in force,
+     and cannot propose a change away from a number nobody is applying. */
+  const current = await loadLeadBuffers(db);
   return [
-    ...learnSupplierBuffers(samples, supplierBuffers),
-    ...learnSeasonBuffers(samples, seasonBuffers),
+    ...learnSupplierBuffers(samples, current.supplierBufferDays),
+    ...learnSeasonBuffers(samples, current.seasonBufferDays),
   ];
-}
-
-/** A stored buffer map, defensively. A non-object setting reads as "no buffers
-    learned yet" — never as a crash on the agent's cron path. */
-function asNumberMap(v: unknown): Record<string, number> {
-  if (!v || typeof v !== 'object' || Array.isArray(v)) return {};
-  const out: Record<string, number> = {};
-  for (const [k, raw] of Object.entries(v as Record<string, unknown>)) {
-    const n = Number(raw);
-    if (Number.isFinite(n)) out[k] = n;
-  }
-  return out;
 }
 
 // ── Console card counters ────────────────────────────────────────────────────

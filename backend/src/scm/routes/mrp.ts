@@ -51,7 +51,9 @@ import {
   subtractCalendarDays,
   LEAD_TIME_SELECT,
   NO_BUFFERS,
+  type LeadBuffers,
 } from '../lib/lead-time';
+import { loadLeadBuffers } from '../../services/agents/procurement-learning';
 import type { Env, Variables } from '../env';
 
 export const mrp = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -253,9 +255,22 @@ export type SoLineCoverage = { source: AllocSource; po: string | null; eta: stri
    the Stock column and the MRP page can never disagree. */
 export async function computeMrp(
   sb: any,
-  opts: { catFilter: string | null; whFilter: string | null; includeUndated: boolean; companyId?: number | null },
+  opts: {
+    catFilter: string | null;
+    whFilter: string | null;
+    includeUndated: boolean;
+    companyId?: number | null;
+    /* The Procurement Agent's approved lead-time buffers (per-supplier
+       punctuality, per-season). REQUIRED, not optional, on purpose: the PO
+       convert applies these to the date it commits, so an order-by hint
+       computed without them would tell you to order LATER than the PO asks the
+       supplier to deliver — the two would disagree by exactly the buffer, which
+       is the drift this codebase keeps paying for. Making it required means a
+       new caller cannot forget; pass NO_BUFFERS explicitly to opt out. */
+    leadBuffers: LeadBuffers;
+  },
 ): Promise<MrpResult> {
-  const { catFilter, whFilter, includeUndated, companyId } = opts;
+  const { catFilter, whFilter, includeUndated, companyId, leadBuffers } = opts;
 
   /* Multi-company isolation: every per-company read (demand SO lines, PO supply,
      inventory balances, warehouses, suppliers, bindings, product master) is
@@ -283,10 +298,27 @@ export async function computeMrp(
   const leadBase = await loadLeadTimeBase(
     scoped(sb.from('mrp_category_lead_times').select(LEAD_TIME_SELECT)),
   );
-  const orderByOf = (deliveryDate: string | null, category: string | null, whId: string | null): string | null =>
+  /* supplierCode is the SKU's MAIN supplier — an approximation, and a stated
+     one: the convert may end up on a different supplier via a per-pick or
+     per-SKU override, in which case that supplier's buffer applies instead and
+     the real PO date can differ from this hint. The main supplier is what this
+     page shows and what the convert picks absent an override, so it is the
+     honest default; the alternative (no supplier at all) would disagree with
+     EVERY buffered PO rather than just the overridden ones. */
+  const orderByOf = (
+    deliveryDate: string | null,
+    category: string | null,
+    whId: string | null,
+    supplierCode: string | null,
+  ): string | null =>
     subtractCalendarDays(
       deliveryDate,
-      resolveLeadDays(leadBase, NO_BUFFERS, { warehouseId: whId, category }).total,
+      resolveLeadDays(leadBase, leadBuffers, {
+        warehouseId: whId,
+        category,
+        supplierCode,
+        deliveryDate,
+      }).total,
     );
 
   // ── 1. Demand — outstanding SO lines ──────────────────────────────────
@@ -576,7 +608,7 @@ export async function computeMrp(
         soDate: r.so?.so_date ?? null,
         deliveryDate: lineDelivery,
         processingDate: r.so?.internal_expected_dd ?? null,
-        orderByDate: orderByOf(lineDelivery, prod?.category ?? null, whId),
+        orderByDate: orderByOf(lineDelivery, prod?.category ?? null, whId, mainByCode.get(code)?.code ?? null),
         qty: eff,
         source,
         poNumber,
@@ -716,7 +748,7 @@ export async function computeMrp(
         soDate: d.so?.so_date ?? null,
         deliveryDate: setDelivery,
         processingDate: d.so?.internal_expected_dd ?? null,
-        orderByDate: orderByOf(setDelivery, prod?.category ?? null, whId),
+        orderByDate: orderByOf(setDelivery, prod?.category ?? null, whId, mainByCode.get(d.item_code)?.code ?? null),
         itemCode: d.item_code,
         description: prod?.name ?? d.description ?? null,
         variantLabel: buildVariantSummary(d.item_group, v) || null,
@@ -795,7 +827,7 @@ mrp.get('/', async (c) => {
   // demand by default; ?includeUndated=true brings it back for a full view.
   const includeUndated = c.req.query('includeUndated') === 'true';
   try {
-    const result = await computeMrp(sb, { catFilter, whFilter, includeUndated, companyId: activeCompanyId(c) });
+    const result = await computeMrp(sb, { catFilter, whFilter, includeUndated, companyId: activeCompanyId(c), leadBuffers: await loadLeadBuffers(c.env.DB) });
     return c.json(result);
   } catch (e) {
     return c.json({ error: 'load_failed', reason: e instanceof Error ? e.message : String(e) }, 500);

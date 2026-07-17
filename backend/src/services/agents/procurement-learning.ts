@@ -57,7 +57,9 @@
 // ---------------------------------------------------------------------------
 
 import type { ConfigParamRule } from '../agent-console';
+import { readAgentSetting } from '../agent-console';
 import { paginateAll } from '../../scm/lib/paginate-all';
+import type { LeadBuffers } from '../../scm/lib/lead-time';
 
 /* The app_settings row both the rules below and the engine read.
    It lives HERE, and procurement-agent.ts re-exports it, rather than the other
@@ -295,6 +297,48 @@ export function learnSeasonBuffers(
 function fmtDays(d: number): string {
   if (d === 0) return 'on time';
   return d > 0 ? `${d}d late` : `${Math.abs(d)}d early`;
+}
+
+// ── Buffer reader (the other direction: approved values -> the PO date) ─────
+
+/**
+ * Read the buffers the owner has APPROVED, for scm/lib/lead-time.ts to add on
+ * top of his manual table.
+ *
+ * Fail-soft, and that is the right trade here rather than the usual fail-loud:
+ * a missing/broken app_settings row means "no buffer learned yet", which is
+ * also the true state on day one and after every reset. Degrading to the
+ * owner's own base lead is the conservative answer — it is exactly today's
+ * behaviour. Throwing would take the whole PO convert down over an optional
+ * refinement.
+ *
+ * That is the OPPOSITE call from loadLeadTimeBase, deliberately: his base table
+ * failing to load is unknowable ignorance being written to a supplier
+ * commitment, so it must throw. A missing buffer is a known, safe zero.
+ */
+export async function loadLeadBuffers(db: D1Database): Promise<LeadBuffers> {
+  try {
+    const cfg = await readAgentSetting<Record<string, unknown>>(db, PROCUREMENT_AGENT_SETTING_KEY);
+    return {
+      supplierBufferDays: asNumberMap(cfg?.supplierBufferDays),
+      seasonBufferDays: asNumberMap(cfg?.seasonBufferDays),
+    };
+  } catch (e) {
+    console.warn('[procurement-learning] buffer read failed; falling back to base lead only:', e);
+    return { supplierBufferDays: {}, seasonBufferDays: {} };
+  }
+}
+
+/** A stored buffer map, defensively. Anything non-numeric is dropped rather
+    than coerced — a NaN buffer would poison every date it touched. */
+function asNumberMap(v: unknown): Record<string, number> {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return {};
+  const out: Record<string, number> = {};
+  for (const [k, raw] of Object.entries(v as Record<string, unknown>)) {
+    const n = Number(raw);
+    if (Number.isFinite(n)) out[k] = n;
+  }
+  return out;
 }
 
 // ── Evidence loader ─────────────────────────────────────────────────────────

@@ -41,9 +41,9 @@ import {
   resolveLeadDays,
   subtractCalendarDays,
   LEAD_TIME_SELECT,
-  NO_BUFFERS,
 } from '../lib/lead-time';
 import { groupKeyFor } from '../lib/po-grouping';
+import { loadLeadBuffers } from '../../services/agents/procurement-learning';
 import { supabaseAuth } from '../middleware/auth';
 import { computeMrp } from './mrp';
 import type { Env, Variables } from '../env';
@@ -482,7 +482,7 @@ mfgPurchaseOrders.get('/outstanding-so-items', async (c) => {
   const shortageBySoItem = new Map<string, number>();
   let pooledOk = true;
   try {
-    const mrpRes = await computeMrp(supabase, { catFilter: null, whFilter: null, includeUndated: true, companyId: activeCompanyId(c) });
+    const mrpRes = await computeMrp(supabase, { catFilter: null, whFilter: null, includeUndated: true, companyId: activeCompanyId(c), leadBuffers: await loadLeadBuffers(c.env.DB) });
     for (const sku of mrpRes.skus) {
       for (const l of sku.lines) shortageBySoItem.set(l.soItemId, l.shortageQty);
     }
@@ -1127,8 +1127,13 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
   const leadBase = await loadLeadTimeBase(
     scopeToCompany(supabase.from('mrp_category_lead_times').select(LEAD_TIME_SELECT), c),
   );
-  const leadDaysFor = (whId: string | null, category: string | null): number =>
-    resolveLeadDays(leadBase, NO_BUFFERS, { warehouseId: whId, category }).total;
+  /* The buffers the owner has APPROVED on top of his table — per-supplier
+     punctuality and per-season, learned by the Procurement Agent from actual
+     receipts (owner 2026-07-17: "要根据不同的供应商准时程度、不同的季节... 来制定
+     提前的 Delivery Date"). Empty until he approves one, in which case this is
+     exactly the base lead, i.e. today's behaviour. Applied per line below, once
+     the effective supplier is known. */
+  const leadBuffers = await loadLeadBuffers(c.env.DB);
 
   const resolveWarehouseId = (salesLocation: string | null | undefined): string | null => {
     const needle = (salesLocation ?? '').trim().toLowerCase();
@@ -1263,26 +1268,26 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
       (purchaseLocationOverride as string | undefined)
       ?? row.warehouse_id
       ?? resolveWarehouseId(row.so?.sales_location);
-    // Per-line delivery date = SO LINE's own date, falling back to the SO
-    // header customer_delivery_date; an explicit caller override wins as-is.
-    // Commander 2026-06-18 — when NOT overridden, pull the date EARLIER by the
-    // category's MRP lead days so the supplier delivers ahead of the customer
-    // date. lead 0 / null date → unchanged. category = the SO line's item_group.
+    // The CUSTOMER's date — SO LINE's own, falling back to the SO header.
+    // The supplier's date is derived from it below, in the grouping loop.
+    //
+    // It is derived THERE and not here because the lead time now has a
+    // per-SUPPLIER layer (the Procurement Agent's learned punctuality buffer),
+    // and the effective supplier is not resolved until effectiveBindingFor runs
+    // — a pick override, a supplierByCode override and the main binding all get
+    // a say first. Computing the date here would silently apply the buffer of a
+    // supplier we had not chosen yet, or none at all.
     const rawDeliveryDate =
       row.line_delivery_date
       ?? row.so?.customer_delivery_date
       ?? null;
-    const lineLeadDays = leadDaysFor(lineWarehouseId, row.item_group);
-    const lineDeliveryDate =
-      (expectedAtOverride as string | undefined)
-      ?? subtractCalendarDays(rawDeliveryDate, lineLeadDays);
     return {
       soDocNo:  row.doc_no,
       itemCode: row.item_code,
       itemName: row.description ?? row.item_code,
       qty,
       lineWarehouseId,
-      lineDeliveryDate,
+      rawDeliveryDate,
       // Phase 3 — carry the SO line's category + variants for PO auto-pricing
       // (#300 also uses these to consolidate same SKU+variant lines + carry the
       // variant through to the PO line).
@@ -1316,10 +1321,21 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
      SKU is reported as "needs a supplier" via missing_bindings below. */
   const supplierIds = [...new Set(((bindings ?? []) as Array<{ supplier_id: string }>).map((b) => b.supplier_id))];
   const liveSupplierIds = new Set<string>();
+  /* supplier uuid -> business code, filled by the liveness probes below. Feeds
+     the lead-time supplier buffer, which is keyed on the code so a supplier row
+     re-imported under a new uuid keeps its learned punctuality. A supplier with
+     no code simply carries no buffer. */
+  const supplierCodeById = new Map<string, string>();
   if (supplierIds.length > 0) {
+    /* `code` rides along on the existing liveness probe — the lead-time
+       supplier buffer is keyed on the business code, not the uuid, and this
+       query already had to run. Zero extra round-trips. */
     const { data: liveSuppliers } = await supabase
-      .from('suppliers').select('id').in('id', supplierIds);
-    for (const s of (liveSuppliers ?? []) as Array<{ id: string }>) liveSupplierIds.add(s.id);
+      .from('suppliers').select('id, code').in('id', supplierIds);
+    for (const s of (liveSuppliers ?? []) as Array<{ id: string; code: string | null }>) {
+      liveSupplierIds.add(s.id);
+      if (s.code) supplierCodeById.set(s.id, s.code);
+    }
   }
   /* Wei Siang 2026-06-11 — also validate suppliers named OUTSIDE bindings (a
      per-pick supplierId, a supplierByCode override, or the append-target PO's
@@ -1332,8 +1348,11 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
   ])].filter((id) => !liveSupplierIds.has(id));
   if (extraCandidates.length > 0) {
     const { data: extraLive } = await supabase
-      .from('suppliers').select('id').in('id', extraCandidates);
-    for (const s of (extraLive ?? []) as Array<{ id: string }>) liveSupplierIds.add(s.id);
+      .from('suppliers').select('id, code').in('id', extraCandidates);
+    for (const s of (extraLive ?? []) as Array<{ id: string; code: string | null }>) {
+      liveSupplierIds.add(s.id);
+      if (s.code) supplierCodeById.set(s.id, s.code);
+    }
   }
 
   /* Group by material_code → the chosen supplier's binding. Commander
@@ -1617,6 +1636,30 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
     const b = effectiveBindingFor(it)!;
     const effectiveSupplierId = b.supplier_id;
     const lineWarehouseId = it.lineWarehouseId;
+
+    /* THE SUPPLIER'S DATE — derived here, the first point where every input
+       exists: the warehouse, the category, the customer's date, and (only now)
+       the chosen supplier.
+
+       Commander 2026-06-18: pull the date EARLIER than the customer's so the
+       supplier delivers ahead of it. Owner 2026-07-17 adds the two axes he
+       cannot maintain by hand — this supplier's measured punctuality, and the
+       season — as buffers ON TOP of his (warehouse, category) table. His number
+       is untouched; see scm/lib/lead-time.ts.
+
+       An explicit caller override still wins outright, unchanged: if the
+       operator typed a date, that is the date. */
+    const supplierCode = supplierCodeById.get(effectiveSupplierId) ?? null;
+    const lead = resolveLeadDays(leadBase, leadBuffers, {
+      warehouseId: lineWarehouseId,
+      category: it.itemGroup,
+      supplierCode,
+      deliveryDate: it.rawDeliveryDate,
+    });
+    const lineDeliveryDate =
+      (expectedAtOverride as string | undefined)
+      ?? subtractCalendarDays(it.rawDeliveryDate, lead.total);
+
     // The split is per-CATEGORY (owner 2026-07-17) — see scm/lib/po-grouping.ts
     // for the rule and its reasoning. Every key still starts (warehouse,
     // supplier), which is what keeps each emitted PO single-warehouse.
@@ -1626,16 +1669,16 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
     // convert: bedframe + sofa per-SO, mattress merged within a delivery-date
     // window, everything he did not rule on still following `poMode`.
     //
-    // The window is passed the LINE's delivery date, i.e. after the lead time
-    // has been subtracted — the bucket must reflect when the goods actually land
-    // in the warehouse, which is what the turnover rule is about.
+    // The window is passed the SUPPLIER's date, not the customer's — the bucket
+    // must reflect when the goods actually land in the warehouse, which is what
+    // the turnover rule is about.
     const groupKey = groupKeyFor(
       {
         warehouseId: lineWarehouseId,
         supplierId: effectiveSupplierId,
         soDocNo: it.soDocNo,
         itemGroup: it.itemGroup,
-        deliveryDate: it.lineDeliveryDate,
+        deliveryDate: lineDeliveryDate,
       },
       poMode,
     );
@@ -1655,7 +1698,7 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
       supplierSku: b.supplier_sku,
       unitPriceCenti: autoCostCenti,
       warehouseId: lineWarehouseId,
-      deliveryDate: it.lineDeliveryDate,
+      deliveryDate: lineDeliveryDate,
       itemGroup: it.itemGroup,
       variants: it.variants,
       soItemId: it.soItemId,

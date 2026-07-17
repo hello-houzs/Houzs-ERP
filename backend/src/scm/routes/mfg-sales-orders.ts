@@ -75,6 +75,7 @@ import { hasHouzsPerm, canViewAllSales, isSalesCaller, canViewScmFinance } from 
    cannot drift apart — a typo on either side would silently disarm the pricing
    envelope, and no test would fail. */
 import { SESSION_ORIGIN_POS } from '../../services/auth';
+import { loadLeadBuffers } from '../../services/agents/procurement-learning';
 import { SO_FINANCE_KEYS, SO_ITEM_FINANCE_KEYS, stripAuditFinance } from '../lib/finance-keys';
 import { resolveSalesScopeIds, salesDocOutOfScope, resolveCallerStaffId } from '../lib/salesScope';
 import { recordSoAudit, diffFields, type FieldChange } from '../lib/so-audit';
@@ -2425,7 +2426,7 @@ mfgSalesOrders.get('/:docNo', async (c) => {
      the allocation fails the page still loads, lines just fall back to Pending. */
   let coverageMap = new Map<string, { source: string; po: string | null; eta: string | null }>();
   try {
-    const mrpResult = await computeMrp(sb, { catFilter: null, whFilter: null, includeUndated: true, companyId: activeCompanyId(c) });
+    const mrpResult = await computeMrp(sb, { catFilter: null, whFilter: null, includeUndated: true, companyId: activeCompanyId(c), leadBuffers: await loadLeadBuffers(c.env.DB) });
     coverageMap = mrpLineCoverage(mrpResult);
   } catch {
     coverageMap = new Map();
@@ -2551,7 +2552,7 @@ mfgSalesOrders.get('/:docNo/items', async (c) => {
   // Best-effort: a failed allocation just drops lines to Pending.
   let coverageMap = new Map<string, { source: string; po: string | null; eta: string | null }>();
   try {
-    const mrpResult = await computeMrp(sb, { catFilter: null, whFilter: null, includeUndated: true, companyId: activeCompanyId(c) });
+    const mrpResult = await computeMrp(sb, { catFilter: null, whFilter: null, includeUndated: true, companyId: activeCompanyId(c), leadBuffers: await loadLeadBuffers(c.env.DB) });
     coverageMap = mrpLineCoverage(mrpResult);
   } catch {
     coverageMap = new Map();
