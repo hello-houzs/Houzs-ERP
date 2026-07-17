@@ -121,6 +121,19 @@ async function reallocatePiCharges(
         .select('id, grn_item_id, material_code, item_group, qty, unit_price_centi, line_total_centi, allocated_charge_centi')
         .eq('purchase_invoice_id', piId),
     ]);
+    /* `?? 1` means "already MYR", so a failed read on an RMB/USD PI allocates the
+       freight pool at rate 1 and writes an allocated_charge_centi wrong by the
+       whole FX factor onto every goods line — which recost then capitalises into
+       the lot. The itemsRes read below fails closed (items = [] returns), but this
+       one silently invents an exchange rate. Returning matches this function's own
+       contract, stated in the catch: the PI's lines are already committed, a
+       hiccup logs + skips and the split re-converges on the next line write. A PI
+       that genuinely carries no rate resolves error === null and correctly uses 1. */
+    if (headRes.error) {
+      /* eslint-disable-next-line no-console */
+      console.error('[reallocatePiCharges] PI rate read failed — charge split left unchanged:', piId, headRes.error.message);
+      return;
+    }
     const piRate = (headRes.data as { exchange_rate?: string | number | null } | null)?.exchange_rate ?? 1;
     const items = (itemsRes.data ?? []) as Array<{
       id: string; grn_item_id: string | null; material_code: string; item_group: string | null;
@@ -201,9 +214,23 @@ async function recomputeGrnInvoiced(sb: any, grnItemIds: Array<string | null | u
   // model self-heals on the next operation that touches these GRN lines.
   try {
     // 1. Sum qty from live (non-cancelled) PI lines per GRN item.
-    const { data: plines } = await sb.from('purchase_invoice_items')
+    /* The live-count model turns `?? []` into a release: a failed read folds every
+       line's recount to 0, the write below stamps invoiced_qty = 0, and the GRN
+       line "auto-releases for re-invoicing" exactly as this function's docblock
+       promises — except nothing was invoiced away. The supplier's goods can then be
+       billed a second time and no error is raised. A GRN line whose PI lines have
+       genuinely all gone resolves error === null with data === [] and MUST still
+       fall through to 0 — that is the release the model is built on, and it is why
+       `rows.length === 0` cannot be the discriminator here. Nothing is written
+       above this point. */
+    const { data: plines, error: plinesErr } = await sb.from('purchase_invoice_items')
       .select('grn_item_id, qty, purchase_invoice_id')
       .in('grn_item_id', ids);
+    if (plinesErr) {
+      /* eslint-disable-next-line no-console */
+      console.error('[recomputeGrnInvoiced] PI lines read failed — invoiced_qty left unchanged:', plinesErr.message);
+      return;
+    }
     const rows = (plines ?? []) as Array<{ grn_item_id: string; qty: number; purchase_invoice_id: string }>;
     const piIds = [...new Set(rows.map((r) => r.purchase_invoice_id).filter(Boolean))];
     /* LEAK GUARD (DRAFT, PI two-state — 2026-06-25 anchoring diff vs 2990) — exclude
@@ -214,7 +241,16 @@ async function recomputeGrnInvoiced(sb: any, grnItemIds: Array<string | null | u
        line against a still-draft PI. */
     const excluded = new Set<string>();
     if (piIds.length > 0) {
-      const { data: pis } = await sb.from('purchase_invoices').select('id, status').in('id', piIds);
+      /* An empty `excluded` from a failed read does not read as "we don't know" —
+         it reads as "no PI here is DRAFT or CANCELLED", which inverts the leak
+         guard above: a still-draft PI's qty gets counted as invoiced and consumes
+         the GRN line, the precise silent consumption the note forbids. */
+      const { data: pis, error: pisErr } = await sb.from('purchase_invoices').select('id, status').in('id', piIds);
+      if (pisErr) {
+        /* eslint-disable-next-line no-console */
+        console.error('[recomputeGrnInvoiced] PI status read failed — invoiced_qty left unchanged:', pisErr.message);
+        return;
+      }
       for (const p of (pis ?? []) as Array<{ id: string; status: string }>) {
         if (p.status === 'CANCELLED' || p.status === 'DRAFT') excluded.add(p.id);
       }
@@ -226,8 +262,16 @@ async function recomputeGrnInvoiced(sb: any, grnItemIds: Array<string | null | u
     }
 
     // 2. Clamp into [0, qty_accepted] per line, then write.
-    const { data: giRows } = await sb.from('grn_items')
+    /* The clamp is a safety rail on a money-adjacent counter and `?? inv` below
+       makes a failed read remove it silently (cap falls back to the uncapped
+       value). Nothing is written until the loop after this. */
+    const { data: giRows, error: giErr } = await sb.from('grn_items')
       .select('id, qty_accepted').in('id', ids);
+    if (giErr) {
+      /* eslint-disable-next-line no-console */
+      console.error('[recomputeGrnInvoiced] GRN accepted-qty read failed — invoiced_qty left unchanged:', giErr.message);
+      return;
+    }
     const acceptedById = new Map<string, number>(
       ((giRows ?? []) as Array<{ id: string; qty_accepted: number }>).map((g) => [g.id, g.qty_accepted ?? 0]),
     );

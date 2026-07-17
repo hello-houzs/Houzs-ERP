@@ -269,11 +269,24 @@ export type PostPiResult =
 
 export async function postPiAccounting(sb: any, invoiceNumber: string): Promise<PostPiResult> {
   // Idempotency — an ACTIVE (non-reversed) PI JE already exists?
-  const { data: existingRows } = await sb
+  /* This guard is the ONLY thing that makes posting idempotent, and `?? []` folded
+     a failed read into "no JE exists yet" — so a transient blip does not skip the
+     posting, it posts a SECOND Dr Inventory / Cr AP for the same invoice and
+     doubles the supplier's payable in the GL. Nothing is written before this
+     point, so returning strands nothing: the PI simply stays unposted and a later
+     call (this function is called on confirm and by resyncPiAccounting) posts it
+     once, correctly. A PI that has genuinely never been posted resolves
+     error === null with data === [] and MUST still fall through. */
+  const { data: existingRows, error: existErr } = await sb
     .from('journal_entries')
     .select('id, je_no, reversed')
     .eq('source_type', 'PI')
     .eq('source_doc_no', invoiceNumber);
+  if (existErr) {
+    /* eslint-disable-next-line no-console */
+    console.error('[pi-accounting] idempotency read failed — PI NOT posted:', invoiceNumber, existErr.message);
+    return { ok: false, status: 'post_failed', reason: existErr.message };
+  }
   const active = ((existingRows ?? []) as Array<{ id: string; je_no: string; reversed: boolean | null }>)
     .find((r) => !r.reversed);
   if (active) return { ok: true, status: 'already_posted', jeNo: active.je_no, jeId: active.id };
