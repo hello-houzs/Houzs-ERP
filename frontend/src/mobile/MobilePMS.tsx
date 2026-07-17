@@ -1011,6 +1011,8 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
               projectId={id}
               stockTransfers={data.stock_transfers}
               attachments={data.attachments}
+              checklist={data.checklist}
+              checklistAttachments={data.checklist_attachments}
               canWrite={canWrite && !archived}
               hideFilledPlan={hideFilledPlan}
               busy={busy}
@@ -2240,11 +2242,13 @@ function PhaseBlock({
 // record is uploaded via PUT /:id/stock-transfers/upload → POST
 // /:id/stock-transfers. Existing rows are listed read-only.
 function FloorPlans({
-  projectId, stockTransfers, attachments, canWrite, hideFilledPlan, busy, setBusy, notify, reload,
+  projectId, stockTransfers, attachments, checklist, checklistAttachments, canWrite, hideFilledPlan, busy, setBusy, notify, reload,
 }: {
   projectId: number;
   stockTransfers?: StockTransfer[];
   attachments?: ProjectAttachment[];
+  checklist?: ChecklistItem[];
+  checklistAttachments?: TaskAttachment[];
   canWrite: boolean;
   hideFilledPlan?: boolean;
   busy: boolean;
@@ -2255,21 +2259,42 @@ function FloorPlans({
   const fileRef = useRef<HTMLInputElement | null>(null);
   const transfers = stockTransfers ?? [];
 
-  // Unfilled = first floorplan attachment, Filled = second (matches the
-  // prototype's two "tap to view" tiles). Opens the stored plan when present.
+  // The tiles mirror the "Blank Floorplan" / "Filled Floorplan" CHECKLIST
+  // task attachments (mig 050 moved uploads per-task — files attached in the
+  // tasklist must surface here). The legacy project-level floorplan-category
+  // attachments remain as a fallback for pre-050 projects.
   // Viewing goes through MediaLightbox rather than window.open(blobUrl):
   // mobile browsers popup-block window.open once an await has broken the
   // user-gesture chain, which made these tiles dead on phones.
   const plans = (attachments ?? []).filter((a) => (a.category || "").toLowerCase() === "floorplan");
-  const [planIdx, setPlanIdx] = useState<number | null>(null);
+  const taskPlanFiles = (prefix: RegExp): MediaItem[] => {
+    const ids = new Set(
+      (checklist ?? []).filter((it) => prefix.test((it.title || "").trim())).map((it) => it.id)
+    );
+    return (checklistAttachments ?? [])
+      .filter((a) => !a.archived_at && ids.has(a.item_id))
+      .map((a): MediaItem => ({
+        r2_key: a.r2_key,
+        content_type: a.mime_type ?? mimeFromKey(a.r2_key),
+        caption: a.file_name,
+      }));
+  };
+  const legacyItem = (a: ProjectAttachment | undefined): MediaItem[] => {
+    const k = a ? pick(a.r2_key, a.r2Key) : undefined;
+    return a && k
+      ? [{ r2_key: k, content_type: pick(a.mime_type, a.mimeType) ?? mimeFromKey(k), caption: pick(a.file_name, a.fileName) }]
+      : [];
+  };
+  const unfilledFiles = (() => { const t = taskPlanFiles(/^blank\s*floor\s*plan/i); return t.length ? t : legacyItem(plans[0]); })();
+  const filledFiles = (() => { const t = taskPlanFiles(/^filled\s*floor\s*plan/i); return t.length ? t : legacyItem(plans[1]); })();
+  const [planView, setPlanView] = useState<{ items: MediaItem[]; idx: number } | null>(null);
   const [docView, setDocView] = useState<MediaItem | null>(null);
-  const openPlan = async (a: ProjectAttachment | undefined, which: string) => {
-    if (!a) {
+  const openPlan = async (files: MediaItem[], which: string) => {
+    if (files.length === 0) {
       await notify({ title: `${which} plan not uploaded`, body: "No floor plan has been uploaded for this project yet.", tone: "info" });
       return;
     }
-    if (!pick(a.r2_key, a.r2Key)) return;
-    setPlanIdx(plans.indexOf(a));
+    setPlanView({ items: files, idx: files.length - 1 });
   };
 
   const uploadTransfer = async (file: File) => {
@@ -2327,23 +2352,25 @@ function FloorPlans({
         {/* Unfilled / Filled plan tiles — tap to view the stored floorplan.
             Filled plan is hidden from driver/helper/storekeeper (owner 2026-07-16). */}
         <div style={{ display: "grid", gridTemplateColumns: hideFilledPlan ? "1fr" : "1fr 1fr", gap: 9 }}>
-          {([["Unfilled", plans[0], "DRAFT", "#f6efd9", "#6e4d12"], ["Filled", plans[1], "PLACED", "#e2f0e9", "#2f8a5b"]] as const).filter(([label]) => !(hideFilledPlan && label === "Filled")).map(([label, att, badge, badgeBg, badgeCol]) => {
-            const key = att ? pick(att.r2_key, att.r2Key) : undefined;
+          {([["Unfilled", unfilledFiles, "DRAFT", "#f6efd9", "#6e4d12"], ["Filled", filledFiles, "PLACED", "#e2f0e9", "#2f8a5b"]] as const).filter(([label]) => !(hideFilledPlan && label === "Filled")).map(([label, files, badge, badgeBg, badgeCol]) => {
+            const latest = files[files.length - 1];
             return (
               <div
                 key={label}
                 role="button"
                 tabIndex={0}
-                onClick={() => void openPlan(att, label)}
-                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); void openPlan(att, label); } }}
+                onClick={() => void openPlan(files, label)}
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); void openPlan(files, label); } }}
                 style={{ border: "1px solid #d6d9d2", borderRadius: 11, overflow: "hidden", cursor: "pointer" }}
               >
-                {att && key && /^image\//.test(pick(att.mime_type, att.mimeType) ?? "")
-                  ? <R2Thumb r2Key={key} style={{ width: "100%", height: 80 }} />
+                {latest && /^image\//.test(latest.content_type ?? "")
+                  ? <R2Thumb r2Key={latest.r2_key} style={{ width: "100%", height: 80 }} />
                   : <div className="ph" style={{ height: 80 }} />}
                 <div style={{ padding: "7px 9px" }}>
                   <div style={{ fontSize: 11, fontWeight: 700, color: "#11140f" }}>{label} plan</div>
-                  <span className="rbadge" style={{ background: att ? badgeBg : "#f0f1ed", color: att ? badgeCol : "#9aa093" }}>{att ? badge : "NONE"}</span>
+                  <span className="rbadge" style={{ background: latest ? badgeBg : "#f0f1ed", color: latest ? badgeCol : "#9aa093" }}>
+                    {latest ? `${badge}${files.length > 1 ? ` · ${files.length}` : ""}` : "NONE"}
+                  </span>
                 </div>
               </div>
             );
@@ -2381,15 +2408,12 @@ function FloorPlans({
             <button className="tinybtn" disabled={busy} onClick={() => fileRef.current?.click()}>Upload stock-out record</button>
           </div>
         )}
-        {planIdx != null && plans[planIdx] && (
+        {planView && (
           <MediaLightbox
-            items={plans.map((a): MediaItem => {
-              const k = pick(a.r2_key, a.r2Key) ?? "";
-              return { r2_key: k, content_type: pick(a.mime_type, a.mimeType) ?? mimeFromKey(k), caption: pick(a.file_name, a.fileName) };
-            })}
-            index={planIdx}
-            onChange={setPlanIdx}
-            onClose={() => setPlanIdx(null)}
+            items={planView.items}
+            index={planView.idx}
+            onChange={(i) => setPlanView((pv) => (pv ? { ...pv, idx: i } : pv))}
+            onClose={() => setPlanView(null)}
             baseUrl="/api/projects/attachments"
             badge="Floor plan"
           />
