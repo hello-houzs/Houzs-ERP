@@ -34,6 +34,7 @@ import {
   type OutstandingSoItem,
 } from '../../vendor/scm/lib/suppliers-queries';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
+import { useIdempotencyKey } from '../../lib/idempotency';
 import { ActionResultDialog } from '../../vendor/scm/components/ActionResultDialog';
 import { ItemGroupPill } from '../../vendor/scm/lib/category-badges';
 import styles from './SalesOrderDetail.module.css';
@@ -102,6 +103,15 @@ export const PurchaseOrderFromSo = () => {
   const targetPoSupplierCode = targetPoQ.data?.purchaseOrder?.supplier?.code ?? null;
   const targetPoNumber = targetPoQ.data?.purchaseOrder?.po_number ?? null;
   const createPos = useCreatePosFromSoItems();
+  /* One append per mount: only the ?poId branch posts, and it navigates to the
+     PO on success — so this mount IS one intent and a per-mount key is the same
+     shape as every other create form (lib/idempotency.ts). Load-bearing here
+     because onError leaves the operator ON this page with the picks intact and
+     an "Add failed" dialog: if the post actually committed and only the response
+     was lost, the invited re-press must REPLAY, not append the same lines twice.
+     Nothing caps it otherwise — this branch does not send fromMrp, so the server
+     only rejects a re-append once remaining runs out. */
+  const idemKey = useIdempotencyKey();
 
   // Map<soItemId, { picked, qty }>. Defaults: picked = false; when ticked,
   // qty defaults to remainingQty.
@@ -436,7 +446,7 @@ export const PurchaseOrderFromSo = () => {
     if (targetPoId) {
       const picksPayload = picked.map(([soItemId, v]) => ({ soItemId, qty: v.qty }));
       createPos.mutate(
-        { picks: picksPayload, targetPoId },
+        { picks: picksPayload, targetPoId, idempotencyKey: idemKey },
         {
           onSuccess: (res) => {
             // Land back on the PO still in Edit mode so the new lines are right there.

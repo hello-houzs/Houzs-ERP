@@ -14,7 +14,7 @@
 // links (purchase-returns, not yet vendored) stay native.
 // ----------------------------------------------------------------------------
 
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Plus, ArrowRightLeft, Printer } from 'lucide-react';
 import { Button } from '@2990s/design-system';
@@ -27,6 +27,7 @@ import {
   useGrnDetail,
 } from '../../vendor/scm/lib/grn-queries';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
+import { newIdempotencyKey } from '../../lib/idempotency';
 import { StatusPill } from '../../vendor/scm/components/StatusPill';
 import { statusLabel } from '../../vendor/scm/lib/status-pill';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
@@ -297,8 +298,27 @@ export const GoodsReceived = () => {
   const convertToPi = (g: GrnRow) => {
     navigate(`/scm/purchase-invoices/new?grnId=${encodeURIComponent(g.id)}`);
   };
+  /* One key per (mount, GRN) — NOT per mount, and NOT bound to the grnId for
+     good. Per mount alone would hand two DIFFERENT GRNs the same key and replay
+     the first one's PR for the second; bound to the grnId permanently would
+     swallow the legitimate second return of one GRN (purchase-returns.ts:806 —
+     "a GRN can be returned across multiple PRs"). Keyed by grnId INSIDE a ref
+     that dies with the mount, both hold: two clicks on the same GRN in one visit
+     are one intent (reaching a real second return means trimming PR-1 to release
+     the qty, which means opening it, which means leaving this list), while a
+     different GRN always mints its own key without depending on the navigate
+     below to unmount us. See the hook for why this action needs it more than the
+     create forms do: it is a context-menu item with no pending guard and no
+     spinner, so the operator's only feedback that the first click did anything
+     is the page changing. */
+  const prKeyRef = useRef<{ grnId: string; key: string } | null>(null);
   const convertToPr = (g: GrnRow) => {
-    prFromGrn.mutate(g.id, {
+    let intent = prKeyRef.current;
+    if (!intent || intent.grnId !== g.id) {
+      intent = { grnId: g.id, key: newIdempotencyKey() };
+      prKeyRef.current = intent;
+    }
+    prFromGrn.mutate({ grnId: g.id, idempotencyKey: intent.key }, {
       onSuccess: (res) => navigate(`/scm/purchase-returns/${res.id}`),
       onError: (e) => notify({ title: 'To Purchase Return failed', body: e instanceof Error ? e.message : String(e), tone: 'error' }),
     });
