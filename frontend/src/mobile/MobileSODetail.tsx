@@ -343,17 +343,24 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
      lock-gated only by the terminal / downstream statuses, never by the
      processing lock. Drafts + cancelled orders still take NO payment (owner:
      "no payments on drafts"), matching desktop hiding Add Payment off-status. */
-  const paymentLocked = isLocked;
+  /* Owner 2026-07-17: "delivered了之後也要可以key payment" — and "電話電腦的權限
+     應該一樣的", so this moves in lockstep with SalesOrderDetail's PaymentsTable.
+     This was `isLocked` (LOCKED_STATUSES.includes(status) || hasChildren): a
+     delivered SO is in that list AND has a DO, so its payments were frozen twice
+     over. isLocked is the LINE/HEADER lock — those freeze because a DO/SI quotes
+     them. Money is not a line, and collecting the balance ON delivery is the
+     normal case. Only CANCELLED stays shut; payEditing still gates the rest. */
+  const paymentLocked = rawStatus === "CANCELLED";
 
   /* No-naked-payment-edits (owner 2026-07-13) — Add / Delete / Edit must NOT
      show in the read-only detail without the operator opting in. The rule
      (desktop parity, SalesOrderDetail.tsx): payments are editable when the SO is
      a DRAFT (never confirmed — always adjustable) OR the operator has entered
      the payments Edit mode on this card. `payEditing` is that in-card toggle,
-     offered only on a submitted, non-terminal / non-downstream-locked SO (the
-     SHIPPED+/has-children lock still fully view-onlys the section, matching the
-     desktop Edit button being disabled when isLocked). The processing lock does
-     NOT gate payments (owner rule 2026-07-05), same as before. */
+     offered on any submitted, non-CANCELLED SO — see paymentLocked: the
+     SHIPPED+/has-children lock used to view-only the section here too, and that
+     was the bug (owner 2026-07-17: "delivered了之後也要可以key payment"). The
+     processing lock does NOT gate payments either (owner rule 2026-07-05). */
   const isDraftSo = ph === "draft";
   const [payEditing, setPayEditing] = useState(false);
   const canOfferPayEdit = ph === "submitted" && !paymentLocked;
@@ -631,10 +638,13 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
                 payment must STAY addable even when the SO is edit-locked (owner
                 rule 2026-07-05 + desktop parity — see paymentLocked above). So a
                 standalone "Add Payment" control sits on THIS card's header,
-                gated by `canAddPayment` (submitted status, not SHIPPED+/child-
-                locked) and NOT by the processing lock. The per-row delete stays
-                parity with desktop PaymentsTable (hidden on cancelled / SHIPPED+
-                / child-locked via editLocked). */}
+                gated by `canAddPayment` and NOT by the processing lock.
+                That intent is older than this comment, but the code did not
+                match it until 2026-07-17: paymentLocked was `isLocked`, so
+                SHIPPED+/child-locked DID view-only the section — the exact case
+                the sentence above says must stay addable. Owner, on hitting it:
+                "delivered了之後也要可以key payment". Now only CANCELLED shuts it,
+                which is also the per-row delete rule. */}
             <div className="card"><div className="card-h"><span className="card-t">Payments</span>
               <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 {!!payments.length && <span className="card-sub">{payments.length}</span>}

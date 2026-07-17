@@ -1980,11 +1980,23 @@ export const SalesOrderDetail = () => {
           exposed when (SO is DRAFT) OR (the detail is in Edit mode). A DRAFT SO
           is never confirmed, so its payments stay editable in the read-only view
           too (draftUnlocked also lifts the per-row same-day EDIT lock). */}
+      {/* Owner 2026-07-17: "delivered了之後也要可以key payment". This used to pass
+          `isLocked`, which is `LOCKED_STATUSES.includes(status) || hasChildren`
+          — and DELIVERED is in that list, and a delivered SO has a DO, so a
+          delivered order's payments were frozen twice over and Edit mode could
+          not lift either. That contradicted this page's own rule three comments
+          up ("PAYMENT and every other customer field stay editable") and the
+          backend, which never gated POST /:docNo/payments on status at all.
+          isLocked is the LINE/HEADER lock: those freeze because a DO/SI already
+          quotes them. Money is not a line. Collecting the balance ON delivery is
+          the normal case — that is what a Balance figure is FOR. Only CANCELLED
+          stays shut (a cancelled order takes no money); the no-naked-edits rule
+          is unchanged, so it is still Edit-then-type for everything but DRAFT. */}
       <PaymentsTable
         docNo={header.doc_no}
         grandTotalCenti={header.local_total_centi}
         currency={header.currency}
-        locked={!isDraftSo && (isLocked || !isEditing)}
+        locked={!isDraftSo && (isCancelled || !isEditing)}
         draftUnlocked={isDraftSo}
         slip={{ slipKey: header.slip_key, fetcher: fetchSoSlipUrl }}
         defaultCollectedBy={selfStaffMatch?.id ?? ''}
