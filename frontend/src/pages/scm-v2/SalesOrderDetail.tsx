@@ -110,6 +110,7 @@ import { useStaff } from '../../vendor/scm/lib/admin-queries';
 import { sortByText, sortByNumeric } from '../../vendor/scm/lib/sort-options';
 import { soStatusDisplay, type DeliveryState, type SoLifecycle } from '../../vendor/scm/lib/so-status';
 import { useAuth as useHouzsAuth } from '../../auth/AuthContext';
+import { canViewScmCosting } from '../../auth/salesAccess';
 import { useAuth } from '../../vendor/scm/lib/auth';
 import { useVenues } from '../../vendor/scm/lib/venues-queries';
 import { useStateWarehouseMappings } from '../../vendor/scm/lib/state-warehouse-queries';
@@ -1951,13 +1952,18 @@ export const SalesOrderDetail = () => {
         )}
       </section>
 
-      {/* Task #114 — Totals card restored (commander 2026-05-27: "Houzs
-          ERP 会计算全部 sku 的 costing 和自动总结一个 category 的 costing").
-          The PR #154 hide was about pre-cost-wiring noise; with cost now
-          snapshotted server-side and rolled up per category, the card is
-          finally useful. Shows Revenue / Cost / Margin / Margin % at the
-          top plus a per-category breakdown below. */}
-      <TotalsCard header={header} />
+      {/* Revenue / Cost / Margin / Margin % + a per-category breakdown.
+          Restored by Task #114 (commander 2026-05-27: "Houzs ERP 会计算全部
+          sku 的 costing 和自动总结一个 category 的 costing"), then gated by
+          canViewScmCosting — #649 turned the costing display OFF because the
+          Houzs catalog has no cost_price_sen, so every Houzs order rendered
+          "100.0% margin" in green. #649 gated the four *DetailV2* pages and
+          MISSED this one: it is the same page's legacy `?edit=1` ledger view,
+          reached from SalesOrderDetailV2's Edit button, and it rendered the
+          card unconditionally — so the number #649 exists to suppress was
+          still one click away. Gate, don't delete: the switch is one line and
+          the card comes back with it. */}
+      {canViewScmCosting(currentUser) && <TotalsCard header={header} />}
 
       {/* ── Payment — Houzs-pattern transactions table ────────────── */}
       {/* Commander 2026-05-27: "Payment 也 follow Hookka 那个排版". Verbatim
