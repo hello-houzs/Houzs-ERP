@@ -100,16 +100,17 @@ function isSalesCohort(u: {
  *  department, so "Sales Director" matches, and these four levels are SET on him
  *  too, overriding whatever his matrix row says.
  *
- *  WHAT HIS RULING DID AND DID NOT SETTLE -- the distinction is the whole reason
- *  only the deny half is enforced. He ruled on the COHORT ("算sales") and on
- *  RETURNS ("就是要关"). He did NOT rule that the Director should be capped at
- *  `view` on DO/SI; that cap is #671's inference from a quote naming "销售人员",
- *  and z1 (2026-07-17) recorded it as unruled. So:
+ *  WHAT HIS RULINGS SETTLED. He ruled on the COHORT ("算sales"), on RETURNS
+ *  ("就是要关"), and on 2026-07-18 on the DO/SI cap itself: "DO SI 只能看
+ *  salesdirector" -- the Director is view-only on delivery + invoices. What was
+ *  #671's inference is now his stated rule. So:
  *    - returns `none` DENIES him -- enforced, his words, `salesJdDenial()`.
- *    - delivery/invoices `view` would CAP him at read -- NOT enforced for a
- *      non-L2 caller, and deliberately left inert. Enforcing it would take his
- *      DO/SI writes away on an inference, which is the exact move this file
- *      exists to end. Pinned by the UNRULED test.
+ *    - delivery/invoices `view` CAPS him at read -- and for the Director this is
+ *      ENFORCED, not inert: his matrix row `scm.sales = full` (prod snapshot)
+ *      makes him scm_l2_configured, so the area-guard requires `edit` for a DO/SI
+ *      write and `view` fails it (a real 403). The "inert for a non-L2 rep" note
+ *      above is about a hypothetical rep with NO scm* row; every real Sales
+ *      position carries one. Pinned by the RULED test.
  *  His own export (2026-07-17) shows scm.procurement / warehouse / transportation
  *  / consignment / finance ALL `none` on his row, so the returns deny costs him
  *  nothing elsewhere -- measured, not assumed.

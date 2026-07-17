@@ -87,14 +87,17 @@ describe("Sales JD override", () => {
     expect(out["projects"]).toBe("view");
   });
 
-  /* PINS TODAY'S BEHAVIOUR — NOT AN ENDORSEMENT OF IT.
-     The Sales Director matches isSalesCohort, so the JD is SET on him and CAPS
-     him at `view` on DO/SI whatever his matrix row grants. The owner's JD quote
-     names "销售人员"; he has never ruled whether that includes the Director
-     (`feat/z1-jd-consolidate`, 2026-07-17 — the recorded blocker). This test
-     exists so that when he DOES rule, the change is deliberate and visible here
-     rather than a silent side effect of touching isSalesCohort. */
-  test("UNRULED: the Sales Director is in the cohort and is capped at view on DO/SI", () => {
+  /* RULED 2026-07-18 — owner: "DO SI 只能看 salesdirector". The Sales Director
+     matches isSalesCohort, so the JD is SET on him and CAPS him at `view` on
+     DO/SI whatever his matrix row grants. His matrix row is `scm.sales = full`
+     (prod snapshot, id 5); a `scm.sales` row makes him scm_l2_configured, so the
+     cap is ENFORCED, not decorative — the area-guard requires `edit` for a DO/SI
+     write and `view` fails it (a real 403). This was the one open question from
+     2026-07-17 ("算sales" settled the cohort, not the DO/SI cap); the owner has
+     now settled it, and the answer is the behaviour this test already pinned.
+     It stays here so any future removal of the cap is a deliberate, visible
+     change against a stated ruling rather than a silent side effect. */
+  test("RULED 2026-07-18: the Sales Director is capped at view on DO/SI", () => {
     const director = {
       permissions: new Set<string>(["scm.access"]),
       position_name: "Sales Director",
