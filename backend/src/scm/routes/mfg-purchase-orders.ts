@@ -1069,10 +1069,20 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
        part of that supply pool — NOT by per-line locking. The ordinary From-SO
        picker leaves this false → keeps its cap. */
     fromMrp?: boolean;
+    /* Land the created POs as DRAFT instead of SUBMITTED (owner 2026-07-17 —
+       the Procurement Agent's Stage 1: propose, then approve).
+
+       Opt-in and defaulting FALSE, so every existing caller is byte-for-byte
+       unaffected. `POST /` has taken this since PR #131 and the SO flow uses it;
+       the bulk convert never could, which is the whole reason an agent could not
+       raise a PO for review — see the header insert below for why a DRAFT is the
+       right fuse rather than a new parallel mechanism. */
+    asDraft?: boolean;
   };
   try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid_json' }, 400); }
   const poMode: 'combined' | 'per-so' = body.mode === 'per-so' ? 'per-so' : 'combined';
   const fromMrp = body.fromMrp === true;
+  const asDraft = body.asDraft === true;
   const supplierByCode = (body.supplierByCode ?? {}) as Record<string, string>;
   const targetPoId = body.targetPoId as string | undefined;
 
@@ -1082,6 +1092,18 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
      front so it can serve as the fallback for unbound SKUs (the PO-scoped
      "Convert from SO" / "Add Line Item" pickers are locked to that supplier
      anyway). */
+  /* asDraft only means anything on the CREATE path — the append path adds lines
+     to a PO that already has a status and must not silently re-open it. Refuse
+     the combination rather than accept it and ignore half of it: a caller that
+     asked for a draft and got its lines appended to a live PO has been told
+     nothing went wrong while the opposite of what it asked for happened. */
+  if (targetPoId && asDraft) {
+    return c.json(
+      { error: 'as_draft_not_supported_on_append', message: 'asDraft cannot be combined with targetPoId — appending to an existing PO cannot change its status.' },
+      400,
+    );
+  }
+
   let targetPoSupplierId: string | null = null;
   if (targetPoId) {
     const { data: tpo } = await supabase
@@ -1805,9 +1827,25 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
     const headerPayload = {
       company_id: activeCompanyId(c), // multi-company: stamp the active company
       supplier_id: supplierId,
-      // PR #131 — Convert-from-SO bulk path also lands SUBMITTED.
-      status: 'SUBMITTED',
-      submitted_at: new Date().toISOString(),
+      /* PR #131 — Convert-from-SO bulk path also lands SUBMITTED. Still the
+         default; `asDraft` is opt-in (see the body doc above), so every existing
+         caller is unaffected.
+
+         A DRAFT here is what makes the Procurement Agent's propose->approve
+         real. The manual create has always taken asDraft and the SO flow has
+         always used it, but the bulk convert — the ONLY path that turns MRP
+         shortages into POs — could not produce one, so an agent had no way to
+         raise a PO for review. It had to stop at a SKU-level suggestion and let
+         a human retype it, which is why approving a reorder proposal creates
+         nothing today.
+
+         A DRAFT PO is inert by design and that is exactly why it is the right
+         fuse: mrp.ts's PO_DEAD excludes DRAFT from supply, so a drafted PO
+         cannot make a shortage look covered; and recomputeSoPicked excludes
+         DRAFT lines, so it cannot lock the SO quota either. Nothing is
+         committed until a human confirms it. */
+      status: asDraft ? 'DRAFT' : 'SUBMITTED',
+      submitted_at: asDraft ? null : new Date().toISOString(),
       currency: bucket.currency,
       subtotal_centi: subtotal,
       tax_centi: 0,
