@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import type { Env } from "../types";
+import { requirePermission } from "../middleware/auth";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -15,7 +16,7 @@ const SORT_MAP: Record<string, string> = {
   id: "id",
 };
 
-app.get("/", async (c) => {
+app.get("/", requirePermission("logs.read"), async (c) => {
   const type = c.req.query("type");
   const status = c.req.query("status");
   const page = parseInt(c.req.query("page") || "1", 10);

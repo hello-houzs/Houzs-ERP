@@ -395,7 +395,7 @@ app.get("/pnl/bucket", requirePermission("projects.read"), async (c) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end)) {
     return c.json({ error: "dates must be YYYY-MM-DD" }, 400);
   }
-  const data = await bucketDrilldown(c.env, start, end);
+  const data = await bucketDrilldown(c.env, start, end, activeCompanyId(c));
   return c.json({ start, end, ...data });
 });
 
