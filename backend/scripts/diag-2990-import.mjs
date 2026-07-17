@@ -1,24 +1,17 @@
 #!/usr/bin/env node
 // TEMPORARY PROBE (branch diag/selling-price-probe -- NEVER MERGE).
 // Replaces the Phase 2 import diagnostics only so the existing read-only
-// diag-2990.yml workflow can carry one question to prod.
+// diag-2990.yml workflow can carry a question to prod. Read-only: SELECTs only.
 //
-// THE QUESTION: why does the Houzs receiver return HTTP 500 for SO-2607-013?
+// THE QUESTION: which 2990 staff are NOT yet Houzs users, and who currently
+// holds which company grant?
 //
-// State (mirror-sentinel, 2026-07-17): source=63 mirrored=62. Six outbox rows
-// for SO-2607-013 (header + 3 items + 1 payment + 1 update), enqueued
-// 2026-07-16T04:39Z, attempts=6582, last_error='http 500'. 2990 is behaving
-// correctly -- drain sends, confirm sees the 500, resets to pending, drain
-// resends, forever. Houzs is rejecting it. `last_error` stores only the status,
-// and the response body lives in 2990's net._http_response which PostgREST
-// cannot reach, so the reason has to be derived.
-//
-// Design risk R3 predicted exactly this: a 2990 record created AFTER the frozen
-// one-time master import references a parent that does not exist in Houzs -> FK
-// violation -> 500 -> retry forever. The earlier FK audit came back CLEAN, but
-// that audit only inspects rows ALREADY in Houzs -- a row that never landed has
-// no dangling FK to find. It could not see this. So: resolve every FK target
-// SO-2607-013 carries against Houzs and name the missing one.
+// Owner 2026-07-17: bring 2990's staff into Houzs, mark everyone in the
+// Operation and Management departments as BOTH companies, leave Sales
+// company-specific. Before proposing any write, establish the real delta --
+// matching on email, which is the only identifier both systems share
+// (2990 staff.id is a uuid; Houzs users.id is an integer; the mig-0066 bridge
+// derives scm.staff.id from the HOUZS user id, so it cannot match backwards).
 import postgres from "postgres";
 import { createClient } from "@supabase/supabase-js";
 
@@ -32,128 +25,95 @@ if (!SUPA_URL || !SUPA_KEY || !DST) {
 const src = createClient(SUPA_URL, SUPA_KEY, { auth: { persistSession: false } });
 const dst = postgres(DST, { ssl: "require", prepare: false, max: 1 });
 
-const DOC = "SO-2607-013";
+const norm = (e) => (e ?? "").trim().toLowerCase();
 
 async function main() {
-  // --- the source row, verbatim ---
-  const { data: sos, error: soErr } = await src
-    .from("mfg_sales_orders")
-    .select("*")
-    .eq("doc_no", DOC)
-    .limit(1);
-  if (soErr) throw new Error(`source SO: ${soErr.message}`);
-  if (!sos?.length) {
-    console.log(`SOURCE_MISSING -- ${DOC} not in 2990.mfg_sales_orders`);
-    return;
-  }
-  const so = sos[0];
-  console.log(`=== 2990 ${DOC} ===`);
-  for (const [k, v] of Object.entries(so)) {
-    if (v === null || v === "") continue;
-    const s = typeof v === "object" ? JSON.stringify(v) : String(v);
-    console.log(`  ${k} = ${s.length > 90 ? s.slice(0, 90) + "..." : s}`);
-  }
-
-  // --- what the receiver will try to insert into, and what those columns FK to ---
+  // --- 2990 staff ---
+  const { data: staff, error } = await src.from("staff").select("*").order("staff_code");
+  if (error) throw new Error(`2990 staff: ${error.message}`);
+  console.log(`=== 2990 public.staff: ${staff.length} rows ===`);
+  const cols = staff[0] ? Object.keys(staff[0]) : [];
+  console.log(`  columns: ${cols.join(", ")}`);
   console.log("");
-  console.log("=== Houzs scm.mfg_sales_orders FK targets ===");
-  const fks = await dst`
-    SELECT a.attname AS col, fn.nspname AS pns, fcl.relname AS parent, fa.attname AS pcol
-      FROM pg_constraint c
-      JOIN pg_class cl      ON cl.oid = c.conrelid
-      JOIN pg_namespace n   ON n.oid = cl.relnamespace
-      JOIN pg_class fcl     ON fcl.oid = c.confrelid
-      JOIN pg_namespace fn  ON fn.oid = fcl.relnamespace
-      JOIN unnest(c.conkey)  WITH ORDINALITY AS ck(attnum, ord) ON true
-      JOIN unnest(c.confkey) WITH ORDINALITY AS fk(attnum, ord) ON fk.ord = ck.ord
-      JOIN pg_attribute a   ON a.attrelid = cl.oid  AND a.attnum = ck.attnum
-      JOIN pg_attribute fa  ON fa.attrelid = fcl.oid AND fa.attnum = fk.attnum
-     WHERE c.contype = 'f' AND n.nspname = 'scm' AND cl.relname = 'mfg_sales_orders'`;
-  if (!fks.length) console.log("  (none -- the DDL port dropped the FKs; a bad ref would be SILENT, not a 500)");
+  for (const s of staff) {
+    console.log(
+      `  ${String(s.staff_code ?? "-").padEnd(12)} ${String(s.name ?? "-").padEnd(18)} ${String(s.role ?? "-").padEnd(16)} ${String(s.email ?? "(no email)").padEnd(34)} active=${s.active ?? s.is_active ?? "?"}`,
+    );
+  }
 
+  // --- Houzs users ---
+  const users = await dst`
+    SELECT u.id, u.email, u.name, u.status,
+           d.name AS dept, p.name AS position, r.name AS role
+      FROM users u
+      LEFT JOIN departments d ON d.id = u.department_id
+      LEFT JOIN positions   p ON p.id = u.position_id
+      LEFT JOIN roles       r ON r.id = u.role_id
+     ORDER BY u.id`;
+  console.log("");
+  console.log(`=== Houzs public.users: ${users.length} rows ===`);
+
+  // --- company grants ---
+  const grants = await dst`
+    SELECT uc.user_id, c.code
+      FROM user_companies uc JOIN companies c ON c.id = uc.company_id
+     ORDER BY uc.user_id`;
+  const byUser = new Map();
+  for (const g of grants) {
+    if (!byUser.has(g.user_id)) byUser.set(g.user_id, []);
+    byUser.get(g.user_id).push(g.code);
+  }
+  console.log(`=== user_companies: ${grants.length} grant rows across ${byUser.size} users ===`);
+  console.log("  (a user with NO row is unrestricted -- companyContext fails OPEN and gives ALL companies)");
+  console.log("");
+  console.log("  id   email                              dept                 position                  companies");
+  for (const u of users) {
+    const g = byUser.get(u.id);
+    console.log(
+      `  ${String(u.id).padEnd(4)} ${String(u.email ?? "-").padEnd(34)} ${String(u.dept ?? "-").padEnd(20)} ${String(u.position ?? "-").padEnd(25)} ${g ? g.sort().join("+") : "(none = ALL)"}`,
+    );
+  }
+
+  // --- the delta, matched on email ---
+  const houzsEmails = new Set(users.map((u) => norm(u.email)).filter(Boolean));
+  console.log("");
+  console.log("=== 2990 staff NOT in Houzs users (matched on email) ===");
   let missing = 0;
-  for (const f of fks) {
-    const val = so[f.col];
-    if (val === null || val === undefined || val === "") {
-      console.log(`  ${f.col} -> ${f.pns}.${f.parent}.${f.pcol}  :: source NULL, skip`);
-      continue;
-    }
-    const q = `SELECT count(*)::int AS n FROM "${f.pns}"."${f.parent}" WHERE "${f.pcol}"::text = $1`;
-    let n;
-    try {
-      n = (await dst.unsafe(q, [String(val)]))[0].n;
-    } catch (e) {
-      console.log(`  ${f.col} -> ${f.pns}.${f.parent}.${f.pcol}  :: CHECK FAILED ${e.message}`);
-      continue;
-    }
-    const verdict = n > 0 ? "ok" : "*** MISSING IN HOUZS ***";
-    if (n === 0) missing++;
-    console.log(`  ${f.col} = ${val}  ->  ${f.pns}.${f.parent}.${f.pcol}  :: ${verdict}`);
+  for (const s of staff) {
+    const e = norm(s.email);
+    if (e && houzsEmails.has(e)) continue;
+    missing++;
+    console.log(
+      `  ${String(s.staff_code ?? "-").padEnd(12)} ${String(s.name ?? "-").padEnd(18)} ${String(s.role ?? "-").padEnd(16)} ${s.email ?? "(NO EMAIL -- cannot be a Houzs user without one)"}`,
+    );
   }
-
-  // --- the same for the child tables the receiver writes ---
-  for (const child of ["mfg_sales_order_items", "mfg_sales_order_payments"]) {
-    const { data: rows, error } = await src.from(child).select("*").eq("doc_no", DOC);
-    if (error) {
-      console.log(`\n${child}: SRC_ERR ${error.message}`);
-      continue;
-    }
-    console.log(`\n=== ${child}: ${rows?.length ?? 0} source row(s) ===`);
-    const cfks = await dst`
-      SELECT a.attname AS col, fn.nspname AS pns, fcl.relname AS parent, fa.attname AS pcol
-        FROM pg_constraint c
-        JOIN pg_class cl      ON cl.oid = c.conrelid
-        JOIN pg_namespace n   ON n.oid = cl.relnamespace
-        JOIN pg_class fcl     ON fcl.oid = c.confrelid
-        JOIN pg_namespace fn  ON fn.oid = fcl.relnamespace
-        JOIN unnest(c.conkey)  WITH ORDINALITY AS ck(attnum, ord) ON true
-        JOIN unnest(c.confkey) WITH ORDINALITY AS fk(attnum, ord) ON fk.ord = ck.ord
-        JOIN pg_attribute a   ON a.attrelid = cl.oid  AND a.attnum = ck.attnum
-        JOIN pg_attribute fa  ON fa.attrelid = fcl.oid AND fa.attnum = fk.attnum
-       WHERE c.contype = 'f' AND n.nspname = 'scm' AND cl.relname = ${child}`;
-    const seen = new Set();
-    for (const r of rows ?? []) {
-      for (const f of cfks) {
-        const val = r[f.col];
-        if (val === null || val === undefined || val === "") continue;
-        const key = `${f.col}:${val}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        const q = `SELECT count(*)::int AS n FROM "${f.pns}"."${f.parent}" WHERE "${f.pcol}"::text = $1`;
-        let n;
-        try {
-          n = (await dst.unsafe(q, [String(val)]))[0].n;
-        } catch (e) {
-          console.log(`  ${f.col} -> ${f.parent}  :: CHECK FAILED ${e.message}`);
-          continue;
-        }
-        if (n === 0) missing++;
-        console.log(`  ${f.col} = ${val}  ->  ${f.pns}.${f.parent}.${f.pcol}  :: ${n > 0 ? "ok" : "*** MISSING IN HOUZS ***"}`);
-      }
-    }
-  }
-
-  // --- column drift: does Houzs have every column 2990 is sending? ---
-  console.log("");
-  const cols = await dst`
-    SELECT column_name, data_type, is_nullable
-      FROM information_schema.columns
-     WHERE table_schema='scm' AND table_name='mfg_sales_orders'`;
-  const have = new Set(cols.map((c) => c.column_name));
-  const extra = Object.keys(so).filter((k) => !have.has(k));
-  console.log(`column drift: 2990 sends ${Object.keys(so).length}, Houzs has ${have.size}`);
-  console.log(`  columns 2990 sends that Houzs LACKS (receiver drops these): ${extra.length ? extra.join(", ") : "(none)"}`);
-  const notNullNoDefault = cols.filter(
-    (c) => c.is_nullable === "NO" && !["doc_no", "company_id"].includes(c.column_name) && !(c.column_name in so),
-  );
-  console.log(
-    `  Houzs NOT NULL columns absent from the source payload: ${
-      notNullNoDefault.length ? notNullNoDefault.map((c) => c.column_name).join(", ") : "(none)"
-    }`,
-  );
+  if (!missing) console.log("  (none -- every 2990 staff email already exists in Houzs)");
 
   console.log("");
-  console.log(missing > 0 ? `VERDICT: ${missing} FK target(s) MISSING in Houzs -- that is the 500.` : "VERDICT: every FK resolves. The 500 is NOT a missing parent -- look at column drift / NOT NULL / a CHECK.");
+  console.log("=== Houzs departments + positions (the targets for the both-company marking) ===");
+  const depts = await dst`
+    SELECT d.name AS dept, p.name AS position, count(u.id)::int AS n
+      FROM departments d
+      LEFT JOIN positions p ON p.department_id = d.id
+      LEFT JOIN users u     ON u.position_id = p.id AND u.status = 'active'
+     GROUP BY d.name, p.name ORDER BY d.name, p.name`;
+  for (const r of depts) console.log(`  ${String(r.dept ?? "-").padEnd(24)} ${String(r.position ?? "-").padEnd(26)} active_users=${r.n}`);
+
+  console.log("");
+  console.log("=== who would be marked BOTH under the owner's rule (Operation + Management, excluding Sales) ===");
+  const targets = await dst`
+    SELECT u.id, u.email, d.name AS dept, p.name AS position
+      FROM users u
+      JOIN positions p   ON p.id = u.position_id
+      JOIN departments d ON d.id = p.department_id
+     WHERE u.status = 'active'
+       AND (d.name ILIKE '%operation%' OR d.name ILIKE '%management%')
+     ORDER BY d.name, u.id`;
+  console.log(`  ${targets.length} active user(s) match:`);
+  for (const t of targets) {
+    const g = byUser.get(t.id);
+    console.log(`  ${String(t.id).padEnd(4)} ${String(t.email ?? "-").padEnd(34)} ${String(t.dept).padEnd(20)} ${String(t.position).padEnd(25)} now=${g ? g.sort().join("+") : "(none = ALL)"}`);
+  }
 }
 
 main()
