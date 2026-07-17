@@ -1393,6 +1393,11 @@ function TasklistSectionView({
             {totalTasks === 0 && !orderedSecs.length && <div style={{ fontSize: 12, color: "#9aa093" }}>No tasks yet.</div>}
             {orderedSecs.map((sec) => {
               const rows = bySection.get(sec.id) ?? [];
+              // Owner 2026-07-17: a section with NO visible tasks for this
+              // viewer renders nothing at all — previously the bare title +
+              // "No tasks in this section" still showed (e.g. PAYMENT / BOOTH
+              // LAYOUT headers on the sales simplified view).
+              if (rows.length === 0) return null;
               const prog = progressById.get(sec.id);
               return (
                 <div key={sec.id} style={{ marginTop: 10 }}>
@@ -1401,7 +1406,7 @@ function TasklistSectionView({
                     <span style={{ fontSize: 11, fontWeight: 800, color: "#11140f" }}>{(sec.name || "").replace(/\s+documents$/i, "")}</span>
                     {prog && <span style={{ marginLeft: "auto", fontSize: 10, fontWeight: 700, color: "#9aa093" }}>{prog.done}/{prog.total}</span>}
                   </div>
-                  {rows.length ? renderRows(rows) : <div style={{ fontSize: 11, color: "#9aa093", padding: "4px 0" }}>No tasks in this section.</div>}
+                  {renderRows(rows)}
                 </div>
               );
             })}
