@@ -65,6 +65,7 @@ import { trips } from "./routes/trips";
 import { lorryCapacity } from "./routes/lorry-capacity";
 import { helpers } from "./routes/helpers";
 import { lorries } from "./routes/lorries";
+import { lorryServiceRecords } from "./routes/lorry-service-records";
 import { soSettings } from "./routes/so-settings";
 import { freeItemCampaigns } from "./routes/free-item-campaigns";
 import { modelFreeGifts } from "./routes/model-free-gifts";
@@ -320,6 +321,10 @@ scm.use("/helpers/*", scmAreaGuard("scm.transportation.drivers"));
 scm.route("/helpers", helpers);
 scm.use("/lorries/*", scmAreaGuard("scm.transportation.drivers"));
 scm.route("/lorries", lorries);
+// Lorry service/repair history (mig 0121). Same area key as the rest of the TMS
+// fleet masters — it is the Fleet page's lorry detail, not a new module.
+scm.use("/lorry-service-records/*", scmAreaGuard("scm.transportation.drivers"));
+scm.route("/lorry-service-records", lorryServiceRecords);
 // Ported 2026-06-21 — SO Maintenance picklists (so_dropdown_options). Backs the
 // vendored SO Maintenance mini-tables (customer_type / building_type /
 // relationship / payment_method cascade / venue). Seeded by

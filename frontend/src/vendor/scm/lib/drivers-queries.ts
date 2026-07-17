@@ -16,8 +16,17 @@ export type DriverRow = {
   phone: string;
   ic_number: string | null;
   vehicle: string | null;
-  // Migration 0195 — in-house staff driver vs outsourced/3rd-party. The pg
-  // driver camelCases result cols, so consumers dual-read `inHouse ?? in_house`.
+  // Migration 0195 — in-house staff driver vs outsourced/3rd-party.
+  //
+  // Consumers dual-read `inHouse ?? in_house`, and the camel half is DEAD. The
+  // reason previously given here ("the pg driver camelCases result cols") is
+  // Hookka's rule and is false for Houzs: pg.ts:5-10 deliberately does not
+  // install that transform ("fix the route, do not flip a global transform"),
+  // and these rows never reach the pg driver anyway — they come from PostgREST
+  // over /api/scm/drivers, which returns the snake_case names listed in
+  // scm/routes/drivers.ts:24's COLS. Only the snake half ever resolves. The
+  // reads are kept (`?? ` is free and every sibling SCM surface has the same
+  // shape); the claim is not.
   in_house?: boolean;
   inHouse?: boolean;
   active: boolean;
