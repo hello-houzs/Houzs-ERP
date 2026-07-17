@@ -16,17 +16,33 @@
  * anyPerm/anyAccess, navFilter.ts:76-91), and on 2026-07-17 a report made from
  * the code alone was wrong and the owner corrected it from memory.
  *
- * Usage:
- *   node scripts/export-position-access.mjs --url <base> --token <bearer>
+ * Usage — TWO ways in, and --input is the one that works:
  *
- * Real invocation (PROD — this is the regenerate command, and it is the same
- * one recorded in the header of the generated module):
+ *   1. --input <file>   Read a JSON export already on disk. This is the real
+ *                       path. Team -> Positions has an Export button that
+ *                       downloads exactly this file; the owner clicks it and
+ *                       the file lands in Downloads. No credential is handled
+ *                       by anyone but his own browser.
+ *
+ *   2. --url + --token  Fetch it directly. Kept for a caller who legitimately
+ *                       holds a bearer token, but note what 2026-07-17 proved:
+ *                       $DASHBOARD_API_KEY is a Cloudflare secret and secrets
+ *                       there are WRITE-ONLY BY DESIGN. Nobody can read it back
+ *                       — not tooling, not the owner. The command this file
+ *                       used to advertise could not be run by anyone. That is
+ *                       why (1) exists, and why it is listed first.
+ *
+ * Real invocation (PROD):
  *   node backend/scripts/export-position-access.mjs \
- *     --url https://autocount-sync-api.houzs-erp.workers.dev \
- *     --token "$DASHBOARD_API_KEY"
+ *     --input ~/Downloads/houzs-position-access.json
  *
  * Flags:
- *   --url            API base URL. Required.
+ *   --input          Path to a JSON export on disk (from the Export button).
+ *                    Mutually exclusive with --url; every guard below still
+ *                    applies, INCLUDING the prod check — a file read from disk
+ *                    is not more trustworthy than one fetched, it is only
+ *                    easier to obtain.
+ *   --url            API base URL. Required unless --input.
  *   --token          Bearer token. Defaults to $DASHBOARD_API_KEY.
  *   --out            Output path. Defaults to src/services/positionAccessSnapshot.ts
  *   --json           Also write the raw export JSON here (for review/diffing).
@@ -42,7 +58,7 @@
  * churn. `generatedAt` is deliberately NOT written into the module for the same
  * reason; the provenance that matters (which DB) is.
  */
-import { writeFileSync } from "node:fs";
+import { writeFileSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -56,29 +72,63 @@ function arg(name, fallback = null) {
 }
 const has = (name) => process.argv.includes(`--${name}`);
 
+const INPUT = arg("input");
 const BASE = (arg("url") || process.env.EXPORT_URL || "").replace(/\/$/, "");
 const TOKEN = arg("token") || process.env.DASHBOARD_API_KEY || "";
 const OUT = resolve(__dirname, "..", arg("out") || "src/services/positionAccessSnapshot.ts");
 const JSON_OUT = arg("json");
 const DRY = has("dry");
 
-if (!BASE) {
-  console.error("[export] no --url. See the header of this file for the prod command.");
+// --input and --url answer the same question from different places. Taking both
+// would mean silently picking one, and the wrong pick writes a snapshot from a
+// source the operator did not mean — the exact class of invisible error the
+// guards below exist to stop.
+if (INPUT && BASE) {
+  console.error("[export] --input and --url are mutually exclusive. Pass one.");
   process.exit(2);
 }
-if (!TOKEN) {
-  console.error("[export] no --token and no $DASHBOARD_API_KEY.");
+if (!INPUT && !BASE) {
+  console.error("[export] no --input and no --url. See the header of this file.");
   process.exit(2);
 }
 
-const res = await fetch(`${BASE}/api/positions/page-access/export`, {
-  headers: { Authorization: `Bearer ${TOKEN}` },
-});
-if (!res.ok) {
-  console.error(`[export] HTTP ${res.status} — ${(await res.text()).slice(0, 400)}`);
-  process.exit(1);
+let data;
+if (INPUT) {
+  const path = resolve(process.cwd(), INPUT);
+  let raw;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch (e) {
+    console.error(`[export] could not read ${path} — ${e.message}`);
+    process.exit(2);
+  }
+  try {
+    data = JSON.parse(raw);
+  } catch (e) {
+    // A truncated or HTML-error-page download parses as neither, and silently
+    // treating it as "no data" is how an empty snapshot ships. Fail loudly.
+    console.error(`[export] ${path} is not valid JSON — ${e.message}`);
+    process.exit(2);
+  }
+} else {
+  if (!TOKEN) {
+    console.error(
+      "[export] no --token and no $DASHBOARD_API_KEY.\n" +
+        "         Note $DASHBOARD_API_KEY cannot be read back out of Cloudflare —\n" +
+        "         secrets there are write-only. Use --input with the file from the\n" +
+        "         Export button on Team -> Positions.",
+    );
+    process.exit(2);
+  }
+  const res = await fetch(`${BASE}/api/positions/page-access/export`, {
+    headers: { Authorization: `Bearer ${TOKEN}` },
+  });
+  if (!res.ok) {
+    console.error(`[export] HTTP ${res.status} — ${(await res.text()).slice(0, 400)}`);
+    process.exit(1);
+  }
+  data = await res.json();
 }
-const data = await res.json();
 
 // ---- Refuse to write anything questionable -------------------------------
 // Every check below prefers writing NOTHING over writing something plausible.
@@ -144,11 +194,20 @@ if (JSON_OUT) {
 // INHERIT, "none" means DENIED even under a full parent. Backfilling the gaps
 // here would nail every child to today's parent value and sever the
 // inheritance he set up. The gaps stay gaps.
+// Joined with a `//` continuation, NOT ` * ` — this is emitted into a
+// line-comment header, and the old ` * ` join produced a broken hybrid the
+// generated file carried on every line but the first.
+//
+// It advertises --input, not --token. The old command named
+// $DASHBOARD_API_KEY, which is a Cloudflare secret: write-only by design and
+// unreadable by anyone, the owner included. This file's own regenerate
+// instruction could not be followed by the person it was written for.
 const REGEN = [
   "node backend/scripts/export-position-access.mjs \\",
-  "  --url https://autocount-sync-api.houzs-erp.workers.dev \\",
-  '  --token "$DASHBOARD_API_KEY"',
-].join("\n *   ");
+  "  --input ~/Downloads/houzs-position-access.json",
+  "",
+  "(the JSON comes from the Export button on Team -> Positions)",
+].join("\n//   ");
 
 const positions = [...data.positions].sort((a, b) => a.id - b.id);
 
@@ -190,7 +249,7 @@ const file = `// ---------------------------------------------------------------
 // silently reverts you.
 //
 // Regenerate:
-// *   ${REGEN}
+//   ${REGEN}
 //
 // Generated from : ${from}
 // Positions      : ${data.totals.positions}
