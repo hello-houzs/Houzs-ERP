@@ -33,6 +33,24 @@ function PublicFallback() {
 // Safe on every page (survey/portal/supplier all benefit too).
 registerPwa();
 
+// STAGING-ONLY view-as hand-off (owner 2026-07-17): the owner's local
+// "Portal Viewer" launcher logs into the staging API and opens this app with
+// #login-as=<token> so they can hop between role accounts in one click while
+// reviewing the portal. Consume the token BEFORE React boots, store it
+// session-only (never "remember me"), and scrub it from the URL/history.
+// Hard-gated to the staging hostname so this path can never mint a session
+// on production.
+if (window.location.hostname === "houzs-erp-staging.pages.dev") {
+  const m = /[#&]login-as=([^&]+)/.exec(window.location.hash);
+  if (m) {
+    try {
+      sessionStorage.setItem("auth:token", decodeURIComponent(m[1]));
+      localStorage.removeItem("auth:token");
+    } catch { /* storage unavailable — fall through to the login screen */ }
+    window.history.replaceState(null, "", window.location.pathname + window.location.search);
+  }
+}
+
 // Public routes that must bypass the staff AuthGate entirely:
 //   /survey/:token       — tokenized customer satisfaction survey
 //   /track               — public case-lookup form (ASSR no + phone)
