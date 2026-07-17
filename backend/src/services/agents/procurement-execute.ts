@@ -22,6 +22,38 @@ import type { Env } from '../../types';
 import { createDraftPosFromPicks } from '../../scm/routes/mfg-purchase-orders';
 import { readAgentSetting } from '../agent-console';
 import { PROCUREMENT_AGENT_SETTING_KEY } from './procurement-learning';
+import { canSelfApprove } from './governance';
+
+/**
+ * The Stage-2 self-approval ceiling for a reorder, in UNITS ordered, read from
+ * app_settings['agents.procurement'].maxAutoApproveUnits. This is the
+ * "Low-value catalogue within limit" cell of the spec's EXTERNAL_PO row
+ * (docs/agents/operating-spec.md §6.8): above it, a reorder is a human's call.
+ *
+ * Default 500. A conservative ceiling, not "no ceiling": the spec forbids
+ * auto-approve from meaning "approve everything" (§1.2), so the absence of a
+ * configured limit must still BE a limit, never unbounded.
+ */
+const DEFAULT_MAX_AUTO_APPROVE_UNITS = 500;
+async function maxAutoApproveUnits(db: D1Database): Promise<number> {
+  const cfg = await readAgentSetting<Record<string, unknown>>(db, PROCUREMENT_AGENT_SETTING_KEY);
+  const n = Number(cfg?.maxAutoApproveUnits);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_MAX_AUTO_APPROVE_UNITS;
+}
+
+/** Sum of a REORDER proposal's pick quantities — the size proxy the Stage-2
+ *  ceiling is measured against. Reads the payload the same way
+ *  executeReorderProposal does. */
+function reorderUnits(payloadRaw: unknown): number {
+  const payload = (typeof payloadRaw === 'string' ? safeParse(payloadRaw) : payloadRaw) as
+    | { picks?: unknown }
+    | null;
+  const picks = Array.isArray(payload?.picks) ? payload.picks : [];
+  return picks.reduce((sum, p) => {
+    const q = Number((p as { qty?: unknown })?.qty);
+    return sum + (Number.isFinite(q) && q > 0 ? q : 0);
+  }, 0);
+}
 
 /* Returning ok=false with reversible=true means NOTHING was created and the
    proposal is safe to hand back to PENDING. reversible=false means something
@@ -215,8 +247,39 @@ export async function autoApproveReorderProposals(
     )
     .all<{ id: string; kind?: string; payload?: unknown }>();
 
+  const unitLimit = await maxAutoApproveUnits(db);
   const nowIso = new Date().toISOString();
   for (const row of res.results ?? []) {
+    /* THE STAGE-2 POLICY GATE (docs/agents/operating-spec.md §1.2, §6.8).
+       The `auto_approve` flag being on is NOT "approve every reorder" — the spec
+       is explicit that autonomy is per decision class, "never a blanket
+       permission to approve everything". So each reorder passes through the
+       shared authority matrix before it is claimed. A reorder over the unit
+       ceiling is held for a human; the flag only ever loosens the low-value case.
+
+       Data-quality is asserted GREEN here rather than measured: the domain gates
+       downstream (executeReorderProposal refuses on missing picks / unusable
+       company; the converter enforces qty-remaining) cover the RED cases today,
+       and wiring a real Green/Amber/Red signal into this loop is a later step,
+       named in the PR. `counterpartyKnown` is left undefined ON PURPOSE — the
+       proposal deliberately does not carry a supplierId (the converter resolves
+       the supplier at execution), so the new-supplier stop cannot be evaluated
+       here and must not be faked as "known". */
+    const gate = canSelfApprove({
+      agent: 'HZS-REP-004',
+      decisionClass: 'EXTERNAL_PO',
+      stage: 2,
+      dataQuality: 'GREEN',
+      valueProxy: reorderUnits(row.payload),
+      limit: unitLimit,
+    });
+    if (!gate.ok) {
+      // Leave it PENDING for a human; do not claim it. Naming it keeps the run
+      // summary honest about what auto-approve did and did not do.
+      out.notes.push(`held for human — ${row.id}: ${gate.reason}`);
+      continue;
+    }
+
     /* CLAIM FIRST, execute second — the same order the console uses, for the
        same reason: the UPDATE is the atomic step, so a heartbeat racing a human
        clicking approve cannot both raise POs for one proposal. */
