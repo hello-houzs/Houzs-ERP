@@ -1316,21 +1316,66 @@ deliveryPlanning.patch('/:type/:id/schedule', async (c) => {
   if (!data) return c.json({ error: 'not_found' }, 404);
 
   // ── Trip wiring — find-or-create a trip, append a stop.
-  let trip: { id: string; trip_no: string } | null = null;
-  if (wantsTrip) {
-    trip = await scheduleOntoTrip(c, sb, type, id, p);
-  }
+  const wiring: TripWiring = wantsTrip
+    ? await scheduleOntoTrip(c, sb, type, id, p)
+    : { state: 'NOT_REQUESTED' };
 
-  return c.json({ ok: true, [type]: data, trip });
+  /* `trip` keeps its exact wire shape — the board reads it, and a failure still
+     means no trip. What is NEW is `tripWiring`, present ONLY on failure, so the
+     absence that used to mean two things now means one. Still 200: the header
+     date IS stored, and saying otherwise would invite a re-press that rewrites
+     it. Report, don't repair. */
+  return c.json({ ok: true, [type]: data, ...tripFieldsFor(wiring) });
 });
+
+/* THREE STATES, never two — `null` was carrying two opposite meanings.
+   WIRED / NOT_REQUESTED / FAILED. The old signature returned
+   `{id,trip_no} | null`, and the caller could not tell "the coordinator did not
+   ask for a trip" from "the coordinator asked and the wiring blew up": both are
+   `trip: null` next to `ok: true`, byte for byte. Same collapse as
+   services/agents/agent-company.ts's UNRESOLVED-vs-STALE_PIN, and it is quiet
+   for the same reason — the two states agree on every field a caller reads. */
+export type TripWiring =
+  | { state: 'WIRED'; trip: { id: string; trip_no: string } }
+  | { state: 'NOT_REQUESTED' }
+  | { state: 'FAILED'; reason: string };
+
+/**
+ * The wire shape of a schedule response's trip fields.
+ *
+ * Exported and pure ONLY because this mapping is where the bug lived: every
+ * non-WIRED state has to answer `trip: null`, so the mapping is the exact place
+ * the two opposite meanings used to become one. Keeping it inline would mean the
+ * distinction is only asserted by reading the code. `tripWiring` is present ONLY
+ * on FAILED — an absent key means "no trip was asked for", which is the one
+ * reading `trip: null` still carries on its own.
+ */
+export function tripFieldsFor(wiring: TripWiring): {
+  trip: { id: string; trip_no: string } | null;
+  tripWiring?: { failed: true; reason: string };
+} {
+  switch (wiring.state) {
+    case 'WIRED':
+      return { trip: wiring.trip };
+    case 'NOT_REQUESTED':
+      return { trip: null };
+    case 'FAILED':
+      return { trip: null, tripWiring: { failed: true, reason: wiring.reason } };
+  }
+}
 
 /* ──────────────────────────────────────────────────────────────────────────
    scheduleOntoTrip — the trip integration. Find-or-create the trip and append a
    DELIVERY trip_stop for this order (revenue from the DO/SO local_total_centi).
    Idempotent on re-schedule: an existing stop for the same (trip, do_id|so_id)
-   is reused, not duplicated. Best-effort — a wiring failure does not fail the
-   (already-committed) header schedule; it returns null and the date still stands.
-   (The delivery_leg trip-linking step was removed with the leg feature.)
+   is reused, not duplicated.
+
+   STILL best-effort, and deliberately so: the header schedule has ALREADY
+   COMMITTED by the time this runs, so throwing here would report "your schedule
+   failed" about a date that is now stored — a worse lie than the one being fixed,
+   and one that invites a re-press. What changes is that a failure is now
+   REPORTED rather than returned as an absence. Report, don't repair — the same
+   call as mfg-purchase-orders.ts's `dropped[]`.
    ─────────────────────────────────────────────────────────────────────────*/
 async function scheduleOntoTrip(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1340,7 +1385,7 @@ async function scheduleOntoTrip(
   type: 'so' | 'do',
   id: string,
   p: z.infer<typeof scheduleSchema>,
-): Promise<{ id: string; trip_no: string } | null> {
+): Promise<TripWiring> {
   try {
     const user = c.get('user') as { id?: string } | null;
 
@@ -1390,7 +1435,12 @@ async function scheduleOntoTrip(
       if (hit) tripId = hit.id;
     }
     if (!tripId) {
-      if (!p.lorryId) return null;  // nothing to create a trip from
+      /* Nothing to create a trip from — genuinely "no trip was asked for", not a
+         failure. Unreachable from the only caller (it guards on
+         `wantsTrip = tripId != null || lorryId != null`, and tripId is null here),
+         so this is defensive; it is typed as the state it means rather than
+         collapsed back into the failure bucket. */
+      if (!p.lorryId) return { state: 'NOT_REQUESTED' };
       const isOutsourced = await deriveTripOutsourced(sb, p.lorryId);
       const { data: created, error: tErr } = await insertWithDocNoRetry<{ id: string; trip_no: string }>(
         () => nextTripNo(sb),
@@ -1407,7 +1457,18 @@ async function scheduleOntoTrip(
         created_by:    user?.id ?? null,
         }).select('id, trip_no').single(),
       );
-      if (tErr || !created) return null;
+      /* The trip INSERT failed. `tErr` is a real database error and was being
+         DISCARDED — the coordinator picked a lorry, no trip exists, and the
+         response said `ok: true, trip: null`, which is what a header-only
+         schedule says. Carry the reason out. */
+      if (tErr || !created) {
+        return {
+          state: 'FAILED',
+          reason: tErr
+            ? `could not create the trip: ${String((tErr as { message?: string }).message ?? tErr).slice(0, 160)}`
+            : 'could not create the trip: the insert returned no row',
+        };
+      }
       tripId = (created as { id: string }).id;
     }
     const tripIdStr = tripId as string;
@@ -1442,8 +1503,22 @@ async function scheduleOntoTrip(
     /* Echo the trip_no for the response. */
     const { data: tNo } = await sb.from('trips').select('id, trip_no').eq('id', tripIdStr).maybeSingle();
     const tr = tNo as { id?: string; trip_no?: string; tripNo?: string } | null;
-    return tr ? { id: tripIdStr, trip_no: (tr.tripNo ?? tr.trip_no ?? '') } : { id: tripIdStr, trip_no: '' };
-  } catch {
-    return null;  // best-effort — never fail the header schedule on a wiring error
+    /* The stop is written; the trip EXISTS. A blank trip_no here means only that
+       the echo read came back empty, so this stays WIRED — the wiring is what is
+       being reported, not the label. */
+    return {
+      state: 'WIRED',
+      trip: tr
+        ? { id: tripIdStr, trip_no: (tr.tripNo ?? tr.trip_no ?? '') }
+        : { id: tripIdStr, trip_no: '' },
+    };
+  } catch (e) {
+    /* Still best-effort — the header schedule already committed, so throwing
+       would report a failure about a date that is now stored. But the operator
+       is told, instead of reading `trip: null` as "I didn't ask for one". */
+    return {
+      state: 'FAILED',
+      reason: `trip wiring failed: ${String((e as Error)?.message ?? e).slice(0, 160)}`,
+    };
   }
 }
