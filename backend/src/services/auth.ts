@@ -9,6 +9,7 @@ import {
 } from "./pageAccess";
 import { getCachedUser, setCachedUser, bustCachedUser } from "./sessionCache";
 import { isScopedProjectUser } from "./projectAcl";
+import { applySalesJdOverride } from "./salesJdAccess";
 
 // ── Crypto helpers ────────────────────────────────────────
 // PBKDF2 via Web Crypto — built into Workers, no WASM needed.
@@ -313,7 +314,11 @@ async function hydrateAuthUser(env: Env, row: any): Promise<AuthUser> {
     department_id: row.department_id ?? null,
     department_name: row.department_name ?? null,
     brand_scope: brandScope,
-    page_access: pageAccess,
+    page_access: applySalesJdOverride(pageAccess, {
+      permissions: permissionsSet,
+      position_name: row.position_name ?? null,
+      department_name: row.department_name ?? null,
+    }),
     scm_l2_configured: scmMeta.explicitScm,
     // sessions.origin — present only on the getUserBySession row (that SELECT
     // already joins `sessions`, so this costs no extra round-trip). getUserById
