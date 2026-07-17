@@ -127,6 +127,50 @@ describe("nav — the rep SCM trim stays trimmed", () => {
   });
 });
 
+describe("nav — Adjustments gates on the key the backend enforces (2026-07-18)", () => {
+  /* Stock ADJUSTMENT writes hit POST /inventory/adjustments, gated server-side on
+     scm.warehouse.inventory (scm/index.ts) — NOT scm.warehouse.adjustments, which
+     no area-guard reads. The nav + route once gated on that dead key, so the ops
+     cohort #731 granted `inventory` could POST an adjustment yet never see the
+     page. These pin that the nav now agrees with the server: the Adjustments entry
+     shows for a holder of scm.warehouse.inventory and NOT for a holder of the dead
+     scm.warehouse.adjustments key. A cohort member (Operation dept, not a sales
+     rep) so hideForSalesRep does not confound the result. */
+  const storekeeper = (): AuthUser =>
+    rep({ position_name: "Storekeeper", department_name: "Operation Department" });
+
+  it("shows Adjustments to a holder of scm.warehouse.inventory (the #731 grant) on desktop AND phone", () => {
+    // inventory=edit is what applyOperationJdOverride raises the cohort to; note
+    // adjustments is left 'none' to prove inventory alone carries the nav.
+    const ctx = ctxFor(storekeeper(), {
+      "scm.warehouse.inventory": "edit",
+      "scm.warehouse.adjustments": "none",
+    });
+    expect(desktopPaths(ctx)).toContain("/scm/stock-adjustments");
+    expect(phoneAllows(ctx, "/scm/stock-adjustments")).toBe(true);
+  });
+
+  it("does NOT show Adjustments to a holder of only the dead scm.warehouse.adjustments key", () => {
+    // The old gate. With inventory=none the server would 403 the POST, so the nav
+    // must not surface the page on the strength of the frontend-only key alone.
+    const ctx = ctxFor(storekeeper(), {
+      "scm.warehouse.adjustments": "view",
+      "scm.warehouse.inventory": "none",
+    });
+    expect(desktopPaths(ctx)).not.toContain("/scm/stock-adjustments");
+    expect(phoneAllows(ctx, "/scm/stock-adjustments")).toBe(false);
+  });
+
+  it("keeps the Warehouse group visible via inventory when adjustments is dropped from its anyAccess", () => {
+    // The group's anyAccess no longer lists scm.warehouse.adjustments; inventory
+    // (and the other warehouse children) still resolve it visible for the cohort.
+    const ctx = ctxFor(storekeeper(), { "scm.warehouse.inventory": "edit" });
+    const paths = desktopPaths(ctx);
+    expect(paths).toContain("/scm/stock-adjustments");
+    expect(paths).toContain("/scm/inventory");
+  });
+});
+
 describe("nav — office and director are untouched by the rep leaf", () => {
   /* The Supply Chain umbrella lists only L1 area keys in its anyAccess, so a
      user reaching Amendments by the subgroup path needs the L1 scm.sales grant,
