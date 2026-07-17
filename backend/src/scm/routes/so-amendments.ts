@@ -25,7 +25,13 @@ import { applySoAmendment, reviseBoundPo, ReceivedFloorError } from '../lib/so-r
 import { hasHouzsPerm, canViewAllSales } from '../lib/houzs-perms';
 import { resolveSalesScopeIds, salesDocOutOfScope, resolveCallerStaffId } from '../lib/salesScope';
 import { recordSoAudit } from '../lib/so-audit';
-import { scopeToCompany, isMirroredDocNo, MIRRORED_SO_READONLY } from '../lib/companyScope';
+import { scopeToCompany, isMirroredDocNo, MIRRORED_SO_READONLY, activeCompanyId } from '../lib/companyScope';
+import {
+  enqueueAmendmentCommand,
+  commandsEnabled,
+  dispatchOne,
+} from '../lib/amendment-command';
+import { readBridgeCommandConfig, probeBridge } from '../lib/bridge-2990-command';
 import type { Context } from 'hono';
 
 export const soAmendments = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -53,8 +59,12 @@ async function gateActorStaffId(
 
 type AmendmentForWrite = { id: string; so_doc_no: string; status: AmendStatus };
 type AmendmentWriteLoad =
-  | { ok: true; amendment: AmendmentForWrite }
-  | { ok: false; reason: 'not_found' | 'mirrored' };
+  // A Houzs-NATIVE amendment: apply locally, exactly as before.
+  | { ok: true; mirrored: false; amendment: AmendmentForWrite }
+  // A MIRRORED (2990-) amendment: the intent is dispatched as a command to
+  // 2990's own API, never applied here (see dispatchMirroredCommand).
+  | { ok: true; mirrored: true; amendment: AmendmentForWrite }
+  | { ok: false; reason: 'not_found' };
 
 /* ── loadAmendmentForWrite — the guard load every mutation gate shares ──────
    The list (GET /) and detail (GET /:id) reads above are company-scoped; the
@@ -67,12 +77,15 @@ type AmendmentWriteLoad =
    rather than 403 so an out-of-company id is indistinguishable from a
    nonexistent one (the convention salesDocOutOfScope already set).
 
-   Second gate, independent of the first: refuse outright when the bound SO is
-   2990's. The company scope above stops a HOUZS-active caller, but a caller who
-   simply SWITCHES to 2990 passes it — and applySoAmendment would then rewrite a
-   mirrored SO that the next 2990 drain silently reverts (see the
-   MIRRORED_COMPANY_CODE block in lib/companyScope.ts). Approving a 2990
-   amendment has to happen in 2990. */
+   Second axis: a MIRRORED (2990-) amendment is NOT applied here. Houzs is not
+   the writer of 2990's records — applySoAmendment would rewrite a mirrored SO
+   that the next 2990 drain silently reverts (F2). Previously this refused with
+   409 MIRRORED_SO_READONLY. Now the refusal is REPLACED by intent-dispatch
+   (design §3.2/D2): the gate hands the action to dispatchMirroredCommand, which
+   calls 2990's OWN API so 2990 applies it with 2990's logic, and the result
+   flows back down the existing mirror. When the feature is dark (flag off /
+   bridge unconfigured), dispatchMirroredCommand restores the exact 409 refusal —
+   so read-only-in-Houzs stays the default until the command channel is enabled. */
 async function loadAmendmentForWrite(
   sb: any,
   id: string,
@@ -84,15 +97,87 @@ async function loadAmendmentForWrite(
   ).maybeSingle();
   if (!data) return { ok: false, reason: 'not_found' };
   const amendment = data as AmendmentForWrite;
-  if (isMirroredDocNo(amendment.so_doc_no)) return { ok: false, reason: 'mirrored' };
-  return { ok: true, amendment };
+  return { ok: true, mirrored: isMirroredDocNo(amendment.so_doc_no), amendment };
 }
 
-/* One refusal shape for all five gates, so they cannot drift apart. */
-function amendmentWriteBlocked(c: Context<any>, reason: 'not_found' | 'mirrored') {
-  return reason === 'mirrored'
-    ? c.json(MIRRORED_SO_READONLY, 409)
-    : c.json({ error: 'not_found' }, 404);
+/* ── dispatchMirroredCommand — turn an approve/reject INTENT on a 2990
+   amendment into a command, instead of a local write (design §3.2/D2).
+
+   Enqueue-then-drain, so the user is never blocked on a cross-system call: we
+   write the durable sync_command row, fire ONE inline attempt on waitUntil, and
+   return 202. The state change appears when the existing mirror delivers 2990's
+   new status back down. A failed dispatch stays retryable and the */5 cron drain
+   finishes it — nothing is fire-and-forget.
+
+   Ships dark: with the flag off OR the bridge unconfigured, the mirrored
+   amendment is refused read-only exactly as it was before this build. */
+async function dispatchMirroredCommand(
+  c: Context<any>,
+  sb: any,
+  amendment: AmendmentForWrite,
+  action: AmendAction,
+  payload: Record<string, unknown>,
+) {
+  if (!(await commandsEnabled(sb))) {
+    // Feature dark — mirrored amendments remain read-only in Houzs.
+    return c.json(MIRRORED_SO_READONLY, 409);
+  }
+  const cfg = readBridgeCommandConfig(c.env);
+  if (!cfg.ok) {
+    // The bridge is not set up, so this could never be delivered. Refuse rather
+    // than queue a command that can only ever fail — and say so plainly.
+    return c.json({
+      error: 'bridge_not_configured',
+      message: 'The connection to 2990 is not set up yet, so this change cannot be sent to 2990. Nothing was queued.',
+      missing: cfg.missing,
+    }, 503);
+  }
+
+  let enq;
+  try {
+    enq = await enqueueAmendmentCommand(sb, {
+      // The mirrored row's id IS 2990's uuid (D4, verbatim) — it addresses the
+      // right 2990 row with no translation.
+      entityKey: amendment.id,
+      action,
+      payload,
+      // The REAL Houzs caller — the authoritative approver (§3.5, requirement 3).
+      // NEVER the pinned SCM system `user` (the pos-cart leak #633 class).
+      requestedBy: c.get('houzsUser')?.id ?? null,
+      companyId: activeCompanyId(c) ?? null,
+    });
+  } catch {
+    return c.json({
+      error: 'command_enqueue_failed',
+      message: 'Could not queue the change for 2990. Please try again.',
+    }, 500);
+  }
+
+  // One inline, non-blocking attempt for the happy path (sub-second). Only when
+  // still PENDING — a duplicate decision that is already in-flight or resolved
+  // (idempotency key) must not be re-fired.
+  if (enq.row.status === 'PENDING') {
+    const p = dispatchOne(sb, cfg.config, enq.row);
+    try { c.executionCtx.waitUntil(p); } catch { void p; }
+  }
+
+  // Houzs-side audit of WHO dispatched — the real caller by name (requirement 3).
+  // The authoritative id is sync_command.requested_by; the name is snapshotted
+  // here. actorId is left null so nothing implies the pinned system row acted.
+  await recordSoAudit(sb, {
+    docNo: amendment.so_doc_no,
+    action: `AMENDMENT_CMD_${action.toUpperCase().replace(/-/g, '_')}`,
+    actorId: null,
+    actorName: c.get('houzsUser')?.name ?? actorName(c.get('user')),
+    fieldChanges: [{ field: 'command', to: action }],
+    note: `Dispatched to 2990 as command ${enq.row.id} (requested by Houzs user ${c.get('houzsUser')?.id ?? 'unknown'}).`,
+  });
+
+  return c.json({
+    pending: true,
+    command: { id: enq.row.id, action, status: enq.row.status },
+    message: 'Sent to 2990. The updated status will appear here shortly.',
+  }, 202);
 }
 
 /* ── GET / — amendment list (newest first) ─────────────────────────────────
@@ -131,6 +216,37 @@ soAmendments.get('/', async (c) => {
     rows = rows.filter((r) => r.so_doc_no != null && allowed.has(r.so_doc_no));
   }
   return c.json({ amendments: rows });
+});
+
+/* ── GET /command-diag — the owner's dry-run for the write-back channel ─────
+   Cannot be verified without a live 2990 bridge account, so this is how the
+   owner checks it once the account exists (same idea as the mirror probes). It
+   reports: the DB kill-switch state, which bridge secrets are set, and — with
+   ?probe=true — an end-to-end read-only check (sign in as the bridge user, then
+   GET 2990's amendment list with that JWT). It NEVER dispatches a command and
+   NEVER mutates anything on either side. Registered BEFORE GET /:id so the
+   static path wins over the :id param. Gated to scm.config.write (owner-level),
+   like maintenance-push/diff, because it exercises the 2990 connection. */
+soAmendments.get('/command-diag', async (c) => {
+  if (!hasHouzsPerm(c, 'scm.config.write')) {
+    return c.json({ error: 'forbidden', message: 'You do not have permission to view the 2990 connection diagnostics.' }, 403);
+  }
+  const sb = c.get('supabase');
+  const enabled = await commandsEnabled(sb);
+  const cfg = readBridgeCommandConfig(c.env);
+
+  const base: Record<string, unknown> = {
+    commandsEnabled: enabled,
+    bridgeConfigured: cfg.ok,
+    missingSecrets: cfg.ok ? [] : cfg.missing,
+    note: 'commandsEnabled is the scm.sync_config row mirror_commands_enabled = true. Both must be true (and the probe green) before Houzs can drive a 2990 amendment.',
+  };
+
+  if (c.req.query('probe') !== 'true' || !cfg.ok) {
+    return c.json(base);
+  }
+  const probe = await probeBridge(cfg.config);
+  return c.json({ ...base, probe });
 });
 
 /* ── GET /:id — amendment detail ───────────────────────────────────────────
@@ -219,7 +335,12 @@ soAmendments.patch('/:id/supplier-confirm', async (c) => {
   if (!ref) return c.json({ error: 'ref_required', reason: 'A supplier confirmation reference is required.' }, 400);
 
   const loaded = await loadAmendmentForWrite(sb, id, c);
-  if (!loaded.ok) return amendmentWriteBlocked(c, loaded.reason);
+  if (!loaded.ok) return c.json({ error: 'not_found' }, 404);
+  if (loaded.mirrored) {
+    return dispatchMirroredCommand(c, sb, loaded.amendment, 'supplier-confirm', {
+      ref, note: body.note, attachmentKey: body.attachmentKey,
+    });
+  }
   const { amendment } = loaded;
 
   const action: AmendAction = 'supplier-confirm';
@@ -274,7 +395,8 @@ soAmendments.patch('/:id/approve-so', async (c) => {
   }
 
   const loaded = await loadAmendmentForWrite(sb, id, c);
-  if (!loaded.ok) return amendmentWriteBlocked(c, loaded.reason);
+  if (!loaded.ok) return c.json({ error: 'not_found' }, 404);
+  if (loaded.mirrored) return dispatchMirroredCommand(c, sb, loaded.amendment, 'approve-so', {});
   const { amendment } = loaded;
 
   const action: AmendAction = 'approve-so';
@@ -332,7 +454,8 @@ soAmendments.patch('/:id/approve-po', async (c) => {
   }
 
   const loaded = await loadAmendmentForWrite(sb, id, c);
-  if (!loaded.ok) return amendmentWriteBlocked(c, loaded.reason);
+  if (!loaded.ok) return c.json({ error: 'not_found' }, 404);
+  if (loaded.mirrored) return dispatchMirroredCommand(c, sb, loaded.amendment, 'approve-po', {});
   const { amendment } = loaded;
 
   const action: AmendAction = 'approve-po';
@@ -409,7 +532,8 @@ soAmendments.patch('/:id/send', async (c) => {
   }
 
   const loaded = await loadAmendmentForWrite(sb, id, c);
-  if (!loaded.ok) return amendmentWriteBlocked(c, loaded.reason);
+  if (!loaded.ok) return c.json({ error: 'not_found' }, 404);
+  if (loaded.mirrored) return dispatchMirroredCommand(c, sb, loaded.amendment, 'send', {});
   const { amendment } = loaded;
 
   const action: AmendAction = 'send';
@@ -461,7 +585,11 @@ soAmendments.patch('/:id/reject', async (c) => {
   try { body = (await c.req.json()) as typeof body; } catch { /* reason is optional */ }
 
   const loaded = await loadAmendmentForWrite(sb, id, c);
-  if (!loaded.ok) return amendmentWriteBlocked(c, loaded.reason);
+  if (!loaded.ok) return c.json({ error: 'not_found' }, 404);
+  if (loaded.mirrored) {
+    return dispatchMirroredCommand(c, sb, loaded.amendment, 'reject',
+      typeof body.reason === 'string' && body.reason.trim() ? { reason: body.reason.trim() } : {});
+  }
   const { amendment } = loaded;
 
   const action: AmendAction = 'reject';
