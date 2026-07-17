@@ -425,6 +425,11 @@ export interface PageDef {
    *  Roles UI to indent and to disable child radios when the parent
    *  is full/none (cascade rule). */
   parent: string | null;
+  /** The key exists in the catalogue but NOTHING in the repo reads it —
+   *  setting it has never done anything (backend DORMANT_PAGE_KEYS). The
+   *  Positions editor greys the control and keeps the row. Optional: only
+   *  /api/positions/pages sends it; absent means "not told", never "wired". */
+  dormant?: boolean;
 }
 
 /** Per-page access entry on a role. `explicit = true` means the

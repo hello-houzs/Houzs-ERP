@@ -547,6 +547,56 @@ export function isValidPageKey(key: string): boolean {
   return PAGE_KEYS.has(key);
 }
 
+/**
+ * DORMANT KEYS — declared here, settable in Team > Positions, and read by
+ * NOTHING. Setting one has never done anything, and the UI said "Saved" every
+ * time. This is the literal, countable form of the owner's standing complaint
+ * "那個設定很多都設定不到", and his ruling on it (2026-07-17) is:
+ *   "不能留着了，然后「頁面灰色」点不到吗？最重要是我要它的 UI"
+ * — stop pretending they work, grey them out, and KEEP the row: he wants the
+ * visual inventory of what the system is MEANT to have. So this list drives a
+ * disabled control in the editor, and nothing else.
+ *
+ * IT CHANGES NO RESOLUTION. `loadPageAccessForRole` / `loadPageAccessForPosition`
+ * do not read it; a dormant key still hydrates, still cascades, still resolves to
+ * exactly what it resolved to yesterday. It has to be that way — a dormant key
+ * may already carry a `= none` row (the seed writes three: hr_manager's
+ * `team.roles` + `team.departments`, seed-user-management.mjs:71), and the moment
+ * anything READS these keys that row starts 403-ing someone on the Monday after.
+ * Greying the editor is the safe half of the ruling; WIRING them is his call and
+ * needs his export first.
+ *
+ * HOW THIS LIST WAS DERIVED, so the next reader re-checks instead of trusting:
+ * every `PAGES[].key` grepped across frontend/src + backend/src for a consumer
+ * outside this file and positionAccessSnapshot.ts — `<PageGuard page="X">`,
+ * `requirePageAccess("X")`, `usePageAccess("X")`, `scmAreaGuard("X")`,
+ * `page_access["X"]`, or the key as a literal in any gate. No dynamic key
+ * construction exists anywhere (re-verified 2026-07-17 — every lookup helper
+ * takes a string and every call site passes a literal), so a literal grep is
+ * exhaustive rather than merely suggestive.
+ *
+ * `team.members` IS THE SEVENTH, and `feat/jd-rules-from-record` counted six.
+ * It was missed because the Team nav LOOKS wired: Sidebar.tsx renders
+ * /team?tab=members, but that entry gates on `pageAccess: "team"` — the PARENT —
+ * plus a flat `users.read`. All four `team.*` children are read by nothing; the
+ * tab strip inside Team.tsx calls no page-access hook at all. Same evidence
+ * profile as `team.roles` and `team.departments`: catalogue + seed writer + docs,
+ * zero gates. If those two are dead, this one is dead by the same test.
+ */
+export const DORMANT_PAGE_KEYS: ReadonlySet<string> = new Set([
+  "service_cases.by_creditor",
+  "service_cases.pnl",
+  "service_cases.settings",
+  "team.members",
+  "team.roles",
+  "team.org_chart",
+  "team.departments",
+]);
+
+export function isDormantPageKey(key: string): boolean {
+  return DORMANT_PAGE_KEYS.has(key);
+}
+
 export function getPageDef(key: string): PageDef | null {
   return PAGES.find((p) => p.key === key) ?? null;
 }

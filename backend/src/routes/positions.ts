@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { Env } from "../types";
 import {
   PAGES,
+  isDormantPageKey,
   isValidPageKey,
   isValidPositionLevel,
   loadPageAccessForPosition,
@@ -139,6 +140,11 @@ app.get("/pages", requirePermission("users.read"), async (c) => {
       partialMeaning: p.partialMeaning,
       supportsPartial: p.supportsPartial,
       parent: p.parent ?? null,
+      // Class A — the key exists here but NOTHING reads it, so setting it has
+      // never done anything. Surfaced so the editor can grey the control and
+      // stop the UI claiming a save that means nothing. Purely descriptive:
+      // it changes no level and no resolution (pageAccess.DORMANT_PAGE_KEYS).
+      dormant: isDormantPageKey(p.key),
     })),
   });
 });
@@ -496,7 +502,32 @@ app.get("/:id/page-access", requirePermission("users.read"), async (c) => {
     out[p.key] = { level: effective[p.key] ?? "none", explicit: explicitKeys.has(p.key) };
   }
 
-  return c.json({ position_id: id, page_access: out });
+  // Class B — ORPHAN rows: a `position_page_access` row whose page_key is not in
+  // the catalogue. `loadPageAccessForPosition` filters every row through
+  // isValidPageKey, so an orphan is not merely denied — it is never read at all.
+  // The admin set it, the UI said "Saved", and it was discarded on that save and
+  // every read since. His 2026-06-13 "money pages: Finance only" ruling is SIX of
+  // these on Finance Manager (overview, orders, orders.balance, orders.overdue,
+  // orders.pnl, petty_cash) — dead from the moment he pressed save.
+  //
+  // WHY SURFACE THEM AT ALL. A dormant key at least has a row in the editor to
+  // grey; an orphan has nothing to render, so silence is the ONLY thing the UI
+  // can say about it — and silence is what let a year of "那個設定很多都設定不到"
+  // stay unexplained. These rows are the physical record of rules he believes are
+  // in force. Named here so the editor can show them as never-wired, which is the
+  // one honest thing to say about a setting that was thrown away.
+  //
+  // READ-ONLY, and not deleted. Deleting them would destroy the evidence of what
+  // he intended, and they grant nothing today. `page_access` above is untouched:
+  // these keys are NOT merged into it, so nothing resolves differently for
+  // anyone. Same fact the export already reports as `orphan_keys`, on the
+  // endpoint the editor actually reads.
+  const orphan_rows = rows
+    .filter((r) => !isValidPageKey(r.page_key))
+    .map((r) => ({ page_key: r.page_key, level: r.level }))
+    .sort((a, b) => a.page_key.localeCompare(b.page_key));
+
+  return c.json({ position_id: id, page_access: out, orphan_rows });
 });
 
 /**
