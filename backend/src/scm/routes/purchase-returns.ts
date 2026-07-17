@@ -58,16 +58,34 @@ const nextNum = async (sb: any, c: any): Promise<string> => {
 /* ── Recompute PR header money rollup (mirror recomputeGrnTotals) ──────────
    Sum line_refund_centi across purchase_return_items → write refund_centi on
    the purchase_returns header. A return is qty × unit price (no tax/discount),
-   so refund_centi is the document total. */
+   so refund_centi is the document total.
+
+   Fails CLOSED and never throws (2026-07-17) — same contract as the SO's
+   recomputeTotals (mfg-sales-orders.ts), which carries the full rationale.
+   See BUG-HISTORY 2026-07-17 (fix/zeroing-twins). */
 async function recomputePrTotals(sb: any, prId: string) {
-  const { data: items } = await sb.from('purchase_return_items')
+  const { data: items, error: itemsErr } = await sb.from('purchase_return_items')
     .select('line_refund_centi')
     .eq('purchase_return_id', prId);
+  /* A failed READ is not an empty return, and `?? []` cannot tell them apart — it
+     folded a transient blip into refund_centi ZERO, i.e. a refund the supplier
+     owes us silently became no refund. The ERROR is the signal, never the
+     emptiness: a genuinely empty return resolves error === null with data === []
+     and MUST still fall through to zero the header. */
+  if (itemsErr) {
+    /* eslint-disable-next-line no-console */
+    console.error('[pr-recompute] item read failed — header left unchanged:', prId, itemsErr.message);
+    return;
+  }
   const refund = (items ?? []).reduce((s: number, r: any) => s + (r.line_refund_centi ?? 0), 0);
-  await sb.from('purchase_returns').update({
+  const { error: updErr } = await sb.from('purchase_returns').update({
     refund_centi: refund,
     updated_at: new Date().toISOString(),
   }).eq('id', prId);
+  if (updErr) {
+    /* eslint-disable-next-line no-console */
+    console.error('[pr-recompute] header update failed — refund left STALE:', prId, updErr.message);
+  }
 }
 
 /* ── GRN→PR consumption helper (migration 0106, unified model) ──────────────

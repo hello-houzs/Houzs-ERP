@@ -40,19 +40,45 @@ const nextNum = async (sb: any, prefix: string, c: any): Promise<string> => {
    Sum line_total_centi across purchase_invoice_items → write subtotal_centi,
    then total_centi = subtotal + tax_centi (PI carries a stored tax that GRN
    does NOT, so we ADD it into total here). paid_centi is untouched — Balance
-   (total - paid) is derived in the UI; payment recording stays on /payment. */
+   (total - paid) is derived in the UI; payment recording stays on /payment.
+
+   Fails CLOSED and never throws (2026-07-17) — same contract as the SO's
+   recomputeTotals (mfg-sales-orders.ts), which carries the full rationale.
+   See BUG-HISTORY 2026-07-17 (fix/zeroing-twins). */
 async function recomputePiTotals(sb: any, piId: string) {
   const [itemsRes, headerRes] = await Promise.all([
     sb.from('purchase_invoice_items').select('line_total_centi').eq('purchase_invoice_id', piId),
     sb.from('purchase_invoices').select('tax_centi').eq('id', piId).maybeSingle(),
   ]);
+  /* Neither read's error was looked at, and `?? []` / `?? 0` cannot tell a failed
+     read from a real empty/zero: a blip on the ITEMS read wrote total_centi ZERO
+     on an invoice the supplier is owed for, and a blip on the HEADER read wrote a
+     total silently SHORT by the tax. Both are what this AP figure is paid from.
+     The ERROR is the signal, never the emptiness: a genuinely line-less PI, and a
+     PI that genuinely carries no tax, both resolve error === null and MUST still
+     fall through. Neither of these two is more urgent than the other, so both
+     abort before any write rather than half-writing from the half we trust. */
+  if (itemsRes.error) {
+    /* eslint-disable-next-line no-console */
+    console.error('[pi-recompute] item read failed — header left unchanged:', piId, itemsRes.error.message);
+    return;
+  }
+  if (headerRes.error) {
+    /* eslint-disable-next-line no-console */
+    console.error('[pi-recompute] tax read failed — header left unchanged:', piId, headerRes.error.message);
+    return;
+  }
   const subtotal = (itemsRes.data ?? []).reduce((s: number, r: any) => s + (r.line_total_centi ?? 0), 0);
   const tax = (headerRes.data as { tax_centi?: number } | null)?.tax_centi ?? 0;
-  await sb.from('purchase_invoices').update({
+  const { error: updErr } = await sb.from('purchase_invoices').update({
     subtotal_centi: subtotal,
     total_centi: subtotal + tax,
     updated_at: new Date().toISOString(),
   }).eq('id', piId);
+  if (updErr) {
+    /* eslint-disable-next-line no-console */
+    console.error('[pi-recompute] header update failed — totals left STALE:', piId, updErr.message);
+  }
 }
 
 /* ── PI-level landed freight ("平摊") — reallocatePiCharges ──────────────────
