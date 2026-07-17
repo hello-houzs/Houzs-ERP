@@ -109,3 +109,15 @@ DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='hr_commiss
 -- So there is NO profile-row data migration in this file, and that is the point:
 -- migrating live profile rows would be a staging-first data op, and nothing here
 -- requires one.
+
+-- 4) PostgREST schema cache ---------------------------------------------------
+-- REQUIRED, not hygiene. /api/scm/* reads through PostgREST, which resolves
+-- tables from a CACHED schema — a table created by a migration is invisible to
+-- it until the cache reloads ("Could not find the table 'scm.<x>' in the schema
+-- cache"). This repo has been bitten before and keeps the fix in
+-- scripts/scm-schema/fix-scm-endpoint-drift.mjs ("Reload PostgREST so the FK
+-- rename + new table hit the schema cache"), which is a MANUAL script nobody
+-- will remember to run at deploy time. Without this, every /hr/override-levels
+-- request 404s in prod while the migration reports success.
+-- NOTIFY is delivered on COMMIT, so it fires only if this file actually applied.
+NOTIFY pgrst, 'reload schema';

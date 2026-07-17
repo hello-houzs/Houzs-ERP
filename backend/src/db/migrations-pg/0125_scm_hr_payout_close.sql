@@ -173,3 +173,12 @@ CREATE TABLE IF NOT EXISTS scm.hr_payout_rows (
 CREATE INDEX IF NOT EXISTS idx_hr_payout_rows_period ON scm.hr_payout_rows (period_id, sort_index);
 
 CREATE INDEX IF NOT EXISTS idx_hr_payout_rows_company_staff ON scm.hr_payout_rows (company_id, staff_id);
+
+-- 3) PostgREST schema cache ---------------------------------------------------
+-- Same requirement as 0124 step 4, for the same reason: /api/scm/* resolves
+-- tables from a CACHED schema, so hr_payout_periods and hr_payout_rows are
+-- invisible to PostgREST — and every close 404s — until it reloads. Repeated
+-- here rather than left to 0124 because the two files apply in SEPARATE
+-- transactions: a run that stops between them would leave these two tables
+-- created but unreachable.
+NOTIFY pgrst, 'reload schema';
