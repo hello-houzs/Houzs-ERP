@@ -10,7 +10,7 @@ import { useStateWarehouseMappings } from "../vendor/scm/lib/state-warehouse-que
 import { todayMyt } from "../vendor/scm/lib/dates";
 import { paymentMethodCodeForValue } from "../vendor/scm/lib/payment-methods";
 import { soDateGuardError, soSliplessPaymentError, soErrorText } from "../vendor/scm/lib/so-form-validate";
-import { newIdempotencyKey, idempotentInit } from "../lib/idempotency";
+import { newIdempotencyKey, idempotentInit, useIdempotencyKey } from "../lib/idempotency";
 import {
   buildAmendmentHeaderChanges,
   hasAmendmentHeaderChanges,
@@ -392,8 +392,16 @@ function buildItemBody(l: LineItem): Record<string, unknown> {
    create body and the draft carries no delivery dates or payments yet.
 
    Returns the minted docNo. Throws on failure so the caller can show a plain-
-   language notify (it never leaves a phantom — a failed POST creates nothing). */
-export async function createDraftFromPrefill(prefill: MobileScanPrefill): Promise<string> {
+   language notify (it never leaves a phantom — a failed POST creates nothing).
+
+   `idempotencyKey` is OPTIONAL and belongs to the CALLER, not to this function:
+   headless code has no mount to hang an intent on, and minting one here would
+   mint a fresh key per invocation — stable for nothing, since this function is
+   called exactly once per draft. The caller owns the scanned-order object that
+   IS the intent and mints the key onto it (MobileScan.tsx), so a re-submit of
+   the same scanned order replays instead of raising a second draft. Omitted →
+   the middleware no-ops, i.e. exactly today's behaviour. */
+export async function createDraftFromPrefill(prefill: MobileScanPrefill, idempotencyKey?: string): Promise<string> {
   // Map each scanned line into a minimal LineItem, exactly as the interactive
   // form seeds `lines` from scanPrefill (name / qty / price / remark), then
   // shape it through the shared buildItemBody.
@@ -442,10 +450,8 @@ export async function createDraftFromPrefill(prefill: MobileScanPrefill): Promis
     items,
   };
 
-  const res = await authedFetch<{ docNo: string }>(`/mfg-sales-orders`, {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
+  const res = await authedFetch<{ docNo: string }>(`/mfg-sales-orders`,
+    idempotentInit(idempotencyKey, { method: "POST", body: JSON.stringify(body) }));
   return res?.docNo ?? "";
 }
 
@@ -534,6 +540,16 @@ export function MobileNewSO({
   /* SO CREATE — the SAME vendored mutation the desktop create path uses, so the
      POST body/route and its shared-key invalidation stay single-sourced. */
   const createSo = useCreateMfgSalesOrder();
+  /* One key for the one order this form is open to raise (lib/idempotency.ts).
+     MobileApp mounts this screen behind `screen.t === "new-so"` (MobileApp.tsx:
+     422) and leaves via onSaved/onBack, so the MOUNT is exactly one order: the
+     key is minted once by useState's lazy init (survives every re-render), is
+     the same on a re-press after a stalled 4G submit (so the retry REPLAYS the
+     first order's docNo instead of raising a second RM3,888 order), and a new
+     order means a new mount and a new key — two customers buying the same item
+     minutes apart never collide. Unused by the isEdit PATCH branch, which
+     addresses one existing docNo and cannot duplicate. */
+  const soIdemKey = useIdempotencyKey();
   const staffQ = useStaff();
   const { staff: authStaff } = useAuth();
   /* FIX A — the app-level Houzs auth exposes the permission gate + the signed-in
@@ -1722,7 +1738,7 @@ export function MobileNewSO({
         items,
       };
 
-      const res = await createSo.mutateAsync(body);
+      const res = await createSo.mutateAsync({ ...body, idempotencyKey: soIdemKey });
       if (res?.docNo) {
         await uploadStagedPhotos(res.docNo);
         await recordSlipBackedPayments(res.docNo);

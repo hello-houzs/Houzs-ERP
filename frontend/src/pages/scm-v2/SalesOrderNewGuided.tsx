@@ -49,6 +49,7 @@ import {
   useDebtorSearch,
   type DebtorSuggestion,
 } from "../../vendor/scm/lib/sales-order-queries";
+import { useIdempotencyKey } from "../../lib/idempotency";
 import { useQuery } from "@tanstack/react-query";
 import { cn } from "../../lib/utils";
 import { soDateGuardError, soSliplessPaymentError, soErrorText } from "../../vendor/scm/lib/so-form-validate";
@@ -141,6 +142,13 @@ const useSofaSkus = () =>
 export function SalesOrderNewGuided() {
   const navigate = useNavigate();
   const create = useCreateMfgSalesOrder();
+  /* One key for the one order this page is open to raise (lib/idempotency.ts).
+     This is a route-level form that navigates to the SO detail on success, so
+     the MOUNT is exactly one order — same rule as mobile MobileNewSO, one logic
+     layer. Minted once by useState's lazy init: stable across re-renders and
+     across a re-press after a stalled submit (the retry replays the first
+     order's docNo), fresh on the next mount so a genuinely new order is new. */
+  const idemKey = useIdempotencyKey();
 
   const [step, setStep] = useState<number>(0);
   const [showValidation, setShowValidation] = useState<boolean>(false);
@@ -278,7 +286,7 @@ export function SalesOrderNewGuided() {
     };
 
     try {
-      const res = await create.mutateAsync(body);
+      const res = await create.mutateAsync({ ...body, idempotencyKey: idemKey });
       navigate(`/scm/sales-orders/${res.docNo}`);
     } catch (e) {
       setPostError(errMsg(e));

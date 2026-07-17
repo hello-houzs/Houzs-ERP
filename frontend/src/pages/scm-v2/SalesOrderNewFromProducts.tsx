@@ -52,6 +52,7 @@ import {
   useDebtorSearch,
   type DebtorSuggestion,
 } from "../../vendor/scm/lib/sales-order-queries";
+import { useIdempotencyKey } from "../../lib/idempotency";
 import { cn } from "../../lib/utils";
 import { soDateGuardError, soSliplessPaymentError, soErrorText } from "../../vendor/scm/lib/so-form-validate";
 import { hasSofaMixConflict, SOFA_MIX_MESSAGE } from "../../vendor/shared/so-variant-rule";
@@ -101,6 +102,10 @@ const itemGroupFor = (cat: string): string => {
 export function SalesOrderNewFromProducts() {
   const navigate = useNavigate();
   const create = useCreateMfgSalesOrder();
+  /* One key for the one order this page is open to raise (lib/idempotency.ts).
+     Route-level form, navigates to the SO detail on success, so the MOUNT is
+     exactly one order — same rule as the other create surfaces. */
+  const idemKey = useIdempotencyKey();
 
   // URL state: ?q=<search> ?cat=<category>
   const [searchParams, setSearchParams] = useSearchParams();
@@ -266,7 +271,7 @@ export function SalesOrderNewFromProducts() {
       items,
     };
     try {
-      const res = await create.mutateAsync(body);
+      const res = await create.mutateAsync({ ...body, idempotencyKey: idemKey });
       navigate(`/scm/sales-orders/${res.docNo}`);
     } catch (e) {
       setPostError(errMsg(e));
