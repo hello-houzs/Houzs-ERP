@@ -64,10 +64,19 @@ import type { LeadBuffers } from '../../scm/lib/lead-time';
    here, so loading its evidence from this module cannot cycle. */
 import type { ReceiptUnit, LoadUnit } from './procurement-capacity';
 
-/* The shape of the PostgREST client these loaders need. Structural rather than
+/* The slice of the PostgREST client these loaders need. Structural rather than
    `any`, so a typo in a builder call is a compile error, and declared once so
-   the loaders cannot drift into three different ideas of the same client. */
-type SbLike = {
+   the loaders cannot drift into three different ideas of the same client.
+
+   EXPORTED, because the callers have to name it. The real supabase-js client
+   does NOT structurally satisfy this type — its `order` takes a specific
+   options object, so a param typed `unknown` here is contravariantly
+   incompatible, and inference across it trips TS2589 besides. The workaround
+   was `sb as never` at each call site, which is the worst of both: `never` is
+   assignable to ANYTHING, so a loader could be handed a number and tsc would
+   nod. `as unknown as SbLike`, once, at the top of the caller, asserts the same
+   thing but names what is being asserted and keeps the checking inside. */
+export type SbLike = {
   from: (t: string) => {
     select: (cols: string) => {
       eq: (c: string, v: unknown) => any;
@@ -447,6 +456,53 @@ export async function loadCapacityEvidence(
     if (slip == null) continue;
 
     out.push({ supplierCode: code, category, receivedDate: received, qty, slipDays: slip });
+  }
+  return out;
+}
+
+/**
+ * Qty already sitting on a DRAFT PO, per source SO line.
+ *
+ * THE BLIND SPOT THIS COVERS. A DRAFT PO is deliberately inert: PO_DEAD keeps
+ * it out of MRP's supply, and recomputeSoPicked refuses to let it advance
+ * po_qty_picked. Both are correct — a draft is a proposal, not a commitment.
+ * But together they mean the agent cannot see its own approved work. Approve a
+ * reorder, get a DRAFT PO, and the next run recomputes the SAME shortage (the
+ * draft is invisible to supply), finds no PENDING proposal for that supplier
+ * (the last one is APPROVED), and proposes it again. Approve twice and the
+ * supplier is asked for double.
+ *
+ * So the agent subtracts drafts explicitly, HERE, rather than by weakening
+ * either guard. It reads the live world instead of remembering what it did, so
+ * it self-heals both ways: delete the draft and the shortage is proposable
+ * again; confirm it and it leaves DRAFT, MRP counts it as real supply, and the
+ * shortage closes on its own.
+ *
+ * THROWS on a read error, and that is the whole point. Returning an empty map
+ * on failure would say "nothing is drafted" — the one answer that re-proposes
+ * everything already awaiting confirm. A blip must stop the run, not double an
+ * order.
+ */
+export async function loadDraftedQtyBySoItem(sb: SbLike): Promise<Map<string, number>> {
+  type Row = { so_item_id: string | null; qty: number | null };
+  const { data, error } = await paginateAll<Row>((from, to) =>
+    sb
+      .from('purchase_order_items')
+      .select('so_item_id, qty, po:purchase_orders!inner ( status )')
+      .eq('po.status', 'DRAFT')
+      .order('id')
+      .range(from, to),
+  );
+  if (error) throw new Error(`procurement_drafted_load_failed: ${error.message}`);
+
+  const out = new Map<string, number>();
+  for (const r of (data ?? []) as Row[]) {
+    const id = (r.so_item_id ?? '').trim();
+    const q = Number(r.qty ?? 0);
+    // A manually-added PO line carries no so_item_id — it converts no SO line,
+    // so it can't cover one either.
+    if (!id || !Number.isFinite(q) || q <= 0) continue;
+    out.set(id, (out.get(id) ?? 0) + q);
   }
   return out;
 }

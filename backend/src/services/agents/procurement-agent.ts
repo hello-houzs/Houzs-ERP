@@ -53,6 +53,8 @@ import {
   loadLeadBuffers,
   loadCapacityEvidence,
   loadOpenLoad,
+  loadDraftedQtyBySoItem,
+  type SbLike,
   learnSupplierBuffers,
   learnSeasonBuffers,
   type BufferFinding,
@@ -187,7 +189,15 @@ interface ReorderPayload {
   supplierCode: string;
   supplierName: string;
   skuCount: number;
+  /** What MRP says is short, before drafts. The unadjusted MRP truth. */
   totalShortageUnits: number;
+  /** Of that shortage, how much is already on a DRAFT PO awaiting confirm and
+   *  therefore NOT asked for again here. Carried so the gap between
+   *  totalShortageUnits and pickUnits is stated rather than left to be
+   *  rediscovered by whoever notices the numbers disagree. */
+  draftedUnits: number;
+  /** What this proposal actually orders: sum of picks. */
+  pickUnits: number;
   earliestOrderByDate: string | null;
   lines: ReorderLine[];
   /* THE TRANSLATION LAYER, and the reason approving this used to do nothing.
@@ -259,12 +269,16 @@ export async function runProcurementAgent(
   const nowIso = new Date().toISOString();
 
   const sb = getSupabaseService(env);
+  /* ONE assertion, here, instead of an `as never` at each loader call. See
+     SbLike: supabase-js's generics don't unify with a structural type, but
+     `as never` disabled the checking entirely rather than narrowing it. */
+  const sbl = sb as unknown as SbLike;
   const mrp = await computeMrp(sb, { catFilter: null, whFilter: null, includeUndated: false, leadBuffers: await loadLeadBuffers(db) });
 
   /* Measured once and used by BOTH the summary line and the brief below. The
      pass is several paginated reads; running it twice to serve two consumers
      would double the agent's cost for one number. */
-  const capacity = await runCapacityPass(sb);
+  const capacity = await runCapacityPass(sbl);
 
   const shortageSkus = mrp.skus.filter((k) => k.shortage > 0);
   const shortageUnits = shortageSkus.reduce((sum, k) => sum + num(k.shortage), 0);
@@ -337,6 +351,12 @@ export async function runProcurementAgent(
       }));
 
     const openKeys = await openProposalKeys(db);
+    /* Qty already on a DRAFT PO awaiting confirm — invisible to MRP's supply by
+       design, so it must be subtracted here or an approved proposal gets
+       proposed a second time. See loadDraftedQtyBySoItem. Deliberately NOT
+       wrapped in a try: a failed read must abort the run, not silently report
+       nothing drafted. */
+    const draftedBySoItem = await loadDraftedQtyBySoItem(sbl);
 
     for (const [supplierCode, bucket] of bySupplier) {
       const lines: ReorderLine[] = bucket.skus.map((k) => ({
@@ -355,12 +375,25 @@ export async function runProcurementAgent(
       /* SKU shortages -> the SO lines that are actually short, in the shape the
          converter takes. Only lines with a real uncovered qty: an MrpLine
          already covered by stock or an open PO carries shortageQty 0 and must
-         not be ordered again. */
+         not be ordered again.
+
+         Then subtract what an earlier approval already put on a DRAFT PO. The
+         `?? 0` is honest here and not the usual lie: the map is COMPLETE (the
+         load throws rather than returning a partial one), so a missing key
+         really does mean no draft line covers this SO line. */
+      let draftedUnits = 0;
       const picks = bucket.skus.flatMap((k) =>
         (k.lines ?? [])
           .filter((l) => num(l.shortageQty) > 0 && s(l.soItemId) !== '')
-          .map((l) => ({ soItemId: s(l.soItemId), qty: num(l.shortageQty) })),
+          .map((l) => {
+            const soItemId = s(l.soItemId);
+            const drafted = Math.min(draftedBySoItem.get(soItemId) ?? 0, num(l.shortageQty));
+            draftedUnits += drafted;
+            return { soItemId, qty: num(l.shortageQty) - drafted };
+          })
+          .filter((p) => p.qty > 0),
       );
+      const pickUnits = picks.reduce((sum, p) => sum + p.qty, 0);
 
       reorderBySupplier.push({
         supplierCode,
@@ -373,19 +406,29 @@ export async function runProcurementAgent(
       const key = `REORDER:${supplierCode}`;
       if (openKeys.has(`REORDER\0${key}`)) continue;
 
+      /* Every short line is already on a draft awaiting confirm — there is
+         nothing left to ask this supplier for. Proposing it again would be the
+         double-order described on loadDraftedQtyBySoItem. */
+      if (picks.length === 0) continue;
+
       const payload: ReorderPayload = {
         supplierCode,
         supplierName,
         skuCount: lines.length,
         totalShortageUnits,
+        draftedUnits,
+        pickUnits,
         earliestOrderByDate: earliest,
         lines,
         picks,
       };
       const proposalSummary =
         `Reorder from ${supplierName} (${supplierCode}): ${lines.length} SKU(s), ` +
-        `${totalShortageUnits} unit(s) short across ${picks.length} SO line(s), ` +
-        `order by ${earliest ?? 'n/a'}.`;
+        `${pickUnits} unit(s) to order across ${picks.length} SO line(s)` +
+        /* Named, never netted silently: MRP says short N, this asks for less,
+           and the reader is owed the reason. */
+        (draftedUnits > 0 ? ` (${draftedUnits} more already on an unconfirmed draft PO)` : '') +
+        `, order by ${earliest ?? 'n/a'}.`;
 
       await db
         .prepare(
@@ -445,7 +488,7 @@ export async function runProcurementAgent(
      so "no proposals" never masquerades as "everyone is punctual". */
   let learning: BufferFinding[] = [];
   try {
-    learning = await runProcurementLearning(env, db, sb);
+    learning = await runProcurementLearning(env, db, sbl);
   } catch (e) {
     console.warn('[procurement-agent] learning pass failed (reorder sweep unaffected):', e);
   }
@@ -474,13 +517,13 @@ function capacitySuffix(c: ProcurementBriefData['capacity']): string {
  * day-one state — rather than to a fabricated empty overload list that would
  * read as "nothing is overloaded".
  */
-async function runCapacityPass(sb: unknown): Promise<ProcurementBriefData['capacity']> {
+async function runCapacityPass(sb: SbLike): Promise<ProcurementBriefData['capacity']> {
   const empty = { pairsMeasured: 0, pairsLowerBoundOnly: 0, overloads: [] };
   try {
     const sinceIso = new Date(Date.now() - CAPACITY_WINDOW_DAYS * 86_400_000).toISOString();
     const [receipts, load] = await Promise.all([
-      loadCapacityEvidence(sb as never, { sinceIso }),
-      loadOpenLoad(sb as never),
+      loadCapacityEvidence(sb, { sinceIso }),
+      loadOpenLoad(sb),
     ]);
     const estimates = estimateCapacity(receipts);
     if (estimates.length === 0) return empty;
@@ -510,11 +553,11 @@ async function runCapacityPass(sb: unknown): Promise<ProcurementBriefData['capac
 async function runProcurementLearning(
   env: Env,
   db: D1Database,
-  sb: unknown,
+  sb: SbLike,
 ): Promise<BufferFinding[]> {
   const sinceIso = new Date(Date.now() - LEARNING_WINDOW_DAYS * 86_400_000).toISOString();
 
-  const samples = await loadReceiptSamples(sb as never, {
+  const samples = await loadReceiptSamples(sb, {
     sinceIso,
     // Single-company today; the learner must not blend 2990's supplier
     // punctuality into Houzs's buffers once company #2 carries real POs. The
