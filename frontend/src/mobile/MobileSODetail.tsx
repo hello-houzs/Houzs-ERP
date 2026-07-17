@@ -7,6 +7,7 @@ import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { fetchScanSlipImageBlobUrl } from "../vendor/scm/lib/slip";
 import { useStaff } from "../vendor/scm/lib/admin-queries";
 import { useAuth as useHouzsAuth } from "../auth/AuthContext";
+import { ACCESS_RANK } from "../types";
 import {
   useMfgSalesOrderDetail,
   useSalesOrderPayments,
@@ -299,6 +300,15 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
      parity) — the server 403 stays the real gate (its plain-language message is
      humanised by authed-fetch); these just hide the affordance from users who
      can't use it. */
+  /* Both footer actions below are WRITES -- "Edit Draft" PATCHes the SO and
+     "Create Sales Order" PATCHes /:docNo/status. The backend's area guard needs
+     `edit` for either (scm/middleware/area-guard: GET/HEAD -> view,
+     POST/PATCH/PUT/DELETE -> edit, "else 403 (ENFORCED)"), so a view-level rep
+     was shown both and got a 403 on the tap. Owner's off-not-hide rule: a
+     button its holder cannot use must be ABSENT, not fail on press. */
+  const canWriteSo =
+    houzsAuth.can("scm.access") ||
+    ACCESS_RANK[houzsAuth.pageAccess("scm.sales.orders")] >= ACCESS_RANK.edit;
   const canSupplierConfirm = houzsAuth.can("scm.amendment.supplier_confirm");
   const canApproveSo = houzsAuth.can("scm.amendment.approve_so");
 
@@ -728,7 +738,7 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
               it stays reachable even when this footer's Edit button is locked.
               Adding a payment through Edit (MobileNewSO's PAYMENTS card) also
               still works when the SO is unlocked. */}
-          {ph === "draft" && (
+          {ph === "draft" && canWriteSo && (
             <div style={{ display: "flex", gap: 9 }}>
               <button className="btn-ghost" style={{ flex: 1, opacity: busy ? 0.55 : 1 }} disabled={busy} onClick={() => onEdit?.(docNo)}>Edit Draft</button>
               <button className="btn" style={{ flex: 1.3, opacity: busy ? 0.55 : 1 }} disabled={busy} onClick={() => setStatus("CONFIRMED")}>{busy ? "Working…" : "Create Sales Order"}</button>
