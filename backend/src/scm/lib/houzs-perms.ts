@@ -14,7 +14,12 @@
 
 import type { MiddlewareHandler } from 'hono';
 import { hasPermission } from '../../services/permissions';
-import { isDirectorUser, isSalesUser, isFinanceViewer } from '../../services/pmsAccess';
+import {
+  isDirectorUser,
+  isSalesUser,
+  isFinanceViewer,
+  isProductCostViewer,
+} from '../../services/pmsAccess';
 import type { AuthUser } from '../../services/auth';
 import type { Env, Variables } from '../env';
 
@@ -117,6 +122,50 @@ export function canViewScmFinance(c: HouzsUserSource): boolean {
   const hu = c.get('houzsUser');
   if (!hu) return false;
   return isFinanceViewer({
+    position_name: hu.position_name ?? null,
+    permissions_set: hu.permissions_set,
+  } as AuthUser);
+}
+
+/**
+ * True when the REAL caller may see a PRODUCT / SKU COST price — the
+ * PRODUCT_FINANCE_KEYS (`cost_price_sen`) vocabulary, and ONLY that.
+ *
+ * Owner 2026-07-17, shown that his 2026-06-13 red line ("Only Purchasing +
+ * Finance see cost") was not in force because Purchasing is in no cost cohort:
+ *   "那就是采购、Finance，还有 Sales Director 啊？"
+ *
+ * Deliberately NOT canViewScmFinance, and this is the whole point of the
+ * function. That one answers "are you a PMS DIRECTOR" (isFinanceViewer ->
+ * getPmsRole -> DIRECTOR), a question with no Purchasing in it — so it strips
+ * cost_price_sen from the very cohort the owner named. #699 split that question
+ * apart on the FE (canViewProductCost -> product_cost_viewer) and its payload
+ * half landed on a main that did not yet carry the strip #673 added 26 minutes
+ * later; both are on main now, and they contradict each other. This is the
+ * backend half #699 would have written had the two PRs been able to see one
+ * another.
+ *
+ * Composed off pmsAccess.isProductCostViewer — the SAME function /auth/me's
+ * `product_cost_viewer` flag is computed from — rather than restating the
+ * cohort here, so the screen and the wire can never disagree about who sees
+ * cost. That is exactly how they came to disagree.
+ *
+ * Strictly WIDER than canViewScmFinance (isProductCostViewer = isDirectorUser
+ * OR Purchasing, and isFinanceViewer resolves to isDirectorUser for a pic_id:null
+ * ProjectLike), so no director loses a column. It admits exactly one function
+ * more: Purchasing. It must NOT be used for MARGIN or for any aggregate — see
+ * canViewScmFinance above, which keeps every one of those.
+ *
+ * Same caller-source shim as canViewAllSales / canViewScmFinance: inside
+ * /api/scm/* the `user` context is the pinned scm.staff system row (no
+ * position), so read the REAL Houzs caller stashed on `houzsUser`.
+ * isProductCostViewer reads position_name + permissions_set only — exactly the
+ * fields middleware/auth.ts mirrors there. Fails CLOSED (no houzsUser → no cost).
+ */
+export function canViewScmProductCost(c: HouzsUserSource): boolean {
+  const hu = c.get('houzsUser');
+  if (!hu) return false;
+  return isProductCostViewer({
     position_name: hu.position_name ?? null,
     permissions_set: hu.permissions_set,
   } as AuthUser);

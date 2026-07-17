@@ -40,7 +40,20 @@ export const SO_ITEM_FINANCE_KEYS = ['unit_cost_centi', 'line_cost_centi', 'line
    its own commit message — "the wire still carries cost_price_sen to any
    products reader (mfg-products.ts has no finance strip)". This list is that
    ruling's payload half, and the gate is the same one the screens use:
-   canViewScmFinance ⇄ FE canViewProductCost, both project_finance_viewer.
+   canViewScmProductCost ⇄ FE canViewProductCost, both the COST cohort
+   (pmsAccess.isProductCostViewer: director + Purchasing, owner 2026-07-17).
+
+   The gate here is canViewScmProductCost and NOT canViewScmFinance, and the
+   difference is a shipped bug, not a preference. This docblock read "both
+   project_finance_viewer" until 2026-07-17: true when written, false 26 minutes
+   later. #699 moved the FE to the cost cohort; #673 added this strip on the
+   director gate; each was correct against the main it branched from and neither
+   could see the other. On the merged result Purchasing was told he could see
+   cost by the screen and handed a payload with the key deleted. Cost is ONE
+   question — ask it with ONE function on both sides, or the screen and the wire
+   drift again. MARGIN is the other question and it keeps canViewScmFinance:
+   SO_FINANCE_KEYS below, the /reports listing, and sales-analysis's
+   customer-level margin are all still director-only.
 
    ONE key, and that is the point. master_price_history.field stores the COLUMN
    NAME verbatim ('cost_price_sen'), so this same list gates the live column AND

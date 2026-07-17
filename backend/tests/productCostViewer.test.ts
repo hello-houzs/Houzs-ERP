@@ -7,6 +7,7 @@ import {
   getPmsAccess,
   getPmsRole,
 } from "../src/services/pmsAccess";
+import { canViewScmProductCost, canViewScmFinance } from "../src/scm/lib/houzs-perms";
 import type { AuthUser } from "../src/services/auth";
 
 /* Owner 2026-07-17, shown that his 2026-06-13 red line ("Only Purchasing +
@@ -108,5 +109,74 @@ describe("product-cost cohort", () => {
     expect(isProductCostViewer(user({ position_name: null }))).toBe(false);
     expect(isProductCostViewer(null)).toBe(false);
     expect(isProductCostViewer(undefined)).toBe(false);
+  });
+});
+
+/* The WIRE half of the same ruling — added 2026-07-17 (fix/purchasing-margin).
+   #699 moved the SCREEN to the cost cohort. #673, merged 26 minutes later,
+   added a payload strip on the DIRECTOR gate (canViewScmFinance) at the three
+   PRODUCT_FINANCE_KEYS sites. Both are on main; together they told Purchasing
+   he could see cost and then deleted cost_price_sen from his payload — the
+   ruling was dead again, in the identical restrictive-and-silent way #699
+   existed to end. These pin screen and wire to ONE question, and pin that the
+   MARGIN gate did NOT move with it. */
+
+/** Minimal HouzsUserSource — the shim the scm gates read the REAL caller from
+ *  (inside /api/scm/* the `user` context is a pinned system row with no
+ *  position, so houzsUser is the only place the position survives). */
+function ctx(u: AuthUser | null) {
+  return {
+    get: (_k: "houzsUser") =>
+      u === null
+        ? undefined
+        : { position_name: u.position_name, permissions_set: u.permissions_set },
+  } as Parameters<typeof canViewScmProductCost>[0];
+}
+
+describe("product-cost cohort — the wire agrees with the screen", () => {
+  test("Purchasing's payload KEEPS cost_price_sen — the strip no longer contradicts #699", () => {
+    // The whole bug: this was false while the FE said true, so the Cost column
+    // rendered blank for the one function the ruling named.
+    expect(canViewScmProductCost(ctx(purchasing))).toBe(true);
+  });
+
+  test("the MARGIN gate did NOT move — Purchasing is still not a finance viewer", () => {
+    // The acceptance test for this PR. canViewScmFinance gates SO_FINANCE_KEYS,
+    // the /reports listing and sales-analysis's customer-level + company-wide
+    // margin. The owner ruled on SKU cost; widening this is what would leak.
+    expect(canViewScmFinance(ctx(purchasing))).toBe(false);
+  });
+
+  test("directors keep cost on the wire — the cohort only ever widened by Purchasing", () => {
+    for (const pos of ["Sales Director", "Finance Manager", "Super Admin", "Test Purchasing"]) {
+      expect(canViewScmProductCost(ctx(user({ position_name: pos })))).toBe(true);
+    }
+    const owner = user({ position_name: "Owner", perms: ["*"] });
+    expect(canViewScmProductCost(ctx(owner))).toBe(true);
+    expect(canViewScmFinance(ctx(owner))).toBe(true);
+  });
+
+  test("a Sales Executive gets no cost on the wire either", () => {
+    const sales = user({ position_name: "Sales Executive", department_name: "Sales Department" });
+    expect(canViewScmProductCost(ctx(sales))).toBe(false);
+    expect(canViewScmFinance(ctx(sales))).toBe(false);
+  });
+
+  test("no houzsUser → no cost (fails closed, same as canViewScmFinance)", () => {
+    expect(canViewScmProductCost(ctx(null))).toBe(false);
+    expect(canViewScmFinance(ctx(null))).toBe(false);
+  });
+
+  test("wire and screen answer the SAME question — pinned so they cannot drift again", () => {
+    // isProductCostViewer is what /auth/me's product_cost_viewer flag is computed
+    // from AND what the strip now asks. If these ever disagree, the bug this
+    // file documents has come back.
+    for (const pos of [
+      "Purchasing", "Test Purchasing", "Sales Director", "Finance Manager",
+      "Super Admin", "Sales Executive", "Logistics", "Driver", null,
+    ]) {
+      const u = user({ position_name: pos });
+      expect(canViewScmProductCost(ctx(u))).toBe(isProductCostViewer(u));
+    }
   });
 });
