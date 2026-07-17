@@ -548,6 +548,68 @@ export function isValidPageKey(key: string): boolean {
 }
 
 /**
+ * RETIRED KEYS — keys that were once in PAGES[] and have since left it.
+ *
+ * WHY THIS LIST EXISTS. Deleting a key from PAGES[] does not delete the rows
+ * keyed on it. `position_page_access` / `role_page_access` keep them, and both
+ * resolvers filter every row through `isValidPageKey` — so the row survives,
+ * stops being read, and grants nothing. Nobody is told. The admin's saved
+ * configuration silently stops corresponding to anything.
+ *
+ * That is not hypothetical. On 2026-06-13 the owner set "money pages: Finance
+ * only" in Team > Positions and saved it correctly. On 2026-06-18 commit
+ * 6e59f071 ("chore: remove inert dead code left by the strip-to-core cutover")
+ * pruned 14 keys out of PAGES[] as part of a cleanup. Six of them were his:
+ * `overview`, `petty_cash`, `orders`, `orders.balance`, `orders.overdue`,
+ * `orders.pnl`. His rows were never touched — they just stopped corresponding
+ * to a catalogue entry. They are still in prod, still inert, and they are the
+ * record of a rule he believes is in force. The editor cannot have caused this:
+ * both PATCH endpoints 400 on an unknown page_key (positions.ts:549,
+ * roles.ts:281), so an orphan is never an honest save gone wrong — it is always
+ * the catalogue moving out from under one.
+ *
+ * WHAT GOES IN HERE. Any key removed from PAGES[]. `pageCatalogueDrift.test.ts`
+ * pins the union of PAGES[] and this list, so a deletion fails CI until the key
+ * is named here — which is the point: the failure is the notice nobody got in
+ * June. When you add one, say what happened to the rows.
+ *
+ * THIS IS NOT DORMANT_PAGE_KEYS, and the two must not be conflated:
+ *   dormant = the key IS in PAGES[]; it is settable and read by nothing.
+ *             The row renders greyed. Fix = wire it, or leave it greyed.
+ *   retired = the key is NOT in PAGES[]; rows may still exist and are inert.
+ *             There is no cell to render. Fix = migrate the rows, or accept
+ *             that they are dead and record why here.
+ *
+ * INERT BY CONSTRUCTION. Nothing reads this at resolve time and nothing may
+ * start: `isValidPageKey` must keep returning false for every key here, or the
+ * orphan rows would come back to life and silently change who can see what.
+ * `pageCatalogueDrift.test.ts` pins that inertness rather than trusting it.
+ */
+export const RETIRED_PAGE_KEYS: ReadonlySet<string> = new Set([
+  // All 14 removed by 6e59f071 on 2026-06-18. The six marked (orphan) are the
+  // ones the owner had saved rows for — verified against the prod photograph in
+  // positionAccessSnapshot.ts, which counts exactly these six and no others.
+  "delivery_orders",
+  "logistics",
+  "logistics.fleet",
+  "logistics.trips",
+  "orders", // (orphan) Finance Manager = view
+  "orders.balance", // (orphan) Finance Manager = view
+  "orders.overdue", // (orphan) Finance Manager = view
+  "orders.pnl", // (orphan) Finance Manager = full
+  "orders.sales_orders",
+  "overview", // (orphan) Finance Manager = full
+  "petty_cash", // (orphan) Finance Manager = view
+  "purchase_orders",
+  "sales_team",
+  "sales_team_maintenance",
+]);
+
+export function isRetiredPageKey(key: string): boolean {
+  return RETIRED_PAGE_KEYS.has(key);
+}
+
+/**
  * DORMANT KEYS — declared here, settable in Team > Positions, and read by
  * NOTHING. Setting one has never done anything, and the UI said "Saved" every
  * time. This is the literal, countable form of the owner's standing complaint
