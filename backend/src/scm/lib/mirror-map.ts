@@ -1,6 +1,7 @@
 // ----------------------------------------------------------------------------
 // Shared row-transform primitives for the 2990 -> Houzs one-way mirror receivers
-// (scm/routes/so-mirror.ts, scm/routes/amendment-mirror.ts).
+// (scm/routes/so-mirror.ts, amendment-mirror.ts, customer-mirror.ts,
+// staff-mirror.ts, warehouse-mirror.ts).
 //
 // Extracted from so-mirror.ts when the amendment receiver landed. A second copy
 // of these rules would be a second place to forget toPgArray (the text[] bug
@@ -10,9 +11,9 @@
 // The rules encode the batch importer's behaviour byte-for-byte
 // (scripts/migrate-2990-into-houzs.mjs), so mirrored rows and batch-imported
 // rows are interchangeable:
-//   (a) stamp company_id,
+//   (a) stamp company_id ON THE TABLES THAT HAVE ONE,
 //   (b) prefix doc-NUMBER columns with `2990-`,
-//   (c) null columns whose target master isn't reconciled across companies,
+//   (c) force columns whose target master isn't reconciled across companies,
 //   (d) drop source columns absent from the Houzs dest table (schema drift),
 //   (e) copy every id (uuid and integer) AS-IS.
 //
@@ -20,7 +21,14 @@
 // '2990'+slice, serial +100000), which matched NO imported row -> FK violation
 // -> 500. Verbatim ids are also what make a 2990 uuid addressable from Houzs
 // without a translation table.
+//
+// (a) is conditional and that is NOT cosmetic — see the destCols guard in
+// applyMap. 0083 rules that SHARED masters get NO company_id, and scm.staff is
+// one. An unconditional stamp names a column that does not exist on that table,
+// which is a 500 on EVERY delivery — the same forever-wedge these receivers
+// exist to prevent.
 // ----------------------------------------------------------------------------
+import type { Context } from 'hono';
 import type { Env } from '../../types';
 
 /** The 2990 company. Mirrored rows are stamped with it on every table. */
@@ -39,28 +47,54 @@ export function toPgArray(v: unknown[]): string {
 }
 
 /** Per-table transform rules. Every field is optional; a table with no entry
- *  still gets company_id + dest-column filtering + array coercion. */
+ *  still gets company_id (where the table has it) + dest-column filtering +
+ *  array coercion. */
 export type MirrorTableConfig = {
   /** Doc-NUMBER columns to stamp `2990-` on (never id/FK columns). */
   prefixCols?: string[];
-  /** Columns forced NULL on every delivery, whether or not the source sent them
-   *  — an ASSERTION about a mirrored row, not a filter on the payload. A column
-   *  the source never sends (Houzs-only, e.g. so_amendments.header_changes) would
-   *  otherwise be absent from the ON CONFLICT SET list and keep whatever value it
-   *  already had. Listing it here is what makes "a mirrored row cannot carry
-   *  this" true rather than merely expected. */
-  nullCols?: string[];
+  /** Columns forced to a FIXED value on every delivery, whether or not the
+   *  source sent them — an ASSERTION about a mirrored row, not a filter on the
+   *  payload. A column the source never sends (Houzs-only, e.g.
+   *  so_amendments.header_changes) would otherwise be absent from the ON CONFLICT
+   *  SET list and keep whatever value it already had. Listing it here is what
+   *  makes "a mirrored row cannot carry this" true rather than merely expected.
+   *
+   *  Was `nullCols: string[]` until the masters mirror needed non-null forces
+   *  (staff.active=false, warehouses.is_default=false — see those receivers for
+   *  why). `{ col: null }` is the same rule it always was; widening the value
+   *  rather than adding a second list keeps ONE force concept, so a reader never
+   *  has to work out which of two lists wins. */
+  forceCols?: Record<string, unknown>;
+  /** Columns dropped from the payload entirely — HOUZS-OWNED, so a mirrored row
+   *  must not state them. Unlike forceCols (which asserts a value), this asserts
+   *  the mirror has NO OPINION: the column appears in neither the INSERT column
+   *  list nor the ON CONFLICT SET list, so an INSERT leaves it at its default and
+   *  an UPDATE leaves whatever Houzs put there untouched. Exists for
+   *  scm.staff.user_id, where writing the source's (absent) value would silently
+   *  unlink a migrated person — see staff-mirror.ts note 3. */
+  preserveCols?: string[];
   /** Per-column value coercion, e.g. status vocabulary guards. */
   normalize?: Record<string, (v: unknown) => unknown>;
 };
 
 export type TableMap = {
   prefixCols: Set<string>;
-  nullCols: Set<string>;
+  forceCols: Record<string, unknown>;
+  preserveCols: Set<string>;
   normalize: Record<string, (v: unknown) => unknown>;
   destCols: Set<string>;
   arrayCols: Set<string>;
 };
+
+/** Shared fail-closed auth for every mirror receiver: the caller is the 2990
+ *  DATABASE (pg_net), not a user with a Supabase JWT, so it presents a static
+ *  shared secret. Fail-CLOSED on an unset secret — an env that forgot
+ *  SYNC_SECRET must reject every caller, never accept an absent header as a
+ *  match for an absent secret. Five receivers repeating this by hand is five
+ *  chances to write `===` against an undefined and open the route to the world. */
+export function mirrorAuthed(c: Context<{ Bindings: Env }>): boolean {
+  return Boolean(c.env.SYNC_SECRET) && c.req.header('x-sync-secret') === c.env.SYNC_SECRET;
+}
 
 /** A mapper bound to one receiver's table config, with its own dest-column
  *  cache. Per-receiver (not module-global) so two receivers can never read each
@@ -91,7 +125,8 @@ export function createMirrorMapper(config: Record<string, MirrorTableConfig>): M
     const cfg = config[table] ?? {};
     const m: TableMap = {
       prefixCols: new Set(cfg.prefixCols ?? []),
-      nullCols: new Set(cfg.nullCols ?? []),
+      forceCols: cfg.forceCols ?? {},
+      preserveCols: new Set(cfg.preserveCols ?? []),
       normalize: cfg.normalize ?? {},
       destCols: new Set(rows.map((r: { col: string }) => r.col)),
       // Postgres array-typed dest columns (e.g. mfg_sales_order_items.photo_urls
@@ -114,15 +149,19 @@ export function createMirrorMapper(config: Record<string, MirrorTableConfig>): M
     for (const [k, v] of Object.entries(row)) {
       if (m.destCols.has(k)) out[k] = m.arrayCols.has(k) && Array.isArray(v) ? toPgArray(v) : v;
     }
-    // Stamp the 2990 company (dest always carries company_id for these tables).
-    out.company_id = C2990;
+    // Drop HOUZS-OWNED columns before anything else can state a value for them.
+    for (const col of m.preserveCols) delete out[col];
+    // Stamp the 2990 company — but ONLY where the dest table actually has the
+    // column. 0083 gives SHARED masters (scm.staff) no company_id, so an
+    // unconditional stamp would name a non-existent column and 500 every delivery.
+    if (m.destCols.has('company_id')) out.company_id = C2990;
     // Prefix doc-number columns; ids/FKs pass through UNCHANGED (match the import).
     for (const col of m.prefixCols) if (out[col] != null) out[col] = prefixDoc(out[col]);
-    // Null columns whose target master isn't reconciled (e.g. venue_id), and
+    // Force columns whose target master isn't reconciled (e.g. venue_id), and
     // columns that assert a Houzs-only concept a 2990 row cannot carry. Keyed on
-    // the DEST table, not on what the source happened to send, so the NULL lands
-    // in the UPDATE set too (see MirrorTableConfig.nullCols).
-    for (const col of m.nullCols) if (m.destCols.has(col)) out[col] = null;
+    // the DEST table, not on what the source happened to send, so the value lands
+    // in the UPDATE set too (see MirrorTableConfig.forceCols).
+    for (const [col, v] of Object.entries(m.forceCols)) if (m.destCols.has(col)) out[col] = v;
     // Per-column value coercion (status vocabulary guards).
     for (const [col, fn] of Object.entries(m.normalize)) if (col in out) out[col] = fn(out[col]);
     return out;
@@ -133,18 +172,28 @@ export function createMirrorMapper(config: Record<string, MirrorTableConfig>): M
 
 /** Idempotent upsert. `conflict` is a comma-separated conflict target; every
  *  non-target column is overwritten from EXCLUDED, so a re-delivered outbox row
- *  converges instead of duplicating. */
+ *  converges instead of duplicating.
+ *
+ *  `opts.where` gates ONLY the UPDATE arm: `ON CONFLICT … DO UPDATE SET … WHERE
+ *  <cond>`, where <cond> reads the EXISTING row by the table's name (Postgres
+ *  exposes it there — `EXCLUDED` is the proposed row). When it is false Postgres
+ *  updates nothing and RAISES NOTHING. That silence is the point: staff-mirror
+ *  uses it to leave rows Houzs User Management has taken over completely alone,
+ *  which must be a no-op, not an error (an error would 500 -> retry forever ->
+ *  wedge). The INSERT arm is never gated: a brand-new 2990 row must always land,
+ *  because that IS the bug this whole mirror fixes. */
 export async function upsert(
   DB: Env['DB'],
   table: string,
   row: Record<string, unknown>,
   conflict: string,
+  opts?: { where?: string },
 ) {
   const cols = Object.keys(row);
   const set = cols.filter((c) => !conflict.split(',').map((s) => s.trim()).includes(c))
     .map((c) => `"${c}"=EXCLUDED."${c}"`).join(', ');
   const sql = `INSERT INTO scm."${table}" (${cols.map((c) => `"${c}"`).join(',')})
     VALUES (${cols.map(() => '?').join(',')})
-    ON CONFLICT (${conflict}) DO UPDATE SET ${set}`;
+    ON CONFLICT (${conflict}) DO UPDATE SET ${set}${opts?.where ? ` WHERE ${opts.where}` : ''}`;
   await DB.prepare(sql).bind(...cols.map((k) => row[k])).run();
 }

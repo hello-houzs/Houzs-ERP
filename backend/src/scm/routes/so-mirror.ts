@@ -16,7 +16,7 @@
 // ----------------------------------------------------------------------------
 import { Hono } from 'hono';
 import type { Env } from '../../types';
-import { C2990, createMirrorMapper, prefixDoc, upsert } from '../lib/mirror-map';
+import { C2990, createMirrorMapper, mirrorAuthed, prefixDoc, upsert } from '../lib/mirror-map';
 
 export const soMirror = new Hono<{ Bindings: Env }>();
 
@@ -45,7 +45,7 @@ const { tableMap, applyMap } = createMirrorMapper({
     prefixCols: ['doc_no', 'cross_category_source_doc_no'],
     // venue_id points at scm.venues, which the import nulls on load (source value
     // references a master row that isn't reconciled across companies).
-    nullCols: ['venue_id'],
+    forceCols: { venue_id: null },
     normalize: { status: normalizeStatus },
   },
   mfg_sales_order_items: { prefixCols: ['doc_no'] },
@@ -53,9 +53,7 @@ const { tableMap, applyMap } = createMirrorMapper({
 });
 
 soMirror.post('/', async (c) => {
-  if (c.req.header('x-sync-secret') !== c.env.SYNC_SECRET || !c.env.SYNC_SECRET) {
-    return c.json({ error: 'unauthorized' }, 401);
-  }
+  if (!mirrorAuthed(c)) return c.json({ error: 'unauthorized' }, 401);
   let body: { docNo?: string; deleted?: boolean; header?: Record<string, unknown>; items?: Record<string, unknown>[]; payments?: Record<string, unknown>[] };
   try { body = await c.req.json(); } catch { return c.json({ error: 'invalid_json' }, 400); }
   const rawDoc = String(body.docNo ?? body.header?.doc_no ?? '').trim();
