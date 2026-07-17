@@ -354,7 +354,12 @@ export function mergeMaintenanceConfig(
       continue;
     }
 
-    const base = remoteList ?? [];
+    // NOT a `?? []` that hides ignorance: the guard above has already refused
+    // the case where 2990 HAS this pool in a shape we cannot read. Reaching
+    // here with no list means remoteRaw was null — 2990 genuinely has no such
+    // pool — which is an established fact, not an unknown, and is reported as
+    // `remoteMissing` rather than silently absorbed.
+    const base: unknown[] = remoteList === undefined ? [] : remoteList;
     const remoteValues: string[] = [];
     const remoteByValue = new Map<string, unknown>();
     for (const e of base) {
