@@ -7,6 +7,7 @@ import { TabStrip } from "../components/TabStrip";
 import { ServiceLeadTimePortal } from "./ServiceLeadTimePortal";
 import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
+import { useAuth } from "../auth/AuthContext";
 import { api } from "../api/client";
 import { UserMultiSelect } from "../components/UserMultiSelect";
 
@@ -119,8 +120,19 @@ function GeneralTab() {
 
 function DefaultAssigneeSection() {
   const toast = useToast();
-  const settings = useQuery<ServiceSettingsResponse>(() =>
-    api.get("/api/assr/settings")
+  // OFF-NOT-HIDE: ServiceCases.tsx no longer mounts this view without
+  // `service_cases.manage`, so this is the query layer of the same gate rather
+  // than a second rule. It matters because the read is the ONE thing the server
+  // does not stop: GET /api/assr/settings needs only `service_cases.read`
+  // (assr.ts:218) while the nav entry and the PUT both need `.manage` — so
+  // anyone who could read a case could read this config. Never fire it without
+  // the permission the page is actually for.
+  const { can } = useAuth();
+  const canManageService = can("service_cases.manage");
+  const settings = useQuery<ServiceSettingsResponse>(
+    () => api.get("/api/assr/settings"),
+    [],
+    { enabled: canManageService }
   );
   const [saving, setSaving] = useState(false);
 

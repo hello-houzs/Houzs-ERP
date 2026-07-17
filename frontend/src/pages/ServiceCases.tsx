@@ -78,6 +78,7 @@ import { formatCurrency, formatDate, formatDateTime, cn } from "../lib/utils";
 import { ServiceMetrics } from "./ServiceMetrics";
 import { ServiceSettingsView } from "./ServiceSettings";
 import { ServiceLeadTimePortal } from "./ServiceLeadTimePortal";
+import { Forbidden } from "./Forbidden";
 import { ServiceProgressTracker } from "../components/ServiceProgressTracker";
 import { resolutionRoute, isStageActive, assrSubStatus, assrSubStatusAddsInfo, assrSubStatusLabel, ASSR_SUB_STATUSES } from "../vendor/scm/lib/assr/stages";
 import type {
@@ -234,6 +235,9 @@ const SERVICE_VIEWS: ServiceView[] = [
   "settings",
 ];
 
+// The module's admin surface — both need `service_cases.manage`.
+const SERVICE_ADMIN_VIEWS: ServiceView[] = ["settings", "lead_time"];
+
 // Per-view header config so each view gets its own dedicated title.
 // (settings view owns its own PageHeader, so it's not in this map.)
 const VIEW_HEADER: Record<
@@ -258,19 +262,45 @@ const VIEW_HEADER: Record<
   },
 };
 
+// Both admin views below deny with the same sentence — one element, two call
+// sites, so the wording cannot drift apart.
+const SERVICE_ADMIN_DENIED = (
+  <Forbidden reason="Service Maintenance is limited to people who can manage service cases. Ask an administrator if you need access." />
+);
+
 export function ServiceCases() {
   // URL-driven (`?view=…`). The sidebar's Quality Management group has
   // one entry per view, so the page itself doesn't render a tab strip
   // — view selection lives in the sidebar.
   const [params] = useSearchParams();
   const navigate = useNavigate();
+  const { can } = useAuth();
+  // Service Maintenance (settings / lead_time) is the module's ADMIN surface.
+  // Sidebar.tsx gates its nav entry on `service_cases.manage`; this page had no
+  // matching gate, so the hub card below offered it to everyone the /assr route
+  // admits — which includes Sales via `allowSales`. The backend holds (writes
+  // are all `service_cases.manage`), but its READS only need
+  // `service_cases.read`, so a reader without manage got the config back at 200
+  // and a raw 403 toast on every write. Gate on the same permission the nav
+  // uses so both agree.
+  const canManageService = can("service_cases.manage");
   const [storedView, setStoredView] = useLocalStorage<ServiceView>(
     "assr:view",
     "cases"
   );
   const urlView = params.get("view") as ServiceView | null;
+  // `assr:view` persists the last view rendered, so anyone who opened Service
+  // Maintenance before it was gated has "settings" stored. Falling back to it
+  // would strand them on a permanent Forbidden at a bare /assr — the effect
+  // below only rewrites the store once a DIFFERENT view renders, which it never
+  // would. Land them on the board instead. An EXPLICIT ?view= is left alone: if
+  // they typed it, they get the plain-language denial and know why.
+  const storedFallback: ServiceView =
+    SERVICE_ADMIN_VIEWS.includes(storedView) && !canManageService
+      ? "cases"
+      : storedView;
   const view: ServiceView =
-    urlView && SERVICE_VIEWS.includes(urlView) ? urlView : storedView;
+    urlView && SERVICE_VIEWS.includes(urlView) ? urlView : storedFallback;
 
   // Persist whatever view was rendered so a bare `/assr` lands back
   // where the user left off.
@@ -321,7 +351,9 @@ export function ServiceCases() {
           cards={[
             { key: "cases", label: "Service Cases", description: VIEW_HEADER.cases.description, icon: ClipboardList, onClick: () => navigate("/assr?view=cases") },
             { key: "metrics", label: "Quality Metrics", description: VIEW_HEADER.metrics.description, icon: ShieldCheck, onClick: () => navigate("/assr?view=metrics") },
-            { key: "settings", label: "Service Maintenance", description: "Picker lists, SLA lead-time targets and module defaults.", icon: Wrench, onClick: () => navigate("/assr?view=settings") },
+            ...(canManageService
+              ? [{ key: "settings", label: "Service Maintenance", description: "Picker lists, SLA lead-time targets and module defaults.", icon: Wrench, onClick: () => navigate("/assr?view=settings") }]
+              : []),
           ]}
         />
       )}
@@ -330,8 +362,13 @@ export function ServiceCases() {
         <CasesView showCreate={showCreate} setShowCreate={setShowCreate} />
       )}
       {view === "metrics" && <ServiceMetrics />}
-      {view === "lead_time" && <ServiceLeadTimePortal />}
-      {view === "settings" && <ServiceSettingsView />}
+      {/* lead_time redirects to ?view=settings&tab=lead_time above, but the
+          redirect runs in an effect — one render lands here first, which was
+          enough to fire the portal's fetch. Gated for that tick. */}
+      {view === "lead_time" &&
+        (canManageService ? <ServiceLeadTimePortal /> : SERVICE_ADMIN_DENIED)}
+      {view === "settings" &&
+        (canManageService ? <ServiceSettingsView /> : SERVICE_ADMIN_DENIED)}
     </div>
   );
 }
