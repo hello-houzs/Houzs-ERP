@@ -258,7 +258,7 @@ trips), per-section permission-gated internally.
   status/history, daily inspection + missing, lorry detail/edit + maintenance/incidents,
   compliance expiring, salary views.
 - **`/api/lorries`** (`lorries.ts`): list, create/reactivate, soft-delete (`fleet.manage`).
-- **`/api/maps`** (`maps.ts`): geocode, directions, backfill-orders, geocode one order.
+- **Maps**: no `/api/maps` route. Geocoding lives in `scm/routes/scan-so.ts` (SO-scan address correction); trip route optimisation is `POST /api/scm/trips/:id/optimize-route` (`scm/lib/maps.ts`), env-gated on `GOOGLE_MAPS_API_KEY` — returns `{configured:false}` and calls nothing when the key is unset.
 - **`/api/planner`** (`planner.ts`, `planner.run`): generate draft proposal, current,
   edit/drop proposed trip, confirm (materialize), discard.
 
