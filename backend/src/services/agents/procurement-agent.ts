@@ -190,6 +190,26 @@ interface ReorderPayload {
   totalShortageUnits: number;
   earliestOrderByDate: string | null;
   lines: ReorderLine[];
+  /* THE TRANSLATION LAYER, and the reason approving this used to do nothing.
+     The agent thinks in SKUs ("MAT-QUEEN is 40 short"); the SO->PO converter
+     takes SO LINE ids. Nothing mapped between them, so an approved proposal was
+     a worklist tick and a human retyped it into the picker by hand.
+
+     MRP already carries the bridge — every MrpLine has `soItemId` ("lets the UI
+     one-click PO this line"). These are exactly the shape POST /from-sos wants,
+     so approval can hand them straight to the SAME converter a human uses:
+     identical supplier resolution, combo redistribution, per-category split and
+     lead-time derivation. A separate agent-only PO writer would have been a
+     second implementation of all of that, and the two would have drifted.
+
+     `supplierId` is deliberately NOT sent. The agent grouped these by the SKU's
+     main supplier, and the converter resolves the main supplier itself — from
+     the bindings as they are AT EXECUTION TIME, not as they were when the
+     proposal was written. Fresher, and it avoids the converter's documented
+     fall-through (naming a supplier with no binding for that SKU silently lands
+     the line on the main supplier anyway). The proposal's supplierCode is the
+     agent's reasoning, not an instruction. */
+  picks: Array<{ soItemId: string; qty: number }>;
 }
 
 async function openProposalKeys(db: D1Database): Promise<Set<string>> {
@@ -332,6 +352,16 @@ export async function runProcurementAgent(
       const earliest = earliestOrderByDate(lines);
       const supplierName = bucket.name;
 
+      /* SKU shortages -> the SO lines that are actually short, in the shape the
+         converter takes. Only lines with a real uncovered qty: an MrpLine
+         already covered by stock or an open PO carries shortageQty 0 and must
+         not be ordered again. */
+      const picks = bucket.skus.flatMap((k) =>
+        (k.lines ?? [])
+          .filter((l) => num(l.shortageQty) > 0 && s(l.soItemId) !== '')
+          .map((l) => ({ soItemId: s(l.soItemId), qty: num(l.shortageQty) })),
+      );
+
       reorderBySupplier.push({
         supplierCode,
         supplierName,
@@ -350,11 +380,12 @@ export async function runProcurementAgent(
         totalShortageUnits,
         earliestOrderByDate: earliest,
         lines,
+        picks,
       };
       const proposalSummary =
         `Reorder from ${supplierName} (${supplierCode}): ${lines.length} SKU(s), ` +
-        `${totalShortageUnits} unit(s) short, order by ${earliest ?? 'n/a'}. ` +
-        `Proposal only — raise the PO via the SO->PO converter.`;
+        `${totalShortageUnits} unit(s) short across ${picks.length} SO line(s), ` +
+        `order by ${earliest ?? 'n/a'}.`;
 
       await db
         .prepare(
@@ -540,5 +571,9 @@ interface MrpSkuLike {
   shortage: number;
   mainSupplierCode: string | null;
   mainSupplierName: string | null;
-  lines: Array<{ orderByDate: string | null; shortageQty: number }>;
+  /* soItemId verified against mrp.ts's MrpLine (:140 — "mfg_sales_order_items.id
+     — lets the UI one-click PO this line"). It is the bridge from the agent's
+     SKU view to the converter's SO-line view; without it an approved proposal
+     cannot become a PO. */
+  lines: Array<{ orderByDate: string | null; shortageQty: number; soItemId: string }>;
 }
