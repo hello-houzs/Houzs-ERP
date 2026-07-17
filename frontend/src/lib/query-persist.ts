@@ -96,8 +96,7 @@ const LIST_ENTITIES = new Set([
   "sales-invoices",
   "grns",
 ]);
-// Sub-resource queries share a list entity's prefix but must NOT be persisted;
-// they are distinguished by a known second segment.
+// Sub-resource queries share a list entity's prefix but must NOT be persisted.
 const SUBRESOURCE = new Set([
   "debtors",
   "deliverable-so-lines",
@@ -112,9 +111,26 @@ function isListKey(key: readonly unknown[]): boolean {
   const entity = key[0];
   const second = key[1];
   if (typeof entity !== "string" || !LIST_ENTITIES.has(entity)) return false;
-  // A list's second segment is a status string ('all' / a status enum). A detail
-  // or sub-resource query has an id/number or a known sub-name here instead.
-  if (typeof second !== "string" || SUBRESOURCE.has(second)) return false;
+  /* Match the sub-resource name ANYWHERE in the key, not just at segment 1.
+     The rule above ("must NOT be persisted") was already the intent; the test
+     was `SUBRESOURCE.has(key[1])`, and the three PAYMENT LEDGERS put the id
+     there instead — ['mfg-delivery-orders', <uuid>, 'payments'],
+     ['mfg-sales-orders', <docNo>, 'payments'], ['sales-invoices', <uuid>,
+     'payments'] — so every one of them passed the guard and was written to
+     localStorage, then rehydrated (stamped updatedAt:1) on the next cold open.
+     That put a PAYMENT LEDGER OF UNKNOWN AGE on disk and handed it back as
+     query `data` — indistinguishable, to a reader, from a fresh successful
+     read. MobilePOD turns exactly that data into the balance a driver
+     collects, so a snapshot taken before the customer paid at the office could
+     re-present a settled balance as outstanding while the real fetch was still
+     in flight (fix/pod-balance, 2026-07-17).
+     Scanning every segment cannot over-reject: SUBRESOURCE holds fixed
+     sub-names, and the real list keys' other segments are statuses, 'all', or
+     ids — none of which collide. ['mfg-purchase-orders', status, supplierId]
+     is a LEGITIMATE 3-segment list key and still persists, which is why this
+     is a name scan and not a length cap. */
+  if (typeof second !== "string") return false;
+  if (key.some((seg) => typeof seg === "string" && SUBRESOURCE.has(seg))) return false;
   return true;
 }
 
