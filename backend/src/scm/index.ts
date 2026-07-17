@@ -25,6 +25,7 @@ import { mfgPurchaseOrders } from "./routes/mfg-purchase-orders";
 import { grns } from "./routes/grns";
 import { purchaseInvoices } from "./routes/purchase-invoices";
 import { paymentVouchers } from "./routes/payment-vouchers";
+import { paymentAuditLog } from "./routes/payment-audit-log";
 import { currencies } from "./routes/currencies";
 import { mfgSalesOrders } from "./routes/mfg-sales-orders";
 import { soAmendments } from "./routes/so-amendments";
@@ -269,6 +270,25 @@ scm.route("/accounting", accounting);
 // finer scm.payment_voucher.* gates layer on inside the handlers.
 scm.use("/payment-vouchers/*", scmAreaGuard("scm.finance.accounting"));
 scm.route("/payment-vouchers", paymentVouchers);
+// Payment Audit Log — Finance's payment TRAIL (port of 2990's /admin/audit-log):
+// one row per mfg_sales_order_payments entry + its SO header context. Read-only.
+// Same L2 area as Accounting: it is the money ledger's read side, not a new
+// module. NOT named /audit-log — /api/audit (audit_events = role changes) and
+// /mfg-sales-orders/:docNo/audit-log (field-change history) already own that
+// word; see the route header.
+//
+// THE AREA KEY IS NOT THE GATE HERE, and this is the one mount where that
+// distinction is load-bearing. scmAreaGuard FALLS OPEN for callers without an
+// explicit SCM L2 config (area-guard.ts: `if (!user.scm_l2_configured) next()`)
+// — deliberate, so nobody is locked out before the matrix is seeded, and fine
+// for the pages above. This payload is every customer payment, amount, approval
+// code and bank slip in the book, so the real boundary is an in-route
+// canViewScmFinance 403 (fails closed, reads the REAL caller via houzsUser).
+// Row-scope (own+downline) rides along as a fuse for the day that gate widens.
+// Read the route header before changing either — "read-only" is not "safe", and
+// that assumption is exactly what shipped the /reports leak.
+scm.use("/payment-audit-log/*", scmAreaGuard("scm.finance.accounting"));
+scm.route("/payment-audit-log", paymentAuditLog);
 // Currency MASTER — owner-maintained list + rate_to_myr, read by the GRN/PI/PV
 // currency dropdowns across areas. Like state-warehouse-mappings, it's a shared
 // lookup left on the coarse scm gate (reads open); writes are gated inside the
