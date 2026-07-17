@@ -16,6 +16,7 @@ import {
   hasAmendmentHeaderChanges,
   withFrozenHeaderFieldsReverted,
 } from "../vendor/scm/lib/so-amendment-header";
+import { diffHeaderPayload, hasHeaderChanges } from "../vendor/scm/lib/so-header-diff";
 import { LOCKED_STATUSES, procLockActive } from "../vendor/scm/lib/so-detail-gates";
 import {
   useSoDropdownOptions,
@@ -739,6 +740,20 @@ export function MobileNewSO({
      DRAFT). setSoStatus stores the status upper-cased. */
   const isDraftSo = soStatus === "DRAFT";
   // Prefill venue (edit) — used to seed the manual venue pick.
+  /* The header patch this form WOULD have sent the moment prefill finished, if
+     the operator changed nothing — the baseline save() diffs against, so an
+     untouched field is never sent (mirrors the desktop originalPayloadRef and
+     the line path's applyLineDiff). null until prefill lands: no baseline means
+     no proof, so save() falls back to sending the whole patch.
+
+     Seeded from the values the form is being seeded WITH, not from a live read,
+     so a field the SERVER changed under the operator mid-edit stays undirty and
+     Save cannot clobber it with the staler value on screen. The three columns
+     the form does not seed — venue_id / venue / sales_location, all re-derived
+     from async lookups — take the SERVER's stored value as their baseline
+     instead, which is what "did the derivation actually change this column"
+     must compare against. */
+  const originalHeaderPatchRef = useRef<Record<string, unknown> | null>(null);
   const [prefillVenueId, setPrefillVenueId] = useState<string | null>(null);
   const [prefillVenueName, setPrefillVenueName] = useState<string>("");
   // SKU picker sheet — the line key it was opened for, or null when closed.
@@ -814,6 +829,34 @@ export function MobileNewSO({
         setPostcode(h.postcode ?? "");
         setOrigState(h.customer_state ?? "");
         setOrigPostcode(h.postcode ?? "");
+        /* The pristine baseline — the SAME builder save() uses, fed the values
+           just seeded above, so an untouched form diffs to {}. salespersonId is
+           seeded to "" here exactly as the picker is (this form never seeds it
+           from the row), and "" maps to the same null save() would send, so an
+           untouched picker is not dirty and salesperson_id is left alone. */
+        originalHeaderPatchRef.current = soHeaderPatchFrom({
+          name: h.debtor_name ?? "",
+          custRef: h.customer_so_no ?? h.ref ?? "",
+          phone: stripPrefix(h.phone),
+          email: h.email ?? "",
+          custType: h.customer_type ?? "",
+          buildingType: h.building_type ?? "",
+          venueId: h.venueId ?? h.venue_id ?? null,
+          venueName: h.venue ?? "",
+          note: h.note ?? "",
+          addr1: h.address1 ?? "",
+          addr2: h.address2 ?? "",
+          state: h.customer_state ?? "",
+          city: h.city ?? "",
+          postcode: h.postcode ?? "",
+          salesLocation: h.sales_location ?? "",
+          procDate: (h.internal_expected_dd ?? "").slice(0, 10),
+          delivDate: (h.customer_delivery_date ?? "").slice(0, 10),
+          ecName: h.emergency_contact_name ?? "",
+          ecPhone: stripPrefix(h.emergency_contact_phone),
+          ecRel: h.emergency_contact_relationship ?? "",
+          salespersonId: null,
+        });
         const liveItems = (detail.items ?? []).filter((it) => !it.cancelled);
         setOrigItems(liveItems);
         const editable = liveItems.map(lineFromItem);
@@ -1519,6 +1562,16 @@ export function MobileNewSO({
     }
     const procOut = asDraft ? "" : procDate;
     const delivOut = asDraft ? "" : delivDate;
+    /* The one value bag the EDIT patch and the CREATE body are both built from
+       (soHeaderPatchFrom), so the two can never drift. */
+    const headerPatchInput: SoHeaderPatchInput = {
+      name, custRef, phone, email, custType, buildingType,
+      venueId: outgoingVenueId, venueName: outgoingVenueName,
+      note, addr1, addr2, state, city, postcode, salesLocation,
+      procDate: procOut, delivDate: delivOut,
+      ecName, ecPhone, ecRel,
+      salespersonId: outgoingSalespersonId,
+    };
     /* Date sanity (set-together / not-past / processing≤delivery) — SHARED with
        desktop via soDateGuardError so the rule can't drift. Validates only what
        will actually be saved (a draft strips both dates → procOut/delivOut "").
@@ -1586,33 +1639,8 @@ export function MobileNewSO({
     setError(null);
     setSubmitting(true);
     try {
-      const phoneOut = "+60" + phone.replace(/\s+/g, "");
-      const ecPhoneOut = ecPhone.trim() ? "+60" + ecPhone.replace(/\s+/g, "") : null;
-
       if (isEdit && docNo) {
-        const patch: Record<string, unknown> = {
-          debtorName: name.trim(),
-          customerSoNo: custRef.trim() || null,
-          phone: phoneOut,
-          email: email.trim() || null,
-          customerType: custType || null,
-          buildingType: buildingType || null,
-          venueId: outgoingVenueId ?? undefined,
-          venue: outgoingVenueName || null,
-          note: note.trim() || null,
-          address1: addr1.trim() || null,
-          address2: addr2.trim() || null,
-          customerState: state || null,
-          city: city.trim() || null,
-          postcode: postcode.trim() || null,
-          salesLocation: salesLocation || undefined,
-          internalExpectedDd: procOut || null,
-          customerDeliveryDate: delivOut || null,
-          emergencyContactName: ecName.trim() || null,
-          emergencyContactPhone: ecPhoneOut,
-          emergencyContactRelationship: ecRel || null,
-          salespersonId: outgoingSalespersonId,
-        };
+        const patch: Record<string, unknown> = soHeaderPatchFrom(headerPatchInput);
         /* AMENDMENT MODE (Phase 1-C, desktop SalesOrderDetail.submitAmendment
            parity) — the SO is processing-locked but amendment_eligible. The edit
            splits in two:
@@ -1647,10 +1675,26 @@ export function MobileNewSO({
             })
           : patch;
 
-        await authedFetch(`/mfg-sales-orders/${encodeURIComponent(docNo)}`, {
-          method: "PATCH",
-          body: JSON.stringify(outgoingPatch),
-        });
+        /* Send ONLY what the operator changed. The diff runs AFTER the frozen-
+           field revert, so a reverted column drops out entirely rather than
+           being re-sent unchanged — the server's lock diffs `col in updates`, so
+           a column we never send cannot 409 so_locked_processing at all.
+           Baseline missing (prefill never completed) -> send the whole patch,
+           exactly as before: we cannot prove a field is unchanged, and
+           "unknown" must not silently become "not dirty". */
+        const dirtyPatch = originalHeaderPatchRef.current
+          ? diffHeaderPayload(originalHeaderPatchRef.current, outgoingPatch)
+          : outgoingPatch;
+        /* Nothing dirty -> no request. An all-unchanged body still re-fires the
+           server's delivery-date cascade (keyed on PRESENCE, not change) and
+           wipes every per-line override. Skipping loses no refresh: this branch
+           invalidates everything itself once the whole composite save settles. */
+        if (hasHeaderChanges(dirtyPatch)) {
+          await authedFetch(`/mfg-sales-orders/${encodeURIComponent(docNo)}`, {
+            method: "PATCH",
+            body: JSON.stringify(dirtyPatch),
+          });
+        }
 
         if (amendmentMode) {
           const amLines = buildAmendmentLines();
@@ -1721,27 +1765,9 @@ export function MobileNewSO({
 
       const body: Record<string, unknown> = {
         customerName: name.trim(),
-        debtorName: name.trim(),
-        customerSoNo: custRef.trim() || null,
-        phone: phoneOut,
-        email: email.trim() || null,
-        customerType: custType || null,
-        buildingType: buildingType || null,
-        venueId: outgoingVenueId ?? undefined,
-        venue: outgoingVenueName || null,
-        note: note.trim() || null,
-        address1: addr1.trim() || null,
-        address2: addr2.trim() || null,
-        customerState: state || null,
-        city: city.trim() || null,
-        postcode: postcode.trim() || null,
-        salesLocation: salesLocation || undefined,
-        internalExpectedDd: procOut || null,
-        customerDeliveryDate: delivOut || null,
-        emergencyContactName: ecName.trim() || null,
-        emergencyContactPhone: ecPhoneOut,
-        emergencyContactRelationship: ecRel || null,
-        salespersonId: outgoingSalespersonId,
+        /* Same builder as the edit patch — a CREATE sends every field because a
+           new order has no prior value to diff against. */
+        ...soHeaderPatchFrom(headerPatchInput),
         /* EXPLICIT draft flag — the backend statuses DRAFT only on
            body.asDraft === true; nulling the dates alone saves CONFIRMED. */
         asDraft: asDraft === true,
@@ -2411,6 +2437,50 @@ function stripPrefix(p: string | null): string {
   if (s.startsWith("+60")) s = s.slice(3);
   else if (s.startsWith("60") && s.length > 9) s = s.slice(2);
   return s.replace(/^0/, "");
+}
+
+/** The raw form values the SO header fields are built from. Every transform
+    (trim, "+60" phone, '' -> null) lives in soHeaderPatchFrom below, so the
+    EDIT patch, the CREATE body and the pristine baseline the edit diffs against
+    can never drift apart — they are one function called three times. */
+type SoHeaderPatchInput = {
+  name: string; custRef: string; phone: string; email: string;
+  custType: string; buildingType: string;
+  venueId: string | null; venueName: string;
+  note: string; addr1: string; addr2: string; state: string;
+  city: string; postcode: string; salesLocation: string;
+  procDate: string; delivDate: string;
+  ecName: string; ecPhone: string; ecRel: string;
+  salespersonId: string | null;
+};
+
+/** The SO header fields exactly as the API takes them. PURE — same input, same
+    object, so an untouched form yields a byte-identical baseline and only a
+    genuine edit survives diffHeaderPayload. */
+function soHeaderPatchFrom(v: SoHeaderPatchInput): Record<string, unknown> {
+  return {
+    debtorName: v.name.trim(),
+    customerSoNo: v.custRef.trim() || null,
+    phone: "+60" + v.phone.replace(/\s+/g, ""),
+    email: v.email.trim() || null,
+    customerType: v.custType || null,
+    buildingType: v.buildingType || null,
+    venueId: v.venueId ?? undefined,
+    venue: v.venueName || null,
+    note: v.note.trim() || null,
+    address1: v.addr1.trim() || null,
+    address2: v.addr2.trim() || null,
+    customerState: v.state || null,
+    city: v.city.trim() || null,
+    postcode: v.postcode.trim() || null,
+    salesLocation: v.salesLocation || undefined,
+    internalExpectedDd: v.procDate || null,
+    customerDeliveryDate: v.delivDate || null,
+    emergencyContactName: v.ecName.trim() || null,
+    emergencyContactPhone: v.ecPhone.trim() ? "+60" + v.ecPhone.replace(/\s+/g, "") : null,
+    emergencyContactRelationship: v.ecRel || null,
+    salespersonId: v.salespersonId,
+  };
 }
 
 // ---- Sub-components ---------------------------------------------------------
