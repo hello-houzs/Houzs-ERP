@@ -20,6 +20,7 @@ import type { Env, Variables } from '../env';
 import { writeMovements, defaultWarehouseId } from '../lib/inventory-movements';
 import { computeVariantKey, isServiceLine, type VariantAttrs } from '../shared';
 import { syncSoDeliveredFromDo } from '../lib/so-delivery-sync';
+import { maybeSendDeliveryOrderEmail } from '../lib/do-email';
 import { todayMyt } from '../lib/my-time';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { escapeForOr } from '../lib/postgrest-search';
@@ -2519,6 +2520,7 @@ deliveryOrdersMfg.post('/', async (c) => {
      status is later advanced). LEAK GUARD (DRAFT): a DRAFT DO has NOT shipped —
      skip the deduction AND the SO-delivered sync; both fire on Confirm. */
   let movementErrors: string[] = [];
+  let emailNotice: string | null = null;
   if (body.asDraft !== true) {
     movementErrors = await deductInventoryForDo(sb, h.id, user.id);
 
@@ -2526,6 +2528,12 @@ deliveryOrdersMfg.post('/', async (c) => {
        auto-advance the SO to DELIVERED (best-effort, never blocks the DO). The
        POS "My orders" board reflects the flip via Supabase realtime. */
     await syncSoDeliveredFromDo(sb, [(body.soDocNo as string) ?? null], user.id);
+
+    /* Customer DO email (owner trigger "A", 2026-07-17). A non-draft create IS
+       the confirm — the DO is born DISPATCHED — so this is the same event the
+       deduction above fires on. Gated OFF and fail-closed inside; best-effort,
+       never blocks the DO. */
+    emailNotice = await maybeSendDeliveryOrderEmail(sb, c.env, h.id);
   }
 
   /* SO↔DO amend mirror (Houzs port of 2990 fc7f0900, extended) — same rule as
@@ -2571,6 +2579,7 @@ deliveryOrdersMfg.post('/', async (c) => {
     id: h.id,
     doNumber: h.do_number,
     movementErrors: movementErrors.length ? movementErrors : undefined,
+    emailNotice: emailNotice ?? undefined,
     so_amend_mirrored: soAmendMirrored,
     so_mirror_error: soAmendMirrorError,
   }, 201);
@@ -2943,15 +2952,27 @@ deliveryOrdersMfg.post('/from-sos', async (c) => {
   //    OUT and the SO-delivered sync; both fire on Confirm.
   await recomputeTotals(sb, dh.id);
   let movementErrors: string[] = [];
+  let emailNotice: string | null = null;
   if (body.asDraft !== true) {
     movementErrors = await deductInventoryForDo(sb, dh.id, user.id);
 
     /* Requirement #3 — a multi-SO DO may complete several SOs at once; check each
        source SO for full coverage and auto-advance to DELIVERED (best-effort). */
     await syncSoDeliveredFromDo(sb, [...docNos], user.id);
+
+    /* Customer DO email (owner trigger "A", 2026-07-17). ONE email per DO, not
+       per source SO: this is the merge path, so the DO carries a single
+       recipient snapshot and the customer gets one notice for the one delivery.
+       Gated OFF and fail-closed inside; best-effort, never blocks the DO. */
+    emailNotice = await maybeSendDeliveryOrderEmail(sb, c.env, dh.id);
   }
 
-  return c.json({ id: dh.id, doNumber: dh.do_number, movementErrors: movementErrors.length ? movementErrors : undefined }, 201);
+  return c.json({
+    id: dh.id,
+    doNumber: dh.do_number,
+    movementErrors: movementErrors.length ? movementErrors : undefined,
+    emailNotice: emailNotice ?? undefined,
+  }, 201);
 });
 
 /* ── Crew assignment (scm.delivery_order_crew, migration 0053) ────────────────
@@ -3769,6 +3790,7 @@ deliveryOrdersMfg.patch('/:id/status', async (c) => {
      DISPATCHED ∈ SHIPPED_STATES so the deduction (skipped on draft create) fires
      HERE, the single chokepoint. This is the commit moving create→confirm. */
   let movementErrors: string[] = [];
+  let emailNotice: string | null = null;
   if (SHIPPED_STATES.includes(body.status)) {
     movementErrors = await deductInventoryForDo(sb, id, user.id);
     /* Mirror the create path: once stock goes out, re-check the source SO for
@@ -3778,6 +3800,22 @@ deliveryOrdersMfg.patch('/:id/status', async (c) => {
     if (prevStatus === 'DRAFT') {
       const { data: doRow } = await sb.from('delivery_orders').select('so_doc_no').eq('id', id).maybeSingle();
       await syncSoDeliveredFromDo(sb, [(doRow as { so_doc_no?: string } | null)?.so_doc_no], user.id);
+    }
+
+    /* Customer DO email (owner trigger "A", 2026-07-17) — the DRAFT-confirm
+       half of the same event the create path fires on.
+       NARROWER than the deduction above, deliberately: the owner ruled "send on
+       CONFIRMED, NOT on delivered". The deduction fires on any shipped state
+       because stock leaves whichever way the DO gets there; the EMAIL says "your
+       order is on its way", which is false once it has arrived. So it fires only
+       on entering DISPATCHED from a pre-ship status — a DO that jumps
+       DRAFT→DELIVERED (the mobile POD path) deducts stock here but does NOT
+       email, because the goods are already with the customer.
+       Once-per-DO by construction, not merely by the stamp: the guard at :3708
+       bars a shipped DO from returning to a pre-ship status, so this transition
+       cannot repeat. Gated OFF and fail-closed inside; best-effort. */
+    if (body.status === 'DISPATCHED' && DO_PRESHIP_STATUSES.has((prevStatus ?? '').toUpperCase())) {
+      emailNotice = await maybeSendDeliveryOrderEmail(sb, c.env, id);
     }
   }
 
@@ -3822,5 +3860,9 @@ deliveryOrdersMfg.patch('/:id/status', async (c) => {
     } catch (e) { /* eslint-disable-next-line no-console */ console.error('[so-allocation] post-do-cancel failed:', e); }
   }
 
-  return c.json({ deliveryOrder: data, movementErrors: movementErrors.length ? movementErrors : undefined });
+  return c.json({
+    deliveryOrder: data,
+    movementErrors: movementErrors.length ? movementErrors : undefined,
+    emailNotice: emailNotice ?? undefined,
+  });
 });

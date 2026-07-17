@@ -101,7 +101,11 @@ const FAIL_CLOSED_PURPOSES: ReadonlySet<EmailPurpose> = new Set([
   "document_report",
 ]);
 
-async function isChannelEnabled(env: Env, purpose: EmailPurpose): Promise<boolean> {
+// Exported so a caller that takes a SIDE EFFECT alongside the send (the DO
+// email claims delivery_orders.do_email_sent_at before sending) can check the
+// gate BEFORE it writes anything. sendEmail re-checks independently, so this is
+// an early-out, never the only gate.
+export async function isChannelEnabled(env: Env, purpose: EmailPurpose): Promise<boolean> {
   // Master kill-switch first.
   const master = await readSetting<{ value: boolean }>(env, "email.enabled");
   if (master && master.value === false) return false;
@@ -473,9 +477,27 @@ function escapeHtml(s: string): string {
 // Shared customer-facing document email (Delivery Order, Invoice, Report all
 // reuse this — only the label + summary rows differ). HTML-only: it inlines the
 // document summary and optionally links to a view/print page, rather than
-// attaching a PDF. WHY: Cloudflare Workers has no headless-browser PDF path and
-// deliverViaResend has no attachment param; the repo's existing "documents"
-// (assr_print/projects_print) are server-rendered HTML for browser print too.
+// attaching a PDF.
+//
+// WHY no PDF — and note the ORIGINAL reason has half expired, so read this
+// before "fixing" it: Cloudflare Workers has no headless-browser PDF path, and
+// Houzs's only PDF generator is frontend jsPDF (frontend/src/vendor/scm/lib/
+// pdf-common.ts), which lazily embeds a Noto Sans SC subset and verifies the
+// font's own cmap covers every codepoint (:196-245), throwing rather than
+// emitting corruption. Writing a BACKEND generator to attach one would mean a
+// SECOND engine that cannot do that — HOOKKA has exactly that and its backend
+// PDF crashes on any Chinese character, smart quote or em-dash. Owner's
+// direction (2026-07-17): Houzs does not build engine two. backend/package.json
+// has no pdf dependency; keep it that way.
+//
+// The part that IS now stale: this comment used to also say "deliverViaResend
+// has no attachment param". It has one — the Mail Center added it (SendOptions
+// .attachments → the provider payload, :233). So attaching a PDF the BROWSER
+// rendered and stored is open, and the owner expects to want it
+// ("之後可能也會要附件"). One catch to design around when that lands:
+// email_outbox has no attachment column (see SendOptions.attachments), so a
+// cron-drained RETRY of a failed send delivers the body WITHOUT the attachment.
+//
 // Every interpolated value is escaped (escapeHtml) since it can be customer text.
 export function documentEmailHtml(p: {
   docTypeLabel: string; // "Delivery Order" | "Invoice" | "Report"
