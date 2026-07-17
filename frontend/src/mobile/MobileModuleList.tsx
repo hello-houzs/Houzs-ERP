@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { lineIdentity } from "@2990s/shared";
+import { useAuth } from "../auth/AuthContext";
+import { visibleFields } from "../auth/salesAccess";
 import { formatDate } from "../lib/utils";
 import { fmtAmt } from "../lib/scm";
 import { useInfiniteQuery } from "@tanstack/react-query";
@@ -33,7 +35,16 @@ export type Column = { key: string; label?: string };
 /** A labelled row shown in the design-style card grid: [accessor, label].
  *  The accessor returns the already-formatted value string (money via rm(),
  *  dates via dm()); a blank/"—" result renders as an em-dash. */
-export type FieldDef = [accessor: (row: any) => string, label: string];
+/** A labelled read-only field on a card.
+ *
+ *  The optional third slot marks the value CONFIDENTIAL. Owner 2026-07-17:
+ *  "全部對sales person 除了sales director 關閉 就是直接看不到這個portion" —
+ *  cost is director-only, on phone and desktop alike. Marked structurally
+ *  rather than matched by label: MobileModuleDetail.tsx already gates its stat
+ *  tiles with `st[0] === "Cost"`, which silently stops working the day someone
+ *  writes "Unit Cost". A tuple slot cannot drift out of sync with its label.
+ *  Filter through {@link visibleFields} — never map over `config.fields` raw. */
+export type FieldDef = [accessor: (row: any) => string, label: string, confidential?: "cost"];
 
 /** A chip filter: a labelled button that filters rows via `match` and shows a
  *  live count. `key` is a stable id (also the "all"-sentinel when key === "all",
@@ -621,6 +632,9 @@ export function MobileModuleList({
 // an em-dash, never undefined.
 // ---------------------------------------------------------------------------
 function ListCard({ config, row, onOpen }: { config: ModuleConfig; row: any; onOpen?: (row: any) => void }) {
+  /* Owner 2026-07-17 — cost is director-only, phone and desktop alike. */
+  const { user: cardUser } = useAuth();
+  const cardFields = visibleFields(config.fields, cardUser);
   const clickable = !!onOpen;
   const open = clickable ? () => onOpen!(row) : undefined;
   const cardStyle: React.CSSProperties = clickable ? { cursor: "pointer" } : { cursor: "default" };
@@ -756,9 +770,9 @@ function ListCard({ config, row, onOpen }: { config: ModuleConfig; row: any; onO
           return rightText ? <span className="money-row">{rightText}</span> : null;
         })()}
       </div>
-      {config.fields?.length ? (
+      {cardFields.length ? (
         <div className="so-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px 12px", marginTop: 8 }}>
-          {config.fields.map(([accessor, label]) => (
+          {cardFields.map(([accessor, label]) => (
             <div key={label} style={{ minWidth: 0 }}>
               <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: ".05em", textTransform: "uppercase", color: "#9aa093" }}>{label}</div>
               <div className="money" style={{ fontSize: 12, fontWeight: 600, color: "#11140f" }}>{safe(accessor, row) || "—"}</div>
@@ -1739,7 +1753,7 @@ export const MODULE_CONFIGS: Record<string, ModuleConfig> = {
       [(r) => pick(r, "category") ?? "—", "Category"],
       [(r) => rmField(pick(r, "basePriceSen", "base_price_sen")), "Base Price"],
       [(r) => rmField(pick(r, "sellPriceSen", "sell_price_sen")), "Selling Price"],
-      [(r) => rmField(pick(r, "costPriceSen", "cost_price_sen")), "Cost Price"],
+      [(r) => rmField(pick(r, "costPriceSen", "cost_price_sen")), "Cost Price", "cost"],
       [(r) => humanize(pick(r, "status")) || "—", "Status"],
     ],
     chips: [

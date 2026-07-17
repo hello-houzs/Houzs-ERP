@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { canViewScmCosting } from "../auth/salesAccess";
+import { canViewScmCosting, visibleFields } from "../auth/salesAccess";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { lineIdentity } from "@2990s/shared";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
@@ -1080,6 +1080,10 @@ function MemberActions({ row, onDone }: { row: any; onDone: () => void }) {
 }
 
 function SimpleDetail({ moduleKey, row, title, onBack, onEdit }: { moduleKey: string; row: any; title: string; onBack: () => void; onEdit?: () => void }) {
+  /* Owner 2026-07-17 — cost is director-only. Its own useAuth: the costing gate
+     further up this file lives in a DIFFERENT component, so there is nothing to
+     borrow here. */
+  const { user: detailUser } = useAuth();
   // Suppliers carries a richer GET /suppliers/:id ({ supplier, bindings }).
   // Merge that over the list row when available; every other simple module just
   // dumps the row it was handed.
@@ -1118,13 +1122,18 @@ function SimpleDetail({ moduleKey, row, title, onBack, onEdit }: { moduleKey: st
   // labelled rows (so-k / so-v pairs) exactly like the prototype's openDetail;
   // else fall back to the humanized full-row dump.
   const configFields = useMemo(() => {
-    if (!config?.fields?.length) return null;
-    return config.fields.map(([accessor, label]) => {
+    /* Owner 2026-07-17 — cost is director-only. This grid renders the SAME
+       MODULE_CONFIGS.fields as MobileModuleList's ListCard, so it needs the
+       same filter: gating the list and not the detail would just move the leak
+       one tap deeper. */
+    const fields = visibleFields(config?.fields, detailUser);
+    if (!fields.length) return null;
+    return fields.map(([accessor, label]) => {
       let value = "—";
       try { value = accessor(effectiveRow) || "—"; } catch { value = "—"; }
       return { label, value };
     });
-  }, [config, effectiveRow]);
+  }, [config, effectiveRow, detailUser]);
 
   const eyebrow = meta ? meta.eyebrow(effectiveRow) : (config?.eyebrow ?? "");
   const heading =
