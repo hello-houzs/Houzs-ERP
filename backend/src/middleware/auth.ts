@@ -73,17 +73,45 @@ declare module "hono" {
  * Hono context as `c.get("user")`. Routes can then call
  * `requirePermission(perm)` for granular gating.
  */
-// Public API sub-paths that live under /api/* but must NOT require
-// staff auth. Customer-facing endpoints (survey, track lookup, portal
-// case view) all sit here so Cloudflare Pages' single /api/* rewrite
-// forwards them without route collisions against SPA paths.
-const PUBLIC_API_PREFIXES = [
+/**
+ * Public API sub-paths that live under /api/* but must NOT require
+ * staff auth. Customer-facing endpoints (survey, track lookup, portal
+ * case view) all sit here so Cloudflare Pages' single /api/* rewrite
+ * forwards them without route collisions against SPA paths.
+ *
+ * THIS LIST IS NOT WHAT MAKES THOSE ROUTES PUBLIC. index.ts mounts them
+ * ABOVE `app.use("/api/*", auth)`, and Hono stops the chain at the first
+ * handler that returns — so a matched public route never reaches this
+ * middleware and never consults this list. What the list actually does
+ * is catch requests that fall THROUGH those routers to the gate (an
+ * unmatched method or sub-path under a public prefix), which 401 instead
+ * of 404 without it.
+ *
+ * ENTRIES HERE ARE LOAD-BEARING IN THE OTHER DIRECTION, and that is the
+ * danger. Anything mounted BELOW the gate whose path matches an entry is
+ * silently served UNAUTHENTICATED, because the gate calls next() before
+ * the route is reached. Two dead entries — "/api/supplier-auth" and
+ * "/api/supplier" — matched no mounted router and were removed on
+ * 2026-07-17: they were a loaded gun aimed at whoever mounted a future
+ * /api/supplier/* route in the ordinary place, below the gate. An entry
+ * that names no router is therefore a BUG, and portalSurfaces.test.ts
+ * fails the build on one.
+ *
+ * WHY THIS DELIBERATELY DOES NOT MIRROR index.ts's pre-auth mounts:
+ * /api/pos, /api/mail-center/inbound, /api/sync/*-mirror and
+ * /api/assr-form-intake are also mounted pre-auth, and are absent here on
+ * purpose. They are machine-to-machine surfaces that carry their OWN
+ * guard (a shared secret, or re-applied `auth` inside the router, as
+ * /api/pos does for set-pin/verify-pin/sales-stats). Adding them would
+ * buy nothing — mount order already makes them reachable — while arming
+ * the exact foot-gun described above for every future sibling path under
+ * those prefixes. The two lists SHOULD diverge; only this one grants.
+ */
+export const PUBLIC_API_PREFIXES = [
   "/api/survey",
   "/api/track",
   "/api/portal",
   "/api/auth",
-  "/api/supplier-auth",
-  "/api/supplier",
 ];
 
 export const auth: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {

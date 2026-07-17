@@ -21,6 +21,15 @@ export const CUSTOMER_TTL_SECONDS = 60 * 30;            // 30 minutes
 // Staff/sales links never expire. Stored as a far-future ISO stamp so
 // the existing `expires_at > now` reads keep working without a schema
 // change (expires_at is NOT NULL).
+//
+// The unbounded lifetime is a product decision, not an oversight: the
+// link is pasted into WhatsApp and the customer reopens it months
+// later to check their case (Nick 2026-07-07, mig 0076). A TTL would
+// break that flow for everyone to contain the rare forwarded link, and
+// the token is 192-bit CSPRNG scoped to one assr_id, so there is
+// nothing enumerable to bound. The answer to a leaked link is
+// revokeCaseTokens() below (mig 0126 revoked_at) -- permanent by
+// default, killable on demand.
 export const PERMANENT_EXPIRES_AT = "9999-12-31T23:59:59.000Z";
 
 export type TrackSource = "customer" | "staff" | "sales";
@@ -86,9 +95,14 @@ export async function verifyAndIssueCustomerToken(
  * the case panel.
  */
 export async function issueStaffToken(env: Env, assrId: number): Promise<string> {
+  // `revoked_at IS NULL` is what makes revocation a rotation rather
+  // than a permanent lockout: without it the reuse branch would hand
+  // back the very token that was just killed, so the button would
+  // return a dead link forever.
   const existing = await env.DB.prepare(
     `SELECT token FROM case_track_tokens
       WHERE assr_id = ? AND source = 'staff'
+        AND revoked_at IS NULL
         AND expires_at > datetime('now')
       ORDER BY created_at DESC
       LIMIT 1`
@@ -105,9 +119,11 @@ export async function issueStaffToken(env: Env, assrId: number): Promise<string>
  * the same reason issueStaffToken is.
  */
 export async function issueSalesToken(env: Env, assrId: number): Promise<string> {
+  // Excludes revoked rows for the same reason issueStaffToken does.
   const existing = await env.DB.prepare(
     `SELECT token FROM case_track_tokens
       WHERE assr_id = ? AND source = 'sales'
+        AND revoked_at IS NULL
         AND expires_at > datetime('now')
       ORDER BY created_at DESC
       LIMIT 1`
@@ -124,9 +140,13 @@ export async function issueSalesToken(env: Env, assrId: number): Promise<string>
  * portal link displays without requiring the user to click anything.
  */
 export async function getActiveStaffToken(env: Env, assrId: number): Promise<string | null> {
+  // A revoked link must stop displaying in the staff panel too -- the
+  // panel is where someone copies it from, so showing a dead token
+  // here would just re-share it.
   const row = await env.DB.prepare(
     `SELECT token FROM case_track_tokens
       WHERE assr_id = ? AND source = 'staff'
+        AND revoked_at IS NULL
         AND expires_at > datetime('now')
       ORDER BY created_at DESC
       LIMIT 1`
@@ -142,8 +162,12 @@ export async function resolveTrackToken(
   env: Env,
   token: string
 ): Promise<TrackedCase | null> {
+  // An empty token must never reach the lookup: `WHERE token = ''`
+  // would match any row a bad mint left with a blank token, and this
+  // is the gate for an unauthenticated surface.
+  if (!token) return null;
   const row = await env.DB.prepare(
-    `SELECT assr_id, source, verified_phone, expires_at
+    `SELECT assr_id, source, verified_phone, expires_at, revoked_at
        FROM case_track_tokens WHERE token = ?`
   )
     .bind(token)
@@ -152,8 +176,13 @@ export async function resolveTrackToken(
       source: TrackSource;
       verified_phone: string | null;
       expires_at: string;
+      revoked_at: string | null;
     }>();
   if (!row) return null;
+  // Revoked is checked before expiry and the row is kept, not deleted:
+  // staff need to see that the link existed and when it was killed,
+  // and the expiry branch below would delete the evidence.
+  if (row.revoked_at) return null;
   if (row.expires_at < new Date().toISOString()) {
     // Expired — opportunistic cleanup.
     await env.DB.prepare(`DELETE FROM case_track_tokens WHERE token = ?`)
@@ -166,6 +195,38 @@ export async function resolveTrackToken(
     source: row.source,
     verified_phone: row.verified_phone,
   };
+}
+
+// ── Revocation ──────────────────────────────────────────────
+
+/**
+ * Kill every live portal link for a case. The answer to "that
+ * WhatsApp link went to the wrong group" -- before this the only
+ * remedy was hand-editing case_track_tokens.
+ *
+ * Revokes ALL sources at once (staff, sales, and any in-flight 30-min
+ * customer session) rather than taking a source argument: a link that
+ * leaked was forwarded, and nobody revoking in a hurry knows which of
+ * the three the recipient is holding. Killing one and leaving the
+ * others open would be a half-remedy that reads as a whole one.
+ *
+ * Returns void, deliberately. A revoked-count is available and honest
+ * here (d1-compat populates meta.changes from postgres.js's `.count`
+ * for non-RETURNING writes), but exposing it would invite the caller to
+ * branch on it -- and the obvious branch, "revoked 0 links so 404", is
+ * wrong: a case whose links were never generated, or were revoked
+ * twice, is a legitimate no-op and not a failure. Success/throw is the
+ * whole contract, so there is no count to misread.
+ */
+export async function revokeCaseTokens(env: Env, assrId: number): Promise<void> {
+  await env.DB.prepare(
+    `UPDATE case_track_tokens
+        SET revoked_at = datetime('now')
+      WHERE assr_id = ?
+        AND revoked_at IS NULL`
+  )
+    .bind(assrId)
+    .run();
 }
 
 // ── Status mapping (customer-facing, server-authoritative) ──
