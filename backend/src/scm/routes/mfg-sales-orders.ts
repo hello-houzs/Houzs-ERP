@@ -881,8 +881,19 @@ const nextDocNo = async (sb: any, c: any): Promise<string> => {
    anyway (these columns are `integer NOT NULL`, and supabase-js serializes NaN
    to JSON `null`), so an unguarded NaN does not corrupt the row — it 23502s the
    whole write, taking the customer's order down with it on the create path and
-   silently leaving STALE totals on recomputeTotals (whose UPDATE error is not
-   checked). Guard at the source instead. */
+   silently leaving STALE totals on recomputeTotals. Guard at the source instead.
+
+   Corrected 2026-07-17 (fix/s1-recompute-silent): this note used to add "(whose
+   UPDATE error is not checked)" as an aside, which understated the defect it was
+   describing. That unchecked UPDATE was only the quieter half — recomputeTotals
+   ALSO discarded its item-read error and coalesced the null to `[]`, so a
+   transient read failure did not leave totals stale, it wrote local_total /
+   balance / revenue / margin / every category bucket / line_count to ZERO on an
+   order whose lines were intact, and the result looked like an ordinary empty SO.
+   Both results are checked now and the roll-up aborts rather than writing. The
+   STALE-totals outcome described above is real and remains the DESIGNED failure
+   mode — it is what the function does deliberately when it cannot vouch for its
+   inputs. */
 const senOrZero = (n: unknown): number => {
   const v = Number(n);
   return Number.isFinite(v) ? v : 0;
@@ -5969,10 +5980,43 @@ mfgSalesOrders.patch('/:docNo', async (c) => {
 // Exported so the free-gift reconciler (lib/free-gift-reconcile.ts) can finish
 // with the SAME authoritative roll-up the edit endpoints used to call directly.
 // route<->lib function cycle is safe (not invoked at module-eval time).
+//
+// Fails CLOSED and never throws (2026-07-17) — the two halves are separate
+// decisions. It must not WRITE from a read it cannot vouch for: every read below
+// aborts the whole recompute on error, because a header written from partial
+// data is a lie that looks like a fact, while a stale header is merely old and
+// self-heals on the next successful edit. It must not THROW to say so, and that
+// is true at EVERY caller for one structural reason: this roll-up only ever runs
+// AFTER its triggering mutation has already committed (create inserts the header
+// with its own inline totals, then calls this to correct the sofa-combo cost; the
+// line PATCHes write the line first; free-gift-reconcile.ts calls it last and
+// deliberately "even if the reconcile pass above threw"). A throw here cannot
+// undo any of that — it can only turn a committed write into a 500 the client
+// retries, which on the create path is a DUPLICATE ORDER (the #657/#658 scar).
+// So: log and abort. Matches the sibling contract at recomputeDeliveryFeeCore
+// ("Best-effort: logs DB errors, never throws") and the non-fatal try/catch
+// so-revision.ts already wraps this path in.
 export async function recomputeTotals(sb: any, docNo: string, c: any) {
-  const { data: items } = await sb.from('mfg_sales_order_items')
+  const { data: items, error: itemsErr } = await sb.from('mfg_sales_order_items')
     .select('id, item_code, item_group, variants, qty, total_centi, line_cost_centi')
     .eq('doc_no', docNo).eq('cancelled', false);
+  /* A failed READ is not an empty SO — and `?? []` cannot tell them apart.
+     supabase-js resolves a failed select to { data: null, error } and does NOT
+     throw (shouldThrowOnError defaults false; nothing here calls .throwOnError),
+     so on a transient REST blip `data ?? []` used to hand the roll-up below an
+     empty line list and the UPDATE wrote local_total / balance / revenue /
+     margin / every category bucket / line_count to ZERO on an order whose lines
+     were intact — silently, and looking exactly like a legitimately empty SO.
+     The ERROR is the signal, never the emptiness: a genuinely empty SO (every
+     line cancelled) resolves error === null with data === [] and MUST still fall
+     through to zero the header. Abort without writing: the header keeps its
+     previous totals, which are stale at worst and self-heal on the next edit.
+     See BUG-HISTORY 2026-07-17 (fix/s1-recompute-silent). */
+  if (itemsErr) {
+    /* eslint-disable-next-line no-console */
+    console.error('[so-recompute] item read failed — header left unchanged:', docNo, itemsErr.message);
+    return;
+  }
   type Row = { id: string; item_code: string; item_group: string; variants: Record<string, unknown> | null; qty: number; total_centi: number; line_cost_centi: number };
   const rows = (items ?? []) as Row[];
 
@@ -5990,10 +6034,20 @@ export async function recomputeTotals(sb: any, docNo: string, c: any) {
       const fabricCodes = [...new Set(sofaRows.map((r) => String((r.variants ?? {} as Record<string, unknown>).fabricCode ?? '')).filter(Boolean))];
       const tierByFabric = new Map<string, SofaPriceTier>();
       if (fabricCodes.length > 0) {
-        const { data: fabs } = await scopeToCompany(
+        const { data: fabs, error: fabsErr } = await scopeToCompany(
           sb.from('fabric_trackings').select('fabric_code, price_tier, sofa_price_tier').in('fabric_code', fabricCodes),
           c,
         );
+        /* Same collapse as the item read, one step subtler: an empty tier map
+           does not skip the combo, it makes every fabric fall to the PRICE_2
+           default below — so a failed read would pick a REAL combo at the WRONG
+           tier and write that cost to the header as fact. A fabric row that
+           genuinely carries no tier still defaults; only the error aborts. */
+        if (fabsErr) {
+          /* eslint-disable-next-line no-console */
+          console.error('[so-recompute] fabric tier read failed — header left unchanged:', docNo, fabsErr.message);
+          return;
+        }
         for (const f of (fabs ?? []) as Array<{ fabric_code: string; price_tier: SofaPriceTier | null; sofa_price_tier: SofaPriceTier | null }>) {
           tierByFabric.set(f.fabric_code, (f.sofa_price_tier ?? f.price_tier ?? 'PRICE_2'));
         }
@@ -6048,11 +6102,22 @@ export async function recomputeTotals(sb: any, docNo: string, c: any) {
         for (let i = 0; i < matched.length; i++) {
           const m = matched[i]!; const newLineCost = spread[i] ?? 0; const q = Math.max(1, m.qty || 1);
           m.line_cost_centi = newLineCost; // mutate in place so the rollup below sees it
-          await sb.from('mfg_sales_order_items').update({
+          const { error: spreadErr } = await sb.from('mfg_sales_order_items').update({
             line_cost_centi:   newLineCost,
             unit_cost_centi:   Math.round(newLineCost / q),
             line_margin_centi: (m.total_centi || 0) - newLineCost,
           }).eq('id', m.id);
+          /* The in-memory mutation above already fed this cost to the roll-up,
+             so a failed line write would have the header assert a cost its own
+             lines do not carry. There is no transaction here to undo the sibling
+             lines that did land; leaving the header alone keeps the ONE row every
+             list, report and margin reads honest, and the spread is idempotent so
+             the next successful edit re-rolls the whole group. */
+          if (spreadErr) {
+            /* eslint-disable-next-line no-console */
+            console.error('[so-recompute] combo cost spread failed — header left unchanged:', docNo, m.id, spreadErr.message);
+            return;
+          }
         }
       }
     }
@@ -6099,16 +6164,24 @@ export async function recomputeTotals(sb: any, docNo: string, c: any) {
   const hasDeliveryFeeLines = rows.some((r) => isDeliveryFeeServiceCode(r.item_code));
   let deliveryCenti = 0;
   if (!hasDeliveryFeeLines) {
-    const { data: hdrFee } = await sb
+    const { data: hdrFee, error: hdrErr } = await sb
       .from('mfg_sales_orders')
       .select('delivery_fee_centi')
       .eq('doc_no', docNo)
       .maybeSingle();
+    /* A failed read here reads as "this legacy SO carries no delivery fee" and
+       would silently write a total SHORT by that fee. A real null (no fee) is
+       error === null and still legitimately means zero. */
+    if (hdrErr) {
+      /* eslint-disable-next-line no-console */
+      console.error('[so-recompute] delivery fee read failed — header left unchanged:', docNo, hdrErr.message);
+      return;
+    }
     deliveryCenti = Number((hdrFee as { delivery_fee_centi?: number } | null)?.delivery_fee_centi ?? 0);
   }
   const grandTotal  = total + deliveryCenti;
   const grandMargin = grandTotal - totalCost;
-  await sb.from('mfg_sales_orders').update({
+  const { error: updErr } = await sb.from('mfg_sales_orders').update({
     mattress_sofa_centi: mattressSofa,
     bedframe_centi: bedframe,
     accessories_centi: accessories,
@@ -6127,9 +6200,17 @@ export async function recomputeTotals(sb: any, docNo: string, c: any) {
     total_revenue_centi: grandTotal,
     total_margin_centi: grandMargin,
     margin_pct_basis: grandTotal > 0 ? Math.round((grandMargin / grandTotal) * 10000) : 0,
-    line_count: (items ?? []).length,
+    line_count: rows.length,
     updated_at: new Date().toISOString(),
   }).eq('doc_no', docNo);
+  /* The write's own result was discarded until 2026-07-17, so a rejected UPDATE
+     (e.g. a 23502 from a non-finite figure — see the money guard above) left the
+     header STALE with nothing logged and every caller reporting success. Logged,
+     not thrown: see the header note on why this roll-up never throws. */
+  if (updErr) {
+    /* eslint-disable-next-line no-console */
+    console.error('[so-recompute] header update failed — totals left STALE:', docNo, updErr.message);
+  }
 }
 
 mfgSalesOrders.post('/:docNo/items', async (c) => {
