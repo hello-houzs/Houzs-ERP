@@ -17,6 +17,7 @@ import { ChunkReloadBoundary } from "./components/RouteFallback";
 import { registerPwa } from "./pwa";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { queryClient } from "./lib/queryClient";
+import { tokenStore } from "./api/client";
 
 // The public surfaces (survey, customer/supplier portal, password reset)
 // are split out of the staff bundle — staff never download them, and the
@@ -49,10 +50,10 @@ const LOGIN_AS_HOSTS = new Set([
 if (LOGIN_AS_HOSTS.has(window.location.hostname)) {
   const m = /[#&]login-as=([^&]+)/.exec(window.location.hash);
   if (m) {
-    try {
-      sessionStorage.setItem("auth:token", decodeURIComponent(m[1]));
-      localStorage.removeItem("auth:token");
-    } catch { /* storage unavailable — fall through to the login screen */ }
+    // Through tokenStore, not a hand-rolled pair of storage calls: it owns the
+    // persistent/session split, and open-coding it here is what let this path
+    // drift. persistent=false keeps the "never remember me" intent.
+    tokenStore.set(decodeURIComponent(m[1]), false);
     window.history.replaceState(null, "", window.location.pathname + window.location.search);
   }
 }

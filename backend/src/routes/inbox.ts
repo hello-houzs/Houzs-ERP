@@ -27,12 +27,14 @@ function companiesPred(allowedCo: number[] | undefined, col: string): string {
  * The spec-v2 doc made the master events table the landing page; in
  * practice people open the ERP to see what's assigned to them, what
  * needs their approval, and what's blocking the chain. This endpoint
- * aggregates that view from ASSR, Projects, and Trips so the home page
- * can be a task inbox instead of a database browser.
+ * aggregates that view from ASSR and Projects so the home page can be a
+ * task inbox instead of a database browser. It aggregated Trips too until
+ * 2026-07-17 — that module was retired by mig 0055 and its two lanes here
+ * could only throw; see loadMyTasks.
  *
  * Each section is independently capped (most-relevant-first) so the
  * payload stays small. The frontend can paginate into full lists via
- * the existing module pages (/assr, /projects, /trips) when needed.
+ * the existing module pages (/assr, /projects) when needed.
  */
 
 interface InboxItem {
@@ -227,41 +229,22 @@ async function loadMyTasks(env: Env, userId: number, perms: string[], isStar: bo
     }
   }
 
-  // Trip stops assigned to me for today (driver side)
-  if (isStar || hasPermission(perms, "trips.read.own") || hasPermission(perms, "trips.read.all")) {
-    const rows = await env.DB.prepare(
-      `SELECT t.id, t.trip_no, t.trip_date, t.status, t.warehouse,
-              (SELECT COUNT(*) FROM trip_stops s WHERE s.trip_id = t.id) as stop_count
-         FROM trips t
-        WHERE t.driver_user_id = ?
-          AND t.trip_date = ?
-          AND t.status IN ('assigned','started','in_progress')
-        ORDER BY t.id DESC
-        LIMIT 10`
-    )
-      .bind(userId, today)
-      .all<{
-        id: number;
-        trip_no: string;
-        trip_date: string;
-        status: string;
-        warehouse: string;
-        stop_count: number;
-      }>();
-    for (const r of rows.results ?? []) {
-      items.push({
-        type: "trip",
-        id: r.id,
-        title: r.trip_no,
-        subtitle: `${r.warehouse} · ${r.stop_count} stops`,
-        severity: r.status === "started" || r.status === "in_progress" ? "warning" : "info",
-        due_date: r.trip_date,
-        link: `/trips`,
-        meta: { status: r.status },
-      });
-    }
-  }
-
+  // The driver's trips used to be a third lane here. It was removed 2026-07-17:
+  // it could only ever throw, and the throw cost the two lanes above. The old
+  // Fleet module was retired by mig 0055 (public.trips DROPped), and what stands
+  // in its place is a compatibility VIEW over scm.trips that aliases the driver
+  // FK as `driver_user_id` — but scm.trips.driver_id is a scm.drivers UUID,
+  // while this bound a public.users bigint. Postgres answers "operator does not
+  // exist: bigint = uuid", safe("my_tasks") swallowed it, and My Tasks returned
+  // [] — throwing away the ASSR cases and checklist items already collected
+  // above. Only a `*` holder ever reached it (trips.read.own / trips.read.all
+  // are not in services/permissions.ts), which is why only the owner saw the
+  // empty inbox and nobody reported it.
+  //
+  // Not repointed at scm.trips: there is no trips UI left to serve (no
+  // /api/trips mount, no /trips page) and scm.trips holds 0 rows. Wiring a
+  // driver-user -> scm.drivers mapping would be building the retired module
+  // back, not fixing a bug.
   return items;
 }
 
@@ -535,54 +518,12 @@ async function loadThisWeek(env: Env, userId: number, perms: string[], isStar: b
     }
   }
 
-  // Trips scheduled this week for me (driver) OR any if I'm a dispatcher
-  if (isStar || hasPermission(perms, "trips.read.all") || hasPermission(perms, "trips.read.own")) {
-    const showAll = isStar || hasPermission(perms, "trips.read.all");
-    const sql = showAll
-      ? `SELECT id, trip_no, trip_date, status, warehouse, driver_user_id,
-                (SELECT name FROM users WHERE id = trips.driver_user_id) as driver_name
-           FROM trips
-          WHERE trip_date BETWEEN ? AND ?
-            AND status IN ('assigned','started','in_progress')
-          ORDER BY trip_date ASC, id ASC
-          LIMIT 10`
-      : `SELECT id, trip_no, trip_date, status, warehouse, driver_user_id,
-                (SELECT name FROM users WHERE id = trips.driver_user_id) as driver_name
-           FROM trips
-          WHERE driver_user_id = ?
-            AND trip_date BETWEEN ? AND ?
-            AND status IN ('assigned','started','in_progress')
-          ORDER BY trip_date ASC, id ASC
-          LIMIT 10`;
-    // trip_date is a MY calendar date; the window binds the MY today (the
-    // driver's "this week"), not the UTC one. The driver-scoped variant keeps
-    // userId FIRST — its placeholder precedes the date range in the text.
-    const stmt = showAll
-      ? env.DB.prepare(sql).bind(today, todayMyt(7))
-      : env.DB.prepare(sql).bind(userId, today, todayMyt(7));
-    const rows = await stmt.all<{
-      id: number;
-      trip_no: string;
-      trip_date: string;
-      status: string;
-      warehouse: string;
-      driver_user_id: number | null;
-      driver_name: string | null;
-    }>();
-    for (const r of rows.results ?? []) {
-      items.push({
-        type: "trip_upcoming",
-        id: r.id,
-        title: r.trip_no,
-        subtitle: `${r.warehouse}${r.driver_name ? ` · ${r.driver_name}` : ""}`,
-        severity: "info",
-        due_date: r.trip_date,
-        link: `/trips`,
-        meta: { status: r.status },
-      });
-    }
-  }
-
+  // "Trips scheduled this week" was removed here 2026-07-17 for the same reason
+  // as the My Tasks lane above — see that comment. Both of its variants selected
+  // `(SELECT name FROM users WHERE id = trips.driver_user_id)`, and the
+  // compatibility VIEW's driver_user_id is a scm.drivers UUID, so even the
+  // dispatcher variant (which binds no user id at all) raised bigint = uuid and
+  // blanked this whole section via safe("this_week").
   return items;
 }
 

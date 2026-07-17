@@ -95,7 +95,7 @@ import { PMS_STAGE_LABEL, pmsStageVariant } from "../vendor/scm/lib/pms-status";
 import { ACCESS_RANK } from "../types";
 import { Forbidden } from "./Forbidden";
 import { useNotifications } from "../hooks/useNotifications";
-import { api, buildQuery, humanHttpMessage } from "../api/client";
+import { api, buildQuery, humanHttpMessage, tokenStore } from "../api/client";
 import { companyHeader } from "../lib/activeCompany";
 import { MediaLightbox } from "../components/MediaLightbox";
 import { ResetFiltersButton } from "../components/ResetFiltersButton";
@@ -12032,10 +12032,13 @@ function ImportCsvPanel({
     setSubmitting(true);
     try {
       // Raw text body (POST text/csv) — api helpers all assume JSON, so
-      // we call fetch directly. Auth token is the same one api uses.
+      // we call fetch directly. Auth token is the same one api uses — read it
+      // THROUGH tokenStore, not from localStorage: a session-only login (Remember
+      // me unchecked, or the owner's view-as) keeps the token in sessionStorage,
+      // and the old inline read sent `Bearer ` and 401'd.
       // No timeout here would hang the dialog forever on a stalled cold-start;
       // cap it with an upload-length AbortSignal and surface a retryable error.
-      const token = localStorage.getItem("auth:token") || "";
+      const token = tokenStore.get();
       let signal: AbortSignal | undefined;
       try { signal = AbortSignal.timeout(120_000); } catch { signal = undefined; }
       let resp: Response;
