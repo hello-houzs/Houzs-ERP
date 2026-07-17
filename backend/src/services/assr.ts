@@ -1240,7 +1240,13 @@ function pushAllowedCompanies(where: string[], ids: number[] | undefined): void 
 }
 
 /** Shared WHERE fragment for the visibility scope — used by both the
- *  paginated list and the CSV export so they can never drift apart. */
+ *  paginated list and the CSV export so they can never drift apart.
+ *
+ *  TWIN: `assrVisibilitySql` (routes/assr.ts) expresses this SAME rule as an
+ *  interpolated fragment for the aggregate endpoints (/summary, /metrics,
+ *  /by-creditor, /metrics/drill, /logistics/all), which do not build bind
+ *  arrays. Change BOTH or the list and its own totals drift apart again — the
+ *  leak `fix/assr-aggregate-scope` closed. */
 function pushVisibilityScope(
   where: string[],
   binds: any[],
