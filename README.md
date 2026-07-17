@@ -15,7 +15,7 @@ Internal operations platform for Houzs Century — AutoCount sync, procurement t
 | SPA hosting | Cloudflare Pages | `frontend/wrangler.toml` |
 | Auth | Session-based (Bearer token), server-issued, role/permission gated | `backend/src/middleware/auth.ts` |
 | Email | [Resend](https://resend.com) | `backend/src/services/email.ts` |
-| Maps / geocoding | Google Maps JS API + Geocoding | `backend/src/services/maps.ts` |
+| Maps / geocoding | Google Geocoding (SO scan address) + Directions (trip route optimisation) | `backend/src/scm/routes/scan-so.ts` (geocode) · `backend/src/scm/lib/maps.ts` (routing, env-gated on `GOOGLE_MAPS_API_KEY`) |
 | Upstream of record | AutoCount middleware (.NET) over HTTPS | `backend/src/services/autocount.ts` |
 | E2E tests | Playwright | `e2e/` |
 

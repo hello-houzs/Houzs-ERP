@@ -30,6 +30,7 @@ import type { Env, Variables } from '../env';
 import { paginateAll } from '../lib/paginate-all';
 import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { scopeToAllowedCompanies, companyCodeMap, withCompanyCode, activeCompanyId } from '../lib/companyScope';
+import { optimizeRoute } from '../lib/maps';
 
 export const trips = new Hono<{ Bindings: Env; Variables: Variables }>();
 trips.use('*', supabaseAuth);
@@ -388,6 +389,47 @@ trips.delete('/:id', async (c) => {
   if (error) return c.json({ error: 'cancel_failed', reason: error.message }, 500);
   if (!data) return c.json({ error: 'not_found' }, 404);
   return c.json({ trip: data, cancelled: true });
+});
+
+/* ──────────────────────────────────────────────────────────────────────────
+   POST /trips/:id/optimize-route — ask Google Directions for the shortest order
+   of this trip's stops, from the origin warehouse and back. GATED: with no
+   GOOGLE_MAPS_API_KEY it returns { configured:false } and never calls Google, so
+   nothing bills until the owner sets the key. Read-only by default; `?apply=true`
+   writes the optimised order back to trip_stops.stop_no.
+   ─────────────────────────────────────────────────────────────────────────*/
+trips.post('/:id/optimize-route', async (c) => {
+  const sb = c.get('supabase');
+  const id = c.req.param('id');
+  const apply = c.req.query('apply') === 'true';
+
+  const t = await sb.from('trips').select('id, warehouse_id').eq('id', id).maybeSingle();
+  if (t.error) return c.json({ error: 'load_failed', reason: t.error.message }, 500);
+  if (!t.data) return c.json({ error: 'not_found' }, 404);
+
+  const [wh, s] = await Promise.all([
+    (t.data as { warehouse_id?: string }).warehouse_id
+      ? sb.from('warehouses').select('name, location').eq('id', (t.data as { warehouse_id: string }).warehouse_id).maybeSingle()
+      : Promise.resolve({ data: null }),
+    sb.from('trip_stops').select('id, address, stop_no').eq('trip_id', id).order('stop_no', { ascending: true }),
+  ]);
+  const whRow = (wh as { data?: { name?: string; location?: string } | null }).data ?? null;
+  const originAddress = [whRow?.location, whRow?.name].filter(Boolean).join(', ') || 'warehouse';
+  const stopRows = ((s as { data?: Array<{ id: string; address?: string }> }).data ?? [])
+    .map((r) => ({ ref: String(r.id), address: String(r.address ?? '') }));
+
+  const result = await optimizeRoute(c.env, { originAddress, stops: stopRows });
+
+  // Only write when routing actually succeeded AND the caller asked to apply.
+  // A failed/absent route must never renumber the operator's manual order.
+  let applied = false;
+  if (apply && result.ok && result.stops.length > 0) {
+    for (const st of result.stops) {
+      await sb.from('trip_stops').update({ stop_no: st.order }).eq('id', st.ref).eq('trip_id', id);
+    }
+    applied = true;
+  }
+  return c.json({ ...result, applied });
 });
 
 export default trips;
