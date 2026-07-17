@@ -32,6 +32,49 @@ export const SO_FINANCE_KEYS = [
    list, so a route that camelCases its payload must strip in ITS vocabulary. */
 export const SO_ITEM_FINANCE_KEYS = ['unit_cost_centi', 'line_cost_centi', 'line_margin_centi'] as const;
 
+/* PRODUCT / SKU cost — the CATALOG vocabulary, not the document one above.
+   mfg_products.cost_price_sen is not derived and is not an artifact: it is
+   exactly what someone typed into the SKU master, and it is confidential.
+   #669 made it director-only on BOTH screens (desktop ProductModelDetail,
+   mobile MobileModuleList + MobileModuleDetail) and named the hole it left in
+   its own commit message — "the wire still carries cost_price_sen to any
+   products reader (mfg-products.ts has no finance strip)". This list is that
+   ruling's payload half, and the gate is the same one the screens use:
+   canViewScmFinance ⇄ FE canViewProductCost, both project_finance_viewer.
+
+   ONE key, and that is the point. master_price_history.field stores the COLUMN
+   NAME verbatim ('cost_price_sen'), so this same list gates the live column AND
+   its history row (stripProductPriceHistory below) — the "stripping the detail
+   while leaving the history just moves the leak one endpoint over" shape that
+   AUDIT_FINANCE_FIELDS had to be invented to name, closed here by construction
+   instead of by a second list that can drift out of sync with this one.
+
+   NOT listed, deliberately: base_price_sen / price1_sen. syncAnchorBindingFromProduct
+   calls them a product's COST, so they read like they belong — but #669's
+   approved screen prints base_price_sen to EVERY caller ("Price 2" on the Model
+   Detail variants table, "Base Price" on the mobile card). Listing them here
+   would blank a column the owner ruled visible.
+
+   THE LIMIT, stated so the next reader re-checks rather than re-derives:
+   seat_height_prices (JSONB) carries priceSen = COST per height (mfg-products.ts
+   PATCH says so verbatim), and it rides the /mfg-products LIST select to every
+   caller. It is NOT here because #669 did not rule on it and because the sofa
+   pricing chain resolves a CHARGED price through the same cost fields
+   (shared/sofa-build.ts: "else flat base_price_sen, else cost_price_sen") — add
+   the key blind and a salesperson's build silently reprices. Trace that chain
+   first, then add it here and gate it everywhere at once. */
+export const PRODUCT_FINANCE_KEYS = ['cost_price_sen'] as const;
+
+/** Drop the finance rows from a master_price_history payload. Non-finance rows
+ *  stay — that a selling price changed, by whom, when, is not cost data. The
+ *  row is dropped whole rather than blanked: an entry with old/new nulled still
+ *  says a cost exists and that someone moved it. Caller decides WHETHER to run
+ *  it (canViewScmFinance); this only does it. */
+export function stripProductPriceHistory<T extends { field?: string }>(rows: readonly T[]): T[] {
+  const finance: ReadonlySet<string> = new Set(PRODUCT_FINANCE_KEYS);
+  return rows.filter((r) => !finance.has(String(r?.field ?? '')));
+}
+
 /* AUDIT-LOG vocabulary — the camelCase escape hatch warned about above, made
    concrete. The line PATCH records `cmp('unitCostCenti', prev.unit_cost_centi,
    unitCost)` into mfg_so_audit_log.field_changes, so the HISTORY carries the

@@ -16,12 +16,15 @@ const app = new Hono<{ Bindings: Env }>();
 // for Sales but must SHOW the scheduled driver/helper names — a Sales Director's
 // position holds no users.read, so this list used to 403 and blank the
 // dropdowns. View-only; no write route is opened.
+//
+// Because that gate is WIDE, the payload stays narrow: only what the crew
+// pickers actually render. Compensation (base_salary / trip_allowance_rate /
+// ot_rate) and ic_number are NEVER served here — widening a gate for a dropdown
+// is not a reason to hand every Sales rep the payroll.
 app.get("/staff", requirePermissionOrSalesView("users.read"), async (c) => {
   const rows = await c.env.DB.prepare(
-    `SELECT u.id, u.email, u.name, u.phone, u.company_phone, u.status, u.user_type,
-            u.ic_number, u.license_no, u.license_expiry,
-            u.base_salary, u.trip_allowance_rate, u.ot_rate,
-            u.role_id, r.name as role_name, u.created_at
+    `SELECT u.id, u.name, u.phone, u.company_phone, u.user_type,
+            r.name as role_name
        FROM users u
        JOIN roles r ON r.id = u.role_id
       WHERE r.name IN ('Driver','Helper','Storekeeper')

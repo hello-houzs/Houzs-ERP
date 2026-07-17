@@ -9048,13 +9048,13 @@ function HelperSelect({
 
 // Driver / helper profile surfaced when one is picked in the Logistics
 // Schedule. Fields come straight from /api/fleet/staff (set up in the
-// Driver App or Logistics > Fleet > Driver). Pay rates are intentionally
-// omitted — they don't belong in the project view.
+// Driver App or Logistics > Fleet > Driver). Pay rates and IC are
+// intentionally omitted — they don't belong in the project view, and the
+// endpoint no longer serves them to this page's wide Sales-view gate.
 type CrewMember = {
   id: number;
   name: string;
   phone: string | null;
-  ic_number: string | null;
   user_type: string | null;
   role_name: string | null;
 };
@@ -9068,7 +9068,6 @@ function CrewInfoCard({ member }: { member: CrewMember }) {
           value={member.phone}
           href={member.phone ? `tel:${member.phone}` : undefined}
         />
-        <InfoBit label="IC" value={member.ic_number} />
       </div>
     </div>
   );

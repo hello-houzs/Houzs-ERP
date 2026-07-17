@@ -23,7 +23,8 @@ import { paginateAll } from '../lib/paginate-all';
 import { findSkuUsage } from '../lib/sku-usage';
 import { productToBindingPatch } from '../lib/cost-anchor-sync';
 import { moduleCodeFromSku, normalizeSofaTier, parseDefaultFreeGifts } from '../shared';
-import { hasHouzsPerm } from '../lib/houzs-perms';
+import { hasHouzsPerm, canViewScmFinance } from '../lib/houzs-perms';
+import { PRODUCT_FINANCE_KEYS, stripProductPriceHistory } from '../lib/finance-keys';
 import { scopeToCompany, activeCompanyId } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
@@ -431,6 +432,15 @@ mfgProducts.get('/:id', async (c) => {
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
   if (!data) return c.json({ error: 'not_found' }, 404);
 
+  /* select('*') hands back every column this table grows, so the finance strip
+     is what stands between a new cost column and every products reader —
+     PRODUCT_FINANCE_KEYS is the ONE place to name it. #669 closed the screen and
+     said the wire was still open; this is the wire. */
+  const product = data as Record<string, unknown>;
+  if (!canViewScmFinance(c)) {
+    for (const k of PRODUCT_FINANCE_KEYS) delete product[k];
+  }
+
   // Side-load the per-dept config row (one-to-one on product_code) so the
   // UI can show working times without a second roundtrip.
   const { data: cfg } = await supabase
@@ -440,7 +450,7 @@ mfgProducts.get('/:id', async (c) => {
     .eq('company_id', activeCompanyId(c))
     .maybeSingle();
 
-  return c.json({ product: data, deptConfig: cfg ?? null });
+  return c.json({ product, deptConfig: cfg ?? null });
 });
 
 // ── PATCH /:id ─────────────────────────────────────────────────────────
@@ -838,7 +848,12 @@ mfgProducts.get('/:id/price-history', async (c) => {
     .order('changed_at', { ascending: false });
 
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
-  return c.json({ history: data ?? [] });
+  /* The history carries the old AND new cost of every cost edit in plain sight,
+     keyed by the column name — gating GET /:id and not this would move the leak
+     one endpoint over, which is the exact shape AUDIT_FINANCE_FIELDS exists to
+     name on the SO side. */
+  const history = (data ?? []) as Array<{ field?: string }>;
+  return c.json({ history: canViewScmFinance(c) ? history : stripProductPriceHistory(history) });
 });
 
 // ── GET /:id/suppliers ────────────────────────────────────────────────
