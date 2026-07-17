@@ -60,6 +60,10 @@ import {
   type BufferFinding,
 } from './procurement-learning';
 import { estimateCapacity, detectOverload } from './procurement-capacity';
+/* Shared with cs-agent: the three-state answer to "which book?", in one place,
+   because both headless agents had the same hole and a second copy of the
+   switch is how one of them silently keeps it. */
+import { resolveAgentCompany, scopeFor } from './agent-company';
 
 /* How far back the learner reads receipts. A year covers every season once, and
    is short enough that a supplier who has since improved is not held to two-year
@@ -112,52 +116,6 @@ function earliestOrderByDate(
     if (best == null || d < best) best = d;
   }
   return best;
-}
-
-/**
- * WHICH COMPANY'S BOOKS THIS AGENT PLANS. One, explicitly, never "all of them".
- *
- * computeMrp's companyId is optional and no-ops when absent — its own comment
- * lists "agent callers" as a case that passes nothing. That made this agent's
- * MRP CROSS-COMPANY: it pooled Houzs and 2990 demand, let one company's stock
- * cover the other's shortage, and produced one reorder per supplier spanning
- * both books. companyScope's header is unambiguous that PO is a PER-COMPANY
- * module whose books are ISOLATED, so those numbers were wrong before anything
- * acted on them. Approval now raises a real PO, so wrong turns into a
- * cross-company write.
- *
- * Pinned to the base company (HOUZS) unless app_settings names another. This is
- * a REDUCTION IN SCOPE, deliberately: serving one company correctly beats
- * serving two by mixing their books. 2990's demand is simply not planned by this
- * agent yet — a stated gap, not a silent wrong answer. Making it multi-company
- * means a per-company MRP pass and a brief that reports per company, which is a
- * shape change the owner should see before it is built.
- *
- * `null` = the companies master is unresolved (pre-migration / cold-start /
- * single-company). Then computeMrp scopes nothing, exactly as it does today —
- * the sentinel's "UNRESOLVED degrades" rule, not a filter to nothing.
- */
-async function resolveAgentCompany(
-  db: D1Database,
-): Promise<{ id: number | null; code: string | null }> {
-  const cfg = await readAgentSetting<Record<string, unknown>>(db, PROCUREMENT_AGENT_SETTING_KEY);
-  const pinned = Number(cfg?.companyId);
-  try {
-    const rows = await db
-      .prepare('SELECT id, code FROM companies WHERE is_active = 1')
-      .all<{ id: number; code: string }>();
-    const list = rows.results ?? [];
-    if (list.length === 0) return { id: null, code: null };
-    const hit = Number.isInteger(pinned) && pinned > 0
-      ? list.find((r) => Number(r.id) === pinned)
-      : list.find((r) => r.code === 'HOUZS');
-    if (!hit) return { id: null, code: null };
-    return { id: Number(hit.id), code: String(hit.code) };
-  } catch {
-    // Master unreadable — degrade to unscoped, which is what every other
-    // consumer does in this state (and what this agent did until now).
-    return { id: null, code: null };
-  }
 }
 
 /** Whole-day tunable pct from app_settings['agents.procurement'], clamped 0..100. */
@@ -326,14 +284,20 @@ export async function runProcurementAgent(
      SbLike: supabase-js's generics don't unify with a structural type, but
      `as never` disabled the checking entirely rather than narrowing it. */
   const sbl = sb as unknown as SbLike;
-  /* ONE company's books — see resolveAgentCompany. Passing nothing here is what
+  /* ONE company's books — see agent-company.ts. Passing nothing here is what
      made this sweep pool two companies' demand into one PO. */
-  const company = await resolveAgentCompany(db);
+  const company = scopeFor(await resolveAgentCompany(db, PROCUREMENT_AGENT_SETTING_KEY));
+  if (company.refuse) {
+    /* Refuse rather than plan the wrong book. A reorder proposal names
+       quantities against a company's stock; getting the company wrong makes
+       every number on it a fiction. */
+    throw new Error(`procurement_company_unresolved: ${company.refuse}`);
+  }
   const mrp = await computeMrp(sb, {
     catFilter: null,
     whFilter: null,
     includeUndated: false,
-    companyId: company.id,
+    companyId: company.companyId ?? null,
     leadBuffers: await loadLeadBuffers(db),
   });
 
@@ -477,7 +441,7 @@ export async function runProcurementAgent(
       if (picks.length === 0) continue;
 
       const payload: ReorderPayload = {
-        companyId: company.id,
+        companyId: company.companyId ?? null,
         companyCode: company.code,
         supplierCode,
         supplierName,
