@@ -60,6 +60,24 @@ import type { ConfigParamRule } from '../agent-console';
 import { readAgentSetting } from '../agent-console';
 import { paginateAll } from '../../scm/lib/paginate-all';
 import type { LeadBuffers } from '../../scm/lib/lead-time';
+/* One-directional: procurement-capacity.ts is pure and imports nothing from
+   here, so loading its evidence from this module cannot cycle. */
+import type { ReceiptUnit, LoadUnit } from './procurement-capacity';
+
+/* The shape of the PostgREST client these loaders need. Structural rather than
+   `any`, so a typo in a builder call is a compile error, and declared once so
+   the loaders cannot drift into three different ideas of the same client. */
+type SbLike = {
+  from: (t: string) => {
+    select: (cols: string) => {
+      eq: (c: string, v: unknown) => any;
+      in: (c: string, v: unknown[]) => any;
+      gte: (c: string, v: unknown) => any;
+      order: (c: string, o?: unknown) => any;
+      range: (a: number, b: number) => any;
+    };
+  };
+};
 
 /* The app_settings row both the rules below and the engine read.
    It lives HERE, and procurement-agent.ts re-exports it, rather than the other
@@ -341,6 +359,154 @@ function asNumberMap(v: unknown): Record<string, number> {
   return out;
 }
 
+// ── Capacity evidence ───────────────────────────────────────────────────────
+
+/**
+ * Per-receipt-line evidence of throughput, for procurement-capacity.ts.
+ *
+ * Each row carries the slip of the PO it belonged to, because that is what says
+ * whether its week witnessed the supplier's ceiling or merely their spare time
+ * — see that module's header. The slip is per-PO, not per-line: a PO is one
+ * promise, and every line on it shares that promise's outcome.
+ */
+export async function loadCapacityEvidence(
+  sb: SbLike,
+  opts: { sinceIso: string },
+): Promise<ReceiptUnit[]> {
+  type GrnRow = {
+    id: string;
+    supplier_id: string;
+    received_at: string | null;
+    purchase_order_id: string | null;
+  };
+  const { data: grns, error: gErr } = await paginateAll<GrnRow>((from, to) =>
+    sb
+      .from('grns')
+      .select('id, supplier_id, received_at, purchase_order_id')
+      .eq('status', 'POSTED')
+      .gte('received_at', opts.sinceIso.slice(0, 10))
+      .order('id')
+      .range(from, to),
+  );
+  if (gErr) throw new Error(`procurement_capacity_grn_load_failed: ${gErr.message}`);
+  const grnRows = (grns ?? []).filter((g) => g.received_at && g.supplier_id);
+  if (grnRows.length === 0) return [];
+
+  // The PO each GRN came from, for its asked date -> the slip.
+  const poIds = [...new Set(grnRows.map((g) => g.purchase_order_id).filter((x): x is string => Boolean(x)))];
+  const askedByPo = new Map<string, string>();
+  for (let i = 0; i < poIds.length; i += 200) {
+    type PoRow = { id: string; expected_at: string | null };
+    const { data: pos, error: pErr } = await paginateAll<PoRow>((from, to) =>
+      sb
+        .from('purchase_orders')
+        .select('id, expected_at')
+        .in('id', poIds.slice(i, i + 200))
+        .order('id')
+        .range(from, to),
+    );
+    if (pErr) throw new Error(`procurement_capacity_po_load_failed: ${pErr.message}`);
+    for (const p of pos ?? []) if (p.expected_at) askedByPo.set(p.id, p.expected_at.slice(0, 10));
+  }
+
+  const grnIds = grnRows.map((g) => g.id);
+  type ItemRow = { grn_id: string; qty_accepted: number | null; item_group: string | null };
+  const items: ItemRow[] = [];
+  for (let i = 0; i < grnIds.length; i += 200) {
+    const { data: rows, error: iErr } = await paginateAll<ItemRow>((from, to) =>
+      sb
+        .from('grn_items')
+        .select('grn_id, qty_accepted, item_group')
+        .in('grn_id', grnIds.slice(i, i + 200))
+        .order('grn_id')
+        .range(from, to),
+    );
+    if (iErr) throw new Error(`procurement_capacity_item_load_failed: ${iErr.message}`);
+    items.push(...(rows ?? []));
+  }
+
+  const supCodeById = await loadSupplierCodes(sb);
+  const grnById = new Map(grnRows.map((g) => [g.id, g]));
+
+  const out: ReceiptUnit[] = [];
+  for (const it of items) {
+    const g = grnById.get(it.grn_id);
+    if (!g) continue;
+    const code = supCodeById.get(g.supplier_id);
+    const category = (it.item_group ?? '').trim();
+    const qty = Number(it.qty_accepted);
+    if (!code || !category || !Number.isFinite(qty) || qty <= 0) continue;
+
+    const asked = g.purchase_order_id ? askedByPo.get(g.purchase_order_id) : undefined;
+    const received = g.received_at!.slice(0, 10);
+    /* No asked date = no slip = we cannot tell whether this week witnessed the
+       ceiling. Drop it rather than default the slip to 0, which would falsely
+       claim the week was flat out and over-read the supplier's capacity. */
+    if (!asked) continue;
+    const slip = slipDays(asked, received);
+    if (slip == null) continue;
+
+    out.push({ supplierCode: code, category, receivedDate: received, qty, slipDays: slip });
+  }
+  return out;
+}
+
+/**
+ * What we have already asked of each supplier and not yet received.
+ * A PO line's own delivery_date is the ask; the header's expected_at is the
+ * fallback for a line that never carried one.
+ */
+export async function loadOpenLoad(
+  sb: SbLike,
+): Promise<LoadUnit[]> {
+  type Row = {
+    qty: number | null;
+    received_qty: number | null;
+    delivery_date: string | null;
+    item_group: string | null;
+    po: { status: string; expected_at: string | null; supplier_id: string | null } | null;
+  };
+  const { data, error } = await paginateAll<Row>((from, to) =>
+    sb
+      .from('purchase_order_items')
+      .select('qty, received_qty, delivery_date, item_group, po:purchase_orders!inner ( status, expected_at, supplier_id )')
+      .in('po.status', ['SUBMITTED', 'PARTIALLY_RECEIVED'])
+      .order('id')
+      .range(from, to),
+  );
+  if (error) throw new Error(`procurement_capacity_load_load_failed: ${error.message}`);
+
+  const supCodeById = await loadSupplierCodes(sb);
+  const out: LoadUnit[] = [];
+  for (const r of (data ?? []) as Row[]) {
+    if (!r.po?.supplier_id) continue;
+    const code = supCodeById.get(r.po.supplier_id);
+    const category = (r.item_group ?? '').trim();
+    const dueDate = (r.delivery_date ?? r.po.expected_at ?? '').slice(0, 10);
+    const left = Number(r.qty ?? 0) - Number(r.received_qty ?? 0);
+    if (!code || !category || !dueDate || !Number.isFinite(left) || left <= 0) continue;
+    out.push({ supplierCode: code, category, dueDate, qty: left });
+  }
+  return out;
+}
+
+/** supplier uuid -> business code. `code` is scm.suppliers' key, not
+    `supplier_code` (which is a PO-line column on a different table). */
+async function loadSupplierCodes(sb: SbLike): Promise<Map<string, string>> {
+  type SupRow = { id: string; code: string | null };
+  const { data, error } = await paginateAll<SupRow>((from, to) =>
+    sb
+      .from('suppliers')
+      .select('id, code')
+      .order('id')
+      .range(from, to),
+  );
+  if (error) throw new Error(`procurement_supplier_codes_load_failed: ${error.message}`);
+  const m = new Map<string, string>();
+  for (const s of data ?? []) if (s.code) m.set(s.id, s.code.trim());
+  return m;
+}
+
 // ── Evidence loader ─────────────────────────────────────────────────────────
 
 /**
@@ -367,17 +533,7 @@ function asNumberMap(v: unknown): Record<string, number> {
  * failed is worse than a learner that did not run.
  */
 export async function loadReceiptSamples(
-  sb: {
-    from: (t: string) => {
-      select: (cols: string) => {
-        eq: (c: string, v: unknown) => any;
-        in: (c: string, v: unknown[]) => any;
-        gte: (c: string, v: unknown) => any;
-        order: (c: string, o?: unknown) => any;
-        range: (a: number, b: number) => any;
-      };
-    };
-  },
+  sb: SbLike,
   opts: { sinceIso: string; companyId: number | null },
 ): Promise<ReceiptSample[]> {
   const scope = <Q>(q: Q): Q =>

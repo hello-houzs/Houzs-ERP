@@ -51,15 +51,26 @@ import {
   PROCUREMENT_AGENT_SETTING_KEY,
   loadReceiptSamples,
   loadLeadBuffers,
+  loadCapacityEvidence,
+  loadOpenLoad,
   learnSupplierBuffers,
   learnSeasonBuffers,
   type BufferFinding,
 } from './procurement-learning';
+import { estimateCapacity, detectOverload } from './procurement-capacity';
 
 /* How far back the learner reads receipts. A year covers every season once, and
    is short enough that a supplier who has since improved is not held to two-year
    -old misses. */
 const LEARNING_WINDOW_DAYS = 365;
+
+/* Capacity reads the same year. A supplier's ceiling is a stable constant per
+   the owner's model, so a longer window buys nothing; a shorter one would miss
+   the busy season, which is the only season that witnesses the ceiling. */
+const CAPACITY_WINDOW_DAYS = 365;
+
+/** Bound the brief's overload list — a deep first run stays readable. */
+const TOP_OVERLOADS = 20;
 
 // ── Config (app_settings['agents.procurement']) ──────────────────────────────
 
@@ -136,6 +147,28 @@ export interface ProcurementBriefData {
     earliestOrderByDate: string | null;
   }>;
   openProposals: { total: number };
+  /* Owner 2026-07-17: "供应商的产量一定都是稳定的 ... 一 overload 就代表他们的产量
+     其实已经 overload 了". Lateness is a symptom of load, so the brief reports the
+     CAUSE — which weeks we have over-committed a supplier — rather than a
+     punctuality score. See procurement-capacity.ts.
+
+     `pairsMeasured` and `pairsLowerBoundOnly` are in the brief on purpose: an
+     overload count means nothing without knowing how much of the book we can
+     actually see. A day-one agent measures nothing and must say so. */
+  capacity: {
+    pairsMeasured: number;
+    pairsLowerBoundOnly: number;
+    overloads: Array<{
+      supplierCode: string;
+      category: string;
+      weekStart: string;
+      loadUnits: number;
+      capacityUnitsPerWeek: number;
+      overloadUnits: number;
+      expectedSlipWeeks: number;
+      capacityIsLowerBound: boolean;
+    }>;
+  };
 }
 
 // ── Proposal persistence (procurement_agent_proposals, public schema) ────────
@@ -208,6 +241,11 @@ export async function runProcurementAgent(
   const sb = getSupabaseService(env);
   const mrp = await computeMrp(sb, { catFilter: null, whFilter: null, includeUndated: false, leadBuffers: await loadLeadBuffers(db) });
 
+  /* Measured once and used by BOTH the summary line and the brief below. The
+     pass is several paginated reads; running it twice to serve two consumers
+     would double the agent's cost for one number. */
+  const capacity = await runCapacityPass(sb);
+
   const shortageSkus = mrp.skus.filter((k) => k.shortage > 0);
   const shortageUnits = shortageSkus.reduce((sum, k) => sum + num(k.shortage), 0);
   const sofaSetShortage = num(mrp.totals?.sofaSetShortageCount);
@@ -254,7 +292,7 @@ export async function runProcurementAgent(
     summary =
       `Procurement gated: supplier coverage ${coveragePct}% below the ${minPct}% threshold ` +
       `(${withSupplier.length}/${shortageSkus.length} shortage SKU(s) have a main supplier). ` +
-      `No reorder proposals created; ${missing.length} shortage SKU(s) still need a supplier binding.`;
+      `No reorder proposals created; ${missing.length} shortage SKU(s) still need a supplier binding.` + capacitySuffix(capacity);
   } else {
     // Group shortage SKUs by main supplier; SKUs with none go to unsuppliedSkus.
     const bySupplier = new Map<string, { name: string; skus: MrpSkuLike[] }>();
@@ -335,7 +373,7 @@ export async function runProcurementAgent(
       `across ${reorderBySupplier.length} supplier(s) (coverage ${coveragePct}%); ` +
       `created ${proposalsCreated} reorder proposal(s)` +
       (noSupplier.length > 0 ? `, ${noSupplier.length} SKU(s) still unsupplied` : '') +
-      `. Proposal only — raise POs via the SO->PO converter.`;
+      `. Proposal only — raise POs via the SO->PO converter.` + capacitySuffix(capacity);
   }
 
   const brief: ProcurementBriefData = {
@@ -352,6 +390,7 @@ export async function runProcurementAgent(
     unsuppliedSkus,
     topShortages,
     openProposals: { total: await openProposalTotal(db) },
+    capacity,
   };
 
   try {
@@ -381,6 +420,58 @@ export async function runProcurementAgent(
   }
 
   return { summary, brief, proposalsCreated, learning };
+}
+
+/* The capacity headline for the console card. Silent when nothing is
+   over-committed — an agent that says "0 overloads" every morning trains the
+   owner to stop reading it. */
+function capacitySuffix(c: ProcurementBriefData['capacity']): string {
+  if (c.overloads.length === 0) return '';
+  const worst = c.overloads[0];
+  return (
+    ` ${c.overloads.length} supplier-week(s) over capacity — worst ${worst.supplierCode}/${worst.category} ` +
+    `wk ${worst.weekStart}: ${worst.loadUnits} due vs ${worst.capacityUnitsPerWeek}/wk.`
+  );
+}
+
+/**
+ * Measure each (supplier, category)'s ceiling and find the weeks we have
+ * over-committed it.
+ *
+ * Best-effort, like every other pass here: a capacity failure must not sink the
+ * reorder sweep. It degrades to "measured nothing" — which is also the honest
+ * day-one state — rather than to a fabricated empty overload list that would
+ * read as "nothing is overloaded".
+ */
+async function runCapacityPass(sb: unknown): Promise<ProcurementBriefData['capacity']> {
+  const empty = { pairsMeasured: 0, pairsLowerBoundOnly: 0, overloads: [] };
+  try {
+    const sinceIso = new Date(Date.now() - CAPACITY_WINDOW_DAYS * 86_400_000).toISOString();
+    const [receipts, load] = await Promise.all([
+      loadCapacityEvidence(sb as never, { sinceIso }),
+      loadOpenLoad(sb as never),
+    ]);
+    const estimates = estimateCapacity(receipts);
+    if (estimates.length === 0) return empty;
+
+    return {
+      pairsMeasured: estimates.length,
+      pairsLowerBoundOnly: estimates.filter((e) => e.isLowerBound).length,
+      overloads: detectOverload(estimates, load).slice(0, TOP_OVERLOADS).map((o) => ({
+        supplierCode: o.supplierCode,
+        category: o.category,
+        weekStart: o.weekStart,
+        loadUnits: o.loadUnits,
+        capacityUnitsPerWeek: o.capacityUnitsPerWeek,
+        overloadUnits: o.overloadUnits,
+        expectedSlipWeeks: o.expectedSlipWeeks,
+        capacityIsLowerBound: o.capacityIsLowerBound,
+      })),
+    };
+  } catch (e) {
+    console.warn('[procurement-agent] capacity pass failed (reorder sweep unaffected):', e);
+    return empty;
+  }
 }
 
 /* Load the receipt evidence and score both buffer axes. Split out so the engine
