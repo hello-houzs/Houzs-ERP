@@ -82,6 +82,19 @@ export type Env = {
   // receiver). The 2990 DB (pg_net) sends it as `x-sync-secret`. Set via
   // `wrangler secret put SYNC_SECRET`. Unset => the receiver 401s (fail-closed).
   SYNC_SECRET?: string;
+  // Houzs → 2990 Product Maintenance push (scm/routes/maintenance-push.ts).
+  // The bridge calls 2990's OWN API as a real 2990 user (D2), so it needs that
+  // user's credentials — NOT a service-role key, which carries no user identity
+  // and therefore FAILS 2990's staff-table RBAC rather than bypassing it.
+  // Set via `wrangler secret put BRIDGE_2990_EMAIL` / `..._PASSWORD`. With any
+  // of these unset the push cannot authenticate and the route 503s — this is
+  // how the feature ships dark. The DB kill switch (scm.sync_config) is the
+  // separate, no-deploy emergency stop.
+  BRIDGE_2990_API_URL?: string;
+  BRIDGE_2990_SUPABASE_URL?: string;
+  BRIDGE_2990_SUPABASE_ANON_KEY?: string;
+  BRIDGE_2990_EMAIL?: string;
+  BRIDGE_2990_PASSWORD?: string;
   // System Health observability (phase 2, ported from Hookka). Writes via the
   // binding; reads via the AE SQL API using the two secrets. All optional —
   // absent => health endpoints serve deterministic mock data.
