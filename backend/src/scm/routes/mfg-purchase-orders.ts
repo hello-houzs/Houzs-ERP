@@ -44,6 +44,7 @@ import {
 } from '../lib/lead-time';
 import { groupKeyFor } from '../lib/po-grouping';
 import { loadLeadBuffers } from '../../services/agents/procurement-learning';
+import { getSupabaseService } from '../../db/supabase';
 import { supabaseAuth } from '../middleware/auth';
 import { computeMrp } from './mrp';
 import type { Env, Variables } from '../env';
@@ -1842,6 +1843,16 @@ export async function convertSosToPosCore(c: PoConvertContext): Promise<PoConver
   let counter = parseInt(firstNextPo.slice(`${p}PO-${yymm}-`.length), 10) - 1;
 
   const created: Array<{ id: string; poNumber: string; supplierId: string; lineCount: number }> = [];
+  /* A bucket that fails to insert is dropped by `continue` below and the call
+     still returns 201. So "created 3 POs" has always been capable of meaning
+     "asked for 4, one supplier silently got nothing" — the same silent-drop the
+     23505 retry note calls out, minus the retry's protection, for every other
+     error. Reported rather than fixed here: swallowing the bucket is wrong, but
+     changing this call to fail the whole convert would change how the operator's
+     button behaves mid-flight, and that is not this commit's decision to make.
+     Additive and omitted when empty, so the normal response is byte-identical
+     and no existing caller sees a new field. */
+  const dropped: Array<{ supplierId: string; lineCount: number; reason: string }> = [];
   for (const bucket of byGroup.values()) {
     const supplierId = bucket.supplierId;
     counter += 1;
@@ -1912,7 +1923,10 @@ export async function convertSosToPosCore(c: PoConvertContext): Promise<PoConver
       const liveNextPo = await mintMonthlyDocNo(supabase, 'purchase_orders', 'po_number', `${p}PO-${yymm}`);
       counter = parseInt(liveNextPo.slice(`${p}PO-${yymm}-`.length), 10);
     }
-    if (!header) continue;
+    if (!header) {
+      dropped.push({ supplierId, lineCount: bucket.lines.length, reason: 'po_header_insert_failed' });
+      continue;
+    }
 
     const rows = bucket.lines.map((l) => ({
       purchase_order_id: header.id,
@@ -1942,6 +1956,7 @@ export async function convertSosToPosCore(c: PoConvertContext): Promise<PoConver
     const { error: iErr } = await supabase.from('purchase_order_items').insert(stampCompany(rows, c));
     if (iErr) {
       await supabase.from('purchase_orders').delete().eq('id', header.id);
+      dropped.push({ supplierId, lineCount: bucket.lines.length, reason: `po_items_insert_failed: ${iErr.message}` });
       continue;
     }
     created.push({ id: header.id, poNumber: header.po_number, supplierId, lineCount: bucket.lines.length });
@@ -1955,7 +1970,7 @@ export async function convertSosToPosCore(c: PoConvertContext): Promise<PoConver
     catch { /* POs already created — don't fail on counter recount */ }
   }
 
-  return c.json({ created, total: created.length }, 201);
+  return c.json({ created, total: created.length, ...(dropped.length ? { dropped } : {}) }, 201);
 }
 
 /* HTTP route — router-level supabaseAuth already ran; the real Hono context is
@@ -1972,6 +1987,69 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
   });
   return c.json(out.body, out.status as 201);
 });
+
+/* ── createDraftPosFromPicks — headless SO→PO for an approved proposal ──────
+   Runs the SAME core an operator's click runs: identical supplier resolution,
+   combo redistribution, per-category split, lead-time subtraction, doc-no
+   minting. Not a parallel PO writer — there is one body that knows how to raise
+   a PO and this is it.
+
+   Authorization happened before this is called: a human approved the proposal
+   in the agent console, and this executes that decision. There is no request
+   here, so the service-role client is the only client available — the same
+   arrangement createDraftSalesOrder uses for the scan job.
+
+   ALWAYS DRAFT. That is the fuse, and it is hard-coded rather than an option:
+   the agent's output is a PO the owner still has to confirm (PATCH /:id/confirm)
+   before it is real, so nothing reaches a supplier on an agent's say-so. Stage 2
+   (auto-approve) and Stage 3 (auto-send to the supplier) are separate decisions
+   and are NOT enabled by this function existing.
+
+   fromMrp: true matches these picks' provenance — they are MRP shortage lines,
+   and the MRP page's own convert button sends exactly this (Mrp.tsx:544). Same
+   input, same flags, so the agent's PO and a human's MRP convert are the same
+   act. `mode` is left at the route default: the three ruled categories are split
+   by rule regardless (po-grouping.ts), and 'combined' is what the operator's
+   picker defaults to for everything else. */
+export async function createDraftPosFromPicks(
+  env: Env,
+  opts: {
+    /** scm.staff UUID — the SCM auth-bridge identity, stamped as created_by.
+     *  NOT the public users bigint (see the SCM staff-UUID trap). */
+    userId: string;
+    /** The company the proposal was raised under. Undefined → unresolved, and
+     *  the stamping no-ops exactly as it does pre-migration. */
+    companyId?: number | null;
+    allowedCompanyIds?: number[] | null;
+    /** MUST be the company CODE string, never the company row. companyDocPrefix
+     *  stringifies whatever it is handed: the scan job's rebuilt context passed
+     *  an object through this exact key and minted "[object Object]-SO-2607-001"
+     *  into production. Typed narrowly here, and re-checked below, because the
+     *  cost of getting it wrong is permanent — it lands in a document number. */
+    companyCode?: string | null;
+    picks: Array<{ soItemId: string; qty: number }>;
+  },
+): Promise<PoConvertOutcome> {
+  const svc = getSupabaseService(env);
+  /* EXPLICIT per key, with no default fall-through. A fall-through is how the
+     scar above happened: an unhandled key returned the wrong object and nothing
+     said so. An unknown key here returns undefined, which every consumer already
+     treats as "unresolved" and degrades on. */
+  const syntheticGet = (key: string): unknown => {
+    if (key === 'supabase') return svc;
+    if (key === 'user') return { id: opts.userId };
+    if (key === 'companyId') return opts.companyId ?? undefined;
+    if (key === 'allowedCompanyIds') return opts.allowedCompanyIds ?? undefined;
+    if (key === 'companyCode') return typeof opts.companyCode === 'string' ? opts.companyCode : undefined;
+    return undefined;
+  };
+  return convertSosToPosCore({
+    req: { json: async () => ({ picks: opts.picks, asDraft: true, fromMrp: true }) },
+    get: syntheticGet as unknown as PoConvertContext['get'],
+    env,
+    json: (b, status) => ({ status: status ?? 200, body: b as Record<string, unknown> }),
+  });
+}
 
 /* ── PR #41 — PATCH header (po_date, expected_at, currency, notes) ── */
 mfgPurchaseOrders.patch('/:id', async (c) => {
