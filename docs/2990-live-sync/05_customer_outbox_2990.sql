@@ -246,8 +246,6 @@ SELECT 'customer', id::text, 'BACKFILL' FROM customers;
 -- silently switch off whatever else is already enabled (e.g. 'so_amendment' from
 -- 04). This append is idempotent and order-independent:
 --
---   INSERT INTO sync_config VALUES ('customer_enable_marker','')   -- no-op guard row
---     ON CONFLICT (k) DO NOTHING;
 --   INSERT INTO sync_config(k, v) VALUES ('enabled_entities','customer')
 --     ON CONFLICT (k) DO UPDATE SET v = (
 --       SELECT string_agg(DISTINCT e, ',')
