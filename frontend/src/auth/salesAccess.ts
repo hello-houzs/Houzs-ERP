@@ -155,8 +155,10 @@ export function canViewScmCosting(user: AuthUser | null | undefined): boolean {
  * Owner 2026-07-17: "全部對sales person 除了sales director 關閉 就是直接看不到
  * 這個portion" + "電腦版本也是不要看到 電話電腦的權限應該一樣的".
  *
- * Deliberately NOT {@link canViewScmCosting}, even though today both resolve to
- * the same cohort. That helper carries the extra COSTING_DISPLAY_ENABLED term —
+ * Deliberately NOT {@link canViewScmCosting}. The two no longer even resolve to
+ * the same cohort (2026-07-17: Purchasing is in this one and not in that one),
+ * but they were kept apart while they DID, and this is why. That helper carries
+ * the extra COSTING_DISPLAY_ENABLED term —
  * an SCM-wide kill switch that has already been flipped twice (off #649, on
  * 2026-07-17). Cost ENTRY must not ride a switch whose whole purpose is to hide
  * cost DISPLAY: the last time it was off, wiring this to it would have meant
@@ -167,20 +169,43 @@ export function canViewScmCosting(user: AuthUser | null | undefined): boolean {
  *
  * `cost_price_sen` is not derived and is not an artifact — whatever is in that
  * column is exactly what someone typed. It is simply CONFIDENTIAL. So this gate
- * is about IDENTITY only: the same cohort DIRECTOR_POSITIONS admits (Super
- * Admin / Sales Director / Finance Manager, plus the `*` wildcard) via the
- * backend's isFinanceViewer -> getPmsRole -> DIRECTOR chain
- * (services/pmsAccess.ts:79,154,256). A plain "Sales *" position routes to
- * PIC/SALES there and never reaches DIRECTOR, so it resolves false — which is
- * the ruling, enforced by the same flag the SO/DO/SI margin surfaces already
- * use. One cohort, one answer, phone and desktop.
+ * is about IDENTITY only.
+ *
+ * That identity is `product_cost_viewer`, and it is NOT `project_finance_viewer`
+ * — the correction of 2026-07-17. Owner, shown that his 2026-06-13 red line
+ * ("Only Purchasing + Finance see cost") was not in force because Purchasing is
+ * in no cost cohort:
+ *
+ *     "那就是采购、Finance，还有 Sales Director 啊？"
+ *
+ * so: Purchasing + Finance Manager + Sales Director, plus Owner/Super Admin via
+ * `*`. This gate read `project_finance_viewer` until now — but that flag answers
+ * "are you a PMS DIRECTOR" (isFinanceViewer -> getPmsRole -> DIRECTOR,
+ * services/pmsAccess.ts:79,154,256), a question with no Purchasing in it. Two
+ * questions had one flag, so an owner ruling sat dead for a month. The fix is
+ * NOT to widen project_finance_viewer to admit Purchasing: that flag also opens
+ * every project's financial snapshot / rental / payment in PMS and makes its
+ * holder isDirectorUser, and the owner asked for cost, not for that. It is to
+ * ask the cost question separately — backend pmsAccess.isProductCostViewer,
+ * surfaced on /auth/me next to its sibling. Same reasoning as the paragraph
+ * above, one level up: keep the two questions apart.
+ *
+ * project_finance_viewer is OR'd in only as a floor. The cost cohort is a strict
+ * SUPERSET of the director cohort (isProductCostViewer = isDirectorUser OR
+ * Purchasing), so a director is already true here by construction — this cannot
+ * widen the cohort by one user. It exists so a director never loses cost against
+ * a backend that predates the new flag (a stale PWA SPA shell is the real case);
+ * an old backend then yields exactly the old director-only behaviour. Note the
+ * inverse is deliberately absent: `isDirectorUser` above must NEVER read
+ * product_cost_viewer, or Purchasing would become a director and inherit the
+ * sales-scope gates and the 27 nav flags.
  *
  * Callers must make the element ABSENT, not blank it ("off, not hide") — a
  * "Cost: —" column still tells a salesperson the field exists and invites the
  * question.
  */
 export function canViewProductCost(user: AuthUser | null | undefined): boolean {
-  return !!user?.project_finance_viewer;
+  return !!user?.product_cost_viewer || !!user?.project_finance_viewer;
 }
 
 /** Drop the confidential fields a user may not see from a mobile card's field

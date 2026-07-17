@@ -141,6 +141,42 @@ export function isDirectorUser(user: AuthUser | null | undefined): boolean {
   return DIRECTOR_POSITIONS.test((user.position_name ?? "").trim());
 }
 
+// The purchasing function. Matched with `\b` rather than the anchored
+// /^Purchasing$/i that getPmsRole uses below, for the same reason
+// DIRECTOR_POSITIONS carries `\b`: real prod positions carry prefixes/variants
+// ("Test Sales Director", "Test Sales Executive" — see projectAcl.ts:23). An
+// anchored test would silently miss the live row and leave the ruling
+// not-in-force, which is the exact failure isProductCostViewer exists to end.
+const PURCHASING_POSITION = /\bPurchasing\b/i;
+
+/**
+ * "May this user see a product / SKU COST price."
+ *
+ * Owner 2026-07-17, shown that his 2026-06-13 red line was not in force:
+ *   "那就是采购、Finance，还有 Sales Director 啊？"
+ * — restoring 2026-06-13 "Only Purchasing + Finance see cost". Purchasing had
+ * simply been lost: the cost question was being answered by isFinanceViewer,
+ * whose cohort has no Purchasing in it. This is a RESTORATION, not a new grant.
+ *
+ * Deliberately its own function rather than a widening of DIRECTOR_POSITIONS /
+ * isFinanceViewer. Those answer a DIFFERENT question — "are you a PMS director",
+ * i.e. may you see a project's financial snapshot, rental, payment and cost
+ * rates. Adding Purchasing there would hand him every project's P&L (SECTIONS_BY_ROLE
+ * .DIRECTOR) and make him isDirectorUser, which feeds the sales-scope gates and
+ * the nav flags. The owner asked for cost, and only cost. Two questions, two
+ * functions.
+ *
+ * Composed off isDirectorUser rather than restating its list, so the `*`
+ * wildcard and any future rename of a director title stay in ONE place. The
+ * cohort is therefore a strict SUPERSET of the director cohort: director + the
+ * purchasing function. Nothing here can narrow what a director already sees.
+ */
+export function isProductCostViewer(user: AuthUser | null | undefined): boolean {
+  if (!user) return false;
+  if (isDirectorUser(user)) return true;
+  return PURCHASING_POSITION.test((user.position_name ?? "").trim());
+}
+
 export interface ProjectLike {
   pic_id: number | null;
   created_by?: number | null;
