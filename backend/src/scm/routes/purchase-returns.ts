@@ -17,7 +17,7 @@ import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { writeMovements, reverseMovements, defaultWarehouseId } from '../lib/inventory-movements';
-import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
+import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { todayMyt } from '../lib/my-time';
 import { buildVariantSummary, computeVariantKey, type VariantAttrs } from '../shared';
 import {
@@ -52,10 +52,7 @@ const nextNum = async (sb: any, c: any): Promise<string> => {
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
   const p = companyDocPrefix(c);
-  const { data: existing } = await sb.from('purchase_returns')
-    .select('return_number')
-    .like('return_number', `${p}PRT-${yymm}-%`);
-  return nextMonthlyDocNo(`${p}PRT-${yymm}`, ((existing ?? []) as Array<{ return_number: string }>).map((r) => r.return_number));
+  return mintMonthlyDocNo(sb, 'purchase_returns', 'return_number', `${p}PRT-${yymm}`);
 };
 
 /* ── Recompute PR header money rollup (mirror recomputeGrnTotals) ──────────
@@ -679,10 +676,8 @@ purchaseReturns.post('/from-grns', async (c) => {
   // Minted inside insertWithDocNoRetry below so a concurrent-create collision
   // (23505 on return_number) re-derives the next free number instead of 500ing.
   const p = companyDocPrefix(c);
-  const nextPrtNumber = async (): Promise<string> => {
-    const { data: existingPrtNos } = await sb.from('purchase_returns').select('return_number').like('return_number', `${p}PRT-${yymm}-%`);
-    return nextMonthlyDocNo(`${p}PRT-${yymm}`, ((existingPrtNos ?? []) as Array<{ return_number: string }>).map((r) => r.return_number));
-  };
+  const nextPrtNumber = async (): Promise<string> =>
+    mintMonthlyDocNo(sb, 'purchase_returns', 'return_number', `${p}PRT-${yymm}`);
 
   const grnNumbersJoined = grnList.map((g) => g.grn_number).join(', ');
   const totalRefund = rejectedItems.reduce((s, it) => s + (it._qty * it.unit_price_centi), 0);

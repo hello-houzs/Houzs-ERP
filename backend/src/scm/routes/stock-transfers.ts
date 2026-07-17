@@ -25,7 +25,7 @@ import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { writeMovements, reverseMovements } from '../lib/inventory-movements';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
-import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
+import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 
 export const stockTransfers = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -43,10 +43,7 @@ const nextTransferNo = async (sb: any, c: any): Promise<string> => {
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
   const p = companyDocPrefix(c);
-  const { data: existing } = await sb.from('stock_transfers')
-    .select('transfer_no')
-    .like('transfer_no', `${p}ST-${yymm}-%`);
-  return nextMonthlyDocNo(`${p}ST-${yymm}`, ((existing ?? []) as Array<{ transfer_no: string }>).map((r) => r.transfer_no));
+  return mintMonthlyDocNo(sb, 'stock_transfers', 'transfer_no', `${p}ST-${yymm}`);
 };
 
 // ── List ──────────────────────────────────────────────────────────────

@@ -1,5 +1,14 @@
 // ----------------------------------------------------------------------------
-// SalesInvoiceDetail — full-page route at /sales-invoices/:id.
+// SalesInvoiceDetail — the ledger-style SI detail page.
+//
+// NOT ROUTED. App.tsx:540 points /scm/sales-invoices/:id at SalesInvoiceDetailV2,
+// and nothing else imports this file — so this page, and the SI header/line
+// mutation hooks it is the only consumer of, are unreachable in the app today.
+// Kept as the ledger-style reference (V2 has no in-place content edit at all).
+// Two consequences worth knowing before trusting anything below: its rules are
+// NOT what protects the invoice — the route handlers are, because the SI APIs
+// have other consumers (the un-repointed 2990 POS/admin app) — and a bug fixed
+// here changes nothing for a user until this page is routed. Fix the server too.
 //
 // Editable clone of DeliveryOrderDetail (itself an SO-clone). View→Edit gate;
 // editable Customer / Invoice Info / Emergency Contact / Address / Line Items /
@@ -192,8 +201,26 @@ export const SalesInvoiceDetail = () => {
   const [savingOrder, setSavingOrder] = useState(false);
   const customerCardRef = useRef<CustomerCardHandle | null>(null);
 
-  // Lock: CANCELLED locks the header.
-  const lockedStatuses: SiStatus[] = ['CANCELLED'];
+  /* Lock: this is the one document that goes to the CUSTOMER, so it freezes the
+     moment it is ISSUED — every status except DRAFT. Mirrors the server's
+     isIssuedSi (backend/src/scm/routes/sales-invoices.ts), which is the real
+     enforcement point; this list only stops the page offering an edit the server
+     will 409.
+
+     Why issue and not PAID: the siblings lock at ['INVOICED','CANCELLED'] —
+     i.e. when something DOWNSTREAM consumed them (DeliveryOrderDetail:265,
+     ConsignmentNoteDetail:161). Nothing consumes an invoice, so its equivalent
+     moment is issue: when revenue posts and the PDF leaves the building.
+     Waiting for PAID would leave the issue→settle window — most of an invoice's
+     life, and exactly when the customer is reading the PDF — wide open.
+
+     This is the CONTENT lock (header + line items) and deliberately does NOT
+     gate the payments ledger: collecting against an issued invoice is the whole
+     point of the document. That is why this page cannot copy the DO's
+     `locked={isLocked || !isEditing}` on PaymentsTable — on a DO the lock and
+     the money never overlap; here they would, and an issued invoice would stop
+     being payable. See the PaymentsTable + Edit-button notes below. */
+  const lockedStatuses: SiStatus[] = ['SENT', 'PARTIALLY_PAID', 'PAID', 'OVERDUE', 'CANCELLED'];
 
   const apiToDraft = useCallback((p: NonNullable<typeof paymentsQ.data>[number]): PaymentDraft => {
     const methodLabel = p.method === 'cash' ? 'Cash' : p.method === 'transfer' ? 'Online' : 'Merchant';
@@ -345,6 +372,24 @@ export const SalesInvoiceDetail = () => {
     if (!handle || !header || savingOrder) return;
     setSaveError(null);
 
+    /* ISSUED → Save means "flush the payments ledger", nothing else. The cards
+       and lines are read-only so there is nothing of theirs to write, and we must
+       NOT send the header payload: buildPayload() carries debtorName / debtorCode
+       / invoiceDate unconditionally (it is a whole-form snapshot, not a diff), so
+       the server would 409 the frozen fields and the payment flush — chained
+       behind it — would never run. That would make an issued invoice unpayable
+       through this page. */
+    if (lockedStatuses.includes(header.status)) {
+      setSavingOrder(true);
+      flushPaymentDrafts()
+        .then(() => { setSavingOrder(false); setIsEditing(false); })
+        .catch((e) => {
+          setSavingOrder(false);
+          setSaveError(`Payments failed to save: ${e instanceof Error ? e.message : String(e)}`);
+        });
+      return;
+    }
+
     if (addingDraft && !addingDraft.itemCode.trim()) {
       setSaveError('Pick a product for the new line, or remove it before saving.');
       return;
@@ -466,9 +511,13 @@ export const SalesInvoiceDetail = () => {
               <Ban {...ICON} /><span>Cancel Invoice</span>
             </Button>
           ) : null}
+          {/* Edit stays reachable on an ISSUED invoice on purpose — it is the way
+              into the payments ledger, which must keep working after issue.
+              Gated on CANCELLED, not isLocked; the content inside is what
+              isLocked freezes. */}
           {!isEditing ? (
-            <Button variant="primary" size="md" onClick={enterEdit} disabled={isLocked}>
-              <Pencil {...ICON} /><span>Edit</span>
+            <Button variant="primary" size="md" onClick={enterEdit} disabled={isCancelled}>
+              <Pencil {...ICON} /><span>{isLocked ? 'Record Payment' : 'Edit'}</span>
             </Button>
           ) : (
             <>
@@ -515,6 +564,20 @@ export const SalesInvoiceDetail = () => {
           <Button variant="primary" size="sm" onClick={handleConfirm} disabled={updateStatus.isPending}>
             <span>{updateStatus.isPending ? 'Confirming…' : 'Confirm Invoice'}</span>
           </Button>
+        </div>
+      )}
+
+      {/* ── ISSUED banner ────────────────────────────────────────────
+          Says why the fields are read-only and what to do instead, so a locked
+          page never reads as a broken one. Only in edit mode: in view mode
+          everything is read-only anyway and the banner would be noise. */}
+      {isLocked && !isCancelled && isEditing && (
+        <div className={styles.bannerWarn}>
+          <strong>This invoice has been issued to the customer.</strong>
+          <span>
+            Its items, prices and invoice date can no longer be changed — cancel and reopen it if it is wrong.
+            You can still record payments below.
+          </span>
         </div>
       )}
 
@@ -648,14 +711,19 @@ export const SalesInvoiceDetail = () => {
 
       {/* DRAFT/Confirmed two-state (Owner 2026-06-25) — a DRAFT SI is not payable
           (the server 409s any payment), so keep the payments ledger locked even in
-          edit mode. Confirm the invoice first, then record payments. */}
+          edit mode. Confirm the invoice first, then record payments.
+
+          NOT gated on isLocked: isLocked is the CONTENT lock and is true for every
+          issued invoice, which is exactly when payments come in. Locking this on
+          isLocked would make an issued invoice unpayable — the one thing an
+          invoice exists to do. CANCELLED / DRAFT only. */}
       <PaymentsTable
         docNo={null}
         payments={paymentDrafts}
         onChange={setPaymentDrafts}
         grandTotalCenti={grandTotal}
         currency={header.currency}
-        locked={isLocked || isDraft || !isEditing}
+        locked={isCancelled || isDraft || !isEditing}
       />
     </div>
   );

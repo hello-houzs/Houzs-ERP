@@ -32,7 +32,7 @@ import {
 } from '../shared/so-line-display';
 import { writeMovements, defaultWarehouseId, resolveWarehouseLotCosts } from '../lib/inventory-movements';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
-import { nextMonthlyDocNo } from '../lib/doc-no';
+import { mintMonthlyDocNo } from '../lib/doc-no';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { todayMyt } from '../lib/my-time';
 
@@ -222,8 +222,7 @@ const nextNumber = async (sb: any, prefix: string, table: string, col: string, c
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
   const p = companyDocPrefix(c);
-  const { data: existing } = await sb.from(table).select(col).like(col, `${p}${prefix}-${yymm}-%`);
-  return nextMonthlyDocNo(`${p}${prefix}-${yymm}`, ((existing ?? []) as Array<Record<string, string>>).map((r) => r[col]));
+  return mintMonthlyDocNo(sb, table, col, `${p}${prefix}-${yymm}`);
 };
 
 /* ── Recompute PC Receive header money rollups ────────────────────────────

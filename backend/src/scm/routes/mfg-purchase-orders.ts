@@ -33,7 +33,7 @@ import {
   sortSoLinesByGroupRank,
 } from '../shared/so-line-display';
 import { resolveMaintenanceConfigForSupplier } from '../lib/po-pricing';
-import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
+import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { escapeForOr } from '../lib/postgrest-search';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { supabaseAuth } from '../middleware/auth';
@@ -845,11 +845,7 @@ mfgPurchaseOrders.post('/', async (c) => {
   // NOT count+1 — count+1 is non-self-healing (a mid-month delete leaves a gap
   // and re-mints a surviving number, jamming the NOT NULL UNIQUE po_number).
   const p = companyDocPrefix(c);
-  const { data: existingPoNos } = await supabase
-    .from('purchase_orders')
-    .select('po_number')
-    .like('po_number', `${p}PO-${yymm}-%`);
-  let poNumber = nextMonthlyDocNo(`${p}PO-${yymm}`, ((existingPoNos ?? []) as Array<{ po_number: string }>).map((r) => r.po_number));
+  let poNumber = await mintMonthlyDocNo(supabase, 'purchase_orders', 'po_number', `${p}PO-${yymm}`);
 
   // Compute totals
   let subtotal = 0;
@@ -952,9 +948,7 @@ mfgPurchaseOrders.post('/', async (c) => {
   const { data: headerData, error: hErr } = await insertWithDocNoRetry(
     async () => {
       if (firstMint) { firstMint = false; return poNumber; }
-      const { data: live } = await supabase
-        .from('purchase_orders').select('po_number').like('po_number', `${p}PO-${yymm}-%`);
-      poNumber = nextMonthlyDocNo(`${p}PO-${yymm}`, ((live ?? []) as Array<{ po_number: string }>).map((r) => r.po_number));
+      poNumber = await mintMonthlyDocNo(supabase, 'purchase_orders', 'po_number', `${p}PO-${yymm}`);
       return poNumber;
     },
     (dn) => {
@@ -1731,13 +1725,9 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
   // Seed from max(suffix), NOT count — count+1 is non-self-healing (a mid-month
   // delete re-mints a surviving number → UNIQUE collision). Derive the next
-  // suffix via nextMonthlyDocNo, then counter starts one below it.
+  // suffix via mintMonthlyDocNo, then counter starts one below it.
   const p = companyDocPrefix(c);
-  const { data: existingBatchPoNos } = await supabase
-    .from('purchase_orders')
-    .select('po_number')
-    .like('po_number', `${p}PO-${yymm}-%`);
-  const firstNextPo = nextMonthlyDocNo(`${p}PO-${yymm}`, ((existingBatchPoNos ?? []) as Array<{ po_number: string }>).map((r) => r.po_number));
+  const firstNextPo = await mintMonthlyDocNo(supabase, 'purchase_orders', 'po_number', `${p}PO-${yymm}`);
   let counter = parseInt(firstNextPo.slice(`${p}PO-${yymm}-`.length), 10) - 1;
 
   const created: Array<{ id: string; poNumber: string; supplierId: string; lineCount: number }> = [];
@@ -1792,11 +1782,8 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
         .single();
       if (!hErr && hd) { header = hd as unknown as { id: string; po_number: string }; break; }
       if (!hErr || (hErr as { code?: string }).code !== '23505') break;
-      const { data: live } = await supabase
-        .from('purchase_orders').select('po_number').like('po_number', `${p}PO-${yymm}-%`);
-      counter = parseInt(
-        nextMonthlyDocNo(`${p}PO-${yymm}`, ((live ?? []) as Array<{ po_number: string }>).map((r) => r.po_number))
-          .slice(`${p}PO-${yymm}-`.length), 10);
+      const liveNextPo = await mintMonthlyDocNo(supabase, 'purchase_orders', 'po_number', `${p}PO-${yymm}`);
+      counter = parseInt(liveNextPo.slice(`${p}PO-${yymm}-`.length), 10);
     }
     if (!header) continue;
 

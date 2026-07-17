@@ -1,3 +1,5 @@
+import { paginateAll } from './paginate-all';
+
 /* ─────────────────────────── Monthly doc numbers ───────────────────────────
    Next `<PREFIX>-YYMM-NNN` from the rows that already exist in the month.
 
@@ -23,6 +25,71 @@ export function nextMonthlyDocNo(monthPrefix: string, existing: string[]): strin
     if (n > max) max = n;
   }
   return `${head}${String(max + 1).padStart(3, '0')}`;
+}
+
+/* ────────────────── Reading the month (max+1's only input) ──────────────────
+   `nextMonthlyDocNo` is exactly as good as the list it is handed, and the
+   obvious way to fetch that list is silently wrong:
+
+     await sb.from('sales_invoices').select('invoice_number')
+       .like('invoice_number', `${p}SI-${yymm}-%`);        // ← ≤1000 rows, no error
+
+   PostgREST caps a response at 1000 rows and drops the rest WITHOUT an error
+   (see lib/paginate-all.ts — `.limit(5000)` does not lift the ceiling either).
+   Past the 1000th document in one YYMM the scan comes back truncated, the max
+   is stale, and the mint re-issues a number that is already live → 23505.
+   Unlike the concurrent-create race below, this does NOT self-heal: every one
+   of insertWithDocNoRetry's attempts re-reads the same truncated set and
+   re-mints the same dead number, so creation stays 500 for the REST OF THE
+   MONTH. Same failure as the 2026-06-12 POS outage above, but deterministic
+   rather than a race — it arrives on a schedule, not on a coincidence.
+
+   `.order(col, { ascending: false }).limit(1)` reads fewer rows and is WRONG
+   here: the suffix is padStart(3)-padded, so the 1000th document is
+   `SI-2607-1000` and a lexical sort ranks `SI-2607-999` above it. That string
+   cliff lands on the very same document as the row cap it was meant to dodge,
+   so it trades a silent truncation for a silent mis-sort at identical volume.
+   (The JE minters — routes/accounting.ts, lib/post-si-revenue.ts — do use that
+   shape and are fine ONLY because they pad to 4, moving their break to 10k/mo.)
+   Paging the month and taking a NUMERIC max is padding-agnostic: it stays
+   correct across 999 → 1000 and any later width change.
+
+   `monthPrefix` feeds BOTH the LIKE and nextMonthlyDocNo, so the two can no
+   longer drift apart — the per-company prefix contract in lib/companyScope.ts
+   (HOUZS bare `SI-2607-001`, others `2990-SI-2607-001`) now holds by
+   construction rather than by remembering to paste the same template twice. */
+export async function fetchMonthlyDocNos(
+  sb: any,
+  table: string,
+  col: string,
+  monthPrefix: string,
+): Promise<string[]> {
+  // `.order(col)` is what makes the paging stable: with no sort key PostgREST
+  // may hand the same row back in two `.range()` windows and silently drop
+  // another. `col` carries the UNIQUE doc-no index, so the order is total.
+  const { data } = await paginateAll<Record<string, unknown>>((from, to) =>
+    sb.from(table).select(col).like(col, `${monthPrefix}-%`).order(col).range(from, to),
+  );
+  // Exactly one column is selected, so the row's single string value IS the doc
+  // number whichever key the driver named it (trips read `trip_no`/`tripNo`).
+  // A fetch error still yields [] — identical to the old `data ?? []`: the
+  // insert collides and insertWithDocNoRetry handles it exactly as it does
+  // today. The ONLY behaviour change here is that the set is no longer cut off.
+  return ((data ?? []) as Array<Record<string, unknown>>)
+    .map((row) => Object.values(row).find((v) => typeof v === 'string'))
+    .filter((v): v is string => typeof v === 'string');
+}
+
+/** Fetch the month uncapped + max+1 — the whole mint for a single-create
+    minter. `monthPrefix` is the doc number WITHOUT the trailing `-NNN`, e.g.
+    `${companyDocPrefix(c)}SI-${yymm}`. */
+export async function mintMonthlyDocNo(
+  sb: any,
+  table: string,
+  col: string,
+  monthPrefix: string,
+): Promise<string> {
+  return nextMonthlyDocNo(monthPrefix, await fetchMonthlyDocNos(sb, table, col, monthPrefix));
 }
 
 /* ─────────────────────── Mint + insert with collision retry ─────────────────

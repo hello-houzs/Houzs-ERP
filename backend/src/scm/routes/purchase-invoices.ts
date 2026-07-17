@@ -3,7 +3,8 @@
 import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
-import { buildVariantSummary } from '../shared';
+import { buildVariantSummary, isServiceLine } from '../shared';
+import { allocateLandedCharges, normalizeAllocationMethod } from '../lib/landed-allocation';
 import {
   orderSofaModuleRowsWithinBuilds,
   sortSoLinesByGroupRank,
@@ -11,7 +12,7 @@ import {
 import { postPiAccounting, reversePiAccounting, resyncPiAccounting } from './accounting';
 import { recostForPi, recostFromGrn } from '../lib/recost';
 import { normalizeCurrency, normalizeExchangeRate, masterRateForCurrency } from '../lib/fx';
-import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
+import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { escapeForOr } from '../lib/postgrest-search';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { todayMyt } from '../lib/my-time';
@@ -32,8 +33,7 @@ const nextNum = async (sb: any, prefix: string, c: any): Promise<string> => {
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
   const p = companyDocPrefix(c);
-  const { data: existing } = await sb.from('purchase_invoices').select('invoice_number').like('invoice_number', `${p}${prefix}-${yymm}-%`);
-  return nextMonthlyDocNo(`${p}${prefix}-${yymm}`, ((existing ?? []) as Array<{ invoice_number: string }>).map((r) => r.invoice_number));
+  return mintMonthlyDocNo(sb, 'purchase_invoices', 'invoice_number', `${p}${prefix}-${yymm}`);
 };
 
 /* ── Recompute PI header money rollups (mirror recomputeGrnTotals) ─────────
@@ -53,6 +53,110 @@ async function recomputePiTotals(sb: any, piId: string) {
     total_centi: subtotal + tax,
     updated_at: new Date().toISOString(),
   }).eq('id', piId);
+}
+
+/* ── PI-level landed freight ("平摊") — reallocatePiCharges ──────────────────
+   Migration 0082 added purchase_invoice_items.allocated_charge_centi and recost.ts
+   folds it into the FIFO lot cost — but until now NO write path ever filled it, so
+   the column sat at 0 forever and freight billed on the SUPPLIER'S INVOICE (the
+   normal shape for RMB / cross-border sourcing, where freight arrives on the PI
+   rather than the GRN) raised the PI total and the AP but never reached inventory:
+   COGS understated permanently. PurchaseInvoiceNew already ships the picker, sends
+   allocationMethod, and its preview names this function as the authoritative
+   splitter — this is that function.
+
+   POOL = PI-NATIVE service lines only (grn_item_id IS NULL). A service line COPIED
+   DOWN from the GRN by /from-grn keeps its grn_item_id, and that charge was ALREADY
+   capitalised into the lot at receive time (grn_items.allocated_charge_centi, which
+   recost re-adds separately) — pooling it again here would capitalise the same
+   freight twice. This is what "each capitalises EXACTLY ONCE" means in recost.ts.
+
+   Allocated across ALL goods lines, mirroring the GRN allocator. A goods line with
+   no grn_item_id owns no lot, so its share simply doesn't capitalise — the goods
+   aren't in inventory to carry it.
+
+   Pure-on-empty: no native service line ⇒ pool 0 ⇒ allocation 0 everywhere ⇒ the
+   column stays 0 and every existing PI recosts byte-for-byte as before.
+
+   METHOD IS NOT PERSISTED: scm.purchase_invoices has no allocation_method column
+   (0082 added one to grns only). The create paths pass the operator's choice; a
+   later line edit has nothing to read it back from and re-splits by QTY. The pool
+   still sums exactly either way — only the basis degrades. Persisting it needs a
+   migration + a column. */
+async function reallocatePiCharges(
+  sb: any,
+  piId: string,
+  method: ReturnType<typeof normalizeAllocationMethod> = 'QTY',
+): Promise<void> {
+  try {
+    const [headRes, itemsRes] = await Promise.all([
+      sb.from('purchase_invoices').select('exchange_rate').eq('id', piId).maybeSingle(),
+      sb.from('purchase_invoice_items')
+        .select('id, grn_item_id, material_code, item_group, qty, unit_price_centi, line_total_centi, allocated_charge_centi')
+        .eq('purchase_invoice_id', piId),
+    ]);
+    const piRate = (headRes.data as { exchange_rate?: string | number | null } | null)?.exchange_rate ?? 1;
+    const items = (itemsRes.data ?? []) as Array<{
+      id: string; grn_item_id: string | null; material_code: string; item_group: string | null;
+      qty: number | null; unit_price_centi: number | null; line_total_centi: number | null;
+      allocated_charge_centi: number | null;
+    }>;
+    if (items.length === 0) return;
+
+    /* Drop GRN-copied service lines BEFORE the allocator sees them: it classifies
+       by item_group/code alone and would otherwise pool a charge the GRN already
+       capitalised. They are not goods either, so removing them leaves the goods
+       basis untouched. */
+    const visible = items.filter((it) =>
+      !(it.grn_item_id && isServiceLine({ itemGroup: it.item_group, itemCode: it.material_code })));
+
+    // CBM basis needs each goods line's product volume; one round trip, default 0
+    // (the allocator falls back to QTY when the CBM Σ is 0).
+    const m3ByCode = new Map<string, number>();
+    const codes = [...new Set(visible.map((it) => it.material_code).filter(Boolean))];
+    if (codes.length > 0) {
+      const { data: prods } = await sb.from('mfg_products').select('code, unit_m3_milli').in('code', codes);
+      for (const p of (prods ?? []) as Array<{ code: string; unit_m3_milli: number | null }>) {
+        m3ByCode.set(p.code, Number(p.unit_m3_milli ?? 0));
+      }
+    }
+
+    const alloc = allocateLandedCharges(
+      visible.map((it) => ({
+        id: it.id,
+        itemGroup: it.item_group ?? null,
+        materialCode: it.material_code,
+        qty: Number(it.qty ?? 0),
+        // Pool by the SERVICE line's line total; allocate ONTO the goods lines.
+        amountCenti: Number(it.line_total_centi ?? 0),
+        unitPriceCenti: Number(it.unit_price_centi ?? 0),
+        unitM3Milli: m3ByCode.get(it.material_code) ?? 0,
+      })),
+      method,
+      piRate,
+    );
+
+    /* Write the computed value (incl. resetting to 0) so a removed / re-split
+       charge is reflected — but only when there's something to reconcile, so a
+       plain goods-only PI issues no writes at all. Lines the allocator didn't
+       return (the service lines themselves) are forced to 0: recost re-adds the
+       charge of ANY line carrying a grn_item_id, so a row that used to be goods and
+       was later retyped as freight would otherwise keep injecting a stale charge. */
+    const anyToReset = items.some((it) => Number(it.allocated_charge_centi ?? 0) !== 0);
+    if (alloc.chargePoolMyr > 0 || anyToReset) {
+      const allocById = new Map(alloc.goods.map((g) => [g.id, g.allocatedChargeCenti]));
+      await Promise.all(items.map((it) => {
+        const next = allocById.get(it.id) ?? 0;
+        if (Number(it.allocated_charge_centi ?? 0) === next) return null;
+        return sb.from('purchase_invoice_items').update({ allocated_charge_centi: next }).eq('id', it.id);
+      }).filter(Boolean));
+    }
+  } catch (e) {
+    // Best-effort (audit-DLQ pattern): the PI's own lines already committed; a
+    // freight-split hiccup logs + skips and re-converges on the next line write.
+    // eslint-disable-next-line no-console
+    console.error('[reallocatePiCharges] failed:', piId, e);
+  }
 }
 
 /* ── Self-heal GRN invoiced counter (live-count model, mirrors recomputeSoPicked
@@ -547,10 +651,17 @@ purchaseInvoices.post('/', async (c) => {
   }
   /* LEAK GUARD (DRAFT) — a DRAFT PI commits nothing: it must NOT consume the GRN
      line (recomputeGrnInvoiced) nor re-cost (recostForPi). Both move to the
-     confirm transition (PATCH /:id/post). GL/AP posting (postPiAccounting) is
-     ALSO skipped for DRAFT — but note PI never auto-posts the GL on create even
-     when POSTED (it posts only on demand via /post/pi), so there's no GL call to
-     gate here on this path; the confirm transition is where it now posts. */
+     confirm transition (PATCH /:id/post). GL/AP posting (postPiAccounting) is ALSO
+     skipped for DRAFT — and this path never posts the GL itself even when POSTED.
+     PATCH /:id/post is what posts it, for a draft being confirmed AND for a PI
+     created straight to POSTED (the New-PI screen calls it right after create);
+     POST /post/pi/:invoiceNumber remains the manual re-post. */
+  /* Split any PI-native freight across the goods lines. Runs for a DRAFT too: the
+     operator's allocation basis is known ONLY here (no column persists it), and the
+     column is inert until the PI is confirmed — recost excludes DRAFT PIs from the
+     freight aggregate — so capturing it now is what makes the confirm honour the
+     basis the operator actually chose. */
+  await reallocatePiCharges(sb, h.id, normalizeAllocationMethod(body.allocationMethod));
   if (!asDraft) {
     // Self-heal the GRN invoiced counter so the just-billed lines drop out of the
     // outstanding picker (mirrors /from-grn-items line ~523 + /:id/items).
@@ -572,16 +683,33 @@ purchaseInvoices.post('/', async (c) => {
      · postPiAccounting       — post Dr Inventory 1200 / Cr Payables 2000 (AP/GL).
      · recostForPi            — push the billed price down the lots → DO → SI.
    Idempotent + back-compat: a PI already POSTED (e.g. created non-DRAFT) echoes
-   back without re-committing — postPiAccounting is itself idempotent (keyed on an
-   active PI JE) and recomputeGrnInvoiced is a from-scratch recount, so a stray
-   double-call can't double-bill. */
+   back without re-running the transition, but still ENSURES its AP/GL entry —
+   postPiAccounting is itself idempotent (keyed on an active PI JE) and
+   recomputeGrnInvoiced is a from-scratch recount, so a stray double-call can't
+   double-bill. */
 purchaseInvoices.patch('/:id/post', async (c) => {
   const sb = c.get('supabase'); const id = c.req.param('id');
   const { data: cur } = await sb.from('purchase_invoices').select('id, status, invoice_number').eq('id', id).maybeSingle();
   if (!cur) return c.json({ error: 'not_found' }, 404);
   const curRow = cur as { id: string; status: string; invoice_number: string };
-  // Already POSTED (or beyond — PARTIALLY_PAID / PAID) → nothing to confirm.
-  if (curRow.status !== 'DRAFT') return c.json({ purchaseInvoice: cur });
+  /* Already POSTED (or beyond — PARTIALLY_PAID / PAID) → nothing to CONFIRM, but
+     the AP/GL entry may still be missing: a PI created straight to POSTED (the
+     default create path) never runs the transition below, and the New-PI screen
+     calls this route immediately after such a create and then tells the operator
+     "AP liability recorded". It wasn't. Ensure it here so that claim is true.
+     postPiAccounting is keyed on an ACTIVE PI JE, so a PI that already posted is
+     untouched and a double-click can't double-book. CANCELLED is excluded: its JE
+     was reversed at cancel time and must not be resurrected. */
+  if (curRow.status !== 'DRAFT') {
+    if (curRow.status !== 'CANCELLED') {
+      const ensure = await postPiAccounting(sb, curRow.invoice_number);
+      if (!ensure.ok) {
+        // eslint-disable-next-line no-console
+        console.error(`[pi-accounting] ensure-post failed for ${curRow.invoice_number}:`, ensure.status, ensure.reason);
+      }
+    }
+    return c.json({ purchaseInvoice: cur });
+  }
 
   /* Atomic single DRAFT → POSTED transition — the conditional UPDATE only fires
      when the row is still DRAFT, so two concurrent confirms race and exactly ONE
@@ -822,8 +950,8 @@ purchaseInvoices.post('/from-grn-items', async (c) => {
   // delete re-mints a surviving number → UNIQUE collision). Derive the next
   // suffix via nextMonthlyDocNo, then counter starts one below it.
   const cp = companyDocPrefix(c);
-  const { data: existingPiNos } = await sb.from('purchase_invoices').select('invoice_number').like('invoice_number', `${cp}PI-${yymm}-%`);
-  let counter = parseInt(nextMonthlyDocNo(`${cp}PI-${yymm}`, ((existingPiNos ?? []) as Array<{ invoice_number: string }>).map((r) => r.invoice_number)).slice(`${cp}PI-${yymm}-`.length), 10) - 1;
+  const firstNext = await mintMonthlyDocNo(sb, 'purchase_invoices', 'invoice_number', `${cp}PI-${yymm}`);
+  let counter = parseInt(firstNext.slice(`${cp}PI-${yymm}-`.length), 10) - 1;
 
   const invoiceDate = body.invoiceDate ?? todayMyt();
   const created: Array<{ id: string; invoiceNumber: string; supplierId: string; grnCount: number; lineCount: number }> = [];
@@ -873,9 +1001,8 @@ purchaseInvoices.post('/from-grn-items', async (c) => {
         .select('id, invoice_number').single();
       if (!hErr && header) { h = header as unknown as { id: string; invoice_number: string }; break; }
       if (!hErr || (hErr as { code?: string }).code !== '23505') break;
-      const { data: live } = await sb.from('purchase_invoices')
-        .select('invoice_number').like('invoice_number', `${cp}PI-${yymm}-%`);
-      counter = parseInt(nextMonthlyDocNo(`${cp}PI-${yymm}`, ((live ?? []) as Array<{ invoice_number: string }>).map((r) => r.invoice_number)).slice(`${cp}PI-${yymm}-`.length), 10);
+      const liveNext = await mintMonthlyDocNo(sb, 'purchase_invoices', 'invoice_number', `${cp}PI-${yymm}`);
+      counter = parseInt(liveNext.slice(`${cp}PI-${yymm}-`.length), 10);
     }
     if (!h) continue;
 
@@ -922,6 +1049,10 @@ purchaseInvoices.post('/from-grn-items', async (c) => {
     }
     // Consume the GRN lines: recount invoiced_qty from live PI lines.
     await recomputeGrnInvoiced(sb, bucket.lines.map(({ row }) => row.id));
+    // Split any PI-native freight before the recost reads it. This path copies GRN
+    // lines only, so a service line among them stays GRN-owned (already in the lot)
+    // and the pool is 0 — kept for the invariant, not for an expected charge.
+    await reallocatePiCharges(sb, h.id);
     // Costing B — push the billed price down to the GRN's lots / DO / SI.
     await recostFromGrn(sb, bucket.grnId);
     created.push({
@@ -1056,6 +1187,10 @@ purchaseInvoices.post('/from-grn', async (c) => {
   // Refresh header subtotal/total from the inserted lines (parity with GRN/PR).
   await recomputePiTotals(sb, h.id);
 
+  // Split any PI-native freight before the recost reads it. This path copies GRN
+  // lines only, so a copied service line stays GRN-owned (already capitalised into
+  // the lot) and the pool is 0 — kept for the invariant, not for an expected charge.
+  await reallocatePiCharges(sb, h.id);
   // Costing B — push the billed price down to the GRN's lots / DO / SI.
   await recostFromGrn(sb, g.id);
 
@@ -1115,6 +1250,8 @@ purchaseInvoices.patch('/:id', async (c) => {
     if (inv) {
       try { await resyncPiAccounting(sb, inv); } catch (e) { /* eslint-disable-next-line no-console */ console.error('[pi-patch] resync failed:', inv, e); }
     }
+    // The freight pool is converted at the PI's rate, so a rate change re-splits it.
+    await reallocatePiCharges(sb, id);
     try { await recostForPi(sb, id); } catch (e) { /* eslint-disable-next-line no-console */ console.error('[pi-patch] recost failed:', id, e); }
   }
   return c.json({ purchaseInvoice: data });
@@ -1220,6 +1357,9 @@ purchaseInvoices.post('/:id/items', async (c) => {
   // nothing). Recount invoiced_qty from live PI lines.
   if (grnItemId) await recomputeGrnInvoiced(sb, [grnItemId]);
   await recomputePiTotals(sb, piId);
+  // The goods basis just changed, so the freight split must be re-derived before
+  // the recost reads it (QTY — no column persists the create-time basis).
+  await reallocatePiCharges(sb, piId);
   // Costing B — a newly added PI line bills a GRN line: re-cost its lots / DO / SI.
   await recostForPi(sb, piId);
   return c.json({ item: data }, 201);
@@ -1304,6 +1444,9 @@ purchaseInvoices.patch('/:id/items/:itemId', async (c) => {
   // [0, qty_accepted]).
   if (grnItemId) await recomputeGrnInvoiced(sb, [grnItemId]);
   await recomputePiTotals(sb, piId);
+  // The goods basis (or the freight line itself) may have changed — re-derive the
+  // split before the recost reads it (QTY; the create-time basis isn't persisted).
+  await reallocatePiCharges(sb, piId);
   // Costing B — a PI price EDIT (incl. human-error correction) re-costs the
   // GRN's lots and cascades to every shipped DO + Sales Invoice in real time.
   await recostForPi(sb, piId);
@@ -1337,6 +1480,9 @@ purchaseInvoices.delete('/:id/items/:itemId', async (c) => {
     const l = line as { qty: number; grn_item_id: string | null };
     // Release: recount invoiced_qty from live PI lines — the deleted line drops out.
     if (l.grn_item_id) await recomputeGrnInvoiced(sb, [l.grn_item_id]);
+    // Re-derive the freight split first: the deleted row may BE the freight line,
+    // or may have been part of the basis it was spread over.
+    await reallocatePiCharges(sb, piId);
     // Costing B — removing a PI line drops its authoritative price; re-cost the
     // GRN so the bucket falls back to the GR price (or Pending) and DOs/SIs follow.
     if (l.grn_item_id) {
@@ -1344,6 +1490,11 @@ purchaseInvoices.delete('/:id/items/:itemId', async (c) => {
       const gid = (gi as { grn_id: string | null } | null)?.grn_id ?? null;
       if (gid) await recostFromGrn(sb, gid);
     }
+    /* Deleting a PI-NATIVE freight line carries no grn_item_id, so the branch above
+       wouldn't recost anything and the freight it used to fund would stay welded to
+       every lot this PI bills. Recost the PI's remaining GRNs too — idempotent, so
+       it's a no-op when the line above already settled them. */
+    await recostForPi(sb, piId);
   }
   await recomputePiTotals(sb, piId);
   /* Deleting a line lowers the PI total — if it was posted to the accounts, void

@@ -33,7 +33,7 @@ import { findSofaLinesWithoutCompleteBatch, sofaNoCompleteBatchResponse, findInc
 import { resolveExpectedBatchBySoItem, buildDropshipOffenders } from '../lib/dropship-batch';
 import { loadSofaBatchStock, sofaStockKey } from '../lib/sofa-set-coverage';
 import { currentDocNoByKey, type CurrentEvent } from '../lib/current-doc';
-import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
+import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { recordSoAudit, type FieldChange } from '../lib/so-audit';
 
 export const deliveryOrdersMfg = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -218,8 +218,7 @@ const nextNum = async (sb: any, c: any, prefixOverride?: string): Promise<string
   // (Delivery-Planning convert stamps the SOURCE SO's company). Falls back to the
   // active company's prefix for the normal same-company paths.
   const p = prefixOverride ?? companyDocPrefix(c);
-  const { data: existing } = await sb.from('delivery_orders').select('do_number').like('do_number', `${p}DO-${yymm}-%`);
-  return nextMonthlyDocNo(`${p}DO-${yymm}`, ((existing ?? []) as Array<{ do_number: string }>).map((r) => r.do_number));
+  return mintMonthlyDocNo(sb, 'delivery_orders', 'do_number', `${p}DO-${yymm}`);
 };
 
 /* Re-derive the DO header's per-category revenue/cost totals + grand total

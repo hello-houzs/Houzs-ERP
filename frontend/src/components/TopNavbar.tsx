@@ -324,6 +324,7 @@ const SCM_SEGMENT_LABELS: Record<string, [string, string]> = {
   // Finance
   "accounting": ["Accounting", "Accounting"],
   "outstanding": ["Outstanding", "Outstanding"],
+  "unbilled-deliveries": ["Not Billed", "Delivered, Not Yet Billed"],
   // Transportation
   "drivers": ["Drivers", "Driver"],
   "delivery-planning": ["Delivery Planning", "Delivery Planning"],

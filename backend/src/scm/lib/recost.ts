@@ -28,9 +28,17 @@
 //   The result: a PI entered/edited (or a GR price corrected) AFTER the goods
 //   shipped flows all the way down to the DO + Sales Invoice margin in real time.
 //
-// COST PRIORITY (per bucket): live (non-cancelled) Purchase Invoice line price,
+// COST PRIORITY (per line): live (non-cancelled) Purchase Invoice line price,
 // else the GR price, else Pending (lot left untouched — cost unknown until a
-// price lands; Stage A surfaces this as "Pending").
+// price lands; Stage A surfaces this as "Pending"). Each step needs a POSITIVE
+// price: 0 encodes "no price known" everywhere else in this schema (the FIFO
+// trigger COALESCEs a missing IN cost to 0), so a zero-priced PI line falls
+// through to the GR price rather than zeroing a lot that cost real money.
+//
+// Costs resolve per GRN LINE and are then aggregated onto the lot that line
+// produced, identified by (product_code, variant_key, batch_no = source PO).
+// Lines that remain tied there are indistinguishable to FIFO too, so they
+// resolve to a qty-weighted average — Σ(qty × cost) is conserved exactly.
 //
 // Best-effort throughout: never throws into the caller (audit-DLQ pattern,
 // same as the rest of the inventory layer). The primary write already
@@ -134,6 +142,39 @@ export async function restampSiFromDo(sb: any, deliveryOrderId: string) {
   } catch (e) { /* eslint-disable-next-line no-console */ console.error('[restampSiFromDo] failed:', deliveryOrderId, e); }
 }
 
+/* Each GRN line's source PO number — the SAME value the GRN post stamped onto
+   its IN movement as batch_no (migration 0120), so it re-identifies the lot a
+   line produced. Re-derived here (rather than imported from routes/grns, which
+   already imports recostFromGrn) to keep this lib free of a routes cycle.
+   Lines with no PO (manual / free GRN) are absent → batch '' , matching the
+   NULL batch_no the post wrote. */
+async function poNumberByGrnItem(
+  sb: any,
+  giList: Array<{ id: string; purchase_order_item_id: string | null }>,
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const poItemIds = [...new Set(giList.map((g) => g.purchase_order_item_id).filter((x): x is string => !!x))];
+  if (poItemIds.length === 0) return out;
+  const { data: poi } = await sb.from('purchase_order_items')
+    .select('id, purchase_order_id').in('id', poItemIds);
+  const poiRows = (poi ?? []) as Array<{ id: string; purchase_order_id: string | null }>;
+  const poIds = [...new Set(poiRows.map((r) => r.purchase_order_id).filter((x): x is string => !!x))];
+  if (poIds.length === 0) return out;
+  const { data: pos } = await sb.from('purchase_orders').select('id, po_number').in('id', poIds);
+  const noByPo = new Map<string, string>();
+  for (const p of (pos ?? []) as Array<{ id: string; po_number: string }>) noByPo.set(p.id, p.po_number);
+  const noByPoItem = new Map<string, string>();
+  for (const r of poiRows) {
+    const n = r.purchase_order_id ? noByPo.get(r.purchase_order_id) : undefined;
+    if (n) noByPoItem.set(r.id, n);
+  }
+  for (const g of giList) {
+    const n = g.purchase_order_item_id ? noByPoItem.get(g.purchase_order_item_id) : undefined;
+    if (n) out.set(g.id, n);
+  }
+  return out;
+}
+
 /* ── recostFromGrn — the engine ───────────────────────────────────────────
    Re-derive authoritative cost for one GRN's received buckets and cascade it
    to lots → consumptions → movements → DO → SI. Idempotent (a bucket whose lot
@@ -143,14 +184,19 @@ export async function recostFromGrn(sb: any, grnId: string) {
     // 1. GRN lines — the received buckets + their GR (fallback) price.
     //    Migration 0082 — also read allocated_charge_centi + qty_accepted so the
     //    landed FREIGHT folded in at receive time survives a PI recost.
+    //    ORDER BY id: the resolution below is order-independent by construction,
+    //    but an unordered select made two runs over identical data observably
+    //    different (audit 2026-07-17) — pin it so a recost is reproducible.
     const { data: grnItems } = await sb.from('grn_items')
-      .select('id, material_code, item_group, variants, unit_price_centi, qty_accepted, allocated_charge_centi')
-      .eq('grn_id', grnId);
+      .select('id, material_code, item_group, variants, unit_price_centi, qty_accepted, allocated_charge_centi, purchase_order_item_id')
+      .eq('grn_id', grnId)
+      .order('id', { ascending: true });
     if (!grnItems || grnItems.length === 0) return;
     const giList = grnItems as Array<{
       id: string; material_code: string; item_group: string | null;
       variants: Record<string, unknown> | null; unit_price_centi: number | null;
       qty_accepted: number | null; allocated_charge_centi: number | null;
+      purchase_order_item_id: string | null;
     }>;
 
     /* Landed-cost core (migration 0082) — the GRN's exchange_rate (MYR per 1 unit
@@ -202,80 +248,89 @@ export async function recostFromGrn(sb: any, grnId: string) {
       piAgg.set(r.grn_item_id, a);
     }
 
-    /* Landed-cost allocation (migration 0082) — per-bucket FREIGHT per unit. The
-       GRN allocated_charge_centi was folded into the lot at receive time as
-       round(allocated / qty) per unit. A PI recost re-derives the GOODS cost, so
-       we must re-add the SAME per-unit freight or it would silently drop out.
-       Aggregate per bucket as a qty-weighted average. 0 everywhere when no charge. */
-    const freightByBucket = new Map<string, number>();
-    {
-      const acc = new Map<string, { freight: number; qty: number }>();
-      for (const g of giList) {
-        const vkey = computeVariantKey(g.item_group, g.variants);
-        const key = `${g.material_code}::${vkey}`;
-        const qty = Math.max(0, Number(g.qty_accepted ?? 0));
-        const perUnit = qty > 0 ? Math.round(Number(g.allocated_charge_centi ?? 0) / qty) : 0;
-        const a = acc.get(key) ?? { freight: 0, qty: 0 };
-        a.freight += perUnit * qty; // total freight sen across this line
-        a.qty += qty;
-        acc.set(key, a);
-      }
-      for (const [key, a] of acc) freightByBucket.set(key, a.qty > 0 ? Math.round(a.freight / a.qty) : 0);
-    }
-
     /* PI-level landed freight (migration 0082) — freight entered on the PI as a
        SERVICE line, pooled + allocated across the PI's GOODS lines and stored per
        line as purchase_invoice_items.allocated_charge_centi (already MYR sen via
-       the PI's own rate, computed at PI write time). SEPARATE from the GRN freight:
-       the user enters freight on the GRN OR the PI (or both, deliberately), and
-       each capitalises EXACTLY ONCE. Re-added here as a per-unit MYR figure ON TOP
-       of the GRN freight + goods cost. DRAFT/CANCELLED PIs excluded. 0 everywhere
-       when no PI freight, so a PI with no service line is unchanged. */
-    const piFreightByBucket = new Map<string, number>();
-    {
-      const giById = new Map(giList.map((g) => [g.id, g]));
-      const acc = new Map<string, { freight: number; qty: number }>();
-      for (const r of piList) {
-        if (!r.grn_item_id || piExcluded.has(r.purchase_invoice_id)) continue;
-        const alloc = Number(r.allocated_charge_centi ?? 0);
-        if (alloc === 0) continue;
-        const g = giById.get(r.grn_item_id);
-        if (!g) continue;
-        const vkey = computeVariantKey(g.item_group, g.variants);
-        const key = `${g.material_code}::${vkey}`;
-        const lotQty = Math.max(0, Number(g.qty_accepted ?? 0));
-        const perUnit = lotQty > 0 ? Math.round(alloc / lotQty) : 0;
-        const a = acc.get(key) ?? { freight: 0, qty: 0 };
-        a.freight += perUnit * lotQty;
-        a.qty += lotQty;
-        acc.set(key, a);
-      }
-      for (const [key, a] of acc) piFreightByBucket.set(key, a.qty > 0 ? Math.round(a.freight / a.qty) : 0);
+       the PI's own rate, computed at PI write time by reallocatePiCharges).
+       SEPARATE from the GRN freight: the user enters freight on the GRN OR the PI
+       (or both, deliberately), and each capitalises EXACTLY ONCE — the PI writer
+       pools only PI-NATIVE service lines, never one copied down from the GRN.
+       DRAFT/CANCELLED PIs excluded. 0 when a PI carries no service line. */
+    const piFreightByGrnItem = new Map<string, number>();
+    for (const r of piList) {
+      if (!r.grn_item_id || piExcluded.has(r.purchase_invoice_id)) continue;
+      const alloc = Number(r.allocated_charge_centi ?? 0);
+      if (alloc === 0) continue;
+      piFreightByGrnItem.set(r.grn_item_id, (piFreightByGrnItem.get(r.grn_item_id) ?? 0) + alloc);
     }
 
-    // 3. Authoritative unit cost per (product_code, variant_key) bucket.
-    //    PI price > GR price > Pending (null → leave the lot untouched).
-    const costByBucket = new Map<string, number | null>();
+    /* 3. Authoritative landed cost PER LINE, then aggregated per LOT IDENTITY.
+       WHY PER LINE (audit 2026-07-17): lots are one-per-GRN-line (the post writes
+       one IN per line; the FIFO trigger opens one lot per IN). Keying cost by
+       (material_code, variant_key) alone put every same-SKU line in ONE bucket and
+       let the first-read line's price win for ALL of that SKU's lots — so a GRN
+       spanning two POs (/from-po-items groups by SUPPLIER, lines keep their own
+       purchase_order_item_id) booked the second PO's lot at the first PO's price.
+
+       LOT IDENTITY: nothing links a lot back to its grn_item — inventory_movements
+       carries no grn_item_id, only source_doc_id = the GRN. The finest identity the
+       schema actually holds is (product_code, variant_key, batch_no), batch_no being
+       the source PO number (migration 0120). That separates the multi-PO case
+       exactly. Lines still tied on all three are genuinely indistinguishable — FIFO
+       itself consumes them in arbitrary order — so they resolve to a qty-weighted
+       average, which conserves Σ(qty × cost) EXACTLY (each line's qty IS its lot's
+       qty_received). Order-independent, so the resolution no longer depends on the
+       row order the DB happened to return.
+
+       COARSE FALLBACK: a lot whose batch_no doesn't match any line's PO (pre-0120
+       lots were stamped NULL) falls back to the (code, variant_key) aggregate —
+       i.e. exactly the bucket this code used before — so refining the key can never
+       leave a lot unmatched that previously resolved. */
+    const batchByGrnItem = await poNumberByGrnItem(sb, giList);
+    type Agg = { qty: number; amt: number };
+    const byLotKey = new Map<string, Agg>();   // code::variant::batch — the lot's identity
+    const byCoarse = new Map<string, Agg>();   // code::variant — pre-0120 fallback
+    const addTo = (m: Map<string, Agg>, key: string, qty: number, landed: number) => {
+      const a = m.get(key) ?? { qty: 0, amt: 0 };
+      a.qty += qty;
+      a.amt += qty * landed;
+      m.set(key, a);
+    };
     for (const g of giList) {
       const vkey = computeVariantKey(g.item_group, g.variants);
-      const key = `${g.material_code}::${vkey}`;
+      const qty = Math.max(0, Number(g.qty_accepted ?? 0));
       const pi = piAgg.get(g.id);
-      // GRN-allocated freight + PI-allocated freight. Both per-unit MYR; each
-      // folds onto the goods cost once (distinct user entries, never double-counted).
-      const freight = (freightByBucket.get(key) ?? 0) + (piFreightByBucket.get(key) ?? 0);
-      let cost: number | null;
-      // PI price (already MYR via piAgg) > GR price × GRN rate (→ MYR) > Pending.
-      if (pi && pi.qty > 0) cost = Math.round(pi.amt / pi.qty) + freight;
-      else if (Number(g.unit_price_centi ?? 0) > 0) cost = toMyrSen(Number(g.unit_price_centi), grnRate) + freight;
-      else cost = null; // Pending — no price anywhere yet.
-      const existing = costByBucket.get(key);
-      if (existing === undefined) costByBucket.set(key, cost);
-      else if (existing === null && cost !== null) costByBucket.set(key, cost); // prefer a priced source
+      /* PI price (already MYR via piAgg) > GR price × GRN rate (→ MYR) > Pending.
+         BOTH branches guard on a POSITIVE price. A zero is not a price in this
+         schema — it is the absence of one: the FIFO trigger's COALESCE(unit_cost,0)
+         means a never-priced lot already sits at 0, and Stage A reads 0 as
+         "Pending". So a supplier billing RM0 (an FOC warranty replacement — the
+         goods still cost real money when they were received) must fall through to
+         the GR price, NOT overwrite a good lot with 0 and hand every sale of that
+         stock a 100% margin. A PI that blends free units WITH billed ones still
+         averages down through piAgg — that is a real landed cost, and it survives
+         this guard because the average is > 0. */
+      const piGoods = pi && pi.qty > 0 ? Math.round(pi.amt / pi.qty) : 0;
+      const goods = piGoods > 0
+        ? piGoods
+        : (Number(g.unit_price_centi ?? 0) > 0 ? toMyrSen(Number(g.unit_price_centi), grnRate) : null);
+      if (goods === null) continue; // Pending — no price anywhere yet; leave the lot alone.
+      /* GRN-allocated freight + PI-allocated freight, each folded in per unit over
+         the RECEIVED qty (the lot's qty) so the lot carries the whole charge once. */
+      const freight = qty > 0
+        ? Math.round(Number(g.allocated_charge_centi ?? 0) / qty)
+          + Math.round((piFreightByGrnItem.get(g.id) ?? 0) / qty)
+        : 0;
+      const landed = goods + freight;
+      addTo(byLotKey, `${g.material_code}::${vkey}::${batchByGrnItem.get(g.id) ?? ''}`, qty, landed);
+      addTo(byCoarse, `${g.material_code}::${vkey}`, qty, landed);
     }
+    const resolve = (a: Agg | undefined): number | null =>
+      a && a.qty > 0 ? Math.round(a.amt / a.qty) : null;
 
     // 4. Lots created by this GRN. Re-cost each, then cascade to its consumptions.
     const { data: lots } = await sb.from('inventory_lots')
-      .select('id, product_code, variant_key, qty_received, movement_id, unit_cost_sen')
+      .select('id, product_code, variant_key, batch_no, qty_received, movement_id, unit_cost_sen')
       .eq('source_doc_type', 'GRN').eq('source_doc_id', grnId);
     if (!lots || lots.length === 0) return;
 
@@ -285,10 +340,14 @@ export async function recostFromGrn(sb: any, grnId: string) {
     // at cancel time; recosting it here would double-correct the GL.
     type ConsCand = { id: string; qty_consumed: number | null; movement_id: string | null; newCost: number };
     const consCandidates: ConsCand[] = [];
-    for (const lot of lots as Array<{ id: string; product_code: string; variant_key: string | null; qty_received: number | null; movement_id: string | null; unit_cost_sen: number | null }>) {
-      const key = `${lot.product_code}::${lot.variant_key ?? ''}`;
-      const newCost = costByBucket.get(key);
-      if (newCost === undefined || newCost === null) continue; // Pending — leave as-is
+    for (const lot of lots as Array<{ id: string; product_code: string; variant_key: string | null; batch_no: string | null; qty_received: number | null; movement_id: string | null; unit_cost_sen: number | null }>) {
+      const vkey = lot.variant_key ?? '';
+      // The lot's own batch first; the pre-0120 (NULL-batch) fallback second.
+      const newCost = resolve(
+        byLotKey.get(`${lot.product_code}::${vkey}::${lot.batch_no ?? ''}`)
+          ?? byCoarse.get(`${lot.product_code}::${vkey}`),
+      );
+      if (newCost === null) continue; // Pending — leave as-is
       if (Number(lot.unit_cost_sen ?? 0) === newCost) continue; // already correct
 
       // 4a. The lot's carrying cost.

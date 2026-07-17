@@ -36,7 +36,7 @@ import {
 } from '../shared/so-line-display';
 import { writeMovements, defaultWarehouseId, resolveWarehouseLotBatches } from '../lib/inventory-movements';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
-import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
+import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { todayMyt } from '../lib/my-time';
 import { recomputePcoReceived } from './purchase-consignment-receives';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
@@ -210,10 +210,7 @@ const nextNum = async (sb: any, c: any): Promise<string> => {
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
   const p = companyDocPrefix(c);
-  const { data: existing } = await sb.from('purchase_consignment_returns')
-    .select('return_number')
-    .like('return_number', `${p}PCT-${yymm}-%`);
-  return nextMonthlyDocNo(`${p}PCT-${yymm}`, ((existing ?? []) as Array<{ return_number: string }>).map((r) => r.return_number));
+  return mintMonthlyDocNo(sb, 'purchase_consignment_returns', 'return_number', `${p}PCT-${yymm}`);
 };
 
 /* ── Recompute PC Return header money rollup ───────────────────────────────
