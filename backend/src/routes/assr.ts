@@ -22,7 +22,7 @@ import {
   setItemRemark,
 } from "../services/assr";
 import { runSlaEscalation } from "../services/assrEscalation";
-import { issueStaffToken, issueSalesToken } from "../services/caseTracking";
+import { issueStaffToken, issueSalesToken, revokeCaseTokens } from "../services/caseTracking";
 import { sendEmail, publicUrl } from "../services/email";
 import { resolveCompanyCode, getBrandingForCompany } from "../services/branding";
 import { AutoCountClient, routeRegion, isAutoCountSyncDisabled } from "../services/autocount";
@@ -1728,8 +1728,17 @@ app.post("/:id{[0-9]+}/mark-opened", requirePermission("service_cases.write"), a
 
 // ── Generate a staff-sourced portal tracking link ─────────────
 // Dispatcher clicks "Copy portal link" — returns a token that the
-// frontend turns into a full URL, then copied into WhatsApp. 30-day
-// TTL so the customer can reopen it over the life of the case.
+// frontend turns into a full URL, then copied into WhatsApp.
+//
+// This said "30-day TTL so the customer can reopen it over the life of
+// the case" until 2026-07-17. It was true when written (mig 017 minted
+// staff tokens with a 30-day expiry) and was superseded by mig 0076 /
+// D1 113: Nick 2026-07-07 ruled that shared WhatsApp links must keep
+// working forever, and that migration extended every existing token to
+// PERMANENT_EXPIRES_AT. The comment outlived the behaviour it
+// described and kept promising a bound this endpoint no longer had, on
+// the surface whose only protection is the token. Links are permanent
+// by design; DELETE /:id/track-link below is what ends one.
 app.post("/:id/track-link", requirePermission("service_cases.write"), async (c) => {
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
@@ -1760,6 +1769,47 @@ app.post("/:id/sales-link", requirePermission("service_cases.write"), async (c) 
   return c.json({ token, path: `/portal/case/${token}` }, 201);
 });
 
+// ── Revoke every portal link for a case ───────────────────────
+//
+// The counterpart to the two issuers above. Portal links are permanent
+// by ruling (see the track-link comment), which is right up until one
+// is forwarded to the wrong WhatsApp group -- before this the only
+// remedy was hand-editing case_track_tokens. Kills staff + sales + any
+// live 30-min customer session for the case; re-clicking Generate
+// mints a fresh link, so this doubles as rotation.
+//
+// Gated on service_cases.write, matching the issuers: anyone who can
+// hand out a link can take it back. A stricter gate would mean the
+// dispatcher who leaked it cannot contain it without escalating.
+app.delete("/:id/track-link", requirePermission("service_cases.write"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+  const exists = await c.env.DB.prepare(
+    `SELECT id FROM assr_cases WHERE id = ?`
+  )
+    .bind(id)
+    .first();
+  if (!exists) return c.json({ error: "Not found" }, 404);
+  await revokeCaseTokens(c.env, id);
+  // Revoking access to an unauthenticated surface is a security event:
+  // it belongs in the case timeline, not just a server log. category
+  // 'system' keeps it off the portal -- of the buckets (mig 121) only
+  // 'customer' renders there, and a revocation record is the last
+  // thing that should be readable through the link it just killed.
+  const userId = (c as any).get?.("userId") ?? null;
+  await logActivity(
+    c.env,
+    id,
+    "portal_links_revoked",
+    null,
+    null,
+    "Portal links revoked — previously shared links no longer open this case.",
+    userId,
+    "system",
+  );
+  return c.json({ ok: true });
+});
+
 // ── Supplier portal link (v3.1) ───────────────────────────────
 //
 // Idempotent: re-clicking the button returns the existing active
@@ -1778,6 +1828,38 @@ app.post("/:id/supplier-link", requirePermission("service_cases.write"), async (
   const { issueSupplierToken } = await import("../services/supplierPortal");
   const token = await issueSupplierToken(c.env, id, row.creditor_code);
   return c.json({ token, path: `/portal/supplier/${token}` }, 201);
+});
+
+// ── Revoke the supplier portal links for a case ───────────────
+//
+// The counterpart to the issuer above, and what finally makes
+// resolveSupplierToken's revoked_at check reachable — it had no caller
+// since the portal shipped, so a supplier link could only end by
+// hitting its 30-day TTL. Needed most when a case is re-assigned: the
+// previous supplier's token stays valid otherwise.
+app.delete("/:id/supplier-link", requirePermission("service_cases.write"), async (c) => {
+  const id = parseInt(c.req.param("id"), 10);
+  if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
+  const exists = await c.env.DB.prepare(
+    `SELECT id FROM assr_cases WHERE id = ?`
+  )
+    .bind(id)
+    .first();
+  if (!exists) return c.json({ error: "Not found" }, 404);
+  const { revokeSupplierTokensForCase } = await import("../services/supplierPortal");
+  await revokeSupplierTokensForCase(c.env, id);
+  const userId = (c as any).get?.("userId") ?? null;
+  await logActivity(
+    c.env,
+    id,
+    "supplier_links_revoked",
+    null,
+    null,
+    "Supplier portal links revoked — previously shared links no longer open this case.",
+    userId,
+    "system",
+  );
+  return c.json({ ok: true });
 });
 
 // ── Generate satisfaction survey token ────────────────────────

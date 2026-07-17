@@ -310,6 +310,12 @@ app.onError((err, c) => {
   return res;
 });
 
+// Exported for portalSurfaces.test.ts, which walks `app.routes` in
+// registration order to prove every PUBLIC_API_PREFIXES entry is backed
+// by a router mounted above the auth gate. The invariant is about mount
+// ORDER, so it can only be checked against the assembled app.
+export { app };
+
 export default {
   fetch: app.fetch,
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext) {

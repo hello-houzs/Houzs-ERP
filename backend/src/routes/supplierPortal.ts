@@ -77,10 +77,26 @@ app.get("/case", async (c) => {
     .bind(assr_id)
     .all();
 
+  // visible_to_customer = 1 is the only "safe to show outside Houzs"
+  // flag the schema has: it defaults to 1 and staff flip it to 0 on the
+  // case page precisely to mark a photo internal. Without this
+  // predicate the supplier portal served EVERY attachment on the case,
+  // including the ones staff had explicitly hidden. The customer portal
+  // has had the filter since mig 016 (routes/portal.ts) — this router
+  // was cloned from it and dropped the line.
+  //
+  // Reusing the customer flag for a supplier audience is a deliberate
+  // fail-closed choice, not a shortcut: a photo marked internal stays
+  // internal to BOTH outside parties. The cost is that hiding a
+  // supplier's own upload also hides it from that supplier — the safe
+  // direction to be wrong in, and the one to revisit only if staff ask
+  // for a separate visible_to_supplier flag.
   const attachments = await c.env.DB.prepare(
     `SELECT id, category, file_name, content_type, created_at
        FROM assr_attachments
-      WHERE assr_id = ? AND archived_at IS NULL
+      WHERE assr_id = ?
+        AND visible_to_customer = 1
+        AND archived_at IS NULL
       ORDER BY created_at DESC`
   )
     .bind(assr_id)
@@ -327,6 +343,13 @@ app.put("/attachments", async (c) => {
 //
 // Stream an attachment binary back. Re-checks scope on every request
 // so a stolen attachment URL with a stale token is rejected.
+//
+// The visibility predicate is repeated here and NOT left to the listing
+// above: this route takes an attachment id straight from the URL, so
+// filtering only the list would hide internal photos from the page
+// while still serving their bytes to anyone walking the id space —
+// ids are sequential. Mirrors routes/portal.ts's customer equivalent,
+// which guards both places for the same reason.
 
 app.get("/attachments/:attId", async (c) => {
   const { assr_id } = c.get("supplierScope");
@@ -338,6 +361,7 @@ app.get("/attachments/:attId", async (c) => {
        FROM assr_attachments
       WHERE id = ?
         AND assr_id = ?
+        AND visible_to_customer = 1
         AND archived_at IS NULL`
   )
     .bind(attId, assr_id)

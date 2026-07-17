@@ -1641,22 +1641,39 @@ export { logActivity };
 // dispatch on case close — pulled out so both paths agree on the
 // "reuse unsubmitted token" behavior.
 
+// mig 015 shipped assr_survey_tokens.expires_at as "nullable -- null =
+// never expires" and then no code ever wrote it, so every survey token
+// minted since has been immortal while the route's 404 claimed
+// otherwise. A survey is asked for right after the case closes and
+// goes stale fast -- a rating submitted a year later is noise -- and
+// the link sits on an unauthenticated route that echoes the customer's
+// name and SO number, so the window is the exposure. 90 days is far
+// past any real response and still ends.
+export const SURVEY_TTL_DAYS = 90;
+
 export async function issueSurveyToken(env: Env, assrId: number): Promise<string> {
+  // The reuse branch has to honour the TTL too. Without the expiry
+  // predicate this hands back a token routes/survey.ts now rejects --
+  // a link that 404s the moment it is shared, which is worse than the
+  // immortal one it replaced.
   const existing = await env.DB.prepare(
     `SELECT token FROM assr_survey_tokens
       WHERE assr_id = ? AND submitted_at IS NULL
+        AND expires_at IS NOT NULL
+        AND expires_at > ?
       ORDER BY created_at DESC LIMIT 1`
   )
-    .bind(assrId)
+    .bind(assrId, new Date().toISOString())
     .first<{ token: string }>();
   if (existing) return existing.token;
   const token = Array.from(crypto.getRandomValues(new Uint8Array(16)))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
+  const expiresAt = new Date(Date.now() + SURVEY_TTL_DAYS * 24 * 60 * 60 * 1000).toISOString();
   await env.DB.prepare(
-    `INSERT INTO assr_survey_tokens (token, assr_id) VALUES (?, ?)`
+    `INSERT INTO assr_survey_tokens (token, assr_id, expires_at) VALUES (?, ?, ?)`
   )
-    .bind(token, assrId)
+    .bind(token, assrId, expiresAt)
     .run();
   return token;
 }
