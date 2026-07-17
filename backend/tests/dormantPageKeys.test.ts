@@ -41,11 +41,17 @@ describe("dormant page keys — the greyed rows", () => {
     }
   });
 
-  test("the list is exactly the seven measured dead cells", () => {
-    // feat/jd-rules-from-record counted six; `team.members` is the seventh — the
+  test("the list is exactly the eight measured dead cells", () => {
+    // feat/jd-rules-from-record counted six; `team.members` was the seventh — the
     // Team nav gates on the PARENT key `team` plus a flat users.read, so all four
     // team.* children are read by nothing. Re-swept 2026-07-17.
+    // `scm.warehouse.adjustments` is the eighth (2026-07-18): the frontend moved
+    // its nav + route off this key onto `scm.warehouse.inventory` — the key the
+    // backend area-guard actually enforces for POST /inventory/adjustments — which
+    // left this one with no consumer at all. Greyed, not retired: it stays in
+    // PAGES[] and the Finance Manager snapshot row keeps its stored value inert.
     expect([...DORMANT_PAGE_KEYS].sort()).toEqual([
+      "scm.warehouse.adjustments",
       "service_cases.by_creditor",
       "service_cases.pnl",
       "service_cases.settings",

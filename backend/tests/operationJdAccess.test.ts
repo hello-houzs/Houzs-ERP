@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { applyOperationJdOverride } from "../src/services/operationJdAccess";
 import {
+  isDormantPageKey,
   resolvePositionAccessFromRows,
   type AccessLevel,
 } from "../src/services/pageAccess";
@@ -174,6 +175,24 @@ describe("Operation JD override — invariants", () => {
     expect(out["scm.warehouse.adjustments"]).toBe("view");
     expect(out["scm.procurement.po"]).toBe("view");
     expect(out["projects"]).toBe("view");
+  });
+
+  test("scm.warehouse.adjustments is DORMANT — no scmAreaGuard reads it, and the FE now agrees", () => {
+    // The dead-key trap, pinned from the backend side. POST /inventory/adjustments
+    // is gated by scmAreaGuard('scm.warehouse.inventory') (scm/index.ts:265); NO
+    // scmAreaGuard is ever mounted on 'scm.warehouse.adjustments' (grep-verified:
+    // only its PAGES[] def + the prod snapshot's stored value reference it). Once
+    // the frontend nav + route moved off it onto scm.warehouse.inventory, the key
+    // had zero consumers — so it is greyed, not retired: settable, its stored
+    // Finance Manager value kept inert, read by nothing.
+    expect(isDormantPageKey("scm.warehouse.adjustments")).toBe(true);
+    // The key the backend actually enforces for adjustment writes is NOT dormant —
+    // it is a live, guarded area and one of the three the cohort is granted.
+    expect(isDormantPageKey("scm.warehouse.inventory")).toBe(false);
+    const out = applyOperationJdOverride(MATRIX, purchasing);
+    // Concretely: the grant lands on the enforced key, never on the dead one.
+    expect(out["scm.warehouse.inventory"]).toBe("edit");
+    expect(out["scm.warehouse.adjustments"]).toBe("view");
   });
 
   test("a caller with no position is not in the cohort — nothing added", () => {
