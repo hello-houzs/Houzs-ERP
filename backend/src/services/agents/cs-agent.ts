@@ -34,6 +34,7 @@
 
 import type { Env } from '../../types';
 import { computeMrp, type MrpResult } from '../../scm/routes/mrp';
+import { loadLeadBuffers } from './procurement-learning';
 import { getSupabaseService } from '../../db/supabase';
 import { resolveStateCode } from './delivery-agent-geo';
 import { readAgentSetting } from '../agent-console';
@@ -481,7 +482,7 @@ export async function runCsAgent(
 
   // Job A — honest promise dates from live MRP supply.
   const [mrp, headers, transitByState] = await Promise.all([
-    computeMrp(sb, { catFilter: null, whFilter: null, includeUndated: false }),
+    computeMrp(sb, { catFilter: null, whFilter: null, includeUndated: false, leadBuffers: await loadLeadBuffers(env.DB) }),
     loadSoHeaders(sb),
     loadTransitDays(db),
   ]);

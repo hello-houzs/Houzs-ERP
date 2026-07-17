@@ -36,6 +36,15 @@ import { resolveMaintenanceConfigForSupplier } from '../lib/po-pricing';
 import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { escapeForOr } from '../lib/postgrest-search';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
+import {
+  loadLeadTimeBase,
+  resolveLeadDays,
+  subtractCalendarDays,
+  LEAD_TIME_SELECT,
+} from '../lib/lead-time';
+import { groupKeyFor } from '../lib/po-grouping';
+import { loadLeadBuffers } from '../../services/agents/procurement-learning';
+import { getSupabaseService } from '../../db/supabase';
 import { supabaseAuth } from '../middleware/auth';
 import { computeMrp } from './mrp';
 import type { Env, Variables } from '../env';
@@ -474,7 +483,7 @@ mfgPurchaseOrders.get('/outstanding-so-items', async (c) => {
   const shortageBySoItem = new Map<string, number>();
   let pooledOk = true;
   try {
-    const mrpRes = await computeMrp(supabase, { catFilter: null, whFilter: null, includeUndated: true, companyId: activeCompanyId(c) });
+    const mrpRes = await computeMrp(supabase, { catFilter: null, whFilter: null, includeUndated: true, companyId: activeCompanyId(c), leadBuffers: await loadLeadBuffers(c.env.DB) });
     for (const sku of mrpRes.skus) {
       for (const l of sku.lines) shortageBySoItem.set(l.soItemId, l.shortageQty);
     }
@@ -994,19 +1003,6 @@ mfgPurchaseOrders.post('/', async (c) => {
   return c.json({ id: header.id, poNumber: header.po_number }, 201);
 });
 
-/* Commander 2026-06-18 — subtract N calendar days from a 'YYYY-MM-DD' date,
-   returning 'YYYY-MM-DD'. Pulls a PO line's delivery date EARLIER than the
-   customer date by the category's MRP lead days so the supplier delivers with a
-   buffer. Null/empty in → null out; days<=0 → unchanged (preserves the raw
-   date). UTC math so it never drifts a day across a timezone. */
-function subtractCalendarDays(dateStr: string | null | undefined, days: number): string | null {
-  if (!dateStr) return null;
-  if (!Number.isFinite(days) || days <= 0) return dateStr;
-  const ms = Date.parse(`${String(dateStr).slice(0, 10)}T00:00:00Z`);
-  if (Number.isNaN(ms)) return dateStr;
-  return new Date(ms - days * 86400000).toISOString().slice(0, 10);
-}
-
 // ── POST /from-sos ────────────────────────────────────────────────────
 // Create POs from selected Sales Order items. For each SO item, looks up
 // the MAIN supplier binding via supplier_material_bindings. Groups items
@@ -1020,7 +1016,44 @@ function subtractCalendarDays(dateStr: string | null | undefined, days: number):
  * still accepted — when given, we look up the SO items by (soDocNo, itemCode)
  * and convert. New shape is preferred because we can validate qty <= remaining
  * (qty - po_qty_picked) and increment po_qty_picked atomically. */
-mfgPurchaseOrders.post('/from-sos', async (c) => {
+/* ── SO → PO convert core (agent factoring, 2026-07-17) ────────────────────
+   The handler body below is the single authority for raising a PO from SO
+   lines: supplier binding, warehouse resolution, lead-time subtraction, the
+   per-category split, doc-no minting. The Procurement Agent's approved
+   proposals must produce POs through THIS body and no other — a second path
+   would drift from it, and the thing that drifts is the date we promise a
+   supplier.
+
+   So the body is factored MECHANICALLY (unchanged) to take a minimal
+   structural context instead of the full Hono context. The HTTP route below
+   wires the real context through verbatim; createDraftPosFromPicks feeds it a
+   synthetic one built from Env.
+
+   The synthetic context is the part with a scar. companyDocPrefix reads
+   `companyCode` and expects a STRING — the scan background job once handed a
+   reconstructed context a whole company object there and minted
+   "[object Object]-SO-2607-001" into production. Hence PoConvertContext types
+   every key it exposes, and the headless builder below returns explicit values
+   for all of them rather than falling through to a default. */
+export type PoConvertOutcome = { status: number; body: Record<string, unknown> };
+export type PoConvertContext = {
+  req: { json(): Promise<unknown> };
+  /* supabase keeps the REAL client type — the body relies on the typed query
+     builders for callback inference (an `any` turns every `.map((r) => ...)`
+     inside into an implicit-any TS7006). Mirrors SoCreateContext. */
+  get(key: 'supabase'): Variables['supabase'];
+  get(key: 'user'): { id: string };
+  /* Multi-company (mig 0061). Undefined pre-migration / cold-start / headless
+     so the stamping and scoping no-op — see the sentinel in companyScope. */
+  get(key: 'companyId'): number | undefined;
+  get(key: 'allowedCompanyIds'): number[] | undefined;
+  /** STRING or undefined. Never an object — see the doc-prefix scar above. */
+  get(key: 'companyCode'): string | undefined;
+  env: Env;
+  json(body: unknown, status?: number): PoConvertOutcome;
+};
+
+export async function convertSosToPosCore(c: PoConvertContext): Promise<PoConvertOutcome> {
   const supabase = c.get('supabase');
   const user = c.get('user');
   let body: {
@@ -1036,7 +1069,22 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
          'combined' (default) = one PO per supplier (all picked SOs merged) —
                                  good for mattresses (dozens of SOs → 1 PO).
          'per-so'             = one PO per (supplier × SO) — good for sofa /
-                                 bedframe where 1 SO → 1 PO. */
+                                 bedframe where 1 SO → 1 PO.
+
+       SUPERSEDED FOR THE THREE RULED CATEGORIES (owner 2026-07-17). The note
+       above was always a description of WHICH MODE TO PICK for which category —
+       so the operator had to know the rule and choose correctly, and a mixed
+       pick could only ever get one behaviour. The rule is now applied
+       automatically per category in scm/lib/po-grouping.ts:
+         sofa, bedframe -> per-SO      (as the note says; sofa also for dye lot)
+         mattress       -> merged, but bounded by a delivery-date WINDOW
+       The window is the 07-17 refinement of the note's unbounded "dozens of SOs
+       -> 1 PO": merging a mattress due next quarter into this week's PO lands
+       stock three months early, which is the opposite of the turnover the merge
+       exists to improve.
+
+       `mode` still decides the categories he has NOT ruled on (accessory,
+       service, anything else item_group carries). */
     mode?: 'combined' | 'per-so';
     /* Commander 2026-05-29 — per-SKU supplier override. The MRP lets the user
        switch an item to an alternate supplier in-place; { itemCode: supplierId }
@@ -1059,10 +1107,20 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
        part of that supply pool — NOT by per-line locking. The ordinary From-SO
        picker leaves this false → keeps its cap. */
     fromMrp?: boolean;
+    /* Land the created POs as DRAFT instead of SUBMITTED (owner 2026-07-17 —
+       the Procurement Agent's Stage 1: propose, then approve).
+
+       Opt-in and defaulting FALSE, so every existing caller is byte-for-byte
+       unaffected. `POST /` has taken this since PR #131 and the SO flow uses it;
+       the bulk convert never could, which is the whole reason an agent could not
+       raise a PO for review — see the header insert below for why a DRAFT is the
+       right fuse rather than a new parallel mechanism. */
+    asDraft?: boolean;
   };
   try { body = (await c.req.json()) as typeof body; } catch { return c.json({ error: 'invalid_json' }, 400); }
   const poMode: 'combined' | 'per-so' = body.mode === 'per-so' ? 'per-so' : 'combined';
   const fromMrp = body.fromMrp === true;
+  const asDraft = body.asDraft === true;
   const supplierByCode = (body.supplierByCode ?? {}) as Record<string, string>;
   const targetPoId = body.targetPoId as string | undefined;
 
@@ -1072,6 +1130,18 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
      front so it can serve as the fallback for unbound SKUs (the PO-scoped
      "Convert from SO" / "Add Line Item" pickers are locked to that supplier
      anyway). */
+  /* asDraft only means anything on the CREATE path — the append path adds lines
+     to a PO that already has a status and must not silently re-open it. Refuse
+     the combination rather than accept it and ignore half of it: a caller that
+     asked for a draft and got its lines appended to a live PO has been told
+     nothing went wrong while the opposite of what it asked for happened. */
+  if (targetPoId && asDraft) {
+    return c.json(
+      { error: 'as_draft_not_supported_on_append', message: 'asDraft cannot be combined with targetPoId — appending to an existing PO cannot change its status.' },
+      400,
+    );
+  }
+
   let targetPoSupplierId: string | null = null;
   if (targetPoId) {
     const { data: tpo } = await supabase
@@ -1104,33 +1174,26 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
 
   // Commander 2026-06-18 — per-category MRP lead days. A PO line's delivery date
   // is pulled this many days EARLIER than the customer/SO delivery date so the
-  // supplier delivers ahead of the customer date (mrp_category_lead_times — the
-  // same table the MRP order-by-date hint reads). Keyed lowercase by category,
-  // which on a SO/PO line is the item_group.
-  // Commander 2026-06-22 (migration 0184 / SCM mig 0036) — also per-WAREHOUSE:
-  // warehouse_id NULL = the GLOBAL DEFAULT. Cascade: (warehouse, category) →
-  // (NULL, category) → 0. Two maps: per-warehouse rows keyed `${warehouseId}|${cat}`,
-  // NULL-warehouse globals keyed `cat`.
-  const { data: leadRows } = await scopeToCompany(
-    supabase
-      .from('mrp_category_lead_times')
-      .select('warehouse_id, category, lead_days'),
-    c,
+  // supplier delivers ahead of the customer date. Commander 2026-06-22
+  // (migration 0184 / SCM mig 0036) — also per-WAREHOUSE.
+  //
+  // The rule now lives in scm/lib/lead-time.ts, shared with the MRP order-by
+  // hint so the two can no longer disagree. It used to be a copy here, and the
+  // copies HAD drifted: mrp.ts checked this query's error, this route discarded
+  // it. A blip zeroed every lead day and the PO went out asking the supplier to
+  // deliver ON the customer's own date — silently, because a zero lead day and a
+  // failed read were the same number. loadLeadTimeBase THROWS instead; the
+  // convert below fails loudly rather than committing a wrong-but-plausible date.
+  const leadBase = await loadLeadTimeBase(
+    scopeToCompany(supabase.from('mrp_category_lead_times').select(LEAD_TIME_SELECT), c),
   );
-  const leadDaysByWhCat = new Map<string, number>();
-  const leadDaysByCat = new Map<string, number>();
-  for (const lr of (leadRows ?? []) as Array<{ warehouse_id: string | null; category: string; lead_days: number }>) {
-    const cat = (lr.category ?? '').toLowerCase();
-    const days = lr.lead_days ?? 0;
-    if (lr.warehouse_id) leadDaysByWhCat.set(`${lr.warehouse_id}|${cat}`, days);
-    else leadDaysByCat.set(cat, days);
-  }
-  // (warehouse, category) → (NULL, category) → 0 cascade.
-  const leadDaysFor = (whId: string | null, category: string | null): number => {
-    const cat = (category ?? '').toLowerCase();
-    return (whId ? leadDaysByWhCat.get(`${whId}|${cat}`) : undefined)
-      ?? leadDaysByCat.get(cat) ?? 0;
-  };
+  /* The buffers the owner has APPROVED on top of his table — per-supplier
+     punctuality and per-season, learned by the Procurement Agent from actual
+     receipts (owner 2026-07-17: "要根据不同的供应商准时程度、不同的季节... 来制定
+     提前的 Delivery Date"). Empty until he approves one, in which case this is
+     exactly the base lead, i.e. today's behaviour. Applied per line below, once
+     the effective supplier is known. */
+  const leadBuffers = await loadLeadBuffers(c.env.DB);
 
   const resolveWarehouseId = (salesLocation: string | null | undefined): string | null => {
     const needle = (salesLocation ?? '').trim().toLowerCase();
@@ -1265,26 +1328,26 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
       (purchaseLocationOverride as string | undefined)
       ?? row.warehouse_id
       ?? resolveWarehouseId(row.so?.sales_location);
-    // Per-line delivery date = SO LINE's own date, falling back to the SO
-    // header customer_delivery_date; an explicit caller override wins as-is.
-    // Commander 2026-06-18 — when NOT overridden, pull the date EARLIER by the
-    // category's MRP lead days so the supplier delivers ahead of the customer
-    // date. lead 0 / null date → unchanged. category = the SO line's item_group.
+    // The CUSTOMER's date — SO LINE's own, falling back to the SO header.
+    // The supplier's date is derived from it below, in the grouping loop.
+    //
+    // It is derived THERE and not here because the lead time now has a
+    // per-SUPPLIER layer (the Procurement Agent's learned punctuality buffer),
+    // and the effective supplier is not resolved until effectiveBindingFor runs
+    // — a pick override, a supplierByCode override and the main binding all get
+    // a say first. Computing the date here would silently apply the buffer of a
+    // supplier we had not chosen yet, or none at all.
     const rawDeliveryDate =
       row.line_delivery_date
       ?? row.so?.customer_delivery_date
       ?? null;
-    const lineLeadDays = leadDaysFor(lineWarehouseId, row.item_group);
-    const lineDeliveryDate =
-      (expectedAtOverride as string | undefined)
-      ?? subtractCalendarDays(rawDeliveryDate, lineLeadDays);
     return {
       soDocNo:  row.doc_no,
       itemCode: row.item_code,
       itemName: row.description ?? row.item_code,
       qty,
       lineWarehouseId,
-      lineDeliveryDate,
+      rawDeliveryDate,
       // Phase 3 — carry the SO line's category + variants for PO auto-pricing
       // (#300 also uses these to consolidate same SKU+variant lines + carry the
       // variant through to the PO line).
@@ -1318,10 +1381,21 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
      SKU is reported as "needs a supplier" via missing_bindings below. */
   const supplierIds = [...new Set(((bindings ?? []) as Array<{ supplier_id: string }>).map((b) => b.supplier_id))];
   const liveSupplierIds = new Set<string>();
+  /* supplier uuid -> business code, filled by the liveness probes below. Feeds
+     the lead-time supplier buffer, which is keyed on the code so a supplier row
+     re-imported under a new uuid keeps its learned punctuality. A supplier with
+     no code simply carries no buffer. */
+  const supplierCodeById = new Map<string, string>();
   if (supplierIds.length > 0) {
+    /* `code` rides along on the existing liveness probe — the lead-time
+       supplier buffer is keyed on the business code, not the uuid, and this
+       query already had to run. Zero extra round-trips. */
     const { data: liveSuppliers } = await supabase
-      .from('suppliers').select('id').in('id', supplierIds);
-    for (const s of (liveSuppliers ?? []) as Array<{ id: string }>) liveSupplierIds.add(s.id);
+      .from('suppliers').select('id, code').in('id', supplierIds);
+    for (const s of (liveSuppliers ?? []) as Array<{ id: string; code: string | null }>) {
+      liveSupplierIds.add(s.id);
+      if (s.code) supplierCodeById.set(s.id, s.code);
+    }
   }
   /* Wei Siang 2026-06-11 — also validate suppliers named OUTSIDE bindings (a
      per-pick supplierId, a supplierByCode override, or the append-target PO's
@@ -1334,8 +1408,11 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
   ])].filter((id) => !liveSupplierIds.has(id));
   if (extraCandidates.length > 0) {
     const { data: extraLive } = await supabase
-      .from('suppliers').select('id').in('id', extraCandidates);
-    for (const s of (extraLive ?? []) as Array<{ id: string }>) liveSupplierIds.add(s.id);
+      .from('suppliers').select('id, code').in('id', extraCandidates);
+    for (const s of (extraLive ?? []) as Array<{ id: string; code: string | null }>) {
+      liveSupplierIds.add(s.id);
+      if (s.code) supplierCodeById.set(s.id, s.code);
+    }
   }
 
   /* Group by material_code → the chosen supplier's binding. Commander
@@ -1619,17 +1696,52 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
     const b = effectiveBindingFor(it)!;
     const effectiveSupplierId = b.supplier_id;
     const lineWarehouseId = it.lineWarehouseId;
-    // (warehouse, supplier) → one single-warehouse PO; soDocNo splits further in
-    // 'per-so' mode. A null warehouse buckets together under the literal 'null'.
-    // Commander 2026-05-31 — SOFA is colour-matched and MUST be produced as one
-    // set on ONE PO (split → different dye lots → colour difference). So sofa
-    // lines ALWAYS group per-(warehouse, supplier, SO) regardless of the toggle:
-    // one SO's whole sofa set = exactly one PO, never merged with another SO's
-    // set, never split per component SKU. Non-sofa lines follow the toggle.
-    const isSofaLine = (it.itemGroup?.toUpperCase() ?? '') === 'SOFA';
-    const groupKey = (poMode === 'per-so' || isSofaLine)
-      ? `${lineWarehouseId ?? 'null'}::${effectiveSupplierId}::${it.soDocNo}`
-      : `${lineWarehouseId ?? 'null'}::${effectiveSupplierId}`;
+
+    /* THE SUPPLIER'S DATE — derived here, the first point where every input
+       exists: the warehouse, the category, the customer's date, and (only now)
+       the chosen supplier.
+
+       Commander 2026-06-18: pull the date EARLIER than the customer's so the
+       supplier delivers ahead of it. Owner 2026-07-17 adds the two axes he
+       cannot maintain by hand — this supplier's measured punctuality, and the
+       season — as buffers ON TOP of his (warehouse, category) table. His number
+       is untouched; see scm/lib/lead-time.ts.
+
+       An explicit caller override still wins outright, unchanged: if the
+       operator typed a date, that is the date. */
+    const supplierCode = supplierCodeById.get(effectiveSupplierId) ?? null;
+    const lead = resolveLeadDays(leadBase, leadBuffers, {
+      warehouseId: lineWarehouseId,
+      category: it.itemGroup,
+      supplierCode,
+      deliveryDate: it.rawDeliveryDate,
+    });
+    const lineDeliveryDate =
+      (expectedAtOverride as string | undefined)
+      ?? subtractCalendarDays(it.rawDeliveryDate, lead.total);
+
+    // The split is per-CATEGORY (owner 2026-07-17) — see scm/lib/po-grouping.ts
+    // for the rule and its reasoning. Every key still starts (warehouse,
+    // supplier), which is what keeps each emitted PO single-warehouse.
+    //
+    // This was a single global toggle with one hardcoded exception (SOFA), so a
+    // mixed pick could only ever get ONE behaviour. It now gets all three in one
+    // convert: bedframe + sofa per-SO, mattress merged within a delivery-date
+    // window, everything he did not rule on still following `poMode`.
+    //
+    // The window is passed the SUPPLIER's date, not the customer's — the bucket
+    // must reflect when the goods actually land in the warehouse, which is what
+    // the turnover rule is about.
+    const groupKey = groupKeyFor(
+      {
+        warehouseId: lineWarehouseId,
+        supplierId: effectiveSupplierId,
+        soDocNo: it.soDocNo,
+        itemGroup: it.itemGroup,
+        deliveryDate: lineDeliveryDate,
+      },
+      poMode,
+    );
     const bucket = byGroup.get(groupKey)
       ?? { supplierId: effectiveSupplierId, warehouseId: lineWarehouseId, currency: b.currency, lines: [], soDocNos: new Set<string>() };
 
@@ -1646,7 +1758,7 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
       supplierSku: b.supplier_sku,
       unitPriceCenti: autoCostCenti,
       warehouseId: lineWarehouseId,
-      deliveryDate: it.lineDeliveryDate,
+      deliveryDate: lineDeliveryDate,
       itemGroup: it.itemGroup,
       variants: it.variants,
       soItemId: it.soItemId,
@@ -1731,6 +1843,16 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
   let counter = parseInt(firstNextPo.slice(`${p}PO-${yymm}-`.length), 10) - 1;
 
   const created: Array<{ id: string; poNumber: string; supplierId: string; lineCount: number }> = [];
+  /* A bucket that fails to insert is dropped by `continue` below and the call
+     still returns 201. So "created 3 POs" has always been capable of meaning
+     "asked for 4, one supplier silently got nothing" — the same silent-drop the
+     23505 retry note calls out, minus the retry's protection, for every other
+     error. Reported rather than fixed here: swallowing the bucket is wrong, but
+     changing this call to fail the whole convert would change how the operator's
+     button behaves mid-flight, and that is not this commit's decision to make.
+     Additive and omitted when empty, so the normal response is byte-identical
+     and no existing caller sees a new field. */
+  const dropped: Array<{ supplierId: string; lineCount: number; reason: string }> = [];
   for (const bucket of byGroup.values()) {
     const supplierId = bucket.supplierId;
     counter += 1;
@@ -1753,9 +1875,25 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
     const headerPayload = {
       company_id: activeCompanyId(c), // multi-company: stamp the active company
       supplier_id: supplierId,
-      // PR #131 — Convert-from-SO bulk path also lands SUBMITTED.
-      status: 'SUBMITTED',
-      submitted_at: new Date().toISOString(),
+      /* PR #131 — Convert-from-SO bulk path also lands SUBMITTED. Still the
+         default; `asDraft` is opt-in (see the body doc above), so every existing
+         caller is unaffected.
+
+         A DRAFT here is what makes the Procurement Agent's propose->approve
+         real. The manual create has always taken asDraft and the SO flow has
+         always used it, but the bulk convert — the ONLY path that turns MRP
+         shortages into POs — could not produce one, so an agent had no way to
+         raise a PO for review. It had to stop at a SKU-level suggestion and let
+         a human retype it, which is why approving a reorder proposal creates
+         nothing today.
+
+         A DRAFT PO is inert by design and that is exactly why it is the right
+         fuse: mrp.ts's PO_DEAD excludes DRAFT from supply, so a drafted PO
+         cannot make a shortage look covered; and recomputeSoPicked excludes
+         DRAFT lines, so it cannot lock the SO quota either. Nothing is
+         committed until a human confirms it. */
+      status: asDraft ? 'DRAFT' : 'SUBMITTED',
+      submitted_at: asDraft ? null : new Date().toISOString(),
       currency: bucket.currency,
       subtotal_centi: subtotal,
       tax_centi: 0,
@@ -1785,7 +1923,10 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
       const liveNextPo = await mintMonthlyDocNo(supabase, 'purchase_orders', 'po_number', `${p}PO-${yymm}`);
       counter = parseInt(liveNextPo.slice(`${p}PO-${yymm}-`.length), 10);
     }
-    if (!header) continue;
+    if (!header) {
+      dropped.push({ supplierId, lineCount: bucket.lines.length, reason: 'po_header_insert_failed' });
+      continue;
+    }
 
     const rows = bucket.lines.map((l) => ({
       purchase_order_id: header.id,
@@ -1815,6 +1956,7 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
     const { error: iErr } = await supabase.from('purchase_order_items').insert(stampCompany(rows, c));
     if (iErr) {
       await supabase.from('purchase_orders').delete().eq('id', header.id);
+      dropped.push({ supplierId, lineCount: bucket.lines.length, reason: `po_items_insert_failed: ${iErr.message}` });
       continue;
     }
     created.push({ id: header.id, poNumber: header.po_number, supplierId, lineCount: bucket.lines.length });
@@ -1828,8 +1970,86 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
     catch { /* POs already created — don't fail on counter recount */ }
   }
 
-  return c.json({ created, total: created.length }, 201);
+  return c.json({ created, total: created.length, ...(dropped.length ? { dropped } : {}) }, 201);
+}
+
+/* HTTP route — router-level supabaseAuth already ran; the real Hono context is
+   wired into the core verbatim, so the request path behaves exactly as it did
+   before the factoring. The dynamic-status cast is safe: every outcome status
+   is a contentful JSON status the old inline c.json calls already returned. */
+mfgPurchaseOrders.post('/from-sos', async (c) => {
+  const out = await convertSosToPosCore({
+    req: { json: () => c.req.json() },
+    get: ((key: 'supabase' | 'user' | 'companyId' | 'allowedCompanyIds' | 'companyCode') =>
+      c.get(key as 'supabase')) as unknown as PoConvertContext['get'],
+    env: c.env,
+    json: (b, status) => ({ status: status ?? 200, body: b as Record<string, unknown> }),
+  });
+  return c.json(out.body, out.status as 201);
 });
+
+/* ── createDraftPosFromPicks — headless SO→PO for an approved proposal ──────
+   Runs the SAME core an operator's click runs: identical supplier resolution,
+   combo redistribution, per-category split, lead-time subtraction, doc-no
+   minting. Not a parallel PO writer — there is one body that knows how to raise
+   a PO and this is it.
+
+   Authorization happened before this is called: a human approved the proposal
+   in the agent console, and this executes that decision. There is no request
+   here, so the service-role client is the only client available — the same
+   arrangement createDraftSalesOrder uses for the scan job.
+
+   ALWAYS DRAFT. That is the fuse, and it is hard-coded rather than an option:
+   the agent's output is a PO the owner still has to confirm (PATCH /:id/confirm)
+   before it is real, so nothing reaches a supplier on an agent's say-so. Stage 2
+   (auto-approve) and Stage 3 (auto-send to the supplier) are separate decisions
+   and are NOT enabled by this function existing.
+
+   fromMrp: true matches these picks' provenance — they are MRP shortage lines,
+   and the MRP page's own convert button sends exactly this (Mrp.tsx:544). Same
+   input, same flags, so the agent's PO and a human's MRP convert are the same
+   act. `mode` is left at the route default: the three ruled categories are split
+   by rule regardless (po-grouping.ts), and 'combined' is what the operator's
+   picker defaults to for everything else. */
+export async function createDraftPosFromPicks(
+  env: Env,
+  opts: {
+    /** scm.staff UUID — the SCM auth-bridge identity, stamped as created_by.
+     *  NOT the public users bigint (see the SCM staff-UUID trap). */
+    userId: string;
+    /** The company the proposal was raised under. Undefined → unresolved, and
+     *  the stamping no-ops exactly as it does pre-migration. */
+    companyId?: number | null;
+    allowedCompanyIds?: number[] | null;
+    /** MUST be the company CODE string, never the company row. companyDocPrefix
+     *  stringifies whatever it is handed: the scan job's rebuilt context passed
+     *  an object through this exact key and minted "[object Object]-SO-2607-001"
+     *  into production. Typed narrowly here, and re-checked below, because the
+     *  cost of getting it wrong is permanent — it lands in a document number. */
+    companyCode?: string | null;
+    picks: Array<{ soItemId: string; qty: number }>;
+  },
+): Promise<PoConvertOutcome> {
+  const svc = getSupabaseService(env);
+  /* EXPLICIT per key, with no default fall-through. A fall-through is how the
+     scar above happened: an unhandled key returned the wrong object and nothing
+     said so. An unknown key here returns undefined, which every consumer already
+     treats as "unresolved" and degrades on. */
+  const syntheticGet = (key: string): unknown => {
+    if (key === 'supabase') return svc;
+    if (key === 'user') return { id: opts.userId };
+    if (key === 'companyId') return opts.companyId ?? undefined;
+    if (key === 'allowedCompanyIds') return opts.allowedCompanyIds ?? undefined;
+    if (key === 'companyCode') return typeof opts.companyCode === 'string' ? opts.companyCode : undefined;
+    return undefined;
+  };
+  return convertSosToPosCore({
+    req: { json: async () => ({ picks: opts.picks, asDraft: true, fromMrp: true }) },
+    get: syntheticGet as unknown as PoConvertContext['get'],
+    env,
+    json: (b, status) => ({ status: status ?? 200, body: b as Record<string, unknown> }),
+  });
+}
 
 /* ── PR #41 — PATCH header (po_date, expected_at, currency, notes) ── */
 mfgPurchaseOrders.patch('/:id', async (c) => {

@@ -45,6 +45,15 @@ import { computeVariantKey, buildVariantSummary, isServiceLine, splitSofaCode, e
 import { supabaseAuth } from '../middleware/auth';
 import { soDeliverableRemaining } from './delivery-orders-mfg';
 import { activeCompanyId } from '../lib/companyScope';
+import {
+  loadLeadTimeBase,
+  resolveLeadDays,
+  subtractCalendarDays,
+  LEAD_TIME_SELECT,
+  NO_BUFFERS,
+  type LeadBuffers,
+} from '../lib/lead-time';
+import { loadLeadBuffers } from '../../services/agents/procurement-learning';
 import type { Env, Variables } from '../env';
 
 export const mrp = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -246,9 +255,22 @@ export type SoLineCoverage = { source: AllocSource; po: string | null; eta: stri
    the Stock column and the MRP page can never disagree. */
 export async function computeMrp(
   sb: any,
-  opts: { catFilter: string | null; whFilter: string | null; includeUndated: boolean; companyId?: number | null },
+  opts: {
+    catFilter: string | null;
+    whFilter: string | null;
+    includeUndated: boolean;
+    companyId?: number | null;
+    /* The Procurement Agent's approved lead-time buffers (per-supplier
+       punctuality, per-season). REQUIRED, not optional, on purpose: the PO
+       convert applies these to the date it commits, so an order-by hint
+       computed without them would tell you to order LATER than the PO asks the
+       supplier to deliver — the two would disagree by exactly the buffer, which
+       is the drift this codebase keeps paying for. Making it required means a
+       new caller cannot forget; pass NO_BUFFERS explicitly to opt out. */
+    leadBuffers: LeadBuffers;
+  },
 ): Promise<MrpResult> {
-  const { catFilter, whFilter, includeUndated, companyId } = opts;
+  const { catFilter, whFilter, includeUndated, companyId, leadBuffers } = opts;
 
   /* Multi-company isolation: every per-company read (demand SO lines, PO supply,
      inventory balances, warehouses, suppliers, bindings, product master) is
@@ -260,40 +282,44 @@ export async function computeMrp(
 
   // ── 0. Per-category lead times (Commander 2026-05-29), now per-WAREHOUSE
   //       (Commander 2026-06-22, migration 0184 / SCM mig 0036) ────────────
-  // order-by date = delivery date − lead_days[warehouse,category]. Keyed
-  // lowercase to match item_group; product category is uppercase so we
-  // lowercase on lookup. warehouse_id NULL = the GLOBAL DEFAULT. Cascade:
-  // (warehouse, category) → (NULL, category) → 0. Two maps: per-warehouse rows
-  // keyed `${warehouseId}|${cat}`, and the NULL-warehouse globals keyed `cat`.
-  const { data: leadRows, error: leadErr } = await scoped(
-    sb
-      .from('mrp_category_lead_times')
-      .select('warehouse_id, category, lead_days'),
+  // order-by date = delivery date − lead_days[warehouse, category].
+  //
+  // The rule lives in scm/lib/lead-time.ts, shared with the PO-from-SO convert
+  // that WRITES this date onto a real purchase order. It used to be a copy in
+  // each, and the copies had drifted on error handling — this one surfaced the
+  // query error (see below), the convert swallowed it. One module now, so the
+  // hint on this page and the date on the PO cannot disagree.
+  //
+  // loadLeadTimeBase THROWS on a query error, which is the behaviour this route
+  // already had and the reason for it is unchanged: a swallowed error silently
+  // zeroed EVERY lead time -> order-by date = production date = delivery date
+  // for the whole plan. Fail loudly rather than emit a wrong-but-plausible
+  // schedule.
+  const leadBase = await loadLeadTimeBase(
+    scoped(sb.from('mrp_category_lead_times').select(LEAD_TIME_SELECT)),
   );
-  /* A query error here used to be swallowed (only `data` was destructured), so a
-     transient PostgREST failure silently zeroed EVERY lead time → order-by date =
-     production date = delivery date for the whole plan. Surface it instead so the
-     caller fails loudly rather than emitting a wrong-but-plausible schedule. */
-  if (leadErr) throw new Error(`mrp_lead_times_load_failed: ${leadErr.message}`);
-  const leadDaysByWhCat = new Map<string, number>();
-  const leadDaysByCat = new Map<string, number>();
-  for (const r of (leadRows ?? []) as Array<{ warehouse_id: string | null; category: string; lead_days: number }>) {
-    const cat = (r.category ?? '').toLowerCase();
-    const days = r.lead_days ?? 0;
-    if (r.warehouse_id) leadDaysByWhCat.set(`${r.warehouse_id}|${cat}`, days);
-    else leadDaysByCat.set(cat, days);
-  }
-  const orderByOf = (deliveryDate: string | null, category: string | null, whId: string | null): string | null => {
-    if (!deliveryDate) return null;
-    const cat = (category ?? '').toLowerCase();
-    const days = (whId ? leadDaysByWhCat.get(`${whId}|${cat}`) : undefined)
-      ?? leadDaysByCat.get(cat) ?? 0;
-    if (days <= 0) return deliveryDate;
-    const d = new Date(`${deliveryDate.slice(0, 10)}T00:00:00Z`);
-    if (Number.isNaN(d.getTime())) return deliveryDate;
-    d.setUTCDate(d.getUTCDate() - days);
-    return d.toISOString().slice(0, 10);
-  };
+  /* supplierCode is the SKU's MAIN supplier — an approximation, and a stated
+     one: the convert may end up on a different supplier via a per-pick or
+     per-SKU override, in which case that supplier's buffer applies instead and
+     the real PO date can differ from this hint. The main supplier is what this
+     page shows and what the convert picks absent an override, so it is the
+     honest default; the alternative (no supplier at all) would disagree with
+     EVERY buffered PO rather than just the overridden ones. */
+  const orderByOf = (
+    deliveryDate: string | null,
+    category: string | null,
+    whId: string | null,
+    supplierCode: string | null,
+  ): string | null =>
+    subtractCalendarDays(
+      deliveryDate,
+      resolveLeadDays(leadBase, leadBuffers, {
+        warehouseId: whId,
+        category,
+        supplierCode,
+        deliveryDate,
+      }).total,
+    );
 
   // ── 1. Demand — outstanding SO lines ──────────────────────────────────
   const { data: demandRaw, error: demandErr } = await scoped(sb
@@ -582,7 +608,7 @@ export async function computeMrp(
         soDate: r.so?.so_date ?? null,
         deliveryDate: lineDelivery,
         processingDate: r.so?.internal_expected_dd ?? null,
-        orderByDate: orderByOf(lineDelivery, prod?.category ?? null, whId),
+        orderByDate: orderByOf(lineDelivery, prod?.category ?? null, whId, mainByCode.get(code)?.code ?? null),
         qty: eff,
         source,
         poNumber,
@@ -722,7 +748,7 @@ export async function computeMrp(
         soDate: d.so?.so_date ?? null,
         deliveryDate: setDelivery,
         processingDate: d.so?.internal_expected_dd ?? null,
-        orderByDate: orderByOf(setDelivery, prod?.category ?? null, whId),
+        orderByDate: orderByOf(setDelivery, prod?.category ?? null, whId, mainByCode.get(d.item_code)?.code ?? null),
         itemCode: d.item_code,
         description: prod?.name ?? d.description ?? null,
         variantLabel: buildVariantSummary(d.item_group, v) || null,
@@ -801,7 +827,7 @@ mrp.get('/', async (c) => {
   // demand by default; ?includeUndated=true brings it back for a full view.
   const includeUndated = c.req.query('includeUndated') === 'true';
   try {
-    const result = await computeMrp(sb, { catFilter, whFilter, includeUndated, companyId: activeCompanyId(c) });
+    const result = await computeMrp(sb, { catFilter, whFilter, includeUndated, companyId: activeCompanyId(c), leadBuffers: await loadLeadBuffers(c.env.DB) });
     return c.json(result);
   } catch (e) {
     return c.json({ error: 'load_failed', reason: e instanceof Error ? e.message : String(e) }, 500);

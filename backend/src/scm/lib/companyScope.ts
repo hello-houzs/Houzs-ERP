@@ -1,4 +1,3 @@
-import type { Context } from "hono";
 import type { CompanyRow } from "../../middleware/companyContext";
 
 /**
@@ -38,7 +37,24 @@ import type { CompanyRow } from "../../middleware/companyContext";
  * checklist in the Phase 0b commit message.
  */
 
-export function activeCompanyId(c: Context<any>): number | undefined {
+/**
+ * What these helpers ACTUALLY need from a context: a `get`. Nothing more.
+ *
+ * They used to demand a whole `Context<any>`, which quietly made them
+ * request-only: a headless job (background scan, agent) has no Hono context, so
+ * it could not call them and had to re-implement the three-state sentinel
+ * locally instead — see createSalesOrderCore's local `stampCo`. That is a
+ * cross-company LEAK waiting to happen, because the local copy is a copy: the
+ * sentinel above can be corrected here and the copy keeps the old behaviour,
+ * and nothing fails loudly when it does.
+ *
+ * Widening to the shape actually used lets BOTH a real request and a synthetic
+ * headless context scope through this one implementation. Hono's Context
+ * satisfies it structurally, so every existing caller is unchanged.
+ */
+export type CompanyScopeCtx = { get(key: any): any };
+
+export function activeCompanyId(c: CompanyScopeCtx): number | undefined {
   return c.get("companyId") as number | undefined;
 }
 
@@ -67,7 +83,7 @@ export function activeCompanyId(c: Context<any>): number | undefined {
  * Returns a validated copy (positive integers only), so consumers can inline the
  * ids into raw SQL without re-checking — they come from OUR companies master.
  */
-export function allowedCompanyIds(c: Context<any>): number[] | undefined {
+export function allowedCompanyIds(c: CompanyScopeCtx): number[] | undefined {
   const raw = c.get("allowedCompanyIds") as number[] | undefined;
   if (!Array.isArray(raw)) return undefined;
   return raw.map(Number).filter((n) => Number.isInteger(n) && n > 0);
@@ -77,7 +93,7 @@ export function allowedCompanyIds(c: Context<any>): number[] | undefined {
  *  caller is granted no active company. Lets the PER-COMPANY helpers tell a
  *  missing active company that means "degrade" (unresolved) from one that means
  *  "this caller may see nothing". */
-export function isRestrictedToNoCompany(c: Context<any>): boolean {
+export function isRestrictedToNoCompany(c: CompanyScopeCtx): boolean {
   const ids = allowedCompanyIds(c);
   return ids !== undefined && ids.length === 0;
 }
@@ -92,7 +108,7 @@ export function isRestrictedToNoCompany(c: Context<any>): boolean {
  * (no binds) is safe — which keeps the many stat queries that already
  * interpolate computed fragments readable.
  */
-export function allowedCompaniesSql(c: Context<any>, col = "company_id"): string {
+export function allowedCompaniesSql(c: CompanyScopeCtx, col = "company_id"): string {
   const ids = allowedCompanyIds(c);
   // UNRESOLVED → no predicate (legacy single-company SQL runs unchanged).
   if (ids === undefined) return "";
@@ -110,7 +126,7 @@ export function allowedCompaniesSql(c: Context<any>, col = "company_id"): string
  * allowedCompaniesSql above: the id comes from OUR companies master and is
  * re-validated as a positive integer here.
  */
-export function activeCompanySql(c: Context<any>, col = "company_id"): string {
+export function activeCompanySql(c: CompanyScopeCtx, col = "company_id"): string {
   const id = Number(activeCompanyId(c));
   if (Number.isInteger(id) && id > 0) return ` AND ${col} = ${id}`;
   // No active company. Two very different reasons — see the sentinel doc on
@@ -132,7 +148,7 @@ export function activeCompanySql(c: Context<any>, col = "company_id"): string {
  * houzsCompanyId returns the resolved id, or undefined when the companies
  * master is unresolved (pre-migration / cold-start).
  */
-export function houzsCompanyId(c: Context<any>): number | undefined {
+export function houzsCompanyId(c: CompanyScopeCtx): number | undefined {
   const rows = (c.get("companies") as CompanyRow[] | undefined) ?? [];
   const houzs = rows.find((r) => r.code === "HOUZS");
   return houzs?.id != null ? Number(houzs.id) : undefined;
@@ -145,7 +161,7 @@ export function houzsCompanyId(c: Context<any>): number | undefined {
  *  behaviour. This feeds the SAME sinks as allowedCompanyIds, where `[]` now
  *  means "restricted to nothing / match nothing"; returning `[]` for unresolved
  *  here would blank ASSR for every sales user on a cold start. */
-export function houzsCompanyIds(c: Context<any>): number[] | undefined {
+export function houzsCompanyIds(c: CompanyScopeCtx): number[] | undefined {
   const id = houzsCompanyId(c);
   return id != null ? [id] : undefined;
 }
@@ -155,14 +171,14 @@ export function houzsCompanyIds(c: Context<any>): number[] | undefined {
  *  single-company SQL runs unchanged. Same inline-not-bind safety as
  *  allowedCompaniesSql — the id comes from OUR companies master, re-validated
  *  as a positive integer here. */
-export function houzsCompanySql(c: Context<any>, col = "company_id"): string {
+export function houzsCompanySql(c: CompanyScopeCtx, col = "company_id"): string {
   const id = Number(houzsCompanyId(c));
   if (!Number.isInteger(id) || id <= 0) return "";
   return ` AND ${col} = ${id}`;
 }
 
 /** id -> code map for tagging cross-company rows with a readable company. */
-export function companyCodeMap(c: Context<any>): Map<number, string> {
+export function companyCodeMap(c: CompanyScopeCtx): Map<number, string> {
   const rows = (c.get("companies") as CompanyRow[] | undefined) ?? [];
   return new Map(rows.map((r) => [r.id, r.code]));
 }
@@ -172,7 +188,7 @@ export function companyCodeMap(c: Context<any>): Map<number, string> {
  * active company is unresolved. Returns the builder so the caller can keep
  * chaining (.order / .eq / .maybeSingle / ...).
  */
-export function scopeToCompany<Q>(query: Q, c: Context<any>): Q {
+export function scopeToCompany<Q>(query: Q, c: CompanyScopeCtx): Q {
   const id = activeCompanyId(c);
   if (id != null) {
     return (query as unknown as { eq(col: string, val: unknown): Q }).eq("company_id", id);
@@ -190,7 +206,7 @@ export function scopeToCompany<Q>(query: Q, c: Context<any>): Q {
  * No-op when the allow-list is empty (unresolved). Returns the builder for
  * further chaining.
  */
-export function scopeToAllowedCompanies<Q>(query: Q, c: Context<any>): Q {
+export function scopeToAllowedCompanies<Q>(query: Q, c: CompanyScopeCtx): Q {
   const ids = allowedCompanyIds(c);
   // UNRESOLVED → no filter. Otherwise `.in` the resolved set — which for the
   // RESTRICTED-TO-NOTHING state is an empty list, and an empty `in` matches no
@@ -210,7 +226,7 @@ export function scopeToAllowedCompanies<Q>(query: Q, c: Context<any>): Q {
  */
 export function stampCompany<T extends Record<string, unknown>>(
   rows: T[],
-  c: Context<any>,
+  c: CompanyScopeCtx,
 ): Array<T & { company_id?: number }> {
   const id = activeCompanyId(c);
   if (id == null) return rows;
@@ -244,7 +260,7 @@ export function withCompanyCode<T extends Record<string, unknown>>(
  * and `nextMonthlyDocNo(${p}SO-${yymm}, existing)`. Do NOT apply to CROSS-COMPANY
  * shared docs (trips / delivery-planning) — those keep one shared sequence.
  */
-export function companyDocPrefix(c: Context<any>): string {
+export function companyDocPrefix(c: CompanyScopeCtx): string {
   const code = c.get("companyCode");
   // Only prefix with a real, non-base company code. A non-string (e.g. a whole
   // company object leaking in from a reconstructed context — as the scan
@@ -299,7 +315,7 @@ export function isMirroredDocNo(docNo: unknown): boolean {
  * race, it is a certainty, and the mirror's upsert then overwrites the
  * Houzs-native order in place.
  */
-export function mintsIntoMirroredNamespace(c: Context<any>): boolean {
+export function mintsIntoMirroredNamespace(c: CompanyScopeCtx): boolean {
   return companyDocPrefix(c) === `${MIRRORED_COMPANY_CODE}-`;
 }
 

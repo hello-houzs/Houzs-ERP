@@ -47,10 +47,40 @@ import type { Env } from '../../types';
 import { getSupabaseService } from '../../db/supabase';
 import { readAgentSetting } from '../agent-console';
 import { computeMrp } from '../../scm/routes/mrp';
+import {
+  PROCUREMENT_AGENT_SETTING_KEY,
+  loadReceiptSamples,
+  loadLeadBuffers,
+  loadCapacityEvidence,
+  loadOpenLoad,
+  loadDraftedQtyBySoItem,
+  type SbLike,
+  learnSupplierBuffers,
+  learnSeasonBuffers,
+  type BufferFinding,
+} from './procurement-learning';
+import { estimateCapacity, detectOverload } from './procurement-capacity';
+
+/* How far back the learner reads receipts. A year covers every season once, and
+   is short enough that a supplier who has since improved is not held to two-year
+   -old misses. */
+const LEARNING_WINDOW_DAYS = 365;
+
+/* Capacity reads the same year. A supplier's ceiling is a stable constant per
+   the owner's model, so a longer window buys nothing; a shorter one would miss
+   the busy season, which is the only season that witnesses the ceiling. */
+const CAPACITY_WINDOW_DAYS = 365;
+
+/** Bound the brief's overload list — a deep first run stays readable. */
+const TOP_OVERLOADS = 20;
 
 // ── Config (app_settings['agents.procurement']) ──────────────────────────────
 
-export const PROCUREMENT_AGENT_SETTING_KEY = 'agents.procurement';
+/* Defined in procurement-learning.ts (imported above) and re-exported here so
+   this module stays the public face of the family — existing importers are
+   unchanged. The ownership is that way round to keep the import graph
+   one-directional; see the note on the definition. */
+export { PROCUREMENT_AGENT_SETTING_KEY };
 
 /** Minimum supplier-binding coverage (% of shortage SKUs with a main supplier)
  *  before the agent will emit any reorder proposal. Owner-editable; 0..100. */
@@ -82,6 +112,52 @@ function earliestOrderByDate(
     if (best == null || d < best) best = d;
   }
   return best;
+}
+
+/**
+ * WHICH COMPANY'S BOOKS THIS AGENT PLANS. One, explicitly, never "all of them".
+ *
+ * computeMrp's companyId is optional and no-ops when absent — its own comment
+ * lists "agent callers" as a case that passes nothing. That made this agent's
+ * MRP CROSS-COMPANY: it pooled Houzs and 2990 demand, let one company's stock
+ * cover the other's shortage, and produced one reorder per supplier spanning
+ * both books. companyScope's header is unambiguous that PO is a PER-COMPANY
+ * module whose books are ISOLATED, so those numbers were wrong before anything
+ * acted on them. Approval now raises a real PO, so wrong turns into a
+ * cross-company write.
+ *
+ * Pinned to the base company (HOUZS) unless app_settings names another. This is
+ * a REDUCTION IN SCOPE, deliberately: serving one company correctly beats
+ * serving two by mixing their books. 2990's demand is simply not planned by this
+ * agent yet — a stated gap, not a silent wrong answer. Making it multi-company
+ * means a per-company MRP pass and a brief that reports per company, which is a
+ * shape change the owner should see before it is built.
+ *
+ * `null` = the companies master is unresolved (pre-migration / cold-start /
+ * single-company). Then computeMrp scopes nothing, exactly as it does today —
+ * the sentinel's "UNRESOLVED degrades" rule, not a filter to nothing.
+ */
+async function resolveAgentCompany(
+  db: D1Database,
+): Promise<{ id: number | null; code: string | null }> {
+  const cfg = await readAgentSetting<Record<string, unknown>>(db, PROCUREMENT_AGENT_SETTING_KEY);
+  const pinned = Number(cfg?.companyId);
+  try {
+    const rows = await db
+      .prepare('SELECT id, code FROM companies WHERE is_active = 1')
+      .all<{ id: number; code: string }>();
+    const list = rows.results ?? [];
+    if (list.length === 0) return { id: null, code: null };
+    const hit = Number.isInteger(pinned) && pinned > 0
+      ? list.find((r) => Number(r.id) === pinned)
+      : list.find((r) => r.code === 'HOUZS');
+    if (!hit) return { id: null, code: null };
+    return { id: Number(hit.id), code: String(hit.code) };
+  } catch {
+    // Master unreadable — degrade to unscoped, which is what every other
+    // consumer does in this state (and what this agent did until now).
+    return { id: null, code: null };
+  }
 }
 
 /** Whole-day tunable pct from app_settings['agents.procurement'], clamped 0..100. */
@@ -119,6 +195,28 @@ export interface ProcurementBriefData {
     earliestOrderByDate: string | null;
   }>;
   openProposals: { total: number };
+  /* Owner 2026-07-17: "供应商的产量一定都是稳定的 ... 一 overload 就代表他们的产量
+     其实已经 overload 了". Lateness is a symptom of load, so the brief reports the
+     CAUSE — which weeks we have over-committed a supplier — rather than a
+     punctuality score. See procurement-capacity.ts.
+
+     `pairsMeasured` and `pairsLowerBoundOnly` are in the brief on purpose: an
+     overload count means nothing without knowing how much of the book we can
+     actually see. A day-one agent measures nothing and must say so. */
+  capacity: {
+    pairsMeasured: number;
+    pairsLowerBoundOnly: number;
+    overloads: Array<{
+      supplierCode: string;
+      category: string;
+      weekStart: string;
+      loadUnits: number;
+      capacityUnitsPerWeek: number;
+      overloadUnits: number;
+      expectedSlipWeeks: number;
+      capacityIsLowerBound: boolean;
+    }>;
+  };
 }
 
 // ── Proposal persistence (procurement_agent_proposals, public schema) ────────
@@ -134,12 +232,47 @@ type ReorderLine = {
 };
 
 interface ReorderPayload {
+  /* WHOSE BOOK. The executor stamps the PO with THIS, never with the approving
+     user's active company — those are different questions, and answering the
+     second when you meant the first files a PO of one company's SO lines under
+     another. null = the companies master was unresolved at plan time, which is
+     the single-company case where stamping no-ops anyway. */
+  companyId: number | null;
+  companyCode: string | null;
   supplierCode: string;
   supplierName: string;
   skuCount: number;
+  /** What MRP says is short, before drafts. The unadjusted MRP truth. */
   totalShortageUnits: number;
+  /** Of that shortage, how much is already on a DRAFT PO awaiting confirm and
+   *  therefore NOT asked for again here. Carried so the gap between
+   *  totalShortageUnits and pickUnits is stated rather than left to be
+   *  rediscovered by whoever notices the numbers disagree. */
+  draftedUnits: number;
+  /** What this proposal actually orders: sum of picks. */
+  pickUnits: number;
   earliestOrderByDate: string | null;
   lines: ReorderLine[];
+  /* THE TRANSLATION LAYER, and the reason approving this used to do nothing.
+     The agent thinks in SKUs ("MAT-QUEEN is 40 short"); the SO->PO converter
+     takes SO LINE ids. Nothing mapped between them, so an approved proposal was
+     a worklist tick and a human retyped it into the picker by hand.
+
+     MRP already carries the bridge — every MrpLine has `soItemId` ("lets the UI
+     one-click PO this line"). These are exactly the shape POST /from-sos wants,
+     so approval can hand them straight to the SAME converter a human uses:
+     identical supplier resolution, combo redistribution, per-category split and
+     lead-time derivation. A separate agent-only PO writer would have been a
+     second implementation of all of that, and the two would have drifted.
+
+     `supplierId` is deliberately NOT sent. The agent grouped these by the SKU's
+     main supplier, and the converter resolves the main supplier itself — from
+     the bindings as they are AT EXECUTION TIME, not as they were when the
+     proposal was written. Fresher, and it avoids the converter's documented
+     fall-through (naming a supplier with no binding for that SKU silently lands
+     the line on the main supplier anyway). The proposal's supplierCode is the
+     agent's reasoning, not an instruction. */
+  picks: Array<{ soItemId: string; qty: number }>;
 }
 
 async function openProposalKeys(db: D1Database): Promise<Set<string>> {
@@ -177,12 +310,37 @@ async function openProposalTotal(db: D1Database): Promise<number> {
  */
 export async function runProcurementAgent(
   env: Env,
-): Promise<{ summary: string; brief: ProcurementBriefData; proposalsCreated: number }> {
+): Promise<{
+  summary: string;
+  brief: ProcurementBriefData;
+  proposalsCreated: number;
+  /** Lead-time buffer findings. Findings, not writes — agents/index.ts turns
+      them into config proposals the owner approves. */
+  learning: BufferFinding[];
+}> {
   const db = env.DB;
   const nowIso = new Date().toISOString();
 
   const sb = getSupabaseService(env);
-  const mrp = await computeMrp(sb, { catFilter: null, whFilter: null, includeUndated: false });
+  /* ONE assertion, here, instead of an `as never` at each loader call. See
+     SbLike: supabase-js's generics don't unify with a structural type, but
+     `as never` disabled the checking entirely rather than narrowing it. */
+  const sbl = sb as unknown as SbLike;
+  /* ONE company's books — see resolveAgentCompany. Passing nothing here is what
+     made this sweep pool two companies' demand into one PO. */
+  const company = await resolveAgentCompany(db);
+  const mrp = await computeMrp(sb, {
+    catFilter: null,
+    whFilter: null,
+    includeUndated: false,
+    companyId: company.id,
+    leadBuffers: await loadLeadBuffers(db),
+  });
+
+  /* Measured once and used by BOTH the summary line and the brief below. The
+     pass is several paginated reads; running it twice to serve two consumers
+     would double the agent's cost for one number. */
+  const capacity = await runCapacityPass(sbl);
 
   const shortageSkus = mrp.skus.filter((k) => k.shortage > 0);
   const shortageUnits = shortageSkus.reduce((sum, k) => sum + num(k.shortage), 0);
@@ -230,7 +388,7 @@ export async function runProcurementAgent(
     summary =
       `Procurement gated: supplier coverage ${coveragePct}% below the ${minPct}% threshold ` +
       `(${withSupplier.length}/${shortageSkus.length} shortage SKU(s) have a main supplier). ` +
-      `No reorder proposals created; ${missing.length} shortage SKU(s) still need a supplier binding.`;
+      `No reorder proposals created; ${missing.length} shortage SKU(s) still need a supplier binding.` + capacitySuffix(capacity);
   } else {
     // Group shortage SKUs by main supplier; SKUs with none go to unsuppliedSkus.
     const bySupplier = new Map<string, { name: string; skus: MrpSkuLike[] }>();
@@ -255,6 +413,12 @@ export async function runProcurementAgent(
       }));
 
     const openKeys = await openProposalKeys(db);
+    /* Qty already on a DRAFT PO awaiting confirm — invisible to MRP's supply by
+       design, so it must be subtracted here or an approved proposal gets
+       proposed a second time. See loadDraftedQtyBySoItem. Deliberately NOT
+       wrapped in a try: a failed read must abort the run, not silently report
+       nothing drafted. */
+    const draftedBySoItem = await loadDraftedQtyBySoItem(sbl);
 
     for (const [supplierCode, bucket] of bySupplier) {
       const lines: ReorderLine[] = bucket.skus.map((k) => ({
@@ -270,6 +434,29 @@ export async function runProcurementAgent(
       const earliest = earliestOrderByDate(lines);
       const supplierName = bucket.name;
 
+      /* SKU shortages -> the SO lines that are actually short, in the shape the
+         converter takes. Only lines with a real uncovered qty: an MrpLine
+         already covered by stock or an open PO carries shortageQty 0 and must
+         not be ordered again.
+
+         Then subtract what an earlier approval already put on a DRAFT PO. The
+         `?? 0` is honest here and not the usual lie: the map is COMPLETE (the
+         load throws rather than returning a partial one), so a missing key
+         really does mean no draft line covers this SO line. */
+      let draftedUnits = 0;
+      const picks = bucket.skus.flatMap((k) =>
+        (k.lines ?? [])
+          .filter((l) => num(l.shortageQty) > 0 && s(l.soItemId) !== '')
+          .map((l) => {
+            const soItemId = s(l.soItemId);
+            const drafted = Math.min(draftedBySoItem.get(soItemId) ?? 0, num(l.shortageQty));
+            draftedUnits += drafted;
+            return { soItemId, qty: num(l.shortageQty) - drafted };
+          })
+          .filter((p) => p.qty > 0),
+      );
+      const pickUnits = picks.reduce((sum, p) => sum + p.qty, 0);
+
       reorderBySupplier.push({
         supplierCode,
         supplierName,
@@ -278,21 +465,37 @@ export async function runProcurementAgent(
         earliestOrderByDate: earliest,
       });
 
-      const key = `REORDER:${supplierCode}`;
+      /* Company in the key: the dedupe is per supplier PER BOOK. Without it a
+         second company's reorder from the same supplier would read as a
+         duplicate of the first and never be raised. */
+      const key = `REORDER:${company.code ?? '-'}:${supplierCode}`;
       if (openKeys.has(`REORDER\0${key}`)) continue;
 
+      /* Every short line is already on a draft awaiting confirm — there is
+         nothing left to ask this supplier for. Proposing it again would be the
+         double-order described on loadDraftedQtyBySoItem. */
+      if (picks.length === 0) continue;
+
       const payload: ReorderPayload = {
+        companyId: company.id,
+        companyCode: company.code,
         supplierCode,
         supplierName,
         skuCount: lines.length,
         totalShortageUnits,
+        draftedUnits,
+        pickUnits,
         earliestOrderByDate: earliest,
         lines,
+        picks,
       };
       const proposalSummary =
         `Reorder from ${supplierName} (${supplierCode}): ${lines.length} SKU(s), ` +
-        `${totalShortageUnits} unit(s) short, order by ${earliest ?? 'n/a'}. ` +
-        `Proposal only — raise the PO via the SO->PO converter.`;
+        `${pickUnits} unit(s) to order across ${picks.length} SO line(s)` +
+        /* Named, never netted silently: MRP says short N, this asks for less,
+           and the reader is owed the reason. */
+        (draftedUnits > 0 ? ` (${draftedUnits} more already on an unconfirmed draft PO)` : '') +
+        `, order by ${earliest ?? 'n/a'}.`;
 
       await db
         .prepare(
@@ -311,7 +514,7 @@ export async function runProcurementAgent(
       `across ${reorderBySupplier.length} supplier(s) (coverage ${coveragePct}%); ` +
       `created ${proposalsCreated} reorder proposal(s)` +
       (noSupplier.length > 0 ? `, ${noSupplier.length} SKU(s) still unsupplied` : '') +
-      `. Proposal only — raise POs via the SO->PO converter.`;
+      `. Proposal only — raise POs via the SO->PO converter.` + capacitySuffix(capacity);
   }
 
   const brief: ProcurementBriefData = {
@@ -328,6 +531,7 @@ export async function runProcurementAgent(
     unsuppliedSkus,
     topShortages,
     openProposals: { total: await openProposalTotal(db) },
+    capacity,
   };
 
   try {
@@ -341,7 +545,103 @@ export async function runProcurementAgent(
     console.warn('[procurement-agent] brief snapshot insert failed:', e);
   }
 
-  return { summary, brief, proposalsCreated };
+  /* LEARNING — the lead-time buffers (owner: "根据不同的供应商准时程度、不同的季节
+     ... 来制定提前的 Delivery Date"). Findings only; agents/index.ts turns them
+     into config proposals he approves. Nothing here writes a buffer.
+
+     Best-effort by contract, like the brief snapshot above: a learner failure
+     must not sink the reorder sweep, which is the run's actual job. It also
+     fails SILENT-BUT-LOUD-IN-LOGS rather than fabricating an empty finding set,
+     so "no proposals" never masquerades as "everyone is punctual". */
+  let learning: BufferFinding[] = [];
+  try {
+    learning = await runProcurementLearning(env, db, sbl);
+  } catch (e) {
+    console.warn('[procurement-agent] learning pass failed (reorder sweep unaffected):', e);
+  }
+
+  return { summary, brief, proposalsCreated, learning };
+}
+
+/* The capacity headline for the console card. Silent when nothing is
+   over-committed — an agent that says "0 overloads" every morning trains the
+   owner to stop reading it. */
+function capacitySuffix(c: ProcurementBriefData['capacity']): string {
+  if (c.overloads.length === 0) return '';
+  const worst = c.overloads[0];
+  return (
+    ` ${c.overloads.length} supplier-week(s) over capacity — worst ${worst.supplierCode}/${worst.category} ` +
+    `wk ${worst.weekStart}: ${worst.loadUnits} due vs ${worst.capacityUnitsPerWeek}/wk.`
+  );
+}
+
+/**
+ * Measure each (supplier, category)'s ceiling and find the weeks we have
+ * over-committed it.
+ *
+ * Best-effort, like every other pass here: a capacity failure must not sink the
+ * reorder sweep. It degrades to "measured nothing" — which is also the honest
+ * day-one state — rather than to a fabricated empty overload list that would
+ * read as "nothing is overloaded".
+ */
+async function runCapacityPass(sb: SbLike): Promise<ProcurementBriefData['capacity']> {
+  const empty = { pairsMeasured: 0, pairsLowerBoundOnly: 0, overloads: [] };
+  try {
+    const sinceIso = new Date(Date.now() - CAPACITY_WINDOW_DAYS * 86_400_000).toISOString();
+    const [receipts, load] = await Promise.all([
+      loadCapacityEvidence(sb, { sinceIso }),
+      loadOpenLoad(sb),
+    ]);
+    const estimates = estimateCapacity(receipts);
+    if (estimates.length === 0) return empty;
+
+    return {
+      pairsMeasured: estimates.length,
+      pairsLowerBoundOnly: estimates.filter((e) => e.isLowerBound).length,
+      overloads: detectOverload(estimates, load).slice(0, TOP_OVERLOADS).map((o) => ({
+        supplierCode: o.supplierCode,
+        category: o.category,
+        weekStart: o.weekStart,
+        loadUnits: o.loadUnits,
+        capacityUnitsPerWeek: o.capacityUnitsPerWeek,
+        overloadUnits: o.overloadUnits,
+        expectedSlipWeeks: o.expectedSlipWeeks,
+        capacityIsLowerBound: o.capacityIsLowerBound,
+      })),
+    };
+  } catch (e) {
+    console.warn('[procurement-agent] capacity pass failed (reorder sweep unaffected):', e);
+    return empty;
+  }
+}
+
+/* Load the receipt evidence and score both buffer axes. Split out so the engine
+   above stays one job per function and the learner can be exercised alone. */
+async function runProcurementLearning(
+  env: Env,
+  db: D1Database,
+  sb: SbLike,
+): Promise<BufferFinding[]> {
+  const sinceIso = new Date(Date.now() - LEARNING_WINDOW_DAYS * 86_400_000).toISOString();
+
+  const samples = await loadReceiptSamples(sb, {
+    sinceIso,
+    // Single-company today; the learner must not blend 2990's supplier
+    // punctuality into Houzs's buffers once company #2 carries real POs. The
+    // sibling engine's un-scoped computeMrp call is a known gap — do not repeat
+    // it here.
+    companyId: null,
+  });
+  if (samples.length === 0) return [];
+
+  /* The CURRENT buffers, read through the same loader the PO convert uses — so
+     the learner always compares against the value that is actually in force,
+     and cannot propose a change away from a number nobody is applying. */
+  const current = await loadLeadBuffers(db);
+  return [
+    ...learnSupplierBuffers(samples, current.supplierBufferDays),
+    ...learnSeasonBuffers(samples, current.seasonBufferDays),
+  ];
 }
 
 // ── Console card counters ────────────────────────────────────────────────────
@@ -381,5 +681,9 @@ interface MrpSkuLike {
   shortage: number;
   mainSupplierCode: string | null;
   mainSupplierName: string | null;
-  lines: Array<{ orderByDate: string | null; shortageQty: number }>;
+  /* soItemId verified against mrp.ts's MrpLine (:140 — "mfg_sales_order_items.id
+     — lets the UI one-click PO this line"). It is the bridge from the agent's
+     SKU view to the converter's SO-line view; without it an approved proposal
+     cannot become a PO. */
+  lines: Array<{ orderByDate: string | null; shortageQty: number; soItemId: string }>;
 }

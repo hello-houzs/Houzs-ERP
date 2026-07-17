@@ -32,6 +32,7 @@
 // r.snake_case) — harmless with Houzs's snake_case-as-is pg driver.
 // ============================================================
 import { Hono } from "hono";
+import type { Context } from "hono";
 import type { Env } from "../types";
 import { requirePermission } from "../middleware/auth";
 import { audit } from "../services/audit";
@@ -68,6 +69,13 @@ import { documentAgentStatus } from "../services/agents/document-agent";
 import { collectionAgentStatus } from "../services/agents/collection-agent";
 import { csAgentStatus } from "../services/agents/cs-agent";
 import { procurementAgentStatus } from "../services/agents/procurement-agent";
+/* The executor lives in services/agents so the full-auto path can reach it
+   without faking a request context — see that module's header. */
+import {
+  executeReorderProposal,
+  staffIdForUser,
+  type ApproveEffect,
+} from "../services/agents/procurement-execute";
 import { pmsAgentStatus } from "../services/agents/pms-agent";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -853,14 +861,18 @@ app.get("/document/brief", async (c) => {
 // a proposal only marks it decided for the office to act on — the PROPOSAL-ONLY
 // red line holds for every family (no engine creates/edits a business document).
 
+
 function mountEngineRoutes(opts: {
   base: string; // URL segment + audit/action slug, e.g. 'collection'
   proposalTable: string;
   briefTable: string;
   auditEntity: string;
   status: (env: Env) => Promise<unknown>;
+  /** Optional executor run after a successful claim. Omitted → approving only
+   *  marks the row decided, which is what the other three families still do. */
+  onApprove?: (c: Context<{ Bindings: Env }>, row: EngineProposalRow) => Promise<ApproveEffect>;
 }) {
-  const { base, proposalTable, briefTable, auditEntity, status } = opts;
+  const { base, proposalTable, briefTable, auditEntity, status, onApprove } = opts;
 
   app.get(`/${base}/status`, async (c) => {
     return c.json({ success: true, data: await status(c.env) });
@@ -901,7 +913,15 @@ function mountEngineRoutes(opts: {
     const decidedBy = c.get("userId") != null ? String(c.get("userId")) : null;
     const next = action === "approve" ? "APPROVED" : "REJECTED";
     let decided = 0;
+    const errors: string[] = [];
+    const notes: string[] = [];
     for (const id of ids) {
+      /* CLAIM FIRST, execute second. The UPDATE is the atomic step: only the
+         caller whose write reports a change owns this proposal, so two consoles
+         approving the same reorder in the same second cannot both raise POs.
+         The config-proposal path above SELECTs then applies — the opposite
+         order. It can afford that because writing a setting twice is
+         idempotent. Creating a purchase order twice is not. */
       const r = await c.env.DB.prepare(
         `UPDATE ${proposalTable}
             SET status = ?, decided_at = ?, decided_by = ?
@@ -909,16 +929,62 @@ function mountEngineRoutes(opts: {
       )
         .bind(next, nowIso, decidedBy, id)
         .run();
-      decided += Number(r.meta?.changes ?? r.meta?.rows_written ?? 0) > 0 ? 1 : 0;
+      const claimed = Number(r.meta?.changes ?? r.meta?.rows_written ?? 0) > 0;
+      if (!claimed) continue; // unknown id, or someone else decided it first
+      decided++;
+      if (action !== "approve" || !onApprove) continue;
+
+      const row = await c.env.DB.prepare(`SELECT * FROM ${proposalTable} WHERE id = ?`)
+        .bind(id)
+        .first<EngineProposalRow>();
+      if (!row) continue;
+
+      let effect: ApproveEffect;
+      try {
+        effect = await onApprove(c, row);
+      } catch (e) {
+        // An executor that threw got far enough to do anything at all, so the
+        // claim stands and a human reads the error. Guessing "nothing happened"
+        // here is what would double an order.
+        effect = { ok: false, error: e instanceof Error ? e.message : String(e), reversible: false };
+      }
+      if (effect.ok) {
+        if (effect.note) notes.push(effect.note);
+        continue;
+      }
+      errors.push(`${id}: ${effect.error}`);
+      if (!effect.reversible) continue;
+      /* Nothing was created, so handing the proposal back is safe and is the
+         honest outcome: an APPROVED row with no PO behind it would tell the
+         owner the job is done. */
+      await c.env.DB.prepare(
+        `UPDATE ${proposalTable}
+            SET status = 'PENDING', decided_at = NULL, decided_by = NULL
+          WHERE id = ? AND status = 'APPROVED'`,
+      )
+        .bind(id)
+        .run();
+      decided--;
     }
     await audit(c, {
       action: `agents.${base}_proposal_${action}`,
       entityType: auditEntity,
       entityId: ids.join(","),
-      summary: `${next} ${decided}/${ids.length} ${base} proposal(s)`,
-      meta: { ids, action },
+      summary:
+        `${next} ${decided}/${ids.length} ${base} proposal(s)` +
+        (notes.length ? ` — ${notes.join("; ")}` : "") +
+        (errors.length ? ` — ${errors.length} failed` : ""),
+      meta: { ids, action, ...(notes.length ? { notes } : {}), ...(errors.length ? { errors } : {}) },
     });
-    return c.json({ success: true, data: { decided, status: next } });
+    return c.json({
+      success: true,
+      data: {
+        decided,
+        status: next,
+        ...(notes.length ? { notes } : {}),
+        ...(errors.length ? { errors } : {}),
+      },
+    });
   });
 
   app.get(`/${base}/brief`, async (c) => {
@@ -961,12 +1027,35 @@ mountEngineRoutes({
   status: csAgentStatus,
 });
 
+/* Procurement is the one family whose approval DOES something: it raises the
+   DRAFT POs the proposal describes. Everything else here still only marks the
+   row decided.
+
+   The red line is unmoved. The engine (procurement-agent.ts) still never touches
+   scm.purchase_orders — it proposes. The PO is created HERE, on a human's click,
+   through the same converter that human would otherwise have driven by hand, and
+   it lands as a DRAFT they still have to confirm. Two gates, not zero: approve,
+   then confirm. */
 mountEngineRoutes({
   base: "procurement",
   proposalTable: "procurement_agent_proposals",
   briefTable: "procurement_agent_briefs",
   auditEntity: "procurement_agent_proposal",
   status: procurementAgentStatus,
+  onApprove: async (c, row) => {
+    /* Acting AS the human who clicked. The full-auto path resolves a different
+       actor (see resolveAgentActorStaffId) — "who did this" has a different
+       answer for a click than for a heartbeat, so neither guesses the other's. */
+    const staffId = await staffIdForUser(c.env.DB, c.get("userId"));
+    if (!staffId) {
+      return {
+        ok: false,
+        error: "approver has no scm.staff record — cannot stamp the PO's created_by",
+        reversible: true,
+      };
+    }
+    return executeReorderProposal(c.env, row, staffId);
+  },
 });
 
 mountEngineRoutes({
