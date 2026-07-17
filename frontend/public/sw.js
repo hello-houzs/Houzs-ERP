@@ -312,7 +312,22 @@
 // only as a human-readable baseline; the appended build id is what guarantees
 // uniqueness. If the build plugin somehow didn't run the token stays literal —
 // still a valid (if non-unique) string, so it degrades gracefully.
-const VERSION = "houzs-erp-v187-__SW_BUILD_ID__";
+//
+// v187/v188 (2026-07-17) — NOT feature bumps: both are deploy recoveries for the
+// same cause, twice in one session. A burst of merges outruns deploy.yml. It is
+// push-only with `concurrency: cancel-in-progress: false`, so the running deploy
+// finishes and the queued ones collapse to the newest — the middle ones are
+// cancelled before their frontend job exists. dorny/paths-filter then compares
+// github.event.before..github.sha on the ONE survivor, sees a backend-only diff,
+// and skips the frontend. Every frontend change in a cancelled run never ships,
+// and the deploy that ran goes GREEN. v188 recovers 8 files including the whole
+// authToken seam — i.e. the owner's view-as flow was fixed, merged, and not live.
+// The bump is the documented recovery precisely because it is a real frontend
+// change, so the filter fires. The real fix is a workflow_dispatch + force input
+// on deploy.yml (paths-filter has no `before` on a dispatch, so it needs both);
+// until that exists, ANY burst merge must be followed by checking that the last
+// deploy's `frontend` job says success, not skipped.
+const VERSION = "houzs-erp-v188-__SW_BUILD_ID__";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 
