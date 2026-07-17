@@ -14,7 +14,9 @@ import {
   CONFIG_PROPOSAL_RULES,
   activeInstructions,
   createConfigProposal,
+  isAutoApproveOn,
 } from "../agent-console";
+import { autoApproveReorderProposals } from "./procurement-execute";
 import { askAgentBrain, type AgentBrainUsageSink } from "../agent-brain";
 import { DELIVERY_TRANSIT_RULE, runDeliveryAgent } from "./delivery-agent";
 import type { DeliveryBriefData } from "./delivery-agent";
@@ -288,7 +290,34 @@ registerAgent({
       "procurement_agent_briefs",
       r.brief,
     );
-    return proposed > 0 ? `${r.summary} · ${proposed} lead-time proposal(s)` : r.summary;
+    /* FULL AUTO (owner's Stage 2) — behind the gate that already exists, and
+       OFF until he turns it on. It removes the human from PROPOSAL → APPROVED
+       only: the PO still lands as a DRAFT someone must confirm, so the gate
+       that faces a supplier is untouched. He reviews draft POs instead of
+       proposals.
+
+       Runs AFTER the sweep above, so this beat's own proposals are eligible in
+       the same beat — matching the config path, which self-tunes immediately
+       after its run. Never throws: a failed auto-approve must not sink the
+       sweep that produced the proposals, and they survive as PENDING for a
+       human either way. */
+    let autoNote = '';
+    if (await isAutoApproveOn(env.DB, "PROCUREMENT")) {
+      const auto = await autoApproveReorderProposals(env, "AGENT_AUTO").catch(
+        (e): { approved: number; notes: string[]; errors: string[] } => ({
+          approved: 0,
+          notes: [],
+          errors: [e instanceof Error ? e.message : String(e)],
+        }),
+      );
+      if (auto.approved > 0) autoNote += ` · auto-approved ${auto.approved} reorder(s)`;
+      if (auto.notes.length) autoNote += ` (${auto.notes.join('; ')})`;
+      /* Loud in the run summary, not just a log line: an auto-approve that
+         failed is the owner believing a PO exists when it does not. */
+      if (auto.errors.length) autoNote += ` · ${auto.errors.length} auto-approve FAILED: ${auto.errors.join('; ')}`;
+    }
+
+    return (proposed > 0 ? `${r.summary} · ${proposed} lead-time proposal(s)` : r.summary) + autoNote;
   },
 });
 

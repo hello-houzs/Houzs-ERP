@@ -1,0 +1,269 @@
+// ---------------------------------------------------------------------------
+// procurement-execute.ts — what an APPROVED reorder proposal actually does.
+//
+// Split out of routes/agent-console.ts because two callers need it and they
+// have nothing else in common:
+//   - the console's approve button, acting AS the human who clicked it;
+//   - the full-auto path (owner's Stage 2), acting as a staff member he has
+//     explicitly nominated.
+// Leaving it in the route would have forced the headless caller to fake a Hono
+// context, which is exactly the mistake companyDocPrefix's comment records
+// ("[object Object]-SO-2607-001").
+//
+// THE RED LINE, restated because this file is where it looks like it moves:
+// procurement-agent.ts (the ENGINE) still never touches scm.purchase_orders. It
+// proposes. This module executes a DECISION someone made about a proposal, and
+// what it creates is a DRAFT PO that a human must still confirm. Approve, then
+// confirm — two gates. Turning the auto-approve gate on removes the FIRST gate,
+// never the second: nothing here can put a PO in front of a supplier.
+// ---------------------------------------------------------------------------
+
+import type { Env } from '../../types';
+import { createDraftPosFromPicks } from '../../scm/routes/mfg-purchase-orders';
+import { readAgentSetting } from '../agent-console';
+import { PROCUREMENT_AGENT_SETTING_KEY } from './procurement-learning';
+
+/* Returning ok=false with reversible=true means NOTHING was created and the
+   proposal is safe to hand back to PENDING. reversible=false means something
+   WAS created and it must stay decided, because replaying it would do that part
+   twice. The distinction is evidence, not optimism — see the created.length
+   check below. */
+export type ApproveEffect =
+  | { ok: true; note?: string }
+  | { ok: false; error: string; reversible: boolean };
+
+export interface ReorderProposalRow {
+  kind?: string;
+  payload?: unknown;
+}
+
+/**
+ * WHO THE AGENT IS when it approves its own work.
+ *
+ * There is no default and there must not be one. A purchase order carries a
+ * created_by, that column is an accountability record, and an agent inventing
+ * an identity for itself — a system row, the first staff member it finds, the
+ * owner because he is probably fine with it — is the agent deciding who is
+ * answerable for an order. That is the owner's call, expressed by naming a
+ * staff member in app_settings['agents.procurement'].actorStaffId.
+ *
+ * Unset → the full-auto path does nothing and says why. The gate being on is
+ * not consent to be attributed to someone who never agreed to it.
+ */
+export async function resolveAgentActorStaffId(db: D1Database): Promise<string | null> {
+  const cfg = await readAgentSetting<Record<string, unknown>>(db, PROCUREMENT_AGENT_SETTING_KEY);
+  const raw = cfg?.actorStaffId;
+  if (typeof raw !== 'string' || raw.trim() === '') return null;
+  const id = raw.trim();
+  // Verify it is a real, active staff row rather than trusting the setting: a
+  // stale id would stamp POs to a person who has left.
+  const hit = await db
+    .prepare(`SELECT id FROM scm.staff WHERE id = ? AND active = true`)
+    .bind(id)
+    .first<{ id: string }>();
+  return hit?.id ?? null;
+}
+
+/** public.users id → scm.staff UUID. /api/agents authenticates with the public
+ *  bigint (its own header says so); PO.created_by is an scm.staff UUID. Mapped
+ *  the way pos.ts does. No fallback — stamping a PO to the wrong identity, or to
+ *  a system row, is worse than refusing to raise it. */
+export async function staffIdForUser(db: D1Database, userId: unknown): Promise<string | null> {
+  if (userId == null) return null;
+  const hit = await db
+    .prepare(`SELECT id FROM scm.staff WHERE user_id = ?`)
+    .bind(userId)
+    .first<{ id: string }>();
+  return hit?.id ?? null;
+}
+
+/**
+ * Raise the DRAFT POs an approved REORDER proposal describes.
+ *
+ * `actorStaffId` is stamped as created_by and is REQUIRED — both callers resolve
+ * their own, because "who did this" has a different answer for a click than for
+ * a heartbeat and neither should guess the other's.
+ */
+export async function executeReorderProposal(
+  env: Env,
+  row: ReorderProposalRow,
+  actorStaffId: string,
+): Promise<ApproveEffect> {
+  if (String(row.kind ?? '').toUpperCase() !== 'REORDER') {
+    return { ok: true }; // nothing to execute for other kinds
+  }
+
+  const payload = (typeof row.payload === 'string'
+    ? safeParse(row.payload)
+    : row.payload) as { picks?: unknown; companyId?: unknown; companyCode?: unknown } | null;
+
+  const picks = (Array.isArray(payload?.picks) ? payload.picks : [])
+    .map((p) => p as { soItemId?: unknown; qty?: unknown })
+    .filter((p) => typeof p.soItemId === 'string' && p.soItemId !== '' && Number(p.qty) > 0)
+    .map((p) => ({ soItemId: String(p.soItemId), qty: Number(p.qty) }));
+  if (picks.length === 0) {
+    /* Raised before proposals carried picks, or every short line was already
+       drafted. Either way there is nothing to convert — say so rather than
+       report a successful approval that created nothing. */
+    return {
+      ok: false,
+      error: 'proposal carries no executable picks — raise this PO from the MRP page',
+      reversible: true,
+    };
+  }
+
+  /* WHOSE BOOK — the PROPOSAL's company, never the caller's active one. The
+     agent planned one company's demand against that company's stock and
+     bindings; whatever company the approver happens to have selected in the top
+     bar is a different question, and answering it here would file one company's
+     SO lines under another's PO. */
+  const planCompanyId = Number(payload?.companyId);
+  const hasCompany = Number.isInteger(planCompanyId) && planCompanyId > 0;
+  if (payload?.companyId != null && !hasCompany) {
+    return {
+      ok: false,
+      error: `proposal carries an unusable companyId (${String(payload.companyId)})`,
+      reversible: true,
+    };
+  }
+
+  const out = await createDraftPosFromPicks(env, {
+    userId: actorStaffId,
+    /* Absent = the companies master was unresolved at plan time (the
+       single-company case). Pass undefined so stamping no-ops per the sentinel's
+       UNRESOLVED rule — do NOT substitute anyone else's company to fill it. */
+    companyId: hasCompany ? planCompanyId : undefined,
+    allowedCompanyIds: hasCompany ? [planCompanyId] : undefined,
+    /* The CODE string. companyDocPrefix stringifies whatever it gets. */
+    companyCode: typeof payload?.companyCode === 'string' ? payload.companyCode : null,
+    picks,
+  });
+
+  const body = out.body as {
+    created?: Array<{ poNumber?: string }>;
+    dropped?: Array<{ reason?: string }>;
+    error?: string;
+  };
+  const created = Array.isArray(body.created) ? body.created : [];
+  if (out.status >= 400 || created.length === 0) {
+    return {
+      ok: false,
+      error: body.error ?? `converter created no PO (status ${out.status})`,
+      // Reversible ONLY because created is empty. That is measured, not assumed.
+      reversible: true,
+    };
+  }
+
+  const numbers = created.map((p) => p.poNumber).filter(Boolean).join(', ');
+  if (body.dropped?.length) {
+    /* Some buckets became real POs and others failed. This must NOT go back to
+       PENDING: replaying it would re-raise the picks that already landed. Loud,
+       and decided. */
+    return {
+      ok: false,
+      error:
+        `raised ${created.length} draft PO(s) (${numbers}) but ${body.dropped.length} bucket(s) failed: ` +
+        `${body.dropped.map((d) => d.reason ?? 'unknown').join('; ')} — the rest must be raised by hand`,
+      reversible: false,
+    };
+  }
+  return { ok: true, note: `raised ${created.length} draft PO(s): ${numbers}` };
+}
+
+/**
+ * FULL AUTO (owner's Stage 2: "自动 Submit 和 Approve").
+ *
+ * Approves the agent's own PENDING reorders and raises their DRAFT POs, exactly
+ * as the console's approve button does — same executor, same claim, same
+ * evidence-based reversibility. The mirror of autoApplyConfigProposals, which
+ * does this for the learner's parameters.
+ *
+ * WHAT THIS GATE DOES AND DOES NOT REMOVE. It removes the human from
+ * PROPOSAL → APPROVED. It does not touch PO DRAFT → SUBMITTED, which is still a
+ * person confirming. So the owner stops reviewing proposals and starts reviewing
+ * draft POs — one gate, not two, and the remaining one is the one that faces a
+ * supplier. Stage 3 (auto-confirm + auto-send) is a separate decision and is not
+ * enabled by this.
+ *
+ * Returns a count and the notes/errors for the run summary. Never throws: a
+ * failed auto-approve must not sink the sweep that produced the proposals, and
+ * the proposals survive as PENDING for a human either way.
+ */
+export async function autoApproveReorderProposals(
+  env: Env,
+  decidedBy: string,
+): Promise<{ approved: number; notes: string[]; errors: string[] }> {
+  const db = env.DB;
+  const out = { approved: 0, notes: [] as string[], errors: [] as string[] };
+
+  const actorStaffId = await resolveAgentActorStaffId(db);
+  if (!actorStaffId) {
+    /* The gate is on but nobody has said who the agent acts as. Do nothing and
+       say so — an agent that picks its own created_by has decided who is
+       answerable for a purchase order, and that is not its decision. */
+    out.errors.push(
+      'auto-approve is on but agents.procurement.actorStaffId names no active staff member — no PO raised',
+    );
+    return out;
+  }
+
+  const res = await db
+    .prepare(
+      `SELECT * FROM procurement_agent_proposals
+        WHERE status = 'PENDING' AND kind = 'REORDER'
+        ORDER BY created_at ASC LIMIT 100`,
+    )
+    .all<{ id: string; kind?: string; payload?: unknown }>();
+
+  const nowIso = new Date().toISOString();
+  for (const row of res.results ?? []) {
+    /* CLAIM FIRST, execute second — the same order the console uses, for the
+       same reason: the UPDATE is the atomic step, so a heartbeat racing a human
+       clicking approve cannot both raise POs for one proposal. */
+    const claim = await db
+      .prepare(
+        `UPDATE procurement_agent_proposals
+            SET status = 'APPROVED', decided_at = ?, decided_by = ?
+          WHERE id = ? AND status = 'PENDING'`,
+      )
+      .bind(nowIso, decidedBy, row.id)
+      .run();
+    if (!(Number(claim.meta?.changes ?? claim.meta?.rows_written ?? 0) > 0)) continue;
+
+    let effect: ApproveEffect;
+    try {
+      effect = await executeReorderProposal(env, row, actorStaffId);
+    } catch (e) {
+      // It got far enough to do anything at all, so the claim stands and a human
+      // reads the error. Guessing "nothing happened" is what would double-order.
+      effect = { ok: false, error: e instanceof Error ? e.message : String(e), reversible: false };
+    }
+
+    if (effect.ok) {
+      out.approved++;
+      if (effect.note) out.notes.push(effect.note);
+      continue;
+    }
+    out.errors.push(`${row.id}: ${effect.error}`);
+    if (!effect.reversible) continue;
+    // Nothing was created — hand it back rather than leave an APPROVED row with
+    // no PO behind it, which would tell the owner the job is done.
+    await db
+      .prepare(
+        `UPDATE procurement_agent_proposals
+            SET status = 'PENDING', decided_at = NULL, decided_by = NULL
+          WHERE id = ? AND status = 'APPROVED'`,
+      )
+      .bind(row.id)
+      .run();
+  }
+  return out;
+}
+
+function safeParse(v: string): unknown {
+  try {
+    return JSON.parse(v);
+  } catch {
+    return null;
+  }
+}

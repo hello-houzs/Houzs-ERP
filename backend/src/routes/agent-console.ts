@@ -69,7 +69,13 @@ import { documentAgentStatus } from "../services/agents/document-agent";
 import { collectionAgentStatus } from "../services/agents/collection-agent";
 import { csAgentStatus } from "../services/agents/cs-agent";
 import { procurementAgentStatus } from "../services/agents/procurement-agent";
-import { createDraftPosFromPicks } from "../scm/routes/mfg-purchase-orders";
+/* The executor lives in services/agents so the full-auto path can reach it
+   without faking a request context — see that module's header. */
+import {
+  executeReorderProposal,
+  staffIdForUser,
+  type ApproveEffect,
+} from "../services/agents/procurement-execute";
 import { pmsAgentStatus } from "../services/agents/pms-agent";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -855,13 +861,6 @@ app.get("/document/brief", async (c) => {
 // a proposal only marks it decided for the office to act on — the PROPOSAL-ONLY
 // red line holds for every family (no engine creates/edits a business document).
 
-/* What an approval DOES, for a family that has an executor. Returning ok=false
-   with reversible=true means NOTHING was created and the proposal is safe to
-   hand back to PENDING; reversible=false means something WAS created and it must
-   stay APPROVED, because re-approving would do that part twice. */
-type ApproveEffect =
-  | { ok: true; note?: string }
-  | { ok: false; error: string; reversible: boolean };
 
 function mountEngineRoutes(opts: {
   base: string; // URL segment + audit/action slug, e.g. 'collection'
@@ -1044,110 +1043,18 @@ mountEngineRoutes({
   auditEntity: "procurement_agent_proposal",
   status: procurementAgentStatus,
   onApprove: async (c, row) => {
-    if (String(row.kind ?? "").toUpperCase() !== "REORDER") {
-      return { ok: true }; // nothing to execute for other kinds
-    }
-    const payload = asJson(row.payload) as {
-      picks?: unknown;
-      companyId?: unknown;
-      companyCode?: unknown;
-    } | null;
-    const picks = (Array.isArray(payload?.picks) ? payload.picks : [])
-      .map((p) => p as { soItemId?: unknown; qty?: unknown })
-      .filter((p) => typeof p.soItemId === "string" && p.soItemId !== "" && Number(p.qty) > 0)
-      .map((p) => ({ soItemId: String(p.soItemId), qty: Number(p.qty) }));
-    if (picks.length === 0) {
-      /* Raised before proposals carried picks, or every line was already
-         drafted. Either way there is nothing to convert — say so instead of
-         reporting a successful approval that created nothing. */
-      return {
-        ok: false,
-        error: "proposal carries no executable picks — raise this PO from the MRP page",
-        reversible: true,
-      };
-    }
-
-    /* PO.created_by is an scm.staff UUID, NOT the public users bigint this
-       route authenticates with — /api/agents is an app route, not /api/scm.
-       Map it the way pos.ts does. No fallback: stamping a PO to the wrong
-       identity, or to a system row, is worse than refusing to raise it. */
-    const uid = c.get("userId");
-    const staff = uid == null
-      ? null
-      : await c.env.DB.prepare(`SELECT id FROM scm.staff WHERE user_id = ?`)
-          .bind(uid)
-          .first<{ id: string }>();
-    if (!staff?.id) {
+    /* Acting AS the human who clicked. The full-auto path resolves a different
+       actor (see resolveAgentActorStaffId) — "who did this" has a different
+       answer for a click than for a heartbeat, so neither guesses the other's. */
+    const staffId = await staffIdForUser(c.env.DB, c.get("userId"));
+    if (!staffId) {
       return {
         ok: false,
         error: "approver has no scm.staff record — cannot stamp the PO's created_by",
         reversible: true,
       };
     }
-
-    /* WHOSE BOOK — the PROPOSAL's company, never the approver's active one.
-       They are different questions. The agent planned one company's demand
-       against that company's stock and bindings; the approver merely happens to
-       have some company selected in the top bar when they click. Stamping the
-       approver's would file one company's SO lines under another's PO, and the
-       top-bar switcher makes that a one-click mistake nobody would see. */
-    const planCompanyId = Number(payload?.companyId);
-    const planCompanyCode = typeof payload?.companyCode === "string" ? payload.companyCode : null;
-    if (payload?.companyId != null && !(Number.isInteger(planCompanyId) && planCompanyId > 0)) {
-      return {
-        ok: false,
-        error: `proposal carries an unusable companyId (${String(payload.companyId)})`,
-        reversible: true,
-      };
-    }
-
-    const out = await createDraftPosFromPicks(c.env, {
-      userId: staff.id,
-      /* null/absent = the companies master was unresolved at plan time, i.e. the
-         single-company case. Pass undefined so the stamping no-ops exactly as it
-         does everywhere else in that state — do NOT substitute the approver's
-         company to "fill the gap". */
-      companyId: Number.isInteger(planCompanyId) && planCompanyId > 0 ? planCompanyId : undefined,
-      /* Scoped to the plan's own company, not the approver's grants: this PO
-         belongs to the book the agent planned. */
-      allowedCompanyIds:
-        Number.isInteger(planCompanyId) && planCompanyId > 0 ? [planCompanyId] : undefined,
-      /* The CODE string. companyDocPrefix stringifies whatever it gets, and
-         passing a company row through this key is what minted
-         "[object Object]-SO-2607-001" out of the scan job. */
-      companyCode: planCompanyCode,
-      picks,
-    });
-
-    const body = out.body as {
-      created?: Array<{ poNumber?: string }>;
-      dropped?: Array<{ reason?: string }>;
-      error?: string;
-    };
-    const created = Array.isArray(body.created) ? body.created : [];
-    if (out.status >= 400 || created.length === 0) {
-      return {
-        ok: false,
-        error: body.error ?? `converter created no PO (status ${out.status})`,
-        // Nothing was created, so this can be approved again once the cause is
-        // fixed. That is only true BECAUSE created is empty — see below.
-        reversible: true,
-      };
-    }
-    const numbers = created.map((p) => p.poNumber).filter(Boolean).join(", ");
-    if (body.dropped?.length) {
-      /* Some suppliers' buckets failed while others became real POs. The
-         proposal must NOT go back to PENDING: re-approving it would replay the
-         picks that already landed. Loud, and decided. */
-      return {
-        ok: false,
-        error:
-          `raised ${created.length} draft PO(s) (${numbers}) but ${body.dropped.length} bucket(s) failed: ` +
-          `${body.dropped.map((d) => d.reason ?? "unknown").join("; ")} — the rest must be raised by hand`,
-        reversible: false,
-      };
-    }
-    return { ok: true, note: `raised ${created.length} draft PO(s): ${numbers}` };
+    return executeReorderProposal(c.env, row, staffId);
   },
 });
 
