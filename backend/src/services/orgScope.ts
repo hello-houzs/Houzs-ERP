@@ -88,6 +88,57 @@ export async function uplineUserIds(
   return [...seen];
 }
 
+/** One ancestor in a reporting chain, with its DISTANCE from the leaf. */
+export interface UplineStep {
+  userId: number;
+  /** 1 = the leaf's direct manager, 2 = that manager's manager, … */
+  level: number;
+}
+
+/**
+ * The ORDERED manager chain above `leafUserId`, each ancestor tagged with its
+ * distance. The leaf itself is NOT included (it is distance 0, and the HR
+ * commission chain override must never pay someone an override on their own
+ * sale — they already earn personal commission on it).
+ *
+ * WHY THIS EXISTS ALONGSIDE uplineUserIds: that function answers "who should be
+ * notified" and returns a Set-derived, self-inclusive, UNORDERED-by-contract
+ * list. Chain-override payroll needs the LEVEL of each ancestor, and must not
+ * depend on JS Set insertion order to decide what someone is paid. Its
+ * behaviour is deliberately left untouched — services/assrNotify.ts is a live
+ * caller.
+ *
+ * `maxDepth` is a CYCLE bound, not a policy cap: the HR caller passes the
+ * deepest level the owner has actually configured, so "unlimited depth" means
+ * "as deep as you configure" rather than a constant hidden in this file. The
+ * visited set still guarantees termination on a manager_id loop regardless.
+ */
+export async function uplineChainSteps(
+  env: Env,
+  leafUserId: number,
+  maxDepth: number = MAX_CHAIN_DEPTH,
+): Promise<UplineStep[]> {
+  const start = Number(leafUserId);
+  if (!Number.isFinite(start)) return [];
+  const seen = new Set<number>([start]);
+  const steps: UplineStep[] = [];
+  let currentId: number | null = start;
+  for (let depth = 1; depth <= maxDepth && currentId != null; depth++) {
+    const row: { manager_id: number | null } | null = await env.DB.prepare(
+      `SELECT manager_id FROM users WHERE id = ?`,
+    )
+      .bind(currentId)
+      .first<{ manager_id: number | null }>();
+    const managerId: number = Number(row?.manager_id ?? NaN);
+    if (!Number.isFinite(managerId)) break; // reached the root (no manager)
+    if (seen.has(managerId)) break; // cycle guard — also stops self-management
+    seen.add(managerId);
+    steps.push({ userId: managerId, level: depth });
+    currentId = managerId;
+  }
+  return steps;
+}
+
 /**
  * The lowercased, trimmed display NAMES of the caller's reporting subtree
  * (self + full manager_id downline). Used to reach LEGACY service cases that

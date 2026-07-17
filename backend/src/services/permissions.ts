@@ -112,6 +112,14 @@ export const PERMISSIONS: PermissionDef[] = [
   // failing closed by default is the intended behaviour.
   { key: "scm.hr.read",   resource: "Supply Chain", verb: "read",   label: "View HR commission",   description: "See the HR module: every salesperson's commission, KPI bonuses, salary profiles and the rate settings (read-only)" },
   { key: "scm.hr.manage", resource: "Supply Chain", verb: "manage", label: "Manage HR commission", description: "Set the commission rates and KPI thresholds, assign salesperson tiers/showrooms, and flag item KPIs — changes what people are paid" },
+  // Closing a period FREEZES that period's payout against later rate edits, and
+  // reopening un-freezes an already-approved figure. They are separate keys and
+  // separate from scm.hr.manage on purpose: whoever tunes the rates should not
+  // thereby be able to approve a payroll run, and whoever approves one should
+  // not thereby be able to reverse an approval nobody else witnessed. Owner + IT
+  // Admin hold both via "*" — grant either explicitly and sparingly.
+  { key: "scm.hr.close",  resource: "Supply Chain", verb: "manage", label: "Close HR payout period", description: "Freeze a commission period so later rate changes cannot alter what it pays — the payroll approval step" },
+  { key: "scm.hr.reopen", resource: "Supply Chain", verb: "manage", label: "Reopen HR payout period", description: "Un-freeze a closed commission period so it recomputes again — reverses an approved payout and is always recorded with a reason" },
 
   // Mail Center — in-ERP shared inbox (/api/mail-center). mail_center.read is the
   // nav/page gate (grant broadly); mail_center.manage gates the alias / access /

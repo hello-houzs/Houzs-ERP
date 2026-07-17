@@ -1,12 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import {
+  COMMISSION_EXCLUDED_STATUSES,
+  computeChainCommission,
+  computeChainOverride,
   computeShowroomCommission,
   lineKpiCenti,
+  soEarnsCommission,
   unitKpiCenti,
   unitKpiExcludedCenti,
   type CommissionConfig,
+  type ChainSalespersonInput,
   type ItemKpiFlag,
   type KpiUnit,
+  type OverrideLevel,
 } from './hr-commission';
 
 const cfg: CommissionConfig = {
@@ -229,5 +235,193 @@ describe('item-KPI as a goods exclusion (unitKpiCenti / unitKpiExcludedCenti)', 
     };
     expect(unitKpiCenti(plain, fabricFlag)).toBe(0);
     expect(unitKpiExcludedCenti(plain, fabricFlag)).toBe(0); // non-flagged fabric Δ stays goods
+  });
+});
+
+// ── owner ruling 2026-07-17: "draft肯定不算" ─────────────────────────────────
+describe('soEarnsCommission (DRAFT exclusion)', () => {
+  // The full status ladder, copied from mfg-sales-orders.ts SO_STATUSES.
+  const ALL_STATUSES = [
+    'DRAFT', 'CONFIRMED', 'IN_PRODUCTION', 'READY_TO_SHIP', 'SHIPPED',
+    'DELIVERED', 'INVOICED', 'CLOSED', 'CANCELLED', 'ON_HOLD',
+  ];
+
+  it('a DRAFT earns NO commission (the ruling)', () => {
+    expect(soEarnsCommission('DRAFT')).toBe(false);
+  });
+
+  it('still excludes CANCELLED and ON_HOLD (2990 parity — unchanged)', () => {
+    expect(soEarnsCommission('CANCELLED')).toBe(false);
+    expect(soEarnsCommission('ON_HOLD')).toBe(false);
+  });
+
+  it('EXACTLY 7 of the 10 statuses earn — nothing else was quietly cut', () => {
+    // The real risk in touching this filter is not missing DRAFT, it is
+    // excluding one status too many: dropping CLOSED or INVOICED would silently
+    // stop paying on completed sales and just look like a slow month.
+    expect(ALL_STATUSES.filter(soEarnsCommission)).toEqual([
+      'CONFIRMED', 'IN_PRODUCTION', 'READY_TO_SHIP', 'SHIPPED',
+      'DELIVERED', 'INVOICED', 'CLOSED',
+    ]);
+  });
+
+  it('every excluded status is a REAL status (a typo would pay everyone)', () => {
+    // 'ONHOLD' would exclude nothing and quietly pay every paused order.
+    for (const s of COMMISSION_EXCLUDED_STATUSES) expect(ALL_STATUSES).toContain(s);
+  });
+
+  it('is case-insensitive, and an unknown status EARNS (matches the SQL filter)', () => {
+    expect(soEarnsCommission('draft')).toBe(false);
+    // `not in (...)` excludes a LISTED status — it does not require a known one.
+    expect(soEarnsCommission('SOMETHING_NEW')).toBe(true);
+    expect(soEarnsCommission(null)).toBe(true);
+  });
+});
+
+// ── owner ruling 2026-07-17: "無限 讓我們自己add 按SO算" ──────────────────────
+describe('computeChainOverride (recursive reporting-line override)', () => {
+  const levels: OverrideLevel[] = [
+    { level: 1, rateBps: 50 }, // 0.5% on direct reports
+    { level: 2, rateBps: 25 }, // 0.25% on their reports
+  ];
+
+  it('pays each configured level its own rate on that level own goods', () => {
+    // level 1: 0.5% of RM 100k = RM 500 ; level 2: 0.25% of RM 200k = RM 500
+    const r = computeChainOverride(levels, new Map([[1, 10_000_000], [2, 20_000_000]]));
+    expect(r.overrideCommissionCenti).toBe(50_000 + 50_000);
+    expect(r.overrideDetail).toEqual([
+      { level: 1, rateBps: 50, goodsCenti: 10_000_000, commissionCenti: 50_000 },
+      { level: 2, rateBps: 25, goodsCenti: 20_000_000, commissionCenti: 50_000 },
+    ]);
+  });
+
+  it('a level with goods but NO configured rate earns nothing ("讓我們自己add")', () => {
+    // RM 500k sits at level 3, but the owner never added a level 3.
+    const r = computeChainOverride(levels, new Map([[1, 10_000_000], [3, 50_000_000]]));
+    expect(r.overrideCommissionCenti).toBe(50_000); // level 1 only
+    expect(r.overrideDetail.map((d) => d.level)).toEqual([1]);
+  });
+
+  it('a configured level with no downline goods earns nothing and is not listed', () => {
+    const r = computeChainOverride(levels, new Map([[1, 10_000_000]]));
+    expect(r.overrideCommissionCenti).toBe(50_000);
+    expect(r.overrideDetail.map((d) => d.level)).toEqual([1]);
+  });
+
+  it('no downline at all → RM 0 override (not an error)', () => {
+    expect(computeChainOverride(levels, new Map()).overrideCommissionCenti).toBe(0);
+  });
+
+  it('"無限": a deep level earns exactly like a shallow one — no cap in the math', () => {
+    const r = computeChainOverride([{ level: 25, rateBps: 10 }], new Map([[25, 10_000_000]]));
+    expect(r.overrideCommissionCenti).toBe(10_000); // 0.1% of RM 100k = RM 100
+  });
+
+  it('rounds ONCE per level, on that level summed goods (money — mirrors 2990)', () => {
+    // 3 bps of 3,333 centi = 0.9999 → 1. Rounding per-seller first (three
+    // sellers of 1,111 each → round(0.3333) = 0 apiece) would pay 0 instead.
+    // The rate hits the SUMMED base, exactly as showroom mode does.
+    expect(computeChainOverride([{ level: 1, rateBps: 3 }], new Map([[1, 3_333]])).overrideCommissionCenti).toBe(1);
+  });
+
+  it('detail order is stable regardless of configured order (byte-stable snapshots)', () => {
+    const shuffled: OverrideLevel[] = [{ level: 2, rateBps: 25 }, { level: 1, rateBps: 50 }];
+    const r = computeChainOverride(shuffled, new Map([[1, 10_000_000], [2, 20_000_000]]));
+    expect(r.overrideDetail.map((d) => d.level)).toEqual([1, 2]);
+  });
+});
+
+describe('computeChainCommission (the double-pay guard)', () => {
+  const levels: OverrideLevel[] = [
+    { level: 1, rateBps: 50 },
+    { level: 2, rateBps: 25 },
+  ];
+  const chain = (
+    staffId: string,
+    tier: 'sales' | 'manager',
+    personalGoodsCenti: number,
+    goodsByLevel: Map<number, number>,
+  ): ChainSalespersonInput => ({ staffId, tier, personalGoodsCenti, itemKpiCenti: 0, goodsByLevel });
+
+  it('THE GUARD: two stacked managers each earn on the seller goods ONCE, at their own level', () => {
+    // A (seller, RM 100k) → M1 → M2. M1 is 1 above A, M2 is 2 above.
+    // This is the case 2990 gets WRONG: there, two managers of one showroom EACH
+    // take the FULL showroom override, so the company pays one room twice at the
+    // same rate. Here: different levels, different rates, once each.
+    const rows = computeChainCommission(cfg, 10_000_000, levels, [
+      chain('A', 'sales', 10_000_000, new Map()),
+      chain('M1', 'manager', 0, new Map([[1, 10_000_000]])),
+      chain('M2', 'manager', 0, new Map([[2, 10_000_000]])),
+    ]);
+    const m1 = rows.find((r) => r.staffId === 'M1');
+    const m2 = rows.find((r) => r.staffId === 'M2');
+    expect(m1?.overrideCommissionCenti).toBe(50_000); // 0.5% of 100k = RM 500
+    expect(m2?.overrideCommissionCenti).toBe(25_000); // 0.25% of 100k = RM 250
+    // …and NOT 2990's answer, where both would take the identical full override.
+    expect(m1?.overrideCommissionCenti).not.toBe(m2?.overrideCommissionCenti);
+  });
+
+  it('THE GUARD: the seller earns personal commission and NO override on their own sale', () => {
+    // Distance 0 never enters goodsByLevel (rollUpChainGoods skips it), so an
+    // own-sale override is unrepresentable rather than merely unlikely.
+    const rows = computeChainCommission(cfg, 10_000_000, levels, [
+      chain('A', 'sales', 10_000_000, new Map()),
+    ]);
+    // RM 100k personal HITS the 100k gate → 1.5%, showroom RM 100k misses 400k.
+    expect(rows[0]?.personalRateBps).toBe(150);
+    expect(rows[0]?.personalCommissionCenti).toBe(150_000);
+    expect(rows[0]?.overrideCommissionCenti).toBe(0);
+  });
+
+  it('a manager who also SELLS: personal on their own, override on the downline, never both on one sale', () => {
+    // M sells RM 100k himself and has RM 200k under him at level 1.
+    const rows = computeChainCommission(cfg, 30_000_000, levels, [
+      chain('M', 'manager', 10_000_000, new Map([[1, 20_000_000]])),
+    ]);
+    expect(rows[0]?.personalRateBps).toBe(150); // 100k gate hit, 400k missed
+    expect(rows[0]?.personalCommissionCenti).toBe(150_000);
+    // 0.5% of the RM 200k DOWNLINE only — his own RM 100k is not in the base.
+    expect(rows[0]?.overrideCommissionCenti).toBe(100_000);
+    expect(rows[0]?.totalCenti).toBe(250_000);
+  });
+
+  it('tier is NOT consulted: a sales-tier person with a downline earns the override', () => {
+    // Having reports is what earns, not a flag — the chain replaces tier for
+    // override purposes. A 'manager' with nobody under them earns nothing.
+    const rows = computeChainCommission(cfg, 10_000_000, levels, [
+      chain('S', 'sales', 0, new Map([[1, 10_000_000]])),
+      chain('M', 'manager', 0, new Map()),
+    ]);
+    expect(rows.find((r) => r.staffId === 'S')?.overrideCommissionCenti).toBe(50_000);
+    expect(rows.find((r) => r.staffId === 'M')?.overrideCommissionCenti).toBe(0);
+  });
+
+  it('reports overrideRateBps as NULL — there is no single rate in chain mode', () => {
+    // 0 would claim a 0% override was earned, which is a different and false
+    // statement. The truth lives in overrideDetail.
+    const rows = computeChainCommission(cfg, 10_000_000, levels, [
+      chain('M', 'manager', 0, new Map([[1, 10_000_000], [2, 20_000_000]])),
+    ]);
+    expect(rows[0]?.overrideRateBps).toBeNull();
+    expect(rows[0]?.overrideDetail).toHaveLength(2);
+  });
+
+  it('personal commission is IDENTICAL to showroom mode — only the override changes', () => {
+    // Both modes share personalPart, so the 100k/400k gates behave the same and
+    // flipping the mode is a change to exactly ONE column.
+    const person = { staffId: 'a', tier: 'sales' as const, personalGoodsCenti: 15_000_000, itemKpiCenti: 7_000 };
+    const showroom = computeShowroomCommission(cfg, 50_000_000, [person]);
+    const chained = computeChainCommission(cfg, 50_000_000, levels, [{ ...person, goodsByLevel: new Map() }]);
+    expect(chained[0]?.personalRateBps).toBe(showroom[0]?.personalRateBps);
+    expect(chained[0]?.personalCommissionCenti).toBe(showroom[0]?.personalCommissionCenti);
+    expect(chained[0]?.itemKpiCenti).toBe(showroom[0]?.itemKpiCenti);
+  });
+
+  it('the item-KPI fixed bonus still lands in the total in chain mode', () => {
+    const rows = computeChainCommission(cfg, 5_000_000, levels, [
+      { ...chain('a', 'sales', 5_000_000, new Map([[1, 10_000_000]])), itemKpiCenti: 15_000 },
+    ]);
+    // 1.0% of 50k = RM 500, + 0.5% of 100k downline = RM 500, + RM 150 fixed
+    expect(rows[0]?.totalCenti).toBe(50_000 + 50_000 + 15_000);
   });
 });

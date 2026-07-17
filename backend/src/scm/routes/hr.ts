@@ -6,13 +6,39 @@
 // it lives in ../shared/hr-commission (byte-identical to 2990's) and
 // ../lib/kpi-units. This file is I/O, authorization and company scope only.
 //
-// Endpoints (12, 1:1 with 2990):
-//   GET    /config            PATCH  /config
-//   GET    /profiles          POST   /profiles
-//   PATCH  /profiles/:id      DELETE /profiles/:id
-//   GET    /item-kpi          POST   /item-kpi
-//   PATCH  /item-kpi/:id      DELETE /item-kpi/:id
-//   GET    /pickers           GET    /commission
+// Endpoints (20 — 12 ported 1:1 from 2990, 8 added by the 2026-07-17 rulings):
+//   GET    /config                 PATCH  /config
+//   GET    /profiles               POST   /profiles
+//   PATCH  /profiles/:id           DELETE /profiles/:id
+//   GET    /item-kpi               POST   /item-kpi
+//   PATCH  /item-kpi/:id           DELETE /item-kpi/:id
+//   GET    /pickers                GET    /commission
+//   GET    /override-levels        POST   /override-levels          (new)
+//   PATCH  /override-levels/:id    DELETE /override-levels/:id      (new)
+//   GET    /payout/periods         POST   /payout/close             (new)
+//   POST   /payout/reopen                                           (new)
+//
+// ── THE 2026-07-17 OWNER RULINGS (what changed and why) ─────────────────────
+// 1. DRAFT EARNS NOTHING ("draft肯定不算"). 2990 excluded only CANCELLED +
+//    ON_HOLD of 10 statuses, so DRAFT — the state every SO is BORN in, and the
+//    state scan-so lands every OCR'd slip in — paid full commission. See
+//    COMMISSION_EXCLUDED_STATUSES for what else that filter reaches.
+//
+// 2. PERIOD CLOSE / PAYOUT SNAPSHOT (raised by IT, NOT ruled on by the owner —
+//    he has not seen this yet). The report recomputed from CURRENT config on
+//    every load, so editing one rate silently rewrote every PAST period's
+//    payout: no figure he has ever approved was reproducible. A closed period
+//    now freezes its rows and is SERVED from them; an open period still
+//    recomputes live. See migration 0125 for the full argument.
+//
+// 3. RECURSIVE OVERRIDE ("無限 讓我們自己add 按SO算"). 2990's override is flat
+//    per showroom and has no chain to walk — no manager_id exists anywhere in
+//    the HR schema. Houzs has users.manager_id, so commission finally obeys the
+//    house rule "reporting-to = FULL recursive downline, every module".
+//    Selected by config.override_mode: 'showroom' (2990 parity, the DEFAULT —
+//    nobody's pay moves on deploy) or 'chain'. NEVER BOTH: running them
+//    together pays a manager twice on overlapping goods. See migration 0124 and
+//    rollUpChainGoods for the double-pay guard.
 //
 // ── AUTHORIZATION (why these keys) ──────────────────────────────────────────
 // 2990 gates on scm.staff.role: mutations = admin|super_admin, reads = those
@@ -60,11 +86,16 @@
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import {
+  COMMISSION_ENGINE_VERSION,
+  COMMISSION_EXCLUDED_STATUSES,
+  computeChainCommission,
   computeShowroomCommission,
   kpiFlagFiresOnUnit,
   unitKpiCenti,
   unitKpiExcludedCenti,
   type CommissionConfig,
+  type CommissionRow,
+  type OverrideLevel,
   type SalespersonInput,
 } from '../shared/hr-commission';
 import { loadKpiUnitsByDoc } from '../lib/kpi-units';
@@ -73,6 +104,7 @@ import { hasHouzsPerm } from '../lib/houzs-perms';
 import { activeCompanyId } from '../lib/companyScope';
 import { resolveCallerStaffId } from '../lib/salesScope';
 import { chunkIn, paginateAll } from '../lib/paginate-all';
+import { uplineChainSteps } from '../../services/orgScope';
 import type { Env, Variables } from '../env';
 
 export const hr = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -108,7 +140,7 @@ const issues = (e: z.ZodError) => e.issues.map((i) => ({ path: i.path, message: 
 
 // ── config ───────────────────────────────────────────────────────────────
 const CONFIG_SELECT =
-  'base_bps, personal_kpi_threshold_centi, personal_kpi_bonus_bps, showroom_kpi_threshold_centi, showroom_kpi_bonus_bps, override_base_bps, override_kpi_bonus_bps, updated_at';
+  'base_bps, personal_kpi_threshold_centi, personal_kpi_bonus_bps, showroom_kpi_threshold_centi, showroom_kpi_bonus_bps, override_base_bps, override_kpi_bonus_bps, override_mode, updated_at';
 
 type ConfigRow = {
   base_bps: number;
@@ -118,8 +150,18 @@ type ConfigRow = {
   showroom_kpi_bonus_bps: number;
   override_base_bps: number;
   override_kpi_bonus_bps: number;
+  override_mode: string;
   updated_at?: string;
 };
+
+/* Which override model this company pays (migration 0124). 'showroom' is 2990's
+   flat-per-showroom override, 'chain' is the owner's recursive reporting-line
+   one. NEVER BOTH — running them together pays a manager twice on overlapping
+   goods. An unrecognised value is refused rather than defaulted: a typo'd mode
+   silently falling back to a payout model is the whole class of bug this module
+   is written against. */
+type OverrideMode = 'showroom' | 'chain';
+const isOverrideMode = (v: unknown): v is OverrideMode => v === 'showroom' || v === 'chain';
 
 const toConfigApi = (r: ConfigRow) => ({
   baseBps: r.base_bps,
@@ -129,6 +171,7 @@ const toConfigApi = (r: ConfigRow) => ({
   showroomKpiBonusBps: r.showroom_kpi_bonus_bps,
   overrideBaseBps: r.override_base_bps,
   overrideKpiBonusBps: r.override_kpi_bonus_bps,
+  overrideMode: r.override_mode,
   updatedAt: r.updated_at,
 });
 
@@ -187,6 +230,7 @@ const configPatchSchema = z.object({
   showroomKpiBonusBps: z.number().int().nonnegative().optional(),
   overrideBaseBps: z.number().int().nonnegative().optional(),
   overrideKpiBonusBps: z.number().int().nonnegative().optional(),
+  overrideMode: z.enum(['showroom', 'chain']).optional(),
 });
 
 hr.patch('/config', async (c) => {
@@ -217,6 +261,22 @@ hr.patch('/config', async (c) => {
   if (d.showroomKpiBonusBps !== undefined) patch.showroom_kpi_bonus_bps = d.showroomKpiBonusBps;
   if (d.overrideBaseBps !== undefined) patch.override_base_bps = d.overrideBaseBps;
   if (d.overrideKpiBonusBps !== undefined) patch.override_kpi_bonus_bps = d.overrideKpiBonusBps;
+  if (d.overrideMode !== undefined) patch.override_mode = d.overrideMode;
+
+  /* Switching TO chain with no levels configured would pay every manager a
+     RM 0 override on the next run. Refuse the switch at the door — the report
+     refuses too, but failing here means the config can never be left in a state
+     that the report cannot honour. */
+  if (d.overrideMode === 'chain') {
+    const lv = await loadOverrideLevels(c, co.companyId);
+    if (!lv.ok) return lv.res;
+    if (lv.levels.length === 0) {
+      return c.json(
+        { error: 'no_override_levels', reason: 'Chain override mode needs at least one override level configured, otherwise every manager would earn RM 0 override. Add the levels first, then switch the mode.' },
+        409,
+      );
+    }
+  }
 
   const { data, error } = await sb
     .from('hr_commission_config')
@@ -501,6 +561,158 @@ hr.delete('/item-kpi/:id', async (c) => {
   return c.json({ ok: true });
 });
 
+// ── override levels (chain mode) ────────────────────────────────────────────
+// The config surface for the owner's "讓我們自己add": one editable rate per
+// level of the reporting chain. level 1 = a person's DIRECT reports, level 2 =
+// their reports' reports, and so on — "無限", bounded only by the rows he adds.
+// Seeded EMPTY (migration 0124): inventing a level rate would be inventing a
+// payout.
+const LEVEL_SELECT = 'id, level, rate_bps, label, active, created_at, updated_at';
+
+type LevelRow = { id: string; level: number; rate_bps: number; label: string; active: boolean };
+
+const toLevelApi = (r: LevelRow) => ({
+  id: r.id,
+  level: r.level,
+  rateBps: r.rate_bps,
+  label: r.label,
+  active: r.active,
+});
+
+/* This company's ACTIVE override levels. An empty list is a legitimate answer
+   ("none configured"), NOT a failure — the CALLER decides whether empty is
+   acceptable for what it is doing (fatal in chain mode, irrelevant in showroom
+   mode). A read failure stays an explicit error and never collapses into the
+   empty list: those two must not look alike, or a transient PostgREST error
+   silently zeroes every override in the company. */
+async function loadOverrideLevels(
+  c: HrContext,
+  companyId: number,
+): Promise<{ ok: true; levels: OverrideLevel[] } | { ok: false; res: Response }> {
+  const sb = c.get('supabase');
+  const res = await paginateAll<LevelRow>((f, t) => sb
+    .from('hr_override_levels')
+    .select(LEVEL_SELECT)
+    .eq('active', true)
+    .eq('company_id', companyId)
+    .order('level')
+    .range(f, t),
+  );
+  if (res.error) return { ok: false, res: c.json({ error: 'override_levels_failed', reason: res.error.message }, 500) };
+  return { ok: true, levels: (res.data ?? []).map((r) => ({ level: r.level, rateBps: r.rate_bps })) };
+}
+
+hr.get('/override-levels', async (c) => {
+  if (!hasHouzsPerm(c, HR_READ)) return forbidden(c, HR_READ);
+  const co = requireCompany(c);
+  if (!co.ok) return co.res;
+  const sb = c.get('supabase');
+  // Unlike loadOverrideLevels this lists INACTIVE rows too — the settings screen
+  // must show a switched-off level, not pretend it was never configured.
+  const { data, error } = await paginateAll<LevelRow>((f, t) => sb
+    .from('hr_override_levels')
+    .select(LEVEL_SELECT)
+    .eq('company_id', co.companyId)
+    .order('level')
+    .range(f, t),
+  );
+  if (error) return c.json({ error: 'fetch_failed', reason: error.message }, 500);
+  return c.json({ levels: (data ?? []).map(toLevelApi) });
+});
+
+const levelCreateSchema = z.object({
+  // No upper bound on `level`: the owner said 無限 (unlimited). The walk depth
+  // follows what is configured here (see /commission), so a level 12 is walked
+  // to 12. Only level 0 is impossible — an "override" on your own sale is just
+  // being paid twice for it.
+  level: z.number().int().min(1),
+  rateBps: z.number().int().nonnegative(),
+  label: z.string().default(''),
+  active: z.boolean().default(true),
+});
+
+hr.post('/override-levels', async (c) => {
+  if (!hasHouzsPerm(c, HR_MANAGE)) return forbidden(c, HR_MANAGE);
+  const co = requireCompany(c);
+  if (!co.ok) return co.res;
+  let body: unknown;
+  try { body = await c.req.json(); } catch { return c.json({ error: 'invalid_json' }, 400); }
+  const parsed = levelCreateSchema.safeParse(body);
+  if (!parsed.success) return c.json({ error: 'validation_failed', issues: issues(parsed.error) }, 400);
+  const sb = c.get('supabase');
+  const { data, error } = await sb
+    .from('hr_override_levels')
+    .insert({
+      level: parsed.data.level,
+      rate_bps: parsed.data.rateBps,
+      label: parsed.data.label,
+      active: parsed.data.active,
+      company_id: co.companyId,
+      updated_by: await resolveCallerStaffId(sb, c.get('houzsUser')?.id),
+    })
+    .select(LEVEL_SELECT)
+    .single();
+  if (error) {
+    // UNIQUE (company_id, level) — one rate per level. Two rows for level 2
+    // would make "the level 2 rate" ambiguous, i.e. a payout nobody can predict.
+    if (error.code === '23505') return c.json({ error: 'duplicate_level', reason: 'this level already has a rate in this company — edit it instead' }, 409);
+    return c.json({ error: 'create_failed', reason: error.message }, 500);
+  }
+  return c.json({ level: toLevelApi(data as LevelRow) }, 201);
+});
+
+const levelPatchSchema = z.object({
+  rateBps: z.number().int().nonnegative().optional(),
+  label: z.string().optional(),
+  active: z.boolean().optional(),
+});
+
+/* `level` itself is NOT patchable — renumbering a level in place silently
+   repoints an existing rate at a different set of people. Delete and re-add. */
+hr.patch('/override-levels/:id', async (c) => {
+  if (!hasHouzsPerm(c, HR_MANAGE)) return forbidden(c, HR_MANAGE);
+  const co = requireCompany(c);
+  if (!co.ok) return co.res;
+  const id = c.req.param('id');
+  let body: unknown;
+  try { body = await c.req.json(); } catch { return c.json({ error: 'invalid_json' }, 400); }
+  const parsed = levelPatchSchema.safeParse(body);
+  if (!parsed.success) return c.json({ error: 'validation_failed', issues: issues(parsed.error) }, 400);
+  const sb = c.get('supabase');
+  const patch: Record<string, unknown> = {
+    updated_at: new Date().toISOString(),
+    updated_by: await resolveCallerStaffId(sb, c.get('houzsUser')?.id),
+  };
+  if (parsed.data.rateBps !== undefined) patch.rate_bps = parsed.data.rateBps;
+  if (parsed.data.label !== undefined) patch.label = parsed.data.label;
+  if (parsed.data.active !== undefined) patch.active = parsed.data.active;
+  const { data, error } = await sb
+    .from('hr_override_levels')
+    .update(patch)
+    .eq('id', id)
+    .eq('company_id', co.companyId)
+    .select(LEVEL_SELECT)
+    .maybeSingle();
+  if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
+  if (!data) return c.json({ error: 'not_found' }, 404);
+  return c.json({ level: toLevelApi(data as LevelRow) });
+});
+
+hr.delete('/override-levels/:id', async (c) => {
+  if (!hasHouzsPerm(c, HR_MANAGE)) return forbidden(c, HR_MANAGE);
+  const co = requireCompany(c);
+  if (!co.ok) return co.res;
+  const id = c.req.param('id');
+  const sb = c.get('supabase');
+  const { error } = await sb
+    .from('hr_override_levels')
+    .delete()
+    .eq('id', id)
+    .eq('company_id', co.companyId);
+  if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
+  return c.json({ ok: true });
+});
+
 // ── pickers: assignable staff + showrooms + products/fabrics/specials to flag ──
 hr.get('/pickers', async (c) => {
   if (!hasHouzsPerm(c, HR_READ)) return forbidden(c, HR_READ);
@@ -538,6 +750,31 @@ hr.get('/pickers', async (c) => {
 // ── commission computation ──────────────────────────────────────────────────
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
+/* The PostgREST rendering of the shared COMMISSION_EXCLUDED_STATUSES rule. The
+   LIST lives in ../shared/hr-commission (it is a commission rule, and a rule in
+   a route file is a rule no test can reach); this is only its wire format, so
+   the query and the tested predicate cannot drift.
+
+   WHAT THIS FILTER TOUCHES, checked rather than assumed (it is wider than "draft
+   people don't get paid"):
+     · The item-KPI pass is driven by docToSalesperson, which is built FROM this
+       query's survivors, so a DRAFT's fixed bonuses and its goods exclusion drop
+       out with it automatically. There is exactly ONE status predicate in this
+       module and this is it — kpi-units.ts deliberately has none.
+     · The showroom total is Σ of its profiled members' goods, so dropping DRAFTs
+       LOWERS it, which can push a showroom back under the RM 400k gate and cut
+       the rate for EVERY member of that room, not just the DRAFT's owner. That
+       is the correct direction (a DRAFT is not a sale) and it is why this is not
+       a one-person change.
+     · scan-so lands every OCR'd slip as a DRAFT for an operator to review
+       ("The whole point: land as DRAFT" — scan-so.ts). Those unreviewed,
+       machine-read slips have been paying commission. That is the live bite.
+   The `(CANCELLED,ON_HOLD)` string appears nowhere else in the codebase — no
+   other route shares this predicate, so nothing else moves. mfg-sales-orders'
+   /mine board already excludes exactly these three, which is the precedent this
+   now matches. */
+const COMMISSION_EXCLUDED_STATUS_FILTER = `(${COMMISSION_EXCLUDED_STATUSES.join(',')})`;
+
 type OrderRow = {
   doc_no: string;
   salesperson_id: string | null;
@@ -565,21 +802,175 @@ const goodsOf = (o: OrderRow): number =>
 // display order within a showroom: managers (tier 2) first, then sales (tier 1).
 const TIER_RANK: Record<string, number> = { manager: 0, sales: 1 };
 
-hr.get('/commission', async (c) => {
-  if (!hasHouzsPerm(c, HR_READ)) return forbidden(c, HR_READ);
-  const co = requireCompany(c);
-  if (!co.ok) return co.res;
-  const from = (c.req.query('from') ?? '').trim();
-  const to = (c.req.query('to') ?? '').trim();
-  if (!ISO_DATE.test(from) || !ISO_DATE.test(to)) return c.json({ error: 'invalid_range', reason: 'from and to must be YYYY-MM-DD' }, 400);
-  if (from > to) return c.json({ error: 'invalid_range', reason: 'from must be <= to' }, 400);
+type ProfileLite = { staff_id: string; tier: string; showroom_id: string };
 
+/**
+ * Roll each profiled seller's commissionable goods UP their reporting line, so
+ * every earner ends up with "Σ goods of my downline, per level".
+ *
+ * ── THE ID BRIDGE (the only link between the two id spaces) ─────────────────
+ *   SO.salesperson_id → scm.staff.id → staff.user_id → public.users.id → walk
+ *   up users.manager_id. Migration 0066 gives every non-disabled user a
+ *   deterministic staff row and is what makes this join exist at all
+ *   (scm/lib/salesScope.ts resolves the same bridge in the other direction).
+ *
+ * ── THE DOUBLE-PAY GUARD ────────────────────────────────────────────────────
+ * 2990's flat model pays the FULL showroom override to EVERY manager in a
+ * showroom, so two managers in one room bill the company twice for one room —
+ * a live 2990 bug. Nothing here can reproduce it:
+ *   · d=0 (the seller) is never emitted by uplineChainSteps, so nobody earns an
+ *     override on their own sale on top of their personal commission.
+ *   · the walk's visited-set means each ancestor is reached at most ONCE per
+ *     seller, at exactly one distance — so one seller's goods enter one
+ *     earner's base exactly once, at one level.
+ *   · two managers stacked in one line (A → M1 → M2) both earn on A's goods,
+ *     but at DIFFERENT levels with DIFFERENT rates, once each. That is the
+ *     pyramid the owner asked for, not the bug.
+ *
+ * ── WHO IS DELIBERATELY LEFT OUT (each one under-pays, never over-pays) ─────
+ *   · a seller with no active HR profile — their goods roll up to nobody. They
+ *     are already invisible to the report and to every showroom total, so the
+ *     scheme does not know them.
+ *   · an ancestor with no active HR profile — a real manager in the org tree who
+ *     is not on the commission scheme earns nothing. The profile IS the scheme.
+ *   · a seller or ancestor whose staff row has no user_id link — unbridgeable,
+ *     so unwalkable. This is the one that most deserves a staging check: it is
+ *     silent, and it looks exactly like "has no downline".
+ *
+ * Cost: one walk per profiled seller, each up to maxLevel single-row lookups.
+ * A payroll screen opened a few times a month over tens of profiles — reusing
+ * orgScope's cycle-guarded walk is worth more here than a bespoke bulk query
+ * with a second copy of the guard.
+ */
+async function rollUpChainGoods(
+  c: HrContext,
+  companyId: number,
+  profiles: ProfileLite[],
+  commissionableGoods: ReadonlyMap<string, number>,
+  levels: OverrideLevel[],
+): Promise<{ ok: true; goods: Map<string, Map<number, number>> } | { ok: false; res: Response }> {
+  const goods = new Map<string, Map<number, number>>();
+  const staffIds = profiles.map((p) => p.staff_id);
+  if (staffIds.length === 0 || levels.length === 0) return { ok: true, goods };
+
+  const sb = c.get('supabase');
+  const linkRes = await chunkIn<{ id: string; user_id: number | null }>(
+    [...new Set(staffIds)],
+    (batch, from, to) => sb.from('staff').select('id, user_id').in('id', batch).order('id').range(from, to),
+  );
+  /* A failed bridge read must NOT degrade into "nobody has a manager" — that
+     pays every override as RM 0 while looking like a correct org chart. */
+  if (linkRes.error) {
+    return { ok: false, res: c.json({ error: 'chain_link_failed', reason: linkRes.error.message }, 500) };
+  }
+
+  const userIdOfStaff = new Map<string, number>();
+  const staffIdOfUser = new Map<number, string>();
+  for (const r of linkRes.data) {
+    const uid = Number(r.user_id);
+    if (!r.user_id || !Number.isFinite(uid)) continue; // unbridgeable — see above
+    userIdOfStaff.set(r.id, uid);
+    staffIdOfUser.set(uid, r.id);
+  }
+
+  /* "無限" in practice: walk exactly as deep as the owner has CONFIGURED, not to
+     some constant in this file. Walking past the deepest configured level would
+     only find ancestors with no rate. If he adds a level 12, this passes 12 —
+     orgScope's MAX_CHAIN_DEPTH default of 10 is a cycle bound, and passing this
+     explicitly is what stops that default from silently capping a ruling that
+     said unlimited. */
+  const maxLevel = Math.max(...levels.map((l) => l.level));
+
+  for (const p of profiles) {
+    const sellerGoods = commissionableGoods.get(p.staff_id) ?? 0;
+    if (sellerGoods <= 0) continue; // nothing to roll up
+    const sellerUserId = userIdOfStaff.get(p.staff_id);
+    if (sellerUserId === undefined) continue; // unbridgeable seller
+    const steps = await uplineChainSteps(c.env, sellerUserId, maxLevel);
+    for (const step of steps) {
+      const earnerStaffId = staffIdOfUser.get(step.userId);
+      if (earnerStaffId === undefined) continue; // ancestor not on the scheme
+      const byLevel = goods.get(earnerStaffId) ?? new Map<number, number>();
+      byLevel.set(step.level, (byLevel.get(step.level) ?? 0) + sellerGoods);
+      goods.set(earnerStaffId, byLevel);
+    }
+  }
+  return { ok: true, goods };
+}
+
+type BuiltRow = CommissionRow & {
+  staffName: string;
+  kpiDetail: Array<{ label: string; qty: number; bonusCenti: number; lineCenti: number }>;
+};
+type BuiltShowroom = {
+  showroomId: string;
+  showroomName: string;
+  showroomGoodsCenti: number;
+  showroomKpiHit: boolean;
+  rows: BuiltRow[];
+};
+type BuiltCommission = {
+  configRow: ConfigRow;
+  mode: OverrideMode;
+  levels: OverrideLevel[];
+  showrooms: BuiltShowroom[];
+};
+
+/**
+ * Compute one period's commission LIVE from the current config.
+ *
+ * Factored out of the GET handler so that GET /commission and POST
+ * /payout/close run the SAME engine over the SAME inputs. Two call paths each
+ * computing "the payout" their own way is how a closed period stops matching the
+ * report it was closed from — the frozen figure MUST be the figure the owner was
+ * looking at when he approved it.
+ */
+async function buildCommissionLive(
+  c: HrContext,
+  companyId: number,
+  from: string,
+  to: string,
+): Promise<{ ok: true; built: BuiltCommission } | { ok: false; res: Response }> {
+  const co = { companyId };
   const sb = c.get('supabase');
 
   // config
-  const cfgRes = await loadConfigRow(c, co.companyId);
-  if (!cfgRes.ok) return cfgRes.res;
+  const cfgRes = await loadConfigRow(c, companyId);
+  if (!cfgRes.ok) return { ok: false, res: cfgRes.res };
   const config = toConfig(cfgRes.row);
+
+  /* An unrecognised override_mode is REFUSED, never defaulted. The CHECK
+     constraint in 0124 makes this near-unreachable — but "near-unreachable" and
+     "silently pays the other model" is not a trade worth taking on payroll. */
+  if (!isOverrideMode(cfgRes.row.override_mode)) {
+    return {
+      ok: false,
+      res: c.json(
+        { error: 'invalid_override_mode', reason: `The commission override mode is set to "${cfgRes.row.override_mode}", which this system does not recognise, so no commission can be calculated. Set it to Showroom or Chain in HR Settings.` },
+        409,
+      ),
+    };
+  }
+  const mode: OverrideMode = cfgRes.row.override_mode;
+
+  const lvRes = await loadOverrideLevels(c, companyId);
+  if (!lvRes.ok) return { ok: false, res: lvRes.res };
+  const levels = lvRes.levels;
+
+  /* Chain mode with zero configured levels would hand every manager in the
+     company a RM 0 override and look exactly like a correct answer. PATCH
+     /config refuses the switch, so reaching here means the levels were deleted
+     AFTER the switch — still refuse. This is the module's "missing data is an
+     error, not a zero" rule applied to the one input that has no safe default. */
+  if (mode === 'chain' && levels.length === 0) {
+    return {
+      ok: false,
+      res: c.json(
+        { error: 'no_override_levels', reason: 'Commission is set to chain override mode but no override levels are configured, so every manager would earn RM 0 override. Add the levels in HR Settings, or switch back to showroom mode.' },
+        409,
+      ),
+    };
+  }
 
   // active profiles (tier + HR-assigned showroom + staff name for labels).
   // The HR-assigned showroom is the SINGLE source of truth for the showroom
@@ -594,30 +985,30 @@ hr.get('/commission', async (c) => {
     .order('staff_id')
     .range(f, t),
   );
-  if (profRes.error) return c.json({ error: 'profiles_failed', reason: profRes.error.message }, 500);
+  if (profRes.error) return { ok: false, res: c.json({ error: 'profiles_failed', reason: profRes.error.message }, 500) };
   const profiles = profRes.data ?? [];
   // Labels via a keyed lookup rather than 2990's embed — see loadStaffLite.
   const staffLite = await loadStaffLite(sb, profiles.map((p) => p.staff_id));
-  if (staffLite.error) return c.json({ error: 'profiles_failed', reason: staffLite.error.message }, 500);
+  if (staffLite.error) return { ok: false, res: c.json({ error: 'profiles_failed', reason: staffLite.error.message }, 500) };
   const staffName = new Map<string, string>(profiles.map((p) => [p.staff_id, staffLite.data.get(p.staff_id)?.name ?? '']));
 
   const showroomRes = await paginateAll<{ id: string; name: string }>((f, t) => sb
     .from('showrooms').select('id, name').eq('company_id', co.companyId).order('id').range(f, t));
-  if (showroomRes.error) return c.json({ error: 'showrooms_failed', reason: showroomRes.error.message }, 500);
+  if (showroomRes.error) return { ok: false, res: c.json({ error: 'showrooms_failed', reason: showroomRes.error.message }, 500) };
   const showroomName = new Map<string, string>((showroomRes.data ?? []).map((s) => [s.id, s.name]));
 
-  // orders in range, excluding cancelled/on-hold. Header category columns only.
+  // orders in range, excluding cancelled/on-hold/draft. Header columns only.
   const ordRes = await paginateAll<OrderRow>((f, t) => sb
     .from('mfg_sales_orders')
     .select('doc_no, salesperson_id, mattress_sofa_centi, bedframe_centi, accessories_centi, others_centi')
     .gte('so_date', from)
     .lte('so_date', to)
-    .not('status', 'in', '(CANCELLED,ON_HOLD)')
+    .not('status', 'in', COMMISSION_EXCLUDED_STATUS_FILTER)
     .eq('company_id', co.companyId)
     .order('doc_no')
     .range(f, t),
   );
-  if (ordRes.error) return c.json({ error: 'orders_failed', reason: ordRes.error.message }, 500);
+  if (ordRes.error) return { ok: false, res: c.json({ error: 'orders_failed', reason: ordRes.error.message }, 500) };
   const orders = ordRes.data ?? [];
 
   const personalGoods = new Map<string, number>(); // salesperson_id → goods centi
@@ -641,7 +1032,7 @@ hr.get('/commission', async (c) => {
     } catch (e) {
       // A KPI read failure must NOT fall through to "no flags" — that would pay
       // every bonus as RM 0 and silently stop excluding flagged goods.
-      return c.json({ error: 'kpi_failed', reason: e instanceof Error ? e.message : String(e) }, 500);
+      return { ok: false, res: c.json({ error: 'kpi_failed', reason: e instanceof Error ? e.message : String(e) }, 500) };
     }
     const { flags, flagLabel, unitsByDoc } = kpi;
     for (const [docNo, units] of unitsByDoc) {
@@ -667,10 +1058,32 @@ hr.get('/commission', async (c) => {
     }
   }
 
-  // group profiles by their HR-assigned showroom, then compute. The KPI add-on
-  // exclusion is subtracted from each salesperson's goods (clamped ≥ 0): a
-  // flagged add-on earns the fixed bonus above instead of % commission, and is
-  // dropped from the goods the % rate + the 100k/400k thresholds run on.
+  /* Each profiled person's COMMISSIONABLE goods: their SO goods less the item-KPI
+     add-on exclusion, clamped >= 0. A flagged add-on earns the fixed bonus above
+     INSTEAD of % commission, and is dropped from the goods the % rate + the
+     100k/400k thresholds run on (Loo 2026-06-20).
+     Both `?? 0`s are 2990's and are CORRECT: these Maps are accumulators this
+     function just built, so a miss means "this person had no such rows in this
+     period" — a known zero, not an unknown. Contrast the config reads above. */
+  const commissionableGoods = new Map<string, number>();
+  for (const p of profiles) {
+    commissionableGoods.set(
+      p.staff_id,
+      Math.max(0, (personalGoods.get(p.staff_id) ?? 0) - (kpiExcludedGoods.get(p.staff_id) ?? 0)),
+    );
+  }
+
+  /* CHAIN MODE: roll each seller's goods UP their reporting line.
+     Skipped entirely in showroom mode — no chain walk, no staff/user lookups,
+     so the 2990-parity path costs exactly what it costs today. */
+  const chainGoods = new Map<string, Map<number, number>>(); // earner staffId → level → goods
+  if (mode === 'chain') {
+    const rolled = await rollUpChainGoods(c, companyId, profiles, commissionableGoods, levels);
+    if (!rolled.ok) return { ok: false, res: rolled.res };
+    for (const [k, v] of rolled.goods) chainGoods.set(k, v);
+  }
+
+  // group profiles by their HR-assigned showroom, then compute.
   const byShowroom = new Map<string, SalespersonInput[]>();
   for (const p of profiles) {
     const sid = p.showroom_id;
@@ -678,17 +1091,30 @@ hr.get('/commission', async (c) => {
     byShowroom.get(sid)!.push({
       staffId: p.staff_id,
       tier: p.tier as 'sales' | 'manager',
-      personalGoodsCenti: Math.max(0, (personalGoods.get(p.staff_id) ?? 0) - (kpiExcludedGoods.get(p.staff_id) ?? 0)),
+      personalGoodsCenti: commissionableGoods.get(p.staff_id) ?? 0,
       itemKpiCenti: itemKpiCenti.get(p.staff_id) ?? 0,
     });
   }
 
-  const showrooms = [...byShowroom.entries()].map(([sid, people]) => {
-    // whole-showroom total = sum of this showroom's profiled members' personal
-    // goods. Single source of truth: the displayed rows always add up to this
-    // figure, and both the 400k gate and the manager override base use it.
+  const showrooms: BuiltShowroom[] = [...byShowroom.entries()].map(([sid, people]) => {
+    /* whole-showroom total = sum of this showroom's profiled members' personal
+       goods. Both the 400k gate and (in showroom mode) the manager override base
+       use it.
+
+       CHAIN-MODE CAVEAT, stated rather than hidden: in showroom mode the rows on
+       screen always add up to this figure. In chain mode they do not have to —
+       a manager in Showroom A whose downline sells in Showroom B earns override
+       on B's goods while sitting in A's group. That is inherent to overriding a
+       reporting line instead of a room, not a bug, and this number keeps its
+       meaning either way: it is what the RM 400k gate reads. */
     const sg = people.reduce((acc, m) => acc + m.personalGoodsCenti, 0);
-    const rows = computeShowroomCommission(config, sg, people).map((r) => ({
+    const computed = mode === 'chain'
+      ? computeChainCommission(config, sg, levels, people.map((p) => ({
+          ...p,
+          goodsByLevel: chainGoods.get(p.staffId) ?? new Map<number, number>(),
+        })))
+      : computeShowroomCommission(config, sg, people);
+    const rows: BuiltRow[] = computed.map((r) => ({
       ...r,
       staffName: staffName.get(r.staffId) ?? '',
       kpiDetail: [...(kpiDetail.get(r.staffId)?.values() ?? [])],
@@ -704,5 +1130,397 @@ hr.get('/commission', async (c) => {
     };
   });
 
-  return c.json({ from, to, config: toConfigApi(cfgRes.row), showrooms });
+  return { ok: true, built: { configRow: cfgRes.row, mode, levels, showrooms } };
+}
+
+// ── payout close / period lock ──────────────────────────────────────────────
+// See migration 0125 for the full rationale. In one line: the report recomputes
+// from CURRENT config on every load, so editing a rate silently rewrites every
+// past period's payout and no figure the owner has approved is reproducible.
+// Closing a period freezes its computed rows. An OPEN period still recomputes
+// live — the freeze is opt-in, per period, and dated.
+
+const PERIOD_SELECT =
+  'id, company_id, period_from, period_to, revision, status, engine_version, config_snapshot, override_mode, override_levels_snapshot, total_centi, row_count, closed_by_name, closed_at, reopened_by_name, reopened_at, reopen_reason';
+
+type PeriodRow = {
+  id: string; period_from: string; period_to: string; revision: number; status: string;
+  engine_version: string; config_snapshot: unknown; override_mode: string;
+  override_levels_snapshot: unknown; total_centi: number; row_count: number;
+  closed_by_name: string; closed_at: string;
+  reopened_by_name: string | null; reopened_at: string | null; reopen_reason: string | null;
+};
+
+type PayoutRowRec = {
+  staff_id: string; staff_name: string; showroom_id: string | null; showroom_name: string;
+  showroom_goods_centi: number; showroom_kpi_hit: boolean; tier: string;
+  personal_goods_centi: number; personal_rate_bps: number; personal_commission_centi: number;
+  override_rate_bps: number | null; override_commission_centi: number; override_detail: unknown;
+  item_kpi_centi: number; kpi_detail: unknown; total_centi: number; sort_index: number;
+};
+
+const PAYOUT_ROW_SELECT =
+  'staff_id, staff_name, showroom_id, showroom_name, showroom_goods_centi, showroom_kpi_hit, tier, personal_goods_centi, personal_rate_bps, personal_commission_centi, override_rate_bps, override_commission_centi, override_detail, item_kpi_centi, kpi_detail, total_centi, sort_index';
+
+/* The LIVE closed snapshot for this exact period, or null. status='CLOSED' only:
+   a PENDING row is a half-written close (see 0125) and a REOPENED one has been
+   deliberately un-frozen — serving either as authoritative would be a payout
+   claim we cannot stand behind. */
+async function loadClosedPeriod(
+  c: HrContext,
+  companyId: number,
+  from: string,
+  to: string,
+): Promise<{ ok: true; period: PeriodRow | null } | { ok: false; res: Response }> {
+  const sb = c.get('supabase');
+  const { data, error } = await sb
+    .from('hr_payout_periods')
+    .select(PERIOD_SELECT)
+    .eq('company_id', companyId)
+    .eq('period_from', from)
+    .eq('period_to', to)
+    .eq('status', 'CLOSED')
+    .maybeSingle();
+  if (error) return { ok: false, res: c.json({ error: 'payout_read_failed', reason: error.message }, 500) };
+  return { ok: true, period: (data as PeriodRow | null) ?? null };
+}
+
+const toPeriodApi = (p: PeriodRow) => ({
+  id: p.id,
+  from: p.period_from,
+  to: p.period_to,
+  revision: p.revision,
+  status: p.status,
+  engineVersion: p.engine_version,
+  totalCenti: p.total_centi,
+  rowCount: p.row_count,
+  closedByName: p.closed_by_name,
+  closedAt: p.closed_at,
+  reopenedByName: p.reopened_by_name,
+  reopenedAt: p.reopened_at,
+  reopenReason: p.reopen_reason,
+});
+
+/* Rebuild the report response from FROZEN rows — the engine is NOT re-run. This
+   is what makes a closed period reproducible across a code change: if this
+   function called computeShowroomCommission again, tomorrow's engine would
+   answer today's approved question, and the guarantee would be worth nothing.
+   The showroom grouping is reconstructed from each row's stored showroom fields
+   and sort_index, so the shape matches the live response exactly and callers
+   never branch on closed-vs-open to read it. */
+/* Shared range parse for every period-scoped endpoint. */
+function parseRange(from: string, to: string, c: HrContext): { ok: true } | { ok: false; res: Response } {
+  if (!ISO_DATE.test(from) || !ISO_DATE.test(to)) return { ok: false, res: c.json({ error: 'invalid_range', reason: 'from and to must be YYYY-MM-DD' }, 400) };
+  if (from > to) return { ok: false, res: c.json({ error: 'invalid_range', reason: 'from must be <= to' }, 400) };
+  return { ok: true };
+}
+
+function frozenToShowrooms(rows: PayoutRowRec[]): BuiltShowroom[] {
+  const ordered = [...rows].sort((a, b) => a.sort_index - b.sort_index);
+  const out: BuiltShowroom[] = [];
+  const index = new Map<string, BuiltShowroom>();
+  for (const r of ordered) {
+    const sid = r.showroom_id ?? '';
+    let sr = index.get(sid);
+    if (!sr) {
+      sr = {
+        showroomId: sid,
+        showroomName: r.showroom_name,
+        showroomGoodsCenti: r.showroom_goods_centi,
+        showroomKpiHit: r.showroom_kpi_hit,
+        rows: [],
+      };
+      index.set(sid, sr);
+      out.push(sr);
+    }
+    sr.rows.push({
+      staffId: r.staff_id,
+      staffName: r.staff_name,
+      tier: r.tier as 'sales' | 'manager',
+      personalGoodsCenti: r.personal_goods_centi,
+      personalRateBps: r.personal_rate_bps,
+      personalCommissionCenti: r.personal_commission_centi,
+      overrideRateBps: r.override_rate_bps,
+      overrideCommissionCenti: r.override_commission_centi,
+      overrideDetail: (r.override_detail as BuiltRow['overrideDetail']) ?? undefined,
+      itemKpiCenti: r.item_kpi_centi,
+      kpiDetail: (r.kpi_detail as BuiltRow['kpiDetail']) ?? [],
+      totalCenti: r.total_centi,
+    });
+  }
+  return out;
+}
+
+hr.get('/commission', async (c) => {
+  if (!hasHouzsPerm(c, HR_READ)) return forbidden(c, HR_READ);
+  const co = requireCompany(c);
+  if (!co.ok) return co.res;
+  const from = (c.req.query('from') ?? '').trim();
+  const to = (c.req.query('to') ?? '').trim();
+  const range = parseRange(from, to, c);
+  if (!range.ok) return range.res;
+
+  /* A CLOSED period is served from its frozen rows — no recompute, so a rate
+     edit (or an engine change) after the close cannot move it. An OPEN period
+     recomputes live, exactly as before. */
+  const closed = await loadClosedPeriod(c, co.companyId, from, to);
+  if (!closed.ok) return closed.res;
+  if (closed.period) {
+    const sb = c.get('supabase');
+    const rowsRes = await paginateAll<PayoutRowRec>((f, t) => sb
+      .from('hr_payout_rows')
+      .select(PAYOUT_ROW_SELECT)
+      .eq('period_id', closed.period!.id)
+      .order('sort_index')
+      .range(f, t),
+    );
+    if (rowsRes.error) return c.json({ error: 'payout_read_failed', reason: rowsRes.error.message }, 500);
+    /* The SNAPSHOT config, never the live one. Returning the live config
+       alongside frozen rows would print rates that do not explain the figures
+       underneath them — the report would contradict itself and look like a
+       rounding bug. */
+    return c.json({
+      from,
+      to,
+      config: closed.period.config_snapshot,
+      overrideMode: closed.period.override_mode,
+      overrideLevels: closed.period.override_levels_snapshot,
+      closed: toPeriodApi(closed.period),
+      showrooms: frozenToShowrooms(rowsRes.data ?? []),
+    });
+  }
+
+  const built = await buildCommissionLive(c, co.companyId, from, to);
+  if (!built.ok) return built.res;
+  return c.json({
+    from,
+    to,
+    config: toConfigApi(built.built.configRow),
+    overrideMode: built.built.mode,
+    overrideLevels: built.built.levels,
+    closed: null,
+    showrooms: built.built.showrooms,
+  });
+});
+
+/* List the closed/reopened periods (audit view). Every revision is kept, so this
+   answers "what did we approve, when, who moved it, and what did it become". */
+hr.get('/payout/periods', async (c) => {
+  if (!hasHouzsPerm(c, HR_READ)) return forbidden(c, HR_READ);
+  const co = requireCompany(c);
+  if (!co.ok) return co.res;
+  const sb = c.get('supabase');
+  const { data, error } = await paginateAll<PeriodRow>((f, t) => sb
+    .from('hr_payout_periods')
+    .select(PERIOD_SELECT)
+    .eq('company_id', co.companyId)
+    .neq('status', 'PENDING') // half-written closes are garbage, not history
+    .order('period_from', { ascending: false })
+    .order('revision', { ascending: false })
+    .range(f, t),
+  );
+  if (error) return c.json({ error: 'fetch_failed', reason: error.message }, 500);
+  return c.json({ periods: (data ?? []).map(toPeriodApi) });
+});
+
+const closeSchema = z.object({
+  from: z.string().regex(ISO_DATE),
+  to: z.string().regex(ISO_DATE),
+});
+
+/**
+ * Close (freeze) a period. Gated on scm.hr.close — NOT scm.hr.manage: whoever
+ * tunes the rates should not thereby be able to approve a payroll run against
+ * the rates they just set.
+ *
+ * TWO-PHASE (PostgREST has no transaction — see 0125): insert the header
+ * PENDING, write every row, then flip to CLOSED. An interrupted close leaves an
+ * inert PENDING row that no read serves, and is safe to simply retry. The
+ * alternative — writing the header CLOSED first — would leave a LIVE period with
+ * only some of its rows, which reads as authoritative and is a corrupt payout.
+ */
+hr.post('/payout/close', async (c) => {
+  if (!hasHouzsPerm(c, 'scm.hr.close')) return forbidden(c, 'scm.hr.close');
+  const co = requireCompany(c);
+  if (!co.ok) return co.res;
+  let body: unknown;
+  try { body = await c.req.json(); } catch { return c.json({ error: 'invalid_json' }, 400); }
+  const parsed = closeSchema.safeParse(body);
+  if (!parsed.success) return c.json({ error: 'validation_failed', issues: issues(parsed.error) }, 400);
+  const { from, to } = parsed.data;
+  const range = parseRange(from, to, c);
+  if (!range.ok) return range.res;
+
+  const sb = c.get('supabase');
+
+  const existing = await loadClosedPeriod(c, co.companyId, from, to);
+  if (!existing.ok) return existing.res;
+  if (existing.period) {
+    return c.json(
+      { error: 'already_closed', reason: `This period was already closed on ${existing.period.closed_at} by ${existing.period.closed_by_name || 'an unknown user'}. Reopen it first if it needs to change.` },
+      409,
+    );
+  }
+
+  // Freeze EXACTLY what the report shows — same builder, same inputs.
+  const built = await buildCommissionLive(c, co.companyId, from, to);
+  if (!built.ok) return built.res;
+  const { configRow, mode, levels, showrooms } = built.built;
+
+  /* revision = one past the highest this period has ever had, INCLUDING
+     reopened ones. History is append-only: a re-close never reuses a number. */
+  const revRes = await sb
+    .from('hr_payout_periods')
+    .select('revision')
+    .eq('company_id', co.companyId)
+    .eq('period_from', from)
+    .eq('period_to', to)
+    .order('revision', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (revRes.error) return c.json({ error: 'payout_read_failed', reason: revRes.error.message }, 500);
+  const revision = ((revRes.data as { revision?: number } | null)?.revision ?? 0) + 1;
+
+  const flat = showrooms.flatMap((s) => s.rows.map((r) => ({ showroom: s, row: r })));
+  const totalCenti = flat.reduce((acc, x) => acc + x.row.totalCenti, 0);
+
+  const hu = c.get('houzsUser');
+  const period = {
+    company_id: co.companyId,
+    period_from: from,
+    period_to: to,
+    revision,
+    status: 'PENDING',
+    engine_version: COMMISSION_ENGINE_VERSION,
+    config_snapshot: toConfigApi(configRow),
+    override_mode: mode,
+    override_levels_snapshot: levels,
+    total_centi: totalCenti,
+    row_count: flat.length,
+    // Attribute to the REAL caller. `user.id` is the bridge's pinned system
+    // staff row — stamping it on a payroll approval is an audit lie.
+    closed_by_staff_id: await resolveCallerStaffId(sb, hu?.id),
+    closed_by_user_id: hu?.id ?? null,
+    closed_by_name: hu?.name ?? '',
+    closed_at: new Date().toISOString(),
+  };
+
+  const insRes = await sb.from('hr_payout_periods').insert(period).select('id').single();
+  if (insRes.error) return c.json({ error: 'close_failed', reason: insRes.error.message }, 500);
+  const periodId = (insRes.data as { id: string }).id;
+
+  /* Abandon a half-written close rather than leave it lying around. Best-effort:
+     correctness does not depend on it (a PENDING row is never served), so a
+     failure to clean up is logged, not surfaced over the real error. */
+  const abandon = async () => {
+    const del = await sb.from('hr_payout_periods').delete().eq('id', periodId);
+    if (del.error) console.log(`[hr] abandoned close ${periodId} left behind: ${del.error.message}`);
+  };
+
+  const payloads = flat.map(({ showroom, row }, i) => ({
+    period_id: periodId,
+    company_id: co.companyId,
+    staff_id: row.staffId,
+    staff_name: row.staffName,
+    showroom_id: showroom.showroomId || null,
+    showroom_name: showroom.showroomName,
+    showroom_goods_centi: showroom.showroomGoodsCenti,
+    showroom_kpi_hit: showroom.showroomKpiHit,
+    tier: row.tier,
+    personal_goods_centi: row.personalGoodsCenti,
+    personal_rate_bps: row.personalRateBps,
+    personal_commission_centi: row.personalCommissionCenti,
+    override_rate_bps: row.overrideRateBps, // null in chain mode — deliberate
+    override_commission_centi: row.overrideCommissionCenti,
+    override_detail: row.overrideDetail ?? null,
+    item_kpi_centi: row.itemKpiCenti,
+    kpi_detail: row.kpiDetail,
+    total_centi: row.totalCenti,
+    sort_index: i, // global order — frozenToShowrooms rebuilds the exact shape
+  }));
+
+  // Chunked: one PostgREST insert of every row in a big company-period could
+  // outgrow the request body limit, and a rejected close is a blocked payroll.
+  for (let i = 0; i < payloads.length; i += 200) {
+    const { error } = await sb.from('hr_payout_rows').insert(payloads.slice(i, i + 200));
+    if (error) {
+      await abandon();
+      return c.json({ error: 'close_failed', reason: error.message }, 500);
+    }
+  }
+
+  // The commit. Until this lands, no read serves this period.
+  const commit = await sb
+    .from('hr_payout_periods')
+    .update({ status: 'CLOSED' })
+    .eq('id', periodId)
+    .select(PERIOD_SELECT)
+    .maybeSingle();
+  if (commit.error) {
+    await abandon();
+    // 23505 on the partial unique index = someone else closed this period while
+    // we were writing. Theirs won, ours is abandoned — say so plainly.
+    if (commit.error.code === '23505') {
+      return c.json({ error: 'already_closed', reason: 'This period was closed by someone else while this close was running. Reload to see the figures that were saved.' }, 409);
+    }
+    return c.json({ error: 'close_failed', reason: commit.error.message }, 500);
+  }
+  if (!commit.data) {
+    await abandon();
+    return c.json({ error: 'close_failed', reason: 'The period could not be finalised.' }, 500);
+  }
+  return c.json({ closed: toPeriodApi(commit.data as PeriodRow) }, 201);
+});
+
+const reopenSchema = z.object({
+  from: z.string().regex(ISO_DATE),
+  to: z.string().regex(ISO_DATE),
+  // A reopen reverses a figure the owner already approved. Requiring a reason is
+  // the cheapest possible check on that, and the DB enforces it too (0125).
+  reason: z.string().trim().min(1),
+});
+
+/**
+ * Reopen a closed period so it recomputes live again.
+ *
+ * WHY REOPEN EXISTS AT ALL: forbidding it is the tempting answer and the wrong
+ * one — real corrections happen (a missed SO, a wrong tier), and a system with
+ * no legitimate correction path gets corrected in the database by hand, with no
+ * name and no reason attached. So it is allowed, and made expensive and visible
+ * instead of impossible: its own permission key, a mandatory reason, and the
+ * frozen rows are NEVER deleted. The period flips to REOPENED and its snapshot
+ * stays readable forever; a later re-close appends revision+1 beside it.
+ */
+hr.post('/payout/reopen', async (c) => {
+  if (!hasHouzsPerm(c, 'scm.hr.reopen')) return forbidden(c, 'scm.hr.reopen');
+  const co = requireCompany(c);
+  if (!co.ok) return co.res;
+  let body: unknown;
+  try { body = await c.req.json(); } catch { return c.json({ error: 'invalid_json' }, 400); }
+  const parsed = reopenSchema.safeParse(body);
+  if (!parsed.success) return c.json({ error: 'validation_failed', issues: issues(parsed.error) }, 400);
+  const { from, to, reason } = parsed.data;
+
+  const existing = await loadClosedPeriod(c, co.companyId, from, to);
+  if (!existing.ok) return existing.res;
+  if (!existing.period) return c.json({ error: 'not_closed', reason: 'This period is not closed, so there is nothing to reopen.' }, 409);
+
+  const sb = c.get('supabase');
+  const hu = c.get('houzsUser');
+  const { data, error } = await sb
+    .from('hr_payout_periods')
+    .update({
+      status: 'REOPENED',
+      reopened_by_user_id: hu?.id ?? null,
+      reopened_by_name: hu?.name ?? '',
+      reopened_at: new Date().toISOString(),
+      reopen_reason: reason,
+    })
+    .eq('id', existing.period.id)
+    .eq('status', 'CLOSED') // lost race → 0 rows, never a double-reopen
+    .select(PERIOD_SELECT)
+    .maybeSingle();
+  if (error) return c.json({ error: 'reopen_failed', reason: error.message }, 500);
+  if (!data) return c.json({ error: 'not_closed', reason: 'This period was already reopened by someone else.' }, 409);
+  return c.json({ reopened: toPeriodApi(data as PeriodRow) });
 });
