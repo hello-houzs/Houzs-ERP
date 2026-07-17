@@ -987,9 +987,9 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
               reload={reload}
             />
 
-            {/* setup & dismantle (logistic) — hidden entirely from non-director
-                Sales, even the PIC (owner 2026-07-15). Same PMS SETUP_DISMANTLE
-                gate as the desktop Projects.tsx crew editor. */}
+            {/* setup & dismantle (logistic). Owner 2026-07-17: Sales may VIEW it
+                (crew + dates) — the backend now sends the data for them — but
+                stays read-only, since PIC/SALES lack the PMS "EDIT" section. */}
             {(canSetupDismantle || cohort5) && (
               <SetupDismantle
                 projectId={id}
@@ -997,7 +997,7 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                 photos={photos}
                 drivers={drivers}
                 lorries={lorries}
-                canWrite={canWrite && !archived}
+                canWrite={canWrite && (pms ? pms.canEdit !== false : true) && !archived}
                 busy={busy}
                 setBusy={setBusy}
                 patchProject={patchProject}

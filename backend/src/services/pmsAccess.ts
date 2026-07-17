@@ -50,19 +50,19 @@ const SECTIONS_BY_ROLE: Record<PmsRole, PmsSection[]> = {
   // required_perm / role_label gate, not this project-wide EDIT flag. Owner
   // rule 2026-07 (Sales-department visibility): finance / payment / rental /
   // quotation / agreement stay hidden (none of those sections listed here).
-  // Owner rule 2026-07-15: Setup & Dismantle (incl. the logistics crew-per-lorry
-  // editor + setup/dismantle documents) is REMOVED from every non-director Sales
-  // user — even the project's own Sales PIC — so SETUP_DISMANTLE is dropped here
-  // and from SALES below. Directors / Logistics / Drivers keep it.
+  // Owner rule 2026-07-17 (REVERSES the 2026-07-15 hide): Sales — including the
+  // non-PIC Sales staff below — may VIEW Setup & Dismantle (crew per lorry +
+  // dates) on mobile and laptop. SETUP_DISMANTLE is a VISIBILITY section only;
+  // "EDIT" is still withheld from PIC/SALES, so they stay read-only on it.
   PIC: [
     "PROJECT_STAGE", "PM_WORKFLOW",
-    "BOOTH_LAYOUT", "EXPO_MAP", "EVENT_CHAT", "INTEGRATIONS",
+    "BOOTH_LAYOUT", "SETUP_DISMANTLE", "EXPO_MAP", "EVENT_CHAT", "INTEGRATIONS",
   ],
   LOGISTIC: [
     "EDIT", "PROJECT_STAGE", "PM_WORKFLOW",
     "BOOTH_LAYOUT", "SETUP_DISMANTLE", "EXPO_MAP", "INTEGRATIONS",
   ],
-  SALES: ["EXPO_MAP", "EVENT_CHAT"], // SETUP_DISMANTLE removed (owner 2026-07-15, non-director Sales)
+  SALES: ["SETUP_DISMANTLE", "EXPO_MAP", "EVENT_CHAT"], // view-only S&D restored (owner 2026-07-17)
   PURCHASING: ["BOOTH_LAYOUT", "SETUP_DISMANTLE"],
   DRIVER: ["BOOTH_LAYOUT", "SETUP_DISMANTLE", "PM_WORKFLOW"],
   OTHER: [
