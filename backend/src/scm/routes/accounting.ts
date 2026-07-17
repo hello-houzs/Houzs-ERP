@@ -25,6 +25,7 @@ import { postSiRevenue } from '../lib/post-si-revenue';
 import { paginateAll } from '../lib/paginate-all';
 import { safeRate, toMyrSen } from '../lib/fx';
 import { todayMyt } from '../lib/my-time';
+import { nextJeNo, jePrefixForCompany } from '../lib/doc-no';
 import { scopeToCompany, activeCompanyId, companyDocPrefix } from '../lib/companyScope';
 
 export const accounting = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -33,35 +34,6 @@ accounting.use('*', supabaseAuth);
 /* ════════════════════════════════════════════════════════════════════════
    Helpers
    ════════════════════════════════════════════════════════════════════════ */
-
-const padMmDd = (d: Date): string => {
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const yy = String(d.getFullYear()).slice(-2);
-  return `${yy}${m}`;
-};
-
-// JE-number company prefix keyed on the DOCUMENT's company (not the operator's
-// active company — an auto-posted PI/reversal belongs to the PI's company). "" for
-// HOUZS (company 1), "2990-" for company 2 — the same HOUZS-bare / else-prefixed
-// rule as companyDocPrefix + the mirror's hardcoded "2990-" (so-mirror prefixDoc).
-const jePrefixForCompany = (companyId: number | null | undefined): string =>
-  companyId == null || Number(companyId) === 1 ? '' : '2990-';
-
-const nextJeNo = async (sb: any, date: Date, coPrefix = ''): Promise<string> => {
-  // Per-company sequence: the prefix in the LIKE pattern isolates each company's
-  // running number — "JE-2607-%" never matches "2990-JE-2607-…" and vice-versa —
-  // so the two companies' accounting vouchers can't collide or share a sequence.
-  const prefix = `${coPrefix}JE-${padMmDd(date)}`;
-  const { data } = await sb
-    .from('journal_entries')
-    .select('je_no')
-    .like('je_no', `${prefix}-%`)
-    .order('je_no', { ascending: false })
-    .limit(1);
-  const last = data?.[0]?.je_no ?? null;
-  const lastN = last ? parseInt(String(last).split('-').pop() ?? '0', 10) : 0;
-  return `${prefix}-${String(lastN + 1).padStart(4, '0')}`;
-};
 
 type JeLineIn = {
   accountCode: string;
