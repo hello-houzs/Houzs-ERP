@@ -99,7 +99,7 @@ import { api, buildQuery, humanHttpMessage } from "../api/client";
 import { companyHeader } from "../lib/activeCompany";
 import { MediaLightbox } from "../components/MediaLightbox";
 import { ResetFiltersButton } from "../components/ResetFiltersButton";
-import { formatDate, formatDateTime, formatTimestamp, formatCurrency, cn, relativeTime } from "../lib/utils";
+import { formatDate, formatDateTime, formatTimestamp, formatCurrency, cn, relativeTime, todayInAppTz } from "../lib/utils";
 
 // ── Types (module-local) ─────────────────────────────────────
 // Kept in this file until something else imports them. Promoting to
@@ -804,10 +804,21 @@ export function Projects() {
     finances: usePageAccess("projects.finances"),
     maintenance: usePageAccess("projects.maintenance"),
   };
+  // Maintenance is a FULL-or-none page by its own catalogue contract
+  // (`projects.maintenance` in pageAccess.ts: supportsPartial false,
+  // partialMeaning "(not used; full or none)"), and Sidebar.tsx states the same
+  // rule on the nav entry with `pageAccessFull`. The generic `!== "none"` test
+  // below admits view/edit — levels this page does not support — and children
+  // INHERIT the parent key when they have no explicit row, so every
+  // `projects = view` user resolved to `maintenance = view`: no nav entry, yet
+  // the hub card below still offered the page. Match the nav's level so the two
+  // gates agree.
+  const canProjectMaintenance = access.maintenance === "full";
   const allowed: ProjectsView[] = PROJECTS_VIEWS.filter(
     (v) =>
       access[v as keyof typeof access] !== "none" &&
-      (v !== "finances" || canProjectFinance)
+      (v !== "finances" || canProjectFinance) &&
+      (v !== "maintenance" || canProjectMaintenance)
   );
   const firstAllowed: ProjectsView | null = allowed[0] ?? null;
 
@@ -858,7 +869,10 @@ export function Projects() {
         { key: "maintenance", label: "Project Maintenance", description: "Templates, checklists and defaults.", icon: Wrench, v: "maintenance" },
       ] as const
     ).filter(
-      (c) => access[c.v] !== "none" && (c.v !== "finances" || canProjectFinance)
+      (c) =>
+        access[c.v] !== "none" &&
+        (c.v !== "finances" || canProjectFinance) &&
+        (c.v !== "maintenance" || canProjectMaintenance)
     );
     return (
       <div>
@@ -890,7 +904,12 @@ export function Projects() {
         ) : (
           <Forbidden page="projects.finances" />
         ))}
-      {view === "maintenance" && <ProjectMaintenanceView />}
+      {view === "maintenance" &&
+        (canProjectMaintenance ? (
+          <ProjectMaintenanceView />
+        ) : (
+          <Forbidden page="projects.maintenance" />
+        ))}
     </div>
   );
 }
@@ -1527,7 +1546,7 @@ function ProjectsListView() {
           <div className="rounded-xl border border-border bg-surface p-4 shadow-stone">
             <div className="mb-2.5 text-[13px] font-bold text-ink">Upcoming</div>
             {(() => {
-              const today = new Date().toISOString().slice(0, 10);
+              const today = todayInAppTz();
               const upcoming = cardRows
                 .filter((r) => r.start_date && r.start_date >= today)
                 .sort((a, b) => (a.start_date || "").localeCompare(b.start_date || ""))
@@ -3142,7 +3161,7 @@ function ProjectsCalendarView() {
           return `${fmt(start)} – ${fmt(end)} ${yearSuffix}`;
         })()
       : monthLabel;
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayInAppTz();
 
   // Per-week lane-packing. Each project that overlaps a week becomes a
   // single segment for that week (clipped to the visible Sun..Sat range)
@@ -7487,7 +7506,7 @@ function ChecklistRow({
   const overdue =
     item.status === "pending" &&
     item.due_date &&
-    new Date(item.due_date) < new Date(new Date().toISOString().slice(0, 10));
+    new Date(item.due_date) < new Date(todayInAppTz());
   const reviewBadge = item.review_status ? REVIEW_BADGES[item.review_status] : null;
   const awaitingReview = item.review_status === "pending_review" || item.review_status === "amended";
   const reviewable = REVIEWABLE_TITLES.has(item.title);
@@ -9722,7 +9741,7 @@ function ProjectSalesEntriesSection({
   const [quickLogOpen, setQuickLogOpen] = useState(false);
   const [qlAmount, setQlAmount] = useState("");
   const [qlRefNo, setQlRefNo] = useState("");
-  const [qlDate, setQlDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [qlDate, setQlDate] = useState(() => todayInAppTz());
   const [qlSaving, setQlSaving] = useState(false);
   // Quick Total Sales — set the project's lump-sum total sales directly
   // (project_finance.total_sales) without logging individual entries. Used
@@ -9774,7 +9793,7 @@ function ProjectSalesEntriesSection({
       setQuickLogOpen(false);
       setQlAmount("");
       setQlRefNo("");
-      setQlDate(new Date().toISOString().slice(0, 10));
+      setQlDate(todayInAppTz());
       list.reload();
     } catch (e: any) {
       toast.error(e?.message || "Failed");

@@ -66,12 +66,23 @@ export const useSalesInvoiceDetail = (id: string | null) => useQuery({
 });
 /* Create a Sales Invoice (header + line items). The server posts revenue on
    create (idempotent), so invalidate the GL queries too. */
+/* `idempotencyKey` is OPTIONAL and must be destructured OUT of the body — the
+   rest-spread would otherwise post it as an SI field. Pass one per SI intent
+   (see lib/idempotency.ts): the middleware replays the first response — the SAME
+   invoiceNumber — instead of invoicing the customer twice. Omitting it is
+   exactly today's behaviour (the middleware no-ops).
+
+   Mirrors useAddSalesInvoicePayment 220 lines below, idempotent since #657 while
+   the invoice the payment settles was not. A duplicate SI is the worst of the
+   set to unwind: this onSuccess shows why — it posts REVENUE and moves
+   journal-entries / account-balances / ar-aging, so a double invoice doubles
+   the books, not just a row. */
 export const useCreateSalesInvoice = () => {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: unknown) =>
+    mutationFn: ({ idempotencyKey, ...body }: { idempotencyKey?: string } & Record<string, unknown>) =>
       authedFetch<{ id: string; invoiceNumber: string; revenue?: { posted: boolean; jeNo?: string; status: string } }>(
-        `/sales-invoices`, { method: 'POST', body: JSON.stringify(body) },
+        `/sales-invoices`, idempotentInit(idempotencyKey, { method: 'POST', body: JSON.stringify(body) }),
       ),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['sales-invoices'] });

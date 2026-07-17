@@ -64,6 +64,7 @@ import {
   amendmentHeaderDiffRows,
   type SoAmendmentHeaderChanges,
 } from '../../vendor/scm/lib/so-amendment-header';
+import { diffHeaderPayload } from '../../vendor/scm/lib/so-header-diff';
 import { todayMyt } from '../../vendor/scm/lib/dates';
 /* lib/utils formatDate (NOT the vendored fmtDate) for the amendment's header
    dates: these are bare YYYY-MM-DD strings, and fmtDate's `new Date(d)` parses
@@ -915,11 +916,21 @@ export const SalesOrderDetail = () => {
   const stableDocNo = docNo ?? '';
   const handleHeaderSave = useCallback(
     (patch: Record<string, unknown>, cb?: { onSuccess?: () => void; onError?: (msg: string) => void }) => {
+      /* `patch` arrives already diffed to the dirty fields, so an empty one means
+         the operator changed nothing this PATCH persists. Skip the request: an
+         all-unchanged body still re-fires the server's delivery-date cascade
+         (keyed on PRESENCE, not change) and wipes every per-line override. The
+         caller is told SUCCESS because nothing failed and nothing was lost —
+         and no refresh is skipped by doing so: every line mutation invalidates
+         the detail / list / audit queries itself, and when no line committed
+         either, there is nothing new to fetch. */
+      if (Object.keys(patch).length === 0) { cb?.onSuccess?.(); return; }
       /* verified-save (Wei Siang 2026-06-08): confirm the customer-identity
          fields actually persisted, so a stale-cache overwrite can't silently
          discard the edit (BUG-2026-06-07-002 #5). Only verbatim-stored, readback-
          present fields are checked (phone is E.164-normalised on store, so it's
-         excluded to avoid a false "didn't stick"). */
+         excluded to avoid a false "didn't stick"). A field the operator did not
+         change is no longer in `patch`, so it is correctly not verified either. */
       const VERIFY: Record<string, string> = {
         debtorName: 'debtor_name', debtorCode: 'debtor_code', agent: 'agent', ref: 'ref',
       };
@@ -1980,11 +1991,23 @@ export const SalesOrderDetail = () => {
           exposed when (SO is DRAFT) OR (the detail is in Edit mode). A DRAFT SO
           is never confirmed, so its payments stay editable in the read-only view
           too (draftUnlocked also lifts the per-row same-day EDIT lock). */}
+      {/* Owner 2026-07-17: "delivered了之後也要可以key payment". This used to pass
+          `isLocked`, which is `LOCKED_STATUSES.includes(status) || hasChildren`
+          — and DELIVERED is in that list, and a delivered SO has a DO, so a
+          delivered order's payments were frozen twice over and Edit mode could
+          not lift either. That contradicted this page's own rule three comments
+          up ("PAYMENT and every other customer field stay editable") and the
+          backend, which never gated POST /:docNo/payments on status at all.
+          isLocked is the LINE/HEADER lock: those freeze because a DO/SI already
+          quotes them. Money is not a line. Collecting the balance ON delivery is
+          the normal case — that is what a Balance figure is FOR. Only CANCELLED
+          stays shut (a cancelled order takes no money); the no-naked-edits rule
+          is unchanged, so it is still Edit-then-type for everything but DRAFT. */}
       <PaymentsTable
         docNo={header.doc_no}
         grandTotalCenti={header.local_total_centi}
         currency={header.currency}
-        locked={!isDraftSo && (isLocked || !isEditing)}
+        locked={!isDraftSo && (isCancelled || !isEditing)}
         draftUnlocked={isDraftSo}
         slip={{ slipKey: header.slip_key, fetcher: fetchSoSlipUrl }}
         defaultCollectedBy={selfStaffMatch?.id ?? ''}
@@ -2305,7 +2328,63 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
     salesLocation: h.sales_location ?? '',
   });
 
+  /* PR #46 — Payload uses the proper column names now. Sales Location +
+     Agent are NOT in this form — they auto-populate from the logged-in
+     POS user (Sales Location = staff.showroom; Agent legacy column kept
+     for B2B manual cases).
+
+     A PURE function of a form snapshot, so the SAME builder produces both the
+     outgoing payload and the pristine one Save diffs it against — an untouched
+     field then yields byte-identical values on both sides and normalisation
+     cannot false-positive (the line path's lineCommitSig relies on the same
+     property). Declared beside initialFormFor because the pristine snapshot
+     below must be seeded from it at the same moment `form` is. */
+  const payloadFor = (f: ReturnType<typeof initialFormFor>) => ({
+    debtorCode: f.customerCode,
+    debtorName: f.customerName,
+    /* PR-A — Persist customer's own SO ref. Empty string → null so we
+       clear the column when the field is blanked. */
+    customerSoNo: f.customerSoNo || null,
+    email: f.email,
+    customerType: f.customerType,
+    salespersonId: f.salespersonId || null,
+    buildingType: f.buildingType,
+    /* Commander 2026-05-27: Venue is locked to the salesperson's
+       staff.venue_id. We persist both the FK + the resolved name. */
+    venue: f.venue,
+    venueId: f.venueId || null,
+    phone: f.phone,
+    address1: f.address1,
+    address2: f.address2,
+    city: f.city,
+    postcode: f.postcode,
+    customerState: f.state,
+    emergencyContactName: f.emergencyContactName,
+    emergencyContactPhone: f.emergencyContactPhone,
+    emergencyContactRelationship: f.emergencyContactRelationship,
+    /* PR #140 — Processing Date persists to internal_expected_dd column
+       (renamed in the UI per commander 2026-05-26: "internal expected date
+       是 Hookka 用的"). targetDate field dropped. */
+    internalExpectedDd: f.processingDate || null,
+    customerDeliveryDate: f.customerDeliveryDate || null,
+    note: f.note,
+    /* Commander 2026-05-27 (Fix 5) — persist the auto-resolved sales location
+       so subsequent edits don't lose it. Empty string → null so we clear the
+       column when no mapping resolves AND the user blanks it. */
+    salesLocation: f.salesLocation || null,
+  });
+
   const [form, setForm] = useState(() => initialFormFor(header));
+  const buildPayload = () => payloadFor(form);
+  /* The header payload AS SEEDED (pristine) — trySave diffs the outgoing
+     payload against this so an untouched field is never sent (the header mirror
+     of originalDraftsRef). Re-seeded in LOCK-STEP with `form`, never from a
+     live `header`: the re-seed effect below deliberately does NOT touch `form`
+     while editing, so tracking `header` here would make a field the SERVER
+     changed under the operator (a background scan write) read as dirty, and
+     Save would clobber that newer value with the stale one the form still
+     holds. Both sides therefore always describe the same snapshot. */
+  const originalPayloadRef = useRef<Record<string, unknown>>(payloadFor(initialFormFor(header)));
   const [showSuggest, setShowSuggest] = useState(false);
   /* Portal the debtor dropdown to document.body so the section card's
      overflow:hidden can't clip it (mirrors the SoLineCard fix). */
@@ -2332,7 +2411,9 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
      the line-item drafts buffer prevents. Cancel still resets via the ref. */
   useEffect(() => {
     if (isEditing) return;
-    setForm(initialFormFor(header));
+    const seeded = initialFormFor(header);
+    setForm(seeded);
+    originalPayloadRef.current = payloadFor(seeded);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [header, isEditing]);
 
@@ -2414,45 +2495,6 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
     }));
     setShowSuggest(false);
   };
-
-  /* PR #46 — Payload uses the proper column names now. Sales Location +
-     Agent are NOT in this form — they auto-populate from the logged-in
-     POS user (Sales Location = staff.showroom; Agent legacy column kept
-     for B2B manual cases). */
-  const buildPayload = () => ({
-    debtorCode: form.customerCode,
-    debtorName: form.customerName,
-    /* PR-A — Persist customer's own SO ref. Empty string → null so we
-       clear the column when the field is blanked. */
-    customerSoNo: form.customerSoNo || null,
-    email: form.email,
-    customerType: form.customerType,
-    salespersonId: form.salespersonId || null,
-    buildingType: form.buildingType,
-    /* Commander 2026-05-27: Venue is locked to the salesperson's
-       staff.venue_id. We persist both the FK + the resolved name. */
-    venue: form.venue,
-    venueId: form.venueId || null,
-    phone: form.phone,
-    address1: form.address1,
-    address2: form.address2,
-    city: form.city,
-    postcode: form.postcode,
-    customerState: form.state,
-    emergencyContactName: form.emergencyContactName,
-    emergencyContactPhone: form.emergencyContactPhone,
-    emergencyContactRelationship: form.emergencyContactRelationship,
-    /* PR #140 — Processing Date persists to internal_expected_dd column
-       (renamed in the UI per commander 2026-05-26: "internal expected date
-       是 Hookka 用的"). targetDate field dropped. */
-    internalExpectedDd: form.processingDate || null,
-    customerDeliveryDate: form.customerDeliveryDate || null,
-    note: form.note,
-    /* Commander 2026-05-27 (Fix 5) — persist the auto-resolved sales location
-       so subsequent edits don't lose it. Empty string → null so we clear the
-       column when no mapping resolves AND the user blanks it. */
-    salesLocation: form.salesLocation || null,
-  });
 
   /* PR #156 — Commander 2026-05-27: "为什么能 save processing date 呢
      没有 delivery date 而且 variant 也没有补完". Mirror the New SO form's
@@ -2569,7 +2611,12 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
     const payload = opts?.keepLockedColsAsOriginal
       ? withFrozenHeaderFieldsReverted(buildPayload(), lockedHeaderOriginal)
       : buildPayload();
-    onSave(payload, cb);
+    /* Send ONLY what the operator changed. The diff runs AFTER the frozen-field
+       revert, so a reverted column equals its seeded value and drops out
+       entirely — which is strictly safer than sending it back unchanged: the
+       server's lock diffs `col in updates`, so a column we never send cannot
+       409 so_locked_processing at all. */
+    onSave(diffHeaderPayload(originalPayloadRef.current, payload), cb);
   };
 
   /* PR-A — Expose imperative save()/reset() so the page-level Edit/Save/
@@ -2579,7 +2626,13 @@ const CustomerCardInner = forwardRef<CustomerCardHandle, CustomerCardProps>(({
   useImperativeHandle(ref, () => ({
     validate: () => validateDates(),
     save: (cb, opts) => trySave(cb, opts),
-    reset: () => setForm(initialFormFor(header)),
+    /* Cancel re-seeds the form, so the pristine snapshot must move with it —
+       otherwise the next edit would diff against the abandoned session. */
+    reset: () => {
+      const seeded = initialFormFor(header);
+      setForm(seeded);
+      originalPayloadRef.current = payloadFor(seeded);
+    },
     getPhone: () => form.phone ?? '',
     getLockedHeaderChanges: () =>
       buildAmendmentHeaderChanges(lockedHeaderNow, lockedHeaderOriginal),

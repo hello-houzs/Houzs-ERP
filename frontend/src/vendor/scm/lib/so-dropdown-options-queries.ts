@@ -29,24 +29,54 @@ export type SoDropdownOption = {
 
 const STALE = 30 * 60 * 1000;
 
-export function useSoDropdownOptions(category: SoDropdownCategory) {
+type GroupedOptions = Record<SoDropdownCategory, SoDropdownOption[]>;
+
+/* HOUZS VENDOR PERF DEVIATION (perf/so-waterfall, 2026-07-17 — keep when
+   re-syncing this file from 2990).
+
+   WHY: every SO/DO/CN/SI form calls useSoDropdownOptions once PER DROPDOWN, and
+   the hook used to fetch one category per call — so opening a Sales Order fired
+   3 requests for the header selects and 4 more from PaymentsTable, 7 round trips
+   for one small, stable picklist table. The owner's capture (2026-07-17) shows
+   three of them side by side, each taking 13.4s under load.
+
+   The grouped endpoint already returned every category in ONE response and had
+   NO callers. So the fix is transport-only: ONE shared query, and each hook
+   select()s its own category out of it. React Query dedupes on the shared key,
+   so all 7 collapse into a single request that the whole page (and the next
+   page) reuses. No call site changes; desktop and mobile converge together
+   because both already route through this hook. */
+function useGroupedSoDropdownOptions<T>(select: (all: GroupedOptions) => T) {
   return useQuery({
-    queryKey: ['so-dropdown-options', category],
+    // The ['so-dropdown-options'] prefix is load-bearing: the CRUD mutations
+    // below invalidate on it, and must keep reaching this query.
+    queryKey: ['so-dropdown-options', 'all', 'active'],
     staleTime: STALE,
     queryFn: () =>
-      authedFetch<{ options: SoDropdownOption[] }>(
-        `/so-dropdown-options?category=${encodeURIComponent(category)}`,
-      ).then((r) => r.options),
+      authedFetch<{ options: GroupedOptions }>('/so-dropdown-options').then((r) => r.options),
+    select,
   });
 }
 
+export function useSoDropdownOptions(category: SoDropdownCategory) {
+  /* No `?? []` on the lookup: an absent category means the response did not
+     answer for it, which is NOT "this picklist is empty". Leave it undefined and
+     let optionsOrFallback below make that call — it is the one place that owns
+     the empty-vs-fallback decision, and it already treats a not-yet-loaded query
+     the same way. */
+  return useGroupedSoDropdownOptions((all) => all[category]);
+}
+
+/* Every category INCLUDING deactivated rows — the Maintenance page, which has to
+   show an inactive option to flip it back on. Kept on its own cache key so it can
+   never serve those rows to an order form's dropdown. */
 export function useAllSoDropdownOptions() {
   return useQuery({
-    queryKey: ['so-dropdown-options', 'all'],
+    queryKey: ['so-dropdown-options', 'all', 'with-inactive'],
     staleTime: STALE,
     queryFn: () =>
-      authedFetch<{ options: Record<SoDropdownCategory, SoDropdownOption[]> }>(
-        '/so-dropdown-options',
+      authedFetch<{ options: GroupedOptions }>(
+        '/so-dropdown-options?includeInactive=1',
       ).then((r) => r.options),
   });
 }

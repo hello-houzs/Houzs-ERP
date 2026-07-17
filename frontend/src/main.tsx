@@ -33,6 +33,30 @@ function PublicFallback() {
 // Safe on every page (survey/portal/supplier all benefit too).
 registerPwa();
 
+// View-as hand-off (owner 2026-07-17): the owner's local "Portal Viewer"
+// launcher opens this app with #login-as=<token> so they can hop between
+// accounts in one click while reviewing the portal. On staging the launcher
+// logs into shared-password test accounts; on production it uses the
+// owner-only POST /users/:id/impersonate (1-hour tokens, audited). Consume
+// the token BEFORE React boots, store it session-only (never "remember me"),
+// and scrub it from the URL/history. NOTE this hook mints nothing — it only
+// stores a token the API already issued to an authorised caller.
+const LOGIN_AS_HOSTS = new Set([
+  "houzs-erp-staging.pages.dev",
+  "houzs-erp.pages.dev",
+  "erp.houzscentury.com",
+]);
+if (LOGIN_AS_HOSTS.has(window.location.hostname)) {
+  const m = /[#&]login-as=([^&]+)/.exec(window.location.hash);
+  if (m) {
+    try {
+      sessionStorage.setItem("auth:token", decodeURIComponent(m[1]));
+      localStorage.removeItem("auth:token");
+    } catch { /* storage unavailable — fall through to the login screen */ }
+    window.history.replaceState(null, "", window.location.pathname + window.location.search);
+  }
+}
+
 // Public routes that must bypass the staff AuthGate entirely:
 //   /survey/:token       — tokenized customer satisfaction survey
 //   /track               — public case-lookup form (ASSR no + phone)

@@ -131,8 +131,12 @@ async function loadMyTasks(env: Env, userId: number, perms: string[], isStar: bo
   // Malaysia calendar "today" for the overdue check + the driver's today-trip
   // filter. Workers run in UTC, so before 08:00 MYT `toISOString()` is still
   // yesterday — an item due today would flag overdue and today's trips would be
-  // missed all morning. (The SQL `date('now')`/`datetime('now')` bounds in these
-  // same queries are still UTC — a deeper, separate sweep.)
+  // missed all morning.
+  //
+  // The `datetime('now') > c.deadline_at` below is deliberately NOT converted:
+  // deadline_at is a stored UTC instant and so is datetime('now'), and an
+  // instant-vs-instant comparison is timezone-independent. Only date-only
+  // columns (due_date / start_date / trip_date) need the MY calendar date.
   const today = todayMyt();
 
   // ASSR cases assigned to me, not closed, not archived
@@ -487,6 +491,11 @@ async function loadBlockers(env: Env, userId: number, perms: string[], isStar: b
 async function loadThisWeek(env: Env, userId: number, perms: string[], isStar: boolean, allowedCo: number[] | undefined) {
   if (!userId) return [];
   const items: InboxItem[] = [];
+  // "This week" means the Malaysian week. start_date / trip_date are MY
+  // calendar dates, but SQL date('now') is the UTC one — d1-compat rewrites it
+  // to an explicitly UTC to_char(timezone('UTC', now()), …) — so before 08:00
+  // MYT the window opened on yesterday and today's trips fell outside it.
+  const today = todayMyt();
 
   // Projects starting this week
   if (isStar || hasPermission(perms, "projects.read")) {
@@ -497,10 +506,11 @@ async function loadThisWeek(env: Env, userId: number, perms: string[], isStar: b
         WHERE p.archived_at IS NULL${companiesPred(allowedCo, "p.company_id")}
           AND p.stage NOT IN ('closed','cancelled')
           AND p.start_date IS NOT NULL
-          AND substr(p.start_date, 1, 10) BETWEEN date('now') AND date('now','+7 days')
+          AND substr(p.start_date, 1, 10) BETWEEN ? AND ?
         ORDER BY p.start_date ASC
         LIMIT 10`
     )
+      .bind(today, todayMyt(7))
       .all<{
         id: number;
         code: string;
@@ -532,7 +542,7 @@ async function loadThisWeek(env: Env, userId: number, perms: string[], isStar: b
       ? `SELECT id, trip_no, trip_date, status, warehouse, driver_user_id,
                 (SELECT name FROM users WHERE id = trips.driver_user_id) as driver_name
            FROM trips
-          WHERE trip_date BETWEEN date('now') AND date('now','+7 days')
+          WHERE trip_date BETWEEN ? AND ?
             AND status IN ('assigned','started','in_progress')
           ORDER BY trip_date ASC, id ASC
           LIMIT 10`
@@ -540,11 +550,16 @@ async function loadThisWeek(env: Env, userId: number, perms: string[], isStar: b
                 (SELECT name FROM users WHERE id = trips.driver_user_id) as driver_name
            FROM trips
           WHERE driver_user_id = ?
-            AND trip_date BETWEEN date('now') AND date('now','+7 days')
+            AND trip_date BETWEEN ? AND ?
             AND status IN ('assigned','started','in_progress')
           ORDER BY trip_date ASC, id ASC
           LIMIT 10`;
-    const stmt = showAll ? env.DB.prepare(sql) : env.DB.prepare(sql).bind(userId);
+    // trip_date is a MY calendar date; the window binds the MY today (the
+    // driver's "this week"), not the UTC one. The driver-scoped variant keeps
+    // userId FIRST — its placeholder precedes the date range in the text.
+    const stmt = showAll
+      ? env.DB.prepare(sql).bind(today, todayMyt(7))
+      : env.DB.prepare(sql).bind(userId, today, todayMyt(7));
     const rows = await stmt.all<{
       id: number;
       trip_no: string;

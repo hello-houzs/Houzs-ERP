@@ -117,14 +117,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      await fetchStatus();
-      if (cancelled) return;
+      // The token is read FIRST because it is the only thing the two hops ever
+      // shared, and it is synchronous — localStorage, not a request. Once it is
+      // in hand the hops are independent: /api/auth/status is a public
+      // COUNT(*) of active users (backend routes/auth.ts:39) that reads no
+      // token, and /api/auth/me validates the bearer header (:508) without
+      // consulting status. Awaiting status before starting me therefore bought
+      // nothing and cost a full round trip — and both paths sit in
+      // api/cache.ts NEVER_CACHE, so no dedupe layer absorbed it. AuthGate
+      // splashes until `loading` clears, so that dead RTT was in front of every
+      // app open, for every user, on every reload.
       const token = tokenStore.get();
       if (!token) {
+        // Nothing to validate, so there is no second hop to overlap. Keep
+        // awaiting status before dropping the gate: hasUsers === false picks
+        // the bootstrap screen (AuthScreens.tsx:713), and clearing `loading`
+        // first would show a flash of the login screen ahead of it.
+        await fetchStatus();
+        if (cancelled) return;
         setState((prev) => ({ ...prev, loading: false }));
         return;
       }
-      await fetchMe();
+      // Both in flight together; fetchMe clears `loading` on every one of its
+      // exits, exactly as it did when it ran second.
+      await Promise.all([fetchStatus(), fetchMe()]);
     })();
     return () => {
       cancelled = true;

@@ -7,6 +7,12 @@
 //
 // Endpoints:
 //   GET    /product-models           List, optional ?category=SOFA filter.
+//   GET    /product-models/by-code/:code
+//                                    One SKU's Model pools + real category.
+//   GET    /product-models/by-code-batch?code=A&code=B
+//                                    The same answer for many codes in ONE trip.
+//                                    The SO/PO line editors ask per LINE, so the
+//                                    single form costs one round trip per line.
 //   GET    /product-models/:id       Detail + side-loaded SKU rows.
 //   POST   /product-models           Create a new Model.
 //   PATCH  /product-models/:id       Update name / description / allowed_options
@@ -238,6 +244,117 @@ productModels.get('/by-code/:code', async (c) => {
     ?? (model as Record<string, unknown> | null)?.allowed_options
     ?? null;
   return c.json({ allowedOptions, category });
+});
+
+// ── GET /by-code-batch?code=A&code=B ─────────────────────────────────────────
+// Batch form of GET /by-code/:code, same answer for every code in one trip.
+//
+// WHY this exists: the SO/PO line editors ask this question once per LINE
+// (useModelAllowedOptionsByCode, called from SoLineCard / MobileNewSO / PoLineCard
+// / PcVariantEditor). One code at a time, that is one HTTP round trip AND two DB
+// reads per line, and the question can only be asked after the order has loaded
+// and its lines are known — so it lands as a second, N-wide serial hop. On a
+// phone at ~250ms RTT that hop is the dominant cost of opening an order (owner's
+// capture, 2026-07-17: one authed-fetch per product, 171 requests for one SO).
+// Two reads now serve the whole order.
+//
+// A GET, and NOT a POST, even though a code list reads more naturally in a body.
+// This router is mounted `scmAreaGuard('scm.procurement.products', { openRead:
+// true })` — openRead exempts GET/HEAD ONLY; a POST would require `edit` on the
+// Products ADMIN area, which every L2-configured salesperson holds at `none`.
+// A POST here would therefore 403 exactly the people who open Sales Orders, and
+// their variant dropdowns would fail. Same scar as the scan-so writeLevel:'view'
+// downgrade and fix/x1-so-create-gate. Repeated `code` params (not a comma list)
+// so a code containing a comma cannot split.
+//
+// The per-code contract is IDENTICAL to the single route — { allowedOptions: null,
+// category: null } for a legacy/unknown code, so callers keep their UNRESTRICTED
+// dropdown fallback. An entry is returned for EVERY requested code: a caller must
+// be able to tell "this SKU has no Model" (a real answer) from "we did not
+// answer", so nothing here fills a gap with a default and the client rejects a
+// missing entry rather than reading it as "no Model".
+//
+// MUST be declared before GET /:id — it is a single path segment, so the param
+// route would otherwise swallow it (same reason as /by-code/:code above).
+// Far above the largest real order (~30 lines); keeps the URL well inside limits.
+// A longer list is not an error for the client — it simply sends a second batch.
+const BY_CODE_BATCH_MAX = 100;
+
+productModels.get('/by-code-batch', async (c) => {
+  const requested = c.req.queries('code') ?? [];
+  const codes = [...new Set(requested.filter((x) => x.length > 0))];
+  if (codes.length === 0) return c.json({ error: 'bad_request', reason: 'code is required' }, 400);
+  if (codes.length > BY_CODE_BATCH_MAX) {
+    return c.json({ error: 'bad_request', reason: `at most ${BY_CODE_BATCH_MAX} codes per request` }, 400);
+  }
+
+  const supabase = c.get('supabase');
+
+  const allNull = () =>
+    Object.fromEntries(codes.map((code) => [code, { allowedOptions: null, category: null }]));
+
+  const { data: skus, error: skuErr } = await supabase
+    .from('mfg_products')
+    .select('code, model_id, category')
+    .in('code', codes)
+    .eq('company_id', activeCompanyId(c));
+  if (skuErr) {
+    // Parity with the single route: a missing relation degrades to "no Model"
+    // rather than 500ing the whole order open.
+    if (/relation .* does not exist/i.test(skuErr.message)) return c.json({ results: allNull() });
+    return c.json({ error: 'load_failed', reason: skuErr.message }, 500);
+  }
+  // No `?? []` here: with error null a select yields an array, so a null `skus`
+  // means the read did not answer. Folding that into "no rows" would report
+  // every line as Model-less and silently unrestrict its dropdowns.
+  if (!skus) return c.json({ error: 'load_failed', reason: 'mfg_products read returned no rows' }, 500);
+
+  const skuByCode = new Map<string, { modelId: string | null; category: string | null }>();
+  for (const r of skus as Array<Record<string, unknown>>) {
+    if (r.code == null) continue;
+    // Dual-read camelCase / snake_case for the FK column, as the single route does.
+    const modelId = r.modelId ?? r.model_id ?? null;
+    skuByCode.set(String(r.code), {
+      modelId: modelId != null ? String(modelId) : null,
+      category: r.category != null ? String(r.category) : null,
+    });
+  }
+
+  const modelIds = [
+    ...new Set(
+      [...skuByCode.values()]
+        .map((s) => s.modelId)
+        .filter((id): id is string => id !== null),
+    ),
+  ];
+  const allowedByModelId = new Map<string, unknown>();
+  if (modelIds.length > 0) {
+    const { data: models, error: modelErr } = await supabase
+      .from('product_models')
+      .select('id, allowed_options')
+      .in('id', modelIds);
+    if (modelErr) return c.json({ error: 'load_failed', reason: modelErr.message }, 500);
+    if (!models) return c.json({ error: 'load_failed', reason: 'product_models read returned no rows' }, 500);
+    for (const m of models as Array<Record<string, unknown>>) {
+      if (m.id == null) continue;
+      allowedByModelId.set(String(m.id), m.allowedOptions ?? m.allowed_options ?? null);
+    }
+  }
+
+  const results: Record<string, { allowedOptions: unknown; category: string | null }> = {};
+  for (const code of codes) {
+    const sku = skuByCode.get(code);
+    if (!sku) { results[code] = { allowedOptions: null, category: null }; continue; }
+    if (!sku.modelId) { results[code] = { allowedOptions: null, category: sku.category }; continue; }
+    // A model_id resolving to no row is a dangling FK. The single route returns
+    // null for it (maybeSingle -> null, no error); keep the two contracts
+    // identical rather than inventing a different answer here.
+    results[code] = {
+      allowedOptions: allowedByModelId.has(sku.modelId) ? allowedByModelId.get(sku.modelId) : null,
+      category: sku.category,
+    };
+  }
+  return c.json({ results });
 });
 
 // ── GET /:id ───────────────────────────────────────────────────────────────

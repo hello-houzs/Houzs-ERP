@@ -1,9 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { lineIdentity } from "@2990s/shared";
 import { fmtAmt } from "../lib/scm";
 import { idempotentInit, useIdempotencyKey } from "../lib/idempotency";
 import { invalidateDoShared, invalidateInventoryShared, invalidateSoShared } from "./sharedInvalidate";
+import {
+  useDeliveryOrderPayments,
+  useMfgDeliveryOrderDetail,
+  useMfgDeliveryOrdersPaged,
+} from "../vendor/scm/lib/delivery-order-queries";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
 import { uploadSlipFull, ALLOWED_SLIP_MIMES, MAX_SLIP_SIZE_BYTES } from "../vendor/scm/lib/slip";
 import { todayMyt } from "../vendor/scm/lib/dates";
@@ -14,9 +19,9 @@ import "./mobile.css";
    Order as DELIVERED. Wired to the REAL DO backend
    (backend/src/scm/routes/delivery-orders-mfg.ts):
 
-     • The list route  GET  /delivery-orders-mfg  resolves the docNo (a DO
-       NUMBER like "DO-2406-0188") to the DO's UUID — every detail/status route
-       keys on the UUID (:id), never the number.
+     • The list route  GET  /delivery-orders-mfg?page=0&pageSize=..&q=<docNo>
+       resolves the docNo (a DO NUMBER like "DO-2406-0188") to the DO's UUID —
+       every detail/status route keys on the UUID (:id), never the number.
      • The detail      GET  /delivery-orders-mfg/:id   → { deliveryOrder, items }
        gives the header (debtor, city/state, status, local_total_centi) and the
        line items to tick off.
@@ -49,11 +54,13 @@ type DoItem = {
   item_code: string | null;
   qty: number | null;
 };
-type DoPayment = { id: string; amount_centi: number | null };
-
-type ListResp = { deliveryOrders: DoHeader[] };
-type DetailResp = { deliveryOrder: DoHeader; items: DoItem[] };
-type PaymentsResp = { payments: DoPayment[] };
+/* How many rows the docNo lookup asks for. The server's `q` is NOT a do_number
+   lookup — it is a substring OR across eight columns (do_number, so_doc_no,
+   debtor_name, debtor_code, ref, branding, sales_location, driver_name;
+   delivery-orders-mfg.ts:2082) — so a DO number can incidentally match another
+   row (a `ref` that cites it, say). do_number itself is unique, so the exact
+   match below is what decides; this is only the window that match must land in. */
+const DOC_NO_LOOKUP_ROWS = 20;
 
 // Bare 2dp amount; callers print their own "RM " prefix. The shared fmtAmt
 // keeps a non-finite from reaching the user as "RM NaN".
@@ -73,34 +80,35 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
   const qc = useQueryClient();
   const confirm = useConfirm();
 
-  // Resolve docNo (a DO number) → the DO row (carries the UUID every other
-  // route keys on). The list route returns full header rows.
-  const listQ = useQuery({
-    queryKey: ["mobile-do-list-for-pod"],
-    queryFn: () => authedFetch<ListResp>(`/delivery-orders-mfg`),
-    staleTime: 15_000,
-  });
-  const doId = useMemo(
-    () => (listQ.data?.deliveryOrders ?? []).find((d) => (d.do_number ?? "") === docNo)?.id ?? null,
-    [listQ.data, docNo],
-  );
+  /* Resolve docNo (a DO number) → the DO row (carries the UUID every other route
+     keys on). ASK THE SERVER FOR THE ONE DOCUMENT, don't scan the org's DOs on a
+     phone: the no-param branch of this route is capped at `.limit(500)` newest-first
+     (delivery-orders-mfg.ts:2047), so it shipped ~500 wide header rows over mobile
+     data to read a single id — and once the org passes 500 DOs, a REAL DO older than
+     the newest 500 simply was not in the answer, so this screen told the driver it
+     "could not be found. Please refresh" — advice that can never come true, on a
+     delivery they are standing in front of. Paging + `q` narrows it to the match.
 
-  const detailQ = useQuery({
-    queryKey: ["mobile-pod-detail", doId],
-    queryFn: () => authedFetch<DetailResp>(`/delivery-orders-mfg/${encodeURIComponent(doId ?? "")}`),
-    enabled: !!doId,
-    staleTime: 15_000,
-  });
-  const paymentsQ = useQuery({
-    queryKey: ["mobile-pod-payments", doId],
-    queryFn: () => authedFetch<PaymentsResp>(`/delivery-orders-mfg/${encodeURIComponent(doId ?? "")}/payments`),
-    enabled: !!doId,
-    staleTime: 15_000,
-  });
+     The shared hooks (and their shared query keys) are deliberate, not incidental:
+     the private ["mobile-do-list-for-pod"] / ["mobile-pod-*"] keys these replace were
+     a second cache over the same URLs, invisible to invalidateDoShared — so a write
+     from the desktop or the planning board left this screen stale, and this screen's
+     own writes left theirs stale. One namespace, one logic layer. */
+  const listQ = useMfgDeliveryOrdersPaged({ page: 0, pageSize: DOC_NO_LOOKUP_ROWS, q: docNo });
+  const doId = useMemo(() => {
+    const rows = listQ.data?.deliveryOrders;
+    // No rows yet (pending, or the read failed) is NOT "no such DO" — leave it
+    // null and let the render tell those two apart. See `notFound` below.
+    if (!rows) return null;
+    return (rows.find((d: DoHeader) => (d.do_number ?? "") === docNo)?.id ?? null) as string | null;
+  }, [listQ.data, docNo]);
 
-  const h = detailQ.data?.deliveryOrder;
-  const items = detailQ.data?.items ?? [];
-  const payments = paymentsQ.data?.payments ?? [];
+  const detailQ = useMfgDeliveryOrderDetail(doId);
+  const paymentsQ = useDeliveryOrderPayments(doId);
+
+  const h = detailQ.data?.deliveryOrder as DoHeader | undefined;
+  const items = (detailQ.data?.items ?? []) as DoItem[];
+  const payments = paymentsQ.data ?? [];
 
   const paid = payments.reduce((sum, p) => sum + (p.amount_centi ?? 0), 0);
   const balance = Math.max(0, (h?.local_total_centi ?? 0) - paid);
@@ -205,14 +213,13 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
           ...(podKey ? { podKey } : {}),
         }),
       });
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: ["mobile-pod-detail", doId] }),
-        qc.invalidateQueries({ queryKey: ["mobile-pod-payments", doId] }),
-        qc.invalidateQueries({ queryKey: ["mobile-do-list-for-pod"] }),
-        qc.invalidateQueries({ queryKey: ["mobile-so-list-paged"] }),
-      ]);
+      await qc.invalidateQueries({ queryKey: ["mobile-so-list-paged"] });
       // Delivering moves stock + flips the DO + touches SO readiness — refresh
-      // the shared/desktop DO, inventory and SO caches too.
+      // the shared/desktop DO, inventory and SO caches too. This screen's own
+      // three reads are now shared keys, so invalidateDoShared's DO_ROOTS
+      // prefix-match already covers them (list, detail AND the payments ledger,
+      // which hangs off the ['mfg-delivery-orders', id, 'payments'] root) —
+      // there is no private mobile key left to refresh separately.
       invalidateDoShared(qc);
       invalidateInventoryShared(qc);
       invalidateSoShared(qc);
@@ -247,7 +254,11 @@ export function MobilePOD({ docNo, onBack, onDone }: { docNo: string; onBack: ()
   // in red before any fetch had run. detailQ is enabled:!!doId, and a disabled
   // query stays isPending forever, so its check must stay behind the doId guard.
   const loading = listQ.isPending || (!!doId && detailQ.isPending);
-  const notFound = !listQ.isPending && !doId;
+  // `!listQ.error` is load-bearing: without it a FAILED lookup (no rows, so no
+  // doId) fell into this branch and told the driver the delivery "could not be
+  // found" — stating as fact something we had not learned. A read that did not
+  // answer must fall through to loadError below and say so.
+  const notFound = !listQ.isPending && !listQ.error && !doId;
   const loadError = listQ.error || detailQ.error;
   const pillLabel = cancelled ? "Cancelled" : delivered ? "Delivered" : "Arrived";
   // Header status badge → canonical .badge variant (spec: DISPATCHED/arrived =

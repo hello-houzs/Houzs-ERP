@@ -1881,17 +1881,35 @@ mfgPurchaseOrders.patch('/:id', async (c) => {
   return c.json({ purchaseOrder: data });
 });
 
-/* ── PR #41 — PO line items: add / edit / delete ─────────────────────── */
+/* ── PR #41 — PO line items: add / edit / delete ───────────────────────
+   Fails CLOSED and never throws (2026-07-17) — same contract as the SO's
+   recomputeTotals (mfg-sales-orders.ts), which carries the full rationale.
+   See BUG-HISTORY 2026-07-17 (fix/zeroing-twins). */
 async function recomputePoTotals(sb: any, poId: string) {
-  const { data: items } = await sb.from('purchase_order_items')
+  const { data: items, error: itemsErr } = await sb.from('purchase_order_items')
     .select('line_total_centi')
     .eq('purchase_order_id', poId);
+  /* A failed READ is not an empty PO, and `?? []` cannot tell them apart — it
+     folded a transient blip into subtotal_centi / total_centi ZERO on an order
+     whose lines were intact, i.e. a PO the supplier is owed for silently claimed
+     to be worth nothing. The ERROR is the signal, never the emptiness: a
+     genuinely empty PO resolves error === null with data === [] and MUST still
+     fall through to zero the header. */
+  if (itemsErr) {
+    /* eslint-disable-next-line no-console */
+    console.error('[po-recompute] item read failed — header left unchanged:', poId, itemsErr.message);
+    return;
+  }
   const subtotal = (items ?? []).reduce((s: number, r: any) => s + (r.line_total_centi ?? 0), 0);
-  await sb.from('purchase_orders').update({
+  const { error: updErr } = await sb.from('purchase_orders').update({
     subtotal_centi: subtotal,
     total_centi: subtotal,
     updated_at: new Date().toISOString(),
   }).eq('id', poId);
+  if (updErr) {
+    /* eslint-disable-next-line no-console */
+    console.error('[po-recompute] header update failed — totals left STALE:', poId, updErr.message);
+  }
 }
 
 /* Keep header expected_at in sync with the lines: earliest non-null line

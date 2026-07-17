@@ -24,6 +24,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { ArrowLeft, ChevronDown, Save, Trash2, X } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { useCreatePaymentVoucher } from '../../vendor/scm/lib/payment-voucher-queries';
+import { useIdempotencyKey } from '../../lib/idempotency';
 import { useAccounts, type Account } from '../../vendor/scm/lib/accounting-queries';
 import { usePurchaseInvoices } from '../../vendor/scm/lib/purchase-invoice-queries';
 import { useSuppliers, useSupplierDetail } from '../../vendor/scm/lib/suppliers-queries';
@@ -77,6 +78,15 @@ type PiAlloc = {
 export const PaymentVoucherNew = () => {
   const navigate = useNavigate();
   const create   = useCreatePaymentVoucher();
+  /* One key for the one voucher this page is open to raise (lib/idempotency.ts).
+     Minted once by useState's lazy init: stable across re-renders and across a
+     re-press after a stalled submit. Like GrnNew (which carries the full
+     reasoning) this page shows a dialog instead of navigating, so the mount can
+     outlive the document; the same trade applies and lands the same way — the
+     lines are not reset on success, so a re-press submits the SAME voucher and
+     replay is the right answer, and the dialog names the FIRST pvNumber rather
+     than failing silently. */
+  const idemKey  = useIdempotencyKey();
   const saving   = create.isPending;
 
   const accountsQ = useAccounts();
@@ -199,6 +209,7 @@ export const PaymentVoucherNew = () => {
       : [];
     try {
       const res = await create.mutateAsync({
+        idempotencyKey:    idemKey,
         payeeName:         payeeName.trim(),
         supplierId:        supplierId || null,
         purpose,

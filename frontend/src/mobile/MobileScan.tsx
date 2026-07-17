@@ -14,6 +14,7 @@ import { useSoDropdownOptions, optionsOrFallback } from "../vendor/scm/lib/so-dr
 import { useLocalities, distinctStates } from "../vendor/scm/lib/localities-queries";
 import { useVenues } from "../vendor/scm/lib/venues-queries";
 import { createDraftFromPrefill } from "./MobileNewSO";
+import { newIdempotencyKey } from "../lib/idempotency";
 import { serviceNotify } from "../vendor/scm/lib/dialog-service";
 import {
   normalizeJobs,
@@ -95,11 +96,28 @@ type Slot = Shot | null;
 
 /* One queued order in the session: a single front slip + its payment slips.
    `id` is a stable client key for React lists + remove (independent of array
-   index so removing an order doesn't reshuffle keys). */
-type OrderDraft = { id: string; front: Slot; payShots: Shot[] };
+   index so removing an order doesn't reshuffle keys).
+
+   `id` and `idempotencyKey` are deliberately SEPARATE and must stay so. `id` is
+   a React list key + the key of the orderErrors map; reusing it as the order key
+   would work by accident today and teach the next reader that a UI key carries
+   order semantics — the same trap MobileNewSO.Payment records (BUG-HISTORY
+   2026-07-17, fix/p1-so-create-idem). `idempotencyKey` is a real
+   crypto.randomUUID and means "this scanned slip becomes ONE draft order". */
+type OrderDraft = { id: string; idempotencyKey: string; front: Slot; payShots: Shot[] };
 
 let ORDER_SEQ = 0;
-const newOrder = (): OrderDraft => ({ id: `ord-${++ORDER_SEQ}-${Date.now()}`, front: null, payShots: [] });
+/* The ONLY birth site of an OrderDraft (all 6 call sites verified; every other
+   setOrders is a `{ ...o }` spread that carries the key through), so the key
+   lives exactly as long as the object the operator thinks of as "this order":
+   the same one for as long as the order sits on screen, and resetOrders() after
+   a submit mints a fresh one — so the next scan is a genuinely new order. */
+const newOrder = (): OrderDraft => ({
+  id: `ord-${++ORDER_SEQ}-${Date.now()}`,
+  idempotencyKey: newIdempotencyKey(),
+  front: null,
+  payShots: [],
+});
 
 /* ── "Recent scans" background-job status list ─────────────────────────────
    After /scan-so/enqueue the OCR runs server-side; without feedback the phone
@@ -752,17 +770,28 @@ export function MobileScan({
      served yet (a 404 from a stale worker): OCR every order while the operator
      waits, then fire the client-side draft creates. */
   const submitLegacy = async () => {
-    const prefills: MobileScanPrefill[] = [];
+    /* Carry each order's OWN key alongside its prefill — the prefill is derived
+       data (re-OCR'd on every press), the OrderDraft is the intent, so the key
+       belongs to the order and not to this loop.
+
+       Honest scope: no double-fire is reachable here TODAY — submit() guards on
+       `!ready || submitting` and resetOrders() clears the photos afterwards, and
+       the primary /enqueue path is domain-idempotent anyway (it 409s
+       duplicate_slip against a slip that already made an SO). This is the right
+       OWNER for the key rather than a live fix: the bare POST it feeds is the
+       same create the interactive form uses, and if a retry is ever added here
+       the key is already on the object that means "one order". */
+    const prefills: { prefill: MobileScanPrefill; idempotencyKey: string }[] = [];
     for (const order of orders) {
       const prefill = await extractOrder(order);
-      if (prefill) prefills.push(prefill);
+      if (prefill) prefills.push({ prefill, idempotencyKey: order.idempotencyKey });
     }
     if (prefills.length === 0) {
       setError("Couldn't read the slip — try again.");
       return;
     }
-    for (const prefill of prefills) {
-      void createDraftFromPrefill(prefill).catch(() => {
+    for (const { prefill, idempotencyKey } of prefills) {
+      void createDraftFromPrefill(prefill, idempotencyKey).catch(() => {
         void serviceNotify({
           title: "Couldn't save one scanned draft",
           body: "One of your scanned orders couldn't be saved. Scan it again.",

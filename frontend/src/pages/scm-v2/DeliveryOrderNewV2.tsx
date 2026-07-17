@@ -49,6 +49,7 @@ import {
   useUpdateMfgDeliveryOrderItem,
   useDeleteMfgDeliveryOrderItem,
 } from "../../vendor/scm/lib/delivery-order-queries";
+import { useIdempotencyKey } from "../../lib/idempotency";
 import { useMfgSalesOrderDetail } from "../../vendor/scm/lib/sales-order-queries";
 import { useSoDropdownOptions, optionsOrFallback } from "../../vendor/scm/lib/so-dropdown-options-queries";
 import {
@@ -476,6 +477,16 @@ export function DeliveryOrderNewV2() {
   const soDetail = useMfgSalesOrderDetail(soDocNo || null);
   const doDetail = useMfgDeliveryOrderDetail(editId || null);
   const createDo = useCreateMfgDeliveryOrder();
+  /* One key for the one DO this page is open to raise (lib/idempotency.ts).
+     This is the ROUTED desktop DO create (App.tsx:543 → /scm/delivery-orders/
+     new); the V1 page above shares the same hook and mints its own key — a hook
+     is not a call site, and protecting only one caller of a shared hook protects
+     nobody who uses the other.
+
+     Route-level form, navigates to the DO detail (or the list) on success, so
+     the MOUNT is exactly one DO. Unused by the editId branch below, which
+     PATCHes one existing DO and cannot duplicate. */
+  const idemKey = useIdempotencyKey();
   const updateHeader = useUpdateMfgDeliveryOrderHeader();
   const addItem = useAddMfgDeliveryOrderItem();
   const updateItem = useUpdateMfgDeliveryOrderItem();
@@ -803,7 +814,7 @@ export function DeliveryOrderNewV2() {
          `status` shipped the DO: stock deducted and the SO synced delivered,
          while the flash said "Saved as draft". The unrouted V1 page had this
          right (DeliveryOrderNew.tsx:294) and this one never got it. */
-      { ...buildBody(), asDraft: draft || undefined, status: draft ? "DRAFT" : "LOADED" },
+      { ...buildBody(), idempotencyKey: idemKey, asDraft: draft || undefined, status: draft ? "DRAFT" : "LOADED" },
       {
         onSuccess: (res) => {
           setFlash(draft ? "Saved as draft" : "Delivery order created");

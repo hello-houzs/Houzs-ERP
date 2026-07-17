@@ -215,10 +215,22 @@ export const invalidateSoLists = (qc: ReturnType<typeof useQueryClient>) => {
   qc.invalidateQueries({ queryKey: ['mfg-sales-orders-paged'] });
 };
 
+/* `idempotencyKey` is OPTIONAL and must be destructured OUT of the body — the
+   rest-spread would otherwise post it as an SO field. Pass one per ORDER intent
+   (see lib/idempotency.ts): the middleware then replays the first response —
+   the SAME docNo — instead of minting a second order number for the same sale.
+   Omitting it is exactly today's behaviour (the middleware no-ops), so a caller
+   with genuine many-orders-per-run semantics (SoFromProducts' batch generator)
+   still compiles and is unaffected.
+
+   The SO is the source document the whole chain hangs off — a duplicate here
+   propagates into DO / SI / stock and is what the #657/#658 scar records. */
 export const useCreateMfgSalesOrder = () => {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: unknown) => authedFetch<{ docNo: string }>(`/mfg-sales-orders`, { method: 'POST', body: JSON.stringify(body) }),
+    mutationFn: ({ idempotencyKey, ...body }: { idempotencyKey?: string } & Record<string, unknown>) =>
+      authedFetch<{ docNo: string }>(`/mfg-sales-orders`,
+        idempotentInit(idempotencyKey, { method: 'POST', body: JSON.stringify(body) })),
     onSuccess: () => {
       invalidateSoLists(qc);
     },

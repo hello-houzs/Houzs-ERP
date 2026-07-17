@@ -25,6 +25,7 @@ import {
   useCreatePurchaseConsignmentReturn,
   usePostPurchaseConsignmentReturn,
 } from '../../vendor/scm/lib/purchase-consignment-return-queries';
+import { useIdempotencyKey } from '../../lib/idempotency';
 import { usePurchaseConsignmentReceiveDetail } from '../../vendor/scm/lib/purchase-consignment-receive-queries';
 import { usePurchaseConsignmentOrderDetail } from '../../vendor/scm/lib/purchase-consignment-order-queries';
 import { useSuppliers } from '../../vendor/scm/lib/suppliers-queries';
@@ -122,6 +123,11 @@ export const PurchaseConsignmentReturnNew = () => {
   const maint  = maintQ.data?.data ?? null;
   const fabrics = useFabricTrackings().data ?? [];
 
+  /* One key for the one return this page is open to raise (lib/idempotency.ts).
+     Route-level form, navigates to the return detail on success, so the MOUNT is
+     exactly one return: stable across re-renders and across a re-press after a
+     stalled submit, fresh on remount. */
+  const idemKey = useIdempotencyKey();
   const create = useCreatePurchaseConsignmentReturn();
   const post   = usePostPurchaseConsignmentReturn();
   const saving = create.isPending || post.isPending;
@@ -272,6 +278,7 @@ export const PurchaseConsignmentReturnNew = () => {
     if (!canSave) { notify({ title: 'Need supplier + at least one line with an item code and qty > 0.', tone: 'error' }); return; }
     try {
       const createRes = await create.mutateAsync({
+        idempotencyKey: idemKey,
         supplierId,
         purchaseOrderId: orderId ?? (grn?.purchase_order_id ?? null),
         grnId: receiveId,

@@ -129,13 +129,23 @@ export const useMfgDeliveryOrderDetail = (id: string | null) => useQuery({
   enabled: Boolean(id), staleTime: 30_000, retry: 1, retryDelay: 800,
 });
 
+/* `idempotencyKey` is OPTIONAL and must be destructured OUT of the body — the
+   rest-spread would otherwise post it as a DO field. Pass one per DO intent (see
+   lib/idempotency.ts): the middleware then replays the first response — the SAME
+   doNumber — instead of raising a second DO that ships the goods twice.
+   Omitting it is exactly today's behaviour (the middleware no-ops).
+
+   Mirrors useAddDeliveryOrderPayment 130 lines below, which has been idempotent
+   since #657 while the DO the payment hangs off was not — the split this PR
+   closes. A duplicate DO is not just a duplicate row: it decrements stock again
+   and carries into SI. */
 export const useCreateMfgDeliveryOrder = () => {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: Record<string, unknown>) =>
+    mutationFn: ({ idempotencyKey, ...body }: { idempotencyKey?: string } & Record<string, unknown>) =>
       authedFetch<{ id: string; doNumber: string }>(
         `/delivery-orders-mfg`,
-        { method: 'POST', body: JSON.stringify(body) },
+        idempotentInit(idempotencyKey, { method: 'POST', body: JSON.stringify(body) }),
       ),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['mfg-delivery-orders'] });

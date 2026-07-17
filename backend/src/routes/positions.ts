@@ -168,6 +168,167 @@ app.patch("/page-order", requirePermission("users.manage"), async (c) => {
   return c.json({ ok: true, count: order.length });
 });
 
+/**
+ * GET /api/positions/page-access/export
+ *
+ * Every position's matrix in ONE response — the input to
+ * `scripts/export-position-access.mjs`, which turns it into
+ * `services/positionAccessSnapshot.ts`.
+ *
+ * WHY THIS EXISTS AT ALL. The rules are moving out of this table and into
+ * backend code (services/salesJdAccess.ts is the first one). Before anything is
+ * switched off, the owner has to be able to READ what the table currently says
+ * — all 17 positions at once, not one click at a time — because nobody can
+ * currently state what a position sees. The code cannot answer it either: nav
+ * visibility ORs `anyPerm`/`anyAccess` (frontend navFilter.ts:76-91) and with
+ * `scm_l2_configured` the `scm.access` term is dropped, so for a non-`*` user
+ * the matrix cell alone decides. Read from the ROWS or be wrong. This was
+ * proven the expensive way on 2026-07-17: Sales Director's access was reported
+ * from Sidebar.tsx's flags and the owner corrected it from memory.
+ *
+ * WHY `entries` IS THE EXPLICIT ROWS AND NOT THE RESOLVED MAP. An absent row
+ * and a `level = 'none'` row are DIFFERENT FACTS for any child page, and
+ * flattening them is how this export would silently destroy his settings:
+ * loadPageAccessForPosition (pageAccess.ts:748) resolves a child as
+ * `explicit[key] ?? out[parent]` — absent means INHERIT THE PARENT, `'none'`
+ * means DENIED even when the parent is full. Writing a resolved map back as
+ * explicit rows would nail every child to today's parent value and quietly
+ * sever the inheritance. So `entries` is a photograph: exactly the rows that
+ * exist, verbatim, and nothing invented for the ones that don't.
+ * (`reference_houzs_nullish_hides_ignorance` — `?? "none"` turning "unknown"
+ * into a confident lie is this codebase's most repeated bug.)
+ *
+ * `resolved` is the DERIVED companion — what each position actually gets at
+ * login, inheritance applied, via the real loader. It is what the owner reads
+ * to check "我現在看到的東西" is intact. It is NOT the snapshot's source of
+ * truth and must never be written back as rows.
+ *
+ * Registered before "/:id" so the literal path wins over the id param.
+ */
+app.get("/page-access/export", requirePermission("users.manage"), async (c) => {
+  const db = getDb(c.env);
+
+  // Which DB answered. Staging and prod are DIFFERENT Supabase projects with
+  // different rows — a snapshot generated off staging and shipped as prod's
+  // would rewrite real people's access with test data. The generator refuses on
+  // this string rather than trusting whoever ran it to remember.
+  const generatedFrom = `${c.env.PUBLIC_APP_URL ?? "unknown-app-url"} (${new URL(c.req.url).host})`;
+
+  const posRows = await db
+    .select({
+      id: positions.id,
+      name: positions.name,
+      slug: positions.slug,
+      active: positions.active,
+      department_id: positions.department_id,
+      department_name: departments.name,
+    })
+    .from(positions)
+    .leftJoin(departments, eq(positions.department_id, departments.id))
+    .orderBy(asc(positions.id));
+
+  // One read of the whole table — no per-position round-trip. Ungated by
+  // page_key on purpose: rows whose key is no longer in the registry are still
+  // rows, and a photograph that drops them is not a photograph.
+  const allRows = await db
+    .select({
+      position_id: position_page_access.position_id,
+      page_key: position_page_access.page_key,
+      level: position_page_access.level,
+    })
+    .from(position_page_access);
+
+  const byPosition = new Map<number, Array<{ page_key: string; level: string }>>();
+  for (const r of allRows) {
+    const list = byPosition.get(r.position_id) ?? [];
+    list.push({ page_key: r.page_key, level: r.level });
+    byPosition.set(r.position_id, list);
+  }
+
+  const registryKeys = new Set(PAGES.map((p) => p.key));
+  let explicitRows = 0;
+  let orphanRows = 0;
+  let gapCells = 0;
+
+  const out: Array<{
+    id: number;
+    name: string;
+    slug: string;
+    active: number;
+    department_id: number | null;
+    department_name: string | null;
+    entries: Record<string, string>;
+    orphan_keys: string[];
+    missing_keys: string[];
+    resolved: Record<string, AccessLevel>;
+  }> = [];
+  for (const p of posRows) {
+    const rows = byPosition.get(p.id) ?? [];
+
+    // Sorted by key so a regenerated file diffs cleanly — row order out of PG
+    // is not stable, and an unsorted export would churn every regeneration and
+    // bury a real change in the noise.
+    const entries: Record<string, string> = {};
+    for (const r of [...rows].sort((a, b) => a.page_key.localeCompare(b.page_key))) {
+      entries[r.page_key] = r.level;
+    }
+
+    // Rows whose page_key the registry no longer knows. loadPageAccessForPosition
+    // ignores them (isValidPageKey, pageAccess.ts:727) so they grant nothing
+    // today — but they are still in the table and would come back to life if the
+    // key were ever re-added. Named, not dropped.
+    const orphan_keys = Object.keys(entries).filter((k) => !registryKeys.has(k));
+
+    // Registry pages this position has NO row for. This is where "he never set
+    // it" hides: a gap is not a decision, and it must not be exported as one.
+    const missing_keys = PAGES.map((x) => x.key).filter((k) => !(k in entries));
+
+    explicitRows += Object.keys(entries).length;
+    orphanRows += orphan_keys.length;
+    gapCells += missing_keys.length;
+
+    out.push({
+      id: p.id,
+      name: p.name,
+      slug: p.slug,
+      active: p.active,
+      department_id: p.department_id,
+      department_name: p.department_name ?? null,
+      entries,
+      orphan_keys,
+      missing_keys,
+      // Derived — inheritance applied, through the SAME loader login uses, so
+      // the review table cannot disagree with the live system. Re-reading the
+      // rows once per position (rather than resolving from `allRows` in memory)
+      // is a deliberate N+1: ~17 positions, admin-only, run by hand a few times
+      // in this migration's life. A second local implementation of the inherit
+      // cascade is the thing worth avoiding here — a review table that quietly
+      // disagrees with login is worse than 17 cheap indexed reads.
+      resolved: await loadPageAccessForPosition(c.env, p.id),
+    });
+  }
+
+  return c.json({
+    generatedFrom,
+    generatedAt: new Date().toISOString(),
+    // The table has NO company_id and NO updated_by (schema.pg.ts:266-276):
+    // position_id, page_key, level, created_at, updated_at, PK(position_id,
+    // page_key). Positions are global across both companies, so there is no
+    // per-company cell for this export to flatten. Timestamps are deliberately
+    // NOT exported: they are not access facts, and they would churn the diff on
+    // every regeneration.
+    schemaNote: "position_page_access has no company_id and no updated_by; positions are global",
+    registryPageCount: PAGES.length,
+    totals: {
+      positions: out.length,
+      explicit_rows: explicitRows,
+      orphan_rows: orphanRows,
+      gap_cells: gapCells,
+    },
+    positions: out,
+  });
+});
+
 /** POST /api/positions  Body: { department_id, name, slug?, level?, sort_order? } */
 app.post("/", requirePermission("users.manage"), async (c) => {
   const body = await c.req.json<{

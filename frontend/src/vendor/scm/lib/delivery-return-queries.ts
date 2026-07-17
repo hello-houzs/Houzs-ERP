@@ -17,6 +17,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
+import { idempotentInit } from '../../../lib/idempotency';
 import { serviceNotify } from './dialog-service';
 
 // Re-export the DO-side prefill hook the New-DR page pulls from this module in
@@ -41,10 +42,22 @@ export const useDeliveryReturnDetail = (id: string | null) => useQuery({
   queryFn: () => authedFetch<{ deliveryReturn: any; items: any[] }>(`/delivery-returns/${id}`),
   enabled: Boolean(id), staleTime: 30_000, retry: 1, retryDelay: 800,
 });
+/* `idempotencyKey` is OPTIONAL and must be destructured OUT of the body — the
+   rest-spread would otherwise post it as a return field. Pass one per return
+   intent (see lib/idempotency.ts): the middleware replays the first response —
+   the SAME returnNumber — instead of taking the goods back twice. Omitting it is
+   exactly today's behaviour (the middleware no-ops).
+
+   NOT on fix/so-idempotency's list of remaining creates — that list was written
+   by reading the files it happened to open, and this one sits in its own. The
+   onSuccess note below is the reason it belongs: a return increases stock ON
+   CREATE, so a duplicate is an on-hand lie, not a spare row. */
 export const useCreateDeliveryReturn = () => {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: unknown) => authedFetch<{ id: string; returnNumber: string }>(`/delivery-returns`, { method: 'POST', body: JSON.stringify(body) }),
+    mutationFn: ({ idempotencyKey, ...body }: { idempotencyKey?: string } & Record<string, unknown>) =>
+      authedFetch<{ id: string; returnNumber: string }>(`/delivery-returns`,
+        idempotentInit(idempotencyKey, { method: 'POST', body: JSON.stringify(body) })),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['delivery-returns'] });
       /* A return increases stock on create — refresh inventory queries so the

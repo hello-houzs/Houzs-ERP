@@ -7,6 +7,7 @@ import {
   useCreateStockTransfer,
 } from "../vendor/scm/lib/stock-queries";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
+import { useIdempotencyKey } from "../lib/idempotency";
 import { MobileSkuPicker, type PickedSku } from "./MobileSkuPicker";
 
 /* ------------------------------------------------------------------ *
@@ -31,6 +32,13 @@ export function MobileStockTransferNew({
 }) {
   const notify = useNotify();
   const create = useCreateStockTransfer();
+  /* One key for the one transfer this screen is open to raise
+     (lib/idempotency.ts). MobileApp mounts this behind a screen and onCreated /
+     onBack leave it (MobileApp.tsx:457), so the MOUNT is exactly one transfer.
+     The desktop twin (StockTransferNew) mints its own — the same document
+     protected on both sides in one PR, since a document covered on one side only
+     is a new divergence. */
+  const idemKey = useIdempotencyKey();
   const warehouses = useWarehouses();
 
   const [fromWarehouseId, setFromWarehouseId] = useState("");
@@ -75,6 +83,7 @@ export function MobileStockTransferNew({
     if (!canCreate) return;
     create.mutate(
       {
+        idempotencyKey: idemKey,
         fromWarehouseId,
         toWarehouseId,
         transferDate,

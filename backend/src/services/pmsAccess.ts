@@ -50,19 +50,19 @@ const SECTIONS_BY_ROLE: Record<PmsRole, PmsSection[]> = {
   // required_perm / role_label gate, not this project-wide EDIT flag. Owner
   // rule 2026-07 (Sales-department visibility): finance / payment / rental /
   // quotation / agreement stay hidden (none of those sections listed here).
-  // Owner rule 2026-07-15: Setup & Dismantle (incl. the logistics crew-per-lorry
-  // editor + setup/dismantle documents) is REMOVED from every non-director Sales
-  // user — even the project's own Sales PIC — so SETUP_DISMANTLE is dropped here
-  // and from SALES below. Directors / Logistics / Drivers keep it.
+  // Owner rule 2026-07-17 (REVERSES the 2026-07-15 hide): Sales — including the
+  // non-PIC Sales staff below — may VIEW Setup & Dismantle (crew per lorry +
+  // dates) on mobile and laptop. SETUP_DISMANTLE is a VISIBILITY section only;
+  // "EDIT" is still withheld from PIC/SALES, so they stay read-only on it.
   PIC: [
     "PROJECT_STAGE", "PM_WORKFLOW",
-    "BOOTH_LAYOUT", "EXPO_MAP", "EVENT_CHAT", "INTEGRATIONS",
+    "BOOTH_LAYOUT", "SETUP_DISMANTLE", "EXPO_MAP", "EVENT_CHAT", "INTEGRATIONS",
   ],
   LOGISTIC: [
     "EDIT", "PROJECT_STAGE", "PM_WORKFLOW",
     "BOOTH_LAYOUT", "SETUP_DISMANTLE", "EXPO_MAP", "INTEGRATIONS",
   ],
-  SALES: ["EXPO_MAP", "EVENT_CHAT"], // SETUP_DISMANTLE removed (owner 2026-07-15, non-director Sales)
+  SALES: ["SETUP_DISMANTLE", "EXPO_MAP", "EVENT_CHAT"], // view-only S&D restored (owner 2026-07-17)
   PURCHASING: ["BOOTH_LAYOUT", "SETUP_DISMANTLE"],
   DRIVER: ["BOOTH_LAYOUT", "SETUP_DISMANTLE", "PM_WORKFLOW"],
   OTHER: [
@@ -139,6 +139,42 @@ export function isDirectorUser(user: AuthUser | null | undefined): boolean {
   if (!user) return false;
   if (user.permissions_set?.has("*")) return true;
   return DIRECTOR_POSITIONS.test((user.position_name ?? "").trim());
+}
+
+// The purchasing function. Matched with `\b` rather than the anchored
+// /^Purchasing$/i that getPmsRole uses below, for the same reason
+// DIRECTOR_POSITIONS carries `\b`: real prod positions carry prefixes/variants
+// ("Test Sales Director", "Test Sales Executive" — see projectAcl.ts:23). An
+// anchored test would silently miss the live row and leave the ruling
+// not-in-force, which is the exact failure isProductCostViewer exists to end.
+const PURCHASING_POSITION = /\bPurchasing\b/i;
+
+/**
+ * "May this user see a product / SKU COST price."
+ *
+ * Owner 2026-07-17, shown that his 2026-06-13 red line was not in force:
+ *   "那就是采购、Finance，还有 Sales Director 啊？"
+ * — restoring 2026-06-13 "Only Purchasing + Finance see cost". Purchasing had
+ * simply been lost: the cost question was being answered by isFinanceViewer,
+ * whose cohort has no Purchasing in it. This is a RESTORATION, not a new grant.
+ *
+ * Deliberately its own function rather than a widening of DIRECTOR_POSITIONS /
+ * isFinanceViewer. Those answer a DIFFERENT question — "are you a PMS director",
+ * i.e. may you see a project's financial snapshot, rental, payment and cost
+ * rates. Adding Purchasing there would hand him every project's P&L (SECTIONS_BY_ROLE
+ * .DIRECTOR) and make him isDirectorUser, which feeds the sales-scope gates and
+ * the nav flags. The owner asked for cost, and only cost. Two questions, two
+ * functions.
+ *
+ * Composed off isDirectorUser rather than restating its list, so the `*`
+ * wildcard and any future rename of a director title stay in ONE place. The
+ * cohort is therefore a strict SUPERSET of the director cohort: director + the
+ * purchasing function. Nothing here can narrow what a director already sees.
+ */
+export function isProductCostViewer(user: AuthUser | null | undefined): boolean {
+  if (!user) return false;
+  if (isDirectorUser(user)) return true;
+  return PURCHASING_POSITION.test((user.position_name ?? "").trim());
 }
 
 export interface ProjectLike {

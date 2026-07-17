@@ -18,7 +18,7 @@
 // ----------------------------------------------------------------------------
 
 import { todayMyt } from '../../vendor/scm/lib/dates';
-import { newIdempotencyKey } from '../../lib/idempotency';
+import { newIdempotencyKey, useIdempotencyKey } from '../../lib/idempotency';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, ArrowRightLeft, ChevronDown, Plus, Save, X } from 'lucide-react';
@@ -64,6 +64,18 @@ export const SalesInvoiceNew = () => {
   const fromPicks = searchParams.get('fromPicks') === '1';
 
   const create = useCreateSalesInvoice();
+  /* One key for the one invoice this page is open to raise (lib/idempotency.ts).
+     Route-level form; onSuccess navigates to the SI detail unconditionally, so
+     the MOUNT is exactly one invoice — stable across re-renders (lazy init) and
+     across a re-press after a stalled submit, fresh on the next mount.
+
+     Load-bearing beyond the double-tap: onSuccess awaits flushPaymentDrafts and
+     up to two notifies BEFORE navigate, so it is the longest window in this set
+     between "the invoice exists" and "the page leaves". A stable key means any
+     re-press in that window replays the first invoiceNumber instead of posting
+     revenue twice. The payment drafts carry their own per-draft keys (line 235),
+     so they don't double either. */
+  const idemKey = useIdempotencyKey();
   const addPayment = useAddSalesInvoicePayment();
   const staffQ = useStaff();
   const loc = useLocalities();
@@ -300,6 +312,7 @@ export const SalesInvoiceNew = () => {
 
     create.mutate(
       {
+        idempotencyKey: idemKey,
         /* DRAFT flow — when saving as draft the server lands the invoice as DRAFT
            and posts NO revenue / credit until it is confirmed on the detail page. */
         asDraft: asDraft || undefined,

@@ -8,6 +8,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
+import { idempotentInit } from '../../../lib/idempotency';
 import { invalidateSoLists } from './sales-order-queries';
 
 export type SupplierStatus = 'ACTIVE' | 'INACTIVE' | 'BLOCKED';
@@ -760,7 +761,30 @@ export function useCreatePisFromGrnItems() {
 /** PR — Phase 1: create POs (one per supplier) from multi-selected SO
     items with partial qty. Increments po_qty_picked on success.
     PR #157 — expectedAt + purchaseLocationId now required (applied to every
-    PO created from the batch). */
+    PO created from the batch).
+
+    DELIBERATELY NOT idempotency-keyed (fix/doc-idempotency, 2026-07-17), and
+    this is the reasoning rather than an omission — it reads like a gap next to
+    the mobile convert wizard, which sends a key to THIS SAME endpoint.
+
+    It is not drift: it is one rule (lib/idempotency.ts — bind the key to the
+    INTENT) giving two answers because the two surfaces have different mount
+    semantics. The wizard is mounted per convert run and unmounts on success, so
+    its mount IS one intent. This hook's live caller is Mrp.tsx, a long-lived
+    planning page that stays mounted and runs convert after convert — a per-mount
+    key there would make runs 2..N replay run 1 and silently raise NOTHING while
+    reporting POs created, which is worse than the duplicate it would prevent
+    (the same reason fix/so-idempotency skipped SoFromProducts).
+
+    Nor is there a safe payload-derived key: `fromMrp: true` makes MRP converts
+    reference-only and INFINITE by design (see the flag below) — the same picks
+    converted twice are two LEGITIMATE POs, so keying on the payload is exactly
+    lib/idempotency.ts rule (2), and would drop the second.
+
+    No optional param was added either: no caller could pass one, and a param
+    nobody sends is the precise disease this line of work exists to fix — a
+    mechanism that ships without an opt-in and reads as coverage. Wire it IN the
+    PR that gives this flow a real per-run intent to bind to. */
 export function useCreatePosFromSoItems() {
   const qc = useQueryClient();
   return useMutation({
@@ -831,10 +855,20 @@ export function useConvertPoFromSo() {
   });
 }
 
+/* `idempotencyKey` is OPTIONAL and is destructured OUT of the body — the
+   rest-spread would otherwise post it as a PO field. Pass one per PO intent (see
+   lib/idempotency.ts): the middleware replays the first response — the SAME
+   poNumber — instead of committing the company to buy the goods twice. Omitting
+   it is exactly today's behaviour (the middleware no-ops).
+
+   This file had NO idempotency at all before 2026-07-17 (fix/doc-idempotency):
+   unlike the DO/SI files there was not even a payment call site here to make the
+   omission visible. A duplicate PO is an order placed with a real supplier. */
 export function useCreatePurchaseOrder() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: {
+    mutationFn: ({ idempotencyKey, ...body }: {
+      idempotencyKey?: string;
       supplierId: string;
       currency?: Currency;
       poDate?: string;
@@ -853,10 +887,11 @@ export function useCreatePurchaseOrder() {
           invisible to MRP supply). Omitted/false → SUBMITTED, as before. */
       asDraft?: boolean;
     }) =>
-      authedFetch<{ id: string; poNumber: string }>(`/mfg-purchase-orders`, {
-        method: 'POST',
-        body: JSON.stringify(body),
-      }),
+      authedFetch<{ id: string; poNumber: string }>(`/mfg-purchase-orders`,
+        idempotentInit(idempotencyKey, {
+          method: 'POST',
+          body: JSON.stringify(body),
+        })),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['mfg-purchase-orders'] }),
   });
 }

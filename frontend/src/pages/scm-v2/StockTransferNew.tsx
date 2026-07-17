@@ -22,6 +22,7 @@ import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { useWarehouses } from '../../vendor/scm/lib/inventory-queries';
 import { useInventoryBalances } from '../../vendor/scm/lib/stock-queries';
+import { useIdempotencyKey } from '../../lib/idempotency';
 import { useMfgProducts } from '../../vendor/scm/lib/mfg-products-queries';
 import { sortByText } from '../../vendor/scm/lib/sort-options';
 import {
@@ -53,6 +54,11 @@ const todayISO = () => {
 export const StockTransferNew = () => {
   const navigate = useNavigate();
   const create   = useCreateStockTransfer();
+  /* One key for the one transfer this page is open to raise (lib/idempotency.ts).
+     Route-level form, navigates to the transfer detail on success, so the MOUNT
+     is exactly one transfer. Its mobile twin (MobileStockTransferNew) mints its
+     own — same document, both sides, one PR. */
+  const idemKey  = useIdempotencyKey();
 
   const askConfirm = useConfirm();
   const notify = useNotify();
@@ -142,6 +148,7 @@ export const StockTransferNew = () => {
 
     create.mutate(
       {
+        idempotencyKey: idemKey,
         fromWarehouseId,
         toWarehouseId,
         transferDate,

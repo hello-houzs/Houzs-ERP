@@ -46,6 +46,7 @@ import {
   type DebtorSuggestion,
 } from '../../vendor/scm/lib/sales-order-queries';
 import { authedFetch, humanApiError } from '../../vendor/scm/lib/authed-fetch';
+import { useIdempotencyKey } from '../../lib/idempotency';
 import { useStaff } from '../../vendor/scm/lib/admin-queries';
 import { todayMyt } from '../../vendor/scm/lib/dates';
 import { sortByText, sortByNumeric } from '../../vendor/scm/lib/sort-options';
@@ -136,6 +137,15 @@ export const SalesOrderNew = () => {
   const copyFromDocNo = searchParams.get('copyFrom');
   const copySource = useMfgSalesOrderDetail(copyFromDocNo);
   const create   = useCreateMfgSalesOrder();
+  /* One key for the one order this page is open to raise (lib/idempotency.ts).
+     Route-level form; onSuccess navigates to the SO detail, so the MOUNT is
+     exactly one order — the same rule mobile MobileNewSO applies, one logic
+     layer. Load-bearing here beyond the double-tap: onSuccess below deliberately
+     does NOT gate navigation on flushPaymentDrafts / flushPendingPhotos, so a
+     re-press after one of those warns re-fires the create — with a stable key
+     that REPLAYS the first docNo instead of raising a second order, and the
+     payment drafts carry their own per-draft keys so they don't double either. */
+  const idemKey  = useIdempotencyKey();
   const addPayment = useAddSalesOrderPayment();
   const uploadPhoto = useUploadSoItemPhoto();
   const staffQ   = useStaff();
@@ -1428,6 +1438,7 @@ export const SalesOrderNew = () => {
 
     create.mutate(
       {
+        idempotencyKey: idemKey,
         ...receiptDepositBody,
         /* DRAFT flow — backend reads `asDraft: true` to create the SO with
            status 'DRAFT' instead of 'CONFIRMED'. Omitted (undefined) for a

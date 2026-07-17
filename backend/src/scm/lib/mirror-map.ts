@@ -1,0 +1,150 @@
+// ----------------------------------------------------------------------------
+// Shared row-transform primitives for the 2990 -> Houzs one-way mirror receivers
+// (scm/routes/so-mirror.ts, scm/routes/amendment-mirror.ts).
+//
+// Extracted from so-mirror.ts when the amendment receiver landed. A second copy
+// of these rules would be a second place to forget toPgArray (the text[] bug
+// below) or to re-introduce id remapping — both are documented production 500s.
+// One implementation, per-table config passed in.
+//
+// The rules encode the batch importer's behaviour byte-for-byte
+// (scripts/migrate-2990-into-houzs.mjs), so mirrored rows and batch-imported
+// rows are interchangeable:
+//   (a) stamp company_id,
+//   (b) prefix doc-NUMBER columns with `2990-`,
+//   (c) null columns whose target master isn't reconciled across companies,
+//   (d) drop source columns absent from the Houzs dest table (schema drift),
+//   (e) copy every id (uuid and integer) AS-IS.
+//
+// (e) is the load-bearing one. The old mirror remapped FK/self ids (uuid ->
+// '2990'+slice, serial +100000), which matched NO imported row -> FK violation
+// -> 500. Verbatim ids are also what make a 2990 uuid addressable from Houzs
+// without a translation table.
+// ----------------------------------------------------------------------------
+import type { Env } from '../../types';
+
+/** The 2990 company. Mirrored rows are stamped with it on every table. */
+export const C2990 = 2;
+
+/** `2990-` + value, idempotent (a re-delivered row must not double-prefix). */
+export function prefixDoc(v: unknown): unknown {
+  return v == null || String(v).startsWith('2990-') ? v : `2990-${v}`;
+}
+
+// Format a JS array as a Postgres array literal: '{}' for empty, '{"a","b"}'
+// otherwise. Elements are double-quoted with " and \ escaped so any text value
+// is safe. Used only for genuine array-typed columns (see TableMap.arrayCols).
+export function toPgArray(v: unknown[]): string {
+  return `{${v.map((x) => (x == null ? 'NULL' : `"${String(x).replace(/(["\\])/g, '\\$1')}"`)).join(',')}}`;
+}
+
+/** Per-table transform rules. Every field is optional; a table with no entry
+ *  still gets company_id + dest-column filtering + array coercion. */
+export type MirrorTableConfig = {
+  /** Doc-NUMBER columns to stamp `2990-` on (never id/FK columns). */
+  prefixCols?: string[];
+  /** Columns forced NULL on every delivery, whether or not the source sent them
+   *  — an ASSERTION about a mirrored row, not a filter on the payload. A column
+   *  the source never sends (Houzs-only, e.g. so_amendments.header_changes) would
+   *  otherwise be absent from the ON CONFLICT SET list and keep whatever value it
+   *  already had. Listing it here is what makes "a mirrored row cannot carry
+   *  this" true rather than merely expected. */
+  nullCols?: string[];
+  /** Per-column value coercion, e.g. status vocabulary guards. */
+  normalize?: Record<string, (v: unknown) => unknown>;
+};
+
+export type TableMap = {
+  prefixCols: Set<string>;
+  nullCols: Set<string>;
+  normalize: Record<string, (v: unknown) => unknown>;
+  destCols: Set<string>;
+  arrayCols: Set<string>;
+};
+
+/** A mapper bound to one receiver's table config, with its own dest-column
+ *  cache. Per-receiver (not module-global) so two receivers can never read each
+ *  other's column rules out of a shared cache. */
+export type MirrorMapper = {
+  tableMap(DB: Env['DB'], table: string): Promise<TableMap>;
+  applyMap(row: Record<string, unknown>, m: TableMap): Record<string, unknown>;
+};
+
+export function createMirrorMapper(config: Record<string, MirrorTableConfig>): MirrorMapper {
+  const mapCache = new Map<string, TableMap>();
+
+  async function tableMap(DB: Env['DB'], table: string): Promise<TableMap> {
+    const cached = mapCache.get(table);
+    if (cached) return cached;
+
+    // Destination columns — used to DROP any 2990-only source column so an INSERT
+    // can't 500 on an unknown column (schema drift between the two ERPs). Read
+    // from information_schema rather than assumed: the two trees drift, and the
+    // scm schema was ported as pure DDL. data_type also flags Postgres array
+    // columns (see arrayCols below).
+    const dc = await DB.prepare(
+      `SELECT column_name AS col, data_type AS dtype FROM information_schema.columns
+        WHERE table_schema='scm' AND table_name=?`,
+    ).bind(table).all<{ col: string; dtype: string }>();
+
+    const rows = dc.results ?? [];
+    const cfg = config[table] ?? {};
+    const m: TableMap = {
+      prefixCols: new Set(cfg.prefixCols ?? []),
+      nullCols: new Set(cfg.nullCols ?? []),
+      normalize: cfg.normalize ?? {},
+      destCols: new Set(rows.map((r: { col: string }) => r.col)),
+      // Postgres array-typed dest columns (e.g. mfg_sales_order_items.photo_urls
+      // text[]). The D1-shim coerces a bound JS array by stringification, turning an
+      // empty array [] into "" — which Postgres rejects as a malformed array literal
+      // ("malformed array literal: \"\""). These must be formatted as explicit
+      // Postgres array literals before binding (see toPgArray). NOTE: this is keyed
+      // on data_type='ARRAY' only, so jsonb columns that happen to hold a JSON array
+      // are left untouched (bound as JSON, not corrupted into a pg array literal).
+      arrayCols: new Set(rows.filter((r: { dtype: string }) => r.dtype === 'ARRAY').map((r: { col: string }) => r.col)),
+    };
+    mapCache.set(table, m);
+    return m;
+  }
+
+  function applyMap(row: Record<string, unknown>, m: TableMap): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    // Keep only columns that exist in the Houzs dest table (drop 2990-only cols).
+    // Array-typed dest columns get an explicit Postgres array literal (see toPgArray).
+    for (const [k, v] of Object.entries(row)) {
+      if (m.destCols.has(k)) out[k] = m.arrayCols.has(k) && Array.isArray(v) ? toPgArray(v) : v;
+    }
+    // Stamp the 2990 company (dest always carries company_id for these tables).
+    out.company_id = C2990;
+    // Prefix doc-number columns; ids/FKs pass through UNCHANGED (match the import).
+    for (const col of m.prefixCols) if (out[col] != null) out[col] = prefixDoc(out[col]);
+    // Null columns whose target master isn't reconciled (e.g. venue_id), and
+    // columns that assert a Houzs-only concept a 2990 row cannot carry. Keyed on
+    // the DEST table, not on what the source happened to send, so the NULL lands
+    // in the UPDATE set too (see MirrorTableConfig.nullCols).
+    for (const col of m.nullCols) if (m.destCols.has(col)) out[col] = null;
+    // Per-column value coercion (status vocabulary guards).
+    for (const [col, fn] of Object.entries(m.normalize)) if (col in out) out[col] = fn(out[col]);
+    return out;
+  }
+
+  return { tableMap, applyMap };
+}
+
+/** Idempotent upsert. `conflict` is a comma-separated conflict target; every
+ *  non-target column is overwritten from EXCLUDED, so a re-delivered outbox row
+ *  converges instead of duplicating. */
+export async function upsert(
+  DB: Env['DB'],
+  table: string,
+  row: Record<string, unknown>,
+  conflict: string,
+) {
+  const cols = Object.keys(row);
+  const set = cols.filter((c) => !conflict.split(',').map((s) => s.trim()).includes(c))
+    .map((c) => `"${c}"=EXCLUDED."${c}"`).join(', ');
+  const sql = `INSERT INTO scm."${table}" (${cols.map((c) => `"${c}"`).join(',')})
+    VALUES (${cols.map(() => '?').join(',')})
+    ON CONFLICT (${conflict}) DO UPDATE SET ${set}`;
+  await DB.prepare(sql).bind(...cols.map((k) => row[k])).run();
+}
