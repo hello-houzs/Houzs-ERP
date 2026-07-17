@@ -43,6 +43,7 @@ import {
   LEAD_TIME_SELECT,
   NO_BUFFERS,
 } from '../lib/lead-time';
+import { groupKeyFor } from '../lib/po-grouping';
 import { supabaseAuth } from '../middleware/auth';
 import { computeMrp } from './mrp';
 import type { Env, Variables } from '../env';
@@ -1030,7 +1031,22 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
          'combined' (default) = one PO per supplier (all picked SOs merged) —
                                  good for mattresses (dozens of SOs → 1 PO).
          'per-so'             = one PO per (supplier × SO) — good for sofa /
-                                 bedframe where 1 SO → 1 PO. */
+                                 bedframe where 1 SO → 1 PO.
+
+       SUPERSEDED FOR THE THREE RULED CATEGORIES (owner 2026-07-17). The note
+       above was always a description of WHICH MODE TO PICK for which category —
+       so the operator had to know the rule and choose correctly, and a mixed
+       pick could only ever get one behaviour. The rule is now applied
+       automatically per category in scm/lib/po-grouping.ts:
+         sofa, bedframe -> per-SO      (as the note says; sofa also for dye lot)
+         mattress       -> merged, but bounded by a delivery-date WINDOW
+       The window is the 07-17 refinement of the note's unbounded "dozens of SOs
+       -> 1 PO": merging a mattress due next quarter into this week's PO lands
+       stock three months early, which is the opposite of the turnover the merge
+       exists to improve.
+
+       `mode` still decides the categories he has NOT ruled on (accessory,
+       service, anything else item_group carries). */
     mode?: 'combined' | 'per-so';
     /* Commander 2026-05-29 — per-SKU supplier override. The MRP lets the user
        switch an item to an alternate supplier in-place; { itemCode: supplierId }
@@ -1601,17 +1617,28 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
     const b = effectiveBindingFor(it)!;
     const effectiveSupplierId = b.supplier_id;
     const lineWarehouseId = it.lineWarehouseId;
-    // (warehouse, supplier) → one single-warehouse PO; soDocNo splits further in
-    // 'per-so' mode. A null warehouse buckets together under the literal 'null'.
-    // Commander 2026-05-31 — SOFA is colour-matched and MUST be produced as one
-    // set on ONE PO (split → different dye lots → colour difference). So sofa
-    // lines ALWAYS group per-(warehouse, supplier, SO) regardless of the toggle:
-    // one SO's whole sofa set = exactly one PO, never merged with another SO's
-    // set, never split per component SKU. Non-sofa lines follow the toggle.
-    const isSofaLine = (it.itemGroup?.toUpperCase() ?? '') === 'SOFA';
-    const groupKey = (poMode === 'per-so' || isSofaLine)
-      ? `${lineWarehouseId ?? 'null'}::${effectiveSupplierId}::${it.soDocNo}`
-      : `${lineWarehouseId ?? 'null'}::${effectiveSupplierId}`;
+    // The split is per-CATEGORY (owner 2026-07-17) — see scm/lib/po-grouping.ts
+    // for the rule and its reasoning. Every key still starts (warehouse,
+    // supplier), which is what keeps each emitted PO single-warehouse.
+    //
+    // This was a single global toggle with one hardcoded exception (SOFA), so a
+    // mixed pick could only ever get ONE behaviour. It now gets all three in one
+    // convert: bedframe + sofa per-SO, mattress merged within a delivery-date
+    // window, everything he did not rule on still following `poMode`.
+    //
+    // The window is passed the LINE's delivery date, i.e. after the lead time
+    // has been subtracted — the bucket must reflect when the goods actually land
+    // in the warehouse, which is what the turnover rule is about.
+    const groupKey = groupKeyFor(
+      {
+        warehouseId: lineWarehouseId,
+        supplierId: effectiveSupplierId,
+        soDocNo: it.soDocNo,
+        itemGroup: it.itemGroup,
+        deliveryDate: it.lineDeliveryDate,
+      },
+      poMode,
+    );
     const bucket = byGroup.get(groupKey)
       ?? { supplierId: effectiveSupplierId, warehouseId: lineWarehouseId, currency: b.currency, lines: [], soDocNos: new Set<string>() };
 
