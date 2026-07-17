@@ -90,6 +90,29 @@ export const PERMISSIONS: PermissionDef[] = [
   // "*"; grant finance / purchasing positions via the Team > Positions matrix.
   { key: "scm.currency.manage",        resource: "Supply Chain", verb: "manage", label: "Manage currencies",        description: "Add or edit a currency in the master and set its exchange rate to MYR (used by GRN / PI / Payment Voucher foreign-currency posting)" },
 
+  // HR / Commission (port of 2990 0171 + apps/api/src/routes/hr.ts). Computes
+  // commission-only salaries: per-salesperson goods -> % rate + KPI bonuses ->
+  // payout. 2990 gates reads on staff.role admin|super_admin|sales_director and
+  // writes on admin|super_admin; those gates are DEAD in Houzs (the SCM bridge
+  // pins every /api/scm/* caller to one super_admin staff row), so these two
+  // flat keys gate the REAL caller instead — the read/write SPLIT is 2990's own
+  // (a sales director may see the numbers, not set the rates).
+  //
+  // These are NEW keys rather than a reuse, deliberately. /hr/commission returns
+  // every colleague's SALARY — the most sensitive read in the SCM surface — so
+  // it must not ride the coarse scm.access umbrella (see the "READ-ONLY IS NOT
+  // THE SAME AS SAFE" incident on scm/index.ts, where reports rode the umbrella
+  // and leaked company-wide cost + margin to any Sales Executive). Nor does it
+  // borrow canViewScmFinance: that answers "may this caller see cost/margin on a
+  // DOCUMENT", and quietly aliasing payroll onto it would mean any later change
+  // to the finance tier silently re-permissions salaries.
+  //
+  // Owner + IT Admin cover both via "*", so the module works on day one; every
+  // other position must be granted explicitly via Team > Positions. Payroll
+  // failing closed by default is the intended behaviour.
+  { key: "scm.hr.read",   resource: "Supply Chain", verb: "read",   label: "View HR commission",   description: "See the HR module: every salesperson's commission, KPI bonuses, salary profiles and the rate settings (read-only)" },
+  { key: "scm.hr.manage", resource: "Supply Chain", verb: "manage", label: "Manage HR commission", description: "Set the commission rates and KPI thresholds, assign salesperson tiers/showrooms, and flag item KPIs — changes what people are paid" },
+
   // Mail Center — in-ERP shared inbox (/api/mail-center). mail_center.read is the
   // nav/page gate (grant broadly); mail_center.manage gates the alias / access /
   // scope-level admin grids. Owner + IT Admin cover both via "*". Per-thread

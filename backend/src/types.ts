@@ -82,6 +82,23 @@ export type Env = {
   // receiver). The 2990 DB (pg_net) sends it as `x-sync-secret`. Set via
   // `wrangler secret put SYNC_SECRET`. Unset => the receiver 401s (fail-closed).
   SYNC_SECRET?: string;
+  // Houzs → 2990 Product Maintenance push (scm/routes/maintenance-push.ts).
+  // The push writes 2990's public.maintenance_config_history DIRECTLY with
+  // 2990's service-role key — an owner-granted, table-scoped exception to D2
+  // (that endpoint is an RBAC check plus a plain INSERT, with no business logic
+  // to reuse). The full cost is documented in scm/lib/bridge-2990.ts's header,
+  // and the headline is: THIS KEY BYPASSES ALL RLS ON 2990'S ENTIRE DATABASE.
+  // It is unrestricted read/write over the live retail DB — every order, every
+  // customer, every price. Supabase cannot scope it to one table, so the only
+  // constraint is the code in bridge-2990.ts (client never exported, no generic
+  // helper, one hardcoded table). Treat any new use of this secret as a
+  // blast-radius decision, not a convenience.
+  // Set via `wrangler secret put BRIDGE_2990_SUPABASE_URL` / `..._SERVICE_ROLE_KEY`.
+  // With either unset the push cannot reach 2990 and the route 503s — this is
+  // how the feature ships dark. The DB kill switch (scm.sync_config) is the
+  // separate, no-deploy emergency stop.
+  BRIDGE_2990_SUPABASE_URL?: string;
+  BRIDGE_2990_SERVICE_ROLE_KEY?: string;
   // System Health observability (phase 2, ported from Hookka). Writes via the
   // binding; reads via the AE SQL API using the two secrets. All optional —
   // absent => health endpoints serve deterministic mock data.

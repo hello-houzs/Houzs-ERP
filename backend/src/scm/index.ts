@@ -17,6 +17,7 @@ import { mfgProducts } from "./routes/mfg-products";
 import { productModels } from "./routes/product-models";
 import { sofaCompartmentPhotos } from "./routes/sofa-compartment-photos";
 import { maintenanceConfig } from "./routes/maintenance-config";
+import { maintenancePush } from "./routes/maintenance-push";
 import { sofaCombos } from "./routes/sofa-combos";
 import { sofaQuickPicks } from "./routes/sofa-quick-picks";
 import { fabricTracking } from "./routes/fabric-tracking";
@@ -25,6 +26,7 @@ import { mfgPurchaseOrders } from "./routes/mfg-purchase-orders";
 import { grns } from "./routes/grns";
 import { purchaseInvoices } from "./routes/purchase-invoices";
 import { paymentVouchers } from "./routes/payment-vouchers";
+import { paymentAuditLog } from "./routes/payment-audit-log";
 import { currencies } from "./routes/currencies";
 import { mfgSalesOrders } from "./routes/mfg-sales-orders";
 import { soAmendments } from "./routes/so-amendments";
@@ -75,6 +77,7 @@ import { posCart } from "./routes/pos-cart";
 import { quotes } from "./routes/quotes";
 import { personalQuickPicks } from "./routes/personal-quick-picks";
 import { salesAnalysis } from "./routes/sales-analysis";
+import { hr } from "./routes/hr";
 
 import { scmAreaGuard } from "./middleware/area-guard";
 
@@ -154,6 +157,13 @@ scm.use("/mfg-products/*", scmAreaGuard("scm.procurement.products", { openRead: 
 scm.route("/mfg-products", mfgProducts);
 scm.use("/product-models/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
 scm.route("/product-models", productModels);
+// Houzs → 2990 option-list push. NO openRead — DELIBERATE: the dry-run report
+// echoes 2990's master config, which carries sellingPriceSen / costSen, i.e.
+// 2990's retail AND cost sides. Opening it would hand that to any scoped
+// salesperson — the same leak class as #625 (see the /sofa-combos note below).
+// Mounted BEFORE /maintenance-config so the static prefix wins the match.
+scm.use("/maintenance-push/*", scmAreaGuard("scm.procurement.products"));
+scm.route("/maintenance-push", maintenancePush);
 // Static prefix must precede the parent /maintenance-config.
 scm.use("/maintenance-config/sofa-compartments/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
 scm.route("/maintenance-config/sofa-compartments", sofaCompartmentPhotos);
@@ -269,11 +279,40 @@ scm.route("/accounting", accounting);
 // finer scm.payment_voucher.* gates layer on inside the handlers.
 scm.use("/payment-vouchers/*", scmAreaGuard("scm.finance.accounting"));
 scm.route("/payment-vouchers", paymentVouchers);
+// Payment Audit Log — Finance's payment TRAIL (port of 2990's /admin/audit-log):
+// one row per mfg_sales_order_payments entry + its SO header context. Read-only.
+// Same L2 area as Accounting: it is the money ledger's read side, not a new
+// module. NOT named /audit-log — /api/audit (audit_events = role changes) and
+// /mfg-sales-orders/:docNo/audit-log (field-change history) already own that
+// word; see the route header.
+//
+// THE AREA KEY IS NOT THE GATE HERE, and this is the one mount where that
+// distinction is load-bearing. scmAreaGuard FALLS OPEN for callers without an
+// explicit SCM L2 config (area-guard.ts: `if (!user.scm_l2_configured) next()`)
+// — deliberate, so nobody is locked out before the matrix is seeded, and fine
+// for the pages above. This payload is every customer payment, amount, approval
+// code and bank slip in the book, so the real boundary is an in-route
+// canViewScmFinance 403 (fails closed, reads the REAL caller via houzsUser).
+// Row-scope (own+downline) rides along as a fuse for the day that gate widens.
+// Read the route header before changing either — "read-only" is not "safe", and
+// that assumption is exactly what shipped the /reports leak.
+scm.use("/payment-audit-log/*", scmAreaGuard("scm.finance.accounting"));
+scm.route("/payment-audit-log", paymentAuditLog);
 // Currency MASTER — owner-maintained list + rate_to_myr, read by the GRN/PI/PV
 // currency dropdowns across areas. Like state-warehouse-mappings, it's a shared
 // lookup left on the coarse scm gate (reads open); writes are gated inside the
 // route by scm.currency.manage.
 scm.route("/currencies", currencies);
+// HR / Commission (port of 2990 apps/api routes/hr.ts + migration 0123). The
+// only place commission is calculated — the last thing keeping 2990's apps/api
+// alive. NO scmAreaGuard: an L2 area key is a PAGE key, and there is no HR page
+// yet (backend-only port; UI needs an approved mockup first). Inventing one
+// would put a live gate on a page that does not exist. Authorization is entirely
+// the flat scm.hr.read / scm.hr.manage keys checked inside the route against the
+// REAL caller — which is stricter than any area guard, since /commission returns
+// every colleague's salary and must never ride the coarse scm.access umbrella
+// that /api/scm/* already applies. Wire an area key here IF/WHEN the page ships.
+scm.route("/hr", hr);
 // ── MRP (scm.procurement.mrp) ───────────────────────────────────────────────
 scm.use("/mrp/*", scmAreaGuard("scm.procurement.mrp"));
 scm.route("/mrp", mrp);

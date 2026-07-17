@@ -1,28 +1,52 @@
 import { Hono } from "hono";
+import type { MiddlewareHandler } from "hono";
 import type { Env } from "../types";
-import { requirePermission } from "../middleware/auth";
+import { requirePermission, requirePageAccessOrSalesView } from "../middleware/auth";
 
 const app = new Hono<{ Bindings: Env }>();
 
-// Allowed table identifiers — keeps the namespace bounded so a typo in the
-// frontend can't create orphan UDF rows in random table buckets.
-const ALLOWED_TABLES = new Set([
-  "sales_orders",
-  "delivery_orders",
-  "purchase_orders",
-  "assr",
-  "balance",
-  "overdue",
-  "logs",
+/**
+ * The allowed table namespace AND each table's read gate, in ONE registry —
+ * keeping them as two lists is how they drift apart.
+ *
+ * GET /:table serves the table's own data (every field value for every row), so
+ * it answers to the SAME gate as the table it mirrors. A single flat key cannot
+ * express that: these tables gate on two different axes — assr / logs on a
+ * permission key, sales_entries on PAGE ACCESS, because a code-keyed Sales user
+ * holds no flat `sales.read` (positions get no permission backfill). Gating
+ * sales_entries on a flat key would 403 exactly the Sales callers #671 admitted.
+ *
+ * Values are the existing middlewares, not re-implemented checks — dispatch
+ * only, so these gates cannot drift from the ones on the tables' own routes.
+ * The five AutoCount tables have no live reader since strip-to-core; their
+ * legacy read keys survive only in the mig 001/009/014 role JSON, so they stay
+ * closed to anyone the matrix can grant.
+ */
+const READ_GATE: Record<string, MiddlewareHandler<{ Bindings: Env }>> = {
+  sales_orders: requirePermission("sales_orders.read"),
+  delivery_orders: requirePermission("delivery_orders.read"),
+  purchase_orders: requirePermission("purchase_orders.read"),
+  assr: requirePermission("service_cases.read"),
+  balance: requirePermission("balance.read"),
+  overdue: requirePermission("overdue.read"),
+  logs: requirePermission("logs.read"),
   // Rep-entered sales transactions. row_key = sales_entries.id (as string).
-  "sales_entries",
-]);
+  sales_entries: requirePageAccessOrSalesView("sales"),
+};
 
 const ALLOWED_TYPES = new Set(["text", "number", "date", "select", "checkbox"]);
 
 function validateTable(table: string): boolean {
-  return ALLOWED_TABLES.has(table);
+  return Object.prototype.hasOwnProperty.call(READ_GATE, table);
 }
+
+// Resolves the gate from the :table param, so an unknown table is rejected
+// before any gate runs (400, matching the handlers' own validateTable reply).
+const udfReadGate: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
+  const table = c.req.param("table");
+  if (!table || !validateTable(table)) return c.json({ error: "Invalid table" }, 400);
+  return READ_GATE[table](c, next);
+};
 
 // snake_case validator — letters, digits, underscores; must start with a letter
 function validateKey(key: string): boolean {
@@ -42,7 +66,7 @@ function validateKey(key: string): boolean {
  * what users actually create). If it ever gets large we can switch to
  * batched ?keys=... queries.
  */
-app.get("/:table", async (c) => {
+app.get("/:table", udfReadGate, async (c) => {
   const table = c.req.param("table");
   if (!validateTable(table)) return c.json({ error: "Invalid table" }, 400);
 
