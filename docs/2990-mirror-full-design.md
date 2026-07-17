@@ -123,6 +123,18 @@ logic, 2990's RBAC, and 2990's identity. The resulting state change flows back d
 **existing** mirror. The owner gets exactly the UX he asked for; the system gets a single
 writer per record. Argued in §3.2.
 
+> **Scoped exception (owner, 2026-07-17) — the Product Maintenance push.** Houzs writes 2990's
+> `public.maintenance_config_history` **directly**, with 2990's service-role key. D2's literal
+> text still holds (that table is **LOCAL** in §3.4's matrix — it is not mirrored, so no mirrored
+> row is written and nothing flows back down), but D2's *principle* — 2990's RBAC, 2990's
+> identity, one writer — does not. The exception is granted on one specific finding: 2990's
+> `POST /maintenance-config/changes` is an RBAC check followed by a plain INSERT, with **no apply
+> engine behind it to reuse**, which is exactly what is not true of `applySoAmendment`. It is
+> scoped to that one table for that reason and **is not precedent**. The cost — 2990's
+> `WRITE_ROLES` check bypassed (and it was the only gate; RLS is not enabled on the table), and a
+> key that bypasses all RLS on 2990's whole database held by the Houzs Worker — is documented in
+> `backend/src/scm/lib/bridge-2990.ts`'s header.
+
 **D3 — Never touch the working SO drain.** New entities get a **second, parallel** drain
 function on 2990. `drain_so_outbox()` and its `entity='sales_order'` filter are frozen. The
 non-negotiable from `00_DESIGN.md` — "POS ↔ 2990 backend link must not break" — extends to the
@@ -289,6 +301,15 @@ admin+). The Supabase **service-role key must not be used**: it carries no user 
 `user.id` would be undefined and the RBAC check would fail anyway. Houzs stores
 `BRIDGE_2990_EMAIL` / `BRIDGE_2990_PASSWORD` as Worker secrets, exchanges them for a JWT, and
 caches it for the isolate lifetime with refresh-on-401.
+
+> **Scope note (2026-07-17).** The paragraph above is about **this** path — the amendment
+> write-back — and remains true for it: the service-role key genuinely cannot call these
+> endpoints, because it fails their staff lookup rather than bypassing it. It is **not** a
+> statement about 2990's whole API. The Product Maintenance push (D2's scoped exception) does not
+> call an endpoint at all; it writes its one table directly with the service-role key, which
+> works precisely because it never goes through GoTrue or a staff lookup. Neither the bridge auth
+> user nor `BRIDGE_2990_EMAIL` / `BRIDGE_2990_PASSWORD` exist yet — they are still to be created
+> when this path is built.
 
 This is a **data change in 2990, not a code change** — one auth user, one staff row. It respects
 the shared-tree constraint. It needs the owner to create it or to authorize IT to (Q2).

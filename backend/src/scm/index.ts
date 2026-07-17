@@ -17,6 +17,7 @@ import { mfgProducts } from "./routes/mfg-products";
 import { productModels } from "./routes/product-models";
 import { sofaCompartmentPhotos } from "./routes/sofa-compartment-photos";
 import { maintenanceConfig } from "./routes/maintenance-config";
+import { maintenancePush } from "./routes/maintenance-push";
 import { sofaCombos } from "./routes/sofa-combos";
 import { sofaQuickPicks } from "./routes/sofa-quick-picks";
 import { fabricTracking } from "./routes/fabric-tracking";
@@ -156,6 +157,13 @@ scm.use("/mfg-products/*", scmAreaGuard("scm.procurement.products", { openRead: 
 scm.route("/mfg-products", mfgProducts);
 scm.use("/product-models/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
 scm.route("/product-models", productModels);
+// Houzs → 2990 option-list push. NO openRead — DELIBERATE: the dry-run report
+// echoes 2990's master config, which carries sellingPriceSen / costSen, i.e.
+// 2990's retail AND cost sides. Opening it would hand that to any scoped
+// salesperson — the same leak class as #625 (see the /sofa-combos note below).
+// Mounted BEFORE /maintenance-config so the static prefix wins the match.
+scm.use("/maintenance-push/*", scmAreaGuard("scm.procurement.products"));
+scm.route("/maintenance-push", maintenancePush);
 // Static prefix must precede the parent /maintenance-config.
 scm.use("/maintenance-config/sofa-compartments/*", scmAreaGuard("scm.procurement.products", { openRead: true }));
 scm.route("/maintenance-config/sofa-compartments", sofaCompartmentPhotos);
