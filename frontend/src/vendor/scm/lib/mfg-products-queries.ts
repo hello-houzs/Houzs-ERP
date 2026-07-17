@@ -306,17 +306,95 @@ type ModelByCodeResult = {
   category: MfgCategory | null;
 };
 
+type RawByCode = { allowedOptions?: ModelAllowedOptions | null; category?: string | null };
+
+const normaliseByCode = (res: RawByCode): ModelByCodeResult => ({
+  allowedOptions: res.allowedOptions ?? null,
+  category: res.category ? (res.category.toUpperCase() as MfgCategory) : null,
+});
+
+/* ── by-code request coalescer ───────────────────────────────────────────────
+   WHY: this question is asked once per LINE (every SoLineCard / PoLineCard /
+   MobileNewSO line card calls a hook below), and it can only be asked once the
+   order has loaded and its item codes are known. Asked one code at a time that
+   was a second, N-wide serial hop — one GET /product-models/by-code/:code per
+   line — which on a phone is the dominant cost of opening an order (owner's
+   capture 2026-07-17: one authed-fetch per product, 171 requests for one SO).
+
+   Only the TRANSPORT changes: React Query still keys the cache per code, so
+   staleTime, the shared cache and both select() consumers behave exactly as
+   before, and no call site moves. Codes requested in the same tick fold into
+   ONE GET /product-models/by-code-batch. Desktop and mobile both converge
+   because both already route through these hooks. */
+type ByCodeJob = {
+  code: string;
+  resolve: (r: ModelByCodeResult) => void;
+  reject: (e: unknown) => void;
+};
+
+/* Matches the route's own cap; a longer order simply sends a second batch. */
+const BY_CODE_BATCH_MAX = 100;
+
+let byCodeQueue: ByCodeJob[] = [];
+let byCodeFlushScheduled = false;
+
+async function flushByCodeQueue(): Promise<void> {
+  const jobs = byCodeQueue;
+  byCodeQueue = [];
+  byCodeFlushScheduled = false;
+  if (jobs.length === 0) return;
+
+  for (let i = 0; i < jobs.length; i += BY_CODE_BATCH_MAX) {
+    const chunk = jobs.slice(i, i + BY_CODE_BATCH_MAX);
+    const codes = [...new Set(chunk.map((j) => j.code))];
+    try {
+      /* A GET with repeated `code` params, not a POST with a body: the route is
+         mounted openRead, which exempts GET/HEAD only — a POST would demand
+         `edit` on the Products admin area and 403 every salesperson. */
+      const params = new URLSearchParams();
+      for (const code of codes) params.append('code', code);
+      const res = await authedFetch<{ results?: Record<string, RawByCode | undefined> }>(
+        `/product-models/by-code-batch?${params.toString()}`,
+      );
+      for (const job of chunk) {
+        const row = res.results?.[job.code];
+        /* No entry for a code we asked for means the batch did not ANSWER the
+           question — it does not mean "this SKU has no Model". Those two must
+           never collapse into one value: the second renders the variant
+           dropdowns UNRESTRICTED, which would silently widen what an operator
+           may pick. Fail loudly; React Query surfaces it like any other error. */
+        if (!row) {
+          job.reject(new Error(`by-code-batch returned no entry for ${job.code}`));
+          continue;
+        }
+        job.resolve(normaliseByCode(row));
+      }
+    } catch (e) {
+      for (const job of chunk) job.reject(e);
+    }
+  }
+}
+
+function loadModelByCode(code: string): Promise<ModelByCodeResult> {
+  return new Promise<ModelByCodeResult>((resolve, reject) => {
+    byCodeQueue.push({ code, resolve, reject });
+    if (byCodeFlushScheduled) return;
+    byCodeFlushScheduled = true;
+    /* A microtask, not a timer: React commits every line card together, so the
+       line hooks enqueue within the same task and the batch closes without
+       costing a frame. Anything that enqueues later just forms its own batch —
+       fewer requests than today either way. */
+    queueMicrotask(() => { void flushByCodeQueue(); });
+  });
+}
+
 const modelByCodeQueryOptions = (itemCode: string | undefined) => ({
   enabled: Boolean(itemCode),
   queryKey: ['model-allowed-options-by-code', itemCode] as const,
   staleTime: 60_000,
   queryFn: async (): Promise<ModelByCodeResult> => {
     if (!itemCode) return { allowedOptions: null, category: null };
-    const res = await authedFetch<{ allowedOptions: ModelAllowedOptions | null; category?: string | null }>(
-      `/product-models/by-code/${encodeURIComponent(itemCode)}`,
-    );
-    const cat = res.category ? (res.category.toUpperCase() as MfgCategory) : null;
-    return { allowedOptions: res.allowedOptions ?? null, category: cat };
+    return loadModelByCode(itemCode);
   },
 });
 
