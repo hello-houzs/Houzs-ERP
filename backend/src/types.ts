@@ -99,6 +99,27 @@ export type Env = {
   // separate, no-deploy emergency stop.
   BRIDGE_2990_SUPABASE_URL?: string;
   BRIDGE_2990_SERVICE_ROLE_KEY?: string;
+  // SO-amendment write-back (scm/lib/bridge-2990-command.ts, design §3.2/D2).
+  // A DIFFERENT credential class from the service-role key above: this path calls
+  // 2990's OWN API (PATCH /so-amendments/:id/{approve-so,...}), which gates on a
+  // real user (isApproveSoCaller reads public.staff WHERE id = user.id). The
+  // service-role key carries NO user identity, so it CANNOT be used here — this
+  // needs a real 2990 Supabase auth user whose public.staff row has an
+  // approve-capable role. Do not collapse the two paths.
+  //   BRIDGE_2990_ANON_KEY  — 2990's project anon key, for the GoTrue password
+  //                           sign-in (grants no identity of its own).
+  //   BRIDGE_2990_API_URL   — 2990's API base that reaches the soAmendments
+  //                           router (origin + any /api prefix); the dispatcher
+  //                           appends /so-amendments/:id/:action.
+  //   BRIDGE_2990_EMAIL / _PASSWORD — the bridge user's credentials.
+  // With ANY unset the write-back cannot reach 2990 and ships dark; the DB kill
+  // switch scm.sync_config.mirror_commands_enabled is the separate no-deploy stop.
+  // Set via `wrangler secret put BRIDGE_2990_ANON_KEY` / `..._EMAIL` / `..._PASSWORD`
+  // and BRIDGE_2990_API_URL (a var, not secret — it is not sensitive).
+  BRIDGE_2990_ANON_KEY?: string;
+  BRIDGE_2990_API_URL?: string;
+  BRIDGE_2990_EMAIL?: string;
+  BRIDGE_2990_PASSWORD?: string;
   // System Health observability (phase 2, ported from Hookka). Writes via the
   // binding; reads via the AE SQL API using the two secrets. All optional —
   // absent => health endpoints serve deterministic mock data.

@@ -62,6 +62,7 @@ import mailInbound from "./routes/mail-inbound";
 // 2990 → Houzs LIVE SO mirror receiver. PRE-AUTH (secret-guarded, called by the
 // 2990 DB via pg_net, no user JWT) — mounted at the top level, outside /api/scm.
 import { soMirror } from "./scm/routes/so-mirror";
+import { drainCommands } from "./scm/lib/amendment-command";
 import { amendmentMirror } from "./scm/routes/amendment-mirror";
 import { customerMirror } from "./scm/routes/customer-mirror";
 import { staffMirror } from "./scm/routes/staff-mirror";
@@ -351,6 +352,17 @@ export default {
             .catch((e) => console.error("[cron so-pull]", e))
         );
       }
+      // Amendment write-back backstop (design §3.2): drain any sync_command left
+      // PENDING (a lost inline attempt, a 2990 hiccup). No-op when the DB flag is
+      // off or the 2990 bridge is unconfigured, so this is safe to run always and
+      // ships dark. Best-effort — a drain failure can never break the slot.
+      ctx.waitUntil(
+        drainCommands(env)
+          .then((r) => {
+            if (r.processed) console.log(`[cron amendment-cmd] ${JSON.stringify(r)}`);
+          })
+          .catch((e) => console.error("[cron amendment-cmd]", e))
+      );
     } else if (event.cron === "*/30 * * * *") {
       // ASSR/QMS v3.1 — per-stage alert scanner (half / approaching / breach).
       // Cheap: one query over open stage_history rows, idempotent via the
