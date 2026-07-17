@@ -20,3 +20,6 @@ jobs:
       - run: node scripts/audit-views.mjs
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      - run: node scripts/probe-fleet-tables.mjs
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
