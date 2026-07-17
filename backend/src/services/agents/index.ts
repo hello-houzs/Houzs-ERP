@@ -21,6 +21,10 @@ import type { DeliveryBriefData } from "./delivery-agent";
 import { runCollectionAgent } from "./collection-agent";
 import { runCsAgent } from "./cs-agent";
 import { runProcurementAgent } from "./procurement-agent";
+import {
+  PROCUREMENT_SUPPLIER_BUFFER_RULE,
+  PROCUREMENT_SEASON_BUFFER_RULE,
+} from "./procurement-learning";
 import { runPmsAgent } from "./pms-agent";
 
 // Document Agent self-registers at module load (family DOCUMENT, 9:00 MYT).
@@ -30,6 +34,15 @@ import "./document-agent";
 
 // Whitelist the learner's only tunable: per-state transit working days.
 CONFIG_PROPOSAL_RULES.push(DELIVERY_TRANSIT_RULE);
+
+// Whitelist the Procurement learner's two tunables: how many days earlier we
+// must ask a given SUPPLIER to deliver, and how many more in a given MONTH.
+// Both are additive buffers ON TOP of the owner's manual per-(warehouse,
+// category) lead-time table, which no agent may write. Anything outside these
+// two patterns and their 0..30 bounds is rejected at approve time — the
+// whitelist is the fuse, not the learner's good manners.
+CONFIG_PROPOSAL_RULES.push(PROCUREMENT_SUPPLIER_BUFFER_RULE);
+CONFIG_PROPOSAL_RULES.push(PROCUREMENT_SEASON_BUFFER_RULE);
 
 /** Pre-compact the brief for the brain — counts and top rows, never tables. */
 function compactDeliveryBrief(b: DeliveryBriefData) {
@@ -247,6 +260,26 @@ registerAgent({
   cadence: { firstRunHour: 8, minGapHours: 6, maxRunsPerDay: 2 },
   run: async (env, ctx) => {
     const r = await runProcurementAgent(env);
+
+    /* Lead-time learning findings → PENDING config proposals (same path as the
+       Delivery Agent's transit days: dedupes per param key, and approval —
+       manual or AGENT_AUTO — goes through the whitelist gateway above).
+
+       The agent proposes only the two axes it can measure, supplier punctuality
+       and season. The owner's own (warehouse, category) table is never touched:
+       these land as separate ADDITIVE buffers, so his number always survives and
+       any buffer can be zeroed without disturbing another. */
+    let proposed = 0;
+    for (const l of r.learning) {
+      const created = await createConfigProposal(env.DB, {
+        paramKey: l.paramKey,
+        currentValue: String(l.currentDays),
+        proposedValue: String(l.proposedDays),
+        reason: l.reason,
+      }).catch(() => false);
+      if (created) proposed++;
+    }
+
     await maybeAiFocus(
       env,
       ctx,
@@ -255,7 +288,7 @@ registerAgent({
       "procurement_agent_briefs",
       r.brief,
     );
-    return r.summary;
+    return proposed > 0 ? `${r.summary} · ${proposed} lead-time proposal(s)` : r.summary;
   },
 });
 

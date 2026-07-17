@@ -47,10 +47,26 @@ import type { Env } from '../../types';
 import { getSupabaseService } from '../../db/supabase';
 import { readAgentSetting } from '../agent-console';
 import { computeMrp } from '../../scm/routes/mrp';
+import {
+  PROCUREMENT_AGENT_SETTING_KEY,
+  loadReceiptSamples,
+  learnSupplierBuffers,
+  learnSeasonBuffers,
+  type BufferFinding,
+} from './procurement-learning';
+
+/* How far back the learner reads receipts. A year covers every season once, and
+   is short enough that a supplier who has since improved is not held to two-year
+   -old misses. */
+const LEARNING_WINDOW_DAYS = 365;
 
 // ── Config (app_settings['agents.procurement']) ──────────────────────────────
 
-export const PROCUREMENT_AGENT_SETTING_KEY = 'agents.procurement';
+/* Defined in procurement-learning.ts (imported above) and re-exported here so
+   this module stays the public face of the family — existing importers are
+   unchanged. The ownership is that way round to keep the import graph
+   one-directional; see the note on the definition. */
+export { PROCUREMENT_AGENT_SETTING_KEY };
 
 /** Minimum supplier-binding coverage (% of shortage SKUs with a main supplier)
  *  before the agent will emit any reorder proposal. Owner-editable; 0..100. */
@@ -177,7 +193,14 @@ async function openProposalTotal(db: D1Database): Promise<number> {
  */
 export async function runProcurementAgent(
   env: Env,
-): Promise<{ summary: string; brief: ProcurementBriefData; proposalsCreated: number }> {
+): Promise<{
+  summary: string;
+  brief: ProcurementBriefData;
+  proposalsCreated: number;
+  /** Lead-time buffer findings. Findings, not writes — agents/index.ts turns
+      them into config proposals the owner approves. */
+  learning: BufferFinding[];
+}> {
   const db = env.DB;
   const nowIso = new Date().toISOString();
 
@@ -341,7 +364,62 @@ export async function runProcurementAgent(
     console.warn('[procurement-agent] brief snapshot insert failed:', e);
   }
 
-  return { summary, brief, proposalsCreated };
+  /* LEARNING — the lead-time buffers (owner: "根据不同的供应商准时程度、不同的季节
+     ... 来制定提前的 Delivery Date"). Findings only; agents/index.ts turns them
+     into config proposals he approves. Nothing here writes a buffer.
+
+     Best-effort by contract, like the brief snapshot above: a learner failure
+     must not sink the reorder sweep, which is the run's actual job. It also
+     fails SILENT-BUT-LOUD-IN-LOGS rather than fabricating an empty finding set,
+     so "no proposals" never masquerades as "everyone is punctual". */
+  let learning: BufferFinding[] = [];
+  try {
+    learning = await runProcurementLearning(env, db, sb);
+  } catch (e) {
+    console.warn('[procurement-agent] learning pass failed (reorder sweep unaffected):', e);
+  }
+
+  return { summary, brief, proposalsCreated, learning };
+}
+
+/* Load the receipt evidence and score both buffer axes. Split out so the engine
+   above stays one job per function and the learner can be exercised alone. */
+async function runProcurementLearning(
+  env: Env,
+  db: D1Database,
+  sb: unknown,
+): Promise<BufferFinding[]> {
+  const cfg = await readAgentSetting<Record<string, unknown>>(db, PROCUREMENT_AGENT_SETTING_KEY);
+  const sinceIso = new Date(Date.now() - LEARNING_WINDOW_DAYS * 86_400_000).toISOString();
+
+  const samples = await loadReceiptSamples(sb as never, {
+    sinceIso,
+    // Single-company today; the learner must not blend 2990's supplier
+    // punctuality into Houzs's buffers once company #2 carries real POs. The
+    // sibling engine's un-scoped computeMrp call is a known gap — do not repeat
+    // it here.
+    companyId: null,
+  });
+  if (samples.length === 0) return [];
+
+  const supplierBuffers = asNumberMap(cfg?.supplierBufferDays);
+  const seasonBuffers = asNumberMap(cfg?.seasonBufferDays);
+  return [
+    ...learnSupplierBuffers(samples, supplierBuffers),
+    ...learnSeasonBuffers(samples, seasonBuffers),
+  ];
+}
+
+/** A stored buffer map, defensively. A non-object setting reads as "no buffers
+    learned yet" — never as a crash on the agent's cron path. */
+function asNumberMap(v: unknown): Record<string, number> {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return {};
+  const out: Record<string, number> = {};
+  for (const [k, raw] of Object.entries(v as Record<string, unknown>)) {
+    const n = Number(raw);
+    if (Number.isFinite(n)) out[k] = n;
+  }
+  return out;
 }
 
 // ── Console card counters ────────────────────────────────────────────────────
