@@ -4,6 +4,43 @@
 
 export type HrTier = 'sales' | 'manager';
 
+/**
+ * Identifies the ARITHMETIC that produced a payout, stamped onto every closed
+ * period (scm.hr_payout_periods.engine_version).
+ *
+ * BUMP THIS WHENEVER THE MATH IN THIS FILE CHANGES — including a "harmless"
+ * rounding tidy-up, which is not harmless: it is a payout change. A closed
+ * period is SERVED from its frozen rows and is never re-run, so a bump cannot
+ * move an already-approved figure. What the stamp buys is the ability to answer
+ * "was this period computed by the engine that has the fabric-Δ fix in it, or
+ * the one before it" without guessing from dates.
+ *
+ * v1 = the 2990-parity engine (flat showroom override) + the 2026-07-17 owner
+ * rulings: DRAFT excluded from goods, and the chain override mode.
+ */
+export const COMMISSION_ENGINE_VERSION = 'v1';
+
+/**
+ * SO statuses that earn NO commission (owner 2026-07-17: "draft肯定不算").
+ *
+ * Lives HERE, with the math, rather than in routes/hr.ts: which sales count is a
+ * commission RULE, not an I/O detail, and a rule in a route file is a rule no
+ * test can reach. This ONE list drives both the PostgREST filter and
+ * soEarnsCommission below, so the query and the rule cannot drift apart.
+ *
+ * 2990 excluded only CANCELLED + ON_HOLD out of the 10 statuses
+ * (mfg-sales-orders.ts SO_STATUSES), which left DRAFT — rank 0, the state every
+ * SO is born in — paying full commission.
+ */
+export const COMMISSION_EXCLUDED_STATUSES = ['CANCELLED', 'ON_HOLD', 'DRAFT'] as const;
+
+/** Does an SO in this status earn commission? Unknown statuses EARN — matching
+ *  the PostgREST `not in` filter exactly (it excludes a listed status, it does
+ *  not require a known one) and matching soStatusTransitionError's "status-blind
+ *  → allow" rule. A new status must be considered here deliberately. */
+export const soEarnsCommission = (status: string | null | undefined): boolean =>
+  !(COMMISSION_EXCLUDED_STATUSES as readonly string[]).includes(String(status ?? '').toUpperCase());
+
 export interface CommissionConfig {
   baseBps: number;
   personalKpiThresholdCenti: number;
@@ -21,25 +58,63 @@ export interface SalespersonInput {
   itemKpiCenti: number;
 }
 
+/** One level's contribution to a chain-mode override (chain mode only). */
+export interface OverrideLevelDetail {
+  /** Distance UP the reporting chain: 1 = this earner's direct reports. */
+  level: number;
+  rateBps: number;
+  /** Σ KPI-excluded goods of the earner's downline sellers at exactly this level. */
+  goodsCenti: number;
+  commissionCenti: number;
+}
+
 export interface CommissionRow {
   staffId: string;
   tier: HrTier;
   personalGoodsCenti: number;
   personalRateBps: number;
   personalCommissionCenti: number;
-  overrideRateBps: number;
+  /* One flat rate on one base in showroom mode. NULL in chain mode, where the
+     override is Σ over levels of DIFFERENT rates on DIFFERENT bases — there is
+     no single rate, and reporting a blended one would be a rounding-lossy figure
+     nobody can reconcile against a payslip. Read overrideDetail instead. */
+  overrideRateBps: number | null;
   overrideCommissionCenti: number;
+  /** Per-level breakdown; chain mode only (undefined in showroom mode). */
+  overrideDetail?: OverrideLevelDetail[];
   itemKpiCenti: number;
   totalCenti: number;
 }
 
 const applyBps = (centi: number, bps: number): number => Math.round((centi * bps) / 10_000);
 
+/* The PERSONAL half of a row — identical in both override modes, so both entry
+   points below call this rather than each carrying a copy of the rate ladder.
+   A second copy is how the two modes would silently drift apart on the next
+   rate change. */
+const personalPart = (
+  config: CommissionConfig,
+  showroomKpiHit: boolean,
+  p: SalespersonInput,
+): { personalRateBps: number; personalCommissionCenti: number } => {
+  const personalKpiHit = p.personalGoodsCenti >= config.personalKpiThresholdCenti;
+  const personalRateBps =
+    config.baseBps +
+    (personalKpiHit ? config.personalKpiBonusBps : 0) +
+    (showroomKpiHit ? config.showroomKpiBonusBps : 0);
+  return { personalRateBps, personalCommissionCenti: applyBps(p.personalGoodsCenti, personalRateBps) };
+};
+
 /**
- * Compute commission for every salesperson in one showroom. `showroomGoodsCenti`
- * is the WHOLE showroom's goods value (used for both the 400k threshold and the
- * manager override base — managers override the entire showroom, including their
- * own sales).
+ * SHOWROOM mode (2990's model, unchanged). Compute commission for every
+ * salesperson in one showroom. `showroomGoodsCenti` is the WHOLE showroom's
+ * goods value (used for both the 400k threshold and the manager override base —
+ * managers override the entire showroom, including their own sales).
+ *
+ * Known limitation, inherited verbatim from 2990 and deliberately NOT fixed
+ * here: TWO managers in one showroom EACH earn the full override on the whole
+ * showroom, so that showroom's override is paid twice. Chain mode below does not
+ * reproduce it. Changing it here would move live 2990-parity payouts.
  */
 export const computeShowroomCommission = (
   config: CommissionConfig,
@@ -48,12 +123,7 @@ export const computeShowroomCommission = (
 ): CommissionRow[] => {
   const showroomKpiHit = showroomGoodsCenti >= config.showroomKpiThresholdCenti;
   return salespeople.map((p) => {
-    const personalKpiHit = p.personalGoodsCenti >= config.personalKpiThresholdCenti;
-    const personalRateBps =
-      config.baseBps +
-      (personalKpiHit ? config.personalKpiBonusBps : 0) +
-      (showroomKpiHit ? config.showroomKpiBonusBps : 0);
-    const personalCommissionCenti = applyBps(p.personalGoodsCenti, personalRateBps);
+    const { personalRateBps, personalCommissionCenti } = personalPart(config, showroomKpiHit, p);
 
     const isManager = p.tier === 'manager';
     const overrideRateBps = isManager
@@ -69,6 +139,110 @@ export const computeShowroomCommission = (
       personalCommissionCenti,
       overrideRateBps,
       overrideCommissionCenti,
+      itemKpiCenti: p.itemKpiCenti,
+      totalCenti: personalCommissionCenti + overrideCommissionCenti + p.itemKpiCenti,
+    };
+  });
+};
+
+// ── chain override (owner 2026-07-17: "無限 讓我們自己add 按SO算") ─────────────
+// A reporting-line override that REPLACES the flat-showroom one. Never both:
+// running the two together would pay a manager the showroom override AND the
+// chain override on overlapping goods, which is the double-pay this model exists
+// to end. routes/hr.ts dispatches on config.overrideMode; the modes are mutually
+// exclusive by construction.
+//
+// "無限" (unlimited depth): depth is bounded by the LEVELS THE OWNER CONFIGURES,
+// not by a constant in this file. Nothing here caps it.
+// "讓我們自己add": one editable rate per level. Level 1 = a person's DIRECT
+// reports, level 2 = their reports' reports, and so on.
+// "按SO算": the goods are SO-derived (mfg_sales_orders bounded on so_date) —
+// exactly the same source showroom mode reads. This file never sees a delivery
+// or an invoice.
+//
+// THE DOUBLE-PAY GUARD, stated precisely: an earner's own sales are at distance
+// 0 and NEVER appear in goodsByLevel (routes/hr.ts skips d=0), so nobody earns an
+// override on a sale they already earn personal commission on. Every downline
+// seller sits at exactly ONE distance from a given earner, so each SO's goods
+// enter that earner's base exactly once. A manager ABOVE another manager earns at
+// their own (deeper) level on the same goods — that is the pyramid the owner
+// asked for, not double-pay: two DIFFERENT people, two DIFFERENT rates, each
+// once. Contrast showroom mode, where two managers in one room each take the
+// whole room.
+
+/** One configured level of the chain override. `level` is 1-based (1 = direct reports). */
+export interface OverrideLevel {
+  level: number;
+  rateBps: number;
+}
+
+/**
+ * The chain override earned by ONE person: Σ over configured levels of
+ * (that level's downline goods × that level's rate).
+ *
+ * ROUNDING (this is money — read before changing): the rate is applied ONCE per
+ * level, to that level's SUMMED goods, mirroring showroom mode's single
+ * applyBps(showroomGoodsCenti, rate) on a summed base. Rounding per-seller and
+ * then summing would produce a different ringgit figure.
+ *
+ * A level present in `goodsByLevel` but ABSENT from `levels` earns nothing. That
+ * is the "讓我們自己add" rule, not a missing-data guess: the owner's configured
+ * rows ARE the definition of who earns, so an unconfigured level is a deliberate
+ * "this level is not on the scheme", identical in meaning to a 0 rate. The
+ * distinct case — chain mode with NO levels configured at all, which would zero
+ * every override in the company — is refused upstream in routes/hr.ts rather
+ * than silently paid as 0.
+ */
+export const computeChainOverride = (
+  levels: OverrideLevel[],
+  goodsByLevel: ReadonlyMap<number, number>,
+): { overrideCommissionCenti: number; overrideDetail: OverrideLevelDetail[] } => {
+  const overrideDetail: OverrideLevelDetail[] = [];
+  let overrideCommissionCenti = 0;
+  // Configured order is irrelevant to the total; sort so the detail (and the
+  // frozen snapshot built from it) is byte-stable run to run.
+  for (const l of [...levels].sort((a, b) => a.level - b.level)) {
+    const goodsCenti = goodsByLevel.get(l.level);
+    if (goodsCenti === undefined || goodsCenti <= 0) continue;
+    const commissionCenti = applyBps(goodsCenti, l.rateBps);
+    overrideDetail.push({ level: l.level, rateBps: l.rateBps, goodsCenti, commissionCenti });
+    overrideCommissionCenti += commissionCenti;
+  }
+  return { overrideCommissionCenti, overrideDetail };
+};
+
+/** A salesperson plus the downline goods that roll up to them, by level. */
+export interface ChainSalespersonInput extends SalespersonInput {
+  /** level (>=1) → Σ KPI-excluded goods of THIS person's downline at that level. */
+  goodsByLevel: ReadonlyMap<number, number>;
+}
+
+/**
+ * CHAIN mode. Personal commission is computed EXACTLY as showroom mode (same
+ * personalPart, same 100k/400k gates on the same showroom base) — only the
+ * override changes. `tier` is NOT consulted: earning an override is decided by
+ * having a downline, not by a flag. A 'sales'-tier person with reports earns;
+ * a 'manager' with none does not.
+ */
+export const computeChainCommission = (
+  config: CommissionConfig,
+  showroomGoodsCenti: number,
+  levels: OverrideLevel[],
+  salespeople: ChainSalespersonInput[],
+): CommissionRow[] => {
+  const showroomKpiHit = showroomGoodsCenti >= config.showroomKpiThresholdCenti;
+  return salespeople.map((p) => {
+    const { personalRateBps, personalCommissionCenti } = personalPart(config, showroomKpiHit, p);
+    const { overrideCommissionCenti, overrideDetail } = computeChainOverride(levels, p.goodsByLevel);
+    return {
+      staffId: p.staffId,
+      tier: p.tier,
+      personalGoodsCenti: p.personalGoodsCenti,
+      personalRateBps,
+      personalCommissionCenti,
+      overrideRateBps: null, // no single rate in chain mode — see overrideDetail
+      overrideCommissionCenti,
+      overrideDetail,
       itemKpiCenti: p.itemKpiCenti,
       totalCenti: personalCommissionCenti + overrideCommissionCenti + p.itemKpiCenti,
     };
