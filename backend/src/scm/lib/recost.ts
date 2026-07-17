@@ -50,11 +50,24 @@ import { restampDoActualCost } from '../routes/delivery-orders-mfg';
 import { toMyrSen } from './fx';
 
 /* Re-derive a Sales Invoice header's per-category revenue/cost totals from its
-   line items. Mirror of the SI route's recomputeTotals (kept in lockstep). */
+   line items. Mirror of the SI route's recomputeTotals (kept in lockstep).
+   Fails CLOSED on a failed read and never throws — the same contract as the
+   route's copy, and as the SO's recomputeTotals which carries the full
+   rationale. See BUG-HISTORY 2026-07-17 (fix/zeroing-twins). */
 async function recomputeSiTotals(sb: any, salesInvoiceId: string) {
-  const { data: items } = await sb.from('sales_invoice_items')
+  const { data: items, error: itemsErr } = await sb.from('sales_invoice_items')
     .select('item_group, line_total_centi, line_cost_centi')
     .eq('sales_invoice_id', salesInvoiceId);
+  /* A failed READ is not an empty invoice, and `?? []` cannot tell them apart —
+     it folded a transient blip into a ZERO total_centi (the column the GL posts
+     from) on an invoice whose lines were intact. The ERROR is the signal, never
+     the emptiness: a genuinely empty invoice resolves error === null with
+     data === [] and MUST still fall through to zero the header. */
+  if (itemsErr) {
+    /* eslint-disable-next-line no-console */
+    console.error('[recost-si] item read failed — header left unchanged:', salesInvoiceId, itemsErr.message);
+    return;
+  }
   let mattressSofa = 0, bedframe = 0, accessories = 0, others = 0, total = 0, totalCost = 0;
   let mattressSofaCost = 0, bedframeCost = 0, accessoriesCost = 0, othersCost = 0;
   for (const it of (items ?? []) as Array<{ item_group: string | null; line_total_centi: number | null; line_cost_centi: number | null }>) {
@@ -69,7 +82,7 @@ async function recomputeSiTotals(sb: any, salesInvoiceId: string) {
     else { others += lineTotal; othersCost += lineCost; }
   }
   const margin = total - totalCost;
-  await sb.from('sales_invoices').update({
+  const { error: updErr } = await sb.from('sales_invoices').update({
     mattress_sofa_centi: mattressSofa,
     bedframe_centi: bedframe,
     accessories_centi: accessories,
@@ -87,6 +100,10 @@ async function recomputeSiTotals(sb: any, salesInvoiceId: string) {
     total_centi: total,
     updated_at: new Date().toISOString(),
   }).eq('id', salesInvoiceId);
+  if (updErr) {
+    /* eslint-disable-next-line no-console */
+    console.error('[recost-si] header update failed — totals left STALE:', salesInvoiceId, updErr.message);
+  }
 }
 
 /* Re-copy a DO's (now actual) line costs onto every non-cancelled Sales Invoice

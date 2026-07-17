@@ -1332,10 +1332,32 @@ consignmentOrders.patch('/:docNo', async (c) => {
 //
 // Each mutation recomputes the header totals + category breakdown so the list
 // view stays accurate without a separate refresh step.
+//
+// Fails CLOSED and never throws (2026-07-17) — this is the SO's recomputeTotals
+// twin (mfg-sales-orders.ts), which carries the full rationale. Every read below
+// aborts the whole recompute on error, because a header written from a read we
+// cannot vouch for is a lie that looks like a fact, while a stale header is
+// merely old and self-heals on the next successful edit. It aborts by LOGGING,
+// not throwing, because this roll-up only ever runs AFTER its triggering
+// mutation has already committed — a throw cannot undo that write, it can only
+// turn it into a 500 the client retries into a DUPLICATE. See BUG-HISTORY
+// 2026-07-17 (fix/zeroing-twins).
 async function recomputeTotals(sb: any, docNo: string) {
-  const { data: items } = await sb.from('consignment_sales_order_items')
+  const { data: items, error: itemsErr } = await sb.from('consignment_sales_order_items')
     .select('id, item_code, item_group, variants, qty, total_centi, line_cost_centi')
     .eq('doc_no', docNo).eq('cancelled', false);
+  /* A failed READ is not an empty order, and `?? []` cannot tell them apart — it
+     folded a transient blip into local_total / balance / revenue / margin / every
+     category bucket / line_count all ZERO on an order whose lines were intact,
+     wreckage indistinguishable from a legitimately empty order. The ERROR is the
+     signal, never the emptiness: an order with every line cancelled resolves
+     error === null with data === [] and MUST still fall through to zero the
+     header — bailing on emptiness would break that real state. */
+  if (itemsErr) {
+    /* eslint-disable-next-line no-console */
+    console.error('[co-recompute] item read failed — header left unchanged:', docNo, itemsErr.message);
+    return;
+  }
   type Row = { id: string; item_code: string; item_group: string; variants: Record<string, unknown> | null; qty: number; total_centi: number; line_cost_centi: number };
   const rows = (items ?? []) as Row[];
 
@@ -1350,7 +1372,17 @@ async function recomputeTotals(sb: any, docNo: string) {
       const fabricCodes = [...new Set(sofaRows.map((r) => String((r.variants ?? {} as Record<string, unknown>).fabricCode ?? '')).filter(Boolean))];
       const tierByFabric = new Map<string, SofaPriceTier>();
       if (fabricCodes.length > 0) {
-        const { data: fabs } = await sb.from('fabric_trackings').select('fabric_code, price_tier, sofa_price_tier').in('fabric_code', fabricCodes);
+        const { data: fabs, error: fabsErr } = await sb.from('fabric_trackings').select('fabric_code, price_tier, sofa_price_tier').in('fabric_code', fabricCodes);
+        /* Same collapse as the item read, one step subtler: an empty tier map
+           does not skip the combo, it makes every fabric fall to the PRICE_2
+           default below — so a failed read would pick a REAL combo at the WRONG
+           tier and write that cost to the header as fact. A fabric row that
+           genuinely carries no tier still defaults; only the error aborts. */
+        if (fabsErr) {
+          /* eslint-disable-next-line no-console */
+          console.error('[co-recompute] fabric tier read failed — header left unchanged:', docNo, fabsErr.message);
+          return;
+        }
         for (const f of (fabs ?? []) as Array<{ fabric_code: string; price_tier: SofaPriceTier | null; sofa_price_tier: SofaPriceTier | null }>) {
           tierByFabric.set(f.fabric_code, (f.sofa_price_tier ?? f.price_tier ?? 'PRICE_2'));
         }
@@ -1402,11 +1434,22 @@ async function recomputeTotals(sb: any, docNo: string) {
         for (let i = 0; i < matched.length; i++) {
           const m = matched[i]!; const newLineCost = spread[i] ?? 0; const q = Math.max(1, m.qty || 1);
           m.line_cost_centi = newLineCost; // mutate in place so the rollup below sees it
-          await sb.from('consignment_sales_order_items').update({
+          const { error: spreadErr } = await sb.from('consignment_sales_order_items').update({
             line_cost_centi:   newLineCost,
             unit_cost_centi:   Math.round(newLineCost / q),
             line_margin_centi: (m.total_centi || 0) - newLineCost,
           }).eq('id', m.id);
+          /* The in-memory mutation above already fed this cost to the roll-up, so
+             a failed line write would have the header assert a cost its own lines
+             do not carry. There is no transaction here to undo the sibling lines
+             that did land; leaving the header alone keeps the ONE row every list
+             and margin report reads honest, and the spread is idempotent so the
+             next successful edit re-rolls the whole group. */
+          if (spreadErr) {
+            /* eslint-disable-next-line no-console */
+            console.error('[co-recompute] combo cost spread failed — header left unchanged:', docNo, m.id, spreadErr.message);
+            return;
+          }
         }
       }
     }
@@ -1435,7 +1478,7 @@ async function recomputeTotals(sb: any, docNo: string) {
     }
   }
   const grandMargin = total - totalCost;
-  await sb.from('consignment_sales_orders').update({
+  const { error: updErr } = await sb.from('consignment_sales_orders').update({
     mattress_sofa_centi: mattressSofa,
     bedframe_centi: bedframe,
     accessories_centi: accessories,
@@ -1453,6 +1496,13 @@ async function recomputeTotals(sb: any, docNo: string) {
     line_count: (items ?? []).length,
     updated_at: new Date().toISOString(),
   }).eq('doc_no', docNo);
+  /* The write's own result was discarded until 2026-07-17: a rejected UPDATE left
+     the header STALE with nothing logged and every caller reporting success.
+     Logged, not thrown: see the contract note on this function. */
+  if (updErr) {
+    /* eslint-disable-next-line no-console */
+    console.error('[co-recompute] header update failed — totals left STALE:', docNo, updErr.message);
+  }
 }
 
 consignmentOrders.post('/:docNo/items', async (c) => {

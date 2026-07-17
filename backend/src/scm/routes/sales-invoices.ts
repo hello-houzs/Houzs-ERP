@@ -119,11 +119,37 @@ const nextNum = async (sb: any, c: any): Promise<string> => {
 /* Re-derive the SI header's per-category revenue/cost totals + grand total from
    its line items. Mirrors the DO recomputeTotals plain per-category rollup. Also
    keeps subtotal_centi / total_centi in sync (they back the GL posting + the
-   legacy payments path). Called after every item mutation. */
+   legacy payments path). Called after every item mutation.
+
+   Fails CLOSED and never throws (2026-07-17) — same contract as the SO's
+   recomputeTotals (mfg-sales-orders.ts), which carries the full rationale. Two
+   separate decisions: (1) every read below aborts the whole recompute on error,
+   because a header written from a read we cannot vouch for is a lie that looks
+   like a fact, while a stale header is merely old and self-heals on the next
+   successful edit; (2) it aborts by LOGGING, not throwing, because this roll-up
+   only ever runs AFTER its triggering line write has already committed — a throw
+   cannot undo that write, it can only turn it into a 500 the client retries,
+   which on the create/add-line paths is a DUPLICATE LINE. See BUG-HISTORY
+   2026-07-17 (fix/zeroing-twins). */
 async function recomputeTotals(sb: any, salesInvoiceId: string) {
-  const { data: items } = await sb.from('sales_invoice_items')
+  const { data: items, error: itemsErr } = await sb.from('sales_invoice_items')
     .select('item_code, item_group, line_total_centi, line_cost_centi')
     .eq('sales_invoice_id', salesInvoiceId);
+  /* A failed READ is not an empty invoice, and `?? []` cannot tell them apart:
+     supabase-js resolves a failed select to { data: null, error } and does NOT
+     throw, so a transient blip used to fold nothing and write subtotal_centi /
+     total_centi / every category bucket to ZERO on an invoice whose lines were
+     intact. total_centi backs the GL, and postSiRevenue treats a zero total as
+     `zero_total` — a status its callers deliberately swallow — so the zeroing
+     ALSO silently skipped the AR/revenue posting entirely. The ERROR is the
+     signal, never the emptiness: a genuinely empty invoice (last line deleted)
+     resolves error === null with data === [] and MUST still fall through to zero
+     the header. */
+  if (itemsErr) {
+    /* eslint-disable-next-line no-console */
+    console.error('[si-recompute] item read failed — header left unchanged:', salesInvoiceId, itemsErr.message);
+    return;
+  }
   let mattressSofa = 0, bedframe = 0, accessories = 0, others = 0, service = 0, total = 0, totalCost = 0;
   let mattressSofaCost = 0, bedframeCost = 0, accessoriesCost = 0, othersCost = 0, serviceCost = 0;
   for (const it of (items ?? []) as Array<{ item_code: string | null; item_group: string | null; line_total_centi: number | null; line_cost_centi: number | null }>) {
@@ -143,13 +169,21 @@ async function recomputeTotals(sb: any, salesInvoiceId: string) {
      line_total_centi), so this is a no-op today — but it stops a future
      header-discount UI that populates them from silently overstating the posted
      revenue (total_centi backs the GL). subtotal_centi stays the line sum. */
-  const { data: siHdr } = await sb.from('sales_invoices')
+  const { data: siHdr, error: hdrErr } = await sb.from('sales_invoices')
     .select('discount_centi, tax_centi').eq('id', salesInvoiceId).maybeSingle();
+  /* A failed read here reads as "no header discount/tax" and would write a
+     total that silently ignores both. A header that genuinely carries neither
+     is error === null with nulls, and still legitimately folds in zero. */
+  if (hdrErr) {
+    /* eslint-disable-next-line no-console */
+    console.error('[si-recompute] header discount/tax read failed — header left unchanged:', salesInvoiceId, hdrErr.message);
+    return;
+  }
   const headerDiscount = Math.max(0, Number(siHdr?.discount_centi ?? 0));
   const headerTax = Math.max(0, Number(siHdr?.tax_centi ?? 0));
   const grand = Math.max(0, total - headerDiscount + headerTax);
   const margin = grand - totalCost;
-  await sb.from('sales_invoices').update({
+  const { error: updErr } = await sb.from('sales_invoices').update({
     mattress_sofa_centi: mattressSofa,
     bedframe_centi: bedframe,
     accessories_centi: accessories,
@@ -169,6 +203,13 @@ async function recomputeTotals(sb: any, salesInvoiceId: string) {
     total_centi: grand,
     updated_at: new Date().toISOString(),
   }).eq('id', salesInvoiceId);
+  /* The write's own result was discarded until 2026-07-17, so a rejected UPDATE
+     left the header STALE with nothing logged and every caller reporting
+     success. Logged, not thrown: see the contract note on this function. */
+  if (updErr) {
+    /* eslint-disable-next-line no-console */
+    console.error('[si-recompute] header update failed — totals left STALE:', salesInvoiceId, updErr.message);
+  }
 }
 
 /* Build one sales_invoice_items insert row from a client line payload. */
@@ -1365,12 +1406,31 @@ const paymentCreateSchema = z.object({
 });
 
 /* Roll the SI paid_centi + status (PARTIALLY_PAID / PAID) from the persisted
-   payments ledger. Mirrors the DO ledger; never moves a CANCELLED invoice. */
+   payments ledger. Mirrors the DO ledger; never moves a CANCELLED invoice.
+   Fails CLOSED and never throws — same contract as recomputeTotals above. */
 async function recomputePaid(sb: any, salesInvoiceId: string) {
-  const { data: pays } = await sb.from('sales_invoice_payments')
+  const { data: pays, error: paysErr } = await sb.from('sales_invoice_payments')
     .select('amount_centi').eq('sales_invoice_id', salesInvoiceId);
+  /* A failed READ is not an unpaid invoice. `?? []` folded a transient blip into
+     paid = 0, which does not merely understate paid_centi — it drives the status
+     ladder below, so a fully PAID invoice silently reverted to SENT and re-entered
+     the AR chase. An invoice that genuinely has no payments resolves error === null
+     with data === [], and MUST still fall through to write paid = 0. */
+  if (paysErr) {
+    /* eslint-disable-next-line no-console */
+    console.error('[si-recompute-paid] payments read failed — paid/status left unchanged:', salesInvoiceId, paysErr.message);
+    return;
+  }
   const paid = (pays ?? []).reduce((s: number, p: { amount_centi: number }) => s + Number(p.amount_centi ?? 0), 0);
-  const { data: cur } = await sb.from('sales_invoices').select('total_centi, status').eq('id', salesInvoiceId).maybeSingle();
+  const { data: cur, error: curErr } = await sb.from('sales_invoices').select('total_centi, status').eq('id', salesInvoiceId).maybeSingle();
+  /* Distinct from `!cur` below: that is a genuinely missing invoice (error null,
+     data null). This is "we could not find out", and the status ladder must not
+     run on a total_centi we never read. */
+  if (curErr) {
+    /* eslint-disable-next-line no-console */
+    console.error('[si-recompute-paid] header read failed — paid/status left unchanged:', salesInvoiceId, curErr.message);
+    return;
+  }
   if (!cur) return;
   const c0 = cur as { total_centi: number; status: string };
   const updates: Record<string, unknown> = { paid_centi: paid, updated_at: new Date().toISOString() };
@@ -1388,7 +1448,11 @@ async function recomputePaid(sb: any, salesInvoiceId: string) {
       updates.status = 'SENT';
     }
   }
-  await sb.from('sales_invoices').update(updates).eq('id', salesInvoiceId);
+  const { error: updErr } = await sb.from('sales_invoices').update(updates).eq('id', salesInvoiceId);
+  if (updErr) {
+    /* eslint-disable-next-line no-console */
+    console.error('[si-recompute-paid] paid/status update failed — left STALE:', salesInvoiceId, updErr.message);
+  }
 }
 
 salesInvoices.post('/:id/payments', async (c) => {
