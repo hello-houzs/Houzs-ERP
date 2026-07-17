@@ -64,6 +64,7 @@ import { useFabricLibrary } from "../vendor/scm/lib/queries";
 import { useDebouncedValue } from "../vendor/scm/lib/hooks";
 import { activeOptions, maintPickerValues, restrictPricedToPool, restrictStringsToPool } from "../vendor/shared/maintenance-pools";
 import { missingVariantAxes, hasSofaMixConflict, SOFA_MIX_MESSAGE } from "../vendor/shared/so-variant-rule";
+import { lineIdentity } from "@2990s/shared";
 import "./mobile.css";
 
 /* ---------------------------------------------------------------------------
@@ -2092,8 +2093,15 @@ export function MobileNewSO({
                     {lines.length ? lines.map((l) => (
                       <div key={l.key} style={roItemBox}>
                         <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                          <span style={{ fontSize: 12.5, fontWeight: 600, color: "#11140f" }}>{l.itemCode || l.name || "—"} <span style={{ color: "#9aa093" }}>{"×"}{num(l.qty)}</span></span>
-                          <span className="money" style={{ fontSize: 12.5, fontWeight: 800, color: "#0c3f39" }}>RM {fmt((toCenti(l.price) * num(l.qty)) / 100)}</span>
+                          {/* Same rule as the editable row above it — description
+                              first, code only as the fallback. This row is the one
+                              #651's lesson predicts you miss: it is the read-only
+                              twin of the picker button in THIS SAME FILE, and it
+                              was code-first with no instruction behind it, purely
+                              because it was copied. minWidth:0 lets a long name
+                              wrap instead of shouldering the price off the row. */}
+                          <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, fontWeight: 600, color: "#11140f", overflowWrap: "anywhere" }}>{lineIdentity({ code: l.itemCode, description: l.name }).primary || "—"} <span style={{ color: "#9aa093" }}>{"×"}{num(l.qty)}</span></span>
+                          <span className="money" style={{ flex: "none", whiteSpace: "nowrap", fontSize: 12.5, fontWeight: 800, color: "#0c3f39" }}>RM {fmt((toCenti(l.price) * num(l.qty)) / 100)}</span>
                         </div>
                       </div>
                     )) : <div style={{ fontSize: 11.5, color: "#9aa093", padding: "8px 0" }}>No items.</div>}
@@ -2562,9 +2570,25 @@ function LineCard({
         >
           <span style={{ flex: 1, minWidth: 0 }}>
             {picked ? (
-              /* Owner 2026-07-03 — show ONLY the product Code (the long name got
-                 squeezed/truncated in the narrow line row). */
-              <span style={{ display: "block", fontSize: 12.5, fontWeight: 700, color: "#11140f", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{line.itemCode}</span>
+              /* SUPERSEDED, owner 2026-07-17 ("根據你的") — this button used to
+                 show ONLY the product Code (owner 2026-07-03), because the long
+                 name got squeezed/truncated in this narrow row. That was a fix for
+                 TRUNCATION, and the truncation was self-inflicted: the row forced
+                 the name through overflow:hidden + ellipsis + nowrap, so of course
+                 it never fit. #626 solved the same tension on the SKU picker the
+                 right way — let the name take the full width and WRAP. This row
+                 now does that (overflowWrap; the header grows a line taller, it
+                 has no fixed height), so the code-swap is unnecessary and the
+                 button reads the same rule as every other surface.
+                 The name is only DISPLAY here: `line.itemCode` is what the form
+                 keys on (picked, the save() guard, the variant panels, the
+                 create/edit body) and is untouched. `lineIdentity` falls back to
+                 the code when a line has no name, so a row is never unidentifiable.
+                 The variant is NOT shown here on purpose — the variant panels sit
+                 directly below in this same card, so repeating it would duplicate. */
+              <span style={{ display: "block", fontSize: 12.5, fontWeight: 700, color: "#11140f", overflowWrap: "anywhere" }}>
+                {lineIdentity({ code: line.itemCode, description: line.name }).primary}
+              </span>
             ) : (
               <span style={{ fontSize: 12.5, fontWeight: 600, color: "#9aa093" }}>Pick a product{"…"}</span>
             )}

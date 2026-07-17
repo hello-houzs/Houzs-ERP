@@ -16,6 +16,7 @@ import {
   type SoAuditFieldChange,
 } from "../vendor/scm/lib/sales-order-queries";
 import { buildVariantSummary } from "../vendor/shared/variant-summary";
+import { lineIdentity } from "@2990s/shared";
 import {
   CANCELLABLE_STATUSES,
   isLocked as isSoLocked,
@@ -552,21 +553,38 @@ export function MobileSODetail({ docNo, onBack, onEdit }: { docNo: string; onBac
             {/* Line items — description / variants / SKU / ×qty / line total */}
             <div className="card"><div className="card-h"><span className="card-t">Line items</span><span className="card-sub">{items.length} {items.length === 1 ? "line" : "lines"}</span></div>
               {items.length ? items.map((it, i) => {
-                /* Owner 2026-07-04 — the long product name 爆掉/被挤掉 at phone
-                   width ("呈现 Code 即可"): the row's primary label is the item
-                   CODE (dual-read camelCase ?? snake_case), the name dropped.
-                   Description only shows when the line carries no code at all. */
+                /* SUPERSEDED, owner 2026-07-17 ("根據你的") — this row used to show
+                   the item CODE INSTEAD of the name (owner 2026-07-04, "呈现 Code
+                   即可"), because a long name 爆掉/被挤掉 at phone width. That
+                   instruction fixed TRUNCATION, and #626 has since fixed
+                   truncation properly: the name takes the row's full width and
+                   WRAPS (overflowWrap) rather than being squeezed into one
+                   ellipsised line. The problem the code-swap worked around is
+                   gone, so the code-swap goes with it and this row reads the same
+                   rule as every other surface (`lineIdentity`, the ONE home).
+                   Do NOT re-swap the code back in without first checking that
+                   wrapping actually failed — restoring it costs the readable name
+                   AND the desktop parity, to fix a truncation that no longer
+                   happens. The code still binds (dual-read camelCase ?? snake_case
+                   feeds `lineIdentity`, and is the fallback for a codeless row). */
                 const code = (((it as unknown as { itemCode?: string | null }).itemCode ?? it.item_code) ?? "").trim();
+                /* Variant = the category-aware spec (sofa Fabric·config / bedframe
+                   size·Headboard·Storage / mattress size·firmness·height) built
+                   from the variants JSON, falling back to the server's stamped
+                   description2 for older rows. It is the ONLY display of that spec
+                   on the row, so `lineIdentity` keeps it as `secondary` and drops
+                   only the redundant code. */
+                const { primary, secondary } = lineIdentity({
+                  code,
+                  description: it.description,
+                  variant: buildVariantSummary(it.item_group, it.variants) || (it.description2 ?? ""),
+                });
                 return (
                 <div key={it.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "11px 13px", borderTop: i ? "1px solid var(--line2)" : "none" }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div className="money" style={{ fontSize: 13, fontWeight: 700, color: "var(--ink)" }}>{code || it.description || "—"}</div>
-                    {/* Category-aware variant spec (sofa Fabric·config / bedframe
-                        size·Headboard·Storage / mattress size·firmness·height) —
-                        built from the variants JSON; falls back to the server's
-                        stamped description2 summary when variants is empty. */}
-                    {(() => { const vs = buildVariantSummary(it.item_group, it.variants) || (it.description2 ?? "").trim(); return vs ? <div style={{ fontSize: 11.5, color: "var(--mut)", marginTop: 2 }}>{vs}</div> : null; })()}
-                    {/* UOM only — the code moved up to the primary line. */}
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "var(--ink)", overflowWrap: "anywhere" }}>{primary || "—"}</div>
+                    {secondary ? <div style={{ fontSize: 11.5, color: "var(--mut)", marginTop: 2, overflowWrap: "anywhere" }}>{secondary}</div> : null}
+                    {/* UOM only — never the code (see the primary line above). */}
                     {(it.uom ?? "").trim() ? <div className="money" style={{ fontSize: 10, color: "var(--mut2)", marginTop: 3 }}>{it.uom!.trim()}</div> : null}
                   </div>
                   <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>
