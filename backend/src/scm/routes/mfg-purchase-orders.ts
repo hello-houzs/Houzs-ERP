@@ -36,6 +36,13 @@ import { resolveMaintenanceConfigForSupplier } from '../lib/po-pricing';
 import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { escapeForOr } from '../lib/postgrest-search';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
+import {
+  loadLeadTimeBase,
+  resolveLeadDays,
+  subtractCalendarDays,
+  LEAD_TIME_SELECT,
+  NO_BUFFERS,
+} from '../lib/lead-time';
 import { supabaseAuth } from '../middleware/auth';
 import { computeMrp } from './mrp';
 import type { Env, Variables } from '../env';
@@ -994,19 +1001,6 @@ mfgPurchaseOrders.post('/', async (c) => {
   return c.json({ id: header.id, poNumber: header.po_number }, 201);
 });
 
-/* Commander 2026-06-18 — subtract N calendar days from a 'YYYY-MM-DD' date,
-   returning 'YYYY-MM-DD'. Pulls a PO line's delivery date EARLIER than the
-   customer date by the category's MRP lead days so the supplier delivers with a
-   buffer. Null/empty in → null out; days<=0 → unchanged (preserves the raw
-   date). UTC math so it never drifts a day across a timezone. */
-function subtractCalendarDays(dateStr: string | null | undefined, days: number): string | null {
-  if (!dateStr) return null;
-  if (!Number.isFinite(days) || days <= 0) return dateStr;
-  const ms = Date.parse(`${String(dateStr).slice(0, 10)}T00:00:00Z`);
-  if (Number.isNaN(ms)) return dateStr;
-  return new Date(ms - days * 86400000).toISOString().slice(0, 10);
-}
-
 // ── POST /from-sos ────────────────────────────────────────────────────
 // Create POs from selected Sales Order items. For each SO item, looks up
 // the MAIN supplier binding via supplier_material_bindings. Groups items
@@ -1104,33 +1098,21 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
 
   // Commander 2026-06-18 — per-category MRP lead days. A PO line's delivery date
   // is pulled this many days EARLIER than the customer/SO delivery date so the
-  // supplier delivers ahead of the customer date (mrp_category_lead_times — the
-  // same table the MRP order-by-date hint reads). Keyed lowercase by category,
-  // which on a SO/PO line is the item_group.
-  // Commander 2026-06-22 (migration 0184 / SCM mig 0036) — also per-WAREHOUSE:
-  // warehouse_id NULL = the GLOBAL DEFAULT. Cascade: (warehouse, category) →
-  // (NULL, category) → 0. Two maps: per-warehouse rows keyed `${warehouseId}|${cat}`,
-  // NULL-warehouse globals keyed `cat`.
-  const { data: leadRows } = await scopeToCompany(
-    supabase
-      .from('mrp_category_lead_times')
-      .select('warehouse_id, category, lead_days'),
-    c,
+  // supplier delivers ahead of the customer date. Commander 2026-06-22
+  // (migration 0184 / SCM mig 0036) — also per-WAREHOUSE.
+  //
+  // The rule now lives in scm/lib/lead-time.ts, shared with the MRP order-by
+  // hint so the two can no longer disagree. It used to be a copy here, and the
+  // copies HAD drifted: mrp.ts checked this query's error, this route discarded
+  // it. A blip zeroed every lead day and the PO went out asking the supplier to
+  // deliver ON the customer's own date — silently, because a zero lead day and a
+  // failed read were the same number. loadLeadTimeBase THROWS instead; the
+  // convert below fails loudly rather than committing a wrong-but-plausible date.
+  const leadBase = await loadLeadTimeBase(
+    scopeToCompany(supabase.from('mrp_category_lead_times').select(LEAD_TIME_SELECT), c),
   );
-  const leadDaysByWhCat = new Map<string, number>();
-  const leadDaysByCat = new Map<string, number>();
-  for (const lr of (leadRows ?? []) as Array<{ warehouse_id: string | null; category: string; lead_days: number }>) {
-    const cat = (lr.category ?? '').toLowerCase();
-    const days = lr.lead_days ?? 0;
-    if (lr.warehouse_id) leadDaysByWhCat.set(`${lr.warehouse_id}|${cat}`, days);
-    else leadDaysByCat.set(cat, days);
-  }
-  // (warehouse, category) → (NULL, category) → 0 cascade.
-  const leadDaysFor = (whId: string | null, category: string | null): number => {
-    const cat = (category ?? '').toLowerCase();
-    return (whId ? leadDaysByWhCat.get(`${whId}|${cat}`) : undefined)
-      ?? leadDaysByCat.get(cat) ?? 0;
-  };
+  const leadDaysFor = (whId: string | null, category: string | null): number =>
+    resolveLeadDays(leadBase, NO_BUFFERS, { warehouseId: whId, category }).total;
 
   const resolveWarehouseId = (salesLocation: string | null | undefined): string | null => {
     const needle = (salesLocation ?? '').trim().toLowerCase();

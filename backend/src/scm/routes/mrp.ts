@@ -45,6 +45,13 @@ import { computeVariantKey, buildVariantSummary, isServiceLine, splitSofaCode, e
 import { supabaseAuth } from '../middleware/auth';
 import { soDeliverableRemaining } from './delivery-orders-mfg';
 import { activeCompanyId } from '../lib/companyScope';
+import {
+  loadLeadTimeBase,
+  resolveLeadDays,
+  subtractCalendarDays,
+  LEAD_TIME_SELECT,
+  NO_BUFFERS,
+} from '../lib/lead-time';
 import type { Env, Variables } from '../env';
 
 export const mrp = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -260,40 +267,27 @@ export async function computeMrp(
 
   // ── 0. Per-category lead times (Commander 2026-05-29), now per-WAREHOUSE
   //       (Commander 2026-06-22, migration 0184 / SCM mig 0036) ────────────
-  // order-by date = delivery date − lead_days[warehouse,category]. Keyed
-  // lowercase to match item_group; product category is uppercase so we
-  // lowercase on lookup. warehouse_id NULL = the GLOBAL DEFAULT. Cascade:
-  // (warehouse, category) → (NULL, category) → 0. Two maps: per-warehouse rows
-  // keyed `${warehouseId}|${cat}`, and the NULL-warehouse globals keyed `cat`.
-  const { data: leadRows, error: leadErr } = await scoped(
-    sb
-      .from('mrp_category_lead_times')
-      .select('warehouse_id, category, lead_days'),
+  // order-by date = delivery date − lead_days[warehouse, category].
+  //
+  // The rule lives in scm/lib/lead-time.ts, shared with the PO-from-SO convert
+  // that WRITES this date onto a real purchase order. It used to be a copy in
+  // each, and the copies had drifted on error handling — this one surfaced the
+  // query error (see below), the convert swallowed it. One module now, so the
+  // hint on this page and the date on the PO cannot disagree.
+  //
+  // loadLeadTimeBase THROWS on a query error, which is the behaviour this route
+  // already had and the reason for it is unchanged: a swallowed error silently
+  // zeroed EVERY lead time -> order-by date = production date = delivery date
+  // for the whole plan. Fail loudly rather than emit a wrong-but-plausible
+  // schedule.
+  const leadBase = await loadLeadTimeBase(
+    scoped(sb.from('mrp_category_lead_times').select(LEAD_TIME_SELECT)),
   );
-  /* A query error here used to be swallowed (only `data` was destructured), so a
-     transient PostgREST failure silently zeroed EVERY lead time → order-by date =
-     production date = delivery date for the whole plan. Surface it instead so the
-     caller fails loudly rather than emitting a wrong-but-plausible schedule. */
-  if (leadErr) throw new Error(`mrp_lead_times_load_failed: ${leadErr.message}`);
-  const leadDaysByWhCat = new Map<string, number>();
-  const leadDaysByCat = new Map<string, number>();
-  for (const r of (leadRows ?? []) as Array<{ warehouse_id: string | null; category: string; lead_days: number }>) {
-    const cat = (r.category ?? '').toLowerCase();
-    const days = r.lead_days ?? 0;
-    if (r.warehouse_id) leadDaysByWhCat.set(`${r.warehouse_id}|${cat}`, days);
-    else leadDaysByCat.set(cat, days);
-  }
-  const orderByOf = (deliveryDate: string | null, category: string | null, whId: string | null): string | null => {
-    if (!deliveryDate) return null;
-    const cat = (category ?? '').toLowerCase();
-    const days = (whId ? leadDaysByWhCat.get(`${whId}|${cat}`) : undefined)
-      ?? leadDaysByCat.get(cat) ?? 0;
-    if (days <= 0) return deliveryDate;
-    const d = new Date(`${deliveryDate.slice(0, 10)}T00:00:00Z`);
-    if (Number.isNaN(d.getTime())) return deliveryDate;
-    d.setUTCDate(d.getUTCDate() - days);
-    return d.toISOString().slice(0, 10);
-  };
+  const orderByOf = (deliveryDate: string | null, category: string | null, whId: string | null): string | null =>
+    subtractCalendarDays(
+      deliveryDate,
+      resolveLeadDays(leadBase, NO_BUFFERS, { warehouseId: whId, category }).total,
+    );
 
   // ── 1. Demand — outstanding SO lines ──────────────────────────────────
   const { data: demandRaw, error: demandErr } = await scoped(sb
