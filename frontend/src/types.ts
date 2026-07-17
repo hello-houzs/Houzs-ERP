@@ -426,9 +426,12 @@ export interface PageDef {
    *  is full/none (cascade rule). */
   parent: string | null;
   /** The key exists in the catalogue but NOTHING in the repo reads it —
-   *  setting it has never done anything (backend DORMANT_PAGE_KEYS). The
-   *  Positions editor greys the control and keeps the row. Optional: only
-   *  /api/positions/pages sends it; absent means "not told", never "wired". */
+   *  setting it has never done anything (backend DORMANT_PAGE_KEYS). BOTH
+   *  access-matrix editors grey the control and keep the row: Positions
+   *  (#709) and the legacy Roles matrix. Sent by /api/positions/pages AND
+   *  /api/roles/pages off the one DORMANT_PAGE_KEYS set, so the two editors
+   *  cannot disagree about which cells are dead.
+   *  Still optional: absent means "not told", never "wired". */
   dormant?: boolean;
 }
 
