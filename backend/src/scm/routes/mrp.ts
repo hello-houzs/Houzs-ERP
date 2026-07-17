@@ -259,7 +259,31 @@ export async function computeMrp(
     catFilter: string | null;
     whFilter: string | null;
     includeUndated: boolean;
-    companyId?: number | null;
+    /* WHICH COMPANY'S BOOKS. REQUIRED — `null` is the explicit "no company
+       scoping" (single-company Houzs / pre-migration / cold-start), and it must
+       be TYPED OUT rather than achieved by silence.
+
+       It was optional until 2026-07-17 and the comment below already argued why
+       that is wrong; it just was not applied to this line. The cost, twice, in
+       one day: both HEADLESS callers omitted it — an agent has no request and
+       therefore no company, so the parameter's default answered for them.
+       procurement-agent pooled Houzs + 2990 demand and would have filed one
+       company's SO lines under the other's PO (#710); cs-agent promised
+       customers delivery dates backed by the other company's stock (#712). Both
+       looked exactly like working code, and this signature is what let them.
+
+       An optional scoping parameter is a trap whose default is "wrong": it
+       offers a correct answer and accepts no answer, and no-answer is
+       indistinguishable from not-knowing-to-answer. Required means a new caller
+       must decide; `null`/`undefined` says they did.
+
+       `undefined` is in the type but the KEY IS NOT OPTIONAL — that is the whole
+       mechanism. `companyId?:` lets a caller omit it and say nothing;
+       `companyId: number | null | undefined` makes them type the word. Same
+       runtime behaviour for the honest callers (activeCompanyId(c) returns
+       `number | undefined` and still passes unchanged), but silence is no longer
+       spellable. */
+    companyId: number | null | undefined;
     /* The Procurement Agent's approved lead-time buffers (per-supplier
        punctuality, per-season). REQUIRED, not optional, on purpose: the PO
        convert applies these to the date it commits, so an order-by hint
