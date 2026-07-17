@@ -65,6 +65,7 @@ import { slips } from "./routes/slips";
 import { deliveryPlanning } from "./routes/delivery-planning";
 import { deliveryPlanningRegions } from "./routes/delivery-planning-regions";
 import { trips } from "./routes/trips";
+import { dpOrders } from "./routes/dp-orders";
 import { lorryCapacity } from "./routes/lorry-capacity";
 import { helpers } from "./routes/helpers";
 import { lorries } from "./routes/lorries";
@@ -364,6 +365,8 @@ scm.use("/delivery-planning-regions/*", scmAreaGuard("scm.transportation.drivers
 scm.route("/delivery-planning-regions", deliveryPlanningRegions);
 scm.use("/trips/*", scmAreaGuard("scm.transportation.drivers"));
 scm.route("/trips", trips);
+scm.use("/dp-orders/*", scmAreaGuard("scm.transportation.drivers"));
+scm.route("/dp-orders", dpOrders);
 scm.use("/lorry-capacity/*", scmAreaGuard("scm.transportation.drivers"));
 scm.route("/lorry-capacity", lorryCapacity);
 scm.use("/helpers/*", scmAreaGuard("scm.transportation.drivers"));
