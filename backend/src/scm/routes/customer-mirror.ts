@@ -45,12 +45,12 @@
 // ----------------------------------------------------------------------------
 import { Hono } from 'hono';
 import type { Env } from '../../types';
-import { C2990, createMirrorMapper, upsert } from '../lib/mirror-map';
+import { C2990, createMirrorMapper, mirrorAuthed, upsert } from '../lib/mirror-map';
 
 export const customerMirror = new Hono<{ Bindings: Env }>();
 
 /* No prefixCols: a customer carries no doc number, and customer_code is left
-   verbatim (see the header). No nullCols: unlike mfg_sales_orders.venue_id there
+   verbatim (see the header). No forceCols: unlike mfg_sales_orders.venue_id there
    is no customers column pointing at a master that isn't reconciled across
    companies, and unlike so_amendments there is no Houzs-only column a 2990 row
    must be asserted not to carry. The shared company_id stamp + dest-column
@@ -61,9 +61,7 @@ export const customerMirror = new Hono<{ Bindings: Env }>();
 const { tableMap, applyMap } = createMirrorMapper({ customers: {} });
 
 customerMirror.post('/', async (c) => {
-  if (c.req.header('x-sync-secret') !== c.env.SYNC_SECRET || !c.env.SYNC_SECRET) {
-    return c.json({ error: 'unauthorized' }, 401);
-  }
+  if (!mirrorAuthed(c)) return c.json({ error: 'unauthorized' }, 401);
   let body: { customerId?: string; deleted?: boolean; customer?: Record<string, unknown> };
   try { body = await c.req.json(); } catch { return c.json({ error: 'invalid_json' }, 400); }
   const id = String(body.customerId ?? body.customer?.id ?? '').trim();

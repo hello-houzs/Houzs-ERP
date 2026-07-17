@@ -64,6 +64,8 @@ import mailInbound from "./routes/mail-inbound";
 import { soMirror } from "./scm/routes/so-mirror";
 import { amendmentMirror } from "./scm/routes/amendment-mirror";
 import { customerMirror } from "./scm/routes/customer-mirror";
+import { staffMirror } from "./scm/routes/staff-mirror";
+import { warehouseMirror } from "./scm/routes/warehouse-mirror";
 // POS auth (Phase 1 of the 2990-backend replacement): PIN/session login for the
 // 2990 POS. Mounted PRE-AUTH; its two write endpoints re-apply `auth` per-route.
 import pos from "./routes/pos";
@@ -165,6 +167,13 @@ app.route("/api/sync/amendment-mirror", amendmentMirror);
 // customers is a live FK parent of mirrored SOs, and a frozen import means a new
 // 2990 customer's first SO 500s here forever (SO-2607-013, 6582 attempts).
 app.route("/api/sync/customer-mirror", customerMirror);
+// 2990 live STAFF + WAREHOUSE mirrors — the rest of the SO trio's FK parents, and
+// the last two that can wedge it (venues are NULLed by so-mirror; items carry no
+// product FK). Same caller, same secret, SEPARATE routes and SEPARATE 2990-side
+// drains/crons. staff has NO company_id (0083: shared masters get none), so it
+// guards on `user_id IS NULL` — the Houzs-User-Management handover flag — instead.
+app.route("/api/sync/staff-mirror", staffMirror);
+app.route("/api/sync/warehouse-mirror", warehouseMirror);
 // POS auth — pin-login + sales-staff are PRE-AUTH (before the /api/* gate);
 // set-pin/verify-pin/sales-stats re-apply `auth` inside the router.
 app.route("/api/pos", pos);

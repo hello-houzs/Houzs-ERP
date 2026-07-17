@@ -23,7 +23,7 @@
 // ----------------------------------------------------------------------------
 import { Hono } from 'hono';
 import type { Env } from '../../types';
-import { C2990, createMirrorMapper, prefixDoc, upsert } from '../lib/mirror-map';
+import { C2990, createMirrorMapper, mirrorAuthed, prefixDoc, upsert } from '../lib/mirror-map';
 
 export const amendmentMirror = new Hono<{ Bindings: Env }>();
 
@@ -58,7 +58,7 @@ const { tableMap, applyMap } = createMirrorMapper({
     // schema's own encoding of "line changes only" (0119's header says so), so
     // forcing NULL states the truth about a 2990 amendment rather than leaving a
     // Houzs-authored value to be misread as 2990's intent.
-    nullCols: ['header_changes', 'old_header_snapshot'],
+    forceCols: { header_changes: null, old_header_snapshot: null },
     normalize: {
       status: (v: unknown) => {
         const s = v == null ? '' : String(v).trim().toUpperCase();
@@ -71,9 +71,7 @@ const { tableMap, applyMap } = createMirrorMapper({
 });
 
 amendmentMirror.post('/', async (c) => {
-  if (c.req.header('x-sync-secret') !== c.env.SYNC_SECRET || !c.env.SYNC_SECRET) {
-    return c.json({ error: 'unauthorized' }, 401);
-  }
+  if (!mirrorAuthed(c)) return c.json({ error: 'unauthorized' }, 401);
   let body: {
     amendmentId?: string;
     deleted?: boolean;
