@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { useLocation, useNavigate } from "react-router-dom";
-import { Plus, ShoppingCart, Wrench, X } from "lucide-react";
+import { Plus, ShoppingCart, Wrench, FolderPlus, X } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 import { quickActionAccess } from "../auth/salesAccess";
 import { cn } from "../lib/utils";
@@ -56,9 +56,11 @@ export function QuickActionsFAB() {
   // Shared with the mobile MobileSalesOrders FAB (auth/salesAccess) so the
   // "New Service Case includes Sales staff" rule lives in one place.
   const { canNewSo, canNewCase } = quickActionAccess(user, can, pageAccess);
+  // New Project — for users who can create events (owner/management/directors).
+  const canNewProject = can("projects.write");
 
   const actions: Array<{
-    key: "so" | "case";
+    key: "so" | "case" | "project";
     label: string;
     icon: typeof ShoppingCart;
     to: string;
@@ -79,6 +81,15 @@ export function QuickActionsFAB() {
       label: "New Service Case",
       icon: Wrench,
       to: "/assr?view=cases&new=1",
+      tone: "secondary",
+    });
+  }
+  if (canNewProject) {
+    actions.push({
+      key: "project",
+      label: "New Project",
+      icon: FolderPlus,
+      to: "/projects?new=1",
       tone: "secondary",
     });
   }

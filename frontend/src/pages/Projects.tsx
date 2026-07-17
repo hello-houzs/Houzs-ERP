@@ -779,7 +779,7 @@ export function Projects() {
   // URL-driven (`?view=…`). The sidebar's Project Management group has
   // one entry per view, so the page itself doesn't render a tab strip
   // — view selection lives in the sidebar.
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
   const { user } = useAuth();
   const [storedView, setStoredView] = useLocalStorage<ProjectsView>(
@@ -947,6 +947,16 @@ function ProjectsListView() {
   // List render mode — cards (P2 design) vs the full data table. Default cards.
   const [listMode, setListMode] = useLocalStorage<"cards" | "table">("projects:listMode", "cards");
   const [showCreate, setShowCreate] = useState(false);
+  // Deep-link: the global "+" quick-action FAB opens the New Project modal via
+  // /projects?new=1. Consume the flag once and strip it so refresh/back don't reopen.
+  useEffect(() => {
+    if (params.get("new") === "1") {
+      setShowCreate(true);
+      const next = new URLSearchParams(params);
+      next.delete("new");
+      setParams(next, { replace: true });
+    }
+  }, [params, setParams]);
   const [showImport, setShowImport] = useState(false);
   const [showArchived, setShowArchived] = useLocalStorage<boolean>("projects:showArchived", false);
   // Hide projects whose every tasklist section is complete — same
