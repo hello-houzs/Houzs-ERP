@@ -63,6 +63,7 @@ import mailInbound from "./routes/mail-inbound";
 // 2990 DB via pg_net, no user JWT) — mounted at the top level, outside /api/scm.
 import { soMirror } from "./scm/routes/so-mirror";
 import { amendmentMirror } from "./scm/routes/amendment-mirror";
+import { customerMirror } from "./scm/routes/customer-mirror";
 // POS auth (Phase 1 of the 2990-backend replacement): PIN/session login for the
 // 2990 POS. Mounted PRE-AUTH; its two write endpoints re-apply `auth` per-route.
 import pos from "./routes/pos";
@@ -159,6 +160,11 @@ app.route("/api/sync/so-mirror", soMirror);
 // SEPARATE 2990-side drain/cron, so an amendment failure can never stall the SO
 // mirror the business already runs on.
 app.route("/api/sync/amendment-mirror", amendmentMirror);
+// 2990 live CUSTOMER mirror — same caller, same secret, SEPARATE route and
+// SEPARATE 2990-side drain/cron. This is the masters prerequisite (design D6):
+// customers is a live FK parent of mirrored SOs, and a frozen import means a new
+// 2990 customer's first SO 500s here forever (SO-2607-013, 6582 attempts).
+app.route("/api/sync/customer-mirror", customerMirror);
 // POS auth — pin-login + sales-staff are PRE-AUTH (before the /api/* gate);
 // set-pin/verify-pin/sales-stats re-apply `auth` inside the router.
 app.route("/api/pos", pos);
