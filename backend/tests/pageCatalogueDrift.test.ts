@@ -158,17 +158,17 @@ describe("the page catalogue cannot lose a key quietly", () => {
 
     // Reported as named sets, not as a count. "expected 49 to be 50" is what the
     // old accidental guard said, and it is why this file exists.
-    const vanished = [...pinned].filter((k) => !accounted.has(k)).sort();
-    const unpinned = [...accounted].filter((k) => !pinned.has(k)).sort();
+    //
+    // Both directions are asserted in ONE expect so a rename — which is a
+    // deletion and an addition at once — reports both halves on the first run.
+    // Two separate expects would surface the vanished key, get fixed, and only
+    // then admit there was a new key too.
+    const drift = {
+      vanished: [...pinned].filter((k) => !accounted.has(k)).sort(),
+      unpinned: [...accounted].filter((k) => !pinned.has(k)).sort(),
+    };
 
-    expect(
-      vanished,
-      `${FIX_INSTRUCTIONS}\nKeys that vanished from both PAGES[] and RETIRED_PAGE_KEYS: ${vanished.join(", ")}`,
-    ).toEqual([]);
-    expect(
-      unpinned,
-      `${FIX_INSTRUCTIONS}\nKeys present in the catalogue but not pinned here: ${unpinned.join(", ")}`,
-    ).toEqual([]);
+    expect(drift, FIX_INSTRUCTIONS).toEqual({ vanished: [], unpinned: [] });
   });
 
   test("the pin has no duplicates and a key is never both live and retired", () => {
