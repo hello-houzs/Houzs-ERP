@@ -10,9 +10,18 @@
 | Stage | What | Status |
 |---|---|---|
 | **① Schema** | migration `backend/src/db/migrations-pg/0053_scm_delivery_planning_tms.sql` | **DONE — applied to prod + committed `28d061d`** |
-| **② Backend** | the routes in this spec | **NOT done — this is your job** |
+| **② Backend** | the routes in this spec | **DONE — all 7 shipped and mounted (verified 2026-07-17)** |
 | **③ Frontend** | Delivery Planning board page + separate Fleet page + Regions config + Lorry Capacity dashboard | NOT done (next stage) |
 | **④ Deploy** | scoped staged deploy + sw bump | NOT done |
+
+> **This spec is now a HISTORICAL record of stage ②, not a work order.** It said
+> *"② Backend — NOT done — this is your job"* for some time after the routes had
+> shipped, which is a trap for the next reader: building to it would have meant
+> re-writing live code. Verified on `origin/main` 2026-07-17 — every target below
+> exists and is mounted in `backend/src/scm/index.ts`:
+> `delivery-planning.ts` (1449 ln), `delivery-planning-regions.ts` (301),
+> `trips.ts` (393), `lorry-capacity.ts` (443), `helpers.ts` (95), `lorries.ts` (194),
+> and `drivers.ts` (102, pre-existing). **Read the code, not this file.**
 
 **The database is already built and live.** You do NOT write any migration. Every table/column below already exists in the `scm` schema in prod. Just build the routes that read/write them.
 
