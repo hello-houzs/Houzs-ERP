@@ -114,6 +114,52 @@ function earliestOrderByDate(
   return best;
 }
 
+/**
+ * WHICH COMPANY'S BOOKS THIS AGENT PLANS. One, explicitly, never "all of them".
+ *
+ * computeMrp's companyId is optional and no-ops when absent — its own comment
+ * lists "agent callers" as a case that passes nothing. That made this agent's
+ * MRP CROSS-COMPANY: it pooled Houzs and 2990 demand, let one company's stock
+ * cover the other's shortage, and produced one reorder per supplier spanning
+ * both books. companyScope's header is unambiguous that PO is a PER-COMPANY
+ * module whose books are ISOLATED, so those numbers were wrong before anything
+ * acted on them. Approval now raises a real PO, so wrong turns into a
+ * cross-company write.
+ *
+ * Pinned to the base company (HOUZS) unless app_settings names another. This is
+ * a REDUCTION IN SCOPE, deliberately: serving one company correctly beats
+ * serving two by mixing their books. 2990's demand is simply not planned by this
+ * agent yet — a stated gap, not a silent wrong answer. Making it multi-company
+ * means a per-company MRP pass and a brief that reports per company, which is a
+ * shape change the owner should see before it is built.
+ *
+ * `null` = the companies master is unresolved (pre-migration / cold-start /
+ * single-company). Then computeMrp scopes nothing, exactly as it does today —
+ * the sentinel's "UNRESOLVED degrades" rule, not a filter to nothing.
+ */
+async function resolveAgentCompany(
+  db: D1Database,
+): Promise<{ id: number | null; code: string | null }> {
+  const cfg = await readAgentSetting<Record<string, unknown>>(db, PROCUREMENT_AGENT_SETTING_KEY);
+  const pinned = Number(cfg?.companyId);
+  try {
+    const rows = await db
+      .prepare('SELECT id, code FROM companies WHERE is_active = 1')
+      .all<{ id: number; code: string }>();
+    const list = rows.results ?? [];
+    if (list.length === 0) return { id: null, code: null };
+    const hit = Number.isInteger(pinned) && pinned > 0
+      ? list.find((r) => Number(r.id) === pinned)
+      : list.find((r) => r.code === 'HOUZS');
+    if (!hit) return { id: null, code: null };
+    return { id: Number(hit.id), code: String(hit.code) };
+  } catch {
+    // Master unreadable — degrade to unscoped, which is what every other
+    // consumer does in this state (and what this agent did until now).
+    return { id: null, code: null };
+  }
+}
+
 /** Whole-day tunable pct from app_settings['agents.procurement'], clamped 0..100. */
 async function minCoveragePct(db: D1Database): Promise<number> {
   const cfg = await readAgentSetting<Record<string, unknown>>(
@@ -186,6 +232,13 @@ type ReorderLine = {
 };
 
 interface ReorderPayload {
+  /* WHOSE BOOK. The executor stamps the PO with THIS, never with the approving
+     user's active company — those are different questions, and answering the
+     second when you meant the first files a PO of one company's SO lines under
+     another. null = the companies master was unresolved at plan time, which is
+     the single-company case where stamping no-ops anyway. */
+  companyId: number | null;
+  companyCode: string | null;
   supplierCode: string;
   supplierName: string;
   skuCount: number;
@@ -273,7 +326,16 @@ export async function runProcurementAgent(
      SbLike: supabase-js's generics don't unify with a structural type, but
      `as never` disabled the checking entirely rather than narrowing it. */
   const sbl = sb as unknown as SbLike;
-  const mrp = await computeMrp(sb, { catFilter: null, whFilter: null, includeUndated: false, leadBuffers: await loadLeadBuffers(db) });
+  /* ONE company's books — see resolveAgentCompany. Passing nothing here is what
+     made this sweep pool two companies' demand into one PO. */
+  const company = await resolveAgentCompany(db);
+  const mrp = await computeMrp(sb, {
+    catFilter: null,
+    whFilter: null,
+    includeUndated: false,
+    companyId: company.id,
+    leadBuffers: await loadLeadBuffers(db),
+  });
 
   /* Measured once and used by BOTH the summary line and the brief below. The
      pass is several paginated reads; running it twice to serve two consumers
@@ -403,7 +465,10 @@ export async function runProcurementAgent(
         earliestOrderByDate: earliest,
       });
 
-      const key = `REORDER:${supplierCode}`;
+      /* Company in the key: the dedupe is per supplier PER BOOK. Without it a
+         second company's reorder from the same supplier would read as a
+         duplicate of the first and never be raised. */
+      const key = `REORDER:${company.code ?? '-'}:${supplierCode}`;
       if (openKeys.has(`REORDER\0${key}`)) continue;
 
       /* Every short line is already on a draft awaiting confirm — there is
@@ -412,6 +477,8 @@ export async function runProcurementAgent(
       if (picks.length === 0) continue;
 
       const payload: ReorderPayload = {
+        companyId: company.id,
+        companyCode: company.code,
         supplierCode,
         supplierName,
         skuCount: lines.length,

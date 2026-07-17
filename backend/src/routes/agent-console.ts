@@ -1047,7 +1047,11 @@ mountEngineRoutes({
     if (String(row.kind ?? "").toUpperCase() !== "REORDER") {
       return { ok: true }; // nothing to execute for other kinds
     }
-    const payload = asJson(row.payload) as { picks?: unknown } | null;
+    const payload = asJson(row.payload) as {
+      picks?: unknown;
+      companyId?: unknown;
+      companyCode?: unknown;
+    } | null;
     const picks = (Array.isArray(payload?.picks) ? payload.picks : [])
       .map((p) => p as { soItemId?: unknown; qty?: unknown })
       .filter((p) => typeof p.soItemId === "string" && p.soItemId !== "" && Number(p.qty) > 0)
@@ -1081,15 +1085,37 @@ mountEngineRoutes({
       };
     }
 
+    /* WHOSE BOOK — the PROPOSAL's company, never the approver's active one.
+       They are different questions. The agent planned one company's demand
+       against that company's stock and bindings; the approver merely happens to
+       have some company selected in the top bar when they click. Stamping the
+       approver's would file one company's SO lines under another's PO, and the
+       top-bar switcher makes that a one-click mistake nobody would see. */
+    const planCompanyId = Number(payload?.companyId);
+    const planCompanyCode = typeof payload?.companyCode === "string" ? payload.companyCode : null;
+    if (payload?.companyId != null && !(Number.isInteger(planCompanyId) && planCompanyId > 0)) {
+      return {
+        ok: false,
+        error: `proposal carries an unusable companyId (${String(payload.companyId)})`,
+        reversible: true,
+      };
+    }
+
     const out = await createDraftPosFromPicks(c.env, {
       userId: staff.id,
-      companyId: c.get("companyId"),
-      allowedCompanyIds: c.get("allowedCompanyIds"),
-      /* The CODE string. companyContext puts the code here; passing the company
-         row instead is what minted "[object Object]-SO-2607-001" out of the scan
-         job. Read it as the string it is and let a non-string degrade to bare
-         numbering rather than stringify into a document number. */
-      companyCode: typeof c.get("companyCode") === "string" ? (c.get("companyCode") as string) : null,
+      /* null/absent = the companies master was unresolved at plan time, i.e. the
+         single-company case. Pass undefined so the stamping no-ops exactly as it
+         does everywhere else in that state — do NOT substitute the approver's
+         company to "fill the gap". */
+      companyId: Number.isInteger(planCompanyId) && planCompanyId > 0 ? planCompanyId : undefined,
+      /* Scoped to the plan's own company, not the approver's grants: this PO
+         belongs to the book the agent planned. */
+      allowedCompanyIds:
+        Number.isInteger(planCompanyId) && planCompanyId > 0 ? [planCompanyId] : undefined,
+      /* The CODE string. companyDocPrefix stringifies whatever it gets, and
+         passing a company row through this key is what minted
+         "[object Object]-SO-2607-001" out of the scan job. */
+      companyCode: planCompanyCode,
       picks,
     });
 
