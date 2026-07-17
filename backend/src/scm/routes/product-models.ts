@@ -27,7 +27,7 @@ import { createClient } from '@supabase/supabase-js';
 import { supabaseAuth } from '../middleware/auth';
 import { findModelUsage } from '../lib/sku-usage';
 import { activeCompanyId, stampCompany, scopeToCompany } from '../lib/companyScope';
-import { hasHouzsPerm, canViewScmFinance } from '../lib/houzs-perms';
+import { hasHouzsPerm, canViewScmProductCost } from '../lib/houzs-perms';
 import { PRODUCT_FINANCE_KEYS } from '../lib/finance-keys';
 import { todayMyt } from '../lib/my-time';
 import type { Env, Variables } from '../env';
@@ -386,9 +386,15 @@ productModels.get('/:id', async (c) => {
   /* #669 made the Cost column director-only on the screen this payload feeds and
      left the number on the wire; PRODUCT_FINANCE_KEYS is that ruling's payload
      half. base_price_sen stays — the same screen prints it to everyone as
-     "Price 2". */
+     "Price 2".
+
+     canViewScmProductCost, NOT canViewScmFinance: the screen this feeds
+     (ProductModelDetail) gates its Cost column on canViewProductCost, which
+     since #699 admits Purchasing. A director gate here deleted the key from
+     under it, so the column rendered blank for the one function the owner's
+     2026-07-17 ruling named. Screen and wire ask ONE question now. */
   const skuRows = (skus ?? []) as Array<Record<string, unknown>>;
-  if (!canViewScmFinance(c)) {
+  if (!canViewScmProductCost(c)) {
     for (const s of skuRows) {
       for (const k of PRODUCT_FINANCE_KEYS) delete s[k];
     }

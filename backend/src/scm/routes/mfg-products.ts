@@ -23,7 +23,7 @@ import { paginateAll } from '../lib/paginate-all';
 import { findSkuUsage } from '../lib/sku-usage';
 import { productToBindingPatch } from '../lib/cost-anchor-sync';
 import { moduleCodeFromSku, normalizeSofaTier, parseDefaultFreeGifts } from '../shared';
-import { hasHouzsPerm, canViewScmFinance } from '../lib/houzs-perms';
+import { hasHouzsPerm, canViewScmProductCost } from '../lib/houzs-perms';
 import { PRODUCT_FINANCE_KEYS, stripProductPriceHistory } from '../lib/finance-keys';
 import { scopeToCompany, activeCompanyId } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
@@ -432,12 +432,17 @@ mfgProducts.get('/:id', async (c) => {
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
   if (!data) return c.json({ error: 'not_found' }, 404);
 
-  /* select('*') hands back every column this table grows, so the finance strip
+  /* select('*') hands back every column this table grows, so the cost strip
      is what stands between a new cost column and every products reader —
      PRODUCT_FINANCE_KEYS is the ONE place to name it. #669 closed the screen and
-     said the wire was still open; this is the wire. */
+     said the wire was still open; this is the wire.
+
+     canViewScmProductCost, NOT canViewScmFinance: this key is a SKU cost, and
+     the owner's cost cohort includes Purchasing (2026-07-17). The director gate
+     that stood here stripped it from Purchasing — the one function the ruling
+     was about — while the FE (#699) told him he could see it. */
   const product = data as Record<string, unknown>;
-  if (!canViewScmFinance(c)) {
+  if (!canViewScmProductCost(c)) {
     for (const k of PRODUCT_FINANCE_KEYS) delete product[k];
   }
 
@@ -853,7 +858,7 @@ mfgProducts.get('/:id/price-history', async (c) => {
      one endpoint over, which is the exact shape AUDIT_FINANCE_FIELDS exists to
      name on the SO side. */
   const history = (data ?? []) as Array<{ field?: string }>;
-  return c.json({ history: canViewScmFinance(c) ? history : stripProductPriceHistory(history) });
+  return c.json({ history: canViewScmProductCost(c) ? history : stripProductPriceHistory(history) });
 });
 
 // ── GET /:id/suppliers ────────────────────────────────────────────────
