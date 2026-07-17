@@ -1015,7 +1015,44 @@ mfgPurchaseOrders.post('/', async (c) => {
  * still accepted — when given, we look up the SO items by (soDocNo, itemCode)
  * and convert. New shape is preferred because we can validate qty <= remaining
  * (qty - po_qty_picked) and increment po_qty_picked atomically. */
-mfgPurchaseOrders.post('/from-sos', async (c) => {
+/* ── SO → PO convert core (agent factoring, 2026-07-17) ────────────────────
+   The handler body below is the single authority for raising a PO from SO
+   lines: supplier binding, warehouse resolution, lead-time subtraction, the
+   per-category split, doc-no minting. The Procurement Agent's approved
+   proposals must produce POs through THIS body and no other — a second path
+   would drift from it, and the thing that drifts is the date we promise a
+   supplier.
+
+   So the body is factored MECHANICALLY (unchanged) to take a minimal
+   structural context instead of the full Hono context. The HTTP route below
+   wires the real context through verbatim; createDraftPosFromPicks feeds it a
+   synthetic one built from Env.
+
+   The synthetic context is the part with a scar. companyDocPrefix reads
+   `companyCode` and expects a STRING — the scan background job once handed a
+   reconstructed context a whole company object there and minted
+   "[object Object]-SO-2607-001" into production. Hence PoConvertContext types
+   every key it exposes, and the headless builder below returns explicit values
+   for all of them rather than falling through to a default. */
+export type PoConvertOutcome = { status: number; body: Record<string, unknown> };
+export type PoConvertContext = {
+  req: { json(): Promise<unknown> };
+  /* supabase keeps the REAL client type — the body relies on the typed query
+     builders for callback inference (an `any` turns every `.map((r) => ...)`
+     inside into an implicit-any TS7006). Mirrors SoCreateContext. */
+  get(key: 'supabase'): Variables['supabase'];
+  get(key: 'user'): { id: string };
+  /* Multi-company (mig 0061). Undefined pre-migration / cold-start / headless
+     so the stamping and scoping no-op — see the sentinel in companyScope. */
+  get(key: 'companyId'): number | undefined;
+  get(key: 'allowedCompanyIds'): number[] | undefined;
+  /** STRING or undefined. Never an object — see the doc-prefix scar above. */
+  get(key: 'companyCode'): string | undefined;
+  env: Env;
+  json(body: unknown, status?: number): PoConvertOutcome;
+};
+
+export async function convertSosToPosCore(c: PoConvertContext): Promise<PoConvertOutcome> {
   const supabase = c.get('supabase');
   const user = c.get('user');
   let body: {
@@ -1919,6 +1956,21 @@ mfgPurchaseOrders.post('/from-sos', async (c) => {
   }
 
   return c.json({ created, total: created.length }, 201);
+}
+
+/* HTTP route — router-level supabaseAuth already ran; the real Hono context is
+   wired into the core verbatim, so the request path behaves exactly as it did
+   before the factoring. The dynamic-status cast is safe: every outcome status
+   is a contentful JSON status the old inline c.json calls already returned. */
+mfgPurchaseOrders.post('/from-sos', async (c) => {
+  const out = await convertSosToPosCore({
+    req: { json: () => c.req.json() },
+    get: ((key: 'supabase' | 'user' | 'companyId' | 'allowedCompanyIds' | 'companyCode') =>
+      c.get(key as 'supabase')) as unknown as PoConvertContext['get'],
+    env: c.env,
+    json: (b, status) => ({ status: status ?? 200, body: b as Record<string, unknown> }),
+  });
+  return c.json(out.body, out.status as 201);
 });
 
 /* ── PR #41 — PATCH header (po_date, expected_at, currency, notes) ── */
