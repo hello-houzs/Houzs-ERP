@@ -1136,17 +1136,17 @@ function StopDetail({
   // DO/SO state, so a convert / start / complete on this board doesn't leave the
   // mobile POD screen or SO list showing pre-mutation status inside their 15-30s
   // staleTime window (the desktop board already invalidates all sibling keys).
-  // `mobile-pod-detail` is prefix-matched so every open detail refreshes.
   const invalidate = () => {
     // Shared/desktop DO, delivery-planning, inventory and SO caches too, so a
     // desktop board/list doesn't read stale after a mobile convert/status/deliver.
+    // MobilePOD now reads through the SHARED DO hooks, so invalidateDoShared
+    // reaches it — the ["mobile-do-list-for-pod"] / ["mobile-pod-detail"] keys
+    // this used to bump no longer exist and bumping them refreshed nothing.
     invalidateDoShared(qc);
     invalidateInventoryShared(qc);
     invalidateSoShared(qc);
     return Promise.all([
       qc.invalidateQueries({ queryKey: ["mobile-delivery-planning"] }),
-      qc.invalidateQueries({ queryKey: ["mobile-do-list-for-pod"] }),
-      qc.invalidateQueries({ queryKey: ["mobile-pod-detail"] }),
       qc.invalidateQueries({ queryKey: ["mobile-so-list-paged"] }),
     ]);
   };
