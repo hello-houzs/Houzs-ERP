@@ -420,9 +420,20 @@ export default {
       );
       // Idempotency-key TTL sweep. Keys only need to outlive a client's retry
       // window; 24h is generous. Cheap (indexed on created_at).
+      //
+      // The predicate is PG-native on purpose. idempotency_keys.created_at is
+      // `timestamptz` (mig 0003), but the d1-compat shim rewrites
+      // datetime('now','-24 hours') into a to_char(...) that returns TEXT — so
+      // the old form was `timestamptz < text`, which Postgres rejects with
+      // "operator does not exist". `.catch(console.error)` swallowed it, so this
+      // sweep had never once deleted a row. mig 0008's rule ("created_at columns
+      // are only ever populated by DEFAULT now(), so they stay timestamptz — no
+      // bug there") reasons about WRITES only; it does not cover COMPARING a
+      // created_at against a shim-rewritten datetime('now'), which is this. When
+      // a timestamptz column meets datetime('now'), compare in PG terms.
       ctx.waitUntil(
         env.DB.prepare(
-          `DELETE FROM idempotency_keys WHERE created_at < datetime('now','-24 hours')`,
+          `DELETE FROM idempotency_keys WHERE created_at < now() - interval '24 hours'`,
         )
           .run()
           .then((r) => {

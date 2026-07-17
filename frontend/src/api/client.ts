@@ -12,6 +12,9 @@ import {
 // {} when no company is selected (single-company / pre-activation), so the
 // backend falls back to its hostname default and nothing changes.
 import { companyHeader } from "../lib/activeCompany";
+// The token's storage key + the read that knows about BOTH backing stores.
+// Shared with the vendored SCM fetch layer — see lib/authToken.
+import { AUTH_TOKEN_KEY as TOKEN_KEY, readAuthToken } from "../lib/authToken";
 
 // Production default is SAME-ORIGIN: /api/* is proxied to the Worker by the
 // Pages Function (functions/api/[[path]].ts). Calling the Worker's
@@ -24,20 +27,11 @@ const baseUrl =
   (import.meta.env.VITE_API_URL as string) ||
   (import.meta.env.PROD ? "" : "https://autocount-sync-api.houzs-erp.workers.dev");
 
-// Token storage — single source of truth for the bearer token. The
-// AuthContext writes here on login/logout; everything else reads.
-const TOKEN_KEY = "auth:token";
-
+// Token storage — the writer. The AuthContext writes here on login/logout.
+// The READ lives in lib/authToken so the vendored SCM layer shares it verbatim
+// rather than re-deriving which store the token is in.
 export const tokenStore = {
-  get(): string {
-    try {
-      // Persistent (Remember me) tokens live in localStorage; session-only ones in
-      // sessionStorage. Read either so a returning user is recognised.
-      return localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY) || "";
-    } catch {
-      return "";
-    }
-  },
+  get: readAuthToken,
   /** persistent = true (Remember me) → localStorage, survives browser close.
    *  persistent = false → sessionStorage, cleared when the tab/app closes. */
   set(token: string, persistent = true) {

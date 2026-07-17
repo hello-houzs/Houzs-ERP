@@ -21,11 +21,15 @@
 // ── HOUZS VENDOR ADAPTATION (only the auth + base URL changed) ─────────────
 //   • API_URL now points at the Houzs Worker + the /api/scm mount (same base
 //     authed-fetch uses), with a build-time VITE_API_URL override.
-//   • The bearer token comes from localStorage['auth:token'] (Houzs's JWT
-//     store) instead of supabase.auth.getSession(); the lazy supabase imports
-//     in authedFetcher + readbackGet are removed. Everything else (write →
+//   • The bearer token comes from Houzs's JWT store via readAuthToken()
+//     instead of supabase.auth.getSession(); the lazy supabase imports in
+//     authedFetcher + readbackGet are removed. Everything else (write →
 //     readback → compare → honest result, friendly messages) is verbatim.
 // ---------------------------------------------------------------------------
+
+// See authed-fetch.ts's import note: the token may be in sessionStorage, so the
+// read must come from the shared accessor, never an inlined localStorage hit.
+import { readAuthToken } from '../../../lib/authToken';
 
 // PROD fallback is same-origin (Pages Function proxies /api/*); see
 // authed-fetch.ts for the rationale.
@@ -103,7 +107,7 @@ function valuesEqual(a: unknown, b: unknown): boolean {
 
 /** Authenticated fetch to the API (same auth as authed-fetch). */
 const authedFetcher: Fetcher = async (path, init) => {
-  const token = localStorage.getItem('auth:token') ?? '';
+  const token = readAuthToken();
   if (!token) throw new Error('not_authenticated');
   return fetch(`${API_URL}${path}`, {
     ...init,
@@ -118,7 +122,7 @@ const authedFetcher: Fetcher = async (path, init) => {
 
 /** Cache-busting authed GET — the canonical `readback` for verifiedSave. */
 export async function readbackGet<T>(path: string): Promise<T | null> {
-  const token = localStorage.getItem('auth:token') ?? '';
+  const token = readAuthToken();
   if (!token) return null;
   const sep = path.includes('?') ? '&' : '?';
   const res = await fetch(`${API_URL}${path}${sep}_t=${Date.now()}`, {

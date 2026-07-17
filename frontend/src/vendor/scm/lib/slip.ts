@@ -3,8 +3,8 @@
 //
 // HOUZS VENDOR NOTES:
 //   - The token + base URL come from the vendored authed-fetch boundary
-//     (localStorage['auth:token'] + VITE_API_URL ?? worker, + /api/scm),
-//     replacing 2990's supabase.auth.getSession() + bare VITE_API_URL.
+//     (readAuthToken() + VITE_API_URL ?? worker, + /api/scm), replacing 2990's
+//     supabase.auth.getSession() + bare VITE_API_URL.
 //   - The slip schema types (SlipUrlResponse / SlipInit* / ALLOWED_SLIP_MIMES /
 //     MAX_SLIP_SIZE_BYTES) lived in @2990s/shared/schemas (not vendored); they
 //     are inlined here and re-exported so SlipUploadField + PaymentsTable can
@@ -25,13 +25,16 @@
 //     'init'|'put'|'confirm' phase vocabulary.
 
 import { humanApiError } from './authed-fetch';
+// See authed-fetch.ts's import note: the token may be in sessionStorage, so the
+// read must come from the shared accessor, never an inlined localStorage hit.
+import { readAuthToken } from '../../../lib/authToken';
 
 const API_URL =
   ((import.meta as { env?: Record<string, string | undefined> }).env?.VITE_API_URL
     || (import.meta.env.PROD ? '' : 'https://autocount-sync-api.houzs-erp.workers.dev')) + '/api/scm';
 
 const token = (): string => {
-  const t = localStorage.getItem('auth:token');
+  const t = readAuthToken();
   if (!t) throw new Error('not_authenticated');
   return t;
 };

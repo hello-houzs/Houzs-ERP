@@ -8,6 +8,9 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authedFetch, API_URL, humanApiError } from './authed-fetch';
+// See authed-fetch.ts's import note: the token may be in sessionStorage, so the
+// read must come from the shared accessor, never an inlined localStorage hit.
+import { readAuthToken } from '../../../lib/authToken';
 
 // Matches the lorry_type enum in migration 0195 / Houzs scm 0053.
 export const LORRY_TYPES = [
@@ -220,7 +223,7 @@ export function useDeleteLorryServiceRecord(lorryId: string) {
  *  The object URL is not revoked, matching slip.ts's accepted trade-off for
  *  view-then-navigate callers. */
 export async function fetchServiceInvoiceUrl(recordId: string): Promise<{ url: string; contentType: string }> {
-  const token = localStorage.getItem('auth:token');
+  const token = readAuthToken();
   if (!token) throw new Error('not_authenticated');
   const companyId = (() => {
     try {

@@ -2348,11 +2348,22 @@ app.post("/:id/generate-po", requirePermission("service_cases.manage"), async (c
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const userId = (c as any).get?.("userId") ?? 0;
 
+  // A case's supplier is its creditor_code resolved against the creditors
+  // mirror. assr_cases has never had a `supplier` column, so the old SELECT
+  // raised `column "supplier" does not exist` and 500'd every click. Same join
+  // the case detail already uses (services/assr.ts:489).
   const existing = await c.env.DB.prepare(
-    `SELECT po_no, supplier FROM assr_cases WHERE id = ?`
+    `SELECT c.po_no, c.creditor_code, cr.company_name AS creditor_name
+       FROM assr_cases c
+       LEFT JOIN creditors cr ON cr.creditor_code = c.creditor_code
+      WHERE c.id = ?`
   )
     .bind(id)
-    .first<{ po_no: string | null; supplier: string | null }>();
+    .first<{
+      po_no: string | null;
+      creditor_code: string | null;
+      creditor_name: string | null;
+    }>();
   if (!existing) return c.json({ error: "Not found" }, 404);
 
   if (existing.po_no) {
@@ -2366,13 +2377,17 @@ app.post("/:id/generate-po", requirePermission("service_cases.manage"), async (c
     .bind(poNo, id)
     .run();
 
+  // Name when the mirror has the creditor, else the raw code — a case can carry
+  // a creditor_code the mirror has not synced yet, and the code still tells the
+  // reader who the PO is for.
+  const supplierLabel = existing.creditor_name || existing.creditor_code;
   await logActivity(
     c.env,
     id,
     "po_generated",
     null,
     poNo,
-    existing.supplier ? `Supplier: ${existing.supplier}` : null,
+    supplierLabel ? `Supplier: ${supplierLabel}` : null,
     userId
   );
 

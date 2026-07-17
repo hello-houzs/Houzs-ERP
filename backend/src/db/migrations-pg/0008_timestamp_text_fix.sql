@@ -12,6 +12,16 @@
 -- (created_at columns are only ever populated by DEFAULT now() on insert, never
 --  via datetime('now'), so they stay timestamptz — no bug there.)
 --
+-- AMENDMENT 2026-07-17 (comment only — this file is applied and never re-runs).
+-- The exemption above is about WRITES, and it is right about writes. It is not a
+-- clearance for the column: a timestamptz created_at may still be COMPARED
+-- against a shim-rewritten datetime('now'), and that is `timestamptz < text`,
+-- which raises. The idempotency-key TTL sweep did exactly that and had never
+-- deleted a row -- its .catch swallowed the error for as long as it existed.
+-- So: "stays timestamptz" means every datetime('now') that TOUCHES it, on either
+-- side of an operator, must be written in PG terms. See backend/src/index.ts's
+-- sweep for the corrected shape.
+--
 -- D1/SQLite already declares all three as TEXT (migs 095/097/094), so there is
 -- no D1 counterpart — this purely corrects the PG side. Idempotent: re-running
 -- ALTER ... TYPE text on an already-text column is a no-op.

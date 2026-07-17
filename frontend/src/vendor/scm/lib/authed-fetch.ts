@@ -12,14 +12,20 @@
 // ── HOUZS VENDOR ADAPTATION (only the boundary changed) ────────────────────
 //   • API_URL now points at the Houzs Worker + the /api/scm mount (2990's
 //     routes were ported there), with a build-time VITE_API_URL override.
-//   • The bearer token comes from localStorage['auth:token'] (Houzs's JWT
-//     store) instead of supabase.auth.getSession(); the supabase import and
-//     the 401 refresh/redirect recovery are removed — a 401 just throws.
+//   • The bearer token comes from Houzs's JWT store via readAuthToken()
+//     instead of supabase.auth.getSession(); the supabase import and the 401
+//     refresh/redirect recovery are removed — a 401 just throws.
 //   Everything else (409 short-stock prompt, sofa hard-block, humanApiError)
 //   is kept verbatim.
 // ---------------------------------------------------------------------------
 
 import { serviceConfirm } from './dialog-service';
+// Imported, NOT re-inlined as localStorage.getItem('auth:token'). Houzs stores
+// session-only logins (Remember me unchecked, and the owner's view-as hand-off)
+// in sessionStorage, so a localStorage-only read returns "" for a perfectly
+// authenticated user and every /scm/* page throws not_authenticated. This is
+// the vendor auth boundary — it is exactly where the host's answer belongs.
+import { readAuthToken } from '../../../lib/authToken';
 
 // `||` not `??`: the CI build inlines VITE_API_URL as an EMPTY STRING when the
 // repo var is unset, and `'' ?? default` keeps `''`. PROD fallback is now
@@ -141,7 +147,7 @@ async function confirmShortStock(raw: string): Promise<boolean> {
 }
 
 export async function authedFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const token = localStorage.getItem('auth:token') ?? '';
+  const token = readAuthToken();
   if (!token) throw new Error('not_authenticated');
   // Only stamp content-type: application/json for string bodies (JSON
   // payloads). For FormData (multipart upload) the browser sets the
