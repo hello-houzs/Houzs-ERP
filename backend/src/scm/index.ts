@@ -75,6 +75,7 @@ import { posCart } from "./routes/pos-cart";
 import { quotes } from "./routes/quotes";
 import { personalQuickPicks } from "./routes/personal-quick-picks";
 import { salesAnalysis } from "./routes/sales-analysis";
+import { hr } from "./routes/hr";
 
 import { scmAreaGuard } from "./middleware/area-guard";
 
@@ -274,6 +275,16 @@ scm.route("/payment-vouchers", paymentVouchers);
 // lookup left on the coarse scm gate (reads open); writes are gated inside the
 // route by scm.currency.manage.
 scm.route("/currencies", currencies);
+// HR / Commission (port of 2990 apps/api routes/hr.ts + migration 0123). The
+// only place commission is calculated — the last thing keeping 2990's apps/api
+// alive. NO scmAreaGuard: an L2 area key is a PAGE key, and there is no HR page
+// yet (backend-only port; UI needs an approved mockup first). Inventing one
+// would put a live gate on a page that does not exist. Authorization is entirely
+// the flat scm.hr.read / scm.hr.manage keys checked inside the route against the
+// REAL caller — which is stricter than any area guard, since /commission returns
+// every colleague's salary and must never ride the coarse scm.access umbrella
+// that /api/scm/* already applies. Wire an area key here IF/WHEN the page ships.
+scm.route("/hr", hr);
 // ── MRP (scm.procurement.mrp) ───────────────────────────────────────────────
 scm.use("/mrp/*", scmAreaGuard("scm.procurement.mrp"));
 scm.route("/mrp", mrp);
