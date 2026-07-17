@@ -467,6 +467,13 @@ export interface AuthUser {
    *  Finance Manager, owner `*`). Gates the Projects "Finances" sub-page
    *  (nav + route). Older backends omit it → treated as false. */
   project_finance_viewer?: boolean;
+  /** True for the COST cohort — Purchasing, Finance Manager, Sales Director,
+   *  owner `*` (owner 2026-07-17). Gates SKU/product cost only; see
+   *  auth/salesAccess.canViewProductCost. Deliberately NOT the same question as
+   *  project_finance_viewer above (PMS project financials) — a Purchasing user
+   *  is true here and false there. Older backends omit it → treated as false,
+   *  which falls back to the director-only behaviour, not to open. */
+  product_cost_viewer?: boolean;
   /** Org POSITION name (positions.name) — e.g. "Sales Executive",
    *  "Super Admin". Sent by /auth/me (services/auth.ts → hydrateAuthUser).
    *  Drives the code-keyed Sales-access model (director / sales detection in

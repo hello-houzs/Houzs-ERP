@@ -11,7 +11,7 @@ import {
   isoIn,
 } from "../services/auth";
 import { bustUserSessions } from "../services/sessionCache";
-import { isFinanceViewer } from "../services/pmsAccess";
+import { isFinanceViewer, isProductCostViewer } from "../services/pmsAccess";
 import { sendEmail, publicUrl, resetEmailHtml, inviteEmailHtml, erpProductName } from "../services/email";
 import { getBrandingForCompany } from "../services/branding";
 import { defaultCompanyCodeForHost } from "../middleware/companyContext";
@@ -535,7 +535,20 @@ app.get("/me", async (c) => {
   // FE so the Projects "Finances" nav item + view (not tied to one project)
   // hide for every non-director sales user. Detail-level sections use the
   // per-project _access.pms flags instead.
-  return c.json({ user: { ...user, project_finance_viewer: isFinanceViewer(user) } });
+  //
+  // product_cost_viewer: a SEPARATE question — "may you see a SKU's cost price"
+  // (owner 2026-07-17: 采购 + Finance + Sales Director). It rode
+  // project_finance_viewer until now, which is why Purchasing silently had no
+  // cost for a month: that flag answers "are you a PMS director". Computed here,
+  // beside its sibling, so the FE never re-derives either from a position-name
+  // regex and the two surfaces cannot drift.
+  return c.json({
+    user: {
+      ...user,
+      project_finance_viewer: isFinanceViewer(user),
+      product_cost_viewer: isProductCostViewer(user),
+    },
+  });
 });
 
 /**
