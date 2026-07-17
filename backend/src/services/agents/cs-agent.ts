@@ -35,6 +35,7 @@
 import type { Env } from '../../types';
 import { computeMrp, type MrpResult } from '../../scm/routes/mrp';
 import { loadLeadBuffers } from './procurement-learning';
+import { resolveAgentCompany, scopeFor } from './agent-company';
 import { getSupabaseService } from '../../db/supabase';
 import { resolveStateCode } from './delivery-agent-geo';
 import { readAgentSetting } from '../agent-console';
@@ -211,14 +212,18 @@ type SoHeaderRow = {
 };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function loadSoHeaders(sb: any): Promise<Map<string, SoHeader>> {
-  const { data: rows, error } = await paginateAll<SoHeaderRow>((from, to) =>
-    sb.from('mfg_sales_orders')
+/* companyId: scope the promise to ONE book. Undefined ONLY when the companies
+   master is unresolved (single-company / cold-start), where no predicate is the
+   correct legacy behaviour — see agent-company.ts. */
+async function loadSoHeaders(sb: any, companyId: number | undefined): Promise<Map<string, SoHeader>> {
+  const { data: rows, error } = await paginateAll<SoHeaderRow>((from, to) => {
+    let q = sb.from('mfg_sales_orders')
       .select('doc_no, debtor_name, status, customer_state, customer_country, customer_delivery_date, amended_delivery_date')
       .neq('status', 'DRAFT')
-      .neq('status', 'CANCELLED')
-      .range(from, to),
-  );
+      .neq('status', 'CANCELLED');
+    if (companyId != null) q = q.eq('company_id', companyId);
+    return q.range(from, to);
+  });
   if (error) throw new Error(`cs-agent SO header load failed: ${error.message}`);
   const map = new Map<string, SoHeader>();
   for (const r of rows ?? []) {
@@ -480,10 +485,25 @@ export async function runCsAgent(
   const nowIso = new Date().toISOString();
   const nowMs = Date.now();
 
+  /* ONE company's books. Job A tells a CUSTOMER when their order will arrive;
+     computed across both companies it was answering that question with the other
+     company's stock. computeMrp's companyId is optional and no-ops when omitted
+     (its own doc names "agent callers"), and this caller omitted it. */
+  const company = scopeFor(await resolveAgentCompany(db, CS_AGENT_SETTING_KEY));
+  if (company.refuse) {
+    throw new Error(`cs_company_unresolved: ${company.refuse}`);
+  }
+
   // Job A — honest promise dates from live MRP supply.
   const [mrp, headers, transitByState] = await Promise.all([
-    computeMrp(sb, { catFilter: null, whFilter: null, includeUndated: false, leadBuffers: await loadLeadBuffers(env.DB) }),
-    loadSoHeaders(sb),
+    computeMrp(sb, {
+      catFilter: null,
+      whFilter: null,
+      includeUndated: false,
+      companyId: company.companyId ?? null,
+      leadBuffers: await loadLeadBuffers(env.DB),
+    }),
+    loadSoHeaders(sb, company.companyId),
     loadTransitDays(db),
   ]);
   const supplyBySo = groupSupplyBySo(mrp);
