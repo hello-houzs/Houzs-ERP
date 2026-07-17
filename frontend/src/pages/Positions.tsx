@@ -8,6 +8,7 @@ import { useToast } from "../hooks/useToast";
 import { useDialog } from "../hooks/useDialog";
 import { api } from "../api/client";
 import { cn } from "../lib/utils";
+import { DORMANT_TAG, DORMANT_TITLE } from "../auth/dormantPages";
 import type { AccessLevel, Department, PageDef, Position } from "../types";
 
 // 4-level position matrix (none/view/edit/full). Lets an admin set, per
@@ -897,9 +898,11 @@ function LevelRow({
   // Nothing in the system reads this key, so the control is disabled rather than
   // removed — the owner wants the row kept ("最重要是我要它的 UI"): the inventory
   // of what the system is meant to have is the point, the working switch is not.
+  // The wording lives in auth/dormantPages so the legacy Roles editor, which
+  // greys the SAME seven keys off the SAME backend flag, cannot word it
+  // differently to the same admin.
   const dormant = page.dormant === true;
-  const dormantTitle =
-    "This setting isn't wired to anything yet — nothing in the system reads it, so changing it would have no effect. Shown here because the page is part of the plan.";
+  const dormantTitle = DORMANT_TITLE;
   return (
     <div
       title={dormant ? dormantTitle : undefined}
@@ -964,7 +967,7 @@ function LevelRow({
             title={dormantTitle}
             className="shrink-0 rounded-full bg-surface-dim px-1.5 py-px text-[8.5px] font-bold uppercase tracking-wide text-ink-muted"
           >
-            not wired
+            {DORMANT_TAG}
           </span>
         )}
         {dirty && (

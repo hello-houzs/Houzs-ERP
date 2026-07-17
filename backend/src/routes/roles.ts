@@ -4,6 +4,7 @@ import { PERMISSIONS, isValidPermission, parsePermissions } from "../services/pe
 import {
   PAGES,
   computeBackfillLevel,
+  isDormantPageKey,
   isValidAccessLevel,
   isValidPageKey,
   type AccessLevel,
@@ -199,6 +200,14 @@ app.get("/pages", requirePermission("roles.read"), async (c) => {
       partialMeaning: p.partialMeaning,
       supportsPartial: p.supportsPartial,
       parent: p.parent ?? null,
+      // Class A — the key exists in PAGES but NOTHING reads it, so setting it
+      // has never done anything. Same field, same source of truth, same seven
+      // keys as /api/positions/pages: the catalogue is ONE array, so a cell
+      // that lies in the Positions editor lies here identically. #709 greyed
+      // Positions and flagged that this editor still rendered the seven as
+      // settable. Purely descriptive — changes no level and no resolution
+      // (pageAccess.DORMANT_PAGE_KEYS is read by nothing in the resolve path).
+      dormant: isDormantPageKey(p.key),
     })),
   });
 });

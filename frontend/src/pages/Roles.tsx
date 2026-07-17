@@ -8,6 +8,7 @@ import { useToast } from "../hooks/useToast";
 import { useDialog } from "../hooks/useDialog";
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
+import { DORMANT_TAG, DORMANT_TITLE } from "../auth/dormantPages";
 import { cn } from "../lib/utils";
 import type {
   AccessLevel,
@@ -549,22 +550,46 @@ function PageAccessRow({
   dense?: boolean;
   children?: React.ReactNode;
 }) {
+  // Nothing in the system reads this key, so the control is disabled rather than
+  // removed — the owner wants the row KEPT ("最重要是我要它的 UI"). Identical
+  // treatment to Team > Positions (#709), off the identical backend flag: one
+  // PAGES catalogue feeds both editors, so these are the same seven keys and a
+  // cell that lies there lies here. `dormant` is optional on PageDef, so `===
+  // true` keeps "not told" meaning "not dormant" rather than crashing an editor
+  // pointed at an endpoint that has not been taught the field.
+  const dormant = page.dormant === true;
   return (
     <div
+      title={dormant ? DORMANT_TITLE : undefined}
       className={cn(
         "rounded-md border border-border bg-surface",
+        dormant && "opacity-60",
         dense ? "p-2" : "p-3"
       )}
     >
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <div className={cn("font-semibold text-ink", dense ? "text-[11.5px]" : "text-[12px]")}>
+          <div
+            className={cn(
+              "font-semibold",
+              dormant ? "text-ink-muted" : "text-ink",
+              dense ? "text-[11.5px]" : "text-[12px]"
+            )}
+          >
             {page.label}
           </div>
           <div className={cn("mt-0.5 font-mono text-ink-muted", dense ? "text-[9px]" : "text-[9.5px]")}>
             {page.key}
           </div>
         </div>
+        {dormant && (
+          <span
+            title={DORMANT_TITLE}
+            className="shrink-0 rounded-full bg-surface-dim px-1.5 py-px text-[9px] font-bold uppercase tracking-wide text-ink-muted"
+          >
+            {DORMANT_TAG}
+          </span>
+        )}
         {dirty && (
           <span className="rounded bg-warning-bg px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider text-warning-text">
             unsaved
@@ -576,15 +601,25 @@ function PageAccessRow({
           </span>
         )}
       </div>
+      {/* Level radios. Disabled for a dormant page: the level still SHOWS (it
+          is the real stored value and must keep reading true — greying must not
+          change what anyone resolves to), it just cannot be changed into a
+          promise the system will not keep. `readOnly` still wins on its own —
+          a system role stays locked whether the key is wired or not. */}
       <div className="mt-2 flex flex-wrap gap-3">
         {(["none", "partial", "full"] as const).map((opt) => {
           if (opt === "partial" && !page.supportsPartial) return null;
           return (
             <label
               key={opt}
+              title={dormant ? DORMANT_TITLE : undefined}
               className={cn(
                 "flex items-center gap-1.5 text-[11px]",
-                readOnly ? "cursor-default opacity-70" : "cursor-pointer"
+                dormant
+                  ? "cursor-not-allowed text-ink-muted"
+                  : readOnly
+                    ? "cursor-default opacity-70"
+                    : "cursor-pointer"
               )}
             >
               <input
@@ -592,7 +627,7 @@ function PageAccessRow({
                 name={`pa-${page.key}`}
                 value={opt}
                 checked={level === opt}
-                disabled={readOnly}
+                disabled={readOnly || dormant}
                 onChange={() => onChange(opt)}
                 className="h-3.5 w-3.5 accent-accent"
               />

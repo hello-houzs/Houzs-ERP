@@ -123,6 +123,24 @@ mfgProducts.get('/', async (c) => {
   // the ACTIVE SKU master (1141 rows live) was silently truncated to 1000.
   // Page through with .range() and concatenate the lot.
   const s = search ? escapeForOr(search) : '';
+  /* 防呆 — cost_price_sen IS NOT IN THIS SELECT, AND ITS ABSENCE IS THE GATE.
+     There is no canViewScmProductCost strip below because there is nothing to
+     strip: unlike GET /:id (select('*'), so it needs one), this select is an
+     explicit column allowlist and cost has never been on it (#673 verified the
+     same thing: "The LIST endpoint never selected cost_price_sen").
+
+     IF YOU ADD IT — and the obvious ask is "Purchasing wants cost on the SKU
+     Master" — add the strip in the SAME edit, or you hand every products reader
+     a number the owner ruled is for Purchasing + Finance + Sales Director only
+     (2026-07-17). The gate already exists and is one line; copy GET /:id:
+         if (!canViewScmProductCost(c)) for (const k of PRODUCT_FINANCE_KEYS) delete p[k];
+     Both are already imported at the top of this file.
+
+     NOT a claim that this route is cost-free. seat_height_prices (below) IS a
+     per-height COST and does ride this select to every caller — finance-keys.ts
+     records why it cannot be stripped blind (the sofa chain resolves a CHARGED
+     price through the same field, so a blind strip reprices a build). That one
+     needs the owner's ruling, not a strip. */
   const { data, error } = await paginateAll((from, to) => {
     let q = supabase
       .from('mfg_products')
