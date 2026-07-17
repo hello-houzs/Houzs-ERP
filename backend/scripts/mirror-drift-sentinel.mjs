@@ -35,7 +35,8 @@
 //
 // Prefer a direct URL when present (one round trip, real SQL aggregates); fall
 // back to PostgREST, which needs head-count queries to do what one FILTER
-// aggregate does. Same numbers either way.
+// aggregate does. Same numbers either way for the SO mirror. The amendment
+// block is postgres-only -- see readAmendments().
 //
 // Usage: node scripts/mirror-drift-sentinel.mjs
 import postgres from "postgres";
@@ -67,6 +68,20 @@ const src = url2990 ? postgres(url2990, { ssl: "require", prepare: false, max: 1
 const rest = src ? null : createClient(restUrl, restKey, { auth: { persistSession: false } });
 const dst = postgres(urlHouzs, { ssl: "require", prepare: false, max: 1 });
 
+// entity = 'sales_order' is LOAD-BEARING on every outbox read below, not
+// tidiness. sync_outbox is shared with the amendment mirror (entity =
+// 'so_amendment', docs/2990-live-sync/04_amendment_outbox_2990.sql). Unscoped,
+// these queries broke in both directions the moment a second entity existed:
+//   * MASKING -- last_delivery is max(delivered_at) across ALL entities, so a
+//     healthy amendment stream keeps it fresh and the staleDelivery alarm never
+//     fires even if the SO mirror has stopped delivering entirely. That is the
+//     alarm on the one link the owner says must not break.
+//   * FALSE ALARM -- a pending amendment row (e.g. 04 applied but the drain not
+//     yet enabled, so nothing drains it) counts as `stuck` and reports as an
+//     SO-mirror failure.
+// The SO alarm is scoped to the SO mirror; amendments get their own block.
+const SO_ENTITY = "sales_order";
+
 /** 2990 SO count + outbox health, over whichever transport is configured.
  *  The REST branch counts with head:true rather than fetching rows: PostgREST
  *  caps a select at 1000 rows and the outbox grows one row per SO EDIT, so
@@ -84,7 +99,8 @@ async function read2990() {
             AND enqueued_at < now() - (${STUCK_MINUTES} * interval '1 minute')
         )::int AS stuck,
         max(delivered_at) AS last_delivery
-      FROM public.sync_outbox`;
+      FROM public.sync_outbox
+      WHERE entity = ${SO_ENTITY}`;
     return {
       sourceCount: Number(sourceCount),
       pending: Number(o.pending),
@@ -97,7 +113,7 @@ async function read2990() {
 
   const outboxCount = async (build) => {
     const { count, error } = await build(
-      rest.from("sync_outbox").select("*", { count: "exact", head: true }),
+      rest.from("sync_outbox").select("*", { count: "exact", head: true }).eq("entity", SO_ENTITY),
     );
     if (error) throw new Error(`sync_outbox count: ${error.message}`);
     return Number(count ?? 0);
@@ -117,6 +133,7 @@ async function read2990() {
   const last = await rest
     .from("sync_outbox")
     .select("delivered_at")
+    .eq("entity", SO_ENTITY)
     .not("delivered_at", "is", null)
     .order("delivered_at", { ascending: false })
     .limit(1);
@@ -140,13 +157,14 @@ async function stuckRows(limit = 10) {
   if (src) {
     return src`
       SELECT entity_key, op, status, enqueued_at, attempts, last_error
-        FROM sync_outbox
-       WHERE status <> 'done' AND enqueued_at < ${cutoff}
+        FROM public.sync_outbox
+       WHERE entity = ${SO_ENTITY} AND status <> 'done' AND enqueued_at < ${cutoff}
        ORDER BY enqueued_at ASC LIMIT ${limit}`;
   }
   const { data, error } = await rest
     .from("sync_outbox")
     .select(cols)
+    .eq("entity", SO_ENTITY)
     .neq("status", "done")
     .lt("enqueued_at", cutoff)
     .order("enqueued_at", { ascending: true })
@@ -155,87 +173,63 @@ async function stuckRows(limit = 10) {
   return data ?? [];
 }
 
-async function main() {
-  const { sourceCount, pending, sent, done, stuck, lastDelivery } = await read2990();
+/** Amendment mirror health -- POSTGRES ONLY, and today that means it does not
+ *  run: SENTINEL_2990_DB_URL is unset, so the live transport is REST and this
+ *  reports `amendments=unchecked`. Deliberately not faked over REST rather than
+ *  half-built: it is reported as unchecked, never as `off` or healthy, because
+ *  an unrun check that reads as a pass is the exact failure this file exists to
+ *  cure. Set SENTINEL_2990_DB_URL to switch it on.
+ *
+ *  Gated on the same sync_config row that gates the drain, so the period
+ *  between "04 applied" and "owner enables it" reports as disabled instead of
+ *  alarming on rows nothing is draining yet. Reports parity but alarms ONLY on
+ *  stuck rows: an unmirrored-but-moving amendment is a transient, whereas the
+ *  FK failures this receiver can hit (a 2990 staff member hired after the
+ *  one-time import has no scm.staff row) do NOT self-heal and must be seen. */
+async function readAmendments() {
+  if (!src) return { summary: "amendments=unchecked (needs SENTINEL_2990_DB_URL)", alarms: [] };
 
-<<<<<<< HEAD
-=======
-  // --- 2990 outbox health ---
-  // entity = 'sales_order' is LOAD-BEARING, not tidiness. sync_outbox is shared
-  // with the amendment mirror (entity = 'so_amendment', docs/2990-live-sync/
-  // 04_amendment_outbox_2990.sql). Unscoped, this query broke in both directions
-  // the moment a second entity existed:
-  //   * MASKING — last_delivery is max(delivered_at) across ALL entities, so a
-  //     healthy amendment stream keeps it fresh and the staleDelivery alarm
-  //     never fires even if the SO mirror has stopped delivering entirely. That
-  //     is the alarm on the one link the owner says must not break.
-  //   * FALSE ALARM — a pending amendment row (e.g. 04 applied but the drain not
-  //     yet enabled, so nothing drains it) counts as `stuck` and reports as an
-  //     SO-mirror failure.
-  // The SO alarm is scoped to the SO mirror; amendments get their own block below.
-  const [outbox] = await src`
-    SELECT
-      count(*) FILTER (WHERE status = 'pending')::int AS pending,
-      count(*) FILTER (WHERE status = 'sent')::int    AS sent,
-      count(*) FILTER (WHERE status = 'done')::int    AS done,
-      count(*) FILTER (
-        WHERE status <> 'done'
-          AND enqueued_at < now() - (${STUCK_MINUTES} * interval '1 minute')
-      )::int AS stuck,
-      max(delivered_at) AS last_delivery
-    FROM public.sync_outbox
-    WHERE entity = 'sales_order'`;
-
-  const pending = Number(outbox.pending);
-  const sent = Number(outbox.sent);
-  const done = Number(outbox.done);
-  const stuck = Number(outbox.stuck);
-  const lastDelivery = outbox.last_delivery; // Date | null
-
-  // --- Houzs mirrored SO count ---
->>>>>>> origin/main
-  const [{ n: mirroredCount }] =
-    await dst`SELECT count(*)::int AS n FROM scm.mfg_sales_orders WHERE company_id = 2`;
-
-  const drift = sourceCount - mirroredCount;
-
-  // --- amendment mirror health (only while it is switched on) ---
-  // Gated on the same sync_config row that gates the drain, so the period
-  // between "04 applied" and "owner enables it" reports as disabled instead of
-  // alarming on rows nothing is draining yet. Reports parity but alarms ONLY on
-  // stuck rows: an unmirrored-but-moving amendment is a transient, whereas the
-  // FK failures this receiver can hit (a 2990 staff member hired after the
-  // one-time import has no scm.staff row) do NOT self-heal and must be seen.
   const [amdCfg] = await src`
     SELECT COALESCE((SELECT v FROM sync_config WHERE k = 'enabled_entities'), '') AS v`;
   const amendmentOn = String(amdCfg.v)
     .split(",")
     .map((s) => s.trim())
     .includes("so_amendment");
+  if (!amendmentOn) return { summary: "amendments=off", alarms: [] };
 
-  const amendmentAlarms = [];
-  let amendmentSummary = "amendments=off";
-  if (amendmentOn) {
-    const [{ n: amdSource }] =
-      await src`SELECT count(*)::int AS n FROM public.so_amendments`;
-    const [amdOutbox] = await src`
-      SELECT count(*) FILTER (
-        WHERE status <> 'done'
-          AND enqueued_at < now() - (${STUCK_MINUTES} * interval '1 minute')
-      )::int AS stuck
-      FROM public.sync_outbox
-      WHERE entity = 'so_amendment'`;
-    const [{ n: amdMirrored }] =
-      await dst`SELECT count(*)::int AS n FROM scm.so_amendments WHERE company_id = 2`;
-    const amdStuck = Number(amdOutbox.stuck);
-    amendmentSummary =
-      `amendments src=${amdSource} mirrored=${amdMirrored} stuck=${amdStuck}`;
-    if (amdStuck > 0)
-      amendmentAlarms.push(
-        `${amdStuck} amendment outbox row(s) stuck > ${STUCK_MINUTES}m ` +
-          `(read net._http_response.content for the receiver's reason)`,
-      );
-  }
+  const [{ n: amdSource }] = await src`SELECT count(*)::int AS n FROM public.so_amendments`;
+  const [amdOutbox] = await src`
+    SELECT count(*) FILTER (
+      WHERE status <> 'done'
+        AND enqueued_at < now() - (${STUCK_MINUTES} * interval '1 minute')
+    )::int AS stuck
+    FROM public.sync_outbox
+    WHERE entity = 'so_amendment'`;
+  const [{ n: amdMirrored }] =
+    await dst`SELECT count(*)::int AS n FROM scm.so_amendments WHERE company_id = 2`;
+  const amdStuck = Number(amdOutbox.stuck);
+
+  const alarms = [];
+  if (amdStuck > 0)
+    alarms.push(
+      `${amdStuck} amendment outbox row(s) stuck > ${STUCK_MINUTES}m ` +
+        `(read net._http_response.content for the receiver's reason)`,
+    );
+  return {
+    summary: `amendments src=${amdSource} mirrored=${amdMirrored} stuck=${amdStuck}`,
+    alarms,
+  };
+}
+
+async function main() {
+  const { sourceCount, pending, sent, done, stuck, lastDelivery } = await read2990();
+
+  const [{ n: mirroredCount }] =
+    await dst`SELECT count(*)::int AS n FROM scm.mfg_sales_orders WHERE company_id = 2`;
+
+  const drift = sourceCount - mirroredCount;
+
+  const { summary: amendmentSummary, alarms: amendmentAlarms } = await readAmendments();
 
   // --- last-delivery staleness (only meaningful while work is waiting) ---
   const now = Date.now();
@@ -245,10 +239,12 @@ async function main() {
     pending > 0 && (lastDeliveryMs == null || deliveryAgeHours > STALE_DELIVERY_HOURS);
 
   // --- alarm decision ---
-  // 1) rows wedged in the outbox past the stuck window;
-<<<<<<< HEAD
+  // 1) rows wedged in the SO outbox past the stuck window;
   // 2) a persisted drift;
-  // 3) deliveries gone stale while pending work is queued.
+  // 3) deliveries gone stale while pending work is queued;
+  // 4) the amendment mirror's own stuck rows. Kept in the same alarm list so one
+  //    failing workflow still means "the mirror needs a look", but worded so the
+  //    reader knows WHICH mirror.
   //
   // (2) no longer requires stuck rows. The original rule was `drift !== 0 && stuck > 0`
   // -- reasoning that a transient in-flight delta is normal, which is true, but it
@@ -258,22 +254,10 @@ async function main() {
   // own; the transient case is excluded by requiring the delta to outlive a drain
   // cycle, which `pending == 0 && sent == 0` establishes far more precisely than
   // `stuck` ever did.
-  const alarms = [];
-  if (stuck > 0) alarms.push(`${stuck} outbox row(s) stuck > ${STUCK_MINUTES}m`);
-  if (drift !== 0 && (stuck > 0 || (pending === 0 && sent === 0)))
-    alarms.push(`persisted drift ${drift} (source ${sourceCount} - mirrored ${mirroredCount})`);
-=======
-  // 2) a real, PERSISTED drift (count mismatch AND stuck rows -- a transient
-  //    in-flight delta with no stuck rows is normal and does NOT alarm);
-  // 3) deliveries have gone stale while pending work is queued.
-  // 4) the amendment mirror's own stuck rows (see the block above). Kept in the
-  //    same alarm list so one failing workflow still means "the mirror needs a
-  //    look", but worded so the reader knows WHICH mirror.
   const alarms = [...amendmentAlarms];
   if (stuck > 0) alarms.push(`${stuck} SO outbox row(s) stuck > ${STUCK_MINUTES}m`);
-  if (drift !== 0 && stuck > 0)
-    alarms.push(`persisted drift ${drift} (source-mirror) with stuck rows`);
->>>>>>> origin/main
+  if (drift !== 0 && (stuck > 0 || (pending === 0 && sent === 0)))
+    alarms.push(`persisted drift ${drift} (source ${sourceCount} - mirrored ${mirroredCount})`);
   if (staleDelivery)
     alarms.push(
       `no delivery for ${deliveryAgeHours == null ? "ever" : deliveryAgeHours.toFixed(1) + "h"} while ${pending} pending`,
@@ -284,11 +268,7 @@ async function main() {
   console.log(
     `mirror-sentinel: source=${sourceCount} mirrored=${mirroredCount} drift=${drift} ` +
       `stuck=${stuck} pending=${pending} sent=${sent} done=${done} lastDelivery=${lastDeliveryStr} ` +
-<<<<<<< HEAD
-      `transport=${src ? "pg" : "rest"}`,
-=======
-      `| ${amendmentSummary}`,
->>>>>>> origin/main
+      `transport=${src ? "pg" : "rest"} | ${amendmentSummary}`,
   );
 
   if (alarms.length > 0) {
