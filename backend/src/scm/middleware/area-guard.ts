@@ -2,6 +2,7 @@ import type { MiddlewareHandler } from "hono";
 import type { Env, Variables } from "../env";
 import type { AuthUser } from "../../services/auth";
 import { meetsLevel, type AccessLevel } from "../../services/pageAccess";
+import { salesJdDenial } from "../../services/salesJdAccess";
 
 // ── L2 per-area WRITE authorization for /api/scm/* ──────────────────────────
 //
@@ -14,9 +15,16 @@ import { meetsLevel, type AccessLevel } from "../../services/pageAccess";
 //   POST / PATCH / PUT /  → require 'edit'   (write/void/delete)
 //   DELETE
 //
-// NO-LOCKOUT ROLLOUT — the gate is enforced ONLY for users who already have an
-// explicit SCM L2 configuration. Resolution order:
+// NO-LOCKOUT ROLLOUT — the MATRIX half of the gate is enforced ONLY for users
+// who already have an explicit SCM L2 configuration. Resolution order:
 //   1. Owner / wildcard (`*`)        → next()  (bypass; never gated)
+//   1.5 Sales JD deny (salesJdAccess.salesJdDenial) → 403  (ENFORCED ALWAYS)
+//                                         A rule in code, not a matrix cell, so
+//                                         it does NOT wait for the L2 rollout —
+//                                         that is the difference between a rule
+//                                         and a setting. Today: exactly
+//                                         scm.sales.returns, for the Sales
+//                                         cohort (owner 2026-07-17 "就是要关").
 //   2. user.scm_l2_configured === true → require meetsLevel(level, required),
 //                                         else 403  (ENFORCED)
 //   3. otherwise (no SCM L2 rows)    → next()  (fall back to the coarse
@@ -87,6 +95,18 @@ export function scmAreaGuard(area: string, opts?: ScmAreaGuardOpts): MiddlewareH
       await next();
       return;
     }
+
+    // 1.5) The Sales JD's DENY half — a RULE in code, not a matrix cell, so it
+    //      is enforced BEFORE the no-lockout fallthrough below. Without this the
+    //      deny was theatre: a Sales rep has no explicit `scm*` row, so step 3
+    //      let them straight through to the Delivery Returns API while only the
+    //      nav entry (`hideForSales`) and the route guard hid it — and a hidden
+    //      nav entry is not a gate, the URL still returned real data.
+    //      Deliberately ABOVE `openRead` too: "那些none的直接不給看" is a rule
+    //      about the area, not about the method. Inert for every area the JD does
+    //      not deny, and `*` is exempt inside salesJdDenial.
+    const jdDenial = salesJdDenial(user, area);
+    if (jdDenial) return c.json({ error: jdDenial }, 403);
 
     // 3) No explicit SCM L2 config → fall back to the coarse scm.access umbrella
     //    (already enforced upstream). Never lock out a current scm.access holder.

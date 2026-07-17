@@ -577,6 +577,11 @@ function PositionMatrixEditor({
   const accessQ = useQuery<{
     position_id: number;
     page_access: Record<string, { level: AccessLevel; explicit: boolean }>;
+    /** Class B — rows whose page_key is not in the catalogue, so every read
+     *  discards them (backend isValidPageKey filter). Optional: an older
+     *  backend does not send it, and absent must read as "not told", never as
+     *  "there are none". */
+    orphan_rows?: Array<{ page_key: string; level: string }>;
   }>(() => api.get(`/api/positions/${position.id}/page-access`), [position.id]);
 
   const [levels, setLevels] = useState<Record<string, AccessLevel>>({});
@@ -646,6 +651,16 @@ function PositionMatrixEditor({
     // Setting a parent cascades the level to its whole sub-tree so the admin
     // sees the entire category flip at once; they can then click an individual
     // sub-page to override it. (Every cascaded page is written explicitly.)
+    //
+    // DORMANT CHILDREN ARE STILL CASCADED, deliberately. Greying a row disables
+    // the DIRECT control; it does not carve the key out of the cascade, because
+    // that would change which rows a save writes — a behaviour change, and this
+    // change is required to have none. Excluding them would also break the one
+    // promise the editor does make ("set a parent to grant a whole area"): the
+    // day a dormant key IS wired, a position granted its parent would silently
+    // not have it. So the stored value keeps tracking the parent exactly as it
+    // does today; the greyed row just shows it honestly instead of inviting a
+    // click that means nothing.
     const subtree: string[] = [];
     let frontier = pages.filter((p) => p.parent === key);
     while (frontier.length) {
@@ -803,9 +818,48 @@ function PositionMatrixEditor({
               </div>
             ))}
           </div>
+          {/* CLASS B — settings that were saved against a page that does not
+              exist. Unlike a dormant row there is nothing in the matrix above to
+              grey: the key is not in the catalogue, so every read throws the row
+              away. Listed rather than hidden because these rows are the record
+              of rules the admin believes are in force — six of them on Finance
+              Manager are the owner's 2026-06-13 "money pages: Finance only",
+              dead since the day he saved it while the UI said Saved. Read-only:
+              they grant nothing, and deleting them would destroy the evidence of
+              what was intended. Only rendered when this position actually has
+              some. */}
+          {(accessQ.data?.orphan_rows?.length ?? 0) > 0 && (
+            <div className="mt-3 rounded-md border border-dashed border-border bg-bg/40 p-2.5">
+              <div className="mb-1.5 text-[10px] font-bold uppercase tracking-brand text-ink-muted">
+                Saved settings that were never wired
+              </div>
+              <p className="mb-2 text-[10.5px] leading-snug text-ink-muted">
+                These were saved against pages this system does not have, so they have never done
+                anything and cannot be edited here. They are kept on screen as a record of what was
+                intended — nothing is lost by leaving them, and nobody's access depends on them.
+              </p>
+              <div className="space-y-0.5">
+                {accessQ.data!.orphan_rows!.map((r) => (
+                  <div
+                    key={r.page_key}
+                    className="flex items-center justify-between gap-2 rounded px-1 py-0.5 opacity-60"
+                  >
+                    <span className="truncate text-[12.5px] font-semibold text-ink-muted">
+                      {r.page_key}
+                    </span>
+                    <span className="shrink-0 rounded border border-border bg-surface-dim px-2 py-0.5 text-[11px] capitalize text-ink-muted">
+                      {r.level}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           <p className="pt-2 text-[10.5px] text-ink-muted">
             Every page (incl. each SCM sub-page) has its own level. Sub-pages inherit their parent
             unless set directly — set a parent to grant a whole area, then override individual pages.
+            Pages marked <span className="font-semibold">not wired</span> are part of the plan but
+            nothing reads them yet, so their level cannot be changed.
           </p>
         </>
       )}
@@ -840,10 +894,18 @@ function LevelRow({
   onDragEndRow?: () => void;
   dragging?: boolean;
 }) {
+  // Nothing in the system reads this key, so the control is disabled rather than
+  // removed — the owner wants the row kept ("最重要是我要它的 UI"): the inventory
+  // of what the system is meant to have is the point, the working switch is not.
+  const dormant = page.dormant === true;
+  const dormantTitle =
+    "This setting isn't wired to anything yet — nothing in the system reads it, so changing it would have no effect. Shown here because the page is part of the plan.";
   return (
     <div
+      title={dormant ? dormantTitle : undefined}
       className={cn(
-        "group -mx-1 flex items-center justify-between gap-1 rounded px-1 transition-colors hover:bg-accent-soft/40",
+        "group -mx-1 flex items-center justify-between gap-1 rounded px-1 transition-colors",
+        dormant ? "opacity-60" : "hover:bg-accent-soft/40",
         dragging && "opacity-40",
       )}
     >
@@ -887,10 +949,22 @@ function LevelRow({
           </button>
         ) : (
           <span
-            title={page.key}
-            className={cn("truncate font-semibold text-ink transition-colors group-hover:font-bold group-hover:text-accent", dense ? "text-[12.5px]" : "text-[13.5px]")}
+            title={dormant ? undefined : page.key}
+            className={cn(
+              "truncate font-semibold transition-colors",
+              dormant ? "text-ink-muted" : "text-ink group-hover:font-bold group-hover:text-accent",
+              dense ? "text-[12.5px]" : "text-[13.5px]",
+            )}
           >
             {page.label}
+          </span>
+        )}
+        {dormant && (
+          <span
+            title={dormantTitle}
+            className="shrink-0 rounded-full bg-surface-dim px-1.5 py-px text-[8.5px] font-bold uppercase tracking-wide text-ink-muted"
+          >
+            not wired
           </span>
         )}
         {dirty && (
@@ -899,19 +973,31 @@ function LevelRow({
           </span>
         )}
       </div>
-      {/* Segmented level control — clearer than 4 loose radios */}
+      {/* Segmented level control — clearer than 4 loose radios. Disabled for a
+          dormant page: the level still SHOWS (it is the real stored value and
+          must keep reading true), it just cannot be changed into a promise the
+          system will not keep. */}
       <div className="inline-flex shrink-0 overflow-hidden rounded-md border border-border">
         {LEVELS.map((opt, i) => (
           <button
             key={opt}
             type="button"
+            disabled={dormant}
+            title={dormant ? dormantTitle : undefined}
             onClick={() => onChange(opt)}
             className={cn(
               "px-2.5 py-1 text-[12px] capitalize transition-colors",
               i > 0 && "border-l border-border",
-              level === opt
-                ? "bg-accent font-semibold text-white"
-                : "bg-surface text-ink-secondary hover:bg-accent-soft/50 hover:text-accent",
+              dormant
+                ? cn(
+                    "cursor-not-allowed",
+                    level === opt
+                      ? "bg-ink-muted/30 font-semibold text-ink-muted"
+                      : "bg-surface-dim text-ink-muted/60",
+                  )
+                : level === opt
+                  ? "bg-accent font-semibold text-white"
+                  : "bg-surface text-ink-secondary hover:bg-accent-soft/50 hover:text-accent",
             )}
           >
             {opt}

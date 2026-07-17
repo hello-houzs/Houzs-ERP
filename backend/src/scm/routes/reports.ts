@@ -43,6 +43,7 @@ import type { Env, Variables } from '../env';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { scopeToCompany } from '../lib/companyScope';
 import { canViewAllSales, canViewScmFinance } from '../lib/houzs-perms';
+import { salesJdDenial } from '../../services/salesJdAccess';
 import { resolveSalesScopeIds } from '../lib/salesScope';
 import { SO_FINANCE_KEYS, SO_ITEM_FINANCE_KEYS } from '../lib/finance-keys';
 
@@ -339,6 +340,14 @@ reports.get('/sales-order-detail-listing', async (c) => {
 // its own list either, so scoping only the report would invent a rule the DR
 // module does not have. That module-level gap is real and flagged in
 // BUG-HISTORY (fix/c1-reports) rather than half-fixed here.
+//   DR UPDATE (feat/dead-cells-and-returns, 2026-07-17): the Sales cohort is now
+//   DENIED this listing outright (salesJdDenial — the owner's returns rule, which
+//   /delivery-returns/* enforces at its mount and this router could not). That is
+//   a COHORT gate, not a row scope: the "who may open the DR module at all"
+//   question, answered the same way in both places. It does NOT close the scoping
+//   gap above — a non-Sales caller with scm.access still reads every DR row here,
+//   exactly as they read every DR row on the module page. Still one gap, still
+//   flagged, still not half-fixed.
 // ----------------------------------------------------------------------------
 
 type AnyRow = Record<string, unknown>;
@@ -491,6 +500,20 @@ reports.get('/sales-invoice-detail-listing', async (c) => {
 
 /* ── Delivery Return Detail Listing ────────────────────────────────── */
 reports.get('/delivery-return-detail-listing', async (c) => {
+  /* THE SECOND DOOR TO DELIVERY RETURNS, and closing only the first would have
+     been a fake close. /reports is mounted on the COARSE umbrella (scm/index.ts
+     — it is cross-area, and that mount is still right), so the
+     scmAreaGuard('scm.sales.returns') on /delivery-returns/* never runs here:
+     this listing returns return_number, debtor, refund and every line to any
+     caller holding scm.access. The FE already treats it as part of the returns
+     surface (DeliveryReturnsGuard wraps this report's route in App.tsx) — only
+     the API disagreed. Gated in the handler, not at the mount, because guarding
+     the whole /reports router on scm.sales.returns would 403 the SO/DO/SI
+     listings too; that is the same reason this file's finance + scope rules live
+     in the handlers. Owner 2026-07-17: "该关（我确实讲过 / 就是要关）". */
+  const jdDenial = salesJdDenial(c.get('houzsUser'), 'scm.sales.returns');
+  if (jdDenial) return c.json({ error: jdDenial }, 403);
+
   const sb = c.get('supabase');
   const dateFrom    = c.req.query('dateFrom');
   const dateTo      = c.req.query('dateTo');

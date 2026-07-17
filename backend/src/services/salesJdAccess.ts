@@ -24,38 +24,47 @@
 // marked apart rather than blended (`feat/jd-rules-from-record`, 2026-07-17,
 // which mined BUG-HISTORY + every merged PR body + the full git log for them):
 //   - orders / delivery / invoices  -- QUOTED AND DATED above (owner 2026-07-17).
-//   - returns                       -- ASSERTED AS AN OWNER RULE, NEVER QUOTED.
-//     The trail: `hideForSalesNonDirector` -> `hideForSales` in f2ca099
-//     (2026-07-14, PR #417), whose body says "deny ALL Sales staff (director
-//     too)" and cites no instruction; no verbatim Chinese for it survives in
-//     BUG-HISTORY, any PR body, or any commit message. It may well be a real
-//     ruling he gave in chat -- but the record cannot show it, and this line
-//     is the ONLY one here that can take access AWAY from a Sales Director.
-//     Flagged for him rather than changed: removing it on my own reading would
-//     be the same inference-instead-of-instruction this file exists to end.
+//   - returns                       -- QUOTED AND DATED as of 2026-07-17. It was
+//     carried as UNQUOTED for three days: `feat/jd-rules-from-record` traced it
+//     to `hideForSalesNonDirector` -> `hideForSales` in f2ca099 (2026-07-14,
+//     PR #417), whose body asserts "deny ALL Sales staff (director too)" and
+//     cites no instruction, and flagged it rather than acting on it. Asked
+//     directly, the owner confirmed it was his all along:
+//       "该关（我确实讲过 / 就是要关）"                    -- owner, 2026-07-17
+//     and settled the cohort question the same day:
+//       "sales director 算sales"                          -- owner, 2026-07-17
+//     So the rule is his, it covers the Director, and it is now ENFORCED rather
+//     than merely written (see below). The three-day gap is the lesson: the
+//     record could not show the rule, and flagging beat guessing.
 //
 // WHAT IS ACTUALLY IN FORCE -- measured, because writing a level here is not the
 // same as enforcing it (`feat/z1-jd-consolidate`, 2026-07-17, proved this the
 // expensive way and its entry is the reason this block exists):
-//   - The backend area-guard SKIPS this map entirely unless the caller already
-//     holds an explicit `scm*` row (`area-guard.ts:93` -- the documented
-//     NO-LOCKOUT fallthrough). So for a Sales user with NO such row, `"none"`
-//     here blocks NOTHING and `"edit"` grants nothing the coarse `scm.access`
-//     umbrella did not already allow.
-//   - `"none"` also does not hide a nav entry: every SCM entry ORs
+//   - The backend area-guard SKIPS this map unless the caller already holds an
+//     explicit `scm*` row (`area-guard.ts` -- the documented NO-LOCKOUT
+//     fallthrough). So for a Sales user with NO such row, `"edit"` here grants
+//     nothing the coarse `scm.access` umbrella did not already allow, and
+//     `"view"` caps nothing.
+//   - THE ONE EXCEPTION, and it is deliberate: `salesJdDenial()` below is
+//     consulted by the area-guard BEFORE that fallthrough, so a `"none"` in this
+//     map is enforced for the cohort whether or not they are L2-configured. That
+//     is what makes `scm.sales.returns` a real 403 instead of a hidden nav entry
+//     (`feat/dead-cells-and-returns`, 2026-07-17). ONLY the deny half works this
+//     way: the `"view"` caps on delivery/invoices are still inert for a non-L2
+//     rep, because enforcing THEM would need `scm_l2_configured` forced true,
+//     which backfills EVERY unlisted SCM key to "none" and starts enforcing it
+//     -- a mass-lockout risk that needs a staging pass, not a merge.
+//   - `"none"` still does not hide a nav entry: every SCM entry ORs
 //     `anyPerm: ["*","scm.access"]` against `anyAccess`, and `navFilter.ts:81-84`
 //     only drops the `scm.access` term when `scm_l2_configured` is true. What
-//     actually hides Delivery Returns today is `hideForSales` on the nav entry
-//     plus `DeliveryReturnsGuard` on the route -- NOT this line.
+//     hides Delivery Returns in the UI is `hideForSales` on the nav entry plus
+//     `DeliveryReturnsGuard` on the route -- both untouched, and both now
+//     BACKED by a real gate rather than standing in for one.
 //   - Where this map IS load-bearing: the FRONTEND reads it from /auth/me
 //     (`quickActionAccess` compares `scm.sales.orders` through ACCESS_RANK
 //     against `edit`), and the backend area-guard enforces it for any cohort
 //     member who IS L2-configured -- which per z1's measurement includes the
 //     Sales Director.
-// Making the deny half real needs `scm_l2_configured` forced true for the
-// cohort, which backfills EVERY unlisted SCM key to "none" and starts enforcing
-// it -- a mass-lockout risk that needs a staging pass, not a merge. Not done
-// here, deliberately.
 //
 // WHY HERE AND NOT IN THE ROUTES. `page_access` is read by BOTH sides -- the
 // backend's scm/middleware/area-guard (`user.page_access[area]`, GET/HEAD needs
@@ -74,8 +83,8 @@ import type { AccessLevel } from "./pageAccess";
 const SALES_POSITION = /^sales/i;
 
 function isSalesCohort(u: {
-  position_name: string | null;
-  department_name: string | null;
+  position_name?: string | null;
+  department_name?: string | null;
 }): boolean {
   const dept = (u.department_name ?? "").toLowerCase();
   if (dept.includes("sales")) return true;
@@ -86,19 +95,24 @@ function isSalesCohort(u: {
  *  answers the SCM sales chain ONLY, and deliberately does not touch Projects,
  *  Service Cases, or anything else a rep's position legitimately configures.
  *
- *  THE DIRECTOR IS IN THIS COHORT, and that is an OPEN QUESTION, not a decision.
- *  `isSalesCohort` matches on department, so "Sales Director" matches -- these
- *  four levels are SET on him too, overriding whatever his matrix row says. His
- *  JD quote names "销售人员" (salespeople); whether that includes the Sales
- *  Director has never been ruled, and z1 (2026-07-17) recorded the gap as the
- *  blocker it is. Two of these lines can only ever REMOVE access, and only from
- *  him -- he is the one cohort member likely to hold a matrix grant above `view`:
- *    - delivery/invoices `view` CAPS him at read; if his row says edit/full, the
- *      area-guard now 403s his DO/SI writes.
- *    - returns `none` DENIES him outright once L2-configured.
- *  Left exactly as #671 shipped it. "Fixing" it needs his rows (the aa1 export,
- *  `positionAccessSnapshot.ts`, still ships EMPTY) -- exempting him blind could
- *  just as easily strip a `view` he has today. His ruling first, then the code.
+ *  THE DIRECTOR IS IN THIS COHORT, and as of 2026-07-17 that is a RULING, not an
+ *  open question: "sales director 算sales" (owner). `isSalesCohort` matches on
+ *  department, so "Sales Director" matches, and these four levels are SET on him
+ *  too, overriding whatever his matrix row says.
+ *
+ *  WHAT HIS RULING DID AND DID NOT SETTLE -- the distinction is the whole reason
+ *  only the deny half is enforced. He ruled on the COHORT ("算sales") and on
+ *  RETURNS ("就是要关"). He did NOT rule that the Director should be capped at
+ *  `view` on DO/SI; that cap is #671's inference from a quote naming "销售人员",
+ *  and z1 (2026-07-17) recorded it as unruled. So:
+ *    - returns `none` DENIES him -- enforced, his words, `salesJdDenial()`.
+ *    - delivery/invoices `view` would CAP him at read -- NOT enforced for a
+ *      non-L2 caller, and deliberately left inert. Enforcing it would take his
+ *      DO/SI writes away on an inference, which is the exact move this file
+ *      exists to end. Pinned by the UNRULED test.
+ *  His own export (2026-07-17) shows scm.procurement / warehouse / transportation
+ *  / consignment / finance ALL `none` on his row, so the returns deny costs him
+ *  nothing elsewhere -- measured, not assumed.
  */
 const SALES_JD: Readonly<Record<string, AccessLevel>> = {
   // Owner 2026-07-17: "销售部门原本就是卖东西、开 SO 的。如果他们没有开 SO，
@@ -108,11 +122,77 @@ const SALES_JD: Readonly<Record<string, AccessLevel>> = {
   // SI，所以他们通常只是来看而已。" -- Office operates it; Sales only looks.
   "scm.sales.delivery": "view",
   "scm.sales.invoices": "view",
-  // NOT QUOTED ANYWHERE -- see PROVENANCE in the header. Asserted as an owner
-  // rule by f2ca099 / PR #417 (2026-07-14); inert for a non-L2 rep; live only
-  // against an L2-configured cohort member, i.e. in practice the Director.
+  // Owner 2026-07-17: "该关（我确实讲过 / 就是要关）" -- his rule, confirmed his
+  // when asked, and "sales director 算sales" puts the Director inside it. This is
+  // the ONE line here that is enforced for the whole cohort regardless of
+  // `scm_l2_configured` -- see salesJdDenial() and the header.
   "scm.sales.returns": "none",
 };
+
+/** Plain-language reason per denied area, for the 403 body. Keyed off the SAME
+ *  map above rather than standing as a second list of denied areas -- a second
+ *  list is how the rule and its enforcement drift apart. A denied area with no
+ *  sentence here still denies (the fallback below); it just says less. */
+const DENY_REASON: Readonly<Record<string, string>> = {
+  "scm.sales.returns":
+    "Delivery Returns is handled by the Office team, not Sales. Ask Office to raise the return for you.",
+};
+
+/** The tolerant caller shape. The area-guard holds a Houzs `AuthUser`; SCM route
+ *  handlers hold `houzsUser` (scm/env.ts), whose fields are all optional because
+ *  the bridge mirrors them. One predicate has to answer for both, so it reads
+ *  only what both actually carry. */
+export interface SalesJdCaller {
+  permissions?: ReadonlyArray<string> | ReadonlySet<string>;
+  permissions_set?: ReadonlySet<string>;
+  position_name?: string | null;
+  department_name?: string | null;
+}
+
+function hasWildcard(u: SalesJdCaller): boolean {
+  if (u.permissions_set?.has("*")) return true;
+  const p = u.permissions;
+  if (!p) return false;
+  return Array.isArray(p) ? p.includes("*") : (p as ReadonlySet<string>).has("*");
+}
+
+/**
+ * Is this caller denied `area` by the Sales JD? Returns the plain-language
+ * reason to put in the 403 body, or null when the JD has nothing to say.
+ *
+ * THIS IS THE DENY HALF, AND ONLY THE DENY HALF. It answers exactly one
+ * question -- "does SALES_JD say `none` for this cohort member?" -- and is
+ * derived from SALES_JD, so it cannot list an area the rule does not deny.
+ *
+ * WHY IT EXISTS SEPARATELY FROM applySalesJdOverride. That function writes the
+ * level into `page_access`; the area-guard then SKIPS `page_access` entirely for
+ * any caller without an explicit `scm*` row (the NO-LOCKOUT fallthrough). So for
+ * a Sales rep the written `"none"` was theatre: `hideForSales` hid the nav entry
+ * and the URL still returned real data. This predicate is consulted BEFORE that
+ * fallthrough, which closes the door without touching `scm_l2_configured` --
+ * forcing that flag true would backfill every unlisted SCM key to "none" and
+ * lock the cohort out of Procurement, Warehouse and the rest (z1 measured it).
+ *
+ * `*` IS EXEMPT, first and unconditionally -- narrowing the owner/IT wildcard
+ * would lock him out of his own system.
+ *
+ * A CALLER THIS CANNOT IDENTIFY IS NOT DENIED (undefined caller, or no
+ * department + no position -> isSalesCohort false -> null). That is fail-OPEN,
+ * stated plainly rather than hidden: this predicate only ever ADDS a denial on
+ * top of gates that already ran (the coarse `scm.access` umbrella upstream, and
+ * supabaseAuth), so an unidentifiable caller lands exactly where it lands today
+ * instead of being newly locked out on missing data.
+ */
+export function salesJdDenial(
+  user: SalesJdCaller | null | undefined,
+  area: string,
+): string | null {
+  if (!user) return null;
+  if (hasWildcard(user)) return null;
+  if (!isSalesCohort(user)) return null;
+  if (SALES_JD[area] !== "none") return null;
+  return DENY_REASON[area] ?? "This page is not part of the Sales role.";
+}
 
 /**
  * Apply the Sales JD over a hydrated page-access map.
