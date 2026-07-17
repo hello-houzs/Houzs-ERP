@@ -301,6 +301,13 @@ const ERROR_CODE_MESSAGES: Record<string, string> = {
     'This order belongs to 2990 and can only be changed in 2990. Any change made here would be undone automatically.',
   so_create_blocked_2990:
     'New orders for 2990 have to be created in 2990. An order created here would take a number 2990 is about to use, and would be overwritten.',
+  // The add-on amount is folded into the line's selling price and never prints
+  // as its own figure, so the description is the only thing on the customer's
+  // document that says what the extra charge was for. Naming the field is the
+  // whole message here — "add a description" is not actionable if you don't
+  // know which box.
+  extra_addon_needs_description:
+    'A special add-on charge needs a description. Fill in "Describe the special order..." next to the extra charge, or clear the amount.',
 };
 
 export function humanApiError(status: number, body: string): string {
