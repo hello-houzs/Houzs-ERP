@@ -24,6 +24,7 @@ import { isSalesDirectorUser } from "../auth/salesAccess";
 import { relativeTime, cn } from "../lib/utils";
 import type { TeamMember, Invitation, Role, Department, Position } from "../types";
 import { MemberOrgPerformance } from "./team/MemberOrgPerformance";
+import { Forbidden } from "./Forbidden";
 import { RolesTab } from "./Roles";
 import { PositionsTab } from "./Positions";
 import { MailboxesTab } from "./MailboxesTab";
@@ -209,17 +210,6 @@ export function Team() {
   const canSeeMembers = canUsers || isSalesDir;
   const canInvite = canManageUsers || isSalesDir;
 
-  const raw = params.get("tab") as TeamTabValue | null;
-  const active: TeamTabValue =
-    raw &&
-    ["hub", "members", "positions", "roles", "orgchart", "departments", "mail"].includes(
-      raw,
-    )
-      ? raw
-      : canSeeMembers
-      ? "members"
-      : "roles";
-
   function setTab(next: TeamTabValue) {
     const p = new URLSearchParams(params);
     p.set("tab", next);
@@ -241,6 +231,44 @@ export function Team() {
     // Roles tab removed (owner: "删了role") — Position governs page access; a
     // baseline role is auto-assigned on invite. Re-add this line to restore.
   ];
+
+  // The landing tab, and the fallback when the requested one is not theirs.
+  const firstVisible = tabs.find((t) => t.show !== false)?.value ?? null;
+
+  // Whether the user can open a tab's CONTENT — deliberately not the same list
+  // as the strip. Entry to /team is granted by the POSITION page matrix
+  // (PageGuard) while every tab below is gated by ROLE permissions, and the two
+  // hydrate from different tables (position_page_access vs roles.permissions
+  // — services/auth.ts), so they can disagree and an admitted user may be able
+  // to open nothing. `roles` is absent from the strip (owner: "删了role") but
+  // the editor is still live and reachable by URL, so it stays viewable for
+  // roles.read. `hub` has something to list only if some tab is visible.
+  const canViewTab: Record<TeamTabValue, boolean> = {
+    hub: firstVisible !== null,
+    members: canSeeMembers,
+    positions: canManageUsers,
+    orgchart: canSeeMembers,
+    departments: canSeeMembers,
+    roles: canRoles,
+    mail: canManageMail,
+  };
+
+  const raw = params.get("tab") as TeamTabValue | null;
+  const requested = raw && raw in canViewTab ? raw : null;
+  // Honour the requested tab only if the user can open it, else land on their
+  // first real one. Falling back to a tab they cannot see renders the header
+  // over an empty body, which is what `: "roles"` used to do here.
+  const active: TeamTabValue | null =
+    requested && canViewTab[requested] ? requested : firstVisible;
+
+  // No tab at all — say so instead of rendering a page with nothing under it.
+  if (active === null)
+    return (
+      <Forbidden
+        page="team"
+        reason="Your position opens the Team page, but your role doesn't include any of its sections. Ask an administrator to update your role."
+      />
+    );
 
   const TAB_HEADER: Record<
     TeamTabValue,
