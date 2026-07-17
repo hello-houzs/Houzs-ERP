@@ -10,6 +10,7 @@ import {
 import { getCachedUser, setCachedUser, bustCachedUser } from "./sessionCache";
 import { isScopedProjectUser } from "./projectAcl";
 import { applySalesJdOverride } from "./salesJdAccess";
+import { applyOperationJdOverride } from "./operationJdAccess";
 import { shadowComparePositionAccess } from "./positionAccessShadow";
 
 // ── Crypto helpers ────────────────────────────────────────
@@ -341,11 +342,22 @@ async function hydrateAuthUser(env: Env, row: any): Promise<AuthUser> {
     department_id: row.department_id ?? null,
     department_name: row.department_name ?? null,
     brand_scope: brandScope,
-    page_access: applySalesJdOverride(pageAccess, {
-      permissions: permissionsSet,
-      position_name: row.position_name ?? null,
-      department_name: row.department_name ?? null,
-    }),
+    // Two org-chart JD overrides compose over the hydrated matrix. They touch
+    // DISJOINT keys (sales -> scm.sales.*, operation -> scm.warehouse.*), so
+    // order is immaterial; sales first, then operation, deliberately. Both are
+    // no-ops for `*` and for anyone outside their cohort.
+    page_access: applyOperationJdOverride(
+      applySalesJdOverride(pageAccess, {
+        permissions: permissionsSet,
+        position_name: row.position_name ?? null,
+        department_name: row.department_name ?? null,
+      }),
+      {
+        permissions: permissionsSet,
+        position_name: row.position_name ?? null,
+        department_name: row.department_name ?? null,
+      },
+    ),
     scm_l2_configured: scmMeta.explicitScm,
     // sessions.origin — present only on the getUserBySession row (that SELECT
     // already joins `sessions`, so this costs no extra round-trip). getUserById
