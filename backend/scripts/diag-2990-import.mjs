@@ -1,109 +1,112 @@
 #!/usr/bin/env node
-// Phase 2 diagnostics — READ-ONLY. Explains src-vs-imported gaps (series 7->3)
-// and audits dangling FKs on company_id=2990 rows (load ran with FK checks off).
-import postgres from "postgres";
+// TEMPORARY PROBE (branch diag/selling-price-probe -- NEVER MERGE).
+// This file normally holds the Phase 2 import diagnostics; it is replaced here
+// only so the existing read-only diag-2990.yml workflow can run one question.
+//
+// THE QUESTION, read-only: does 2990's live maintenance config actually carry
+// sellingPriceSen values today?
+//
+// Why it decides everything: Houzs's Maintenance writes ONE price (priceSen =
+// COST, owner rule 2026-06-22) and deliberately omits sellingPriceSen -- see
+// migrations-pg/0030 "costSen/sellingPriceSen are opt-in and intentionally
+// omitted". 2990's POS charges the customer from sellingPriceSen ALONE
+// (apps/pos/src/lib/queries.ts:720 `surcharge: Math.round(o.sellingPriceSen ?? 0) / 100`).
+// 2990's only config write endpoint takes the WHOLE blob, so pushing Houzs's
+// config over would drop that field -> `?? 0` -> every surcharge becomes RM 0.00
+// on the POS, live within ~300ms via the Realtime subscription, with no error.
+//
+// So: if sellingPriceSen is unset everywhere today, the POS surcharges are
+// ALREADY 0 and a push loses nothing. If it carries values, a push is real
+// revenue loss. The code comment claiming "Unset today everywhere" is dated
+// 2026-05-28 and cannot be trusted two months on.
 import { createClient } from "@supabase/supabase-js";
-const SUPA_URL = process.env.SOURCE_SUPABASE_URL, SUPA_KEY = process.env.SOURCE_SERVICE_ROLE_KEY, DST = process.env.DATABASE_URL;
-if (!DST) { console.error("need DATABASE_URL"); process.exit(2); }
-const dst = postgres(DST, { ssl: "require", prepare: false, max: 1 });
+
+const SUPA_URL = process.env.SOURCE_SUPABASE_URL;
+const SUPA_KEY = process.env.SOURCE_SERVICE_ROLE_KEY;
+if (!SUPA_URL || !SUPA_KEY) {
+  console.error("SOURCE_SUPABASE_URL / SOURCE_SERVICE_ROLE_KEY missing");
+  process.exit(2);
+}
+const src = createClient(SUPA_URL, SUPA_KEY, { auth: { persistSession: false } });
+
+const PRICED_POOLS = ["divanHeights", "legHeights", "totalHeights", "specials", "sofaLegHeights", "sofaSpecials"];
 
 async function main() {
-  const cidRow = await dst`SELECT id FROM companies WHERE code='2990'`;
-  const cid = Number(cidRow[0].id);
-  console.log(`2990 company_id=${cid}`);
-
-  console.log("=== scm.series constraints ===");
-  const cons = await dst`SELECT conname, pg_get_constraintdef(c.oid) AS def FROM pg_constraint c JOIN pg_class cl ON cl.oid=c.conrelid JOIN pg_namespace n ON n.oid=cl.relnamespace WHERE n.nspname='scm' AND cl.relname='series'`;
-  for (const r of cons) console.log(`${r.conname}: ${r.def}`);
-
-  console.log("=== dest scm.series rows ===");
-  const destSeries = await dst.unsafe("SELECT * FROM scm.series ORDER BY id");
-  for (const r of destSeries) console.log(JSON.stringify(r));
-
-  if (SUPA_URL && SUPA_KEY) {
-    console.log("=== source (2990) series rows ===");
-    const src = createClient(SUPA_URL, SUPA_KEY, { auth: { persistSession: false } });
-    const { data, error } = await src.schema("public").from("series").select("*");
-    if (error) console.log("SRC_ERR " + error.message);
-    else for (const r of data) console.log(JSON.stringify(r));
+  const { data, error } = await src
+    .from("maintenance_config_history")
+    .select("id, scope, effective_from, created_at, config")
+    .eq("scope", "master")
+    .order("effective_from", { ascending: false })
+    .order("created_at", { ascending: false })
+    .limit(1);
+  if (error) throw new Error(`maintenance_config_history: ${error.message}`);
+  if (!data?.length) {
+    console.log("NO_MASTER_ROW -- 2990 has no scope='master' config row.");
+    return;
   }
 
-  console.log("=== dangling-FK audit on company_id=2990 rows (scm, single-col FKs) ===");
-  const fks = await dst`
-    SELECT c.conname, cl.relname AS child, a.attname AS col, fn.nspname AS pns, fcl.relname AS parent, fa.attname AS pcol
-    FROM pg_constraint c
-    JOIN pg_class cl ON cl.oid=c.conrelid
-    JOIN pg_namespace n ON n.oid=cl.relnamespace
-    JOIN pg_class fcl ON fcl.oid=c.confrelid
-    JOIN pg_namespace fn ON fn.oid=fcl.relnamespace
-    CROSS JOIN LATERAL unnest(c.conkey) WITH ORDINALITY k(attnum,ord)
-    JOIN pg_attribute a ON a.attrelid=cl.oid AND a.attnum=k.attnum
-    CROSS JOIN LATERAL unnest(c.confkey) WITH ORDINALITY fk(attnum,ord2)
-    JOIN pg_attribute fa ON fa.attrelid=fcl.oid AND fa.attnum=fk.attnum AND fk.ord2=k.ord
-    WHERE c.contype='f' AND n.nspname='scm' AND array_length(c.conkey,1)=1`;
-  let bad = 0;
-  for (const f of fks) {
-    const hasCid = await dst`SELECT 1 FROM information_schema.columns WHERE table_schema='scm' AND table_name=${f.child} AND column_name='company_id'`;
-    if (!hasCid.length) continue;
-    const q = `SELECT count(*)::int AS n FROM scm."${f.child}" t WHERE t.company_id=${cid} AND t."${f.col}" IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "${f.pns}"."${f.parent}" p WHERE p."${f.pcol}" = t."${f.col}")`;
-    let n; try { n = (await dst.unsafe(q))[0].n; } catch (e) { console.log(`ERR ${f.child}.${f.col}: ${e.message}`); continue; }
-    if (n > 0) { bad += n; console.log(`DANGLING ${f.child}.${f.col} -> ${f.parent}.${f.pcol}: ${n} rows`); }
-  }
-  console.log(bad === 0 ? "FK_AUDIT_CLEAN" : `FK_AUDIT_TOTAL_DANGLING=${bad}`);
+  const row = data[0];
+  console.log(`resolved master row: id=${row.id} effective_from=${row.effective_from} created_at=${row.created_at}`);
+  const cfg = row.config ?? {};
 
-  console.log("=== unprefixed doc-ref scan (text cols named like doc refs, company=2990 rows) ===");
-  const tabs = await dst`SELECT DISTINCT table_name FROM information_schema.columns WHERE table_schema='scm' AND column_name='company_id'`;
-  let hits = 0;
-  for (const { table_name: t } of tabs) {
-    const cols = await dst`SELECT column_name FROM information_schema.columns WHERE table_schema='scm' AND table_name=${t} AND data_type IN ('text','character varying') AND (column_name LIKE '%doc_no%' OR column_name LIKE '%\\_number%' OR column_name LIKE '%reference%')`;
-    for (const { column_name: c } of cols) {
-      const q = `SELECT count(*)::int AS n, min("${c}") AS sample FROM scm."${t}" WHERE company_id=${cid} AND "${c}" IS NOT NULL AND "${c}" NOT LIKE '2990-%'`;
-      try { const [r] = await dst.unsafe(q); if (r.n > 0) { hits += r.n; console.log(`UNPREFIXED ${t}.${c}: ${r.n} (e.g. ${r.sample})`); } } catch {}
+  let total = 0;
+  let withSelling = 0;
+  let nonZeroSelling = 0;
+
+  console.log("");
+  console.log("pool                | entries | has selling | selling>0 | sample");
+  console.log("--------------------+---------+-------------+-----------+--------");
+  for (const pool of PRICED_POOLS) {
+    const arr = Array.isArray(cfg[pool]) ? cfg[pool] : null;
+    if (!arr) {
+      console.log(`${pool.padEnd(19)} | ABSENT from the blob`);
+      continue;
     }
+    const ws = arr.filter((o) => o?.sellingPriceSen !== undefined && o?.sellingPriceSen !== null);
+    const nz = ws.filter((o) => Number(o.sellingPriceSen) > 0);
+    total += arr.length;
+    withSelling += ws.length;
+    nonZeroSelling += nz.length;
+    const sample = nz[0]
+      ? `${nz[0].value}: selling=${nz[0].sellingPriceSen} priceSen=${nz[0].priceSen}`
+      : arr[0]
+        ? `${arr[0].value}: priceSen=${arr[0].priceSen} selling=${arr[0].sellingPriceSen ?? "(unset)"}`
+        : "(empty pool)";
+    console.log(
+      `${pool.padEnd(19)} | ${String(arr.length).padStart(7)} | ${String(ws.length).padStart(11)} | ${String(nz.length).padStart(9)} | ${sample}`,
+    );
   }
-  console.log(hits === 0 ? "DOCREF_SCAN_CLEAN" : `DOCREF_SCAN_HITS=${hits} (judge each: internal doc refs need prefix, external/supplier numbers do not)`);
 
-  console.log("=== company separation: per-table row counts (c1 | c2 | NULL) ===");
-  const scoped = await dst`SELECT t.table_name FROM information_schema.tables t WHERE t.table_schema='scm' AND t.table_type='BASE TABLE' AND EXISTS (SELECT 1 FROM information_schema.columns c WHERE c.table_schema='scm' AND c.table_name=t.table_name AND c.column_name='company_id') ORDER BY t.table_name`;
-  let nullTagged = 0;
-  for (const { table_name: t } of scoped) {
-    const [r] = await dst.unsafe(`SELECT count(*) FILTER (WHERE company_id=1)::int AS c1, count(*) FILTER (WHERE company_id=2)::int AS c2, count(*) FILTER (WHERE company_id IS NULL)::int AS cn FROM scm."${t}"`);
-    if (r.c1 + r.c2 + r.cn > 0) console.log(`${t}: ${r.c1} | ${r.c2} | ${r.cn}`);
-    if (r.cn > 0) { nullTagged += r.cn; console.log(`NULL_COMPANY ${t}: ${r.cn} rows untagged`); }
+  console.log("");
+  console.log(`TOTALS entries=${total} withSellingPriceSen=${withSelling} sellingGreaterThanZero=${nonZeroSelling}`);
+  console.log("");
+  if (nonZeroSelling === 0) {
+    console.log("VERDICT: SELLING_UNSET -- no priced option carries a non-zero sellingPriceSen.");
+    console.log("  POS surcharge for these pools is ALREADY RM 0.00 (queries.ts:720 `?? 0`).");
+    console.log("  A whole-blob push from Houzs would not lose retail revenue on these pools.");
+  } else {
+    console.log(`VERDICT: SELLING_IN_USE -- ${nonZeroSelling} option(s) carry a real sellingPriceSen.`);
+    console.log("  A whole-blob push from Houzs WOULD zero these on the POS within ~300ms, silently.");
+    console.log("  Any push must read-modify-write and preserve sellingPriceSen per entry.");
   }
-  console.log(nullTagged === 0 ? "NULL_TAG_CLEAN" : `NULL_TAG_TOTAL=${nullTagged}`);
 
-  console.log("=== cross-company FK leak scan (child company_id <> parent company_id) ===");
-  let leaks = 0;
-  for (const f of fks) {
-    const bothScoped = await dst`SELECT (SELECT count(*) FROM information_schema.columns WHERE table_schema='scm' AND table_name=${f.child} AND column_name='company_id')::int + (SELECT count(*) FROM information_schema.columns WHERE table_schema=${f.pns} AND table_name=${f.parent} AND column_name='company_id')::int AS n`;
-    if (Number(bothScoped[0].n) !== 2) continue;
-    const q = `SELECT count(*)::int AS n FROM scm."${f.child}" t JOIN "${f.pns}"."${f.parent}" p ON p."${f.pcol}" = t."${f.col}" WHERE t."${f.col}" IS NOT NULL AND t.company_id IS DISTINCT FROM p.company_id`;
-    try { const [r] = await dst.unsafe(q); if (r.n > 0) { leaks += r.n; console.log(`XLEAK ${f.child}.${f.col} -> ${f.pns}.${f.parent}: ${r.n} rows cross-company`); } } catch (e) { console.log(`ERR xleak ${f.child}.${f.col}: ${e.message}`); }
+  const meta = cfg.sofaCompartmentMeta;
+  if (meta && typeof meta === "object") {
+    const entries = Object.entries(meta);
+    const priced = entries.filter(([, v]) => Number(v?.defaultPriceCenti ?? 0) > 0);
+    console.log("");
+    console.log(`sofaCompartmentMeta: ${entries.length} entries, ${priced.length} with defaultPriceCenti > 0`);
+    if (priced.length) console.log(`  e.g. ${priced[0][0]} = ${priced[0][1].defaultPriceCenti} centi`);
   }
-  console.log(leaks === 0 ? "XCOMPANY_CLEAN" : `XCOMPANY_TOTAL=${leaks} (known exception: products.series_id -> shared seeded series)`);
 
-  // Completeness matrix: for EVERY dest scm table, ask the 2990 SOURCE for its row
-  // count and compare with what we hold under company_id=2. Surfaces tables that
-  // were never in the migration ORDER list (e.g. mfg_products).
-  if (SUPA_URL && SUPA_KEY) {
-    console.log("=== source-vs-dest completeness (src rows | dest c2 rows) ===");
-    const src = createClient(SUPA_URL, SUPA_KEY, { auth: { persistSession: false } });
-    const allTabs = await dst`SELECT t.table_name FROM information_schema.tables t WHERE t.table_schema='scm' AND t.table_type='BASE TABLE' ORDER BY t.table_name`;
-    let missing = 0;
-    for (const { table_name: t } of allTabs) {
-      const { count, error } = await src.schema("public").from(t).select("*", { count: "exact", head: true });
-      if (error) continue; // table doesn't exist on source
-      const srcN = count ?? 0;
-      if (srcN === 0) continue;
-      const hasCid = await dst`SELECT 1 FROM information_schema.columns WHERE table_schema='scm' AND table_name=${t} AND column_name='company_id'`;
-      const q = hasCid.length ? `SELECT count(*)::int AS n FROM scm."${t}" WHERE company_id=2` : `SELECT count(*)::int AS n FROM scm."${t}"`;
-      const [r] = await dst.unsafe(q);
-      const mark = r.n >= srcN ? "ok" : "MISSING";
-      if (mark === "MISSING") missing++;
-      console.log(`${mark} ${t}: ${srcN} | ${r.n}${hasCid.length ? "" : " (shared, total)"}`);
-    }
-    console.log(missing === 0 ? "COMPLETENESS_CLEAN" : `COMPLETENESS_GAPS=${missing} tables`);
-  }
+  const pools = Object.keys(cfg).sort();
+  console.log("");
+  console.log(`config keys present on 2990 (${pools.length}): ${pools.join(", ")}`);
 }
-main().then(() => dst.end()).catch(async e => { console.error("DIAG_FAIL", e.message); await dst.end(); process.exit(1); });
+
+main()
+  .then(() => process.exit(0))
+  .catch((e) => {
+    console.error("FAIL", e.message);
+    process.exit(1);
+  });
