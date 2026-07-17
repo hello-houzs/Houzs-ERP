@@ -66,9 +66,12 @@ describe("pmsAccess — project-detail section gating", () => {
     expect(a.sections).not.toContain("WF_SENSITIVE");
     // Still opens + views the project.
     expect(a.canOpen).toBe(true);
-    // Owner 2026-07-15: Setup & Dismantle is hidden from a Sales PIC too.
-    expect(a.canSetupDismantle).toBe(false);
-    expect(a.sections).not.toContain("SETUP_DISMANTLE");
+    // Owner 2026-07-17: "sales supposed can view mobile and laptop for this
+    // part" — this REVERSES his 2026-07-15 hide (7f7fc27). SETUP_DISMANTLE is a
+    // VISIBILITY section only; it grants no edit, which is why restoring it does
+    // not weaken the read-only assertions above. The newer ruling wins.
+    expect(a.canSetupDismantle).toBe(true);
+    expect(a.sections).toContain("SETUP_DISMANTLE");
   });
 
   test("isFinanceViewer / financeHiddenForUser gate money for non-directors only", () => {
@@ -106,15 +109,18 @@ describe("pmsAccess — project-detail section gating", () => {
     expect(a.sections).not.toContain("RENTAL");
   });
 
-  test("Sales NOT the PIC: only expo/chat, no booth, no setup/dismantle, no money", () => {
+  test("Sales NOT the PIC: expo/chat + view-only setup/dismantle, no booth, no money", () => {
     const a = getPmsAccess(user({ id: 7, position_name: "Sales Executive" }), { pic_id: 99 });
     expect(a.role).toBe("SALES");
     expect(a.sections).toEqual(
       expect.arrayContaining(["EXPO_MAP", "EVENT_CHAT"]),
     );
-    // Owner 2026-07-15: Setup & Dismantle removed from non-director Sales.
-    expect(a.canSetupDismantle).toBe(false);
-    expect(a.sections).not.toContain("SETUP_DISMANTLE");
+    // Owner 2026-07-17: "sales supposed can view mobile and laptop for this
+    // part" — REVERSES his 2026-07-15 removal (7f7fc27). The newer ruling wins.
+    expect(a.canSetupDismantle).toBe(true);
+    expect(a.sections).toContain("SETUP_DISMANTLE");
+    // The money and booth lines are UNCHANGED by that reversal and stay pinned:
+    // S&D is a visibility section, and restoring it must not widen anything else.
     expect(a.sections).not.toContain("FINANCIAL");
     expect(a.sections).not.toContain("BOOTH_LAYOUT");
   });
