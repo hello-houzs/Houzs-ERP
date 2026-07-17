@@ -39,6 +39,14 @@ export type PostSiResult =
   | { ok: true; status: 'already_posted'; jeNo: string; jeId: string }
   | { ok: false; status: 'invoice_not_found' | 'zero_total' | 'je_insert_failed' | 'lines_insert_failed' | 'post_failed'; reason?: string };
 
+/* Every read below binds its `error`. supabase-js does NOT throw — a failed
+   select resolves { data: null, error }, so `?? []` folds "we could not ask" into
+   "the answer is no". On an idempotency guard that inversion does not degrade the
+   result, it DEFEATS the guard and writes the entry a second time. Discriminator
+   (shared with #678/#690): error !== null → abort; error === null && data === []
+   → genuinely nothing there → fall through, which is the correct first booking
+   and MUST keep working. */
+
 /**
  * Post (or no-op if already posted) the GL entry for a Sales Invoice.
  * Returns a structured result; never throws on the expected failure paths.
@@ -49,11 +57,23 @@ export async function postSiRevenue(sb: any, invoiceNumber: string): Promise<Pos
   // entry it calls us to post a FRESH one at the new total, so a reversed
   // original must NOT block the re-post. The trial-balance views already exclude
   // reversed entries, so only a live one means "already posted".
-  const { data: existingRows } = await sb
+  /* #690 hardened this exact guard on the PI side (postPiAccounting) and left its
+     SI original — the twin the PI docblock names as the thing it "mirrors". The SI
+     side is the hotter path: PI posts only on demand, SI auto-posts on every
+     create/confirm. A blip here reads as "no JE exists yet" and books a SECOND
+     Dr AR / Cr Sales, double-counting the revenue. Nothing is written before this
+     point, so returning strands nothing: the SI stays unposted and the next call
+     (create/confirm/resync are all idempotent) posts it once. */
+  const { data: existingRows, error: existErr } = await sb
     .from('journal_entries')
     .select('id, je_no, reversed')
     .eq('source_type', 'SI')
     .eq('source_doc_no', invoiceNumber);
+  if (existErr) {
+    /* eslint-disable-next-line no-console */
+    console.error('[si-revenue] idempotency read failed — SI NOT posted:', invoiceNumber, existErr.message);
+    return { ok: false, status: 'post_failed', reason: existErr.message };
+  }
   const activeExisting = ((existingRows ?? []) as Array<{ id: string; je_no: string; reversed: boolean | null }>)
     .find((r) => !r.reversed);
   if (activeExisting) {
@@ -137,10 +157,15 @@ export async function postSiRevenue(sb: any, invoiceNumber: string): Promise<Pos
   return { ok: true, status: 'posted', jeNo: je.je_no, jeId: je.id, totalSen };
 }
 
+/* 'reversal_read_failed' is the honest third state this type was missing: a read
+   that did not answer is neither "reversed" nor "nothing to reverse". It is the
+   ONLY type change the read-hardening needed — the whole downstream chain already
+   widens to `string` (ResyncSiResult's ok:false) or only console.errors the value
+   (sales-invoices.ts), and nothing anywhere narrows on a reversal status literal. */
 export type ReverseSiResult =
   | { ok: true; status: 'reversed'; jeNo: string; jeId: string }
   | { ok: true; status: 'already_reversed' | 'nothing_to_reverse' }
-  | { ok: false; status: 'reversal_insert_failed' | 'reversal_lines_failed'; reason?: string };
+  | { ok: false; status: 'reversal_insert_failed' | 'reversal_lines_failed' | 'reversal_read_failed'; reason?: string };
 
 /**
  * Reverse (void) the revenue JE for a Sales Invoice when it is CANCELLED.
@@ -161,11 +186,18 @@ export async function reverseSiRevenue(sb: any, invoiceNumber: string): Promise<
   // historical SI JEs after edit-driven void+repost cycles (resyncSiRevenue), so
   // we void the live one, not an arbitrary `.limit(1)` row. Nothing live →
   // nothing to reverse.
-  const { data: origRows } = await sb
+  /* A failed read here used to return { ok:true, 'nothing_to_reverse' } — the
+     caller cancels the SI, believes the GL was squared, and logs nothing, while a
+     live revenue JE stays posted against a cancelled invoice. The books then claim
+     revenue the company cancelled, and no later run revisits it: every healthy
+     retry of this function sees the JE and reverses it, but nothing retries a
+     cancel that already reported success. */
+  const { data: origRows, error: origErr } = await sb
     .from('journal_entries')
     .select('id, je_no, entry_date, reversed, total_debit_sen, total_credit_sen, narration, company_id')
     .eq('source_type', 'SI')
     .eq('source_doc_no', invoiceNumber);
+  if (origErr) return { ok: false, status: 'reversal_read_failed', reason: `origRows: ${origErr.message}` };
   const orig = ((origRows ?? []) as Array<{ id: string; je_no: string; entry_date: string; reversed: boolean; total_debit_sen: number; total_credit_sen: number; narration: string | null; company_id: number | null }>)
     .find((r) => !r.reversed);
   if (!orig) return { ok: true, status: 'nothing_to_reverse' };
@@ -174,12 +206,17 @@ export async function reverseSiRevenue(sb: any, invoiceNumber: string): Promise<
   // flag never stuck). Keyed on reversed_by_je = orig.id, NOT just "any reversal
   // for this invoice", so a prior cycle's reversal doesn't block voiding the
   // current live JE.
-  const { data: revExisting } = await sb
+  /* This guard is the only thing making the reversal idempotent, so a blip does not
+     degrade it — it defeats it and writes a SECOND contra JE. The cancellation is
+     then booked twice and the invoice's revenue is over-reversed. Still before any
+     write: returning leaves the original live and a retry reverses it once. */
+  const { data: revExisting, error: revExistErr } = await sb
     .from('journal_entries')
     .select('id, je_no')
     .eq('source_type', 'SI_REVERSAL')
     .eq('reversed_by_je', orig.id)
     .limit(1);
+  if (revExistErr) return { ok: false, status: 'reversal_read_failed', reason: `revExisting: ${revExistErr.message}` };
   if (revExisting && revExisting.length > 0) {
     // The reversing JE exists but the flag never got set — make the flag stick.
     await sb.from('journal_entries').update({ reversed: true, reversed_by_je: revExisting[0].id }).eq('id', orig.id);
@@ -195,11 +232,18 @@ export async function reverseSiRevenue(sb: any, invoiceNumber: string): Promise<
 
   // Load the original lines so the reversal mirrors the SAME accounts + parties,
   // just with debit/credit swapped (a faithful contra entry).
-  const { data: origLines } = await sb
+  /* The `?? []` fold below is load-bearing for the genuinely-empty case, so the
+     error must be caught BEFORE it: a failed read is indistinguishable from "the
+     original had no lines" and silently takes the canonical-2-line fallback, which
+     mirrors the assumed accounts instead of the real ones (wrong party attribution
+     at best; a contra against accounts the original never touched at worst). Last
+     read before the first write — abort is still free. */
+  const { data: origLines, error: origLinesErr } = await sb
     .from('journal_entry_lines')
     .select('account_code, debit_sen, credit_sen, party_type, party_code, party_name, notes')
     .eq('journal_entry_id', orig.id)
     .order('line_no');
+  if (origLinesErr) return { ok: false, status: 'reversal_read_failed', reason: `origLines: ${origLinesErr.message}` };
   const oLines = (origLines ?? []) as Array<{
     account_code: string; debit_sen: number; credit_sen: number;
     party_type: string | null; party_code: string | null; party_name: string | null; notes: string | null;
@@ -281,20 +325,31 @@ export type ResyncSiResult =
  */
 export async function resyncSiRevenue(sb: any, invoiceNumber: string): Promise<ResyncSiResult> {
   // Current live SI JE (non-reversed) + its booked total.
-  const { data: jeRows } = await sb
+  const { data: jeRows, error: jeErr } = await sb
     .from('journal_entries')
     .select('id, total_debit_sen, reversed')
     .eq('source_type', 'SI')
     .eq('source_doc_no', invoiceNumber);
+  if (jeErr) return { ok: false, status: 'resync_read_failed', reason: `jeRows: ${jeErr.message}` };
   const active = ((jeRows ?? []) as Array<{ id: string; total_debit_sen: number; reversed: boolean | null }>)
     .find((r) => !r.reversed);
 
-  // Current invoice total + status.
-  const { data: si } = await sb
+  /* The most destructive read in this file, and it reads as a lookup. A blip left
+     `si` null, so newTotal folded to 0 and status folded to '' — which walks
+     straight past the CANCELLED/DRAFT short-circuit, fails the unchanged-total
+     test against any real total, reverses the live JE, and then returns
+     { ok:true, 'reversed_to_zero' } because 0 <= 0. A healthy invoice loses its
+     revenue on a line edit and the caller is told it succeeded. It does NOT
+     re-post (the re-post sits after that early return), so nothing self-heals
+     until someone edits a line again.
+     `error === null && si === null` stays untouched: the invoice is genuinely
+     gone and voiding its JE is the existing, intended behaviour. */
+  const { data: si, error: siErr } = await sb
     .from('sales_invoices')
     .select('total_centi, status')
     .eq('invoice_number', invoiceNumber)
     .maybeSingle();
+  if (siErr) return { ok: false, status: 'resync_read_failed', reason: `si: ${siErr.message}` };
   const newTotal = Number((si as { total_centi?: number } | null)?.total_centi ?? 0);
 
   /* A CANCELLED or DRAFT invoice must never (re)post revenue. CANCELLED: its JE
