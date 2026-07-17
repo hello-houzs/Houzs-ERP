@@ -10,6 +10,7 @@ import {
 import { getCachedUser, setCachedUser, bustCachedUser } from "./sessionCache";
 import { isScopedProjectUser } from "./projectAcl";
 import { applySalesJdOverride } from "./salesJdAccess";
+import { shadowComparePositionAccess } from "./positionAccessShadow";
 
 // ── Crypto helpers ────────────────────────────────────────
 // PBKDF2 via Web Crypto — built into Workers, no WASM needed.
@@ -297,6 +298,32 @@ async function hydrateAuthUser(env: Env, row: any): Promise<AuthUser> {
     : row.position_id != null
       ? await loadPageAccessForPosition(env, row.position_id, scmMeta)
       : await loadPageAccessForRole(env, row.role_id, permissionsSet, scmMeta);
+
+  // SHADOW ONLY — reads a second opinion, serves neither. `pageAccess` above is
+  // and stays the table's answer; this reports where positionAccessSnapshot
+  // would have disagreed, so the cutover can be decided on prod evidence instead
+  // of a promise (positionAccessShadow.ts explains why that evidence cannot come
+  // from staging). Deliberately NOT applied to the `*` branch: the wildcard
+  // never touches the position matrix, so there is nothing to compare, and
+  // asking would only invite narrowing fullAccessMap().
+  //
+  // try/catch because this is the login path and a shadow that can break
+  // authentication is worse than no shadow at all.
+  if (!permissionsSet.has("*") && row.position_id != null) {
+    try {
+      shadowComparePositionAccess(env, row.position_id, pageAccess, scmMeta);
+    } catch (e) {
+      console.warn(
+        JSON.stringify({
+          evt: "position_access_shadow",
+          result: "error",
+          position_id: row.position_id,
+          message: String((e as Error)?.message ?? e),
+        }),
+      );
+    }
+  }
+
   return {
     id: row.id,
     email: row.email,

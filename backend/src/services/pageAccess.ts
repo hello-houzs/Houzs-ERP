@@ -761,19 +761,36 @@ export async function loadPageAccessForRole(
  * Returned record is attached to `AuthUser.page_access` exactly like the role
  * loader's output, so `requirePageAccess` / `usePageAccess` need no changes.
  */
-export async function loadPageAccessForPosition(
-  env: Env,
-  positionId: number,
+/**
+ * The position inherit model as a PURE function of its rows — the single
+ * implementation of the cascade, shared by every source of those rows.
+ *
+ * WHY THIS IS EXTRACTED RATHER THAN COPIED. The rows can now come from two
+ * places: the live `position_page_access` table (below) and the generated
+ * `positionAccessSnapshot` photograph. A second local implementation of this
+ * cascade is the one thing that must not exist — `positions.ts:306-313` already
+ * refused to write one for the export's `resolved` map, for the same reason:
+ * "a review table that quietly disagrees with login is worse". Two resolvers
+ * would have to be PROVEN equal on every cell forever; one resolver fed from
+ * two sources reduces that to "are the rows equal", which is a data question a
+ * test can answer once. So `explicit[key] ?? out[parent]` lives here exactly
+ * once and both callers pass through it.
+ *
+ * THE FILTER IS PART OF THE SEMANTICS, not hygiene. `isValidPageKey` drops rows
+ * whose key left the registry, and `explicitScm` is set INSIDE that guard — so
+ * an orphan `scm*` row does NOT mark a caller L2-configured. The snapshot
+ * carries its 6 orphan rows verbatim (the export keeps them on purpose:
+ * "a photograph that drops them is not a photograph"), so a snapshot-fed caller
+ * that skipped this guard would flip `scm_l2_configured` true and backfill every
+ * unlisted SCM key to "none" — the mass lockout z1 measured. Sharing the filter
+ * is what makes that impossible rather than merely unlikely.
+ */
+export function resolvePositionAccessFromRows(
+  rows: Iterable<{ page_key: string; level: string }>,
   meta?: PageAccessMeta,
-): Promise<Record<string, AccessLevel>> {
-  const rows = await env.DB.prepare(
-    `SELECT page_key, level FROM position_page_access WHERE position_id = ?`,
-  )
-    .bind(positionId)
-    .all<{ page_key: string; level: string }>();
-
+): Record<string, AccessLevel> {
   const explicit: Record<string, AccessLevel> = {};
-  for (const r of rows.results ?? []) {
+  for (const r of rows) {
     if (isValidPageKey(r.page_key) && isValidAccessLevel(r.level)) {
       explicit[r.page_key] = r.level;
       if (meta && r.page_key.startsWith("scm")) meta.explicitScm = true;
@@ -799,4 +816,18 @@ export async function loadPageAccessForPosition(
   }
 
   return out;
+}
+
+export async function loadPageAccessForPosition(
+  env: Env,
+  positionId: number,
+  meta?: PageAccessMeta,
+): Promise<Record<string, AccessLevel>> {
+  const rows = await env.DB.prepare(
+    `SELECT page_key, level FROM position_page_access WHERE position_id = ?`,
+  )
+    .bind(positionId)
+    .all<{ page_key: string; level: string }>();
+
+  return resolvePositionAccessFromRows(rows.results ?? [], meta);
 }
