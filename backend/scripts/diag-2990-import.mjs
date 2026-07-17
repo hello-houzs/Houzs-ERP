@@ -1,11 +1,18 @@
 #!/usr/bin/env node
 // TEMPORARY PROBE (branch diag/selling-price-probe -- NEVER MERGE).
-// Replaces the Phase 2 import diagnostics only so the existing read-only
-// diag-2990.yml workflow can carry questions to prod. SELECTs only.
+// Read-only. SELECTs only.
 //
-// FIVE MONEY/CORRECTNESS LANDMINES, measured before anyone "fixes" them.
-// Each was found by reading code today; none has been measured. Fixing a
-// predicted bug blind is how you ship a real one.
+// THE QUESTION: is the recursive-override chain actually walkable in prod?
+//
+// Owner ruled 2026-07-17: a manager earns on THEIR OWN downline, not the whole
+// showroom ("跟著自己的sales的"). That is chain mode (PR #708). But chain mode
+// walks users.manager_id, and bridges an SO's salesperson to a Houzs user via
+// scm.staff.user_id (the mig-0066 link).
+//
+// **Both links fail SILENTLY.** A NULL manager_id looks exactly like "top of the
+// tree"; a NULL staff.user_id looks exactly like "has no downline". Either one
+// pays RM 0 and reports success -- the `?? 0`-hides-ignorance class, in payroll.
+// So: count the coverage BEFORE flipping the default, not after someone's payslip.
 import postgres from "postgres";
 
 const DST = process.env.DATABASE_URL;
@@ -15,90 +22,103 @@ const dst = postgres(DST, {
   types: { bigint: { to: 20, from: [20], serialize: String, parse: Number } },
 });
 
-const q = async (label, sql, fn) => {
-  try { console.log(`${label}: ${await fn()}`); }
-  catch (e) { console.log(`${label}: QUERY FAILED -- ${e.message}`); }
+const q = async (label, fn) => {
+  try { console.log(`  ${label}: ${await fn()}`); }
+  catch (e) { console.log(`  ${label}: QUERY FAILED -- ${e.message.split("\n")[0]}`); }
 };
 
 async function main() {
-  // --- 1. idempotency_keys: the sweep has never run (timestamptz < text). How big? ---
-  console.log("=== 1. idempotency_keys (sweep is broken -- unbounded since day one?) ===");
-  await q("  rows", null, async () =>
-    (await dst`SELECT count(*)::int AS n FROM idempotency_keys`)[0].n);
-  await q("  oldest", null, async () =>
-    (await dst`SELECT min(created_at) AS m FROM idempotency_keys`)[0].m ?? "(empty)");
-  await q("  total size", null, async () =>
-    (await dst`SELECT pg_size_pretty(pg_total_relation_size('idempotency_keys')) AS s`)[0].s);
-  // Confirm the DELETE actually raises, rather than trusting the read of the shim.
-  await q("  does the sweep predicate raise?", null, async () => {
-    try {
-      await dst.unsafe(
-        `SELECT count(*) FROM idempotency_keys WHERE created_at < to_char(timezone('UTC',now()) - interval '24 hours','YYYY-MM-DD HH24:MI:SS')`);
-      return "NO -- it runs. The audit's claim is WRONG.";
-    } catch (e) { return `YES -- ${e.message.split("\n")[0]}`; }
-  });
+  // --- 1. Does anyone have an HR profile at all? If 0, everything below is moot ---
+  console.log("=== 1. HR profiles (no profile => the person is silently dropped from commission) ===");
+  await q("hr_salesperson_profiles rows", async () =>
+    (await dst`SELECT count(*)::int AS n FROM scm.hr_salesperson_profiles`)[0].n);
+  await q("  of which active", async () =>
+    (await dst`SELECT count(*)::int AS n FROM scm.hr_salesperson_profiles WHERE active`)[0].n);
+  await q("  of which tier=manager", async () =>
+    (await dst`SELECT count(*)::int AS n FROM scm.hr_salesperson_profiles WHERE tier = 'manager'`)[0].n);
+  await q("hr_item_kpi rows", async () =>
+    (await dst`SELECT count(*)::int AS n FROM scm.hr_item_kpi`)[0].n);
+  await q("hr_commission_config rows (one per company expected)", async () =>
+    (await dst`SELECT count(*)::int AS n FROM scm.hr_commission_config`)[0].n);
 
-  // --- 2. The DO/DR idempotency indexes six comments call the "hard backstop" ---
+  // --- 2. manager_id — the chain itself ---
   console.log("");
-  console.log("=== 2. inventory_movements unique indexes (do the DO/DR ones exist?) ===");
-  const idx = await dst`SELECT indexname, indexdef FROM pg_indexes WHERE schemaname='scm' AND tablename='inventory_movements' ORDER BY indexname`;
-  for (const i of idx) console.log(`  ${i.indexname}`);
-  const names = idx.map((i) => i.indexname);
-  for (const want of ["uq_inv_mov_do_source", "uq_inv_mov_dr_source", "uq_inv_mov_cs_do_source", "uq_inv_mov_cs_dr_source"]) {
-    console.log(`  ${want}: ${names.includes(want) ? "EXISTS" : "*** MISSING ***"}`);
-  }
-  // If we CREATE the missing ones, would they fail on existing data?
-  console.log("  -- would creating the DO/DR uniques FAIL on existing data? (dupes block the migration => blocks ALL deploys)");
-  await q("  duplicate (source_doc_type, source_doc_id, product_code, variant_key) groups", null, async () => {
+  console.log("=== 2. users.manager_id (chain mode walks THIS; NULL = top of tree = earns nothing) ===");
+  await q("active users", async () =>
+    (await dst`SELECT count(*)::int AS n FROM users WHERE status = 'active'`)[0].n);
+  await q("active users WITH a manager_id", async () =>
+    (await dst`SELECT count(*)::int AS n FROM users WHERE status = 'active' AND manager_id IS NOT NULL`)[0].n);
+  await q("active SALES-dept users", async () => {
     const r = await dst`
-      SELECT count(*)::int AS n FROM (
-        SELECT source_doc_type, source_doc_id, product_code, variant_key, count(*) AS c
-          FROM scm.inventory_movements
-         WHERE source_doc_type IN ('DO','DR')
-         GROUP BY 1,2,3,4 HAVING count(*) > 1) t`;
-    return `${r[0].n} (a non-zero number means the "obvious" fix BLOCKS EVERY DEPLOY)`;
+      SELECT count(*)::int AS n FROM users u
+        JOIN departments d ON d.id = u.department_id
+       WHERE u.status='active' AND d.name ILIKE '%sales%'`;
+    return r[0].n;
+  });
+  await q("active SALES-dept users WITH a manager_id", async () => {
+    const r = await dst`
+      SELECT count(*)::int AS n FROM users u
+        JOIN departments d ON d.id = u.department_id
+       WHERE u.status='active' AND d.name ILIKE '%sales%' AND u.manager_id IS NOT NULL`;
+    return r[0].n;
+  });
+  await q("distinct people who ARE someone's manager", async () =>
+    (await dst`SELECT count(DISTINCT manager_id)::int AS n FROM users WHERE manager_id IS NOT NULL`)[0].n);
+  await q("deepest chain depth reachable", async () => {
+    const r = await dst`
+      WITH RECURSIVE up AS (
+        SELECT id, manager_id, 1 AS d FROM users WHERE manager_id IS NOT NULL
+        UNION ALL
+        SELECT u.id, p.manager_id, up.d + 1
+          FROM up JOIN users u ON u.id = up.id
+                  JOIN users p ON p.id = up.manager_id
+         WHERE p.manager_id IS NOT NULL AND up.d < 12)
+      SELECT COALESCE(max(d), 0)::int AS n FROM up`;
+    return `${r[0].n} (chain mode needs > 0 to pay anyone; MAX_CHAIN_DEPTH is 10)`;
   });
 
-  // --- 3. 'TRANSFER': live enum value, +qty balance rule, no FIFO trigger branch ---
+  // --- 3. The staff.user_id bridge — the OTHER silent failure ---
   console.log("");
-  console.log("=== 3. TRANSFER movements (balance counts them +qty; the FIFO trigger has no branch) ===");
-  await q("  TRANSFER rows", null, async () =>
-    (await dst`SELECT count(*)::int AS n FROM scm.inventory_movements WHERE movement_type='TRANSFER'`)[0].n);
-  await q("  movement_type breakdown", null, async () => {
-    const r = await dst`SELECT movement_type, count(*)::int AS n FROM scm.inventory_movements GROUP BY 1 ORDER BY 1`;
-    return r.map((x) => `${x.movement_type}=${x.n}`).join(" ");
-  });
-
-  // --- 4. DO-cancel orphans: lot consumptions left behind => COGS overstated forever ---
-  console.log("");
-  console.log("=== 4. Orphaned lot consumptions from cancelled DOs (COGS overstated) ===");
-  await q("  cancelled DOs", null, async () =>
-    (await dst`SELECT count(*)::int AS n FROM scm.delivery_orders WHERE status='CANCELLED'`)[0].n);
-  await q("  consumptions still pointing at a CANCELLED DO's OUT movement", null, async () => {
+  console.log("=== 3. scm.staff.user_id bridge (NULL => unbridgeable => rolls up to NOBODY) ===");
+  await q("scm.staff rows", async () =>
+    (await dst`SELECT count(*)::int AS n FROM scm.staff`)[0].n);
+  await q("  WITH user_id set", async () =>
+    (await dst`SELECT count(*)::int AS n FROM scm.staff WHERE user_id IS NOT NULL`)[0].n);
+  await q("  active AND bridged", async () =>
+    (await dst`SELECT count(*)::int AS n FROM scm.staff WHERE active AND user_id IS NOT NULL`)[0].n);
+  await q("profiles whose staff row is UNBRIDGEABLE (the killer)", async () => {
     const r = await dst`
       SELECT count(*)::int AS n
-        FROM scm.inventory_lot_consumptions c
-        JOIN scm.inventory_movements m ON m.id = c.movement_id
-        JOIN scm.delivery_orders d ON d.id::text = m.source_doc_id::text
-       WHERE m.source_doc_type = 'DO' AND d.status = 'CANCELLED'`;
-    return `${r[0].n} (each is COGS that never came back)`;
+        FROM scm.hr_salesperson_profiles p
+        JOIN scm.staff s ON s.id = p.staff_id
+       WHERE s.user_id IS NULL`;
+    return `${r[0].n} (each looks exactly like "has no downline" and pays 0)`;
   });
 
-  // --- 5. batch(): 11 call sites believe they are atomic. Cannot be measured in SQL ---
+  // --- 4. Who actually sells — is any of this even live? ---
   console.log("");
-  console.log("=== 5. batch() -- NOT measurable here ===");
-  console.log("  d1-compat.ts:497 does sql.begin((tx) => ...) and never uses tx; the statements");
-  console.log("  run on the ROOT client. With max:1 the transaction holds the only connection");
-  console.log("  while its own statements queue for one. Predicted: ~12s stall per batch() then");
-  console.log("  a retry outside the transaction. This needs a RUNTIME test on staging, not SQL.");
-  console.log("  11 call sites: assr.ts:388, assrPortal.ts:182/386, projects.ts:322/498/1135/2866/3181,");
-  console.log("  users.ts:420/491, assrLeadTime.ts:53");
+  console.log("=== 4. Do SOs even carry a salesperson? ===");
+  await q("mfg_sales_orders by company", async () => {
+    const r = await dst`SELECT company_id, count(*)::int AS n FROM scm.mfg_sales_orders GROUP BY 1 ORDER BY 1`;
+    return r.map((x) => `co${x.company_id}=${x.n}`).join(" ");
+  });
+  await q("distinct salesperson_id on SOs", async () =>
+    (await dst`SELECT count(DISTINCT salesperson_id)::int AS n FROM scm.mfg_sales_orders WHERE salesperson_id IS NOT NULL`)[0].n);
+  await q("SO status breakdown (DRAFT was paying commission until #708)", async () => {
+    const r = await dst`SELECT status, count(*)::int AS n FROM scm.mfg_sales_orders GROUP BY 1 ORDER BY 2 DESC`;
+    return r.map((x) => `${x.status}=${x.n}`).join(" ");
+  });
 
   console.log("");
-  console.log("=== rows the app has, for scale ===");
-  for (const t of ["scm.inventory_movements", "scm.inventory_lots", "scm.inventory_lot_consumptions", "scm.delivery_orders"]) {
-    await q(`  ${t}`, null, async () => (await dst.unsafe(`SELECT count(*)::int AS n FROM ${t}`))[0].n);
-  }
+  console.log("=== VERDICT ===");
+  const [{ n: profiles }] = await dst`SELECT count(*)::int AS n FROM scm.hr_salesperson_profiles`;
+  const [{ n: chained }] = await dst`SELECT count(*)::int AS n FROM users WHERE status='active' AND manager_id IS NOT NULL`;
+  if (profiles === 0)
+    console.log("  HR profiles = 0 -> /hr/commission returns an EMPTY list for everyone, silently.");
+  if (chained === 0)
+    console.log("  NO user has a manager_id -> chain mode would pay EVERY override RM 0, and look correct.");
+  if (profiles > 0 && chained > 0)
+    console.log("  Both links have coverage. Chain mode is walkable -- verify the per-person numbers above.");
 }
 
 main()
