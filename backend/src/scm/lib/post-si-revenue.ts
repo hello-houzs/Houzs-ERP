@@ -14,25 +14,7 @@
 // ----------------------------------------------------------------------------
 
 import { todayMyt } from './my-time';
-
-const padMmDd = (d: Date): string => {
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const yy = String(d.getFullYear()).slice(-2);
-  return `${yy}${m}`;
-};
-
-const nextJeNo = async (sb: any, date: Date): Promise<string> => {
-  const prefix = `JE-${padMmDd(date)}`;
-  const { data } = await sb
-    .from('journal_entries')
-    .select('je_no')
-    .like('je_no', `${prefix}-%`)
-    .order('je_no', { ascending: false })
-    .limit(1);
-  const last = data?.[0]?.je_no ?? null;
-  const lastN = last ? parseInt(String(last).split('-').pop() ?? '0', 10) : 0;
-  return `${prefix}-${String(lastN + 1).padStart(4, '0')}`;
-};
+import { nextJeNo, jePrefixForCompany } from './doc-no';
 
 export type PostSiResult =
   | { ok: true; status: 'posted'; jeNo: string; jeId: string; totalSen: number }
@@ -113,7 +95,7 @@ export async function postSiRevenue(sb: any, invoiceNumber: string): Promise<Pos
     },
   ];
 
-  const jeNo = await nextJeNo(sb, new Date(si.invoice_date));
+  const jeNo = await nextJeNo(sb, new Date(si.invoice_date), jePrefixForCompany(companyId));
   const { data: je, error: jeErr } = await sb
     .from('journal_entries')
     .insert({
@@ -252,7 +234,7 @@ export async function reverseSiRevenue(sb: any, invoiceNumber: string): Promise<
   // Multi-company (mig 0061): a reversal belongs to the same company as the JE it undoes.
   const companyId = orig.company_id ?? null;
   const companyLine = companyId != null ? { company_id: companyId } : {};
-  const revJeNo = await nextJeNo(sb, new Date(orig.entry_date));
+  const revJeNo = await nextJeNo(sb, new Date(orig.entry_date), jePrefixForCompany(companyId));
   const { data: revJe, error: revErr } = await sb
     .from('journal_entries')
     .insert({
