@@ -44,6 +44,7 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
       - run: npm run typecheck
+      - run: npm test
       - run: npm run build
       # Fail the build if the bundle blew past budget (see the script for
       # the budgets + rationale). Cheap, and the thing that actually keeps

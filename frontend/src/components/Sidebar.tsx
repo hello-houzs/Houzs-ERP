@@ -376,6 +376,20 @@ export const NAV_TABS: NavTab[] = [
         icon: ShoppingCart,
         salesRepOnly: true,
       },
+      // Rep-only Amendments leaf (owner rule 2026-07-16 — a salesperson must see
+      // the amendments for their OWN Sales Orders, they raise them). It has to be
+      // a rep leaf HERE and not the Amendments child of the Sales Order subgroup
+      // below: that subgroup carries hideForSalesRep, and the tree filter drops a
+      // hidden group WITHOUT mapping its children, so the child's deliberate
+      // "no hideForSalesRep" exemption never got the chance to run and the rule
+      // sat dead on desktop while the phone (which gates leaves directly) showed
+      // the row. Same shape + same reasoning as the DO / SI leaves below.
+      {
+        to: "/scm/amendments",
+        label: "Amendments",
+        icon: History,
+        salesRepOnly: true,
+      },
       // Rep-only Delivery Orders + Sales Invoices leaves (owner rule 2026-07-16):
       // a salesperson must be able to find the DO / invoice generated from their
       // OWN Sales Orders (e.g. to resend a customer's invoice). The routes carry
@@ -422,12 +436,11 @@ export const NAV_TABS: NavTab[] = [
         anyAccess: ["scm.sales", "scm.sales.orders", "scm.sales.delivery", "scm.sales.invoices", "scm.sales.returns"],
         children: [
           { to: "/scm/sales-orders", label: "Sales Orders", icon: ShoppingCart, anyPerm: ["*", "scm.access"], anyAccess: ["scm.sales.orders"] },
-          // Owner 2026-07-16 — a salesperson must see the amendments for their
-          // OWN Sales Orders (they raise them), so this mirrors the Sales Orders
-          // entry (same scm.sales.orders access) with NO hideForSalesRep. The
-          // backend list/detail scope a rep to their own+downline SOs, so no
-          // other rep's amendments are exposed.
-          { to: "/scm/amendments", label: "Amendments", icon: History, anyPerm: ["*", "scm.access", "scm.amendment.create", "scm.amendment.supplier_confirm", "scm.amendment.approve_so", "scm.amendment.approve_po"], anyAccess: ["scm.sales.orders"] },
+          // The office / director path to Amendments. A rep reaches it via the
+          // rep-only leaf above instead, so this carries hideForSalesRep like its
+          // DO / SI siblings — belt-and-braces against the parent's flag being
+          // removed, which would otherwise render the row TWICE for a rep.
+          { to: "/scm/amendments", label: "Amendments", icon: History, anyPerm: ["*", "scm.access", "scm.amendment.create", "scm.amendment.supplier_confirm", "scm.amendment.approve_so", "scm.amendment.approve_po"], anyAccess: ["scm.sales.orders"], hideForSalesRep: true },
           { to: "/scm/delivery-orders", label: "Delivery Orders", icon: Send, anyPerm: ["*", "scm.access"], anyAccess: ["scm.sales.delivery"], hideForSalesRep: true },
           { to: "/scm/sales-invoices", label: "Sales Invoices", icon: FileText, anyPerm: ["*", "scm.access"], anyAccess: ["scm.sales.invoices"], hideForSalesRep: true },
           { to: "/scm/delivery-returns", label: "Delivery Returns", icon: RotateCcw, anyPerm: ["*", "scm.access"], anyAccess: ["scm.sales.returns"], hideForSales: true },
