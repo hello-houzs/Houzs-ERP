@@ -1,154 +1,107 @@
 #!/usr/bin/env node
 // TEMPORARY PROBE (branch diag/selling-price-probe -- NEVER MERGE).
 // Replaces the Phase 2 import diagnostics only so the existing read-only
-// diag-2990.yml workflow can carry a question to prod. Read-only: SELECTs only.
+// diag-2990.yml workflow can carry questions to prod. SELECTs only.
 //
-// THE QUESTION: which 2990 staff are NOT yet Houzs users, and who currently
-// holds which company grant?
-//
-// Owner 2026-07-17: bring 2990's staff into Houzs, mark everyone in the
-// Operation and Management departments as BOTH companies, leave Sales
-// company-specific. Before proposing any write, establish the real delta --
-// matching on email, which is the only identifier both systems share
-// (2990 staff.id is a uuid; Houzs users.id is an integer; the mig-0066 bridge
-// derives scm.staff.id from the HOUZS user id, so it cannot match backwards).
+// FIVE MONEY/CORRECTNESS LANDMINES, measured before anyone "fixes" them.
+// Each was found by reading code today; none has been measured. Fixing a
+// predicted bug blind is how you ship a real one.
 import postgres from "postgres";
-import { createClient } from "@supabase/supabase-js";
 
-const SUPA_URL = process.env.SOURCE_SUPABASE_URL;
-const SUPA_KEY = process.env.SOURCE_SERVICE_ROLE_KEY;
 const DST = process.env.DATABASE_URL;
-if (!SUPA_URL || !SUPA_KEY || !DST) {
-  console.error("need SOURCE_SUPABASE_URL + SOURCE_SERVICE_ROLE_KEY + DATABASE_URL");
-  process.exit(2);
-}
-const src = createClient(SUPA_URL, SUPA_KEY, { auth: { persistSession: false } });
-// bigint -> Number, the same transform db/pg.ts applies. Without it postgres.js
-// hands back user_id as a STRING, a Map keyed on it never matches a numeric
-// users.id, and every user reads as "no grant" -- which is the exact shape of
-// the `?? 0` class: a lookup miss rendering as a confident answer.
+if (!DST) { console.error("need DATABASE_URL"); process.exit(2); }
 const dst = postgres(DST, {
-  ssl: "require",
-  prepare: false,
-  max: 1,
+  ssl: "require", prepare: false, max: 1,
   types: { bigint: { to: 20, from: [20], serialize: String, parse: Number } },
 });
 
-const norm = (e) => (e ?? "").trim().toLowerCase();
-// 2990 has shuihor00@gmail.com; Houzs has suihor00@gmail.com -- one letter
-// apart, same person. An exact-match delta would report him missing and invite
-// a duplicate account. Compare a squashed local-part too, and SHOW the near
-// misses rather than silently resolving them.
-const squash = (e) => norm(e).split("@")[0].replace(/[^a-z0-9]/g, "");
+const q = async (label, sql, fn) => {
+  try { console.log(`${label}: ${await fn()}`); }
+  catch (e) { console.log(`${label}: QUERY FAILED -- ${e.message}`); }
+};
 
 async function main() {
-  // --- 2990 staff ---
-  const { data: staff, error } = await src.from("staff").select("*").order("staff_code");
-  if (error) throw new Error(`2990 staff: ${error.message}`);
-  console.log(`=== 2990 public.staff: ${staff.length} rows ===`);
-  const cols = staff[0] ? Object.keys(staff[0]) : [];
-  console.log(`  columns: ${cols.join(", ")}`);
+  // --- 1. idempotency_keys: the sweep has never run (timestamptz < text). How big? ---
+  console.log("=== 1. idempotency_keys (sweep is broken -- unbounded since day one?) ===");
+  await q("  rows", null, async () =>
+    (await dst`SELECT count(*)::int AS n FROM idempotency_keys`)[0].n);
+  await q("  oldest", null, async () =>
+    (await dst`SELECT min(created_at) AS m FROM idempotency_keys`)[0].m ?? "(empty)");
+  await q("  total size", null, async () =>
+    (await dst`SELECT pg_size_pretty(pg_total_relation_size('idempotency_keys')) AS s`)[0].s);
+  // Confirm the DELETE actually raises, rather than trusting the read of the shim.
+  await q("  does the sweep predicate raise?", null, async () => {
+    try {
+      await dst.unsafe(
+        `SELECT count(*) FROM idempotency_keys WHERE created_at < to_char(timezone('UTC',now()) - interval '24 hours','YYYY-MM-DD HH24:MI:SS')`);
+      return "NO -- it runs. The audit's claim is WRONG.";
+    } catch (e) { return `YES -- ${e.message.split("\n")[0]}`; }
+  });
+
+  // --- 2. The DO/DR idempotency indexes six comments call the "hard backstop" ---
   console.log("");
-  for (const s of staff) {
-    console.log(
-      `  ${String(s.staff_code ?? "-").padEnd(12)} ${String(s.name ?? "-").padEnd(18)} ${String(s.role ?? "-").padEnd(16)} ${String(s.email ?? "(no email)").padEnd(34)} active=${s.active ?? s.is_active ?? "?"}`,
-    );
+  console.log("=== 2. inventory_movements unique indexes (do the DO/DR ones exist?) ===");
+  const idx = await dst`SELECT indexname, indexdef FROM pg_indexes WHERE schemaname='scm' AND tablename='inventory_movements' ORDER BY indexname`;
+  for (const i of idx) console.log(`  ${i.indexname}`);
+  const names = idx.map((i) => i.indexname);
+  for (const want of ["uq_inv_mov_do_source", "uq_inv_mov_dr_source", "uq_inv_mov_cs_do_source", "uq_inv_mov_cs_dr_source"]) {
+    console.log(`  ${want}: ${names.includes(want) ? "EXISTS" : "*** MISSING ***"}`);
   }
+  // If we CREATE the missing ones, would they fail on existing data?
+  console.log("  -- would creating the DO/DR uniques FAIL on existing data? (dupes block the migration => blocks ALL deploys)");
+  await q("  duplicate (source_doc_type, source_doc_id, product_code, variant_key) groups", null, async () => {
+    const r = await dst`
+      SELECT count(*)::int AS n FROM (
+        SELECT source_doc_type, source_doc_id, product_code, variant_key, count(*) AS c
+          FROM scm.inventory_movements
+         WHERE source_doc_type IN ('DO','DR')
+         GROUP BY 1,2,3,4 HAVING count(*) > 1) t`;
+    return `${r[0].n} (a non-zero number means the "obvious" fix BLOCKS EVERY DEPLOY)`;
+  });
 
-  // --- Houzs users ---
-  const users = await dst`
-    SELECT u.id, u.email, u.name, u.status,
-           d.name AS dept, p.name AS position, r.name AS role
-      FROM users u
-      LEFT JOIN departments d ON d.id = u.department_id
-      LEFT JOIN positions   p ON p.id = u.position_id
-      LEFT JOIN roles       r ON r.id = u.role_id
-     ORDER BY u.id`;
+  // --- 3. 'TRANSFER': live enum value, +qty balance rule, no FIFO trigger branch ---
   console.log("");
-  console.log(`=== Houzs public.users: ${users.length} rows ===`);
+  console.log("=== 3. TRANSFER movements (balance counts them +qty; the FIFO trigger has no branch) ===");
+  await q("  TRANSFER rows", null, async () =>
+    (await dst`SELECT count(*)::int AS n FROM scm.inventory_movements WHERE movement_type='TRANSFER'`)[0].n);
+  await q("  movement_type breakdown", null, async () => {
+    const r = await dst`SELECT movement_type, count(*)::int AS n FROM scm.inventory_movements GROUP BY 1 ORDER BY 1`;
+    return r.map((x) => `${x.movement_type}=${x.n}`).join(" ");
+  });
 
-  // --- company grants ---
-  const grants = await dst`
-    SELECT uc.user_id, c.code
-      FROM user_companies uc JOIN companies c ON c.id = uc.company_id
-     ORDER BY uc.user_id`;
-  const byUser = new Map();
-  for (const g of grants) {
-    if (!byUser.has(g.user_id)) byUser.set(g.user_id, []);
-    byUser.get(g.user_id).push(g.code);
-  }
-  console.log(`=== user_companies: ${grants.length} grant rows across ${byUser.size} users ===`);
-  console.log("  (a user with NO row is unrestricted -- companyContext fails OPEN and gives ALL companies)");
+  // --- 4. DO-cancel orphans: lot consumptions left behind => COGS overstated forever ---
   console.log("");
-  console.log("  id   email                              dept                 position                  companies");
-  for (const u of users) {
-    const g = byUser.get(u.id);
-    console.log(
-      `  ${String(u.id).padEnd(4)} ${String(u.email ?? "-").padEnd(34)} ${String(u.dept ?? "-").padEnd(20)} ${String(u.position ?? "-").padEnd(25)} ${g ? g.sort().join("+") : "(none = ALL)"}`,
-    );
-  }
+  console.log("=== 4. Orphaned lot consumptions from cancelled DOs (COGS overstated) ===");
+  await q("  cancelled DOs", null, async () =>
+    (await dst`SELECT count(*)::int AS n FROM scm.delivery_orders WHERE status='CANCELLED'`)[0].n);
+  await q("  consumptions still pointing at a CANCELLED DO's OUT movement", null, async () => {
+    const r = await dst`
+      SELECT count(*)::int AS n
+        FROM scm.inventory_lot_consumptions c
+        JOIN scm.inventory_movements m ON m.id = c.movement_id
+        JOIN scm.delivery_orders d ON d.id::text = m.source_doc_id::text
+       WHERE m.source_doc_type = 'DO' AND d.status = 'CANCELLED'`;
+    return `${r[0].n} (each is COGS that never came back)`;
+  });
 
-  // --- the delta, matched on email ---
-  const houzsEmails = new Set(users.map((u) => norm(u.email)).filter(Boolean));
-  const houzsSquash = new Map();
-  for (const u of users) if (u.email) houzsSquash.set(squash(u.email), u);
-
+  // --- 5. batch(): 11 call sites believe they are atomic. Cannot be measured in SQL ---
   console.log("");
-  console.log("=== 2990 staff vs Houzs users ===");
-  let missing = 0;
-  let near = 0;
-  for (const s of staff) {
-    const e = norm(s.email);
-    if (e && houzsEmails.has(e)) continue;
-    const nm = e ? houzsSquash.get(squash(e)) : null;
-    if (nm) {
-      near++;
-      console.log(
-        `  NEAR-MATCH  ${String(s.staff_code ?? "-").padEnd(10)} ${String(s.name ?? "-").padEnd(16)} 2990=${e}  vs  Houzs id=${nm.id} ${nm.email}  -- same person? do NOT create a duplicate`,
-      );
-      continue;
-    }
-    missing++;
-    const posLocal = /\+pos@2990s\.local$/i.test(e);
-    console.log(
-      `  MISSING     ${String(s.staff_code ?? "-").padEnd(10)} ${String(s.name ?? "-").padEnd(16)} ${String(s.role ?? "-").padEnd(15)} ${s.email ?? "(no email)"}${posLocal ? "   <- synthetic POS-only address, not a real mailbox" : ""}`,
-    );
-  }
-  if (!missing && !near) console.log("  (none -- every 2990 staff email already exists in Houzs)");
-  console.log(`  totals: ${missing} missing, ${near} near-match`);
+  console.log("=== 5. batch() -- NOT measurable here ===");
+  console.log("  d1-compat.ts:497 does sql.begin((tx) => ...) and never uses tx; the statements");
+  console.log("  run on the ROOT client. With max:1 the transaction holds the only connection");
+  console.log("  while its own statements queue for one. Predicted: ~12s stall per batch() then");
+  console.log("  a retry outside the transaction. This needs a RUNTIME test on staging, not SQL.");
+  console.log("  11 call sites: assr.ts:388, assrPortal.ts:182/386, projects.ts:322/498/1135/2866/3181,");
+  console.log("  users.ts:420/491, assrLeadTime.ts:53");
 
   console.log("");
-  console.log("=== Houzs departments + positions (the targets for the both-company marking) ===");
-  const depts = await dst`
-    SELECT d.name AS dept, p.name AS position, count(u.id)::int AS n
-      FROM departments d
-      LEFT JOIN positions p ON p.department_id = d.id
-      LEFT JOIN users u     ON u.position_id = p.id AND u.status = 'active'
-     GROUP BY d.name, p.name ORDER BY d.name, p.name`;
-  for (const r of depts) console.log(`  ${String(r.dept ?? "-").padEnd(24)} ${String(r.position ?? "-").padEnd(26)} active_users=${r.n}`);
-
-  console.log("");
-  console.log("=== who would be marked BOTH under the owner's rule (Operation + Management, excluding Sales) ===");
-  const targets = await dst`
-    SELECT u.id, u.email, d.name AS dept, p.name AS position
-      FROM users u
-      JOIN positions p   ON p.id = u.position_id
-      JOIN departments d ON d.id = p.department_id
-     WHERE u.status = 'active'
-       AND (d.name ILIKE '%operation%' OR d.name ILIKE '%management%')
-     ORDER BY d.name, u.id`;
-  console.log(`  ${targets.length} active user(s) match:`);
-  for (const t of targets) {
-    const g = byUser.get(t.id);
-    console.log(`  ${String(t.id).padEnd(4)} ${String(t.email ?? "-").padEnd(34)} ${String(t.dept).padEnd(20)} ${String(t.position).padEnd(25)} now=${g ? g.sort().join("+") : "(none = ALL)"}`);
+  console.log("=== rows the app has, for scale ===");
+  for (const t of ["scm.inventory_movements", "scm.inventory_lots", "scm.inventory_lot_consumptions", "scm.delivery_orders"]) {
+    await q(`  ${t}`, null, async () => (await dst.unsafe(`SELECT count(*)::int AS n FROM ${t}`))[0].n);
   }
 }
 
 main()
   .then(() => dst.end({ timeout: 5 }))
   .then(() => process.exit(0))
-  .catch(async (e) => {
-    console.error("FAIL", e.message);
-    await dst.end({ timeout: 5 }).catch(() => {});
-    process.exit(1);
-  });
+  .catch(async (e) => { console.error("FAIL", e.message); await dst.end({ timeout: 5 }).catch(() => {}); process.exit(1); });
