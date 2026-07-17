@@ -804,10 +804,21 @@ export function Projects() {
     finances: usePageAccess("projects.finances"),
     maintenance: usePageAccess("projects.maintenance"),
   };
+  // Maintenance is a FULL-or-none page by its own catalogue contract
+  // (`projects.maintenance` in pageAccess.ts: supportsPartial false,
+  // partialMeaning "(not used; full or none)"), and Sidebar.tsx states the same
+  // rule on the nav entry with `pageAccessFull`. The generic `!== "none"` test
+  // below admits view/edit — levels this page does not support — and children
+  // INHERIT the parent key when they have no explicit row, so every
+  // `projects = view` user resolved to `maintenance = view`: no nav entry, yet
+  // the hub card below still offered the page. Match the nav's level so the two
+  // gates agree.
+  const canProjectMaintenance = access.maintenance === "full";
   const allowed: ProjectsView[] = PROJECTS_VIEWS.filter(
     (v) =>
       access[v as keyof typeof access] !== "none" &&
-      (v !== "finances" || canProjectFinance)
+      (v !== "finances" || canProjectFinance) &&
+      (v !== "maintenance" || canProjectMaintenance)
   );
   const firstAllowed: ProjectsView | null = allowed[0] ?? null;
 
@@ -858,7 +869,10 @@ export function Projects() {
         { key: "maintenance", label: "Project Maintenance", description: "Templates, checklists and defaults.", icon: Wrench, v: "maintenance" },
       ] as const
     ).filter(
-      (c) => access[c.v] !== "none" && (c.v !== "finances" || canProjectFinance)
+      (c) =>
+        access[c.v] !== "none" &&
+        (c.v !== "finances" || canProjectFinance) &&
+        (c.v !== "maintenance" || canProjectMaintenance)
     );
     return (
       <div>
@@ -890,7 +904,12 @@ export function Projects() {
         ) : (
           <Forbidden page="projects.finances" />
         ))}
-      {view === "maintenance" && <ProjectMaintenanceView />}
+      {view === "maintenance" &&
+        (canProjectMaintenance ? (
+          <ProjectMaintenanceView />
+        ) : (
+          <Forbidden page="projects.maintenance" />
+        ))}
     </div>
   );
 }
