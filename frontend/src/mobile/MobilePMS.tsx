@@ -1739,7 +1739,7 @@ function TaskRow({
         {canAttach && (
           <>
             <input ref={fileRef} type="file" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void upload(f); }} />
-            <button className="tinybtn" style={{ minWidth: 76, display: "inline-flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2, lineHeight: 1, boxSizing: "border-box" }} disabled={busy} onClick={() => fileRef.current?.click()} title={attachments.length ? `${attachments.length} file(s)` : "Attach"}>
+            <button className="tinybtn" style={{ minWidth: 60, display: "inline-flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2, lineHeight: 1, boxSizing: "border-box", border: "none", background: "transparent", color: "#767b6e", padding: "4px 6px" }} disabled={busy} onClick={() => fileRef.current?.click()} title={attachments.length ? `${attachments.length} file(s)` : "Attach"}>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flex: "none" }}><path d="M13.2 6.5 7 12.7a4.4 4.4 0 1 0 6.2 6.2l6.5-6.5a2.9 2.9 0 1 0-4.1-4.1l-6.5 6.5a1.5 1.5 0 1 0 2.1 2.1l6.1-6.2" /></svg>
               <span style={{ fontSize: 9, fontWeight: 700 }}>{attachments.length ? `Attach (${attachments.length})` : "Attach"}</span>
             </button>
@@ -1798,7 +1798,7 @@ function TaskRow({
       {canAttach && (
         <>
           <input ref={fileRef} type="file" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; const cap = pendingCaptionRef.current; pendingCaptionRef.current = undefined; if (f) void upload(f, cap); }} />
-          <button className="tinybtn" style={{ minWidth: 76, display: "inline-flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2, lineHeight: 1, boxSizing: "border-box" }} disabled={busy} onClick={() => void startAttach()} title={isDefectList ? "Write a remark, then upload" : attachments.length ? `${attachments.length} file(s)` : "Attach"}>
+          <button className="tinybtn" style={{ minWidth: 60, display: "inline-flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2, lineHeight: 1, boxSizing: "border-box", border: "none", background: "transparent", color: "#767b6e", padding: "4px 6px" }} disabled={busy} onClick={() => void startAttach()} title={isDefectList ? "Write a remark, then upload" : attachments.length ? `${attachments.length} file(s)` : "Attach"}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flex: "none" }}><path d="M13.2 6.5 7 12.7a4.4 4.4 0 1 0 6.2 6.2l6.5-6.5a2.9 2.9 0 1 0-4.1-4.1l-6.5 6.5a1.5 1.5 0 1 0 2.1 2.1l6.1-6.2" /></svg>
             <span style={{ fontSize: 9, fontWeight: 700 }}>{attachments.length ? `Attach (${attachments.length})` : isDefectList ? "Add photo" : "Attach"}</span>
           </button>
