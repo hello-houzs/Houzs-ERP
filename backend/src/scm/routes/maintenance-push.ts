@@ -12,16 +12,28 @@
 //
 // There is no UI. Owner rule: a UI needs an approved mockup first.
 //
-// SHAPE OF THE THING (why it is a proxy and not a writer):
-// Per D2 (docs/2990-mirror-full-design.md §3.2), Houzs never writes 2990's
-// database. It calls 2990's own POST /maintenance-config/changes as a real 2990
-// user, and 2990's logic runs: 2990's WRITE_ROLES check against its staff table,
-// 2990's effective-dating, 2990's created_by. That endpoint takes the WHOLE
-// config blob, and 2990's POS subscribes to the table via Supabase Realtime
-// (apps/pos/src/lib/queries.ts:1474), so whatever we send is on the tablets in
-// ~300ms — no deploy, no review, no error if it is wrong. Everything defensive
-// in this file follows from that one fact. The merge itself lives in
-// lib/maintenance-push.ts, unit-tested without a network.
+// SHAPE OF THE THING (we are a WRITER — a scoped exception to D2):
+// D2 (docs/2990-mirror-full-design.md §3.2) says Houzs never writes 2990's
+// database, and this feature is the owner-granted exception to it, for one
+// table. The reasoning and its full cost are in lib/bridge-2990.ts's header —
+// read that before changing anything here. In short: 2990's
+// POST /maintenance-config/changes is an RBAC check plus a plain INSERT, with no
+// business logic behind it to reuse, so we do the INSERT ourselves with 2990's
+// service-role key. That is what makes this table the exception and not a
+// precedent — the SO-amendment write-back DOES have an apply engine behind its
+// endpoint (honest-pricing recompute, delivery-fee re-derive, revision bump), so
+// it still has to call 2990's API.
+//
+// What that does NOT change is the hazard everything defensive here answers to:
+// the row we insert carries the WHOLE config blob, and 2990's POS subscribes to
+// this table via Supabase Realtime (apps/pos/src/lib/queries.ts:1474) — which is
+// WAL-based, so it fires for our direct INSERT exactly as it did for 2990's own.
+// Whatever we write is on the tablets in ~300ms: no deploy, no review, no error
+// if it is wrong. Going direct removed 2990's WRITE_ROLES check, which was the
+// ONLY gate in front of this table (RLS is not enabled on it), so the checks in
+// this file and in lib/maintenance-push.ts are now the only ones that run
+// anywhere. The merge itself lives in lib/maintenance-push.ts, unit-tested
+// without a network.
 //
 // NOT IMPLEMENTED ON PURPOSE — the compartment rename. 2990 exposes
 // POST /maintenance-config/sofa-compartments/rename, which rewrites the SKU
@@ -325,10 +337,10 @@ maintenancePush.post('/apply', async (c) => {
       applied: true,
       changeId: result.id,
       effectiveFrom: result.effectiveFrom,
-      // Who really did this. 2990 stamps its own created_by with the BRIDGE
-      // account, so 2990's column will read as the bridge, not this person
-      // (design §3.5 — the mirrored column lies about the actor, by design).
-      // The real actor is recorded here and in the notes above.
+      // Who really did this. The row's created_by on 2990 is NULL — Houzs is not
+      // a 2990 staff member and the column does not pretend otherwise. The owner
+      // ruled the audit trail lives here ("houzs erp 看得到誰改的就行了"), so this
+      // response and the row's notes carry the actor.
       requestedByHouzsUserId: c.get('houzsUser')?.id,
       ...r.report,
     });

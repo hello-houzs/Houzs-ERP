@@ -1,53 +1,96 @@
 // ----------------------------------------------------------------------------
-// bridge-2990 — authenticated client for 2990's OWN production API.
+// bridge-2990 — direct writer for exactly ONE table in 2990's production
+// database: public.maintenance_config_history.
 //
-// D2 (docs/2990-mirror-full-design.md): Houzs never writes 2990's database.
-// When Houzs wants something to change over there, it calls 2990's existing
-// endpoint and 2990's own logic runs — 2990's RBAC, 2990's validation, 2990's
-// effective-dating. This file is the transport for that, and nothing more.
+// TRANSPORT CHANGE (owner, 2026-07-17). This module used to sign in to 2990 as a
+// real bridge user and call 2990's own POST /maintenance-config/changes. The
+// owner rejected that setup (it needs a Supabase auth user plus a public.staff
+// row created inside 2990), and for THIS endpoint he is right that it is
+// avoidable. 2990's handler (apps/api/src/routes/maintenance-config.ts:150-209)
+// is an RBAC check followed by a plain INSERT of
+// {id, scope, config, effective_from, notes, created_by} — verified line by
+// line. There is no cascade, no derived write, no trigger on the table, and no
+// NOTIFY. The INSERT is the whole endpoint, so we can perform it ourselves and
+// lose nothing but the checks enumerated below.
 //
-// WHY A PASSWORD GRANT AND NOT THE SERVICE-ROLE KEY:
-//   2990's supabaseAuth (apps/api/src/middleware/auth.ts) validates the bearer
-//   token against GoTrue's /auth/v1/user and sets `c.get('user')` from the
-//   response. Every writer then gates on the `staff` table keyed by
-//   `c.get('user').id`. The service-role key is not a user — GoTrue returns no
-//   user row for it, so `user.id` is undefined and the staff lookup finds
-//   nothing. The service-role key does not "bypass" that check; it FAILS it.
-//   A real auth user with a real public.staff row is the only thing that works.
+// THIS REASONING IS SPECIFIC TO THIS ONE TABLE AND DOES NOT GENERALISE. The
+// SO-amendment write-back (design §3.2, D2) still MUST call 2990's API:
+// applySoAmendment is a snapshot + line diff + honest-pricing recompute +
+// delivery-fee re-derive + revision bump. Writing that row directly would skip
+// all of it and fork the pricing engine. Do not cite this file as precedent for
+// it.
 //
-// The token is cached for the isolate lifetime and refreshed on a 401. The
-// cache is keyed by (auth host + email) so rotating a secret cannot serve a
-// token minted from the previous config. Note this caches a SERVICE identity,
-// not a per-user one — there is no cross-user leak to worry about here, unlike
-// a cache of caller tokens. The env object is never mutated (a shared isolate
-// mutation is the documented cause of the app-wide 500 in
-// project_houzs_foundation_hardening).
+// WHAT GOING DIRECT GIVES UP — three things, all real, none hypothetical:
+//
+//  1. 2990's WRITE_ROLES check is GONE, and it was the ONLY gate.
+//     maintenance-config.ts:68 restricts writes to admin / super_admin /
+//     coordinator / sales_director via 2990's staff table. RLS is NOT enabled on
+//     maintenance_config_history (verified against prod, 2026-07-17), so that
+//     app-side check was the only thing standing in front of this table. We now
+//     bypass it entirely, and nothing on 2990's side replaces it. What gates
+//     this write is Houzs-side and Houzs-side only: hasHouzsPerm
+//     ('scm.config.write') plus the DB kill switch. Accepted — we ARE the
+//     system, and the owner ruled the audit trail lives in Houzs ("houzs erp
+//     看得到誰改的就行了"). Written down because removing the only gate is not a
+//     thing to do quietly.
+//
+//  2. 2990's validation of the payload is GONE. In full, it was: parseScope()
+//     (scope must be 'master' | 'customer:<id>' | 'supplier:<id>'), an ISO
+//     YYYY-MM-DD test on effectiveFrom, and a `config != null` check. That is
+//     the entire list — 2990 never validated the config blob's shape at all, so
+//     the naive-push hazard this feature exists to prevent was never going to be
+//     caught over there either. All three checks are re-done on this side
+//     (PUSH_SCOPE is the constant 'master', the route ISO-tests effectiveFrom,
+//     and push2990Change re-checks config below). What we actually gave up is a
+//     second opinion, not a check that no longer happens.
+//
+//  3. The service-role key bypasses ALL RLS on 2990's ENTIRE database. This is
+//     the real cost, and it is a genuine widening of blast radius: to insert one
+//     config row, this Worker now holds unrestricted read/write over the live
+//     retail DB — every order, every customer, every price. Supabase has no way
+//     to scope a service key down to one table, so the constraint has to be
+//     built here instead:
+//       · The client is NOT exported. Nothing outside this module can obtain one.
+//       · There is no generic query/fetch helper. The only two operations that
+//         exist are the two this feature needs, and both hardcode TABLE.
+//       · The client is pinned to the public schema, so a typo cannot reach
+//         another one.
+//     That is a code convention, not a database permission. It holds exactly as
+//     long as nobody exports the client. If this file ever needs a third
+//     operation, that is the moment to re-ask whether this key belongs in this
+//     Worker at all.
+//
+// created_by is now NULL, where it used to carry the bridge account's staff
+// uuid. The column is nullable (2990 schema.ts:2553, FK to staff ON DELETE SET
+// NULL), so NULL is legal — and it is more honest than the bridge was: a row
+// 2990 did not author now says so, instead of naming a "Houzs Bridge" staff row
+// that implies a 2990 actor. The real actor is recorded in Houzs and echoed into
+// the row's `notes`.
 // ----------------------------------------------------------------------------
 
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import type { Env } from '../env';
 
+/** The ONLY table this module may touch. Both operations below hardcode it;
+ *  see (3) in the header for why that constant is load-bearing. */
+const TABLE = 'maintenance_config_history';
+
 export interface Bridge2990Config {
-  apiUrl: string;
   supabaseUrl: string;
-  anonKey: string;
-  email: string;
-  password: string;
+  serviceRoleKey: string;
 }
 
 export type BridgeConfigResult =
   | { ok: true; config: Bridge2990Config }
   | { ok: false; missing: string[] };
 
-/** Read the bridge secrets. Every one is required: a partially-configured
- *  bridge must not half-work. Absent secrets are how this feature ships dark —
- *  with nothing set, the push cannot even authenticate, let alone write. */
+/** Read the bridge secrets. Both are required: a partially-configured bridge
+ *  must not half-work. Absent secrets are how this feature ships dark — with
+ *  nothing set, the push cannot reach 2990 at all. */
 export function readBridgeConfig(env: Env): BridgeConfigResult {
   const raw = {
-    BRIDGE_2990_API_URL: env.BRIDGE_2990_API_URL,
     BRIDGE_2990_SUPABASE_URL: env.BRIDGE_2990_SUPABASE_URL,
-    BRIDGE_2990_SUPABASE_ANON_KEY: env.BRIDGE_2990_SUPABASE_ANON_KEY,
-    BRIDGE_2990_EMAIL: env.BRIDGE_2990_EMAIL,
-    BRIDGE_2990_PASSWORD: env.BRIDGE_2990_PASSWORD,
+    BRIDGE_2990_SERVICE_ROLE_KEY: env.BRIDGE_2990_SERVICE_ROLE_KEY,
   };
   const missing = Object.entries(raw)
     .filter(([, v]) => typeof v !== 'string' || v.trim() === '')
@@ -56,25 +99,11 @@ export function readBridgeConfig(env: Env): BridgeConfigResult {
   return {
     ok: true,
     config: {
-      apiUrl: raw.BRIDGE_2990_API_URL!.replace(/\/+$/, ''),
       supabaseUrl: raw.BRIDGE_2990_SUPABASE_URL!.replace(/\/+$/, ''),
-      anonKey: raw.BRIDGE_2990_SUPABASE_ANON_KEY!,
-      email: raw.BRIDGE_2990_EMAIL!,
-      password: raw.BRIDGE_2990_PASSWORD!,
+      serviceRoleKey: raw.BRIDGE_2990_SERVICE_ROLE_KEY!,
     },
   };
 }
-
-interface CachedToken {
-  token: string;
-  /** Epoch ms. Refreshed early by SKEW_MS so a token cannot expire in flight. */
-  expiresAt: number;
-}
-
-const tokenCache = new Map<string, CachedToken>();
-const SKEW_MS = 60_000;
-
-const cacheKey = (cfg: Bridge2990Config) => `${cfg.supabaseUrl}|${cfg.email}`;
 
 export class Bridge2990Error extends Error {
   readonly code: string;
@@ -89,164 +118,168 @@ export class Bridge2990Error extends Error {
   }
 }
 
-/** Exchange the bridge credentials for a 2990 Supabase JWT. */
-async function mintToken(cfg: Bridge2990Config): Promise<CachedToken> {
-  const res = await fetch(`${cfg.supabaseUrl}/auth/v1/token?grant_type=password`, {
-    method: 'POST',
-    headers: { apikey: cfg.anonKey, 'content-type': 'application/json' },
-    body: JSON.stringify({ email: cfg.email, password: cfg.password }),
+/** Deliberately not exported — see (3) in the header. A client handed out of
+ *  this module is unrestricted access to 2990's entire database. */
+function client(cfg: Bridge2990Config): SupabaseClient {
+  return createClient(cfg.supabaseUrl, cfg.serviceRoleKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+    db: { schema: 'public' },
   });
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new Bridge2990Error(
-      'bridge_login_failed',
-      "Could not sign in to 2990 with the bridge account. Check that the account exists in 2990 and that BRIDGE_2990_EMAIL / BRIDGE_2990_PASSWORD are correct.",
-      502,
-      { status: res.status, body: body.slice(0, 500) },
-    );
-  }
-  const json = (await res.json()) as { access_token?: unknown; expires_in?: unknown };
-  if (typeof json.access_token !== 'string' || json.access_token === '') {
-    throw new Bridge2990Error('bridge_login_no_token', 'The 2990 sign-in returned no access token.', 502);
-  }
-  // No `?? 3600` here: an unknown expiry is not a one-hour expiry. When 2990
-  // does not tell us, treat the token as good for one use window only (expire
-  // it immediately after this request) rather than inventing a lifetime.
-  const lifetimeMs = typeof json.expires_in === 'number' && json.expires_in > 0 ? json.expires_in * 1000 : 0;
-  return { token: json.access_token, expiresAt: lifetimeMs > 0 ? Date.now() + lifetimeMs - SKEW_MS : 0 };
-}
-
-async function getToken(cfg: Bridge2990Config, force: boolean): Promise<string> {
-  const key = cacheKey(cfg);
-  if (!force) {
-    const hit = tokenCache.get(key);
-    if (hit && hit.expiresAt > Date.now()) return hit.token;
-  }
-  const minted = await mintToken(cfg);
-  if (minted.expiresAt > Date.now()) tokenCache.set(key, minted);
-  else tokenCache.delete(key);
-  return minted.token;
-}
-
-/** For tests / secret rotation — drop every cached token. */
-export function clearBridgeTokenCache(): void {
-  tokenCache.clear();
-}
-
-export interface BridgeResponse<T> {
-  status: number;
-  body: T;
 }
 
 /**
- * Call 2990's API as the bridge user. Refreshes the token once on a 401 — the
- * cached token may simply have aged out mid-isolate.
+ * 2990's notion of "today", which is the UTC calendar date: maintenance-config
+ * .ts:41 `todayIso()` is `new Date().toISOString().slice(0, 10)` and :78 defaults
+ * asOf to it.
  *
- * Returns the parsed body and status; it does NOT throw on a non-2xx from
- * 2990's application layer, because those are decisions (403 forbidden, 409 bad
- * transition) the caller must handle, not transport failures.
+ * Deliberately NOT todayMyt(). Houzs treats a UTC-based document date as a bug
+ * and fixed it (lib/my-time.ts), but 2990 has not, and this read is not the
+ * place to correct 2990's clock. Between 00:00 and 08:00 MYT the two disagree by
+ * a day, and resolving with MYT would hand the merge a row 2990's own POS is not
+ * serving yet — breaking the one property every safety mechanism here rests on:
+ * that the blob we preserve byte-for-byte is the blob actually on the tablets.
+ * Read what 2990 reads.
  */
-export async function bridge2990Fetch<T = unknown>(
-  cfg: Bridge2990Config,
-  path: string,
-  init: { method?: string; body?: unknown } = {},
-): Promise<BridgeResponse<T>> {
-  const url = `${cfg.apiUrl}${path.startsWith('/') ? path : `/${path}`}`;
-
-  const attempt = async (token: string): Promise<Response> =>
-    fetch(url, {
-      method: init.method ?? 'GET',
-      headers: {
-        authorization: `Bearer ${token}`,
-        apikey: cfg.anonKey,
-        ...(init.body === undefined ? {} : { 'content-type': 'application/json' }),
-      },
-      body: init.body === undefined ? undefined : JSON.stringify(init.body),
-    });
-
-  let res: Response;
-  try {
-    res = await attempt(await getToken(cfg, false));
-    if (res.status === 401) {
-      tokenCache.delete(cacheKey(cfg));
-      res = await attempt(await getToken(cfg, true));
-    }
-  } catch (e) {
-    if (e instanceof Bridge2990Error) throw e;
-    throw new Bridge2990Error('bridge_unreachable', 'Could not reach 2990. It may be down or the API URL may be wrong.', 502, String(e));
-  }
-
-  const text = await res.text();
-  let body: unknown = null;
-  if (text !== '') {
-    try {
-      body = JSON.parse(text);
-    } catch {
-      throw new Bridge2990Error('bridge_bad_response', '2990 returned a response that is not JSON.', 502, {
-        status: res.status,
-        body: text.slice(0, 500),
-      });
-    }
-  }
-  return { status: res.status, body: body as T };
+function today2990Iso(): string {
+  return new Date().toISOString().slice(0, 10);
 }
-
-// --- the two calls this feature makes ---------------------------------------
 
 export interface Resolved2990Config {
   data: Record<string, unknown> | null;
   effectiveFrom: string | null;
-  hasPendingPriceChange?: boolean;
-  pendingEffectiveFrom?: string | null;
+  hasPendingPriceChange: boolean;
+  pendingEffectiveFrom: string | null;
 }
 
-/** GET 2990's currently-effective config for a scope. This is the READ half of
- *  read-modify-write, and it is the ONLY acceptable source for the base blob:
- *  a cached or reconstructed copy would be a guess about live prices. */
+/**
+ * Read 2990's currently-effective config for a scope. This is the READ half of
+ * read-modify-write, and it is the ONLY acceptable source for the base blob: a
+ * cached or reconstructed copy would be a guess about live prices.
+ *
+ * The query reproduces 2990's own resolver (maintenance-config.ts:82-104) —
+ * same filter, same `effective_from DESC, created_at DESC` tie-break, same
+ * limit, same pending-lookahead — so this resolves the row 2990's /resolved
+ * would return. It selects only the two columns the merge needs; the row's
+ * created_by is 2990's business, not ours.
+ */
 export async function fetch2990Resolved(cfg: Bridge2990Config, scope: string): Promise<Resolved2990Config> {
-  const res = await bridge2990Fetch<Resolved2990Config & { error?: string; reason?: string }>(
-    cfg,
-    `/maintenance-config/resolved?scope=${encodeURIComponent(scope)}`,
-  );
-  if (res.status === 403) {
+  const sb = client(cfg);
+  const asOf = today2990Iso();
+
+  const { data: rows, error } = await sb
+    .from(TABLE)
+    .select('config, effective_from')
+    .eq('scope', scope)
+    .lte('effective_from', asOf)
+    .order('effective_from', { ascending: false })
+    .order('created_at', { ascending: false })
+    .limit(1);
+  if (error) {
+    throw new Bridge2990Error('bridge_read_failed', "Could not read 2990's maintenance config.", 502, error.message);
+  }
+  if (!rows || rows.length === 0) {
+    return { data: null, effectiveFrom: null, hasPendingPriceChange: false, pendingEffectiveFrom: null };
+  }
+
+  const row = rows[0] as { config: unknown; effective_from: string };
+  const blob = row.config;
+  // The column is jsonb, which also permits an array, a string or a number. The
+  // merge assumes an object of pools. Refusing an unexpected shape is the same
+  // rule the local reader already applies to Houzs's own row, and the same rule
+  // the merge applies per-pool: a shape we do not understand is a refusal, never
+  // a coercion.
+  if (!blob || typeof blob !== 'object' || Array.isArray(blob)) {
     throw new Bridge2990Error(
-      'bridge_forbidden',
-      "2990 refused the bridge account. Its staff row is missing, inactive, or does not have an editor role.",
-      403,
-      res.body,
+      'bridge_bad_config_shape',
+      "2990's master maintenance config is not a set of option pools, so nothing can be merged into it. This needs a look before anything is sent.",
+      502,
+      { type: Array.isArray(blob) ? 'array' : typeof blob },
     );
   }
-  if (res.status !== 200) {
-    throw new Bridge2990Error('bridge_read_failed', "Could not read 2990's maintenance config.", 502, res.body);
+
+  // Lookahead for a future-dated row, mirroring maintenance-config.ts:98-104.
+  // Unlike 2990's own handler, a failure here THROWS rather than being dropped:
+  // reporting "no pending change" because the query broke would state a fact we
+  // do not have.
+  const { data: pending, error: pendingErr } = await sb
+    .from(TABLE)
+    .select('effective_from')
+    .eq('scope', scope)
+    .gt('effective_from', asOf)
+    .order('effective_from', { ascending: true })
+    .limit(1);
+  if (pendingErr) {
+    throw new Bridge2990Error(
+      'bridge_read_failed',
+      "Could not check whether 2990 has a pending config change.",
+      502,
+      pendingErr.message,
+    );
   }
-  return res.body;
+  const hasPending = Boolean(pending && pending.length > 0);
+
+  return {
+    data: blob as Record<string, unknown>,
+    effectiveFrom: row.effective_from,
+    hasPendingPriceChange: hasPending,
+    pendingEffectiveFrom: hasPending ? (pending![0] as { effective_from: string }).effective_from : null,
+  };
 }
 
-/** POST a new effective-dated config row to 2990. This is 2990's OWN endpoint —
- *  2990 re-checks the role, stamps its own created_by, and appends its own
- *  history row. We are a caller, not a writer. */
+/** Mint the row id the way 2990 does (maintenance-config.ts:61-64). The column
+ *  is TEXT PRIMARY KEY with no default, so the id is the writer's to supply, and
+ *  a row whose id does not look like 2990's own would stand out wrongly in its
+ *  own history UI. */
+function newChangeId(): string {
+  const rnd = crypto.randomUUID().replace(/-/g, '').slice(0, 12);
+  return `mch-${rnd}`;
+}
+
+/**
+ * Append a new effective-dated config row to 2990. This is the write 2990's
+ * POST /maintenance-config/changes would have performed, performed directly —
+ * see the header for exactly what that skips and why it is equivalent.
+ *
+ * The POS picks the row up unchanged: it subscribes to postgres_changes on this
+ * table (apps/pos/src/lib/queries.ts:1474), which is WAL-based and so fires
+ * identically whether the INSERT came from 2990's API or from here.
+ */
 export async function push2990Change(
   cfg: Bridge2990Config,
   input: { scope: string; config: unknown; effectiveFrom: string; notes?: string },
 ): Promise<{ id: string; effectiveFrom: string }> {
-  const res = await bridge2990Fetch<{ id?: string; effectiveFrom?: string; error?: string; reason?: string }>(
-    cfg,
-    '/maintenance-config/changes',
-    { method: 'POST', body: input },
-  );
-  if (res.status === 403) {
-    throw new Bridge2990Error(
-      'bridge_forbidden',
-      "2990 refused the change. The bridge account's staff row is missing, inactive, or does not have an editor role (admin, super_admin, coordinator or sales_director).",
-      403,
-      res.body,
-    );
+  // 2990's config_required check (maintenance-config.ts:171), re-done here now
+  // that we no longer get its second opinion. The column is NOT NULL, so this is
+  // a clear refusal instead of a raw constraint violation.
+  if (input.config == null) {
+    throw new Bridge2990Error('bridge_config_required', 'Refusing to send an empty config to 2990.', 500);
   }
-  if (res.status !== 201 || typeof res.body?.id !== 'string') {
-    throw new Bridge2990Error('bridge_write_failed', 'The change was not accepted by 2990.', 502, res.body);
+
+  const sb = client(cfg);
+  const id = newChangeId();
+
+  const { data, error } = await sb
+    .from(TABLE)
+    .insert({
+      id,
+      scope: input.scope,
+      config: input.config,
+      effective_from: input.effectiveFrom,
+      notes: input.notes === undefined ? null : input.notes,
+      // NULL, not a bridge account — see the header. Houzs is not a 2990 staff
+      // member and this column will not pretend otherwise.
+      created_by: null,
+    })
+    .select('id, effective_from')
+    .single();
+
+  if (error) {
+    throw new Bridge2990Error('bridge_write_failed', 'The change was not accepted by 2990.', 502, {
+      code: error.code,
+      message: error.message,
+    });
   }
-  // Echo-or-ours: 2990 validated and stored effectiveFrom, so falling back to
-  // what we sent is a statement of fact, not a guess.
-  const stored = typeof res.body.effectiveFrom === 'string' ? res.body.effectiveFrom : input.effectiveFrom;
-  return { id: res.body.id, effectiveFrom: stored };
+
+  const stored = data as { id: string; effective_from: string };
+  return { id: stored.id, effectiveFrom: stored.effective_from };
 }
