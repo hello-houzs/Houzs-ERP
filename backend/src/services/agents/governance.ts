@@ -36,7 +36,7 @@ export type SpecAgentId =
 /** The families the CODE already runs (services/agent-console.ts). Not 1:1 with
  *  the spec: DOCUMENT/PMS have no spec agent, and OF/COM/GCOA have no family. */
 export type AgentFamily =
-  | 'DELIVERY' | 'DOCUMENT' | 'CS' | 'COLLECTION' | 'PROCUREMENT' | 'PMS';
+  | 'DELIVERY' | 'DOCUMENT' | 'CS' | 'COLLECTION' | 'PROCUREMENT' | 'PMS' | 'OF';
 
 /** Family → spec ID, for the families that map. The unmapped ones are honest
  *  absences, not forced fits:
@@ -47,6 +47,7 @@ export type AgentFamily =
  *   • CS       — computes delivery-promise dates; it is NOT the Communication
  *                agent (no WhatsApp/email, no reply→facts). HZS-COM-003 is a gap. */
 export const FAMILY_TO_SPEC: Partial<Record<AgentFamily, SpecAgentId>> = {
+  OF: 'HZS-OF-001',
   DELIVERY: 'HZS-DLV-002',
   COLLECTION: 'HZS-AR-005',
   PROCUREMENT: 'HZS-REP-004',
@@ -55,7 +56,6 @@ export const FAMILY_TO_SPEC: Partial<Record<AgentFamily, SpecAgentId>> = {
 /** Spec agents with NO code implementation yet (survey 2026-07-17). Named so the
  *  registry is honest about the gaps rather than pretending coverage. */
 export const UNIMPLEMENTED_SPEC_AGENTS: readonly SpecAgentId[] = [
-  'HZS-OF-001',
   'HZS-COM-003',
   'HZS-SI-006',
   'GROUP-GCOA-001',

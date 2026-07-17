@@ -205,6 +205,7 @@ const REVIEW_FAMILY_SOURCES: Record<
   CS: { task: "cs-run", proposalTable: "cs_agent_proposals" },
   PROCUREMENT: { task: "procurement-run", proposalTable: "procurement_agent_proposals" },
   PMS: { task: "pms-run", proposalTable: "pms_agent_proposals" },
+  OF: { task: "of-run", findingsTable: "of_agent_findings" },
 };
 
 export interface AgentReviewFamily {
