@@ -62,6 +62,7 @@ import mailInbound from "./routes/mail-inbound";
 // 2990 → Houzs LIVE SO mirror receiver. PRE-AUTH (secret-guarded, called by the
 // 2990 DB via pg_net, no user JWT) — mounted at the top level, outside /api/scm.
 import { soMirror } from "./scm/routes/so-mirror";
+import { amendmentMirror } from "./scm/routes/amendment-mirror";
 // POS auth (Phase 1 of the 2990-backend replacement): PIN/session login for the
 // 2990 POS. Mounted PRE-AUTH; its two write endpoints re-apply `auth` per-route.
 import pos from "./routes/pos";
@@ -154,6 +155,10 @@ app.route("/api/supplier-portal", supplierPortal);
 app.route("/api/mail-center/inbound", mailInbound);
 // 2990 live SO mirror — pre-auth, secret-guarded (x-sync-secret == SYNC_SECRET).
 app.route("/api/sync/so-mirror", soMirror);
+// 2990 live SO AMENDMENT mirror — same caller, same secret, SEPARATE route and
+// SEPARATE 2990-side drain/cron, so an amendment failure can never stall the SO
+// mirror the business already runs on.
+app.route("/api/sync/amendment-mirror", amendmentMirror);
 // POS auth — pin-login + sales-staff are PRE-AUTH (before the /api/* gate);
 // set-pin/verify-pin/sales-stats re-apply `auth` inside the router.
 app.route("/api/pos", pos);
