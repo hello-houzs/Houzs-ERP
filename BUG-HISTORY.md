@@ -1,5 +1,14 @@
 ## 2026-07-17
 
+### 🔴 The class behind #710 and #712: `computeMrp`'s `companyId` was OPTIONAL, so silence meant "plan both companies as one" — and only the callers that could not know better were bitten
+- **Symptom:** two shipped cross-company bugs in one day, each found only after the fact. The signature is the common cause.
+- **Root cause:** `companyId?: number | null`, no-op when omitted. The doc on `leadBuffers` **one line below** already made the argument — *"REQUIRED, not optional, on purpose ... Making it required means a new caller cannot forget"* — and it was simply never applied to the line above it.
+- **Who it selected for.** Every REQUEST-driven caller passes `activeCompanyId(c)` and was always correct. Both **HEADLESS** callers omitted it, and that is not chance: an agent has no request, therefore no company, therefore nothing to pass — so the default answered on its behalf. The signature was safe for callers who already knew the answer and silent for the ones who didn't.
+- **Fix:** `companyId: number | null | undefined` — `undefined` is still a legal VALUE but the KEY is no longer optional. `companyId?:` lets a caller omit it and say nothing; this makes them type the word. Runtime unchanged for every honest caller (`activeCompanyId` returns `number | undefined` and still passes as-is); **no caller needed editing**. Silence is no longer spellable. Verified by compiling a probe that omits it (TS2345), then removing the probe.
+- **The general rule:** an optional scoping parameter is a trap whose default is "wrong". It offers a correct answer and accepts no answer, and no-answer is indistinguishable from not-knowing-to-answer. If a read MUST be scoped, the scope belongs in the required half of the signature — `null` typed out is a decision, omission is not.
+- **Ref:** `fix/mrp-company-required`, 2026-07-17. Written after fixing the same bug twice.
+
+
 ### 🔴 The CS Agent promised customers delivery dates backed by the OTHER company's stock — the same optional-companyId hole #710 fixed for Procurement, in the one caller it missed
 - **Symptom:** latent. A PROMISE_DATE proposal is an answer to "when will my order arrive?", and one computed from pooled supply looks exactly like one that is right.
 - **Root cause:** `computeMrp`'s `companyId` is optional and NO-OPS when omitted — its own doc lists *"agent callers"* among the cases that pass nothing. #710 fixed `procurement-agent`; a survey of all six callers afterwards found **exactly one still holding it: `cs-agent.ts:485`.** Every request-driven caller passes `activeCompanyId(c)`; both headless ones did not, because an agent has no request and therefore no company, and the parameter's default is silence. **`loadSoHeaders` was unscoped too** — so Job A both pooled the supply AND ran over both companies' sales orders.
