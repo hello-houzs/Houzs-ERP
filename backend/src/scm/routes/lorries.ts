@@ -17,7 +17,24 @@ import { activeCompanyId } from '../lib/companyScope';
 export const lorries = new Hono<{ Bindings: Env; Variables: Variables }>();
 lorries.use('*', supabaseAuth);
 
-const COLS = 'id, plate, type, is_internal, warehouse_id, capacity_m3, capacity_kg, active, notes, created_at, updated_at';
+// Migration 0121 added the purchase record + the three compliance expiries.
+// They are NOT a revival of the old public.lorries columns (mig 0015): that
+// table was DROPPED by mig 0055, which explicitly discarded model /
+// road_tax_expiry / insurance_expiry / puspakom_expiry on the way out. These
+// are new columns on the table this route actually reads.
+//
+// No extra finance gate on purchase_price_centi, deliberately and by precedent:
+// this router is already behind scmAreaGuard('scm.transportation.drivers'), and
+// the sibling lorry-capacity route serves delivery revenue (revenue_centi) to
+// that same audience. Fleet money is visible to the fleet audience. If that
+// ruling ever changes it changes for both routes together, not just this one.
+const COLS = [
+  'id', 'plate', 'type', 'is_internal', 'warehouse_id', 'capacity_m3', 'capacity_kg',
+  'active', 'notes', 'created_at', 'updated_at',
+  'model', 'purchase_date', 'purchase_price_centi',
+  'purchase_invoice_key', 'purchase_invoice_name', 'purchase_invoice_mime', 'purchase_invoice_size',
+  'road_tax_expiry', 'insurance_expiry', 'puspakom_expiry',
+].join(', ');
 
 // Mirrors the lorry_type enum in migration 0053. Reject anything else so a bad
 // client can't write a value Postgres would 22P02 on.
@@ -31,6 +48,39 @@ function toNumericOrNull(v: unknown): number | null {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 }
+
+/* A `date` column — accept YYYY-MM-DD, store null when blank. Anything that is
+   not that exact shape is REJECTED rather than coerced: these are compliance
+   dates, and a silently-mangled road-tax expiry is worse than a 400. Postgres
+   would 22007 on garbage anyway; this turns that 500 into an honest 400. */
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+function toDateOrNull(v: unknown): { ok: true; value: string | null } | { ok: false } {
+  if (v === null || v === undefined || v === '') return { ok: true, value: null };
+  const s = String(v).slice(0, 10);
+  return ISO_DATE.test(s) ? { ok: true, value: s } : { ok: false };
+}
+
+/* An integer cents / km field. Rejects a negative (the table CHECKs cost_centi
+   >= 0 and odometer_km >= 0 — reject here so the operator gets a field-named
+   400 instead of a raw constraint-violation 500). */
+function toIntOrNull(v: unknown): { ok: true; value: number | null } | { ok: false } {
+  if (v === null || v === undefined || v === '') return { ok: true, value: null };
+  const n = Number(v);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) return { ok: false };
+  return { ok: true, value: n };
+}
+
+/* The date columns a client may set on a lorry, and the wire name each maps
+   from. Kept as an explicit list rather than a generic loop-over-body: this
+   repo's BUG-HISTORY logs a generic client-field map as the exact mechanism
+   that made a server-owned column client-writable (the paid_centi back-door,
+   2026-07-16). Every entry here is genuine operator-entered data. */
+const LORRY_DATE_FIELDS: [wire: string, col: string][] = [
+  ['purchaseDate', 'purchase_date'],
+  ['roadTaxExpiry', 'road_tax_expiry'],
+  ['insuranceExpiry', 'insurance_expiry'],
+  ['puspakomExpiry', 'puspakom_expiry'],
+];
 
 lorries.get('/', async (c) => {
   const sb = c.get('supabase');
@@ -55,6 +105,15 @@ lorries.post('/', async (c) => {
   const type = String(body.type ?? 'OTHER').trim();
   if (!LORRY_TYPES.has(type)) return c.json({ error: 'invalid_type' }, 400);
 
+  const dates: Record<string, string | null> = {};
+  for (const [wire, col] of LORRY_DATE_FIELDS) {
+    const d = toDateOrNull(body[wire]);
+    if (!d.ok) return c.json({ error: 'invalid_date', reason: `${wire} must be YYYY-MM-DD` }, 400);
+    dates[col] = d.value;
+  }
+  const price = toIntOrNull(body.purchasePriceCenti);
+  if (!price.ok) return c.json({ error: 'invalid_amount', reason: 'purchasePriceCenti must be a non-negative integer (cents)' }, 400);
+
   const sb = c.get('supabase');
   const { data, error } = await sb.from('lorries').insert({
     company_id: activeCompanyId(c),
@@ -66,6 +125,12 @@ lorries.post('/', async (c) => {
     capacity_kg: toNumericOrNull(body.capacityKg),
     notes: (body.notes as string) ?? null,
     active: body.active === false ? false : true,
+    model: (body.model as string) || null,
+    purchase_price_centi: price.value,
+    ...dates,
+    // The purchase invoice is NOT settable here — it arrives as a file via
+    // PUT /lorries/:id/purchase-invoice, so the R2 key is server-minted and a
+    // client can never point the row at an arbitrary bucket key.
   }).select(COLS).single();
   if (error) {
     if (error.code === '23505') return c.json({ error: 'duplicate_plate' }, 409);
@@ -97,6 +162,22 @@ lorries.patch('/:id', async (c) => {
   if (body.notes !== undefined) updates.notes = (body.notes as string) || null;
   if (body.isInternal !== undefined) updates.is_internal = Boolean(body.isInternal);
   if (body.active !== undefined) updates.active = Boolean(body.active);
+  if (body.model !== undefined) updates.model = (body.model as string) || null;
+  for (const [wire, col] of LORRY_DATE_FIELDS) {
+    if (body[wire] === undefined) continue;
+    const d = toDateOrNull(body[wire]);
+    if (!d.ok) return c.json({ error: 'invalid_date', reason: `${wire} must be YYYY-MM-DD` }, 400);
+    updates[col] = d.value;
+  }
+  if (body.purchasePriceCenti !== undefined) {
+    const price = toIntOrNull(body.purchasePriceCenti);
+    if (!price.ok) return c.json({ error: 'invalid_amount', reason: 'purchasePriceCenti must be a non-negative integer (cents)' }, 400);
+    updates.purchase_price_centi = price.value;
+  }
+  // purchase_invoice_* are server-owned (minted by the upload route). NOT in
+  // this map on purpose — a client-writable R2 key would let any caller point a
+  // lorry row at another tenant's object, and all four R2 bindings share ONE
+  // physical bucket (wrangler.toml:72-102), so the key IS the only boundary.
   // Touch updated_at on any edit (the master has an updated_at column).
   if (Object.keys(updates).length === 0) return c.json({ error: 'no_changes' }, 400);
   updates.updated_at = new Date().toISOString();

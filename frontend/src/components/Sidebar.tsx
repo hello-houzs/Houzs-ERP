@@ -480,7 +480,11 @@ export const NAV_TABS: NavTab[] = [
           { to: "/scm/delivery-planning", label: "Delivery Planning", icon: Send, anyPerm: ["*", "scm.access"], anyAccess: ["scm.transportation.drivers"], hideForSalesRep: true },
           { to: "/scm/fleet", label: "Fleet", icon: Truck, anyPerm: ["*", "scm.access"], anyAccess: ["scm.transportation.drivers"], hideForSalesRep: true },
           { to: "/scm/lorry-capacity", label: "Lorry Capacity", icon: BarChart3, anyPerm: ["*", "scm.access"], anyAccess: ["scm.transportation.drivers"], hideForSalesRep: true },
-          { to: "/scm/drivers", label: "Drivers", icon: Truck, anyPerm: ["*", "scm.access"], anyAccess: ["scm.transportation.drivers"], hideForSalesRep: true },
+          /* "Drivers" (/scm/drivers) retired 2026-07-17 — it duplicated the Drivers
+             section of Fleet above, and sat here with the SAME Truck icon and the
+             SAME scm.transportation.drivers access key, which is what made the
+             duplication invisible. The area key is unchanged and still gates every
+             row in this group, so no permission moves. Do not re-add. */
           { to: "/scm/delivery-planning-regions", label: "Regions", icon: Map, anyPerm: ["*", "scm.access"], anyAccess: ["scm.transportation.drivers"], hideForSalesRep: true },
         ],
       },

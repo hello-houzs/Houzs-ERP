@@ -38,9 +38,8 @@ const CARD_DESCRIPTIONS: Record<string, string> = {
 
   // Transportation
   "/scm/delivery-planning":         "Route planning and dispatch board.",
-  "/scm/fleet":                     "Vehicle roster and status.",
+  "/scm/fleet":                     "Drivers, helpers, and lorries.",
   "/scm/lorry-capacity":            "Available capacity by lorry.",
-  "/scm/drivers":                   "Driver directory.",
   "/scm/delivery-planning-regions": "Delivery region maintenance.",
 
   // Warehouse

@@ -77,7 +77,8 @@ const ROUTE_CHUNKS: Record<string, () => Promise<unknown>> = {
   "/scm/delivery-planning": () => import("../pages/scm-v2/DeliveryPlanning"),
   "/scm/fleet": () => import("../pages/scm-v2/Fleet"),
   "/scm/lorry-capacity": () => import("../pages/scm-v2/LorryCapacity"),
-  "/scm/drivers": () => import("../pages/scm-v2/Drivers"),
+  // "/scm/drivers" retired 2026-07-17 (merged into /scm/fleet). Left OUT on
+  // purpose: a prefetch entry here would re-import the unmounted page's chunk.
   "/scm/delivery-planning-regions": () => import("../pages/scm-v2/DeliveryPlanningRegions"),
   // Warehouse.
   "/scm/warehouses": () => import("../pages/scm-v2/Warehouses"),

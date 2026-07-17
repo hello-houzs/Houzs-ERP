@@ -7,7 +7,7 @@
 // copied verbatim from 2990.
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { authedFetch } from './authed-fetch';
+import { authedFetch, API_URL, humanApiError } from './authed-fetch';
 
 // Matches the lorry_type enum in migration 0195 / Houzs scm 0053.
 export const LORRY_TYPES = [
@@ -29,8 +29,15 @@ export type LorryRow = {
   id: string;
   plate: string;
   type: LorryType;
-  // Migration 0195 — true = in-house fleet, false = outsourced. The pg driver
-  // camelCases result cols, so consumers dual-read `isInternal ?? is_internal`.
+  // Migration 0195 — true = in-house fleet, false = outsourced.
+  //
+  // The camel twins below are DEAD and kept only because every vendored SCM
+  // consumer still dual-reads them. The claim that used to sit here ("the pg
+  // driver camelCases result cols") is HOOKKA's rule and is false for Houzs:
+  // pg.ts:5-10 deliberately does not install that transform, and these rows
+  // never touch the pg driver anyway — they come from PostgREST over
+  // /api/scm/lorries, which returns exactly the snake_case names in the route's
+  // COLS. Only the snake half ever resolves. Do not restore the claim.
   is_internal?: boolean;
   isInternal?: boolean;
   warehouse_id?: string | null;
@@ -42,6 +49,22 @@ export type LorryRow = {
   active: boolean;
   notes: string | null;
   created_at: string;
+  // ── Migration 0121: purchase record + compliance expiries ─────────────────
+  // NOT a revival of the old public.lorries columns (mig 0015) — that table was
+  // dropped by mig 0055. These are new columns on scm.lorries.
+  model?: string | null;
+  purchase_date?: string | null;
+  purchase_price_centi?: number | null;
+  purchase_invoice_key?: string | null;
+  purchase_invoice_name?: string | null;
+  purchase_invoice_mime?: string | null;
+  purchase_invoice_size?: number | null;
+  /** YYYY-MM-DD, as printed on the document. Renews yearly. */
+  road_tax_expiry?: string | null;
+  /** YYYY-MM-DD, as printed on the cover note. Renews yearly. */
+  insurance_expiry?: string | null;
+  /** YYYY-MM-DD. Commercial goods vehicles: every 6 months. */
+  puspakom_expiry?: string | null;
 };
 
 export type NewLorry = {
@@ -53,6 +76,12 @@ export type NewLorry = {
   capacityKg?: number | null;
   notes?: string;
   active?: boolean;
+  model?: string | null;
+  purchaseDate?: string | null;
+  purchasePriceCenti?: number | null;
+  roadTaxExpiry?: string | null;
+  insuranceExpiry?: string | null;
+  puspakomExpiry?: string | null;
 };
 
 export type FleetFilter = 'all' | 'internal' | 'outsourced';
@@ -93,5 +122,137 @@ export function useUpdateLorry() {
         method: 'PATCH', body: JSON.stringify(body),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['lorries'] }),
+  });
+}
+
+// ── Service / repair records (migration 0121) ────────────────────────────────
+// HOUZS-AUTHORED, not vendored from 2990 — 2990 has no equivalent. Kept in this
+// file rather than a new one because it is the same master's detail and every
+// consumer already imports from here.
+
+export type LorryServiceRecord = {
+  id: string;
+  lorry_id: string;
+  service_date: string;
+  description: string;
+  workshop: string | null;
+  cost_centi: number;
+  /** Odometer AT THE TIME OF SERVICE. The only mileage source in the system —
+   *  see vendor/shared/lorry-compliance.ts before deriving anything from it. */
+  odometer_km: number | null;
+  invoice_key: string | null;
+  invoice_name: string | null;
+  invoice_mime: string | null;
+  invoice_size: number | null;
+  next_service_date: string | null;
+  next_service_km: number | null;
+  notes: string | null;
+  created_at: string;
+  created_by: number | null;
+};
+
+export type NewLorryServiceRecord = {
+  lorryId: string;
+  serviceDate: string;
+  description: string;
+  workshop?: string | null;
+  costCenti?: number | null;
+  odometerKm?: number | null;
+  nextServiceDate?: string | null;
+  nextServiceKm?: number | null;
+  notes?: string | null;
+};
+
+export function useLorryServiceRecords(lorryId: string | null) {
+  return useQuery({
+    queryKey: ['lorry-service-records', lorryId],
+    // OFF, not hide: with no lorry selected the detail is not open, so the
+    // query must not fire at all rather than fetch and discard.
+    enabled: !!lorryId,
+    queryFn: () =>
+      authedFetch<{ records: LorryServiceRecord[] }>(
+        `/lorry-service-records?lorryId=${encodeURIComponent(lorryId!)}`,
+      ).then((r) => r.records),
+    staleTime: 60_000,
+  });
+}
+
+export function useCreateLorryServiceRecord() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: NewLorryServiceRecord) =>
+      authedFetch<{ record: LorryServiceRecord }>(`/lorry-service-records`, {
+        method: 'POST', body: JSON.stringify(body),
+      }),
+    onSuccess: (_d, v) => qc.invalidateQueries({ queryKey: ['lorry-service-records', v.lorryId] }),
+  });
+}
+
+export function useUpdateLorryServiceRecord(lorryId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...body }: Partial<Omit<NewLorryServiceRecord, 'lorryId'>> & { id: string }) =>
+      authedFetch<{ record: LorryServiceRecord }>(`/lorry-service-records/${id}`, {
+        method: 'PATCH', body: JSON.stringify(body),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['lorry-service-records', lorryId] }),
+  });
+}
+
+export function useDeleteLorryServiceRecord(lorryId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      authedFetch<{ ok: true }>(`/lorry-service-records/${id}`, { method: 'DELETE' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['lorry-service-records', lorryId] }),
+  });
+}
+
+/** The record's invoice as a blob object URL, for `window.open` / `<a href>`.
+ *
+ *  A raw fetch rather than authedFetch: that helper JSON-parses its response
+ *  and this endpoint streams bytes. Mirrors slip.ts's fetchSlipAsObjectUrl —
+ *  the established shape for an authed binary in this tree — and reuses
+ *  authed-fetch's exported API_URL rather than declaring a fourth copy of it.
+ *
+ *  The endpoint is behind auth (an invoice is a financial document), which is
+ *  why this cannot be a plain <a href> the way the product-photo proxy can.
+ *  The object URL is not revoked, matching slip.ts's accepted trade-off for
+ *  view-then-navigate callers. */
+export async function fetchServiceInvoiceUrl(recordId: string): Promise<{ url: string; contentType: string }> {
+  const token = localStorage.getItem('auth:token');
+  if (!token) throw new Error('not_authenticated');
+  const companyId = (() => {
+    try {
+      const raw = localStorage.getItem('houzs.activeCompanyId');
+      const n = raw ? Number(raw) : NaN;
+      return Number.isFinite(n) && n > 0 ? String(n) : null;
+    } catch { return null; }
+  })();
+  const res = await fetch(`${API_URL}/lorry-service-records/${encodeURIComponent(recordId)}/invoice`, {
+    headers: {
+      authorization: `Bearer ${token}`,
+      ...(companyId ? { 'X-Company-Id': companyId } : {}),
+    },
+  });
+  if (!res.ok) throw new Error(humanApiError(res.status, await res.text().catch(() => '')));
+  const contentType = res.headers.get('content-type') ?? 'application/octet-stream';
+  return { url: URL.createObjectURL(await res.blob()), contentType };
+}
+
+/** Upload / replace a record's invoice. FormData on purpose: authedFetch only
+ *  stamps `content-type: application/json` for string bodies, so the multipart
+ *  boundary survives (authed-fetch.ts:161). Do not set content-type here. */
+export function useUploadServiceInvoice(lorryId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, file }: { id: string; file: File }) => {
+      const fd = new FormData();
+      fd.append('file', file);
+      return authedFetch<{ record: LorryServiceRecord }>(
+        `/lorry-service-records/${id}/invoice`, { method: 'PUT', body: fd },
+      );
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['lorry-service-records', lorryId] }),
   });
 }

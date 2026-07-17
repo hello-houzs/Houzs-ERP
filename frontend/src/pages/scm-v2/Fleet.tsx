@@ -9,8 +9,20 @@
 // query hooks (useDrivers/useHelpers/useLorries + create/update) and the exact
 // columns, In-house/Outsource handling, and Fleet filter from 2990 — nothing
 // about the CRUD or behaviour changed, only the layout (h1 → h2 section
-// headers) and the co-location on one page. Dual-read camelCase throughout
-// (the pg driver camelCases result cols).
+// headers) and the co-location on one page.
+//
+// The `x.camelCase ?? x.snake_case` reads below are DEAD on their camel half,
+// and the comment that used to sit here ("the pg driver camelCases result
+// cols") was false for Houzs — it is Hookka's rule, copied in with the 2990
+// port. Two independent reasons it cannot be true here: (1) Houzs deliberately
+// does NOT install the camelCase transform (backend/src/db/pg.ts:5-10 — "fix
+// the route, do not flip a global transform"; docs/UPGRADE-PLAN.md:105 lists
+// the map as Hookka-specific, do-not-copy); (2) these rows never touch the pg
+// driver anyway — they arrive over /api/scm/* from PostgREST, which returns the
+// snake_case column names named in each route's COLS (backend/src/scm/routes/
+// lorries.ts:20, drivers.ts:24, helpers.ts). The snake half is the ONLY half
+// that ever resolves. Left in place because `?? ` costs nothing and every
+// sibling SCM surface still carries the same shape; do not "restore" the claim.
 // ----------------------------------------------------------------------------
 
 import { useMemo, useState } from 'react';
@@ -41,11 +53,12 @@ import {
 import { useWarehouses } from '../../vendor/scm/lib/inventory-queries';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
+import { LorryDetail } from './LorryDetail';
 import styles from './Suppliers.module.css';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
-/** Dual-read camelCase helpers (the pg driver camelCases result cols). */
+/** Snake-case reads with a dead camel fallback — see the header note. */
 const isInternalOf = (l: LorryRow) => (l.isInternal ?? l.is_internal) !== false;
 const warehouseIdOf = (l: LorryRow) => l.warehouseId ?? l.warehouse_id ?? null;
 const capM3Of = (l: LorryRow) => l.capacityM3 ?? l.capacity_m3 ?? null;
@@ -130,15 +143,31 @@ const DriversSection = () => {
       accessor: (d) => d.vehicle ?? '—',
     },
     {
+      // EDITABLE, not a label. The retired /scm/drivers page (Drivers.tsx) grew
+      // an inline In-house/Outsource checkbox on 2026-07-01 (1521453) — three
+      // days AFTER this merged page was ported (2d57c45, 2026-06-28) — and the
+      // commit touched only that file, so this column stayed a read-only <span>
+      // and was the ONE thing the old page could do that Fleet could not. Ported
+      // here BEFORE unmounting it; the backend already accepted the write
+      // (scm/routes/drivers.ts:91 maps body.inHouse → in_house). Kept under the
+      // 'fleet' key so an existing dg-drivers saved layout still resolves it.
+      // stopPropagation so the toggle never reads as a row click.
       key: 'fleet',
       label: 'Fleet',
       width: 130,
       accessor: (d) => {
         const inHouse = (d.inHouse ?? d.in_house) !== false;
         return (
-          <span style={{ fontSize: 'var(--fs-12)', color: inHouse ? 'var(--c-secondary-a)' : 'var(--fg-muted)' }}>
-            {inHouse ? 'In-house' : 'Outsource'}
-          </span>
+          <label
+            onClick={(e) => e.stopPropagation()}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}
+          >
+            <input type="checkbox" checked={inHouse}
+              onChange={(e) => updateMutate({ id: d.id, inHouse: e.target.checked })} />
+            <span style={{ fontSize: 'var(--fs-12)', color: inHouse ? 'var(--fg-muted)' : 'var(--c-secondary-a)' }}>
+              {inHouse ? 'In-house' : 'Outsource'}
+            </span>
+          </label>
         );
       },
       searchValue: (d) => ((d.inHouse ?? d.in_house) !== false ? 'In-house' : 'Outsource'),
@@ -433,6 +462,10 @@ const LorriesSection = () => {
   const [includeInactive, setIncludeInactive] = useState(false);
   const [fleet, setFleet] = useState<FleetFilter>('all');
   const [creating, setCreating] = useState(false);
+  /* The open lorry is held by ID, not by the row object: the row object is a
+     snapshot from the list query, so holding it would leave the detail showing
+     stale compliance dates after a save until the drawer was reopened. */
+  const [openId, setOpenId] = useState<string | null>(null);
   const lorries = useLorries({ includeInactive, fleet });
   const warehouses = useWarehouses();
   const update = useUpdateLorry();
@@ -444,6 +477,15 @@ const LorriesSection = () => {
     for (const w of warehouses.data ?? []) m.set(w.id, w.code || w.name);
     return m;
   }, [warehouses.data]);
+
+  /* Re-resolved from the live list each render, so an edit in the detail is
+     reflected as soon as the lorries query is invalidated. Undefined once the
+     row leaves the filtered set (e.g. toggled inactive while open) — the drawer
+     then unmounts rather than showing a row that is no longer in the list. */
+  const openLorry = useMemo(
+    () => (openId ? (lorries.data ?? []).find((l) => l.id === openId) : undefined),
+    [openId, lorries.data],
+  );
 
   const columns = useMemo<DataGridColumn<LorryRow>[]>(() => [
     {
@@ -564,9 +606,11 @@ const LorriesSection = () => {
         groupBanner={false}
         isLoading={lorries.isLoading}
         emptyMessage="No lorries yet."
+        onRowClick={(l) => setOpenId(l.id)}
       />
 
       {creating && <CreateLorryDrawer onClose={() => setCreating(false)} />}
+      {openLorry && <LorryDetail lorry={openLorry} onClose={() => setOpenId(null)} />}
     </section>
   );
 };

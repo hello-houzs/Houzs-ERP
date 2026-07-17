@@ -91,7 +91,6 @@ const ScmPurchaseReturnDetailV2 = lazy(() => import("./pages/scm-v2/PurchaseRetu
 const ScmInventoryV2 = lazy(() => import("./pages/scm-v2/Inventory").then((m) => ({ default: m.Inventory })));
 const ScmStockCardV2 = lazy(() => import("./pages/scm-v2/StockCard").then((m) => ({ default: m.StockCard })));
 const ScmSupplierDetailV2 = lazy(() => import("./pages/scm-v2/SupplierDetail").then((m) => ({ default: m.SupplierDetail })));
-const ScmDriversV2 = lazy(() => import("./pages/scm-v2/Drivers").then((m) => ({ default: m.Drivers })));
 // Delivery Planning + TMS (Stage 3 — ported 2026-06-28 from 2990).
 const ScmDeliveryPlanningV2 = lazy(() => import("./pages/scm-v2/DeliveryPlanning").then((m) => ({ default: m.DeliveryPlanning })));
 const ScmDeliveryPlanningRegionsV2 = lazy(() => import("./pages/scm-v2/DeliveryPlanningRegions").then((m) => ({ default: m.DeliveryPlanningRegions })));
@@ -481,7 +480,13 @@ export default function App() {
         <Route path="/scm/inventory" element={<ScmGuard area="scm.warehouse.inventory"><Scm2990Shell><ScmInventoryV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/inventory/stock-card/:productCode" element={<ScmGuard area="scm.warehouse.inventory"><Scm2990Shell><ScmStockCardV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/suppliers/:id" element={<ScmGuard area="scm.procurement.suppliers"><Scm2990Shell><ScmSupplierDetailV2 /></Scm2990Shell></ScmGuard>} />
-        <Route path="/scm/drivers" element={<ScmGuard area="scm.transportation.drivers"><Scm2990Shell><ScmDriversV2 /></Scm2990Shell></ScmGuard>} />
+        {/* /scm/drivers is RETIRED (owner 2026-07-17: "fleet 里面也是有 driver，
+            所以我都不需要多一个 driver"). Its page is now the Drivers section of
+            /scm/fleet, which carries the same scm.transportation.drivers gate.
+            Route deliberately NOT mounted — "off, not hide": no nav entry, no
+            route, no prefetch, so nothing mounts and no query fires. The file
+            pages/scm-v2/Drivers.tsx is KEPT on disk (vendored 2990 tree shape)
+            but has no importer. Do not re-add this route. */}
         {/* Delivery Planning + TMS Stage 3 — all under the existing scm.transportation.drivers area. */}
         <Route path="/scm/delivery-planning"         element={<ScmGuard area="scm.transportation.drivers"><Scm2990Shell><ScmDeliveryPlanningV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/delivery-planning-regions" element={<ScmGuard area="scm.transportation.drivers"><Scm2990Shell><ScmDeliveryPlanningRegionsV2 /></Scm2990Shell></ScmGuard>} />

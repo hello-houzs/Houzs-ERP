@@ -111,8 +111,13 @@ const ROUTE_TO_CONFIG: Record<string, string> = {
  *  opens a real mobile screen and is still permission-gated by the matching
  *  desktop nav entry (an item whose nav tab isn't visible for the user's
  *  position is hidden). The bottom tabs cover Sales Orders / Calendar /
- *  Inbox / Profile. */
-const MOBILE_MENU_GROUPS: { group: string; items: { to: string; label: string; alwaysShow?: boolean; directorOnly?: boolean }[] }[] = [
+ *  Inbox / Profile.
+ *
+ *  `gateVia` — gate this row on ANOTHER path's nav entry. Needed when a mobile
+ *  screen outlives its desktop route: `allowed()` fails OPEN for a path with no
+ *  NAV_TABS match, so a row pointing at a retired desktop path would go from
+ *  gated to visible-to-everyone. Point it at a live entry with the same gate. */
+const MOBILE_MENU_GROUPS: { group: string; items: { to: string; label: string; alwaysShow?: boolean; directorOnly?: boolean; gateVia?: string }[] }[] = [
   { group: "Sales & Finance", items: [
     { to: "/scm/sales-orders", label: "Sales Orders" },
     { to: "/scm/amendments", label: "Amendments" },
@@ -146,7 +151,24 @@ const MOBILE_MENU_GROUPS: { group: string; items: { to: string; label: string; a
   { group: "Logistics", items: [
     { to: "/scm/delivery-planning", label: "Delivery Planning" },
     { to: "/scm/fleet", label: "Fleet" },
-    { to: "/scm/drivers", label: "Drivers" },
+    /* KEPT, unlike the retired DESKTOP /scm/drivers page — mobile is NOT the
+       same shape and the owner's "fleet 里面也是有 driver" is not true here.
+       Mobile's "fleet" module is LORRIES ONLY (MODULE_CONFIGS.fleet — title
+       "Lorries", endpoint /lorries); it does not merge drivers/helpers the way
+       the desktop Fleet page does. So this row is the only driver surface on a
+       phone, not a duplicate, and retiring it would delete the capability
+       instead of consolidating it. See the report to the owner: the mobile
+       "Fleet" LABEL is the thing that is wrong here, and renaming it is a
+       prototype/design call, not this PR's.
+
+       `gateVia` because the desktop /scm/drivers NAV_TABS entry — which used to
+       supply this row's permission — is gone with that page, and `allowed()`
+       fails OPEN for a path with no nav match ("matches.length === 0 ? true").
+       Without this the row would silently become visible to every mobile user.
+       /scm/fleet carries the byte-identical gate the /scm/drivers entry had
+       (anyPerm ["*","scm.access"] + anyAccess ["scm.transportation.drivers"] +
+       hideForSalesRep), so this preserves today's behaviour exactly. */
+    { to: "/scm/drivers", label: "Drivers", gateVia: "/scm/fleet" },
   ]},
   { group: "Warehouse", items: [
     { to: "/scm/warehouses", label: "Warehouse" },
@@ -341,7 +363,7 @@ function MobileAppInner() {
   // (via the shared `allowed` above). Items with no nav match still show (backend
   // gates).
   const menuGroups = MOBILE_MENU_GROUPS
-    .map((g) => ({ group: g.group, items: g.items.filter((it) => (it.directorOnly ? isDirectorUser(user) : (it.alwaysShow || allowed(it.to)))) }))
+    .map((g) => ({ group: g.group, items: g.items.filter((it) => (it.directorOnly ? isDirectorUser(user) : (it.alwaysShow || allowed(it.gateVia ?? it.to)))) }))
     .filter((g) => g.items.length > 0);
 
   // Organisation rows shown inside the Profile screen — gated by the SAME
