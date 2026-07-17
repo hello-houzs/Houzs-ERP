@@ -2,6 +2,7 @@ import type { Env } from "../types";
 import { recomputeAutoCostLines } from "./projectCostRates";
 import { scopeNotExpiredSql } from "./projectAcl";
 import { isSensitiveChecklistItem, isSetupDismantleSection } from "./pmsAccess";
+import { todayMyt } from "../scm/lib/my-time";
 
 // ── Codes ─────────────────────────────────────────────────────
 // Format: `YYYY-MM-{ORGANIZER}-{STATE}-{VENUE}-{BRAND}` — built from
@@ -1283,7 +1284,16 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
   // Time-gate shared by every "my pending" lane (owner 2026-07-13): a task
   // only surfaces once its scheduled date has arrived, so far-future events
   // stay hidden. Falls back to the project start when a task has no due date.
-  const DUE_GATE = `substr(COALESCE(pc.due_date, p.start_date), 1, 10) <= date('now')`;
+  //
+  // "Has arrived" means arrived in MALAYSIA. due_date / start_date are MY
+  // calendar dates, but SQL date('now') is the UTC one (d1-compat rewrites it
+  // to an explicitly UTC to_char(timezone('UTC', now()), …)) — so before 08:00
+  // MYT the gate compared against yesterday and a task due TODAY stayed hidden
+  // until 08:00. DUE_GATE is the LAST clause of every lane below, so its
+  // placeholder is always that lane's final bind: push `dueToday` after the
+  // lane's own binds.
+  const dueToday = todayMyt();
+  const DUE_GATE = `substr(COALESCE(pc.due_date, p.start_date), 1, 10) <= ?`;
   if (f.pending_label === "PURCHASER") {
     // Purchaser: the Stock Out Transfer Record only unlocks once the Display
     // Floor Plan is done; their other tasks surface on their own due date.
@@ -1299,6 +1309,7 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
                                      AND fp.title = 'Display Floor Plan'
                                      AND (fp.status = 'done' OR fp.review_status = 'approved'))))`
     );
+    binds.push(dueToday);
   } else if (f.pending_label) {
     where.push(
       `EXISTS (SELECT 1 FROM project_checklist pc
@@ -1307,7 +1318,7 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
                   AND pc.role_label = ?
                   AND ${DUE_GATE})`
     );
-    binds.push(f.pending_label);
+    binds.push(f.pending_label, dueToday);
   }
   if (f.pending_title) {
     where.push(
@@ -1317,7 +1328,7 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
                   AND pc.title = ?
                   AND ${DUE_GATE})`
     );
-    binds.push(f.pending_title);
+    binds.push(f.pending_title, dueToday);
   }
   if (f.pending_approve && f.pending_approve.length) {
     // Approver lane: projects with a DUE, still-pending item whose required_perm
@@ -1330,7 +1341,7 @@ export async function listProjects(env: Env, f: ListProjectsFilters) {
                   AND pc.required_perm IN (${ph})
                   AND ${DUE_GATE})`
     );
-    binds.push(...f.pending_approve);
+    binds.push(...f.pending_approve, dueToday);
   }
   if (f.pending_logistic) {
     // Logistic work is staged:

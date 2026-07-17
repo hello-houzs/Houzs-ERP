@@ -99,7 +99,7 @@ import { api, buildQuery, humanHttpMessage } from "../api/client";
 import { companyHeader } from "../lib/activeCompany";
 import { MediaLightbox } from "../components/MediaLightbox";
 import { ResetFiltersButton } from "../components/ResetFiltersButton";
-import { formatDate, formatDateTime, formatTimestamp, formatCurrency, cn, relativeTime } from "../lib/utils";
+import { formatDate, formatDateTime, formatTimestamp, formatCurrency, cn, relativeTime, todayInAppTz } from "../lib/utils";
 
 // ── Types (module-local) ─────────────────────────────────────
 // Kept in this file until something else imports them. Promoting to
@@ -1546,7 +1546,7 @@ function ProjectsListView() {
           <div className="rounded-xl border border-border bg-surface p-4 shadow-stone">
             <div className="mb-2.5 text-[13px] font-bold text-ink">Upcoming</div>
             {(() => {
-              const today = new Date().toISOString().slice(0, 10);
+              const today = todayInAppTz();
               const upcoming = cardRows
                 .filter((r) => r.start_date && r.start_date >= today)
                 .sort((a, b) => (a.start_date || "").localeCompare(b.start_date || ""))
@@ -3161,7 +3161,7 @@ function ProjectsCalendarView() {
           return `${fmt(start)} – ${fmt(end)} ${yearSuffix}`;
         })()
       : monthLabel;
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayInAppTz();
 
   // Per-week lane-packing. Each project that overlaps a week becomes a
   // single segment for that week (clipped to the visible Sun..Sat range)
@@ -7506,7 +7506,7 @@ function ChecklistRow({
   const overdue =
     item.status === "pending" &&
     item.due_date &&
-    new Date(item.due_date) < new Date(new Date().toISOString().slice(0, 10));
+    new Date(item.due_date) < new Date(todayInAppTz());
   const reviewBadge = item.review_status ? REVIEW_BADGES[item.review_status] : null;
   const awaitingReview = item.review_status === "pending_review" || item.review_status === "amended";
   const reviewable = REVIEWABLE_TITLES.has(item.title);
@@ -9741,7 +9741,7 @@ function ProjectSalesEntriesSection({
   const [quickLogOpen, setQuickLogOpen] = useState(false);
   const [qlAmount, setQlAmount] = useState("");
   const [qlRefNo, setQlRefNo] = useState("");
-  const [qlDate, setQlDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [qlDate, setQlDate] = useState(() => todayInAppTz());
   const [qlSaving, setQlSaving] = useState(false);
   // Quick Total Sales — set the project's lump-sum total sales directly
   // (project_finance.total_sales) without logging individual entries. Used
@@ -9793,7 +9793,7 @@ function ProjectSalesEntriesSection({
       setQuickLogOpen(false);
       setQlAmount("");
       setQlRefNo("");
-      setQlDate(new Date().toISOString().slice(0, 10));
+      setQlDate(todayInAppTz());
       list.reload();
     } catch (e: any) {
       toast.error(e?.message || "Failed");
