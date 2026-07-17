@@ -106,7 +106,7 @@ async function loadAmendmentForWrite(
    Enqueue-then-drain, so the user is never blocked on a cross-system call: we
    write the durable sync_command row, fire ONE inline attempt on waitUntil, and
    return 202. The state change appears when the existing mirror delivers 2990's
-   new status back down. A failed dispatch stays retryable and the */5 cron drain
+   new status back down. A failed dispatch stays retryable and the every-5-min cron drain
    finishes it — nothing is fire-and-forget.
 
    Ships dark: with the flag off OR the bridge unconfigured, the mirrored
@@ -168,7 +168,7 @@ async function dispatchMirroredCommand(
     docNo: amendment.so_doc_no,
     action: `AMENDMENT_CMD_${action.toUpperCase().replace(/-/g, '_')}`,
     actorId: null,
-    actorName: c.get('houzsUser')?.name ?? actorName(c.get('user')),
+    actorName: c.get('houzsUser')?.name ?? null,
     fieldChanges: [{ field: 'command', to: action }],
     note: `Dispatched to 2990 as command ${enq.row.id} (requested by Houzs user ${c.get('houzsUser')?.id ?? 'unknown'}).`,
   });

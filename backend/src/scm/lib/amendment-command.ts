@@ -264,7 +264,7 @@ export async function dispatchOne(
 /**
  * Cron sweep (§3.2 "backstop sweep"). Drains retryable amendment commands oldest
  * first. No-op when the flag is off or the bridge is unconfigured — so it is safe
- * to wire unconditionally into the existing */5 cron. Returns a small summary for
+ * to wire unconditionally into the existing every-5-min cron. Returns a small summary for
  * the cron log.
  */
 export async function drainCommands(env: Env): Promise<{
