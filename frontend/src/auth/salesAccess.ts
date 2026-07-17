@@ -127,25 +127,22 @@ export function quickActionAccess(
 /**
  * SCM COSTING gate — "may this user see cost/margin on a SUPPLY-CHAIN surface".
  *
- * Deliberately NOT the same question as {@link isDirectorUser} / the PMS
- * `project_finance_viewer` check, even though it is built from it. Two
- * different costing systems live in this app and only one of them has data:
+ * Owner 2026-07-17: "margin 給2990開啊 houzs的也是啊 是看什麽position 的" — the
+ * POSITION is the control, and it is the `project_finance_viewer` flag below:
+ * Super Admin / Sales Director / Finance Manager, plus Owner/IT via the `*`
+ * wildcard (backend isFinanceViewer -> getPmsRole -> DIRECTOR,
+ * services/pmsAccess.ts:79,154,256). A `Sales *` position routes to PIC/SALES
+ * there and never reaches DIRECTOR, so every salesperson below Sales Director
+ * gets false. That is the whole rule.
  *
- *   - PMS / Projects P&L — fee + actual logistics cost, `cogs` / `transport`
- *     slugs, entered per project. REAL. Keeps rendering for a finance viewer.
- *   - SCM / document costing — derived from `mfg_products.cost_price_sen`,
- *     which is EMPTY across the whole ~1326-SKU catalog (prices were
- *     deliberately deferred, owner 2026-06-22 "不需要價格先"). Every margin it
- *     produces is an artifact: cost 0 -> margin = revenue -> "100.0%" in green,
- *     on every order, shown only to the finance viewer who acts on it.
+ * Kept as its own helper rather than reading `project_finance_viewer` raw,
+ * because the COSTING_DISPLAY_ENABLED term is SCM-only: it exists so the SCM
+ * document surfaces can be switched off without taking the PMS / Projects P&L
+ * (real data, same flag) down with them. It was false 2026-07-16..17 (#649) and
+ * is true again now — see costing-enabled.ts for what a HOUZS 100% still means
+ * until that catalog is costed.
  *
- * Owner 2026-07-16: "那個costing 應該是整個remove 掉啊 不是show naan", then
- * "全關" — off everywhere, not dressed up. Gating the SCM surfaces through THIS
- * helper rather than the raw `project_finance_viewer` flag is what keeps the
- * PMS P&L alive while the SCM costing is dark; a blanket switch would have
- * taken working project finances down with it.
- *
- * Turning it back on = seed the costs, flip COSTING_DISPLAY_ENABLED. One line.
+ * Callers must make the element ABSENT, not blank it ("off, not hide").
  */
 export function canViewScmCosting(user: AuthUser | null | undefined): boolean {
   if (!COSTING_DISPLAY_ENABLED) return false;
@@ -158,13 +155,15 @@ export function canViewScmCosting(user: AuthUser | null | undefined): boolean {
  * Owner 2026-07-17: "全部對sales person 除了sales director 關閉 就是直接看不到
  * 這個portion" + "電腦版本也是不要看到 電話電腦的權限應該一樣的".
  *
- * Deliberately NOT {@link canViewScmCosting}, and the difference is the whole
- * point. That helper answers "may we DISPLAY a derived margin", and it is wired
- * to COSTING_DISPLAY_ENABLED — a DATA-QUALITY switch, currently false because
- * `mfg_products.cost_price_sen` is empty catalog-wide so every margin renders
- * "100.0%". Reusing it here would gate cost entry on the emptiness of cost
- * entry: nobody, not even the Owner, could ever type a cost in, and the switch
- * could never be flipped back on. The circularity is the bug.
+ * Deliberately NOT {@link canViewScmCosting}, even though today both resolve to
+ * the same cohort. That helper carries the extra COSTING_DISPLAY_ENABLED term —
+ * an SCM-wide kill switch that has already been flipped twice (off #649, on
+ * 2026-07-17). Cost ENTRY must not ride a switch whose whole purpose is to hide
+ * cost DISPLAY: the last time it was off, wiring this to it would have meant
+ * nobody — not even the Owner — could type a cost in, and the switch could
+ * never have been flipped back. The circularity is the bug, and it stays fixed
+ * by keeping the two questions apart rather than by the current value of the
+ * flag.
  *
  * `cost_price_sen` is not derived and is not an artifact — whatever is in that
  * column is exactly what someone typed. It is simply CONFIDENTIAL. So this gate
