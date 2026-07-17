@@ -1006,6 +1006,22 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
               />
             )}
 
+            {/* Setup & Dismantle documents as TILES (owner 2026-07-17) — the
+                sales cohort's six deliverables in the Floor-Plans card style.
+                The tasklist rows stay; this is the visual hub on top. */}
+            {isSalesStaff && !isMgt && (
+              <SalesDocsCard
+                checklist={data.checklist}
+                attachments={data.checklist_attachments}
+                canTick={canTick && !archived}
+                busy={busy}
+                setBusy={setBusy}
+                notify={notify}
+                prompt={prompt}
+                reload={reload}
+              />
+            )}
+
             {/* floor plans & layout + stock transfers (upload-only) */}
             <FloorPlans
               projectId={id}
@@ -2231,6 +2247,207 @@ function PhaseBlock({
         />
       )}
     </>
+  );
+}
+
+// ── Setup & Dismantle documents — sales tile card (owner 2026-07-17) ──
+// The sales cohort's six deliverables rendered as Floor-Plans-style tiles:
+// Weekend Activity is a REMARK tile (tap to edit the item's `notes`); the
+// other five are FILE tiles (thumbnail of the latest upload, tap to view,
+// "+ Add" to upload — Defect List keeps its compulsory per-photo remark).
+// Tiles map to checklist items by title prefix; "Setup Image" exists twice,
+// so that tile pins to the SALES PIC-badged variant.
+const SALES_DOC_TILES: ReadonlyArray<{
+  label: string;
+  match: RegExp;
+  salesPicOnly?: boolean;
+  remarkTile?: boolean;
+  requirePhotoRemark?: boolean;
+}> = [
+  { label: "Weekend Activity", match: /^weekend/i, remarkTile: true },
+  { label: "Permit", match: /permit/i },
+  { label: "Deco / Coffee Table", match: /^deco/i },
+  { label: "Setup Image", match: /^setup image/i, salesPicOnly: true },
+  { label: "Defect List", match: /^defect list/i, requirePhotoRemark: true },
+  { label: "Event Complete Image", match: /^event complete image/i },
+];
+
+function SalesDocsCard({
+  checklist, attachments, canTick, busy, setBusy, notify, prompt, reload,
+}: {
+  checklist?: ChecklistItem[];
+  attachments?: TaskAttachment[];
+  canTick: boolean;
+  busy: boolean;
+  setBusy: SetBusy;
+  notify: NotifyFn;
+  prompt: PromptFn;
+  reload: () => void;
+}) {
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const pendingRef = useRef<{ itemId: number; caption?: string } | null>(null);
+  const [view, setView] = useState<{ items: MediaItem[]; idx: number } | null>(null);
+
+  const tiles = SALES_DOC_TILES.map((t) => {
+    const item = (checklist ?? []).find(
+      (it) =>
+        t.match.test((it.title || "").trim()) &&
+        (!t.salesPicOnly || (it.role_label ?? "").trim().toUpperCase() === "SALES PIC")
+    );
+    const files = item
+      ? (attachments ?? [])
+          .filter((a) => !a.archived_at && a.item_id === item.id)
+          .map((a): MediaItem => ({
+            r2_key: a.r2_key,
+            content_type: a.mime_type ?? mimeFromKey(a.r2_key),
+            caption: a.file_name,
+          }))
+      : [];
+    return { ...t, item, files };
+  }).filter((t) => t.item);
+
+  if (tiles.length === 0) return null;
+
+  const doneCount = tiles.filter((t) =>
+    t.remarkTile ? !!(t.item?.notes ?? "").trim() : t.files.length > 0
+  ).length;
+
+  const startUpload = async (t: (typeof tiles)[number]) => {
+    if (!t.item) return;
+    let caption: string | undefined;
+    if (t.requirePhotoRemark) {
+      const remark = await prompt({
+        title: "Remark for this photo",
+        placeholder: "e.g. scratch on left armrest",
+        validate: (v) => (v.trim() ? null : "Please write a remark before uploading."),
+      });
+      if (remark == null || !remark.trim()) return;
+      caption = remark.trim();
+    }
+    pendingRef.current = { itemId: t.item.id, caption };
+    fileRef.current?.click();
+  };
+
+  const upload = async (file: File) => {
+    const pending = pendingRef.current;
+    pendingRef.current = null;
+    if (!pending) return;
+    if (file.size > 10 * 1024 * 1024) {
+      await notify({ title: "File too large", body: "Max 10MB.", tone: "error" });
+      return;
+    }
+    const ext = (file.name.split(".").pop() || "").toLowerCase();
+    if (!ext) {
+      await notify({ title: "Missing extension", body: "The file needs an extension.", tone: "error" });
+      return;
+    }
+    setBusy(true);
+    try {
+      const buf = await file.arrayBuffer();
+      const capParam = pending.caption ? `&caption=${encodeURIComponent(pending.caption)}` : "";
+      await api.putBinary(
+        `/api/projects/checklist/${pending.itemId}/attachments?ext=${encodeURIComponent(ext)}&name=${encodeURIComponent(file.name)}${capParam}`,
+        buf,
+        file.type || "application/octet-stream",
+      );
+      reload();
+    } catch (e) {
+      await notify({ title: "Upload failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  };
+
+  const editRemark = async (t: (typeof tiles)[number]) => {
+    if (!t.item || !canTick) return;
+    const val = await prompt({
+      title: `Remark — ${t.label}`,
+      placeholder: "Write the remark…",
+      defaultValue: t.item.notes ?? "",
+    });
+    if (val == null) return;
+    setBusy(true);
+    try {
+      await api.patch(`/api/projects/checklist/${t.item.id}`, { notes: val.trim() });
+      reload();
+    } catch (e) {
+      await notify({ title: "Save failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openTile = async (t: (typeof tiles)[number]) => {
+    if (t.remarkTile) { await editRemark(t); return; }
+    if (t.files.length > 0) { setView({ items: t.files, idx: t.files.length - 1 }); return; }
+    if (canTick) { await startUpload(t); return; }
+    await notify({ title: `${t.label} not uploaded`, body: "Nothing has been uploaded here yet.", tone: "info" });
+  };
+
+  return (
+    <details className="pacc" open>
+      <summary>
+        <span className="psec-t">Setup &amp; Dismantle documents</span>
+        <span style={{ marginLeft: "auto", fontSize: 10, fontWeight: 700, color: "#9aa093" }}>{doneCount}/{tiles.length}</span>
+        <svg className="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
+      </summary>
+      <div className="pbody">
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 9 }}>
+          {tiles.map((t) => {
+            const latest = t.files[t.files.length - 1];
+            const hasContent = t.remarkTile ? !!(t.item?.notes ?? "").trim() : t.files.length > 0;
+            return (
+              <div key={t.label} style={{ border: "1px solid #d6d9d2", borderRadius: 11, overflow: "hidden", background: "#fff" }}>
+                <div
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => { if (!busy) void openTile(t); }}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); if (!busy) void openTile(t); } }}
+                  style={{ cursor: "pointer" }}
+                >
+                  {t.remarkTile ? (
+                    <div style={{ height: 80, padding: "8px 10px", fontSize: 11, lineHeight: 1.45, color: (t.item?.notes ?? "").trim() ? "#414539" : "#9aa093", overflow: "hidden", background: "#faf9f5" }}>
+                      {(t.item?.notes ?? "").trim() || (canTick ? "Tap to write the remark…" : "No remark yet.")}
+                    </div>
+                  ) : latest && /^image\//.test(latest.content_type ?? "") ? (
+                    <R2Thumb r2Key={latest.r2_key} style={{ width: "100%", height: 80 }} />
+                  ) : (
+                    <div className="ph" style={{ height: 80 }} />
+                  )}
+                  <div style={{ padding: "7px 9px 4px" }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: "#11140f" }}>{t.label}</div>
+                    <span className="rbadge" style={{ background: hasContent ? "#e2f0e9" : "#f0f1ed", color: hasContent ? "#2f8a5b" : "#9aa093" }}>
+                      {t.remarkTile
+                        ? (hasContent ? "DONE" : "NONE")
+                        : (hasContent ? `${t.files.length} FILE${t.files.length === 1 ? "" : "S"}` : "NONE")}
+                    </span>
+                  </div>
+                </div>
+                {!t.remarkTile && canTick && (
+                  <div style={{ padding: "0 9px 8px" }}>
+                    <button className="tinybtn" style={{ width: "100%" }} disabled={busy} onClick={() => void startUpload(t)}>
+                      {t.files.length ? "+ Add more" : "Upload"}
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        <input ref={fileRef} type="file" accept="image/*,.pdf,.mp4,.mov,.webm" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void upload(f); }} />
+        {view && (
+          <MediaLightbox
+            items={view.items}
+            index={view.idx}
+            onChange={(i) => setView((v) => (v ? { ...v, idx: i } : v))}
+            onClose={() => setView(null)}
+            baseUrl="/api/projects/attachments"
+            badge="Document"
+          />
+        )}
+      </div>
+    </details>
   );
 }
 
