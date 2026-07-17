@@ -90,6 +90,7 @@ const ROUTE_CHUNKS: Record<string, () => Promise<unknown>> = {
   "/scm/accounting": () => import("../pages/scm-v2/Accounting"),
   "/scm/payment-vouchers": () => import("../pages/scm-v2/PaymentVouchers"),
   "/scm/outstanding": () => import("../pages/scm-v2/Outstanding"),
+  "/scm/unbilled-deliveries": () => import("../pages/scm-v2/UnbilledDeliveriesV2"),
   "/scm/currencies": () => import("../pages/scm-v2/Currencies"),
   // ── Keys below are NOT pathnames, so a hover can never match them; they
   //    exist only for the idle list to name a chunk the sidebar can't reach. ──

@@ -65,7 +65,7 @@ import { z } from 'zod';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { paginateAll } from '../lib/paginate-all';
-import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
+import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { summariseReadiness, type ReadinessLine } from '../lib/so-readiness';
 import { soDeliverableRemaining } from './delivery-orders-mfg';
 import { activeCompanyId, scopeToAllowedCompanies, companyCodeMap } from '../lib/companyScope';
@@ -1196,14 +1196,12 @@ async function deriveTripOutsourced(sb: any, lorryId: string | null): Promise<bo
 }
 
 /* Next TRIP-YYMM-NNN (mirrors trips.ts nextTripNo). max+1 via the shared
-   nextMonthlyDocNo — never count+1. */
+   mintMonthlyDocNo — never count+1, and never a capped scan. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function nextTripNo(sb: any): Promise<string> {
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
-  const { data: existing } = await sb.from('trips').select('trip_no').like('trip_no', `TRIP-${yymm}-%`);
-  return nextMonthlyDocNo(`TRIP-${yymm}`, ((existing ?? []) as Array<{ trip_no?: string; tripNo?: string }>)
-    .map((r) => r.tripNo ?? r.trip_no ?? ''));
+  return mintMonthlyDocNo(sb, 'trips', 'trip_no', `TRIP-${yymm}`);
 }
 
 deliveryPlanning.patch('/:type/:id/schedule', async (c) => {

@@ -31,7 +31,7 @@ import type { Env, Variables } from '../env';
 import { defaultWarehouseId, writeMovements, resolveWarehouseLotBatches } from '../lib/inventory-movements';
 import { computeVariantKey, type VariantAttrs } from '../shared';
 import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item-codes';
-import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
+import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { todayMyt } from '../lib/my-time';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { escapeForOr } from '../lib/postgrest-search';
@@ -137,8 +137,7 @@ const nextNum = async (sb: any, c: any): Promise<string> => {
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
   const p = companyDocPrefix(c);
-  const { data: existing } = await sb.from('consignment_delivery_orders').select('do_number').like('do_number', `${p}CN-${yymm}-%`);
-  return nextMonthlyDocNo(`${p}CN-${yymm}`, ((existing ?? []) as Array<{ do_number: string }>).map((r) => r.do_number));
+  return mintMonthlyDocNo(sb, 'consignment_delivery_orders', 'do_number', `${p}CN-${yymm}`);
 };
 
 /* Re-derive the note header's per-category revenue/cost totals + grand total from

@@ -4,6 +4,15 @@
 // letterhead header, the drawInfoColumns info block (BILL TO label-gutter +
 // INVOICE DETAILS colon-aligned), and the consistent footer (doc no · portal ·
 // page n of m). A4 portrait, pure B&W. Totals + signatures unchanged.
+//
+// BILL TO prints the customer's ADDRESS + Tel/Email, and INVOICE DETAILS prints
+// the customer's own 'Customer PO' reference. All of it was already captured by
+// the route and simply never drawn — the invoice, the one document that leaves
+// the building, went out with no address on it. Layout is untouched:
+// drawInfoColumns skips blank rows, so a record with no address prints exactly
+// as before. The SI carries ONE flat address, not the SO's
+// ship_to/bill_to/install_to trio — see the SiHeader note.
+import { formatPhone } from '@2990s/shared/phone';
 import { COMPANY, drawHeader, drawInfoColumns, drawSignatureBoxes, ensurePdfCjkFont, fmtRm, safeName, fmtDocDate } from './pdf-common';
 import { docVariantLine, loadCustomerFabricMaps } from './supplier-doc-data';
 
@@ -13,6 +22,23 @@ type SiHeader = {
   invoice_date: string; due_date: string | null; currency: string;
   subtotal_centi: number; discount_centi: number; tax_centi: number;
   total_centi: number; paid_centi: number; notes: string | null;
+  /* The route has always CAPTURED these (sales-invoices.ts HEADER + the from-DO
+     convert copies them off the DO header) — they were simply never printed, so
+     the invoice went to the customer with no address on it. Optional because the
+     detail-page item/header shapes are passed through `as never` by the callers
+     and older rows may carry nulls; drawInfoColumns skips a blank row, so a
+     record with no address prints exactly as it does today.
+
+     NOTE the SI carries ONE flat address (address1/2 · city · state · postcode ·
+     phone), NOT the SO's ship_to/bill_to/install_to trio — those columns do not
+     exist on sales_invoices. So this is the billing address as captured; the
+     delivery address for the same goods lives on the DO, which prints its own. */
+  address1?: string | null; address2?: string | null;
+  city?: string | null; state?: string | null; postcode?: string | null;
+  phone?: string | null; email?: string | null;
+  /* The CUSTOMER's own reference — distinct from `so_doc_no`, which is OUR SO
+     number. Printed as 'Customer PO', matching the SO PDF's label. */
+  po_doc_no?: string | null; customer_so_no?: string | null;
 };
 type SiItem = {
   item_code: string; description: string | null;
@@ -55,6 +81,19 @@ export async function renderSalesInvoiceInto(
     ],
   });
 
+  /* Same composition as the DO's DELIVER TO block (delivery-order-pdf.ts) so the
+     two customer-facing documents render one address the same way. */
+  const addressValue = [
+    header.address1,
+    header.address2,
+    [header.postcode, header.city, header.state]
+      .map((s) => (typeof s === 'string' ? s.trim() : ''))
+      .filter(Boolean)
+      .join(' '),
+  ]
+    .map((s) => (typeof s === 'string' ? s.trim() : ''))
+    .filter(Boolean)
+    .join(', ');
   const statusText = header.status.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
   y = drawInfoColumns(doc, y,
     {
@@ -62,6 +101,12 @@ export async function renderSalesInvoiceInto(
       rows: [
         ['Company', header.debtor_name],
         ['Code', header.debtor_code],
+        /* An invoice with no address is not a document that stands alone — it
+           cannot be posted, filed or matched to a customer record on its own.
+           Row order + labels mirror the SO/DO BILL TO block. */
+        ['Address', addressValue],
+        ['Tel', header.phone ? formatPhone(header.phone) : null],
+        ['Email', header.email],
         ['Note', header.notes],
       ],
     },
@@ -69,7 +114,11 @@ export async function renderSalesInvoiceInto(
       title: 'INVOICE DETAILS',
       rows: [
         ['Invoice No', header.invoice_number],
+        /* 'SO Ref' is OUR sales order; 'Customer PO' is the number the customer
+           files this invoice under — the one their AP clerk searches for. Both
+           are captured; print both. Same label + fallback order as the SO PDF. */
         ['SO Ref', header.so_doc_no],
+        ['Customer PO', header.po_doc_no ?? header.customer_so_no],
         ['Date', fmtDocDate(header.invoice_date)],
         ['Due', header.due_date ? fmtDocDate(header.due_date) : null],
         ['Status', statusText],

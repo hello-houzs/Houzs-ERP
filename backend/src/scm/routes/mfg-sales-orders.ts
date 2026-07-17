@@ -84,7 +84,10 @@ import { recordSoAudit, diffFields, type FieldChange } from '../lib/so-audit';
 import { noteScanDraftAccepted } from '../lib/scan-sample-review';
 /* TBC sofa exchange PWP re-evaluation (Loo 2026-06-12) — reuse the voucher
    generator + model-list matcher from the reserve route. */
-import { genCode, inList } from './pwp-codes';
+/* resolveOwnerStaffId — the caller's REAL scm.staff uuid for ownership /
+   attribution, with the headless-replay allowance. Homed in pwp-codes.ts only
+   because that is the module both consumers already share (see its header). */
+import { genCode, inList, resolveOwnerStaffId } from './pwp-codes';
 import { signSoItemPhotoUrl, soItemPhotoBindings, type SlipMime } from '../lib/r2';
 import { slipBindings } from '../lib/slip';
 import {
@@ -136,7 +139,7 @@ import { pickCrossCategoryMatch, type AutoMatchCandidate } from '../lib/cross-ca
 import { recomputeSoStockAllocation } from '../lib/so-stock-allocation';
 import { creditFromCancelledSo, getCustomerCreditBalance } from '../lib/customer-credits';
 import { summariseReadiness, normCategory } from '../lib/so-readiness';
-import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
+import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { soDeliverableRemaining, soLineDeliveries, computeSoLifecycle, soCurrentDocNo, soLineShippedSourcePos } from './delivery-orders-mfg';
 /* Shared 4-state delivery-planning derivation — the SO list emits planning_state
    (the mobile Orders-list card's status) from the SAME helper the Delivery
@@ -855,12 +858,7 @@ const nextDocNo = async (sb: any, c: any): Promise<string> => {
     const d = new Date();
     return `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
   })();
-  const { data } = await sb
-    .from('mfg_sales_orders')
-    .select('doc_no')
-    .like('doc_no', `${p}SO-${yymm}-%`);
-  const existing = ((data ?? []) as Array<{ doc_no: string }>).map((r) => r.doc_no);
-  return nextMonthlyDocNo(`${p}SO-${yymm}`, existing);
+  return mintMonthlyDocNo(sb, 'mfg_sales_orders', 'doc_no', `${p}SO-${yymm}`);
 };
 
 /* ─────────────────────────── Cost snapshot ────────────────────────────
@@ -1653,12 +1651,15 @@ mfgSalesOrders.get('/mine', async (c) => {
      else: the param is ignored and they stay self-scoped on their own client. */
   const wantSalesperson = c.req.query('salesperson') ?? null;
   let client = sb;
-  /* Self = the caller's REAL scm.staff uuid (mig 0066) — user.id is the
-     bridge's pinned system row shared by every caller (see /my-mtd note).
-     Fall back to user.id so a missing sync row degrades to the old
-     (system-attributed) behavior instead of erroring. */
-  let targetSalespersonId: string | null =
-    (await resolveCallerStaffId(sb, c.get('houzsUser')?.id)) ?? user.id; // default: own orders only
+  /* Self = the caller's REAL scm.staff uuid (mig 0066) — never user.id, the
+     bridge's pinned system row shared by every caller (see /my-mtd note). The
+     old `?? user.id` handed an unresolved caller every order ever mis-stamped
+     with that pin, i.e. other people's orders on a board called "mine". */
+  let targetSalespersonId: string | null = await resolveOwnerStaffId(sb, c.get('houzsUser')?.id, user.id);
+  /* `null` below means NO salesperson filter (see the .eq guard), i.e. EVERY
+     order — so "unresolved" and "deliberately unscoped" must never be the same
+     value. Only a view-all caller asking for ?salesperson=all earns the second. */
+  let viewingAll = false;
   if (wantSalesperson) {
     // Houzs-flavoured: gate on the flat permission key `scm.so.view_all`
     // against the REAL caller (the 2990 staff_role lookup is dead in Houzs —
@@ -1670,9 +1671,14 @@ mfgSalesOrders.get('/mine', async (c) => {
         auth: { persistSession: false, autoRefreshToken: false },
       });
       client = admin;
-      targetSalespersonId = wantSalesperson === 'all' ? null : wantSalesperson;
+      viewingAll = wantSalesperson === 'all';
+      targetSalespersonId = viewingAll ? null : wantSalesperson;
     }
   }
+  /* Unidentified caller, self-scoped → an EMPTY board, matching /my-mtd's zeroes
+     directly above. Falling through would drop the filter and show them the
+     whole book. */
+  if (!targetSalespersonId && !viewingAll) return c.json({ salesOrders: [] });
 
   let query = client
     .from('mfg_sales_orders')
@@ -2863,19 +2869,41 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
 
   let docNo = await nextDocNo(sb, c);
 
-  /* Caller's REAL scm.staff identity (mig 0066 deterministic sync row,
-     linked by staff.user_id) — drives the venue auto-stamp AND the
-     salesperson self-lock below. `user.id` is the bridge's pinned SYSTEM
-     staff uuid shared by every caller; stamping it as salesperson_id made
-     every self-created SO belong to "System" instead of the person, which
-     breaks the self-scoped visibility (own + downline) rule. Fall back to
-     the system row only when the sync row is missing (inactive/unsynced). */
-  const callerStaffId = (await resolveCallerStaffId(sb, c.get('houzsUser')?.id)) ?? user.id;
-  const { data: callerStaff } = await sb
-    .from('staff')
-    .select('role, venue_id')
-    .eq('id', callerStaffId)
-    .maybeSingle();
+  /* Caller's REAL scm.staff identity (mig 0066 deterministic sync row, linked
+     by staff.user_id) — drives the venue auto-stamp AND the salesperson
+     self-lock below. NEVER the bridge's pinned SYSTEM uuid: it is shared by
+     every caller, so stamping it as salesperson_id credits the order to one
+     phantom salesperson. Nothing looks wrong on screen — it surfaces at
+     month-end, when the commission run pays the wrong people and sales analysis
+     attributes their orders to "System". resolveOwnerStaffId still returns the
+     headless scan job's PRE-RESOLVED uploader id (createDraftSalesOrder feeds it
+     through `user`), so an OCR draft keeps crediting whoever scanned the slip. */
+  const callerStaffId = await resolveOwnerStaffId(sb, c.get('houzsUser')?.id, user.id);
+  /* Refuse rather than mis-attribute — but ONLY for a caller who would actually
+     be attributed by it. A self-scoped caller (no scm.so.attribute_other) IS the
+     salesperson on this order, so an unidentified one must not silently become
+     the phantom; a caller WITH the permission names the salesperson explicitly
+     below (or leaves it blank, which stamps NULL, not the phantom) and only
+     loses the caller-venue default — blocking them would be a regression for a
+     field they never depended on. */
+  const canAttributeOther = hasHouzsPerm(c, 'scm.so.attribute_other');
+  if (!callerStaffId && !canAttributeOther) {
+    /* Deliberately covers BOTH reachable causes (no staff link, or the staff
+       lookup itself failed — resolveCallerStaffId drops its `error`), because
+       from here they are indistinguishable and the operator's next move is the
+       same either way. One plain sentence, no internals: the SCM client's
+       humanApiError has no entry for this code and falls through to `message`. */
+    return c.json({
+      error: 'staff_unlinked',
+      message:
+        'We could not confirm who this order belongs to — please try again, and if it keeps happening ask IT to link your account to a sales profile.',
+    }, 409);
+  }
+  /* Guarded: `.eq('id', null)` is not "no venue", it is a malformed filter. */
+  const callerStaffRes = callerStaffId
+    ? await sb.from('staff').select('role, venue_id').eq('id', callerStaffId).maybeSingle()
+    : null;
+  const callerStaff = callerStaffRes?.data ?? null;
   /* Loo 2026-06-05 — a self-scoped sales caller can only create orders under
      their OWN account: whatever salespersonId the client sent is overridden
      with the caller's id (the POS locks the picker too; this closes the API
@@ -2884,7 +2912,7 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
      lookup is dead in Houzs — the SCM bridge pins every caller to one
      super_admin row). Owner + IT Admin pass via `*`; grant to other positions
      via the Team > Positions matrix. */
-  const salespersonIdToStamp = hasHouzsPerm(c, 'scm.so.attribute_other')
+  const salespersonIdToStamp = canAttributeOther
     ? ((body.salespersonId as string) ?? null)
     : callerStaffId;
 
@@ -3171,7 +3199,15 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
     if (pwpPrefetchFailed) { reject('could not verify the code — please try again'); continue; }
     const cRow = pwpRowByCode.get(code) ?? null;
     if (!cRow) { reject('code not found — it may have been replaced; re-apply PWP on this line'); continue; }
-    const redeemable = cRow.status === 'AVAILABLE' || (cRow.status === 'RESERVED' && cRow.owner_staff_id === user.id);
+    /* Same-cart ownership — MUST key on callerStaffId, the same identity
+       /pwp-codes reserve stamps. It read `user.id` (the bridge's pin) on both
+       sides, so every RESERVED code looked owned by whoever was confirming: one
+       salesperson could burn another's held code. A null callerStaffId owns no
+       RESERVED codes by construction (reserve refuses to stamp one), so only an
+       AVAILABLE voucher can redeem — never a null===null match. */
+    const redeemable =
+      cRow.status === 'AVAILABLE' ||
+      (cRow.status === 'RESERVED' && callerStaffId != null && cRow.owner_staff_id === callerStaffId);
     /* Orphan self-heal (2026-06-05, SO-2606-020 incident) — a code claimed by a
        create attempt that died on a path without rollbackPwpClaims (uncaught
        exception / Worker timeout) is left USED pointing at a doc_no that was
@@ -4498,7 +4534,12 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
            onlineType, so transfer falls back to 'Bank transfer'. */
         account_sheet:      deriveAccountSheet(p.method, merchantProvider, null),
         amount_centi:       p.amountCenti,
-        collected_by:       (body.salespersonId as string) ?? user.id,
+        /* Who took the money. The fallback was the bridge's pinned system uuid,
+           so an unnamed collector recorded as "System" on the money ledger; the
+           column is a NULLABLE FK to staff (the /payments writer stamps null
+           freely), so the real caller — or an honest blank — is always better.
+           Precedence is unchanged: an explicit salespersonId still wins. */
+        collected_by:       (body.salespersonId as string) ?? callerStaffId,
         created_by:         user.id,
         is_deposit:         true,
         note:               'POS split payment (auto-recorded at SO create)',
@@ -4575,7 +4616,8 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
         /* Account Sheet auto-fill (Loo 2026-06-07). */
         account_sheet:      deriveAccountSheet(depositMethod, merchantProvider, null),
         amount_centi:       depositCenti,
-        collected_by:       (body.salespersonId as string) ?? user.id,
+        // Same as the split-payment row above: never the pin on the money ledger.
+        collected_by:       (body.salespersonId as string) ?? callerStaffId,
         created_by:         user.id,
         is_deposit:         true,
         note:               'POS deposit (auto-recorded at SO create)',
@@ -4685,15 +4727,25 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
       .map((it) => String((it as { cartLineKey?: string } | null)?.cartLineKey ?? ''))
       .filter(Boolean),
   ));
-  if (rewardLineKeys.length > 0) {
+  /* These three blocks key on owner_staff_id + cart_line_key and MUST use the
+     same identity /pwp-codes reserve stamps (callerStaffId), not the bridge's
+     pin. They are the reason the reserve-side fix could not ship alone: left on
+     the pin they would match NOTHING once reserve stamps the real owner, and the
+     carry-forward below is what turns an un-applied reservation into the
+     customer's AVAILABLE voucher — it would have failed silently (no error, no
+     rows) and quietly cost customers the vouchers they had earned.
+     A null callerStaffId owns no RESERVED codes (reserve refuses to stamp one),
+     so skip rather than send `.eq('owner_staff_id', null)`, which is a malformed
+     filter and not "no owner". */
+  if (callerStaffId && rewardLineKeys.length > 0) {
     await sb.from('pwp_codes').delete()
-      .eq('owner_staff_id', user.id).eq('status', 'RESERVED').eq('type', 'promo')
+      .eq('owner_staff_id', callerStaffId).eq('status', 'RESERVED').eq('type', 'promo')
       .in('cart_line_key', rewardLineKeys);
   }
-  if (pwpCartLineKeys.length > 0) {
+  if (callerStaffId && pwpCartLineKeys.length > 0) {
     await sb.from('pwp_codes').update({
       status: 'AVAILABLE', source_doc_no: docNo, customer_id: orderCustomerId, updated_at: new Date().toISOString(),
-    }).eq('owner_staff_id', user.id).eq('status', 'RESERVED').in('cart_line_key', pwpCartLineKeys);
+    }).eq('owner_staff_id', callerStaffId).eq('status', 'RESERVED').in('cart_line_key', pwpCartLineKeys);
   }
 
   /* Re-stamp trigger_item_code (Loo 2026-06-06, the (K)→(Q) drift; reworked
@@ -4706,10 +4758,10 @@ async function createSalesOrderCore(c: SoCreateContext): Promise<SoCreateOutcome
      mints are reflected via the in-place row rewrite). One batched read, then
      one update per distinct lead code that drifted. Covers both USED (claimed
      above — cart_line_key survives the claim) and AVAILABLE. */
-  if (pwpCartLineKeys.length > 0) {
+  if (callerStaffId && pwpCartLineKeys.length > 0) {
     const { data: stampRows } = await sb.from('pwp_codes')
       .select('code, cart_line_key, trigger_item_code')
-      .eq('owner_staff_id', user.id)
+      .eq('owner_staff_id', callerStaffId)
       .in('cart_line_key', pwpCartLineKeys);
     const codesByLead = new Map<string, string[]>();
     for (const r of ((stampRows ?? []) as Array<{ code: string; cart_line_key: string | null; trigger_item_code: string | null }>)) {
@@ -6228,6 +6280,14 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
         qty,
       }, 422);
     }
+    /* Same-cart ownership — the helper compares owner_staff_id against this arg,
+       so it must be the identity /pwp-codes reserve stamps, not the bridge's pin
+       (which made every RESERVED code redeemable by any caller). '' when
+       unresolved: the helper takes a plain string, and an unidentified caller
+       owns no RESERVED code, so '' correctly matches none while leaving an
+       AVAILABLE voucher redeemable. */
+    const addLineOwnerStaffId =
+      (await resolveOwnerStaffId(sb, c.get('houzsUser')?.id, user.id)) ?? '';
     const pwpClaimResult = await claimPwpForSingleLine(sb, {
       code: addLinePwpCode,
       docNo,
@@ -6239,7 +6299,7 @@ mfgSalesOrders.post('/:docNo/items', async (c) => {
         pwp_price_sen: productLite?.pwp_price_sen ?? null,
       },
       customerId:    (header.customer_id as string | null) ?? null,
-      ownerStaffId:  user.id,
+      ownerStaffId:  addLineOwnerStaffId,
       qty,
       variants:      variantsObj as Record<string, unknown> | null,
     });
@@ -7679,6 +7739,11 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap', async (c) => {
     if (pwpNewlyTriggered.length > 0) {
       const { data: hdr } = await sb.from('mfg_sales_orders').select('customer_id').eq('doc_no', docNo).maybeSingle();
       const customerId = ((hdr as { customer_id?: string | null } | null)?.customer_id) ?? null;
+      /* Provenance for the minted vouchers — resolved ONCE, outside the mint
+         loops. These land AVAILABLE, which is redeemable regardless of owner, so
+         this is who minted it rather than a gate; it still must not be the
+         bridge's pin, which records every voucher as minted by "System". */
+      const mintOwnerStaffId = await resolveOwnerStaffId(sb, c.get('houzsUser')?.id, user.id);
       const { data: keptRows } = triggerCodesToRestamp.length > 0
         ? await sb.from('pwp_codes').select('code, rule_id').in('code', triggerCodesToRestamp)
         : { data: [] };
@@ -7703,7 +7768,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap', async (c) => {
               reward_compartments: r.reward_compartments ?? [],
               type: r.type ?? 'pwp',
               status: 'AVAILABLE',
-              owner_staff_id: user.id,
+              owner_staff_id: mintOwnerStaffId,
               cart_line_key: null,
               trigger_item_code: newCode,
               source_doc_no: docNo,
@@ -8408,6 +8473,9 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
     if (pwpNewlyTriggered.length > 0) {
       const { data: hdr } = await sb.from('mfg_sales_orders').select('customer_id').eq('doc_no', docNo).maybeSingle();
       const customerId = ((hdr as { customer_id?: string | null } | null)?.customer_id) ?? null;
+      /* Minting provenance — resolved once outside the loops; see the non-sofa
+         swap above for why this must not be the bridge's pinned system uuid. */
+      const mintOwnerStaffId = await resolveOwnerStaffId(sb, c.get('houzsUser')?.id, user.id);
       const { data: keptRows } = pwpKeepCodes.length > 0
         ? await sb.from('pwp_codes').select('code, rule_id').in('code', pwpKeepCodes)
         : { data: [] };
@@ -8432,7 +8500,7 @@ mfgSalesOrders.post('/:docNo/items/:itemId/tbc-swap-sofa', async (c) => {
               reward_compartments: r.reward_compartments ?? [],
               type: r.type ?? 'pwp',
               status: 'AVAILABLE',
-              owner_staff_id: user.id,
+              owner_staff_id: mintOwnerStaffId,
               cart_line_key: null,
               trigger_item_code: newLeadCode,
               source_doc_no: docNo,

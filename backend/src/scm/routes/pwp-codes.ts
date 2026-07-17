@@ -14,6 +14,7 @@ import { z } from 'zod';
 import { matchComboSubset, passesRefinementColumns } from '../shared';
 import { supabaseAuth } from '../middleware/auth';
 import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
+import { resolveCallerStaffId } from '../lib/salesScope';
 import type { Env, Variables } from '../env';
 
 type AppCtx = Context<{ Bindings: Env; Variables: Variables }>;
@@ -21,6 +22,57 @@ type AppCtx = Context<{ Bindings: Env; Variables: Variables }>;
 export const pwpCodes = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 pwpCodes.use('*', supabaseAuth);
+
+/* ── Caller identity for OWNERSHIP / ATTRIBUTION ────────────────────────────
+   The scm auth bridge (middleware/auth.ts) pins `c.get('user').id` to ONE
+   seeded system staff row for EVERY caller: a type shim, not an identity. The
+   real person is the mig-0066 staff row linked to the Houzs user, read by
+   resolveCallerStaffId. This wrapper adds the ONE distinction the bare resolver
+   cannot make, because only its callers can see `user`:
+
+     · resolved → the caller's own staff uuid. Always wins.
+     · unresolved, and `user.id` is NOT the pin → a real staff uuid a HEADLESS
+       REPLAY already resolved while its request was still authed. Only
+       mfg-sales-orders' createDraftSalesOrder does this: it feeds the scan job's
+       scan_jobs.salesperson_id in through `user`, and the enqueue-time resolver
+       (scan-so.ts resolveScanUploaderStaffId) has an email fallback this one
+       lacks. Trust it — dropping it would regress OCR drafts that attribute
+       correctly today.
+     · unresolved, and `user.id` IS the pin → a human we could not identify.
+       Return null and let the CALLER decide: reads answer empty, writes refuse.
+       Never hand back the pin — every row stamped with it collapses onto one
+       shared identity, which is the pos-cart leak (#633) and the PWP-ownership
+       and salesperson_id bugs this change fixes.
+
+   PLACEMENT: this belongs in lib/salesScope.ts beside resolveCallerStaffId, and
+   the constant belongs in middleware/auth.ts (which does not export it — hence
+   the copy below). It sits here because this module is the only one BOTH
+   consumers can reach without an import cycle: mfg-sales-orders.ts already
+   imports genCode / inList from here, so the edge exists and only goes one way.
+   Move all three together once auth.ts exports the pin. */
+export const SCM_SYSTEM_STAFF_ID = '00000000-0000-4000-8000-000000000001';
+
+export async function resolveOwnerStaffId(
+  sb: any,
+  houzsUserId: number | null | undefined,
+  bridgeUserId: string | null | undefined,
+): Promise<string | null> {
+  const own = await resolveCallerStaffId(sb, houzsUserId);
+  if (own) return own;
+  const preResolved = (bridgeUserId ?? '').trim();
+  return preResolved && preResolved !== SCM_SYSTEM_STAFF_ID ? preResolved : null;
+}
+
+/* One wording for the refusal, so both writers refuse identically. Mirrors
+   pos-cart's PUT (409 staff_unlinked) — same condition, same remedy. The client
+   has no ERROR_CODE_MESSAGES entry for this code, so humanApiError falls through
+   to `message`; keep it one plain sentence with no internals or it gets filtered
+   out and the operator sees the generic 409 instead. */
+const STAFF_UNLINKED_PWP: { error: string; message: string } = {
+  error: 'staff_unlinked',
+  message:
+    'Your account is not linked to a sales profile yet, so PWP codes cannot be held for this cart. Ask IT to link your account.',
+};
 
 // product_models.id list match: [] = whole category, else the modelId must be in
 // the list (null modelId never matches a non-empty list). Mirrors shared/pwp.ts.
@@ -79,10 +131,19 @@ const toApi = (r: CodeRow) => ({
       the reward configurator's "Apply PWP" toggle (which code is available in
       THIS cart). Keyed by cart_line_key on the client. */
 pwpCodes.get('/mine', async (c) => {
-  const u = c.get('user');
-  if (!u?.id) return c.json({ error: 'auth_required' }, 401);
-  const userId = u.id;
   const supabase = c.get('supabase');
+  /* OWNER = the caller's REAL staff uuid (resolveOwnerStaffId). It used to be
+     `user.id` — the bridge's pin — which is ALSO what /reserve stamped, so every
+     row carried the identical value and this filter was a no-op: "my reserved
+     codes" returned every salesperson's held promo codes to everybody. The
+     dropped `if (!u?.id) 401` above tested that pin, which the bridge always
+     sets; it could never fire. The real auth gate is upstream (the global
+     /api/* session auth + requireScmAccess). */
+  const userId = await resolveOwnerStaffId(supabase, c.get('houzsUser')?.id, c.get('user')?.id);
+  // No staff link → this caller owns no codes, and empty is the truthful
+  // answer. A read must not break the POS cart reconciler; /reserve reports the
+  // problem in plain language the moment they try to hold one (as pos-cart does).
+  if (!userId) return c.json({ codes: [] });
   const { data, error } = await scopeToCompany(
     supabase
       .from('pwp_codes')
@@ -115,10 +176,15 @@ const reserveSchema = z.object({
       qty rather than double-generating. Returns the line's full RESERVED set.
       No rule matches → []. */
 pwpCodes.post('/reserve', async (c) => {
-  const u = c.get('user');
-  if (!u?.id) return c.json({ error: 'auth_required' }, 401);
-  const userId = u.id;
   const supabase = c.get('supabase');
+  /* OWNER = the caller's REAL staff uuid (resolveOwnerStaffId), not the bridge's
+     pin every row used to carry. Fail SAFE when it will not resolve: stamping
+     the shared system row hands this cart's held codes to every other
+     salesperson and shows theirs here, so a reservation nobody owns is worse
+     than no reservation. (The dropped `if (!u?.id) 401` tested the pin, which is
+     always set — see /mine.) */
+  const userId = await resolveOwnerStaffId(supabase, c.get('houzsUser')?.id, c.get('user')?.id);
+  if (!userId) return c.json(STAFF_UNLINKED_PWP, 409);
 
   let body: unknown;
   try { body = await c.req.json(); } catch { return c.json({ error: 'invalid_json' }, 400); }
@@ -194,12 +260,21 @@ pwpCodes.post('/reserve', async (c) => {
     matching = matching.filter((r) => String(r.type ?? 'pwp') !== 'promo');
   }
 
-  // 3. Existing RESERVED codes for this cart line, grouped by rule.
-  const { data: existingRows } = await supabase
-    .from('pwp_codes')
-    .select(SELECT)
-    .eq('cart_line_key', cartLineKey)
-    .eq('status', 'RESERVED');
+  /* 3. Existing RESERVED codes for THIS caller's cart line, grouped by rule.
+        cart_line_key is POS-client-supplied and carries no authority — its
+        entropy is a client-side contract this repo cannot verify — so it must
+        never be the only predicate on a read that drives the DELETEs below.
+        Scope by the ACTIVE company (mirroring the stamp the inserts use, as
+        DELETE /reserve does) AND by the owner, so a colliding key from another
+        salesperson's cart can neither be counted here nor trimmed there. */
+  const { data: existingRows } = await scopeToCompany(
+    supabase
+      .from('pwp_codes')
+      .select(SELECT)
+      .eq('cart_line_key', cartLineKey)
+      .eq('owner_staff_id', userId),
+    c,
+  ).eq('status', 'RESERVED');
   const existing = (existingRows as CodeRow[] | null) ?? [];
 
   // 4. Reconcile each matching rule to target = qty_per_trigger × qty.
@@ -235,7 +310,13 @@ pwpCodes.post('/reserve', async (c) => {
       // Qty reduced — trim the surplus RESERVED codes for this line+rule.
       const surplus = mine.slice(target).map((e) => e.code);
       if (surplus.length > 0) {
-        await supabase.from('pwp_codes').delete().in('code', surplus).eq('status', 'RESERVED');
+        // `surplus` already comes from the company+owner-scoped read above; the
+        // predicate is repeated here as defence in depth, so a future widening
+        // of that read cannot turn this into a cross-company/-owner delete.
+        await scopeToCompany(
+          supabase.from('pwp_codes').delete().in('code', surplus).eq('owner_staff_id', userId),
+          c,
+        ).eq('status', 'RESERVED');
       }
     }
   }
@@ -251,16 +332,24 @@ pwpCodes.post('/reserve', async (c) => {
       .filter((e) => !e.rule_id || !matchingIds.has(e.rule_id))
       .map((e) => e.code);
     if (strays.length > 0) {
-      await supabase.from('pwp_codes').delete().in('code', strays).eq('status', 'RESERVED');
+      // Same defence-in-depth predicate as the surplus trim above.
+      await scopeToCompany(
+        supabase.from('pwp_codes').delete().in('code', strays).eq('owner_staff_id', userId),
+        c,
+      ).eq('status', 'RESERVED');
     }
   }
 
-  // 5. Return the line's current RESERVED set.
-  const { data: finalRows } = await supabase
-    .from('pwp_codes')
-    .select(SELECT)
-    .eq('cart_line_key', cartLineKey)
-    .eq('status', 'RESERVED');
+  // 5. Return the line's current RESERVED set — the CALLER's, scoped exactly
+  //    like the step-3 read (cart_line_key alone is not a boundary).
+  const { data: finalRows } = await scopeToCompany(
+    supabase
+      .from('pwp_codes')
+      .select(SELECT)
+      .eq('cart_line_key', cartLineKey)
+      .eq('owner_staff_id', userId),
+    c,
+  ).eq('status', 'RESERVED');
   return c.json({ codes: ((finalRows as CodeRow[] | null) ?? []).map(toApi) });
 });
 
@@ -311,10 +400,13 @@ pwpCodes.get('/by-so/:docNo', async (c) => {
       model (the configurator has both); the per-SKU price authority stays at
       order Confirm (server uses pwp_price_sen). Marks nothing used. */
 pwpCodes.get('/:code', async (c) => {
-  const u = c.get('user');
-  if (!u?.id) return c.json({ error: 'auth_required' }, 401);
-  const userId = u.id;
   const supabase = c.get('supabase');
+  /* OWNER = the caller's REAL staff uuid (resolveOwnerStaffId). On the bridge's
+     pin — which every reserve also stamped — the RESERVED branch below was true
+     for ANY caller, so one salesperson's held code read as owned by whoever
+     asked. null → the caller owns nothing, so only an AVAILABLE (cross-order)
+     code can validate. (The dropped `if (!u?.id) 401` tested the pin — see /mine.) */
+  const userId = await resolveOwnerStaffId(supabase, c.get('houzsUser')?.id, c.get('user')?.id);
   const code = c.req.param('code');
   const rewardCategory = (c.req.query('rewardCategory') ?? '').toUpperCase();
   const rewardModelId = c.req.query('rewardModelId') ?? '';
@@ -326,8 +418,12 @@ pwpCodes.get('/:code', async (c) => {
   const r = row as unknown as CodeRow;
 
   // Redeemable iff AVAILABLE (cross-order voucher) or RESERVED-owned-by-caller
-  // (same-cart). USED → spent.
-  const redeemable = r.status === 'AVAILABLE' || (r.status === 'RESERVED' && r.owner_staff_id === userId);
+  // (same-cart). USED → spent. The `userId != null` guard is load-bearing: an
+  // unidentified caller must not match a RESERVED row that happens to carry a
+  // NULL owner (null === null) and thereby redeem someone else's hold.
+  const redeemable =
+    r.status === 'AVAILABLE' ||
+    (r.status === 'RESERVED' && userId != null && r.owner_staff_id === userId);
   if (!redeemable) return c.json({ valid: false, reason: r.status === 'USED' ? 'already_used' : 'not_redeemable' });
 
   if (rewardCategory && rewardCategory !== String(r.reward_category).toUpperCase()) {

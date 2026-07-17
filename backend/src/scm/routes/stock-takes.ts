@@ -28,7 +28,7 @@
 import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
-import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
+import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 
@@ -49,10 +49,7 @@ const nextTakeNo = async (sb: any, c: any): Promise<string> => {
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
   const p = companyDocPrefix(c);
-  const { data: existing } = await sb.from('stock_takes')
-    .select('take_no')
-    .like('take_no', `${p}STK-${yymm}-%`);
-  return nextMonthlyDocNo(`${p}STK-${yymm}`, ((existing ?? []) as Array<{ take_no: string }>).map((r) => r.take_no));
+  return mintMonthlyDocNo(sb, 'stock_takes', 'take_no', `${p}STK-${yymm}`);
 };
 
 // ── Resolve in-scope SKUs PER (product_code, variant_key) + current on-hand ──

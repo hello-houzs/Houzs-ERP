@@ -518,6 +518,10 @@ export const NAV_TABS: NavTab[] = [
           { to: "/scm/accounting", label: "Accounting", icon: BookOpen, anyPerm: ["*", "scm.access"], anyAccess: ["scm.finance.accounting"] },
           { to: "/scm/payment-vouchers", label: "Payment Vouchers", icon: Wallet, anyPerm: ["*", "scm.access", "scm.payment_voucher.create", "scm.payment_voucher.write", "scm.payment_voucher.post", "scm.payment_voucher.cancel"], anyAccess: ["scm.finance.accounting"] },
           { to: "/scm/outstanding", label: "Outstanding", icon: AlertCircle, anyPerm: ["*", "scm.access"], anyAccess: ["scm.finance.outstanding"] },
+          // Delivered-but-not-billed, aged. Sits next to Outstanding and on the
+          // SAME area key: it is the money answer to the question Outstanding's
+          // DO tab asks with a header-status flag and no money column.
+          { to: "/scm/unbilled-deliveries", label: "Not Yet Billed", icon: HandCoins, anyPerm: ["*", "scm.access"], anyAccess: ["scm.finance.outstanding"] },
           // Currencies master (Phase 1-A FX) — owner-maintained currency + rate
           // table for GRN / PI / PV foreign-currency posting. Gated on the flat
           // scm.currency.manage permission (Owner / IT Admin via *).

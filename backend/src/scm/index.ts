@@ -47,6 +47,7 @@ import { accounting } from "./routes/accounting";
 import { mrp } from "./routes/mrp";
 import { mrpLeadTimes } from "./routes/mrp-lead-times";
 import { outstanding } from "./routes/outstanding";
+import { unbilledDeliveries } from "./routes/unbilled-deliveries";
 import { localities } from "./routes/localities";
 import { staff } from "./routes/staff";
 import { fabricColours } from "./routes/fabric-colours";
@@ -283,6 +284,15 @@ scm.route("/mrp-lead-times", mrpLeadTimes);
 // mounted above — its GET list was added to the existing route, not remounted.
 scm.use("/outstanding/*", scmAreaGuard("scm.finance.outstanding"));
 scm.route("/outstanding", outstanding);
+// Delivered-but-not-invoiced, aged (read-only). The money answer to the same
+// question /outstanding/do asks with a header-status flag and no money column —
+// see the header note in routes/unbilled-deliveries.ts. It is the SAME question
+// about the SAME documents for the SAME reader, so it reuses the Outstanding
+// area key rather than inventing a permission: anyone who may see the DO
+// Outstanding tab may see what that tab is worth. Row-scope (own+downline) and
+// the finance-column rules live IN the route, as they do for reports.ts.
+scm.use("/unbilled-deliveries/*", scmAreaGuard("scm.finance.outstanding"));
+scm.route("/unbilled-deliveries", unbilledDeliveries);
 // localities: MY State/City/Postcode reference — cross-area lookup, left on the
 // coarse gate (see SHARED READ HELPERS note above).
 scm.route("/localities", localities);

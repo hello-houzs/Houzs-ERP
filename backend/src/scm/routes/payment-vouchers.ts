@@ -25,7 +25,7 @@
 //     super_admin row).
 //   * multi-company: company_id stamped on insert (activeCompanyId / stampCompany)
 //     + scopeToCompany on the list; JE + JE-lines inherit the PV's company_id.
-//   * doc numbers via companyDocPrefix + nextMonthlyDocNo (max+1, self-healing)
+//   * doc numbers via companyDocPrefix + mintMonthlyDocNo (max+1, self-healing)
 //     with insertWithDocNoRetry on the header insert.
 //   * FX removed (no currencies master): currency defaults MYR, rate 1.
 //
@@ -36,7 +36,7 @@
 import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
-import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
+import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { hasHouzsPerm } from '../lib/houzs-perms';
 import { normalizeCurrency, normalizeExchangeRate, masterRateForCurrency } from '../lib/fx';
@@ -64,14 +64,13 @@ const normalizePurpose = (raw: unknown): 'SUPPLIER_PAYMENT' | 'FREIGHT' | 'OTHER
    MYR ⇒ rate 1, a foreign rate must be finite > 0 else 1 — the GL post can never
    be zeroed). */
 
-/* Next PV-YYMM-NNN (company-prefixed). Mirrors purchase-invoices nextNum —
-   max(suffix)+1 via nextMonthlyDocNo (self-healing; never count+1). */
+/* Next PV-YYMM-NNN (company-prefixed). Mirrors the sibling scm minters —
+   max(suffix)+1 via mintMonthlyDocNo (self-healing; never count+1). */
 const nextPvNo = async (sb: any, c: any): Promise<string> => {
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
   const p = companyDocPrefix(c);
-  const { data: existing } = await sb.from('payment_vouchers').select('pv_number').like('pv_number', `${p}PV-${yymm}-%`);
-  return nextMonthlyDocNo(`${p}PV-${yymm}`, ((existing ?? []) as Array<{ pv_number: string }>).map((r) => r.pv_number));
+  return mintMonthlyDocNo(sb, 'payment_vouchers', 'pv_number', `${p}PV-${yymm}`);
 };
 
 const padMmDd = (d: Date): string => {

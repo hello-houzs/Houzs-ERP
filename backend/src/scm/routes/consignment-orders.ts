@@ -51,7 +51,7 @@ import {
 import { findIncompleteVariantLines } from '../lib/so-variant-check';
 import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item-codes';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
-import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
+import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { SO_ITEM_FINANCE_KEYS, stripAuditFinance } from '../lib/finance-keys';
 import type { Env, Variables } from '../env';
@@ -240,11 +240,7 @@ const nextDocNo = async (sb: any, c: any): Promise<string> => {
     return `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
   })();
   const p = companyDocPrefix(c);
-  const { data: existing } = await sb
-    .from('consignment_sales_orders')
-    .select('doc_no')
-    .like('doc_no', `${p}CS-${yymm}-%`);
-  return nextMonthlyDocNo(`${p}CS-${yymm}`, ((existing ?? []) as Array<{ doc_no: string }>).map((r) => r.doc_no));
+  return mintMonthlyDocNo(sb, 'consignment_sales_orders', 'doc_no', `${p}CS-${yymm}`);
 };
 
 /* ── Cost snapshot ──────────────────────────────────────────────────────

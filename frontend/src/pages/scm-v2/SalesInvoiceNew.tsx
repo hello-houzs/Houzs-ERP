@@ -346,7 +346,7 @@ export const SalesInvoiceNew = () => {
         })),
       },
       {
-        onSuccess: async (res: { id: string; invoiceNumber: string }) => {
+        onSuccess: async (res: { id: string; invoiceNumber: string; priceWarningMessage?: string }) => {
           /* A DRAFT invoice cannot take payments yet (the server 409s a draft
              payment). Skip the payment flush — the operator records payments
              after confirming on the detail page. */
@@ -357,6 +357,18 @@ export const SalesInvoiceNew = () => {
                 `row${failed === 1 ? '' : 's'} failed to save. Please re-enter ` +
                 `${failed === 1 ? 'it' : 'them'} on the Detail page.`,
               tone: 'error',
+            });
+          }
+          /* Price differs from the price agreed on the order (server-side
+             comparison against the source DO line, which carries the SO's
+             agreed price). ADVISORY, never a block — the selling price is the
+             operator's to author (Commander 2026-05-29), so this states the
+             discrepancy and gets out of the way. Not tone:'error': nothing
+             failed, and the invoice was created. */
+          if (res.priceWarningMessage) {
+            await notify({
+              title: `Invoice ${res.invoiceNumber} was created, but a price does not match the order.`,
+              body: res.priceWarningMessage,
             });
           }
           navigate(`/scm/sales-invoices/${res.id}`);

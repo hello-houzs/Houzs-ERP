@@ -14,7 +14,7 @@ import { recostFromGrn } from '../lib/recost';
 import { normalizeExchangeRate, toMyrSen, normalizeCurrency, masterRateForCurrency } from '../lib/fx';
 import { allocateLandedCharges, normalizeAllocationMethod } from '../lib/landed-allocation';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
-import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
+import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { todayMyt } from '../lib/my-time';
 import { paginateAll } from '../lib/paginate-all';
 import { escapeForOr } from '../lib/postgrest-search';
@@ -369,8 +369,7 @@ const nextNumber = async (sb: ReturnType<Variables['supabase']['valueOf']> exten
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
   const p = companyDocPrefix(c);
-  const { data: existing } = await sb.from(table).select(col).like(col, `${p}${prefix}-${yymm}-%`);
-  return nextMonthlyDocNo(`${p}${prefix}-${yymm}`, ((existing ?? []) as Array<Record<string, string>>).map((r) => r[col] as string));
+  return mintMonthlyDocNo(sb, table, col, `${p}${prefix}-${yymm}`);
 };
 
 /* ── Recompute GRN header money rollups (migration 0101) ──────────────────
@@ -1332,8 +1331,7 @@ grns.post('/from-pos', async (c) => {
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
   const cp = companyDocPrefix(c);
-  const { data: existingGrnNos } = await sb.from('grns').select('grn_number').like('grn_number', `${cp}GRN-${yymm}-%`);
-  let grnNumber = nextMonthlyDocNo(`${cp}GRN-${yymm}`, ((existingGrnNos ?? []) as Array<{ grn_number: string }>).map((r) => r.grn_number));
+  let grnNumber = await mintMonthlyDocNo(sb, 'grns', 'grn_number', `${cp}GRN-${yymm}`);
 
   const poNumbersJoined = poList.map((p) => p.po_number).join(', ');
   /* Migration 0082 — GRN currency = the source POs' currency (same supplier ⇒
@@ -1348,8 +1346,7 @@ grns.post('/from-pos', async (c) => {
   const { data: header, error: hErr } = await insertWithDocNoRetry(
     async () => {
       if (firstMint) { firstMint = false; return grnNumber; }
-      const { data: live } = await sb.from('grns').select('grn_number').like('grn_number', `${cp}GRN-${yymm}-%`);
-      grnNumber = nextMonthlyDocNo(`${cp}GRN-${yymm}`, ((live ?? []) as Array<{ grn_number: string }>).map((r) => r.grn_number));
+      grnNumber = await mintMonthlyDocNo(sb, 'grns', 'grn_number', `${cp}GRN-${yymm}`);
       return grnNumber;
     },
     (dn) => sb.from('grns').insert({
@@ -1573,10 +1570,9 @@ grns.post('/from-po-items', async (c) => {
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
   // Seed from max(suffix), NOT count — count+1 is non-self-healing (a mid-month
   // delete re-mints a surviving number → UNIQUE collision). Derive the next
-  // suffix via nextMonthlyDocNo, then counter starts one below it.
+  // suffix via mintMonthlyDocNo, then counter starts one below it.
   const cp = companyDocPrefix(c);
-  const { data: existingBatchNos } = await sb.from('grns').select('grn_number').like('grn_number', `${cp}GRN-${yymm}-%`);
-  const firstNext = nextMonthlyDocNo(`${cp}GRN-${yymm}`, ((existingBatchNos ?? []) as Array<{ grn_number: string }>).map((r) => r.grn_number));
+  const firstNext = await mintMonthlyDocNo(sb, 'grns', 'grn_number', `${cp}GRN-${yymm}`);
   let counter = parseInt(firstNext.slice(`${cp}GRN-${yymm}-`.length), 10) - 1;
 
   const receivedAt = body.receivedDate ?? todayMyt();
@@ -1618,9 +1614,8 @@ grns.post('/from-po-items', async (c) => {
         .select('id, grn_number').single();
       if (!hErr && header) { h = header as unknown as { id: string; grn_number: string }; break; }
       if (!hErr || (hErr as { code?: string }).code !== '23505') break;
-      const { data: live } = await sb.from('grns')
-        .select('grn_number').like('grn_number', `${cp}GRN-${yymm}-%`);
-      counter = parseInt(nextMonthlyDocNo(`${cp}GRN-${yymm}`, ((live ?? []) as Array<{ grn_number: string }>).map((r) => r.grn_number)).slice(`${cp}GRN-${yymm}-`.length), 10);
+      const liveNext = await mintMonthlyDocNo(sb, 'grns', 'grn_number', `${cp}GRN-${yymm}`);
+      counter = parseInt(liveNext.slice(`${cp}GRN-${yymm}-`.length), 10);
     }
     if (!h) continue;
 

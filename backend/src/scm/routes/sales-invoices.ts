@@ -13,6 +13,18 @@
 // source_doc_no=invoice_number) so it can never double-post. Posting failures
 // never roll back the invoice (audit-DLQ pattern).
 //
+// ISSUED = FROZEN: this is the ONE document that leaves the building, so once it
+// is issued (any status but DRAFT — see isIssuedSi) its money and identity stop
+// being writable: line items are frozen wholesale, and the header freezes
+// invoice_date / currency / debtor_name / debtor_code (SI_ISSUED_FROZEN_FIELDS)
+// while every neutral field stays editable. The correction path is cancel → fix
+// → reopen, which already re-derives revenue, credit and paid status. Without
+// this gate a PAID invoice could be re-priced under a customer holding the PDF,
+// and moving an issued invoice's date stranded its JE in the original period
+// (post-si-revenue fixes entry_date from invoice_date; resyncSiRevenue compares
+// only the total). The resync's void+repost is the owner's 2026-06-01 ruling and
+// is CORRECT — the bug was the missing gate in front of it, not the mechanic.
+//
 // Houzs adaptation: same plumbing as the sibling SCM routes — supabaseAuth bridge
 // + scm-scoped service client via c.get('supabase'). Imports repointed from
 // @2990s/shared → ../shared. NOTE: GL posting needs scm.accounts seeded with at
@@ -23,12 +35,12 @@
 
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { normalizePhone, buildVariantSummary, isServiceLine } from '../shared';
+import { normalizePhone, buildVariantSummary, isServiceLine, fmtRM } from '../shared';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { postSiRevenue, reverseSiRevenue, resyncSiRevenue } from '../lib/post-si-revenue';
-import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
+import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { todayMyt } from '../lib/my-time';
 import { resolveSalesScopeIds, salesDocOutOfScope } from '../lib/salesScope';
 import { escapeForOr } from '../lib/postgrest-search';
@@ -101,8 +113,7 @@ const nextNum = async (sb: any, c: any): Promise<string> => {
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
   const p = companyDocPrefix(c);
-  const { data: existing } = await sb.from('sales_invoices').select('invoice_number').like('invoice_number', `${p}SI-${yymm}-%`);
-  return nextMonthlyDocNo(`${p}SI-${yymm}`, ((existing ?? []) as Array<{ invoice_number: string }>).map((r) => r.invoice_number));
+  return mintMonthlyDocNo(sb, 'sales_invoices', 'invoice_number', `${p}SI-${yymm}`);
 };
 
 /* Re-derive the SI header's per-category revenue/cost totals + grand total from
@@ -167,7 +178,14 @@ function buildItemRow(salesInvoiceId: string, it: Record<string, unknown>, lineN
   const discount = Number(it.discountCenti ?? 0);
   const tax = Number(it.taxCenti ?? 0);
   const unitCost = Number(it.unitCostCenti ?? 0);
-  const lineTotal = (qty * unitPrice) - discount + tax;
+  /* Clamp at 0 — the operator's screen already does (SalesInvoiceNew.tsx:250-252
+     computes Math.max(0, qty*price − disc) per line). Without the clamp a line
+     whose discount exceeds its gross recorded a NEGATIVE total: the operator saw
+     one grand total on screen and the invoice persisted a lower one, because
+     recomputeTotals sums the raw line totals and only clamps the GRAND total.
+     Tax is inside the clamp so the two sides stay byte-identical (tax is 0 on
+     every one of the owner's invoices; it is carried, not used). */
+  const lineTotal = Math.max(0, (qty * unitPrice) - discount + tax);
   const lineCost = qty * unitCost;
   const itemGroup = (it.itemGroup as string) ?? null;
   const variants = (it.variants as unknown) ?? null;
@@ -270,6 +288,81 @@ async function unlinkedFromDoOffenders(
   return [...offenders];
 }
 
+/* ── Invoice price vs the AGREED ORDER price — WARN, never block ───────────
+   Nothing downstream of the SO compares the two. The happy path is already
+   anchored (a from-DO SI line copies its price from the DO line at /from-dos,
+   which copied it from the SO at delivery-orders-mfg.ts:2867), so this is
+   structurally silent there. It fires on the case that has nothing catching it
+   today: a clerk hand-editing a price on the create form for goods whose price
+   was agreed months ago upstream.
+
+   WARN, NEVER REJECT. The owner ruled (Commander 2026-05-29,
+   mfg-pricing-recompute.ts:337-344) that the selling price is operator-authored
+   and NOT computed — a hard block would overrule him on his own document. Note
+   what the anchor is: the SO's 0.5% honest-pricing gate compares a client price
+   against a COMPUTED price, and per that same ruling there IS no computed
+   selling figure to compare to here. So the anchor is the price the customer
+   already agreed to. Same 0.5% threshold as the SO gate, so the number means
+   one thing system-wide.
+
+   Only a DO-LINKED line has an anchor. A genuinely-new manual line is silently
+   fine — the owner's ruling is that an SI MAY carry direct/standalone lines, and
+   an unlinked line has no agreed price to drift from. Discount is deliberately
+   NOT compared: a goodwill discount granted at invoice time is legitimate and
+   would false-positive constantly. One query, and only when linked lines exist. */
+const SI_PRICE_DRIFT_THRESHOLD = 0.005;
+
+type SiPriceWarning = { itemCode: string; invoicedCenti: number; orderedCenti: number };
+
+async function siPriceDriftWarnings(
+  sb: any,
+  lines: Array<Record<string, unknown>>,
+): Promise<SiPriceWarning[]> {
+  const linked = lines.filter((l) => l.doItemId && l.unitPriceCenti !== undefined);
+  if (linked.length === 0) return [];
+  const { data } = await sb.from('delivery_order_items')
+    .select('id, item_code, unit_price_centi')
+    .in('id', [...new Set(linked.map((l) => String(l.doItemId)))]);
+  const byId = new Map<string, { item_code: string | null; unit_price_centi: number | null }>();
+  for (const r of (data ?? []) as Array<{ id: string; item_code: string | null; unit_price_centi: number | null }>) {
+    byId.set(r.id, r);
+  }
+  const out: SiPriceWarning[] = [];
+  for (const l of linked) {
+    const src = byId.get(String(l.doItemId));
+    if (!src) continue;
+    const ordered = Math.round(Number(src.unit_price_centi ?? 0));
+    const invoiced = Math.round(Number(l.unitPriceCenti ?? 0));
+    /* An agreed price of 0 has no ratio to drift from (and a free/gift line is a
+       real thing here) — nothing to say about it. */
+    if (!(ordered > 0) || !Number.isFinite(invoiced)) continue;
+    if (Math.abs(invoiced - ordered) / ordered <= SI_PRICE_DRIFT_THRESHOLD) continue;
+    out.push({ itemCode: String(l.itemCode ?? src.item_code ?? ''), invoicedCenti: invoiced, orderedCenti: ordered });
+  }
+  return out;
+}
+
+/* One plain sentence an operator can act on. Built server-side so EVERY caller
+   gets the warning in words — the un-repointed 2990 POS/admin app consumes these
+   same APIs and cannot be taught to compose this. fmtRM is the system-wide sole
+   money formatter (shared/format.ts); whole-ringgit is fine because anything
+   under the 0.5% gate is invisible at that precision anyway. */
+function siPriceWarningMessage(warnings: SiPriceWarning[]): string {
+  const parts = warnings.map(
+    (w) => `${w.itemCode} is invoiced at ${fmtRM(w.invoicedCenti / 100)} but the order price is ${fmtRM(w.orderedCenti / 100)}`,
+  );
+  return `${parts.join('; ')}. Check the price before sending this invoice.`;
+}
+
+/* Attach the warning to a success response. Adds NOTHING when there is no drift,
+   so the response stays byte-identical on the happy path and no existing
+   consumer sees a new key it did not ask for. */
+function withPriceWarnings<T extends object>(res: T, warnings: SiPriceWarning[]) {
+  return warnings.length === 0
+    ? res
+    : { ...res, priceWarnings: warnings, priceWarningMessage: siPriceWarningMessage(warnings) };
+}
+
 /* Filter-pill bucket → the raw sales_invoices.status values it covers. Single
    source of truth for BOTH the status-count queries and the list `status`
    filter. sent / partial / paid are MULTI-status buckets; cancelled is 1:1. The
@@ -305,6 +398,59 @@ function canonicalSiStatus(raw: string | null | undefined): string | null {
   if (!raw || typeof raw !== 'string') return null;
   return SI_STATUS_CANON[raw.trim().toUpperCase()] ?? null;
 }
+
+/* ── ISSUED = the document is in the customer's hands ──────────────────────
+   An SI leaves DRAFT at exactly the moment postSiRevenue books Dr AR / Cr Sales
+   and the operator prints/sends the PDF. So "issued" is every status EXCEPT
+   DRAFT — CANCELLED is frozen on its own terms and always was, so it is not
+   "issued", it is simply dead.
+
+   The line falls here and NOT at PAID on purpose: PAID is far too late. The
+   SENT → PARTIALLY_PAID window is most of an invoice's life and is exactly when
+   the customer is holding the PDF deciding what to pay, which is the window the
+   harm lives in. An UNRECOGNISED status counts as issued (fail closed): the
+   only cost is that the operator must cancel/reopen to edit it, whereas the
+   cost of guessing wrong the other way is a silently mutated customer invoice.
+   That does not brick a legacy row — SI_LEGAL_TRANSITIONS still fails OPEN, so
+   cancel/reopen stays available to unfreeze it. */
+const isIssuedSi = (raw: string | null | undefined): boolean => {
+  const s = (raw ?? '').trim().toUpperCase();
+  return s !== 'DRAFT' && s !== 'CANCELLED';
+};
+
+/* Header fields FROZEN once the invoice is issued → the plain-English name used
+   in the rejection. These four are the money and the identity of the document
+   the customer is holding; every other header field (phone, email, address,
+   agent, venue, remarks…) stays editable forever, because correcting a typo'd
+   phone number on a 3-month-old invoice is a real workflow and changes neither
+   what is owed nor the GL.
+
+   invoice_date earns its place here: post-si-revenue fixes the JE's entry_date
+   from invoice_date at post time, and resyncSiRevenue compares only the TOTAL —
+   so moving an issued invoice's date silently strands its JE in the original
+   period. Freezing the date is the gate that makes the resync's total-only
+   comparison correct BY CONSTRUCTION (the resync mechanic itself is the owner's
+   2026-06-01 void+repost ruling and is deliberately untouched). A DRAFT may
+   still move its date freely — it has no JE yet, and resyncSiRevenue
+   short-circuits on DRAFT. */
+const SI_ISSUED_FROZEN_FIELDS: Record<string, string> = {
+  invoiceDate: 'invoice date',
+  currency:    'currency',
+  debtorName:  'customer name',
+  debtorCode:  'customer code',
+};
+
+/* LINES are frozen WHOLESALE on an issued invoice — not field-by-field like the
+   header above. The asymmetry is deliberate: a header carries genuinely neutral
+   fields (a phone number, a delivery note) worth keeping editable for years,
+   whereas every field on a line either IS the money (qty / price / discount) or
+   is the customer-facing description of what the money bought. Freezing the set
+   also matches the sibling documents, whose lock gates line add/remove wholesale
+   (DeliveryOrderDetail / ConsignmentNoteDetail `canRemove={!isLocked}`).
+   Cancel → fix → reopen is the sanctioned correction path and is already
+   first-class here (it re-derives revenue, credit and paid status). */
+const SI_ISSUED_LINE_MESSAGE =
+  'This invoice has already been issued to the customer, so its items can no longer be changed. Cancel the invoice and reopen it if it is wrong.';
 
 /* Legal transitions between canonical states (the SINGLE transition authority for
    PATCH /:id/status). Self-transitions (X→X) are always allowed (idempotent) and
@@ -507,6 +653,12 @@ salesInvoices.post('/', async (c) => {
     }
   }
 
+  /* Price-vs-order drift — a WARNING carried back in the response, NEVER a
+     rejection (see siPriceDriftWarnings). Computed here so the operator hears
+     about a fat-fingered price on the same round-trip that creates the invoice,
+     while it is still a draft they can fix. */
+  const priceWarnings = await siPriceDriftWarnings(sb, items);
+
   const phoneRaw = (body.phone as string | undefined) ?? null;
   const emPhoneRaw = (body.emergencyContactPhone as string | undefined) ?? null;
   const nowIso = new Date().toISOString();
@@ -574,7 +726,7 @@ salesInvoices.post('/', async (c) => {
   /* LEAK GUARD (DRAFT) — a DRAFT SI must NOT post AR/GL revenue nor auto-apply
      customer credit. Both happen on confirm (PATCH /:id/status DRAFT→SENT). */
   if (isDraft) {
-    return c.json({ id: h.id, invoiceNumber: h.invoice_number, revenue: { posted: false, status: 'draft' }, creditApplied: 0 }, 201);
+    return c.json(withPriceWarnings({ id: h.id, invoiceNumber: h.invoice_number, revenue: { posted: false, status: 'draft' }, creditApplied: 0 }, priceWarnings), 201);
   }
 
   /* REVENUE — record it now. Idempotent + best-effort. */
@@ -614,7 +766,7 @@ salesInvoices.post('/', async (c) => {
   }
 
   if (creditApplied > 0) await recomputePaid(sb, h.id);
-  return c.json({ id: h.id, invoiceNumber: h.invoice_number, revenue, creditApplied }, 201);
+  return c.json(withPriceWarnings({ id: h.id, invoiceNumber: h.invoice_number, revenue, creditApplied }, priceWarnings), 201);
 });
 
 /* ── Convert picked DO LINES (partial qty) → ONE Sales Invoice ───────────── */
@@ -834,6 +986,14 @@ salesInvoices.post('/:id/items/from-do/:doId', async (c) => {
   const { data: si } = await sb.from('sales_invoices').select('id, invoice_number, status').eq('id', id).maybeSingle();
   if (!si) return c.json({ error: 'not_found' }, 404);
   if ((si as { status: string }).status === 'CANCELLED') return c.json({ error: 'invoice_cancelled' }, 409);
+  /* ISSUED gate — same rule as the other three line paths. The in-place "append
+     a DO into this invoice" button was retired from the UI (Commander
+     2026-05-30, Phase B: one invoice per convert, via /sales-invoices/from-do),
+     so this endpoint now only serves API callers — which is precisely why it
+     needs the gate spelled out rather than assumed. */
+  if (isIssuedSi((si as { status: string }).status)) {
+    return c.json({ error: 'invoice_issued', message: SI_ISSUED_LINE_MESSAGE }, 409);
+  }
 
   const { data: doHeader } = await sb.from('delivery_orders').select('id, status').eq('id', doId).maybeSingle();
   if (!doHeader) return c.json({ error: 'delivery_order_not_found' }, 404);
@@ -907,6 +1067,45 @@ salesInvoices.patch('/:id', async (c) => {
   let body: Record<string, unknown>;
   try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
 
+  /* Load the header BEFORE writing: this route had no status check, no sales
+     scope and no company filter at all — the least-guarded write on the
+     customer-facing document. Company-scoped to match the LIST (`GET /`), so an
+     invoice the caller cannot even see in their list can never be written by id.
+     Out-of-scope / other-company / missing all answer 404, indistinguishable
+     from one another (mirrors GET /:id + GET /:id/payments). */
+  const { data: cur, error: curErr } = await scopeToCompany(
+    sb.from('sales_invoices').select('id, status, salesperson_id').eq('id', id), c,
+  ).maybeSingle();
+  if (curErr) return c.json({ error: 'load_failed', reason: curErr.message }, 500);
+  if (!cur) return c.json({ error: 'not_found' }, 404);
+  {
+    const sp = (cur as { salesperson_id?: number | string | null }).salesperson_id;
+    if (await salesDocOutOfScope(sb, c.env, c.get('houzsUser')?.id, canViewAllSales(c), sp)) {
+      return c.json({ error: 'not_found' }, 404);
+    }
+  }
+
+  const curStatus = ((cur as { status: string }).status ?? '').toUpperCase();
+  if (curStatus === 'CANCELLED') {
+    return c.json({ error: 'invoice_cancelled', message: 'This invoice is cancelled — reopen it before editing it.' }, 409);
+  }
+  /* ISSUED gate — the money and identity of a document the customer is already
+     holding cannot change under them. Everything else on the header stays
+     editable (see SI_ISSUED_FROZEN_FIELDS). Rejected as a set rather than
+     silently dropped: a caller that thinks it changed the price must not be told
+     "ok". */
+  if (isIssuedSi(curStatus)) {
+    const frozen = Object.keys(SI_ISSUED_FROZEN_FIELDS).filter((k) => body[k] !== undefined);
+    if (frozen.length > 0) {
+      const names = frozen.map((k) => SI_ISSUED_FROZEN_FIELDS[k]);
+      return c.json({
+        error: 'invoice_issued',
+        message: `This invoice has already been issued to the customer, so its ${names.join(', ')} can no longer be changed. Cancel the invoice and reopen it if it is wrong.`,
+        fields: frozen,
+      }, 409);
+    }
+  }
+
   const map: Array<[string, string]> = [
     ['debtorCode', 'debtor_code'], ['debtorName', 'debtor_name'], ['agent', 'agent'],
     ['salesLocation', 'sales_location'], ['ref', 'ref'], ['poDocNo', 'po_doc_no'],
@@ -960,6 +1159,12 @@ salesInvoices.post('/:id/items', async (c) => {
   if (((header as { status: string }).status ?? '').toUpperCase() === 'CANCELLED') {
     return c.json({ error: 'invoice_cancelled', message: 'This invoice is cancelled — reopen it before adding lines.' }, 409);
   }
+  /* ISSUED gate — adding a line to an issued invoice raises what the customer
+     owes and void+reposts its GL through the resync below, all without the
+     customer's copy of the PDF changing. */
+  if (isIssuedSi((header as { status: string }).status)) {
+    return c.json({ error: 'invoice_issued', message: SI_ISSUED_LINE_MESSAGE }, 409);
+  }
 
   {
     const over = await checkSiOverRemaining(sb, [it]);
@@ -993,6 +1198,9 @@ salesInvoices.post('/:id/items', async (c) => {
   const nextLineNo = typeof (maxNoRow as { line_no?: number | null } | null)?.line_no === 'number'
     ? (maxNoRow as { line_no: number }).line_no + 1
     : null;
+  /* Price-vs-order drift — warning only, same contract as POST /. */
+  const priceWarnings = await siPriceDriftWarnings(sb, [it]);
+
   const row = buildItemRow(id, it, nextLineNo);
   const { data, error } = await sb.from('sales_invoice_items').insert({ ...row, company_id: activeCompanyId(c) }).select(ITEM).single();
   if (error) return c.json({ error: 'insert_failed', reason: error.message }, 500);
@@ -1001,7 +1209,7 @@ salesInvoices.post('/:id/items', async (c) => {
   try {
     await resyncSiRevenue(sb, (header as { invoice_number: string }).invoice_number);
   } catch (e) { /* eslint-disable-next-line no-console */ console.error('[si-revenue] post-add-line resync failed:', e); }
-  return c.json({ item: data }, 201);
+  return c.json(withPriceWarnings({ item: data }, priceWarnings), 201);
 });
 
 salesInvoices.patch('/:id/items/:itemId', async (c) => {
@@ -1013,6 +1221,10 @@ salesInvoices.patch('/:id/items/:itemId', async (c) => {
     const { data: hd } = await sb.from('sales_invoices').select('status').eq('id', id).maybeSingle();
     if (hd && ((hd as { status: string }).status ?? '').toUpperCase() === 'CANCELLED') {
       return c.json({ error: 'invoice_cancelled', message: 'This invoice is cancelled — reopen it before editing lines.' }, 409);
+    }
+    /* ISSUED gate — this is the path that could re-price a PAID invoice. */
+    if (hd && isIssuedSi((hd as { status: string }).status)) {
+      return c.json({ error: 'invoice_issued', message: SI_ISSUED_LINE_MESSAGE }, 409);
     }
   }
 
@@ -1048,7 +1260,9 @@ salesInvoices.patch('/:id/items/:itemId', async (c) => {
   const unitCost = (canViewScmFinance(c) && it.unitCostCenti !== undefined)
     ? Number(it.unitCostCenti)
     : Number(prev.unit_cost_centi);
-  const lineTotal = (qty * unitPrice) - discount + tax;
+  /* Same 0-clamp as buildItemRow — the edit path must not be able to persist a
+     negative line the create path refuses. */
+  const lineTotal = Math.max(0, (qty * unitPrice) - discount + tax);
   const lineCost = qty * unitCost;
 
   const updates: Record<string, unknown> = {
@@ -1084,6 +1298,11 @@ salesInvoices.delete('/:id/items/:itemId', async (c) => {
     const { data: hd } = await sb.from('sales_invoices').select('status').eq('id', id).maybeSingle();
     if (hd && ((hd as { status: string }).status ?? '').toUpperCase() === 'CANCELLED') {
       return c.json({ error: 'invoice_cancelled', message: 'This invoice is cancelled — reopen it before deleting lines.' }, 409);
+    }
+    /* ISSUED gate — deleting a line lowers what the customer owes while their
+       copy of the invoice still shows it. */
+    if (hd && isIssuedSi((hd as { status: string }).status)) {
+      return c.json({ error: 'invoice_issued', message: SI_ISSUED_LINE_MESSAGE }, 409);
     }
   }
   {

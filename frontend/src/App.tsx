@@ -57,6 +57,7 @@ const ScmPurchaseOrderDetailV2 = lazy(() => import("./pages/scm-v2/PurchaseOrder
 const ScmMrpV2 = lazy(() => import("./pages/scm-v2/Mrp").then((m) => ({ default: m.Mrp })));
 const ScmAccountingV2 = lazy(() => import("./pages/scm-v2/Accounting").then((m) => ({ default: m.Accounting })));
 const ScmOutstandingV2 = lazy(() => import("./pages/scm-v2/Outstanding").then((m) => ({ default: m.Outstanding })));
+const ScmUnbilledDeliveriesV2 = lazy(() => import("./pages/scm-v2/UnbilledDeliveriesV2").then((m) => ({ default: m.UnbilledDeliveriesV2 })));
 const ScmFabricTrackingV2 = lazy(() => import("./pages/scm-v2/FabricTracking").then((m) => ({ default: m.FabricTracking })));
 const ScmWarehousesV2 = lazy(() => import("./pages/scm-v2/Warehouses").then((m) => ({ default: m.Warehouses })));
 const ScmWarehouseRacksV2 = lazy(() => import("./pages/scm-v2/WarehouseRacks").then((m) => ({ default: m.WarehouseRacks })));
@@ -432,6 +433,9 @@ export default function App() {
         <Route path="/scm/mrp" element={<ScmGuard area="scm.procurement.mrp"><Scm2990Shell><ScmMrpV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/accounting" element={<ScmGuard area="scm.finance.accounting"><Scm2990Shell><ScmAccountingV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/outstanding" element={<ScmGuard area="scm.finance.outstanding"><Scm2990Shell><ScmOutstandingV2 /></Scm2990Shell></ScmGuard>} />
+        {/* Delivered-but-not-billed, aged. Same area key as Outstanding — it is the
+            money answer to the question that page's DO tab asks with a status flag. */}
+        <Route path="/scm/unbilled-deliveries" element={<ScmGuard area="scm.finance.outstanding"><Scm2990Shell><ScmUnbilledDeliveriesV2 /></Scm2990Shell></ScmGuard>} />
         {/* Currencies master (Phase 1-A FX) — owner-maintained currency + rate
             table feeding the GRN / PI / PV foreign-currency posting. Gated on the
             flat scm.currency.manage permission (Owner / IT Admin cover it via *). */}

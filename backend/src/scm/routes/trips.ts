@@ -11,7 +11,7 @@
 // is_outsourced is DERIVED from the lorry's is_internal at create time
 // (is_outsourced = NOT is_internal) and snapshotted on the trip, so a later
 // master flip doesn't rewrite history. trip_no is a human doc number
-// (TRIP-YYMM-NNN) minted server-side via nextMonthlyDocNo (max+1, never count+1).
+// (TRIP-YYMM-NNN) minted server-side via mintMonthlyDocNo (max+1, never count+1).
 //
 // Money: DO/SO grand totals are local_total_centi (integer cents); a stop's
 // revenue_centi is sourced from that. Dual-read camelCase ?? snake_case on every
@@ -19,7 +19,7 @@
 //
 // Houzs port of 2990's apps/api/src/routes/trips.ts — same plumbing as the
 // sibling SCM routes (supabaseAuth + scm-scoped c.get('supabase'); paginateAll
-// from ../lib/paginate-all, nextMonthlyDocNo from ../lib/doc-no). scm.trips /
+// from ../lib/paginate-all, mintMonthlyDocNo from ../lib/doc-no). scm.trips /
 // scm.trip_stops already exist (migration 0053). Mounted at '/trips'.
 // ----------------------------------------------------------------------------
 
@@ -28,7 +28,7 @@ import { z } from 'zod';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { paginateAll } from '../lib/paginate-all';
-import { nextMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
+import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { scopeToAllowedCompanies, companyCodeMap, withCompanyCode, activeCompanyId } from '../lib/companyScope';
 
 export const trips = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -55,12 +55,14 @@ function dual<T = unknown>(row: Record<string, unknown>, snake: string): T {
 }
 
 /* Next TRIP-YYMM-NNN. Mirrors the sibling scm minters — max(suffix)+1 via
-   nextMonthlyDocNo (self-healing; never count+1). */
+   mintMonthlyDocNo (self-healing; never count+1). */
 async function nextTripNo(sb: any): Promise<string> {
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
-  const { data: existing } = await sb.from('trips').select('trip_no').like('trip_no', `TRIP-${yymm}-%`);
-  return nextMonthlyDocNo(`TRIP-${yymm}`, ((existing ?? []) as Array<{ trip_no: string }>).map((r) => dual<string>(r, 'trip_no')));
+  // TRIP stays CROSS-COMPANY (no companyDocPrefix) — one shared sequence, per
+  // lib/companyScope.ts. mintMonthlyDocNo reads the row's single selected value,
+  // so it keeps working whichever of trip_no/tripNo the driver hands back.
+  return mintMonthlyDocNo(sb, 'trips', 'trip_no', `TRIP-${yymm}`);
 }
 
 /* is_outsourced derives from the lorry's is_internal (NOT is_internal). A trip

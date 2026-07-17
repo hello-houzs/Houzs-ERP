@@ -88,7 +88,14 @@ const BUDGETS = {
   // 1360 -> 1500 on 2026-07-01 for the new mobile app (frontend/src/mobile/*),
   // code-split behind AuthScreens' useIsMobile — desktop users never fetch it
   // (initial JS unchanged), but it is counted here since this sums every .js.
-  TOTAL_JS_GZIP: 1700 * KB,
+  // 1700 -> 1750 on 2026-07-16: the Not Yet Billed report is one new lazy route
+  // (+7.1 KB gzip: 1694.1 -> 1701.2), which is exactly the growth this budget
+  // exists to surface — and it did. A page is a lazy chunk; only its own users
+  // fetch it, and initial JS is unchanged. Headroom is ~7 more pages, which is
+  // the point: this should trip again in a few pages' time and make someone
+  // look. Unlike INITIAL_JS_GZIP, growth here is not a first-paint cost — but
+  // it IS the number to watch if the lazy tail ever stops being lazy.
+  TOTAL_JS_GZIP: 1750 * KB,
   // Any single chunk, raw. A route blowing past this should be split.
   // Raised to fit the heaviest vendored lib — xlsx (~430 KB raw), pulled
   // out of the eager `vendor` chunk and loaded only on export.
