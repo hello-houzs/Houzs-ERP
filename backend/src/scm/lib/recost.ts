@@ -133,7 +133,19 @@ export async function restampSiFromDo(sb: any, deliveryOrderId: string) {
     const siIds = [...new Set((siLines as Array<{ sales_invoice_id: string }>).map((s) => s.sales_invoice_id).filter(Boolean))];
     const cancelled = new Set<string>();
     if (siIds.length > 0) {
-      const { data: heads } = await sb.from('sales_invoices').select('id, status').in('id', siIds);
+      const { data: heads, error: headsErr } = await sb.from('sales_invoices').select('id, status').in('id', siIds);
+      /* `?? []` folds a failed read into an EMPTY cancelled-set, which does not
+         read as "we don't know" — it reads as "no invoice here is cancelled", and
+         the loop below then re-stamps costs onto the lines of CANCELLED invoices
+         and recomputes their totals. The two reads above return early on a null
+         result, so a blip there merely skips the restamp; this one silently
+         inverts a skip-guard. Abort instead: nothing is written until the loop
+         below, so the invoices simply keep the costs they already had. */
+      if (headsErr) {
+        /* eslint-disable-next-line no-console */
+        console.error('[restampSiFromDo] invoice status read failed — SI costs left unchanged:', deliveryOrderId, headsErr.message);
+        return;
+      }
       for (const h of (heads ?? []) as Array<{ id: string; status: string }>) {
         if ((h.status ?? '').toUpperCase() === 'CANCELLED') cancelled.add(h.id);
       }
@@ -221,16 +233,37 @@ export async function recostFromGrn(sb: any, grnId: string) {
        (g.unit_price_centi, in the GRN's currency) to MYR. The PI path below uses
        the PI's OWN rate. rate 1 ⇒ toMyrSen is a no-op, so an MYR GRN recosts
        byte-for-byte as before. */
-    const { data: grnHead } = await sb.from('grns').select('exchange_rate').eq('id', grnId).maybeSingle();
+    /* `?? 1` is correct for an MYR GRN and a catastrophe for a failed read: rate 1
+       means "this price is already MYR", so a blip on an RMB GRN capitalises the
+       raw RMB figure into the lot as if it were ringgit — the whole cross-border
+       landed cost wrong by the FX factor, silently, on a column that flows into
+       every downstream DO/SI margin. A GRN that genuinely carries no rate
+       resolves error === null with a null rate and MUST still fall through to 1. */
+    const { data: grnHead, error: grnHeadErr } = await sb.from('grns').select('exchange_rate').eq('id', grnId).maybeSingle();
+    if (grnHeadErr) {
+      /* eslint-disable-next-line no-console */
+      console.error('[recostFromGrn] GRN rate read failed — lot costs left unchanged:', grnId, grnHeadErr.message);
+      return;
+    }
     const grnRate = (grnHead as { exchange_rate?: string | number | null } | null)?.exchange_rate ?? 1;
 
     // 2. PI lines billing those GRN lines — the AUTHORITATIVE price (overrides
     //    GR). Weighted-average across all live (non-cancelled) PI lines per
     //    grn_item, so a partial / corrected invoice resolves cleanly.
     const giIds = giList.map((g) => g.id);
-    const { data: piRows } = await sb.from('purchase_invoice_items')
+    /* A failed read folds to "no PI bills these lines", which is not neutral: the
+       PI price is the AUTHORITATIVE cost and the GR price is only its fallback, so
+       every lot below silently reverts to the un-invoiced GR estimate and the real
+       billed cost is thrown away. A GRN that genuinely has no PI yet resolves
+       error === null with data === [] and correctly keeps the GR fallback. */
+    const { data: piRows, error: piRowsErr } = await sb.from('purchase_invoice_items')
       .select('grn_item_id, qty, unit_price_centi, purchase_invoice_id, allocated_charge_centi')
       .in('grn_item_id', giIds);
+    if (piRowsErr) {
+      /* eslint-disable-next-line no-console */
+      console.error('[recostFromGrn] PI lines read failed — lot costs left unchanged:', grnId, piRowsErr.message);
+      return;
+    }
     const piList = (piRows ?? []) as Array<{ grn_item_id: string | null; qty: number; unit_price_centi: number | null; purchase_invoice_id: string; allocated_charge_centi: number | null }>;
     const piIds = [...new Set(piList.map((r) => r.purchase_invoice_id).filter(Boolean))];
     /* LEAK GUARD (DRAFT, PI two-state — 2026-06-25 anchoring diff vs 2990) — exclude
@@ -245,7 +278,20 @@ export async function recostFromGrn(sb: any, grnId: string) {
        rates, so key the rate per purchase_invoice_id. */
     const piRateById = new Map<string, string | number | null>();
     if (piIds.length > 0) {
-      const { data: pis } = await sb.from('purchase_invoices').select('id, status, exchange_rate').in('id', piIds);
+      /* This single read carries BOTH the leak guard above and the FX map, and a
+         `?? []` fold breaks both at once and in the same direction — towards a
+         confident wrong cost. Empty piExcluded means no PI is CANCELLED or DRAFT,
+         so a draft PI's uncommitted price becomes the lot's authoritative cost —
+         exactly what the LEAK GUARD note says must NEVER happen. Empty piRateById
+         means every foreign PI line falls to `?? 1` and is booked as if its RMB
+         price were ringgit. The rows we need are the ones we failed to read, so
+         there is no safe way to proceed; nothing is written yet, so return. */
+      const { data: pis, error: pisErr } = await sb.from('purchase_invoices').select('id, status, exchange_rate').in('id', piIds);
+      if (pisErr) {
+        /* eslint-disable-next-line no-console */
+        console.error('[recostFromGrn] PI status/rate read failed — lot costs left unchanged:', grnId, pisErr.message);
+        return;
+      }
       for (const p of (pis ?? []) as Array<{ id: string; status: string; exchange_rate?: string | number | null }>) {
         const st = (p.status ?? '').toUpperCase();
         if (st === 'CANCELLED' || st === 'DRAFT') piExcluded.add(p.id);
@@ -401,7 +447,24 @@ export async function recostFromGrn(sb: any, grnId: string) {
         }
       }
       if (doIdSet.size > 0) {
-        const { data: dos } = await sb.from('delivery_orders').select('id, status').in('id', [...doIdSet]);
+        const { data: dos, error: dosErr } = await sb.from('delivery_orders').select('id, status').in('id', [...doIdSet]);
+        /* `?? []` folds a failed read into "no DO here is cancelled" and 4c below
+           then re-stamps consumptions the cancel already settled — the
+           double-correction the note above forbids. Unlike the other sites in this
+           file, aborting is NOT free: the lots and their IN movements were already
+           re-costed ~40 lines up. It is still the safer half, and not by a small
+           margin. The re-stamps are SETs, not deltas, so an abort leaves a
+           half-recost that the NEXT PI touch recomputes from scratch and
+           converges. Proceeding does the opposite: it overwrites a settled
+           consumption's cost basis so the cancel's reversal no longer nets against
+           the original, and because a later HEALTHY run correctly SKIPS cancelled
+           DOs, nothing will ever revisit that row — the GL is wrong permanently.
+           Self-healing beats unrecoverable. */
+        if (dosErr) {
+          /* eslint-disable-next-line no-console */
+          console.error('[recostFromGrn] DO status read failed — consumptions NOT re-stamped (lots already re-costed; next PI touch reconverges):', grnId, dosErr.message);
+          return;
+        }
         const cancelledDoIds = new Set<string>();
         for (const d of (dos ?? []) as Array<{ id: string; status: string | null }>) {
           if ((d.status ?? '').toUpperCase() === 'CANCELLED') cancelledDoIds.add(d.id);
@@ -426,8 +489,20 @@ export async function recostFromGrn(sb: any, grnId: string) {
     //    Cancelled-DO movements were never added to affectedOutMovements above.
     const affectedDoIds = new Set<string>();
     for (const movId of affectedOutMovements) {
-      const { data: mc } = await sb.from('inventory_lot_consumptions')
+      const { data: mc, error: mcErr } = await sb.from('inventory_lot_consumptions')
         .select('qty_consumed, total_cost_sen').eq('movement_id', movId);
+      /* The zeroing shape, on COGS: `?? []` folds a failed read to totalCost = 0
+         and the update below stamps total_cost_sen = 0 / unit_cost_sen = 0 onto an
+         OUT movement whose consumptions are intact. Every movId here came from a
+         consumption we just re-stamped, so an empty result is not a real state —
+         but skip per-movement rather than abort the loop: the movements are
+         independent, and leaving this one at its previous cost keeps it merely
+         stale (the next recost re-derives it) instead of confidently zero. */
+      if (mcErr) {
+        /* eslint-disable-next-line no-console */
+        console.error('[recostFromGrn] consumption read failed — OUT movement cost left unchanged:', movId, mcErr.message);
+        continue;
+      }
       const rows = (mc ?? []) as Array<{ qty_consumed: number | null; total_cost_sen: number | null }>;
       const totalCost = rows.reduce((s, r) => s + Number(r.total_cost_sen ?? 0), 0);
       const totalQty = rows.reduce((s, r) => s + Number(r.qty_consumed ?? 0), 0);

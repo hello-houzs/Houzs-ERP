@@ -95,12 +95,31 @@ export async function applyCustomerCreditToSi(
   if (!(args.remainingDueCenti > 0)) return { applied: 0, reason: 'no_due' };
 
   // Idempotency — already applied to this SI?
-  const { data: existing } = await sb
+  const { data: existing, error: existErr } = await sb
     .from('sales_invoice_payments')
     .select('id, amount_centi')
     .eq('sales_invoice_id', args.siId)
     .eq('method', 'credit')
     .limit(1);
+  /* A failed READ is not "no credit has been applied yet". supabase-js resolves a
+     failed select to { data: null, error } and does NOT throw, so a transient blip
+     (Hyperdrive cold-start) used to leave `existing` null, fall straight through
+     this guard, and apply the customer's credit a SECOND time — a duplicate
+     payment row, a duplicate APPLIED_TO_SI debit, and paid_centi bumped twice, all
+     reported as success. Unlike a stale roll-up this is not recoverable by the next
+     write: the money has already moved twice.
+     Aborting is safe HERE and nowhere later — this guard runs before this function
+     writes anything, so returning leaves the credit standing in the ledger and the
+     SI merely unpaid. Both are true states an operator can see and act on, and the
+     next successful call applies the credit normally. The ERROR is the signal,
+     never the emptiness: a customer whose credit has genuinely never been applied
+     resolves error === null with data === [] and MUST still fall through and
+     apply. */
+  if (existErr) {
+    /* eslint-disable-next-line no-console */
+    console.error('[customer-credit] idempotency read failed — credit NOT applied:', args.siNumber, existErr.message);
+    return { applied: 0, reason: 'guard_read_failed' };
+  }
   if (existing && existing.length > 0) {
     return { applied: 0, reason: 'already_applied' };
   }
@@ -111,7 +130,20 @@ export async function applyCustomerCreditToSi(
   if (apply <= 0) return { applied: 0, reason: 'no_due' };
 
   // Multi-company (mig 0061): the payment + ledger rows inherit the SI's company.
-  const { data: siCo } = await sb.from('sales_invoices').select('company_id').eq('id', args.siId).maybeSingle();
+  /* `?? null` does NOT fail closed here, which is the whole reason this aborts.
+     company_id is NOT NULL (mig 0083) but mig 0091 also gave every scm/public
+     table carrying the column a DEFAULT of the HOUZS company id — so an insert
+     that OMITS company_id (which is exactly what the `companyId != null` spreads
+     below do when this read fails) does not raise; Postgres silently stamps HOUZS.
+     A 2990 customer's credit and its payment row would be booked to Houzs's
+     accounts with no error anywhere. Nothing is written at this point, so
+     returning is free. */
+  const { data: siCo, error: siCoErr } = await sb.from('sales_invoices').select('company_id').eq('id', args.siId).maybeSingle();
+  if (siCoErr) {
+    /* eslint-disable-next-line no-console */
+    console.error('[customer-credit] company read failed — credit NOT applied:', args.siNumber, siCoErr.message);
+    return { applied: 0, reason: 'company_read_failed' };
+  }
   const companyId = (siCo as { company_id?: number | null } | null)?.company_id ?? null;
 
   // 1. Payment row on the SI — marks the SI as (partly) paid.
@@ -126,7 +158,18 @@ export async function applyCustomerCreditToSi(
   if (payErr) return { applied: 0, reason: payErr.message };
 
   // 2. Ledger entry — negative (credit consumed).
-  await addCustomerCredit(sb, {
+  /* NOT-ATOMIC, DELIBERATELY LEFT THAT WAY — logged so it stops being invisible.
+     Steps 1-3 are three separate HTTP calls (there is no BEGIN/COMMIT anywhere in
+     backend/src/scm; every sb.from() is its own round trip), so if THIS insert
+     fails the payment row from step 1 is already committed and the invoice is paid
+     from a credit that was never debited — the customer keeps the balance and can
+     spend it again. Neither available branch fixes that: returning early strands
+     the same committed payment row AND lets the guard above read it as
+     'already_applied' forever, while continuing bumps paid_centi on a debit that
+     does not exist. Both are half-applications; only a transaction makes this
+     right. So the reason is recorded, not swallowed, and the state stays exactly
+     as it is today. See BUG-HISTORY 2026-07-17 (fix/silent-money-reads). */
+  const ledger = await addCustomerCredit(sb, {
     debtorCode: args.debtorCode,
     debtorName: args.debtorName ?? null,
     amountCenti: -apply,
@@ -137,6 +180,10 @@ export async function applyCustomerCreditToSi(
     createdBy: args.createdBy ?? null,
     companyId,
   });
+  if (!ledger.ok) {
+    /* eslint-disable-next-line no-console */
+    console.error('[customer-credit] HALF-APPLIED — payment row committed but the ledger debit did NOT:', args.siNumber, ledger.reason);
+  }
 
   // 3. Bump SI's paid_centi — optimistic-concurrency loop (Bug#5 class, ported
   //    from 2990 ce04e468). The old read-modify-write lost a concurrent SI
@@ -175,11 +222,20 @@ export async function reconcileSiOverpay(
   sb: any,
   siId: string,
 ): Promise<{ delta: number; reason?: string }> {
-  const { data: si } = await sb
+  const { data: si, error: siErr } = await sb
     .from('sales_invoices')
     .select('invoice_number, total_centi, paid_centi, debtor_code, debtor_name, status, company_id')
     .eq('id', siId)
     .maybeSingle();
+  /* Distinct from `!si` below: that is a genuinely missing invoice (error null,
+     data null) and skipping is correct. This is "we could not find out", which
+     took the same branch and reported it as 'not_found' — a false statement about
+     an invoice that is sitting right there. */
+  if (siErr) {
+    /* eslint-disable-next-line no-console */
+    console.error('[customer-credit] overpay header read failed — overpay NOT reconciled:', siId, siErr.message);
+    return { delta: 0, reason: 'header_read_failed' };
+  }
   if (!si) return { delta: 0, reason: 'not_found' };
   const s = si as { invoice_number: string; total_centi: number | null; paid_centi: number | null; debtor_code: string | null; debtor_name: string | null; status: string | null; company_id: number | null };
   if (!s.debtor_code) return { delta: 0, reason: 'no_debtor' };
@@ -190,11 +246,24 @@ export async function reconcileSiOverpay(
   const target = Math.max(0, paid - total);
 
   // Σ existing OVERPAY entries already booked for this SI (signed).
-  const { data: existing } = await sb
+  /* This Σ IS the idempotency of this function — `delta = target - existingTotal`
+     is what makes a re-run a no-op. A failed read folded to existingTotal = 0 via
+     `?? []`, which does not merely understate it: it makes delta = target, so the
+     FULL overpay is written again as a second OVERPAY row and the customer is
+     credited the same excess twice, on every retry. An invoice that genuinely has
+     no OVERPAY row yet resolves error === null with data === [] and MUST still
+     fall through — that is the first, correct booking. Nothing is written above
+     this point, so returning strands nothing. */
+  const { data: existing, error: existErr } = await sb
     .from('customer_credits')
     .select('amount_centi')
     .eq('source_type', 'OVERPAY')
     .eq('source_doc_no', s.invoice_number);
+  if (existErr) {
+    /* eslint-disable-next-line no-console */
+    console.error('[customer-credit] overpay Σ read failed — overpay NOT reconciled:', s.invoice_number, existErr.message);
+    return { delta: 0, reason: 'existing_read_failed' };
+  }
   const existingTotal = ((existing ?? []) as Array<{ amount_centi: number }>)
     .reduce((acc, r) => acc + Number(r.amount_centi ?? 0), 0);
 
@@ -233,11 +302,21 @@ export async function creditFromCancelledSi(
   // invoice was reopened): net > 0 means a live credit already exists → no-op.
   // net ≤ 0 means it was never credited OR was reversed on a prior reopen, so a
   // fresh cancel after reopen correctly credits again. (Wei Siang 2026-06-03)
-  const { data: priorRows } = await sb
+  const { data: priorRows, error: priorErr } = await sb
     .from('customer_credits')
     .select('amount_centi')
     .eq('source_doc_no', args.siNumber)
     .in('source_type', ['SI_CANCEL_REFUND', 'SI_REOPEN_CONTRA']);
+  /* A failed read folded to standing = 0, which reads as "never credited" and
+     hands the customer the cancel refund a SECOND time. `standing > 0` is the only
+     thing stopping a re-cancel from re-crediting, and a net of 0 from a genuinely
+     un-credited (or reversed-on-reopen) invoice is the case that MUST fall
+     through — so the emptiness cannot be the signal here, only the error. */
+  if (priorErr) {
+    /* eslint-disable-next-line no-console */
+    console.error('[customer-credit] cancel-refund guard read failed — NOT credited:', args.siNumber, priorErr.message);
+    return { credited: 0, reason: 'guard_read_failed' };
+  }
   const standing = ((priorRows ?? []) as Array<{ amount_centi: number }>)
     .reduce((s, r) => s + Number(r.amount_centi ?? 0), 0);
   if (standing > 0) {
@@ -249,18 +328,35 @@ export async function creditFromCancelledSi(
      never corrects it). Crediting the full paid_centi here would hand the
      excess out twice, so the cancel credit is paid − Σ live OVERPAY entries
      for this SI (net, never negative). */
-  const { data: overRows } = await sb
+  const { data: overRows, error: overErr } = await sb
     .from('customer_credits')
     .select('amount_centi')
     .eq('source_type', 'OVERPAY')
     .eq('source_doc_no', args.siNumber);
+  /* The H2 note above is exactly what a failed read undoes: `?? []` folds to
+     liveOverpay = 0, the subtraction becomes a no-op, and the full paid_centi is
+     credited — handing out the already-booked excess twice, the precise double
+     that this block exists to prevent. An SI with no OVERPAY row resolves
+     error === null with data === [] and correctly credits the full paid amount. */
+  if (overErr) {
+    /* eslint-disable-next-line no-console */
+    console.error('[customer-credit] live-overpay read failed — NOT credited:', args.siNumber, overErr.message);
+    return { credited: 0, reason: 'overpay_read_failed' };
+  }
   const liveOverpay = ((overRows ?? []) as Array<{ amount_centi: number }>)
     .reduce((s, r) => s + Number(r.amount_centi ?? 0), 0);
   const creditCenti = Math.max(0, args.paidCenti - Math.max(0, liveOverpay));
   if (creditCenti <= 0) return { credited: 0, reason: 'covered_by_overpay' };
 
   // Multi-company (mig 0061): the ledger row inherits the SI's company.
-  const { data: siCo } = await sb.from('sales_invoices').select('company_id').eq('id', args.siId).maybeSingle();
+  // Aborts on a read error — an omitted company_id defaults to HOUZS (mig 0091),
+  // silently booking another company's credit to Houzs. Nothing written yet.
+  const { data: siCo, error: siCoErr } = await sb.from('sales_invoices').select('company_id').eq('id', args.siId).maybeSingle();
+  if (siCoErr) {
+    /* eslint-disable-next-line no-console */
+    console.error('[customer-credit] company read failed — cancel refund NOT credited:', args.siNumber, siCoErr.message);
+    return { credited: 0, reason: 'company_read_failed' };
+  }
   const companyId = (siCo as { company_id?: number | null } | null)?.company_id ?? null;
 
   const r = await addCustomerCredit(sb, {
@@ -289,17 +385,34 @@ export async function reverseCancelledSiCredit(
   args: { siId: string; siNumber: string; debtorCode: string | null; debtorName: string | null; createdBy?: string | null },
 ): Promise<{ reversed: number; reason?: string }> {
   if (!args.debtorCode || !args.debtorCode.trim()) return { reversed: 0, reason: 'no_debtor' };
-  const { data: rows } = await sb
+  const { data: rows, error: rowsErr } = await sb
     .from('customer_credits')
     .select('amount_centi')
     .eq('source_doc_no', args.siNumber)
     .in('source_type', ['SI_CANCEL_REFUND', 'SI_REOPEN_CONTRA']);
+  /* This one leans the other way and is still wrong: a failed read folds to
+     standing = 0, takes the `nothing_to_reverse` branch and reports ok — so the
+     reopened invoice goes live again while the customer KEEPS the cancel refund,
+     and the company is out that amount with no error anywhere. The outcome of
+     aborting is the same (no contra row), but it is now findable instead of
+     reported as a clean no-op. */
+  if (rowsErr) {
+    /* eslint-disable-next-line no-console */
+    console.error('[customer-credit] standing-credit read failed — cancel refund NOT clawed back on reopen:', args.siNumber, rowsErr.message);
+    return { reversed: 0, reason: 'standing_read_failed' };
+  }
   const standing = ((rows ?? []) as Array<{ amount_centi: number }>)
     .reduce((s, r) => s + Number(r.amount_centi ?? 0), 0);
   if (standing <= 0) return { reversed: 0, reason: 'nothing_to_reverse' };
 
   // Multi-company (mig 0061): the contra row inherits the SI's company.
-  const { data: siCo } = await sb.from('sales_invoices').select('company_id').eq('id', args.siId).maybeSingle();
+  // Aborts on a read error — an omitted company_id defaults to HOUZS (mig 0091).
+  const { data: siCo, error: siCoErr } = await sb.from('sales_invoices').select('company_id').eq('id', args.siId).maybeSingle();
+  if (siCoErr) {
+    /* eslint-disable-next-line no-console */
+    console.error('[customer-credit] company read failed — contra NOT written:', args.siNumber, siCoErr.message);
+    return { reversed: 0, reason: 'company_read_failed' };
+  }
   const companyId = (siCo as { company_id?: number | null } | null)?.company_id ?? null;
 
   const r = await addCustomerCredit(sb, {
@@ -329,22 +442,40 @@ export async function creditFromCancelledSo(
   if (!args.debtorCode || !args.debtorCode.trim()) return { credited: 0, reason: 'no_debtor' };
 
   // Idempotency — already credited?
-  const { data: existing } = await sb
+  /* Same defeat as applyCustomerCreditToSi's guard: a failed read leaves `existing`
+     null, falls through, and credits the cancelled SO's deposit to the customer a
+     SECOND time. An SO that has genuinely never been credited resolves
+     error === null with data === [] and must still fall through. */
+  const { data: existing, error: existErr } = await sb
     .from('customer_credits')
     .select('id')
     .eq('source_type', 'SO_CANCEL_REFUND')
     .eq('source_doc_no', args.docNo)
     .limit(1);
+  if (existErr) {
+    /* eslint-disable-next-line no-console */
+    console.error('[customer-credit] SO cancel-refund guard read failed — NOT credited:', args.docNo, existErr.message);
+    return { credited: 0, reason: 'guard_read_failed' };
+  }
   if (existing && existing.length > 0) {
     return { credited: 0, reason: 'already_credited' };
   }
 
   // Sum deposits on the SO. The payments table keys on so_doc_no
   // (mfg_sales_order_payments — migration 0073).
-  const { data: pays } = await sb
+  /* A failed read folds to total = 0 and returns 'no_paid' — indistinguishable
+     from a deposit-free SO, so a customer who HAS paid a deposit on a cancelled
+     order silently gets no credit for it. The outcome of aborting is the same (no
+     credit row) but it is reported honestly instead of as "nothing was paid". */
+  const { data: pays, error: paysErr } = await sb
     .from('mfg_sales_order_payments')
     .select('amount_centi, company_id')
     .eq('so_doc_no', args.docNo);
+  if (paysErr) {
+    /* eslint-disable-next-line no-console */
+    console.error('[customer-credit] SO deposit read failed — cancel refund NOT credited:', args.docNo, paysErr.message);
+    return { credited: 0, reason: 'deposits_read_failed' };
+  }
   const payRows = (pays ?? []) as Array<{ amount_centi: number; company_id?: number | null }>;
   const total = payRows.reduce((s, p) => s + Number(p.amount_centi ?? 0), 0);
   if (total <= 0) return { credited: 0, reason: 'no_paid' };
