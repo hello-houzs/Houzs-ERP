@@ -749,6 +749,10 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
   const itemHidden = (it: ChecklistItem): boolean => {
     const title = (it.title ?? "").trim().toLowerCase();
     const label = (it.role_label ?? "").trim().toUpperCase();
+    // Filled Floorplan now lives on the Floor Plans & Layout card (view for all,
+    // upload for sales), so its tasklist row is redundant on mobile (owner
+    // 2026-07-17).
+    if (/^filled\s*floor\s*plan/.test(title)) return true;
     // Field/sales cohort: whole tasklist sections removed (kept: OPERATION etc.).
     // Owner 2026-07-16 (2nd pass): sales executives/managers must still get
     // their OWN deliverables — anything badged SALES PIC (Setup Image, Defect
@@ -2504,6 +2508,53 @@ function FloorPlans({
   };
   const unfilledFiles = (() => { const t = taskPlanFiles(/^blank\s*floor\s*plan/i); return t.length ? t : legacyItem(plans[0]); })();
   const filledFiles = (() => { const t = taskPlanFiles(/^filled\s*floor\s*plan/i); return t.length ? t : legacyItem(plans[1]); })();
+  // Checklist task ids by title prefix — used to attach uploads to the right task.
+  const taskIdByPrefix = (prefix: RegExp): number | null =>
+    (checklist ?? []).find((it) => prefix.test((it.title || "").trim()))?.id ?? null;
+  const filledPlanTaskId = taskIdByPrefix(/^filled\s*floor\s*plan/i);
+  // Stock out transfer — mirrors the "Stock Out Transfer Record" CHECKLIST task
+  // attachments. (The legacy project-level stock_transfers store is unused: every
+  // stock-out record is attached to the task, which is why this read empty.)
+  const stockOutAtts = (() => {
+    const ids = new Set(
+      (checklist ?? []).filter((it) => /^stock\s*(out|in)\s*transfer/i.test((it.title || "").trim())).map((it) => it.id)
+    );
+    return (checklistAttachments ?? []).filter((a) => !a.archived_at && ids.has(a.item_id));
+  })();
+  // Sales upload the Filled Floorplan straight from this card (owner 2026-07-17)
+  // — it attaches to the "Filled Floorplan" checklist task, so the tasklist row
+  // and this card stay one and the same file.
+  const filledRef = useRef<HTMLInputElement | null>(null);
+  const uploadFilledPlan = async (file: File) => {
+    if (!filledPlanTaskId) {
+      await notify({ title: "No Filled Floorplan task", body: "This event has no Filled Floorplan task to attach to.", tone: "error" });
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      await notify({ title: "File too large", body: "Max 10MB.", tone: "error" });
+      return;
+    }
+    const ext = (file.name.split(".").pop() || "").toLowerCase();
+    if (!ext) {
+      await notify({ title: "Missing extension", body: "The file needs an extension.", tone: "error" });
+      return;
+    }
+    setBusy(true);
+    try {
+      const buf = await file.arrayBuffer();
+      await api.putBinary(
+        `/api/projects/checklist/${filledPlanTaskId}/attachments?ext=${encodeURIComponent(ext)}&name=${encodeURIComponent(file.name)}`,
+        buf,
+        file.type || "application/octet-stream",
+      );
+      reload();
+    } catch (e) {
+      await notify({ title: "Upload failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+      if (filledRef.current) filledRef.current.value = "";
+    }
+  };
   const [planView, setPlanView] = useState<{ items: MediaItem[]; idx: number } | null>(null);
   const [docView, setDocView] = useState<MediaItem | null>(null);
   const openPlan = async (files: MediaItem[], which: string) => {
@@ -2588,41 +2639,41 @@ function FloorPlans({
                   <span className="rbadge" style={{ background: latest ? badgeBg : "#f0f1ed", color: latest ? badgeCol : "#9aa093" }}>
                     {latest ? `${badge}${files.length > 1 ? ` · ${files.length}` : ""}` : "NONE"}
                   </span>
+                  {label === "Filled" && canWrite && filledPlanTaskId != null && (
+                    <button
+                      className="tinybtn"
+                      style={{ marginTop: 6, width: "100%" }}
+                      disabled={busy}
+                      onClick={(e) => { e.stopPropagation(); filledRef.current?.click(); }}
+                    >
+                      {files.length ? "+ Add / replace" : "Upload"}
+                    </button>
+                  )}
                 </div>
               </div>
             );
           })}
         </div>
+        <input ref={filledRef} type="file" accept="image/*,.pdf" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void uploadFilledPlan(f); }} />
 
         <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: ".1em", textTransform: "uppercase", color: "#9aa093", margin: "10px 0 6px" }}>Stock transfer record</div>
-        {transfers.length === 0 && <div style={{ fontSize: 12, color: "#9aa093", marginBottom: 8 }}>No stock transfer recorded yet.</div>}
-        {transfers.length > 0 && (
+        {stockOutAtts.length === 0 && <div style={{ fontSize: 12, color: "#9aa093", marginBottom: 8 }}>No stock transfer recorded yet.</div>}
+        {stockOutAtts.length > 0 && (
           <div style={{ border: "1px solid #e3e6e0", borderRadius: 10, overflow: "hidden", marginBottom: 8 }}>
-            {transfers.map((t, i) => {
-              const who = pick(t.created_by_name, t.createdByName);
-              const when = pick(t.transferred_at, t.transferredAt);
-              const recKey = pick(t.record_r2_key, t.recordR2Key);
-              return (
-                <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 11px", borderTop: i === 0 ? "none" : "1px solid #eceee9", flexWrap: "wrap" }}>
-                  <span className="rbadge" style={{ background: "#e2f0e9", color: "#2f8a5b" }}>OUT</span>
-                  <span style={{ flex: 1, minWidth: 80, fontSize: 11, color: "#414539" }}>{[who || "—", when ? dm(when) : null].filter(Boolean).join(" · ")}</span>
-                  {recKey && (
-                    <button
-                      className="tinybtn"
-                      onClick={() => setDocView({ r2_key: recKey, content_type: mimeFromKey(recKey), caption: pick(t.file_name, t.fileName) ?? "Stock transfer record" })}
-                    >
-                      View
-                    </button>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-        {canWrite && (
-          <div style={{ display: "flex", gap: 7, alignItems: "center" }}>
-            <input ref={fileRef} type="file" accept=".jpg,.jpeg,.png,.webp,.pdf,.xlsx" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void uploadTransfer(f); }} />
-            <button className="tinybtn" disabled={busy} onClick={() => fileRef.current?.click()}>Upload stock-out record</button>
+            {stockOutAtts.map((a, i) => (
+              <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 11px", borderTop: i === 0 ? "none" : "1px solid #eceee9", flexWrap: "wrap" }}>
+                <span className="rbadge" style={{ background: "#e2f0e9", color: "#2f8a5b" }}>OUT</span>
+                <span style={{ flex: 1, minWidth: 80, fontSize: 11, color: "#414539" }}>
+                  {[a.file_name || "Record", a.uploader_name || null, a.uploaded_at ? dm(a.uploaded_at) : null].filter(Boolean).join(" · ")}
+                </span>
+                <button
+                  className="tinybtn"
+                  onClick={() => setDocView({ r2_key: a.r2_key, content_type: a.mime_type ?? mimeFromKey(a.r2_key), caption: a.file_name ?? "Stock transfer record" })}
+                >
+                  View
+                </button>
+              </div>
+            ))}
           </div>
         )}
         {planView && (
