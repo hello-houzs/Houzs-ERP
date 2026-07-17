@@ -103,6 +103,9 @@
   align-items: center;
   gap: 4px;
   letter-spacing: 0.02em;
+  /* A header that wraps sits a row taller than its own column and the table
+     reads crooked. Never wrap: if a label no longer fits, widen the track. */
+  white-space: nowrap;
 }
 
 .headerCellRight {

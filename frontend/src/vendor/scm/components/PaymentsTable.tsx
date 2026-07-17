@@ -741,9 +741,19 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
      112+116+100+104+104+52+128+28 = 744 px. */
   const gridStyle: CSSProperties | undefined = showSlip
     ? {
+        /* Every track fits its OWN header on one line. The previous set was
+           squeezed to make room for Slip (112/116/100/.../128, sum 744) and the
+           labels silently WRAPPED to two lines while the data stayed on one --
+           the header sat a row taller than its column and the whole table read
+           crooked (owner 2026-07-17: "歪来歪去").
+           Slack goes to the LAST content column, not to two arbitrary middle
+           ones: with Account Sheet + Approval Code as the only 1fr tracks, a
+           wide screen poured all the extra width into them, so a short value
+           like "PBB" sat alone at the left of a 400px column and the row had
+           two holes punched in its middle. */
         gridTemplateColumns:
-          '112px 116px 100px minmax(104px, 1fr) minmax(104px, 1fr) 52px 128px 28px',
-        minWidth: 780,
+          '112px 116px 116px 140px 140px 52px minmax(140px, 1fr) 28px',
+        minWidth: 844,
       }
     : undefined;
 
@@ -786,7 +796,7 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
               Date <CalIcon size={12} strokeWidth={1.75} />
             </span>
             <span className={paymentsStyles.headerCell}>
-              Payment Method <Tag size={12} strokeWidth={1.75} />
+              Method <Tag size={12} strokeWidth={1.75} />
             </span>
             <span className={paymentsStyles.headerCellRight}>
               Amount ({currency}) <DollarSign size={12} strokeWidth={1.75} />
