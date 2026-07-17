@@ -1667,6 +1667,62 @@ app.delete("/invitations/:id", requirePermission("users.manage"), async (c) => {
 });
 
 /**
+ * POST /api/users/:id/impersonate
+ * OWNER-ONLY (wildcard `*`) view-as: mints a SHORT-LIVED (1 hour) session for
+ * the target member so the owner can open the portal exactly as that user
+ * sees it (the local Portal Viewer passes it to the app via #login-as, which
+ * stores it session-only). Deliberately NOT granted to plain users.manage
+ * holders — impersonation is strictly the owner's review tool. Every use is
+ * audited with the target identity.
+ */
+app.post("/:id/impersonate", requirePermission("users.manage"), async (c) => {
+  const me = c.get("user");
+  const granted = me?.permissions_set ?? me?.permissions ?? [];
+  if (!hasPermission(granted, "*")) {
+    return c.json({ error: "Owner only" }, 403);
+  }
+  const id = parseInt(c.req.param("id"), 10);
+  if (!id) return c.json({ error: "Invalid ID." }, 400);
+
+  const db = getDb(c.env);
+  const rows = await db
+    .select({ id: users.id, name: users.name, email: users.email, status: users.status })
+    .from(users)
+    .where(eq(users.id, id))
+    .limit(1);
+  if (rows.length === 0) return c.json({ error: "User not found" }, 404);
+  if (rows[0].status !== "active") {
+    return c.json({ error: "User is not active — only active members can be viewed as" }, 400);
+  }
+
+  // Inserted directly (not createSession) so the 7-day default TTL doesn't
+  // apply — a view-as token dies after an hour.
+  const token = generateToken();
+  const expires = isoIn(60 * 60);
+  await c.env.DB.prepare(
+    `INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)`
+  )
+    .bind(token, id, expires)
+    .run();
+
+  await audit(c, {
+    action: "user.impersonate",
+    entityType: "user",
+    entityId: rows[0].email,
+    summary: `View-as session minted for ${rows[0].email} (expires in 1h)`,
+    meta: { target_user_id: id, expires_at: expires },
+  });
+
+  return c.json({
+    token,
+    expires_at: expires,
+    user_id: rows[0].id,
+    name: rows[0].name,
+    email: rows[0].email,
+  });
+});
+
+/**
  * POST /api/users/:id/reset-password
  * Admin-triggered. Generates a one-hour reset token, optionally emails
  * the user a link. Returns the token so the admin can also copy-paste

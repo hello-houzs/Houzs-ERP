@@ -17,6 +17,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
+import { idempotentInit } from '../../../lib/idempotency';
 
 /* ═══════════════════════════════════════════════════════════════════════════
    INVENTORY — movements / balances / adjustment / breakdown / buckets
@@ -280,13 +281,25 @@ export type CreateStockTransferInput = {
   items: StockTransferItemInput[];
 };
 
+/* `idempotencyKey` is OPTIONAL and is destructured OUT of the body — the
+   rest-spread would otherwise post it as a transfer field. Pass one per transfer
+   intent (see lib/idempotency.ts): the middleware replays the first response —
+   the SAME transferNo — instead of moving the stock twice. Omitting it is
+   exactly today's behaviour (the middleware no-ops).
+
+   NOT on fix/so-idempotency's list (that list walked the sales/purchase document
+   chain and stopped there), but the note below is the argument for it: DRAFT was
+   dropped in mig 0078, so the row is inserted POSTED and the create MOVES STOCK
+   inline. A duplicate is phantom on-hand in two warehouses at once — invisible
+   until a stock count, which is the owner's complaint verbatim. */
 export function useCreateStockTransfer() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: CreateStockTransferInput) =>
-      authedFetch<{ id: string; transferNo: string }>(`/stock-transfers`, {
-        method: 'POST', body: JSON.stringify(body),
-      }),
+    mutationFn: ({ idempotencyKey, ...body }: CreateStockTransferInput & { idempotencyKey?: string }) =>
+      authedFetch<{ id: string; transferNo: string }>(`/stock-transfers`,
+        idempotentInit(idempotencyKey, {
+          method: 'POST', body: JSON.stringify(body),
+        })),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['stock-transfers'] });
       // DRAFT was dropped (mig 0078): the row is inserted POSTED and the paired
@@ -460,13 +473,19 @@ export type CreateStockTakeInput = {
   notes?: string;
 };
 
+/* `idempotencyKey` is OPTIONAL and is destructured OUT of the body — the
+   rest-spread would otherwise post it as a take field. Pass one per take intent
+   (see lib/idempotency.ts): the middleware replays the first response — the SAME
+   takeNo — instead of raising the count twice. Omitting it is exactly today's
+   behaviour (the middleware no-ops). */
 export function useCreateStockTake() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: CreateStockTakeInput) =>
-      authedFetch<{ id: string; takeNo: string; lineCount: number }>(`/stock-takes`, {
-        method: 'POST', body: JSON.stringify(body),
-      }),
+    mutationFn: ({ idempotencyKey, ...body }: CreateStockTakeInput & { idempotencyKey?: string }) =>
+      authedFetch<{ id: string; takeNo: string; lineCount: number }>(`/stock-takes`,
+        idempotentInit(idempotencyKey, {
+          method: 'POST', body: JSON.stringify(body),
+        })),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['stock-takes'] });
     },

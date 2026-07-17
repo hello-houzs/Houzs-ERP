@@ -33,9 +33,18 @@
 // break (2). There is no correct automatic key, which is precisely why the
 // middleware was built opt-in and precisely why nobody ever opted in.
 //
-// SCOPE: money only — a call site that creates a payment-ledger row or adds to
-// a paid total. NOT a blanket on every POST: plenty of endpoints have
-// legitimate repeat-submit semantics, and an endpoint that is already
+// SCOPE: money that duplicates — a call site that creates a payment-ledger row,
+// adds to a paid total, or MINTS A SOURCE DOCUMENT money hangs off. The third
+// clause was added 2026-07-17 (fix/so-idempotency) and is not a widening of the
+// rule, it is the rule finally being read: SO create was left out while every
+// payment stacked ON TOP of it was covered, so the order itself could be raised
+// twice at RM3,888 and take DO / SI / stock with it. The middleware's own
+// docblock always said so — "instead of creating a duplicate order/DO/PO".
+//
+// NOT a blanket on every POST: plenty of endpoints have legitimate repeat-submit
+// semantics (SoFromProducts' batch generator raises N orders per run BY DESIGN —
+// a per-mount key there would collapse N into 1, which is rule (2) inverted and
+// worse than the bug it would claim to fix), and an endpoint that is already
 // domain-idempotent (payment-vouchers.ts:407 /post, :528 /cancel both detect
 // their own replay and echo back) gains nothing from a key.
 // ---------------------------------------------------------------------------

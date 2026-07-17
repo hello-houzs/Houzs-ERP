@@ -34,6 +34,7 @@ import {
   useCreatePurchaseReturn,
   usePostPurchaseReturn,
 } from '../../vendor/scm/lib/purchase-return-queries';
+import { useIdempotencyKey } from '../../lib/idempotency';
 import { useGrnDetail } from '../../vendor/scm/lib/grn-queries';
 import { usePurchaseOrderDetail, useSuppliers } from '../../vendor/scm/lib/suppliers-queries';
 import { useMfgProducts, useMaintenanceConfig, useSpecialAddons } from '../../vendor/scm/lib/mfg-products-queries';
@@ -149,6 +150,12 @@ export const PurchaseReturnNew = () => {
     return { bedframe: pick('BEDFRAME'), sofa: pick('SOFA') };
   }, [specialAddonsQ.data]);
 
+  /* One key for the one return this page is open to raise (lib/idempotency.ts).
+     Route-level form, navigates to the return detail on success, so the MOUNT is
+     exactly one return. Load-bearing: the POST creates the return already POSTED
+     and writes the stock OUT inline (see useCreatePurchaseReturn), so a re-press
+     after a stalled submit moves stock twice unless it replays. */
+  const idemKey = useIdempotencyKey();
   const create = useCreatePurchaseReturn();
   const post   = usePostPurchaseReturn();
   const saving = create.isPending || post.isPending;
@@ -270,6 +277,7 @@ export const PurchaseReturnNew = () => {
     if (!canSave) { notify({ title: 'Need supplier + at least one line with an item code and qty > 0.', tone: 'error' }); return; }
     try {
       const createRes = await create.mutateAsync({
+        idempotencyKey: idemKey,
         supplierId,
         purchaseOrderId: poId ?? (grn?.purchase_order_id ?? null),
         grnId,

@@ -28,6 +28,7 @@ import { Button } from '@2990s/design-system';
 import { PhoneInput } from '../../vendor/scm/components/PhoneInput';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { useCreateConsignmentReturn } from '../../vendor/scm/lib/consignment-return-queries';
+import { useIdempotencyKey } from '../../lib/idempotency';
 import { useConsignmentNoteDetail } from '../../vendor/scm/lib/consignment-note-queries';
 import { useStaff } from '../../vendor/scm/lib/admin-queries';
 import {
@@ -61,6 +62,11 @@ export const ConsignmentReturnNew = () => {
   const fromConsignmentNote = searchParams.get('fromConsignmentNote');
   const fromPicks = searchParams.get('fromPicks') === '1';
 
+  /* One key for the one return this page is open to raise (lib/idempotency.ts).
+     Route-level form, navigates to the return detail on success, so the MOUNT is
+     exactly one return: stable across re-renders and across a re-press after a
+     stalled submit, fresh on remount. */
+  const idemKey = useIdempotencyKey();
   const create = useCreateConsignmentReturn();
   const staffQ = useStaff();
   const loc = useLocalities();
@@ -233,6 +239,7 @@ export const ConsignmentReturnNew = () => {
 
     create.mutate(
       {
+        idempotencyKey: idemKey,
         debtorName,
         debtorCode: debtorCode || undefined,
         phone: phone || undefined,

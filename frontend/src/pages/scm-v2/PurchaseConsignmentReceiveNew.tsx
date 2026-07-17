@@ -30,6 +30,7 @@ import {
   useCreatePurchaseConsignmentReceive,
   usePostPurchaseConsignmentReceive,
 } from '../../vendor/scm/lib/purchase-consignment-receive-queries';
+import { useIdempotencyKey } from '../../lib/idempotency';
 import {
   usePurchaseConsignmentOrderDetail,
   usePurchaseConsignmentOrders,
@@ -123,6 +124,12 @@ export const PurchaseConsignmentReceiveNew = () => {
     [poListQ.data],
   );
 
+  /* One key for the one receive this page is open to raise (lib/idempotency.ts).
+     Same create-then-post-then-dialog shape as GrnNew (which carries the full
+     reasoning): the post below is unconditional here, so a failure in it reports
+     "Save failed" while the receive already exists — the re-press must REPLAY
+     rather than receive the consigned goods a second time. */
+  const idemKey = useIdempotencyKey();
   const create = useCreatePurchaseConsignmentReceive();
   const post   = usePostPurchaseConsignmentReceive();
   const saving = create.isPending || post.isPending;
@@ -375,6 +382,7 @@ export const PurchaseConsignmentReceiveNew = () => {
     }
     try {
       const createRes = await create.mutateAsync({
+        idempotencyKey: idemKey,
         // Backend (purchase-consignment-receives POST) reads
         // purchaseConsignmentOrderId / pcOrderItemId — NOT the PO's
         // purchaseOrderId / purchaseOrderItemId. Sending the wrong keys

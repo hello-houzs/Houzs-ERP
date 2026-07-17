@@ -23,6 +23,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Plus, Save, Trash2, X } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { useCreatePurchaseConsignmentOrder } from '../../vendor/scm/lib/purchase-consignment-order-queries';
+import { useIdempotencyKey } from '../../lib/idempotency';
 import {
   useSuppliers,
   useSupplierDetail,
@@ -121,6 +122,11 @@ const SpecialsCheckboxes = ({
 export const PurchaseConsignmentOrderNew = () => {
   const navigate = useNavigate();
   const create   = useCreatePurchaseConsignmentOrder();
+  /* One key for the one order this page is open to raise (lib/idempotency.ts).
+     Route-level form, navigates to the order detail on success, so the MOUNT is
+     exactly one order: stable across re-renders and across a re-press after a
+     stalled submit, fresh on remount. */
+  const idemKey  = useIdempotencyKey();
 
   // ── Header state ────────────────────────────────────────────────────
   const [supplierId, setSupplierId]   = useState<string>('');
@@ -352,6 +358,7 @@ export const PurchaseConsignmentOrderNew = () => {
 
     create.mutate(
       {
+        idempotencyKey: idemKey,
         supplierId,
         currency,
         poDate,

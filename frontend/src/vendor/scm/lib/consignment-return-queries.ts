@@ -26,6 +26,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { serviceNotify } from './dialog-service';
 import { authedFetch } from './authed-fetch';
+import { idempotentInit } from '../../../lib/idempotency';
 
 /* ── Consignment Note detail (for ?fromNote prefill on the New page) ───── */
 export const useConsignmentNoteDetailForReturn = (id: string | null) => useQuery({
@@ -125,11 +126,20 @@ export const useConsignmentReturnDetail = (id: string | null) => useQuery({
 });
 
 /* ── Create ──────────────────────────────────────────────────────────── */
+/* `idempotencyKey` is OPTIONAL and must be destructured OUT of the body — the
+   rest-spread would otherwise post it as a return field. Pass one per return
+   intent (see lib/idempotency.ts): the middleware replays the first response —
+   the SAME returnNumber — instead of taking the consigned goods back twice.
+   Omitting it is exactly today's behaviour (the middleware no-ops).
+
+   NOT on fix/so-idempotency's list of remaining creates; same class as the rest,
+   found by sweeping every create rather than re-reading that list. */
 export const useCreateConsignmentReturn = () => {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: unknown) =>
-      authedFetch<{ id: string; returnNumber: string }>(`/consignment-returns`, { method: 'POST', body: JSON.stringify(body) }),
+    mutationFn: ({ idempotencyKey, ...body }: { idempotencyKey?: string } & Record<string, unknown>) =>
+      authedFetch<{ id: string; returnNumber: string }>(`/consignment-returns`,
+        idempotentInit(idempotencyKey, { method: 'POST', body: JSON.stringify(body) })),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['consignment-return'] }),
   });
 };

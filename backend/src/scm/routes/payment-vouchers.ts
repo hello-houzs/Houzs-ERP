@@ -36,7 +36,7 @@
 import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
-import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
+import { mintMonthlyDocNo, insertWithDocNoRetry, nextJeNo, jePrefixForCompany } from '../lib/doc-no';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { hasHouzsPerm } from '../lib/houzs-perms';
 import { normalizeCurrency, normalizeExchangeRate, masterRateForCurrency } from '../lib/fx';
@@ -71,27 +71,6 @@ const nextPvNo = async (sb: any, c: any): Promise<string> => {
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
   const p = companyDocPrefix(c);
   return mintMonthlyDocNo(sb, 'payment_vouchers', 'pv_number', `${p}PV-${yymm}`);
-};
-
-const padMmDd = (d: Date): string => {
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const yy = String(d.getFullYear()).slice(-2);
-  return `${yy}${m}`;
-};
-
-/* Next JE number — copied verbatim from accounting.ts nextJeNo so PV journal
-   entries slot into the same JE-YYMM-NNNN sequence as SI/PI postings. */
-const nextJeNo = async (sb: any, date: Date): Promise<string> => {
-  const prefix = `JE-${padMmDd(date)}`;
-  const { data } = await sb
-    .from('journal_entries')
-    .select('je_no')
-    .like('je_no', `${prefix}-%`)
-    .order('je_no', { ascending: false })
-    .limit(1);
-  const last = data?.[0]?.je_no ?? null;
-  const lastN = last ? parseInt(String(last).split('-').pop() ?? '0', 10) : 0;
-  return `${prefix}-${String(lastN + 1).padStart(4, '0')}`;
 };
 
 /* ── Normalise + validate the incoming lines, recompute the header total ──── */
@@ -432,7 +411,7 @@ paymentVouchers.post('/:id/post', async (c) => {
   const supplier = pv.supplier ?? { code: null, name: null };
   // Multi-company (mig 0061/0081): the JE + its lines belong to the PV's company.
   const companyId = pv.company_id ?? null;
-  const jeNo = await nextJeNo(sb, new Date(pv.voucher_date));
+  const jeNo = await nextJeNo(sb, new Date(pv.voucher_date), jePrefixForCompany(companyId));
   const { data: je, error: jeErr } = await sb.from('journal_entries').insert({
     ...(companyId != null ? { company_id: companyId } : {}),
     je_no:            jeNo,
@@ -573,15 +552,21 @@ async function reversePvAccounting(
   sb: any,
   pvNumber: string,
 ): Promise<{ ok: boolean; status: string; jeNo?: string; jeId?: string; reason?: string }> {
-  const { data: origRows } = await sb.from('journal_entries')
+  /* A failed read used to return { ok:true, 'nothing_to_reverse' }: the PV is
+     cancelled, the caller logs nothing, and the payment stays posted to the GL —
+     money recorded as paid out on a voucher that was voided. */
+  const { data: origRows, error: origErr } = await sb.from('journal_entries')
     .select('id, je_no, entry_date, reversed, total_debit_sen, total_credit_sen, company_id')
     .eq('source_type', 'PV').eq('source_doc_no', pvNumber);
+  if (origErr) return { ok: false, status: 'reversal_read_failed', reason: `origRows: ${origErr.message}` };
   const orig = ((origRows ?? []) as Array<{ id: string; je_no: string; entry_date: string; reversed: boolean; total_debit_sen: number; total_credit_sen: number; company_id: number | null }>)
     .find((r) => !r.reversed);
   if (!orig) return { ok: true, status: 'nothing_to_reverse' };
 
-  const { data: revExisting } = await sb.from('journal_entries')
+  /* Idempotency guard — a blip defeats it and contras the voucher twice. */
+  const { data: revExisting, error: revExistErr } = await sb.from('journal_entries')
     .select('id, je_no').eq('source_type', 'PV_REVERSAL').eq('reversed_by_je', orig.id).limit(1);
+  if (revExistErr) return { ok: false, status: 'reversal_read_failed', reason: `revExisting: ${revExistErr.message}` };
   if (revExisting && revExisting.length > 0) {
     await sb.from('journal_entries').update({ reversed: true, reversed_by_je: revExisting[0].id }).eq('id', orig.id);
     return { ok: true, status: 'already_reversed' };
@@ -593,9 +578,18 @@ async function reversePvAccounting(
     return { ok: true, status: 'reversed', jeNo: orig.je_no, jeId: orig.id };
   }
 
-  const { data: origLines } = await sb.from('journal_entry_lines')
+  /* Worst of the three copies here, because a PV JE's legs are DYNAMIC (the
+     voucher's own debit accounts + chosen credit account), so unlike the SI/PI
+     mirrors there is no canonical 2-line fallback to guess with — `swapped` folds
+     to [] and the block below simply skips the insert. The reversing JE is then
+     written with total_debit_sen/total_credit_sen set to the full amount, marked
+     posted, and the original flagged reversed: an unbalanced JE header carrying a
+     total against ZERO lines, standing in the ledger as the record of a reversal
+     that reversed nothing. Pre-write — abort is free. */
+  const { data: origLines, error: origLinesErr } = await sb.from('journal_entry_lines')
     .select('account_code, debit_sen, credit_sen, party_type, party_code, party_name, notes')
     .eq('journal_entry_id', orig.id).order('line_no');
+  if (origLinesErr) return { ok: false, status: 'reversal_read_failed', reason: `origLines: ${origLinesErr.message}` };
   const oLines = (origLines ?? []) as Array<{
     account_code: string; debit_sen: number; credit_sen: number;
     party_type: string | null; party_code: string | null; party_name: string | null; notes: string | null;
@@ -603,11 +597,14 @@ async function reversePvAccounting(
 
   const companyId = orig.company_id ?? null;
   const companyLine = companyId != null ? { company_id: companyId } : {};
-  const revJeNo = await nextJeNo(sb, new Date(orig.entry_date));
+  const revJeNo = await nextJeNo(sb, new Date(orig.entry_date), jePrefixForCompany(companyId));
   const { data: revJe, error: revErr } = await sb.from('journal_entries').insert({
     ...companyLine,
     je_no:            revJeNo,
-    entry_date:       new Date().toISOString().slice(0, 10),
+    // Workers run in UTC: the raw date slice is YESTERDAY before 08:00 MYT, so a
+    // PV cancelled early morning dated its reversal into the previous day —
+    // possibly a closed period. The SI/PI reversals already use todayMyt().
+    entry_date:       todayMyt(),
     source_type:      'PV_REVERSAL',
     source_doc_no:    pvNumber,
     narration:        `Reversal of ${orig.je_no} — Payment voucher ${pvNumber} cancelled`,

@@ -29,6 +29,7 @@ import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import {
   useCreateDeliveryReturn, useMfgDeliveryOrderDetail,
 } from '../../vendor/scm/lib/delivery-return-queries';
+import { useIdempotencyKey } from '../../lib/idempotency';
 import { useStaff } from '../../vendor/scm/lib/admin-queries';
 import { sortByText, sortByNumeric } from '../../vendor/scm/lib/sort-options';
 import {
@@ -55,6 +56,12 @@ export const DeliveryReturnNew = () => {
   const fromPicks = searchParams.get('fromPicks') === '1';
 
   const create = useCreateDeliveryReturn();
+  /* One key for the one return this page is open to raise (lib/idempotency.ts).
+     Route-level form, navigates to the return detail on success, so the MOUNT is
+     exactly one return. Load-bearing: the create increases stock inline (see
+     useCreateDeliveryReturn), so a re-press after a stalled submit books the
+     goods back IN twice unless it replays. */
+  const idemKey = useIdempotencyKey();
   const staffQ = useStaff();
   const loc = useLocalities();
 
@@ -234,6 +241,7 @@ export const DeliveryReturnNew = () => {
 
     create.mutate(
       {
+        idempotencyKey: idemKey,
         doDocNo: doDocNo || undefined,
         deliveryOrderId: fromDo || undefined,
         debtorName,

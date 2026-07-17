@@ -25,6 +25,7 @@ import { postSiRevenue } from '../lib/post-si-revenue';
 import { paginateAll } from '../lib/paginate-all';
 import { safeRate, toMyrSen } from '../lib/fx';
 import { todayMyt } from '../lib/my-time';
+import { nextJeNo, jePrefixForCompany } from '../lib/doc-no';
 import { scopeToCompany, activeCompanyId, companyDocPrefix } from '../lib/companyScope';
 
 export const accounting = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -33,35 +34,6 @@ accounting.use('*', supabaseAuth);
 /* ════════════════════════════════════════════════════════════════════════
    Helpers
    ════════════════════════════════════════════════════════════════════════ */
-
-const padMmDd = (d: Date): string => {
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const yy = String(d.getFullYear()).slice(-2);
-  return `${yy}${m}`;
-};
-
-// JE-number company prefix keyed on the DOCUMENT's company (not the operator's
-// active company — an auto-posted PI/reversal belongs to the PI's company). "" for
-// HOUZS (company 1), "2990-" for company 2 — the same HOUZS-bare / else-prefixed
-// rule as companyDocPrefix + the mirror's hardcoded "2990-" (so-mirror prefixDoc).
-const jePrefixForCompany = (companyId: number | null | undefined): string =>
-  companyId == null || Number(companyId) === 1 ? '' : '2990-';
-
-const nextJeNo = async (sb: any, date: Date, coPrefix = ''): Promise<string> => {
-  // Per-company sequence: the prefix in the LIKE pattern isolates each company's
-  // running number — "JE-2607-%" never matches "2990-JE-2607-…" and vice-versa —
-  // so the two companies' accounting vouchers can't collide or share a sequence.
-  const prefix = `${coPrefix}JE-${padMmDd(date)}`;
-  const { data } = await sb
-    .from('journal_entries')
-    .select('je_no')
-    .like('je_no', `${prefix}-%`)
-    .order('je_no', { ascending: false })
-    .limit(1);
-  const last = data?.[0]?.je_no ?? null;
-  const lastN = last ? parseInt(String(last).split('-').pop() ?? '0', 10) : 0;
-  return `${prefix}-${String(lastN + 1).padStart(4, '0')}`;
-};
 
 type JeLineIn = {
   accountCode: string;
@@ -269,11 +241,24 @@ export type PostPiResult =
 
 export async function postPiAccounting(sb: any, invoiceNumber: string): Promise<PostPiResult> {
   // Idempotency — an ACTIVE (non-reversed) PI JE already exists?
-  const { data: existingRows } = await sb
+  /* This guard is the ONLY thing that makes posting idempotent, and `?? []` folded
+     a failed read into "no JE exists yet" — so a transient blip does not skip the
+     posting, it posts a SECOND Dr Inventory / Cr AP for the same invoice and
+     doubles the supplier's payable in the GL. Nothing is written before this
+     point, so returning strands nothing: the PI simply stays unposted and a later
+     call (this function is called on confirm and by resyncPiAccounting) posts it
+     once, correctly. A PI that has genuinely never been posted resolves
+     error === null with data === [] and MUST still fall through. */
+  const { data: existingRows, error: existErr } = await sb
     .from('journal_entries')
     .select('id, je_no, reversed')
     .eq('source_type', 'PI')
     .eq('source_doc_no', invoiceNumber);
+  if (existErr) {
+    /* eslint-disable-next-line no-console */
+    console.error('[pi-accounting] idempotency read failed — PI NOT posted:', invoiceNumber, existErr.message);
+    return { ok: false, status: 'post_failed', reason: existErr.message };
+  }
   const active = ((existingRows ?? []) as Array<{ id: string; je_no: string; reversed: boolean | null }>)
     .find((r) => !r.reversed);
   if (active) return { ok: true, status: 'already_posted', jeNo: active.je_no, jeId: active.id };
@@ -423,11 +408,16 @@ export async function reversePiAccounting(
   // historical PI JEs after edit-driven void+repost cycles (resyncPiAccounting),
   // so we void the live one, not an arbitrary `.limit(1)` row. Nothing live →
   // nothing to reverse.
-  const { data: origRows } = await sb
+  /* A failed read used to return { ok:true, 'nothing_to_reverse' }: the PI is
+     cancelled, the caller logs nothing, and Dr Inventory / Cr Payables stays live
+     against it — payables and inventory value both left overstated, which is the
+     exact condition the contra above exists to undo ("取消 PI 要追溯回去"). */
+  const { data: origRows, error: origErr } = await sb
     .from('journal_entries')
     .select('id, je_no, entry_date, reversed, total_debit_sen, total_credit_sen, narration, company_id')
     .eq('source_type', 'PI')
     .eq('source_doc_no', invoiceNumber);
+  if (origErr) return { ok: false, status: 'reversal_read_failed', reason: `origRows: ${origErr.message}` };
   const orig = ((origRows ?? []) as Array<{ id: string; je_no: string; entry_date: string; reversed: boolean; total_debit_sen: number; total_credit_sen: number; narration: string | null; company_id: number | null }>)
     .find((r) => !r.reversed);
   if (!orig) return { ok: true, status: 'nothing_to_reverse' };
@@ -436,12 +426,15 @@ export async function reversePiAccounting(
   // flag never stuck). Keyed on reversed_by_je = orig.id, NOT just "any reversal
   // for this invoice", so a prior cycle's reversal doesn't block voiding the
   // current live JE.
-  const { data: revExisting } = await sb
+  /* Idempotency guard — a blip defeats it rather than degrading it, writing a
+     SECOND contra JE so the cancellation is booked twice. Nothing written yet. */
+  const { data: revExisting, error: revExistErr } = await sb
     .from('journal_entries')
     .select('id, je_no')
     .eq('source_type', 'PI_REVERSAL')
     .eq('reversed_by_je', orig.id)
     .limit(1);
+  if (revExistErr) return { ok: false, status: 'reversal_read_failed', reason: `revExisting: ${revExistErr.message}` };
   if (revExisting && revExisting.length > 0) {
     // The reversing JE exists but the flag never got set — make the flag stick.
     await sb.from('journal_entries').update({ reversed: true, reversed_by_je: revExisting[0].id }).eq('id', orig.id);
@@ -457,11 +450,15 @@ export async function reversePiAccounting(
 
   // Load the original lines so the reversal mirrors the SAME accounts + parties,
   // just with debit/credit swapped (a faithful contra entry).
-  const { data: origLines } = await sb
+  /* Caught before the `?? []` fold, which cannot tell a failed read from a
+     line-less original and would silently contra the canonical Dr 2000 / Cr 1200
+     instead of the accounts the original actually used. Still pre-write. */
+  const { data: origLines, error: origLinesErr } = await sb
     .from('journal_entry_lines')
     .select('account_code, debit_sen, credit_sen, party_type, party_code, party_name, notes')
     .eq('journal_entry_id', orig.id)
     .order('line_no');
+  if (origLinesErr) return { ok: false, status: 'reversal_read_failed', reason: `origLines: ${origLinesErr.message}` };
   const oLines = (origLines ?? []) as Array<{
     account_code: string; debit_sen: number; credit_sen: number;
     party_type: string | null; party_code: string | null; party_name: string | null; notes: string | null;
@@ -532,21 +529,30 @@ export async function resyncPiAccounting(
   sb: any,
   invoiceNumber: string,
 ): Promise<{ ok: boolean; status: string; reason?: string }> {
-  const { data: jeRows } = await sb
+  const { data: jeRows, error: jeRowsErr } = await sb
     .from('journal_entries')
     .select('id, total_debit_sen, reversed')
     .eq('source_type', 'PI')
     .eq('source_doc_no', invoiceNumber);
+  if (jeRowsErr) return { ok: false, status: 'resync_read_failed', reason: `jeRows: ${jeRowsErr.message}` };
   const active = ((jeRows ?? []) as Array<{ id: string; total_debit_sen: number; reversed: boolean | null }>)
     .find((r) => !r.reversed);
   // Not posted to the GL yet → nothing to keep in sync (PI posts only on demand).
   if (!active) return { ok: true, status: 'not_posted' };
 
-  const { data: pi } = await sb
+  /* #690 flagged this read as folding "a blip into a changed total and churns a
+     void+repost". It is worse than that: there is no repost. A blip leaves `pi`
+     null, newTotal folds to 0, the live JE is reversed, and `newTotal <= 0` then
+     returns 'reversed_to_zero' BEFORE postPiAccounting is reached — so a healthy
+     PI silently loses its payable on a line edit and the caller is told ok.
+     `error === null && pi === null` (invoice genuinely gone) keeps voiding, as
+     today. */
+  const { data: pi, error: piErr } = await sb
     .from('purchase_invoices')
     .select('total_centi, exchange_rate')
     .eq('invoice_number', invoiceNumber)
     .maybeSingle();
+  if (piErr) return { ok: false, status: 'resync_read_failed', reason: `pi: ${piErr.message}` };
   const piRow = pi as { total_centi?: number; exchange_rate?: string | number | null } | null;
   // Migration 0082 — the posted JE is in MYR; compare against the MYR-equivalent
   // of the (foreign) PI total so a foreign PI doesn't churn a void+repost every

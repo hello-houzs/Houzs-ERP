@@ -32,6 +32,7 @@ import {
   type MaterialKind,
   type OutstandingSoItem,
 } from '../../vendor/scm/lib/suppliers-queries';
+import { useIdempotencyKey } from '../../lib/idempotency';
 import { useMfgProducts, useMaintenanceConfig, useSpecialAddons } from '../../vendor/scm/lib/mfg-products-queries';
 import { activeOptions, maintPickerValues } from '@2990s/shared';
 import { useFabricTrackings, fabricOptionLabel } from '../../vendor/scm/lib/fabric-queries';
@@ -153,6 +154,12 @@ const SpecialsCheckboxes = ({
 export const PurchaseOrderNew = () => {
   const navigate = useNavigate();
   const create   = useCreatePurchaseOrder();
+  /* One key for the one PO this page is open to raise (lib/idempotency.ts).
+     Route-level form, navigates to the PO detail on success, so the MOUNT is
+     exactly one PO: stable across re-renders (lazy init) and across a re-press
+     after a stalled submit — which is the point, since a duplicate PO orders and
+     pays for the same goods twice from a real supplier — and fresh on remount. */
+  const idemKey  = useIdempotencyKey();
   const notify   = useNotify();
 
   // ── Header state ────────────────────────────────────────────────────
@@ -662,6 +669,7 @@ export const PurchaseOrderNew = () => {
 
     create.mutate(
       {
+        idempotencyKey: idemKey,
         supplierId,
         currency,
         poDate,

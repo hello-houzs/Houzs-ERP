@@ -43,6 +43,7 @@ import {
   deriveWarehouseIdFromState,
 } from '../routes/mfg-sales-orders';
 import { activeCompanyId, isMirroredDocNo } from './companyScope';
+import { todayMyt } from './my-time';
 
 /* The Supabase client threaded through the routes is loosely typed (`any` in
    every sibling helper — see mfg-pricing-recompute.ts / so-audit callers). Keep
@@ -206,8 +207,16 @@ export async function applySoAmendment(
   // Multi-company: an ADD-line diff inserts a new mfg_sales_order_items row —
   // it inherits the SO header's company (NOT the request's active company: an
   // amendment may be approved while another company is active).
-  const { data: soHdrCo } = await sb.from('mfg_sales_orders')
+  /* Throws, like every other load in this function (and per its docblock) — the
+     approve-so route catches it, leaves the amendment status unchanged and lets the
+     operator retry; snapshotSo's upsert is idempotent on (so_doc_no, revision), so
+     the retry is clean. This read was the one exception, and `?? null` does not
+     fail closed: the ADD-line insert below OMITS company_id when this is null, and
+     mig 0091 gave the column a HOUZS DEFAULT — so a blip books a 2990 order's new
+     line to Houzs, silently, exactly as the note on that insert warns. */
+  const { data: soHdrCo, error: soHdrCoErr } = await sb.from('mfg_sales_orders')
     .select('company_id').eq('doc_no', docNo).maybeSingle();
+  if (soHdrCoErr) throw new Error(`applySoAmendment: SO company load failed: ${soHdrCoErr.message}`);
   const soCompanyId = (soHdrCo as { company_id?: number | null } | null)?.company_id ?? null;
 
   // Config loaded ONCE and threaded into every per-line recompute (the create
@@ -263,7 +272,7 @@ export async function applySoAmendment(
       const { error: insErr } = await sb.from('mfg_sales_order_items').insert({
         ...(soCompanyId != null ? { company_id: soCompanyId } : {}),
         doc_no:                  docNo,
-        line_date:              new Date().toISOString().slice(0, 10),
+        line_date:              todayMyt(),
         item_group:             itemGroup,
         item_code:              itemCode,
         uom:                    'UNIT',
@@ -750,10 +759,25 @@ export async function reviseBoundPo(
     // Recompute PO subtotal/total from the live lines and the header expected_at
     // = earliest non-null line delivery_date (mirrors recomputePoTotals /
     // recomputePoExpectedAt in mfg-purchase-orders.ts).
-    const { data: liveLines } = await sb
+    /* The roll-up zeroing shape (BUG-HISTORY 2026-07-17, fix/zeroing-twins) — this
+       is a 16th instance of it, reached from the amendment engine rather than a
+       line route. `?? []` folds a failed read to subtotal 0, and the update below
+       is unconditional: the PO's subtotal_centi AND total_centi go to 0 and
+       expected_at to null while its lines sit there intact and priced.
+       Throws rather than logging-and-skipping, unlike the 15 — the contract here
+       is the opposite one and it is stated in this function's own docblock. Every
+       other load and write in it throws; the approve-po route catches, returns 500
+       and deliberately does NOT advance the amendment status, so the operator
+       retries and snapshotPo's upsert is idempotent on (po_id, revision). The
+       retry cannot duplicate a document the way a re-POSTed create can (#657/#658)
+       — it is a PATCH on one amendment id behind a status-transition guard. And
+       the bump 12 lines below already throws, stranding the identical half-revised
+       PO, so this adds no new failure state — it only refuses to write a zero. */
+    const { data: liveLines, error: liveErr } = await sb
       .from('purchase_order_items')
       .select('line_total_centi, delivery_date')
       .eq('purchase_order_id', po.id);
+    if (liveErr) throw new Error(`reviseBoundPo: PO lines re-read failed for ${po.id}: ${liveErr.message}`);
     const rows = (liveLines ?? []) as Array<{ line_total_centi: number | null; delivery_date: string | null }>;
     const subtotal = rows.reduce((s, r) => s + Number(r.line_total_centi ?? 0), 0);
     const dates = rows.map((r) => r.delivery_date).filter((d): d is string => Boolean(d)).sort();

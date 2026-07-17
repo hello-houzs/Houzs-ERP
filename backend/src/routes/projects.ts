@@ -51,6 +51,7 @@ import { scopeSalesReportsForUser } from "../services/orgScope";
 import { audit } from "../services/audit";
 import { hasPermission } from "../services/permissions";
 import { recomputeAutoCostLines } from "../services/projectCostRates";
+import { todayMyt } from "../scm/lib/my-time";
 import { getDb } from "../db/client";
 import {
   project_brands,
@@ -636,14 +637,20 @@ app.get("/summary", requirePageAccess("projects.list"), async (c) => {
       GROUP BY stage`
   ).all();
 
+  // SQL date('now') is the UTC calendar date (d1-compat rewrites it to
+  // to_char(timezone('UTC', now()), ...)), so before 08:00 MYT the window was
+  // anchored to yesterday. start_date is a Malaysian calendar date — bind the
+  // MY date so the two sides speak the same calendar.
   const upcoming = await c.env.DB.prepare(
     `SELECT COUNT(*) as count FROM projects
       WHERE archived_at IS NULL${coSql}
         AND stage NOT IN ('closed','cancelled')
         AND start_date IS NOT NULL
-        AND substr(start_date, 1, 10) >= date('now')
-        AND substr(start_date, 1, 10) <= date('now', '+30 days')`
-  ).first<{ count: number }>();
+        AND substr(start_date, 1, 10) >= ?
+        AND substr(start_date, 1, 10) <= ?`
+  )
+    .bind(todayMyt(), todayMyt(30))
+    .first<{ count: number }>();
 
   const live = await c.env.DB.prepare(
     `SELECT COUNT(*) as count FROM projects
@@ -658,8 +665,10 @@ app.get("/summary", requirePageAccess("projects.list"), async (c) => {
       WHERE p.archived_at IS NULL${activeCompanySql(c, "p.company_id")}
         AND c.status = 'pending'
         AND c.due_date IS NOT NULL
-        AND substr(c.due_date, 1, 10) < date('now')`
-  ).first<{ count: number }>();
+        AND substr(c.due_date, 1, 10) < ?`
+  )
+    .bind(todayMyt())
+    .first<{ count: number }>();
 
   return c.json({
     by_stage: byStage.results ?? [],
@@ -3814,7 +3823,7 @@ app.get("/calendar/events", requirePageAccess("projects.calendar"), async (c) =>
             p.code as project_code, p.brand, p.organizer, p.status as project_status,
             p.name as project_name,
             u.name as owner_name,
-            CASE WHEN substr(c.due_date, 1, 10) < date('now') THEN 1 ELSE 0 END as is_overdue
+            CASE WHEN substr(c.due_date, 1, 10) < ? THEN 1 ELSE 0 END as is_overdue
        FROM project_checklist c
        JOIN projects p ON p.id = c.project_id
        LEFT JOIN users u ON u.id = c.owner_user_id
@@ -3825,7 +3834,9 @@ app.get("/calendar/events", requirePageAccess("projects.calendar"), async (c) =>
         AND substr(c.due_date, 1, 10) BETWEEN substr(?, 1, 10) AND substr(?, 1, 10)${scopeWhere}${coSql}
       ORDER BY c.due_date, p.brand, c.id`
   )
-    .bind(from, to, ...scopeBinds)
+    // The MY date is the FIRST bind — the is_overdue placeholder sits in the
+    // SELECT list, ahead of the BETWEEN bounds and the scope binds.
+    .bind(todayMyt(), from, to, ...scopeBinds)
     .all();
 
   return c.json({ projects: projects.results ?? [], tasks: tasks.results ?? [] });

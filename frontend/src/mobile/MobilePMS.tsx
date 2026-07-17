@@ -9,7 +9,7 @@ import { useAuth } from "../auth/AuthContext";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { usePrompt } from "../vendor/scm/components/PromptDialog";
-import { formatCurrency, formatDate } from "../lib/utils";
+import { formatCurrency, formatDate, todayInAppTz } from "../lib/utils";
 import { pmsStageLabel, pmsStageVariant, type PmsStageVariant } from "../vendor/scm/lib/pms-status";
 import "./mobile.css";
 
@@ -749,6 +749,10 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
   const itemHidden = (it: ChecklistItem): boolean => {
     const title = (it.title ?? "").trim().toLowerCase();
     const label = (it.role_label ?? "").trim().toUpperCase();
+    // Filled Floorplan now lives on the Floor Plans & Layout card (view for all,
+    // upload for sales), so its tasklist row is redundant on mobile (owner
+    // 2026-07-17).
+    if (/^filled\s*floor\s*plan/.test(title)) return true;
     // Field/sales cohort: whole tasklist sections removed (kept: OPERATION etc.).
     // Owner 2026-07-16 (2nd pass): sales executives/managers must still get
     // their OWN deliverables — anything badged SALES PIC (Setup Image, Defect
@@ -987,9 +991,9 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
               reload={reload}
             />
 
-            {/* setup & dismantle (logistic) — hidden entirely from non-director
-                Sales, even the PIC (owner 2026-07-15). Same PMS SETUP_DISMANTLE
-                gate as the desktop Projects.tsx crew editor. */}
+            {/* setup & dismantle (logistic). Owner 2026-07-17: Sales may VIEW it
+                (crew + dates) — the backend now sends the data for them — but
+                stays read-only, since PIC/SALES lack the PMS "EDIT" section. */}
             {(canSetupDismantle || cohort5) && (
               <SetupDismantle
                 projectId={id}
@@ -997,7 +1001,7 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
                 photos={photos}
                 drivers={drivers}
                 lorries={lorries}
-                canWrite={canWrite && !archived}
+                canWrite={canWrite && (pms ? pms.canEdit !== false : true) && !archived}
                 busy={busy}
                 setBusy={setBusy}
                 patchProject={patchProject}
@@ -1006,11 +1010,29 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
               />
             )}
 
+            {/* Setup & Dismantle documents as TILES (owner 2026-07-17) — the
+                sales cohort's six deliverables in the Floor-Plans card style.
+                The tasklist rows stay; this is the visual hub on top. */}
+            {isSalesStaff && !isMgt && (
+              <SalesDocsCard
+                checklist={data.checklist}
+                attachments={data.checklist_attachments}
+                canTick={canTick && !archived}
+                busy={busy}
+                setBusy={setBusy}
+                notify={notify}
+                prompt={prompt}
+                reload={reload}
+              />
+            )}
+
             {/* floor plans & layout + stock transfers (upload-only) */}
             <FloorPlans
               projectId={id}
               stockTransfers={data.stock_transfers}
               attachments={data.attachments}
+              checklist={data.checklist}
+              checklistAttachments={data.checklist_attachments}
               canWrite={canWrite && !archived}
               hideFilledPlan={hideFilledPlan}
               busy={busy}
@@ -1393,6 +1415,11 @@ function TasklistSectionView({
             {totalTasks === 0 && !orderedSecs.length && <div style={{ fontSize: 12, color: "#9aa093" }}>No tasks yet.</div>}
             {orderedSecs.map((sec) => {
               const rows = bySection.get(sec.id) ?? [];
+              // Owner 2026-07-17: a section with NO visible tasks for this
+              // viewer renders nothing at all — previously the bare title +
+              // "No tasks in this section" still showed (e.g. PAYMENT / BOOTH
+              // LAYOUT headers on the sales simplified view).
+              if (rows.length === 0) return null;
               const prog = progressById.get(sec.id);
               return (
                 <div key={sec.id} style={{ marginTop: 10 }}>
@@ -1401,7 +1428,7 @@ function TasklistSectionView({
                     <span style={{ fontSize: 11, fontWeight: 800, color: "#11140f" }}>{(sec.name || "").replace(/\s+documents$/i, "")}</span>
                     {prog && <span style={{ marginLeft: "auto", fontSize: 10, fontWeight: 700, color: "#9aa093" }}>{prog.done}/{prog.total}</span>}
                   </div>
-                  {rows.length ? renderRows(rows) : <div style={{ fontSize: 11, color: "#9aa093", padding: "4px 0" }}>No tasks in this section.</div>}
+                  {renderRows(rows)}
                 </div>
               );
             })}
@@ -1732,8 +1759,9 @@ function TaskRow({
         {canAttach && (
           <>
             <input ref={fileRef} type="file" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void upload(f); }} />
-            <button className="tinybtn" style={{ minWidth: 76, display: "inline-flex", alignItems: "center", justifyContent: "center", boxSizing: "border-box" }} disabled={busy} onClick={() => fileRef.current?.click()} title={attachments.length ? `${attachments.length} file(s)` : "Attach"}>
-              {attachments.length ? `Attach (${attachments.length})` : "Attach"}
+            <button className="tinybtn" style={{ minWidth: 60, display: "inline-flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2, lineHeight: 1, boxSizing: "border-box", border: "none", background: "transparent", color: "#767b6e", padding: "4px 6px" }} disabled={busy} onClick={() => fileRef.current?.click()} title={attachments.length ? `${attachments.length} file(s)` : "Attach"}>
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flex: "none" }}><path d="M13.2 6.5 7 12.7a4.4 4.4 0 1 0 6.2 6.2l6.5-6.5a2.9 2.9 0 1 0-4.1-4.1l-6.5 6.5a1.5 1.5 0 1 0 2.1 2.1l6.1-6.2" /></svg>
+              <span style={{ fontSize: 9, fontWeight: 700 }}>{attachments.length ? `Attach (${attachments.length})` : "Attach"}</span>
             </button>
           </>
         )}
@@ -1790,8 +1818,9 @@ function TaskRow({
       {canAttach && (
         <>
           <input ref={fileRef} type="file" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; const cap = pendingCaptionRef.current; pendingCaptionRef.current = undefined; if (f) void upload(f, cap); }} />
-          <button className="tinybtn" style={{ minWidth: 76, display: "inline-flex", alignItems: "center", justifyContent: "center", boxSizing: "border-box" }} disabled={busy} onClick={() => void startAttach()} title={isDefectList ? "Write a remark, then upload" : attachments.length ? `${attachments.length} file(s)` : "Attach"}>
-            {attachments.length ? `Attach (${attachments.length})` : isDefectList ? "Add photo" : "Attach"}
+          <button className="tinybtn" style={{ minWidth: 60, display: "inline-flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 2, lineHeight: 1, boxSizing: "border-box", border: "none", background: "transparent", color: "#767b6e", padding: "4px 6px" }} disabled={busy} onClick={() => void startAttach()} title={isDefectList ? "Write a remark, then upload" : attachments.length ? `${attachments.length} file(s)` : "Attach"}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flex: "none" }}><path d="M13.2 6.5 7 12.7a4.4 4.4 0 1 0 6.2 6.2l6.5-6.5a2.9 2.9 0 1 0-4.1-4.1l-6.5 6.5a1.5 1.5 0 1 0 2.1 2.1l6.1-6.2" /></svg>
+            <span style={{ fontSize: 9, fontWeight: 700 }}>{attachments.length ? `Attach (${attachments.length})` : isDefectList ? "Add photo" : "Attach"}</span>
           </button>
         </>
       )}
@@ -2225,6 +2254,215 @@ function PhaseBlock({
   );
 }
 
+// ── Setup & Dismantle documents — sales tile card (owner 2026-07-17) ──
+// The sales cohort's six deliverables rendered as Floor-Plans-style tiles:
+// Weekend Activity is a REMARK tile (tap to edit the item's `notes`); the
+// other five are FILE tiles (thumbnail of the latest upload, tap to view,
+// "+ Add" to upload — Defect List keeps its compulsory per-photo remark).
+// Tiles map to checklist items by title prefix; "Setup Image" exists twice,
+// so that tile pins to the SALES PIC-badged variant.
+// Arrangement per the owner's Card-Editor screenshot (2026-07-17): Weekend
+// full-width on top, Permit+Deco side by side, Setup Image+Defect List side
+// by side, Event Complete Image full-width at the bottom.
+const SALES_DOC_TILES: ReadonlyArray<{
+  label: string;
+  match: RegExp;
+  salesPicOnly?: boolean;
+  remarkTile?: boolean;
+  requirePhotoRemark?: boolean;
+  /** Full-width tile (spans both grid columns). */
+  fullWidth?: boolean;
+  /** Media area height in px (default 80). */
+  mediaH?: number;
+}> = [
+  { label: "Weekend Activity", match: /^weekend/i, remarkTile: true, fullWidth: true },
+  { label: "Permit", match: /permit/i },
+  { label: "Deco / Coffee Table", match: /^deco/i },
+  { label: "Setup Image", match: /^setup image/i, salesPicOnly: true },
+  { label: "Defect List", match: /^defect list/i, requirePhotoRemark: true },
+  { label: "Event Complete Image", match: /^event complete image/i, fullWidth: true, mediaH: 108 },
+];
+
+function SalesDocsCard({
+  checklist, attachments, canTick, busy, setBusy, notify, prompt, reload,
+}: {
+  checklist?: ChecklistItem[];
+  attachments?: TaskAttachment[];
+  canTick: boolean;
+  busy: boolean;
+  setBusy: SetBusy;
+  notify: NotifyFn;
+  prompt: PromptFn;
+  reload: () => void;
+}) {
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const pendingRef = useRef<{ itemId: number; caption?: string } | null>(null);
+  const [view, setView] = useState<{ items: MediaItem[]; idx: number } | null>(null);
+
+  const tiles = SALES_DOC_TILES.map((t) => {
+    const item = (checklist ?? []).find(
+      (it) =>
+        t.match.test((it.title || "").trim()) &&
+        (!t.salesPicOnly || (it.role_label ?? "").trim().toUpperCase() === "SALES PIC")
+    );
+    const files = item
+      ? (attachments ?? [])
+          .filter((a) => !a.archived_at && a.item_id === item.id)
+          .map((a): MediaItem => ({
+            r2_key: a.r2_key,
+            content_type: a.mime_type ?? mimeFromKey(a.r2_key),
+            caption: a.file_name,
+          }))
+      : [];
+    return { ...t, item, files };
+  }).filter((t) => t.item);
+
+  if (tiles.length === 0) return null;
+
+  const doneCount = tiles.filter((t) =>
+    t.remarkTile ? !!(t.item?.notes ?? "").trim() : t.files.length > 0
+  ).length;
+
+  const startUpload = async (t: (typeof tiles)[number]) => {
+    if (!t.item) return;
+    let caption: string | undefined;
+    if (t.requirePhotoRemark) {
+      const remark = await prompt({
+        title: "Remark for this photo",
+        placeholder: "e.g. scratch on left armrest",
+        validate: (v) => (v.trim() ? null : "Please write a remark before uploading."),
+      });
+      if (remark == null || !remark.trim()) return;
+      caption = remark.trim();
+    }
+    pendingRef.current = { itemId: t.item.id, caption };
+    fileRef.current?.click();
+  };
+
+  const upload = async (file: File) => {
+    const pending = pendingRef.current;
+    pendingRef.current = null;
+    if (!pending) return;
+    if (file.size > 10 * 1024 * 1024) {
+      await notify({ title: "File too large", body: "Max 10MB.", tone: "error" });
+      return;
+    }
+    const ext = (file.name.split(".").pop() || "").toLowerCase();
+    if (!ext) {
+      await notify({ title: "Missing extension", body: "The file needs an extension.", tone: "error" });
+      return;
+    }
+    setBusy(true);
+    try {
+      const buf = await file.arrayBuffer();
+      const capParam = pending.caption ? `&caption=${encodeURIComponent(pending.caption)}` : "";
+      await api.putBinary(
+        `/api/projects/checklist/${pending.itemId}/attachments?ext=${encodeURIComponent(ext)}&name=${encodeURIComponent(file.name)}${capParam}`,
+        buf,
+        file.type || "application/octet-stream",
+      );
+      reload();
+    } catch (e) {
+      await notify({ title: "Upload failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  };
+
+  const editRemark = async (t: (typeof tiles)[number]) => {
+    if (!t.item || !canTick) return;
+    const val = await prompt({
+      title: `Remark — ${t.label}`,
+      placeholder: "Write the remark…",
+      defaultValue: t.item.notes ?? "",
+    });
+    if (val == null) return;
+    setBusy(true);
+    try {
+      await api.patch(`/api/projects/checklist/${t.item.id}`, { notes: val.trim() });
+      reload();
+    } catch (e) {
+      await notify({ title: "Save failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openTile = async (t: (typeof tiles)[number]) => {
+    if (t.remarkTile) { await editRemark(t); return; }
+    if (t.files.length > 0) { setView({ items: t.files, idx: t.files.length - 1 }); return; }
+    if (canTick) { await startUpload(t); return; }
+    await notify({ title: `${t.label} not uploaded`, body: "Nothing has been uploaded here yet.", tone: "info" });
+  };
+
+  return (
+    <details className="pacc" open>
+      <summary>
+        <span className="psec-t">Setup &amp; Dismantle documents</span>
+        <span style={{ marginLeft: "auto", fontSize: 10, fontWeight: 700, color: "#9aa093" }}>{doneCount}/{tiles.length}</span>
+        <svg className="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
+      </summary>
+      <div className="pbody">
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 9 }}>
+          {tiles.map((t) => {
+            const latest = t.files[t.files.length - 1];
+            const hasContent = t.remarkTile ? !!(t.item?.notes ?? "").trim() : t.files.length > 0;
+            const mediaH = t.mediaH ?? 80;
+            return (
+              <div key={t.label} style={{ border: "1px solid #d6d9d2", borderRadius: 11, overflow: "hidden", background: "#fff", ...(t.fullWidth ? { gridColumn: "1 / -1" } : {}) }}>
+                <div
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => { if (!busy) void openTile(t); }}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); if (!busy) void openTile(t); } }}
+                  style={{ cursor: "pointer" }}
+                >
+                  {t.remarkTile ? (
+                    <div style={{ height: mediaH, padding: "8px 10px", fontSize: 11, lineHeight: 1.45, color: (t.item?.notes ?? "").trim() ? "#414539" : "#9aa093", overflow: "hidden", background: "#faf9f5" }}>
+                      {(t.item?.notes ?? "").trim() || (canTick ? "Tap to write the remark…" : "No remark yet.")}
+                    </div>
+                  ) : latest && /^image\//.test(latest.content_type ?? "") ? (
+                    <R2Thumb r2Key={latest.r2_key} style={{ width: "100%", height: mediaH }} />
+                  ) : (
+                    <div className="ph" style={{ height: mediaH }} />
+                  )}
+                  <div style={{ padding: "7px 9px 4px" }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: "#11140f" }}>{t.label}</div>
+                    <span className="rbadge" style={{ background: hasContent ? "#e2f0e9" : "#f0f1ed", color: hasContent ? "#2f8a5b" : "#9aa093" }}>
+                      {t.remarkTile
+                        ? (hasContent ? "DONE" : "NONE")
+                        : (hasContent ? `${t.files.length} FILE${t.files.length === 1 ? "" : "S"}` : "NONE")}
+                    </span>
+                  </div>
+                </div>
+                {!t.remarkTile && canTick && (
+                  <div style={{ padding: "0 9px 8px" }}>
+                    <button className="tinybtn" style={{ width: "100%" }} disabled={busy} onClick={() => void startUpload(t)}>
+                      {t.files.length ? "+ Add more" : "Upload"}
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        <input ref={fileRef} type="file" accept="image/*,.pdf,.mp4,.mov,.webm" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void upload(f); }} />
+        {view && (
+          <MediaLightbox
+            items={view.items}
+            index={view.idx}
+            onChange={(i) => setView((v) => (v ? { ...v, idx: i } : v))}
+            onClose={() => setView(null)}
+            baseUrl="/api/projects/attachments"
+            badge="Document"
+          />
+        )}
+      </div>
+    </details>
+  );
+}
+
 // ── Floor plans & layout + stock transfers ──
 // The 3D viewer stays a design placeholder (no plan-image payload). The
 // Unfilled / Filled plan tiles are wired to the project's floorplan-category
@@ -2233,11 +2471,13 @@ function PhaseBlock({
 // record is uploaded via PUT /:id/stock-transfers/upload → POST
 // /:id/stock-transfers. Existing rows are listed read-only.
 function FloorPlans({
-  projectId, stockTransfers, attachments, canWrite, hideFilledPlan, busy, setBusy, notify, reload,
+  projectId, stockTransfers, attachments, checklist, checklistAttachments, canWrite, hideFilledPlan, busy, setBusy, notify, reload,
 }: {
   projectId: number;
   stockTransfers?: StockTransfer[];
   attachments?: ProjectAttachment[];
+  checklist?: ChecklistItem[];
+  checklistAttachments?: TaskAttachment[];
   canWrite: boolean;
   hideFilledPlan?: boolean;
   busy: boolean;
@@ -2248,21 +2488,89 @@ function FloorPlans({
   const fileRef = useRef<HTMLInputElement | null>(null);
   const transfers = stockTransfers ?? [];
 
-  // Unfilled = first floorplan attachment, Filled = second (matches the
-  // prototype's two "tap to view" tiles). Opens the stored plan when present.
+  // The tiles mirror the "Blank Floorplan" / "Filled Floorplan" CHECKLIST
+  // task attachments (mig 050 moved uploads per-task — files attached in the
+  // tasklist must surface here). The legacy project-level floorplan-category
+  // attachments remain as a fallback for pre-050 projects.
   // Viewing goes through MediaLightbox rather than window.open(blobUrl):
   // mobile browsers popup-block window.open once an await has broken the
   // user-gesture chain, which made these tiles dead on phones.
   const plans = (attachments ?? []).filter((a) => (a.category || "").toLowerCase() === "floorplan");
-  const [planIdx, setPlanIdx] = useState<number | null>(null);
+  const taskPlanFiles = (prefix: RegExp): MediaItem[] => {
+    const ids = new Set(
+      (checklist ?? []).filter((it) => prefix.test((it.title || "").trim())).map((it) => it.id)
+    );
+    return (checklistAttachments ?? [])
+      .filter((a) => !a.archived_at && ids.has(a.item_id))
+      .map((a): MediaItem => ({
+        r2_key: a.r2_key,
+        content_type: a.mime_type ?? mimeFromKey(a.r2_key),
+        caption: a.file_name,
+      }));
+  };
+  const legacyItem = (a: ProjectAttachment | undefined): MediaItem[] => {
+    const k = a ? pick(a.r2_key, a.r2Key) : undefined;
+    return a && k
+      ? [{ r2_key: k, content_type: pick(a.mime_type, a.mimeType) ?? mimeFromKey(k), caption: pick(a.file_name, a.fileName) }]
+      : [];
+  };
+  const unfilledFiles = (() => { const t = taskPlanFiles(/^blank\s*floor\s*plan/i); return t.length ? t : legacyItem(plans[0]); })();
+  const filledFiles = (() => { const t = taskPlanFiles(/^filled\s*floor\s*plan/i); return t.length ? t : legacyItem(plans[1]); })();
+  // Checklist task ids by title prefix — used to attach uploads to the right task.
+  const taskIdByPrefix = (prefix: RegExp): number | null =>
+    (checklist ?? []).find((it) => prefix.test((it.title || "").trim()))?.id ?? null;
+  const filledPlanTaskId = taskIdByPrefix(/^filled\s*floor\s*plan/i);
+  // Stock out transfer — mirrors the "Stock Out Transfer Record" CHECKLIST task
+  // attachments. (The legacy project-level stock_transfers store is unused: every
+  // stock-out record is attached to the task, which is why this read empty.)
+  const stockOutAtts = (() => {
+    const ids = new Set(
+      (checklist ?? []).filter((it) => /^stock\s*(out|in)\s*transfer/i.test((it.title || "").trim())).map((it) => it.id)
+    );
+    return (checklistAttachments ?? []).filter((a) => !a.archived_at && ids.has(a.item_id));
+  })();
+  // Sales upload the Filled Floorplan straight from this card (owner 2026-07-17)
+  // — it attaches to the "Filled Floorplan" checklist task, so the tasklist row
+  // and this card stay one and the same file.
+  const filledRef = useRef<HTMLInputElement | null>(null);
+  const uploadFilledPlan = async (file: File) => {
+    if (!filledPlanTaskId) {
+      await notify({ title: "No Filled Floorplan task", body: "This event has no Filled Floorplan task to attach to.", tone: "error" });
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      await notify({ title: "File too large", body: "Max 10MB.", tone: "error" });
+      return;
+    }
+    const ext = (file.name.split(".").pop() || "").toLowerCase();
+    if (!ext) {
+      await notify({ title: "Missing extension", body: "The file needs an extension.", tone: "error" });
+      return;
+    }
+    setBusy(true);
+    try {
+      const buf = await file.arrayBuffer();
+      await api.putBinary(
+        `/api/projects/checklist/${filledPlanTaskId}/attachments?ext=${encodeURIComponent(ext)}&name=${encodeURIComponent(file.name)}`,
+        buf,
+        file.type || "application/octet-stream",
+      );
+      reload();
+    } catch (e) {
+      await notify({ title: "Upload failed", body: e instanceof Error ? e.message : "Please try again.", tone: "error" });
+    } finally {
+      setBusy(false);
+      if (filledRef.current) filledRef.current.value = "";
+    }
+  };
+  const [planView, setPlanView] = useState<{ items: MediaItem[]; idx: number } | null>(null);
   const [docView, setDocView] = useState<MediaItem | null>(null);
-  const openPlan = async (a: ProjectAttachment | undefined, which: string) => {
-    if (!a) {
+  const openPlan = async (files: MediaItem[], which: string) => {
+    if (files.length === 0) {
       await notify({ title: `${which} plan not uploaded`, body: "No floor plan has been uploaded for this project yet.", tone: "info" });
       return;
     }
-    if (!pick(a.r2_key, a.r2Key)) return;
-    setPlanIdx(plans.indexOf(a));
+    setPlanView({ items: files, idx: files.length - 1 });
   };
 
   const uploadTransfer = async (file: File) => {
@@ -2320,69 +2628,68 @@ function FloorPlans({
         {/* Unfilled / Filled plan tiles — tap to view the stored floorplan.
             Filled plan is hidden from driver/helper/storekeeper (owner 2026-07-16). */}
         <div style={{ display: "grid", gridTemplateColumns: hideFilledPlan ? "1fr" : "1fr 1fr", gap: 9 }}>
-          {([["Unfilled", plans[0], "DRAFT", "#f6efd9", "#6e4d12"], ["Filled", plans[1], "PLACED", "#e2f0e9", "#2f8a5b"]] as const).filter(([label]) => !(hideFilledPlan && label === "Filled")).map(([label, att, badge, badgeBg, badgeCol]) => {
-            const key = att ? pick(att.r2_key, att.r2Key) : undefined;
+          {([["Unfilled", unfilledFiles, "DRAFT", "#f6efd9", "#6e4d12"], ["Filled", filledFiles, "PLACED", "#e2f0e9", "#2f8a5b"]] as const).filter(([label]) => !(hideFilledPlan && label === "Filled")).map(([label, files, badge, badgeBg, badgeCol]) => {
+            const latest = files[files.length - 1];
             return (
               <div
                 key={label}
                 role="button"
                 tabIndex={0}
-                onClick={() => void openPlan(att, label)}
-                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); void openPlan(att, label); } }}
+                onClick={() => void openPlan(files, label)}
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); void openPlan(files, label); } }}
                 style={{ border: "1px solid #d6d9d2", borderRadius: 11, overflow: "hidden", cursor: "pointer" }}
               >
-                {att && key && /^image\//.test(pick(att.mime_type, att.mimeType) ?? "")
-                  ? <R2Thumb r2Key={key} style={{ width: "100%", height: 80 }} />
+                {latest && /^image\//.test(latest.content_type ?? "")
+                  ? <R2Thumb r2Key={latest.r2_key} style={{ width: "100%", height: 80 }} />
                   : <div className="ph" style={{ height: 80 }} />}
                 <div style={{ padding: "7px 9px" }}>
                   <div style={{ fontSize: 11, fontWeight: 700, color: "#11140f" }}>{label} plan</div>
-                  <span className="rbadge" style={{ background: att ? badgeBg : "#f0f1ed", color: att ? badgeCol : "#9aa093" }}>{att ? badge : "NONE"}</span>
+                  <span className="rbadge" style={{ background: latest ? badgeBg : "#f0f1ed", color: latest ? badgeCol : "#9aa093" }}>
+                    {latest ? `${badge}${files.length > 1 ? ` · ${files.length}` : ""}` : "NONE"}
+                  </span>
+                  {label === "Filled" && canWrite && filledPlanTaskId != null && (
+                    <button
+                      className="tinybtn"
+                      style={{ marginTop: 6, width: "100%" }}
+                      disabled={busy}
+                      onClick={(e) => { e.stopPropagation(); filledRef.current?.click(); }}
+                    >
+                      {files.length ? "+ Add / replace" : "Upload"}
+                    </button>
+                  )}
                 </div>
               </div>
             );
           })}
         </div>
+        <input ref={filledRef} type="file" accept="image/*,.pdf" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void uploadFilledPlan(f); }} />
 
         <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: ".1em", textTransform: "uppercase", color: "#9aa093", margin: "10px 0 6px" }}>Stock transfer record</div>
-        {transfers.length === 0 && <div style={{ fontSize: 12, color: "#9aa093", marginBottom: 8 }}>No stock transfer recorded yet.</div>}
-        {transfers.length > 0 && (
+        {stockOutAtts.length === 0 && <div style={{ fontSize: 12, color: "#9aa093", marginBottom: 8 }}>No stock transfer recorded yet.</div>}
+        {stockOutAtts.length > 0 && (
           <div style={{ border: "1px solid #e3e6e0", borderRadius: 10, overflow: "hidden", marginBottom: 8 }}>
-            {transfers.map((t, i) => {
-              const who = pick(t.created_by_name, t.createdByName);
-              const when = pick(t.transferred_at, t.transferredAt);
-              const recKey = pick(t.record_r2_key, t.recordR2Key);
-              return (
-                <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 11px", borderTop: i === 0 ? "none" : "1px solid #eceee9", flexWrap: "wrap" }}>
-                  <span className="rbadge" style={{ background: "#e2f0e9", color: "#2f8a5b" }}>OUT</span>
-                  <span style={{ flex: 1, minWidth: 80, fontSize: 11, color: "#414539" }}>{[who || "—", when ? dm(when) : null].filter(Boolean).join(" · ")}</span>
-                  {recKey && (
-                    <button
-                      className="tinybtn"
-                      onClick={() => setDocView({ r2_key: recKey, content_type: mimeFromKey(recKey), caption: pick(t.file_name, t.fileName) ?? "Stock transfer record" })}
-                    >
-                      View
-                    </button>
-                  )}
-                </div>
-              );
-            })}
+            {stockOutAtts.map((a, i) => (
+              <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 11px", borderTop: i === 0 ? "none" : "1px solid #eceee9", flexWrap: "wrap" }}>
+                <span className="rbadge" style={{ background: "#e2f0e9", color: "#2f8a5b" }}>OUT</span>
+                <span style={{ flex: 1, minWidth: 80, fontSize: 11, color: "#414539" }}>
+                  {[a.file_name || "Record", a.uploader_name || null, a.uploaded_at ? dm(a.uploaded_at) : null].filter(Boolean).join(" · ")}
+                </span>
+                <button
+                  className="tinybtn"
+                  onClick={() => setDocView({ r2_key: a.r2_key, content_type: a.mime_type ?? mimeFromKey(a.r2_key), caption: a.file_name ?? "Stock transfer record" })}
+                >
+                  View
+                </button>
+              </div>
+            ))}
           </div>
         )}
-        {canWrite && (
-          <div style={{ display: "flex", gap: 7, alignItems: "center" }}>
-            <input ref={fileRef} type="file" accept=".jpg,.jpeg,.png,.webp,.pdf,.xlsx" style={{ display: "none" }} onChange={(e) => { const f = e.target.files?.[0]; if (f) void uploadTransfer(f); }} />
-            <button className="tinybtn" disabled={busy} onClick={() => fileRef.current?.click()}>Upload stock-out record</button>
-          </div>
-        )}
-        {planIdx != null && plans[planIdx] && (
+        {planView && (
           <MediaLightbox
-            items={plans.map((a): MediaItem => {
-              const k = pick(a.r2_key, a.r2Key) ?? "";
-              return { r2_key: k, content_type: pick(a.mime_type, a.mimeType) ?? mimeFromKey(k), caption: pick(a.file_name, a.fileName) };
-            })}
-            index={planIdx}
-            onChange={setPlanIdx}
-            onClose={() => setPlanIdx(null)}
+            items={planView.items}
+            index={planView.idx}
+            onChange={(i) => setPlanView((pv) => (pv ? { ...pv, idx: i } : pv))}
+            onClose={() => setPlanView(null)}
             baseUrl="/api/projects/attachments"
             badge="Floor plan"
           />
@@ -2436,7 +2743,7 @@ function FinancialSnapshot({
     if (amtStr == null) return;
     const ref = await prompt({ title: "Reference no. (optional)", placeholder: "e.g. INV-123" });
     if (ref == null) return;
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayInAppTz();
     setBusy(true);
     try {
       await api.post(`/api/sales/entries`, {

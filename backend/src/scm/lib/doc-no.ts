@@ -49,8 +49,11 @@ export function nextMonthlyDocNo(monthPrefix: string, existing: string[]): strin
    `SI-2607-1000` and a lexical sort ranks `SI-2607-999` above it. That string
    cliff lands on the very same document as the row cap it was meant to dodge,
    so it trades a silent truncation for a silent mis-sort at identical volume.
-   (The JE minters — routes/accounting.ts, lib/post-si-revenue.ts — do use that
-   shape and are fine ONLY because they pad to 4, moving their break to 10k/mo.)
+   (`nextJeNo` at the foot of this file does use that shape and is fine ONLY
+   because it pads to 4, moving its break to 10k/mo. It is a deliberate
+   difference, not an oversight — do not "unify" it into this family: the pad
+   widths differ, so minting a JE through nextMonthlyDocNo would hand out
+   `JE-2607-001` and break a live sequence's continuity.)
    Paging the month and taking a NUMERIC max is padding-agnostic: it stays
    correct across 999 → 1000 and any later width change.
 
@@ -124,3 +127,50 @@ export async function insertWithDocNoRetry<T>(
   }
   return last;
 }
+
+/* ──────────────────────── Journal-entry numbers (JE) ────────────────────────
+   ONE minter for every JE number in the system. It lived in THREE copies —
+   routes/accounting.ts, lib/post-si-revenue.ts, routes/payment-vouchers.ts —
+   and the copies drifted: only accounting.ts's ever learned the company prefix,
+   so a 2990 Sales Invoice's and Payment Voucher's JE minted into HOUZS's
+   sequence while a 2990 Purchase Invoice's correctly got `2990-JE-…`.
+   payment-vouchers.ts said so in writing ("copied verbatim from accounting.ts
+   nextJeNo") while no longer being verbatim — a copy's comment describes the
+   day it was pasted, not today. Same lesson as fetchMonthlyDocNos above: the
+   month prefix feeds BOTH the LIKE and the mint, so they cannot drift apart —
+   here the whole minter is the shared thing, for the same reason.
+
+   Deliberately NOT folded into the nextMonthlyDocNo family above: 4-pad vs
+   3-pad, and a single-row read instead of a paged one. See the note there. */
+
+const padMmDd = (d: Date): string => {
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const yy = String(d.getFullYear()).slice(-2);
+  return `${yy}${m}`;
+};
+
+/**
+ * JE-number company prefix keyed on the DOCUMENT's company (not the operator's
+ * active company — an auto-posted SI/PI/PV or a reversal belongs to the source
+ * document's company, whoever is logged in). "" for HOUZS (company 1), "2990-"
+ * for company 2 — the same HOUZS-bare / else-prefixed rule as companyDocPrefix
+ * + the mirror's hardcoded "2990-" (so-mirror prefixDoc).
+ */
+export const jePrefixForCompany = (companyId: number | null | undefined): string =>
+  companyId == null || Number(companyId) === 1 ? '' : '2990-';
+
+export const nextJeNo = async (sb: any, date: Date, coPrefix = ''): Promise<string> => {
+  // Per-company sequence: the prefix in the LIKE pattern isolates each company's
+  // running number — "JE-2607-%" never matches "2990-JE-2607-…" and vice-versa —
+  // so the two companies' accounting vouchers can't collide or share a sequence.
+  const prefix = `${coPrefix}JE-${padMmDd(date)}`;
+  const { data } = await sb
+    .from('journal_entries')
+    .select('je_no')
+    .like('je_no', `${prefix}-%`)
+    .order('je_no', { ascending: false })
+    .limit(1);
+  const last = data?.[0]?.je_no ?? null;
+  const lastN = last ? parseInt(String(last).split('-').pop() ?? '0', 10) : 0;
+  return `${prefix}-${String(lastN + 1).padStart(4, '0')}`;
+};

@@ -141,11 +141,27 @@ const nextNum = async (sb: any, c: any): Promise<string> => {
 };
 
 /* Re-derive the note header's per-category revenue/cost totals + grand total from
-   its line items. Plain per-category rollup, copied from the DO. */
+   its line items. Plain per-category rollup, copied from the DO.
+
+   Fails CLOSED and never throws (2026-07-17) — same contract as the SO's
+   recomputeTotals (mfg-sales-orders.ts), which carries the full rationale: a
+   read it cannot vouch for must not become a written total, and it aborts by
+   LOGGING because this roll-up only runs AFTER its triggering line write has
+   committed (a throw becomes a 500 the client retries into a duplicate line).
+   See BUG-HISTORY 2026-07-17 (fix/zeroing-twins). */
 async function recomputeTotals(sb: any, noteId: string) {
-  const { data: items } = await sb.from('consignment_delivery_order_items')
+  const { data: items, error: itemsErr } = await sb.from('consignment_delivery_order_items')
     .select('item_group, line_total_centi, line_cost_centi')
     .eq('consignment_delivery_order_id', noteId);
+  /* A failed READ is not an empty note, and `?? []` cannot tell them apart —
+     it folded a transient blip into a ZERO header on a note whose lines were
+     intact. The ERROR is the signal, never the emptiness: a genuinely empty note
+     resolves error === null with data === [] and MUST still zero the header. */
+  if (itemsErr) {
+    /* eslint-disable-next-line no-console */
+    console.error('[cn-recompute] item read failed — header left unchanged:', noteId, itemsErr.message);
+    return;
+  }
   let mattressSofa = 0, bedframe = 0, accessories = 0, others = 0, total = 0, totalCost = 0;
   let mattressSofaCost = 0, bedframeCost = 0, accessoriesCost = 0, othersCost = 0;
   for (const it of (items ?? []) as Array<{ item_group: string | null; line_total_centi: number | null; line_cost_centi: number | null }>) {
@@ -160,7 +176,7 @@ async function recomputeTotals(sb: any, noteId: string) {
     else { others += lineTotal; othersCost += lineCost; }
   }
   const margin = total - totalCost;
-  await sb.from('consignment_delivery_orders').update({
+  const { error: updErr } = await sb.from('consignment_delivery_orders').update({
     mattress_sofa_centi: mattressSofa,
     bedframe_centi: bedframe,
     accessories_centi: accessories,
@@ -176,6 +192,12 @@ async function recomputeTotals(sb: any, noteId: string) {
     line_count: (items ?? []).length,
     updated_at: new Date().toISOString(),
   }).eq('id', noteId);
+  /* The write's own result was discarded until 2026-07-17: a rejected UPDATE left
+     the header STALE with nothing logged and every caller reporting success. */
+  if (updErr) {
+    /* eslint-disable-next-line no-console */
+    console.error('[cn-recompute] header update failed — totals left STALE:', noteId, updErr.message);
+  }
 }
 
 /* ── resolveNoteLineWarehouses ────────────────────────────────────────────────

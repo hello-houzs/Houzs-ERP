@@ -227,17 +227,35 @@ const nextNumber = async (sb: any, prefix: string, table: string, col: string, c
 
 /* ── Recompute PC Receive header money rollups ────────────────────────────
    Sum line_total_centi across receive_items → write subtotal_centi +
-   total_centi. The receive carries no tax, so total = subtotal. */
+   total_centi. The receive carries no tax, so total = subtotal.
+
+   Fails CLOSED and never throws (2026-07-17) — same contract as the SO's
+   recomputeTotals (mfg-sales-orders.ts), which carries the full rationale.
+   See BUG-HISTORY 2026-07-17 (fix/zeroing-twins). */
 async function recomputePcReceiveTotals(sb: any, receiveId: string) {
-  const { data: items } = await sb.from('purchase_consignment_receive_items')
+  const { data: items, error: itemsErr } = await sb.from('purchase_consignment_receive_items')
     .select('line_total_centi')
     .eq('pc_receive_id', receiveId);
+  /* A failed READ is not an empty receive, and `?? []` cannot tell them apart —
+     it folded a transient blip into subtotal_centi / total_centi ZERO on a
+     receive whose lines were intact. The ERROR is the signal, never the
+     emptiness: a genuinely empty receive resolves error === null with data === []
+     and MUST still fall through to zero the header. */
+  if (itemsErr) {
+    /* eslint-disable-next-line no-console */
+    console.error('[pcr-recompute] item read failed — header left unchanged:', receiveId, itemsErr.message);
+    return;
+  }
   const subtotal = (items ?? []).reduce((s: number, r: any) => s + (r.line_total_centi ?? 0), 0);
-  await sb.from('purchase_consignment_receives').update({
+  const { error: updErr } = await sb.from('purchase_consignment_receives').update({
     subtotal_centi: subtotal,
     total_centi: subtotal,
     updated_at: new Date().toISOString(),
   }).eq('id', receiveId);
+  if (updErr) {
+    /* eslint-disable-next-line no-console */
+    console.error('[pcr-recompute] header update failed — totals left STALE:', receiveId, updErr.message);
+  }
 }
 
 /* ── Post-insert over-receipt verification for BULK creates ────────────────

@@ -86,4 +86,38 @@ describe("Sales JD override", () => {
     const out = applySalesJdOverride(MATRIX_SAYS_VIEW, salesRep);
     expect(out["projects"]).toBe("view");
   });
+
+  /* PINS TODAY'S BEHAVIOUR — NOT AN ENDORSEMENT OF IT.
+     The Sales Director matches isSalesCohort, so the JD is SET on him and CAPS
+     him at `view` on DO/SI whatever his matrix row grants. The owner's JD quote
+     names "销售人员"; he has never ruled whether that includes the Director
+     (`feat/z1-jd-consolidate`, 2026-07-17 — the recorded blocker). This test
+     exists so that when he DOES rule, the change is deliberate and visible here
+     rather than a silent side effect of touching isSalesCohort. */
+  test("UNRULED: the Sales Director is in the cohort and is capped at view on DO/SI", () => {
+    const director = {
+      permissions: new Set<string>(["scm.access"]),
+      position_name: "Sales Director",
+      department_name: "Sales Department",
+    };
+    const out = applySalesJdOverride(
+      { ...MATRIX_SAYS_VIEW, "scm.sales.delivery": "full", "scm.sales.invoices": "edit" },
+      director,
+    );
+    expect(out["scm.sales.delivery"]).toBe("view");
+    expect(out["scm.sales.invoices"]).toBe("view");
+  });
+
+  /* `role_page_access` is still live (auth.ts:297) — a user with NO position
+     hydrates from the ROLE matrix and lands here anyway, because the cohort is
+     keyed on department_name, which is independent of position_id. Any rule
+     added to this file must keep working for them. */
+  test("a Sales user with NO position still gets the JD (cohort is the department)", () => {
+    const out = applySalesJdOverride(MATRIX_SAYS_VIEW, {
+      permissions: new Set<string>(["scm.access"]),
+      position_name: null,
+      department_name: "Sales Department",
+    });
+    expect(out["scm.sales.orders"]).toBe("edit");
+  });
 });

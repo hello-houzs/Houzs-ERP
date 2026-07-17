@@ -8,8 +8,12 @@
 // scripts/scm-schema/seed-scm-reference-data.sql (2990 migrations 0081/0083/0156).
 //
 // Endpoints (mirror 2990 so vendored pages call them with just an /api/scm prefix):
-//   GET    /                        — all categories grouped:
+//   GET    /                        — all categories grouped, ACTIVE rows:
 //                                       { customer_type: [...], building_type: [...], ... }
+//                                     This is what the order forms read: one
+//                                     request instead of one per dropdown.
+//   GET    /?includeInactive=1      — as above plus deactivated rows (the
+//                                     Maintenance page, which flips them back on).
 //   GET    /?category=customer_type — active rows for one category, by sort_order
 //   POST   /                        — create an option (payment_method locked)
 //   PATCH  /:id                     — update value/label/sortOrder/active
@@ -121,14 +125,25 @@ soDropdownOptions.get("/", async (c) => {
     return c.json({ options: (data ?? []).map((r) => toApi(r as Record<string, unknown>)) });
   }
 
-  // All categories grouped — maintenance page wants every row, including
-  // inactive ones, so the user can flip `active` back on.
+  // All categories grouped.
+  //
+  // `includeInactive` now means the SAME thing on BOTH branches: default
+  // active-only, opt in for the rest. It previously defaulted to "every row" here
+  // and "active only" above, so the two branches answered different questions and
+  // the grouped form could not be used to serve an order form — an option the
+  // maintenance page had deactivated would have come straight back into the SO
+  // dropdowns. The maintenance page is the one caller that wants inactive rows
+  // (to flip `active` back on) and it now asks for them: useAllSoDropdownOptions
+  // sends includeInactive=1. (perf/so-waterfall, 2026-07-17 — this is what lets
+  // ONE grouped request replace the 3-7 per-category requests every SO/DO/CN form
+  // was firing.)
   let allQ = sb
     .from("so_dropdown_options")
     .select("id, category, value, label, sort_order, active")
     .order("category", { ascending: true })
     .order("sort_order", { ascending: true })
     .order("label", { ascending: true });
+  if (!includeInactive) allQ = allQ.eq("active", true);
   allQ = scopeToCompany(allQ, c); // multi-company: isolate to the active company
   const { data, error } = await allQ;
 

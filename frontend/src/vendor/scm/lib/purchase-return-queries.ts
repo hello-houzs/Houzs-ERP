@@ -19,6 +19,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
+import { idempotentInit } from '../../../lib/idempotency';
 import { serviceNotify } from './dialog-service';
 
 /* ── Purchase Returns ────────────────────────────────────────────────── */
@@ -38,13 +39,23 @@ export const usePurchaseReturnDetail = (id: string | null) => useQuery({
   enabled: Boolean(id), staleTime: 30_000, retry: 1, retryDelay: 800,
 });
 
+/* `idempotencyKey` is OPTIONAL and must be destructured OUT of the body — the
+   rest-spread would otherwise post it as a return field. Pass one per return
+   intent (see lib/idempotency.ts): the middleware replays the first response —
+   the SAME returnNumber — instead of returning the goods twice. Omitting it is
+   exactly today's behaviour (the middleware no-ops).
+
+   Load-bearing here in particular: as the onSuccess note below records, this
+   POST creates the return ALREADY POSTED and writes the stock OUT inline, so a
+   duplicate does not sit harmlessly as a draft — it moves stock a second time. */
 export const useCreatePurchaseReturn = () => {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: unknown) =>
-      authedFetch<{ id: string; returnNumber: string }>(`/purchase-returns`, {
-        method: 'POST', body: JSON.stringify(body),
-      }),
+    mutationFn: ({ idempotencyKey, ...body }: { idempotencyKey?: string } & Record<string, unknown>) =>
+      authedFetch<{ id: string; returnNumber: string }>(`/purchase-returns`,
+        idempotentInit(idempotencyKey, {
+          method: 'POST', body: JSON.stringify(body),
+        })),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['purchase-returns'] });
       /* PR-DRAFT-removal: the POST creates the return already POSTED and writes

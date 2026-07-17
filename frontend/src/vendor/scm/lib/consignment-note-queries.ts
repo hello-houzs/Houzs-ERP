@@ -111,13 +111,21 @@ export const useDeliverableOrderLines = () => useQuery({
 });
 
 /* ── Create ──────────────────────────────────────────────────────────── */
+/* `idempotencyKey` is OPTIONAL and must be destructured OUT of the body — the
+   rest-spread would otherwise post it as a note field. Pass one per note intent
+   (see lib/idempotency.ts): the middleware replays the first response — the SAME
+   doNumber — instead of consigning the goods twice. Omitting it is exactly
+   today's behaviour (the middleware no-ops).
+
+   Mirrors useAddConsignmentNotePayment below, idempotent since #657 while the
+   note the payment hangs off was not. */
 export const useCreateConsignmentNote = () => {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: Record<string, unknown>) =>
+    mutationFn: ({ idempotencyKey, ...body }: { idempotencyKey?: string } & Record<string, unknown>) =>
       authedFetch<{ id: string; doNumber: string }>(
         `/consignment-notes`,
-        { method: 'POST', body: JSON.stringify(body) },
+        idempotentInit(idempotencyKey, { method: 'POST', body: JSON.stringify(body) }),
       ),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['consignment-note'] }),
   });

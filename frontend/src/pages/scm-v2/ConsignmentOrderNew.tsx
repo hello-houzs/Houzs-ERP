@@ -24,6 +24,7 @@ import { ArrowLeft, ChevronDown, Plus, Save, X } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { PhoneInput } from '../../vendor/scm/components/PhoneInput';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
+import { useIdempotencyKey } from '../../lib/idempotency';
 import {
   useCreateConsignmentOrder, useConsignmentDebtorSearch, useAddConsignmentOrderPayment,
   useUploadConsignmentItemPhoto, useConsignmentOrderDetail,
@@ -76,6 +77,11 @@ export const ConsignmentOrderNew = () => {
   const [searchParams] = useSearchParams();
   const copyFromDocNo = searchParams.get('copyFrom');
   const copySource = useConsignmentOrderDetail(copyFromDocNo);
+  /* One key for the one order this page is open to raise (lib/idempotency.ts).
+     Route-level form, navigates to the order detail on success, so the MOUNT is
+     exactly one order: stable across re-renders and across a re-press after a
+     stalled submit, fresh on remount. */
+  const idemKey    = useIdempotencyKey();
   const create     = useCreateConsignmentOrder();
   const addPayment = useAddConsignmentOrderPayment();
   const uploadPhoto = useUploadConsignmentItemPhoto();
@@ -486,6 +492,7 @@ export const ConsignmentOrderNew = () => {
 
     create.mutate(
       {
+        idempotencyKey: idemKey,
         debtorName,
         debtorCode: debtorCode || undefined,
         phone: phone || undefined,

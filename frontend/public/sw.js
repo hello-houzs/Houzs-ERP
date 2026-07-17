@@ -312,18 +312,35 @@
 // only as a human-readable baseline; the appended build id is what guarantees
 // uniqueness. If the build plugin somehow didn't run the token stays literal —
 // still a valid (if non-unique) string, so it degrades gracefully.
-const VERSION = "houzs-erp-v185-__SW_BUILD_ID__";
+const VERSION = "houzs-erp-v186-__SW_BUILD_ID__";
 const SHELL_CACHE = `${VERSION}-shell`;
 const API_CACHE = `${VERSION}-api`;
 
 // Pre-cache the bare-minimum shell so the app is launchable offline.
 // Hashed assets (built JS/CSS) are picked up lazily on first fetch.
+//
+// The two brand logos USED to be listed here, and they were the cause of the
+// "spins forever, works after Reload" reports that followed every deploy.
+// install fetches this list with `cache: "no-store"` inside `waitUntil`, so
+// each new SW forced a fresh 433 KB download (logo-mark 110 KB +
+// logo-wordmark 323 KB) over the same connection the app's API calls were
+// using — and `networkFirst` aborts those at 4s (fetchWithTimeout below),
+// then answers the app with a synthetic 503 `{offline:true}` because a
+// just-deployed API_CACHE is empty. Net effect on a phone: real requests
+// cancelled at exactly 4.00s, error page, reload, fine (logos now cached).
+// Measured 2026-07-17 on prod: logo-wordmark 21.28s, logo-mark 10.74s, with
+// /delivery-orders and /my-cases cancelled at 4.01s alongside.
+//
+// Nothing is lost by omitting them: the fetch handler routes every
+// non-navigation request (logos included) to cacheFirst, so they are cached
+// on first render and offline-available from then on. The only uncovered case
+// is a cold FIRST launch with no network, which cannot reach the login screen
+// anyway. Keep this list to what the shell cannot boot without; an image is
+// never that. Weigh bytes before adding anything here.
 const SHELL_URLS = [
   "/",
   "/index.html",
   "/manifest.webmanifest",
-  "/logo-mark.png",
-  "/logo-wordmark.png",
 ];
 
 self.addEventListener("install", (event) => {
