@@ -91,7 +91,15 @@ describe("the snapshot's shape matches what its header claims", () => {
   });
 
   it("the registry is 50 pages, 43 of which have a parent", () => {
-    expect(PAGES.length).toBe(50);
+    // If this fires because you changed PAGES[], do NOT just update the number.
+    // These counts are bookkeeping for the photograph; the catalogue's own guard
+    // is pageCatalogueDrift.test.ts, and it explains what a removed key does to
+    // the rows saved against it. Read that failure first — it is the one with
+    // the consequence in it.
+    expect(
+      PAGES.length,
+      "PAGES[] changed size — see pageCatalogueDrift.test.ts before touching this number",
+    ).toBe(50);
     expect(PAGES.filter((p) => p.parent).length).toBe(43);
   });
 
@@ -101,7 +109,14 @@ describe("the snapshot's shape matches what its header claims", () => {
     const orphans = all.filter((k) => !registry.has(k));
 
     expect(all.length).toBe(144);
-    expect(orphans.length).toBe(6);
+    // A 7th orphan means a key left PAGES[] and took one of his saved cells with
+    // it. That is the 2026-06-18 bug happening again, not a stale constant —
+    // pageCatalogueDrift.test.ts says what to do about it.
+    expect(
+      orphans.length,
+      `orphan count moved (${orphans.sort().join(", ")}) — a page key left PAGES[]. ` +
+        `See pageCatalogueDrift.test.ts; do not just update this number.`,
+    ).toBe(6);
     expect(all.length - orphans.length).toBe(138);
 
     // The gap count is the load-bearing number: 850 addressable cells minus the
