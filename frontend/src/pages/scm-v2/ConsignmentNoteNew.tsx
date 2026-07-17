@@ -27,6 +27,7 @@ import { ArrowLeft, ArrowRightLeft, ChevronDown, Plus, Save, X } from 'lucide-re
 import { Button } from '@2990s/design-system';
 import { PhoneInput } from '../../vendor/scm/components/PhoneInput';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
+import { useIdempotencyKey } from '../../lib/idempotency';
 import {
   useCreateConsignmentNote, useAddConsignmentNotePayment,
 } from '../../vendor/scm/lib/consignment-note-queries';
@@ -67,6 +68,11 @@ export const ConsignmentNoteNew = () => {
   const fromConsignmentOrder = searchParams.get('fromConsignmentOrder');
   const fromPicks = searchParams.get('fromPicks') === '1';
 
+  /* One key for the one note this page is open to raise (lib/idempotency.ts).
+     Route-level form, navigates to the note detail on success, so the MOUNT is
+     exactly one note: stable across re-renders and across a re-press after a
+     stalled submit, fresh on remount. */
+  const idemKey = useIdempotencyKey();
   const create = useCreateConsignmentNote();
   const addPayment = useAddConsignmentNotePayment();
   const staffQ = useStaff();
@@ -272,6 +278,7 @@ export const ConsignmentNoteNew = () => {
 
     create.mutate(
       {
+        idempotencyKey: idemKey,
         doDate: doDate || undefined,
         debtorName,
         debtorCode: debtorCode || undefined,

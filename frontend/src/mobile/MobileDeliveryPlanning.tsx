@@ -2,6 +2,7 @@ import { useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invalidateDoShared, invalidateInventoryShared, invalidateSoShared } from "./sharedInvalidate";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
+import { idempotentInit, useIdempotencyKey } from "../lib/idempotency";
 import { MobileVirtualList } from "./MobileVirtualList";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
@@ -1111,6 +1112,23 @@ function StopDetail({
   const qc = useQueryClient();
   const notify = useNotify();
   const confirm = useConfirm();
+  /* One key for the one DO this stop can cut (lib/idempotency.ts). NOT on
+     fix/so-idempotency's list — it names the DO hook, and this surface reaches
+     /delivery-orders-mfg/from-sos through a bare authedFetch instead — but it is
+     the same document and the same 4G driver, so it is fixed in the same PR.
+
+     WHY PER-MOUNT IS PER-ORDER HERE, since this component takes `order` as a
+     PROP rather than owning it — that would normally be the collapse trap (React
+     reuses an instance at the same position and a lazy useState would then hand
+     TWO stops ONE key, silently replaying stop A's DO for stop B). It cannot
+     happen: MobileDeliveryPlanning renders this behind an EARLY RETURN (`if
+     (detailOrder) return <StopDetail .../>`, :378), so the board is not mounted
+     while a stop is open, and the only way to reach another stop is onBack →
+     setOpenStop(null) → this unmounts. There is no order-A→order-B prop
+     transition. If that early return is ever replaced by rendering StopDetail
+     inside the list, this key MUST move onto the order identity — the invariant
+     it rests on is that the mount is one stop. */
+  const idemKey = useIdempotencyKey();
 
   const { started, arrived, done } = stopFlags(order);
   const st = trackState(order, isToday);
@@ -1172,7 +1190,7 @@ function StopDetail({
       }
       return authedFetch<{ id: string; doNumber: string }>(
         `/delivery-orders-mfg/from-sos`,
-        { method: "POST", body: JSON.stringify({ picks }) },
+        idempotentInit(idemKey, { method: "POST", body: JSON.stringify({ picks }) }),
       );
     },
     onSuccess: async () => {

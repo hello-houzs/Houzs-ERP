@@ -38,6 +38,7 @@ import {
   useCreatePurchaseInvoice,
   usePostPurchaseInvoice,
 } from '../../vendor/scm/lib/purchase-invoice-queries';
+import { useIdempotencyKey } from '../../lib/idempotency';
 import { useGrnDetail } from '../../vendor/scm/lib/grn-queries';
 import { useActiveCurrencies, rateFor } from '../../vendor/scm/lib/currencies-queries';
 import { CurrencySelect } from '../../vendor/scm/components/CurrencySelect';
@@ -120,6 +121,12 @@ export const PurchaseInvoiceNew = () => {
   // Manual mode = no ?grnId= in the URL (Commander 2026-05-29 — blank PI).
   const isManual = !grnId;
 
+  /* One key for the one PI this page is open to raise (lib/idempotency.ts).
+     Same create-then-post-then-dialog shape as GrnNew (which carries the full
+     reasoning): the submit is TWO calls and a POST failure reports "Save failed"
+     while the PI already exists, so the re-press that copy invites must REPLAY
+     rather than book the supplier's bill a second time. */
+  const idemKey = useIdempotencyKey();
   const create = useCreatePurchaseInvoice();
   const post   = usePostPurchaseInvoice();
   const saving = create.isPending || post.isPending;
@@ -429,6 +436,7 @@ export const PurchaseInvoiceNew = () => {
     if (!canSave) { setDialog({ title: 'Check the quantities', body: 'Each line needs qty > 0.' }); return; }
     try {
       const createRes = await create.mutateAsync({
+        idempotencyKey: idemKey,
         // Manual: no GRN / PO behind it. GRN-sourced: carry both FKs through.
         supplierId,
         purchaseOrderId:    isManual ? null : (grn?.purchase_order_id ?? null),

@@ -88,11 +88,20 @@ export const useConsignmentOrderDetail = (docNo: string | null) => useQuery({
 });
 
 /* ── Create ──────────────────────────────────────────────────────────── */
+/* `idempotencyKey` is OPTIONAL and must be destructured OUT of the body — the
+   rest-spread would otherwise post it as an order field. Pass one per order
+   intent (see lib/idempotency.ts): the middleware replays the first response —
+   the SAME docNo — instead of raising the consignment order twice. Omitting it
+   is exactly today's behaviour (the middleware no-ops).
+
+   Mirrors useAddConsignmentOrderPayment below, idempotent since #657 while the
+   order it pays for was not. */
 export const useCreateConsignmentOrder = () => {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: unknown) =>
-      authedFetch<{ docNo: string }>(`/consignment-orders`, { method: 'POST', body: JSON.stringify(body) }),
+    mutationFn: ({ idempotencyKey, ...body }: { idempotencyKey?: string } & Record<string, unknown>) =>
+      authedFetch<{ docNo: string }>(`/consignment-orders`,
+        idempotentInit(idempotencyKey, { method: 'POST', body: JSON.stringify(body) })),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['consignment-order'] }),
   });
 };

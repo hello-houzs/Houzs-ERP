@@ -8,6 +8,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
+import { idempotentInit } from '../../../lib/idempotency';
 
 // baseQuery is a custom-hook factory — only ever called from use* hooks below.
 // eslint-disable-next-line react-hooks/rules-of-hooks
@@ -59,10 +60,23 @@ export const usePaymentVoucherDetail = (id: string | null) => useQuery({
   enabled: !!id,
 });
 
+/* `idempotencyKey` is OPTIONAL and must be destructured OUT of the body — the
+   rest-spread would otherwise post it as a voucher field. Pass one per voucher
+   intent (see lib/idempotency.ts): the middleware replays the first response —
+   the SAME pvNumber — instead of raising a second voucher to pay the same
+   supplier. Omitting it is exactly today's behaviour (the middleware no-ops).
+
+   NOT on fix/so-idempotency's list, and the omission is worth naming: this is
+   the most literal money-out document in the app, and lib/idempotency.ts even
+   cites this file — but for /post and /cancel, which "detect their own replay
+   and echo back". CREATE has no such guard. The domain-idempotent note was about
+   two OTHER endpoints and quietly read as if the file were covered. */
 export const useCreatePaymentVoucher = () => {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: unknown) => authedFetch<{ id: string; pvNumber: string }>(`/payment-vouchers`, { method: 'POST', body: JSON.stringify(body) }),
+    mutationFn: ({ idempotencyKey, ...body }: { idempotencyKey?: string } & Record<string, unknown>) =>
+      authedFetch<{ id: string; pvNumber: string }>(`/payment-vouchers`,
+        idempotentInit(idempotencyKey, { method: 'POST', body: JSON.stringify(body) })),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['payment-vouchers'] }),
   });
 };
