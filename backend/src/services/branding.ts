@@ -60,7 +60,7 @@ export const DEFAULT_BRANDING: Branding = {
   registrationNo: "202201031135 (1476832-W)",
   address:
     "1831-B, Jalan KPB 1, Kawasan Perindustrian Balakong, 43300 Seri Kembangan, Selangor.",
-  // Mirrors migration 0141's backfill (extracted from the address above). The
+  // Mirrors migration 0142's backfill (extracted from the address above). The
   // address still carries "43300", so composeBrandingAddress leaves the printed
   // letterhead byte-identical — this only makes the structured value available.
   postcode: "43300",
