@@ -26,6 +26,12 @@
 
 import type { Env } from '../types';
 import { askAgentBrain, type AgentBrainUsageSink } from './agent-brain';
+import {
+  allowedCapabilityKeys,
+  redactFacts,
+  scopeNote,
+  type AssistantScope,
+} from './assistant-scope';
 
 /** One specialist the router can consult. `briefTable`/`itemsTable` are module
  *  constants — never user input — so they are safe to interpolate. */
@@ -160,6 +166,11 @@ export async function askAssistant(
   env: Env,
   message: string,
   usageSink?: AgentBrainUsageSink,
+  /* The caller's visibility. Defaults to WILDCARD because the only route that
+     reaches this today is owner-only (requirePermission("*")); the moment that
+     gate widens, the route must pass a real scope. That default is safe only
+     because of the gate, so the two must change together. */
+  scope: AssistantScope = { wildcard: true, canSeeMargin: true, canSeeCommission: true, orderScope: 'all' },
 ): Promise<AssistantAnswer> {
   const apiKey = env.ANTHROPIC_API_KEY;
   const text = (message ?? '').trim();
@@ -182,6 +193,9 @@ export async function askAssistant(
     }
   }
   if (keys.length === 0) keys = keywordRoute(text);
+  /* Gate BEFORE gathering: a specialist the caller may not consult is never even
+     queried, so its rows do not exist to leak. */
+  keys = allowedCapabilityKeys(keys, scope);
   const caps = keys.map((k) => byKey.get(k)).filter((c): c is Capability => !!c).slice(0, 4);
 
   // 2. GATHER — each specialist's OWN deterministic output. No new arithmetic here.
@@ -202,9 +216,14 @@ export async function askAssistant(
       agents, degraded: true,
     };
   }
+  /* Redact BEFORE the model call, not in the instructions to it. A figure inside
+     the context window is disclosed no matter what the system prompt asks. */
+  const note = scopeNote(scope);
   const worded = await askAgentBrain(apiKey, {
-    system: ANSWER_SYSTEM,
-    payload: { question: text, agentData: facts },
+    system: note ? `${ANSWER_SYSTEM}
+
+${note}` : ANSWER_SYSTEM,
+    payload: { question: text, agentData: redactFacts(facts, scope) },
     maxTokens: 500,
     usageSink,
   });
