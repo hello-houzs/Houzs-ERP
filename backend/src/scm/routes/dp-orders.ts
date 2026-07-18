@@ -177,7 +177,47 @@ dpOrders.post('/:id/schedule', async (c) => {
     .select('*').maybeSingle();
   if (error) return c.json({ error: 'schedule_failed', reason: error.message }, 500);
   if (!data) return c.json({ error: 'not_pending', reason: 'DP order is not pending schedule (already scheduled or gone)' }, 409);
-  return c.json({ dpOrder: data, dp_no: dpNo });
+
+  /* Put the DP order ONTO the trip as a stop, so it flows into the trip view and
+     the route optimiser. job_type IS a scm.trip_stop_type (SUPPLIER_PICKUP was
+     added in 0128), so it maps straight through. The structured address is
+     flattened to the stop's single `address` line — the form the optimiser
+     geocodes. Only when a trip was named; a header-only schedule (dp_no minted,
+     no trip) is valid too.
+
+     Best-effort like the board's scheduleOntoTrip — the schedule already
+     committed — but the outcome is REPORTED (tripStop.failed), never a silent
+     null, per the #720 lesson. */
+  let tripStop: { id: string | null; failed: boolean; reason?: string } = { id: null, failed: false };
+  if (p.tripId) {
+    try {
+      const d = data as Record<string, unknown>;
+      const stops = await sb.from('trip_stops').select('stop_no').eq('trip_id', p.tripId);
+      const nextStopNo = ((stops.data ?? []) as Array<{ stop_no?: number }>)
+        .reduce((m, r) => Math.max(m, Number(r.stop_no ?? 0)), 0) + 1;
+      const address = [d.address1, d.address2, d.address3, d.address4, d.city, d.postcode, d.state]
+        .filter(Boolean).join(', ') || null;
+      const ins = await sb.from('trip_stops').insert({
+        company_id: activeCompanyId(c) ?? null,
+        trip_id: p.tripId,
+        stop_no: nextStopNo,
+        stop_type: d.job_type,
+        customer_name: (d.party_name as string | null) ?? null,
+        address,
+        revenue_centi: 0,
+      }).select('id').maybeSingle();
+      const stopId = (ins.data as { id?: string } | null)?.id ?? null;
+      if (ins.error || !stopId) {
+        tripStop = { id: null, failed: true, reason: ins.error?.message ?? 'trip_stop insert returned no row' };
+      } else {
+        await sb.from('dp_orders').update({ trip_stop_id: stopId }).eq('id', id);
+        tripStop = { id: stopId, failed: false };
+      }
+    } catch (e) {
+      tripStop = { id: null, failed: true, reason: `trip_stop wiring failed: ${String((e as Error)?.message ?? e).slice(0, 140)}` };
+    }
+  }
+  return c.json({ dpOrder: data, dp_no: dpNo, tripStop });
 });
 
 export default dpOrders;
