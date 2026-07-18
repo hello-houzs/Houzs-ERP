@@ -1330,7 +1330,7 @@ export function MobileNewSO({
         uploadSessionId: p.slipSession,
       };
       if (code === "merchant") { body.merchantProvider = p.bank || null; body.installmentMonths = planToMonths(p.plan); }
-      else if (code === "installment") { body.installmentMonths = planToMonths(p.plan); }
+      else if (code === "installment") { body.merchantProvider = p.bank || null; body.installmentMonths = planToMonths(p.plan); }
       else if (code === "transfer") { body.onlineType = p.online || null; }
       try {
         await authedFetch(`/mfg-sales-orders/${encodeURIComponent(createdDocNo)}/payments`,
@@ -3269,8 +3269,14 @@ function PayCard({ pay, staff, onChange, onRemove }: { pay: Payment; staff: Arra
             <SpecSel label="Plan" required value={pay.plan} opts={planOpts} onChange={(vv) => onChange({ plan: vv })} />
           </div>
         )}
+        {/* Installment — Bank + Plan (owner 2026-07-19 "Installment 要能选银行的").
+            Bank drives the EPP fee; same picker/source as Merchant. Optional (no
+            required gate), matching desktop + the server. */}
         {pay.method === "Installment" && (
-          <SpecSel label="Installment plan" value={pay.plan} opts={planOpts} onChange={(vv) => onChange({ plan: vv })} />
+          <div style={{ display: "flex", gap: 9 }}>
+            <SpecSel label="Bank" value={pay.bank} opts={bankOpts} onChange={(vv) => onChange({ bank: vv })} />
+            <SpecSel label="Plan" value={pay.plan} opts={planOpts} onChange={(vv) => onChange({ plan: vv })} />
+          </div>
         )}
         {pay.method === "Online" && (
           <SpecSel label="Sub-type" required value={pay.online} opts={onlineOpts} onChange={(vv) => onChange({ online: vv })} />

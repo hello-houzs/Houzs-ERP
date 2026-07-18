@@ -62,9 +62,10 @@ export function PaymentInfoBlock({ payment }: { payment: RecordedPaymentLike }) 
     <div style={{ minWidth: 0 }}>
       <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--ink)' }}>{methodLabel(p.method)}</div>
       <div className="money" style={{ fontSize: 10.5, color: 'var(--mut)', marginTop: 2 }}>{meta}</div>
-      {/* Bank + tenure (Merchant) / online type (Transfer) — parity with desktop
-          PaymentsTable. Dual-read camelCase ?? snake_case. */}
-      {p.method === 'merchant' && (
+      {/* Bank + tenure (Merchant + Installment) / online type (Transfer) —
+          parity with desktop PaymentsTable. Installment carries a bank too since
+          2026-07-19 (owner: it drives the EPP fee). Dual-read camelCase ?? snake_case. */}
+      {(p.method === 'merchant' || p.method === 'installment') && (
         <div className="money" style={{ fontSize: 10, color: 'var(--mut2)' }}>
           {[bank, typeof months === 'number' ? `${months} month${months === 1 ? '' : 's'}` : 'One shot']
             .filter((x) => x && String(x).trim())

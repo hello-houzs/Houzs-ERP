@@ -93,7 +93,8 @@ export type MerchantProvider = string;
      Method (L1)    → Merchant | Online | Installment | Cash
        Merchant     → pick Merchant bank + Installment plan
        Online       → pick Online sub-type (Bank Transfer / TNG / Cheque / DuitNow)
-       Installment  → pick Installment plan (term in months)
+       Installment  → pick Merchant bank + Installment plan (term in months)
+                      (bank added 2026-07-19 — drives the EPP/installment fee)
        Cash         → done
    Routing keys off the row VALUE via the shared map — labels are freely
    renameable in SO Maintenance and never affect booking. The cash fallback
@@ -158,9 +159,10 @@ const methodPillStyle = (m: PaymentMethod): CSSProperties => {
 /* Task #122 (cascade) — methodLabel is the L1 pick (Merchant / Online /
    Cash). The three optional sub-fields below carry the L2 picks; only the
    field(s) relevant to the current methodLabel are populated.
-     methodLabel = Merchant → merchantProvider + installmentMonthsLabel
-     methodLabel = Online   → onlineType
-     methodLabel = Cash     → all three sub-fields stay ''
+     methodLabel = Merchant    → merchantProvider + installmentMonthsLabel
+     methodLabel = Installment → merchantProvider + installmentMonthsLabel
+     methodLabel = Online      → onlineType
+     methodLabel = Cash        → all three sub-fields stay ''
    installmentMonthsLabel is stored verbatim from the dropdown (e.g.
    'One-off', '3 months', '12 months') and parsed to an integer on
    persist (One-off → null/0; 'N months' → N). */
@@ -168,8 +170,8 @@ export type PaymentDraft = {
   uid:                      string;
   paidAt:                   string;             // YYYY-MM-DD
   methodLabel:              PaymentMethodLabel;
-  merchantProvider:         string;             // L2 bank pick (Merchant only)
-  installmentMonthsLabel:   string;             // L2 plan pick (Merchant only)
+  merchantProvider:         string;             // L2 bank pick (Merchant + Installment)
+  installmentMonthsLabel:   string;             // L2 plan pick (Merchant + Installment)
   onlineType:               string;             // L2 sub-type (Online only)
   amountCenti:              number;
   accountSheet:             string;
@@ -230,10 +232,15 @@ export const parseInstallmentMonths = (label: string): number | null => {
 
 /* Cascade required-field check (spec 1) — returns a human reason when the
    chosen method is missing a required sub-field, else null:
-     Merchant → Bank (merchantProvider) AND Plan (installmentMonthsLabel)
-     Online   → Sub-Type (onlineType)
-     Cash     → nothing
-   Keyed off the L1 methodLabel VALUE (Merchant / Online / Cash). Unknown /
+     Merchant    → Bank (merchantProvider) AND Plan (installmentMonthsLabel)
+     Online      → Sub-Type (onlineType)
+     Installment → nothing gated (its Bank + Plan are both OPTIONAL — the bank
+                   was added 2026-07-19 to inform the EPP fee, but a bank-less
+                   installment still books; the server FIX-3 guard likewise
+                   exempts installment)
+     Cash        → nothing
+   Keyed off the L1 methodLabel VALUE (Merchant / Online / Installment / Cash).
+   Unknown /
    pre-lock labels are treated as Cash (no sub-field), matching labelToApi's
    cash fallback. Shared by the per-row commit gate (SAVED mode) and the New SO
    batch-save guard (DRAFT mode) so both pages enforce the same rule. */
@@ -267,7 +274,14 @@ export const draftMethodFields = (
     };
   }
   if (method === 'installment') {
-    return { installmentMonths: parseInstallmentMonths(d.installmentMonthsLabel) };
+    // Owner 2026-07-19 ("Installment 要能选银行的") — Installment now also carries
+    // the bank: different banks charge different EPP fees, so the bank is needed
+    // to compute installment cost. Backend already treats installment as
+    // merchant-like (persists merchant_provider); send it here too.
+    return {
+      merchantProvider:  d.merchantProvider || null,
+      installmentMonths: parseInstallmentMonths(d.installmentMonthsLabel),
+    };
   }
   if (method === 'transfer') {
     return { onlineType: d.onlineType || null };
@@ -966,7 +980,11 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
                       const next = e.target.value;
                       patchDraft(d.uid, {
                         methodLabel: next,
-                        merchantProvider:       next === 'Merchant' ? d.merchantProvider : '',
+                        /* Bank applies to Merchant AND Installment now (owner
+                           2026-07-19) — preserve it across a switch between the
+                           two, clear it for Online / Cash. */
+                        merchantProvider:       next === 'Merchant' || next === 'Installment'
+                          ? d.merchantProvider : '',
                         installmentMonthsLabel: next === 'Merchant' || next === 'Installment'
                           ? d.installmentMonthsLabel : '',
                         onlineType:             next === 'Online'   ? d.onlineType       : '',
@@ -1042,24 +1060,47 @@ const PaymentsTableInner = (props: PaymentsTableProps) => {
                     </select>
                   )}
 
-                  {/* L2 — Installment cascade: pick the plan (term). */}
+                  {/* L2 — Installment cascade: pick the Bank + the plan (term).
+                      Bank added 2026-07-19 (owner: "Installment 要能选银行的") — the
+                      same picker/source Merchant uses (payment_merchant), since the
+                      bank drives the EPP/installment fee. Optional (no gate), so a
+                      bank-less installment still books (backend derives 'Card
+                      terminal' for the Account Sheet). */}
                   {d.methodLabel === 'Installment' && (
-                    <select
-                      className={paymentsStyles.inlineSelect}
-                      style={{ fontSize: 'var(--fs-11)' }}
-                      value={d.installmentMonthsLabel}
-                      disabled={locked}
-                      onChange={(e) => patchDraft(d.uid, { installmentMonthsLabel: e.target.value })}
-                      aria-label="Installment plan"
-                    >
-                      <option value="">— Plan —</option>
-                      {installmentOpts.map((m) => (
-                        <option key={m.id} value={m.value}>{m.label}</option>
-                      ))}
-                      {d.installmentMonthsLabel && !installmentOpts.some((m) => m.value === d.installmentMonthsLabel) && (
-                        <option value={d.installmentMonthsLabel}>{d.installmentMonthsLabel}</option>
-                      )}
-                    </select>
+                    <>
+                      <select
+                        className={paymentsStyles.inlineSelect}
+                        style={{ fontSize: 'var(--fs-11)' }}
+                        value={d.merchantProvider}
+                        disabled={locked}
+                        onChange={(e) => patchDraft(d.uid, { merchantProvider: e.target.value })}
+                        aria-label="Installment bank"
+                      >
+                        <option value="">— Bank —</option>
+                        {merchantOpts.map((m) => (
+                          <option key={m.id} value={m.value}>{m.label}</option>
+                        ))}
+                        {d.merchantProvider && !merchantOpts.some((m) => m.value === d.merchantProvider) && (
+                          <option value={d.merchantProvider}>{d.merchantProvider}</option>
+                        )}
+                      </select>
+                      <select
+                        className={paymentsStyles.inlineSelect}
+                        style={{ fontSize: 'var(--fs-11)' }}
+                        value={d.installmentMonthsLabel}
+                        disabled={locked}
+                        onChange={(e) => patchDraft(d.uid, { installmentMonthsLabel: e.target.value })}
+                        aria-label="Installment plan"
+                      >
+                        <option value="">— Plan —</option>
+                        {installmentOpts.map((m) => (
+                          <option key={m.id} value={m.value}>{m.label}</option>
+                        ))}
+                        {d.installmentMonthsLabel && !installmentOpts.some((m) => m.value === d.installmentMonthsLabel) && (
+                          <option value={d.installmentMonthsLabel}>{d.installmentMonthsLabel}</option>
+                        )}
+                      </select>
+                    </>
                   )}
 
                   {/* L2 — Cash: no extra fields */}

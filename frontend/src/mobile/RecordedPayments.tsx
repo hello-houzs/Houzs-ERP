@@ -321,7 +321,7 @@ export function AddPaymentSheet({
     // Slip is optional — only send the session when one was actually uploaded.
     if (!isEdit && slipSession) body.uploadSessionId = slipSession;
     if (code === "merchant") { body.merchantProvider = bank || null; body.installmentMonths = planToMonths(plan); }
-    else if (code === "installment") { body.installmentMonths = planToMonths(plan); }
+    else if (code === "installment") { body.merchantProvider = bank || null; body.installmentMonths = planToMonths(plan); }
     else if (code === "transfer") { body.onlineType = online || null; }
     try {
       /* The shared vendored mutations — mobile shares the desktop payment write
@@ -389,13 +389,25 @@ export function AddPaymentSheet({
                 </div>
               </div>
             )}
+            {/* Installment — Bank + Plan (owner 2026-07-19 "Installment 要能选银行的").
+                Bank drives the EPP fee; same picker/source as Merchant. Optional
+                (no save gate), matching desktop + the server. */}
             {method === "Installment" && (
-              <div className="fld">
-                <span className="fld-l">Installment plan</span>
-                <select className="fld-i" value={plan} onChange={(e) => setPlan(e.target.value)}>
-                  <option value="">— Plan —</option>
-                  {planOpts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-                </select>
+              <div style={{ display: "flex", gap: 9 }}>
+                <div className="fld" style={{ flex: 1 }}>
+                  <span className="fld-l">Bank</span>
+                  <select className="fld-i" value={bank} onChange={(e) => setBank(e.target.value)}>
+                    <option value="">— Bank —</option>
+                    {bankOpts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                </div>
+                <div className="fld" style={{ flex: 1 }}>
+                  <span className="fld-l">Plan</span>
+                  <select className="fld-i" value={plan} onChange={(e) => setPlan(e.target.value)}>
+                    <option value="">— Plan —</option>
+                    {planOpts.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                </div>
               </div>
             )}
             {method === "Online" && (
