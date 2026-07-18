@@ -1538,6 +1538,16 @@ app.post("/", requirePermission("projects.write"), async (c) => {
   if (!body.name || !body.name.trim()) {
     return c.json({ error: "name is required" }, 400);
   }
+  // Owner 2026-07-18: PIC assignment is open to EVERYONE holding projects.write
+  // EXCEPT the Sales Director — consistent with the PATCH pic_id + sales-attendees
+  // gates below. Enforced by EXACT normalised position name (isSalesDirectorUser),
+  // deliberately NOT a \b substring, so a free-text rename can't drift the block.
+  // Field-scoped like the PATCH rule: a Sales Director may still CREATE a project,
+  // they simply cannot set the PIC at creation. Fires only when a real pic_id is
+  // supplied — creating WITHOUT a PIC is a harmless no-op, not a 403.
+  if ((body.pic_id ?? null) !== null && isSalesDirectorUser(user)) {
+    return c.json({ error: "A Sales Director cannot assign the project PIC." }, 403);
+  }
   // Scoped users (sales reps) can only create projects where they or
   // their manager is the PIC. Ignore any other pic_id they submit.
   let picId = body.pic_id ?? null;
