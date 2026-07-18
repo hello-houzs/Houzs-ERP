@@ -77,6 +77,7 @@ import announcements from "./routes/announcements";
 // (Delivery/Document/CS). Skeleton: controls + runs + config proposals +
 // feedback; the engines register themselves in services/agent-scheduler.ts.
 import agentConsole from "./routes/agent-console";
+import assistant from "./routes/assistant";
 import { caseTrack } from "./middleware/caseTrack";
 import { supplierTrack } from "./middleware/supplierTrack";
 import { dbInject, withPgDb } from "./middleware/db";
@@ -257,6 +258,7 @@ app.route("/api/announcements", announcements);
 // Deliberately in the public /api tree, NOT /api/scm (the scm subtree swaps
 // c.get('user') to scm.staff UUIDs — the known staff-UUID bigint trap).
 app.route("/api/agents", agentConsole);
+app.route("/api/assistant", assistant);
 app.route("/api/projects-print", projectsPrint);
 app.route("/api/search", search);
 app.route("/api/assr-print", assrPrint);
