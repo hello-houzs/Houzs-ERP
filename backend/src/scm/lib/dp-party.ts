@@ -58,18 +58,24 @@ export function snapshotFromSo(row: Record<string, unknown>): DpPartySnapshot {
   };
 }
 
-/** From an scm.suppliers row. The supplier master has a SINGLE free-text address
- *  (survey — no address1-4, no city), so it maps to address1 and city stays null.
- *  contact_name prefers contact_person, then attention; phone prefers phone, then
- *  mobile. */
+/** From an scm.suppliers row. Since mig 0131 the supplier master carries the
+ *  SO-style structured address (address1-4 + city); prefer it when ANY structured
+ *  line is filled, else fall back to the legacy single `address` → address1 (rows
+ *  not yet re-entered in the maintenance form). contact_name prefers
+ *  contact_person, then attention; phone prefers phone, then mobile. */
 export function snapshotFromSupplier(row: Record<string, unknown>): DpPartySnapshot {
+  const structured = [row.address1, row.address2, row.address3, row.address4].some((v) => s(v) != null);
   return {
     party_type: 'SUPPLIER',
     party_name: s(row.name),
     contact_name: s(row.contact_person) ?? s(row.attention),
     contact_phone: s(row.phone) ?? s(row.mobile),
-    address1: s(row.address), address2: null, address3: null, address4: null,
-    city: null, postcode: s(row.postcode),
+    address1: structured ? s(row.address1) : s(row.address),
+    address2: structured ? s(row.address2) : null,
+    address3: structured ? s(row.address3) : null,
+    address4: structured ? s(row.address4) : null,
+    city: s(row.city),
+    postcode: s(row.postcode),
     state: s(row.state),
   };
 }
