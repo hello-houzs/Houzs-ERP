@@ -586,12 +586,16 @@ export const NAV_TABS: NavTab[] = [
     pageAccess: "team",
     // Sales Director → scoped Team (own-dept Members / Org Chart / Departments +
     // Invite). Bypasses the perm/pageAccess gate on the group header + those
-    // three leaves ONLY; Positions + Mailboxes deliberately omit the flag so
-    // they stay hidden. Backend scopes every leaf to his department.
+    // three leaves ONLY; Mailboxes deliberately omits the flag so it stays
+    // hidden. Backend scopes every leaf to his department.
     showForSalesDirector: true,
     children: [
       { to: "/team?tab=members", label: "Members", icon: Users, perm: "users.read", pageAccess: "team", showForSalesDirector: true },
-      { to: "/team?tab=positions", label: "Positions", icon: ShieldCheck, perm: "users.manage", pageAccess: "team" },
+      // Positions leaf removed from the nav (owner: "那個team的矩陣拆掉") — the
+      // same treatment Roles got, which is why there is no Roles leaf here either.
+      // The position_page_access matrix and its read path are unchanged; the
+      // editor stays live and reachable at /team?tab=positions as its sole-writer
+      // escape hatch, just no longer surfaced in navigation. Re-add to restore.
       { to: "/team?tab=orgchart", label: "Org Chart", icon: Network, perm: "users.read", pageAccess: "team", showForSalesDirector: true },
       { to: "/team?tab=departments", label: "Departments", icon: Building2, perm: "users.read", pageAccess: "team" },
       { to: "/team?tab=mail", label: "Mailboxes", icon: Mail, perm: "mail_center.manage", pageAccess: "team" },

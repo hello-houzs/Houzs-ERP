@@ -222,12 +222,17 @@ export function Team() {
 
   const tabs: TabOption<TeamTabValue>[] = [
     { value: "members", label: "Members", show: canSeeMembers },
-    // Positions = permission editing — deliberately NOT shown to a Sales
-    // Director (owner: "去掉 Positions"); backend also 403s its endpoints.
-    { value: "positions", label: "Positions", show: canManageUsers },
     { value: "orgchart", label: "Org Chart", show: canSeeMembers },
     { value: "departments", label: "Departments", show: canSeeMembers },
     { value: "mail", label: "Mailboxes", show: canManageMail },
+    // Positions tab removed from the strip (owner: "那個team的矩陣拆掉") — the
+    // same treatment the Roles tab got, which is why neither is in the strip.
+    // The 4-level position_page_access matrix and its read path (auth.ts ->
+    // loadPageAccessForPosition) are untouched, so no position gains or loses
+    // access — only the editor's place in the nav is gone. The editor stays live
+    // and URL-reachable at /team?tab=positions (honoured by canViewTab below for
+    // users.manage) so the sole writer of that live-enforced table is never
+    // stranded. Re-add this line to restore the tab.
     // Roles tab removed (owner: "删了role") — Position governs page access; a
     // baseline role is auto-assigned on invite. Re-add this line to restore.
   ];
