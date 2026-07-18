@@ -16,19 +16,20 @@ import { useState } from 'react';
 import type { CSSProperties } from 'react';
 import { X } from 'lucide-react';
 import { Button } from '@2990s/design-system';
-import { useCreateDpOrder, type DpOrderCreate } from '../lib/delivery-planning-queries';
+import {
+  useCreateDpOrder,
+  DP_JOB_TYPES,
+  DP_JOB_TYPE_LABEL,
+  type DpOrderCreate,
+} from '../lib/delivery-planning-queries';
 import { useNotify } from './NotifyDialog';
 import styles from '../../../pages/scm-v2/Suppliers.module.css';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
-const JOB_TYPES: DpOrderCreate['jobType'][] = [
-  'DELIVERY', 'PICKUP', 'SERVICE', 'SETUP', 'DISMANTLE', 'SUPPLIER_PICKUP',
-];
-const JOB_LABEL: Record<DpOrderCreate['jobType'], string> = {
-  DELIVERY: 'Delivery', PICKUP: 'Pickup', SERVICE: 'Service',
-  SETUP: 'Setup', DISMANTLE: 'Dismantle', SUPPLIER_PICKUP: 'Supplier pickup',
-};
+/* Job types + labels come from the SHARED canonical list (DP_JOB_TYPES /
+   DP_JOB_TYPE_LABEL in delivery-planning-queries) — the same set the board renders
+   in its Type chip — so this dropdown can never drift from what's shown elsewhere. */
 
 /* What the SOURCE reference means for each type, and the field it maps to. */
 function sourceMeta(jobType: DpOrderCreate['jobType']): { label: string; hint: string; kind: 'so' | 'supplier' | 'project' | 'assr' | 'none' } {
@@ -107,7 +108,7 @@ export const NewDpOrderDrawer = ({ onClose }: { onClose: () => void }) => {
             <div className={styles.eyebrow} style={{ marginBottom: 'var(--space-1)' }}>Job type</div>
             <select className={styles.searchInput} style={inputStyle}
               value={form.jobType} onChange={(e) => set('jobType', e.target.value as DpOrderCreate['jobType'])}>
-              {JOB_TYPES.map((t) => <option key={t} value={t}>{JOB_LABEL[t]}</option>)}
+              {DP_JOB_TYPES.map((t) => <option key={t} value={t}>{DP_JOB_TYPE_LABEL[t]}</option>)}
             </select>
           </label>
 

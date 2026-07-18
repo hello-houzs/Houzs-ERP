@@ -52,6 +52,7 @@ import {
   useScheduleDelivery,
   DELIVERY_STATES,
   DELIVERY_STATE_LABEL,
+  dpJobTypeLabel,
   type DeliveryState,
   type PlanningOrder,
 } from '../../vendor/scm/lib/delivery-planning-queries';
@@ -106,12 +107,11 @@ function CompanyBadge({ code }: { code: string | null }) {
 const isAssr = (o: PlanningOrder): boolean => o.row_type === 'assr';
 /* DP-Order rows (manual setup / dismantle / supplier-pickup jobs). */
 const isDp = (o: PlanningOrder): boolean => o.row_type === 'dp';
-/* A friendly label for a DP job type. */
+/* A friendly label for a DP job type — resolved from the SHARED canonical map
+   (dpJobTypeLabel) so the board's Type chip and the New-DP-Order dropdown always
+   read the same wording. Empty job_type falls back to a generic 'DP job'. */
 const dpLabel = (o: PlanningOrder): string =>
-  (o.dp_job_type ?? '')
-    .toLowerCase()
-    .replace(/_/g, ' ')
-    .replace(/\b\w/g, (m) => m.toUpperCase()) || 'DP job';
+  o.dp_job_type ? dpJobTypeLabel(o.dp_job_type) : 'DP job';
 /* ASSR key includes job_kind — a case with BOTH a customer-pickup and a
    delivery date emits TWO rows sharing one assr_id, so the key must carry the
    leg to stay unique (the backend's so_doc_no is already `<assrNo>#<jobKind>`). */
