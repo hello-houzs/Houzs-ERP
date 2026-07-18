@@ -100,6 +100,10 @@ const invalidateAmendmentSideEffects = (
   qc.invalidateQueries({ queryKey: ['mfg-sales-order-detail'] });
   qc.invalidateQueries({ queryKey: ['mfg-purchase-orders'] });
   qc.invalidateQueries({ queryKey: ['mfg-purchase-order-detail'] });
+  /* A gate writes one AMENDMENT_* audit row, and the amendment's Approval-history
+     view reads the SO audit log — refetch it so the new decision shows at once
+     (broad key: the gate carries the amendment id, not the SO doc_no here). */
+  qc.invalidateQueries({ queryKey: ['mfg-sales-order-audit-log'] });
 };
 
 /* ── List ──────────────────────────────────────────────────────────────── */

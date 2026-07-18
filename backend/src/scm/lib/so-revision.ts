@@ -50,6 +50,20 @@ import { todayMyt } from './my-time';
    the same shape so this file composes with them without a type fight. */
 type Sb = any;
 
+/* The amendment audit rows below stamp the pinned SCM system `userId` as actor_id
+   (the bridge pins every caller to one super_admin row — see scm/middleware/auth).
+   Left to look itself up, recordSoAudit would snapshot the SYSTEM row's name, so
+   "who approved" would read as the system for SO_APPROVED / PO_REVISED. Resolve
+   the REAL Houzs caller's name off the request context and pass it explicitly, the
+   way the sibling gate audits in routes/so-amendments.ts already do. */
+function realActorName(c?: Context<any>): string | null {
+  if (!c) return null;
+  const houzs = c.get('houzsUser') as { name?: string | null } | undefined;
+  if (houzs?.name) return houzs.name;
+  const user = c.get('user') as { user_metadata?: { name?: string } } | undefined;
+  return user?.user_metadata?.name ?? null;
+}
+
 type AmendmentRow = {
   id: string;
   so_doc_no: string;
@@ -479,6 +493,7 @@ export async function applySoAmendment(
     docNo,
     action: 'AMENDMENT_SO_APPROVED',
     actorId: userId,
+    actorName: realActorName(c),
     fieldChanges: [
       { field: 'amendment_id', to: amendmentId },
       { field: 'revision', from: nextRevision - 1, to: nextRevision },
@@ -796,6 +811,7 @@ export async function reviseBoundPo(
       docNo,
       action: 'AMENDMENT_PO_REVISED',
       actorId: userId,
+      actorName: realActorName(c),
       fieldChanges: [
         { field: 'amendment_id', to: amendmentId },
         { field: 'po_number', to: po.po_number },

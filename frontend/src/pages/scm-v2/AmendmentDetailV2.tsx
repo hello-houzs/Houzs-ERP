@@ -53,6 +53,11 @@ import {
   useApproveSo,
   type AmendmentLine,
 } from "../../vendor/scm/lib/so-amendment-queries";
+import { useSalesOrderAuditLog } from "../../vendor/scm/lib/sales-order-queries";
+import {
+  buildAmendmentDecisionHistory,
+  isRejectDecision,
+} from "../../vendor/scm/lib/so-amendment-history";
 import {
   amendmentHeaderDiffRows,
   type SoAmendmentHeaderChanges,
@@ -440,43 +445,13 @@ function SupplierConfirmModal({
   );
 }
 
-// ─── Recent-activity timeline (derived from the amendment's own timestamps) ──
+// ─── Decision history (the amendment's approve / reject audit trail) ─────────
+// Owner 2026-07-18 — every approve AND reject is now visible with who, when, and
+// the reason. Sourced from mfg_so_audit_log (the ONLY place a rejection's actor /
+// time / reason survives — the reject gate stores no column), via the shared
+// buildAmendmentDecisionHistory. Desktop + mobile read it identically.
 
-type TimelineEvent = { title: string; meta: string };
-
-/* Every `*_by` on an amendment is a bare scm.staff uuid. `actorNameOf` resolves
-   it through the shared staff roster; an unresolvable id reads "Unknown user"
-   so the timeline never prints a uuid at a person's place (owner 2026-07-16). */
-function buildTimeline(
-  amendment: Record<string, unknown>,
-  actorNameOf: (id: string | null | undefined, empty?: string) => string,
-): TimelineEvent[] {
-  const events: TimelineEvent[] = [];
-  const push = (title: string, at: unknown, by?: unknown) => {
-    const ts = asStr(at);
-    if (!ts) return;
-    const who = actorNameOf(asStr(by), "");
-    events.push({
-      title,
-      meta: who ? `${fmtDateTime(ts)} · ${who}` : fmtDateTime(ts),
-    });
-  };
-  push("Requested", amendment.created_at, amendment.requested_by);
-  if (asStr(amendment.supplier_confirmed_by) || asStr(amendment.supplier_confirmation_ref)) {
-    const ref = asStr(amendment.supplier_confirmation_ref);
-    events.push({
-      title: "Supplier confirmed",
-      meta: [actorNameOf(asStr(amendment.supplier_confirmed_by), ""), ref ? `ref ${ref}` : null]
-        .filter(Boolean)
-        .join(" · ") || "Recorded",
-    });
-  }
-  push("SO revision approved", amendment.so_approved_at, amendment.so_approved_by);
-  push("PO revision approved", amendment.po_approved_at, amendment.po_approved_by);
-  push("Sent to supplier", amendment.sent_at);
-  // Newest first — mirrors the SO Recent-activity ordering.
-  return events.reverse();
-}
+type TimelineEvent = { title: string; meta: string; note: string | null; isReject: boolean };
 
 function ActivityTimeline({ events }: { events: TimelineEvent[] }) {
   if (events.length === 0) {
@@ -492,14 +467,19 @@ function ActivityTimeline({ events }: { events: TimelineEvent[] }) {
               <span
                 className={cn(
                   "mt-1 h-2 w-2 rounded-full",
-                  i === 0 ? "bg-primary" : "bg-border-strong"
+                  e.isReject ? "bg-err" : i === 0 ? "bg-primary" : "bg-border-strong"
                 )}
               />
               {!isLast && <span className="mt-1 w-[2px] flex-1 bg-border-subtle" />}
             </div>
             <div className="min-w-0">
-              <div className="text-[12.5px] font-semibold text-ink">{e.title}</div>
+              <div className={cn("text-[12.5px] font-semibold", e.isReject ? "text-err" : "text-ink")}>
+                {e.title}
+              </div>
               <div className="mt-0.5 text-[11px] text-ink-muted">{e.meta}</div>
+              {e.note && (
+                <div className="mt-0.5 text-[11px] italic text-ink-secondary">{e.note}</div>
+              )}
             </div>
           </div>
         );
@@ -570,10 +550,22 @@ export function AmendmentDetailV2() {
     { label: amendmentNo ?? "Amendment" },
   ]);
 
-  const timeline = useMemo(
-    () => (amendment ? buildTimeline(amendment, actorNameOf) : []),
-    [amendment, actorNameOf]
-  );
+  /* The approve / reject decision trail (owner 2026-07-18). Read the SO audit log
+     and keep only THIS amendment's AMENDMENT_* rows (created_at floor). This is
+     the only source that carries a rejection's actor / time / reason. */
+  const { data: auditEntries } = useSalesOrderAuditLog(soDocNo || null);
+  const timeline = useMemo<TimelineEvent[]>(() => {
+    const decisions = buildAmendmentDecisionHistory(
+      auditEntries,
+      asStr(amendment?.created_at),
+    );
+    return decisions.map((d) => ({
+      title: d.label,
+      meta: d.actor ? `${fmtDateTime(d.at)} · ${d.actor}` : fmtDateTime(d.at),
+      note: d.note,
+      isReject: isRejectDecision(d.action),
+    }));
+  }, [auditEntries, amendment]);
 
   const canSupplierConfirm = can("scm.amendment.supplier_confirm");
   const canApproveSo = can("scm.amendment.approve_so");
@@ -854,7 +846,7 @@ export function AmendmentDetailV2() {
               </AsideCard>
             )}
 
-            <AsideCard title="Recent activity">
+            <AsideCard title="Approval history">
               <ActivityTimeline events={timeline} />
             </AsideCard>
           </DetailAside>
