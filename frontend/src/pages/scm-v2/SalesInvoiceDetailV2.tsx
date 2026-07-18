@@ -28,7 +28,6 @@
 // useUpdateSalesInvoiceStatus).
 
 import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
-import { canViewScmCosting } from "../../auth/salesAccess";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -549,12 +548,7 @@ export function SalesInvoiceDetailV2() {
   const notify = useNotify();
   const showCustomerPo = useCustomerPoNotice();
   const askConfirm = useConfirm();
-  const { user, pageAccess } = useAuth();
-  // Finance-viewer gate (#574) — non-finance users never see cost / margin.
-  /* SCM costing is dark — the catalog carries no costs, so every margin it
-     produces is an artifact. The gate lives in auth/salesAccess so the PMS
-     project P&L (real data) stays up while this stays off. */
-  const canFinance = canViewScmCosting(user);
+  const { pageAccess } = useAuth();
   // Mutation gate — a salesperson opens this invoice read-only via the sales
   // inherit hatch (allowSales; backend readInheritsFrom scm.sales.orders) and
   // cannot confirm/cancel/edit or record payments. Hide those controls (owner
@@ -980,11 +974,6 @@ export function SalesInvoiceDetailV2() {
   // it — so payment actions are hidden until it leaves DRAFT.
   const canRecordPayment = !isTerminal && !isDraft && outstanding > 0;
   const canMarkPaid = !isTerminal && !isDraft && outstanding === 0;
-  // Cost line still pending (goods received with no price / PI yet) — mirrors the
-  // ledger page's per-line Pending semantics for the Totals · Margin card.
-  const costPending = items.some(
-    (it) => Number(it.qty) > 0 && Number(it.unit_cost_centi ?? 0) === 0
-  );
 
   return (
     <div className="pb-24 md:pb-0">
@@ -1412,16 +1401,10 @@ export function SalesInvoiceDetailV2() {
               />
             </Section>
 
-            {/* Totals · Margin — finance-gated (Revenue / Cost / Margin / Margin%
-                + per-category breakdown). Non-finance users don't see cost or
-                margin at all (#574). */}
-            {canFinance && (
-              <MarginCard
-                header={salesInvoice}
-                costPending={costPending}
-                currency={salesInvoice.currency}
-              />
-            )}
+            {/* Owner 2026-07-17: Totals·Margin (Revenue/Cost/Margin/Margin%)
+                card removed from the SI document view for EVERYONE — costing
+                moves to the separate Finance "Fulfillment Costing" module. The
+                customer-facing invoice totals are untouched. */}
 
             {/* Payments — shared ledger. DRAFT-mode PaymentsTable seeded from the
                 persisted rows; adds / deletes flush on Save. A DRAFT SI isn't
@@ -1671,157 +1654,10 @@ function Divider() {
   );
 }
 
-// ─── Totals · Margin (finance-gated) ───────────────────────────────────────
-// Revenue / Cost / Margin / Margin% KPIs + a per-category revenue·cost·margin
-// breakdown, ported from the ledger SalesInvoiceDetail's TotalsCard. Reads the
-// server-stamped header cost / margin fields; only mounted for a finance viewer.
-const PENDING_PILL = (
-  <span className="rounded bg-warning-bg px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-warning-text">
-    Pending
-  </span>
-);
-
-function MarginCard({
-  header,
-  costPending,
-  currency,
-}: {
-  header: SiHeader;
-  costPending: boolean;
-  currency: string;
-}) {
-  const revenue = header.local_total_centi || header.total_centi || 0;
-  const cost = header.total_cost_centi ?? 0;
-  const margin = header.total_margin_centi ?? revenue - cost;
-  const marginPct = (header.margin_pct_basis ?? 0) / 100;
-  /* An unknown margin is NOT a bad margin — NaN fails every comparison and
-     fell through to "text-err". Unknown → no tone + "—" (see SO detail). */
-  const marginKnown = Number.isFinite(margin) && Number.isFinite(marginPct);
-  const marginTone = !marginKnown
-    ? undefined
-    : margin <= 0
-      ? "text-err"
-      : marginPct >= 30
-        ? "text-synced"
-        : marginPct >= 15
-          ? "text-warning-text"
-          : "text-err";
-  const categories = [
-    {
-      label: "Mattress / Sofa",
-      rev: header.mattress_sofa_centi ?? 0,
-      cost: header.mattress_sofa_cost_centi ?? 0,
-    },
-    { label: "Bedframe", rev: header.bedframe_centi ?? 0, cost: header.bedframe_cost_centi ?? 0 },
-    {
-      label: "Accessories",
-      rev: header.accessories_centi ?? 0,
-      cost: header.accessories_cost_centi ?? 0,
-    },
-    { label: "Others", rev: header.others_centi ?? 0, cost: header.others_cost_centi ?? 0 },
-    ...((header.service_centi ?? 0) > 0
-      ? [
-          {
-            label: "Services",
-            rev: header.service_centi ?? 0,
-            cost: header.service_cost_centi ?? 0,
-          },
-        ]
-      : []),
-  ].filter((c) => c.rev > 0 || c.cost > 0);
-
-  return (
-    <Section title="Totals · Margin">
-      <div className="grid grid-cols-2 gap-4 border-b border-border-subtle pb-4 sm:grid-cols-4">
-        <div>
-          <div className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
-            Revenue
-          </div>
-          <div className="mt-1 font-money text-[15px] font-bold text-ink">
-            {fmtMoney(revenue, currency)}
-          </div>
-        </div>
-        <div>
-          <div className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
-            Cost
-          </div>
-          <div className="mt-1 font-money text-[15px] font-semibold text-ink-secondary">
-            {costPending ? PENDING_PILL : fmtMoney(cost, currency)}
-          </div>
-        </div>
-        <div>
-          <div className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
-            Margin
-          </div>
-          <div
-            className={cn(
-              "mt-1 font-money text-[15px] font-bold",
-              costPending ? "text-ink-muted" : marginTone
-            )}
-          >
-            {costPending ? PENDING_PILL : fmtMoney(margin, currency)}
-          </div>
-        </div>
-        <div>
-          <div className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
-            Margin %
-          </div>
-          <div
-            className={cn(
-              "mt-1 font-money text-[15px] font-bold",
-              costPending ? "text-ink-muted" : marginTone
-            )}
-          >
-            {costPending || !marginKnown
-              ? "—"
-              : revenue > 0
-                ? `${marginPct.toFixed(1)}%`
-                : "—"}
-          </div>
-        </div>
-      </div>
-
-      <div className="mt-4">
-        <div className="font-mono text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
-          By category
-        </div>
-        <div className="mt-2 space-y-1.5">
-          {categories.length === 0 ? (
-            <div className="text-[13px] text-ink-muted">No category totals.</div>
-          ) : (
-            categories.map(({ label, rev, cost: catCost }) => {
-              const catMargin = rev - catCost;
-              const tone =
-                rev <= 0
-                  ? "text-ink-muted"
-                  : catMargin > 0
-                    ? "text-synced"
-                    : catMargin < 0
-                      ? "text-err"
-                      : "text-ink-muted";
-              return (
-                <div
-                  key={label}
-                  className="grid grid-cols-[1.4fr_1fr_1fr_1fr] items-baseline gap-3 text-[12.5px]"
-                >
-                  <div className="font-semibold text-ink">{label}</div>
-                  <div className="font-money text-ink-secondary">
-                    Rev {fmtMoney(rev, currency)}
-                  </div>
-                  <div className="font-money text-ink-muted">
-                    Cost {fmtMoney(catCost, currency)}
-                  </div>
-                  <div className={cn("font-money font-semibold", tone)}>
-                    Margin {fmtMoney(catMargin, currency)}
-                  </div>
-                </div>
-              );
-            })
-          )}
-        </div>
-      </div>
-    </Section>
-  );
-}
+// ─── Totals · Margin card — REMOVED (owner 2026-07-17) ─────────────────────
+// The Revenue / Cost / Margin / Margin% section (and its per-category cost
+// breakdown) is gone from the SI document view for EVERYONE; costing moves to
+// the separate Finance "Fulfillment Costing" module. Customer-facing invoice
+// totals are untouched.
 
 export default SalesInvoiceDetailV2;
