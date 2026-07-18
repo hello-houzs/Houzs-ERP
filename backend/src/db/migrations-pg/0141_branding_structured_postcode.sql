@@ -1,4 +1,4 @@
--- 0139_branding_structured_postcode.sql (Postgres)
+-- 0141_branding_structured_postcode.sql (Postgres)
 -- Owner ask (2026-07-18): the COMPANY's own address (Settings -> Branding, the
 -- identity printed on document letterheads) should be structured so a postcode
 -- can be filled SEPARATELY from the address lines, instead of one free-text blob.
