@@ -466,12 +466,13 @@ export default function App() {
         {/* TEMP — vendored 2990's stock-movement pages (wave 4: Adjustments /
             Transfers / Takes), parallel to the native /scm/* below. Each wrapped
             in <Scm2990Shell>. Literal /new precedes /:id so it matches first. */}
-        {/* Adjustment writes hit POST /inventory/adjustments, gated on
-            scm.warehouse.inventory server-side (scm/index.ts). Guard the route on
-            that same key, not the frontend-only scm.warehouse.adjustments no
-            area-guard reads, so the route matches the backend the page calls. */}
-        <Route path="/scm/stock-adjustments" element={<ScmGuard area="scm.warehouse.inventory"><Scm2990Shell><ScmStockAdjustmentsV2 /></Scm2990Shell></ScmGuard>} />
-        <Route path="/scm/stock-adjustments/new" element={<ScmGuard area="scm.warehouse.inventory"><Scm2990Shell><ScmStockAdjustmentNewV2 /></Scm2990Shell></ScmGuard>} />
+        {/* Adjustment writes hit POST /inventory/adjustments, now gated on
+            scm.warehouse.adjustments server-side by its own area-guard sub-mount
+            (scm/index.ts) — split off inventory-view because adjusting changes
+            valuation. Guard the route on that same key so a position with
+            inventory-view but no adjustments grant reaches Inventory, not this. */}
+        <Route path="/scm/stock-adjustments" element={<ScmGuard area="scm.warehouse.adjustments"><Scm2990Shell><ScmStockAdjustmentsV2 /></Scm2990Shell></ScmGuard>} />
+        <Route path="/scm/stock-adjustments/new" element={<ScmGuard area="scm.warehouse.adjustments"><Scm2990Shell><ScmStockAdjustmentNewV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/stock-transfers" element={<ScmGuard area="scm.warehouse.transfers"><Scm2990Shell><ScmStockTransfersV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/stock-transfers/new" element={<ScmGuard area="scm.warehouse.transfers"><Scm2990Shell><ScmStockTransferNewV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/stock-transfers/:id" element={<ScmGuard area="scm.warehouse.transfers"><Scm2990Shell><ScmStockTransferDetailV2 /></Scm2990Shell></ScmGuard>} />
