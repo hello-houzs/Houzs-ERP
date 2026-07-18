@@ -4274,6 +4274,14 @@ function CreateProjectPanel({
   brands: string[];
   eventTypes: EventType[];
 }) {
+  const { can, user } = useAuth();
+  // Owner 2026-07-18: setting the PIC at creation is open to EVERYONE holding
+  // projects.write EXCEPT the Sales Director — mirrors the assignment-on-an-
+  // existing-project rule (canAssignPeople in ProjectDetailContent) and the
+  // backend POST / gate. Sales Director matched by EXACT normalised name
+  // (isSalesDirectorUser), never a \b substring. When false we hide the PIC
+  // picker entirely so the project is created unassigned (admin PICs it later).
+  const canAssignPeople = can("projects.write") && !isSalesDirectorUser(user);
   const [eventTypeId, setEventTypeId] = useState<string>("");
   const [brand, setBrand] = useState<string>("");
   const [startDate, setStartDate] = useState("");
@@ -4542,6 +4550,7 @@ function CreateProjectPanel({
         </div>
       </PanelSection>
 
+      {canAssignPeople && (
       <PanelSection title="Ownership">
         <div>
           <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
@@ -4575,6 +4584,7 @@ function CreateProjectPanel({
           </div>
         </div>
       </PanelSection>
+      )}
     </Panel>
   );
 }
