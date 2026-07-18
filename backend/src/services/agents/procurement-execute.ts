@@ -45,7 +45,7 @@ async function maxAutoApproveUnits(db: D1Database): Promise<number> {
 /** Sum of a REORDER proposal's pick quantities — the size proxy the Stage-2
  *  ceiling is measured against. Reads the payload the same way
  *  executeReorderProposal does. */
-function reorderUnits(payloadRaw: unknown): number {
+export function reorderUnits(payloadRaw: unknown): number {
   const payload = (typeof payloadRaw === 'string' ? safeParse(payloadRaw) : payloadRaw) as
     | { picks?: unknown }
     | null;

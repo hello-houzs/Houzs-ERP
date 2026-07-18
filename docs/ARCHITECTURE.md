@@ -42,13 +42,16 @@ stockItems; assr (+ portal, print); projects (+ driverProjects, print); trips,
 planner, delivery, lorries, fleet; users, auth, roles, departments; sales-team,
 sales; gamify, awards, innovations, suggestions, ideas*; search, logs, finance,
 inbox, notifications, events, presence; portal, supplierPortal, track, survey;
-settings, udf, warehouses, maps, pettyCash.
+settings, udf, warehouses, pettyCash. (No `/api/maps` route — geocoding lives in
+scm/routes/scan-so.ts and trip route-optimisation in scm/lib/maps.ts, reached via
+POST /api/scm/trips/:id/optimize-route.)
 
 **Services (~40)** carry the domain logic: `autocount.ts` (+ pull/po/push/
 creditors), `assr*` (workflow, alerts, escalation, leadTime), `projects*`
 (lifecycle, cost rates, reminders), `delivery`/`planner`/`trips` (logistics),
 `points`/`salesTeam`/`salesEntries`, `permissions`/`pageAccess`/`projectAcl`
-(authz), `email`/`maps`/`push`/`logger` (integration).
+(authz), `email`/`push`/`logger` (integration). Maps is not a service module:
+see scm/lib/maps.ts (Directions, env-gated on GOOGLE_MAPS_API_KEY).
 
 **Authz model** (3 layers):
 - Flat permission strings (`permissions.ts`, ~30 keys) → `requirePermission` /
