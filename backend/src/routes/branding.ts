@@ -69,6 +69,7 @@ app.put("/", requirePermission("settings.manage"), async (c) => {
     companyName: str(body.companyName, current.companyName),
     registrationNo: str(body.registrationNo, current.registrationNo),
     address: str(body.address, current.address),
+    postcode: str(body.postcode, current.postcode),
     phone: str(body.phone, current.phone),
     email: str(body.email, current.email),
     website: str(body.website, current.website),

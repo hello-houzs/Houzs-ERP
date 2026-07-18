@@ -7,6 +7,7 @@ import {
   resolveCompanyCode,
   shortCompanyName,
   brandingAddressLines,
+  composeBrandingAddress,
   HOUZS_COMPANY_CODE,
 } from "../services/branding";
 import { canSeeProject } from "../services/projectAcl";
@@ -194,7 +195,7 @@ app.get("/:id", async (c) => {
   );
   const branding = await getBrandingForCompany(c.env, companyCode);
   const coShort = shortCompanyName(branding.companyName);
-  const coAddressLines = brandingAddressLines(branding.address);
+  const coAddressLines = brandingAddressLines(composeBrandingAddress(branding));
 
   // Uploaded per-company letterhead logo wins; the bundled Houzs wordmark is
   // HOUZS-only; otherwise the text fallback renders the company name.

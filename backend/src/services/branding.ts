@@ -28,6 +28,10 @@ export interface Branding {
   companyName: string;
   registrationNo: string;
   address: string;
+  // Structured postcode, kept SEPARATE from the free-text address lines
+  // (owner ask 2026-07-18). "" when unset — the address alone is then the
+  // letterhead source, so legacy single-field rows render unchanged.
+  postcode: string;
   phone: string;
   email: string;
   website: string;
@@ -56,6 +60,10 @@ export const DEFAULT_BRANDING: Branding = {
   registrationNo: "202201031135 (1476832-W)",
   address:
     "1831-B, Jalan KPB 1, Kawasan Perindustrian Balakong, 43300 Seri Kembangan, Selangor.",
+  // Mirrors migration 0142's backfill (extracted from the address above). The
+  // address still carries "43300", so composeBrandingAddress leaves the printed
+  // letterhead byte-identical — this only makes the structured value available.
+  postcode: "43300",
   phone: "011-1110 8883",
   email: "hello@houzscentury.com",
   website: "",
@@ -72,6 +80,7 @@ export const DEFAULT_BRANDING_2990: Branding = {
   companyName: "2990's Home",
   registrationNo: "",
   address: "",
+  postcode: "",
   phone: "",
   email: "",
   website: "",
@@ -99,6 +108,25 @@ export function shortCompanyName(name: string): string {
   return short || name;
 }
 
+/** Effective single-line company address for letterheads: the free-text
+ *  `address` with the structured `postcode` woven in. Legacy rows render
+ *  byte-identically — the postcode is only appended when it is set AND not
+ *  already present in the address text, so a row whose address already embeds
+ *  its postcode (e.g. the HOUZS seed "…43300 Seri Kembangan…") is unchanged.
+ *  The owner keeps full control of exact wording via the Address field; this is
+ *  a best-effort overlay for rows that keep the postcode in its own field. */
+export function composeBrandingAddress(b: {
+  address: string;
+  postcode?: string;
+}): string {
+  const a = (b.address || "").trim();
+  const p = (b.postcode || "").trim();
+  if (!p || a.includes(p)) return a;
+  if (!a) return p;
+  // Drop trailing punctuation so we don't print "…Selangor., 43300".
+  return `${a.replace(/[.,\s]+$/, "")}, ${p}`;
+}
+
 /** Split the single-line branding address into ≤2 print lines on a comma
  *  boundary — same convention as the frontend PDF letterhead. Blank → []. */
 export function brandingAddressLines(address: string): string[] {
@@ -123,6 +151,8 @@ function normalize(raw: unknown, defaults: Branding = DEFAULT_BRANDING): Brandin
     companyName: str(r.companyName, defaults.companyName),
     registrationNo: str(r.registrationNo, defaults.registrationNo),
     address: str(r.address, defaults.address),
+    // Older rows written before the postcode field existed have no key → "".
+    postcode: str(r.postcode, ""),
     phone: str(r.phone, defaults.phone),
     email: str(r.email, defaults.email),
     website: str(r.website, defaults.website),

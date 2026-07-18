@@ -7,6 +7,7 @@ import {
   resolveCompanyCode,
   shortCompanyName,
   brandingAddressLines,
+  composeBrandingAddress,
   HOUZS_COMPANY_CODE,
 } from "../services/branding";
 
@@ -165,7 +166,7 @@ app.get("/:id", requirePermission("service_cases.read"), async (c) => {
   );
   const branding = await getBrandingForCompany(c.env, companyCode);
   const coShort = shortCompanyName(branding.companyName);
-  const coAddressLines = brandingAddressLines(branding.address);
+  const coAddressLines = brandingAddressLines(composeBrandingAddress(branding));
   // Warehouse/CS contact line: the historical HOUZS CS number is not part of
   // the Branding config, so HOUZS keeps its literal (unchanged output); other
   // companies show their branding phone (blank → line renders without one).

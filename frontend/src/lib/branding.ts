@@ -19,6 +19,10 @@ export interface Branding {
   companyName: string;
   registrationNo: string;
   address: string;
+  /** Structured postcode, kept SEPARATE from the free-text address lines (owner
+   *  ask 2026-07-18). "" when unset — the address alone is then the letterhead
+   *  source, so legacy single-field rows render unchanged. */
+  postcode: string;
   phone: string;
   email: string;
   website: string;
@@ -36,6 +40,10 @@ export const DEFAULT_BRANDING: Branding = {
   registrationNo: "202201031135 (1476832-W)",
   address:
     "1831-B, Jalan KPB 1, Kawasan Perindustrian Balakong, 43300 Seri Kembangan, Selangor.",
+  // Mirrors migration 0142's backfill (extracted from the address above). The
+  // address still carries "43300", so composeCompanyAddress leaves the printed
+  // letterhead byte-identical — this only makes the structured value available.
+  postcode: "43300",
   phone: "011-1110 8883",
   email: "hello@houzscentury.com",
   website: "",
@@ -50,6 +58,7 @@ export const DEFAULT_BRANDING_2990: Branding = {
   companyName: "2990's Home",
   registrationNo: "",
   address: "",
+  postcode: "",
   phone: "",
   email: "",
   website: "",
@@ -113,6 +122,9 @@ export function normalizeBranding(
     companyName: pick("companyName", "company_name", defaults.companyName),
     registrationNo: pick("registrationNo", "registration_no", defaults.registrationNo),
     address: pick("address", "address", defaults.address),
+    // Rows written before the postcode field existed have no key → "" (a blank
+    // postcode must stay blank; the address alone drives the letterhead then).
+    postcode: pick("postcode", "postcode", ""),
     phone: pick("phone", "phone", defaults.phone),
     email: pick("email", "email", defaults.email),
     // website + logoR2Key default to empty (not the seed) — they're genuinely
@@ -120,6 +132,24 @@ export function normalizeBranding(
     website: ((r.website ?? r.web_site) as string | undefined)?.toString().trim() ?? "",
     logoR2Key: ((r.logoR2Key ?? r.logo_r2_key) as string | undefined)?.toString().trim() ?? "",
   };
+}
+
+/** Effective single-line company address for letterheads: the free-text
+ *  `address` with the structured `postcode` woven in. Mirrors the backend's
+ *  composeBrandingAddress (services/branding.ts) so the frontend PDFs and the
+ *  backend HTML prints render the same block. Legacy rows render byte-identically
+ *  — the postcode is only appended when it is set AND not already present in the
+ *  address text, so the HOUZS seed ("…43300 Seri Kembangan…") is unchanged. */
+export function composeCompanyAddress(b: {
+  address: string;
+  postcode?: string;
+}): string {
+  const a = (b.address || "").trim();
+  const p = (b.postcode || "").trim();
+  if (!p || a.includes(p)) return a;
+  if (!a) return p;
+  // Drop trailing punctuation so we don't print "…Selangor., 43300".
+  return `${a.replace(/[.,\s]+$/, "")}, ${p}`;
 }
 
 // ── Module-level cache for the pure (non-React) jspdf libs ────────────────────

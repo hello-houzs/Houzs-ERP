@@ -9,6 +9,7 @@
 
 import { fmtDate } from '@2990s/shared';
 import {
+  composeCompanyAddress,
   getBrandingCache,
   getBrandingCompanyCode,
   getBrandingLogoCache,
@@ -52,7 +53,9 @@ export const COMPANY = {
     return getBrandingCache().registrationNo;
   },
   get addressLines(): string[] {
-    return splitAddressLines(getBrandingCache().address);
+    // Weave the structured postcode into the free-text address (legacy rows,
+    // and rows whose address already embeds the postcode, are unchanged).
+    return splitAddressLines(composeCompanyAddress(getBrandingCache()));
   },
   get phone(): string {
     return getBrandingCache().phone;
