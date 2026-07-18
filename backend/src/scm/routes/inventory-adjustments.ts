@@ -33,6 +33,7 @@ import {
 import { supabaseAuth } from '../middleware/auth';
 import { recomputeSoStockAllocation } from '../lib/so-stock-allocation';
 import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
+import { recordEntityAudit, compactChanges, fieldChange } from '../lib/entity-audit';
 import type { Env, Variables } from '../env';
 
 export const inventoryAdjustments = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -115,6 +116,30 @@ inventoryAdjustments.post('/', async (c) => {
     performed_by: user.id,
   }).select('id').single();
   if (error) return c.json({ error: 'insert_failed', reason: error.message }, 500);
+
+  /* A manual adjustment has no header document — the movement row IS the
+     document, so the movement id is the entity id. This is the only path in the
+     module that lets a person change on-hand by typing a number, which makes it
+     the one that most needs a name attached to it. */
+  await recordEntityAudit(sb, {
+    entityType: 'INVENTORY_ADJUSTMENT',
+    entityId: (data as { id: string }).id,
+    action: 'CREATE',
+    actor: c.get('houzsUser'),
+    companyId: activeCompanyId(c),
+    note: reasonCode,
+    fieldChanges: compactChanges([
+      fieldChange('warehouseId', null, warehouseId),
+      fieldChange('productCode', null, productCode),
+      fieldChange('variantKey', null, variantKey),
+      fieldChange('batchNo', null, batchNo),
+      fieldChange('qtyDelta', null, qtyDelta),
+      fieldChange('reasonCode', null, reasonCode),
+      fieldChange('unitCostSen', null, Number(body.unitCostSen ?? 0)),
+      fieldChange('notes', null, (body.notes as string | undefined) ?? null),
+    ]),
+  });
+
   /* Audit 2026-06-10 #12 — every other stock-mutating path re-walks the SO
      allocation; a manual adjustment was the one forgotten path. A write-off
      left SO lines READY against vanished stock; a found-stock increase didn't
