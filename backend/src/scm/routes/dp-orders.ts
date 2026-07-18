@@ -21,7 +21,7 @@ import {
   partyTypeFor, emptySnapshot, snapshotFromSo, snapshotFromSupplier,
   snapshotFromProject, snapshotFromAssr, type DpJobType, type DpPartySnapshot,
 } from '../lib/dp-party';
-import { mintDpNo } from '../lib/dp-no';
+import { mintNextDpNo, plateForLorry } from '../lib/dp-no-mint';
 import {
   resolveDeliveryScope, scopeMatchesAssignment,
   type CrewAssignment, type DeliveryScope,
@@ -343,17 +343,20 @@ dpOrders.post('/:id/schedule', async (c) => {
   const denied = await denyIfNotOwnDpJob(c, sb, id);
   if (denied) return denied;
 
-  const lorry = await sb.from('lorries').select('plate').eq('id', p.lorryId).maybeSingle();
-  const plate = (lorry.data as { plate?: string } | null)?.plate;
+  const plate = await plateForLorry(sb, p.lorryId);
   if (!plate) return c.json({ error: 'lorry_not_found' }, 404);
 
-  // Existing DP numbers for this day+plate — the minter filters by the exact
-  // prefix, so reading the day's numbers is enough. max+1, never count+1.
-  const prefix = `DP-${p.tripDate.slice(2, 4)}${p.tripDate.slice(5, 7)}${p.tripDate.slice(8, 10)}-`;
-  const existing = await sb.from('dp_orders').select('dp_no').like('dp_no', `${prefix}%`);
-  const existingNos = ((existing.data ?? []) as Array<{ dp_no?: string }>)
-    .map((r) => r.dp_no).filter((x): x is string => typeof x === 'string');
-  const dpNo = mintDpNo(p.tripDate, plate, existingNos);
+  /* Mint from the SHARED registry. This read used to cover `dp_orders` alone,
+     which was complete only while this handler was the only minter. Now that a
+     board-scheduled delivery also takes a number (onto trip_stops), reading one
+     table would hand the same number to two different jobs. */
+  const dpNo = await mintNextDpNo(sb, { tripDate: p.tripDate, plate });
+  if (!dpNo) {
+    return c.json({
+      error: 'dp_no_unavailable',
+      reason: 'could not read the DP number registry, so a number could not be issued safely — nothing was scheduled',
+    }, 503);
+  }
 
   const { data, error } = await sb.from('dp_orders')
     .update({ dp_no: dpNo, trip_id: p.tripId ?? null, status: 'SCHEDULED', updated_at: new Date().toISOString() })
@@ -389,6 +392,10 @@ dpOrders.post('/:id/schedule', async (c) => {
         customer_name: (d.party_name as string | null) ?? null,
         address,
         revenue_centi: 0,
+        /* The SAME number the order header carries — a mirror, not a second
+           identity. Writing it here is also what keeps trip_stops the complete
+           registry the minter scans. */
+        dp_no: dpNo,
       }).select('id').maybeSingle();
       const stopId = (ins.data as { id?: string } | null)?.id ?? null;
       if (ins.error || !stopId) {
