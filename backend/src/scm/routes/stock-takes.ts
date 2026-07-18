@@ -31,7 +31,7 @@ import type { Env, Variables } from '../env';
 import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
-import { recordEntityAudit, compactChanges, fieldChange, statusChange, type FieldChange } from '../lib/entity-audit';
+import { recordEntityAudit, compactChanges, fieldChange, statusChange, assertAuditWritable, auditUnavailableBody, type FieldChange } from '../lib/entity-audit';
 
 export const stockTakes = new Hono<{ Bindings: Env; Variables: Variables }>();
 stockTakes.use('*', supabaseAuth);
@@ -323,6 +323,14 @@ stockTakes.patch('/:id/lines', async (c) => {
     return c.json({ error: 'lines_required' }, 400);
   }
 
+  /* AUDIT PRE-FLIGHT. recordEntityAudit runs after the counts are already
+     stored, so it cannot honestly fail there; the sink is asked here instead,
+     behind the cheap guards and ahead of the first update, so that the refusal
+     below is literally true — nothing has been written yet. Same reasoning at
+     every other pre-flight in this file. */
+  const pf = await assertAuditWritable(sb, { entityType: 'STOCK_TAKE', entityId: id, action: 'UPDATE', companyId: head.company_id });
+  if (!pf.ok) return c.json(auditUnavailableBody(), 409);
+
   /* BEFORE values for the from->to record. Batched (chunkIn bounds the .in()
      list and pages each chunk, so a 500-line take cannot lose rows to
      PostgREST's 1000-row cap) rather than a read per line — the update loop
@@ -398,6 +406,14 @@ stockTakes.patch('/:id/cancel', async (c) => {
   const sb = c.get('supabase');
   const id = c.req.param('id');
 
+  /* The flip below is this handler's first statement that touches anything, and
+     it is also its not-found / wrong-state check, so the probe sits directly in
+     front of it rather than behind a guard. The flip keeps its single-flight
+     role untouched. companyId is omitted: the row's company is only known from
+     the flip's own result, and no read is worth adding for it. */
+  const pf = await assertAuditWritable(sb, { entityType: 'STOCK_TAKE', entityId: id, action: 'CANCEL' });
+  if (!pf.ok) return c.json(auditUnavailableBody(), 409);
+
   const { data, error } = await sb.from('stock_takes')
     .update({ status: 'CANCELLED', cancelled_at: new Date().toISOString() })
     .eq('id', id).eq('status', 'OPEN')
@@ -444,6 +460,12 @@ stockTakes.patch('/:id/reverse', async (c) => {
   const sb = c.get('supabase');
   const user = c.get('user');
   const id = c.req.param('id');
+
+  /* Probe before the flip: the flip is the first mutating call and doubles as
+     the state check, so there is no earlier guard to sit behind. It remains the
+     single-flight lock. */
+  const pf = await assertAuditWritable(sb, { entityType: 'STOCK_TAKE', entityId: id, action: 'REVERSE', companyId: activeCompanyId(c) });
+  if (!pf.ok) return c.json(auditUnavailableBody(), 409);
 
   // Flip status first so a concurrent reverse can't double-write movements.
   const { data: cancelled, error: cErr } = await sb.from('stock_takes')
@@ -546,6 +568,9 @@ stockTakes.delete('/:id', async (c) => {
   };
   if (doomed.status !== 'OPEN') return c.json({ error: 'not_open' }, 409);
 
+  const pf = await assertAuditWritable(sb, { entityType: 'STOCK_TAKE', entityId: id, action: 'DELETE', companyId: doomed.company_id });
+  if (!pf.ok) return c.json(auditUnavailableBody(), 409);
+
   const { error } = await sb.from('stock_takes').delete().eq('id', id);
   if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
 
@@ -585,6 +610,11 @@ stockTakes.patch('/:id/post', async (c) => {
   const sb = c.get('supabase');
   const user = c.get('user');
   const id = c.req.param('id');
+
+  /* Probe before the flip, for the same reason as /reverse: the flip is both
+     the first write and the state check, and it stays the single-flight lock. */
+  const pf = await assertAuditWritable(sb, { entityType: 'STOCK_TAKE', entityId: id, action: 'POST', companyId: activeCompanyId(c) });
+  if (!pf.ok) return c.json(auditUnavailableBody(), 409);
 
   // Flip status first so concurrent posts don't double-write movements.
   const { data: posted, error: pErr } = await sb.from('stock_takes')

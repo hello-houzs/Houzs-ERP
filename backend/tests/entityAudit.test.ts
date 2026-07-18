@@ -6,7 +6,13 @@ import {
   compactChanges,
   statusChange,
   diffFields,
+  assertAuditWritable,
+  recordEntityAudit,
+  auditUnavailableBody,
+  AUDIT_UNAVAILABLE_ERROR,
+  AUDIT_UNAVAILABLE_MESSAGE,
 } from "../src/scm/lib/entity-audit";
+import { isMissingRpc } from "../src/scm/lib/rpc-missing";
 import { stripAuditFinance, AUDIT_FINANCE_FIELDS } from "../src/scm/lib/finance-keys";
 import {
   GRN_LINE_AUDIT_FIELDS, GRN_LINE_AUDIT_SELECT,
@@ -385,5 +391,182 @@ describe("auditSelectGaps", () => {
   test("a prefix match is not a match", () => {
     // 'qty' must not be considered covered by 'qty_accepted'.
     expect(auditSelectGaps([["qty", "qty"]], "qty_accepted, qty_received")).toEqual(["qty"]);
+  });
+});
+
+/* ──────────────────────────────────────────────────────────────────────
+   THE FAILURE BEHAVIOUR (owner's ruling, 2026-07-19).
+
+   Same boundary as the note at the top of this file: the probe's SQL half
+   (scm.entity_audit_writable) runs in Postgres and is not reachable from the D1
+   harness, and there is no route-level harness for /api/scm/*, so the handlers'
+   409 is not exercised here. What IS pure — and what the ruling actually turns
+   on — is the DECISION assertAuditWritable makes from a given database answer,
+   and the promise recordEntityAudit makes about never throwing. Those are driven
+   below through stub clients rather than a faked route.
+   ────────────────────────────────────────────────────────────────────── */
+
+type ProbeAnswer = { data: unknown; error: { code?: string; message?: string } | null };
+
+function stubClient(opts: {
+  rpc?: () => Promise<ProbeAnswer>;
+  select?: () => Promise<ProbeAnswer>;
+  onFrom?: () => void;
+}) {
+  return {
+    rpc: async () => {
+      if (!opts.rpc) throw new Error("rpc not stubbed");
+      return opts.rpc();
+    },
+    from: () => {
+      opts.onFrom?.();
+      return {
+        select: () => ({
+          limit: async () => (opts.select ? opts.select() : { data: [], error: null }),
+        }),
+      };
+    },
+  } as unknown as Parameters<typeof assertAuditWritable>[0];
+}
+
+const MISSING_RPC = { code: "PGRST202", message: "Could not find the function scm.entity_audit_writable in the schema cache" };
+
+describe("assertAuditWritable — the decision that makes the refusal honest", () => {
+  test("a writable sink lets the handler proceed", async () => {
+    const r = await assertAuditWritable(stubClient({ rpc: async () => ({ data: true, error: null }) }), {
+      entityType: "PAYMENT_VOUCHER", entityId: "pv-1", action: "POST",
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  test("a sink that reports it will not accept a row blocks the write", async () => {
+    // The probe ran and answered false — the INSERT inside it failed. Proceeding
+    // would produce exactly the outcome the owner ruled against: a changed
+    // document with no record of who changed it.
+    const r = await assertAuditWritable(stubClient({ rpc: async () => ({ data: false, error: null }) }), {
+      entityType: "GRN", entityId: "grn-1", action: "POST",
+    });
+    expect(r.ok).toBe(false);
+  });
+
+  test("an unknown answer blocks rather than waves through", async () => {
+    // Fail-closed is the deliberate bias: a refusal costs one retry, proceeding
+    // costs an unrecorded money or stock movement that nobody discovers.
+    const r = await assertAuditWritable(
+      stubClient({ rpc: async () => ({ data: null, error: { message: "connection reset" } }) }),
+      { entityType: "STOCK_TAKE", entityId: "st-1", action: "POST" },
+    );
+    expect(r.ok).toBe(false);
+  });
+
+  test("a live probe error does NOT fall back to the weaker read", async () => {
+    // The fallback exists only for a database that has not had the function
+    // applied. Taking it on a real error would downgrade a failing sink to a
+    // reachable one and let the write through.
+    let fellBack = false;
+    const r = await assertAuditWritable(
+      stubClient({ rpc: async () => ({ data: null, error: { message: "permission denied" } }), onFrom: () => { fellBack = true; } }),
+      { entityType: "STOCK_TRANSFER", entityId: "tr-1", action: "CANCEL" },
+    );
+    expect(r.ok).toBe(false);
+    expect(fellBack).toBe(false);
+  });
+
+  test("a probe that rejects blocks instead of escaping the handler", async () => {
+    const r = await assertAuditWritable(
+      stubClient({ rpc: async () => { throw new Error("socket closed"); } }),
+      { entityType: "INVENTORY_ADJUSTMENT", action: "CREATE" },
+    );
+    expect(r.ok).toBe(false);
+  });
+
+  test("before the SQL is applied it degrades to reachability, and says so", async () => {
+    // Merging the code ahead of the manual apply must not break a handler; it
+    // weakens the guarantee instead, and the reason names which guarantee is in
+    // force so a green result is not mistaken for a full write check.
+    const r = await assertAuditWritable(
+      stubClient({ rpc: async () => ({ data: null, error: MISSING_RPC }), select: async () => ({ data: [], error: null }) }),
+      { entityType: "GRN", entityId: "grn-2", action: "UPDATE" },
+    );
+    expect(r.ok).toBe(true);
+    expect(r.reason).toBe("reachability_only");
+  });
+
+  test("an unreachable sink blocks even on the fallback path", async () => {
+    const r = await assertAuditWritable(
+      stubClient({ rpc: async () => ({ data: null, error: MISSING_RPC }), select: async () => ({ data: null, error: { message: "service unavailable" } }) }),
+      { entityType: "GRN", entityId: "grn-3", action: "UPDATE" },
+    );
+    expect(r.ok).toBe(false);
+  });
+});
+
+describe("isMissingRpc", () => {
+  test("recognises an absent function by code and by wording", () => {
+    expect(isMissingRpc({ code: "PGRST202" })).toBe(true);
+    expect(isMissingRpc({ code: "42883" })).toBe(true);
+    expect(isMissingRpc({ message: "Could not find the function scm.foo in the schema cache" })).toBe(true);
+  });
+
+  test("does not mistake a live failure for an absent function", () => {
+    // This predicate gates every atomic-write fallback in the scm tree. A false
+    // positive re-runs a non-atomic path against a database that just refused.
+    expect(isMissingRpc({ message: "permission denied for table entity_audit_log" })).toBe(false);
+    expect(isMissingRpc({ message: "canceling statement due to statement timeout" })).toBe(false);
+    expect(isMissingRpc(null)).toBe(false);
+  });
+});
+
+describe("recordEntityAudit stays non-throwing", () => {
+  /* The pre-flight is the guarantee; this is the reporting. If this writer ever
+     threw it would unwind a handler PAST a committed business write — a GRN that
+     received stock reported as failed, which is the ruling's own bug pointing
+     the other way. */
+  test("reports a failed insert instead of throwing", async () => {
+    const sb = { from: () => ({ insert: async () => ({ error: { message: "sink gone" } }) }) } as unknown as Parameters<typeof recordEntityAudit>[0];
+    const r = await recordEntityAudit(sb, { entityType: "GRN", entityId: "grn-4", action: "POST" });
+    expect(r.recorded).toBe(false);
+    expect(r.reason).toBe("sink gone");
+  });
+
+  test("reports success when the row lands", async () => {
+    const sb = { from: () => ({ insert: async () => ({ error: null }) }) } as unknown as Parameters<typeof recordEntityAudit>[0];
+    const r = await recordEntityAudit(sb, { entityType: "GRN", entityId: "grn-5", action: "POST" });
+    expect(r.recorded).toBe(true);
+  });
+
+  test("swallows a client that throws outright", async () => {
+    const sb = { from: () => { throw new Error("no client"); } } as unknown as Parameters<typeof recordEntityAudit>[0];
+    await expect(recordEntityAudit(sb, { entityType: "GRN", entityId: "grn-6", action: "POST" })).resolves.toMatchObject({ recorded: false });
+  });
+});
+
+describe("the refusal an operator actually sees", () => {
+  /* humanApiError (frontend/src/vendor/scm/lib/authed-fetch.ts) DROPS a server
+     sentence that is too long, looks like JSON, or contains internals
+     vocabulary, and shows a generic status line instead. These assertions mirror
+     that filter so a future reword cannot silently make the message invisible —
+     the failure mode would be an operator seeing "That clashes with something
+     already in the system", which explains nothing and is not true. */
+  const INTERNALS = /violates|constraint|null value|column|relation|syntax|PGRST|error_code|\b\d{5}\b/i;
+
+  test("the body is shaped so the sentence reaches the operator", () => {
+    const body = auditUnavailableBody();
+    expect(body.error).toBe(AUDIT_UNAVAILABLE_ERROR);
+    expect(body.message).toBe(AUDIT_UNAVAILABLE_MESSAGE);
+  });
+
+  test("the sentence survives the client's filter", () => {
+    expect(AUDIT_UNAVAILABLE_MESSAGE.length).toBeLessThan(200);
+    expect(AUDIT_UNAVAILABLE_MESSAGE.trim().startsWith("{")).toBe(false);
+    expect(INTERNALS.test(AUDIT_UNAVAILABLE_MESSAGE)).toBe(false);
+  });
+
+  test("it tells the operator the edit did not happen, in plain words", () => {
+    // The whole point of the pre-flight: this claim has to be TRUE, so the
+    // message is allowed to say it. It must also not read like an error code.
+    expect(AUDIT_UNAVAILABLE_MESSAGE).toMatch(/nothing has changed/i);
+    expect(AUDIT_UNAVAILABLE_MESSAGE).toMatch(/try again/i);
+    expect(AUDIT_UNAVAILABLE_MESSAGE).not.toMatch(/_/);
   });
 });

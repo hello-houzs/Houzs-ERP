@@ -14,6 +14,8 @@
 // credit. No automatic refund.
 // ----------------------------------------------------------------------------
 
+import { isMissingRpc } from './rpc-missing';
+
 export type CreditSourceType =
   | 'SI_CANCEL_REFUND'   // SI was cancelled with paid_centi > 0 → credit equal to paid_centi
   | 'SI_REOPEN_CONTRA'   // a cancelled SI was reopened → reverse the SI_CANCEL_REFUND credit
@@ -77,16 +79,10 @@ type ApplyCreditArgs = {
   createdBy?: string | null;
 };
 
-/** True when a PostgREST error means the RPC does not exist yet (the atomic
- *  function has not been applied to this database). Anything else is a real
- *  failure and must NOT silently fall back. */
-function isMissingRpc(err: { code?: string; message?: string } | null | undefined): boolean {
-  if (!err) return false;
-  // PGRST202 = "Could not find the function ... in the schema cache". 42883 =
-  // Postgres undefined_function (surfaced when the schema cache is stale).
-  if (err.code === 'PGRST202' || err.code === '42883') return true;
-  return /could not find the function|schema cache|undefined function|does not exist/i.test(err.message ?? '');
-}
+/* The "has the atomic function been applied to this database yet?" predicate now
+   lives in lib/rpc-missing, shared with the audit-sink pre-flight, which needs
+   exactly the same fallback decision. Two copies would eventually disagree about
+   which errors mean "absent". */
 
 /**
  * Apply available customer credit toward a new Sales Invoice.
