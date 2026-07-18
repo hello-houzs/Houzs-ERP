@@ -38,6 +38,10 @@ export type EmailPurpose =
   | "delivery_order"
   | "invoice"
   | "document_report"
+  // Supplier-facing: a Purchase Order sent to its supplier. OFF by default
+  // (seeded false in mig 0132), fail-closed — a PO reaches an external supplier
+  // only when the owner flips this channel on, and only on a human action.
+  | "purchase_order"
   | "generic";
 
 export interface SendOptions {
@@ -88,6 +92,7 @@ const PURPOSE_TOGGLE_KEYS: Record<EmailPurpose, string> = {
   delivery_order: "email.delivery_order",
   invoice: "email.invoice",
   document_report: "email.document_report",
+  purchase_order: "email.purchase_order",
   // No toggle for 'generic' — caller opted in explicitly.
   generic: "email.enabled",
 };
@@ -99,6 +104,7 @@ const FAIL_CLOSED_PURPOSES: ReadonlySet<EmailPurpose> = new Set([
   "delivery_order",
   "invoice",
   "document_report",
+  "purchase_order",
 ]);
 
 // Exported so a caller that takes a SIDE EFFECT alongside the send (the DO
