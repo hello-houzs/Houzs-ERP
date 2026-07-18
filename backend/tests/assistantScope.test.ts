@@ -1,0 +1,117 @@
+import { describe, expect, test } from "vitest";
+import {
+  REDACTED,
+  allowedCapabilityKeys,
+  isCapabilityAllowed,
+  redactFacts,
+  scopeNote,
+  type AssistantScope,
+} from "../src/services/assistant-scope";
+
+/* The Assistant is owner-only because the specialists' briefs carry margin and
+   per-salesperson performance. This module is what has to be right BEFORE it can
+   be opened to staff, and the property that matters is WHERE redaction happens:
+   before the model is called, not in the instructions to it. A number in the
+   context window is disclosed regardless of what the prompt asks. */
+
+const OWNER: AssistantScope = { wildcard: true, canSeeMargin: true, canSeeCommission: true, orderScope: "all" };
+const DIRECTOR: AssistantScope = { canSeeMargin: true, canSeeCommission: true, orderScope: "all" };
+const SALES_REP: AssistantScope = { canSeeMargin: false, canSeeCommission: false, orderScope: "own_downline" };
+
+describe("capability gating", () => {
+  test("a rep cannot consult receivables or commercial intelligence", () => {
+    expect(isCapabilityAllowed("receivables", SALES_REP)).toBe(false);
+    expect(isCapabilityAllowed("sales_intel", SALES_REP)).toBe(false);
+  });
+
+  test("but CAN consult the operational specialists — this is not a lockout", () => {
+    for (const k of ["order_fulfilment", "delivery", "procurement"]) {
+      expect(isCapabilityAllowed(k, SALES_REP), k).toBe(true);
+    }
+  });
+
+  test("a director passes the money gates", () => {
+    expect(isCapabilityAllowed("receivables", DIRECTOR)).toBe(true);
+    expect(isCapabilityAllowed("sales_intel", DIRECTOR)).toBe(true);
+  });
+
+  test("wildcard bypasses every gate but still走 the same path", () => {
+    expect(allowedCapabilityKeys(["receivables", "sales_intel", "delivery"], OWNER))
+      .toEqual(["receivables", "sales_intel", "delivery"]);
+  });
+
+  test("an UNKNOWN capability is allowed — new operational agents are not money", () => {
+    // Fails toward usable. A future money capability must add its own requirement;
+    // that is a deliberate, reviewable act rather than a silent default.
+    expect(isCapabilityAllowed("some_future_agent", SALES_REP)).toBe(true);
+  });
+});
+
+describe("redactFacts — the numbers never reach the model", () => {
+  const facts = {
+    sales_intel: {
+      brief: { headline: "Q3 up", marginCenti: 123456, grossProfit: 9, revenue_centi: 5_000_00 },
+      openItems: [
+        { id: 1, note: "low margin order", unitCost: 700, commission: 250, customer: "Tan" },
+        { id: 2, nested: { landed_cost: 42, quantity: 3 } },
+      ],
+    },
+  };
+
+  test("THE ONE THAT MATTERS: margin/cost keys are replaced at every depth", () => {
+    const r = redactFacts(facts, SALES_REP) as typeof facts;
+    expect(r.sales_intel.brief.marginCenti).toBe(REDACTED);
+    expect(r.sales_intel.brief.grossProfit).toBe(REDACTED);
+    expect(r.sales_intel.openItems[0].unitCost).toBe(REDACTED);
+    expect((r.sales_intel.openItems[1] as { nested: { landed_cost: unknown } }).nested.landed_cost).toBe(REDACTED);
+  });
+
+  test("commission is gated on its OWN flag, not on margin", () => {
+    const marginOnly: AssistantScope = { canSeeMargin: true, canSeeCommission: false, orderScope: "all" };
+    const r = redactFacts(facts, marginOnly) as typeof facts;
+    expect(r.sales_intel.brief.marginCenti).toBe(123456);          // allowed
+    expect(r.sales_intel.openItems[0].commission).toBe(REDACTED);  // still hidden
+  });
+
+  test("non-money data is untouched — redaction must not gut the answer", () => {
+    const r = redactFacts(facts, SALES_REP) as typeof facts;
+    expect(r.sales_intel.brief.headline).toBe("Q3 up");
+    expect(r.sales_intel.brief.revenue_centi).toBe(5_000_00);
+    expect(r.sales_intel.openItems[0].customer).toBe("Tan");
+    expect((r.sales_intel.openItems[1] as { nested: { quantity: number } }).nested.quantity).toBe(3);
+  });
+
+  test("a redacted value is a MARKER, not a deletion or a zero", () => {
+    // A missing key lets the model reason as if the figure were nil, and a 0 is an
+    // outright lie. The marker makes "I am not allowed to tell you" expressible.
+    const r = redactFacts(facts, SALES_REP) as typeof facts;
+    expect("marginCenti" in r.sales_intel.brief).toBe(true);
+    expect(r.sales_intel.brief.marginCenti).not.toBe(0);
+  });
+
+  test("the owner's payload is returned untouched", () => {
+    expect(redactFacts(facts, OWNER)).toEqual(facts);
+    expect(redactFacts(facts, DIRECTOR)).toEqual(facts);
+  });
+
+  test("null / primitives / empty do not crash the walker", () => {
+    expect(redactFacts(null, SALES_REP)).toBeNull();
+    expect(redactFacts(7, SALES_REP)).toBe(7);
+    expect(redactFacts({}, SALES_REP)).toEqual({});
+    expect(redactFacts([], SALES_REP)).toEqual([]);
+  });
+});
+
+describe("scopeNote", () => {
+  test("tells the model to say 'not available', never to guess", () => {
+    const n = scopeNote(SALES_REP)!;
+    expect(n).toMatch(/margin and cost/);
+    expect(n).toMatch(/commission/);
+    expect(n).toMatch(/Never guess/i);
+  });
+
+  test("no note when nothing is hidden — no needless hedging in owner answers", () => {
+    expect(scopeNote(OWNER)).toBeNull();
+    expect(scopeNote(DIRECTOR)).toBeNull();
+  });
+});
