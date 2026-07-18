@@ -17,6 +17,8 @@
 
 import { registerAgent } from '../agent-scheduler';
 import type { Env } from '../../types';
+import { activeInstructions } from '../agent-console';
+import { askAgentBrain, type AgentBrainUsageSink } from '../agent-brain';
 import { summariseReadiness, type ReadinessLine } from '../../scm/lib/so-readiness';
 import { computeReleaseGate } from './release-gate';
 import { assessFulfilment, type FulfilmentInput } from './order-fulfilment';
@@ -183,9 +185,47 @@ export async function patrolOrderFulfilment(env: Env): Promise<OfPatrolResult> {
   };
 }
 
+const OF_FOCUS_SYSTEM = [
+  'You are the Order Fulfilment Agent of Houzs, a Malaysian B2C furniture retailer.',
+  "You are given today's deterministic readiness brief. Write ONE short paragraph",
+  '(3-5 sentences, plain English, no markdown, no emoji) telling the owner which',
+  'blocked orders matter most today and WHO needs to act — Sales, Finance,',
+  'Procurement, the Warehouse or the Office. Judgment and prioritisation only:',
+  'never invent an order, a number or a blocker that is not in the payload.',
+  'Honour ownerInstructions when present.',
+].join(' ');
+
+async function writeOfAiFocus(env: Env, focus: string): Promise<void> {
+  await env.DB.prepare(
+    `UPDATE of_agent_briefs SET ai_focus = ?
+      WHERE id = (SELECT id FROM of_agent_briefs ORDER BY generated_at DESC LIMIT 1)`,
+  ).bind(focus).run();
+}
+
 registerAgent({
   family: 'OF',
   task: 'of-run',
   cadence: { firstRunHour: 8, minGapHours: 6, maxRunsPerDay: 2 },
-  run: async (env) => (await patrolOrderFulfilment(env)).summary,
+  run: async (env, ctx) => {
+    const r = await patrolOrderFulfilment(env);
+    /* AI focus — first run of the day only (ctx.llmKey is budget-gated and
+       undefined otherwise). Best-effort: a brain failure leaves ai_focus NULL and
+       every deterministic finding still ships. */
+    if (ctx.llmKey) {
+      const sink: AgentBrainUsageSink = { tokensIn: 0, tokensOut: 0 };
+      const ownerInstructions = await activeInstructions(env.DB, 'OF');
+      const focus = await askAgentBrain(ctx.llmKey, {
+        system: OF_FOCUS_SYSTEM,
+        payload: { brief: r.brief, ownerInstructions },
+        maxTokens: 400,
+        usageSink: sink,
+      });
+      ctx.addTokens(sink.tokensIn, sink.tokensOut);
+      if (focus) {
+        await writeOfAiFocus(env, focus).catch((e) =>
+          console.warn('[of-agent] ai_focus write failed:', e));
+      }
+    }
+    return r.summary;
+  },
 });
