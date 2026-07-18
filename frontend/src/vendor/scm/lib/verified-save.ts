@@ -31,12 +31,9 @@
 // read must come from the shared accessor, never an inlined localStorage hit.
 import { readAuthToken } from '../../../lib/authToken';
 
-// PROD fallback is same-origin (Pages Function proxies /api/*); see
-// authed-fetch.ts for the rationale.
-const API_URL =
-  (import.meta.env.VITE_API_URL ||
-    (import.meta.env.PROD ? '' : 'https://autocount-sync-api.houzs-erp.workers.dev')) +
-  '/api/scm';
+import { API_ORIGIN } from '../../../lib/apiBase';
+
+const API_URL = API_ORIGIN + '/api/scm';
 
 // Multi-company (Phase 0c): stamp the active company on every SCM request so
 // the backend's companyContext resolves it. The id is written by the top-bar

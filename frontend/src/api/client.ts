@@ -16,16 +16,12 @@ import { companyHeader } from "../lib/activeCompany";
 // Shared with the vendored SCM fetch layer — see lib/authToken.
 import { AUTH_TOKEN_KEY as TOKEN_KEY, readAuthToken } from "../lib/authToken";
 
-// Production default is SAME-ORIGIN: /api/* is proxied to the Worker by the
-// Pages Function (functions/api/[[path]].ts). Calling the Worker's
-// *.workers.dev origin directly broke for field staff on Malaysian mobile
-// carriers that intermittently block that domain (2026-07-09 driver login
-// timeouts). VITE_API_URL still overrides (the staging Pages build points at
-// the staging Worker); local `vite dev` has no proxy, so dev builds keep the
-// absolute workers.dev fallback.
-const baseUrl =
-  (import.meta.env.VITE_API_URL as string) ||
-  (import.meta.env.PROD ? "" : "https://autocount-sync-api.houzs-erp.workers.dev");
+// Same-origin on web, the Pages origin on native, workers.dev only in dev.
+// The rationale (and the carrier-blocking incident that forced it) lives with
+// the constant.
+import { API_ORIGIN } from "../lib/apiBase";
+
+const baseUrl = API_ORIGIN;
 
 // Token storage — the writer. The AuthContext writes here on login/logout.
 // The READ lives in lib/authToken so the vendored SCM layer shares it verbatim

@@ -16,6 +16,7 @@ function surveyCompanyName(): string {
 }
 import { Star, CheckCircle2 } from "lucide-react";
 import { cn, formatDate } from "../lib/utils";
+import { API_ORIGIN } from "../lib/apiBase";
 import { humanHttpMessage } from "../api/client";
 
 // Public (unauthenticated) customer satisfaction survey. Loaded via
@@ -46,10 +47,7 @@ export function SurveyPublic() {
   useEffect(() => {
     (async () => {
       try {
-        const base =
-          (import.meta.env.VITE_API_URL as string) ||
-          (import.meta.env.PROD ? "" : "https://autocount-sync-api.houzs-erp.workers.dev");
-        const res = await fetch(`${base}/api/survey/${encodeURIComponent(token)}`);
+        const res = await fetch(`${API_ORIGIN}/api/survey/${encodeURIComponent(token)}`);
         if (!res.ok) {
           throw new Error(humanHttpMessage(res.status, await res.text().catch(() => "")));
         }
@@ -72,8 +70,7 @@ export function SurveyPublic() {
     setSubmitting(true);
     setError(null);
     try {
-      const base = (import.meta.env.VITE_API_URL as string) || "";
-      const res = await fetch(`${base}/api/survey/${encodeURIComponent(token)}`, {
+      const res = await fetch(`${API_ORIGIN}/api/survey/${encodeURIComponent(token)}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ rating, notes: notes.trim() || undefined }),

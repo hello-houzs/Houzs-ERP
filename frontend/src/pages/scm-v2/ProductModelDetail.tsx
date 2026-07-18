@@ -19,6 +19,7 @@
 // ----------------------------------------------------------------------------
 
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { API_ORIGIN } from '../../lib/apiBase';
 import { useNavigate, useParams } from 'react-router';
 import { Link } from 'react-router-dom';
 import { ArrowLeft, ImagePlus, Save, Store, Trash2, Wand2, X, Power, PowerOff } from 'lucide-react';
@@ -77,10 +78,7 @@ const BACK_LINK =
    · legacy Supabase-Storage upload → a full https:// public URL → use as-is.
    (Commander 2026-05-28: Model photo rendered as a broken image because the
    relative R2 path resolved against the backend origin → 404.) */
-const API_URL =
-  ((import.meta.env.VITE_API_URL ||
-    (import.meta.env.PROD ? '' : 'https://autocount-sync-api.houzs-erp.workers.dev')) as string) +
-  '/api/scm';
+const API_URL = API_ORIGIN + '/api/scm';
 const resolveModelPhotoUrl = (u: string | null | undefined): string | undefined => {
   if (!u) return undefined;
   if (/^https?:\/\//i.test(u) || u.startsWith('data:')) return u;

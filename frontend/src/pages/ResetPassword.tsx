@@ -19,9 +19,9 @@ import { validatePasswordStrength } from "../lib/passwordStrength";
 
 // PROD default is same-origin (Pages Function proxies /api/* to the Worker) —
 // reset links open on phones where *.workers.dev can be carrier-blocked.
-const baseUrl =
-  (import.meta.env.VITE_API_URL as string) ||
-  (import.meta.env.PROD ? "" : "https://autocount-sync-api.houzs-erp.workers.dev");
+import { API_ORIGIN } from "../lib/apiBase";
+
+const baseUrl = API_ORIGIN;
 
 function AuthShell({
   eyebrow,

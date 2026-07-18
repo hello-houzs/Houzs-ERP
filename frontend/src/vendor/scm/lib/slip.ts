@@ -28,10 +28,9 @@ import { humanApiError } from './authed-fetch';
 // See authed-fetch.ts's import note: the token may be in sessionStorage, so the
 // read must come from the shared accessor, never an inlined localStorage hit.
 import { readAuthToken } from '../../../lib/authToken';
+import { API_ORIGIN } from '../../../lib/apiBase';
 
-const API_URL =
-  ((import.meta as { env?: Record<string, string | undefined> }).env?.VITE_API_URL
-    || (import.meta.env.PROD ? '' : 'https://autocount-sync-api.houzs-erp.workers.dev')) + '/api/scm';
+const API_URL = API_ORIGIN + '/api/scm';
 
 const token = (): string => {
   const t = readAuthToken();

@@ -15,6 +15,7 @@ import {
 } from "../lib/branding";
 import { PasswordStrengthMeter } from "../components/PasswordStrengthMeter";
 import { validatePasswordStrength } from "../lib/passwordStrength";
+import { API_ORIGIN } from "../lib/apiBase";
 import { useIsMobile } from "../mobile/useIsMobile";
 import { AmbientSnow } from "../components/AmbientSnow";
 
@@ -546,9 +547,7 @@ export function AcceptInviteScreen() {
   // Token arrives via the real public route (/invite/:token); the old
   // email links used a #invite= hash, still accepted for backward-compat.
   const { token: routeToken } = useParams<{ token: string }>();
-  const baseUrl =
-    (import.meta.env.VITE_API_URL as string) ||
-    (import.meta.env.PROD ? "" : "https://autocount-sync-api.houzs-erp.workers.dev");
+  const baseUrl = API_ORIGIN;
   const [token, setToken] = useState("");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");

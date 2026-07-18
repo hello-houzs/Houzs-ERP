@@ -10,6 +10,7 @@
 // ----------------------------------------------------------------------------
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { API_ORIGIN } from '../../lib/apiBase';
 import { ProductModelDetail } from './ProductModelDetail';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
 import { Search, Plus, Trash2, Truck, X, ImageOff, Upload, Edit3 } from 'lucide-react';
@@ -490,10 +491,7 @@ function FilterChip({
    photo_url). Errors surface as a small red caption under the thumb so
    we don't block the table layout. */
 
-const API_URL =
-  ((import.meta.env.VITE_API_URL ||
-    (import.meta.env.PROD ? '' : 'https://autocount-sync-api.houzs-erp.workers.dev')) as string) +
-  '/api/scm';
+const API_URL = API_ORIGIN + '/api/scm';
 const PHOTO_MAX_BYTES_CLIENT = 2 * 1024 * 1024;
 
 /** Mirror of the POS catalog's resolvePhotoUrl(): photo_url is stored as

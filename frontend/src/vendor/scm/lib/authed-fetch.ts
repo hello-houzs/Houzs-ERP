@@ -26,6 +26,7 @@ import { serviceConfirm } from './dialog-service';
 // authenticated user and every /scm/* page throws not_authenticated. This is
 // the vendor auth boundary — it is exactly where the host's answer belongs.
 import { readAuthToken } from '../../../lib/authToken';
+import { API_ORIGIN } from '../../../lib/apiBase';
 
 // `||` not `??`: the CI build inlines VITE_API_URL as an EMPTY STRING when the
 // repo var is unset, and `'' ?? default` keeps `''`. PROD fallback is now
@@ -34,16 +35,10 @@ import { readAuthToken } from '../../../lib/authToken';
 // `vite dev` has no proxy, so dev keeps the absolute Worker URL.
 /* EXPORTED so a caller that must bypass authedFetch (a raw byte stream, which
    this helper JSON-parses) can reuse this base instead of declaring its own.
-   `||` not `??` is load-bearing — an empty-string VITE_API_URL must fall back
-   to the worker, and `??` would keep the empty string. slip.ts and
-   verified-save.ts still declare their own copies of this constant; converging
-   those two onto this export is a follow-up, deliberately not done here — both
-   carry the same `||` fix today and re-testing their upload paths is outside a
-   fleet PR. */
-export const API_URL =
-  (import.meta.env.VITE_API_URL ||
-    (import.meta.env.PROD ? '' : 'https://autocount-sync-api.houzs-erp.workers.dev')) +
-  '/api/scm';
+   The origin itself now comes from the host (lib/apiBase) rather than being
+   re-derived here -- native needs a third branch and the copies had begun to
+   drift. */
+export const API_URL = API_ORIGIN + '/api/scm';
 
 /* ── Request timeout (ported from 2990 b9d0035c) ───────────────────────────
    A fetch with no timeout hangs the UI forever on a stalled connection — the
