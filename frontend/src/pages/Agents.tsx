@@ -8,6 +8,7 @@ import {
   Headset,
   Package,
   BarChart3,
+  ClipboardCheck,
   Play,
   Pause,
   Power,
@@ -32,7 +33,7 @@ import { cn, formatCurrency, relativeTime } from "../lib/utils";
 
 // ── Types (mirror the /api/agents contract, docs/agent-console-api.md) ────────
 
-type Family = "DELIVERY" | "DOCUMENT" | "COLLECTION" | "CS" | "PROCUREMENT" | "PMS";
+type Family = "DELIVERY" | "DOCUMENT" | "COLLECTION" | "CS" | "PROCUREMENT" | "PMS" | "OF";
 
 interface RunRow {
   id: string;
@@ -91,8 +92,12 @@ interface Finding {
   id: string;
   kind: string;
   severity: string;
-  docType: string;
-  docNo: string | null;
+  docType?: string;
+  docNo?: string | null;
+  // Order-fulfilment (OF) findings are order-centric, not doc-centric.
+  soDocNo?: string;
+  readiness?: number;
+  owner?: string | null;
   summary: string;
   status: string;
   createdAt: string | null;
@@ -155,6 +160,7 @@ const FAMILIES: FamilyMeta[] = [
   { id: "CS", label: "Customer service", base: "cs", icon: Headset },
   { id: "PROCUREMENT", label: "Procurement", base: "procurement", icon: Package },
   { id: "PMS", label: "Roadshow / PMS", base: "pms", icon: BarChart3 },
+  { id: "OF", label: "Order fulfilment", base: "of", icon: ClipboardCheck, findings: true },
 ];
 
 const CARD = "relative overflow-hidden rounded-md border border-border bg-surface p-6 shadow-stone";
@@ -736,7 +742,11 @@ function FindingsPanel({ meta }: { meta: FamilyMeta }) {
               <Badge tone="neutral" caseless>
                 {f.kind.replace(/_/g, " ").toLowerCase()}
               </Badge>
-              {f.docNo && <span className="text-[11px] font-medium text-ink-secondary">{f.docNo}</span>}
+              {(f.docNo || f.soDocNo) && <span className="text-[11px] font-medium text-ink-secondary">{f.docNo || f.soDocNo}</span>}
+              {f.owner && <Badge tone="neutral" caseless>{f.owner.toLowerCase()}</Badge>}
+              {typeof f.readiness === "number" && (
+                <span className="text-[11px] text-ink-muted">ready {f.readiness}%</span>
+              )}
               {f.createdAt && <span className="text-[11px] text-ink-muted">{relativeTime(f.createdAt)}</span>}
             </div>
             <p className="text-[13px] leading-snug text-ink">{f.summary}</p>
