@@ -447,8 +447,14 @@ const BRANDING_FIELDS: {
   {
     key: "address",
     label: "Address",
-    placeholder: "Lot / street, area, postcode city, state.",
-    hint: "Printed as the letterhead address; split onto two lines on a comma boundary.",
+    placeholder: "Lot / street, area, city, state.",
+    hint: "Printed as the letterhead address; split onto two lines on a comma boundary. The postcode below is appended automatically if it isn't already in this text.",
+  },
+  {
+    key: "postcode",
+    label: "Postcode",
+    placeholder: "43300",
+    hint: "Woven into the printed letterhead address.",
   },
   { key: "phone", label: "Phone", placeholder: "011-1110 8883" },
   { key: "email", label: "Email", placeholder: "hello@houzscentury.com" },
