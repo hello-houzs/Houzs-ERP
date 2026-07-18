@@ -34,7 +34,6 @@
 // the vendored delivery-return-queries slice.
 
 import { useMemo, useState, type ReactNode } from "react";
-import { canViewScmCosting } from "../../auth/salesAccess";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -73,7 +72,6 @@ import {
 } from "../../components/scm-v2/DocumentRelationshipMapModal";
 import { cn } from "../../lib/utils";
 import { fmtMoneyCenti, lineIdentity } from "@2990s/shared";
-import { useAuth } from "../../auth/AuthContext";
 
 // ─── Row shapes (subset — see DeliveryReturnDetail.tsx for full 40-field
 // header) ────────────────────────────────────────────────────────────────
@@ -298,132 +296,10 @@ function AsideCard({ title, children }: { title: string; children: ReactNode }) 
   );
 }
 
-// ─── Totals · Margin card (finance-gated) ──────────────────────────────────
-// Restored from the 2990 DeliveryReturnDetail TotalsCard. Cost / margin never
-// render for a non-finance viewer — the caller gates the whole card behind
-// user.project_finance_viewer (mirrors the #574 list-column rule). "Revenue"
-// is the returned value (local_total_centi); margin % = margin_pct_basis / 100.
-// DR has NO service bucket. Category cost columns fall back to 0 for rows
-// predating the cost backfill.
-
-function MarginKpi({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: string;
-  tone?: string;
-}) {
-  return (
-    <div className="rounded-md border border-border-subtle bg-surface-2 px-2.5 py-2">
-      <div className="font-mono text-[9px] font-semibold uppercase tracking-brand text-ink-muted">
-        {label}
-      </div>
-      <div
-        className={cn(
-          "mt-1 font-money text-[15px] font-bold leading-none text-ink",
-          tone
-        )}
-      >
-        {value}
-      </div>
-    </div>
-  );
-}
-
-function TotalsMarginCard({
-  currency,
-  revenue,
-  cost,
-  margin,
-  marginPctBasis,
-  categories,
-}: {
-  currency: string;
-  revenue: number;
-  cost: number;
-  margin: number;
-  marginPctBasis: number;
-  categories: Array<{ label: string; rev: number; cost: number }>;
-}) {
-  const marginPct = marginPctBasis / 100;
-  /* An unknown margin is NOT a bad margin — NaN fails every comparison and
-     fell through to "text-err". Unknown → no tone + "—" (see SO detail). */
-  const marginKnown = Number.isFinite(margin) && Number.isFinite(marginPct);
-  const marginTone = !marginKnown
-    ? undefined
-    : margin <= 0
-      ? "text-err"
-      : marginPct >= 30
-        ? "text-synced"
-        : marginPct >= 15
-          ? "text-accent-bright"
-          : "text-err";
-  const rows = categories.filter((cat) => cat.rev > 0 || cat.cost > 0);
-  return (
-    <AsideCard title="Totals · Margin">
-      <div className="grid grid-cols-2 gap-2">
-        <MarginKpi label="Returned value" value={fmtMoney(revenue, currency)} />
-        <MarginKpi label="Cost" value={fmtMoney(cost, currency)} />
-        <MarginKpi
-          label="Margin"
-          value={fmtMoney(margin, currency)}
-          tone={marginTone}
-        />
-        <MarginKpi
-          label="Margin %"
-          value={revenue > 0 && marginKnown ? `${marginPct.toFixed(1)}%` : "—"}
-          tone={marginTone}
-        />
-      </div>
-      {rows.length > 0 && (
-        <div className="mt-4">
-          <div className="mb-2 font-mono text-[10px] font-semibold uppercase tracking-brand text-ink-muted">
-            By category
-          </div>
-          <div>
-            {rows.map((cat) => {
-              const catMargin = cat.rev - cat.cost;
-              const tone =
-                cat.rev <= 0
-                  ? "text-ink-muted"
-                  : catMargin > 0
-                    ? "text-synced"
-                    : catMargin < 0
-                      ? "text-err"
-                      : "text-ink-muted";
-              return (
-                <div
-                  key={cat.label}
-                  className="border-b border-border-subtle py-2 last:border-b-0"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[12.5px] font-semibold text-ink">
-                      {cat.label}
-                    </span>
-                    <span
-                      className={cn(
-                        "font-money text-[12.5px] font-semibold",
-                        tone
-                      )}
-                    >
-                      {fmtMoney(catMargin, currency)}
-                    </span>
-                  </div>
-                  <div className="mt-0.5 flex items-center justify-between gap-2 text-[11px] text-ink-muted">
-                    <span>Value {fmtMoney(cat.rev, currency)}</span>
-                    <span>Cost {fmtMoney(cat.cost, currency)}</span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-    </AsideCard>
-  );
-}
+// ─── Totals · Margin card — REMOVED (owner 2026-07-17) ─────────────────────
+// The Returned value / Cost / Margin / Margin% aside card is gone from the DR
+// document view for EVERYONE; costing moves to the separate Finance
+// "Fulfillment Costing" module. The customer-facing Refund figure is untouched.
 
 function KeyDateRow({ k, v, muted }: { k: string; v: string; muted?: boolean }) {
   return (
@@ -507,24 +383,20 @@ function ActivityRow({
 //
 // SO detail = Order total, DO detail = Dispatch, SI detail = Outstanding.
 // The DR detail hero is REFUND — the money the biz owes back. Big red
-// while pending, big green stamp once actually refunded. Cost + margin
-// sub-lines show the loss the return baked in so accounting can see the
-// hit at a glance.
+// while pending, big green stamp once actually refunded. (Owner 2026-07-17:
+// the Line cost / Margin hit sub-lines were removed for EVERYONE — costing
+// moves to the separate Finance "Fulfillment Costing" module.)
 
 function RefundHeroCard({
   header,
   items,
-  canFinance,
 }: {
   header: DrHeader;
   items: DrItem[];
-  canFinance: boolean;
 }) {
   const eff = effectiveOf(header);
   const t = EFFECTIVE_TONE[eff];
   const refund = refundOf(header, items);
-  const cost = header.total_cost_centi ?? 0;
-  const margin = header.total_margin_centi ?? refund - cost;
   const isRefunded = eff === "refunded";
   return (
     <div className="rounded-lg bg-sidebar px-5 py-5 text-sidebar-ink shadow-stone">
@@ -557,22 +429,6 @@ function RefundHeroCard({
 
       <div className="mt-4 space-y-2 border-t border-white/10 pt-4">
         <HeroLine k="Refund" v={fmtMoney(refund, header.currency)} strong />
-        {/* Cost / margin never render for a non-finance viewer (mirrors #574).
-            The Refund line stays visible to everyone. */}
-        {canFinance && (
-          <>
-            <HeroLine
-              k="Line cost"
-              v={fmtMoney(cost, header.currency)}
-              tone="muted"
-            />
-            <HeroLine
-              k="Margin hit"
-              v={fmtMoney(margin, header.currency)}
-              tone={margin < 0 ? "err" : "muted"}
-            />
-          </>
-        )}
       </div>
     </div>
   );
@@ -628,14 +484,6 @@ export function DeliveryReturnDetailV2() {
   const { nameOf: salespersonNameOf } = useStaffLookup();
   const notify = useNotify();
   const showCustomerPo = useCustomerPoNotice();
-  // Finance-viewer gate — cost / margin (the Totals·Margin card AND the hero's
-  // Line cost / Margin hit sub-lines) must never render for a non-finance user.
-  // Same rule as the #574 DR list finance columns (canViewScmFinance server-side).
-  const { user } = useAuth();
-  /* SCM costing is dark — the catalog carries no costs, so every margin it
-     produces is an artifact. The gate lives in auth/salesAccess so the PMS
-     project P&L (real data) stays up while this stays off. */
-  const canFinance = canViewScmCosting(user);
 
   const deliveryReturn =
     (detail.data as { deliveryReturn?: DrHeader } | undefined)?.deliveryReturn ??
@@ -1268,43 +1116,12 @@ export function DeliveryReturnDetailV2() {
 
           <DetailAside>
             <div className="hidden lg:sticky lg:top-[124px] space-y-3 md:block">
-              <RefundHeroCard
-                header={deliveryReturn}
-                items={items}
-                canFinance={canFinance}
-              />
+              <RefundHeroCard header={deliveryReturn} items={items} />
 
-              {canFinance && (
-                <TotalsMarginCard
-                  currency={deliveryReturn.currency}
-                  revenue={deliveryReturn.local_total_centi}
-                  cost={deliveryReturn.total_cost_centi ?? 0}
-                  margin={deliveryReturn.total_margin_centi ?? 0}
-                  marginPctBasis={deliveryReturn.margin_pct_basis ?? 0}
-                  categories={[
-                    {
-                      label: "Mattress / Sofa",
-                      rev: deliveryReturn.mattress_sofa_centi ?? 0,
-                      cost: deliveryReturn.mattress_sofa_cost_centi ?? 0,
-                    },
-                    {
-                      label: "Bedframe",
-                      rev: deliveryReturn.bedframe_centi ?? 0,
-                      cost: deliveryReturn.bedframe_cost_centi ?? 0,
-                    },
-                    {
-                      label: "Accessories",
-                      rev: deliveryReturn.accessories_centi ?? 0,
-                      cost: deliveryReturn.accessories_cost_centi ?? 0,
-                    },
-                    {
-                      label: "Others",
-                      rev: deliveryReturn.others_centi ?? 0,
-                      cost: deliveryReturn.others_cost_centi ?? 0,
-                    },
-                  ]}
-                />
-              )}
+              {/* Owner 2026-07-17: Totals·Margin (Returned value / Cost / Margin)
+                  card removed from the DR document view for EVERYONE — costing
+                  moves to the separate Finance "Fulfillment Costing" module. The
+                  customer-facing Refund figure is untouched. */}
 
               <AsideCard title="Key dates">
                 <KeyDateRow

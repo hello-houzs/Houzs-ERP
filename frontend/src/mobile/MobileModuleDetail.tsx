@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { canViewScmCosting, visibleFields } from "../auth/salesAccess";
+import { visibleFields } from "../auth/salesAccess";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { lineIdentity } from "@2990s/shared";
 import { authedFetch } from "../vendor/scm/lib/authed-fetch";
@@ -253,10 +253,11 @@ const DOC_MODULES: Record<string, DocMap> = {
       ["Reference", firstOf(h.ref, h.po_doc_no)],
       ["Salesperson", firstOf(h.agent)],
     ],
+    /* Owner 2026-07-17: Cost + Margin stat tiles removed from the mobile DO
+       document view for EVERYONE (desktop parity — the DO detail Totals·Margin
+       card was removed too). Costing moves to the separate Finance module. */
     stats: (h) => [
       ["Total", money(h.local_total_centi), "var(--ink)"],
-      ["Cost", money(h.total_cost_centi), "#a16a2e"],
-      ["Margin", money(h.total_margin_centi), "#2f8a5b"],
     ],
     /* Description ONCE, code NOT displayed — the shared rule
        (vendor/shared/line-identity.ts). `name` already preferred the
@@ -792,12 +793,6 @@ function DocumentDetail({ map, row, moduleKey, onBack, onEdit, onPOD }: { map: D
   const id = docId(row);
   const qc = useQueryClient();
   const detailNotify = useNotify();
-  // Finance-viewer gate — a scoped salesperson can now open their own DO / SI on
-  // mobile (readInheritsFrom scm.sales.orders). The backend already strips
-  // cost/margin from the payload for a non-finance caller (canViewScmFinance);
-  // drop the Cost / Margin stat tiles too so they don't render as RM0.00.
-  const { user: financeUser } = useAuth();
-  const canFinanceStats = canViewScmCosting(financeUser);
   const { data, isLoading, error } = useQuery({
     queryKey: ["mobile-module-detail", map.path, id],
     queryFn: () => authedFetch<Record<string, unknown>>(`${map.path}/${encodeURIComponent(id)}`),
@@ -810,11 +805,7 @@ function DocumentDetail({ map, row, moduleKey, onBack, onEdit, onPOD }: { map: D
   const header = (data?.[map.headerKey] as any) ?? row ?? {};
   const items = (data?.items as any[]) ?? [];
   const meta = map.meta(header).filter(([, v]) => v && v !== "—");
-  const stats = map
-    .stats(header)
-    .map((st) =>
-      st && !canFinanceStats && (st[0] === "Cost" || st[0] === "Margin") ? null : st,
-    );
+  const stats = map.stats(header);
 
   const cancelled = isCancelledDoc(map.status(header));
 

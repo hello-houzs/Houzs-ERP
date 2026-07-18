@@ -112,7 +112,6 @@ import { useStaff } from '../../vendor/scm/lib/admin-queries';
 import { sortByText, sortByNumeric } from '../../vendor/scm/lib/sort-options';
 import { soStatusDisplay, type DeliveryState, type SoLifecycle } from '../../vendor/scm/lib/so-status';
 import { useAuth as useHouzsAuth } from '../../auth/AuthContext';
-import { canViewScmCosting } from '../../auth/salesAccess';
 import { useAuth } from '../../vendor/scm/lib/auth';
 import { useVenues } from '../../vendor/scm/lib/venues-queries';
 import { useStateWarehouseMappings } from '../../vendor/scm/lib/state-warehouse-queries';
@@ -156,12 +155,7 @@ const DATES_XOR_WARN_STYLE: CSSProperties = {
 const EMERGENCY_HEADER_NOTE_STYLE: CSSProperties = {
   fontSize: 'var(--fs-12)', color: 'var(--fg-muted)',
 };
-/* Houzs 2026-06-24 — the totals KPI grid moved from this inline const to the
-   .totalsKpiGrid CSS-module class so the phone breakpoint can collapse it to
-   2×2 (inline styles can't carry a media query). See SalesOrderDetail.module.css. */
-/* PR — Step KPI tile values from fs-18 → fs-15 so the totals card no longer
-   reads as another hero. Margin / Margin % share this override. */
-const TOTALS_KPI_VALUE_STYLE: CSSProperties = { fontSize: 'var(--fs-15, 15px)' };
+/* TOTALS_KPI_VALUE_STYLE removed with the Totals·Margin card (owner 2026-07-17). */
 const HISTORY_STATUS_PILL_STYLE: CSSProperties = { marginLeft: 6, fontSize: 'var(--fs-10)' };
 
 /* 2026-06-04 — the required-variant rule lives in @2990s/shared
@@ -1806,13 +1800,10 @@ export const SalesOrderDetail = () => {
                     header date when the line hasn't been overridden. */}
                 <th className={styles.tableRight}>Delivery</th>
                 <th className={styles.tableRight}>Total</th>
-                {/* Task #114 — Per-line cost + margin columns. Cost is
-                    snapshotted server-side from mfg_products on insert;
-                    margin = line_total − line_cost. Mirrors the Houzs
-                    Sales Order line-item layout commander pointed at. */}
-                <th className={styles.tableRight}>Unit Cost</th>
-                <th className={styles.tableRight}>Line Cost</th>
-                <th className={styles.tableRight}>Margin</th>
+                {/* Owner 2026-07-17: per-line Unit Cost / Line Cost / Margin
+                    columns removed from the SO document view for EVERYONE —
+                    costing moves to the separate Finance "Fulfillment Costing"
+                    module. Customer-facing columns (Unit / Disc / Total) stay. */}
               </tr>
             </thead>
             <tbody>
@@ -1931,31 +1922,8 @@ export const SalesOrderDetail = () => {
                     ) : '—'}
                   </td>
                   <td className={styles.priceCell} data-label="Total">{fmtRm(it.total_centi, header.currency)}</td>
-                  {/* Task #114 — cost + margin columns. unit_cost_centi is
-                      snapshotted server-side from mfg_products on insert.
-                      Margin coloring rule matches Houzs: green > 0, red < 0,
-                      grey when zero (typically a not-yet-priced item). */}
-                  <td className={styles.tableRight} data-label="Unit Cost">
-                    <span className={styles.muted}>
-                      {it.unit_cost_centi > 0 ? fmtRm(it.unit_cost_centi, header.currency) : '—'}
-                    </span>
-                  </td>
-                  <td className={styles.tableRight} data-label="Line Cost">
-                    <span className={styles.muted}>
-                      {it.line_cost_centi > 0 ? fmtRm(it.line_cost_centi, header.currency) : '—'}
-                    </span>
-                  </td>
-                  <td className={styles.tableRight} data-label="Margin">
-                    {it.total_centi > 0 ? (
-                      <span className={
-                        it.line_margin_centi > 0 ? styles.marginGood
-                        : it.line_margin_centi < 0 ? styles.marginBad
-                        : styles.muted
-                      } style={{ fontWeight: 600 }}>
-                        {fmtRm(it.line_margin_centi, header.currency)}
-                      </span>
-                    ) : <span className={styles.muted}>—</span>}
-                  </td>
+                  {/* Owner 2026-07-17: per-line Unit Cost / Line Cost / Margin
+                      cells removed for EVERYONE (see the <thead> note). */}
                 </tr>
                 );
               })}
@@ -1964,21 +1932,13 @@ export const SalesOrderDetail = () => {
         )}
       </section>
 
-      {/* Revenue / Cost / Margin / Margin % + a per-category breakdown.
-          Restored by Task #114 (commander 2026-05-27: "Houzs ERP 会计算全部
-          sku 的 costing 和自动总结一个 category 的 costing"), then gated by
-          canViewScmCosting in #666. The gate stays regardless of what the
-          COSTING_DISPLAY_ENABLED half is set to (off #649, on 2026-07-17): the
-          position half is permanent — cost/margin is Super Admin / Sales
-          Director / Finance Manager / Owner only, phone and desktop alike
-          (owner 2026-07-17).
-          Why this page needed its own: it is the legacy `?edit=1` ledger view
-          on the SAME route, reached from SalesOrderDetailV2's Edit button, and
-          it rendered the card UNCONDITIONALLY — so while #649 had the display
-          off, the number it existed to suppress was still one click away from
-          the page it gated. Two SO detail components live on one route; patch
-          both. */}
-      {canViewScmCosting(currentUser) && <TotalsCard header={header} />}
+      {/* Owner 2026-07-17: the Totals·Margin (Revenue / Cost / Margin / Margin%
+          + per-category breakdown) card is removed from the SO document view
+          for EVERYONE — including directors — because costing moves to the
+          separate Finance "Fulfillment Costing" module. This is the legacy
+          `?edit=1` editor reached from SalesOrderDetailV2's Edit button; the
+          read-only V2 view had its own copy of the card removed too. The
+          customer-facing Order Total section above is untouched. */}
 
       {/* ── Payment — Houzs-pattern transactions table ────────────── */}
       {/* Commander 2026-05-27: "Payment 也 follow Hookka 那个排版". Verbatim
@@ -3103,116 +3063,12 @@ const ScannedImageCard = ({
   );
 };
 
-const TotalsCard = ({ header }: { header: SoHeader }) => {
-  // margin_pct_basis is margin/revenue × 10000 (i.e. percent × 100). Divide
-  // by 100 to get the displayed percentage. Coloring rule matches the Houzs
-  // detail page: ≥30% emerald, ≥15% amber, < 15% red, 0/negative red.
-  const marginPct = header.margin_pct_basis / 100;
-  const marginCls =
-    header.total_margin_centi <= 0 ? styles.marginBad
-    : marginPct >= 30 ? styles.marginGood
-    : marginPct >= 15 ? styles.marginWarn
-    : styles.marginBad;
-
-  /* Task #114 — Per-category rows. Each category surfaces revenue, cost,
-     and margin (revenue − cost) so commander can see where the SO's
-     margin is coming from at a glance. Cost columns fall back to 0 when
-     the row pre-dates migration 0079 (it'll backfill on next item write). */
-  const categories: Array<{ label: string; rev: number; cost: number }> = [
-    { label: 'Mattress / Sofa', rev: header.mattress_sofa_centi, cost: header.mattress_sofa_cost_centi ?? 0 },
-    { label: 'Bedframe',        rev: header.bedframe_centi,      cost: header.bedframe_cost_centi      ?? 0 },
-    { label: 'Accessories',     rev: header.accessories_centi,   cost: header.accessories_cost_centi   ?? 0 },
-    { label: 'Others',          rev: header.others_centi,        cost: header.others_cost_centi        ?? 0 },
-    /* SO-SKU spec P2 (D1, migration 0155) — SERVICE bucket (delivery fee /
-       dispose / lift lines); hidden when zero so legacy docs keep 4 rows. */
-    ...((((header as unknown as { service_centi?: number | null }).service_centi ?? 0) > 0)
-      ? [{
-          label: 'Services',
-          rev:  (header as unknown as { service_centi?: number | null }).service_centi ?? 0,
-          cost: (header as unknown as { service_cost_centi?: number | null }).service_cost_centi ?? 0,
-        }]
-      : []),
-  ];
-
-  const fmtMarginClass = (rev: number, marginCenti: number) => {
-    if (rev <= 0) return styles.muted;
-    if (marginCenti > 0) return styles.marginGood;
-    if (marginCenti < 0) return styles.marginBad;
-    return styles.muted;
-  };
-
-  return (
-    <section className={styles.card}>
-      <header className={styles.cardHeader}>
-        <h2 className={styles.cardTitle}>Totals · Margin</h2>
-      </header>
-      <div className={styles.cardBody}>
-        {/* Top row — Revenue / Cost / Margin / Margin % as 4 KPI tiles.
-            Houzs 2026-06-24 — class (not inline const) so the phone breakpoint
-            can collapse 4 cols → 2×2 (Margin % was clipping at ~80px/col). */}
-        <div className={styles.totalsKpiGrid}>
-          <div>
-            <div className={styles.totalLabel}>Revenue</div>
-            <div className={styles.grandTotal} style={TOTALS_KPI_VALUE_STYLE}>
-              {fmtRm(header.local_total_centi, header.currency)}
-            </div>
-          </div>
-          <div>
-            <div className={styles.totalLabel}>Cost</div>
-            <div className={styles.totalValue} style={TOTALS_KPI_VALUE_STYLE}>
-              {fmtRm(header.total_cost_centi, header.currency)}
-            </div>
-          </div>
-          <div>
-            <div className={styles.totalLabel}>Margin</div>
-            <div className={`${styles.totalValue} ${marginCls}`} style={TOTALS_KPI_VALUE_STYLE}>
-              {fmtRm(header.total_margin_centi, header.currency)}
-            </div>
-          </div>
-          <div>
-            <div className={styles.totalLabel}>Margin %</div>
-            <div className={`${styles.totalValue} ${marginCls}`} style={TOTALS_KPI_VALUE_STYLE}>
-              {header.local_total_centi > 0 ? `${marginPct.toFixed(1)}%` : '—'}
-            </div>
-          </div>
-        </div>
-
-        {/* By-category breakdown */}
-        <div className={styles.totalLabel} style={{ marginBottom: 'var(--space-2)' }}>
-          By Category
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
-          {/* Commander 2026-05-29 — only show categories that actually carry a
-             value; hide the 0.00 rows so the breakdown stays clean ("变弹性"). */}
-          {categories.filter((c) => c.rev > 0 || c.cost > 0).map(({ label, rev, cost }) => {
-            const margin = rev - cost;
-            return (
-              <div key={label} style={{
-                display: 'grid',
-                gridTemplateColumns: '1.4fr 1fr 1fr 1fr',
-                gap: 'var(--space-3)',
-                alignItems: 'baseline',
-              }}>
-                <div className={styles.totalLabel} style={{ textTransform: 'none', letterSpacing: 0, fontSize: 'var(--fs-13)' }}>
-                  {label}
-                </div>
-                <div className={styles.totalValue}>
-                  Revenue {fmtRm(rev, header.currency)}
-                </div>
-                <div className={styles.totalValue} style={{ color: 'var(--fg-muted)' }}>
-                  Cost {fmtRm(cost, header.currency)}
-                </div>
-                <div className={`${styles.totalValue} ${fmtMarginClass(rev, margin)}`}>
-                  Margin {fmtRm(margin, header.currency)}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    </section>
-  );
-};
+/* ── Totals · Margin card — REMOVED (owner 2026-07-17) ─────────────────────
+   The Revenue / Cost / Margin / Margin% card (and its per-category cost
+   breakdown) is gone from the SO document view for EVERYONE — costing moves to
+   the separate Finance "Fulfillment Costing" module. Customer-facing totals are
+   untouched. The header cost/margin columns (total_cost_centi etc.) remain in
+   the type + server payload; only their display is removed. */
 
 /* ════════════════════════════════════════════════════════════════════════
    Task #101 — dead code removal (2026-05-27)

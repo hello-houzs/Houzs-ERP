@@ -226,13 +226,16 @@ const SoLineCardInner = ({
      (isHatchSales in lib/auth.tsx — remove with the hatch). */
   const { staff } = useAuth();
   const canEditPrice = isAdminLevel(staff?.role) || isHatchSales(staff?.role);
-  /* Unified special-order price-visibility gate (owner-approved, PR "unified
-     special-order entry"). REUSES the SAME isAdminLevel gate the Unit Price
-     locks on (lib/auth.ts: "price stays locked unless isAdminLevel"). A
-     non-admin sales role only DESCRIBES the special order — every RM surcharge
-     on the presets AND the "Custom / other" price field are hidden for them;
-     office/admin see + edit the amounts as before. */
-  const showPrices = isAdminLevel(staff?.role);
+  /* Special-order price DISPLAY is off for EVERYONE on the order-entry
+     documents (owner 2026-07-17: costing leaves the SO/DO/SI/DR forms entirely
+     and moves to the separate Finance "Fulfillment Costing" module — even
+     Sales Director / Finance do not need to see it while opening documents).
+     So the preset "+MYR …" surcharges, the retired-line prices, the follow-up
+     option-group amounts, and the manual "Extra charge (RM)" field are all
+     hidden — the option NAME + checkbox stay, only the money is gone. The
+     server still applies every surcharge; this removes the DISPLAY only. Was
+     `isAdminLevel(staff?.role)` (the same gate the Unit Price locks on). */
+  const showPrices = false;
 
   const [search, setSearch] = useState(draft.description || draft.itemCode || '');
   const [picked, setPicked]         = useState<MfgProductRow | null>(null);
