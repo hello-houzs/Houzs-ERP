@@ -17,6 +17,7 @@ import {
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
 import { WarehouseFormDrawer } from '../../vendor/scm/components/WarehouseFormDrawer';
 import styles from './Suppliers.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -90,24 +91,30 @@ export const Warehouses = () => {
   ], []);
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div>
-          <h1 className={styles.title}>Warehouses</h1>
-        </div>
-        <div className={styles.actionsRow}>
-          <Link to="/scm/warehouses/racks" style={{ textDecoration: 'none' }}>
-            <Button variant="ghost" size="md">
-              <Layers {...ICON} />
-              <span>Racks &amp; Bins</span>
+    /* Page shell matches Inventory (PageHeader + space-y-4), NOT the vendored
+       .page card. Owner 2026-07-18: the framed look "弄得整个看起来很丑" and
+       Inventory is the reference. 68 of the /scm pages still use the vendored
+       shell and 33 use this one — Warehouses moves across; the rest are a
+       separate sweep, not smuggled into this diff. */
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Stock"
+        title="Warehouses"
+        actions={
+          <div className={styles.actionsRow}>
+            <Link to="/scm/warehouses/racks" style={{ textDecoration: 'none' }}>
+              <Button variant="ghost" size="md">
+                <Layers {...ICON} />
+                <span>Racks &amp; Bins</span>
+              </Button>
+            </Link>
+            <Button variant="primary" size="md" onClick={() => setCreating(true)}>
+              <Plus {...ICON} />
+              <span>New Warehouse</span>
             </Button>
-          </Link>
-          <Button variant="primary" size="md" onClick={() => setCreating(true)}>
-            <Plus {...ICON} />
-            <span>New Warehouse</span>
-          </Button>
-        </div>
-      </div>
+          </div>
+        }
+      />
 
       <div className={styles.headerRow}>
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--space-2)', fontSize: 'var(--fs-13)' }}>
