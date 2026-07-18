@@ -44,6 +44,7 @@ import {
 } from '../lib/lead-time';
 import { groupKeyFor } from '../lib/po-grouping';
 import { loadLeadBuffers } from '../../services/agents/procurement-learning';
+import { sendEmail, documentEmailHtml, isChannelEnabled } from '../../services/email';
 import { getSupabaseService } from '../../db/supabase';
 import { supabaseAuth } from '../middleware/auth';
 import { computeMrp } from './mrp';
@@ -2662,6 +2663,80 @@ mfgPurchaseOrders.patch('/:id/confirm', async (c) => {
     .eq('id', id)
     .maybeSingle();
   return c.json({ purchaseOrder: after ?? { id, status: 'SUBMITTED' } });
+});
+
+/* ── POST /:id/send-to-supplier — email the PO to its supplier (HUMAN action) ──
+   The Procurement agent only ever raises a DRAFT PO; a person confirms it and,
+   separately, chooses to send it. This is that send. It is NOT automatic and NOT
+   the agent's — an operator triggers it from the PO page.
+
+   The PO PDF is rendered in the BROWSER (the owner bars a backend PDF engine), so
+   the frontend posts the rendered PDF as base64 and this attaches it. Without a
+   pdf, a summary-only email still goes (documentEmailHtml).
+
+   FAIL-CLOSED: the `purchase_order` channel is seeded OFF (mig 0132) — a PO leaves
+   for an external supplier only when the owner has turned the channel on. */
+mfgPurchaseOrders.post('/:id/send-to-supplier', async (c) => {
+  const id = c.req.param('id');
+  const supabase = c.get('supabase');
+
+  let body: { pdfBase64?: unknown; message?: unknown } = {};
+  try { body = (await c.req.json()) as typeof body; } catch { body = {}; }
+
+  const { data: po, error } = await supabase
+    .from('purchase_orders')
+    .select('id, po_number, status, total_centi, currency, po_date, supplier:suppliers(name, email)')
+    .eq('id', id)
+    .maybeSingle();
+  if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
+  if (!po) return c.json({ error: 'not_found' }, 404);
+
+  const row = po as {
+    po_number?: string; status?: string; total_centi?: number; currency?: string; po_date?: string;
+    supplier?: { name?: string | null; email?: string | null } | null;
+  };
+  const supplierEmail = row.supplier?.email ?? null;
+  if (!supplierEmail) {
+    return c.json({ error: 'no_supplier_email', message: 'This supplier has no email address on file.' }, 400);
+  }
+  // Sending a DRAFT to a supplier would put an unconfirmed order in front of them.
+  if (String(row.status ?? '') === 'DRAFT') {
+    return c.json({ error: 'not_confirmed', message: 'Confirm the PO before sending it to the supplier.' }, 409);
+  }
+  if (!(await isChannelEnabled(c.env, 'purchase_order'))) {
+    return c.json({ error: 'channel_off', message: 'The purchase-order email channel is off. Turn it on in email settings to send.' }, 409);
+  }
+
+  const poNo = row.po_number ?? id;
+  const total = ((Number(row.total_centi ?? 0)) / 100).toFixed(2);
+  const cur = row.currency ?? 'MYR';
+  const html = documentEmailHtml({
+    docTypeLabel: 'Purchase Order',
+    docNo: poNo,
+    recipientName: row.supplier?.name ?? 'Supplier',
+    rows: [
+      { label: 'PO No.', value: poNo },
+      { label: 'Date', value: String(row.po_date ?? '').slice(0, 10) || '-' },
+      { label: 'Total', value: `${cur} ${total}` },
+    ],
+    note: typeof body.message === 'string' && body.message.trim() ? body.message.trim() : null,
+  });
+
+  const attachments = typeof body.pdfBase64 === 'string' && body.pdfBase64.length > 0
+    ? [{ filename: `${poNo}.pdf`, content: body.pdfBase64 }]
+    : undefined;
+
+  const res = await sendEmail(c.env, {
+    to: supplierEmail,
+    subject: `Purchase Order ${poNo}`,
+    html,
+    purpose: 'purchase_order',
+    refType: 'purchase_order',
+    // po id is a uuid; email_log.ref_id is INTEGER, so identity lives in the subject.
+    companyCode: null,
+    attachments,
+  });
+  return c.json({ sent: res.status === 'sent', result: res, to: supplierEmail });
 });
 
 mfgPurchaseOrders.patch('/:id/cancel', async (c) => {
