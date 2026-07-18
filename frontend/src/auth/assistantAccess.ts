@@ -16,6 +16,7 @@ export const ASSISTANT_DENIED_POSITIONS: ReadonlySet<string> = new Set([
   "driver",
   "helper",
   "storekeeper",
+  "storekeeper supervisor",
 ]);
 
 const normalise = (n: string | null | undefined): string =>

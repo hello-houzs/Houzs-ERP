@@ -8,14 +8,14 @@ import { ASSISTANT_DENIED_POSITIONS, canUseAssistant } from "./assistantAccess";
 
 describe("assistant deny list (FE mirror)", () => {
   test("exactly the three the owner named, lowercased", () => {
-    expect([...ASSISTANT_DENIED_POSITIONS].sort()).toEqual(["driver", "helper", "storekeeper"]);
+    expect([...ASSISTANT_DENIED_POSITIONS].sort()).toEqual(["driver", "helper", "storekeeper", "storekeeper supervisor"]);
   });
 
   test("denies the field crew, allows everyone else", () => {
-    for (const p of ["Driver", "Helper", "Storekeeper", " storekeeper "]) {
+    for (const p of ["Driver", "Helper", "Storekeeper", " storekeeper ", "Storekeeper Supervisor"]) {
       expect(canUseAssistant({ permissions: [], position_name: p }), p).toBe(false);
     }
-    for (const p of ["Storekeeper Supervisor", "Sales Executive", "Operation Manager", null]) {
+    for (const p of ["Sales Executive", "Operation Manager", null]) {
       expect(canUseAssistant({ permissions: [], position_name: p }), String(p)).toBe(true);
     }
   });
