@@ -89,14 +89,29 @@ export interface PositionAccessFlags {
    *  (Announcements are permission-gated today — announcements.read — so this is
    *  the flag the converged policy will drive, not a live gate this PR.) */
   announcementScope: "dept" | "all";
+  /** May MOVE MONEY — post a journal entry to the GL, or raise/post/cancel a
+   *  payment voucher (cash-out). Owner 2026-07-18: his "暂时都可以看到系统里的
+   *  所有内容" is about SEEING, and seeing is not doing — so default-full grants
+   *  every READ but NOT the money-moving writes. True for Finance Manager (it is
+   *  his job) and Super Admin; false for everyone else. Drives BOTH halves of the
+   *  carve-out: the money keys are lowered to `view` in the map (so the FE agrees)
+   *  and `moneyWriteDenial` enforces it at the door. */
+  canMoveMoney: boolean;
 }
 
-/** The unrestricted / management default — see everything, no row-scope. */
+/** The unrestricted / management default — SEE everything, but do NOT move money. */
 const FLAGS_FULL: PositionAccessFlags = {
   orderScope: "all",
   canSeeMargin: true,
   canSeeCommission: true,
   announcementScope: "all",
+  canMoveMoney: false,
+};
+
+/** Finance authority — full, INCLUDING the money-moving writes. */
+const FLAGS_FULL_MONEY: PositionAccessFlags = {
+  ...FLAGS_FULL,
+  canMoveMoney: true,
 };
 
 /** Restricted labour cohort — they do not operate order documents, and must not
@@ -107,6 +122,7 @@ const FLAGS_RESTRICTED: PositionAccessFlags = {
   canSeeMargin: false,
   canSeeCommission: false,
   announcementScope: "dept",
+  canMoveMoney: false,
 };
 
 /** Sales cohort — RECORDS the existing enforcement (own+downline, margin hidden,
@@ -117,6 +133,7 @@ const FLAGS_SALES: PositionAccessFlags = {
   canSeeMargin: false,
   canSeeCommission: false,
   announcementScope: "dept",
+  canMoveMoney: false,
 };
 
 // ── The restricted whitelists — the owner's manual, per position ─────────────
@@ -209,6 +226,135 @@ const RESTRICTED_ROWS: ReadonlyMap<string, readonly PolicyRow[]> = new Map(
   ].map(([name, rows]) => [normalisePosition(name as string), rows as readonly PolicyRow[]]),
 );
 
+// ── The MONEY-MOVING WRITE carve-out ─────────────────────────────────────────
+//
+// Owner 2026-07-18, ruling on the default-full exposure: his instruction was
+// "暂时都可以看到系统里的所有内容" — SEE everything. Seeing is not doing. So a
+// FULL position keeps every READ (nothing below lowers a read) but does NOT get
+// the money-moving WRITES; those stay with Finance Manager (and Super Admin).
+//
+// WHICH AREAS, measured against the routes rather than assumed (this repo's key
+// lists have repeatedly been incomplete, so each was opened and read):
+//   scm.finance.accounting — the real one. Gates /accounting/* (POST
+//     /journal-entries, POST /journal-entries/:id/post, POST /post/si/:no, POST
+//     /post/pi/:no — all post to the GL), /payment-vouchers/* (POST create,
+//     PATCH, POST /:id/post, POST /:id/cancel — cash-out), and /payment-audit-log/*
+//     (read-only). accounting.ts carries NO flat-permission gate of its own
+//     (grep-verified: zero hasHouzsPerm / requirePermission), so the area guard is
+//     its ONLY protection — which is exactly why the denial below has to exist.
+//     payment-vouchers additionally checks flat scm.payment_voucher.* perms, so it
+//     was already double-gated; accounting was not gated at all.
+//   scm.finance.outstanding — /outstanding/* + /unbilled-deliveries/*, which have
+//     ZERO write endpoints today (grep-verified). Included so the rule is
+//     future-proof: a money write added under Outstanding tomorrow is denied by
+//     default rather than silently open. Reducing it changes NOTHING today.
+//
+// DELIBERATELY OUT OF SCOPE, and this is a judgement the owner should see:
+// issuing a Sales Invoice posts its own revenue JE (lib/post-si-revenue, called
+// from routes/sales-invoices.ts on POST) and it rides `scm.sales.invoices`, not a
+// finance key. That write is NOT carved out, because raising DO + SI is OFFICE's
+// documented job — denying it would lock Office out of its core duty, which the
+// "must not lock anyone out of anything else" bar forbids. Same for Purchase
+// Invoice creation (scm.procurement.pi, Purchasing's job); the GL posting for a PI
+// is a separate call that DOES ride scm.finance.accounting and IS carved out. So
+// the line drawn here is: DOCUMENT ISSUANCE that books its own revenue stays with
+// the department that owns the document; the DEDICATED finance surfaces (manual
+// journal entries + payment vouchers) are Finance-only.
+const MONEY_WRITE_AREAS: ReadonlySet<string> = new Set([
+  "scm.finance.accounting",
+  "scm.finance.outstanding",
+]);
+
+/**
+ * Positions that MAY move money. Finance Manager because it is his job; Super
+ * Admin because the owner named it alongside `*` — a Super Admin whose ROLE lacks
+ * the `*` wildcard would otherwise reach this policy and be stripped of a
+ * capability it has today. The `*` wildcard itself never reaches this module
+ * (auth.ts short-circuits to fullAccessMap) and is exempt inside the denial too.
+ */
+const MONEY_WRITE_POSITIONS: ReadonlySet<string> = new Set(
+  ["Finance Manager", "Super Admin"].map(normalisePosition),
+);
+
+function canMoveMoney(positionName: string | null): boolean {
+  const name = normalisePosition(positionName ?? "");
+  return name ? MONEY_WRITE_POSITIONS.has(name) : false;
+}
+
+/** Plain-language reason for the 403 body — a sentence a person can act on. */
+const MONEY_DENY_REASON =
+  "Posting journal entries and payment vouchers is handled by Finance. You can view this page, but ask Finance to post it.";
+
+const isWriteMethod = (method: string): boolean =>
+  method === "POST" || method === "PATCH" || method === "PUT" || method === "DELETE";
+
+/** The tolerant caller shape — mirrors SalesJdCaller so the area-guard's Houzs
+ *  AuthUser and the SCM bridge's houzsUser both satisfy it. */
+export interface MoneyWriteCaller {
+  permissions?: ReadonlyArray<string> | ReadonlySet<string>;
+  permissions_set?: ReadonlySet<string>;
+  position_name?: string | null;
+}
+
+function hasWildcard(u: MoneyWriteCaller): boolean {
+  if (u.permissions_set?.has("*")) return true;
+  const p = u.permissions;
+  if (!p) return false;
+  return Array.isArray(p) ? p.includes("*") : (p as ReadonlySet<string>).has("*");
+}
+
+/**
+ * Is this caller denied a money-moving WRITE on `area`? Returns the plain-language
+ * reason for the 403 body, or null when the rule has nothing to say.
+ *
+ * WHY THIS EXISTS SEPARATELY FROM THE MAP. Lowering the money keys to `view` in
+ * page_access is NOT self-enforcing: scmAreaGuard skips the per-area check
+ * entirely for any caller without an explicit `scm*` row, and a FULL position is
+ * deliberately NOT scm_l2_configured (a full map needs no per-area enforcement).
+ * So the `view` alone would be theatre — the exact trap salesJdAccess documents,
+ * where a written "none" sat inert for three days while the URL kept returning
+ * real data. This predicate is consulted BEFORE that no-lockout fallthrough, so
+ * the money write is genuinely shut without forcing scm_l2_configured true (which
+ * would start enforcing every other area and risks the z1 mass lockout).
+ *
+ * READS ARE NEVER DENIED — the method check is first and total. This rule can only
+ * ever remove a WRITE on the two finance areas; it cannot narrow a read, and it
+ * touches no other area.
+ *
+ * A CALLER THIS CANNOT IDENTIFY IS NOT DENIED (no position_name → null). That is
+ * fail-OPEN, stated plainly and matching the salesJdDenial precedent: a
+ * positionless user resolves from the legacy ROLE matrix and never reaches this
+ * policy, so denying them here would be a new lockout on missing data.
+ */
+export function moneyWriteDenial(
+  user: MoneyWriteCaller | null | undefined,
+  area: string,
+  method: string,
+): string | null {
+  if (!user) return null;
+  // Reads are always allowed — "SEE everything" is the whole point.
+  if (!isWriteMethod(method)) return null;
+  if (!MONEY_WRITE_AREAS.has(area)) return null;
+  // The owner / IT wildcard is never narrowed.
+  if (hasWildcard(user)) return null;
+  // Unidentifiable caller (no position) → not denied; see docstring.
+  const pos = user.position_name;
+  if (!pos) return null;
+  if (canMoveMoney(pos)) return null;
+  return MONEY_DENY_REASON;
+}
+
+/** Lower the money-moving areas to `view` on an otherwise-full map. Reads stay
+ *  (view satisfies every GET gate + every nav `!== "none"` check — verified: no
+ *  finance nav entry or route uses `pageAccessFull`), writes lose `edit`. */
+function withMoneyWriteRemoved(
+  map: Record<string, AccessLevel>,
+): Record<string, AccessLevel> {
+  const out = { ...map };
+  for (const key of MONEY_WRITE_AREAS) out[key] = "view";
+  return out;
+}
+
 /**
  * The Sales cohort — matched the same way the rest of the Sales enforcement is
  * (salesJdAccess.isSalesCohort, pmsAccess.isSalesUser): department name
@@ -234,7 +380,10 @@ export interface PositionPolicyInput {
  * cohorts, so sales converges into it without a new type.
  *
  * - cohort "full"       — `pageAccess` = fullAccessMap() (unrestricted, owner-
- *                         approved interim). `scmConfigured` FALSE (same as `*`).
+ *                         approved interim), MINUS the money-moving writes unless
+ *                         the position may move money (`flags.canMoveMoney`):
+ *                         the finance areas drop to `view` so it SEES everything
+ *                         and the write 403s. `scmConfigured` FALSE (same as `*`).
  * - cohort "restricted" — `pageAccess` = the owner's whitelist; `scmConfigured`
  *                         is the honest explicit-scm signal so the area-guard
  *                         enforces the whitelist's `none` denials.
@@ -302,11 +451,19 @@ export function resolvePositionPolicy(input: PositionPolicyInput): PositionPolic
   // Everyone else — and anything unclassified — is FULL (owner-approved interim,
   // fail-open). `scmConfigured` FALSE, same as `*`: a full map needs no per-area
   // enforcement.
+  //
+  // The MONEY-MOVING WRITE carve-out rides on top: Finance Manager / Super Admin
+  // keep the finance areas at `full`; every other full position (and every
+  // unclassified position that fails open to full) has them lowered to `view` —
+  // it SEES all the finance data and the write 403s (moneyWriteDenial). Nothing
+  // else in the map moves, and no read is lowered anywhere.
+  const money = canMoveMoney(input.position_name);
+  const full = fullAccessMap();
   return {
     cohort: "full",
-    pageAccess: fullAccessMap(),
+    pageAccess: money ? full : withMoneyWriteRemoved(full),
     scmConfigured: false,
-    flags: FLAGS_FULL,
+    flags: money ? FLAGS_FULL_MONEY : FLAGS_FULL,
     resolutionDeferred: false,
   };
 }

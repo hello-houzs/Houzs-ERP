@@ -3,6 +3,7 @@ import type { Env, Variables } from "../env";
 import type { AuthUser } from "../../services/auth";
 import { meetsLevel, type AccessLevel } from "../../services/pageAccess";
 import { salesJdDenial } from "../../services/salesJdAccess";
+import { moneyWriteDenial } from "../../services/positionPolicy";
 
 // ── L2 per-area WRITE authorization for /api/scm/* ──────────────────────────
 //
@@ -25,6 +26,12 @@ import { salesJdDenial } from "../../services/salesJdAccess";
 //                                         and a setting. Today: exactly
 //                                         scm.sales.returns, for the Sales
 //                                         cohort (owner 2026-07-17 "就是要关").
+//   1.6 Money-write deny (positionPolicy.moneyWriteDenial) → 403  (ENFORCED ALWAYS)
+//                                         Owner 2026-07-18: default-full is about
+//                                         SEEING, not doing. A WRITE on the finance
+//                                         areas (journal entries / payment vouchers)
+//                                         is Finance-only. Reads never denied, and
+//                                         only the finance areas are in scope.
 //   2. user.scm_l2_configured === true → require meetsLevel(level, required),
 //                                         else 403  (ENFORCED)
 //   3. otherwise (no SCM L2 rows)    → next()  (fall back to the coarse
@@ -107,6 +114,20 @@ export function scmAreaGuard(area: string, opts?: ScmAreaGuardOpts): MiddlewareH
     //      not deny, and `*` is exempt inside salesJdDenial.
     const jdDenial = salesJdDenial(user, area);
     if (jdDenial) return c.json({ error: jdDenial }, 403);
+
+    // 1.6) The MONEY-MOVING WRITE rule (owner 2026-07-18) — also a RULE in code,
+    //      so it is likewise enforced BEFORE the no-lockout fallthrough. His
+    //      default-full ruling is about SEEING ("暂时都可以看到系统里的所有内容");
+    //      posting a journal entry or a payment voucher is DOING, and stays with
+    //      Finance. It has to sit here rather than rely on the `view` written into
+    //      page_access: a full position is deliberately NOT scm_l2_configured, so
+    //      step 3 below would hand it straight through to the accounting API —
+    //      and routes/accounting.ts has no permission gate of its own, making this
+    //      guard the only thing between a full position and the GL.
+    //      READS ARE UNTOUCHED (the predicate checks the method first) and only
+    //      the two finance areas are in scope, so nothing else can be narrowed.
+    const moneyDenial = moneyWriteDenial(user, area, c.req.method);
+    if (moneyDenial) return c.json({ error: moneyDenial }, 403);
 
     // 3) No explicit SCM L2 config → fall back to the coarse scm.access umbrella
     //    (already enforced upstream). Never lock out a current scm.access holder.
