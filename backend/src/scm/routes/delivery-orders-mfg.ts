@@ -37,9 +37,97 @@ import { loadSofaBatchStock, sofaStockKey } from '../lib/sofa-set-coverage';
 import { currentDocNoByKey, type CurrentEvent } from '../lib/current-doc';
 import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { recordSoAudit, type FieldChange } from '../lib/so-audit';
+import { recordEntityAudit, diffFields, compactChanges, fieldChange } from '../lib/entity-audit';
 
 export const deliveryOrdersMfg = new Hono<{ Bindings: Env; Variables: Variables }>();
 deliveryOrdersMfg.use('*', supabaseAuth);
+
+/* ── Audit trail (migration 0139 / lib/entity-audit) ───────────────────────────
+   Everything this file records is an edit to the DO itself, so the action is
+   UPDATE throughout — including the line add / edit / delete. DELETE is reserved
+   for destroying the DOCUMENT, and this file has no such path; using it for a
+   line would tell a reader the delivery order was deleted when it was not. The
+   line's identity travels in field_changes and the note.
+
+   ── THIS FILE ALREADY WRITES ONE AUDIT ROW, AND IT IS NOT A DUPLICATE ──
+   prepareSoAmendMirrorAudit (above) writes to the SALES ORDER's log
+   (scm.mfg_so_audit_log, keyed by so_doc_no) when the DO PATCH mirrors the
+   amend fields onto the parent SO. That records a change to the SO HEADER, on
+   the SO's own timeline, and it is left exactly as it is. The rows added here
+   record changes to the DELIVERY ORDER, in scm.entity_audit_log, keyed by the
+   DO id. The two never describe the same write: amend_date_from_customer /
+   amended_delivery_date / amend_reason are not DO columns at all — the PATCH
+   strips them from `updates` before the DO update and applies them only to the
+   SO. So a PATCH carrying both kinds of field produces two rows on two
+   documents, which is what a reader of either timeline needs to see. */
+
+/* The auditable DO header fields, camel (API) -> snake (column). Deliberately
+   the same list the PATCH's own map uses. */
+const DO_AUDIT_FIELDS: Array<[string, string]> = [
+  ['debtorCode', 'debtor_code'], ['debtorName', 'debtor_name'], ['agent', 'agent'],
+  ['salesLocation', 'sales_location'], ['ref', 'ref'], ['poDocNo', 'po_doc_no'],
+  ['venue', 'venue'], ['venueId', 'venue_id'], ['branding', 'branding'],
+  ['address1', 'address1'], ['address2', 'address2'],
+  ['city', 'city'], ['state', 'state'], ['postcode', 'postcode'], ['phone', 'phone'],
+  ['note', 'note'], ['notes', 'notes'],
+  ['doDate', 'do_date'], ['currency', 'currency'],
+  ['customerState', 'customer_state'], ['customerCountry', 'customer_country'],
+  ['customerSoNo', 'customer_so_no'],
+  ['customerDeliveryDate', 'customer_delivery_date'],
+  ['expectedDeliveryAt', 'expected_delivery_at'],
+  ['timeRange', 'time_range'], ['timeConfirmed', 'time_confirmed'],
+  ['arrivalAt', 'arrival_at'], ['departureAt', 'departure_at'],
+  ['shipoutDate', 'shipout_date'], ['customerDeliveredDate', 'customer_delivered_date'],
+  ['etaArrivingPort', 'eta_arriving_port'], ['deliverySubstatus', 'delivery_substatus'],
+  ['arrivesEmWarehouseDate', 'arrives_em_warehouse_date'],
+  ['email', 'email'], ['customerType', 'customer_type'],
+  ['salespersonId', 'salesperson_id'], ['buildingType', 'building_type'],
+  ['driverId', 'driver_id'], ['driverName', 'driver_name'], ['vehicle', 'vehicle'],
+  ['emergencyContactName', 'emergency_contact_name'],
+  ['emergencyContactPhone', 'emergency_contact_phone'],
+  ['emergencyContactRelationship', 'emergency_contact_relationship'],
+];
+
+const DO_AUDIT_SELECT =
+  `id, do_number, status, company_id, ${DO_AUDIT_FIELDS.map(([, snake]) => snake).join(', ')}`;
+
+/* The auditable LINE fields. The camel names are deliberate: unitCostCenti,
+   lineCostCenti and lineMarginCenti are the exact keys AUDIT_FINANCE_FIELDS
+   (lib/finance-keys) strips from field_changes, so recording a line's cost here
+   is gated on read by the same rule that gates it on the detail payload.
+   Spelling one of them differently would leak cost to every reader. */
+const DO_LINE_AUDIT_FIELDS: Array<[string, string]> = [
+  ['qty', 'qty'],
+  ['unitPriceCenti', 'unit_price_centi'],
+  ['discountCenti', 'discount_centi'],
+  ['unitCostCenti', 'unit_cost_centi'],
+  ['lineTotalCenti', 'line_total_centi'],
+  ['itemCode', 'item_code'],
+  ['itemGroup', 'item_group'],
+  ['description', 'description'],
+  ['uom', 'uom'],
+  ['notes', 'notes'],
+  ['rackId', 'rack_id'],
+  ['lineDeliveryDate', 'line_delivery_date'],
+];
+
+/* The DO's identity for an audit row written from a LINE handler, which has the
+   line in hand but not the parent. Best-effort by design: the writer is
+   fail-open, so an unresolved doc number costs the row its human key and
+   nothing else. */
+async function loadDoAuditMeta(
+  sb: Variables['supabase'],
+  doId: string,
+): Promise<{ docNo: string | null; companyId: number | null; status: string | null }> {
+  try {
+    const { data } = await sb.from('delivery_orders')
+      .select('do_number, company_id, status').eq('id', doId).maybeSingle();
+    const row = (data ?? null) as { do_number?: string | null; company_id?: number | null; status?: string | null } | null;
+    return { docNo: row?.do_number ?? null, companyId: row?.company_id ?? null, status: row?.status ?? null };
+  } catch {
+    return { docNo: null, companyId: null, status: null };
+  }
+}
 
 /* HC "Remark 4" delivery sub-status — the known values (mirrors the whitelist in
    the Delivery Planning /fields route + HC_SUBSTATUS_VALUES on the frontend). Blank
@@ -3014,9 +3102,18 @@ deliveryOrdersMfg.put('/:id/crew', async (c) => {
   try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
 
   // The DO must exist (FK target + so the header sync below has a row to update).
-  const { data: doRow, error: doErr } = await sb.from('delivery_orders').select('id, company_id').eq('id', id).maybeSingle();
+  const { data: doRow, error: doErr } = await sb.from('delivery_orders')
+    .select('id, company_id, do_number, status').eq('id', id).maybeSingle();
   if (doErr) return c.json({ error: 'load_failed', reason: doErr.message }, 500);
   if (!doRow) return c.json({ error: 'not_found' }, 404);
+
+  /* The crew row as it stands BEFORE the upsert. This endpoint is a PUT, so a
+     re-assign silently overwrites whoever was on the job — without this read the
+     history could only say who is on it now, never who was taken off it. */
+  const { data: crewBeforeRow } = await sb.from('delivery_order_crew')
+    .select('driver_1_id, driver_2_id, helper_1_id, helper_2_id, lorry_id, driver_1_name, driver_2_name, helper_1_name, helper_2_name, lorry_plate')
+    .eq('do_id', id).maybeSingle();
+  const crewBefore = (crewBeforeRow ?? {}) as Record<string, unknown>;
 
   const str = (v: unknown): string | null => {
     if (v === undefined || v === null) return null;
@@ -3102,6 +3199,34 @@ deliveryOrdersMfg.put('/:id/crew', async (c) => {
     vehicle: d1?.vehicle ?? lorry?.plate ?? null,
     updated_at: now,
   }).eq('id', id);
+
+  /* Who was assigned to drive the goods, and who they replaced. The NAMES are
+     recorded alongside the ids for the same reason the crew row snapshots them:
+     an id alone stops meaning anything once a master row is edited. A re-assign
+     that changed nobody writes no row (compactChanges drops the no-ops). */
+  {
+    const crewChanges = compactChanges([
+      fieldChange('driver1', crewBefore.driver_1_name ?? crewBefore.driver_1_id ?? null, d1?.name ?? driver1Id),
+      fieldChange('driver2', crewBefore.driver_2_name ?? crewBefore.driver_2_id ?? null, d2?.name ?? driver2Id),
+      fieldChange('helper1', crewBefore.helper_1_name ?? crewBefore.helper_1_id ?? null, h1?.name ?? helper1Id),
+      fieldChange('helper2', crewBefore.helper_2_name ?? crewBefore.helper_2_id ?? null, h2?.name ?? helper2Id),
+      fieldChange('lorry', crewBefore.lorry_plate ?? crewBefore.lorry_id ?? null, lorry?.plate ?? lorryId),
+    ]);
+    if (crewChanges.length > 0) {
+      const head = doRow as { do_number?: string | null; status?: string | null };
+      await recordEntityAudit(sb, {
+        entityType: 'DELIVERY_ORDER',
+        entityId: id,
+        entityDocNo: head.do_number ?? null,
+        action: 'UPDATE',
+        actor: c.get('houzsUser'),
+        companyId: doCompanyId,
+        statusSnapshot: head.status ?? null,
+        note: 'Delivery crew assigned',
+        fieldChanges: crewChanges,
+      });
+    }
+  }
 
   return c.json({ crew });
 });
@@ -3204,6 +3329,12 @@ deliveryOrdersMfg.patch('/:id', async (c) => {
   const headerLock = await doHasDownstream(sb, id);
   if (headerLock) return c.json(headerLock, 409);
 
+  /* The BEFORE half of every from->to pair recorded after the DO write below.
+     Read after the guards so a rejected PATCH costs nothing. */
+  const { data: beforeRow } = await sb.from('delivery_orders')
+    .select(DO_AUDIT_SELECT).eq('id', id).maybeSingle();
+  const before = (beforeRow ?? {}) as unknown as Record<string, unknown>;
+
   /* DUAL-WRITE NOTE: Supabase REST has no client-side transaction primitive —
      the underlying postgrest call is one statement per HTTP request. We order
      the writes DO-FIRST so a failed DO update never produces a phantom SO
@@ -3221,6 +3352,26 @@ deliveryOrdersMfg.patch('/:id', async (c) => {
     if (!data) return c.json({ error: 'not_found' }, 404);
     mirrorSoDocNo = (data as { soDocNo?: string | null; so_doc_no?: string | null }).soDocNo
       ?? (data as { so_doc_no?: string | null }).so_doc_no ?? null;
+
+    /* Only the DO columns, and only in the branch that actually wrote them. The
+       amend fields are NOT here: they are never DO columns and the SO's own log
+       records them (see the header note on double-recording). Diffing the
+       normalised `updates` rather than the body keeps normalizePhone's rewrite
+       out of the history as a phantom change. */
+    const auditPatch: Record<string, unknown> = {};
+    for (const [camel, snake] of DO_AUDIT_FIELDS) {
+      if (updates[snake] !== undefined) auditPatch[camel] = updates[snake];
+    }
+    await recordEntityAudit(sb, {
+      entityType: 'DELIVERY_ORDER',
+      entityId: id,
+      entityDocNo: (before.do_number as string | null) ?? null,
+      action: 'UPDATE',
+      actor: c.get('houzsUser'),
+      companyId: (before.company_id as number | null) ?? activeCompanyId(c),
+      statusSnapshot: (before.status as string | null) ?? null,
+      fieldChanges: diffFields(before, auditPatch, DO_AUDIT_FIELDS),
+    });
   } else {
     /* No DO column changes — only the SO mirror payload was sent. Skip the DO
        UPDATE (Postgres would still touch updated_at, polluting the audit log)
@@ -3283,7 +3434,8 @@ deliveryOrdersMfg.post('/:id/items', async (c) => {
   const childLock = await doHasDownstream(sb, id);
   if (childLock) return c.json(childLock, 409);
 
-  const { data: header } = await sb.from('delivery_orders').select('id, status, warehouse_id').eq('id', id).maybeSingle();
+  const { data: header } = await sb.from('delivery_orders')
+    .select('id, status, warehouse_id, do_number, company_id').eq('id', id).maybeSingle();
   if (!header) return c.json({ error: 'not_found' }, 404);
 
   /* Edge #1+#2 — if the DO is already shipped, an added line ships immediately
@@ -3383,6 +3535,34 @@ deliveryOrdersMfg.post('/:id/items', async (c) => {
   // OUT booking for that bucket (otherwise the new line ships but inventory
   // doesn't move). No-op when not shipped — deductInventoryForDo handles ship.
   await resyncInventoryForDo(sb, id, user?.id);
+
+  /* A line added to an ALREADY-SHIPPED DO moves stock out immediately (the
+     resync above), so this is a stock event as much as a paperwork one. The
+     stored row is the source of the recorded values, not the request body, so
+     the log matches what buildItemRow actually wrote. Money is INTEGER SEN. */
+  {
+    const line = data as unknown as Record<string, unknown>;
+    const head = header as { do_number?: string | null; status?: string | null; company_id?: number | null };
+    await recordEntityAudit(sb, {
+      entityType: 'DELIVERY_ORDER',
+      entityId: id,
+      entityDocNo: head.do_number ?? null,
+      action: 'UPDATE',
+      actor: c.get('houzsUser'),
+      companyId: head.company_id ?? activeCompanyId(c),
+      statusSnapshot: head.status ?? null,
+      note: `Line added: ${String(line.item_code ?? it.itemCode ?? '')}`,
+      fieldChanges: compactChanges([
+        fieldChange('itemCode', null, line.item_code ?? null),
+        fieldChange('description', null, line.description ?? null),
+        fieldChange('qty', null, line.qty ?? null),
+        fieldChange('unitPriceCenti', null, line.unit_price_centi ?? null),
+        fieldChange('discountCenti', null, line.discount_centi ?? null),
+        fieldChange('lineTotalCenti', null, line.line_total_centi ?? null),
+      ]),
+    });
+  }
+
   return c.json({ item: data }, 201);
 });
 
@@ -3402,7 +3582,7 @@ deliveryOrdersMfg.patch('/:id/items/:itemId', async (c) => {
   if (childLock) return c.json(childLock, 409);
 
   const { data: prev } = await sb.from('delivery_order_items')
-    .select('qty, unit_price_centi, discount_centi, unit_cost_centi, item_code, item_group, description, uom, variants, notes, so_item_id')
+    .select('qty, unit_price_centi, discount_centi, unit_cost_centi, item_code, item_group, description, uom, variants, notes, so_item_id, line_total_centi, rack_id, line_delivery_date')
     .eq('id', itemId).maybeSingle();
   if (!prev) return c.json({ error: 'not_found' }, 404);
 
@@ -3547,6 +3727,34 @@ deliveryOrdersMfg.patch('/:id/items/:itemId', async (c) => {
 
   const { error } = await sb.from('delivery_order_items').update(updates).eq('id', itemId);
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
+
+  /* Diff `updates` — the EFFECTIVE values written — against the stored row. qty
+     / price / discount / cost are recomputed above from the body OR the prior
+     row, so the body alone would not say what changed. The camel names are the
+     ones AUDIT_FINANCE_FIELDS gates (unitCostCenti et al), so a non-finance
+     reader of the history is stripped exactly as they are on the detail. */
+  {
+    const meta = await loadDoAuditMeta(sb, id);
+    const auditPatch: Record<string, unknown> = {};
+    for (const [camel, snake] of DO_LINE_AUDIT_FIELDS) {
+      if (updates[snake] !== undefined) auditPatch[camel] = updates[snake];
+    }
+    const lineChanges = diffFields(prev as unknown as Record<string, unknown>, auditPatch, DO_LINE_AUDIT_FIELDS);
+    if (lineChanges.length > 0) {
+      await recordEntityAudit(sb, {
+        entityType: 'DELIVERY_ORDER',
+        entityId: id,
+        entityDocNo: meta.docNo,
+        action: 'UPDATE',
+        actor: c.get('houzsUser'),
+        companyId: meta.companyId ?? activeCompanyId(c),
+        statusSnapshot: meta.status,
+        note: `Line edited: ${String((prev as { item_code?: string | null }).item_code ?? itemId)}`,
+        fieldChanges: lineChanges,
+      });
+    }
+  }
+
   await recomputeTotals(sb, id);
   // TASK #24 — if the DO has shipped, propagate the qty change to inventory
   // (delta OUT for increase, delta IN for decrease). No-op when not shipped.
@@ -3597,8 +3805,42 @@ deliveryOrdersMfg.delete('/:id/items/:itemId', async (c) => {
     }, 409);
   }
 
+  /* Read the line BEFORE destroying it — afterwards the audit row is the only
+     remaining evidence of what was on the delivery order, and there is nothing
+     left to join back to. */
+  const { data: doomedRow } = await sb.from('delivery_order_items')
+    .select('item_code, description, qty, unit_price_centi, discount_centi, line_total_centi')
+    .eq('id', itemId).maybeSingle();
+  const doomed = (doomedRow ?? {}) as Record<string, unknown>;
+
   const { error } = await sb.from('delivery_order_items').delete().eq('id', itemId);
   if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
+
+  /* UPDATE, not DELETE: the entity is the DELIVERY ORDER and it still exists.
+     DELETE on this entity type would tell a reader the whole document was
+     destroyed. The line is the from-value of every pair, to-value null. */
+  {
+    const meta = await loadDoAuditMeta(sb, id);
+    await recordEntityAudit(sb, {
+      entityType: 'DELIVERY_ORDER',
+      entityId: id,
+      entityDocNo: meta.docNo,
+      action: 'UPDATE',
+      actor: c.get('houzsUser'),
+      companyId: meta.companyId ?? activeCompanyId(c),
+      statusSnapshot: meta.status,
+      note: `Line removed: ${String(doomed.item_code ?? itemId)}`,
+      fieldChanges: compactChanges([
+        fieldChange('itemCode', doomed.item_code ?? null, null),
+        fieldChange('description', doomed.description ?? null, null),
+        fieldChange('qty', doomed.qty ?? null, null),
+        fieldChange('unitPriceCenti', doomed.unit_price_centi ?? null, null),
+        fieldChange('discountCenti', doomed.discount_centi ?? null, null),
+        fieldChange('lineTotalCenti', doomed.line_total_centi ?? null, null),
+      ]),
+    });
+  }
+
   await recomputeTotals(sb, id);
   // TASK #24 — give the deleted qty back to stock (delta IN per bucket). No-op
   // when the DO hasn't shipped yet.

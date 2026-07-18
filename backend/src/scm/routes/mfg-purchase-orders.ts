@@ -47,6 +47,7 @@ import { loadLeadBuffers } from '../../services/agents/procurement-learning';
 import { sendEmail, documentEmailHtml, isChannelEnabled } from '../../services/email';
 import { getSupabaseService } from '../../db/supabase';
 import { supabaseAuth } from '../middleware/auth';
+import { recordEntityAudit, diffFields, compactChanges, fieldChange, statusChange } from '../lib/entity-audit';
 import { computeMrp } from './mrp';
 import type { Env, Variables } from '../env';
 
@@ -90,6 +91,28 @@ async function loadSupplierSofaCombos(
   }
   return out;
 }
+
+/* ── Audit trail (migration 0139 / lib/entity-audit) ───────────────────────────
+   Action vocabulary for this module:
+     POST   — DRAFT -> SUBMITTED. The PO COMMITS here: it claims its SO lines'
+              quota and becomes live supply to MRP and receivable by a GRN.
+     CANCEL — status -> CANCELLED.
+     UPDATE — header edits and the reopen (CANCELLED -> SUBMITTED).
+     DELETE — the hard delete, whose subject no longer exists afterwards.
+   No REVERSE: a PO posts nothing to the ledger, so there is nothing to contra. */
+const PO_AUDIT_FIELDS: Array<[string, string]> = [
+  ['poDate', 'po_date'], ['expectedAt', 'expected_at'], ['currency', 'currency'],
+  ['notes', 'notes'], ['supplierId', 'supplier_id'],
+  ['purchaseLocationId', 'purchase_location_id'],
+  ['supplierDeliveryDate2', 'supplier_delivery_date_2'],
+  ['supplierDeliveryDate3', 'supplier_delivery_date_3'],
+  ['supplierDeliveryDate4', 'supplier_delivery_date_4'],
+];
+
+/* The BEFORE half of the header PATCH's from->to pairs, plus the identity
+   columns every audit row on this entity needs. */
+const PO_AUDIT_SELECT =
+  `id, po_number, status, company_id, ${PO_AUDIT_FIELDS.map(([, snake]) => snake).join(', ')}`;
 
 export const mfgPurchaseOrders = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -2062,21 +2085,38 @@ mfgPurchaseOrders.patch('/:id', async (c) => {
      exists. Convert-to-GRN (partial receiving) is NOT routed here. */
   const childLock = await poHasDownstream(sb, id);
   if (childLock) return c.json(childLock, 409);
+
+  /* Read BEFORE writing — this row is the from-value of every pair recorded
+     below. PO_AUDIT_FIELDS is the same column list the loop writes (PR #77 =
+     purchase_location_id, migration 0180 = the supplier-revised dates), kept in
+     one place so a field added to the PATCH cannot silently escape the log. */
+  const { data: beforeRow } = await sb.from('purchase_orders')
+    .select(PO_AUDIT_SELECT).eq('id', id).maybeSingle();
+  const before = (beforeRow ?? {}) as unknown as Record<string, unknown>;
+
   const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
-  for (const [from, to] of [
-    ['poDate', 'po_date'], ['expectedAt', 'expected_at'], ['currency', 'currency'],
-    ['notes', 'notes'], ['supplierId', 'supplier_id'],
-    // PR #77 — default ship-to warehouse for every line on this PO
-    ['purchaseLocationId', 'purchase_location_id'],
-    // Migration 0180 — supplier-revised header delivery dates.
-    ['supplierDeliveryDate2', 'supplier_delivery_date_2'],
-    ['supplierDeliveryDate3', 'supplier_delivery_date_3'],
-    ['supplierDeliveryDate4', 'supplier_delivery_date_4'],
-  ] as const) {
+  for (const [from, to] of PO_AUDIT_FIELDS) {
     if (body[from] !== undefined) updates[to] = body[from];
   }
   const { data, error } = await sb.from('purchase_orders').update(updates).eq('id', id).select('*').single();
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
+
+  {
+    const auditPatch: Record<string, unknown> = {};
+    for (const [camel, snake] of PO_AUDIT_FIELDS) {
+      if (updates[snake] !== undefined) auditPatch[camel] = updates[snake];
+    }
+    await recordEntityAudit(sb, {
+      entityType: 'PURCHASE_ORDER',
+      entityId: id,
+      entityDocNo: (before.po_number as string | null) ?? null,
+      action: 'UPDATE',
+      actor: c.get('houzsUser'),
+      companyId: (before.company_id as number | null) ?? activeCompanyId(c),
+      statusSnapshot: (before.status as string | null) ?? null,
+      fieldChanges: diffFields(before, auditPatch, PO_AUDIT_FIELDS),
+    });
+  }
 
   /* Migration 0180 — fan a header revised date down to its lines, mirroring the
      way the create/new flow cascades expected_at → each line's delivery_date.
@@ -2597,6 +2637,11 @@ mfgPurchaseOrders.post('/:id/convert-from-so', async (c) => {
 // ── Submit / cancel ──────────────────────────────────────────────────
 // PR-DRAFT-removal — POST creates SUBMITTED directly. This endpoint is kept
 // as an idempotent no-op so legacy callers still work.
+//
+// DELIBERATELY NOT AUDITED: it writes nothing. Every path either echoes the row
+// back unchanged or 409s. An audit row here would record an edit that did not
+// happen, which is worse than no row — the log's value is that its entries are
+// all real.
 mfgPurchaseOrders.patch('/:id/submit', async (c) => {
   const id = c.req.param('id');
   const supabase = c.get('supabase');
@@ -2625,7 +2670,7 @@ mfgPurchaseOrders.patch('/:id/confirm', async (c) => {
 
   const { data: cur, error: readErr } = await supabase
     .from('purchase_orders')
-    .select('id, status')
+    .select('id, status, po_number, company_id, supplier_id, total_centi, currency')
     .eq('id', id)
     .maybeSingle();
   if (readErr) return c.json({ error: 'load_failed', reason: readErr.message }, 500);
@@ -2644,6 +2689,29 @@ mfgPurchaseOrders.patch('/:id/confirm', async (c) => {
     .update({ status: 'SUBMITTED', submitted_at: new Date().toISOString(), updated_at: new Date().toISOString() })
     .eq('id', id);
   if (updErr) return c.json({ error: 'confirm_failed', reason: updErr.message }, 500);
+
+  /* Recorded before the SO-quota recount below, which is itself best-effort:
+     the PO is SUBMITTED from this point regardless of whether the counter
+     recount lands, and that is the fact worth keeping. totalCenti is the
+     INTEGER SEN the supplier is now owed. */
+  {
+    const po = cur as { po_number?: string | null; company_id?: number | null; supplier_id?: string | null; total_centi?: number | null; currency?: string | null };
+    await recordEntityAudit(supabase, {
+      entityType: 'PURCHASE_ORDER',
+      entityId: id,
+      entityDocNo: po.po_number ?? null,
+      action: 'POST',
+      actor: c.get('houzsUser'),
+      companyId: po.company_id ?? activeCompanyId(c),
+      statusSnapshot: 'SUBMITTED',
+      fieldChanges: compactChanges([
+        ...statusChange('DRAFT', 'SUBMITTED'),
+        fieldChange('supplierId', null, po.supplier_id ?? null),
+        fieldChange('totalCenti', null, Number(po.total_centi ?? 0)),
+        fieldChange('currency', null, po.currency ?? null),
+      ]),
+    });
+  }
 
   /* Commit the SO-quota advance that the DRAFT create deliberately skipped: the
      PO is SUBMITTED now, so recomputeSoPicked counts this PO's lines and the
@@ -2749,7 +2817,7 @@ mfgPurchaseOrders.patch('/:id/cancel', async (c) => {
      into read → guard → update → re-read so the cancel can't 500 on that. */
   const { data: cur, error: readErr } = await supabase
     .from('purchase_orders')
-    .select('id, status, po_number')
+    .select('id, status, po_number, company_id, total_centi')
     .eq('id', id)
     .maybeSingle();
   if (readErr) return c.json({ error: 'load_failed', reason: readErr.message }, 500);
@@ -2778,6 +2846,28 @@ mfgPurchaseOrders.patch('/:id/cancel', async (c) => {
     .update({ status: 'CANCELLED', cancelled_at: new Date().toISOString(), updated_at: new Date().toISOString() })
     .eq('id', id);
   if (updErr) return c.json({ error: 'cancel_failed', reason: updErr.message }, 500);
+
+  /* The prior status comes from the guarded read above, so this records the real
+     transition (SUBMITTED / PARTIALLY_RECEIVED -> CANCELLED) rather than
+     asserting a fixed from-value. Cancelling releases the SO quota below —
+     recorded here so the release always has an author even if the recount
+     hiccups. */
+  {
+    const po = cur as { po_number?: string | null; company_id?: number | null; total_centi?: number | null };
+    await recordEntityAudit(supabase, {
+      entityType: 'PURCHASE_ORDER',
+      entityId: id,
+      entityDocNo: po.po_number ?? null,
+      action: 'CANCEL',
+      actor: c.get('houzsUser'),
+      companyId: po.company_id ?? activeCompanyId(c),
+      statusSnapshot: 'CANCELLED',
+      fieldChanges: compactChanges([
+        ...statusChange(curStatus, 'CANCELLED'),
+        fieldChange('totalCenti', null, Number(po.total_centi ?? 0)),
+      ]),
+    });
+  }
 
   /* Commander 2026-05-29 (BUG 1) — "cancel 了之后 代表这些 SO 有释放出来了是吧":
      YES. Cancelling a PO releases EVERY converted SO line's quota back so they
@@ -2815,7 +2905,7 @@ mfgPurchaseOrders.patch('/:id/reopen', async (c) => {
 
   const { data: cur, error: readErr } = await supabase
     .from('purchase_orders')
-    .select('id, status')
+    .select('id, status, po_number, company_id')
     .eq('id', id)
     .maybeSingle();
   if (readErr) return c.json({ error: 'load_failed', reason: readErr.message }, 500);
@@ -2834,6 +2924,23 @@ mfgPurchaseOrders.patch('/:id/reopen', async (c) => {
     .update({ status: 'SUBMITTED', cancelled_at: null, updated_at: new Date().toISOString() })
     .eq('id', id);
   if (updErr) return c.json({ error: 'reopen_failed', reason: updErr.message }, 500);
+
+  /* UPDATE, not REVERSE: nothing was posted to reverse. A reopen re-claims the
+     SO quota the cancel released, which is a document-state move. */
+  {
+    const po = cur as { po_number?: string | null; company_id?: number | null };
+    await recordEntityAudit(supabase, {
+      entityType: 'PURCHASE_ORDER',
+      entityId: id,
+      entityDocNo: po.po_number ?? null,
+      action: 'UPDATE',
+      actor: c.get('houzsUser'),
+      companyId: po.company_id ?? activeCompanyId(c),
+      statusSnapshot: 'SUBMITTED',
+      note: 'PO reopened',
+      fieldChanges: statusChange('CANCELLED', 'SUBMITTED'),
+    });
+  }
 
   /* Re-claim every converted SO line's quota: the PO is SUBMITTED again, so
      recomputeSoPicked now counts this PO's lines (it excludes only CANCELLED
@@ -2865,12 +2972,15 @@ mfgPurchaseOrders.delete('/:id', async (c) => {
   // Status guard first — get current row.
   const { data: cur, error: readErr } = await supabase
     .from('purchase_orders')
-    .select('id, status, po_number')
+    .select('id, status, po_number, company_id, supplier_id, total_centi, po_date')
     .eq('id', id)
     .maybeSingle();
   if (readErr) return c.json({ error: 'read_failed', reason: readErr.message }, 500);
   if (!cur)    return c.json({ error: 'not_found' }, 404);
-  const row = cur as { id: string; status: string; po_number: string };
+  const row = cur as {
+    id: string; status: string; po_number: string;
+    company_id?: number | null; supplier_id?: string | null; total_centi?: number | null; po_date?: string | null;
+  };
   if (row.status !== 'CANCELLED') {
     return c.json({
       error: 'cannot_delete',
@@ -2888,6 +2998,28 @@ mfgPurchaseOrders.delete('/:id', async (c) => {
   // Items cascade via FK ON DELETE CASCADE.
   const { error: delErr } = await supabase.from('purchase_orders').delete().eq('id', id);
   if (delErr) return c.json({ error: 'delete_failed', reason: delErr.message }, 500);
+
+  /* The one action whose subject no longer exists once it is recorded — the
+     purchase_orders row is gone, so this entry is the ONLY remaining evidence
+     that the PO existed. Hence the snapshot of number / supplier / total in
+     field_changes: nothing can be joined back to afterwards. entity_id is kept
+     regardless so a later document cannot silently inherit this history. */
+  await recordEntityAudit(supabase, {
+    entityType: 'PURCHASE_ORDER',
+    entityId: id,
+    entityDocNo: row.po_number,
+    action: 'DELETE',
+    actor: c.get('houzsUser'),
+    companyId: row.company_id ?? activeCompanyId(c),
+    statusSnapshot: 'CANCELLED',
+    fieldChanges: compactChanges([
+      fieldChange('poNumber', row.po_number, null),
+      fieldChange('supplierId', row.supplier_id ?? null, null),
+      fieldChange('totalCenti', Number(row.total_centi ?? 0), null),
+      fieldChange('poDate', row.po_date ?? null, null),
+      fieldChange('status', 'CANCELLED', null),
+    ]),
+  });
 
   try { await recomputeSoPicked(supabase, ((doomedLines ?? []) as Array<{ so_item_id: string | null }>).map((l) => l.so_item_id)); }
   catch { /* PO already deleted — don't fail on counter recount */ }

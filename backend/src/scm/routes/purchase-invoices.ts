@@ -16,9 +16,27 @@ import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { escapeForOr } from '../lib/postgrest-search';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { todayMyt } from '../lib/my-time';
+import { recordEntityAudit, diffFields, compactChanges, fieldChange, statusChange } from '../lib/entity-audit';
 
 export const purchaseInvoices = new Hono<{ Bindings: Env; Variables: Variables }>();
 purchaseInvoices.use('*', supabaseAuth);
+
+/* ── Audit trail (migration 0139 / lib/entity-audit) ───────────────────────────
+   Action vocabulary for this module:
+     POST   — DRAFT -> POSTED. The AP liability is booked (Dr Inventory / Cr
+              Payables) and the GRN lines are consumed.
+     CANCEL — status -> CANCELLED (the document event).
+     REVERSE— the AP/GL contra that follows a cancel (the LEDGER event), kept
+              apart from the CANCEL for the same reason payment-vouchers keeps
+              them apart: a reversal that FAILED must be visible as such.
+     UPDATE — header edits and payments.
+   No DELETE: this module never hard-deletes an invoice. */
+const PI_AUDIT_FIELDS: Array<[string, string]> = [
+  ['supplierId', 'supplier_id'], ['supplierInvoiceRef', 'supplier_invoice_ref'],
+  ['invoiceDate', 'invoice_date'], ['dueDate', 'due_date'],
+  ['currency', 'currency'], ['notes', 'notes'],
+  ['exchangeRate', 'exchange_rate'],
+];
 
 const HEADER =
   'id, invoice_number, supplier_invoice_ref, supplier_id, purchase_order_id, grn_id, invoice_date, due_date, currency, exchange_rate, subtotal_centi, tax_centi, total_centi, paid_centi, status, notes, posted_at, created_at, created_by, updated_at';
@@ -759,9 +777,13 @@ purchaseInvoices.post('/', async (c) => {
    double-bill. */
 purchaseInvoices.patch('/:id/post', async (c) => {
   const sb = c.get('supabase'); const id = c.req.param('id');
-  const { data: cur } = await sb.from('purchase_invoices').select('id, status, invoice_number').eq('id', id).maybeSingle();
+  const { data: cur } = await sb.from('purchase_invoices')
+    .select('id, status, invoice_number, company_id, supplier_id, total_centi, currency').eq('id', id).maybeSingle();
   if (!cur) return c.json({ error: 'not_found' }, 404);
-  const curRow = cur as { id: string; status: string; invoice_number: string };
+  const curRow = cur as {
+    id: string; status: string; invoice_number: string;
+    company_id?: number | null; supplier_id?: string | null; total_centi?: number | null; currency?: string | null;
+  };
   /* Already POSTED (or beyond — PARTIALLY_PAID / PAID) → nothing to CONFIRM, but
      the AP/GL entry may still be missing: a PI created straight to POSTED (the
      default create path) never runs the transition below, and the New-PI screen
@@ -795,6 +817,27 @@ purchaseInvoices.patch('/:id/post', async (c) => {
     return c.json({ purchaseInvoice: now ?? cur });
   }
 
+  /* Recorded the moment the flip WON, before the GRN consume / GL post / recost
+     below. Each of those is a separate awaited step that can throw, and a PI
+     that is POSTED in the database with no record of who posted it is exactly
+     the hole this log exists to close. The GL outcome is recorded separately
+     when it fails. totalCenti is the INTEGER SEN booked to Payables. */
+  await recordEntityAudit(sb, {
+    entityType: 'PURCHASE_INVOICE',
+    entityId: id,
+    entityDocNo: curRow.invoice_number,
+    action: 'POST',
+    actor: c.get('houzsUser'),
+    companyId: curRow.company_id ?? activeCompanyId(c),
+    statusSnapshot: 'POSTED',
+    fieldChanges: compactChanges([
+      ...statusChange('DRAFT', 'POSTED'),
+      fieldChange('supplierId', null, curRow.supplier_id ?? null),
+      fieldChange('totalCenti', null, Number(curRow.total_centi ?? 0)),
+      fieldChange('currency', null, curRow.currency ?? null),
+    ]),
+  });
+
   // COMMIT (was skipped at DRAFT create). Consume the GRN lines so the just-billed
   // rows drop out of the outstanding picker.
   const { data: lines } = await sb.from('purchase_invoice_items')
@@ -807,6 +850,22 @@ purchaseInvoices.patch('/:id/post', async (c) => {
   if (!postRes.ok) {
     // eslint-disable-next-line no-console
     console.error(`[pi-accounting] confirm post failed for ${curRow.invoice_number}:`, postRes.status, postRes.reason);
+
+    /* A SECOND row, written only on failure. The POST above is true — the
+       invoice IS posted — but the AP entry behind it is not, and a history that
+       shows only the success would send someone hunting for a JE that was never
+       written. */
+    await recordEntityAudit(sb, {
+      entityType: 'PURCHASE_INVOICE',
+      entityId: id,
+      entityDocNo: curRow.invoice_number,
+      action: 'POST',
+      actor: c.get('houzsUser'),
+      companyId: curRow.company_id ?? activeCompanyId(c),
+      statusSnapshot: 'POSTED',
+      note: `AP/GL post FAILED: ${postRes.status} — ${postRes.reason ?? 'no reason given'}`,
+      fieldChanges: compactChanges([fieldChange('apPosted', null, false)]),
+    });
   }
   // Costing B — the now-confirmed PI is the authoritative cost: re-cost lots/DO/SI.
   await recostForPi(sb, id);
@@ -831,9 +890,12 @@ purchaseInvoices.patch('/:id/payment', async (c) => {
   // fresh read.
   for (let attempt = 0; attempt < 6; attempt += 1) {
     const { data: cur } = await sb.from('purchase_invoices')
-      .select('paid_centi, total_centi, status').eq('id', id).maybeSingle();
+      .select('paid_centi, total_centi, status, invoice_number, company_id').eq('id', id).maybeSingle();
     if (!cur) return c.json({ error: 'not_found' }, 404);
-    const c0 = cur as { paid_centi: number; total_centi: number; status: string };
+    const c0 = cur as {
+      paid_centi: number; total_centi: number; status: string;
+      invoice_number?: string | null; company_id?: number | null;
+    };
     // LEAK GUARD (DRAFT) — a DRAFT PI is not yet a real liability; reject payment
     // until it's confirmed. (Re-added with the DRAFT lifecycle — see POST/.)
     if (c0.status === 'DRAFT') return c.json({ error: 'not_payable', message: 'PI is a draft — confirm it before recording payment' }, 409);
@@ -849,7 +911,28 @@ purchaseInvoices.patch('/:id/payment', async (c) => {
       .eq('paid_centi', c0.paid_centi) // only if nobody else moved it since the read
       .select('id, paid_centi, status');
     if (error) return c.json({ error: 'payment_failed', reason: error.message }, 500);
-    if (data && data.length > 0) return c.json({ purchaseInvoice: data[0] });
+    if (data && data.length > 0) {
+      /* Written only by the attempt whose compare-and-set actually landed, so a
+         retry loop cannot produce two rows for one payment. The from-value is
+         the paid_centi that guard matched, which makes the pair exact rather
+         than approximate. All three figures are INTEGER SEN. */
+      await recordEntityAudit(sb, {
+        entityType: 'PURCHASE_INVOICE',
+        entityId: id,
+        entityDocNo: c0.invoice_number ?? null,
+        action: 'UPDATE',
+        actor: c.get('houzsUser'),
+        companyId: c0.company_id ?? activeCompanyId(c),
+        statusSnapshot: newStatus,
+        note: 'Payment recorded',
+        fieldChanges: compactChanges([
+          fieldChange('paidCenti', c0.paid_centi, newPaid),
+          fieldChange('paymentAmountCenti', null, amount),
+          ...statusChange(c0.status, newStatus),
+        ]),
+      });
+      return c.json({ purchaseInvoice: data[0] });
+    }
     // 0 rows updated → a concurrent payment changed paid_centi; loop re-reads + retries.
   }
   return c.json({ error: 'payment_conflict', message: 'Another payment was recorded at the same moment — please check the balance and retry.' }, 409);
@@ -861,9 +944,13 @@ purchaseInvoices.patch('/:id/cancel', async (c) => {
   // Read → guard → release → cancel. Keep the existing PAID guard; a PI with
   // any payment can't be cancelled.
   const { data: cur } = await sb.from('purchase_invoices')
-    .select('id, status, paid_centi').eq('id', id).maybeSingle();
+    .select('id, status, paid_centi, invoice_number, company_id, total_centi').eq('id', id).maybeSingle();
   if (!cur) return c.json({ error: 'not_found' }, 404);
-  const head = cur as { id: string; status: string; paid_centi: number | null };
+  const head = cur as {
+    id: string; status: string; paid_centi: number | null;
+    invoice_number?: string | null; company_id?: number | null; total_centi?: number | null;
+  };
+  const auditCompanyId = head.company_id ?? activeCompanyId(c);
   if (head.status === 'PAID' || (head.paid_centi ?? 0) > 0) {
     return c.json({ error: 'cannot_cancel', message: 'PI already paid' }, 409);
   }
@@ -877,6 +964,25 @@ purchaseInvoices.patch('/:id/cancel', async (c) => {
     const { data: d } = await sb.from('purchase_invoices').update({
       status: 'CANCELLED', updated_at: new Date().toISOString(),
     }).eq('id', id).eq('status', 'DRAFT').select('id, status').maybeSingle();
+
+    /* Only the call that actually flipped the row gets one back (the
+       .eq('status','DRAFT') gate), so a lost race writes nothing. No REVERSE
+       row follows: a DRAFT PI posted nothing, which is why this branch skips
+       the accounting reversal entirely. */
+    if (d) {
+      await recordEntityAudit(sb, {
+        entityType: 'PURCHASE_INVOICE',
+        entityId: id,
+        entityDocNo: head.invoice_number ?? null,
+        action: 'CANCEL',
+        actor: c.get('houzsUser'),
+        companyId: auditCompanyId,
+        statusSnapshot: 'CANCELLED',
+        note: 'Draft cancelled — nothing was posted to reverse',
+        fieldChanges: statusChange('DRAFT', 'CANCELLED'),
+      });
+    }
+
     return c.json({ purchaseInvoice: d ?? { id, status: 'CANCELLED' } });
   }
 
@@ -901,6 +1007,23 @@ purchaseInvoices.patch('/:id/cancel', async (c) => {
   }
   const cancelled = data as { id: string; status: string; invoice_number: string };
 
+  /* Recorded immediately after the atomic flip won the race, so exactly one
+     CANCEL row exists per invoice — the losing concurrent call returned above
+     and never reaches here. */
+  await recordEntityAudit(sb, {
+    entityType: 'PURCHASE_INVOICE',
+    entityId: id,
+    entityDocNo: cancelled.invoice_number,
+    action: 'CANCEL',
+    actor: c.get('houzsUser'),
+    companyId: auditCompanyId,
+    statusSnapshot: 'CANCELLED',
+    fieldChanges: compactChanges([
+      ...statusChange(head.status, 'CANCELLED'),
+      fieldChange('totalCenti', null, Number(head.total_centi ?? 0)),
+    ]),
+  });
+
   /* Bug #5 — reverse the PI accounting (Dr Inventory / Cr Payables → contra).
      "取消 PI 要追溯回去". Best-effort (audit-DLQ): a reversal failure never
      un-cancels the PI; it's idempotent so a retry / re-cancel converges. */
@@ -909,6 +1032,22 @@ purchaseInvoices.patch('/:id/cancel', async (c) => {
     // eslint-disable-next-line no-console
     console.error(`[pi-accounting] reversal failed for ${cancelled.invoice_number}:`, rev.status, rev.reason);
   }
+
+  /* A SEPARATE row from the CANCEL above, not a duplicate of it: that was a
+     document-status event, this is the AP/GL contra with its own outcome, and a
+     cancel whose reversal failed must be distinguishable from one whose
+     reversal landed. */
+  await recordEntityAudit(sb, {
+    entityType: 'PURCHASE_INVOICE',
+    entityId: id,
+    entityDocNo: cancelled.invoice_number,
+    action: 'REVERSE',
+    actor: c.get('houzsUser'),
+    companyId: auditCompanyId,
+    statusSnapshot: 'CANCELLED',
+    note: rev.ok ? `AP/GL reversal: ${rev.status}` : `AP/GL reversal FAILED: ${rev.status} — ${rev.reason ?? 'no reason given'}`,
+    fieldChanges: compactChanges([fieldChange('reversalOk', null, rev.ok)]),
+  });
 
   // Release the GRN-line consumption: recount invoiced_qty from live PI lines —
   // this cancelled PI's lines now drop out, auto-releasing the GRN line.
@@ -1282,16 +1421,23 @@ purchaseInvoices.patch('/:id', async (c) => {
   let body: Record<string, unknown>;
   try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
   const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
-  for (const [from, to] of [
-    ['supplierId', 'supplier_id'], ['supplierInvoiceRef', 'supplier_invoice_ref'],
-    ['invoiceDate', 'invoice_date'], ['dueDate', 'due_date'],
-    ['currency', 'currency'], ['notes', 'notes'],
-  ] as const) {
+  /* exchangeRate is in PI_AUDIT_FIELDS but NOT written here — it is derived from
+     the currency below, so this loop skips it and the derived value is folded
+     into the audit patch after. */
+  for (const [from, to] of PI_AUDIT_FIELDS) {
+    if (from === 'exchangeRate') continue;
     if (body[from] !== undefined) updates[to] = body[from];
   }
   // currency is normalised to upper-case like POST does.
   if (updates.currency !== undefined) updates.currency = normalizeCurrency(updates.currency);
   const sb = c.get('supabase');
+
+  /* The BEFORE half of every from->to pair. Also supplies the invoice number and
+     company for the audit row, which the update's RETURNING gives us only after
+     the fact. */
+  const { data: beforeRow } = await sb.from('purchase_invoices')
+    .select(`${HEADER}, company_id`).eq('id', id).maybeSingle();
+  const before = (beforeRow ?? {}) as unknown as Record<string, unknown>;
   /* Migration 0082 — keep exchange_rate consistent with the effective currency
      (rate explicitly sent → normalise against it; currency flipped to MYR without
      a rate → reset to 1; else untouched). MYR ⇒ 1, a no-op. */
@@ -1299,8 +1445,9 @@ purchaseInvoices.patch('/:id', async (c) => {
   if (body.exchangeRate !== undefined || updates.currency !== undefined) {
     let effectiveCurrency = updates.currency as string | undefined;
     if (effectiveCurrency === undefined) {
-      const { data: curRow } = await sb.from('purchase_invoices').select('currency').eq('id', id).maybeSingle();
-      effectiveCurrency = (curRow as { currency?: string } | null)?.currency ?? 'MYR';
+      /* Taken from the row already read above — the second round-trip this used
+         to make read the same column of the same row. */
+      effectiveCurrency = (before.currency as string | undefined) ?? 'MYR';
     }
     if (body.exchangeRate !== undefined) {
       updates.exchange_rate = normalizeExchangeRate(body.exchangeRate, effectiveCurrency);
@@ -1312,6 +1459,27 @@ purchaseInvoices.patch('/:id', async (c) => {
   }
   const { data, error } = await sb.from('purchase_invoices').update(updates).eq('id', id).select(HEADER).single();
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
+
+  /* Diff the NORMALISED values actually written, not the raw body: currency is
+     upper-cased and exchange_rate is derived from it, so logging what the client
+     sent would log a value that was never stored. */
+  {
+    const auditPatch: Record<string, unknown> = {};
+    for (const [camel, snake] of PI_AUDIT_FIELDS) {
+      if (updates[snake] !== undefined) auditPatch[camel] = updates[snake];
+    }
+    await recordEntityAudit(sb, {
+      entityType: 'PURCHASE_INVOICE',
+      entityId: id,
+      entityDocNo: (before.invoice_number as string | null) ?? null,
+      action: 'UPDATE',
+      actor: c.get('houzsUser'),
+      companyId: (before.company_id as number | null) ?? activeCompanyId(c),
+      statusSnapshot: (before.status as string | null) ?? null,
+      fieldChanges: diffFields(before, auditPatch, PI_AUDIT_FIELDS),
+    });
+  }
+
   /* A rate change moves the MYR AP amount posted to the GL. If the PI is posted,
      re-align its JE (void stale + re-post at the new MYR total) + recost its lots
      (the PI drives the authoritative MYR lot cost). Best-effort; no-op for MYR. */
