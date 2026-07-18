@@ -861,6 +861,19 @@ app.post("/invite", requirePermissionOrSalesDirector("users.manage"), async (c) 
       : [1];
   if (userId) await setUserCompanies(c, userId, inviteCompanyIds);
 
+  // Keep the Sales Team roster in lockstep at CREATE time too — not just on the
+  // later department-change PATCH. A member invited straight into a Sales
+  // department otherwise never gets a sales_reps row (the roster is what the PMS
+  // "Sales Attending" picker and the SO salesperson list read), so the picker
+  // showed "No Sales Persons found" for a floor full of Sales staff. sync is
+  // idempotent and gated on the department NAME containing "sales", so this is a
+  // no-op for every non-Sales invite and never duplicates an existing rep. Runs
+  // for both the direct-activate and the token-invite placeholder — an invited
+  // rep is created up front so the picker lists them the moment they're onboarded.
+  if (userId && departmentId != null) {
+    await syncSalesRepFromUser(c.env, userId, me.id);
+  }
+
   // Admin set a password → the account is live now; no invite token/email.
   if (activate) {
     await audit(c, {
