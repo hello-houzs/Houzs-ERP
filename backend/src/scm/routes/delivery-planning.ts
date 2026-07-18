@@ -71,6 +71,7 @@ import { soDeliverableRemaining } from './delivery-orders-mfg';
 import { activeCompanyId, scopeToAllowedCompanies, companyCodeMap } from '../lib/companyScope';
 import { recordSoAudit, type FieldChange } from '../lib/so-audit';
 import { computeReleaseGate } from '../../services/agents/release-gate';
+import { resolveDeliveryScope, scopeMatchesAssignment, type DeliveryScope, type CrewAssignment } from '../lib/deliveryScope';
 
 export const deliveryPlanning = new Hono<{ Bindings: Env; Variables: Variables }>();
 deliveryPlanning.use('*', supabaseAuth);
@@ -303,6 +304,97 @@ export function derivePlanningState(input: {
   return daysLeft != null && daysLeft <= 3 ? 'OVERDUE' : 'PENDING_DELIVERY';
 }
 
+/* Filter assembled board rows down to a self-scoped caller's OWN jobs. A no-op
+   for an `all` scope (ops/dispatcher/management) — their board is returned
+   unchanged. Kept as a standalone helper (not inline) so the assignment rule has
+   ONE definition and the board handler stays readable. Generic over the row shape
+   so it does not depend on the handler-local BoardRow type; it only reads
+   `row_type` + `so_doc_no` (the board's unique row key). */
+async function applyDeliveryRowScope<T extends { row_type: string; so_doc_no: string }>(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  sb: any,
+  scope: DeliveryScope,
+  rows: T[],
+  maps: {
+    doByDoc: Map<string, Array<{ id: string; doNumber: string; status: string }>>;
+    doDriverById: Map<string, string | null>;
+    crewIdsByDo: Map<string, { driverIds: string[]; helperIds: string[] }>;
+    dpTripIdByKey: Map<string, string | null>;
+  },
+): Promise<T[]> {
+  if (scope.mode === 'all') return rows;
+
+  /* DP rows reference their crew through a trip. Batch-load the crew ids for the
+     trips actually on the board (bounded .in — never the whole table). */
+  const tripCrewById = new Map<string, CrewAssignment>();
+  const tripIds = [...new Set([...maps.dpTripIdByKey.values()].filter((x): x is string => !!x))];
+  if (tripIds.length > 0) {
+    const { data: tripRows } = await sb.from('trips')
+      .select('id, driver_id, helper_1_id, helper_2_id')
+      .in('id', tripIds);
+    for (const t of (tripRows ?? []) as Array<Record<string, unknown>>) {
+      const id = String(t.id ?? '');
+      if (!id) continue;
+      tripCrewById.set(id, {
+        driverIds: [(t.driverId ?? t.driver_id) as string | null],
+        helperIds: [(t.helper1Id ?? t.helper_1_id) as string | null, (t.helper2Id ?? t.helper_2_id) as string | null],
+      });
+    }
+  }
+
+  const EMPTY: CrewAssignment = { driverIds: [], helperIds: [] };
+  const assignmentFor = (row: T): CrewAssignment => {
+    if (row.row_type === 'so') {
+      const dos = maps.doByDoc.get(row.so_doc_no) ?? [];
+      if (dos.length === 0) return EMPTY; // no DO cut yet → unassigned
+      const latestDoId = dos[dos.length - 1]!.id; // crew follows the latest DO
+      const crew = maps.crewIdsByDo.get(latestDoId) ?? { driverIds: [], helperIds: [] };
+      return {
+        driverIds: [...crew.driverIds, maps.doDriverById.get(latestDoId) ?? null],
+        helperIds: crew.helperIds,
+      };
+    }
+    if (row.row_type === 'dp') {
+      const tripId = maps.dpTripIdByKey.get(row.so_doc_no);
+      return (tripId && tripCrewById.get(tripId)) || EMPTY;
+    }
+    // ASSR (service-case) rows carry no crew → never a driver's own job.
+    return EMPTY;
+  };
+
+  return rows.filter((row) => scopeMatchesAssignment(scope, assignmentFor(row)));
+}
+
+/* A single DO's crew assignment (header driver_id + delivery_order_crew ids),
+   for the write-ownership check on the driver-facing step/POD endpoints. Returns
+   an empty assignment (matches no self scope) when the DO or its crew is absent. */
+async function fetchDoCrewAssignment(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  sb: any,
+  doId: string,
+): Promise<CrewAssignment> {
+  const [doRes, crewRes] = await Promise.all([
+    sb.from('delivery_orders').select('driver_id').eq('id', doId).maybeSingle(),
+    sb.from('delivery_order_crew').select('driver_1_id, driver_2_id, helper_1_id, helper_2_id').eq('do_id', doId).maybeSingle(),
+  ]);
+  const d = (doRes?.data ?? {}) as Record<string, unknown>;
+  const cr = (crewRes?.data ?? {}) as Record<string, unknown>;
+  return {
+    driverIds: [
+      (d.driverId ?? d.driver_id) as string | null,
+      (cr.driver1Id ?? cr.driver_1_id) as string | null,
+      (cr.driver2Id ?? cr.driver_2_id) as string | null,
+    ],
+    helperIds: [
+      (cr.helper1Id ?? cr.helper_1_id) as string | null,
+      (cr.helper2Id ?? cr.helper_2_id) as string | null,
+    ],
+  };
+}
+
+/* Plain-language 403 for a field-crew caller acting on a job that is not theirs. */
+const NOT_YOUR_JOB = "You can only update a delivery job assigned to you.";
+
 /* ──────────────────────────────────────────────────────────────────────────
    GET /delivery-planning?region=<ALL|code>&state=<delivery_state|ALL>
    The board. Source = live (status NOT DRAFT/CANCELLED) mfg_sales_orders that
@@ -313,6 +405,13 @@ export function derivePlanningState(input: {
 deliveryPlanning.get('/', async (c) => {
   const sb = c.get('supabase');
   const today = todayMY();
+
+  /* Per-assignee ROW SCOPE (owner rule): a Driver/Helper sees ONLY the jobs
+     assigned to their own name; every dispatcher / ops / management caller keeps
+     the whole board. resolveDeliveryScope narrows ONLY a policy-restricted caller
+     with a resolvable fleet identity — see lib/deliveryScope.ts. `all` (the
+     common case) leaves the entire assembly below untouched. */
+  const scope = await resolveDeliveryScope(sb, c.get('houzsUser'));
 
   const regionParam = (c.req.query('region') ?? 'ALL').trim().toUpperCase();
   const stateParam = (c.req.query('state') ?? 'ALL').trim().toUpperCase();
@@ -533,6 +632,9 @@ deliveryPlanning.get('/', async (c) => {
   };
   const { data: doRowsRaw } = await paginateAll<{
     id: string; do_number: string | null; so_doc_no: string | null; status: string | null;
+    // driver_id — the DO header's quick-field driver, one half of the row-scope
+    // assignment (the crew snapshot below carries the rest). dual-read camelCase.
+    driver_id: string | null; driverId?: string | null;
     delivery_state: string | null; customer_delivery_date: string | null; do_date: string | null;
     time_range: string | null; time_confirmed: boolean | null;
     arrival_at: string | null; departure_at: string | null;
@@ -548,11 +650,14 @@ deliveryPlanning.get('/', async (c) => {
     arrivesEmWarehouseDate?: string | null;
   }>((from, to) =>
     sb.from('delivery_orders')
-      .select('id, do_number, so_doc_no, status, delivery_state, customer_delivery_date, do_date, time_range, time_confirmed, arrival_at, departure_at, shipout_date, customer_delivered_date, eta_arriving_port, delivery_substatus, arrives_em_warehouse_date')
+      .select('id, do_number, so_doc_no, status, driver_id, delivery_state, customer_delivery_date, do_date, time_range, time_confirmed, arrival_at, departure_at, shipout_date, customer_delivered_date, eta_arriving_port, delivery_substatus, arrives_em_warehouse_date')
       .in('so_doc_no', docNos)
       .range(from, to),
   );
   const doByDoc = new Map<string, Array<{ id: string; doNumber: string; status: string }>>();
+  /* DO header driver_id by DO id — half the row-scope assignment (crew ids are
+     the other half). Only consulted when the caller is self-scoped. */
+  const doDriverById = new Map<string, string | null>();
   /* Latest non-DRAFT/CANCELLED DO's HC exec fields, keyed by SO doc_no — the
      same DO whose crew is shown (the last in doByDoc). null when no DO. */
   const doExecByDoc = new Map<string, DoExecOut>();
@@ -566,6 +671,7 @@ deliveryPlanning.get('/', async (c) => {
     arr.push({ id: d.id, doNumber: d.do_number ?? '—', status: st });
     doByDoc.set(dn, arr);
     doIds.push(d.id);
+    doDriverById.set(d.id, d.driverId ?? d.driver_id ?? null);
     // overwrite so the LAST DO wins (matches the crew = latest-DO convention)
     doExecByDoc.set(dn, {
       time_range: d.timeRange ?? d.time_range ?? null,
@@ -593,19 +699,29 @@ deliveryPlanning.get('/', async (c) => {
     lorry_plate: string | null;
   };
   const crewByDo = new Map<string, CrewOut>();
+  /* Crew driver/helper IDS by DO id — the row-scope assignment (the CrewOut
+     above carries only NAMES, for display). Only consulted when self-scoped. */
+  const crewIdsByDo = new Map<string, { driverIds: string[]; helperIds: string[] }>();
   if (doIds.length > 0) {
     const { data: crewRows } = await paginateAll<{
       do_id: string;
+      driver_1_id: string | null; driver_2_id: string | null;
+      helper_1_id: string | null; helper_2_id: string | null;
       driver_1_name: string | null; driver_1_ic: string | null; driver_1_contact: string | null;
       driver_2_name: string | null;
       helper_1_name: string | null; helper_2_name: string | null; lorry_plate: string | null;
+      driver1Id?: string | null; driver2Id?: string | null; helper1Id?: string | null; helper2Id?: string | null;
     }>((from, to) =>
       sb.from('delivery_order_crew')
-        .select('do_id, driver_1_name, driver_1_ic, driver_1_contact, driver_2_name, helper_1_name, helper_2_name, lorry_plate')
+        .select('do_id, driver_1_id, driver_2_id, helper_1_id, helper_2_id, driver_1_name, driver_1_ic, driver_1_contact, driver_2_name, helper_1_name, helper_2_name, lorry_plate')
         .in('do_id', doIds)
         .range(from, to),
     );
     for (const cr of (crewRows ?? [])) {
+      crewIdsByDo.set(cr.do_id, {
+        driverIds: [cr.driver1Id ?? cr.driver_1_id, cr.driver2Id ?? cr.driver_2_id].filter((x): x is string => !!x),
+        helperIds: [cr.helper1Id ?? cr.helper_1_id, cr.helper2Id ?? cr.helper_2_id].filter((x): x is string => !!x),
+      });
       crewByDo.set(cr.do_id, {
         driver: [cr.driver_1_name, cr.driver_2_name].filter(Boolean).join(' / ') || null,
         helper: [cr.helper_1_name, cr.helper_2_name].filter(Boolean).join(' / ') || null,
@@ -952,6 +1068,10 @@ deliveryPlanning.get('/', async (c) => {
      defensive wrapper as the ASSR union — a bad DP row must never break the board.
      Region + date + release-gate mirror the ASSR row exactly (parity). */
   const dpBoardRows: BoardRow[] = [];
+  /* DP-row key ("DP:<id>") → its trip_id, so a self-scoped caller's DP jobs can
+     be resolved from the trip crew (a DP order carries no delivery_order_crew).
+     Only consulted when self-scoped. */
+  const dpTripIdByKey = new Map<string, string | null>();
   try {
     let dpQuery = sb.from('dp_orders')
       .select('id, dp_no, job_type, party_name, contact_phone, address1, address2, address3, address4, city, postcode, state, requested_date, status, trip_id')
@@ -969,6 +1089,7 @@ deliveryPlanning.get('/', async (c) => {
       const address = [d.address1, d.address2, d.address3, d.address4, d.city, d.postcode, d.state]
         .filter(Boolean).join(', ') || null;
       const scheduled = String(d.status ?? '') === 'SCHEDULED';
+      dpTripIdByKey.set(`DP:${String(d.id)}`, ((d.trip_id ?? (d as { tripId?: string | null }).tripId) as string | null) ?? null);
       dpBoardRows.push({
         row_type: 'dp',
         ref: (d.dp_no as string | null) ?? null,
@@ -1041,11 +1162,22 @@ deliveryPlanning.get('/', async (c) => {
 
   const allOrders = [...orders, ...assrOrders, ...dpBoardRows];
 
+  /* 7c. PER-ASSIGNEE ROW SCOPE. For a self-scoped caller (Driver/Helper), keep
+        ONLY the rows assigned to them; unassigned rows and other crews' jobs drop
+        out. Ops/dispatcher/management resolve to `all` above, so this whole block
+        is skipped and their board is byte-identical to before. A row's assignment:
+          · SO row  → the latest DO's header driver_id + crew driver/helper ids.
+          · DP row  → its trip's driver_id / helper_1_id / helper_2_id.
+          · ASSR / DO-less SO → no assignment (empty) → never matches a self scope. */
+  const scopedOrders = await applyDeliveryRowScope(sb, scope, allOrders, {
+    doByDoc, doDriverById, crewIdsByDo, dpTripIdByKey,
+  });
+
   /* 8. Counts per state — computed over the REGION-filtered set so the state
         tab badges reflect the active region. The state filter is applied AFTER
         counting (so switching state tabs doesn't change the badge numbers). The
         region param is validated against the config's region codes. */
-  const regionFiltered = allOrders.filter((o) => matchesRegion(o, regionParam, regionCfg.validCodes));
+  const regionFiltered = scopedOrders.filter((o) => matchesRegion(o, regionParam, regionCfg.validCodes));
   const counts = emptyCounts();
   for (const o of regionFiltered) counts[o.delivery_state] += 1;
   counts.ALL = regionFiltered.length;
@@ -1227,6 +1359,29 @@ deliveryPlanning.patch('/:type/:id/fields', async (c) => {
       ? ((doRow as { soDocNo?: string | null; so_doc_no?: string | null }).soDocNo
          ?? (doRow as { so_doc_no?: string | null }).so_doc_no ?? null)
       : null;
+  }
+
+  /* WRITE OWNERSHIP (owner rule): a field-crew caller (Driver/Helper) may submit
+     a step / POD update ONLY on a job assigned to them. Ops/dispatcher/management
+     resolve to `all` and pass untouched. The job is identified by its DO's crew;
+     a field-crew caller acting where no assigned DO can be found is denied (they
+     have no job to act on here). This layers UNDER the area-guard's edit gate, so
+     for a view-only Driver it is belt-and-braces; it becomes the load-bearing gate
+     the moment a transportation-edit grant lets field crew reach this write. */
+  {
+    const scope = await resolveDeliveryScope(sb, c.get('houzsUser'));
+    if (scope.mode === 'self') {
+      let ownDoId = doId;
+      if (type === 'so' && !ownDoId) {
+        const { data: doRows } = await sb.from('delivery_orders')
+          .select('id, status').eq('so_doc_no', id);
+        const live = ((doRows ?? []) as Array<{ id: string; status: string | null }>)
+          .filter((d) => { const s = (d.status ?? '').toUpperCase(); return s !== 'DRAFT' && s !== 'CANCELLED'; });
+        ownDoId = live.length > 0 ? live[live.length - 1]!.id : null;
+      }
+      const assignment = ownDoId ? await fetchDoCrewAssignment(sb, ownDoId) : { driverIds: [], helperIds: [] };
+      if (!scopeMatchesAssignment(scope, assignment)) return c.json({ error: NOT_YOUR_JOB }, 403);
+    }
   }
 
   const written: { so: boolean; do: boolean } = { so: false, do: false };

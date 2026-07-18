@@ -31,6 +31,7 @@ import { paginateAll } from '../lib/paginate-all';
 import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { scopeToAllowedCompanies, companyCodeMap, withCompanyCode, activeCompanyId } from '../lib/companyScope';
 import { optimizeRoute } from '../lib/maps';
+import { resolveDeliveryScope, scopeMatchesAssignment, type CrewAssignment } from '../lib/deliveryScope';
 
 export const trips = new Hono<{ Bindings: Env; Variables: Variables }>();
 trips.use('*', supabaseAuth);
@@ -46,6 +47,15 @@ const STOP_COLS =
   'id, trip_id, stop_no, stop_type, do_id, so_id, customer_name, address, revenue_centi, notes, created_at';
 
 const TRIP_STATUSES = new Set(['PLANNED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED']);
+
+/* A trip's crew as a CrewAssignment (dual-read camelCase/snake_case), for the
+   per-assignee row scope: a Driver/Helper sees / acts on ONLY their own trips. */
+function tripAssignment(row: Record<string, unknown>): CrewAssignment {
+  return {
+    driverIds: [dual<string | null>(row, 'driver_id')],
+    helperIds: [dual<string | null>(row, 'helper_1_id'), dual<string | null>(row, 'helper_2_id')],
+  };
+}
 
 /* Dual-read a camelCased OR snake_cased field off a query result. The pg driver
    camelCases result columns; reading the snake_case key alone returns undefined
@@ -109,9 +119,16 @@ trips.get('/', async (c) => {
     return q;
   });
   if (error) return c.json({ error: 'load_failed', reason: error.message }, 500);
+  /* PER-ASSIGNEE ROW SCOPE (owner rule): a Driver/Helper sees ONLY the trips
+     they are crewed on; ops/dispatcher/management resolve to `all` and see every
+     trip (the shared cross-company queue), unchanged. */
+  const scope = await resolveDeliveryScope(sb, c.get('houzsUser'));
+  const scoped = scope.mode === 'all'
+    ? (data ?? [])
+    : (data ?? []).filter((r) => scopeMatchesAssignment(scope, tripAssignment(r)));
   // Tag each row with a readable company_code so the list can show a company column.
   const codes = companyCodeMap(c);
-  const trips = (data ?? []).map((r) => withCompanyCode(r, codes));
+  const trips = scoped.map((r) => withCompanyCode(r, codes));
   return c.json({ trips });
 });
 
@@ -127,6 +144,13 @@ trips.get('/:id', async (c) => {
   ]);
   if (t.error) return c.json({ error: 'load_failed', reason: t.error.message }, 500);
   if (!t.data) return c.json({ error: 'not_found' }, 404);
+  /* Row scope — a self-scoped Driver/Helper opening a trip that is not theirs
+     gets a 404 (indistinguishable from a nonexistent trip), same hatch the sales
+     doc detail uses. Ops/dispatcher (`all`) are never blocked. */
+  const scope = await resolveDeliveryScope(sb, c.get('houzsUser'));
+  if (scope.mode === 'self' && !scopeMatchesAssignment(scope, tripAssignment(t.data as unknown as Record<string, unknown>))) {
+    return c.json({ error: 'not_found' }, 404);
+  }
   return c.json({ trip: t.data, stops: s.data ?? [] });
 });
 
@@ -255,8 +279,18 @@ trips.patch('/:id/status', async (c) => {
   if (!TRIP_STATUSES.has(status)) return c.json({ error: 'invalid_status' }, 400);
 
   const sb = c.get('supabase');
-  const { data: cur } = await sb.from('trips').select('clock_in_at, clock_out_at').eq('id', id).maybeSingle();
+  const { data: cur } = await sb.from('trips').select('clock_in_at, clock_out_at, driver_id, helper_1_id, helper_2_id').eq('id', id).maybeSingle();
   if (!cur) return c.json({ error: 'not_found' }, 404);
+  /* WRITE OWNERSHIP (owner rule): a Driver/Helper may advance a trip's step
+     (status) ONLY on a trip they are crewed on. Ops/dispatcher (`all`) pass
+     untouched. Layers under the area-guard's edit gate — see the twin guard in
+     delivery-planning.ts /fields. */
+  {
+    const scope = await resolveDeliveryScope(sb, c.get('houzsUser'));
+    if (scope.mode === 'self' && !scopeMatchesAssignment(scope, tripAssignment(cur as Record<string, unknown>))) {
+      return c.json({ error: 'You can only update a delivery job assigned to you.' }, 403);
+    }
+  }
   const now = new Date().toISOString();
   const updates: Record<string, unknown> = { status, updated_at: now };
   if (status === 'IN_PROGRESS' && !dual(cur as Record<string, unknown>, 'clock_in_at')) updates.clock_in_at = now;
