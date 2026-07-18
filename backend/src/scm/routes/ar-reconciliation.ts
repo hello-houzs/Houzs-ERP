@@ -27,8 +27,18 @@ import type { Env, Variables } from '../env';
 import { paginateAll } from '../lib/paginate-all';
 import { scopeToAllowedCompanies } from '../lib/companyScope';
 import { computeReleaseGate } from '../../services/agents/release-gate';
+import { supabaseAuth } from '../middleware/auth';
 
 export const arReconciliation = new Hono<{ Bindings: Env; Variables: Variables }>();
+
+// Attach the scm-scoped supabase-js client (c.get('supabase')) the handler reads.
+// This router is mounted in scm/index.ts WITHOUT the usual `scm.use(prefix,
+// scmAreaGuard(...))` line (it rides the coarse scm.access umbrella as a read-only
+// preview) and shipped without its own supabaseAuth too — so `c.get('supabase')`
+// was undefined and the first `sb.from('mfg_sales_orders')` threw a TypeError,
+// 500-ing the AR reconciliation preview for everyone. Same `.use('*', supabaseAuth)`
+// every other scm sub-router carries.
+arReconciliation.use('*', supabaseAuth);
 
 /** Orders still in play for receivables — a draft has no money story yet and a
  *  cancelled one is closed. */

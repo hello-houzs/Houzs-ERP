@@ -26,8 +26,21 @@ import {
   resolveDeliveryScope, scopeMatchesAssignment,
   type CrewAssignment, type DeliveryScope,
 } from '../lib/deliveryScope';
+import { supabaseAuth } from '../middleware/auth';
 
 export const dpOrders = new Hono<{ Bindings: Env; Variables: Variables }>();
+
+// Attach the scm-scoped supabase-js client (c.get('supabase')) + the real Houzs
+// caller (c.get('houzsUser')) that every handler below reads. Without this the
+// sub-router never had them set: `c.get('supabase')` was undefined, so the first
+// `sb.from(...)` in ANY endpoint threw a TypeError — surfacing as a generic 500
+// ("Something went wrong. Please try again.") on the whole DP-Order feature. Same
+// `.use('*', supabaseAuth)` line every other scm sub-router carries (e.g.
+// delivery-planning.ts); this router was the one that shipped without it. Runs
+// AFTER the parent `scm.use('/dp-orders/*', scmAreaGuard(...))` in scm/index.ts,
+// which must read the real Houzs user BEFORE supabaseAuth swaps in the scm.staff
+// system identity — the ordering the area-guard header documents.
+dpOrders.use('*', supabaseAuth);
 
 // ── Per-assignee row scope (owner rule, Lim Wei Siang) ──────────────────────
 // A Driver / Helper may see and act on ONLY the delivery jobs assigned to them.
