@@ -29,6 +29,7 @@ import { resolveSalesScopeIds, salesDocOutOfScope } from '../lib/salesScope';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix, companyCodeMap } from '../lib/companyScope';
 import { canViewAllSales, canViewScmFinance } from '../lib/houzs-perms';
 import { SO_ITEM_FINANCE_KEYS } from '../lib/finance-keys';
+import { freezeShipCost } from '../lib/fulfillment-costing';
 import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item-codes';
 import { checkStockAvailability, shortStockResponse } from '../lib/check-stock-availability';
 import { findSofaLinesWithoutCompleteBatch, sofaNoCompleteBatchResponse, findIncompleteSofaSets, sofaIncompleteSetResponse, detectSofaSoItemIds } from '../lib/sofa-batch-guard';
@@ -467,7 +468,7 @@ export async function restampDoActualCost(sb: any, deliveryOrderId: string) {
     const isDropship = (doHeader as { is_dropship?: boolean }).is_dropship === true;
 
     const { data: items } = await sb.from('delivery_order_items')
-      .select('id, so_item_id, item_code, qty, item_group, variants, line_total_centi')
+      .select('id, so_item_id, item_code, qty, item_group, variants, line_total_centi, ship_cost_centi')
       .eq('delivery_order_id', deliveryOrderId);
     if (!items || items.length === 0) return;
 
@@ -512,6 +513,7 @@ export async function restampDoActualCost(sb: any, deliveryOrderId: string) {
     for (const it of items as Array<{
       id: string; so_item_id?: string | null; item_code: string; qty: number;
       item_group?: string | null; variants?: VariantAttrs | null; line_total_centi: number | null;
+      ship_cost_centi?: number | null;
     }>) {
       const warehouseId = lineWh.get(it.id) ?? null;
       if (!warehouseId) continue;
@@ -524,11 +526,22 @@ export async function restampDoActualCost(sb: any, deliveryOrderId: string) {
       const qty = Number(it.qty ?? 0);
       const lineTotal = Number(it.line_total_centi ?? 0);
       const lineCost = unitCost * qty;
-      await sb.from('delivery_order_items').update({
+      const update: Record<string, number> = {
         unit_cost_centi: unitCost,
         line_cost_centi: lineCost,
         line_margin_centi: lineTotal - lineCost,
-      }).eq('id', it.id);
+      };
+      /* Freeze the ship-time FIFO unit cost ONCE (mig 0143). This path re-runs
+         on line-set change and, via recost.ts, when a supplier PI lands — each
+         re-run overwrites unit_cost_centi IN PLACE with the newest (landed)
+         cost, which is what erases the ship-time ② and collapses it into ③.
+         freezeShipCost writes ship_cost_centi only while it is still NULL, so
+         the FIRST post-ship costing captures the true ② and every later recost
+         leaves it untouched — the whole basis of the three-way Fulfillment
+         Costing report. Nothing else about the cost numbers changes. */
+      const shipFreeze = freezeShipCost(it.ship_cost_centi ?? null, unitCost);
+      if (shipFreeze !== undefined) update.ship_cost_centi = shipFreeze;
+      await sb.from('delivery_order_items').update(update).eq('id', it.id);
     }
 
     await recomputeTotals(sb, deliveryOrderId);

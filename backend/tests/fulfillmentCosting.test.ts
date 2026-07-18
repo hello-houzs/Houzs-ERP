@@ -1,0 +1,292 @@
+import { describe, expect, test } from "vitest";
+import {
+  freezeShipCost,
+  aggregateDoLines,
+  aggregateSiLines,
+  computeLineComparison,
+  filterRows,
+  summarize,
+  groupRows,
+  dimensionKeyLabel,
+  type LineComparison,
+  type LineDims,
+} from "../src/scm/lib/fulfillment-costing";
+import { canViewScmFinance } from "../src/scm/lib/houzs-perms";
+import type { AuthUser } from "../src/services/auth";
+
+/* The Fulfillment Costing report's correctness is money: a THREE-WAY split
+   (① order / ② DO ship-time FIFO / ③ SI landed) that must stay distinct after a
+   supplier PI recost collapses ②→③ in the live column. These pin the exact
+   behaviours the migration + write-path change exist to guarantee:
+     (a) ship freezes ship_cost_centi ONCE;
+     (b) a later recost changes the live unit cost but leaves the frozen ②;
+     (c) the report shows three DISTINCT numbers for a shipped+PI'd line and
+         falls back + flags legacy rows;
+     (d) filters + group-by work for all four dimensions;
+     (e) the permission gate blocks a sales user. */
+
+// ── (a) + (b) the freeze decision (the money-path half) ─────────────────────
+describe("freezeShipCost — freeze once, never overwrite", () => {
+  test("(a) first post-ship costing freezes: NULL → the ship-time unit cost", () => {
+    expect(freezeShipCost(null, 1000)).toBe(1000);
+    expect(freezeShipCost(undefined, 1000)).toBe(1000);
+  });
+
+  test("(b) a later recost does NOT rewrite it: already set → undefined (no write)", () => {
+    // undefined is the signal the route uses to omit ship_cost_centi from the
+    // UPDATE — so recost changes unit_cost_centi but leaves the frozen ②.
+    expect(freezeShipCost(1000, 1200)).toBeUndefined();
+  });
+
+  test("zero is a REAL frozen value, not 'unset' — a genuinely free line stays 0", () => {
+    // == null is deliberate (catches null + undefined only); 0 must not re-freeze.
+    expect(freezeShipCost(0, 1200)).toBeUndefined();
+  });
+
+  test("the ship→PI lifecycle end to end", () => {
+    // At ship: nothing frozen yet, FIFO unit = 1000.
+    const atShip = freezeShipCost(null, 1000);
+    expect(atShip).toBe(1000);
+    // PI lands, recost re-runs restampDoActualCost with the landed unit = 1200.
+    const atRecost = freezeShipCost(atShip ?? null, 1200);
+    expect(atRecost).toBeUndefined(); // ship_cost_centi stays 1000; unit becomes 1200.
+  });
+});
+
+// ── DO / SI aggregation ──────────────────────────────────────────────────────
+describe("aggregateDoLines — ② resolution", () => {
+  test("frozen ship cost is used and is distinct from the live (landed) cost", () => {
+    const agg = aggregateDoLines([
+      { qty: 2, unit_cost_centi: 1200, line_cost_centi: 2400, ship_cost_centi: 1000 },
+    ]);
+    expect(agg.present).toBe(true);
+    expect(agg.isLegacy).toBe(false);
+    expect(agg.shipUnitCenti).toBe(1000); // ② frozen
+    expect(agg.shipLineCenti).toBe(2000);
+    expect(agg.liveUnitCenti).toBe(1200); // == ③ after PI
+  });
+
+  test("weighted across multiple delivering DO lines", () => {
+    const agg = aggregateDoLines([
+      { qty: 2, unit_cost_centi: 1200, line_cost_centi: 2400, ship_cost_centi: 1000 },
+      { qty: 1, unit_cost_centi: 1200, line_cost_centi: 1200, ship_cost_centi: 1300 },
+    ]);
+    expect(agg.qty).toBe(3);
+    expect(agg.shipLineCenti).toBe(2 * 1000 + 1 * 1300); // 3300
+    expect(agg.shipUnitCenti).toBe(Math.round(3300 / 3)); // 1100
+  });
+
+  test("legacy: a NULL ship_cost taints the line — ② falls back to live + is flagged", () => {
+    const agg = aggregateDoLines([
+      { qty: 1, unit_cost_centi: 1200, line_cost_centi: 1200, ship_cost_centi: null },
+    ]);
+    expect(agg.isLegacy).toBe(true);
+    expect(agg.shipUnitCenti).toBe(1200); // == live, honest fallback
+    expect(agg.liveUnitCenti).toBe(1200);
+  });
+
+  test("no DO lines → not present, no legacy", () => {
+    const agg = aggregateDoLines([]);
+    expect(agg.present).toBe(false);
+    expect(agg.isLegacy).toBe(false);
+    expect(agg.shipUnitCenti).toBeNull();
+  });
+});
+
+describe("aggregateSiLines — ③ resolution", () => {
+  test("weighted landed unit cost", () => {
+    const agg = aggregateSiLines([
+      { qty: 2, unit_cost_centi: 1200, line_cost_centi: 2400 },
+      { qty: 1, unit_cost_centi: 1500, line_cost_centi: 1500 },
+    ]);
+    expect(agg.present).toBe(true);
+    expect(agg.lineCenti).toBe(3900);
+    expect(agg.unitCenti).toBe(Math.round(3900 / 3)); // 1300
+  });
+
+  test("no SI lines → not present (this is what makes a line 'pending')", () => {
+    expect(aggregateSiLines([]).present).toBe(false);
+  });
+});
+
+const dims = (over: Partial<LineDims> = {}): LineDims => ({
+  so_item_id: "so-1",
+  doc_no: "SO-1",
+  item_code: "ITM-1",
+  item_name: "Item One",
+  category: "MATTRESS",
+  customer_state: "Selangor",
+  menu: "Model A",
+  qty: 1,
+  ...over,
+});
+
+// ── (c) three distinct numbers + legacy fallback ────────────────────────────
+describe("computeLineComparison — (c) the three-way split", () => {
+  test("shipped + PI'd line shows three DISTINCT numbers with correct variances", () => {
+    const row = computeLineComparison({
+      dims: dims({ qty: 2 }),
+      order: { unitCenti: 800, lineCenti: 1600 },
+      doAgg: aggregateDoLines([{ qty: 2, unit_cost_centi: 1200, line_cost_centi: 2400, ship_cost_centi: 1000 }]),
+      siAgg: aggregateSiLines([{ qty: 2, unit_cost_centi: 1200, line_cost_centi: 2400 }]),
+    });
+    // ① 800  ② 1000  ③ 1200 — all different.
+    expect(row.order_unit_centi).toBe(800);
+    expect(row.do_unit_centi).toBe(1000);
+    expect(row.si_unit_centi).toBe(1200);
+    expect(new Set([row.order_unit_centi, row.do_unit_centi, row.si_unit_centi]).size).toBe(3);
+    expect(row.do_cost_is_legacy).toBe(false);
+    expect(row.pending).toBe(false);
+    // variances (unit): ②−① = +200 (+25%), ③−② = +200 (+20%), ③−① = +400 (+50%).
+    expect(row.var_do_order_centi).toBe(200);
+    expect(row.var_do_order_pct).toBeCloseTo(25);
+    expect(row.var_si_do_centi).toBe(200);
+    expect(row.var_si_do_pct).toBeCloseTo(20);
+    expect(row.var_si_order_centi).toBe(400);
+    expect(row.max_abs_var_pct).toBeCloseTo(25);
+  });
+
+  test("legacy DO row: ②≈③ but FLAGGED so the owner reads it as a limitation, not convergence", () => {
+    const row = computeLineComparison({
+      dims: dims(),
+      order: { unitCenti: 800, lineCenti: 800 },
+      doAgg: aggregateDoLines([{ qty: 1, unit_cost_centi: 1200, line_cost_centi: 1200, ship_cost_centi: null }]),
+      siAgg: aggregateSiLines([{ qty: 1, unit_cost_centi: 1200, line_cost_centi: 1200 }]),
+    });
+    expect(row.do_cost_is_legacy).toBe(true);
+    expect(row.do_unit_centi).toBe(row.si_unit_centi); // ②≈③, the legacy limit
+  });
+
+  test("pending: delivered but not yet invoiced → no ③, flagged pending", () => {
+    const row = computeLineComparison({
+      dims: dims(),
+      order: { unitCenti: 800, lineCenti: 800 },
+      doAgg: aggregateDoLines([{ qty: 1, unit_cost_centi: 1000, line_cost_centi: 1000, ship_cost_centi: 1000 }]),
+      siAgg: aggregateSiLines([]),
+    });
+    expect(row.pending).toBe(true);
+    expect(row.si_present).toBe(false);
+    expect(row.si_unit_centi).toBeNull();
+    expect(row.var_si_do_pct).toBeNull(); // no lie off an absent stage
+  });
+});
+
+// ── (d) filters + group-by for all four dimensions ──────────────────────────
+function sampleRows(): LineComparison[] {
+  const mk = (over: Partial<LineDims>, order: number, doShip: number, si: number | null) =>
+    computeLineComparison({
+      dims: dims(over),
+      order: { unitCenti: order, lineCenti: order * (over.qty ?? 1) },
+      doAgg: aggregateDoLines([{ qty: over.qty ?? 1, unit_cost_centi: doShip, line_cost_centi: doShip * (over.qty ?? 1), ship_cost_centi: doShip }]),
+      siAgg: si == null ? aggregateSiLines([]) : aggregateSiLines([{ qty: over.qty ?? 1, unit_cost_centi: si, line_cost_centi: si * (over.qty ?? 1) }]),
+    });
+  return [
+    mk({ so_item_id: "a", item_code: "ITM-1", category: "MATTRESS", menu: "Model A", customer_state: "Selangor" }, 1000, 1000, 1010), // ~1% var
+    mk({ so_item_id: "b", item_code: "ITM-2", category: "SOFA", menu: "Model B", customer_state: "Johor" }, 1000, 1200, 1200),     // 20% var
+    mk({ so_item_id: "c", item_code: "ITM-1", category: "MATTRESS", menu: "Model A", customer_state: "Johor" }, 1000, 1000, null),  // pending
+  ];
+}
+
+describe("filterRows — (d) variance + pending", () => {
+  test("minVariancePct keeps only rows above the threshold", () => {
+    const kept = filterRows(sampleRows(), { minVariancePct: 5 });
+    expect(kept.map((r) => r.so_item_id)).toEqual(["b"]); // only the 20% row
+  });
+
+  test("pendingOnly keeps only rows with no landed cost", () => {
+    const kept = filterRows(sampleRows(), { pendingOnly: true });
+    expect(kept.map((r) => r.so_item_id)).toEqual(["c"]);
+  });
+
+  test("no filter → all rows", () => {
+    expect(filterRows(sampleRows(), {})).toHaveLength(3);
+  });
+});
+
+describe("groupRows — (d) all four dimensions", () => {
+  test("by item", () => {
+    const g = groupRows(sampleRows(), "item");
+    const byKey = Object.fromEntries(g.map((x) => [x.key, x.lines]));
+    expect(byKey["ITM-1"]).toBe(2);
+    expect(byKey["ITM-2"]).toBe(1);
+  });
+
+  test("by category", () => {
+    const g = groupRows(sampleRows(), "category");
+    expect(new Set(g.map((x) => x.key))).toEqual(new Set(["MATTRESS", "SOFA"]));
+  });
+
+  test("by menu", () => {
+    const g = groupRows(sampleRows(), "menu");
+    expect(new Set(g.map((x) => x.key))).toEqual(new Set(["Model A", "Model B"]));
+  });
+
+  test("by state", () => {
+    const g = groupRows(sampleRows(), "state");
+    const byKey = Object.fromEntries(g.map((x) => [x.key, x.lines]));
+    expect(byKey["Johor"]).toBe(2);
+    expect(byKey["Selangor"]).toBe(1);
+  });
+
+  test("a missing dimension value groups under Unspecified, not dropped", () => {
+    const rows = [computeLineComparison({
+      dims: dims({ customer_state: null }),
+      order: { unitCenti: 100, lineCenti: 100 },
+      doAgg: aggregateDoLines([]),
+      siAgg: aggregateSiLines([]),
+    })];
+    const g = groupRows(rows, "state");
+    expect(g).toHaveLength(1);
+    expect(g[0].key).toBe("");
+    expect(g[0].label).toBe("Unspecified");
+    expect(dimensionKeyLabel(rows[0], "state").label).toBe("Unspecified");
+  });
+});
+
+describe("summarize — the 5-tile strip", () => {
+  test("totals, variance, pending + legacy counts", () => {
+    const s = summarize(sampleRows());
+    expect(s.lines).toBe(3);
+    expect(s.order_cost_centi).toBe(3000);          // 1000*3
+    expect(s.do_cost_centi).toBe(1000 + 1200 + 1000); // 3200
+    expect(s.si_cost_centi).toBe(1010 + 1200 + 0);    // 2210 (pending row contributes 0)
+    expect(s.pending_count).toBe(1);
+    expect(s.legacy_count).toBe(0);
+    expect(s.variance_centi).toBe(s.si_cost_centi - s.order_cost_centi);
+  });
+});
+
+// ── (e) permission gate blocks a sales user ─────────────────────────────────
+function user(over: { position_name?: string | null; perms?: string[] }): AuthUser {
+  const perms = over.perms ?? [];
+  return {
+    id: 1, email: "t@test.local", name: "t", role_id: 1, role_name: "r",
+    position_id: 1, position_name: over.position_name ?? null, status: "active",
+    permissions: perms, permissions_set: new Set(perms), manager_id: null,
+    scope_to_pic: false, department_id: null, department_name: null,
+    brand_scope: null, page_access: {}, scm_l2_configured: false,
+  } as AuthUser;
+}
+function ctx(u: AuthUser | null) {
+  return {
+    get: (_k: "houzsUser") =>
+      u === null ? undefined : { position_name: u.position_name, permissions_set: u.permissions_set },
+  } as Parameters<typeof canViewScmFinance>[0];
+}
+
+describe("(e) the report's finance gate blocks sales, admits finance", () => {
+  test("a Sales Executive is refused — the endpoint 403s on this being false", () => {
+    expect(canViewScmFinance(ctx(user({ position_name: "Sales Executive" })))).toBe(false);
+  });
+
+  test("directors / finance are admitted", () => {
+    for (const pos of ["Sales Director", "Finance Manager", "Super Admin"]) {
+      expect(canViewScmFinance(ctx(user({ position_name: pos })))).toBe(true);
+    }
+    expect(canViewScmFinance(ctx(user({ position_name: "Owner", perms: ["*"] })))).toBe(true);
+  });
+
+  test("no caller → refused (fails closed)", () => {
+    expect(canViewScmFinance(ctx(null))).toBe(false);
+  });
+});

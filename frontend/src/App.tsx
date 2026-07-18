@@ -3,7 +3,7 @@ import { Routes, Route, Navigate } from "react-router-dom";
 import { Layout } from "./components/Layout";
 import { useAuth } from "./auth/AuthContext";
 import { canUseAssistant } from "./auth/assistantAccess";
-import { isSalesStaff, isDirectorUser, isSalesDirectorUser } from "./auth/salesAccess";
+import { isSalesStaff, isDirectorUser, isSalesDirectorUser, canViewScmCosting } from "./auth/salesAccess";
 import { PageGuard } from "./auth/PageGuard";
 import { Forbidden } from "./pages/Forbidden";
 import { GlobalSearchProvider } from "./components/GlobalSearch";
@@ -127,6 +127,7 @@ const ScmSoDetailListingV2 = lazy(() => import("./pages/scm-v2/SalesOrderDetailL
 const ScmDoDetailListingV2 = lazy(() => import("./pages/scm-v2/DeliveryOrderDetailListing").then((m) => ({ default: m.DeliveryOrderDetailListing })));
 const ScmSiDetailListingV2 = lazy(() => import("./pages/scm-v2/SalesInvoiceDetailListing").then((m) => ({ default: m.SalesInvoiceDetailListing })));
 const ScmDrDetailListingV2 = lazy(() => import("./pages/scm-v2/DeliveryReturnDetailListing").then((m) => ({ default: m.DeliveryReturnDetailListing })));
+const ScmFulfillmentCostingV2 = lazy(() => import("./pages/scm-v2/FulfillmentCosting").then((m) => ({ default: m.FulfillmentCosting })));
 const ScmDeliveryOrdersV2 = lazy(() => import("./pages/scm-v2/MfgDeliveryOrdersListV2").then((m) => ({ default: m.MfgDeliveryOrdersListV2 })));
 const ScmDeliveryOrderNewV2 = lazy(() => import("./pages/scm-v2/DeliveryOrderNewV2").then((m) => ({ default: m.DeliveryOrderNewV2 })));
 const ScmDeliveryOrderFromSoV2 = lazy(() => import("./pages/scm-v2/DeliveryOrderFromSo").then((m) => ({ default: m.DeliveryOrderFromSo })));
@@ -285,6 +286,21 @@ function DeliveryReturnsGuard({ children }: { children: React.ReactNode }) {
 function SoMaintenanceGuard({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
   if (!isDirectorUser(user)) return <Forbidden page="scm.sales.orders" />;
+  return <>{children}</>;
+}
+
+/**
+ * Fulfillment Costing route guard — COSTING/FINANCE only. The whole page is
+ * cost data (#786 moved cost off the document views to live only here), so it
+ * gates on canViewScmCosting (project_finance_viewer AND the costing master
+ * switch) — the SAME question the backend enforces with canViewScmFinance. A
+ * Sales user is Forbidden BEFORE mount, so none of the report's data hooks fire
+ * (off, not hidden). Backend remains the source of truth; this is defence in
+ * depth for a typed URL.
+ */
+function FinanceCostingGuard({ children }: { children: React.ReactNode }) {
+  const { user } = useAuth();
+  if (!canViewScmCosting(user)) return <Forbidden page="scm.finance" />;
   return <>{children}</>;
 }
 
@@ -572,6 +588,9 @@ export default function App() {
         <Route path="/scm/reports/delivery-order-detail-listing" element={<ScmGuard area="scm.sales.delivery"><Scm2990Shell><ScmDoDetailListingV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/reports/sales-invoice-detail-listing" element={<ScmGuard area="scm.sales.invoices"><Scm2990Shell><ScmSiDetailListingV2 /></Scm2990Shell></ScmGuard>} />
         <Route path="/scm/reports/delivery-return-detail-listing" element={<DeliveryReturnsGuard><Scm2990Shell><ScmDrDetailListingV2 /></Scm2990Shell></DeliveryReturnsGuard>} />
+        {/* Finance > Fulfillment Costing — three-way cost report; finance-only
+            (FinanceCostingGuard mirrors the backend canViewScmFinance gate). */}
+        <Route path="/scm/reports/fulfillment-costing" element={<FinanceCostingGuard><Scm2990Shell><ScmFulfillmentCostingV2 /></Scm2990Shell></FinanceCostingGuard>} />
         {/* allowSales — a salesperson READS the DO list/detail generated from
             their own SOs (backend row-scopes own+downline, strips cost/margin).
             Create routes below deliberately OMIT allowSales (read-only). */}
