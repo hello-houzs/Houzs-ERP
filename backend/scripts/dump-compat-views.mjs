@@ -7,7 +7,7 @@
 // env rebuilt from the tree has neither, and getProjectDetail's `LEFT JOIN
 // lorries` 500s on every project there.
 //
-// This probe captures the ground-truth body so migration 0128 can recreate them
+// This probe captures the ground-truth body so migration 0136 can recreate them
 // byte-faithfully (the DB is the source of truth — never hand-write the DDL,
 // a drifted column would 500 and block ALL deploys). Same shape + workflow
 // pattern as scripts/dump-views.mjs. No writes.
@@ -37,7 +37,7 @@ try {
     } catch (e) {
       console.log(`!!! ${v} meta failed: ${e.message}`);
     }
-    // The canonical, pretty-printed body — paste this into migration 0128.
+    // The canonical, pretty-printed body — paste this into migration 0136.
     try {
       const rows = await pg`SELECT pg_get_viewdef(${v}::regclass, true) AS def`;
       console.log(`----- BEGIN ${v} -----`);
