@@ -50,6 +50,7 @@ import { BrandingPill, badgeFor } from '../../vendor/scm/lib/category-badges';
 import { soStatusDisplay, type DeliveryState, type SoLifecycle } from '../../vendor/scm/lib/so-status';
 import { useAuth } from '../../auth/AuthContext';
 import styles from './MfgSalesOrdersList.module.css';
+import { PageHeader } from '../../components/Layout';
 import soDetailStyles from './SalesOrderDetail.module.css';
 
 /* Local payments hook — lazy-loaded per expanded SO row alongside the detail
@@ -907,20 +908,19 @@ export const ConsignmentOrders = () => {
   );
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div>
-          <h1 className={styles.title}>
-            Consignment Orders {outstandingOnly && <span style={{ color: 'var(--c-burnt)' }}>· Outstanding only</span>}
-          </h1>
-        </div>
-        <div style={{ display: 'inline-flex', gap: 'var(--space-2)' }}>
-          <Button variant="primary" size="sm" onClick={onNew}>
-            <Plus size={14} strokeWidth={1.75} />
-            <span>New Consignment Order</span>
-          </Button>
-        </div>
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Supply Chain"
+        title={`Consignment Orders${outstandingOnly ? ' · Outstanding only' : ''}`}
+        actions={
+          <div style={{ display: 'inline-flex', gap: 'var(--space-2)' }}>
+            <Button variant="primary" size="sm" onClick={onNew}>
+              <Plus size={14} strokeWidth={1.75} />
+              <span>New Consignment Order</span>
+            </Button>
+          </div>
+        }
+      />
 
       {outstandingOnly && (
         <div style={{

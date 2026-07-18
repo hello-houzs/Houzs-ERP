@@ -31,6 +31,7 @@ import {
 import { useMfgProducts, useMaintenanceConfig, useSpecialAddons } from '../../vendor/scm/lib/mfg-products-queries';
 import { sortByText } from '../../vendor/scm/lib/sort-options';
 import styles from './SalesOrderDetail.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -235,24 +236,27 @@ export const StockAdjustmentNew = () => {
   };
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
-          <Link to="/scm/stock-adjustments" className={styles.backBtn}>
-            <ArrowLeft {...ICON} /> <span>Stock Adjustments</span>
-          </Link>
-          <h1 className={styles.title}>New Stock Adjustment</h1>
-        </div>
-        <div className={styles.actions}>
-          <Button variant="ghost" size="md" onClick={() => navigate('/scm/stock-adjustments')}>
-            <X {...ICON} /> Cancel
-          </Button>
-          <Button variant="primary" size="md" onClick={onSave} disabled={adjust.isPending}>
-            <Save {...ICON} />
-            {adjust.isPending ? 'Saving…' : 'Save Adjustment'}
-          </Button>
-        </div>
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Inventory"
+        title="New Stock Adjustment"
+        actions={
+          <>
+            <Link to="/scm/stock-adjustments" className={styles.backBtn}>
+              <ArrowLeft {...ICON} /> <span>Stock Adjustments</span>
+            </Link>
+            <div className={styles.actions}>
+              <Button variant="ghost" size="md" onClick={() => navigate('/scm/stock-adjustments')}>
+                <X {...ICON} /> Cancel
+              </Button>
+              <Button variant="primary" size="md" onClick={onSave} disabled={adjust.isPending}>
+                <Save {...ICON} />
+                {adjust.isPending ? 'Saving…' : 'Save Adjustment'}
+              </Button>
+            </div>
+          </>
+        }
+      />
 
       <section className={styles.card}>
         <div className={styles.cardHeader}>

@@ -38,6 +38,7 @@ import { useIdempotencyKey } from '../../lib/idempotency';
 import { ActionResultDialog } from '../../vendor/scm/components/ActionResultDialog';
 import { ItemGroupPill } from '../../vendor/scm/lib/category-badges';
 import styles from './SalesOrderDetail.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -536,52 +537,46 @@ export const PurchaseOrderFromSo = () => {
   );
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
-          <Link
-            to={targetPoId ? `/scm/purchase-orders/${targetPoId}?edit=1`
-              : cameFromNewPage ? '/scm/purchase-orders/new'
-              : '/scm/purchase-orders'}
-            className={styles.backBtn}
-          >
-            <ArrowLeft {...ICON} />
-            {' '}
-            <span>{targetPoId ? 'Back to PO' : cameFromNewPage ? 'Back to New PO' : 'Purchase Orders'}</span>
-          </Link>
-          <h1 className={styles.title}>
-            Pick Sales Orders for this PO
-            {targetPoNumber && (
-              <span style={{ marginLeft: 8, fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-14)', color: 'var(--c-burnt)' }}>
-                · {targetPoNumber}
-              </span>
-            )}
-          </h1>
-        </div>
-        <div className={styles.actions}>
-          <Button
-            variant="ghost" size="md"
-            onClick={() => navigate(
-              targetPoId ? `/scm/purchase-orders/${targetPoId}?edit=1`
-              : cameFromNewPage ? '/scm/purchase-orders/new'
-              : '/scm/purchase-orders'
-            )}
-          >
-            <X {...ICON} /> Cancel
-          </Button>
-          <Button
-            variant="primary" size="md"
-            onClick={onSave}
-            disabled={pickedCount === 0 || createPos.isPending}
-            title={targetPoId ? 'Add the picked SO lines into this PO' : 'Add the picked SO lines into the New PO form'}
-          >
-            <Save {...ICON} />
-            {createPos.isPending
-              ? 'Adding…'
-              : pickedCount === 0 ? 'Pick at least 1 line' : `Add ${pickedCount} line${pickedCount === 1 ? '' : 's'} to PO`}
-          </Button>
-        </div>
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Procurement"
+        title={`Pick Sales Orders for this PO${targetPoNumber ? ` · ${targetPoNumber}` : ''}`}
+        actions={
+          <div className={styles.actions}>
+            <Link
+              to={targetPoId ? `/scm/purchase-orders/${targetPoId}?edit=1`
+                : cameFromNewPage ? '/scm/purchase-orders/new'
+                : '/scm/purchase-orders'}
+              className={styles.backBtn}
+            >
+              <ArrowLeft {...ICON} />
+              {' '}
+              <span>{targetPoId ? 'Back to PO' : cameFromNewPage ? 'Back to New PO' : 'Purchase Orders'}</span>
+            </Link>
+            <Button
+              variant="ghost" size="md"
+              onClick={() => navigate(
+                targetPoId ? `/scm/purchase-orders/${targetPoId}?edit=1`
+                : cameFromNewPage ? '/scm/purchase-orders/new'
+                : '/scm/purchase-orders'
+              )}
+            >
+              <X {...ICON} /> Cancel
+            </Button>
+            <Button
+              variant="primary" size="md"
+              onClick={onSave}
+              disabled={pickedCount === 0 || createPos.isPending}
+              title={targetPoId ? 'Add the picked SO lines into this PO' : 'Add the picked SO lines into the New PO form'}
+            >
+              <Save {...ICON} />
+              {createPos.isPending
+                ? 'Adding…'
+                : pickedCount === 0 ? 'Pick at least 1 line' : `Add ${pickedCount} line${pickedCount === 1 ? '' : 's'} to PO`}
+            </Button>
+          </div>
+        }
+      />
       {lockedSupplier && (
         <p style={{ margin: '0 0 var(--space-2)', fontSize: 'var(--fs-12)', color: 'var(--fg-muted)' }}>
           One supplier per PO — locked to <strong>{lockedSupplier}</strong>. Other suppliers' lines

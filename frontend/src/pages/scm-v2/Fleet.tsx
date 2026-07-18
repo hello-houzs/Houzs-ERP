@@ -55,6 +55,7 @@ import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataG
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { LorryDetail } from './LorryDetail';
 import styles from './Suppliers.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -76,13 +77,12 @@ const fmtNum = (v: number | string | null): string => {
 
 export const Fleet = () => {
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div>
-          <h1 className={styles.title}>Driver &amp; Helper</h1>
-          <p className={styles.subtitle}>Open and manage your drivers, helpers, and lorries.</p>
-        </div>
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Delivery"
+        title="Driver & Helper"
+        description="Open and manage your drivers, helpers, and lorries."
+      />
 
       <DriversSection />
       <HelpersSection />

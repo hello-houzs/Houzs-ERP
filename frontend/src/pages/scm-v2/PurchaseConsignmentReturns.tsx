@@ -29,6 +29,7 @@ import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { fmtDateOrDash, buildVariantSummary } from '@2990s/shared';
 import styles from './Suppliers.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -254,18 +255,19 @@ export const PurchaseConsignmentReturns = () => {
   };
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div>
-          <h1 className={styles.title}>Purchase Consignment Returns</h1>
-        </div>
-        <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-          <Button variant="primary" size="sm" onClick={() => navigate('/scm/purchase-consignment-returns/new')}>
-            <Plus {...ICON} />
-            <span>New Purchase Consignment Return</span>
-          </Button>
-        </div>
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Procurement"
+        title="Purchase Consignment Returns"
+        actions={
+          <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+            <Button variant="primary" size="sm" onClick={() => navigate('/scm/purchase-consignment-returns/new')}>
+              <Plus {...ICON} />
+              <span>New Purchase Consignment Return</span>
+            </Button>
+          </div>
+        }
+      />
 
       <p className={styles.eyebrow}>
         {isLoading ? 'Loading…' : `${rows.length} purchase consignment returns`}

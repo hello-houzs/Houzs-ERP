@@ -24,7 +24,7 @@ import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { SkeletonDetailPage } from '../../vendor/scm/components/Skeleton';
 import {
-  ArrowLeft, Pencil, Plus, Printer, Save, Undo2, ChevronDown, Ban, RotateCcw,
+  ArrowLeft, Pencil, Plus, Printer, Save, ChevronDown, Ban, RotateCcw,
 } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { PhoneInput } from '../../vendor/scm/components/PhoneInput';
@@ -49,6 +49,7 @@ import {
 import { useStaff } from '../../vendor/scm/lib/admin-queries';
 import { sortByText, sortByNumeric } from '../../vendor/scm/lib/sort-options';
 import styles from './SalesOrderDetail.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -58,7 +59,6 @@ type CrnStatus = typeof STATUS_FLOW[number];
 const fmtRm = (centi: number, currency = 'MYR'): string =>
   `${currency} ${(centi / 100).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-const TITLE_ICON_STYLE: CSSProperties = { color: 'var(--c-burnt)' };
 const TOTALS_KPI_GRID_STYLE: CSSProperties = {
   display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 'var(--space-3)',
   marginBottom: 'var(--space-3)', paddingBottom: 'var(--space-3)', borderBottom: '1px solid var(--line)',
@@ -317,7 +317,7 @@ export const ConsignmentReturnDetail = () => {
   }
   if (detail.isError || !header) {
     return (
-      <div className={styles.page}>
+      <div className="space-y-4">
         <Link to="/scm/consignment-returns" className={styles.backBtn}>
           <ArrowLeft {...ICON} /><span>Back</span>
         </Link>
@@ -363,25 +363,18 @@ export const ConsignmentReturnDetail = () => {
   };
 
   return (
-    <div className={styles.page} style={isCancelled ? { filter: 'grayscale(0.7)' } : undefined}>
+    <div className="space-y-4" style={isCancelled ? { filter: 'grayscale(0.7)' } : undefined}>
       {/* ── Header ── */}
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
+      <PageHeader
+        eyebrow="Supply Chain"
+        title={`${header.return_number} — ${header.debtor_name}`}
+        description={`Return date ${fmtDateOrDash(header.return_date)} · ${header.line_count} ${header.line_count === 1 ? 'line' : 'lines'}${header.customer_so_no ? ` · Customer Ref ${header.customer_so_no}` : ''}`}
+        actions={
+          <>
           <Link to="/scm/consignment-returns" className={styles.backBtn}>
             <ArrowLeft {...ICON} /><span>Back</span>
           </Link>
-          <div>
-            <h1 className={styles.title}>
-              <Undo2 size={16} strokeWidth={1.75} style={TITLE_ICON_STYLE} />
-              {header.return_number} — {header.debtor_name}
-            </h1>
-            <p className={styles.subtitle}>
-              Return date {fmtDateOrDash(header.return_date)} · {header.line_count} {header.line_count === 1 ? 'line' : 'lines'}
-              {header.customer_so_no && ` · Customer Ref ${header.customer_so_no}`}
-            </p>
-          </div>
-        </div>
-        <div className={styles.actions}>
+          <div className={styles.actions}>
           <div className={styles.totalRail}>
             <span className={styles.totalRailLabel}>Returned</span>
             <span className={styles.totalRailValue}>{fmtRm(header.local_total_centi, header.currency)}</span>
@@ -416,8 +409,10 @@ export const ConsignmentReturnDetail = () => {
               </Button>
             </>
           )}
-        </div>
-      </div>
+          </div>
+          </>
+        }
+      />
 
       {saveError && (
         <div className={styles.bannerWarn}>

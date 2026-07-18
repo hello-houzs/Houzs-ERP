@@ -19,7 +19,6 @@
 
 import {
   forwardRef, memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState,
-  type CSSProperties,
 } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { RelationshipMapButton } from '../../vendor/scm/components/RelationshipMapButton';
@@ -53,6 +52,7 @@ import {
 import { useStaff } from '../../vendor/scm/lib/admin-queries';
 import { sortByText, sortByNumeric } from '../../vendor/scm/lib/sort-options';
 import styles from './SalesOrderDetail.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -61,8 +61,6 @@ type CnStatus = typeof STATUS_FLOW[number];
 
 const fmtRm = (centi: number, currency = 'MYR'): string =>
   `${currency} ${(centi / 100).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-
-const TITLE_ICON_STYLE: CSSProperties = { color: 'var(--c-burnt)' };
 
 type CnHeader = {
   id: string;
@@ -301,7 +299,7 @@ export const ConsignmentNoteDetail = () => {
   }
   if (detail.isError || !header) {
     return (
-      <div className={styles.page}>
+      <div className="space-y-4">
         <Link to="/scm/consignment-notes" className={styles.backBtn}>
           <ArrowLeft {...ICON} /><span>Back</span>
         </Link>
@@ -341,25 +339,18 @@ export const ConsignmentNoteDetail = () => {
   };
 
   return (
-    <div className={styles.page} style={isCancelled ? { filter: 'grayscale(0.7)' } : undefined}>
+    <div className="space-y-4" style={isCancelled ? { filter: 'grayscale(0.7)' } : undefined}>
       {/* ── Header ── */}
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
+      <PageHeader
+        eyebrow="Supply Chain"
+        title={`${header.do_number} — ${header.debtor_name}`}
+        description={`Date ${fmtDateOrDash(header.do_date)} · ${header.line_count} ${header.line_count === 1 ? 'line' : 'lines'}${header.customer_so_no ? ` · Customer Ref ${header.customer_so_no}` : ''}`}
+        actions={
+          <>
           <Link to="/scm/consignment-notes" className={styles.backBtn}>
             <ArrowLeft {...ICON} /><span>Back</span>
           </Link>
-          <div>
-            <h1 className={styles.title}>
-              <FileText size={16} strokeWidth={1.75} style={TITLE_ICON_STYLE} />
-              {header.do_number} — {header.debtor_name}
-            </h1>
-            <p className={styles.subtitle}>
-              Date {fmtDateOrDash(header.do_date)} · {header.line_count} {header.line_count === 1 ? 'line' : 'lines'}
-              {header.customer_so_no && ` · Customer Ref ${header.customer_so_no}`}
-            </p>
-          </div>
-        </div>
-        <div className={styles.actions}>
+          <div className={styles.actions}>
           <div className={styles.totalRail}>
             <span className={styles.totalRailLabel}>Total</span>
             <span className={styles.totalRailValue}>{fmtRm(header.local_total_centi, header.currency)}</span>
@@ -400,8 +391,10 @@ export const ConsignmentNoteDetail = () => {
               </Button>
             </>
           )}
-        </div>
-      </div>
+          </div>
+          </>
+        }
+      />
 
       {saveError && (
         <div className={styles.bannerWarn}>

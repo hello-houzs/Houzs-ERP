@@ -47,6 +47,7 @@ import { ActionResultDialog } from '../../vendor/scm/components/ActionResultDial
 import { MoneyInput } from '../../vendor/scm/components/MoneyInput';
 import type { GrnFromPoPick } from './GrnFromPo';
 import styles from './SalesOrderDetail.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -670,34 +671,35 @@ export const GrnNew = () => {
   };
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
-          <Link to="/scm/grns" className={styles.backBtn}>
-            <ArrowLeft {...ICON} /> <span>Goods Receipts</span>
-          </Link>
-          <h1 className={styles.title}>New Goods Receipt{po?.po_number ? ` · ${po.po_number}` : ''}</h1>
-        </div>
-        <div className={styles.actions}>
-          {/* Bulk / multi-PO picker that FEEDS this form. */}
-          <Button variant="ghost" size="md" onClick={goToFromPo}>
-            <ArrowRightLeft {...ICON} /> From Purchase Order
-          </Button>
-          <Button variant="ghost" size="md" onClick={() => navigate('/scm/grns')}>
-            <X {...ICON} /> Cancel
-          </Button>
-          {/* Save as Draft — lands the GRN at DRAFT (no stock IN, no PO rollup)
-              for later review + Confirm. */}
-          <Button variant="ghost" size="md" onClick={() => onSave(true)} disabled={saving}>
-            <Save {...ICON} />
-            {saving ? 'Saving…' : 'Save as Draft'}
-          </Button>
-          <Button variant="primary" size="md" onClick={() => onSave(false)} disabled={saving}>
-            <Save {...ICON} />
-            {saving ? 'Saving…' : 'Create Goods Receipt'}
-          </Button>
-        </div>
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Procurement"
+        title={`New Goods Receipt${po?.po_number ? ` · ${po.po_number}` : ''}`}
+        actions={
+          <div className={styles.actions}>
+            <Link to="/scm/grns" className={styles.backBtn}>
+              <ArrowLeft {...ICON} /> <span>Goods Receipts</span>
+            </Link>
+            {/* Bulk / multi-PO picker that FEEDS this form. */}
+            <Button variant="ghost" size="md" onClick={goToFromPo}>
+              <ArrowRightLeft {...ICON} /> From Purchase Order
+            </Button>
+            <Button variant="ghost" size="md" onClick={() => navigate('/scm/grns')}>
+              <X {...ICON} /> Cancel
+            </Button>
+            {/* Save as Draft — lands the GRN at DRAFT (no stock IN, no PO rollup)
+                for later review + Confirm. */}
+            <Button variant="ghost" size="md" onClick={() => onSave(true)} disabled={saving}>
+              <Save {...ICON} />
+              {saving ? 'Saving…' : 'Save as Draft'}
+            </Button>
+            <Button variant="primary" size="md" onClick={() => onSave(false)} disabled={saving}>
+              <Save {...ICON} />
+              {saving ? 'Saving…' : 'Create Goods Receipt'}
+            </Button>
+          </div>
+        }
+      />
 
       {/* Header card — PO picker is inline so you stay on the form. */}
       <section className={styles.card}>

@@ -38,6 +38,7 @@ import { ActionResultDialog } from '../../vendor/scm/components/ActionResultDial
 import { ItemGroupPill } from '../../vendor/scm/lib/category-badges';
 import { sortByText } from '../../vendor/scm/lib/sort-options';
 import styles from './SalesOrderDetail.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -532,40 +533,39 @@ export const GrnFromPo = () => {
   );
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
-          <Link to={appendToGrn ? `/scm/grns/${appendToGrn}?edit=1` : '/scm/grns'} className={styles.backBtn}>
-            <ArrowLeft {...ICON} /> <span>{appendToGrn ? (appendGrn?.grn_number ?? 'Goods Receipt') : 'Goods Receipts'}</span>
-          </Link>
-          <h1 className={styles.title}>
-            {appendToGrn
-              ? `Add PO lines to ${appendGrn?.grn_number ?? 'this GRN'}`
-              : 'Pick PO lines for this GRN'}
-          </h1>
-        </div>
-        <div className={styles.actions}>
-          <Button
-            variant="ghost" size="md"
-            onClick={() => navigate(appendToGrn ? `/scm/grns/${appendToGrn}?edit=1` : '/scm/grns')}
-          >
-            <X {...ICON} /> Cancel
-          </Button>
-          <Button
-            variant="primary" size="md"
-            onClick={onSave}
-            disabled={pickedCount === 0 || appending}
-            title={appendToGrn ? 'Append the picked PO lines into this GRN' : 'Add the picked PO lines into the New GRN form'}
-          >
-            <Save {...ICON} />
-            {appending
-              ? 'Adding…'
-              : pickedCount === 0
-                ? 'Pick at least 1 line'
-                : `Add ${pickedCount} line${pickedCount === 1 ? '' : 's'} to GRN`}
-          </Button>
-        </div>
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Procurement"
+        title={appendToGrn
+          ? `Add PO lines to ${appendGrn?.grn_number ?? 'this GRN'}`
+          : 'Pick PO lines for this GRN'}
+        actions={
+          <div className={styles.actions}>
+            <Link to={appendToGrn ? `/scm/grns/${appendToGrn}?edit=1` : '/scm/grns'} className={styles.backBtn}>
+              <ArrowLeft {...ICON} /> <span>{appendToGrn ? (appendGrn?.grn_number ?? 'Goods Receipt') : 'Goods Receipts'}</span>
+            </Link>
+            <Button
+              variant="ghost" size="md"
+              onClick={() => navigate(appendToGrn ? `/scm/grns/${appendToGrn}?edit=1` : '/scm/grns')}
+            >
+              <X {...ICON} /> Cancel
+            </Button>
+            <Button
+              variant="primary" size="md"
+              onClick={onSave}
+              disabled={pickedCount === 0 || appending}
+              title={appendToGrn ? 'Append the picked PO lines into this GRN' : 'Add the picked PO lines into the New GRN form'}
+            >
+              <Save {...ICON} />
+              {appending
+                ? 'Adding…'
+                : pickedCount === 0
+                  ? 'Pick at least 1 line'
+                  : `Add ${pickedCount} line${pickedCount === 1 ? '' : 's'} to GRN`}
+            </Button>
+          </div>
+        }
+      />
       {appendToGrn && (
         <p style={{
           margin: '0 0 var(--space-2)', padding: 'var(--space-1) var(--space-3)',

@@ -47,6 +47,7 @@ import { MoneyInput } from '../../vendor/scm/components/MoneyInput';
 import { ActionResultDialog } from '../../vendor/scm/components/ActionResultDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import styles from './SalesOrderDetail.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON    = { size: 16, strokeWidth: 1.75 } as const;
 const SM_ICON = { size: 14, strokeWidth: 1.75 } as const;
@@ -691,44 +692,44 @@ export const PurchaseOrderNew = () => {
   };
 
   return (
-    <div className={styles.page}>
-      {/* Top bar — same shape as PurchaseOrderDetail */}
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
-          <Link to="/scm/purchase-orders" className={styles.backBtn}>
-            <ArrowLeft {...ICON} /> <span>Purchase Orders</span>
-          </Link>
-          <h1 className={styles.title}>New Purchase Order</h1>
-        </div>
-        <div className={styles.actions}>
-          {/* PR — Commander 2026-05-27: parity with PO list — quick swap into
-              the SO-driven flow without bouncing back to the list page. */}
-          <Button variant="ghost" size="md" onClick={goToFromSo}>
-            <ArrowRightLeft {...ICON} /> From Sales Order
-          </Button>
-          <Button variant="ghost" size="md" onClick={() => navigate('/scm/purchase-orders')}>
-            <X {...ICON} /> Cancel
-          </Button>
-          {/* Draft/Confirmed — opt-in DRAFT save. Lands the PO in the Draft
-              review queue (no MRP supply, no SO-quota lock) until Confirmed. */}
-          <Button
-            variant="ghost" size="md"
-            onClick={() => onSave(true)}
-            disabled={create.isPending}
-          >
-            <Save {...ICON} />
-            {create.isPending ? 'Saving…' : 'Save as Draft'}
-          </Button>
-          <Button
-            variant="primary" size="md"
-            onClick={() => onSave(false)}
-            disabled={create.isPending}
-          >
-            <Save {...ICON} />
-            {create.isPending ? 'Saving…' : 'Create Purchase Order'}
-          </Button>
-        </div>
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Procurement"
+        title="New Purchase Order"
+        actions={
+          <div className={styles.actions}>
+            <Link to="/scm/purchase-orders" className={styles.backBtn}>
+              <ArrowLeft {...ICON} /> <span>Purchase Orders</span>
+            </Link>
+            {/* PR — Commander 2026-05-27: parity with PO list — quick swap into
+                the SO-driven flow without bouncing back to the list page. */}
+            <Button variant="ghost" size="md" onClick={goToFromSo}>
+              <ArrowRightLeft {...ICON} /> From Sales Order
+            </Button>
+            <Button variant="ghost" size="md" onClick={() => navigate('/scm/purchase-orders')}>
+              <X {...ICON} /> Cancel
+            </Button>
+            {/* Draft/Confirmed — opt-in DRAFT save. Lands the PO in the Draft
+                review queue (no MRP supply, no SO-quota lock) until Confirmed. */}
+            <Button
+              variant="ghost" size="md"
+              onClick={() => onSave(true)}
+              disabled={create.isPending}
+            >
+              <Save {...ICON} />
+              {create.isPending ? 'Saving…' : 'Save as Draft'}
+            </Button>
+            <Button
+              variant="primary" size="md"
+              onClick={() => onSave(false)}
+              disabled={create.isPending}
+            >
+              <Save {...ICON} />
+              {create.isPending ? 'Saving…' : 'Create Purchase Order'}
+            </Button>
+          </div>
+        }
+      />
 
       {/* Header card — 2-column grid */}
       <section className={styles.card}>

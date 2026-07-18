@@ -38,6 +38,7 @@ import { ActionResultDialog } from '../../vendor/scm/components/ActionResultDial
 import { ItemGroupPill } from '../../vendor/scm/lib/category-badges';
 import { sortByText } from '../../vendor/scm/lib/sort-options';
 import styles from './SalesOrderDetail.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -310,31 +311,34 @@ export const DeliveryReturnFromDo = () => {
   );
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
-          <Link to="/scm/delivery-returns" className={styles.backBtn}>
-            <ArrowLeft {...ICON} /> <span>Delivery Returns</span>
-          </Link>
-          <h1 className={styles.title}>Pick Delivery Order lines to return</h1>
-        </div>
-        <div className={styles.actions}>
-          <Button variant="ghost" size="md" onClick={() => navigate('/scm/delivery-returns')}>
-            <X {...ICON} /> Cancel
-          </Button>
-          <Button
-            variant="primary" size="md"
-            onClick={onContinue}
-            disabled={pickedCount === 0}
-            title="Open the New Delivery Return form prefilled with the picked Delivery Order lines"
-          >
-            <ArrowRight {...ICON} />
-            {pickedCount === 0
-              ? 'Pick at least 1 line'
-              : `Continue with ${pickedCount} line${pickedCount === 1 ? '' : 's'}`}
-          </Button>
-        </div>
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Supply Chain"
+        title="Pick Delivery Order lines to return"
+        actions={
+          <>
+            <Link to="/scm/delivery-returns" className={styles.backBtn}>
+              <ArrowLeft {...ICON} /> <span>Delivery Returns</span>
+            </Link>
+            <div className={styles.actions}>
+              <Button variant="ghost" size="md" onClick={() => navigate('/scm/delivery-returns')}>
+                <X {...ICON} /> Cancel
+              </Button>
+              <Button
+                variant="primary" size="md"
+                onClick={onContinue}
+                disabled={pickedCount === 0}
+                title="Open the New Delivery Return form prefilled with the picked Delivery Order lines"
+              >
+                <ArrowRight {...ICON} />
+                {pickedCount === 0
+                  ? 'Pick at least 1 line'
+                  : `Continue with ${pickedCount} line${pickedCount === 1 ? '' : 's'}`}
+              </Button>
+            </div>
+          </>
+        }
+      />
       <p style={{ margin: '0 0 var(--space-2)', fontSize: 'var(--fs-12)', color: 'var(--fg-muted)' }}>
         Pick the Delivery Order lines being returned and set the quantity + condition for each. A line can be
         returned in parts across several returns — only the remaining (not-yet-returned, not-yet-invoiced)

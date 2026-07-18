@@ -31,6 +31,7 @@ import { useAuth } from '../../auth/AuthContext';
 import { BrandingPill, badgeFor } from '../../vendor/scm/lib/category-badges';
 import styles from './MfgSalesOrdersList.module.css';
 import soDetailStyles from './SalesOrderDetail.module.css';
+import { PageHeader } from '../../components/Layout';
 
 /* ── Row shape (CN header — mirrors the DO header) ─────────────────────── */
 type CnRow = {
@@ -404,18 +405,19 @@ export const ConsignmentNotes = () => {
   );
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div>
-          <h1 className={styles.title}>Consignment Notes</h1>
-        </div>
-        <div style={{ display: 'inline-flex', gap: 'var(--space-2)' }}>
-          <Button variant="primary" size="sm" onClick={onNew}>
-            <Plus size={14} strokeWidth={1.75} />
-            <span>New Consignment Note</span>
-          </Button>
-        </div>
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Supply Chain"
+        title="Consignment Notes"
+        actions={
+          <div style={{ display: 'inline-flex', gap: 'var(--space-2)' }}>
+            <Button variant="primary" size="sm" onClick={onNew}>
+              <Plus size={14} strokeWidth={1.75} />
+              <span>New Consignment Note</span>
+            </Button>
+          </div>
+        }
+      />
 
       {error && !isLoading && (
         <div className={styles.bannerWarn}>

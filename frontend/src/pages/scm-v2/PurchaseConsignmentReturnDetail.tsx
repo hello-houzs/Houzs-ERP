@@ -22,7 +22,7 @@ import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { RelationshipMapButton } from '../../vendor/scm/components/RelationshipMapButton';
 import { SkeletonDetailPage } from '../../vendor/scm/components/Skeleton';
 import {
-  ArrowLeft, Undo2, Pencil, Printer, Trash2, Save, Ban, ChevronDown,
+  ArrowLeft, Pencil, Printer, Trash2, Save, Ban, ChevronDown,
 } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { buildVariantSummary, fmtDateOrDash } from '@2990s/shared';
@@ -44,6 +44,7 @@ import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { StatusPill } from '../../vendor/scm/components/StatusPill';
 import { sortByText } from '../../vendor/scm/lib/sort-options';
 import styles from './SalesOrderDetail.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 const SM_ICON = { size: 14, strokeWidth: 1.75 } as const;
@@ -155,7 +156,7 @@ export const PurchaseConsignmentReturnDetail = () => {
   }
   if (detail.isError || !pr) {
     return (
-      <div className={styles.page}>
+      <div className="space-y-4">
         <Link to="/scm/purchase-consignment-returns" className={styles.backBtn}>
           <ArrowLeft {...ICON} />
           <span>Back</span>
@@ -284,62 +285,58 @@ export const PurchaseConsignmentReturnDetail = () => {
   };
 
   return (
-    <div className={styles.page}>
+    <div className="space-y-4">
       {/* ── Header ──────────────────────────────────────────────── */}
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
-          <Link to="/scm/purchase-consignment-returns" className={styles.backBtn}>
-            <ArrowLeft {...ICON} />
-            <span>Back</span>
-          </Link>
-          <div>
-            <h1 className={styles.title}>
-              <Undo2 size={14} strokeWidth={1.75} style={{ color: 'var(--c-burnt)' }} />
-              {pr.return_number} — {pr.supplier?.name ?? pr.supplier?.code ?? '—'}
-            </h1>
+      <PageHeader
+        eyebrow="Procurement"
+        title={`${pr.return_number} — ${pr.supplier?.name ?? pr.supplier?.code ?? '—'}`}
+        actions={
+          <div className={styles.actions}>
+            <Link to="/scm/purchase-consignment-returns" className={styles.backBtn}>
+              <ArrowLeft {...ICON} />
+              <span>Back</span>
+            </Link>
+            <div className={styles.totalRail}>
+              <span className={styles.totalRailLabel}>Refund</span>
+              <span className={styles.totalRailValue}>{fmtRm(refundTotal)}</span>
+            </div>
+            <StatusPill docType="pr" status={pr.status} />
+            <RelationshipMapButton type="pcrn" id={pr.id} />
+            <Button variant="ghost" size="md" onClick={handlePrint}>
+              <Printer {...ICON} /><span>Print PDF</span>
+            </Button>
+            {pr.status !== 'CANCELLED' && pr.status !== 'COMPLETED' && (
+              <Button variant="ghost" size="md"
+                onClick={async () => {
+                  if (!(await askConfirm({
+                    title: `Cancel return ${pr.return_number}?`,
+                    body: 'This reverses the return — the goods are put back into stock. Line items stay for audit.',
+                    confirmLabel: 'Cancel Return',
+                    danger: true,
+                  }))) return;
+                  cancel.mutate(pr.id, {
+                    onError: (err) => notify({ title: 'Cancel failed', body: err instanceof Error ? err.message : String(err), tone: 'error' }),
+                  });
+                }}
+                disabled={cancel.isPending}>
+                <Ban {...ICON} />
+                <span>{cancel.isPending ? 'Cancelling…' : 'Cancel'}</span>
+              </Button>
+            )}
+            {!isEditing ? (
+              <Button variant="primary" size="md" onClick={enterEdit} disabled={isLocked}>
+                <Pencil {...ICON} />
+                <span>Edit</span>
+              </Button>
+            ) : (
+              <Button variant="primary" size="md" onClick={handleSave} disabled={savingDraft}>
+                <Save {...ICON} />
+                <span>{savingDraft ? 'Saving…' : 'Save'}</span>
+              </Button>
+            )}
           </div>
-        </div>
-        <div className={styles.actions}>
-          <div className={styles.totalRail}>
-            <span className={styles.totalRailLabel}>Refund</span>
-            <span className={styles.totalRailValue}>{fmtRm(refundTotal)}</span>
-          </div>
-          <StatusPill docType="pr" status={pr.status} />
-          <RelationshipMapButton type="pcrn" id={pr.id} />
-          <Button variant="ghost" size="md" onClick={handlePrint}>
-            <Printer {...ICON} /><span>Print PDF</span>
-          </Button>
-          {pr.status !== 'CANCELLED' && pr.status !== 'COMPLETED' && (
-            <Button variant="ghost" size="md"
-              onClick={async () => {
-                if (!(await askConfirm({
-                  title: `Cancel return ${pr.return_number}?`,
-                  body: 'This reverses the return — the goods are put back into stock. Line items stay for audit.',
-                  confirmLabel: 'Cancel Return',
-                  danger: true,
-                }))) return;
-                cancel.mutate(pr.id, {
-                  onError: (err) => notify({ title: 'Cancel failed', body: err instanceof Error ? err.message : String(err), tone: 'error' }),
-                });
-              }}
-              disabled={cancel.isPending}>
-              <Ban {...ICON} />
-              <span>{cancel.isPending ? 'Cancelling…' : 'Cancel'}</span>
-            </Button>
-          )}
-          {!isEditing ? (
-            <Button variant="primary" size="md" onClick={enterEdit} disabled={isLocked}>
-              <Pencil {...ICON} />
-              <span>Edit</span>
-            </Button>
-          ) : (
-            <Button variant="primary" size="md" onClick={handleSave} disabled={savingDraft}>
-              <Save {...ICON} />
-              <span>{savingDraft ? 'Saving…' : 'Save'}</span>
-            </Button>
-          )}
-        </div>
-      </div>
+        }
+      />
 
       {/* ── Supplier / dates / reason / notes ───────────────────── */}
       <SupplierCard

@@ -25,6 +25,7 @@ import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataG
 import { ActionResultDialog } from '../../vendor/scm/components/ActionResultDialog';
 import { ItemGroupPill } from '../../vendor/scm/lib/category-badges';
 import styles from './SalesOrderDetail.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -255,31 +256,34 @@ export const ConsignmentNoteFromOrder = () => {
   );
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
-          <Link to="/scm/consignment-notes" className={styles.backBtn}>
-            <ArrowLeft {...ICON} /> <span>Consignment Notes</span>
-          </Link>
-          <h1 className={styles.title}>Pick Consignment Order lines to note</h1>
-        </div>
-        <div className={styles.actions}>
-          <Button variant="ghost" size="md" onClick={() => navigate('/scm/consignment-notes')}>
-            <X {...ICON} /> Cancel
-          </Button>
-          <Button
-            variant="primary" size="md"
-            onClick={onContinue}
-            disabled={pickedCount === 0}
-            title="Open the New Consignment Note form prefilled with the picked Consignment Order lines"
-          >
-            <ArrowRight {...ICON} />
-            {pickedCount === 0
-              ? 'Pick at least 1 line'
-              : `Continue with ${pickedCount} line${pickedCount === 1 ? '' : 's'}`}
-          </Button>
-        </div>
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Supply Chain"
+        title="Pick Consignment Order lines to note"
+        actions={
+          <>
+            <Link to="/scm/consignment-notes" className={styles.backBtn}>
+              <ArrowLeft {...ICON} /> <span>Consignment Notes</span>
+            </Link>
+            <div className={styles.actions}>
+              <Button variant="ghost" size="md" onClick={() => navigate('/scm/consignment-notes')}>
+                <X {...ICON} /> Cancel
+              </Button>
+              <Button
+                variant="primary" size="md"
+                onClick={onContinue}
+                disabled={pickedCount === 0}
+                title="Open the New Consignment Note form prefilled with the picked Consignment Order lines"
+              >
+                <ArrowRight {...ICON} />
+                {pickedCount === 0
+                  ? 'Pick at least 1 line'
+                  : `Continue with ${pickedCount} line${pickedCount === 1 ? '' : 's'}`}
+              </Button>
+            </div>
+          </>
+        }
+      />
       <p style={{ margin: '0 0 var(--space-2)', fontSize: 'var(--fs-12)', color: 'var(--fg-muted)' }}>
         Pick the Consignment Order lines being placed at the showroom and set the quantity for each. A line can
         be noted in parts across several notes — only the outstanding (not-yet-noted) quantity is shown.

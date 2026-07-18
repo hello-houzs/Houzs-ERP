@@ -42,6 +42,7 @@ import { SkeletonDetailPage } from '../../vendor/scm/components/Skeleton';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import styles from './SalesOrderDetail.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON    = { size: 16, strokeWidth: 1.75 } as const;
 const SM_ICON = { size: 14, strokeWidth: 1.75 } as const;
@@ -298,46 +299,47 @@ export const PaymentVoucherDetail = () => {
   };
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
-          <Link to="/scm/payment-vouchers" className={styles.backBtn}>
-            <ArrowLeft {...ICON} /> <span>Payment Vouchers</span>
-          </Link>
-          <h1 className={styles.title}>{pv.pv_number}</h1>
-        </div>
-        <div className={styles.actions} style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-          <StatusPill docType="pv" status={pv.status} />
-          {!isEditing ? (
-            <>
-              {isDraft && canWrite && (
-                <Button variant="ghost" size="md" onClick={() => setIsEditing(true)} disabled={busy}>
-                  <Pencil {...ICON} /> Edit
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Finance"
+        title={pv.pv_number}
+        actions={
+          <div className={styles.actions} style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+            <Link to="/scm/payment-vouchers" className={styles.backBtn}>
+              <ArrowLeft {...ICON} /> <span>Payment Vouchers</span>
+            </Link>
+            <StatusPill docType="pv" status={pv.status} />
+            {!isEditing ? (
+              <>
+                {isDraft && canWrite && (
+                  <Button variant="ghost" size="md" onClick={() => setIsEditing(true)} disabled={busy}>
+                    <Pencil {...ICON} /> Edit
+                  </Button>
+                )}
+                {isDraft && canPost && (
+                  <Button variant="primary" size="md" onClick={onPost} disabled={busy}>
+                    <Send {...ICON} /> Post to GL
+                  </Button>
+                )}
+                {pv.status !== 'CANCELLED' && canCancel && (
+                  <Button variant="ghost" size="md" onClick={onCancel} disabled={busy}>
+                    <Ban {...ICON} /> Cancel
+                  </Button>
+                )}
+              </>
+            ) : (
+              <>
+                <Button variant="ghost" size="md" onClick={() => setIsEditing(false)} disabled={busy}>
+                  <X {...ICON} /> Back
                 </Button>
-              )}
-              {isDraft && canPost && (
-                <Button variant="primary" size="md" onClick={onPost} disabled={busy}>
-                  <Send {...ICON} /> Post to GL
+                <Button variant="primary" size="md" onClick={onSave} disabled={busy}>
+                  <Save {...ICON} /> {update.isPending ? 'Saving…' : 'Save'}
                 </Button>
-              )}
-              {pv.status !== 'CANCELLED' && canCancel && (
-                <Button variant="ghost" size="md" onClick={onCancel} disabled={busy}>
-                  <Ban {...ICON} /> Cancel
-                </Button>
-              )}
-            </>
-          ) : (
-            <>
-              <Button variant="ghost" size="md" onClick={() => setIsEditing(false)} disabled={busy}>
-                <X {...ICON} /> Back
-              </Button>
-              <Button variant="primary" size="md" onClick={onSave} disabled={busy}>
-                <Save {...ICON} /> {update.isPending ? 'Saving…' : 'Save'}
-              </Button>
-            </>
-          )}
-        </div>
-      </div>
+              </>
+            )}
+          </div>
+        }
+      />
 
       {/* ── Header card ───────────────────────────────────────────────── */}
       <section className={styles.card}>

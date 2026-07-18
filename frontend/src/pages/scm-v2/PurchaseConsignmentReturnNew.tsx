@@ -38,6 +38,7 @@ import { MoneyInput } from '../../vendor/scm/components/MoneyInput';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { sortByText } from '../../vendor/scm/lib/sort-options';
 import styles from './SalesOrderDetail.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -314,27 +315,28 @@ export const PurchaseConsignmentReturnNew = () => {
     '(free-form)';
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
-          <Link to="/scm/purchase-consignment-returns" className={styles.backBtn}>
-            <ArrowLeft {...ICON} /> <span>Purchase Consignment Returns</span>
-          </Link>
-          <h1 className={styles.title}>New Purchase Consignment Return {sourceTitle}</h1>
-        </div>
-        <div className={styles.actions}>
-          <Button variant="ghost" size="md" onClick={() => navigate('/scm/purchase-consignment-returns/from-receive')}>
-            <ArrowRightLeft {...ICON} /> From Purchase Consignment Receive
-          </Button>
-          <Button variant="ghost" size="md" onClick={() => navigate('/scm/purchase-consignment-returns')}>
-            <X {...ICON} /> Cancel
-          </Button>
-          <Button variant="primary" size="md" onClick={onSave} disabled={saving}>
-            <Save {...ICON} />
-            {saving ? 'Saving…' : 'Create Purchase Consignment Return'}
-          </Button>
-        </div>
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Procurement"
+        title={`New Purchase Consignment Return ${sourceTitle}`}
+        actions={
+          <div className={styles.actions}>
+            <Link to="/scm/purchase-consignment-returns" className={styles.backBtn}>
+              <ArrowLeft {...ICON} /> <span>Purchase Consignment Returns</span>
+            </Link>
+            <Button variant="ghost" size="md" onClick={() => navigate('/scm/purchase-consignment-returns/from-receive')}>
+              <ArrowRightLeft {...ICON} /> From Purchase Consignment Receive
+            </Button>
+            <Button variant="ghost" size="md" onClick={() => navigate('/scm/purchase-consignment-returns')}>
+              <X {...ICON} /> Cancel
+            </Button>
+            <Button variant="primary" size="md" onClick={onSave} disabled={saving}>
+              <Save {...ICON} />
+              {saving ? 'Saving…' : 'Create Purchase Consignment Return'}
+            </Button>
+          </div>
+        }
+      />
 
       <section className={styles.card}>
         <div className={styles.cardHeader}><h2 className={styles.cardTitle}>Header</h2></div>

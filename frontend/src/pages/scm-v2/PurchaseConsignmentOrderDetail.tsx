@@ -28,7 +28,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
-  ArrowLeft, FileText, Pencil, Plus, Printer, Trash2, Save, Ban, ChevronDown,
+  ArrowLeft, Pencil, Plus, Printer, Trash2, Save, Ban, ChevronDown,
 } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { buildVariantSummary } from '@2990s/shared';
@@ -64,6 +64,7 @@ import { RelationshipMapButton } from '../../vendor/scm/components/RelationshipM
 import { StatusPill } from '../../vendor/scm/components/StatusPill';
 import { sortByText } from '../../vendor/scm/lib/sort-options';
 import styles from './SalesOrderDetail.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -254,7 +255,7 @@ export const PurchaseConsignmentOrderDetail = () => {
   }
   if (detail.isError || !po) {
     return (
-      <div className={styles.page}>
+      <div className="space-y-4">
         <Link to="/scm/purchase-consignment-orders" className={styles.backBtn}>
           <ArrowLeft {...ICON} />
           <span>Back</span>
@@ -470,95 +471,91 @@ export const PurchaseConsignmentOrderDetail = () => {
   };
 
   return (
-    <div className={styles.page}>
+    <div className="space-y-4">
       {/* ── Header ──────────────────────────────────────────────── */}
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
-          <Link to="/scm/purchase-consignment-orders" className={styles.backBtn}>
-            <ArrowLeft {...ICON} />
-            <span>Back</span>
-          </Link>
-          <div>
-            <h1 className={styles.title}>
-              <FileText size={14} strokeWidth={1.75} style={{ color: 'var(--c-burnt)' }} />
-              {pcNo} — {po.supplier?.name ?? po.supplier?.code ?? '—'}
-            </h1>
+      <PageHeader
+        eyebrow="Procurement"
+        title={`${pcNo} — ${po.supplier?.name ?? po.supplier?.code ?? '—'}`}
+        actions={
+          <div className={styles.actions}>
+            <Link to="/scm/purchase-consignment-orders" className={styles.backBtn}>
+              <ArrowLeft {...ICON} />
+              <span>Back</span>
+            </Link>
+            <div className={styles.totalRail}>
+              <span className={styles.totalRailLabel}>Total</span>
+              <span className={styles.totalRailValue}>{fmtRm(grandTotal, po.currency)}</span>
+            </div>
+            <StatusPill docType="po" status={po.status} />
+            <RelationshipMapButton type="pco" id={po.id} />
+            <Button variant="ghost" size="md" onClick={handlePrint}>
+              <Printer {...ICON} /><span>Print PDF</span>
+            </Button>
+            {(po.status === 'SUBMITTED' || po.status === 'PARTIALLY_RECEIVED') && (
+              <Button variant="ghost" size="md"
+                onClick={async () => {
+                  if (!(await askConfirm({
+                    title: `Cancel ${pcNo}?`,
+                    body: 'This sets status to CANCELLED — line items + linked docs stay for audit.',
+                    confirmLabel: 'Cancel PO',
+                    danger: true,
+                  }))) return;
+                  cancel.mutate(po.id, {
+                    onError: (err) => notify({ title: 'Cancel failed', body: err instanceof Error ? err.message : String(err), tone: 'error' }),
+                  });
+                }}
+                disabled={cancel.isPending}>
+                <Ban {...ICON} />
+                <span>{cancel.isPending ? 'Cancelling…' : 'Cancel'}</span>
+              </Button>
+            )}
+            {po.status === 'CANCELLED' && (
+              <Button variant="ghost" size="md"
+                onClick={async () => {
+                  if (!(await askConfirm({
+                    title: `Permanently delete ${pcNo}?`,
+                    body: 'This removes the header + all line items and cannot be undone.',
+                    confirmLabel: 'Delete',
+                    danger: true,
+                  }))) return;
+                  deletePo.mutate(po.id, {
+                    onSuccess: () => navigate('/scm/purchase-consignment-orders'),
+                    onError:   (err) => notify({ title: 'Delete failed', body: err instanceof Error ? err.message : String(err), tone: 'error' }),
+                  });
+                }}
+                disabled={deletePo.isPending}>
+                <Trash2 {...ICON} />
+                <span>{deletePo.isPending ? 'Deleting…' : 'Delete'}</span>
+              </Button>
+            )}
+            {/* Receive Goods → /scm/purchase-consignment-receives/new?fromPcOrder=X */}
+            {(po.status === 'SUBMITTED' || po.status === 'PARTIALLY_RECEIVED') && (
+              <Button variant="primary" size="md"
+                onClick={() => navigate(`/scm/purchase-consignment-receives/new?fromPcOrder=${po.id}`)}>
+                <span>Receive Goods</span>
+              </Button>
+            )}
+            {/* Raise Return → /scm/purchase-consignment-returns/new?fromPcOrder=X */}
+            {(po.status === 'PARTIALLY_RECEIVED' || po.status === 'RECEIVED') && (
+              <Button variant="ghost" size="md"
+                onClick={() => navigate(`/scm/purchase-consignment-returns/new?fromPcOrder=${po.id}`)}>
+                <span>Raise Return</span>
+              </Button>
+            )}
+            {!isEditing ? (
+              <Button variant="primary" size="md" onClick={enterEdit} disabled={isLocked}>
+                <Pencil {...ICON} />
+                <span>Edit</span>
+              </Button>
+            ) : (
+              <Button variant="primary" size="md" onClick={handleSave} disabled={savingDraft}>
+                <Save {...ICON} />
+                <span>{savingDraft ? 'Saving…' : 'Save'}</span>
+              </Button>
+            )}
           </div>
-        </div>
-        <div className={styles.actions}>
-          <div className={styles.totalRail}>
-            <span className={styles.totalRailLabel}>Total</span>
-            <span className={styles.totalRailValue}>{fmtRm(grandTotal, po.currency)}</span>
-          </div>
-          <StatusPill docType="po" status={po.status} />
-          <RelationshipMapButton type="pco" id={po.id} />
-          <Button variant="ghost" size="md" onClick={handlePrint}>
-            <Printer {...ICON} /><span>Print PDF</span>
-          </Button>
-          {(po.status === 'SUBMITTED' || po.status === 'PARTIALLY_RECEIVED') && (
-            <Button variant="ghost" size="md"
-              onClick={async () => {
-                if (!(await askConfirm({
-                  title: `Cancel ${pcNo}?`,
-                  body: 'This sets status to CANCELLED — line items + linked docs stay for audit.',
-                  confirmLabel: 'Cancel PO',
-                  danger: true,
-                }))) return;
-                cancel.mutate(po.id, {
-                  onError: (err) => notify({ title: 'Cancel failed', body: err instanceof Error ? err.message : String(err), tone: 'error' }),
-                });
-              }}
-              disabled={cancel.isPending}>
-              <Ban {...ICON} />
-              <span>{cancel.isPending ? 'Cancelling…' : 'Cancel'}</span>
-            </Button>
-          )}
-          {po.status === 'CANCELLED' && (
-            <Button variant="ghost" size="md"
-              onClick={async () => {
-                if (!(await askConfirm({
-                  title: `Permanently delete ${pcNo}?`,
-                  body: 'This removes the header + all line items and cannot be undone.',
-                  confirmLabel: 'Delete',
-                  danger: true,
-                }))) return;
-                deletePo.mutate(po.id, {
-                  onSuccess: () => navigate('/scm/purchase-consignment-orders'),
-                  onError:   (err) => notify({ title: 'Delete failed', body: err instanceof Error ? err.message : String(err), tone: 'error' }),
-                });
-              }}
-              disabled={deletePo.isPending}>
-              <Trash2 {...ICON} />
-              <span>{deletePo.isPending ? 'Deleting…' : 'Delete'}</span>
-            </Button>
-          )}
-          {/* Receive Goods → /scm/purchase-consignment-receives/new?fromPcOrder=X */}
-          {(po.status === 'SUBMITTED' || po.status === 'PARTIALLY_RECEIVED') && (
-            <Button variant="primary" size="md"
-              onClick={() => navigate(`/scm/purchase-consignment-receives/new?fromPcOrder=${po.id}`)}>
-              <span>Receive Goods</span>
-            </Button>
-          )}
-          {/* Raise Return → /scm/purchase-consignment-returns/new?fromPcOrder=X */}
-          {(po.status === 'PARTIALLY_RECEIVED' || po.status === 'RECEIVED') && (
-            <Button variant="ghost" size="md"
-              onClick={() => navigate(`/scm/purchase-consignment-returns/new?fromPcOrder=${po.id}`)}>
-              <span>Raise Return</span>
-            </Button>
-          )}
-          {!isEditing ? (
-            <Button variant="primary" size="md" onClick={enterEdit} disabled={isLocked}>
-              <Pencil {...ICON} />
-              <span>Edit</span>
-            </Button>
-          ) : (
-            <Button variant="primary" size="md" onClick={handleSave} disabled={savingDraft}>
-              <Save {...ICON} />
-              <span>{savingDraft ? 'Saving…' : 'Save'}</span>
-            </Button>
-          )}
-        </div>
-      </div>
+        }
+      />
 
       {lockedDueToChildren && (
         <div className={styles.bannerWarn} style={{ marginBottom: 'var(--space-3)' }}>

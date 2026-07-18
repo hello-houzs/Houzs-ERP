@@ -49,6 +49,7 @@ import { sortByText, sortByNumeric } from '../../vendor/scm/lib/sort-options';
 import { MoneyInput } from '../../vendor/scm/components/MoneyInput';
 import { ActionResultDialog } from '../../vendor/scm/components/ActionResultDialog';
 import styles from './SalesOrderDetail.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON    = { size: 16, strokeWidth: 1.75 } as const;
 const SM_ICON = { size: 14, strokeWidth: 1.75 } as const;
@@ -489,36 +490,37 @@ export const PurchaseInvoiceNew = () => {
 
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
-          <Link to="/scm/purchase-invoices" className={styles.backBtn}>
-            <ArrowLeft {...ICON} /> <span>Purchase Invoices</span>
-          </Link>
-          <h1 className={styles.title}>New Purchase Invoice{!isManual && grn?.grn_number ? ` · ${grn.grn_number}` : ''}</h1>
-        </div>
-        <div className={styles.actions}>
-          {/* Keep the GRN→Invoice path: jump to the multi-GRN-line picker. */}
-          {isManual && (
-            <Button variant="ghost" size="md" onClick={() => navigate('/scm/purchase-invoices/from-grn')}>
-              <ArrowRightLeft {...ICON} /> From Goods Receipt
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Procurement"
+        title={`New Purchase Invoice${!isManual && grn?.grn_number ? ` · ${grn.grn_number}` : ''}`}
+        actions={
+          <div className={styles.actions}>
+            <Link to="/scm/purchase-invoices" className={styles.backBtn}>
+              <ArrowLeft {...ICON} /> <span>Purchase Invoices</span>
+            </Link>
+            {/* Keep the GRN→Invoice path: jump to the multi-GRN-line picker. */}
+            {isManual && (
+              <Button variant="ghost" size="md" onClick={() => navigate('/scm/purchase-invoices/from-grn')}>
+                <ArrowRightLeft {...ICON} /> From Goods Receipt
+              </Button>
+            )}
+            <Button variant="ghost" size="md" onClick={() => navigate(isManual ? '/scm/purchase-invoices' : (grn ? `/scm/grns/${grn.id}` : '/scm/grns'))}>
+              <X {...ICON} /> Cancel
             </Button>
-          )}
-          <Button variant="ghost" size="md" onClick={() => navigate(isManual ? '/scm/purchase-invoices' : (grn ? `/scm/grns/${grn.id}` : '/scm/grns'))}>
-            <X {...ICON} /> Cancel
-          </Button>
-          {/* Save as Draft — creates the PI as DRAFT (no AP post / GRN consume);
-              Confirm later on the detail page. Mirrors the SO Draft flow. */}
-          <Button variant="ghost" size="md" onClick={() => onSave(true)} disabled={saving}>
-            <Save {...ICON} />
-            {saving ? 'Saving…' : 'Save as Draft'}
-          </Button>
-          <Button variant="primary" size="md" onClick={() => onSave(false)} disabled={saving}>
-            <Save {...ICON} />
-            {saving ? 'Saving…' : 'Create Purchase Invoice'}
-          </Button>
-        </div>
-      </div>
+            {/* Save as Draft — creates the PI as DRAFT (no AP post / GRN consume);
+                Confirm later on the detail page. Mirrors the SO Draft flow. */}
+            <Button variant="ghost" size="md" onClick={() => onSave(true)} disabled={saving}>
+              <Save {...ICON} />
+              {saving ? 'Saving…' : 'Save as Draft'}
+            </Button>
+            <Button variant="primary" size="md" onClick={() => onSave(false)} disabled={saving}>
+              <Save {...ICON} />
+              {saving ? 'Saving…' : 'Create Purchase Invoice'}
+            </Button>
+          </div>
+        }
+      />
 
       <section className={styles.card}>
         <div className={styles.cardHeader}><h2 className={styles.cardTitle}>Header</h2></div>

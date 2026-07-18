@@ -30,6 +30,7 @@ import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataG
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import styles from './Suppliers.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -197,19 +198,18 @@ export const DeliveryPlanningRegions = () => {
   ], [edits, updateMutate, update.isPending, del.isPending]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div>
-          <h1 className={styles.title}>Delivery Regions</h1>
-          <p className={styles.subtitle}>
-            The region buckets (tabs) on Delivery Planning. Assign which states fall under each region in SO Maintenance.
-          </p>
-        </div>
-        <Button variant="primary" size="md" onClick={() => setCreating(true)}>
-          <Plus {...ICON} />
-          <span>New Region</span>
-        </Button>
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Delivery"
+        title="Delivery Regions"
+        description="The region buckets (tabs) on Delivery Planning. Assign which states fall under each region in SO Maintenance."
+        actions={
+          <Button variant="primary" size="md" onClick={() => setCreating(true)}>
+            <Plus {...ICON} />
+            <span>New Region</span>
+          </Button>
+        }
+      />
 
       <div className={styles.headerRow}>
         <p className={styles.eyebrow}>{regions.data?.length ?? 0} regions</p>

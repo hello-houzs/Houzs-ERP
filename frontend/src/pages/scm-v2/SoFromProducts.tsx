@@ -34,6 +34,7 @@ import { useCreateMfgSalesOrder } from '../../vendor/scm/lib/sales-order-queries
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import styles from './SalesOrderDetail.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -350,20 +351,21 @@ export const SoFromProducts = () => {
   const totalTest = counts.mattressOnly + counts.mattressBedframe + counts.sofaSet;
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
-          <Link to="/scm/sales-orders" className={styles.backBtn}>
-            <ArrowLeft {...ICON} /> <span>Sales Orders</span>
-          </Link>
-          <h1 className={styles.title}>Generate SO from Products</h1>
-        </div>
-        <div className={styles.actions}>
-          <Button variant="ghost" size="md" onClick={() => navigate('/scm/sales-orders')}>
-            <X {...ICON} /> Done
-          </Button>
-        </div>
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Supply Chain"
+        title="Generate SO from Products"
+        actions={
+          <div className={styles.actions}>
+            <Link to="/scm/sales-orders" className={styles.backBtn}>
+              <ArrowLeft {...ICON} /> <span>Sales Orders</span>
+            </Link>
+            <Button variant="ghost" size="md" onClick={() => navigate('/scm/sales-orders')}>
+              <X {...ICON} /> Done
+            </Button>
+          </div>
+        }
+      />
 
       {/* Progress / result banner */}
       {(running || result) && (

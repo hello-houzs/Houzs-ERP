@@ -46,6 +46,7 @@ import {
   PaymentsTable, labelToApi, draftMethodFields, type PaymentDraft,
 } from '../../vendor/scm/components/PaymentsTable';
 import styles from './SalesOrderDetail.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -341,34 +342,34 @@ export const ConsignmentNoteNew = () => {
   };
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
-          <Link to="/scm/consignment-notes" className={styles.backBtn}>
-            <ArrowLeft {...ICON} /> <span>Consignment Notes</span>
-          </Link>
-          <h1 className={styles.title}>
-            New Consignment Note
-            {fromConsignmentOrder && (
-              <span style={{ fontSize: 'var(--fs-13)', fontWeight: 600, color: 'var(--fg-muted)', marginLeft: 8 }}>
-                {loadingPrefill ? `· loading ${fromConsignmentOrder}…` : `· from ${fromConsignmentOrder}`}
-              </span>
-            )}
-          </h1>
-        </div>
-        <div className={styles.actions}>
-          <Button variant="ghost" size="md" onClick={() => navigate('/scm/consignment-notes/from-order')}>
-            <ArrowRightLeft {...ICON} /> From Consignment Order
-          </Button>
-          <Button variant="ghost" size="md" onClick={() => navigate('/scm/consignment-notes')}>
-            <X {...ICON} /> Cancel
-          </Button>
-          <Button variant="primary" size="md" onClick={onSave} disabled={create.isPending || loadingPrefill}>
-            <Save {...ICON} />
-            {create.isPending ? 'Saving…' : 'Create Consignment Note'}
-          </Button>
-        </div>
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Supply Chain"
+        title={`New Consignment Note${
+          fromConsignmentOrder
+            ? (loadingPrefill ? ` · loading ${fromConsignmentOrder}…` : ` · from ${fromConsignmentOrder}`)
+            : ''
+        }`}
+        actions={
+          <>
+            <Link to="/scm/consignment-notes" className={styles.backBtn}>
+              <ArrowLeft {...ICON} /> <span>Consignment Notes</span>
+            </Link>
+            <div className={styles.actions}>
+              <Button variant="ghost" size="md" onClick={() => navigate('/scm/consignment-notes/from-order')}>
+                <ArrowRightLeft {...ICON} /> From Consignment Order
+              </Button>
+              <Button variant="ghost" size="md" onClick={() => navigate('/scm/consignment-notes')}>
+                <X {...ICON} /> Cancel
+              </Button>
+              <Button variant="primary" size="md" onClick={onSave} disabled={create.isPending || loadingPrefill}>
+                <Save {...ICON} />
+                {create.isPending ? 'Saving…' : 'Create Consignment Note'}
+              </Button>
+            </div>
+          </>
+        }
+      />
 
       {/* ── CUSTOMER ── */}
       <section className={styles.card}>
