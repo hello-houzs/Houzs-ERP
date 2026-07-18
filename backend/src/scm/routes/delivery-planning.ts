@@ -463,7 +463,12 @@ deliveryPlanning.get('/', async (c) => {
   };
   const { data: soRowsRaw, error: soErr } = await paginateAll<SoHeaderRow>((from, to) =>
     sb.from('mfg_sales_orders')
-      .select('id, doc_no, company_id, debtor_code, debtor_name, phone, branding, status, delivery_state, customer_state, customer_country, customer_delivery_date, amend_date_from_customer, amended_delivery_date, amend_reason, internal_expected_dd, processing_date, so_date, address1, address2, postcode, building_type, local_total_centi, balance_centi, possession_date, house_type, replacement_disposal, referral')
+      /* NO `id` column here: scm.mfg_sales_orders is keyed by doc_no (TEXT PK) and
+         has no `id` column at all. Selecting `id` makes PostgREST reject the whole
+         query ("column mfg_sales_orders.id does not exist") → soErr → the board 500s
+         with load_failed. The SO's identity on this board is its doc_no; every join
+         below keys on doc_no / so_doc_no, never an id. */
+      .select('doc_no, company_id, debtor_code, debtor_name, phone, branding, status, delivery_state, customer_state, customer_country, customer_delivery_date, amend_date_from_customer, amended_delivery_date, amend_reason, internal_expected_dd, processing_date, so_date, address1, address2, postcode, building_type, local_total_centi, balance_centi, possession_date, house_type, replacement_disposal, referral')
       .neq('status', 'DRAFT')
       .neq('status', 'CANCELLED')
       .order('customer_delivery_date', { ascending: true, nullsFirst: false })
@@ -696,39 +701,31 @@ deliveryPlanning.get('/', async (c) => {
      is honest about not knowing, rather than inventing a number. */
   const dpNoByDoc = new Map<string, string>();
   {
-    const soIdByDoc = new Map<string, string>();
-    const soIds: string[] = [];
-    for (const r of soRows) {
-      const id = (r as { id?: string }).id;
-      const dn = String(r.doc_no ?? '');
-      if (id && dn) { soIdByDoc.set(dn, id); soIds.push(id); }
-    }
-    const docBySoId = new Map([...soIdByDoc].map(([dn, id]) => [id, dn]));
+    /* SO rows resolve their number through their DO. There is deliberately NO
+       so_id lookup: scm.mfg_sales_orders has no `id`, so an SO can never be the
+       target of trip_stops.so_id (that UUID column is only ever populated for a
+       source that actually has a UUID id). A board-scheduled SO reaches a trip
+       via its DO, and the stop carries do_id — which docByDoId resolves. */
     const docByDoId = new Map<string, string>();
     for (const [dn, arr] of doByDoc) for (const d of arr) docByDoId.set(d.id, dn);
 
-    type StopRow = { dp_no?: string | null; do_id?: string | null; so_id?: string | null };
+    type StopRow = { dp_no?: string | null; do_id?: string | null };
     const take = (rows: StopRow[] | null | undefined) => {
       for (const s of rows ?? []) {
         const no = s.dp_no;
         if (!no) continue;
-        const dn = (s.do_id && docByDoId.get(s.do_id)) || (s.so_id && docBySoId.get(s.so_id)) || null;
+        const dn = (s.do_id && docByDoId.get(s.do_id)) || null;
         // Last write wins = the most recent schedule, matching the crew = latest-DO
         // convention this board already uses.
         if (dn) dpNoByDoc.set(dn, no);
       }
     };
     try {
-      const [byDo, bySo] = await Promise.all([
-        doIds.length
-          ? sb.from('trip_stops').select('dp_no, do_id, so_id').in('do_id', doIds).not('dp_no', 'is', null)
-          : Promise.resolve({ data: [] as StopRow[] }),
-        soIds.length
-          ? sb.from('trip_stops').select('dp_no, do_id, so_id').in('so_id', soIds).not('dp_no', 'is', null)
-          : Promise.resolve({ data: [] as StopRow[] }),
-      ]);
-      take((byDo as { data?: StopRow[] }).data);
-      take((bySo as { data?: StopRow[] }).data);
+      if (doIds.length) {
+        const byDo = await sb.from('trip_stops')
+          .select('dp_no, do_id').in('do_id', doIds).not('dp_no', 'is', null);
+        take((byDo as { data?: StopRow[] }).data);
+      }
     } catch { /* leave the map empty — rows render dp_no null */ }
   }
 
@@ -1753,11 +1750,16 @@ async function scheduleOntoTrip(
       }
     } else {
       soDocNo = id;
+      /* NO `id` in this select: scm.mfg_sales_orders has no `id` column (TEXT PK =
+         doc_no). Selecting it errored the whole read, so the customer / address /
+         revenue snapshot below silently came back empty on every SO-direct
+         schedule. An SO therefore has no UUID to put in trip_stops.so_id — it stays
+         null, and the stop reaches its SO through the DO (do_id) instead. */
       const { data: soRow } = await sb.from('mfg_sales_orders')
-        .select('id, local_total_centi, debtor_name, address1, address2').eq('doc_no', id).maybeSingle();
+        .select('local_total_centi, debtor_name, address1, address2').eq('doc_no', id).maybeSingle();
       if (soRow) {
         const r = soRow as Record<string, unknown>;
-        soId = (r.id ?? null) as string | null;
+        soId = null;
         revenueCenti = Number((r.localTotalCenti ?? r.local_total_centi) ?? 0);
         customerName = (r.debtorName ?? r.debtor_name ?? null) as string | null;
         address = [r.address1, r.address2].filter(Boolean).join(', ') || null;
