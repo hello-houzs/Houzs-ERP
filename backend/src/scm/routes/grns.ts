@@ -18,7 +18,7 @@ import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { todayMyt } from '../lib/my-time';
 import { paginateAll } from '../lib/paginate-all';
 import { escapeForOr } from '../lib/postgrest-search';
-import { recordEntityAudit, diffFields, compactChanges, fieldChange, statusChange } from '../lib/entity-audit';
+import { recordEntityAudit, assertAuditWritable, auditUnavailableBody, diffFields, compactChanges, fieldChange, statusChange } from '../lib/entity-audit';
 import { GRN_LINE_AUDIT_FIELDS, GRN_LINE_AUDIT_SELECT } from '../lib/entity-audit-fields';
 
 export const grns = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -1287,6 +1287,16 @@ grns.post('/', async (c) => {
   if (!headerWarehouseId) {
     return c.json({ error: 'warehouse_required', message: 'Select a warehouse to receive the goods into.' }, 400);
   }
+
+  /* AUDIT PRE-FLIGHT — the ordering rationale for all nine in this file.
+     recordEntityAudit runs AFTER the business write has committed, so it cannot
+     honestly fail there; refusing up front is the only point at which "nothing
+     has changed, please try again" is true. Each one therefore sits after every
+     auth / validation / read guard (a refusal costs the operator nothing) and
+     strictly before the handler's FIRST mutating call. */
+  const pf = await assertAuditWritable(sb, { entityType: 'GRN', action: 'CREATE', companyId: activeCompanyId(c) });
+  if (!pf.ok) return c.json(auditUnavailableBody(), 409);
+
   /* Migration 0082 — GRN currency + rate inherit from the source PO (MYR default);
      allocation_method for landed-freight "平摊" (default QTY). MYR ⇒ rate 1, no-op. */
   const grnFx = await resolveGrnFx(sb, (body.purchaseOrderId as string | undefined) ?? null, body.currency, body.exchangeRate);
@@ -1466,6 +1476,9 @@ grns.post('/from-pos', async (c) => {
     return c.json({ error: 'warehouse_required', message: 'These purchase orders have no single receive-into warehouse. Set the warehouse on the PO lines, or receive them per warehouse.' }, 400);
   }
 
+  const pf = await assertAuditWritable(sb, { entityType: 'GRN', action: 'CREATE', companyId: activeCompanyId(c) });
+  if (!pf.ok) return c.json(auditUnavailableBody(), 409);
+
   // Generate GRN number using same pattern as the single-POST endpoint.
   const d = new Date();
   const yymm = `${String(d.getFullYear()).slice(2)}${String(d.getMonth() + 1).padStart(2, '0')}`;
@@ -1625,6 +1638,9 @@ grns.patch('/:id/post', async (c) => {
     return c.json({ error: 'qty_exceeds_remaining', poItemId: over.poItemId, requested: over.requested, remaining: over.remaining }, 409);
   }
 
+  const pf = await assertAuditWritable(sb, { entityType: 'GRN', entityId: id, action: 'POST', companyId: activeCompanyId(c) });
+  if (!pf.ok) return c.json(auditUnavailableBody(), 409);
+
   const res = await postGrnAndRollup(sb, id, user.id);
   if (!res.ok) return c.json({ error: 'post_failed', reason: res.reason }, 500);
   // Header money rollup (no stock) — keep it in sync on confirm.
@@ -1722,6 +1738,12 @@ grns.post('/from-po-items', async (c) => {
       return c.json({ error: 'po_not_receivable', poItemId: p.poItemId, status: row.po.status }, 409);
     }
   }
+
+  /* One probe for the whole batch, not one per bucket: every bucket below writes
+     to the same sink, and a refusal here leaves the entire multi-GRN receive
+     untouched rather than half-created. */
+  const pf = await assertAuditWritable(sb, { entityType: 'GRN', action: 'CREATE', companyId: activeCompanyId(c) });
+  if (!pf.ok) return c.json(auditUnavailableBody(), 409);
 
   // Group picks by SUPPLIER → one GRN per supplier (Commander 2026-05-29:
   // "不同 supplier 不能 under 同一张 GRN" + "multi-select → 一张 GRN"). A
@@ -1930,6 +1952,13 @@ grns.patch('/:id/cancel', async (c) => {
     return c.json({ grn: data ?? { id, status: 'CANCELLED' } });
   }
 
+  /* Ahead of the DRAFT short-circuit below, not just the main path: that branch
+     flips status to CANCELLED itself, so a pre-flight placed after it would let
+     a draft be voided with no record. Both exits record a CANCEL, so both are
+     covered by this one probe. */
+  const pf = await assertAuditWritable(sb, { entityType: 'GRN', entityId: id, action: 'CANCEL', companyId: activeCompanyId(c) });
+  if (!pf.ok) return c.json(auditUnavailableBody(), 409);
+
   /* LEAK GUARD (CRITICAL): a DRAFT GRN committed NOTHING (no inventory IN, no
      PO received-rollup), so cancelling one must NOT reverse anything — the
      inventory OUT + PO recount below would over-reverse (drive stock negative /
@@ -2097,6 +2126,15 @@ grns.patch('/:id', async (c) => {
   const { data: beforeRow } = await sb.from('grns')
     .select(GRN_AUDIT_SELECT).eq('id', id).maybeSingle();
   const before = (beforeRow ?? {}) as unknown as Record<string, unknown>;
+
+  /* Before the relocation block below, which writes inventory movements — those
+     are a real stock change, so the last honest refusal point is above them, not
+     above the header UPDATE further down. */
+  const pf = await assertAuditWritable(sb, {
+    entityType: 'GRN', entityId: id, action: 'UPDATE',
+    companyId: (before.company_id as number | null) ?? activeCompanyId(c),
+  });
+  if (!pf.ok) return c.json(auditUnavailableBody(), 409);
 
   /* Warehouse relocation — a posted GRN already pushed its IN stock into the OLD
      warehouse. If the operator changes the warehouse, just rewriting the header
@@ -2272,6 +2310,9 @@ grns.post('/:id/items', async (c) => {
       }
     }
   }
+
+  const pf = await assertAuditWritable(sb, { entityType: 'GRN', entityId: grnId, action: 'UPDATE', companyId: activeCompanyId(c) });
+  if (!pf.ok) return c.json(auditUnavailableBody(), 409);
 
   const row: Record<string, unknown> = {
     grn_id: grnId,
@@ -2570,6 +2611,9 @@ grns.patch('/:id/items/:itemId', async (c) => {
     }
   }
 
+  const pf = await assertAuditWritable(sb, { entityType: 'GRN', entityId: grnId, action: 'UPDATE', companyId: activeCompanyId(c) });
+  if (!pf.ok) return c.json(auditUnavailableBody(), 409);
+
   const { error } = await sb.from('grn_items').update(updates).eq('id', itemId);
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
 
@@ -2728,6 +2772,11 @@ grns.delete('/:id/items/:itemId', async (c) => {
       if (consumedLock) return c.json(consumedLock, 409);
     }
   }
+
+  /* The audit row is the ONLY remaining evidence of this line once the delete
+     lands, so refusing here matters more than anywhere else in this file. */
+  const pf = await assertAuditWritable(sb, { entityType: 'GRN', entityId: grnId, action: 'UPDATE', companyId: activeCompanyId(c) });
+  if (!pf.ok) return c.json(auditUnavailableBody(), 409);
 
   const { error } = await sb.from('grn_items').delete().eq('id', itemId);
   if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);

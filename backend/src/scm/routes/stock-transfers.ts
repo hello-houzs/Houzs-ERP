@@ -27,7 +27,7 @@ import { writeMovements, reverseMovements } from '../lib/inventory-movements';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
-import { recordEntityAudit, compactChanges, fieldChange, statusChange } from '../lib/entity-audit';
+import { recordEntityAudit, compactChanges, fieldChange, statusChange, assertAuditWritable, auditUnavailableBody } from '../lib/entity-audit';
 
 export const stockTransfers = new Hono<{ Bindings: Env; Variables: Variables }>();
 stockTransfers.use('*', supabaseAuth);
@@ -317,6 +317,14 @@ stockTransfers.post('/', async (c) => {
   };
   if (body.transferDate) headerInsert.transfer_date = body.transferDate;
 
+  /* Ask the audit sink BEFORE the header insert — the first write this handler
+     makes — because both audit rows below (the success one and the auto-cancel
+     one) are written after stock has already moved, so neither can honestly fail
+     there. One probe covers both: they share this entity and action, and by the
+     time either runs the choice between them is already made. */
+  const pf = await assertAuditWritable(sb, { entityType: 'STOCK_TRANSFER', action: 'CREATE', companyId: activeCompanyId(c) });
+  if (!pf.ok) return c.json(auditUnavailableBody(), 409);
+
   const { data: headerData, error: hErr } = await insertWithDocNoRetry<{ id: string; transfer_no: string; from_warehouse_id: string; to_warehouse_id: string }>(
     () => nextTransferNo(sb, c),
     (transferNo) => sb
@@ -438,6 +446,9 @@ stockTransfers.patch('/:id/cancel', async (c) => {
     transfer_no: string; status: string;
     from_warehouse_id: string | null; to_warehouse_id: string | null; company_id: number | null;
   } | null;
+
+  const pf = await assertAuditWritable(sb, { entityType: 'STOCK_TRANSFER', entityId: id, action: 'CANCEL', companyId: beforeTransfer?.company_id ?? null });
+  if (!pf.ok) return c.json(auditUnavailableBody(), 409);
 
   const { data, error } = await sb.from('stock_transfers')
     .update({ status: 'CANCELLED', cancelled_at: new Date().toISOString() })

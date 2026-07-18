@@ -41,7 +41,7 @@ import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from 
 import { hasHouzsPerm } from '../lib/houzs-perms';
 import { normalizeCurrency, normalizeExchangeRate, masterRateForCurrency } from '../lib/fx';
 import { todayMyt } from '../lib/my-time';
-import { recordEntityAudit, diffFields, compactChanges, fieldChange, statusChange } from '../lib/entity-audit';
+import { recordEntityAudit, diffFields, compactChanges, fieldChange, statusChange, assertAuditWritable, auditUnavailableBody } from '../lib/entity-audit';
 
 export const paymentVouchers = new Hono<{ Bindings: Env; Variables: Variables }>();
 paymentVouchers.use('*', supabaseAuth);
@@ -251,6 +251,13 @@ paymentVouchers.post('/', async (c) => {
     : await masterRateForCurrency(sb, currency);
   const exchangeRate = normalizeExchangeRate(pvRateRaw, currency);
 
+  /* Asked BEFORE the first write, not at the recordEntityAudit call below: that
+     one runs after the voucher exists, where "please try again" would be a lie
+     the operator acts on. Refusing here is the only point at which nothing has
+     yet moved. */
+  const pf = await assertAuditWritable(sb, { entityType: 'PAYMENT_VOUCHER', action: 'CREATE', companyId: activeCompanyId(c) });
+  if (!pf.ok) return c.json(auditUnavailableBody(), 409);
+
   const { data: header, error: hErr } = await insertWithDocNoRetry<{ id: string; pv_number: string }>(
     () => nextPvNo(sb, c),
     (pvNumber) => sb.from('payment_vouchers').insert({
@@ -365,6 +372,9 @@ paymentVouchers.patch('/:id', async (c) => {
     }
   }
 
+  const pf = await assertAuditWritable(sb, { entityType: 'PAYMENT_VOUCHER', entityId: id, action: 'UPDATE', companyId: (before.company_id as number | null) ?? null });
+  if (!pf.ok) return c.json(auditUnavailableBody(), 409);
+
   // Lines (optional) — full replace + recompute total when supplied.
   let newTotal: number | undefined;
   if (body.lines !== undefined) {
@@ -469,6 +479,10 @@ paymentVouchers.post('/:id/post', async (c) => {
   const supplier = pv.supplier ?? { code: null, name: null };
   // Multi-company (mig 0061/0081): the JE + its lines belong to the PV's company.
   const companyId = pv.company_id ?? null;
+
+  const pf = await assertAuditWritable(sb, { entityType: 'PAYMENT_VOUCHER', entityId: id, action: 'POST', companyId });
+  if (!pf.ok) return c.json(auditUnavailableBody(), 409);
+
   const jeNo = await nextJeNo(sb, new Date(pv.voucher_date), jePrefixForCompany(companyId));
   const { data: je, error: jeErr } = await sb.from('journal_entries').insert({
     ...(companyId != null ? { company_id: companyId } : {}),
@@ -584,6 +598,12 @@ paymentVouchers.post('/:id/cancel', async (c) => {
   const head = cur as { id: string; status: string; pv_number: string; purpose: string | null };
   // Idempotent — already cancelled, echo back.
   if (head.status === 'CANCELLED') return c.json({ paymentVoucher: { id, status: 'CANCELLED' } });
+
+  /* One probe covers BOTH history rows this handler writes (the CANCEL and the
+     REVERSE): they share a sink, and past this point the flip has happened, so a
+     second check further down could only report a failure it can no longer undo. */
+  const pf = await assertAuditWritable(sb, { entityType: 'PAYMENT_VOUCHER', entityId: id, action: 'CANCEL' });
+  if (!pf.ok) return c.json(auditUnavailableBody(), 409);
 
   /* ATOMIC ACTIVE→CANCELLED — the conditional UPDATE excludes CANCELLED, so two
      concurrent cancels race and only ONE flips it (the other gets no row back →

@@ -33,7 +33,7 @@ import {
 import { supabaseAuth } from '../middleware/auth';
 import { recomputeSoStockAllocation } from '../lib/so-stock-allocation';
 import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
-import { recordEntityAudit, compactChanges, fieldChange } from '../lib/entity-audit';
+import { recordEntityAudit, compactChanges, fieldChange, assertAuditWritable, auditUnavailableBody } from '../lib/entity-audit';
 import type { Env, Variables } from '../env';
 
 export const inventoryAdjustments = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -95,6 +95,12 @@ inventoryAdjustments.post('/', async (c) => {
       }, 422);
     }
   }
+
+  /* Everything above is read-only, so refusing here leaves nothing changed and
+     the message the operator gets is literally true. The audit row below cannot
+     say that: it runs after this movement has already altered on-hand. */
+  const pf = await assertAuditWritable(sb, { entityType: 'INVENTORY_ADJUSTMENT', action: 'CREATE', companyId: activeCompanyId(c) });
+  if (!pf.ok) return c.json(auditUnavailableBody(), 409);
 
   const { data, error } = await sb.from('inventory_movements').insert({
     company_id: activeCompanyId(c), // multi-company: stamp the active company
