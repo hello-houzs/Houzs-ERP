@@ -5,6 +5,7 @@ import {
   isCapabilityAllowed,
   redactFacts,
   scopeNote,
+  scopeForUser,
   type AssistantScope,
 } from "../src/services/assistant-scope";
 
@@ -113,5 +114,49 @@ describe("scopeNote", () => {
   test("no note when nothing is hidden — no needless hedging in owner answers", () => {
     expect(scopeNote(OWNER)).toBeNull();
     expect(scopeNote(DIRECTOR)).toBeNull();
+  });
+});
+
+describe("scopeForUser — derived from the ONE policy, never re-authored", () => {
+  const resolve = (i: { position_name: string | null }) =>
+    i.position_name === "Sales Executive"
+      ? { flags: { canSeeMargin: false, canSeeCommission: false, orderScope: "own_downline" as const } }
+      : { flags: { canSeeMargin: true, canSeeCommission: true, orderScope: "all" as const } };
+
+  test("wildcard sees everything", () => {
+    expect(scopeForUser({ permissions: ["*"] }, resolve).wildcard).toBe(true);
+    expect(scopeForUser({ permissions: "*" }, resolve).wildcard).toBe(true);
+  });
+
+  test("a positioned user gets the policy's flags VERBATIM", () => {
+    const rep = scopeForUser({ permissions: [], position_name: "Sales Executive" }, resolve);
+    expect(rep).toEqual({ canSeeMargin: false, canSeeCommission: false, orderScope: "own_downline" });
+  });
+
+  test("the owner's default-FULL model is honoured, not quietly tightened", () => {
+    // An unclassified position sees money because that is his ruling. This surface
+    // must not be stricter than every other one — that inconsistency is the bug.
+    const other = scopeForUser({ permissions: [], position_name: "HR Manager" }, resolve);
+    expect(other.canSeeMargin).toBe(true);
+  });
+
+  test("THE ONE THAT MATTERS: no position = money HIDDEN, not granted", () => {
+    // The policy has no input to decide from. "Cannot tell" must not resolve to
+    // "entitled" — defaulting the unknown to permissive is how a nullish fallback
+    // becomes a disclosure.
+    for (const u of [null, undefined, {}, { permissions: [] }, { permissions: [], position_name: null }]) {
+      const s = scopeForUser(u as never, resolve);
+      expect(s.canSeeMargin, JSON.stringify(u)).toBe(false);
+      expect(s.canSeeCommission, JSON.stringify(u)).toBe(false);
+    }
+  });
+
+  test("a policy that cannot resolve also hides", () => {
+    const s = scopeForUser({ permissions: [], position_name: "Ghost" }, () => null);
+    expect(s.canSeeMargin).toBe(false);
+  });
+
+  test("a stray '*' inside a longer permission string is NOT wildcard", () => {
+    expect(scopeForUser({ permissions: "scm.*" }, resolve).wildcard).toBeUndefined();
   });
 });

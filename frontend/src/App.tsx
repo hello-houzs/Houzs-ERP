@@ -362,7 +362,11 @@ export default function App() {
             agent fleet: pause/kill, autonomy gates, proposals + findings, the
             learned-tuning approvals, and the per-agent teaching notebook. */}
         <Route path="/agents" element={<Guard anyPerm={["*"]}><Agents /></Guard>} />
-        <Route path="/assistant" element={<Guard anyPerm={["*"]}><Assistant /></Guard>} />
+        {/* No permission gate: the Assistant is open to every authenticated staff
+            member, and what each may SEE is scoped server-side per position
+            (services/assistant-scope.ts). Gating the door again here would only
+            hide the feature from the people the scoping already protects. */}
+        <Route path="/assistant" element={<Assistant />} />
         <Route
           path="/system-health"
           element={

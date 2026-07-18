@@ -4,12 +4,18 @@
 // POST /api/assistant/chat { message } → one grounded answer + which specialist
 // agents were consulted (the routing trace the UI shows).
 //
-// OWNER-ONLY for now (requirePermission("*")), deliberately. The specialists'
+// OPEN TO AUTHENTICATED STAFF, with the protection in the SCOPING rather than in
+// the door. It was owner-only until the scoping existed, because the specialists'
 // briefs carry MARGIN, per-salesperson performance and company-wide receivables —
-// exactly the class of aggregate that leaked to every Sales Executive once before
-// (fix/c1-reports: "READ-ONLY IS NOT THE SAME AS SAFE"). Serving this to all staff
-// needs per-role scoping of what each specialist may contribute, which is a
-// follow-up, not something to guess at now.
+// the class of aggregate that leaked to every Sales Executive once before
+// (fix/c1-reports: "READ-ONLY IS NOT THE SAME AS SAFE").
+//
+// What changed: services/assistant-scope.ts derives each caller's visibility from
+// positionPolicy — the SAME flags every other surface obeys — gates the money
+// specialists, and redacts money keys from the payload BEFORE the model is called.
+// A rep asking about margin now reaches an agent list that never included the
+// commercial-intelligence brief, over a payload where those keys are already
+// markers. The door is no longer what protects the numbers, so the door can open.
 //
 // READ-ONLY: this route never writes a business row. The assistant answers and
 // points at the screen where a human acts.
@@ -17,12 +23,12 @@
 
 import { Hono } from "hono";
 import type { Env } from "../types";
-import { requirePermission } from "../middleware/auth";
 import { askAssistant } from "../services/assistant";
+import { scopeForUser } from "../services/assistant-scope";
+import { resolvePositionPolicy } from "../services/positionPolicy";
 
 const app = new Hono<{ Bindings: Env }>();
 
-app.use("*", requirePermission("*"));
 
 app.post("/chat", async (c) => {
   let body: { message?: unknown } = {};
@@ -35,7 +41,15 @@ app.post("/chat", async (c) => {
   if (!message.trim()) {
     return c.json({ success: false, error: "message required" }, 400);
   }
-  const res = await askAssistant(c.env, message);
+  /* Scope is resolved per REQUEST from the caller's own position — never cached,
+     never passed in by the client. A user with no position resolves to money
+     hidden: the policy has no basis to decide, and "cannot tell" must not become
+     "entitled". */
+  const user = c.get("user") as
+    | { permissions?: unknown; position_name?: string | null; department_name?: string | null }
+    | undefined;
+  const scope = scopeForUser(user, (i) => resolvePositionPolicy(i));
+  const res = await askAssistant(c.env, message, undefined, scope);
   return c.json({ success: true, data: res });
 });
 
