@@ -1,9 +1,9 @@
--- 0128_capture_compat_views_trips_lorries.sql
+-- 0136_capture_compat_views_trips_lorries.sql
 --
 -- STATUS: TEMPLATE — NOT YET RUNNABLE. This file ends in `.sql.TEMPLATE`, so
 -- scripts/pg-migrate.mjs (which globs only `*.sql`) SKIPS it and it CANNOT block
 -- a deploy. It becomes a real migration only after the two view bodies below are
--- filled in from the probe and the file is renamed to `0128_..._lorries.sql`.
+-- filled in from the probe and the file is renamed to `0136_..._lorries.sql`.
 --
 -- WHY THIS EXISTS
 -- Migration 0055 DROPped the old public.trips + public.lorries TABLES in favour
