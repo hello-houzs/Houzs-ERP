@@ -37,7 +37,7 @@ import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
-import { hasHouzsPerm, canViewAllSales, canViewScmFinance } from '../lib/houzs-perms';
+import { canWriteScmConfig, canViewAllSales, canViewScmFinance } from '../lib/houzs-perms';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 import {
   summarizeOverview, monthlyTrend, collapseToPurchases,
@@ -474,7 +474,7 @@ salesAnalysis.put('/targets', async (c) => {
   const sb = c.get('supabase');
 
   // Editing the marketing target profile = SCM master-data config.
-  if (!hasHouzsPerm(c, 'scm.config.write')) {
+  if (!canWriteScmConfig(c)) {
     return c.json({ error: 'forbidden', reason: 'targets_edit_requires_scm.config.write' }, 403);
   }
 

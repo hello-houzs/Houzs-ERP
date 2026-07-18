@@ -21,7 +21,7 @@
 
 import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
-import { hasHouzsPerm } from '../lib/houzs-perms';
+import { canWriteScmConfig } from '../lib/houzs-perms';
 import { todayMyt } from '../lib/my-time';
 import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
@@ -166,7 +166,7 @@ maintenanceConfig.get('/history', async (c) => {
 // previously writable by ANY authed staff. Now gated app-side to WRITE_ROLES,
 // matching the sibling pricing editors. (RLS defence-in-depth can follow.)
 maintenanceConfig.post('/changes', async (c) => {
-  if (!hasHouzsPerm(c, 'scm.config.write')) {
+  if (!canWriteScmConfig(c)) {
     return c.json({ error: 'forbidden', reason: 'missing_scm_config_write' }, 403);
   }
   let body: { scope?: string; config?: unknown; effectiveFrom?: string; notes?: string };
@@ -266,7 +266,7 @@ maintenanceConfig.post('/sofa-compartments/rename', async (c) => {
 // delete for the cancel-pending UX. Past-effective rows should not be
 // deleted in practice — the UI hides the trash icon on those.
 maintenanceConfig.delete('/changes/:id', async (c) => {
-  if (!hasHouzsPerm(c, 'scm.config.write')) {
+  if (!canWriteScmConfig(c)) {
     return c.json({ error: 'forbidden', reason: 'missing_scm_config_write' }, 403);
   }
   const id = c.req.param('id');

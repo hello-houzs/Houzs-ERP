@@ -20,6 +20,7 @@ import {
   isFinanceViewer,
   isProductCostViewer,
 } from '../../services/pmsAccess';
+import { resolvePositionPolicy } from '../../services/positionPolicy';
 import type { AuthUser } from '../../services/auth';
 import type { Env, Variables } from '../env';
 
@@ -169,6 +170,37 @@ export function canViewScmProductCost(c: HouzsUserSource): boolean {
     position_name: hu.position_name ?? null,
     permissions_set: hu.permissions_set,
   } as AuthUser);
+}
+
+/**
+ * True when the caller may WRITE SCM master data / config — the `scm.config.write`
+ * gate, reconciled across the TWO permission layers that used to disagree:
+ *   1. the flat permission key `scm.config.write` on the caller's ROLE (legacy
+ *      path — Owner / IT `*` pass here too, and any role the owner grants the key
+ *      keeps working), OR
+ *   2. the caller's POSITION policy `canWriteConfig` flag (positionPolicy.ts) —
+ *      the operation/purchasing positions (CONFIG_WRITE_POSITIONS) that own
+ *      product/SKU/price master data satisfy the gate by position alone.
+ *
+ * This is the dual-rule fix (owner 2026-07-18, "ONE RULE — position-driven"): a
+ * full-page-access operation position no longer needs a roles.permissions grant
+ * to DO the master-data writes it can already SEE. `flat OR position`, never
+ * `position only`, so nothing that passes today stops passing. Additive: it can
+ * only ever GRANT the write.
+ *
+ * Same caller-source shim as the other helpers: inside /api/scm/* the `user`
+ * context is the pinned scm.staff system row (no position), so the REAL Houzs
+ * caller is read from `houzsUser`, whose position_name + department_name
+ * middleware/auth.ts mirrors there. Fails CLOSED (no houzsUser → no write).
+ */
+export function canWriteScmConfig(c: HouzsUserSource): boolean {
+  if (hasHouzsPerm(c, 'scm.config.write')) return true;
+  const hu = c.get('houzsUser');
+  if (!hu) return false;
+  return resolvePositionPolicy({
+    position_name: hu.position_name ?? null,
+    department_name: hu.department_name ?? null,
+  }).flags.canWriteConfig;
 }
 
 /** Hono middleware — 403s when the caller lacks `perm`. Mirrors

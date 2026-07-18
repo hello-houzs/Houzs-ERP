@@ -3,7 +3,7 @@
 // (server role check + RLS defence-in-depth, migration 0124).
 import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
-import { hasHouzsPerm } from '../lib/houzs-perms';
+import { canWriteScmConfig } from '../lib/houzs-perms';
 import { scopeToCompany } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
@@ -11,7 +11,7 @@ export const fabricLibrary = new Hono<{ Bindings: Env; Variables: Variables }>()
 
 fabricLibrary.use('*', supabaseAuth);
 
-// Houzs-flavoured: gate on the flat permission key `scm.config.write` against
+// Houzs-flavoured: gate via canWriteScmConfig (flat `scm.config.write` OR the position policy canWriteConfig flag, see houzs-perms.ts) against
 // the REAL caller (the 2990 staff_role lookup is dead in Houzs — the SCM
 // bridge pins every caller to one super_admin row).
 const VALID_TIER_FIELDS = new Set(['sofaTier', 'bedframeTier']);
@@ -55,7 +55,7 @@ fabricLibrary.get('/', async (c) => {
 });
 
 fabricLibrary.patch('/:id/tier', async (c) => {
-  if (!hasHouzsPerm(c, 'scm.config.write')) {
+  if (!canWriteScmConfig(c)) {
     return c.json({ error: 'forbidden', reason: 'missing_scm_config_write' }, 403);
   }
   const id       = c.req.param('id');

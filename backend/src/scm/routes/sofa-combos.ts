@@ -29,7 +29,7 @@ import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { canonicalizeComboModulesForStorage, comboSlotsKey, sofaComboCostSen, parseDefaultFreeGifts, type ComboSlots } from '../shared';
 import { loadModelSofaModuleCosts } from '../lib/mfg-pricing-recompute';
-import { hasHouzsPerm } from '../lib/houzs-perms';
+import { canWriteScmConfig } from '../lib/houzs-perms';
 import { todayMyt } from '../lib/my-time';
 import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
 
@@ -47,7 +47,7 @@ type AppContext = Context<{ Bindings: Env; Variables: Variables }>;
 // POS salesperson must read combos to price builds); only writes are gated.
 
 async function requireWriteRole(c: AppContext): Promise<{ ok: true } | { ok: false; res: Response }> {
-  if (!hasHouzsPerm(c, 'scm.config.write')) {
+  if (!canWriteScmConfig(c)) {
     return { ok: false, res: c.json({ error: 'forbidden', reason: 'missing_scm_config_write' }, 403) };
   }
   return { ok: true };

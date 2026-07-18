@@ -5,7 +5,7 @@ import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { parseFreeItemEligible, ruleTargetSchema } from '../shared';
 import { supabaseAuth } from '../middleware/auth';
-import { hasHouzsPerm } from '../lib/houzs-perms';
+import { canWriteScmConfig } from '../lib/houzs-perms';
 import type { Env, Variables } from '../env';
 import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
 
@@ -14,7 +14,7 @@ type AppContext = Context<{ Bindings: Env; Variables: Variables }>;
 export const freeItemCampaigns = new Hono<{ Bindings: Env; Variables: Variables }>();
 freeItemCampaigns.use('*', supabaseAuth);
 
-// Houzs-flavoured: gate on the flat permission key `scm.config.write` against
+// Houzs-flavoured: gate via canWriteScmConfig (flat `scm.config.write` OR the position policy canWriteConfig flag, see houzs-perms.ts) against
 // the REAL caller (the 2990 staff_role lookup is dead in Houzs — the SCM
 // bridge pins every caller to one super_admin row). Owner + IT Admin pass via
 // `*`; grant individual positions via the Team > Positions matrix.
@@ -30,7 +30,7 @@ const writeSchema = z.object({
 });
 
 const requireCampaignEditor = async (c: AppContext) => {
-  if (!hasHouzsPerm(c, 'scm.config.write')) {
+  if (!canWriteScmConfig(c)) {
     return { error: c.json({ error: 'forbidden', reason: 'missing_scm_config_write' }, 403) };
   }
   const u = c.get('user');

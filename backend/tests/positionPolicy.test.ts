@@ -180,6 +180,7 @@ describe("positionPolicy — the resolved-access table over all 17 real position
       canSeeCommission: false,
       announcementScope: "dept",
       canMoveMoney: false,
+      canWriteConfig: false,
     });
     // The Sales Director tier within the cohort — view-all scope + margin visible.
     const dir = resolvePositionPolicy({ position_name: "Sales Director", department_name: "Sales Department" });
@@ -189,6 +190,7 @@ describe("positionPolicy — the resolved-access table over all 17 real position
       canSeeCommission: false,
       announcementScope: "dept",
       canMoveMoney: false,
+      canWriteConfig: false,
     });
     const full = resolvePositionPolicy({ position_name: "HR Manager", department_name: "Management" });
     expect(full.flags).toEqual({
@@ -197,10 +199,75 @@ describe("positionPolicy — the resolved-access table over all 17 real position
       canSeeCommission: true,
       announcementScope: "all",
       canMoveMoney: false, // SEE everything, but do not move money
+      canWriteConfig: false, // HR does not manage SCM master data
     });
     const restricted = resolvePositionPolicy({ position_name: "Storekeeper", department_name: "Operation Department" });
     expect(restricted.flags.canSeeMargin).toBe(false);
     expect(restricted.flags.orderScope).toBe("all");
+  });
+});
+
+/* ── THE SCM-CONFIG-WRITE COHORT (owner-editable) — position-driven scm.config.write.
+   Owner 2026-07-18 "ONE RULE": Purchasing (and the operation/purchasing positions)
+   must be able to WRITE SCM master data they can already SEE, WITHOUT a role
+   migration. `canWriteConfig` is TRUE for exactly that cohort and FALSE for
+   everyone else — proven over all 17 real positions. This is the blast radius the
+   owner confirms: exactly WHO gains the master-data write. */
+describe("positionPolicy — canWriteConfig is the owner-editable operation cohort", () => {
+  // The ground truth the owner directed. TRUE = manages products/SKUs/prices.
+  const EXPECTED_CONFIG_WRITE: Record<string, boolean> = {
+    "Super Admin": true, // included like MONEY_WRITE_POSITIONS (no-`*` edge)
+    "Operation Manager": true,
+    "Operation Executive": true,
+    "Procurement/Purchasing": true,
+    "Logistic Admin": true,
+    // Everyone else is FALSE — must stay 403 on config writes unless their role
+    // holds the flat perm.
+    "HR Manager": false,
+    "Finance Manager": false, // config is not finance work
+    "Sales Director": false,
+    "Sales Manager": false,
+    "Sales Executive": false,
+    "Sales Person": false,
+    "Storekeeper": false, // view-only inventory cohort
+    "Storekeeper Supervisor": false,
+    "Driver": false,
+    "Helper": false,
+    "Service Admin": false,
+    "Calendar Viewer": false,
+  };
+
+  test("the expectation table covers exactly the 17 real positions", () => {
+    expect(Object.keys(EXPECTED_CONFIG_WRITE).sort()).toEqual(
+      POSITION_ACCESS_SNAPSHOT.map((p) => p.name).sort(),
+    );
+  });
+
+  test.each(POSITION_ACCESS_SNAPSHOT.map((e) => [e.name, e] as const))(
+    "%s carries the directed canWriteConfig",
+    (name, entry) => {
+      const policy = resolvePositionPolicy(inputFor(entry));
+      expect(policy.flags.canWriteConfig, name).toBe(EXPECTED_CONFIG_WRITE[name]);
+    },
+  );
+
+  test("exactly five positions gain the write; the restricted/sales/HR cohorts do NOT", () => {
+    const granted = POSITION_ACCESS_SNAPSHOT.filter(
+      (e) => resolvePositionPolicy(inputFor(e)).flags.canWriteConfig,
+    ).map((e) => e.name).sort();
+    expect(granted).toEqual(
+      ["Logistic Admin", "Operation Executive", "Operation Manager", "Procurement/Purchasing", "Super Admin"].sort(),
+    );
+    // The safety line the owner asked to confirm: Storekeeper stays FALSE.
+    expect(resolvePositionPolicy({ position_name: "Storekeeper", department_name: "Operation Department" }).flags.canWriteConfig).toBe(false);
+  });
+
+  test("an unclassified / renamed position fails to FALSE (no injection via free-text rename)", () => {
+    // A rename that merely CONTAINS a granted name must NOT inherit the write —
+    // exact normalised-name membership only.
+    expect(resolvePositionPolicy({ position_name: "Assistant to Operation Manager", department_name: "Operation Department" }).flags.canWriteConfig).toBe(false);
+    expect(resolvePositionPolicy({ position_name: "Junior Purchasing", department_name: "Operation Department" }).flags.canWriteConfig).toBe(false);
+    expect(resolvePositionPolicy({ position_name: null, department_name: null }).flags.canWriteConfig).toBe(false);
   });
 });
 

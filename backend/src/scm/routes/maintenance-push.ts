@@ -46,7 +46,7 @@
 
 import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
-import { hasHouzsPerm } from '../lib/houzs-perms';
+import { canWriteScmConfig } from '../lib/houzs-perms';
 import { todayMyt } from '../lib/my-time';
 import {
   activeCompanyId,
@@ -234,7 +234,7 @@ async function buildReport(
 maintenancePush.get('/diff', async (c) => {
   // Gated like the sibling cost-bearing readers: this report echoes 2990's
   // config, prices included, so it is not openRead.
-  if (!hasHouzsPerm(c, 'scm.config.write')) {
+  if (!canWriteScmConfig(c)) {
     return c.json({ error: 'forbidden', message: 'You do not have permission to view or change product maintenance settings.' }, 403);
   }
   try {
@@ -260,7 +260,7 @@ maintenancePush.get('/diff', async (c) => {
 // body: { effectiveFrom?: YYYY-MM-DD, notes?: string, allowRemovals?: boolean,
 //         pools?: string[], confirm: true }
 maintenancePush.post('/apply', async (c) => {
-  if (!hasHouzsPerm(c, 'scm.config.write')) {
+  if (!canWriteScmConfig(c)) {
     return c.json({ error: 'forbidden', message: 'You do not have permission to change product maintenance settings.' }, 403);
   }
 

@@ -22,7 +22,7 @@ import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { canTransition, nextStatus, type AmendStatus, type AmendAction } from '../shared';
 import { applySoAmendment, reviseBoundPo, ReceivedFloorError } from '../lib/so-revision';
-import { hasHouzsPerm, canViewAllSales } from '../lib/houzs-perms';
+import { hasHouzsPerm, canViewAllSales, canWriteScmConfig } from '../lib/houzs-perms';
 import { resolveSalesScopeIds, salesDocOutOfScope, resolveCallerStaffId } from '../lib/salesScope';
 import { recordSoAudit } from '../lib/so-audit';
 import { scopeToCompany, isMirroredDocNo, MIRRORED_SO_READONLY, activeCompanyId } from '../lib/companyScope';
@@ -228,7 +228,7 @@ soAmendments.get('/', async (c) => {
    static path wins over the :id param. Gated to scm.config.write (owner-level),
    like maintenance-push/diff, because it exercises the 2990 connection. */
 soAmendments.get('/command-diag', async (c) => {
-  if (!hasHouzsPerm(c, 'scm.config.write')) {
+  if (!canWriteScmConfig(c)) {
     return c.json({ error: 'forbidden', message: 'You do not have permission to view the 2990 connection diagnostics.' }, 403);
   }
   const sb = c.get('supabase');

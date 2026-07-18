@@ -115,6 +115,17 @@ export interface PositionAccessFlags {
    *  carve-out: the money keys are lowered to `view` in the map (so the FE agrees)
    *  and `moneyWriteDenial` enforces it at the door. */
   canMoveMoney: boolean;
+  /** May WRITE SCM MASTER DATA / config — the flat `scm.config.write` capability,
+   *  keyed off POSITION rather than the role matrix. Owner-directed 2026-07-18
+   *  ("ONE RULE — permissions position-driven, no roles.permissions migration"):
+   *  a full-page-access OPERATION position that manages products/SKUs/prices must
+   *  be able to DO the master-data writes it can SEE, without a role grant. True
+   *  for the CONFIG_WRITE_POSITIONS cohort (the operation/purchasing positions);
+   *  false for everyone else. Consumed by scm/lib/houzs-perms.canWriteScmConfig,
+   *  which gates the 29 `scm.config.write` route sites as `flat perm OR this flag`
+   *  — never `position only`, so any role that already holds the flat perm still
+   *  passes. Additive: it only ever GRANTS the write, never removes one. */
+  canWriteConfig: boolean;
 }
 
 /** The unrestricted / management default — SEE everything, but do NOT move money. */
@@ -124,6 +135,9 @@ const FLAGS_FULL: PositionAccessFlags = {
   canSeeCommission: true,
   announcementScope: "all",
   canMoveMoney: false,
+  // Default OFF even for the full cohort — only the named CONFIG_WRITE_POSITIONS
+  // get it, layered on in resolvePositionPolicy (mirrors how canMoveMoney is set).
+  canWriteConfig: false,
 };
 
 /** Finance authority — full, INCLUDING the money-moving writes. */
@@ -141,6 +155,8 @@ const FLAGS_RESTRICTED: PositionAccessFlags = {
   canSeeCommission: false,
   announcementScope: "dept",
   canMoveMoney: false,
+  // Storekeeper / Driver / Helper are view-only — every config/master write 403s.
+  canWriteConfig: false,
 };
 
 /** Ordinary Sales (Sales Manager / Executive / Person) — RECORDS the enforcement
@@ -155,6 +171,8 @@ const FLAGS_SALES: PositionAccessFlags = {
   canSeeCommission: false,
   announcementScope: "dept",
   canMoveMoney: false,
+  // Sales does not manage SCM master data.
+  canWriteConfig: false,
 };
 
 /** Sales DIRECTOR — the director tier WITHIN sales. Differs from the ordinary rep
@@ -171,6 +189,8 @@ const FLAGS_SALES_DIRECTOR: PositionAccessFlags = {
   canSeeCommission: false,
   announcementScope: "dept",
   canMoveMoney: false,
+  // Sales Director does not manage SCM master data either.
+  canWriteConfig: false,
 };
 
 // ── The restricted whitelists — the owner's manual, per position ─────────────
@@ -365,6 +385,51 @@ function canMoveMoney(positionName: string | null): boolean {
   return name ? MONEY_WRITE_POSITIONS.has(name) : false;
 }
 
+// ── The SCM MASTER-DATA WRITE cohort (scm.config.write, position-driven) ──────
+//
+// Owner-directed 2026-07-18, "ONE RULE — permissions position-driven": Purchasing
+// had FULL page access to Products but was denied SKU import / product / price
+// writes because the flat key `scm.config.write` lived on the ROLE, not the
+// position. Rather than a roles.permissions data migration (brittle role-ids +
+// staging-first + auto-applies to prod), the capability is defined HERE, off the
+// stable position, exactly like canMoveMoney above and the isProductCostViewer
+// precedent (which already keyed Purchasing's product COST visibility off
+// position, owner-approved 2026-07-17).
+//
+// THE OWNER-EDITABLE LIST. These are the operation/purchasing positions that
+// legitimately manage SCM master data (products / SKUs / prices / sofa combos /
+// fabric / delivery fees / maintenance config). The owner tunes THIS one set.
+// Exact normalised names (positionAccessSnapshot.ts) — same anti-injection rule
+// as everywhere else in this module (no substring/word-boundary matching, so a
+// free-text rename can never inject the write). Super Admin is included for the
+// same reason MONEY_WRITE_POSITIONS includes it: a Super Admin whose ROLE somehow
+// lacks `*` would otherwise reach this policy and lose a capability it has today
+// (the `*` wildcard itself never reaches this module — auth.ts short-circuits).
+//
+// DELIBERATELY ABSENT (must stay 403 on config writes unless they hold the flat
+// perm): Storekeeper / Storekeeper Supervisor / Driver / Helper (restricted,
+// view-only), the whole Sales cohort, HR Manager, Service Admin, Calendar Viewer,
+// and Finance Manager (config is not finance work — Finance keeps money writes,
+// not master-data writes).
+const CONFIG_WRITE_POSITIONS: ReadonlySet<string> = new Set(
+  [
+    "Procurement/Purchasing",
+    "Operation Manager",
+    "Operation Executive",
+    "Logistic Admin",
+    "Super Admin",
+  ].map(normalisePosition),
+);
+
+/** True when this position may WRITE SCM master data / config by virtue of the
+ *  position alone (the flat `scm.config.write` perm is checked separately and
+ *  OR-ed in by scm/lib/houzs-perms.canWriteScmConfig — this is never the only
+ *  gate). Exact normalised-name membership; unknown/empty → false. */
+function positionCanWriteConfig(positionName: string | null): boolean {
+  const name = normalisePosition(positionName ?? "");
+  return name ? CONFIG_WRITE_POSITIONS.has(name) : false;
+}
+
 /** Plain-language reason for the 403 body — a sentence a person can act on. */
 const MONEY_DENY_REASON =
   "Posting journal entries and payment vouchers is handled by Finance. You can view this page, but ask Finance to post it.";
@@ -531,12 +596,21 @@ export function resolvePositionPolicy(input: PositionPolicyInput): PositionPolic
   // unclassified position that fails open to full) has them lowered to `view` —
   // it SEES all the finance data and the write 403s (moneyWriteDenial). Nothing
   // else in the map moves, and no read is lowered anywhere.
+  //
+  // The SCM MASTER-DATA WRITE flag rides on top too, independently: the named
+  // CONFIG_WRITE_POSITIONS (operation/purchasing) get `canWriteConfig: true` so
+  // scm/lib/houzs-perms.canWriteScmConfig lets them DO the master-data writes
+  // they can SEE, without a role grant. Every other full/unclassified position
+  // keeps it false. This only ever GRANTS a write — page access and money are
+  // untouched.
   const money = canMoveMoney(input.position_name);
+  const config = positionCanWriteConfig(input.position_name);
+  const baseFlags = money ? FLAGS_FULL_MONEY : FLAGS_FULL;
   const full = fullAccessMap();
   return {
     cohort: "full",
     pageAccess: money ? full : withMoneyWriteRemoved(full),
     scmConfigured: false,
-    flags: money ? FLAGS_FULL_MONEY : FLAGS_FULL,
+    flags: config ? { ...baseFlags, canWriteConfig: true } : baseFlags,
   };
 }
