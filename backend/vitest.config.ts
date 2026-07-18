@@ -66,9 +66,20 @@ export default defineWorkersConfig(async () => {
       // The previous mitigation for this same class was raising hookTimeout to
       // 180s (see above). That bought two more test files. A longer timeout
       // does not help once the main thread is the bottleneck, so bound the
-      // concurrency instead. 2 keeps CI green with headroom to grow; raise it
-      // only with a green full-suite run to back the new number.
-      maxWorkers: 2,
+      // concurrency instead.
+      //
+      // WHY 1 AND NOT 2: maxWorkers 2 was tried first and measured, not assumed.
+      // It moved the suite from 0-of-5 runs passing to 1-of-2 — the same commit
+      // produced one green backend run (3m08s) and one red one carrying the
+      // identical zero-assertion signature (58 of 66 "failed", 174 RPC
+      // timeouts). Better is not fixed, and a suite that guards money and stock
+      // posting paths must not be a coin flip. One worker removes the
+      // contention entirely rather than reducing it. The green run's 3-minute
+      // wall time leaves ample room for the serial cost.
+      //
+      // This is a floor, not a ceiling: raising it is fine, but only with
+      // repeated green full-suite runs behind the new number.
+      maxWorkers: 1,
       minWorkers: 1,
       poolOptions: {
         workers: {
