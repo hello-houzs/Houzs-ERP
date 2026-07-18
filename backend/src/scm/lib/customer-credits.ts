@@ -68,32 +68,92 @@ export async function getCustomerCreditBalance(sb: any, debtorCode: string): Pro
   return sum;
 }
 
+type ApplyCreditArgs = {
+  debtorCode: string;
+  debtorName?: string | null;
+  siId: string;
+  siNumber: string;
+  remainingDueCenti: number;
+  createdBy?: string | null;
+};
+
+/** True when a PostgREST error means the RPC does not exist yet (the atomic
+ *  function has not been applied to this database). Anything else is a real
+ *  failure and must NOT silently fall back. */
+function isMissingRpc(err: { code?: string; message?: string } | null | undefined): boolean {
+  if (!err) return false;
+  // PGRST202 = "Could not find the function ... in the schema cache". 42883 =
+  // Postgres undefined_function (surfaced when the schema cache is stale).
+  if (err.code === 'PGRST202' || err.code === '42883') return true;
+  return /could not find the function|schema cache|undefined function|does not exist/i.test(err.message ?? '');
+}
+
 /**
  * Apply available customer credit toward a new Sales Invoice.
  *
- *   1. Resolve current balance for debtorCode.
- *   2. Apply = min(balance, remainingDueCenti).
- *   3. Insert a sales_invoice_payments row (method='credit', amount = applied).
- *   4. Insert a customer_credits APPLIED_TO_SI row with amount = −applied.
- *   5. Increment sales_invoices.paid_centi by the applied amount.
+ * ATOMIC PATH — the credit payment row on the SI and the negative APPLIED_TO_SI
+ * ledger row are TWO writes in different tables that must move together, or the
+ * invoice ends up paid from a credit that was never debited (customer keeps the
+ * balance and spends it twice — a silent half-application). PostgREST's
+ * sb.from() cannot span two statements in one transaction, so the write is done
+ * by scm.apply_customer_credit_to_si — a function whose body is a single
+ * implicit transaction (both inserts commit or neither does), with its
+ * idempotency guard INSIDE that transaction. See
+ * scripts/scm-schema/customer-credit-atomic-apply.sql.
  *
- * No-op when balance ≤ 0. Idempotent via a guard: if a credit-payment for
- * this SI already exists, we don't re-apply.
+ * FALLBACK — until that function is applied to a given database, the RPC is
+ * absent; we detect that (and ONLY that) and fall back to the legacy two-write
+ * path, so behaviour is unchanged pre-apply. paid_centi is not touched here: it
+ * is a cache the callers re-derive from the payments table via recomputePaid.
+ *
+ * No-op when balance ≤ 0. Idempotent: if a credit-payment for this SI already
+ * exists, we don't re-apply.
  */
 export async function applyCustomerCreditToSi(
   sb: any,
-  args: {
-    debtorCode: string;
-    debtorName?: string | null;
-    siId: string;
-    siNumber: string;
-    remainingDueCenti: number;
-    createdBy?: string | null;
-  },
+  args: ApplyCreditArgs,
 ): Promise<{ applied: number; reason?: string }> {
   if (!args.debtorCode || !args.debtorCode.trim()) return { applied: 0, reason: 'no_debtor' };
   if (!(args.remainingDueCenti > 0)) return { applied: 0, reason: 'no_due' };
 
+  // Preferred path: one atomic transaction in the DB.
+  const { data, error } = await sb.rpc('apply_customer_credit_to_si', {
+    p_debtor_code: args.debtorCode,
+    p_si_id: args.siId,
+    p_si_number: args.siNumber,
+    p_remaining_due_centi: Math.round(args.remainingDueCenti),
+    p_debtor_name: args.debtorName ?? null,
+    p_created_by: args.createdBy ?? null,
+  });
+  if (!error) {
+    // RETURNS TABLE(...) → PostgREST hands back an array of one row.
+    const row = (Array.isArray(data) ? data[0] : data) as { applied_centi?: number; reason?: string } | undefined;
+    const applied = Number(row?.applied_centi ?? 0);
+    return applied > 0 ? { applied } : { applied: 0, reason: row?.reason ?? 'no_apply' };
+  }
+  if (!isMissingRpc(error)) {
+    /* A real DB error — the function ran and rolled back (no partial state), or
+       never started. Do NOT fall through to the non-atomic path on a live error;
+       report it so the credit stays standing and the SI merely unpaid, both of
+       which an operator can see and re-drive. */
+    /* eslint-disable-next-line no-console */
+    console.error('[customer-credit] atomic apply RPC failed — credit NOT applied:', args.siNumber, error.message);
+    return { applied: 0, reason: error.message };
+  }
+
+  // The atomic function is not present on this database yet — legacy fallback.
+  return applyCustomerCreditToSiLegacy(sb, args);
+}
+
+/**
+ * LEGACY two-write fallback, used only when scm.apply_customer_credit_to_si has
+ * not been applied. Non-atomic by construction (see the NOT-ATOMIC note on the
+ * ledger insert below); kept unchanged so pre-apply behaviour does not regress.
+ */
+async function applyCustomerCreditToSiLegacy(
+  sb: any,
+  args: ApplyCreditArgs,
+): Promise<{ applied: number; reason?: string }> {
   // Idempotency — already applied to this SI?
   const { data: existing, error: existErr } = await sb
     .from('sales_invoice_payments')
@@ -158,17 +218,17 @@ export async function applyCustomerCreditToSi(
   if (payErr) return { applied: 0, reason: payErr.message };
 
   // 2. Ledger entry — negative (credit consumed).
-  /* NOT-ATOMIC, DELIBERATELY LEFT THAT WAY — logged so it stops being invisible.
-     Steps 1-3 are three separate HTTP calls (there is no BEGIN/COMMIT anywhere in
-     backend/src/scm; every sb.from() is its own round trip), so if THIS insert
-     fails the payment row from step 1 is already committed and the invoice is paid
-     from a credit that was never debited — the customer keeps the balance and can
-     spend it again. Neither available branch fixes that: returning early strands
-     the same committed payment row AND lets the guard above read it as
-     'already_applied' forever, while continuing bumps paid_centi on a debit that
-     does not exist. Both are half-applications; only a transaction makes this
-     right. So the reason is recorded, not swallowed, and the state stays exactly
-     as it is today. See BUG-HISTORY 2026-07-17 (fix/silent-money-reads). */
+  /* NOT-ATOMIC — this fallback runs ONLY when scm.apply_customer_credit_to_si is
+     absent. Steps 1-3 are separate HTTP calls (no BEGIN/COMMIT in this path), so
+     if THIS insert fails the payment row from step 1 is already committed and the
+     invoice is paid from a credit that was never debited — the customer keeps the
+     balance and can spend it again. Neither branch fixes that: returning early
+     strands the committed payment row AND lets the guard above read it as
+     'already_applied' forever; continuing bumps paid_centi on a debit that does
+     not exist. Only a transaction makes this right — which is exactly what the
+     atomic RPC in applyCustomerCreditToSi does when present. The reason is
+     recorded, not swallowed. See BUG-HISTORY 2026-07-18 (fix/credit-ledger-atomic)
+     and 2026-07-17 (fix/silent-money-reads). */
   const ledger = await addCustomerCredit(sb, {
     debtorCode: args.debtorCode,
     debtorName: args.debtorName ?? null,
