@@ -77,6 +77,7 @@ import {
   type ApproveEffect,
 } from "../services/agents/procurement-execute";
 import { pmsAgentStatus } from "../services/agents/pms-agent";
+import { listKillScopes, setKillScope } from "../services/agents/kill-scopes";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -932,6 +933,73 @@ app.get("/of/brief", async (c) => {
       aiFocus: (r.aiFocus ?? r.ai_focus) ?? null,
       generatedAt: (r.generatedAt ?? r.generated_at) ?? null,
     },
+  });
+});
+
+// ═══ §10.6 kill SCOPES + §9.4 decision packets ════════════════════════════════
+// The global switch and the per-family pause already exist; these are the finer
+// scopes (a company / a transaction class / a tool) and the decision history.
+app.get("/kill-scopes", async (c) => {
+  return c.json({ success: true, data: await listKillScopes(c.env.DB) });
+});
+
+app.post("/kill-scopes", async (c) => {
+  let body: { scopeType?: unknown; scopeValue?: unknown; paused?: unknown; reason?: unknown } = {};
+  try { body = (await c.req.json()) as typeof body; } catch { body = {}; }
+  const scopeType = String(body.scopeType ?? "").toUpperCase();
+  const scopeValue = String(body.scopeValue ?? "").trim();
+  if (!["COMPANY", "CLASS", "TOOL"].includes(scopeType) || !scopeValue) {
+    return c.json({ success: false, error: "scopeType (COMPANY|CLASS|TOOL) and scopeValue are required" }, 400);
+  }
+  const paused = body.paused !== false;
+  const user = c.get("user") as { id?: string | number } | undefined;
+  await setKillScope(c.env.DB, {
+    scopeType: scopeType as "COMPANY" | "CLASS" | "TOOL",
+    scopeValue,
+    paused,
+    reason: typeof body.reason === "string" ? body.reason : null,
+    updatedBy: user?.id != null ? String(user.id) : null,
+  });
+  await audit(c, {
+    action: paused ? "agents.kill_scope_on" : "agents.kill_scope_off",
+    entityType: "agent_kill_scope",
+    entityId: `${scopeType}:${scopeValue}`,
+    summary: `${paused ? "Stopped" : "Resumed"} agents for ${scopeType} ${scopeValue}`,
+    meta: { scopeType, scopeValue, paused },
+  });
+  return c.json({ success: true, data: { scopeType, scopeValue, paused } });
+});
+
+app.get("/decisions", async (c) => {
+  const agent = (c.req.query("agent") ?? "").trim();
+  const params: string[] = [];
+  let where = "";
+  if (agent) { where = "WHERE agent = ?"; params.push(agent); }
+  const res = await c.env.DB.prepare(
+    `SELECT * FROM agent_decisions ${where} ORDER BY created_at DESC LIMIT 100`,
+  ).bind(...params).all<Record<string, unknown>>();
+  return c.json({
+    success: true,
+    data: (res.results ?? []).map((r) => ({
+      id: r.id,
+      agent: r.agent,
+      family: r.family ?? null,
+      decisionClass: (r.decisionClass ?? r.decision_class) ?? "",
+      statement: r.statement ?? "",
+      reason: r.reason ?? null,
+      evidence: asJson(r.evidence),
+      options: asJson(r.options),
+      impact: r.impact ?? null,
+      policy: r.policy ?? null,
+      confidence: r.confidence ?? null,
+      dataQuality: (r.dataQuality ?? r.data_quality) ?? null,
+      reversible: Number(r.reversible) === 1,
+      rollback: r.rollback ?? null,
+      verification: r.verification ?? null,
+      approver: r.approver ?? null,
+      outcome: r.outcome ?? null,
+      createdAt: (r.createdAt ?? r.created_at) ?? null,
+    })),
   });
 });
 
