@@ -48,15 +48,25 @@ const MATERIAL_KINDS = new Set(['mfg_product', 'fabric', 'raw']);
 /* PR #40 — full master record (Commander 2026-05-26 AutoCount parity) */
 /* Mig 0028 — registration_no / nature_of_business / exemption_no / phone2
    (AutoCount creditor-export parity). */
-const SUPPLIER_COLS =
+/* The supplier columns that predate migration 0084 — i.e. the ones the
+   `suppliers_with_derived_category` view actually exposes (see SUPPLIER_LIST_COLS
+   below for why that matters). */
+const SUPPLIER_BASE_COLS =
   'id, code, name, whatsapp_number, email, contact_person, phone, address, state, ' +
   'payment_terms, status, rating, notes, supplier_type, category, tin_number, ' +
   'business_reg_no, postcode, area, mobile, fax, website, attention, business_nature, ' +
   'currency, statement_type, aging_basis, credit_limit_sen, country, ' +
-  'registration_no, nature_of_business, exemption_no, phone2, ' +
-  /* Mig 0131 — SO-style structured pickup address (the DP supplier-pickup
-     auto-fill prefers these over the legacy single `address` line). */
-  'address1, address2, address3, address4, city, created_at, updated_at';
+  'registration_no, nature_of_business, exemption_no, phone2';
+/* Mig 0131 — SO-style structured pickup address (the DP supplier-pickup auto-fill
+   prefers these over the legacy single `address` line). Added to the base table
+   AFTER the list view froze its `s.*` expansion (0084), so they exist on the base
+   table but NOT on the view — see SUPPLIER_LIST_COLS. */
+const SUPPLIER_STRUCTURED_ADDRESS_COLS = 'address1, address2, address3, address4, city';
+
+/* Base-table column set — used by the DETAIL / create / patch reads, which hit
+   `scm.suppliers` directly (not the view) and so can see the structured address. */
+const SUPPLIER_COLS =
+  `${SUPPLIER_BASE_COLS}, ${SUPPLIER_STRUCTURED_ADDRESS_COLS}, created_at, updated_at`;
 
 /* PR — Commander 2026-05-27 ("当 Assign SKU 之后，你就会知道它是什么 Category 了呀"):
    List endpoint queries the `suppliers_with_derived_category` view (migration
@@ -65,7 +75,24 @@ const SUPPLIER_COLS =
    the Suppliers list page's visible Category column. Detail/create/patch
    keep reading from the base `suppliers` table because they don't need
    the derived field (and to avoid touching the rest of the file). */
-const SUPPLIER_LIST_COLS = `${SUPPLIER_COLS}, derived_category`;
+/* List-view column set. The list reads the `suppliers_with_derived_category`
+   VIEW (defined `SELECT s.*, … FROM suppliers` in migration 0084). Postgres FREEZES
+   a `s.*` view's column list at CREATE time, so the structured-address columns
+   added by migration 0131 (address1-4, city) are NOT exposed by the view — selecting
+   them through it fails with "column does not exist" and 500s the whole Suppliers
+   list. So the list select must stay to the pre-0131 columns the view actually has.
+   This costs nothing: the list page shows code / name / category / contact / phone /
+   state / status and links to the DETAIL page for the address (which reads the base
+   table via SUPPLIER_COLS and still shows every address field).
+
+   PROPER long-term fix (STAGING-FIRST, owner-run): recreate the view so `SELECT s.*`
+   re-expands to include the new columns —
+     DROP VIEW scm.suppliers_with_derived_category;
+     CREATE VIEW scm.suppliers_with_derived_category AS SELECT s.*, (…) derived_category FROM suppliers s;
+   After that lands the structured address could be added back here. It is deliberately
+   NOT in this PR: it auto-applies to prod on deploy and touches a view, and there is no
+   staging path right now. */
+const SUPPLIER_LIST_COLS = `${SUPPLIER_BASE_COLS}, created_at, updated_at, derived_category`;
 
 const STATEMENT_TYPES = new Set(['OPEN_ITEM', 'BALANCE_FORWARD', 'NO_STATEMENT']);
 const AGING_BASES = new Set(['INVOICE_DATE', 'DUE_DATE']);
