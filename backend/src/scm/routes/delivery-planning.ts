@@ -71,6 +71,7 @@ import { soDeliverableRemaining } from './delivery-orders-mfg';
 import { activeCompanyId, scopeToAllowedCompanies, companyCodeMap } from '../lib/companyScope';
 import { recordSoAudit, type FieldChange } from '../lib/so-audit';
 import { computeReleaseGate } from '../../services/agents/release-gate';
+import { mintDpNoForLorry } from '../lib/dp-no-mint';
 import { resolveDeliveryScope, scopeMatchesAssignment, type DeliveryScope, type CrewAssignment } from '../lib/deliveryScope';
 
 export const deliveryPlanning = new Hono<{ Bindings: Env; Variables: Variables }>();
@@ -462,7 +463,7 @@ deliveryPlanning.get('/', async (c) => {
   };
   const { data: soRowsRaw, error: soErr } = await paginateAll<SoHeaderRow>((from, to) =>
     sb.from('mfg_sales_orders')
-      .select('doc_no, company_id, debtor_code, debtor_name, phone, branding, status, delivery_state, customer_state, customer_country, customer_delivery_date, amend_date_from_customer, amended_delivery_date, amend_reason, internal_expected_dd, processing_date, so_date, address1, address2, postcode, building_type, local_total_centi, balance_centi, possession_date, house_type, replacement_disposal, referral')
+      .select('id, doc_no, company_id, debtor_code, debtor_name, phone, branding, status, delivery_state, customer_state, customer_country, customer_delivery_date, amend_date_from_customer, amended_delivery_date, amend_reason, internal_expected_dd, processing_date, so_date, address1, address2, postcode, building_type, local_total_centi, balance_centi, possession_date, house_type, replacement_disposal, referral')
       .neq('status', 'DRAFT')
       .neq('status', 'CANCELLED')
       .order('customer_delivery_date', { ascending: true, nullsFirst: false })
@@ -687,6 +688,50 @@ deliveryPlanning.get('/', async (c) => {
     });
   }
 
+  /* DP NUMBER per SO row. The number is minted onto the trip_stop at schedule
+     time (lib/dp-no-mint.ts), so it is read back from there — a stop reaches its
+     SO either directly (so_id, an SO scheduled with no DO) or via its DO (do_id).
+     Both are resolved here so a job shows its number regardless of which shape it
+     took. Best-effort: a failed read leaves dp_no null, which renders as "—" and
+     is honest about not knowing, rather than inventing a number. */
+  const dpNoByDoc = new Map<string, string>();
+  {
+    const soIdByDoc = new Map<string, string>();
+    const soIds: string[] = [];
+    for (const r of soRows) {
+      const id = (r as { id?: string }).id;
+      const dn = String(r.doc_no ?? '');
+      if (id && dn) { soIdByDoc.set(dn, id); soIds.push(id); }
+    }
+    const docBySoId = new Map([...soIdByDoc].map(([dn, id]) => [id, dn]));
+    const docByDoId = new Map<string, string>();
+    for (const [dn, arr] of doByDoc) for (const d of arr) docByDoId.set(d.id, dn);
+
+    type StopRow = { dp_no?: string | null; do_id?: string | null; so_id?: string | null };
+    const take = (rows: StopRow[] | null | undefined) => {
+      for (const s of rows ?? []) {
+        const no = s.dp_no;
+        if (!no) continue;
+        const dn = (s.do_id && docByDoId.get(s.do_id)) || (s.so_id && docBySoId.get(s.so_id)) || null;
+        // Last write wins = the most recent schedule, matching the crew = latest-DO
+        // convention this board already uses.
+        if (dn) dpNoByDoc.set(dn, no);
+      }
+    };
+    try {
+      const [byDo, bySo] = await Promise.all([
+        doIds.length
+          ? sb.from('trip_stops').select('dp_no, do_id, so_id').in('do_id', doIds).not('dp_no', 'is', null)
+          : Promise.resolve({ data: [] as StopRow[] }),
+        soIds.length
+          ? sb.from('trip_stops').select('dp_no, do_id, so_id').in('so_id', soIds).not('dp_no', 'is', null)
+          : Promise.resolve({ data: [] as StopRow[] }),
+      ]);
+      take((byDo as { data?: StopRow[] }).data);
+      take((bySo as { data?: StopRow[] }).data);
+    } catch { /* leave the map empty — rows render dp_no null */ }
+  }
+
   /* Crew snapshot per DO. Best-effort — read the assign-time snapshot so the
      board shows the driver/helper/lorry without joining the masters. */
   type CrewOut = {
@@ -810,7 +855,10 @@ deliveryPlanning.get('/', async (c) => {
       // DP-Order job type (DELIVERY/PICKUP/SERVICE/SETUP/DISMANTLE/SUPPLIER_PICKUP)
       // — only 'dp' rows carry it; SO/ASSR rows are null (union parity).
       dp_job_type: null as string | null,
-      dp_no: null as string | null,
+      /* SO rows DO carry a DP number now — it is minted onto their trip_stop at
+         schedule time, same rule and same number space as a manual DP order.
+         null = not scheduled yet (or the lorry was not known), never a guess. */
+      dp_no: dpNoByDoc.get(docNo) ?? null,
       assr_id: null as number | null,
       so_doc_no: docNo,
       debtor_code: r.debtor_code ?? null,
@@ -1777,6 +1825,25 @@ async function scheduleOntoTrip(
       const { data: cntRows } = await sb.from('trip_stops').select('stop_no').eq('trip_id', tripIdStr);
       const nextStopNo = ((cntRows ?? []) as Array<{ stop_no?: number; stopNo?: number }>)
         .reduce((m, r) => Math.max(m, Number(r.stopNo ?? r.stop_no ?? 0)), 0) + 1;
+
+      /* MINT THE DP NUMBER. Until now only the manual path (dp-orders) numbered a
+         job, so the owner's DP-YYMMDD-<plate><NN> rule covered the MINORITY of
+         jobs — a delivery scheduled from this board got none. The lorry may have
+         been named directly (p.lorryId) or inherited from an existing trip, so it
+         is resolved from the trip when absent. */
+      let dpNo: string | null = null;
+      let lorryIdForNo = p.lorryId ?? null;
+      if (!lorryIdForNo) {
+        const { data: tRow } = await sb.from('trips').select('lorry_id').eq('id', tripIdStr).maybeSingle();
+        const tr = tRow as { lorry_id?: string | null; lorryId?: string | null } | null;
+        lorryIdForNo = (tr?.lorryId ?? tr?.lorry_id ?? null) as string | null;
+      }
+      dpNo = await mintDpNoForLorry(sb, { tripDate, lorryId: lorryIdForNo });
+
+      /* dp_no stays NULL when the lorry is unknown or the registry could not be
+         read. An unnumbered stop is visibly incomplete and can be renumbered; a
+         DUPLICATE number is a silent corruption that surfaces as two drivers
+         holding the same job sheet. Never guess a number. */
       await sb.from('trip_stops').insert({
         company_id:    activeCompanyId(c),
         trip_id:       tripIdStr,
@@ -1787,6 +1854,7 @@ async function scheduleOntoTrip(
         customer_name: customerName,
         address,
         revenue_centi: revenueCenti,
+        dp_no:         dpNo,
       });
     }
 
