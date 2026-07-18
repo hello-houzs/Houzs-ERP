@@ -21,6 +21,8 @@
 
 import { registerAgent } from '../agent-scheduler';
 import type { Env } from '../../types';
+import { activeInstructions } from '../agent-console';
+import { askAgentBrain, type AgentBrainUsageSink } from '../agent-brain';
 
 export const SI_AGENT_SETTING_KEY = 'agents.si';
 
@@ -230,9 +232,45 @@ export async function patrolSalesIntelligence(env: Env): Promise<SiPatrolResult>
   };
 }
 
+const SI_FOCUS_SYSTEM = [
+  'You are the Sales & Commercial Intelligence Agent of Houzs, a Malaysian B2C',
+  'furniture retailer selling through showrooms and roadshows. You are given a',
+  '30-day scorecard (money in sen, RM x100). Write ONE short paragraph (3-5',
+  'sentences, plain English, no markdown, no emoji) on what the numbers actually',
+  'say: where sales AND margin moved together, where they did not, and which',
+  'anomaly is worth acting on. Never present revenue growth as profit growth, and',
+  'never rank a salesperson or venue without noting the sample size. Invent',
+  'nothing that is not in the payload. Honour ownerInstructions when present.',
+].join(' ');
+
+async function writeSiAiFocus(env: Env, focus: string): Promise<void> {
+  await env.DB.prepare(
+    `UPDATE si_agent_briefs SET ai_focus = ?
+      WHERE id = (SELECT id FROM si_agent_briefs ORDER BY generated_at DESC LIMIT 1)`,
+  ).bind(focus).run();
+}
+
 registerAgent({
   family: 'SI',
   task: 'si-run',
   cadence: { firstRunHour: 7, minGapHours: 12, maxRunsPerDay: 1 },
-  run: async (env) => (await patrolSalesIntelligence(env)).summary,
+  run: async (env, ctx) => {
+    const r = await patrolSalesIntelligence(env);
+    if (ctx.llmKey) {
+      const sink: AgentBrainUsageSink = { tokensIn: 0, tokensOut: 0 };
+      const ownerInstructions = await activeInstructions(env.DB, 'SI');
+      const focus = await askAgentBrain(ctx.llmKey, {
+        system: SI_FOCUS_SYSTEM,
+        payload: { brief: r.brief, ownerInstructions },
+        maxTokens: 400,
+        usageSink: sink,
+      });
+      ctx.addTokens(sink.tokensIn, sink.tokensOut);
+      if (focus) {
+        await writeSiAiFocus(env, focus).catch((e) =>
+          console.warn('[si-agent] ai_focus write failed:', e));
+      }
+    }
+    return r.summary;
+  },
 });
