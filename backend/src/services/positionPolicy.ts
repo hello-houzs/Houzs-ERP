@@ -17,15 +17,22 @@
 // "unknown" and "unrestricted" both land on full, so no covered position can
 // resolve to an empty map by accident.
 //
-// SALES IS ONE COHORT IN THIS SAME POLICY — NOT A PARALLEL SYSTEM. This PR does
-// NOT rip out the working Sales enforcement (salesJdAccess + salesScope +
-// pmsAccess): sales' RESOLUTION is deferred to that existing path THIS PR only.
-// But sales is a KNOWN, explicitly-marked cohort here (`cohort: "sales"`,
-// `resolutionDeferred: true`), and the policy result already carries the
-// enforcement FLAGS sales needs (orderScope / canSeeMargin / canSeeCommission /
-// announcementScope). The follow-up folds sales' page-access levels + those
-// flags INTO this same shape and drops `resolutionDeferred` — no second
-// structure is invented later, because the shape that will hold sales exists now.
+// SALES IS ONE COHORT IN THIS SAME POLICY — AND NOW RESOLVED HERE. The earlier
+// step marked sales a KNOWN cohort but DEFERRED its page-access resolution to the
+// legacy matrix (`resolutionDeferred: true`). THIS step folds it in: the four
+// sales positions get an explicit page-access whitelist below — their prod rows
+// (positionAccessSnapshot) PLUS the imported SALES_JD leaf levels — resolved
+// through the SAME resolver the restricted cohort uses, so positionPolicy is now
+// the single page-access SOURCE for ALL 17 positions. `resolutionDeferred` is
+// gone. What is NOT ripped out, deliberately: the enforcement MECHANISMS that
+// derive the non-page dimensions from the same org fields — salesJdDenial (the
+// enforced returns 403, still consulted by area-guard + reports.ts), salesScope
+// (own+downline row scope), and the pmsAccess/houzs-perms margin+director gates.
+// The policy's FLAGS record those decisions (orderScope / canSeeMargin /
+// canSeeCommission / announcementScope) and a test pins that the flags AGREE with
+// those live helpers for the sales cohort — the policy is the authority, the
+// mechanisms are its hands. Proven byte-identical to the pre-fold resolution for
+// every sales position (positionPolicy.test.ts, before/after over the snapshot).
 //
 // scm_l2_configured IS DERIVED HERE, NOT FORCED. A restricted whitelist is fed
 // through the SAME resolver the DB path uses (resolvePositionAccessFromRows), so
@@ -47,6 +54,13 @@ import {
   type AccessLevel,
   type PageAccessMeta,
 } from "./pageAccess";
+// The Sales JD's SCM leaf levels + cohort detection live in salesJdAccess and are
+// IMPORTED here rather than restated: this module folds those SAME levels into the
+// sales cohort's page-access rows, so there is ONE definition of "what a Sales
+// position may do on the SCM sales chain" (orders/delivery/invoices/returns) and
+// ONE Sales-cohort detection rule. salesJdAccess does not import this module, so
+// there is no cycle.
+import { SALES_JD, isSalesCohort } from "./salesJdAccess";
 
 /** A code-defined explicit access row — same shape resolvePositionAccessFromRows
  *  reads from the DB, so the restricted whitelists resolve through the identical
@@ -67,14 +81,18 @@ function normalisePosition(name: string): string {
 // ── Enforcement flags — the shape the CONVERGED policy carries for every
 //    position, so the follow-up folds sales in without a second structure ─────
 //
-// These describe the non-page-access dimensions of a position's authority. TODAY
-// they are DECLARATIVE for the full/restricted cohorts (auth.ts does not yet read
-// them — those cohorts' behaviour is fully expressed by their page-access map)
-// and, for SALES, they RECORD what the existing salesJdAccess/salesScope/pmsAccess
-// path already enforces (own+downline order scope, hidden margin, hidden
-// commission, dept-scoped announcements). The follow-up PR that migrates sales
-// into this policy WIRES these fields in place of that path — the fields exist
-// now precisely so that migration adds no new type.
+// These describe the non-page-access dimensions of a position's authority. They
+// are DECLARATIVE — no live gate reads them yet; each cohort's behaviour is
+// enforced by its page-access map plus the existing mechanisms. For SALES they
+// RECORD what salesScope (own+downline) / canViewScmFinance (margin) / pmsAccess
+// (director) / enforceSalesDirectorScope (dept announcements) enforce from the
+// SAME org fields this policy classifies on, and positionPolicy.test.ts pins that
+// the flags AGREE with those helpers caller-for-caller. So the policy is the one
+// authority for "who is this position and what may they do", the mechanisms are
+// its hands, and a test proves they have not drifted — rather than rewiring every
+// mechanism through the flags in one risky step (canViewAllSales, for one, is
+// director-narrow and would leak sales visibility to every full-cohort position if
+// naively pointed at orderScope==='all').
 export interface PositionAccessFlags {
   /** Row-scope for order-bearing documents (SO/DO/SI/PO...). Sales reps see
    *  their own + downline; everyone else sees all. Enforced today by
@@ -125,12 +143,31 @@ const FLAGS_RESTRICTED: PositionAccessFlags = {
   canMoveMoney: false,
 };
 
-/** Sales cohort — RECORDS the existing enforcement (own+downline, margin hidden,
- *  commission hidden at rep level, dept announcements) so the follow-up wires
- *  these instead of re-deriving them. */
+/** Ordinary Sales (Sales Manager / Executive / Person) — RECORDS the enforcement
+ *  the live mechanisms apply to a non-director rep: own+downline row scope
+ *  (salesScope, because they are not isDirectorUser and hold no scm.so.view_all),
+ *  margin hidden (canViewScmFinance false — they resolve to pmsAccess SALES, not
+ *  DIRECTOR), commission hidden, dept-scoped announcements. A test pins that these
+ *  match the live helpers caller-for-caller. */
 const FLAGS_SALES: PositionAccessFlags = {
   orderScope: "own_downline",
   canSeeMargin: false,
+  canSeeCommission: false,
+  announcementScope: "dept",
+  canMoveMoney: false,
+};
+
+/** Sales DIRECTOR — the director tier WITHIN sales. Differs from the ordinary rep
+ *  on exactly the two dimensions the live helpers already treat him differently:
+ *  order scope is ALL (pmsAccess.isDirectorUser("Sales Director") → canViewAllSales
+ *  true) and margin is VISIBLE (isFinanceViewer → DIRECTOR → canViewScmFinance
+ *  true). Announcements stay dept-scoped (his announcements are scoped to the Sales
+ *  Department — isSalesDirectorUser / enforceSalesDirectorScope). Commission stays
+ *  hidden here (no live reader today; declarative — see the flags interface). He
+ *  still may NOT move money. */
+const FLAGS_SALES_DIRECTOR: PositionAccessFlags = {
+  orderScope: "all",
+  canSeeMargin: true,
   canSeeCommission: false,
   announcementScope: "dept",
   canMoveMoney: false,
@@ -225,6 +262,53 @@ const RESTRICTED_ROWS: ReadonlyMap<string, readonly PolicyRow[]> = new Map(
     ["Storekeeper Supervisor", STOREKEEPER_SUPERVISOR_ROWS],
   ].map(([name, rows]) => [normalisePosition(name as string), rows as readonly PolicyRow[]]),
 );
+
+// ── The Sales cohort's page access — folded IN, no longer deferred ───────────
+//
+// Each sales position's whitelist is its PROD ROWS (positionAccessSnapshot, the
+// owner's live photograph) PLUS the imported SALES_JD leaf levels. Feeding both
+// through resolvePositionAccessFromRows below reproduces EXACTLY the pre-fold
+// resolution — which was loadPageAccessForPosition(prod rows) THEN
+// applySalesJdOverride(SALES_JD) — because SALES_JD's keys are all leaves of
+// scm.sales: setting a leaf as an explicit row is identical to overriding it after
+// the parent's inheritance cascaded (proven in positionPolicy.test.ts, before/after
+// over the snapshot). The `scm.sales` parent row makes explicitScm true, so the
+// cohort is scm_l2_configured exactly as it is today — which is what keeps the
+// area-guard ENFORCING the delivery/invoices `view` caps for a real sales position.
+//
+// SALES_JD is the SINGLE definition of those four leaf levels; it is imported, not
+// restated, so the map here and the applySalesJdOverride fallback (positionless
+// Sales-department users) can never drift.
+const SALES_JD_ROWS: readonly PolicyRow[] = Object.entries(SALES_JD).map(
+  ([page_key, level]) => ({ page_key, level }),
+);
+
+// Sales Director (prod row scm.sales=full + the projects.calendar view his row
+// carries). Director tier: scm.sales=full, view-all scope, margin visible.
+const SALES_DIRECTOR_ROWS: readonly PolicyRow[] = [
+  { page_key: "projects", level: "view" },
+  { page_key: "projects.calendar", level: "view" },
+  { page_key: "sales", level: "none" },
+  { page_key: "scm.sales", level: "full" },
+  { page_key: "service_cases", level: "edit" },
+  ...SALES_JD_ROWS,
+];
+
+// Sales Manager / Executive / Person — the ordinary rep row (prod scm.sales=view).
+const SALES_ORDINARY_ROWS: readonly PolicyRow[] = [
+  { page_key: "projects", level: "view" },
+  { page_key: "sales", level: "none" },
+  { page_key: "scm.sales", level: "view" },
+  { page_key: "service_cases", level: "edit" },
+  ...SALES_JD_ROWS,
+];
+
+// The Sales-DIRECTOR split within the cohort. Matched with `\b` (word boundary),
+// the SAME rule pmsAccess.isSalesDirectorUser / DIRECTOR_POSITIONS use — so the
+// policy's director classification agrees with the live director helpers
+// (canViewAllSales / canViewScmFinance) that actually enforce the scope + margin
+// tier. A cohort member who is NOT a Sales Director gets the ordinary rep rows.
+const SALES_DIRECTOR_NAME = /\bSales Director\b/i;
 
 // ── The MONEY-MOVING WRITE carve-out ─────────────────────────────────────────
 //
@@ -355,21 +439,6 @@ function withMoneyWriteRemoved(
   return out;
 }
 
-/**
- * The Sales cohort — matched the same way the rest of the Sales enforcement is
- * (salesJdAccess.isSalesCohort, pmsAccess.isSalesUser): department name
- * containing "sales", or a position name starting with "Sales". Keeping ONE
- * detection rule is what stops a Sales position from accidentally becoming
- * full-access.
- */
-const SALES_NAME = /^sales/i;
-
-function isSalesPosition(input: PositionPolicyInput): boolean {
-  const dept = (input.department_name ?? "").toLowerCase();
-  if (dept.includes("sales")) return true;
-  return SALES_NAME.test((input.position_name ?? "").trim());
-}
-
 export interface PositionPolicyInput {
   position_name: string | null;
   department_name: string | null;
@@ -377,7 +446,7 @@ export interface PositionPolicyInput {
 
 /**
  * The resolution outcome for a positioned, non-`*` user — ONE shape for all three
- * cohorts, so sales converges into it without a new type.
+ * cohorts, every one of them now RESOLVED here (no deferral).
  *
  * - cohort "full"       — `pageAccess` = fullAccessMap() (unrestricted, owner-
  *                         approved interim), MINUS the money-moving writes unless
@@ -387,25 +456,23 @@ export interface PositionPolicyInput {
  * - cohort "restricted" — `pageAccess` = the owner's whitelist; `scmConfigured`
  *                         is the honest explicit-scm signal so the area-guard
  *                         enforces the whitelist's `none` denials.
- * - cohort "sales"      — `resolutionDeferred` = true and `pageAccess` = null:
- *                         the caller KEEPS the existing sales resolution THIS PR
- *                         (legacy matrix + applySalesJdOverride). `flags` records
- *                         the enforcement the follow-up will wire here. This is
- *                         the convergence marker, not a permanent second rule.
+ * - cohort "sales"      — `pageAccess` = the sales whitelist (prod rows + the
+ *                         SALES_JD leaves), `scmConfigured` TRUE (the scm.sales
+ *                         row — the same L2-configured signal sales carries today,
+ *                         which is what keeps the delivery/invoices `view` caps
+ *                         enforced at the area-guard). `flags` carries the scope /
+ *                         margin / commission / announcement decisions the live
+ *                         mechanisms (salesScope / canViewScmFinance / pmsAccess)
+ *                         apply; a test pins the flags AGREE with those helpers.
  *
- * `flags` is present on EVERY result (the convergence shape); `pageAccess` is a
- * concrete map for full + restricted and NULL only for the deferred sales cohort;
- * `resolutionDeferred` is true ONLY for sales this PR.
+ * `flags` and `pageAccess` are present on EVERY result — `pageAccess` is a concrete
+ * map for all three cohorts now (never null).
  */
 export interface PositionPolicy {
   cohort: "full" | "restricted" | "sales";
-  pageAccess: Record<string, AccessLevel> | null;
+  pageAccess: Record<string, AccessLevel>;
   scmConfigured: boolean;
   flags: PositionAccessFlags;
-  /** True when this cohort's page-access RESOLUTION is deferred to its existing
-   *  path this PR (sales only). The follow-up sets this false once sales' levels
-   *  live in this policy. */
-  resolutionDeferred: boolean;
 }
 
 /**
@@ -431,20 +498,27 @@ export function resolvePositionPolicy(input: PositionPolicyInput): PositionPolic
       pageAccess,
       scmConfigured: meta.explicitScm,
       flags: FLAGS_RESTRICTED,
-      resolutionDeferred: false,
     };
   }
 
-  // Sales — a KNOWN cohort in this one policy, but its RESOLUTION is deferred to
-  // the existing path this PR. Do NOT flip to full, do NOT migrate to a whitelist
-  // yet; the follow-up folds its levels in here.
-  if (isSalesPosition(input)) {
+  // Sales — now RESOLVED here (no longer deferred). The whitelist is the prod row
+  // + the SALES_JD leaves, run through the SAME resolver; the scm.sales row flips
+  // explicitScm true so the cohort stays scm_l2_configured exactly as today. The
+  // Sales Director gets the director row (scm.sales=full) + director flags; every
+  // other cohort member gets the ordinary rep row + rep flags. Matched on the org
+  // fields, not the matrix.
+  if (isSalesCohort(input)) {
+    const isDirector = SALES_DIRECTOR_NAME.test((input.position_name ?? "").trim());
+    const meta: PageAccessMeta = { explicitScm: false };
+    const pageAccess = resolvePositionAccessFromRows(
+      isDirector ? SALES_DIRECTOR_ROWS : SALES_ORDINARY_ROWS,
+      meta,
+    );
     return {
       cohort: "sales",
-      pageAccess: null,
-      scmConfigured: false,
-      flags: FLAGS_SALES,
-      resolutionDeferred: true,
+      pageAccess,
+      scmConfigured: meta.explicitScm,
+      flags: isDirector ? FLAGS_SALES_DIRECTOR : FLAGS_SALES,
     };
   }
 
@@ -464,6 +538,5 @@ export function resolvePositionPolicy(input: PositionPolicyInput): PositionPolic
     pageAccess: money ? full : withMoneyWriteRemoved(full),
     scmConfigured: false,
     flags: money ? FLAGS_FULL_MONEY : FLAGS_FULL,
-    resolutionDeferred: false,
   };
 }

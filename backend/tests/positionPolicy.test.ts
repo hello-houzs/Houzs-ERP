@@ -2,8 +2,21 @@ import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
 import { resolvePositionPolicy } from "../src/services/positionPolicy";
 import { scmAreaGuard } from "../src/scm/middleware/area-guard";
-import { PAGES, fullAccessMap, meetsLevel, type AccessLevel } from "../src/services/pageAccess";
+import {
+  PAGES,
+  fullAccessMap,
+  meetsLevel,
+  resolvePositionAccessFromRows,
+  type AccessLevel,
+} from "../src/services/pageAccess";
 import { POSITION_ACCESS_SNAPSHOT } from "../src/services/positionAccessSnapshot";
+import { applySalesJdOverride } from "../src/services/salesJdAccess";
+import {
+  isDirectorUser,
+  isFinanceViewer,
+  isSalesDirectorUser,
+  isSalesUser,
+} from "../src/services/pmsAccess";
 
 /* THE ONE RULE — positionPolicy is now the position page-access SOURCE (owner
    2026-07-18). These pin the two things the owner reviews before merge:
@@ -139,23 +152,40 @@ describe("positionPolicy — the resolved-access table over all 17 real position
     }
   });
 
-  test("every SALES position is deferred — a KNOWN cohort, NOT flipped to full", () => {
+  test("every SALES position is FOLDED IN — resolved in-policy, a real map, NOT flipped to full", () => {
     for (const entry of POSITION_ACCESS_SNAPSHOT) {
       if (EXPECTED_COHORT[entry.name] !== "sales") continue;
       const policy = resolvePositionPolicy(inputFor(entry));
       expect(policy.cohort).toBe("sales");
-      expect(policy.resolutionDeferred).toBe(true);
-      // The safety line: sales must NOT accidentally become full-access — its
-      // resolution is left to the existing path this PR, not this map.
-      expect(policy.pageAccess).toBeNull();
+      // Sales now carries a concrete map (no longer deferred/null) and is honestly
+      // scm_l2_configured (the scm.sales row) — the signal that keeps the area-guard
+      // enforcing the delivery/invoices `view` caps.
+      expect(policy.pageAccess).not.toBeNull();
+      expect(policy.scmConfigured).toBe(true);
+      // The safety line survives: the SO chain's source doc is writable (edit),
+      // Office docs are read-only (view), returns are DENIED (none).
+      const map = policy.pageAccess;
+      expect(map["scm.sales.orders"]).toBe("edit");
+      expect(map["scm.sales.delivery"]).toBe("view");
+      expect(map["scm.sales.invoices"]).toBe("view");
+      expect(map["scm.sales.returns"]).toBe("none");
     }
   });
 
-  test("the convergence FLAGS are present on every cohort (sales folds in next PR without a new shape)", () => {
-    const sales = resolvePositionPolicy({ position_name: "Sales Executive", department_name: "Sales Department" });
-    expect(sales.flags).toEqual({
+  test("the convergence FLAGS are present on every cohort — sales folded in with its shape", () => {
+    const rep = resolvePositionPolicy({ position_name: "Sales Executive", department_name: "Sales Department" });
+    expect(rep.flags).toEqual({
       orderScope: "own_downline",
       canSeeMargin: false,
+      canSeeCommission: false,
+      announcementScope: "dept",
+      canMoveMoney: false,
+    });
+    // The Sales Director tier within the cohort — view-all scope + margin visible.
+    const dir = resolvePositionPolicy({ position_name: "Sales Director", department_name: "Sales Department" });
+    expect(dir.flags).toEqual({
+      orderScope: "all",
+      canSeeMargin: true,
       canSeeCommission: false,
       announcementScope: "dept",
       canMoveMoney: false,
@@ -171,6 +201,92 @@ describe("positionPolicy — the resolved-access table over all 17 real position
     const restricted = resolvePositionPolicy({ position_name: "Storekeeper", department_name: "Operation Department" });
     expect(restricted.flags.canSeeMargin).toBe(false);
     expect(restricted.flags.orderScope).toBe("all");
+  });
+});
+
+/* ── THE FOLD SAFETY PROOF — sales resolves IDENTICALLY to the pre-fold path ───
+   The highest-risk claim in this PR: folding sales into the policy must not change
+   what any of the four sales positions resolves to. The pre-fold path was
+     applySalesJdOverride( loadPageAccessForPosition(prod rows) )
+   i.e. resolve the position's prod rows, THEN overlay the SALES_JD leaf levels.
+   These reconstruct that EXACTLY from the snapshot (the prod-row photograph) and
+   assert it equals what the policy now produces — key-by-key over the whole PAGES
+   registry, for every sales position. Any drift is a login-visible regression. */
+describe("positionPolicy — sales fold is byte-identical to the pre-fold resolution", () => {
+  /** The pre-fold map: the position's prod rows resolved, then the Sales JD
+   *  override overlaid — the literal composition auth.ts ran before the fold. */
+  function preFoldMap(entry: (typeof POSITION_ACCESS_SNAPSHOT)[number]): Record<string, AccessLevel> {
+    const rows = Object.entries(entry.entries).map(([page_key, level]) => ({ page_key, level: level as string }));
+    const resolved = resolvePositionAccessFromRows(rows);
+    return applySalesJdOverride(resolved, {
+      permissions: new Set<string>(), // a real sales rep holds no `*`
+      position_name: entry.name,
+      department_name: entry.department_name,
+    });
+  }
+
+  test.each(
+    POSITION_ACCESS_SNAPSHOT.filter((e) => EXPECTED_COHORT[e.name] === "sales").map((e) => [e.name, e] as const),
+  )("%s: policy map === pre-fold map on EVERY registry key", (_name, entry) => {
+    const policyMap = resolvePositionPolicy(inputFor(entry)).pageAccess;
+    const pre = preFoldMap(entry);
+    for (const p of PAGES) {
+      expect(policyMap[p.key], `${entry.name}:${p.key}`).toBe(pre[p.key]);
+    }
+    // And the whole objects match (no key present in one but not the other).
+    expect(policyMap).toEqual(pre);
+  });
+
+  test.each(
+    POSITION_ACCESS_SNAPSHOT.filter((e) => EXPECTED_COHORT[e.name] === "sales").map((e) => [e.name, e] as const),
+  )("%s: applySalesJdOverride over the policy map is IDEMPOTENT (auth.ts re-applies it harmlessly)", (_name, entry) => {
+    const policyMap = resolvePositionPolicy(inputFor(entry)).pageAccess;
+    const reapplied = applySalesJdOverride(policyMap, {
+      permissions: new Set<string>(),
+      position_name: entry.name,
+      department_name: entry.department_name,
+    });
+    expect(reapplied).toEqual(policyMap);
+  });
+});
+
+/* ── THE FLAGS AGREE WITH THE LIVE MECHANISMS ─────────────────────────────────
+   The policy carries the scope/margin/announcement decisions as declarative
+   flags, but the RUNTIME enforcement still runs through salesScope /
+   canViewScmFinance / pmsAccess. These pin that the flags say the SAME thing those
+   helpers decide for each sales position — so "the policy is the authority, the
+   mechanisms are its hands" is a proven equality, not a hope. */
+describe("positionPolicy — sales flags agree with pmsAccess / finance / director helpers", () => {
+  const userFor = (entry: (typeof POSITION_ACCESS_SNAPSHOT)[number]) => ({
+    id: 1,
+    position_name: entry.name,
+    department_name: entry.department_name,
+    permissions_set: new Set<string>(),
+  }) as never;
+
+  test.each(
+    POSITION_ACCESS_SNAPSHOT.filter((e) => EXPECTED_COHORT[e.name] === "sales").map((e) => [e.name, e] as const),
+  )("%s: canSeeMargin === isFinanceViewer, orderScope tracks isDirectorUser", (_name, entry) => {
+    const flags = resolvePositionPolicy(inputFor(entry)).flags;
+    const u = userFor(entry);
+    // Margin: the flag matches the live finance-viewer gate (director → true).
+    expect(flags.canSeeMargin).toBe(isFinanceViewer(u));
+    // Order scope: 'all' iff the live director gate says so (view-all tier); every
+    // other sales member is scoped own+downline. (The additive scm.so.view_all
+    // permission grant is orthogonal and not modelled by the org-field flag.)
+    expect(flags.orderScope).toBe(isDirectorUser(u) ? "all" : "own_downline");
+    // These are Sales staff by the live org-field detection too.
+    expect(isSalesUser(u)).toBe(true);
+  });
+
+  test("only the Sales Director carries the dept-announcement + director tier", () => {
+    const dir = userFor({ name: "Sales Director", department_name: "Sales Department" } as never);
+    expect(isSalesDirectorUser(dir)).toBe(true);
+    for (const nm of ["Sales Manager", "Sales Executive", "Sales Person"]) {
+      const u = userFor({ name: nm, department_name: "Sales Department" } as never);
+      expect(isSalesDirectorUser(u)).toBe(false);
+      expect(isFinanceViewer(u)).toBe(false); // no margin for ordinary reps
+    }
   });
 });
 
@@ -206,8 +322,7 @@ describe("positionPolicy — the NO-LOCKOUT invariant (fail-open)", () => {
   test("NO position — real or hypothetical — resolves to an empty/near-empty map", () => {
     for (const entry of POSITION_ACCESS_SNAPSHOT) {
       const policy = resolvePositionPolicy(inputFor(entry));
-      if (policy.resolutionDeferred) continue; // sales keeps its existing path
-      const map = policy.pageAccess as Record<string, AccessLevel>;
+      const map = policy.pageAccess; // every cohort — including sales — has a map now
       const granted = Object.values(map).filter((l) => l !== "none").length;
       expect(granted, `${entry.name} resolved to an all-none map`).toBeGreaterThan(0);
     }
@@ -391,12 +506,13 @@ describe("money-write carve-out — the MAP (reads preserved, writes lowered)", 
     }
   });
 
-  test("SALES is untouched — still deferred, the carve-out does not migrate it", () => {
+  test("SALES is untouched by the money carve-out — it never had the finance areas", () => {
     for (const entry of POSITION_ACCESS_SNAPSHOT) {
       if (EXPECTED_COHORT[entry.name] !== "sales") continue;
-      const policy = resolvePositionPolicy(inputFor(entry));
-      expect(policy.resolutionDeferred).toBe(true);
-      expect(policy.pageAccess).toBeNull();
+      const map = resolvePositionPolicy(inputFor(entry)).pageAccess;
+      // Sales resolves in-policy now (non-null), and the money keys were never in
+      // its whitelist — they inherit none, unaffected by the carve-out.
+      for (const key of MONEY_KEYS) expect(map[key], `${entry.name}:${key}`).toBe("none");
     }
   });
 });

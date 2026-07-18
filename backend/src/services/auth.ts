@@ -2,7 +2,6 @@ import type { Env } from "../types";
 import { parsePermissions } from "./permissions";
 import {
   loadPageAccessForRole,
-  loadPageAccessForPosition,
   fullAccessMap,
   type AccessLevel,
   type PageAccessMeta,
@@ -284,18 +283,22 @@ async function hydrateAuthUser(env: Env, row: any): Promise<AuthUser> {
     brandScope = (res.results ?? []).map((r) => r.brand);
   }
   // Page-access SOURCE (owner-directed 2026-07-18, services/positionPolicy.ts):
-  // ONE authoritative policy, not the old matrix plus a separate sales rule.
+  // ONE authoritative policy for ALL 17 positions — the old matrix + a separate
+  // sales rule are BOTH gone for a positioned user.
   //   - `*` wildcard              → fullAccessMap() (UNCHANGED — never narrowed).
   //   - positioned, non-`*` user  → resolvePositionPolicy(), not position_page_access:
   //       · cohort "restricted" → the owner's explicit whitelist. Its explicit
   //         scm* rows set `explicitScm` through the SAME resolver the table used,
   //         so the area-guard enforces the whitelist's `none` denials (a
   //         Storekeeper can VIEW inventory but every stock write 403s).
-  //       · cohort "sales" (resolutionDeferred) → KEEP the existing sales
-  //         resolution THIS PR — the legacy position matrix + applySalesJdOverride
-  //         below + salesScope/pms. Sales is a KNOWN cohort in the one policy; its
-  //         page-access levels + flags converge into positionPolicy next PR. It is
-  //         deliberately NOT flipped to full and NOT migrated yet.
+  //       · cohort "sales" → the sales whitelist (prod rows + SALES_JD leaves),
+  //         resolved in-policy — FOLDED IN, no longer deferred to the matrix. The
+  //         scm.sales row sets `explicitScm` TRUE, so the delivery/invoices `view`
+  //         caps stay enforced at the area-guard exactly as before. Proven
+  //         byte-identical to the old matrix + applySalesJdOverride resolution
+  //         (positionPolicy.test.ts). applySalesJdOverride still composes below,
+  //         now IDEMPOTENT for positioned sales — load-bearing only for the
+  //         positionless Sales-department fallback the policy cannot reach.
   //       · cohort "full" (everyone else / unclassified) → fullAccessMap()
   //         (owner's interim "暂时都可以看到系统里的所有内容"; fail-OPEN — an
   //         unclassified position lands here, never on a lockout).
@@ -303,26 +306,24 @@ async function hydrateAuthUser(env: Env, row: any): Promise<AuthUser> {
   //     unchanged — a positionless user never reaches the position policy).
   //
   // `scmMeta.explicitScm` drives AuthUser.scm_l2_configured. It is FALSE on the
-  // full + `*` branches (a full map needs no per-area enforcement — same as `*`)
-  // and honestly TRUE for a restricted whitelist that configured scm* areas.
+  // full + `*` branches (a full map needs no per-area enforcement — same as `*`),
+  // TRUE for a restricted whitelist that configured scm* areas, and TRUE for sales
+  // (the scm.sales row) — the same signal a Sales position carries today.
   const scmMeta: PageAccessMeta = { explicitScm: false };
   let pageAccess: Record<string, AccessLevel>;
   if (permissionsSet.has("*")) {
     pageAccess = fullAccessMap();
   } else if (row.position_id != null) {
+    // ALL 17 positioned cohorts resolve HERE now — full, restricted, AND sales.
+    // The policy is the single page-access source; the legacy position matrix is
+    // no longer read for a positioned user. (loadPageAccessForPosition survives
+    // only for the positionless role-matrix fallback below.)
     const policy = resolvePositionPolicy({
       position_name: row.position_name ?? null,
       department_name: row.department_name ?? null,
     });
-    if (policy.resolutionDeferred) {
-      // Sales this PR — keep the existing resolution (legacy matrix; the Sales JD
-      // override composes below). Converges into positionPolicy next PR.
-      pageAccess = await loadPageAccessForPosition(env, row.position_id, scmMeta);
-    } else {
-      // full or restricted — the policy IS the source; pageAccess is non-null.
-      pageAccess = policy.pageAccess as Record<string, AccessLevel>;
-      scmMeta.explicitScm = policy.scmConfigured;
-    }
+    pageAccess = policy.pageAccess;
+    scmMeta.explicitScm = policy.scmConfigured;
   } else {
     pageAccess = await loadPageAccessForRole(env, row.role_id, permissionsSet, scmMeta);
   }
@@ -344,14 +345,17 @@ async function hydrateAuthUser(env: Env, row: any): Promise<AuthUser> {
     department_id: row.department_id ?? null,
     department_name: row.department_name ?? null,
     brand_scope: brandScope,
-    // Sales JD override composes over the resolved map — it is the ONE cohort
-    // whose SCM sales levels are a code rule (owner 2026-07-17). It is a no-op
-    // for `*` and for anyone outside the Sales cohort, so it is safe to apply on
-    // every non-`*` branch (full, restricted, sales-keep-current alike). The old
-    // operationJdAccess override is GONE (2026-07-18): under default-full the
-    // operation cohort is full anyway, and for the restricted Storekeeper /
-    // Supervisor it was WRONG — it granted warehouse-write edit the owner's
-    // manual denies them.
+    // Sales JD override composes over the resolved map. Since the fold, the
+    // positioned sales cohort ALREADY carries these SALES_JD levels from the
+    // policy, so this is now IDEMPOTENT for them (re-spreading the same values).
+    // It is retained for the ONE case the position policy cannot reach: a user in
+    // a Sales DEPARTMENT with no position_id, hydrated from the legacy role matrix
+    // just above — for whom this is still the sole source of the JD levels. No-op
+    // for `*` and for anyone outside the Sales cohort, so it stays safe on every
+    // non-`*` branch. The old operationJdAccess override is GONE (2026-07-18):
+    // under default-full the operation cohort is full anyway, and for the
+    // restricted Storekeeper / Supervisor it was WRONG — it granted warehouse-write
+    // edit the owner's manual denies them.
     page_access: applySalesJdOverride(pageAccess, {
       permissions: permissionsSet,
       position_name: row.position_name ?? null,
