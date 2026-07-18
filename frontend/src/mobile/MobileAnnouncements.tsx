@@ -27,6 +27,12 @@ import "./mobile.css";
 
 type Attachment = { r2Key: string; name: string; mime: string; size?: number };
 
+// Rich-media layout hint (mig 0139). Optional keys; absent = derive a default
+// from the attachment count (legacy rows render unchanged).
+type PhotoLayout = "1" | "2" | "3" | "4";
+type VideoLayout = "1x1" | "1x2";
+type MediaLayout = { photo?: PhotoLayout; video?: VideoLayout } | null;
+
 type Announcement = {
   id: string;
   title: string;
@@ -38,6 +44,7 @@ type Announcement = {
   remindedAt: string | null;
   updatedAt: string | null;
   attachments: Attachment[];
+  mediaLayout?: MediaLayout;
   targetType: string;
   targetDeptIds?: number[];
   targetPositionIds?: number[];
@@ -108,6 +115,21 @@ const byLine = (a: Announcement) => a.createdByName?.trim() || "Management";
 
 const isImage = (att: Attachment) => (att.mime || "").startsWith("image/");
 const isVideo = (att: Attachment) => (att.mime || "").startsWith("video/");
+
+// Layout-hint helpers (mig 0139). Mirror the desktop AnnouncementMedia mapping
+// so a notice lays out identically on both platforms.
+function photoCols(layout: PhotoLayout): number {
+  return layout === "4" ? 2 : Number(layout);
+}
+function defaultPhotoLayout(n: number): PhotoLayout {
+  if (n <= 1) return "1";
+  if (n === 2) return "2";
+  if (n === 3) return "3";
+  return "4";
+}
+function videoAspect(layout: VideoLayout): string {
+  return layout === "1x2" ? "1 / 2" : "1 / 1";
+}
 
 const fmtSize = (n?: number) => {
   if (!n || n <= 0) return "";
@@ -209,20 +231,27 @@ function Attachments({ ann }: { ann: Announcement }) {
   const photos = atts.filter(isImage);
   const rest = atts.filter((a) => !isImage(a));
 
+  // Honour the author's layout hint; fall back to a count-derived default so
+  // legacy (NULL media_layout) notices render as before.
+  const photoLayout = ann.mediaLayout?.photo ?? defaultPhotoLayout(photos.length);
+  const cols = photoCols(photoLayout);
+  const videoLayout = ann.mediaLayout?.video ?? "1x1";
+  const photoAspect = cols === 1 ? "16 / 9" : "1 / 1";
+
   return (
     <div>
       <div className="ey" style={{ color: "#767b6e", margin: "0 2px 8px" }}>Attachments</div>
       {photos.length > 0 && (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 7, marginBottom: 8 }}>
+        <div style={{ display: "grid", gridTemplateColumns: `repeat(${cols},1fr)`, gap: 7, marginBottom: 8 }}>
           {photos.map((p) => (
-            <MediaThumb key={p.r2Key} ann={ann} att={p} style={{ width: "100%", aspectRatio: "1", borderRadius: 9 }} />
+            <MediaThumb key={p.r2Key} ann={ann} att={p} style={{ width: "100%", aspectRatio: photoAspect, borderRadius: 9 }} />
           ))}
         </div>
       )}
       {rest.map((a) =>
         isVideo(a) ? (
           <div key={a.r2Key} style={{ position: "relative", borderRadius: 11, overflow: "hidden", marginBottom: 8 }}>
-            <MediaThumb ann={ann} att={a} style={{ width: "100%", height: 150, borderRadius: 11 }} />
+            <MediaThumb ann={ann} att={a} style={{ width: "100%", aspectRatio: videoAspect(videoLayout), maxHeight: 380, borderRadius: 11 }} />
             <span style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
               <span style={{ width: 44, height: 44, borderRadius: "50%", background: "rgba(0,0,0,.45)", display: "flex", alignItems: "center", justifyContent: "center" }}>
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="#fff"><path d="M8 5v14l11-7Z" /></svg>
@@ -647,8 +676,15 @@ function Compose({
   const [userSearch, setUserSearch] = useState("");
   const [body, setBody] = useState("");
   const [files, setFiles] = useState<File[]>([]);
+  // Rich-media layout hint (mig 0139). "" photo = auto (derive from count);
+  // video defaults to a 1x1 square. Only surfaced when the media is attached.
+  const [photoLayout, setPhotoLayout] = useState<PhotoLayout | "">("");
+  const [videoLayout, setVideoLayout] = useState<VideoLayout>("1x1");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  const hasPhotos = files.some((f) => (f.type || "").startsWith("image/"));
+  const hasVideos = files.some((f) => (f.type || "").startsWith("video/"));
 
   const addFiles = (picked: FileList | null) => {
     if (!picked || !picked.length) return;
@@ -734,6 +770,14 @@ function Compose({
       // (backend stores NULL = all companies).
       if (companyPick !== "ALL") payload.targetCompanyIds = [companyPick];
       payload.attachments = uploaded;
+      // Media layout — only hints for media actually uploaded. Empty photo pick
+      // stays absent so the renderer derives a count default.
+      const upPhotos = uploaded.some((a) => (a.mime || "").startsWith("image/"));
+      const upVideos = uploaded.some((a) => (a.mime || "").startsWith("video/"));
+      const mediaLayout: { photo?: PhotoLayout; video?: VideoLayout } = {};
+      if (upPhotos && photoLayout) mediaLayout.photo = photoLayout;
+      if (upVideos) mediaLayout.video = videoLayout;
+      if (mediaLayout.photo || mediaLayout.video) payload.mediaLayout = mediaLayout;
       await api.post("/api/announcements", payload);
       onPublished();
     } catch (e) {
@@ -909,6 +953,43 @@ function Compose({
                 <span onClick={() => removeFile(i)} style={{ fontSize: 16, color: "#b23a3a", cursor: "pointer", lineHeight: 1 }}>×</span>
               </div>
             ))}
+          </div>
+        )}
+
+        {/* Layout hints — mirror the desktop composer. Only shown for the media
+            actually attached. */}
+        {(hasPhotos || hasVideos) && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 9, marginTop: 12, background: "#fff", border: "1px solid var(--line)", borderRadius: 11, padding: "11px 12px" }}>
+            {hasPhotos && (
+              <div>
+                <div className="fld-l" style={{ marginBottom: 6 }}>Photo layout</div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {(["", "1", "2", "3", "4"] as Array<PhotoLayout | "">).map((val) => {
+                    const on = photoLayout === val;
+                    return (
+                      <button key={val || "auto"} onClick={() => setPhotoLayout(val)} className="tinybtn" style={{ padding: "6px 12px", background: on ? "var(--brand)" : "#fff", borderColor: on ? "var(--brand)" : "var(--line)", color: on ? "#fff" : "var(--ink)" }}>
+                        {val === "" ? "Auto" : val}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            {hasVideos && (
+              <div>
+                <div className="fld-l" style={{ marginBottom: 6 }}>Video layout</div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {(["1x1", "1x2"] as VideoLayout[]).map((val) => {
+                    const on = videoLayout === val;
+                    return (
+                      <button key={val} onClick={() => setVideoLayout(val)} className="tinybtn" style={{ padding: "6px 12px", background: on ? "var(--brand)" : "#fff", borderColor: on ? "var(--brand)" : "var(--line)", color: on ? "#fff" : "var(--ink)" }}>
+                        {val === "1x1" ? "1 x 1 (square)" : "1 x 2 (portrait)"}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         )}
 

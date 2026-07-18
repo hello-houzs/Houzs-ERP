@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   Megaphone,
   Send,
@@ -10,6 +11,7 @@ import {
   BellRing,
   Users as UsersIcon,
   Paperclip,
+  Plus,
   X,
   ImageIcon,
   Video,
@@ -31,6 +33,12 @@ import { useAuth } from "../auth/AuthContext";
 import { isSalesDirectorUser } from "../auth/salesAccess";
 import { cn, relativeTime } from "../lib/utils";
 import type { TeamMember, Department, Position } from "../types";
+import {
+  AnnouncementMedia,
+  type PhotoLayout,
+  type VideoLayout,
+  type AnnMediaLayout,
+} from "../components/AnnouncementMedia";
 
 // ────────────────────────────────────────────────────────────────────────────
 // Domain types — mirrors backend/src/routes/announcements.ts public shape.
@@ -62,6 +70,7 @@ type Announcement = {
   remindedAt: string | null;
   updatedAt: string | null;
   attachments?: Attachment[];
+  mediaLayout?: AnnMediaLayout;
   targetType?: TargetType;
   targetDeptIds?: number[];
   targetPositionIds?: number[];
@@ -235,23 +244,45 @@ export function Announcements() {
   const positions = positionsQ.data?.positions ?? [];
   const companies = companiesQ.data?.companies ?? [];
 
+  // Owner rule 2026-07-18: Create is a BUTTON, not an always-open form. The
+  // composer now lives behind a modal opened from the header CTA — the page
+  // opens on the history list, which is the primary surface.
+  const [composerOpen, setComposerOpen] = useState(false);
+
   return (
     <div className="mx-auto flex w-full max-w-4xl flex-col gap-5 px-4 py-5">
       <PageHeader
         eyebrow="Workspace · Communications"
         title="Announcements"
         description="Post office-wide notices and track who has acknowledged them."
+        primaryAction={
+          canWrite ? (
+            <Button
+              variant="primary"
+              onClick={() => setComposerOpen(true)}
+              icon={<Plus size={14} />}
+            >
+              New announcement
+            </Button>
+          ) : undefined
+        }
       />
 
-      {canWrite && (
-        <Composer
-          users={users}
-          departments={depts}
-          positions={positions}
-          companies={companies}
-          salesDirOnly={salesDirOnly}
-          onPosted={() => listQ.reload()}
-        />
+      {canWrite && composerOpen && (
+        <ComposerModal onClose={() => setComposerOpen(false)}>
+          <Composer
+            users={users}
+            departments={depts}
+            positions={positions}
+            companies={companies}
+            salesDirOnly={salesDirOnly}
+            onPosted={() => {
+              listQ.reload();
+              setComposerOpen(false);
+            }}
+            onCancel={() => setComposerOpen(false)}
+          />
+        </ComposerModal>
       )}
 
       <section className="flex flex-col gap-2.5">
@@ -416,6 +447,7 @@ function Composer({
   companies,
   salesDirOnly,
   onPosted,
+  onCancel,
 }: {
   users: TeamMember[];
   departments: Department[];
@@ -426,6 +458,7 @@ function Composer({
    *  The department / user lookups are already server-scoped to their dept. */
   salesDirOnly: boolean;
   onPosted: () => void;
+  onCancel?: () => void;
 }) {
   const toast = useToast();
   const [title, setTitle] = useState("");
@@ -444,6 +477,11 @@ function Composer({
   const [userSearch, setUserSearch] = useState("");
   const [expiresAt, setExpiresAt] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  // Rich-media layout hint (mig 0139). "" photo layout = auto (derive from
+  // count); a video defaults to a 1x1 square. Only surfaced when the matching
+  // media is actually attached.
+  const [photoLayout, setPhotoLayout] = useState<PhotoLayout | "">("");
+  const [videoLayout, setVideoLayout] = useState<VideoLayout>("1x1");
   const [posting, setPosting] = useState(false);
   const [uploadErr, setUploadErr] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -544,6 +582,14 @@ function Composer({
       // (backend stores NULL = all companies).
       if (companyPick !== "ALL") body.targetCompanyIds = [companyPick];
       if (expiresAt) body.expiresAt = new Date(expiresAt).toISOString();
+      // Media layout — only send hints for media actually attached; an empty
+      // photo pick stays absent so the renderer derives a count default.
+      const hasPhotos = attachments.some((a) => a.mime.startsWith("image/"));
+      const hasVideos = attachments.some((a) => a.mime.startsWith("video/"));
+      const mediaLayout: { photo?: PhotoLayout; video?: VideoLayout } = {};
+      if (hasPhotos && photoLayout) mediaLayout.photo = photoLayout;
+      if (hasVideos) mediaLayout.video = videoLayout;
+      if (mediaLayout.photo || mediaLayout.video) body.mediaLayout = mediaLayout;
       await api.post("/api/announcements", body);
       // Reset.
       setTitle("");
@@ -556,6 +602,8 @@ function Composer({
       setSelectedUsers(new Set());
       setExpiresAt("");
       setAttachments([]);
+      setPhotoLayout("");
+      setVideoLayout("1x1");
       toast.success("Announcement posted");
       onPosted();
     } catch (e: any) {
@@ -566,6 +614,8 @@ function Composer({
   }
 
   const canPost = !posting && title.trim().length > 0;
+  const hasPhotos = attachments.some((a) => a.mime.startsWith("image/"));
+  const hasVideos = attachments.some((a) => a.mime.startsWith("video/"));
   const companyOptions: Array<["ALL" | number, string]> = [
     ["ALL", "Both"],
     ...companies.map((co) => [co.id, co.name] as ["ALL" | number, string]),
@@ -665,6 +715,77 @@ function Composer({
           )}
           {uploadErr && (
             <p className="mt-1 text-[11px] text-err">{uploadErr}</p>
+          )}
+
+          {/* Layout hints — only shown for the media actually attached. Photos
+              get a 1 / 2 / 3 / 4 arrangement (Auto derives from the count);
+              a video gets a 1x1 square or 1x2 portrait block. */}
+          {(hasPhotos || hasVideos) && (
+            <div className="mt-2.5 flex flex-col gap-2 rounded-md border border-border-subtle bg-surface-dim p-2.5">
+              {hasPhotos && (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="mr-1 text-[11px] font-semibold uppercase tracking-wider text-ink-secondary">
+                    Photo layout
+                  </span>
+                  {(
+                    [
+                      ["", "Auto"],
+                      ["1", "1"],
+                      ["2", "2"],
+                      ["3", "3"],
+                      ["4", "4"],
+                    ] as Array<[PhotoLayout | "", string]>
+                  ).map(([val, label]) => {
+                    const selected = photoLayout === val;
+                    return (
+                      <button
+                        key={label}
+                        type="button"
+                        onClick={() => setPhotoLayout(val)}
+                        className={cn(
+                          "rounded-md border px-2.5 py-1 text-[11.5px] font-semibold transition-colors",
+                          selected
+                            ? "border-primary bg-primary/10 text-primary"
+                            : "border-border bg-surface text-ink-secondary hover:border-accent/40 hover:text-accent",
+                        )}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              {hasVideos && (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="mr-1 text-[11px] font-semibold uppercase tracking-wider text-ink-secondary">
+                    Video layout
+                  </span>
+                  {(
+                    [
+                      ["1x1", "1 x 1 (square)"],
+                      ["1x2", "1 x 2 (portrait)"],
+                    ] as Array<[VideoLayout, string]>
+                  ).map(([val, label]) => {
+                    const selected = videoLayout === val;
+                    return (
+                      <button
+                        key={val}
+                        type="button"
+                        onClick={() => setVideoLayout(val)}
+                        className={cn(
+                          "rounded-md border px-2.5 py-1 text-[11.5px] font-semibold transition-colors",
+                          selected
+                            ? "border-primary bg-primary/10 text-primary"
+                            : "border-border bg-surface text-ink-secondary hover:border-accent/40 hover:text-accent",
+                        )}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           )}
         </div>
 
@@ -895,6 +1016,11 @@ function Composer({
         </div>
 
         <div className="flex items-center justify-end gap-2 pt-1">
+          {onCancel && (
+            <Button variant="ghost" onClick={onCancel} disabled={posting}>
+              Cancel
+            </Button>
+          )}
           <Button
             variant="primary"
             onClick={post}
@@ -906,6 +1032,59 @@ function Composer({
         </div>
       </div>
     </section>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// ComposerModal — the create form lives behind this overlay (owner 2026-07-18:
+// "Create should be a Button"). A centred, scrollable panel; the backdrop and
+// the X both close it. Rendered via a portal so it escapes the page's max-w
+// column and stacking context.
+// ────────────────────────────────────────────────────────────────────────────
+function ComposerModal({
+  onClose,
+  children,
+}: {
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [onClose]);
+
+  if (typeof document === "undefined") return null;
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[90] flex items-start justify-center overflow-y-auto bg-ink/30 p-4 backdrop-blur-[1px] sm:p-6"
+      role="dialog"
+      aria-modal="true"
+      onMouseDown={onClose}
+    >
+      <div
+        className="relative my-4 w-full max-w-2xl"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close"
+          className="absolute -top-2 right-0 z-10 -translate-y-full rounded-full border border-border bg-surface p-1.5 text-ink-secondary shadow-stone hover:text-ink sm:-right-2"
+        >
+          <X size={16} />
+        </button>
+        {children}
+      </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -1116,11 +1295,12 @@ function AnnouncementRow({
           )}
 
           {a.attachments && a.attachments.length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {a.attachments.map((att, i) => (
-                <AttachmentChip key={att.r2Key + i} att={att} annId={a.id} />
-              ))}
-            </div>
+            <AnnouncementMedia
+              annId={a.id}
+              attachments={a.attachments}
+              layout={a.mediaLayout ?? null}
+              className="mt-2 max-w-md"
+            />
           )}
 
           <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-ink-muted">
@@ -1255,33 +1435,5 @@ function AnnouncementRow({
         )}
       </div>
     </li>
-  );
-}
-
-function AttachmentChip({ att, annId }: { att: Attachment; annId: string }) {
-  const kind = attachmentKind(att.mime);
-  const Icon =
-    kind === "image"
-      ? ImageIcon
-      : kind === "video"
-      ? Video
-      : kind === "pdf"
-      ? FileText
-      : FileIcon;
-  // The download path requires the announcements.read permission server-side.
-  // The full r2Key is URL-safe (no spaces, no double-slash collisions) so we
-  // encode it as a single segment; the route matcher uses :key{.+}.
-  const href = `${api.baseUrl}/api/announcements/${annId}/attachments/${att.r2Key}`;
-  return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noreferrer"
-      className="inline-flex max-w-[18rem] items-center gap-1 rounded-full border border-border bg-surface-dim px-2 py-0.5 text-[11px] text-ink hover:border-accent/40 hover:text-accent"
-      title={att.name}
-    >
-      <Icon size={11} className="shrink-0 text-ink-muted" />
-      <span className="truncate">{att.name}</span>
-    </a>
   );
 }

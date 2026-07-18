@@ -13,6 +13,11 @@ import {
 import { api } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { cn } from "../lib/utils";
+import {
+  AnnouncementMedia,
+  type AnnAttachment,
+  type AnnMediaLayout,
+} from "./AnnouncementMedia";
 
 // ────────────────────────────────────────────────────────────────────────────
 // AnnouncementBanner — top-of-app strip that surfaces the latest active
@@ -33,6 +38,8 @@ type Announcement = {
   createdAt: string | null;
   remindedAt: string | null;
   category?: AnnouncementCategory;
+  attachments?: AnnAttachment[];
+  mediaLayout?: AnnMediaLayout;
 };
 
 type BannerResponse = {
@@ -305,7 +312,7 @@ export function AnnouncementBanner() {
       >
         {/* colour rail across the top edge */}
         <span className={cn("absolute left-0 top-0 h-[3px] w-full", meta.railCls)} />
-        <div className="p-5">
+        <div className="max-h-[85vh] overflow-y-auto p-5">
           <div className="mb-2 flex items-center gap-2.5">
             <div
               className={cn(
@@ -341,6 +348,14 @@ export function AnnouncementBanner() {
             <p className="mt-1 whitespace-pre-wrap text-[13px] leading-relaxed text-ink-secondary">
               {current.body}
             </p>
+          )}
+          {current.attachments && current.attachments.length > 0 && (
+            <AnnouncementMedia
+              annId={current.id}
+              attachments={current.attachments}
+              layout={current.mediaLayout ?? null}
+              className="mt-3"
+            />
           )}
           <div className="mt-4 flex justify-end gap-2">
             <button
