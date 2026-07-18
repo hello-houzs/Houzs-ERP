@@ -67,6 +67,7 @@ import { deliveryPlanning } from "./routes/delivery-planning";
 import { deliveryPlanningRegions } from "./routes/delivery-planning-regions";
 import { trips } from "./routes/trips";
 import { dpOrders } from "./routes/dp-orders";
+import { arReconciliation } from "./routes/ar-reconciliation";
 import { lorryCapacity } from "./routes/lorry-capacity";
 import { helpers } from "./routes/helpers";
 import { lorries } from "./routes/lorries";
@@ -379,6 +380,9 @@ scm.use("/trips/*", scmAreaGuard("scm.transportation.drivers"));
 scm.route("/trips", trips);
 scm.use("/dp-orders/*", scmAreaGuard("scm.transportation.drivers"));
 scm.route("/dp-orders", dpOrders);
+// AR receivables reconciliation (read-only preview) — finance-side read, mounted
+// under the coarse scm.access gate like the other cross-area read helpers.
+scm.route("/ar", arReconciliation);
 scm.use("/lorry-capacity/*", scmAreaGuard("scm.transportation.drivers"));
 scm.route("/lorry-capacity", lorryCapacity);
 scm.use("/helpers/*", scmAreaGuard("scm.transportation.drivers"));
