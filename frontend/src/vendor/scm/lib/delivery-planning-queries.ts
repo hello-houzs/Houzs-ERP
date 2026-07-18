@@ -275,6 +275,18 @@ export function useCreateDpOrder() {
   });
 }
 
+/* Cancel a DP Order (and drop its trip stop, backend-side). */
+export function useCancelDpOrder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      authedFetch<{ stopRemoved?: { failed?: boolean; reason?: string } }>(
+        `/dp-orders/${id}/cancel`, { method: 'POST', body: JSON.stringify({}) },
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['delivery-planning'] }),
+  });
+}
+
 /* Set the concrete schedule date (+ optional manual delivery_state override,
    + optional driver / lorry trip-wiring) on an SO or DO. type = 'so' | 'do';
    id = SO doc_no or DO id.
