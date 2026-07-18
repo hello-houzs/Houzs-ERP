@@ -7,6 +7,7 @@ import {
   isNeverAutonomous,
   dataQualityGate,
   canSelfApprove,
+  canSelfTuneConfig,
   PROMOTION_GATES,
   RUNTIME_STATES,
   type SpecAgentId,
@@ -184,6 +185,34 @@ describe("canSelfApprove — 'auto-approve' is no longer a blanket (§1.2)", () 
     // stale data, so it is named first.
     const v = canSelfApprove({ agent: "HZS-REP-004", decisionClass: "WIRE_MONEY", stage: 3, dataQuality: "RED" });
     expect(v.reason).toMatch(/no decision class/);
+  });
+});
+
+describe("CONFIG_TUNING — the owner-authorised shared class (decision B)", () => {
+  test("every agent owns CONFIG_TUNING via the SHARED fallback", () => {
+    for (const a of ALL_AGENTS) {
+      expect(authorityFor(a, "CONFIG_TUNING"), a).not.toBeNull();
+    }
+  });
+
+  test("CONFIG_TUNING is NOT never-autonomous (it self-approves at Stage 2)", () => {
+    expect(isNeverAutonomous(authorityFor("HZS-DLV-002", "CONFIG_TUNING")!)).toBe(false);
+  });
+
+  test("canSelfTuneConfig: green Stage-2 tunes (behaviour-preserving)", () => {
+    expect(canSelfTuneConfig({ stage: 2, dataQuality: "GREEN" }).ok).toBe(true);
+  });
+
+  test("canSelfTuneConfig: Stage 1 is refused — a param change is the human's", () => {
+    const v = canSelfTuneConfig({ stage: 1, dataQuality: "GREEN" });
+    expect(v.ok).toBe(false);
+    expect(v.reason).toMatch(/Stage 1/);
+  });
+
+  test("canSelfTuneConfig: RED data never self-tunes", () => {
+    const v = canSelfTuneConfig({ stage: 2, dataQuality: "RED" });
+    expect(v.ok).toBe(false);
+    expect(v.reason).toMatch(/RED/);
   });
 });
 

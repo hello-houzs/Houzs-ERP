@@ -154,11 +154,32 @@ export const AUTHORITY: Record<SpecAgentId, Matrix> = {
   'GROUP-GCOA-001': GCOA,
 };
 
-/** The authority row for one agent + decision class, or null if the class is not
- *  one this agent owns (asking is a caller bug worth surfacing, not silently
- *  defaulting to "allowed"). */
+/** Classes EVERY agent shares — the policy is identical whoever the agent is, so
+ *  they live once here rather than repeated in every matrix.
+ *
+ *  CONFIG_TUNING — owner-authorised 2026-07-18 (decision "B") as a first-class
+ *  governed class: an agent self-approving a change to its OWN whitelisted
+ *  operational parameter (lead-time buffers, chase-days, transit-days …). It is
+ *  reversible and bounded (the whitelist enforces the range), so it self-approves
+ *  at Stage 2 — but it is refused at Stage 1 and on RED data, and it may NEVER
+ *  reach a policy/threshold/control that needs board approval. So "auto-tune" is
+ *  no longer an ungoverned blanket (§1.2) for the families that only self-approve
+ *  config. */
+const SHARED: Matrix = {
+  CONFIG_TUNING: {
+    stage1: 'Propose',
+    stage2: 'Self-approve a whitelisted operational parameter within its bounds',
+    stage3: 'Automatic',
+    neverAutonomous: 'Change a policy / threshold / control requiring board approval',
+  },
+};
+
+/** The authority row for one agent + decision class. Falls back to the SHARED
+ *  classes (CONFIG_TUNING) before null, so every agent owns them. Null still means
+ *  "this agent has no such class" — a caller bug worth surfacing, not a silent
+ *  "allowed". */
 export function authorityFor(agent: SpecAgentId, decisionClass: string): DecisionAuthority | null {
-  return AUTHORITY[agent]?.[decisionClass] ?? null;
+  return AUTHORITY[agent]?.[decisionClass] ?? SHARED[decisionClass] ?? null;
 }
 
 /** A class is never-autonomous when its stage-2 AND stage-3 cells both refuse.
@@ -304,6 +325,28 @@ export function canSelfApprove(req: SelfApproveRequest): SelfApproveVerdict {
   // Stage-2 "within limit / low-value" cells: over the ceiling is a human call.
   if (req.limit != null && req.valueProxy != null && req.valueProxy > req.limit) {
     return { ok: false, reason: `size ${req.valueProxy} exceeds the Stage-2 self-approval limit ${req.limit} — human approval required` };
+  }
+  return { ok: true };
+}
+
+/**
+ * The CONFIG_TUNING gate — the same policy for EVERY family, so it takes no
+ * spec-agent id (families like DOCUMENT / PMS / CS have no spec agent, yet still
+ * self-tune config). Owner decision "B", 2026-07-18: bring every family's
+ * `auto_approve` config self-approval under governance.
+ *
+ * The whitelist + numeric bounds (applyConfigProposalValue) already stop a bad
+ * value; this adds the autonomy discipline the flag was missing — no self-tune at
+ * Stage 1, and none on RED data. Behaviour-preserving for the normal case (a
+ * green, Stage-2 family self-tunes as before), so it tightens without disabling
+ * the owner's config auto-tuning.
+ */
+export function canSelfTuneConfig(req: { stage: AutonomyStage; dataQuality: DataQuality }): SelfApproveVerdict {
+  if (req.dataQuality === 'RED') {
+    return { ok: false, reason: 'data-quality is RED — no self-tuning until it clears' };
+  }
+  if (req.stage < 2) {
+    return { ok: false, reason: 'agent is at Stage 1 — a parameter change is the human role' };
   }
   return { ok: true };
 }

@@ -41,6 +41,7 @@ import {
   AGENT_SCHEDULE_SETTING_KEY,
   MYT_OFFSET_MS,
 } from "./agent-console";
+import { canSelfTuneConfig } from "./agents/governance";
 
 // Structural bounds — an agent can never talk itself past these.
 const HARD_MAX_RUNS_PER_DAY = 6;
@@ -292,10 +293,21 @@ export async function executeAgentTask(
       addTokens: (i, o) => run.addTokens(i, o),
     });
     if (await isAutoApproveOn(db, reg.family)) {
-      const params = await autoApplyConfigProposals(db, reg.family, "AGENT_AUTO").catch(
-        () => 0,
-      );
-      if (params > 0) summary += ` · self-tuned ${params} param(s)`;
+      /* Owner decision "B" (2026-07-18): every family's config self-approval goes
+         through governance. auto_approve on = Stage 2; data-quality is asserted
+         GREEN here (a real G/A/R signal per family is a later step, as on the
+         procurement path). canSelfTuneConfig refuses at Stage 1 / on RED, so the
+         flag is no longer an ungoverned blanket — behaviour-preserving for the
+         normal green case. */
+      const gate = canSelfTuneConfig({ stage: 2, dataQuality: "GREEN" });
+      if (gate.ok) {
+        const params = await autoApplyConfigProposals(db, reg.family, "AGENT_AUTO").catch(
+          () => 0,
+        );
+        if (params > 0) summary += ` · self-tuned ${params} param(s)`;
+      } else {
+        summary += ` · config self-tune held (${gate.reason})`;
+      }
     }
     summary = `${summary} (${d.reason})`;
     run.setSummary(summary);
