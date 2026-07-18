@@ -854,6 +854,86 @@ app.get("/document/brief", async (c) => {
   });
 });
 
+// ═══ Order Fulfilment (OF-001) — findings worklist, mirrors DOCUMENT ═══════════
+// OF is a findings agent (of_agent_findings, mig 0130): one NOT_READY row per
+// blocked order. Same list/resolve/brief surface as DOCUMENT, but the row shape
+// is order-centric (so_doc_no / readiness / top_blocker / owner) rather than
+// doc-type-centric, so it gets its own mapping rather than reusing DOCUMENT's.
+app.get("/of/findings", async (c) => {
+  const status = (c.req.query("status") ?? "OPEN").toUpperCase();
+  const severity = (c.req.query("severity") ?? "").toUpperCase();
+  const owner = (c.req.query("owner") ?? "").toUpperCase();
+  const params: string[] = [status];
+  let where = "status = ?";
+  if (severity) { where += " AND severity = ?"; params.push(severity); }
+  if (owner) { where += " AND owner = ?"; params.push(owner); }
+  const res = await c.env.DB.prepare(
+    `SELECT * FROM of_agent_findings WHERE ${where}
+      ORDER BY CASE severity WHEN 'CRIT' THEN 0 WHEN 'WARN' THEN 1 ELSE 2 END,
+               readiness ASC, created_at ASC
+      LIMIT 200`,
+  ).bind(...params).all<Record<string, unknown>>();
+  return c.json({
+    success: true,
+    data: (res.results ?? []).map((r) => ({
+      id: r.id,
+      kind: r.kind,
+      severity: r.severity,
+      soDocNo: (r.soDocNo ?? r.so_doc_no) ?? "",
+      readiness: Number(r.readiness ?? 0),
+      topBlocker: (r.topBlocker ?? r.top_blocker) ?? null,
+      owner: r.owner ?? null,
+      summary: r.summary ?? "",
+      payload: asJson(r.payload),
+      status: r.status,
+      createdAt: (r.createdAt ?? r.created_at) ?? null,
+      lastSeenAt: (r.lastSeenAt ?? r.last_seen_at) ?? null,
+      resolvedAt: (r.resolvedAt ?? r.resolved_at) ?? null,
+    })),
+  });
+});
+
+app.post("/of/findings/resolve", async (c) => {
+  let body: { ids?: unknown } = {};
+  try { body = (await c.req.json()) as typeof body; } catch { body = {}; }
+  const ids = Array.isArray(body.ids)
+    ? body.ids.filter((x): x is string => typeof x === "string" && x.length > 0).slice(0, 100)
+    : [];
+  if (ids.length === 0) return c.json({ success: false, error: "ids[] required" }, 400);
+  const nowIso = new Date().toISOString();
+  let resolved = 0;
+  for (const id of ids) {
+    const r = await c.env.DB.prepare(
+      `UPDATE of_agent_findings SET status = 'RESOLVED', resolved_at = ? WHERE id = ? AND status = 'OPEN'`,
+    ).bind(nowIso, id).run();
+    resolved += Number(r.meta?.changes ?? r.meta?.rows_written ?? 0) > 0 ? 1 : 0;
+  }
+  await audit(c, {
+    action: "agents.of_finding_resolve",
+    entityType: "of_agent_finding",
+    entityId: ids.join(","),
+    summary: `Manually resolved ${resolved}/${ids.length} order-fulfilment finding(s)`,
+    meta: { ids },
+  });
+  return c.json({ success: true, data: { resolved } });
+});
+
+app.get("/of/brief", async (c) => {
+  const r = await c.env.DB.prepare(
+    `SELECT * FROM of_agent_briefs ORDER BY generated_at DESC LIMIT 1`,
+  ).first<Record<string, unknown>>();
+  if (!r) return c.json({ success: true, data: null });
+  return c.json({
+    success: true,
+    data: {
+      id: r.id,
+      brief: asJson(r.brief),
+      aiFocus: (r.aiFocus ?? r.ai_focus) ?? null,
+      generatedAt: (r.generatedAt ?? r.generated_at) ?? null,
+    },
+  });
+});
+
 // ═══ Engine endpoints — Phase-2 engines (Collection / CS / Procurement / PMS) ══
 // Every Phase-2 engine exposes the SAME four-route surface as Delivery
 // (status / proposals list / proposals decide / latest brief) over its own
