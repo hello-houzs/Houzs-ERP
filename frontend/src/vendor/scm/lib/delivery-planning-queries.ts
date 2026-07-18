@@ -253,11 +253,45 @@ export function useUpdateDeliveryFields() {
   });
 }
 
+/* The DP job-type vocabulary — the SINGLE source of truth for the set the whole
+   Delivery Planning surface uses. Mirrors the `scm.trip_stop_type` enum (mig 0053
+   + SUPPLIER_PICKUP in 0128), ORDERED as the enum declares them so the create
+   dropdown and any future list read the same order. Both the New-DP-Order dropdown
+   AND the board's Type chip resolve their label from DP_JOB_TYPE_LABEL below, so
+   the value a user PICKS is byte-identical to what the board SHOWS — they can no
+   longer drift (owner: the dropdown type must equal the type we normally show). */
+export const DP_JOB_TYPES = [
+  'DELIVERY', 'PICKUP', 'SERVICE', 'SETUP', 'DISMANTLE', 'SUPPLIER_PICKUP',
+] as const;
+export type DpJobType = (typeof DP_JOB_TYPES)[number];
+
+export const DP_JOB_TYPE_LABEL: Record<DpJobType, string> = {
+  DELIVERY: 'Delivery',
+  PICKUP: 'Pickup',
+  SERVICE: 'Service',
+  SETUP: 'Setup',
+  DISMANTLE: 'Dismantle',
+  SUPPLIER_PICKUP: 'Supplier Pickup',
+};
+
+/* The label the board / dropdown show for a DP job type. Reads the canonical map;
+   falls back to a Title-Cased prettify for any value not in the set (defensive —
+   the board's Type chip previously prettified inline, so unknown/legacy stored
+   values keep rendering rather than blanking). */
+export const dpJobTypeLabel = (value: string | null | undefined): string => {
+  const key = (value ?? '').toUpperCase();
+  if (key in DP_JOB_TYPE_LABEL) return DP_JOB_TYPE_LABEL[key as DpJobType];
+  return (value ?? '')
+    .toLowerCase()
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (m) => m.toUpperCase());
+};
+
 /* Create a DP Order (delivery-planning job). The server auto-fills the party from
    whichever source ref is given (SO / supplier / project / service case); manual
    `overrides` win over the auto-fill. POST /dp-orders, then the board refreshes. */
 export type DpOrderCreate = {
-  jobType: 'DELIVERY' | 'PICKUP' | 'SERVICE' | 'SETUP' | 'DISMANTLE' | 'SUPPLIER_PICKUP';
+  jobType: DpJobType;
   soDocNo?: string;
   supplierId?: string;
   projectId?: number;
