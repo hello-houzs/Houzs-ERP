@@ -38,13 +38,19 @@ export type RegionKey = 'ALL' | RegionCode;
 /* A board row is either a Sales-Order delivery (the original rows) or a
    Service-Case (ASSR) job. row_type discriminates; it defaults to 'so' for the
    long-standing SO rows (the backend now stamps it explicitly on every row). */
-export type PlanningRowType = 'so' | 'assr';
+export type PlanningRowType = 'so' | 'assr' | 'dp';
 /* ASSR job kind (only meaningful when row_type === 'assr'). */
 export type AssrJobKind = 'customer_pickup' | 'delivery';
 
 export type PlanningOrder = {
-  /* SO rows: 'so' (default). ASSR (service-case) rows: 'assr'. */
+  /* SO rows: 'so' (default). ASSR (service-case) rows: 'assr'. DP-Order jobs
+     (manual setup / dismantle / supplier-pickup, no source SO) : 'dp'. */
   row_type: PlanningRowType;
+  /* DP-only. The DP job type (DELIVERY/PICKUP/SERVICE/SETUP/DISMANTLE/
+     SUPPLIER_PICKUP) and the minted DP number (null until scheduled). Null on
+     SO/ASSR rows. */
+  dp_job_type?: string | null;
+  dp_no?: string | null;
   /* ASSR-only. The service case's NUMERIC id (drives the /assr/:id detail route)
      and its human ref (= assr_no, shown in the SO No. cell). null on SO rows. */
   assr_id: number | null;

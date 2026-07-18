@@ -688,9 +688,13 @@ deliveryPlanning.get('/', async (c) => {
       // Row discriminator + ASSR-parity fields. SO rows are always 'so' with no
       // Service-Case ref / job_kind. ADDITIVE — every existing SO field below is
       // untouched (see the ASSR union after this map for the 'assr' rows).
-      row_type: 'so' as 'so' | 'assr',
+      row_type: 'so' as 'so' | 'assr' | 'dp',
       ref: null as string | null,
       job_kind: null as 'customer_pickup' | 'delivery' | null,
+      // DP-Order job type (DELIVERY/PICKUP/SERVICE/SETUP/DISMANTLE/SUPPLIER_PICKUP)
+      // — only 'dp' rows carry it; SO/ASSR rows are null (union parity).
+      dp_job_type: null as string | null,
+      dp_no: null as string | null,
       assr_id: null as number | null,
       so_doc_no: docNo,
       debtor_code: r.debtor_code ?? null,
@@ -858,6 +862,8 @@ deliveryPlanning.get('/', async (c) => {
           row_type: 'assr',
           ref: assrNo,
           job_kind: leg.jobKind,
+          dp_job_type: null,
+          dp_no: null,
           assr_id: a.id != null ? Number(a.id) : null,
           so_doc_no: rowKey,
           debtor_code: null,
@@ -938,7 +944,102 @@ deliveryPlanning.get('/', async (c) => {
     console.warn(`[delivery-planning] ASSR union skipped: ${String((e as Error).message).slice(0, 120)}`);
   }
 
-  const allOrders = [...orders, ...assrOrders];
+  /* ── DP Order union (mig 0129) ────────────────────────────────────────────────
+     The MANUAL DP orders — SETUP / DISMANTLE / SUPPLIER_PICKUP and any DP order
+     with no source document already on the board (so_doc_no / assr_case_id / do_id
+     all null). SO/assr-backed DP orders are NOT unioned: their SO/ASSR row already
+     represents them, so pulling the DP row too would double the line. Same
+     defensive wrapper as the ASSR union — a bad DP row must never break the board.
+     Region + date + release-gate mirror the ASSR row exactly (parity). */
+  const dpBoardRows: BoardRow[] = [];
+  try {
+    let dpQuery = sb.from('dp_orders')
+      .select('id, dp_no, job_type, party_name, contact_phone, address1, address2, address3, address4, city, postcode, state, requested_date, status, trip_id')
+      .is('so_doc_no', null).is('assr_case_id', null).is('do_id', null)
+      .not('status', 'in', '("DELIVERED","CANCELLED")')
+      .limit(1000);
+    dpQuery = scopeToAllowedCompanies(dpQuery, c);
+    const dpRes = await dpQuery;
+    for (const d of (dpRes.data ?? []) as Array<Record<string, unknown>>) {
+      const dpState = (d.state as string | null) ?? null;
+      const stateRegions = stateToRegionsFromConfig(regionCfg, dpState, null);
+      const primaryRegion = stateRegions[0] ?? FALLBACK_DEFAULT_REGION;
+      const regionSet = new Set<Region>(stateRegions);
+      const date = (d.requested_date as string | null) ?? null;
+      const address = [d.address1, d.address2, d.address3, d.address4, d.city, d.postcode, d.state]
+        .filter(Boolean).join(', ') || null;
+      const scheduled = String(d.status ?? '') === 'SCHEDULED';
+      dpBoardRows.push({
+        row_type: 'dp',
+        ref: (d.dp_no as string | null) ?? null,
+        job_kind: null,
+        dp_job_type: (d.job_type as string | null) ?? null,
+        dp_no: (d.dp_no as string | null) ?? null,
+        assr_id: null,
+        // Stable, unique React key — DP orders have no SO doc number.
+        so_doc_no: `DP:${String(d.id)}`,
+        debtor_code: null,
+        debtor_name: (d.party_name as string | null) ?? null,
+        phone: (d.contact_phone as string | null) ?? null,
+        branding: null,
+        status: String(d.status ?? ''),
+        delivery_state: scheduled ? 'PENDING_DELIVERY' : 'PENDING_SCHEDULE',
+        delivery_state_override: null,
+        balance_centi: 0,
+        balance_centi_live: null,
+        local_total_centi: 0,
+        // A DP job carries no order balance — plain RELEASE, computed for parity.
+        release_gate: (() => {
+          const g = computeReleaseGate({ totalCenti: 0, paidCenti: 0 });
+          return { decision: g.decision, remaining_centi: g.remainingCenti, collect_on_delivery_centi: g.collectOnDeliveryCenti, reason: 'DP job — no order balance' };
+        })(),
+        so_date: null,
+        processing_date: null,
+        customer_delivery_date: date,
+        amend_date_from_customer: null,
+        amended_delivery_date: date,
+        amend_reason: null,
+        effective_delivery_date: date,
+        internal_expected_dd: date,
+        days_left: date ? daysBetween(today, date) : null,
+        address,
+        postcode: (d.postcode as string | null) ?? null,
+        building_type: null,
+        possession_date: null,
+        house_type: null,
+        replacement_disposal: null,
+        referral: null,
+        time_range: null,
+        time_confirmed: null,
+        arrival_at: null,
+        departure_at: null,
+        shipout_date: null,
+        customer_delivered_date: null,
+        eta_arriving_port: null,
+        delivery_substatus: null,
+        arrives_em_warehouse_date: null,
+        do_date: null,
+        stock_status: null,
+        stock_remark: null,
+        is_main_ready: null,
+        company_code: null,
+        region: primaryRegion,
+        regions: [...regionSet],
+        warehouse_id: null,
+        warehouse_code: null,
+        warehouse_name: null,
+        customer_state: dpState,
+        delivered_qty: 0,
+        remaining_qty: 0,
+        crew: null,
+        delivery_orders: [],
+      });
+    }
+  } catch (e) {
+    console.warn(`[delivery-planning] DP-order union skipped: ${String((e as Error).message).slice(0, 120)}`);
+  }
+
+  const allOrders = [...orders, ...assrOrders, ...dpBoardRows];
 
   /* 8. Counts per state — computed over the REGION-filtered set so the state
         tab badges reflect the active region. The state filter is applied AFTER
