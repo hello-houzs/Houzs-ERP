@@ -12,6 +12,7 @@ import { BrowserPushSink } from "./components/BrowserPushSink";
 import { AnnouncementBanner } from "./components/AnnouncementBanner";
 import { QuickActionsFAB } from "./components/QuickActionsFAB";
 import { BackToTopFAB } from "./components/BackToTopFAB";
+import { AssistantLauncher } from "./components/AssistantLauncher";
 import { BreadcrumbsProvider } from "./hooks/useBreadcrumbs";
 import { PageSkeleton, RouteCrashBoundary } from "./components/RouteFallback";
 import { NewVersionBanner } from "./components/NewVersionBanner";
@@ -296,6 +297,7 @@ export default function App() {
       <AnnouncementBanner />
       <QuickActionsFAB />
       <BackToTopFAB />
+      <AssistantLauncher />
       <NewVersionBanner />
       <IosInstallGuide />
       <AndroidInstallGuide />
