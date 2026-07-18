@@ -6,19 +6,34 @@
 // and computes nothing, so the sheet the owner approves and the figure the
 // backend froze can never disagree.
 //
+// It is also where a period is APPROVED. An open period recalculates on every
+// load, so editing one rate silently rewrites what every past period pays;
+// closing freezes the figures and serves them from the snapshot instead.
+// Close and reopen each carry their own backend permission key
+// (scm.hr.close / scm.hr.reopen) — deliberately NOT scm.hr.manage, so whoever
+// tunes the rates cannot also approve a payroll run against the rates they just
+// set. The buttons follow those keys; the server re-checks regardless.
+//
 // Page shell is Inventory's (PageHeader + space-y-4), not the vendored 2990
 // card slab — owner 2026-07-18.
 // ----------------------------------------------------------------------------
 
 import { Fragment, useMemo, useState } from 'react';
-import { ChevronDown, ChevronRight, Download, Lock } from 'lucide-react';
+import { ChevronDown, ChevronRight, Download, Lock, LockOpen } from 'lucide-react';
 import { Button } from '../../components/Button';
 import { Badge } from '../../components/Badge';
 import { PageHeader } from '../../components/Layout';
 import { EmptyState } from '../../components/EmptyState';
 import { fmtCenti } from '@2990s/shared';
 import { formatDate } from '../../lib/utils';
-import { useHrCommission, type HrCommissionRow } from '../../vendor/scm/lib/hr-queries';
+import { useAuth } from '../../auth/AuthContext';
+import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
+import { useNotify } from '../../vendor/scm/components/NotifyDialog';
+import { usePrompt } from '../../vendor/scm/components/PromptDialog';
+import {
+  useHrCommission, useHrPayoutPeriods, useCloseHrPayout, useReopenHrPayout,
+  type HrCommissionRow,
+} from '../../vendor/scm/lib/hr-queries';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -50,7 +65,83 @@ export const HrCommission = () => {
   const query = useHrCommission(applied.from, applied.to);
   const data = query.data;
 
+  const periods = useHrPayoutPeriods();
+  const closePayout = useCloseHrPayout();
+  const reopenPayout = useReopenHrPayout();
+
+  const askConfirm = useConfirm();
+  const askPrompt = usePrompt();
+  const notify = useNotify();
+
+  /* Close and reopen are separate backend keys from scm.hr.read/manage, so the
+     buttons follow those keys and nothing else. Hiding a control the API would
+     refuse is the point: the server is still the authority (it re-checks), this
+     only stops the UI from offering an action that cannot succeed. */
+  const { can } = useAuth();
+  // can() already answers true on the `*` wildcard, so Owner / IT Admin hold
+  // both without either key being listed separately.
+  const mayClose = can('scm.hr.close');
+  const mayReopen = can('scm.hr.reopen');
+
   const rangeValid = Boolean(from) && Boolean(to) && from <= to;
+  const busy = closePayout.isPending || reopenPayout.isPending;
+
+  const onClose = async () => {
+    if (!data || data.closed) return;
+    const total = data.showrooms.reduce(
+      (acc, s) => acc + s.rows.reduce((a, r) => a + r.totalCenti, 0),
+      0,
+    );
+    const people = data.showrooms.reduce((acc, s) => acc + s.rows.length, 0);
+    const ok = await askConfirm({
+      title: 'Close this commission period?',
+      body:
+        `${formatDate(data.from)} to ${formatDate(data.to)} — ${people} salespeople, ${fmtCenti(total)} in total.\n\n` +
+        'Closing saves these exact figures and stops them recalculating. After this, changing a rate, ' +
+        'a tier or an item KPI will not move what this period pays — the saved figures are what the ' +
+        'report will show from now on.\n\n' +
+        'It can only be undone by reopening the period, which is recorded with your name and a reason.',
+      confirmLabel: 'Close period',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await closePayout.mutateAsync({ from: data.from, to: data.to });
+    } catch (e) {
+      await notify({ title: 'Could not close the period', body: (e as Error)?.message, tone: 'error' });
+    }
+  };
+
+  const onReopen = async () => {
+    if (!data?.closed) return;
+    const ok = await askConfirm({
+      title: 'Reopen this closed period?',
+      body:
+        `${formatDate(data.from)} to ${formatDate(data.to)} was closed at ${fmtCenti(data.closed.totalCenti)}` +
+        `${data.closed.closedByName ? ` by ${data.closed.closedByName}` : ''}.\n\n` +
+        'Reopening makes it recalculate against the current rates again, so what it pays can change. ' +
+        'The figures saved at close are kept and stay readable, and closing it again saves a new revision beside them.',
+      confirmLabel: 'Continue',
+      danger: true,
+    });
+    if (!ok) return;
+    /* A reason is mandatory server-side AND in the database. Asked for here so
+       the refusal never arrives as a validation error after the fact. */
+    const reason = await askPrompt({
+      title: 'Why is this period being reopened?',
+      body: 'This is kept with the period permanently, next to your name.',
+      placeholder: 'e.g. SO-2607-018 was missed',
+      confirmLabel: 'Reopen period',
+      multiline: true,
+      validate: (v) => (v.trim().length < 3 ? 'Please give a reason (at least 3 characters).' : null),
+    });
+    if (reason == null) return;
+    try {
+      await reopenPayout.mutateAsync({ from: data.from, to: data.to, reason: reason.trim() });
+    } catch (e) {
+      await notify({ title: 'Could not reopen the period', body: (e as Error)?.message, tone: 'error' });
+    }
+  };
 
   const toggle = (staffId: string) =>
     setExpanded((prev) => {
@@ -98,14 +189,38 @@ export const HrCommission = () => {
         eyebrow="HR"
         title="Commission"
         primaryAction={
-          <Button
-            variant="secondary"
-            icon={<Download {...ICON} />}
-            onClick={onExport}
-            disabled={!data || data.showrooms.length === 0}
-          >
-            Export Excel
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="secondary"
+              icon={<Download {...ICON} />}
+              onClick={onExport}
+              disabled={!data || data.showrooms.length === 0}
+            >
+              Export Excel
+            </Button>
+            {data && !data.closed && mayClose && (
+              <Button
+                variant="primary"
+                icon={<Lock {...ICON} />}
+                onClick={onClose}
+                // Closing an empty period would freeze "nobody earned anything"
+                // as an approved payroll run. Nothing to approve, so no button.
+                disabled={busy || data.showrooms.length === 0}
+              >
+                {closePayout.isPending ? 'Closing…' : 'Close period'}
+              </Button>
+            )}
+            {data?.closed && mayReopen && (
+              <Button
+                variant="secondary"
+                icon={<LockOpen {...ICON} />}
+                onClick={onReopen}
+                disabled={busy}
+              >
+                {reopenPayout.isPending ? 'Reopening…' : 'Reopen period'}
+              </Button>
+            )}
+          </div>
         }
       />
 
@@ -171,12 +286,25 @@ export const HrCommission = () => {
             </Badge>
           )}
           {data.overrideMode === 'chain' && (
+            /* The ladder these figures were actually computed against — the
+               SNAPSHOT on a closed period, today's on an open one. Without it a
+               chain override is an amount with nothing on the page that
+               explains it, and on a closed period the live HR Settings ladder
+               may no longer be the one that produced it. */
             <Badge tone="accent" variant="soft" caseless>
-              Chain override
+              {data.overrideLevels.length > 0
+                ? `Chain override · ${data.overrideLevels.map((l) => `L${l.level} ${fmtPct(l.rateBps)}`).join(' · ')}`
+                : 'Chain override · no levels configured'}
             </Badge>
           )}
         </div>
       )}
+
+      {/* The reopen fields are NOT rendered here on purpose. /commission serves
+          only status='CLOSED' rows, and a reopen flips the row to 'REOPENED' and
+          leaves a fresh row behind on the next close — so closed.reopened* is
+          always null in this response. Those fields belong to the history table
+          below, which is the read that actually returns REOPENED rows. */}
 
       {data && data.showrooms.length === 0 && (
         <EmptyState
@@ -224,6 +352,76 @@ export const HrCommission = () => {
           </div>
         </section>
       ))}
+
+      {/* Payout history — every close and every reopen, newest first. This is
+          the audit answer to "what did we approve, when, and who moved it".
+          Clicking a row loads that period into the report above. */}
+      <section className="space-y-2">
+        <h2 className="text-[14px] font-semibold text-ink">Payout history</h2>
+
+        {periods.isError && (
+          <div className="rounded-md border border-err/40 bg-err/5 px-3 py-3 text-[13px] text-ink">
+            {(periods.error as Error)?.message || 'The payout history could not be loaded.'}
+          </div>
+        )}
+
+        <div className="overflow-x-auto rounded-md border border-border bg-surface">
+          <table className="w-full text-[12px]">
+            <thead className="bg-bg/40 text-[9px] font-semibold uppercase tracking-wider text-ink-muted">
+              <tr>
+                <th className="px-3 py-2 text-left">Period</th>
+                <th className="px-2 py-2 text-right">Rev</th>
+                <th className="px-2 py-2 text-left">Status</th>
+                <th className="px-2 py-2 text-right">People</th>
+                <th className="px-2 py-2 text-right">Total</th>
+                <th className="px-2 py-2 text-left">Closed by</th>
+                <th className="px-3 py-2 text-left">Reopened</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(periods.data ?? []).map((p) => (
+                <tr
+                  key={p.id}
+                  className="cursor-pointer border-t border-border-subtle hover:bg-primary-soft/40"
+                  onClick={() => {
+                    setFrom(p.from);
+                    setTo(p.to);
+                    setApplied({ from: p.from, to: p.to });
+                  }}
+                >
+                  <td className="px-3 py-2 text-ink">
+                    {formatDate(p.from)} – {formatDate(p.to)}
+                  </td>
+                  <td className="px-2 py-2 text-right font-mono text-ink-secondary">{p.revision}</td>
+                  <td className="px-2 py-2">
+                    <Badge tone={p.status === 'CLOSED' ? 'success' : 'warning'} variant="soft" caseless>
+                      {p.status === 'CLOSED' ? 'Closed' : 'Reopened'}
+                    </Badge>
+                  </td>
+                  <td className="px-2 py-2 text-right font-mono text-ink-secondary">{p.rowCount}</td>
+                  <td className="px-2 py-2 text-right font-mono">{fmtCenti(p.totalCenti)}</td>
+                  <td className="px-2 py-2 text-ink-secondary">
+                    {p.closedByName || '—'}
+                    {p.closedAt ? ` · ${formatDate(p.closedAt)}` : ''}
+                  </td>
+                  <td className="px-3 py-2 text-ink-secondary">
+                    {p.reopenedAt
+                      ? `${p.reopenedByName || 'unknown'} · ${formatDate(p.reopenedAt)}${p.reopenReason ? ` — ${p.reopenReason}` : ''}`
+                      : '—'}
+                  </td>
+                </tr>
+              ))}
+              {(periods.data ?? []).length === 0 && !periods.isLoading && !periods.isError && (
+                <tr className="border-t border-border-subtle">
+                  <td colSpan={7} className="px-3 py-4 text-center text-[12px] text-ink-secondary">
+                    No period has been closed yet. Every range still recalculates live.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
     </div>
   );
 };

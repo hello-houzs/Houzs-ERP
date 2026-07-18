@@ -1,12 +1,19 @@
 // ----------------------------------------------------------------------------
-// HR Settings — who earns commission, at what rates, and which items carry a
-// fixed per-unit bonus. Writes PATCH /config, and CRUD on /profiles + /item-kpi
-// (all under /api/scm/hr, all gated server-side on scm.hr.manage).
+// HR Settings — who earns commission, at what rates, which items carry a fixed
+// per-unit bonus, and how the manager override is paid. Writes PATCH /config and
+// CRUD on /profiles + /item-kpi + /override-levels (all under /api/scm/hr, all
+// gated server-side on scm.hr.manage).
 //
-// EDIT -> SAVE, never naked edits (house rule): tier / showroom / active and
-// every rate buffer into a draft and NOTHING persists until Save. The add rows
-// and the delete button are explicit single actions, so they commit directly —
-// deletes behind an in-app confirm.
+// EDIT -> SAVE, never naked edits (house rule): tier / showroom / active, every
+// rate, every item-KPI bonus and every override level buffer into a draft and
+// NOTHING persists until Save. The add rows and the delete button are explicit
+// single actions, so they commit directly — deletes behind an in-app confirm.
+//
+// The override MODE lives here rather than on the report because it is a rate
+// decision, not a reporting one: showroom mode pays a flat per-showroom
+// override, chain mode pays down the reporting line at the per-level rates in
+// the last section. They are alternatives — running both would pay a manager
+// twice on the same goods — so the page states which one is live.
 //
 // Page shell is Inventory's (PageHeader + space-y-4), not the vendored 2990
 // card slab — owner 2026-07-18.
@@ -22,9 +29,10 @@ import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import {
   useHrConfig, useUpdateHrConfig,
   useHrProfiles, useCreateHrProfile, useUpdateHrProfile, useDeleteHrProfile,
-  useHrItemKpi, useCreateHrItemKpi, useDeleteHrItemKpi,
+  useHrItemKpi, useCreateHrItemKpi, useUpdateHrItemKpi, useDeleteHrItemKpi,
+  useHrOverrideLevels, useCreateHrOverrideLevel, useUpdateHrOverrideLevel, useDeleteHrOverrideLevel,
   useHrPickers,
-  type HrConfigPatch, type HrFlagType, type HrPickerRef, type HrTier,
+  type HrConfigPatch, type HrFlagType, type HrOverrideMode, type HrPickerRef, type HrTier,
 } from '../../vendor/scm/lib/hr-queries';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
@@ -43,6 +51,9 @@ const Label = ({ children }: { children: string }) => (
 const SectionHeading = ({ children }: { children: string }) => (
   <h2 className="text-[14px] font-semibold text-ink">{children}</h2>
 );
+
+/** Integer bps -> a human percent, trailing zeros dropped. Display only. */
+const fmtPct = (bps: number) => `${(bps / 100).toFixed(2).replace(/\.?0+$/, '')}%`;
 
 /* A rate held as integer basis points, edited as a percent. The bps never
    changes shape in flight: it is divided by 100 to render and multiplied back
@@ -110,7 +121,48 @@ const CentiField = ({
   );
 };
 
+/* The in-table twin of RateField/CentiField: an integer minor unit (sen or bps)
+   edited as its major one, with the same blank guard. Read-only mode prints the
+   value rather than showing a disabled box, because a table of greyed inputs
+   reads as broken. `render` formats the committed value; `scale` is what one
+   major unit is worth (100 for both RM->sen and %->bps). */
+const MinorUnitCell = ({
+  value, editable, scale, step, render, onChange,
+}: {
+  value: number;
+  editable: boolean;
+  scale: number;
+  step?: string;
+  render: (v: number) => string;
+  onChange: (v: number) => void;
+}) => {
+  const [text, setText] = useState((value / scale).toString());
+  useEffect(() => setText((value / scale).toString()), [value, scale]);
+  if (!editable) return <span className="font-mono">{render(value)}</span>;
+  return (
+    <input
+      className={`${INPUT_CLASS} text-right`}
+      type="number"
+      min={0}
+      step={step}
+      value={text}
+      onChange={(e) => setText(e.target.value)}
+      // Blank is "unknown", not zero — Number('') === 0 would stage a real edit.
+      onBlur={() => {
+        const n = Number(text);
+        if (text.trim() === '' || !Number.isFinite(n) || n < 0) {
+          setText((value / scale).toString());
+          return;
+        }
+        onChange(Math.round(n * scale));
+      }}
+    />
+  );
+};
+
 type ProfileDraft = { tier?: HrTier; showroomId?: string; active?: boolean };
+type ItemKpiDraft = { label?: string; bonusCenti?: number; active?: boolean };
+type LevelDraft = { rateBps?: number; label?: string; active?: boolean };
 
 export const HrSettings = () => {
   const profiles = useHrProfiles();
@@ -124,13 +176,21 @@ export const HrSettings = () => {
 
   const itemKpi = useHrItemKpi();
   const createItemKpi = useCreateHrItemKpi();
+  const updateItemKpi = useUpdateHrItemKpi();
   const deleteItemKpi = useDeleteHrItemKpi();
+
+  const levels = useHrOverrideLevels();
+  const createLevel = useCreateHrOverrideLevel();
+  const updateLevel = useUpdateHrOverrideLevel();
+  const deleteLevel = useDeleteHrOverrideLevel();
 
   const askConfirm = useConfirm();
   const notify = useNotify();
 
   const [editMode, setEditMode] = useState(false);
   const [profileDraft, setProfileDraft] = useState<Record<string, ProfileDraft>>({});
+  const [itemDraft, setItemDraft] = useState<Record<string, ItemKpiDraft>>({});
+  const [levelDraft, setLevelDraft] = useState<Record<string, LevelDraft>>({});
   const [cfgDraft, setCfgDraft] = useState<HrConfigPatch>({});
   const [saving, setSaving] = useState(false);
 
@@ -142,16 +202,38 @@ export const HrSettings = () => {
   const [flagRef, setFlagRef] = useState('');
   const [flagBonus, setFlagBonus] = useState('');
 
+  const [newLevel, setNewLevel] = useState('');
+  const [newLevelRate, setNewLevelRate] = useState('');
+  const [newLevelLabel, setNewLevelLabel] = useState('');
+
   const cfg = config.data;
   const showrooms = pickers.data?.showrooms ?? [];
-  const dirtyCount = Object.keys(profileDraft).length + Object.keys(cfgDraft).length;
+  const levelRows = levels.data ?? [];
+  const dirtyCount =
+    Object.keys(profileDraft).length +
+    Object.keys(itemDraft).length +
+    Object.keys(levelDraft).length +
+    Object.keys(cfgDraft).length;
 
   const stageProfile = (id: string, patch: ProfileDraft) =>
     setProfileDraft((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
+  const stageItem = (id: string, patch: ItemKpiDraft) =>
+    setItemDraft((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
+  const stageLevel = (id: string, patch: LevelDraft) =>
+    setLevelDraft((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
   const stageCfg = (patch: HrConfigPatch) => setCfgDraft((prev) => ({ ...prev, ...patch }));
+
+  /* The mode as the page currently believes it (staged edit wins over server).
+     Drives the chain-only hints — the ladder section itself stays visible in
+     both modes, because you must be able to BUILD the ladder before the mode
+     that needs it can be selected. */
+  const effectiveMode: HrOverrideMode = cfgDraft.overrideMode ?? cfg?.overrideMode ?? 'showroom';
+  const activeLevelCount = levelRows.filter((l) => levelDraft[l.id]?.active ?? l.active).length;
 
   const cancelEdits = () => {
     setProfileDraft({});
+    setItemDraft({});
+    setLevelDraft({});
     setCfgDraft({});
     setEditMode(false);
   };
@@ -162,8 +244,20 @@ export const HrSettings = () => {
       for (const [id, patch] of Object.entries(profileDraft)) {
         await updateProfile.mutateAsync({ id, ...patch });
       }
+      for (const [id, patch] of Object.entries(itemDraft)) {
+        await updateItemKpi.mutateAsync({ id, ...patch });
+      }
+      /* Levels BEFORE config, deliberately. The backend refuses to switch the
+         mode to 'chain' unless at least one ACTIVE level exists; applying the
+         ladder edits first means that check runs against the state this save is
+         actually establishing, not the one it is replacing. */
+      for (const [id, patch] of Object.entries(levelDraft)) {
+        await updateLevel.mutateAsync({ id, ...patch });
+      }
       if (Object.keys(cfgDraft).length > 0) await updateConfig.mutateAsync(cfgDraft);
       setProfileDraft({});
+      setItemDraft({});
+      setLevelDraft({});
       setCfgDraft({});
       setEditMode(false);
     } catch (e) {
@@ -210,6 +304,32 @@ export const HrSettings = () => {
     }
   };
 
+  const addLevel = async () => {
+    /* Both fields are read from their TEXT, never coerced: Number('') === 0, so
+       a blank rate box would silently add a 0% rung — a level that pays nobody
+       but makes chain mode selectable. Blank is refused, an explicit 0 is not. */
+    const lvl = Number(newLevel);
+    const rate = Number(newLevelRate);
+    if (newLevel.trim() === '' || !Number.isInteger(lvl) || lvl < 1) return;
+    if (newLevelRate.trim() === '' || !Number.isFinite(rate) || rate < 0) return;
+    try {
+      await createLevel.mutateAsync({
+        level: lvl,
+        rateBps: Math.round(rate * 100),
+        label: newLevelLabel.trim(),
+      });
+      setNewLevel('');
+      setNewLevelRate('');
+      setNewLevelLabel('');
+    } catch (e) {
+      await notify({ title: 'Could not add override level', body: (e as Error)?.message, tone: 'error' });
+    }
+  };
+
+  const newLevelValid =
+    newLevel.trim() !== '' && Number.isInteger(Number(newLevel)) && Number(newLevel) >= 1 &&
+    newLevelRate.trim() !== '' && Number.isFinite(Number(newLevelRate)) && Number(newLevelRate) >= 0;
+
   return (
     <div className="space-y-4">
       <PageHeader
@@ -249,6 +369,11 @@ export const HrSettings = () => {
       {itemKpi.isError && (
         <div className="rounded-md border border-err/40 bg-err/5 px-3 py-3 text-[13px] text-ink">
           {(itemKpi.error as Error)?.message || 'The item KPI list could not be loaded.'}
+        </div>
+      )}
+      {levels.isError && (
+        <div className="rounded-md border border-err/40 bg-err/5 px-3 py-3 text-[13px] text-ink">
+          {(levels.error as Error)?.message || 'The override levels could not be loaded.'}
         </div>
       )}
 
@@ -424,7 +549,36 @@ export const HrSettings = () => {
               bps={cfgDraft.overrideKpiBonusBps ?? cfg.overrideKpiBonusBps}
               onChange={(v) => stageCfg({ overrideKpiBonusBps: v })}
             />
+            <label className="flex flex-col gap-1">
+              <Label>Override mode</Label>
+              <select
+                className={INPUT_CLASS}
+                disabled={!editMode}
+                value={effectiveMode}
+                onChange={(e) => stageCfg({ overrideMode: e.target.value as HrOverrideMode })}
+              >
+                <option value="showroom">showroom — flat rate per showroom</option>
+                <option value="chain">chain — by reporting line</option>
+              </select>
+            </label>
           </div>
+        )}
+
+        {/* The two modes are alternatives, never both: running them together
+            pays a manager twice on the same goods. Saying which one is live is
+            worth a line, because the rate fields above only explain one of them. */}
+        {cfg && (
+          <p className="text-[12px] text-ink-secondary">
+            {effectiveMode === 'chain'
+              ? 'Chain mode: a manager earns on every level of their reporting line, at the per-level rates below. The Override base % and Override KPI +% above are not used.'
+              : 'Showroom mode: a manager earns one flat Override base % on their whole showroom. The override levels below are not used.'}
+          </p>
+        )}
+
+        {effectiveMode === 'chain' && activeLevelCount === 0 && (
+          <p className="rounded-md border border-err/40 bg-err/5 px-3 py-2 text-[12px] text-ink">
+            Chain mode needs at least one active override level. Add one below first — saving without it will be refused, because every manager would otherwise earn RM 0 override.
+          </p>
         )}
       </section>
 
@@ -447,8 +601,26 @@ export const HrSettings = () => {
                 <tr key={it.id} className="border-t border-border-subtle">
                   <td className="px-3 py-2 text-ink-secondary">{it.flagType}</td>
                   <td className="px-2 py-2 text-ink">{it.label || it.ref}</td>
-                  <td className="px-2 py-2 text-right font-mono">{fmtCenti(it.bonusCenti)}</td>
-                  <td className="px-2 py-2 text-ink-secondary">{it.active ? 'Yes' : 'No'}</td>
+                  <td className="px-2 py-2 text-right">
+                    <MinorUnitCell
+                      value={itemDraft[it.id]?.bonusCenti ?? it.bonusCenti}
+                      editable={editMode}
+                      scale={100}
+                      render={fmtCenti}
+                      onChange={(v) => stageItem(it.id, { bonusCenti: v })}
+                    />
+                  </td>
+                  <td className="px-2 py-2 text-ink-secondary">
+                    {editMode ? (
+                      <input
+                        type="checkbox"
+                        checked={itemDraft[it.id]?.active ?? it.active}
+                        onChange={(e) => stageItem(it.id, { active: e.target.checked })}
+                      />
+                    ) : (
+                      it.active ? 'Yes' : 'No'
+                    )}
+                  </td>
                   <td className="px-3 py-2 text-right">
                     <button
                       type="button"
@@ -525,6 +697,147 @@ export const HrSettings = () => {
             icon={<Plus {...ICON} />}
             disabled={!flagRef || !(Number(flagBonus) > 0) || createItemKpi.isPending}
             onClick={addItemKpi}
+          >
+            Add
+          </Button>
+        </div>
+      </section>
+
+      {/* 4 · Override levels (chain mode) */}
+      <section className={SECTION_CLASS}>
+        <SectionHeading>Override levels</SectionHeading>
+        <p className="text-[12px] text-ink-secondary">
+          Used by chain override mode only. Level 1 is a manager's direct reports, level 2 is their
+          reports' reports, and so on — add as many levels as the reporting line goes deep. Each
+          level's rate applies to that level's goods.
+        </p>
+
+        <div className={TABLE_WRAP_CLASS}>
+          <table className="w-full text-[12px]">
+            <thead className={THEAD_CLASS}>
+              <tr>
+                <th className="px-3 py-2 text-left">Level</th>
+                <th className="px-2 py-2 text-left">Label</th>
+                <th className="px-2 py-2 text-right">Rate</th>
+                <th className="px-2 py-2 text-left">Active</th>
+                <th className="px-3 py-2" />
+              </tr>
+            </thead>
+            <tbody>
+              {levelRows.map((lv) => (
+                <tr key={lv.id} className="border-t border-border-subtle">
+                  {/* The level NUMBER is never editable — the backend refuses to
+                      patch it too. Renumbering a rung in place would repoint an
+                      existing rate at a different set of people without anyone
+                      choosing that. Delete and re-add instead. */}
+                  <td className="px-3 py-2 font-semibold text-ink">{lv.level}</td>
+                  <td className="px-2 py-2">
+                    {editMode ? (
+                      <input
+                        className={INPUT_CLASS}
+                        value={levelDraft[lv.id]?.label ?? lv.label}
+                        onChange={(e) => stageLevel(lv.id, { label: e.target.value })}
+                      />
+                    ) : (
+                      <span className="text-ink">{lv.label || '—'}</span>
+                    )}
+                  </td>
+                  <td className="px-2 py-2 text-right">
+                    <MinorUnitCell
+                      value={levelDraft[lv.id]?.rateBps ?? lv.rateBps}
+                      editable={editMode}
+                      scale={100}
+                      step="0.1"
+                      render={fmtPct}
+                      onChange={(v) => stageLevel(lv.id, { rateBps: v })}
+                    />
+                  </td>
+                  <td className="px-2 py-2 text-ink-secondary">
+                    {editMode ? (
+                      <input
+                        type="checkbox"
+                        checked={levelDraft[lv.id]?.active ?? lv.active}
+                        onChange={(e) => stageLevel(lv.id, { active: e.target.checked })}
+                      />
+                    ) : (
+                      lv.active ? 'Yes' : 'No'
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-right">
+                    <button
+                      type="button"
+                      aria-label={`Remove level ${lv.level}`}
+                      className="rounded p-1 text-ink-muted hover:bg-err/10 hover:text-err"
+                      onClick={async () => {
+                        const ok = await askConfirm({
+                          title: `Remove override level ${lv.level}?`,
+                          body:
+                            effectiveMode === 'chain' && activeLevelCount <= 1
+                              ? `This is the last active level. Chain override mode is switched on, so removing it means every manager earns RM 0 override on the next run. Past closed periods keep their frozen figures.`
+                              : `Managers will stop earning override on level ${lv.level} of their reporting line from the next run. Past closed periods keep their frozen figures.`,
+                          confirmLabel: 'Remove',
+                          danger: true,
+                        });
+                        if (!ok) return;
+                        try {
+                          await deleteLevel.mutateAsync(lv.id);
+                        } catch (e) {
+                          await notify({ title: 'Could not remove', body: (e as Error)?.message, tone: 'error' });
+                        }
+                      }}
+                    >
+                      <Trash2 {...ICON} />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {levelRows.length === 0 && !levels.isLoading && !levels.isError && (
+                <tr className="border-t border-border-subtle">
+                  <td colSpan={5} className="px-3 py-4 text-center text-[12px] text-ink-secondary">
+                    No override levels configured yet.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="flex flex-wrap items-end gap-3 rounded-md border border-border bg-surface px-3 py-3">
+          <label className="flex min-w-[120px] flex-col gap-1">
+            <Label>Level</Label>
+            <input
+              className={INPUT_CLASS}
+              type="number"
+              min={1}
+              step="1"
+              value={newLevel}
+              onChange={(e) => setNewLevel(e.target.value)}
+            />
+          </label>
+          <label className="flex min-w-[140px] flex-col gap-1">
+            <Label>Rate %</Label>
+            <input
+              className={INPUT_CLASS}
+              type="number"
+              min={0}
+              step="0.1"
+              value={newLevelRate}
+              onChange={(e) => setNewLevelRate(e.target.value)}
+            />
+          </label>
+          <label className="flex min-w-[220px] flex-col gap-1">
+            <Label>Label (optional)</Label>
+            <input
+              className={INPUT_CLASS}
+              value={newLevelLabel}
+              onChange={(e) => setNewLevelLabel(e.target.value)}
+            />
+          </label>
+          <Button
+            variant="primary"
+            icon={<Plus {...ICON} />}
+            disabled={!newLevelValid || createLevel.isPending}
+            onClick={addLevel}
           >
             Add
           </Button>

@@ -95,6 +95,21 @@ export type HrCommissionShowroom = {
   rows: HrCommissionRow[];
 };
 
+/** A configured rung of the chain-mode override ladder (scm.hr_override_levels). */
+export type HrOverrideLevel = {
+  id: string;
+  level: number;
+  rateBps: number;
+  label: string;
+  active: boolean;
+};
+
+/* The ladder as the ENGINE saw it — id/label/active stripped, because only the
+   level and its rate feed the maths. The report returns this shape both live
+   (today's active levels) and frozen (the closed period's snapshot), so the page
+   reads one type either way. */
+export type HrOverrideLevelRate = { level: number; rateBps: number };
+
 export type HrPayoutPeriod = {
   id: string;
   from: string;
@@ -119,6 +134,10 @@ export type HrCommissionReport = {
   /* Non-null when this range has been CLOSED: the rows are frozen and served
      from the snapshot, not recomputed, so a later rate edit cannot move them. */
   closed: HrPayoutPeriod | null;
+  /* The ladder these figures were computed against. On a CLOSED period this is
+     the SNAPSHOT, not today's config — printing the live ladder beside frozen
+     amounts would show rates that do not explain them. Empty in showroom mode. */
+  overrideLevels: HrOverrideLevelRate[];
   showrooms: HrCommissionShowroom[];
 };
 
@@ -215,6 +234,82 @@ export function useDeleteHrItemKpi() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => authedFetch<{ ok: true }>(`/hr/item-kpi/${id}`, { method: 'DELETE' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['hr'] }),
+  });
+}
+
+// ── override levels (chain mode) ────────────────────────────────────────────
+// One editable rate per rung of the reporting chain: level 1 = a person's DIRECT
+// reports, level 2 = their reports' reports, unbounded. The list is EMPTY until
+// someone configures it, and the backend refuses to switch override_mode to
+// 'chain' against an empty ladder.
+
+export function useHrOverrideLevels() {
+  return useQuery({
+    queryKey: ['hr', 'override-levels'],
+    queryFn: () => authedFetch<{ levels: HrOverrideLevel[] }>('/hr/override-levels').then((r) => r.levels),
+    staleTime: 60_000,
+    retry: 1,
+  });
+}
+
+export function useCreateHrOverrideLevel() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { level: number; rateBps: number; label?: string; active?: boolean }) =>
+      authedFetch<{ level: HrOverrideLevel }>('/hr/override-levels', { method: 'POST', body: JSON.stringify(body) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['hr'] }),
+  });
+}
+
+/* `level` is deliberately absent from the patch shape — the backend refuses it
+   too. Renumbering a rung in place silently repoints an existing rate at a
+   different set of people; delete and re-add instead. */
+export function useUpdateHrOverrideLevel() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...body }: { id: string; rateBps?: number; label?: string; active?: boolean }) =>
+      authedFetch<{ level: HrOverrideLevel }>(`/hr/override-levels/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['hr'] }),
+  });
+}
+
+export function useDeleteHrOverrideLevel() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => authedFetch<{ ok: true }>(`/hr/override-levels/${id}`, { method: 'DELETE' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['hr'] }),
+  });
+}
+
+// ── payout periods (close / reopen) ─────────────────────────────────────────
+
+export function useHrPayoutPeriods() {
+  return useQuery({
+    queryKey: ['hr', 'payout', 'periods'],
+    queryFn: () => authedFetch<{ periods: HrPayoutPeriod[] }>('/hr/payout/periods').then((r) => r.periods),
+    staleTime: 30_000,
+    retry: 1,
+  });
+}
+
+export function useCloseHrPayout() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { from: string; to: string }) =>
+      authedFetch<{ closed: HrPayoutPeriod }>('/hr/payout/close', { method: 'POST', body: JSON.stringify(body) }),
+    // A close changes what /commission SERVES for that range (frozen rows
+    // instead of a live recompute), so the report must be refetched, not just
+    // the period list.
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['hr'] }),
+  });
+}
+
+export function useReopenHrPayout() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { from: string; to: string; reason: string }) =>
+      authedFetch<{ reopened: HrPayoutPeriod }>('/hr/payout/reopen', { method: 'POST', body: JSON.stringify(body) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['hr'] }),
   });
 }

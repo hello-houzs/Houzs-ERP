@@ -568,8 +568,13 @@ export const NAV_TABS: NavTab[] = [
         // FLAT keys only, deliberately no `scm.access` and no `anyAccess`: HR has
         // no L2 page-access area, and /commission returns every colleague's pay.
         // Riding the SCM umbrella here is exactly the mistake scm/index.ts warns
-        // about ("READ-ONLY IS NOT THE SAME AS SAFE"). Backend gates on these same
-        // two keys, so nav visibility and API access cannot drift apart.
+        // about ("READ-ONLY IS NOT THE SAME AS SAFE").
+        //
+        // These are the two ENTRY keys. HR has four in total — scm.hr.close and
+        // scm.hr.reopen gate the payout approval actions and are checked on the
+        // Commission page itself (per-button), not here: they grant an action
+        // inside the module, never admittance to it. Neither is usable without
+        // scm.hr.read anyway, since the API refuses to show the period first.
         anyPerm: ["*", "scm.hr.read", "scm.hr.manage"],
         children: [
           { to: "/scm/hr/commission", label: "Commission", icon: DollarSign, anyPerm: ["*", "scm.hr.read", "scm.hr.manage"] },
