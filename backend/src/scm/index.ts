@@ -42,6 +42,7 @@ import { purchaseConsignmentOrders } from "./routes/purchase-consignment-orders"
 import { purchaseConsignmentReceives } from "./routes/purchase-consignment-receives";
 import { purchaseConsignmentReturns } from "./routes/purchase-consignment-returns";
 import { inventory } from "./routes/inventory";
+import { inventoryAdjustments } from "./routes/inventory-adjustments";
 import { warehouse } from "./routes/warehouse";
 import { stockTransfers } from "./routes/stock-transfers";
 import { stockTakes } from "./routes/stock-takes";
@@ -263,6 +264,17 @@ scm.route("/purchase-consignment-receives", purchaseConsignmentReceives);
 scm.use("/purchase-consignment-returns/*", scmAreaGuard("scm.consignment.po_returns"));
 scm.route("/purchase-consignment-returns", purchaseConsignmentReturns);
 // ── Warehouse (scm.warehouse.*) ─────────────────────────────────────────────
+// Stock ADJUSTMENT is a separate, more-sensitive permission than viewing the
+// Inventory page: adjusting changes inventory valuation. It MUST be registered
+// BEFORE the broad `/inventory/*` inventory guard below — its own sub-router
+// handles POST /inventory/adjustments and returns before that broad guard is
+// reached, so the write requires ONLY `scm.warehouse.adjustments`, never also
+// `scm.warehouse.inventory`. (Layering a second guard on /inventory/* would
+// fire BOTH and re-couple the two, defeating the split.) The reads the
+// adjustment form needs (warehouses, buckets, movements) stay under /inventory
+// on `scm.warehouse.inventory`.
+scm.use("/inventory/adjustments", scmAreaGuard("scm.warehouse.adjustments"));
+scm.route("/inventory/adjustments", inventoryAdjustments);
 scm.use("/inventory/*", scmAreaGuard("scm.warehouse.inventory"));
 scm.route("/inventory", inventory);
 scm.use("/warehouse/*", scmAreaGuard("scm.warehouse.inventory"));

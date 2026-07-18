@@ -18,20 +18,16 @@
 //                                                ?warehouseId&productCode (Stage 2 sofa batch view)
 //   GET   /inventory/cogs                     — COGS stream (consumption flat list)
 //   GET   /inventory/value                    — inventory valuation (qty × cost)
-//   POST  /inventory/adjustments              — manual correction
+//
+// The manual stock ADJUSTMENT write (POST /inventory/adjustments) lives in its
+// own router (routes/inventory-adjustments.ts) so it can be gated on the
+// separate `scm.warehouse.adjustments` permission — see that file + scm/index.ts.
 // ----------------------------------------------------------------------------
 
 import { Hono } from 'hono';
-import {
-  isAdjustmentReasonCode,
-  computeVariantKey,
-  adjustmentIncreaseErrors,
-  type VariantAttrs,
-} from '../shared';
 import { supabaseAuth } from '../middleware/auth';
 import { escapeForOr } from '../lib/postgrest-search';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
-import { recomputeSoStockAllocation } from '../lib/so-stock-allocation';
 import { reconcileLedger } from '../lib/reconcile-ledger';
 import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
@@ -754,89 +750,10 @@ inventory.get('/reconcile', async (c) => {
   }
 });
 
-/* ── Manual adjustment ───────────────────────────────────────────────── */
-inventory.post('/adjustments', async (c) => {
-  const sb = c.get('supabase'); const user = c.get('user');
-  let body: Record<string, unknown>;
-  try { body = (await c.req.json()) as Record<string, unknown>; } catch { return c.json({ error: 'invalid_json' }, 400); }
-
-  if (!body.warehouseId || !body.productCode) return c.json({ error: 'warehouse_and_product_required' }, 400);
-  const qtyDelta = Number(body.qtyDelta ?? 0);
-  if (!Number.isFinite(qtyDelta) || qtyDelta === 0) return c.json({ error: 'invalid_qty_delta' }, 400);
-
-  // Structured reason is mandatory on a manual adjustment (audit trail).
-  // Validated against the shared catalogue — single source of truth shared
-  // with the frontend dropdown.
-  const reasonCode = String(body.reasonCode ?? '');
-  if (!isAdjustmentReasonCode(reasonCode)) return c.json({ error: 'reason_required' }, 400);
-
-  const warehouseId = String(body.warehouseId);
-  const productCode = String(body.productCode);
-  const itemGroup = (body.itemGroup as string | undefined) ?? null;
-  const variants = (body.variants as Record<string, unknown> | null | undefined) ?? null;
-  const batchNo = ((body.batchNo as string | undefined) ?? '').trim() || null;
-
-  // Resolve which stock bucket (variant_key + batch_no) this adjustment hits.
-  //   • INCREASE behaves like a mini-receipt: compute variant_key from the chosen
-  //     attributes (mirrors GRN) and gate on the shared variant+batch rule so the
-  //     found stock isn't stranded in the unclassified / no-batch bucket.
-  //   • DECREASE targets an EXISTING bucket the operator picked, so it arrives
-  //     with an explicit variantKey + batchNo; we only verify enough is on hand
-  //     (no orphan / negative bucket).
-  let variantKey: string;
-  if (qtyDelta > 0) {
-    const errs = adjustmentIncreaseErrors(itemGroup, variants, batchNo);
-    if (errs.length > 0) return c.json({ error: 'adjustment_incomplete', message: errs.join(' ') }, 422);
-    variantKey = body.variantKey != null
-      ? String(body.variantKey)
-      : computeVariantKey(itemGroup, (variants as VariantAttrs | null) ?? null);
-  } else {
-    variantKey = String(body.variantKey ?? '');
-    let avQ = sb.from('v_inventory_lots_open')
-      .select('qty_remaining')
-      .eq('warehouse_id', warehouseId)
-      .eq('product_code', productCode)
-      .eq('variant_key', variantKey);
-    avQ = scopeToCompany(avQ, c); // multi-company: isolate available-stock check to the active company (view exposes company_id, mig 0106)
-    avQ = batchNo == null ? avQ.is('batch_no', null) : avQ.eq('batch_no', batchNo);
-    const { data: openLots } = await avQ;
-    const available = ((openLots ?? []) as Array<{ qty_remaining: number | null }>)
-      .reduce((s, l) => s + Number(l.qty_remaining ?? 0), 0);
-    if (Math.abs(qtyDelta) > available) {
-      return c.json({
-        error: 'insufficient_bucket',
-        message: `Only ${available} on hand in that batch/variant — you can't take out ${Math.abs(qtyDelta)}.`,
-      }, 422);
-    }
-  }
-
-  const { data, error } = await sb.from('inventory_movements').insert({
-    company_id: activeCompanyId(c), // multi-company: stamp the active company
-    movement_type: 'ADJUSTMENT',
-    warehouse_id: warehouseId,
-    product_code: productCode,
-    // Attribute-composition bucket (migration 0095) + dye-lot batch (0120). An
-    // increase computes these from the chosen attributes; a decrease carries the
-    // picked existing bucket. The FIFO trigger (0126) honours batch_no on
-    // ADJUSTMENT: +qty creates a batched lot, −qty consumes the batch FIFO.
-    variant_key: variantKey,
-    batch_no: batchNo,
-    product_name: (body.productName as string) ?? null,
-    qty: qtyDelta,
-    unit_cost_sen: Number(body.unitCostSen ?? 0),
-    source_doc_type: 'ADJUSTMENT',
-    reason_code: reasonCode,
-    notes: (body.notes as string) ?? null,
-    performed_by: user.id,
-  }).select('id').single();
-  if (error) return c.json({ error: 'insert_failed', reason: error.message }, 500);
-  /* Audit 2026-06-10 #12 — every other stock-mutating path re-walks the SO
-     allocation; a manual adjustment was the one forgotten path. A write-off
-     left SO lines READY against vanished stock; a found-stock increase didn't
-     flip PENDING→READY until some unrelated document touched stock. */
-  try { await recomputeSoStockAllocation(sb); } catch { /* best-effort */ }
-  return c.json({ movement: data }, 201);
-});
+// Manual stock ADJUSTMENT write (POST /inventory/adjustments) moved to its own
+// router — routes/inventory-adjustments.ts — so it can be gated on the separate
+// `scm.warehouse.adjustments` permission instead of `scm.warehouse.inventory`.
+// See that file's header and scm/index.ts for the sub-mount ordering.
 
 /* ── Open stock buckets for one product (decrease-adjustment picker) ───────
    Groups the OPEN lots (qty_remaining > 0) of one SKU by (variant_key, batch_no)
