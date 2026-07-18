@@ -28,6 +28,14 @@ export const ENTITY_TYPES = [
   'STOCK_TAKE',
   'STOCK_TRANSFER',
   'INVENTORY_ADJUSTMENT',
+  /* The document modules, added after the money/stock set. entity_type is plain
+     text in migration 0139 with NO check constraint, deliberately (see the
+     migration header), so extending this list needs no migration — but it is
+     still the ONLY list, because the read endpoint rejects anything not in it. */
+  'SALES_INVOICE',
+  'PURCHASE_ORDER',
+  'PURCHASE_INVOICE',
+  'DELIVERY_ORDER',
 ] as const;
 export type EntityType = (typeof ENTITY_TYPES)[number];
 

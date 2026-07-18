@@ -7,6 +7,7 @@ import {
   statusChange,
   diffFields,
 } from "../src/scm/lib/entity-audit";
+import { stripAuditFinance, AUDIT_FINANCE_FIELDS } from "../src/scm/lib/finance-keys";
 
 /* WHAT IS AND IS NOT TESTED HERE.
    recordEntityAudit itself is NOT unit-tested: it is a thin insert against
@@ -21,6 +22,14 @@ import {
 describe("entity type vocabulary", () => {
   test("accepts every declared type", () => {
     for (const t of ENTITY_TYPES) expect(isEntityType(t)).toBe(true);
+  });
+
+  test("covers the document modules, not only money and stock", () => {
+    // The read endpoint rejects any type not in this list, so a module wired up
+    // in a route file but missing here writes rows nobody can ever read back.
+    for (const t of ["SALES_INVOICE", "PURCHASE_ORDER", "PURCHASE_INVOICE", "DELIVERY_ORDER"]) {
+      expect(isEntityType(t)).toBe(true);
+    }
   });
 
   test("rejects anything else, including near-misses", () => {
@@ -154,5 +163,50 @@ describe("diffFields is the SHARED differ, re-exported not reimplemented", () =>
   test("agrees with fieldChange on the null/empty-string question", () => {
     expect(diffFields({ notes: null }, { notes: "" }, ALIASES)).toEqual([]);
     expect(fieldChange("notes", null, "")).toBeNull();
+  });
+});
+
+describe("a document line's cost is gated on read by the field NAME it was written with", () => {
+  /* The delivery-order line handlers record their diff with the API's camelCase
+     names, and AUDIT_FINANCE_FIELDS is keyed on exactly those. That coupling is
+     invisible at the call site — a line recorded as `unit_cost_centi` or
+     `unitCost` would sail straight past the strip and hand every non-finance
+     reader the cost basis, which is the #600/#625/#632 shape one endpoint over.
+     These tests are the guard on the spelling. */
+
+  const DO_LINE_FIELD_NAMES = [
+    "qty", "unitPriceCenti", "discountCenti", "unitCostCenti",
+    "lineTotalCenti", "itemCode", "itemGroup", "description",
+    "uom", "notes", "rackId", "lineDeliveryDate",
+  ];
+
+  test("the cost field a line diff emits is one the strip knows", () => {
+    expect(AUDIT_FINANCE_FIELDS.has("unitCostCenti")).toBe(true);
+    expect(DO_LINE_FIELD_NAMES).toContain("unitCostCenti");
+  });
+
+  test("stripping a line-edit entry removes the cost and keeps the rest", () => {
+    const line = diffFields(
+      { qty: 2, unit_price_centi: 50000, unit_cost_centi: 30000, item_code: "BF-001" },
+      { qty: 3, unitPriceCenti: 55000, unitCostCenti: 31000 },
+      [
+        ["qty", "qty"],
+        ["unitPriceCenti", "unit_price_centi"],
+        ["unitCostCenti", "unit_cost_centi"],
+        ["itemCode", "item_code"],
+      ],
+    );
+    const entries = [{ field_changes: line }];
+    stripAuditFinance(entries);
+    const fields = (entries[0].field_changes as Array<{ field: string }>).map((f) => f.field);
+    expect(fields).toEqual(["qty", "unitPriceCenti"]);
+  });
+
+  test("the price a customer is charged is NOT stripped", () => {
+    // The line #625 drew: what the order is worth is visible to everyone who
+    // passes the access gate; what it COST is not.
+    for (const f of ["qty", "unitPriceCenti", "discountCenti", "lineTotalCenti"]) {
+      expect(AUDIT_FINANCE_FIELDS.has(f)).toBe(false);
+    }
   });
 });

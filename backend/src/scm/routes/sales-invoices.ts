@@ -49,9 +49,46 @@ import { SO_ITEM_FINANCE_KEYS } from '../lib/finance-keys';
 import { doLineRemaining, doRemainingByItemId, resolveCandidateDoIds, custKeyOf, type DoRemainingLine } from '../lib/do-line-remaining';
 import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item-codes';
 import { applyCustomerCreditToSi, creditFromCancelledSi, reverseCancelledSiCredit, reconcileSiOverpay } from '../lib/customer-credits';
+import { recordEntityAudit, diffFields, compactChanges, fieldChange, statusChange } from '../lib/entity-audit';
 
 export const salesInvoices = new Hono<{ Bindings: Env; Variables: Variables }>();
 salesInvoices.use('*', supabaseAuth);
+
+/* ── Audit trail (migration 0139 / lib/entity-audit) ───────────────────────────
+   The action vocabulary is the shared six. How this module maps onto it:
+     POST   — the invoice leaves DRAFT and revenue is posted to AR/GL.
+     CANCEL — the status flips to CANCELLED (the document event).
+     REVERSE— the AR/GL contra that follows a cancel (the LEDGER event). A
+              separate row from the CANCEL for the same reason payment-vouchers
+              keeps them apart: a cancel whose reversal FAILED must be
+              distinguishable from one whose reversal landed.
+     UPDATE — header edits, payments, and every other status transition.
+   No DELETE: this module never hard-deletes an invoice. */
+
+/* The auditable header fields, camel (API) -> snake (column). Money is recorded
+   as the INTEGER SEN it is stored as, never a formatted amount. */
+const SI_AUDIT_FIELDS: Array<[string, string]> = [
+  ['debtorCode', 'debtor_code'], ['debtorName', 'debtor_name'], ['agent', 'agent'],
+  ['salesLocation', 'sales_location'], ['ref', 'ref'], ['poDocNo', 'po_doc_no'],
+  ['venue', 'venue'], ['venueId', 'venue_id'], ['branding', 'branding'],
+  ['address1', 'address1'], ['address2', 'address2'],
+  ['city', 'city'], ['state', 'state'], ['postcode', 'postcode'], ['phone', 'phone'],
+  ['note', 'note'], ['notes', 'notes'],
+  ['invoiceDate', 'invoice_date'], ['dueDate', 'due_date'], ['currency', 'currency'],
+  ['customerState', 'customer_state'], ['customerCountry', 'customer_country'],
+  ['customerSoNo', 'customer_so_no'],
+  ['customerDeliveryDate', 'customer_delivery_date'],
+  ['email', 'email'], ['customerType', 'customer_type'],
+  ['salespersonId', 'salesperson_id'], ['buildingType', 'building_type'],
+  ['emergencyContactName', 'emergency_contact_name'],
+  ['emergencyContactPhone', 'emergency_contact_phone'],
+  ['emergencyContactRelationship', 'emergency_contact_relationship'],
+];
+
+/* The BEFORE half of every from->to pair the header PATCH records, plus the
+   identity columns the audit row itself needs. */
+const SI_AUDIT_SELECT =
+  `id, invoice_number, status, company_id, ${SI_AUDIT_FIELDS.map(([, snake]) => snake).join(', ')}`;
 
 /* Full SI header — mirrors the editable DO header shape. */
 const HEADER =
@@ -1114,19 +1151,26 @@ salesInvoices.patch('/:id', async (c) => {
      invoice the caller cannot even see in their list can never be written by id.
      Out-of-scope / other-company / missing all answer 404, indistinguishable
      from one another (mirrors GET /:id + GET /:id/payments). */
+  /* SI_AUDIT_SELECT, not the three columns the guards need: this row is also the
+     BEFORE half of every from->to pair recorded at the end of the handler. An
+     audit entry that carries only the new value does not answer "what changed". */
   const { data: cur, error: curErr } = await scopeToCompany(
-    sb.from('sales_invoices').select('id, status, salesperson_id').eq('id', id), c,
+    sb.from('sales_invoices').select(SI_AUDIT_SELECT).eq('id', id), c,
   ).maybeSingle();
   if (curErr) return c.json({ error: 'load_failed', reason: curErr.message }, 500);
   if (!cur) return c.json({ error: 'not_found' }, 404);
+  const before = cur as unknown as Record<string, unknown>;
   {
-    const sp = (cur as { salesperson_id?: number | string | null }).salesperson_id;
+    /* Read through `before`, not `cur`: a .select() built from a concatenated
+       string infers as GenericStringError on the SupabaseClient<any> the scm
+       client is, so the row shape only exists after the cast above. */
+    const sp = before.salesperson_id as number | string | null | undefined;
     if (await salesDocOutOfScope(sb, c.env, c.get('houzsUser')?.id, canViewAllSales(c), sp)) {
       return c.json({ error: 'not_found' }, 404);
     }
   }
 
-  const curStatus = ((cur as { status: string }).status ?? '').toUpperCase();
+  const curStatus = String(before.status ?? '').toUpperCase();
   if (curStatus === 'CANCELLED') {
     return c.json({ error: 'invoice_cancelled', message: 'This invoice is cancelled — reopen it before editing it.' }, 409);
   }
@@ -1180,6 +1224,25 @@ salesInvoices.patch('/:id', async (c) => {
   const { data, error } = await sb.from('sales_invoices').update(updates).eq('id', id).select('id').maybeSingle();
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
   if (!data) return c.json({ error: 'not_found' }, 404);
+
+  /* Diff the NORMALISED values actually written (`updates`), not the raw body —
+     phone numbers are rewritten by normalizePhone above, and a log of what the
+     client asked for rather than what was stored is a log of the wrong thing. */
+  const auditPatch: Record<string, unknown> = {};
+  for (const [camel, snake] of SI_AUDIT_FIELDS) {
+    if (updates[snake] !== undefined) auditPatch[camel] = updates[snake];
+  }
+  await recordEntityAudit(sb, {
+    entityType: 'SALES_INVOICE',
+    entityId: id,
+    entityDocNo: (before.invoice_number as string | null) ?? null,
+    action: 'UPDATE',
+    actor: c.get('houzsUser'),
+    companyId: (before.company_id as number | null) ?? activeCompanyId(c),
+    statusSnapshot: (before.status as string | null) ?? null,
+    fieldChanges: diffFields(before, auditPatch, SI_AUDIT_FIELDS),
+  });
+
   return c.json({ ok: true, id });
 });
 
@@ -1458,7 +1521,8 @@ async function recomputePaid(sb: any, salesInvoiceId: string) {
 salesInvoices.post('/:id/payments', async (c) => {
   const sb = c.get('supabase'); const id = c.req.param('id'); const user = c.get('user');
 
-  const { data: doc } = await sb.from('sales_invoices').select('id, status').eq('id', id).maybeSingle();
+  const { data: doc } = await sb.from('sales_invoices')
+    .select('id, status, invoice_number, company_id, paid_centi').eq('id', id).maybeSingle();
   if (!doc) return c.json({ error: 'sales_invoice_not_found' }, 404);
   if ((doc as { status?: string }).status === 'CANCELLED') return c.json({ error: 'not_payable', message: 'SI is cancelled' }, 409);
   /* LEAK GUARD (DRAFT) — a DRAFT invoice is not yet committed; it cannot accept
@@ -1497,21 +1561,78 @@ salesInvoices.post('/:id/payments', async (c) => {
   await recomputePaid(sb, id);
   try { await reconcileSiOverpay(sb, id); }
   catch (e) { /* eslint-disable-next-line no-console */ console.error('[customer-credit] overpay reconcile failed (post):', e); }
+
+  /* Money IN. paidCenti is read AFTER recomputePaid so the from->to pair is the
+     real ledger total either side of this payment, not the requested amount
+     twice. Both are the INTEGER SEN. Best-effort read: an unresolved `to` still
+     leaves a row naming who paid what and when. */
+  {
+    const head = doc as { invoice_number?: string | null; company_id?: number | null; paid_centi?: number | null };
+    const { data: after } = await sb.from('sales_invoices').select('paid_centi, status').eq('id', id).maybeSingle();
+    const post = (after ?? null) as { paid_centi?: number | null; status?: string | null } | null;
+    await recordEntityAudit(sb, {
+      entityType: 'SALES_INVOICE',
+      entityId: id,
+      entityDocNo: head.invoice_number ?? null,
+      action: 'UPDATE',
+      actor: c.get('houzsUser'),
+      companyId: head.company_id ?? activeCompanyId(c),
+      statusSnapshot: post?.status ?? null,
+      note: 'Payment recorded',
+      fieldChanges: compactChanges([
+        fieldChange('paidCenti', Number(head.paid_centi ?? 0), post?.paid_centi ?? null),
+        fieldChange('paymentAmountCenti', null, p.amountCenti),
+        fieldChange('paymentMethod', null, p.method),
+        fieldChange('paidAt', null, p.paidAt),
+      ]),
+    });
+  }
+
   return c.json({ payment: data }, 201);
 });
 
 salesInvoices.delete('/:id/payments/:paymentId', async (c) => {
   const sb = c.get('supabase'); const id = c.req.param('id'); const paymentId = c.req.param('paymentId');
-  const { data: row } = await sb.from('sales_invoice_payments').select('sales_invoice_id').eq('id', paymentId).maybeSingle();
+  /* The payment's own columns are read BEFORE the delete — once the row is gone
+     the audit entry is the only remaining evidence of what was removed. */
+  const { data: row } = await sb.from('sales_invoice_payments')
+    .select('sales_invoice_id, amount_centi, method, paid_at').eq('id', paymentId).maybeSingle();
   if (!row) return c.json({ error: 'not_found' }, 404);
-  if ((row as { sales_invoice_id: string }).sales_invoice_id !== id) return c.json({ error: 'payment_doc_mismatch' }, 400);
-  const { data: inv } = await sb.from('sales_invoices').select('status').eq('id', id).maybeSingle();
+  const doomed = row as { sales_invoice_id: string; amount_centi?: number | null; method?: string | null; paid_at?: string | null };
+  if (doomed.sales_invoice_id !== id) return c.json({ error: 'payment_doc_mismatch' }, 400);
+  const { data: inv } = await sb.from('sales_invoices').select('status, invoice_number, company_id, paid_centi').eq('id', id).maybeSingle();
   if ((inv as { status?: string } | null)?.status === 'CANCELLED') return c.json({ error: 'not_payable', message: 'SI is cancelled' }, 409);
   const { error } = await sb.from('sales_invoice_payments').delete().eq('id', paymentId);
   if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
   await recomputePaid(sb, id);
   try { await reconcileSiOverpay(sb, id); }
   catch (e) { /* eslint-disable-next-line no-console */ console.error('[customer-credit] overpay reconcile failed (delete):', e); }
+
+  /* Money taken back OFF the invoice. Recorded as UPDATE, not DELETE: the entity
+     is the INVOICE and it still exists — DELETE on this entity type means the
+     document itself was destroyed, and a reader must not be told that. */
+  {
+    const head = (inv ?? null) as { invoice_number?: string | null; company_id?: number | null; paid_centi?: number | null } | null;
+    const { data: after } = await sb.from('sales_invoices').select('paid_centi, status').eq('id', id).maybeSingle();
+    const post = (after ?? null) as { paid_centi?: number | null; status?: string | null } | null;
+    await recordEntityAudit(sb, {
+      entityType: 'SALES_INVOICE',
+      entityId: id,
+      entityDocNo: head?.invoice_number ?? null,
+      action: 'UPDATE',
+      actor: c.get('houzsUser'),
+      companyId: head?.company_id ?? activeCompanyId(c),
+      statusSnapshot: post?.status ?? null,
+      note: 'Payment deleted',
+      fieldChanges: compactChanges([
+        fieldChange('paidCenti', Number(head?.paid_centi ?? 0), post?.paid_centi ?? null),
+        fieldChange('paymentAmountCenti', Number(doomed.amount_centi ?? 0), null),
+        fieldChange('paymentMethod', doomed.method ?? null, null),
+        fieldChange('paidAt', doomed.paid_at ?? null, null),
+      ]),
+    });
+  }
+
   return c.json({ ok: true });
 });
 
@@ -1541,10 +1662,14 @@ salesInvoices.patch('/:id/status', async (c) => {
   if (status === 'PAID') ts.paid_at = now;
 
   const { data: curRow, error: curErr } = await sb.from('sales_invoices')
-    .select('status').eq('id', id).maybeSingle();
+    .select('status, invoice_number, company_id').eq('id', id).maybeSingle();
   if (curErr) return c.json({ error: 'load_failed', reason: curErr.message }, 500);
   if (!curRow) return c.json({ error: 'not_found' }, 404);
   const prevStatus = ((curRow as { status: string }).status ?? '').toUpperCase();
+  /* Identity for the audit rows below, read here so every exit path has it
+     without a second round-trip. */
+  const auditDocNo = (curRow as { invoice_number?: string | null }).invoice_number ?? null;
+  const auditCompanyId = (curRow as { company_id?: number | null }).company_id ?? activeCompanyId(c);
 
   /* FIX 2 — single legal-transition authority. Unknown targets were rejected
      above; here we reject clearly-illegal jumps (e.g. any → DRAFT, a payment jump
@@ -1594,6 +1719,27 @@ salesInvoices.patch('/:id/status', async (c) => {
       // eslint-disable-next-line no-console
       console.error(`[si-revenue] confirm post failed for ${d.invoice_number}:`, post.status, (post as { reason?: string }).reason);
     }
+
+    /* The moment the invoice becomes real to the customer AND to the ledger. The
+       .eq('status','DRAFT') gate above means only the call that actually flipped
+       it reaches here, so exactly one POST row is written per confirm. totalCenti
+       is the INTEGER SEN posted to AR. */
+    await recordEntityAudit(sb, {
+      entityType: 'SALES_INVOICE',
+      entityId: id,
+      entityDocNo: d.invoice_number,
+      action: 'POST',
+      actor: c.get('houzsUser'),
+      companyId: auditCompanyId,
+      statusSnapshot: 'SENT',
+      note: post.ok ? undefined : `AR/GL revenue post FAILED: ${post.status}`,
+      fieldChanges: compactChanges([
+        ...statusChange('DRAFT', 'SENT'),
+        fieldChange('totalCenti', null, Number(d.total_centi ?? 0)),
+        fieldChange('paidCenti', null, Number(d.paid_centi ?? 0)),
+        fieldChange('revenuePosted', null, post.ok),
+      ]),
+    });
 
     /* Auto-apply customer credit now (was skipped on draft create). */
     if (d.debtor_code) {
@@ -1666,6 +1812,23 @@ salesInvoices.patch('/:id/status', async (c) => {
     data = updated as typeof data;
   }
 
+  /* The DOCUMENT event, recorded for every transition that actually moved the
+     status. The cancel branch's .neq('status','CANCELLED') gate already returned
+     early when it changed nothing, so a losing concurrent cancel writes no row.
+     The reopen's revenue re-post is recorded separately below — same document-
+     event / ledger-event split the cancel path uses. */
+  await recordEntityAudit(sb, {
+    entityType: 'SALES_INVOICE',
+    entityId: id,
+    entityDocNo: (data as { invoice_number?: string | null } | null)?.invoice_number ?? auditDocNo,
+    action: status === 'CANCELLED' ? 'CANCEL' : 'UPDATE',
+    actor: c.get('houzsUser'),
+    companyId: auditCompanyId,
+    statusSnapshot: status,
+    note: isReopen ? 'Invoice reopened' : undefined,
+    fieldChanges: statusChange(prevStatus, status),
+  });
+
   if (status === 'CANCELLED') {
     const d = data as { invoice_number: string; paid_centi: number | null; debtor_code: string | null; debtor_name: string | null };
     const rev = await reverseSiRevenue(sb, d.invoice_number);
@@ -1673,6 +1836,25 @@ salesInvoices.patch('/:id/status', async (c) => {
       // eslint-disable-next-line no-console
       console.error(`[si-revenue] reversal failed for ${d.invoice_number}:`, rev.status, rev.reason);
     }
+
+    /* A SEPARATE row from the CANCEL above, not a duplicate of it: that was a
+       document-status event, this is the AR/GL contra, and a cancel whose
+       reversal failed must be distinguishable from one whose reversal landed.
+       paidCenti is the INTEGER SEN that becomes a customer credit below. */
+    await recordEntityAudit(sb, {
+      entityType: 'SALES_INVOICE',
+      entityId: id,
+      entityDocNo: d.invoice_number,
+      action: 'REVERSE',
+      actor: c.get('houzsUser'),
+      companyId: auditCompanyId,
+      statusSnapshot: 'CANCELLED',
+      note: rev.ok ? `AR/GL reversal: ${rev.status}` : `AR/GL reversal FAILED: ${rev.status} — ${rev.reason ?? 'no reason given'}`,
+      fieldChanges: compactChanges([
+        fieldChange('reversalOk', null, rev.ok),
+        fieldChange('paidCentiCredited', null, Number(d.paid_centi ?? 0)),
+      ]),
+    });
     if (Number(d.paid_centi ?? 0) > 0) {
       try {
         const user = c.get('user');
@@ -1698,6 +1880,22 @@ salesInvoices.patch('/:id/status', async (c) => {
       // eslint-disable-next-line no-console
       console.error(`[si-revenue] re-post on reopen failed for ${d.invoice_number}:`, post.status, (post as { reason?: string }).reason);
     }
+
+    /* The LEDGER half of a reopen — the UPDATE row above recorded the status
+       move. Reopening re-posts revenue that the cancel contra'd, so whether that
+       re-post landed is its own fact. */
+    await recordEntityAudit(sb, {
+      entityType: 'SALES_INVOICE',
+      entityId: id,
+      entityDocNo: d.invoice_number,
+      action: 'POST',
+      actor: c.get('houzsUser'),
+      companyId: auditCompanyId,
+      statusSnapshot: status,
+      note: post.ok ? 'AR/GL revenue re-posted on reopen' : `AR/GL revenue re-post FAILED: ${post.status}`,
+      fieldChanges: compactChanges([fieldChange('revenuePosted', null, post.ok)]),
+    });
+
     try {
       const user = c.get('user');
       await reverseCancelledSiCredit(sb, {
@@ -1730,7 +1928,8 @@ salesInvoices.patch('/:id/payment', async (c) => {
   const amount = Number(body.amountCenti ?? 0);
   if (!Number.isFinite(amount) || amount <= 0) return c.json({ error: 'invalid_amount' }, 400);
 
-  const { data: cur } = await sb.from('sales_invoices').select('status').eq('id', id).maybeSingle();
+  const { data: cur } = await sb.from('sales_invoices')
+    .select('status, invoice_number, company_id, paid_centi').eq('id', id).maybeSingle();
   if (!cur) return c.json({ error: 'not_found' }, 404);
   if ((cur as { status: string }).status === 'CANCELLED') return c.json({ error: 'not_payable', message: 'SI is cancelled' }, 409);
   /* LEAK GUARD (DRAFT) — same as POST /:id/payments: a draft can't be paid. */
@@ -1753,5 +1952,29 @@ salesInvoices.patch('/:id/payment', async (c) => {
   try { await reconcileSiOverpay(sb, id); }
   catch (e) { /* eslint-disable-next-line no-console */ console.error('[customer-credit] overpay reconcile failed (quick-pay):', e); }
   const { data } = await sb.from('sales_invoices').select('id, paid_centi, status').eq('id', id).maybeSingle();
+
+  /* Same money event as POST /:id/payments, reached through the legacy quick-pay
+     screen. It writes the same ledger, so it writes the same audit row — an
+     entry point the history cannot see is a gap in it. */
+  {
+    const head = cur as { invoice_number?: string | null; company_id?: number | null; paid_centi?: number | null };
+    const post = (data ?? null) as { paid_centi?: number | null; status?: string | null } | null;
+    await recordEntityAudit(sb, {
+      entityType: 'SALES_INVOICE',
+      entityId: id,
+      entityDocNo: head.invoice_number ?? null,
+      action: 'UPDATE',
+      actor: c.get('houzsUser'),
+      companyId: head.company_id ?? activeCompanyId(c),
+      statusSnapshot: post?.status ?? null,
+      note: 'Payment recorded (quick pay)',
+      fieldChanges: compactChanges([
+        fieldChange('paidCenti', Number(head.paid_centi ?? 0), post?.paid_centi ?? null),
+        fieldChange('paymentAmountCenti', null, amount),
+        fieldChange('paymentMethod', null, 'cash'),
+      ]),
+    });
+  }
+
   return c.json({ salesInvoice: data });
 });
