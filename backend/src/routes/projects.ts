@@ -46,7 +46,7 @@ import {
   canSeeProject,
   isScopedProjectUser,
 } from "../services/projectAcl";
-import { getPmsAccess, getPmsRole, financeHiddenForUser, isFinanceViewer, isSalesUser } from "../services/pmsAccess";
+import { getPmsAccess, getPmsRole, financeHiddenForUser, isFinanceViewer, isSalesUser, isSalesDirectorUser } from "../services/pmsAccess";
 import { scopeSalesReportsForUser } from "../services/orgScope";
 import { audit } from "../services/audit";
 import { hasPermission } from "../services/permissions";
@@ -1642,6 +1642,22 @@ app.patch("/:id", requirePermission("projects.write"), async (c) => {
         delete body.pic_id;
       }
     }
+  }
+
+  // Owner 2026-07-18: PIC assignment is open to EVERYONE holding projects.write
+  // EXCEPT the Sales Director. Enforced by EXACT normalised position name
+  // (isSalesDirectorUser), deliberately NOT a \b substring — a free-text rename
+  // ("Assistant to Sales Director") must not smuggle this block onto, or off,
+  // another position. Scoped to the pic_id FIELD only: a Sales Director keeps
+  // every other project edit in this same PATCH; they simply cannot (re)assign
+  // the PIC. Fires only on an actual change so a redundant same-value echo is a
+  // harmless no-op rather than a spurious 403.
+  if (
+    "pic_id" in body &&
+    (body.pic_id ?? null) !== (existing.pic_id ?? null) &&
+    isSalesDirectorUser(user)
+  ) {
+    return c.json({ error: "A Sales Director cannot assign the project PIC." }, 403);
   }
 
   // Brand gate for any PIC assignment (admin or scoped). Validates
@@ -3379,6 +3395,12 @@ app.post("/:id/sales-attendees", requirePermission("projects.write"), async (c) 
   const id = parseInt(c.req.param("id"), 10);
   if (isNaN(id)) return c.json({ error: "Invalid ID" }, 400);
   const user = c.get("user");
+  // Owner 2026-07-18: Sales-Attending assignment is open to EVERYONE with
+  // projects.write EXCEPT the Sales Director. Same exact-name gate as the PIC
+  // PATCH above (isSalesDirectorUser, not a \b substring).
+  if (isSalesDirectorUser(user)) {
+    return c.json({ error: "A Sales Director cannot change Sales Attending." }, 403);
+  }
   const body = await c.req.json<{ sales_rep_id?: number }>();
   if (!body.sales_rep_id) return c.json({ error: "sales_rep_id required" }, 400);
   try {
@@ -3416,6 +3438,12 @@ app.delete(
     const repId = parseInt(c.req.param("repId"), 10);
     if (isNaN(id) || isNaN(repId)) return c.json({ error: "Invalid ID" }, 400);
     const user = c.get("user");
+    // Owner 2026-07-18: removing an attendee is part of the same "assign"
+    // capability — open to everyone with projects.write EXCEPT the Sales
+    // Director (exact-name gate, mirrors the POST above).
+    if (isSalesDirectorUser(user)) {
+      return c.json({ error: "A Sales Director cannot change Sales Attending." }, 403);
+    }
     const rep = await c.env.DB.prepare(
       `SELECT code, name FROM sales_reps WHERE id = ?`
     )

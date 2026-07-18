@@ -6,6 +6,7 @@ import { MobileVirtualList } from "./MobileVirtualList";
 import { MobileGantt } from "./MobileGantt";
 import { MediaLightbox, type MediaItem } from "../components/MediaLightbox";
 import { useAuth } from "../auth/AuthContext";
+import { isSalesDirectorUser } from "../auth/salesAccess";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { useNotify } from "../vendor/scm/components/NotifyDialog";
 import { usePrompt } from "../vendor/scm/components/PromptDialog";
@@ -781,14 +782,17 @@ function ProjectDetailView({ id, onBack }: { id: number; onBack: () => void }) {
   // Reversed 2026-07-16: crew (driver/helper/storekeeper) now VIEW+DOWNLOAD the
   // Filled floorplan (previously hidden). Keep the prop for future per-role use.
   const hideFilledPlan = false;
-  // A sales PIC (canEdit=false) sees Team as read-only, matching the desktop
-  // ProjectTeamSection/ProjectSpecStrip gate. Falls back to canWrite when the
-  // backend omitted pms.
-  const canEditTeam = canWrite && (pms ? pms.canEdit !== false : true);
-  // Owner 2026-07-13: the event's own Sales PIC manages Sales Attending even
-  // while the rest of the Team card (PIC picker) stays read-only for them.
-  const canEditAttending =
-    canWrite && (pms ? pms.canEdit !== false || pms.role === "PIC" : true);
+  // Owner 2026-07-18: PIC assignment AND Sales-Attending assignment are open to
+  // EVERYONE holding projects.write EXCEPT the Sales Director — same single
+  // logic layer as the desktop ProjectTeamSection (canAssignPeople). This
+  // SUPERSEDES the old director/logistics (pms.canEdit) + own-PIC gates on these
+  // two pickers. Sales Director matched by EXACT normalised name
+  // (isSalesDirectorUser), never a \b substring, so a free-text rename can't
+  // drift the block. Backend re-enforces the same rule (PATCH pic_id +
+  // POST/DELETE sales-attendees); this is UX/defence-in-depth only.
+  const canAssignPeople = canWrite && !isSalesDirectorUser(user);
+  const canEditTeam = canAssignPeople;
+  const canEditAttending = canAssignPeople;
   // PIC's phone from the project detail (backend populates pic_phone) — shown
   // on the mobile Team card for everyone, not just editors.
   const picPhone = fmtPhone(p?.pic_phone);

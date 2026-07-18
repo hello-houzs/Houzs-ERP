@@ -90,7 +90,7 @@ import { useFocusFromUrl } from "../hooks/useFocusFromUrl";
 import { useStickyFilters } from "../hooks/useStickyFilters";
 import { useAuth } from "../auth/AuthContext";
 import { usePageAccess } from "../auth/PageGuard";
-import { isSalesStaff, isDirectorUser } from "../auth/salesAccess";
+import { isSalesStaff, isDirectorUser, isSalesDirectorUser } from "../auth/salesAccess";
 import { PMS_STAGE_LABEL, pmsStageVariant } from "../vendor/scm/lib/pms-status";
 import { ACCESS_RANK } from "../types";
 import { Forbidden } from "./Forbidden";
@@ -4594,7 +4594,7 @@ function ProjectDetailContent({
   brands: string[];
   eventTypes: EventType[];
 }) {
-  const { can } = useAuth();
+  const { can, user } = useAuth();
   const dialog = useDialog();
   const detail = useQuery<ProjectDetail>(() => api.get(`/api/projects/${id}`), [id]);
   // Users list — fetched once per open panel, reused for owner pickers
@@ -4633,11 +4633,17 @@ function ProjectDetailContent({
   // absent (older cached response) we fall back to `fullAccess`.
   const pms = detail.data?._access?.pms;
   const canEditDetail = fullAccess && (pms ? pms.canEdit : true);
-  // Owner 2026-07-13: the event's own Sales PIC may manage WHO attends their
-  // event, even though the rest of the project stays read-only for them
-  // (pms.canEdit=false). The PIC picker itself stays on canEditDetail.
-  const canEditAttending =
-    fullAccess && (pms ? pms.canEdit || pms.role === "PIC" : true);
+  // Owner 2026-07-18: PIC assignment AND Sales-Attending assignment are open to
+  // EVERYONE holding projects.write EXCEPT the Sales Director. This SUPERSEDES
+  // the earlier director/logistics (pms.canEdit) + own-PIC gates on these two
+  // pickers — every other project edit (spec strip, checklist) keeps its own
+  // canEditDetail gate untouched. Sales Director matched by EXACT normalised
+  // name (isSalesDirectorUser), never a \b substring, so a free-text rename
+  // can't drift the block. Backend re-enforces the same rule on PATCH pic_id +
+  // POST/DELETE sales-attendees — this is UX/defence-in-depth only.
+  const canAssignPeople =
+    fullAccess && can("projects.write") && !isSalesDirectorUser(user);
+  const canEditAttending = canAssignPeople;
 
   async function patch(body: Record<string, any>) {
     const res = await api.patch<{ shifted_tasks?: number; delta_days?: number }>(
@@ -4902,7 +4908,7 @@ function ProjectDetailContent({
                 attendees={detail.data?.sales_attendees ?? []}
                 picUsers={picUsers}
                 picUsersLoading={picUsersQ.loading}
-                fullAccess={canEditDetail}
+                canEditPic={canAssignPeople}
                 canEditAttending={canEditAttending}
                 patch={patch}
                 onChanged={() => detail.reload()}
@@ -4948,7 +4954,7 @@ function ProjectTeamSection({
   attendees,
   picUsers,
   picUsersLoading,
-  fullAccess,
+  canEditPic,
   canEditAttending,
   patch,
   onChanged,
@@ -4959,10 +4965,11 @@ function ProjectTeamSection({
   attendees: SalesAttendee[];
   picUsers: Array<{ id: number; name: string | null; email: string }>;
   picUsersLoading: boolean;
-  fullAccess: boolean;
-  /** Owner 2026-07-13: the event's own Sales PIC manages Sales Attending
-   *  even while the rest of the project (incl. the PIC picker) is
-   *  read-only for them. */
+  /** Owner 2026-07-18: may this user (re)assign the PIC — open to every
+   *  projects.write holder EXCEPT the Sales Director. */
+  canEditPic: boolean;
+  /** Owner 2026-07-18: may this user change Sales Attending — same
+   *  everyone-except-Sales-Director rule as canEditPic. */
   canEditAttending: boolean;
   patch: (body: Record<string, any>) => Promise<void>;
   onChanged: () => void;
@@ -5048,7 +5055,7 @@ function ProjectTeamSection({
         <div className="mb-1 flex items-center gap-1.5 text-[9.5px] font-semibold uppercase tracking-brand text-ink-muted">
           <UserCircle2 size={11} /> PIC
         </div>
-        {fullAccess ? (
+        {canEditPic ? (
           <>
             <select
               value={p.pic_id ?? ""}
