@@ -2,7 +2,7 @@ import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { targetRefinementSchema } from '../shared';
 import { supabaseAuth } from '../middleware/auth';
-import { hasHouzsPerm } from '../lib/houzs-perms';
+import { canWriteScmConfig } from '../lib/houzs-perms';
 import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
@@ -12,7 +12,7 @@ export const deliveryFees = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 deliveryFees.use('*', supabaseAuth);
 
-// Houzs-flavoured: gate on the flat permission key `scm.config.write` against
+// Houzs-flavoured: gate via canWriteScmConfig (flat `scm.config.write` OR the position policy canWriteConfig flag, see houzs-perms.ts) against
 // the REAL caller (the 2990 staff_role lookup is dead in Houzs — the SCM
 // bridge pins every caller to one super_admin row). Owner + IT Admin pass via
 // `*`; grant individual positions via the Team > Positions matrix.
@@ -55,7 +55,7 @@ deliveryFees.get('/', async (c) => {
 // role check + RLS as defence-in-depth (migrations 0029 + 0112 grant UPDATE to
 // exactly these roles).
 deliveryFees.patch('/', async (c) => {
-  if (!hasHouzsPerm(c, 'scm.config.write')) {
+  if (!canWriteScmConfig(c)) {
     return c.json({ error: 'forbidden', reason: 'missing_scm_config_write' }, 403);
   }
   const u = c.get('user');
@@ -120,7 +120,7 @@ const specialRuleSchema = z.object({
 
 // Reused gate for the special-fee writes — Houzs flat-key permission.
 const requireFeeEditor = async (c: AppContext) => {
-  if (!hasHouzsPerm(c, 'scm.config.write')) {
+  if (!canWriteScmConfig(c)) {
     return { error: c.json({ error: 'forbidden', reason: 'missing_scm_config_write' }, 403) };
   }
   const u = c.get('user');

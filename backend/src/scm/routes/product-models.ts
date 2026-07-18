@@ -27,7 +27,7 @@ import { createClient } from '@supabase/supabase-js';
 import { supabaseAuth } from '../middleware/auth';
 import { findModelUsage } from '../lib/sku-usage';
 import { activeCompanyId, stampCompany, scopeToCompany } from '../lib/companyScope';
-import { hasHouzsPerm, canViewScmProductCost } from '../lib/houzs-perms';
+import { canWriteScmConfig, canViewScmProductCost } from '../lib/houzs-perms';
 import { PRODUCT_FINANCE_KEYS } from '../lib/finance-keys';
 import { todayMyt } from '../lib/my-time';
 import type { Env, Variables } from '../env';
@@ -1188,7 +1188,7 @@ productModels.get('/:id/photos', async (c) => {
 });
 
 productModels.post('/:id/photos', async (c) => {
-  if (!hasHouzsPerm(c, 'scm.config.write')) {
+  if (!canWriteScmConfig(c)) {
     return c.json({ error: 'forbidden' }, 403);
   }
   if (!c.env.SO_ITEM_PHOTOS) {
@@ -1281,7 +1281,7 @@ productModels.post('/:id/photos', async (c) => {
 });
 
 productModels.delete('/:id/photos/:photoId', async (c) => {
-  if (!hasHouzsPerm(c, 'scm.config.write')) {
+  if (!canWriteScmConfig(c)) {
     return c.json({ error: 'forbidden' }, 403);
   }
   const supabase = c.get('supabase');
@@ -1334,7 +1334,7 @@ productModels.delete('/:id/photos/:photoId', async (c) => {
 });
 
 productModels.patch('/:id/photos/:photoId', async (c) => {
-  if (!hasHouzsPerm(c, 'scm.config.write')) {
+  if (!canWriteScmConfig(c)) {
     return c.json({ error: 'forbidden' }, 403);
   }
   let body: Record<string, unknown>;

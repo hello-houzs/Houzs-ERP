@@ -6,7 +6,7 @@
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { supabaseAuth } from '../middleware/auth';
-import { hasHouzsPerm } from '../lib/houzs-perms';
+import { canWriteScmConfig } from '../lib/houzs-perms';
 import { activeCompanyId, scopeToCompany } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
@@ -16,7 +16,7 @@ export const pwpRules = new Hono<{ Bindings: Env; Variables: Variables }>();
 
 pwpRules.use('*', supabaseAuth);
 
-// Houzs-flavoured: gate on the flat permission key `scm.config.write` against
+// Houzs-flavoured: gate via canWriteScmConfig (flat `scm.config.write` OR the position policy canWriteConfig flag, see houzs-perms.ts) against
 // the REAL caller (the 2990 staff_role lookup is dead in Houzs — the SCM
 // bridge pins every caller to one super_admin row).
 
@@ -85,7 +85,7 @@ const SELECT =
 
 // Editors-only guard — Houzs flat-key permission.
 async function requireWrite(c: AppCtx) {
-  if (!hasHouzsPerm(c, 'scm.config.write')) {
+  if (!canWriteScmConfig(c)) {
     return { ok: false as const, res: c.json({ error: 'forbidden', reason: 'missing_scm_config_write' }, 403) };
   }
   const u = c.get('user');

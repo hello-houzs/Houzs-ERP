@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { supabaseAuth } from '../middleware/auth';
-import { hasHouzsPerm } from '../lib/houzs-perms';
+import { canWriteScmConfig } from '../lib/houzs-perms';
 import { scopeToCompany, activeCompanyId } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
 
@@ -10,13 +10,13 @@ export const categoriesApi = new Hono<{ Bindings: Env; Variables: Variables }>()
 
 categoriesApi.use('*', supabaseAuth);
 
-// Houzs-flavoured: gate on the flat permission key `scm.config.write` against
+// Houzs-flavoured: gate via canWriteScmConfig (flat `scm.config.write` OR the position policy canWriteConfig flag, see houzs-perms.ts) against
 // the REAL caller (the 2990 staff_role lookup is dead in Houzs — the SCM
 // bridge pins every caller to one super_admin row, so the original gate
 // trivially passed for everyone).
 
 categoriesApi.post('/:id/hero-image', async (c) => {
-  if (!hasHouzsPerm(c, 'scm.config.write')) {
+  if (!canWriteScmConfig(c)) {
     return c.json({ error: 'forbidden' }, 403);
   }
   const supabase = c.get('supabase');
@@ -47,7 +47,7 @@ categoriesApi.post('/:id/hero-image', async (c) => {
 // role like the put/delete here), Content-Type set from the stored object,
 // 404 when the category has no hero or the object is missing.
 categoriesApi.get('/:id/hero-image', async (c) => {
-  if (!hasHouzsPerm(c, 'scm.config.write')) {
+  if (!canWriteScmConfig(c)) {
     return c.json({ error: 'forbidden' }, 403);
   }
   const supabase = c.get('supabase');
@@ -74,7 +74,7 @@ categoriesApi.get('/:id/hero-image', async (c) => {
 });
 
 categoriesApi.delete('/:id/hero-image', async (c) => {
-  if (!hasHouzsPerm(c, 'scm.config.write')) {
+  if (!canWriteScmConfig(c)) {
     return c.json({ error: 'forbidden' }, 403);
   }
   const supabase = c.get('supabase');
@@ -249,7 +249,7 @@ const trim200 = (v: unknown): string =>
   typeof v === 'string' ? v.trim().slice(0, 200) : '';
 
 publicCategoriesApi.post('/', async (c) => {
-  if (!hasHouzsPerm(c, 'scm.config.write')) {
+  if (!canWriteScmConfig(c)) {
     return c.json({ error: 'forbidden' }, 403);
   }
   let body: Record<string, unknown>;
@@ -302,7 +302,7 @@ publicCategoriesApi.post('/', async (c) => {
 });
 
 publicCategoriesApi.patch('/:id', async (c) => {
-  if (!hasHouzsPerm(c, 'scm.config.write')) {
+  if (!canWriteScmConfig(c)) {
     return c.json({ error: 'forbidden' }, 403);
   }
   let body: Record<string, unknown>;
@@ -350,7 +350,7 @@ publicCategoriesApi.patch('/:id', async (c) => {
 });
 
 publicCategoriesApi.delete('/:id', async (c) => {
-  if (!hasHouzsPerm(c, 'scm.config.write')) {
+  if (!canWriteScmConfig(c)) {
     return c.json({ error: 'forbidden' }, 403);
   }
   const supabase = c.get('supabase');
@@ -403,7 +403,7 @@ publicCategoriesApi.delete('/:id', async (c) => {
 
 // PATCH /:id/hero-meta — focal + alt update. Admin-only.
 publicCategoriesApi.patch('/:id/hero-meta', async (c) => {
-  if (!hasHouzsPerm(c, 'scm.config.write')) {
+  if (!canWriteScmConfig(c)) {
     return c.json({ error: 'forbidden' }, 403);
   }
   let body: Record<string, unknown>;

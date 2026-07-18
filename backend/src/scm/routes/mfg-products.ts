@@ -23,7 +23,7 @@ import { paginateAll } from '../lib/paginate-all';
 import { findSkuUsage } from '../lib/sku-usage';
 import { productToBindingPatch } from '../lib/cost-anchor-sync';
 import { moduleCodeFromSku, normalizeSofaTier, parseDefaultFreeGifts } from '../shared';
-import { hasHouzsPerm, canViewScmProductCost } from '../lib/houzs-perms';
+import { canWriteScmConfig, canViewScmProductCost } from '../lib/houzs-perms';
 import { PRODUCT_FINANCE_KEYS, stripProductPriceHistory } from '../lib/finance-keys';
 import { scopeToCompany, activeCompanyId } from '../lib/companyScope';
 import type { Env, Variables } from '../env';
@@ -36,15 +36,17 @@ type AppContext = Context<{ Bindings: Env; Variables: Variables }>;
 
 // mfg_products has NO RLS — this app-layer gate is the only thing stopping a
 // junior salesperson from rewriting SKU prices/data via a direct API call (the
-// POS productsMode client gate is bypassable). Houzs-flavoured: gate on the
-// flat permission key `scm.config.write` against the REAL caller. Owner + IT
-// Admin pass via `*`; grant individual positions via the Team > Positions
-// matrix. The 2990 staff_role lookup is dead in Houzs (the SCM bridge pins
-// every caller to one super_admin row).
+// POS productsMode client gate is bypassable). Houzs-flavoured: gate via
+// canWriteScmConfig against the REAL caller — satisfied by EITHER the flat
+// permission key `scm.config.write` (Owner + IT pass via `*`; any role granted
+// the key) OR the caller's POSITION policy canWriteConfig flag (the
+// operation/purchasing cohort — Procurement/Purchasing et al. — positionPolicy.ts
+// CONFIG_WRITE_POSITIONS). The 2990 staff_role lookup is dead in Houzs (the SCM
+// bridge pins every caller to one super_admin row).
 // GET stays open — the POS salesperson must read the catalogue to price builds.
 
 async function requireRole(c: AppContext): Promise<{ ok: true } | { ok: false; res: Response }> {
-  if (!hasHouzsPerm(c, 'scm.config.write')) {
+  if (!canWriteScmConfig(c)) {
     return { ok: false, res: c.json({ error: 'forbidden', reason: 'missing_scm_config_write' }, 403) };
   }
   return { ok: true };
