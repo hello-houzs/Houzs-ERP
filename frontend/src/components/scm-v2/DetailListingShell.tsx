@@ -40,6 +40,7 @@ import type { DetailListingFilters, DetailListingRow } from '../../vendor/scm/li
 import styles from '../../pages/scm-v2/SalesOrderDetailListing.module.css';
 import { fmtDate } from '@2990s/shared';
 import { todayMyt } from '../../vendor/scm/lib/dates';
+import { printPage } from '../../lib/nativeFiles';
 
 const SM_ICON = { size: 14, strokeWidth: 1.75 } as const;
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
@@ -179,7 +180,7 @@ export function DetailListingShell<R extends DetailListingRow>({
 
   const runPrint = () => {
     if (!hasRunQuery) runInquiry();
-    setTimeout(() => window.print(), 60);
+    setTimeout(() => void printPage(), 60);
   };
 
   // HOUZS VENDOR STUB — the source renders the listing to a PDF via

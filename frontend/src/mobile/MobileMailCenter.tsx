@@ -5,6 +5,7 @@ import { useQuery } from "../hooks/useQuery";
 import { useToast } from "../hooks/useToast";
 import { useConfirm } from "../vendor/scm/components/ConfirmDialog";
 import { formatDate } from "../lib/utils";
+import { openBlobUrl } from "../lib/nativeFiles";
 import "./mobile.css";
 
 // Mobile Mail Center — the email client, wired to /api/mail-center. Kept at
@@ -838,7 +839,7 @@ function AttachmentChip({ a }: { a: Attachment }) {
     try {
       // Attachments are served through an authed stream route, not a public URL.
       const url = await api.fetchBlobUrl(a.url);
-      window.open(url, "_blank", "noopener,noreferrer");
+      await openBlobUrl(url, a.filename, { features: "noopener,noreferrer" });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Couldn't open attachment.");
     }

@@ -67,6 +67,7 @@ import {
 import { cn } from "../../lib/utils";
 import { lineIdentity } from "@2990s/shared";
 import { useAuth } from "../../auth/AuthContext";
+import { printPage } from "../../lib/nativeFiles";
 
 // ─── Header + item shapes (subset — full 40-field row lives in the list V2) ─
 
@@ -884,7 +885,7 @@ export function DeliveryOrderDetailV2() {
       );
   };
   const doPrintNow = () => {
-    window.print();
+    void printPage();
   };
 
   // ── DO line item columns — Item (with variant chips) · Type (FOC/Sale) · Qty ─

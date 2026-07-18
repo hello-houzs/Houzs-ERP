@@ -42,6 +42,36 @@ export default defineConfig(({ mode }) => {
   // dist/sw.js below), so a deploy can never accidentally reuse either.
   const buildId = Date.now().toString(36);
 
+  /* Native (Capacitor) build defaults, applied by `vite build --mode native`.
+     These would normally live in .env.native, but .env* is gitignored and
+     weakening that rule to admit one file is how a secret eventually leaks.
+     None of these is secret -- they are the public URLs the browser already
+     talks to -- and a shipped binary cannot be reconfigured afterwards, so the
+     values it was built with belong somewhere reviewable rather than in one
+     person's CI settings. An explicitly-set env var still wins, which is what
+     a staging build would use. */
+  const nativeDefines =
+    mode === "native"
+      ? {
+          // capacitor://localhost gives /api/* nothing to be relative to. Points
+          // at the PAGES origin, not the Worker: *.workers.dev is intermittently
+          // blocked by Malaysian carriers (2026-07-09 driver login timeouts) and
+          // the Pages Function proxy is the fix.
+          "import.meta.env.VITE_API_URL": JSON.stringify(
+            env.VITE_API_URL || "https://erp.houzscentury.com"
+          ),
+          // Links that LEAVE the app: portal cases, invites, password resets.
+          "import.meta.env.VITE_PUBLIC_WEB_ORIGIN": JSON.stringify(
+            env.VITE_PUBLIC_WEB_ORIGIN || "https://erp.houzscentury.com"
+          ),
+          // Pre-auth company identity; the web infers it from the hostname,
+          // which a native shell can never satisfy.
+          "import.meta.env.VITE_DEFAULT_COMPANY_CODE": JSON.stringify(
+            env.VITE_DEFAULT_COMPANY_CODE || "HOUZS"
+          ),
+        }
+      : {};
+
   return {
     resolve: {
       // Array form (find/replacement) — required because the react-router
@@ -173,6 +203,7 @@ export default defineConfig(({ mode }) => {
     // orphans the previous build's snapshot instead of hydrating a stale shape.
     define: {
       __BUILD_ID__: JSON.stringify(buildId),
+      ...nativeDefines,
     },
     build: {
       // Don't <link rel="modulepreload"> the heavy on-demand chunks (jspdf /

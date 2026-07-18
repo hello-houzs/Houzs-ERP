@@ -15,6 +15,8 @@
 // fails / the app is offline) — only centralised, nothing changes visually.
 // ----------------------------------------------------------------------------
 
+import { IS_NATIVE } from "./native";
+
 export interface Branding {
   companyName: string;
   registrationNo: string;
@@ -79,8 +81,16 @@ export const HOUZS_COMPANY_CODE = "HOUZS";
 /** Hostname default company — mirrors the backend companyContext middleware's
  *  defaultCompanyCodeForHost (erp.2990shome.com → 2990; everything else →
  *  HOUZS). Used pre-fetch (and pre-auth, where GET /api/branding 401s) so the
- *  login screen / first paint on a 2990 hostname never flashes Houzs. */
+ *  login screen / first paint on a 2990 hostname never flashes Houzs.
+ *
+ *  A native shell has no meaningful hostname (it is always capacitor://
+ *  localhost), so the host test would silently answer HOUZS for every build.
+ *  The company a native build belongs to is decided when that build is made,
+ *  which is what VITE_DEFAULT_COMPANY_CODE carries. */
 export function hostDefaultCompanyCode(): string {
+  const configured = ((import.meta.env.VITE_DEFAULT_COMPANY_CODE as string) || "").trim().toUpperCase();
+  if (configured) return configured;
+  if (IS_NATIVE) return HOUZS_COMPANY_CODE;
   try {
     return window.location.hostname.toLowerCase().includes("2990")
       ? "2990"

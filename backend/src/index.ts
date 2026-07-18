@@ -22,6 +22,7 @@ import positions from "./routes/positions";
 import departments from "./routes/departments";
 import companies from "./routes/companies";
 import notifications from "./routes/notifications";
+import push from "./routes/push";
 import presence from "./routes/presence";
 import events from "./routes/events";
 import projects from "./routes/projects";
@@ -235,6 +236,9 @@ app.route("/api/positions", positions);
 app.route("/api/departments", departments);
 app.route("/api/companies", companies);
 app.route("/api/notifications", notifications);
+// APNs device-token registration for the iOS shell. Any authed user, same as
+// /api/notifications — a device token is the caller's own plumbing.
+app.route("/api/push", push);
 app.route("/api/presence", presence);
 app.route("/api/events", events);
 app.route("/api/projects", projects);

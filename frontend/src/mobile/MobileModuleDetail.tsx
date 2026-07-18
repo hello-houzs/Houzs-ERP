@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { PUBLIC_WEB_ORIGIN } from "../lib/native";
 import { visibleFields } from "../auth/salesAccess";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { lineIdentity } from "@2990s/shared";
@@ -1035,7 +1036,7 @@ function MemberActions({ row, onDone }: { row: any; onDone: () => void }) {
         email_sent?: boolean;
         email_status?: string;
       }>(`/api/users/${id}/reset-password`);
-      const link = res.reset_path ? `${window.location.origin}${res.reset_path}` : "";
+      const link = res.reset_path ? `${PUBLIC_WEB_ORIGIN}${res.reset_path}` : "";
       const copied = await copyLink(link);
       if (res.email_sent) {
         await notify({ title: "Reset link sent", body: copied ? `Emailed to ${email} — the link is also copied.` : `Emailed to ${email}.` });

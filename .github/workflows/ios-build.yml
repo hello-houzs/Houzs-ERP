@@ -1,0 +1,372 @@
+name: iOS build
+
+# Builds the Capacitor iOS shell around the existing mobile web UI.
+#
+# Why this workflow exists at all: the owner develops on Windows and has no
+# Mac. Xcode only runs on macOS, so a GitHub macOS runner is the ONLY path to
+# an .ipa. Everything Xcode-shaped therefore lives here rather than in a local
+# script someone is expected to run.
+#
+# Signing is entirely optional. With zero secrets configured this workflow
+# still runs to completion and produces an UNSIGNED .ipa, so the pipeline can
+# be proven green before the Apple Developer account exists. Once the four
+# signing secrets are set it switches to a signed export automatically - no
+# edit to this file is needed. See docs/IOS-RELEASE.md.
+#
+# Manual trigger only. macOS runner minutes bill at ten times the Linux rate
+# on private repos, so this must not fire on every push.
+
+on:
+  workflow_dispatch:
+    inputs:
+      export_method:
+        description: "Export method (ignored on unsigned builds)"
+        type: choice
+        default: app-store-connect
+        options:
+          - app-store-connect
+          - ad-hoc
+          - development
+      upload_testflight:
+        description: "Upload the signed .ipa to TestFlight"
+        type: boolean
+        default: false
+      force_unsigned:
+        description: "Force an unsigned build even if signing secrets exist"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # Pinned rather than macos-latest: an Xcode major bump arriving silently
+    # under us would break signing on a day nobody touched this file.
+    runs-on: macos-15
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+
+    env:
+      # The bundled web assets have no same-origin to be relative to - the page
+      # is served from capacitor://localhost. Both vars must be absolute and
+      # must point at the PAGES origin, not the Worker: see the comment blocks
+      # in frontend/src/lib/apiBase.ts (Malaysian carriers intermittently block
+      # *.workers.dev, which stranded field staff at login on 2026-07-09) and
+      # frontend/src/lib/native.ts (links that LEAVE the app must be openable).
+      VITE_API_URL: https://erp.houzscentury.com
+      VITE_PUBLIC_WEB_ORIGIN: https://erp.houzscentury.com
+      IOS_APP_DIR: frontend/ios/App
+      BUNDLE_ID: com.houzscentury.erp
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Show toolchain
+        run: |
+          node --version
+          xcodebuild -version
+          pod --version
+
+      # Decide signed vs unsigned WITHOUT ever printing a secret. Only the
+      # words true/false and the NAMES of missing secrets leave this step.
+      - name: Resolve signing mode
+        id: signing
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          IOS_DIST_CERT_P12_BASE64: ${{ secrets.IOS_DIST_CERT_P12_BASE64 }}
+          IOS_DIST_CERT_PASSWORD: ${{ secrets.IOS_DIST_CERT_PASSWORD }}
+          IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+          FORCE_UNSIGNED: ${{ inputs.force_unsigned }}
+        run: |
+          missing=""
+          for name in APPLE_TEAM_ID IOS_DIST_CERT_P12_BASE64 IOS_DIST_CERT_PASSWORD IOS_PROVISIONING_PROFILE_BASE64; do
+            if [ -z "${!name}" ]; then missing="$missing $name"; fi
+          done
+
+          if [ "$FORCE_UNSIGNED" = "true" ]; then
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "reason=forced unsigned by workflow input" >> "$GITHUB_OUTPUT"
+          elif [ -n "$missing" ]; then
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "reason=signing secrets not configured:$missing" >> "$GITHUB_OUTPUT"
+          else
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+            echo "reason=all signing secrets present" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      # --mode native. vite.config.ts supplies the native origins for that mode,
+      # so a build is correct without depending on this job's env being set;
+      # the VITE_* above still override, which is what a staging build uses.
+      # Either way the values are inlined here - changing them later has no
+      # effect on the shipped app.
+      - name: Build web assets
+        working-directory: frontend
+        run: npm run build:native
+
+      # The ios/ project is generated here rather than committed. Rationale:
+      # `npx cap add ios` runs pod install, which cannot run on the owner's
+      # Windows machine, so a committed project could only ever come from a
+      # Mac nobody has. Generating it makes the build reproducible from the
+      # web sources alone. If a Mac later commits frontend/ios/, this step
+      # detects it and syncs instead of regenerating - no workflow edit needed.
+      - name: Generate or sync the iOS project
+        working-directory: frontend
+        run: |
+          if [ -d ios ]; then
+            echo "frontend/ios exists - syncing the committed project"
+          else
+            echo "frontend/ios absent - generating it with cap add"
+            npx cap add ios
+          fi
+          npx cap sync ios
+
+      # Info.plist keys are applied by script, not assumed to be in a
+      # committed project. Camera and photo library for order-slip scanning
+      # and delivery POD, location for POD, remote-notification background
+      # mode for push.
+      - name: Patch Info.plist and entitlements
+        run: |
+          if [ "${{ inputs.export_method }}" = "development" ]; then
+            aps=development
+          else
+            aps=production
+          fi
+          bash .github/scripts/ios-prepare.sh "$IOS_APP_DIR" "$aps"
+
+      # ---- Signed path: temporary keychain -------------------------------
+      # A dedicated keychain in RUNNER_TEMP, destroyed at the end of the job.
+      # Never the login keychain, so nothing survives into another run.
+      - name: Import signing certificate
+        if: steps.signing.outputs.signed == 'true'
+        env:
+          IOS_DIST_CERT_P12_BASE64: ${{ secrets.IOS_DIST_CERT_P12_BASE64 }}
+          IOS_DIST_CERT_PASSWORD: ${{ secrets.IOS_DIST_CERT_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/houzs-ios-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+          echo "KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+
+          # openssl rather than base64(1): the BSD base64 on macOS and the GNU
+          # one disagree on the decode flag, and openssl -A tolerates whatever
+          # line wrapping the pasted secret happens to carry.
+          printf '%s' "$IOS_DIST_CERT_P12_BASE64" | tr -d '\n\r' \
+            | openssl base64 -d -A > "$RUNNER_TEMP/dist.p12"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/dist.p12" \
+            -P "$IOS_DIST_CERT_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          # Without a partition list, codesign blocks on a UI prompt that can
+          # never be answered on a headless runner and the job hangs to timeout.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychain -d user -s "$KEYCHAIN" login.keychain-db
+
+          rm -f "$RUNNER_TEMP/dist.p12"
+          security find-identity -v -p codesigning "$KEYCHAIN"
+
+      - name: Install provisioning profile
+        id: profile
+        if: steps.signing.outputs.signed == 'true'
+        env:
+          IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          PROFILE="$RUNNER_TEMP/app.mobileprovision"
+          printf '%s' "$IOS_PROVISIONING_PROFILE_BASE64" | tr -d '\n\r' \
+            | openssl base64 -d -A > "$PROFILE"
+
+          # A .mobileprovision is a CMS envelope; decode it to read the name
+          # and UUID rather than making the owner type them into more secrets.
+          security cms -D -i "$PROFILE" > "$RUNNER_TEMP/profile.plist"
+          NAME=$(/usr/libexec/PlistBuddy -c "Print :Name" "$RUNNER_TEMP/profile.plist")
+          UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" "$RUNNER_TEMP/profile.plist")
+          APPID=$(/usr/libexec/PlistBuddy -c "Print :Entitlements:application-identifier" "$RUNNER_TEMP/profile.plist")
+          echo "profile name: $NAME"
+          echo "profile uuid: $UUID"
+          echo "profile app id: $APPID"
+
+          DEST="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$DEST"
+          cp "$PROFILE" "$DEST/$UUID.mobileprovision"
+
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+      # ---- Archive --------------------------------------------------------
+      - name: Archive (unsigned)
+        if: steps.signing.outputs.signed != 'true'
+        run: |
+          set -o pipefail
+          xcodebuild archive \
+            -workspace "$IOS_APP_DIR/App.xcworkspace" \
+            -scheme App \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            2>&1 | tee "$RUNNER_TEMP/xcodebuild-archive.log"
+          test -d "$RUNNER_TEMP/App.xcarchive"
+
+      - name: Archive (signed)
+        if: steps.signing.outputs.signed == 'true'
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -o pipefail
+          xcodebuild archive \
+            -workspace "$IOS_APP_DIR/App.xcworkspace" \
+            -scheme App \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            CODE_SIGN_STYLE=Manual \
+            PROVISIONING_PROFILE_SPECIFIER="${{ steps.profile.outputs.name }}" \
+            CODE_SIGN_ENTITLEMENTS="$GITHUB_WORKSPACE/$IOS_APP_DIR/App/App.entitlements" \
+            OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN" \
+            2>&1 | tee "$RUNNER_TEMP/xcodebuild-archive.log"
+          test -d "$RUNNER_TEMP/App.xcarchive"
+
+      # ---- Package --------------------------------------------------------
+      # An .ipa is a zip with the .app under Payload/. Apple's exportArchive
+      # refuses to run without signing, so the unsigned path builds the
+      # container by hand. It cannot be installed on a device - it exists so
+      # the owner can see the pipeline go green and confirm the app compiles
+      # before paying Apple.
+      - name: Package unsigned .ipa
+        if: steps.signing.outputs.signed != 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/export/Payload"
+          cp -R "$RUNNER_TEMP/App.xcarchive/Products/Applications/App.app" \
+                "$RUNNER_TEMP/export/Payload/"
+          cd "$RUNNER_TEMP/export"
+          zip -qry "HouzsERP-unsigned-${{ github.run_number }}.ipa" Payload
+          rm -rf Payload
+          ls -lh "$RUNNER_TEMP/export"
+
+      - name: Export signed .ipa
+        if: steps.signing.outputs.signed == 'true'
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -o pipefail
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>${{ inputs.export_method }}</string>
+            <key>teamID</key>
+            <string>${APPLE_TEAM_ID}</string>
+            <key>signingStyle</key>
+            <string>manual</string>
+            <key>signingCertificate</key>
+            <string>Apple Distribution</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>${BUNDLE_ID}</key>
+              <string>${{ steps.profile.outputs.name }}</string>
+            </dict>
+            <key>stripSwiftSymbols</key>
+            <true/>
+            <key>uploadSymbols</key>
+            <true/>
+          </dict>
+          </plist>
+          PLIST
+
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/export" \
+            2>&1 | tee "$RUNNER_TEMP/xcodebuild-export.log"
+
+          ls -lh "$RUNNER_TEMP/export"
+          test -n "$(ls "$RUNNER_TEMP/export"/*.ipa 2>/dev/null)"
+
+      # ---- TestFlight (opt-in, secret-gated) ------------------------------
+      - name: Upload to TestFlight
+        if: steps.signing.outputs.signed == 'true' && inputs.upload_testflight
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_API_KEY_P8_BASE64: ${{ secrets.ASC_API_KEY_P8_BASE64 }}
+        run: |
+          if [ -z "$ASC_KEY_ID" ] || [ -z "$ASC_ISSUER_ID" ] || [ -z "$ASC_API_KEY_P8_BASE64" ]; then
+            echo "TestFlight upload requested but ASC_KEY_ID / ASC_ISSUER_ID / ASC_API_KEY_P8_BASE64 are not all set."
+            echo "Skipping the upload. The .ipa is still attached to this run as an artifact."
+            exit 0
+          fi
+
+          # altool looks for the key at this exact path and filename.
+          mkdir -p "$HOME/.appstoreconnect/private_keys"
+          printf '%s' "$ASC_API_KEY_P8_BASE64" | tr -d '\n\r' | openssl base64 -d -A \
+            > "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+
+          IPA=$(ls "$RUNNER_TEMP/export"/*.ipa | head -n 1)
+          xcrun altool --upload-app -f "$IPA" -t ios \
+            --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+
+      # ---- Always ---------------------------------------------------------
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build-${{ github.run_number }}
+          path: |
+            ${{ runner.temp }}/export/*.ipa
+            ${{ runner.temp }}/xcodebuild-*.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## iOS build ${{ github.run_number }}"
+            echo ""
+            echo "- Signing: ${{ steps.signing.outputs.signed == 'true' && 'signed' || 'UNSIGNED' }}"
+            echo "- Reason: ${{ steps.signing.outputs.reason }}"
+            echo "- Export method: ${{ inputs.export_method }}"
+            echo "- TestFlight upload requested: ${{ inputs.upload_testflight }}"
+            echo ""
+            if [ "${{ steps.signing.outputs.signed }}" != "true" ]; then
+              echo "An UNSIGNED .ipa cannot be installed on a device. It proves the"
+              echo "app compiles. See docs/IOS-RELEASE.md for the secrets that turn"
+              echo "this into a signed, installable build."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Destroy the temporary keychain
+        if: always()
+        run: |
+          rm -f "$HOME/.appstoreconnect/private_keys"/AuthKey_*.p8 || true
+          rm -f "$RUNNER_TEMP/dist.p12" "$RUNNER_TEMP/app.mobileprovision" "$RUNNER_TEMP/profile.plist" || true
+          if [ -n "${KEYCHAIN:-}" ] && [ -f "$KEYCHAIN" ]; then
+            security delete-keychain "$KEYCHAIN" || true
+          fi

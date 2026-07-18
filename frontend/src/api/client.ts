@@ -21,6 +21,9 @@ import { AUTH_TOKEN_KEY as TOKEN_KEY, readAuthToken } from "../lib/authToken";
 // the constant.
 import { API_ORIGIN } from "../lib/apiBase";
 
+// <a download> and window.open(blob:) are both dead in the iOS WKWebView.
+import { openBlobUrl, saveAndOpenBlob } from "../lib/nativeFiles";
+
 const baseUrl = API_ORIGIN;
 
 // Token storage — the writer. The AuthContext writes here on login/logout.
@@ -451,14 +454,7 @@ export const api = {
     const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd);
     const name = m ? decodeURIComponent(m[1]) : fallbackName;
     const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = name;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    await saveAndOpenBlob(blob, name);
   },
 
   async openHtml(path: string): Promise<void> {
@@ -470,9 +466,8 @@ export const api = {
     const html = await res.text();
     const blob = new Blob([html], { type: "text/html" });
     const url = URL.createObjectURL(blob);
-    window.open(url, "_blank");
     // Revoke after the new tab has had time to parse; instant revoke breaks some browsers.
-    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    await openBlobUrl(url, "document.html", { revokeAfterMs: 60_000 });
   },
 };
 

@@ -1,5 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useNotifications, type NotificationItem } from "../hooks/useNotifications";
+import { IS_NATIVE } from "../lib/native";
+import { initNativePush } from "../lib/nativePush";
 import {
   HOUZS_COMPANY_CODE,
   getBrandingCache,
@@ -11,6 +13,11 @@ const PUSH_PREF_KEY = "notifications:browserPush";
 
 export function isBrowserPushEnabled(): boolean {
   try {
+    // Native shell delivers through APNs, not through this component. WKWebView
+    // has no Notification constructor, so the check below would already be
+    // false — this is the explicit statement of that, so the next reader does
+    // not "fix" the missing constructor by polyfilling it.
+    if (IS_NATIVE) return false;
     return (
       typeof window !== "undefined" &&
       "Notification" in window &&
@@ -41,6 +48,19 @@ export function BrowserPushSink() {
   const { feed, lastTick } = useNotifications();
   const seenRef = useRef<Set<number>>(new Set());
   const primedRef = useRef(false);
+  const nativeInitRef = useRef(false);
+
+  // Native push is driven by the FIRST SUCCESSFUL POLL rather than by mount:
+  // lastTick only advances once /api/notifications has answered, which proves
+  // the session is live. Registering a device token against a session that is
+  // about to 401 would file the token under the wrong user, and prompting for
+  // OS permission before the app has loaded any data is the cold-start prompt
+  // that gets an app permanently denied.
+  useEffect(() => {
+    if (!IS_NATIVE || nativeInitRef.current || lastTick === 0) return;
+    nativeInitRef.current = true;
+    void initNativePush();
+  }, [lastTick]);
 
   useEffect(() => {
     // First tick after mount: treat everything we already have as

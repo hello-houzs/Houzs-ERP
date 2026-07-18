@@ -64,6 +64,7 @@ import {
 } from '../../vendor/scm/lib/reports-queries';
 import { useAuth } from '../../auth/AuthContext';
 import styles from './SalesOrderDetailListing.module.css';
+import { printPage } from '../../lib/nativeFiles';
 
 /* Bump the storage key when migrating to the Houzs layout — the previous
    key (`so-detail-listing-grid`) held the AutoCount column order, which
@@ -673,7 +674,7 @@ export const SalesOrderDetailListing = () => {
   /* ── PDF preview (retained from the AutoCount layout) ──────────────── */
   const [findNonce, setFindNonce] = useState(0);
 
-  const runPrint = () => window.print();
+  const runPrint = () => void printPage();
 
   /* Match the headline format Houzs uses on the title bar — drives the
        "N items · drag to reorder columns" subtitle below. */

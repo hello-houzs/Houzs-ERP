@@ -25,6 +25,8 @@ import {
   ensureBrandLogoLoaded,
   getBrandLogoCache,
 } from '../../../lib/branding';
+import { IS_NATIVE } from '../../../lib/native';
+import { saveAndOpenBlob } from '../../../lib/nativeFiles';
 
 // ----------------------------------------------------------------------------
 // Sales Order PDF generator — dynamic jspdf import so it doesn't bloat the
@@ -752,6 +754,13 @@ export async function generateSalesOrderPdf(
      - save:    write a real file (download)
      - print:   blob URL → hidden iframe → window.print()
      - preview: blob URL → new tab (browser PDF viewer) */
+  /* Native collapses all three actions onto the share sheet: doc.save() is an
+     <a download> the WKWebView ignores, and neither a new tab nor a print
+     dialog exists. The sheet offers Print, Save to Files and Open in... */
+  if (IS_NATIVE) {
+    await saveAndOpenBlob(doc.output('blob'), filename);
+    return;
+  }
   if (action === 'save') {
     doc.save(filename);
     return;
@@ -788,5 +797,10 @@ export async function generateCombinedSalesOrderPdf(
       opts,
     );
   }
-  doc.save(opts?.fileName ?? 'sales-orders.pdf');
+  const combinedName = opts?.fileName ?? 'sales-orders.pdf';
+  if (IS_NATIVE) {
+    await saveAndOpenBlob(doc.output('blob'), combinedName);
+    return;
+  }
+  doc.save(combinedName);
 }

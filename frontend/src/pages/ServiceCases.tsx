@@ -71,6 +71,7 @@ import { useDialog } from "../hooks/useDialog";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useServerSort } from "../hooks/useServerSort";
 import { useFocusFromUrl } from "../hooks/useFocusFromUrl";
+import { PUBLIC_WEB_ORIGIN } from "../lib/native";
 import { useAuth } from "../auth/AuthContext";
 import { isSalesStaff } from "../auth/salesAccess";
 import { api, buildQuery } from "../api/client";
@@ -6790,7 +6791,7 @@ function PortalLinkRow({
   // Readable link: the ASSR slug rides in the path (cosmetic — the
   // token alone still resolves, old bare links keep working).
   const link = existingToken
-    ? `${window.location.origin}/portal/case/${assrSlug(assrNo)}/${existingToken}`
+    ? `${PUBLIC_WEB_ORIGIN}/portal/case/${assrSlug(assrNo)}/${existingToken}`
     : null;
 
   async function generate() {
@@ -6877,7 +6878,7 @@ function SupplierPortalLinkRow({
       const r = await api.post<{ token: string; path: string }>(
         `/api/assr/${id}/supplier-link`
       );
-      setLink(`${window.location.origin}/portal/supplier/${r.token}`);
+      setLink(`${PUBLIC_WEB_ORIGIN}/portal/supplier/${r.token}`);
       toast.success("Supplier link generated.");
     } catch (e: any) {
       toast.error(e?.message || "Failed to generate link");
@@ -6958,7 +6959,7 @@ function SalesPortalLinkRow({
       const r = await api.post<{ token: string; path: string }>(
         `/api/assr/${id}/sales-link`
       );
-      setLink(`${window.location.origin}/portal/case/${assrSlug(assrNo)}/${r.token}`);
+      setLink(`${PUBLIC_WEB_ORIGIN}/portal/case/${assrSlug(assrNo)}/${r.token}`);
       toast.success("Sales link generated.");
     } catch (e: any) {
       toast.error(e?.message || "Failed to generate link");
@@ -7024,7 +7025,7 @@ function SurveyLinkButton({ id, toast }: { id: number; toast: ReturnType<typeof 
     setBusy(true);
     try {
       const res = await api.post<{ token: string }>(`/api/assr/${id}/survey-token`);
-      const url = `${window.location.origin}/survey/${res.token}`;
+      const url = `${PUBLIC_WEB_ORIGIN}/survey/${res.token}`;
       setLink(url);
       await navigator.clipboard?.writeText(url).catch(() => void 0);
       toast.success("Survey link copied to clipboard");

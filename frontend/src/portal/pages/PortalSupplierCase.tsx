@@ -24,6 +24,7 @@ import { StatusPill } from "../components/StatusPill";
 import { Button } from "../../components/Button";
 import { Skeleton } from "../../components/Skeleton";
 import { useDialog } from "../../hooks/useDialog";
+import { printPage } from "../../lib/nativeFiles";
 import type { PortalStatusColor } from "../types";
 
 const ALLOWED_EXT = ["jpg", "jpeg", "png", "webp"];
@@ -654,7 +655,7 @@ export function PortalSupplierCasePage() {
 
       {/* Footer actions */}
       <div className="mt-5 flex flex-col items-stretch justify-center gap-2 sm:flex-row sm:items-center sm:gap-3 print:hidden">
-        <Button variant="secondary" onClick={() => window.print()} icon={<Printer size={14} />}>
+        <Button variant="secondary" onClick={() => void printPage()} icon={<Printer size={14} />}>
           Print
         </Button>
         <Button variant="ghost" onClick={() => nav(-1)} icon={<ArrowLeft size={14} />}>

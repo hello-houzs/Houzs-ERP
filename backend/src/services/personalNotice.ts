@@ -17,6 +17,7 @@
 // ─────────────────────────────────────────────────────────────────────────
 
 import type { Env } from "../types";
+import { sendPushToUsers, type ApnsEnv } from "./apns";
 
 // The announcements category CHECK constraint (mig 0058) allows only these.
 export type PersonalNoticeCategory = "GENERAL" | "WARNING" | "SOP" | "LEARNING";
@@ -75,6 +76,24 @@ export async function postPersonalNotice(
         opts.source,
       )
       .run();
+
+    /* The in-app unread dot only shows up once the user opens the app, which
+       is exactly what a phone notification is for. This is the single insert
+       path for system notices, so pushing here covers every caller rather than
+       each one remembering. Awaited (not fire-and-forget) because a Worker
+       stops executing pending promises the moment the response is returned.
+       Skips itself when APNs is unconfigured, and never throws -- an
+       undelivered banner must not fail the operation that earned it. */
+    await sendPushToUsers(env as ApnsEnv, ids, {
+      title: opts.title,
+      body: opts.body,
+      /* kind is "announcement" because that is genuinely what was created and
+         where the tap can land -- the notice carries no record id to open. The
+         originating source rides along so a future handler can be sharper
+         without changing the send path. */
+      data: { kind: "announcement", id, source: opts.source },
+      collapseId: `${opts.source}-${id}`,
+    });
   } catch (e) {
     console.error(
       `[personal-notice] insert failed (source=${opts.source}):`,

@@ -2,13 +2,29 @@
  * PWA wiring — service worker registration + installable / online
  * state observable. Pure logic, no UI; the install banner reads
  * from this and renders itself.
+ *
+ * All of it is inert inside the native shell. The app is ALREADY installed
+ * there, so every install affordance is nonsense, and the SW would be worse
+ * than useless: under capacitor://localhost the hostname is "localhost", which
+ * trips sw.js's IS_LOCAL_DEV bail-out, so it would register, claim clients and
+ * then decline to do anything — while its navigation fallback still competes
+ * with the shell's own routing. Online/offline stays live; that signal is real
+ * on a phone.
  */
+
+import { IS_NATIVE } from "./lib/native";
 
 let deferredPrompt: any = null;
 const installListeners = new Set<(canInstall: boolean) => void>();
 const onlineListeners = new Set<(online: boolean) => void>();
 
 export function registerPwa() {
+  if (IS_NATIVE) {
+    window.addEventListener("online", () => notifyOnline(true));
+    window.addEventListener("offline", () => notifyOnline(false));
+    return;
+  }
+
   // DEV: never run a service worker. On localhost the SW caches the vite
   // module graph cache-first, so edits "don't show" after a refresh until the
   // SW + caches are cleared by hand. Tear down any SW a previous prod/PWA visit
@@ -81,7 +97,7 @@ export function onOnline(fn: (online: boolean) => void): () => void {
 }
 
 export async function promptInstall(): Promise<"accepted" | "dismissed" | "unavailable"> {
-  if (!deferredPrompt) return "unavailable";
+  if (IS_NATIVE || !deferredPrompt) return "unavailable";
   try {
     deferredPrompt.prompt();
     const choice = await deferredPrompt.userChoice;
@@ -93,7 +109,11 @@ export async function promptInstall(): Promise<"accepted" | "dismissed" | "unava
   }
 }
 
+/** True in the native shell, which is the most standalone the app ever gets.
+ *  This is also what makes isIosInstallable / isAndroidInstallable return false
+ *  there — both gate on !isStandalone(). */
 export function isStandalone(): boolean {
+  if (IS_NATIVE) return true;
   return (
     window.matchMedia?.("(display-mode: standalone)").matches ||
     // iOS-specific

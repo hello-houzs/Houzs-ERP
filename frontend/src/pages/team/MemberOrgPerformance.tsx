@@ -39,6 +39,7 @@ import { usePageAccess } from "../../auth/PageGuard";
 import { isDirectorUser, isSalesStaff } from "../../auth/salesAccess";
 import { classifyLoadError, errMsg } from "../../components/scm-v2/PhotoGallery";
 import { cn } from "../../lib/utils";
+import { printPage } from "../../lib/nativeFiles";
 import { ACCESS_RANK, type TeamMember } from "../../types";
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -158,7 +159,7 @@ export function MemberOrgPerformance({
   const exportOrgChart = () => {
     if (typeof window === "undefined") return;
     document.documentElement.style.setProperty("--print-zoom", "0.85");
-    window.print();
+    void printPage();
   };
 
   return (

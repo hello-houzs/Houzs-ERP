@@ -100,6 +100,7 @@ import { companyHeader } from "../lib/activeCompany";
 import { MediaLightbox } from "../components/MediaLightbox";
 import { ResetFiltersButton } from "../components/ResetFiltersButton";
 import { formatDate, formatDateTime, formatTimestamp, formatCurrency, cn, relativeTime, todayInAppTz } from "../lib/utils";
+import { openBlobUrl, saveAndOpenBlob } from "../lib/nativeFiles";
 
 // ── Types (module-local) ─────────────────────────────────────
 // Kept in this file until something else imports them. Promoting to
@@ -5836,7 +5837,7 @@ function TaskAttachmentRow({
   async function viewInTab() {
     try {
       const url = await api.fetchBlobUrl(`/api/projects/attachments/${attachment.r2_key}`);
-      window.open(url, "_blank", "noopener");
+      await openBlobUrl(url, attachment.file_name || "attachment", { features: "noopener" });
     } catch (e: any) {
       toast?.error(e?.message || "Failed to open");
     }
@@ -8189,8 +8190,7 @@ function StockTransferSection({
     if (!t.record_r2_key) return;
     try {
       const url = await api.fetchBlobUrl(`/api/projects/attachments/${t.record_r2_key}`);
-      window.open(url, "_blank");
-      setTimeout(() => URL.revokeObjectURL(url), 30_000);
+      await openBlobUrl(url, t.file_name || "transfer-record", { revokeAfterMs: 30_000 });
     } catch (e: any) {
       toast.error(e?.message || "Failed");
     }
@@ -10791,8 +10791,7 @@ function CategoryDetailLines({
     if (!line.r2_key) return;
     try {
       const url = await api.fetchBlobUrl(`/api/projects/attachments/${line.r2_key}`);
-      window.open(url, "_blank");
-      setTimeout(() => URL.revokeObjectURL(url), 30_000);
+      await openBlobUrl(url, line.file_name || "attachment", { revokeAfterMs: 30_000 });
     } catch (e: any) {
       toast.error(e?.message || "Failed");
     }
@@ -11115,8 +11114,7 @@ function LedgerGroup({
     if (!line.r2_key) return;
     try {
       const url = await api.fetchBlobUrl(`/api/projects/attachments/${line.r2_key}`);
-      window.open(url, "_blank");
-      setTimeout(() => URL.revokeObjectURL(url), 30_000);
+      await openBlobUrl(url, line.file_name || "attachment", { revokeAfterMs: 30_000 });
     } catch (e: any) {
       toast.error(e?.message || "Failed");
     }
@@ -11807,24 +11805,22 @@ function AttachmentTile({
   async function openFile() {
     try {
       const url = await api.fetchBlobUrl(`/api/projects/attachments/${attachment.r2_key}`);
-      window.open(url, "_blank");
-      setTimeout(() => URL.revokeObjectURL(url), 30_000);
+      await openBlobUrl(url, attachmentName(), { revokeAfterMs: 30_000 });
     } catch (e: any) {
       toast.error(e?.message || "Failed to open");
     }
   }
 
+  function attachmentName() {
+    return attachment.file_name || attachment.r2_key.split("/").pop() || "download";
+  }
+
   async function downloadFile() {
     try {
       const url = await api.fetchBlobUrl(`/api/projects/attachments/${attachment.r2_key}`);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download =
-        attachment.file_name || attachment.r2_key.split("/").pop() || "download";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 30_000);
+      const blob = await (await fetch(url)).blob();
+      URL.revokeObjectURL(url);
+      await saveAndOpenBlob(blob, attachmentName());
     } catch (e: any) {
       toast.error(e?.message || "Download failed");
     }

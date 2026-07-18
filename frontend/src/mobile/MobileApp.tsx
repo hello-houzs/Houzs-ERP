@@ -1,4 +1,7 @@
-import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState, type ReactNode } from "react";
+import { useScreenStack } from "./useScreenStack";
+import { useNativeBack } from "./useNativeBack";
+import { setPushDeepLinkHandler } from "../lib/nativePush";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../auth/AuthContext";
 import { isDirectorUser } from "../auth/salesAccess";
@@ -75,6 +78,30 @@ type Screen =
   | { t: "announcements" }
   | { t: "inbox" }
   | { t: "stub"; title: string };
+
+/* Identity of a destination, for the back stack. Two screens with the same key
+   are the same place, so navigating to the one directly beneath the top is a
+   return rather than a new entry -- which is how the shell has always spelled
+   "back to the list" (see module-form's onBack). Deliberately ignores payload
+   that does not change WHERE the user is: scanPrefill, startNew, and the row
+   object itself (identified by id, since it is re-fetched, not referentially
+   stable). */
+function rowIdentity(row: unknown): string {
+  if (!row || typeof row !== "object") return "";
+  const r = row as Record<string, unknown>;
+  const id = r.id ?? r.doc_no ?? r.docNo ?? r.code;
+  return id === undefined ? "" : String(id);
+}
+
+function screenKey(s: Screen): string {
+  const f = s as unknown as Record<string, unknown>;
+  const parts: string[] = [s.t];
+  for (const field of ["docNo", "key", "mode", "title", "target", "projectId"]) {
+    if (f[field] !== undefined) parts.push(String(f[field]));
+  }
+  if (f.row !== undefined) parts.push(rowIdentity(f.row));
+  return parts.join(":");
+}
 
 // Doc modules whose "+ New" opens a convert wizard (create by converting a
 // source doc), matching desktop. Others with a `form` open MobileModuleForm.
@@ -287,10 +314,66 @@ function MobileAppInner() {
   // no one starts on a locked screen.
   const firstTab: Tab = canOrders ? "orders" : canService ? "service" : canCalendar ? "calendar" : "profile";
 
-  const [tab, setTab] = useState<Tab>(firstTab);
+  const [tab, setTabState] = useState<Tab>(firstTab);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [screen, setScreen] = useState<Screen>({ t: "tab" });
-  const back = () => setScreen({ t: "tab" });
+
+  /* `push` keeps setScreen's old signature, so the ~58 navigation call sites
+     below are unchanged -- what they gain is a remembered previous screen.
+     `back` is now one level up rather than a jump to the tab root, which is
+     what the deeper screens (pod under module-detail) always meant by it. */
+  const nav = useScreenStack<Screen>({ t: "tab" }, screenKey);
+  const screen = nav.screen;
+  const setScreen = nav.push;
+  const back = nav.pop;
+
+  const setTab = useCallback(
+    (t: Tab) => {
+      nav.resetToRoot();
+      setTabState(t);
+    },
+    [nav],
+  );
+
+  /* Root-level back. Android would otherwise close the app outright; iOS
+     forbids exiting programmatically, so there the edge swipe simply stops at
+     the first tab. */
+  const handleBack = useCallback(() => {
+    if (menuOpen) return setMenuOpen(false);
+    if (nav.canGoBack) return nav.pop();
+    if (tab !== firstTab) return setTabState(firstTab);
+  }, [menuOpen, nav, tab, firstTab]);
+
+  useNativeBack(handleBack);
+
+  /* A tapped push must land on the record it is about. The tap arrives during
+     cold start, before this component mounts, so nativePush buffers it and
+     flushes on registration -- which is why this registers navigation rather
+     than reading a value. An unrecognised kind falls through to no navigation:
+     the app still opens, just on the default tab. */
+  useEffect(
+    () =>
+      setPushDeepLinkHandler((link) => {
+        switch (link.kind) {
+          case "project": {
+            const id = Number(link.id);
+            if (Number.isFinite(id)) setScreen({ t: "pms", projectId: id });
+            return;
+          }
+          case "so":
+          case "sales_order":
+            if (link.id) setScreen({ t: "so-detail", docNo: link.id });
+            return;
+          case "assr":
+          case "service_case":
+            setScreen({ t: "service" });
+            return;
+          case "announcement":
+            setScreen({ t: "announcements" });
+            return;
+        }
+      }),
+    [setScreen],
+  );
 
   // Search → calendar jump target. When a project search hit is tapped we route
   // to the Calendar tab and snap it to the project's start-date month, with the

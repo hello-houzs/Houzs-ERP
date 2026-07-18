@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { formatDate, formatDateTime } from "../lib/utils";
+import { PUBLIC_WEB_ORIGIN } from "../lib/native";
 import { createPortal } from "react-dom";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api/client";
@@ -1454,7 +1455,7 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
                     onClick={async () => {
                       if (!portalToken) return;
                       const slug = String(caseNo(c)).replace(/[^A-Za-z0-9-]+/g, "-");
-                      const url = `${window.location.origin}/portal/case/${slug}/${portalToken}`;
+                      const url = `${PUBLIC_WEB_ORIGIN}/portal/case/${slug}/${portalToken}`;
                       try {
                         if (navigator.clipboard) await navigator.clipboard.writeText(url);
                         await notify({ title: "Portal link copied", body: url });
@@ -1474,7 +1475,7 @@ function CaseDetail({ id, onBack }: { id: number; onBack: () => void }) {
                       try {
                         const r = await api.post<{ token: string }>(`/api/assr/${id}/sales-link`);
                         const slug = String(caseNo(c)).replace(/[^A-Za-z0-9-]+/g, "-");
-                        const url = `${window.location.origin}/portal/case/${slug}/${r.token}`;
+                        const url = `${PUBLIC_WEB_ORIGIN}/portal/case/${slug}/${r.token}`;
                         if (navigator.clipboard) await navigator.clipboard.writeText(url);
                         await notify({ title: "Sales link copied", body: url });
                       } catch (e: any) {

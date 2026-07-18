@@ -22,12 +22,14 @@ import { api, tokenStore } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { isSalesDirectorUser } from "../auth/salesAccess";
 import { relativeTime, cn } from "../lib/utils";
+import { PUBLIC_WEB_ORIGIN } from "../lib/native";
 import type { TeamMember, Invitation, Role, Department, Position } from "../types";
 import { MemberOrgPerformance } from "./team/MemberOrgPerformance";
 import { Forbidden } from "./Forbidden";
 import { RolesTab } from "./Roles";
 import { PositionsTab } from "./Positions";
 import { MailboxesTab } from "./MailboxesTab";
+import { printPage } from "../lib/nativeFiles";
 
 type TeamTabValue =
   | "hub"
@@ -730,7 +732,7 @@ function MembersTab({
         email_sent?: boolean;
         email_status?: string;
       }>(`/api/users/${u.id}/reset-password`);
-      const link = `${window.location.origin}${res.reset_path}`;
+      const link = `${PUBLIC_WEB_ORIGIN}${res.reset_path}`;
       const copied = await navigator.clipboard
         .writeText(link)
         .then(() => true)
@@ -858,7 +860,7 @@ function MembersTab({
     // Prefer the server-built canonical link (PUBLIC_APP_URL) so copied
     // links always carry erp.houzscentury.com regardless of which origin
     // the admin's browser is on.
-    const link = inv.invite_url || `${window.location.origin}/#invite=${inv.token}`;
+    const link = inv.invite_url || `${PUBLIC_WEB_ORIGIN}/#invite=${inv.token}`;
     navigator.clipboard.writeText(link).then(
       () => toast.success("Invite link copied to clipboard"),
       () => toast.error("Couldn't access clipboard")
@@ -3526,7 +3528,7 @@ function OrgChartTab() {
                         "--print-zoom",
                         String(Math.min(1, 1000 / (el.scrollWidth || 1))),
                       );
-                    window.print();
+                    void printPage();
                   }),
                 );
               }}
@@ -4688,7 +4690,7 @@ export function InvitePanel({
   function copyLink() {
     if (!issued) return;
     const link =
-      issued.invite_url || `${window.location.origin}/#invite=${issued.token}`;
+      issued.invite_url || `${PUBLIC_WEB_ORIGIN}/#invite=${issued.token}`;
     navigator.clipboard.writeText(link).then(
       () => toast.success("Invite link copied"),
       () => toast.error("Couldn't access clipboard")
@@ -4978,7 +4980,7 @@ export function InvitePanel({
             </div>
             <div className="break-all font-mono text-[11px] text-ink">
               {issued.invite_url ||
-                `${window.location.origin}/#invite=${issued.token}`}
+                `${PUBLIC_WEB_ORIGIN}/#invite=${issued.token}`}
             </div>
           </div>
           <Button variant="brass" className="w-full" icon={<Copy size={14} />} onClick={copyLink}>
