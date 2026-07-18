@@ -24,13 +24,13 @@ import { createPortal } from 'react-dom';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeft, FileText, Pencil, Plus, X, Printer, Save,
-  DollarSign, Lock, History, ChevronDown, ChevronRight, Ban, Share2, Check,
+  DollarSign, Lock, History, ChevronDown, Ban, Share2, Check,
 } from 'lucide-react';
 import { Button } from '../../components/Button';
 import { PageHeader } from '../../components/Layout';
 import { useSetBreadcrumbs } from '../../hooks/useBreadcrumbs';
 import { formatPhone } from '@2990s/shared/phone';
-import { buildVariantSummary, canonicalizeVariants, fmtCenti, fmtDate, fmtDateOrDash, fmtDateTime, lineIdentity, missingVariantAxes, hasSofaMixConflict, SOFA_MIX_MESSAGE } from '@2990s/shared'; // Commander 2026-05-28
+import { buildVariantSummary, canonicalizeVariants, fmtCenti, fmtDateOrDash, fmtDateTime, lineIdentity, missingVariantAxes, hasSofaMixConflict, SOFA_MIX_MESSAGE } from '@2990s/shared'; // Commander 2026-05-28
 import { PhoneInput } from '../../vendor/scm/components/PhoneInput';
 import { SkeletonDetailPage } from '../../vendor/scm/components/Skeleton';
 import {
@@ -46,9 +46,10 @@ import {
   useSalesOrderPayments,
   useUploadSoItemPhoto,
   type DebtorSuggestion,
-  type SoAuditEntry,
-  type SoAuditFieldChange,
 } from '../../vendor/scm/lib/sales-order-queries';
+import { AuditHistoryPanel } from '../../components/audit/AuditHistoryPanel';
+import type { AuditFieldChange, AuditLogEntry } from '../../components/audit/audit-labels';
+import { SO_AUDIT_LABELS } from './so-audit-labels';
 import {
   LOCKED_STATUSES,
   CANCELLABLE_STATUSES,
@@ -161,7 +162,7 @@ const EMERGENCY_HEADER_NOTE_STYLE: CSSProperties = {
 /* PR — Step KPI tile values from fs-18 → fs-15 so the totals card no longer
    reads as another hero. Margin / Margin % share this override. */
 const TOTALS_KPI_VALUE_STYLE: CSSProperties = { fontSize: 'var(--fs-15, 15px)' };
-const HISTORY_NOTE_STYLE: CSSProperties = { fontStyle: 'italic' };
+const HISTORY_STATUS_PILL_STYLE: CSSProperties = { marginLeft: 6, fontSize: 'var(--fs-10)' };
 
 /* 2026-06-04 — the required-variant rule lives in @2990s/shared
    `so-variant-rule` (one source for the server 409 gate + every Backend
@@ -3347,107 +3348,10 @@ const OverridePriceModal = ({
 
 /* ════════════════════════════════════════════════════════════════════════
    PR-D — HistoryPanel
-   Right-side drawer driven by mfg_so_audit_log. HOOKKA / Inistate-style:
-     • avatar (initials in hash-colored circle)
-     • "<actor> performed <action> [status pill] · <relative time>"
-     • "via <source>" suffix
-     • "Changes" toggle expands a field-level from→to diff block
+   Thin Sales Order binding over the shared AuditHistoryPanel: fetches
+   mfg_so_audit_log and supplies the SO vocabulary plus the status pill.
    ════════════════════════════════════════════════════════════════════════ */
 
-const ACTION_LABEL: Record<string, string> = {
-  CREATE:         'Created order',
-  UPDATE_DETAILS: 'Updated details',
-  UPDATE_STATUS:  'Status changed',
-  ADD_LINE:       'Added line',
-  UPDATE_LINE:    'Updated line',
-  DELETE_LINE:    'Removed line',
-  ADD_PAYMENT:    'Added payment',
-  UPDATE_PAYMENT: 'Edited payment',
-  DELETE_PAYMENT: 'Removed payment',
-};
-
-const FIELD_LABEL: Record<string, string> = {
-  debtorCode: 'Customer code', debtorName: 'Customer', agent: 'Agent',
-  phone: 'Phone', email: 'Email', soDate: 'SO date', status: 'Status',
-  paymentMethod: 'Payment method', depositCenti: 'Deposit',
-  internalExpectedDd: 'Processing date', customerSoNo: 'Customer SO ref',
-  customerPo: 'Customer PO', customerState: 'State',
-  customerDeliveryDate: 'Delivery date', city: 'City', postcode: 'Postcode',
-  buildingType: 'Building type', address1: 'Address 1', address2: 'Address 2',
-  address3: 'Address 3', address4: 'Address 4', note: 'Note',
-  remark2: 'Remark 2', remark3: 'Remark 3', remark4: 'Remark 4',
-  itemCode: 'Item', itemGroup: 'Group', description: 'Description',
-  description2: 'Description 2', uom: 'UOM', qty: 'Qty',
-  unitPriceCenti: 'Unit price', discountCenti: 'Discount',
-  unitCostCenti: 'Unit cost', totalCenti: 'Line total',
-  lineCount: 'Lines', localTotalCenti: 'Total', cancelled: 'Cancelled',
-  remark: 'Remark', salespersonId: 'Salesperson', customerType: 'Customer type',
-  emergencyContactName: 'Emergency name', emergencyContactPhone: 'Emergency phone',
-  emergencyContactRelationship: 'Emergency relationship',
-  targetDate: 'Target date', branding: 'Branding', venue: 'Venue', venueId: 'Venue (master)',
-  salesLocation: 'Sales location', ref: 'Ref', poDocNo: 'PO doc no',
-  /* Coverage-audit additions (2026-07) — keys emitted by the DO amend mirror,
-     Delivery Planning /fields + /schedule and payment/automation entries, so
-     the History panel never falls back to a raw camelCase key for them. */
-  amendDateFromCustomer: 'Amend date (customer)', amendedDeliveryDate: 'Amended delivery date',
-  amendReason: 'Amend reason', deliveryState: 'Delivery region',
-  possessionDate: 'Possession date', houseType: 'House type',
-  replacementDisposal: 'Replacement / disposal', referral: 'Referral',
-  amountCenti: 'Amount', paidAt: 'Paid on', method: 'Method',
-  merchantProvider: 'Bank', installmentMonths: 'Installment months',
-  onlineType: 'Online type', approvalCode: 'Approval code',
-  stockStatus: 'Stock status', photoAdded: 'Photo added', photoRemoved: 'Photo removed',
-  photosCleaned: 'Photos removed', tbcVariants: 'Variants updated', sofaBuild: 'Sofa build',
-  pwpCode: 'PWP code', pwpRewardsReverted: 'PWP rewards reverted', pwpCodesDeleted: 'PWP codes deleted',
-};
-
-const MONEY_FIELDS = new Set(['unitPriceCenti', 'discountCenti', 'totalCenti', 'depositCenti', 'localTotalCenti', 'unitCostCenti', 'amountCenti']);
-
-const fmtField = (field: string, val: unknown): string => {
-  if (val === null || val === undefined || val === '') return '—';
-  if (MONEY_FIELDS.has(field) && typeof val === 'number') {
-    return fmtCenti(val);
-  }
-  if (typeof val === 'object') return JSON.stringify(val);
-  return String(val).replace(/_/g, ' ');
-};
-
-const hashHue = (s: string): number => {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
-  return Math.abs(h) % 360;
-};
-
-const initialsFor = (name: string | null): string => {
-  if (!name) return '?';
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return '?';
-  const first = parts[0] ?? '';
-  if (parts.length === 1) return first.slice(0, 2).toUpperCase();
-  const last = parts[parts.length - 1] ?? '';
-  return ((first[0] ?? '') + (last[0] ?? '')).toUpperCase();
-};
-
-const relTime = (iso: string): string => {
-  const then = new Date(iso).getTime();
-  const diffMs = Date.now() - then;
-  const m = Math.round(diffMs / 60_000);
-  if (m < 1) return 'just now';
-  if (m < 60) return `${m}m ago`;
-  const h = Math.round(m / 60);
-  if (h < 24) return `${h}h ago`;
-  const d = Math.round(h / 24);
-  if (d < 14) return `${d}d ago`;
-  return fmtDate(iso);
-};
-
-/* Task #99 (UI perf) — Memoize the History drawer. It only mounts when
-   `historyOpen` is true (so the audit-log query is correctly lazy by
-   construction) but once opened, scrolling / expanding individual entries
-   triggers internal state changes that would otherwise re-render the entire
-   parent page. With docNo + onClose stable from the parent (the parent's
-   onClose is wrapped in useCallback below), shallow-compare prevents the
-   parent-driven re-renders. */
 const HistoryPanel = memo(({
   docNo,
   onClose,
@@ -3457,126 +3361,31 @@ const HistoryPanel = memo(({
 }) => {
   const q = useSalesOrderAuditLog(docNo);
   const entries = q.data ?? [];
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
-  /* Portal-anchored to <body> so the drawer's `position: fixed` latches to the
-     VIEWPORT. Rendered in place it did not: Layout wraps every page in
-     <PullToRefresh className="… animate-rise">, whose content div carries BOTH an
-     inline `transform: translateY(0px)` and the filled `rise` animation — and a
-     transform other than `none` makes an element the containing block for its
-     fixed descendants. The drawer therefore anchored to the page content box
-     instead of the screen: it parked over the sticky PageHeader, scrolled away
-     with the page, and its inset:0 backdrop dimmed only the content box. Same
-     hazard ModalOverlay's portal already documents. (The transform trap itself is
-     fixed at source in PullToRefresh + the rise keyframe; this portal is the
-     drawer's own guarantee, and matches how every other modal here is mounted.) */
-  return createPortal(
-    <>
-      <div className={styles.historyBackdrop} onClick={onClose} />
-      <aside className={styles.historyPanel} role="dialog" aria-label="Sales order history">
-        <header className={styles.historyPanelHead}>
-          <h3 className={styles.historyPanelTitle}>
-            <History {...SM_ICON} />
-            History · {docNo}
-            <span style={{ marginLeft: 8, fontWeight: 400 }}>
-              ({entries.length})
-            </span>
-          </h3>
-          <Button variant="ghost" onClick={onClose}>
-            <X {...SM_ICON} />
-          </Button>
-        </header>
-        <div className={styles.historyPanelBody}>
-          {q.isLoading ? (
-            <p className={styles.fieldLabel} style={{ padding: 'var(--space-3)' }}>Loading…</p>
-          ) : entries.length === 0 ? (
-            <p className={styles.muted} style={{ padding: 'var(--space-3)' }}>
-              No history yet.
-            </p>
-          ) : (
-            entries.map((e: SoAuditEntry) => {
-              const name = e.actor_name_snapshot ?? '(unknown)';
-              const hue = hashHue(name);
-              const fc: SoAuditFieldChange[] = Array.isArray(e.field_changes) ? e.field_changes : [];
-              const isExpanded = !!expanded[e.id];
-              const label = ACTION_LABEL[e.action] ?? e.action.replace(/_/g, ' ').toLowerCase();
-              const statusPillStatus = e.action === 'UPDATE_STATUS'
-                ? (fc.find((f) => f.field === 'status')?.to as string | undefined)
-                : null;
-              return (
-                <div key={e.id} className={styles.historyItem}>
-                  <span
-                    className={styles.historyAvatar}
-                    style={{ background: `hsl(${hue}, 50%, 60%)` }}
-                    aria-hidden
-                  >
-                    {initialsFor(name)}
-                  </span>
-                  <div>
-                    <div className={styles.historyLine}>
-                      <span className={styles.historyActor}>{name}</span>
-                      {' performed '}
-                      <strong>{label}</strong>
-                      {statusPillStatus && (
-                        <span
-                          className={`${styles.statusPill} ${STATUS_CLASS[statusPillStatus as SoStatus] ?? ''}`}
-                          style={{ marginLeft: 6, fontSize: 'var(--fs-10)' }}
-                        >
-                          {SO_STATUS_LABEL[statusPillStatus] ?? statusPillStatus.replace(/_/g, ' ')}
-                        </span>
-                      )}
-                    </div>
-                    <div className={styles.historyMeta}>
-                      {fmtDateTime(e.created_at)}
-                      {' · '}{relTime(e.created_at)}
-                      {e.source ? ` · via ${e.source}` : ''}
-                    </div>
-                    {e.note && (
-                      <div className={styles.historyMeta} style={HISTORY_NOTE_STYLE}>
-                        “{e.note}”
-                      </div>
-                    )}
-                    {fc.length > 0 && (
-                      <>
-                        <button
-                          type="button"
-                          className={styles.historyChangesBtn}
-                          onClick={() => setExpanded((s) => ({ ...s, [e.id]: !s[e.id] }))}
-                        >
-                          {isExpanded ? <ChevronDown size={12} strokeWidth={1.75} /> : <ChevronRight size={12} strokeWidth={1.75} />}
-                          {' '}Changes ({fc.length})
-                        </button>
-                        {isExpanded && (
-                          <div className={styles.historyChanges}>
-                            {fc.map((ch, idx) => (
-                              <div key={idx} className={styles.historyChange}>
-                                <span className={styles.historyChangeField}>
-                                  {FIELD_LABEL[ch.field] ?? ch.field}
-                                </span>
-                                <span className={styles.historyChangeDiff}>
-                                  {ch.from !== undefined && ch.from !== null && ch.from !== '' ? (
-                                    <>
-                                      <span className={styles.historyChangeFrom}>{fmtField(ch.field, ch.from)}</span>
-                                      <span className={styles.historyChangeArrow}>→</span>
-                                    </>
-                                  ) : null}
-                                  <span>{fmtField(ch.field, ch.to)}</span>
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </>
-                    )}
-                  </div>
-                </div>
-              );
-            })
-          )}
-        </div>
-      </aside>
-    </>,
-    document.body,
+  const renderBadge = useCallback((entry: AuditLogEntry, changes: AuditFieldChange[]) => {
+    if (entry.action !== 'UPDATE_STATUS') return null;
+    const status = changes.find((f) => f.field === 'status')?.to as string | undefined;
+    if (!status) return null;
+    return (
+      <span
+        className={`${styles.statusPill} ${STATUS_CLASS[status as SoStatus] ?? ''}`}
+        style={HISTORY_STATUS_PILL_STYLE}
+      >
+        {SO_STATUS_LABEL[status] ?? status.replace(/_/g, ' ')}
+      </span>
+    );
+  }, []);
+
+  return (
+    <AuditHistoryPanel
+      recordLabel={docNo}
+      entityName="Sales order"
+      entries={entries}
+      isLoading={q.isLoading}
+      labels={SO_AUDIT_LABELS}
+      onClose={onClose}
+      renderBadge={renderBadge}
+    />
   );
 });
 HistoryPanel.displayName = 'HistoryPanel';
