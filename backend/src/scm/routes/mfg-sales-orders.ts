@@ -57,6 +57,7 @@ import { orderSofaModuleRowsWithinBuilds, sortSoLinesByGroupRank } from '../shar
    charge (gated by so_settings.pos_remark_extra_auto_sku). Pure code-resolution
    + row-build lives in the lib; this route batches the DB collision check. */
 import { buildOneShotMints, type OneShotMintReq } from '../lib/one-shot-mint';
+import { warehouseLabel } from '../lib/warehouse-label';
 import {
   scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix,
   isMirroredDocNo, mintsIntoMirroredNamespace,
@@ -841,7 +842,7 @@ export const deriveSalesLocationFromState = async (
     .eq('id', whId)
     .maybeSingle();
   const wh = w as { name?: string; code?: string } | null;
-  return wh ? (wh.code ?? wh.name ?? null) : null;
+  return warehouseLabel(wh);
 };
 
 /* Commander 2026-05-31 (MRP/Supply-Chain rebuild) — the per-LINE warehouse_id
@@ -1401,14 +1402,17 @@ mfgSalesOrders.get('/', async (c) => {
        (Wei Siang 2026-05-31). 'none' falls back to the stored status. */
     const [lifecycleByDoc, currentByDoc] = await lifecycleProm;
 
-    /* Warehouse label map (id → name) for the mobile Orders-list card's
-       warehouse_name. Mirrors the Delivery Planning board's read-only master
-       lookup (delivery-planning.ts step 1). Small master, unpaginated like there. */
+    /* Warehouse label map (id → label) for the Orders-list `warehouse_name`.
+       Small master, unpaginated. This map used to be the ONE name-first label
+       in the codebase, so the same warehouse read "BALAKONG WAREHOUSE" here and
+       "KL WAREHOUSE" on every document — it now shares warehouseLabel() with
+       them, which also makes a correctly-derived SO's label identical to its
+       stored sales_location text. */
     const whName = new Map<string, string>();
     {
       const whRows = await whRowsProm;
       for (const w of (whRows ?? []) as Array<{ id: string; code: string | null; name: string | null }>) {
-        const label = (w.name ?? w.code ?? '').trim();
+        const label = warehouseLabel(w);
         if (label) whName.set(w.id, label);
       }
     }
@@ -1446,8 +1450,11 @@ mfgSalesOrders.get('/', async (c) => {
       const readiness = readinessByDoc.get(docNo);
       (r as Record<string, unknown>).stock_remark = readiness?.stockRemark ?? '';
       (r as Record<string, unknown>).is_main_ready = readiness?.isMainReady ?? false;
-      /* Mobile Orders-list card fields (snake_case, dual-read by the FE):
-         · warehouse_name  — the SO's primary line warehouse label ('—' until set).
+      /* Orders-list card fields (snake_case, dual-read by the FE):
+         · warehouse_name  — the SO's primary line warehouse label (null until
+           set). Desktop AND mobile both render the Location column from this,
+           falling back to the free-text sales_location snapshot only when no
+           line carries a warehouse.
          · planning_state  — the 4-state Delivery-Planning status, derived from the
            SAME shared helper the board uses. delivery_state (above) is the DO-
            progress none/partial/full field — this is the ORTHOGONAL planning

@@ -8,6 +8,7 @@ import { normalizeJobs, type ScanJobsResp } from "./MobileScan";
 import { MobileVirtualList } from "./MobileVirtualList";
 import { invalidateSoShared } from "./sharedInvalidate";
 import { fmtCenti } from "../lib/scm";
+import { resolveSoLocation } from "../lib/soLocation";
 import { formatDate } from "../lib/utils";
 import "./mobile.css";
 
@@ -501,7 +502,7 @@ export function MobileSalesOrders({ onScan, onOpen, onNew, onNewCase }: { onScan
                 estimateHeight={140}
                 renderItem={(r) => {
               const cancelled = isCancelled(r);
-              const warehouse = r.warehouse_name || r.sales_location;
+              const warehouse = resolveSoLocation(r).label;
               return (
                 /* Owner-locked SO card (prototype `soRowCard`):
                    L1  {customer name}                          ·  {status badge}

@@ -32,6 +32,7 @@ import { defaultWarehouseId, writeMovements, resolveWarehouseLotBatches } from '
 import { computeVariantKey, type VariantAttrs } from '../shared';
 import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item-codes';
 import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
+import { warehouseLabel } from '../lib/warehouse-label';
 import { todayMyt } from '../lib/my-time';
 import { paginateAll, chunkIn } from '../lib/paginate-all';
 import { escapeForOr } from '../lib/postgrest-search';
@@ -241,7 +242,7 @@ async function warehouseCodeMap(
   if (uniq.length === 0) return out;
   const { data } = await sb.from('warehouses').select('id, code, name').in('id', uniq);
   for (const w of (data ?? []) as Array<{ id: string; code: string | null; name: string | null }>) {
-    out.set(w.id, w.code ?? w.name ?? '');
+    out.set(w.id, warehouseLabel(w) ?? '');
   }
   return out;
 }

@@ -56,6 +56,7 @@ import { useChoice } from "../../vendor/scm/components/ChoiceDialog";
 import { useConfirm } from "../../vendor/scm/components/ConfirmDialog";
 import { useQueryClient } from "@tanstack/react-query";
 import { cn } from "../../lib/utils";
+import { resolveSoLocation } from "../../lib/soLocation";
 import { useAuth } from "../../auth/AuthContext";
 import { isDirectorUser, canViewScmCosting } from "../../auth/salesAccess";
 import { buildVariantSummary, lineIdentity } from "@2990s/shared";
@@ -73,6 +74,7 @@ type SoRow = {
   agent: string | null;
   salesperson_id: string | null;
   sales_location: string | null;
+  warehouse_name: string | null;
   customer_so_no: string | null;
   po_doc_no: string | null;
   ref: string | null;
@@ -517,7 +519,7 @@ function DetailDrawer({
               {/* meta grid */}
               <dl className="mt-5 grid grid-cols-2 gap-x-4 gap-y-3 rounded-lg border border-border bg-surface-2 px-4 py-4">
                 <MetaItem k="Salesperson" v={salespersonName} />
-                <MetaItem k="Location" v={row.sales_location || "—"} />
+                <MetaItem k="Location" v={<LocationText row={row} />} />
                 <MetaItem k="Reference" v={refOf(row)} mono />
                 <MetaItem k="Branding" v={brandOf(row)} />
                 <MetaItem k="Order date" v={fmtDate(row.so_date)} />
@@ -691,6 +693,23 @@ function DetailDrawer({
 }
 
 // ─── Drawer sub-primitives ──────────────────────────────────────────────────
+
+/* The free-text fallback is a create-time snapshot that no relation backs — it
+   is styled apart so a guess is never indistinguishable from a real warehouse. */
+function LocationText({ row, className }: { row: SoRow; className?: string }) {
+  const { label, isWarehouse } = resolveSoLocation(row);
+  if (!label) return <span className={cn("text-ink-secondary", className)}>—</span>;
+  if (isWarehouse)
+    return <span className={cn("text-ink-secondary", className)}>{label}</span>;
+  return (
+    <span
+      className={cn("italic text-ink-muted", className)}
+      title="Unverified location text from this order's header — no warehouse is set on its lines."
+    >
+      {label}
+    </span>
+  );
+}
 
 function MetaItem({ k, v, mono }: { k: string; v: ReactNode; mono?: boolean }) {
   return (
@@ -1264,10 +1283,8 @@ export function MfgSalesOrdersListV2() {
       label: "Location",
       width: "132px",
       disableSort: true,
-      getValue: (r) => r.sales_location ?? "",
-      render: (r) => (
-        <span className="text-[12.5px] text-ink-secondary">{r.sales_location || "—"}</span>
-      ),
+      getValue: (r) => resolveSoLocation(r).label ?? "",
+      render: (r) => <LocationText row={r} className="text-[12.5px]" />,
     },
     {
       key: "reference",
