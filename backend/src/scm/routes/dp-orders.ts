@@ -59,7 +59,7 @@ async function resolveSnapshot(
   }
   if (p.supplierId) {
     const { data } = await sb.from('suppliers')
-      .select('name, contact_person, attention, phone, mobile, address, postcode, state')
+      .select('name, contact_person, attention, phone, mobile, address, address1, address2, address3, address4, city, postcode, state')
       .eq('id', p.supplierId).maybeSingle();
     if (data) return snapshotFromSupplier(data as Record<string, unknown>);
   }

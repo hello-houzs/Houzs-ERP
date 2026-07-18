@@ -39,8 +39,8 @@ describe("snapshotFromSo — SO header, no contact person", () => {
   });
 });
 
-describe("snapshotFromSupplier — single-line address must not vanish", () => {
-  test("the free-text address lands in address1; city stays null", () => {
+describe("snapshotFromSupplier — structured when present, legacy line otherwise", () => {
+  test("the legacy single address falls back into address1 (rows not re-entered yet)", () => {
     const snap = snapshotFromSupplier({
       name: "Guan Chong Timber Sdn Bhd", contact_person: "Mr. Tan", phone: "012-345",
       address: "Lot 12, Jalan Perusahaan 3, Batu Caves", postcode: "68100", state: "Selangor",
@@ -48,10 +48,23 @@ describe("snapshotFromSupplier — single-line address must not vanish", () => {
     expect(snap.party_type).toBe("SUPPLIER");
     expect(snap.party_name).toContain("Guan Chong");
     expect(snap.contact_name).toBe("Mr. Tan");
-    expect(snap.address1).toContain("Lot 12");     // the whole line, not dropped
+    expect(snap.address1).toContain("Lot 12");     // the whole legacy line, not dropped
     expect(snap.city).toBeNull();
     expect(snap.postcode).toBe("68100");
     expect(snap.state).toBe("Selangor");
+  });
+
+  test("the structured address1-4 + city WIN once entered (mig 0131)", () => {
+    const snap = snapshotFromSupplier({
+      name: "Guan Chong Timber Sdn Bhd",
+      address: "old single line — should be ignored",
+      address1: "Lot 12", address2: "Jalan Perusahaan 3", address3: "", address4: null,
+      city: "Batu Caves", postcode: "68100", state: "Selangor",
+    });
+    expect(snap.address1).toBe("Lot 12");          // structured wins over legacy `address`
+    expect(snap.address2).toBe("Jalan Perusahaan 3");
+    expect(snap.address3).toBeNull();
+    expect(snap.city).toBe("Batu Caves");
   });
   test("contact falls back: attention when no contact_person, mobile when no phone", () => {
     const snap = snapshotFromSupplier({ name: "X", attention: "Ms. Lee", mobile: "019-9" });
