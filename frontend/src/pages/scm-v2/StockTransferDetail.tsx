@@ -13,10 +13,10 @@
 // Back/Close → the parallel /scm/stock-transfers list.
 // ----------------------------------------------------------------------------
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
-  ArrowLeft, ArrowRight, X, Ban,
+  ArrowLeft, ArrowRight, History, X, Ban,
 } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { SkeletonDetailPage } from '../../vendor/scm/components/Skeleton';
@@ -34,6 +34,8 @@ import {
 } from '../../vendor/scm/lib/stock-queries';
 import styles from './SalesOrderDetail.module.css';
 import { PageHeader } from '../../components/Layout';
+import { EntityHistoryPanel } from './EntityHistoryPanel';
+import { STOCK_TRANSFER_AUDIT_LABELS } from './entity-audit-labels';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -53,6 +55,11 @@ const fmtDateTime = (iso: string | null): string => {
 export const StockTransferDetail = () => {
   const { id }   = useParams<{ id: string }>();
   const navigate = useNavigate();
+
+  /* History drawer. Stable close handler so the memoized panel is not
+     re-created on every parent render. */
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const closeHistory = useCallback(() => setHistoryOpen(false), []);
 
   const detail = useStockTransferDetail(id ?? null);
   const cancel = useCancelStockTransfer();
@@ -135,6 +142,12 @@ export const StockTransferDetail = () => {
               <ArrowLeft {...ICON} /> <span>Stock Transfers</span>
             </Link>
             <div className={styles.actions}>
+              {/* History drawer toggle. Same header seat on every detail page,
+                  and unconditional: a cancelled transfer is exactly when
+                  someone needs to see who changed what. */}
+              <Button variant="ghost" size="md" onClick={() => setHistoryOpen(true)}>
+                <History {...ICON} /> History
+              </Button>
               {isPosted && (
                 <Button variant="ghost" size="md" onClick={onCancel} disabled={cancel.isPending}>
                   <Ban {...ICON} /> {cancel.isPending ? 'Cancelling…' : 'Cancel'}
@@ -242,6 +255,20 @@ export const StockTransferDetail = () => {
           </table>
         </div>
       </section>
+
+      {/* History drawer — portals to <body>, so its position here is only
+          about lifecycle, not layout. */}
+      {historyOpen && (
+        <EntityHistoryPanel
+          entityType="STOCK_TRANSFER"
+          entityId={String(t.id)}
+          recordLabel={t.transfer_no}
+          entityName="Stock transfer"
+          labels={STOCK_TRANSFER_AUDIT_LABELS}
+          statusDocType="stockTransfer"
+          onClose={closeHistory}
+        />
+      )}
     </div>
   );
 };
