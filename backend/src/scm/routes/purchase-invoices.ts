@@ -17,6 +17,7 @@ import { escapeForOr } from '../lib/postgrest-search';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { todayMyt } from '../lib/my-time';
 import { recordEntityAudit, diffFields, compactChanges, fieldChange, statusChange } from '../lib/entity-audit';
+import { PI_LINE_AUDIT_FIELDS, PI_LINE_AUDIT_SELECT } from '../lib/entity-audit-fields';
 
 export const purchaseInvoices = new Hono<{ Bindings: Env; Variables: Variables }>();
 purchaseInvoices.use('*', supabaseAuth);
@@ -38,6 +39,19 @@ const PI_AUDIT_FIELDS: Array<[string, string]> = [
   ['exchangeRate', 'exchange_rate'],
 ];
 
+/* CREATE was added after the post/payment/cancel/header pass, and it is recorded
+   LATE for a reason. All three create paths write the header first and DELETE it
+   again — on a failed line insert, and again when the post-insert over-invoice
+   re-verification finds this PI would over-bill a GRN line. A CREATE row emitted
+   at insert time would describe an invoice that never existed, against a GRN
+   whose invoiced_qty never moved. recordPiCreate re-reads the persisted row
+   rather than echoing the payload, which makes that ordering self-enforcing: a
+   rolled-back header reads back as nothing and no row is written.
+
+   The line vocabulary lives in lib/entity-audit-fields (imported above) — the
+   camelCase half is what AUDIT_FINANCE_FIELDS gates on and needs a test that can
+   import it without dragging Hono along. */
+
 const HEADER =
   'id, invoice_number, supplier_invoice_ref, supplier_id, purchase_order_id, grn_id, invoice_date, due_date, currency, exchange_rate, subtotal_centi, tax_centi, total_centi, paid_centi, status, notes, posted_at, created_at, created_by, updated_at';
 const ITEM =
@@ -46,6 +60,76 @@ const ITEM =
   'item_group, description, description2, uom, discount_centi, variants, ' +
   'gap_inches, divan_height_inches, divan_price_sen, leg_height_inches, leg_price_sen, ' +
   'custom_specials, line_suffix, special_order_price_sen, unit_cost_centi, created_at';
+
+/* The PI's identity for an audit row written from a LINE handler, which has the
+   line in hand but not the parent. Best-effort by design: the writer is
+   fail-open, so an unresolved doc number costs the row its human key and
+   nothing else. */
+async function loadPiAuditMeta(
+  sb: Variables['supabase'],
+  piId: string,
+): Promise<{ docNo: string | null; companyId: number | null; status: string | null }> {
+  try {
+    const { data } = await sb.from('purchase_invoices')
+      .select('invoice_number, company_id, status').eq('id', piId).maybeSingle();
+    const row = (data ?? null) as { invoice_number?: string | null; company_id?: number | null; status?: string | null } | null;
+    return { docNo: row?.invoice_number ?? null, companyId: row?.company_id ?? null, status: row?.status ?? null };
+  } catch {
+    return { docNo: null, companyId: null, status: null };
+  }
+}
+
+/**
+ * Record the CREATE of a PI that has SURVIVED its handler.
+ *
+ * Reads the row back rather than taking the caller's payload: the doc number is
+ * minted server-side, the currency and exchange rate are resolved server-side,
+ * the totals come off the lines — and a header a compensating branch already
+ * deleted reads back as nothing, so this cannot write a CREATE row for an
+ * invoice that was rolled back.
+ */
+async function recordPiCreate(
+  sb: Variables['supabase'],
+  actor: Variables['houzsUser'],
+  fallbackCompanyId: number | null | undefined,
+  piId: string,
+  lineCount: number,
+  note?: string,
+): Promise<void> {
+  let row: Record<string, unknown> | null = null;
+  try {
+    const { data } = await sb.from('purchase_invoices')
+      .select('id, invoice_number, status, company_id, supplier_id, supplier_invoice_ref, ' +
+        'purchase_order_id, grn_id, invoice_date, due_date, currency, exchange_rate, total_centi')
+      .eq('id', piId).maybeSingle();
+    row = (data ?? null) as Record<string, unknown> | null;
+  } catch { /* best-effort */ }
+  if (!row) return; // rolled back (or unreadable): a CREATE row here would be a lie
+  await recordEntityAudit(sb, {
+    entityType: 'PURCHASE_INVOICE',
+    entityId: piId,
+    entityDocNo: (row.invoice_number as string | null) ?? null,
+    action: 'CREATE',
+    actor,
+    companyId: (row.company_id as number | null) ?? fallbackCompanyId,
+    statusSnapshot: (row.status as string | null) ?? null,
+    note,
+    fieldChanges: compactChanges([
+      fieldChange('status', null, row.status ?? null),
+      fieldChange('supplierId', null, row.supplier_id ?? null),
+      fieldChange('supplierInvoiceRef', null, row.supplier_invoice_ref ?? null),
+      fieldChange('purchaseOrderId', null, row.purchase_order_id ?? null),
+      fieldChange('grnId', null, row.grn_id ?? null),
+      fieldChange('invoiceDate', null, row.invoice_date ?? null),
+      fieldChange('dueDate', null, row.due_date ?? null),
+      fieldChange('currency', null, row.currency ?? null),
+      fieldChange('exchangeRate', null, row.exchange_rate ?? null),
+      /* INTEGER SEN, straight off the column. */
+      fieldChange('totalCenti', null, row.total_centi ?? null),
+      fieldChange('lineCount', null, lineCount),
+    ]),
+  });
+}
 
 const nextNum = async (sb: any, prefix: string, c: any): Promise<string> => {
   const d = new Date();
@@ -737,6 +821,14 @@ purchaseInvoices.post('/', async (c) => {
       return c.json({ error: 'qty_exceeds_remaining', lines: over }, 409);
     }
   }
+
+  /* The invoice has survived both compensating branches (items-insert rollback,
+     over-invoice rollback). Everything below is best-effort and never deletes
+     the header, so from here every exit is a success and this CREATE row is
+     true. Written before the DRAFT-dependent side-effects so both statuses
+     record exactly one. */
+  await recordPiCreate(sb, c.get('houzsUser'), activeCompanyId(c), h.id, itemRows.length);
+
   /* LEAK GUARD (DRAFT) — a DRAFT PI commits nothing: it must NOT consume the GRN
      line (recomputeGrnInvoiced) nor re-cost (recostForPi). Both move to the
      confirm transition (PATCH /:id/post). GL/AP posting (postPiAccounting) is ALSO
@@ -1256,6 +1348,13 @@ purchaseInvoices.post('/from-grn-items', async (c) => {
         continue;
       }
     }
+    /* This bucket's PI cleared both of its own rollbacks (the two `continue`s
+       above), so it survives the request even if a LATER bucket is rolled back —
+       each bucket is its own document and its own CREATE row. */
+    await recordPiCreate(
+      sb, c.get('houzsUser'), activeCompanyId(c), h.id, bucket.lines.length,
+      `Converted from Goods Receipt ${bucket.grnNumber}`,
+    );
     // Consume the GRN lines: recount invoiced_qty from live PI lines.
     await recomputeGrnInvoiced(sb, bucket.lines.map(({ row }) => row.id));
     // Split any PI-native freight before the recost reads it. This path copies GRN
@@ -1390,11 +1489,19 @@ purchaseInvoices.post('/from-grn', async (c) => {
     }
   }
 
-  // Consume each GRN line: recount invoiced_qty from live PI lines.
-  await recomputeGrnInvoiced(sb, lines.map((it) => it.id));
-
   // Refresh header subtotal/total from the inserted lines (parity with GRN/PR).
   await recomputePiTotals(sb, h.id);
+
+  /* Past both compensating branches (items-insert rollback, over-invoice
+     rollback) — the invoice is permanent from here. Written after
+     recomputePiTotals so totalCenti is the rolled-up figure. */
+  await recordPiCreate(
+    sb, c.get('houzsUser'), activeCompanyId(c), h.id, rows.length,
+    `Converted from Goods Receipt ${g.grn_number ?? g.id}`,
+  );
+
+  // Consume each GRN line: recount invoiced_qty from live PI lines.
+  await recomputeGrnInvoiced(sb, lines.map((it) => it.id));
 
   // Split any PI-native freight before the recost reads it. This path copies GRN
   // lines only, so a copied service line stays GRN-owned (already capitalised into
@@ -1591,6 +1698,27 @@ purchaseInvoices.post('/:id/items', async (c) => {
     }
   }
 
+  /* UPDATE, not CREATE: the entity is the PURCHASE INVOICE and it already
+     existed. Recorded after the over-invoice rollback above, so a line that was
+     inserted and then deleted by the race guard leaves no "added" row. */
+  {
+    const added = (data ?? {}) as unknown as Record<string, unknown>;
+    const meta = await loadPiAuditMeta(sb, piId);
+    await recordEntityAudit(sb, {
+      entityType: 'PURCHASE_INVOICE',
+      entityId: piId,
+      entityDocNo: meta.docNo,
+      action: 'UPDATE',
+      actor: c.get('houzsUser'),
+      companyId: meta.companyId ?? activeCompanyId(c),
+      statusSnapshot: meta.status,
+      note: `Line added: ${String(it.materialCode ?? '')}`,
+      fieldChanges: compactChanges(
+        PI_LINE_AUDIT_FIELDS.map(([camel, snake]) => fieldChange(camel, null, added[snake] ?? null)),
+      ),
+    });
+  }
+
   // Consume the GRN line if this PI line is GRN-linked (manual lines consume
   // nothing). Recount invoiced_qty from live PI lines.
   if (grnItemId) await recomputeGrnInvoiced(sb, [grnItemId]);
@@ -1617,16 +1745,25 @@ purchaseInvoices.patch('/:id/items/:itemId', async (c) => {
   /* Audit 2026-06-11 M10 — scope the line to THIS PI: a mismatched itemId
      must 404, not edit another PI's line while the recompute / recost / GL
      resync run against this one. */
-  const { data: prev } = await sb.from('purchase_invoice_items')
-    .select('qty, unit_price_centi, discount_centi, item_group, variants, grn_item_id')
+  /* The audited columns as well as the ones the money logic reads: this row is
+     also the BEFORE half of every from->to pair recorded after the update lands.
+     `variants` and `grn_item_id` are business-logic only and deliberately not in
+     PI_LINE_AUDIT_FIELDS — variants render into description2, which is
+     server-owned and derived, not an operator edit. */
+  const { data: prevRow } = await sb.from('purchase_invoice_items')
+    .select(PI_LINE_AUDIT_SELECT + ', variants, grn_item_id')
     .eq('id', itemId).eq('purchase_invoice_id', piId).maybeSingle();
-  if (!prev) return c.json({ error: 'not_found' }, 404);
+  if (!prevRow) return c.json({ error: 'not_found' }, 404);
+  /* Cast through `unknown`: a .select() built from a concatenated string infers
+     as GenericStringError on the SupabaseClient<any> the scm client is, so the
+     row shape only exists after this. Project-wide pattern in these routes. */
+  const prev = prevRow as unknown as Record<string, unknown>;
 
-  const prevQty = (prev as { qty: number }).qty;
-  const grnItemId = (prev as { grn_item_id: string | null }).grn_item_id ?? null;
+  const prevQty = Number(prev.qty);
+  const grnItemId = (prev.grn_item_id as string | null) ?? null;
   const qty = it.qty !== undefined ? Number(it.qty) : prevQty;
-  const unit = it.unitPriceCenti !== undefined ? Number(it.unitPriceCenti) : (prev as { unit_price_centi: number }).unit_price_centi;
-  const discount = it.discountCenti !== undefined ? Number(it.discountCenti) : ((prev as { discount_centi: number }).discount_centi ?? 0);
+  const unit = it.unitPriceCenti !== undefined ? Number(it.unitPriceCenti) : Number(prev.unit_price_centi);
+  const discount = it.discountCenti !== undefined ? Number(it.discountCenti) : Number(prev.discount_centi ?? 0);
   /* PI discount unification (audit 2026-06-11 M3) — this IS the canonical rule
      (line_total_centi = qty × unit − discount, discount stored); all four
      create paths now write the same way, so an edit no longer shifts a line's
@@ -1678,6 +1815,32 @@ purchaseInvoices.patch('/:id/items/:itemId', async (c) => {
 
   const { error } = await sb.from('purchase_invoice_items').update(updates).eq('id', itemId);
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
+
+  /* Diff `updates` — the EFFECTIVE values written — against the stored row. qty,
+     price, discount and the line total are recomputed above from the body OR the
+     prior row, so the body alone would not say what was actually stored. */
+  {
+    const auditPatch: Record<string, unknown> = {};
+    for (const [camel, snake] of PI_LINE_AUDIT_FIELDS) {
+      if (updates[snake] !== undefined) auditPatch[camel] = updates[snake];
+    }
+    const lineChanges = diffFields(prev, auditPatch, PI_LINE_AUDIT_FIELDS);
+    if (lineChanges.length > 0) {
+      const meta = await loadPiAuditMeta(sb, piId);
+      await recordEntityAudit(sb, {
+        entityType: 'PURCHASE_INVOICE',
+        entityId: piId,
+        entityDocNo: meta.docNo,
+        action: 'UPDATE',
+        actor: c.get('houzsUser'),
+        companyId: meta.companyId ?? activeCompanyId(c),
+        statusSnapshot: meta.status,
+        note: `Line edited: ${String(prev.material_code ?? itemId)}`,
+        fieldChanges: lineChanges,
+      });
+    }
+  }
+
   // Recount the source GRN line's invoiced_qty from live PI lines (clamps to
   // [0, qty_accepted]).
   if (grnItemId) await recomputeGrnInvoiced(sb, [grnItemId]);
@@ -1709,13 +1872,39 @@ purchaseInvoices.delete('/:id/items/:itemId', async (c) => {
   // Read the line first so we can release its GRN-line consumption on delete.
   // Audit 2026-06-11 M10 — scoped to THIS PI: a mismatched itemId must 404,
   // not delete another PI's line while the recompute / GL resync run here.
-  const { data: line } = await sb.from('purchase_invoice_items')
-    .select('qty, grn_item_id').eq('id', itemId).eq('purchase_invoice_id', piId).maybeSingle();
-  if (!line) return c.json({ error: 'not_found' }, 404);
+  /* The audited columns too — after the delete the audit row is the only
+     remaining evidence of what the supplier billed on this line. */
+  const { data: lineRow } = await sb.from('purchase_invoice_items')
+    .select(PI_LINE_AUDIT_SELECT + ', grn_item_id').eq('id', itemId).eq('purchase_invoice_id', piId).maybeSingle();
+  if (!lineRow) return c.json({ error: 'not_found' }, 404);
+  /* Cast through `unknown` — see the note on the line PATCH's `prev`. */
+  const line = lineRow as unknown as Record<string, unknown>;
+
   const { error } = await sb.from('purchase_invoice_items').delete().eq('id', itemId);
   if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
-  if (line) {
-    const l = line as { qty: number; grn_item_id: string | null };
+
+  /* UPDATE, not DELETE: the entity is the PURCHASE INVOICE and it still exists.
+     DELETE on this entity type would tell a reader the whole invoice was
+     destroyed — and this module never hard-deletes one. */
+  {
+    const meta = await loadPiAuditMeta(sb, piId);
+    await recordEntityAudit(sb, {
+      entityType: 'PURCHASE_INVOICE',
+      entityId: piId,
+      entityDocNo: meta.docNo,
+      action: 'UPDATE',
+      actor: c.get('houzsUser'),
+      companyId: meta.companyId ?? activeCompanyId(c),
+      statusSnapshot: meta.status,
+      note: `Line removed: ${String(line.material_code ?? itemId)}`,
+      fieldChanges: compactChanges(
+        PI_LINE_AUDIT_FIELDS.map(([camel, snake]) => fieldChange(camel, line[snake] ?? null, null)),
+      ),
+    });
+  }
+
+  {
+    const l = { qty: Number(line.qty), grn_item_id: (line.grn_item_id as string | null) ?? null };
     // Release: recount invoiced_qty from live PI lines — the deleted line drops out.
     if (l.grn_item_id) await recomputeGrnInvoiced(sb, [l.grn_item_id]);
     // Re-derive the freight split first: the deleted row may BE the freight line,

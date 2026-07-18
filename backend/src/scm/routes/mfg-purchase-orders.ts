@@ -48,6 +48,7 @@ import { sendEmail, documentEmailHtml, isChannelEnabled } from '../../services/e
 import { getSupabaseService } from '../../db/supabase';
 import { supabaseAuth } from '../middleware/auth';
 import { recordEntityAudit, diffFields, compactChanges, fieldChange, statusChange } from '../lib/entity-audit';
+import { PO_LINE_AUDIT_FIELDS, PO_LINE_AUDIT_SELECT } from '../lib/entity-audit-fields';
 import { computeMrp } from './mrp';
 import type { Env, Variables } from '../env';
 
@@ -113,6 +114,92 @@ const PO_AUDIT_FIELDS: Array<[string, string]> = [
    columns every audit row on this entity needs. */
 const PO_AUDIT_SELECT =
   `id, po_number, status, company_id, ${PO_AUDIT_FIELDS.map(([, snake]) => snake).join(', ')}`;
+
+/* CREATE was added after the header/confirm/cancel/reopen/delete pass, and it is
+   recorded LATE for a reason. Both create paths write the PO header first and
+   DELETE it again when the line insert fails — POST / rolls back so it does not
+   leak a no-items PO, and the SO->PO convert rolls the bucket back and reports
+   it as `dropped`. A CREATE row emitted at insert time would describe a purchase
+   order that never existed, against SO lines whose quota never moved.
+   recordPoCreate re-reads the persisted row instead of echoing the payload,
+   which makes that ordering self-enforcing: a rolled-back header reads back as
+   nothing and no row is written.
+
+   The line vocabulary lives in lib/entity-audit-fields (imported above) — the
+   camelCase half is what AUDIT_FINANCE_FIELDS gates on and needs a test that can
+   import it without dragging Hono along. */
+
+/* The PO's identity for an audit row written from a LINE handler, which has the
+   line in hand but not the parent. Best-effort by design: the writer is
+   fail-open, so an unresolved doc number costs the row its human key and
+   nothing else. */
+async function loadPoAuditMeta(
+  sb: Variables['supabase'],
+  poId: string,
+): Promise<{ docNo: string | null; companyId: number | null; status: string | null }> {
+  try {
+    const { data } = await sb.from('purchase_orders')
+      .select('po_number, company_id, status').eq('id', poId).maybeSingle();
+    const row = (data ?? null) as { po_number?: string | null; company_id?: number | null; status?: string | null } | null;
+    return { docNo: row?.po_number ?? null, companyId: row?.company_id ?? null, status: row?.status ?? null };
+  } catch {
+    return { docNo: null, companyId: null, status: null };
+  }
+}
+
+/**
+ * Record the CREATE of a PO that has SURVIVED its handler.
+ *
+ * Reads the row back rather than taking the caller's payload: the doc number is
+ * minted server-side (and re-minted on a 23505 retry), the totals are derived
+ * from the lines, and a header a compensating branch already deleted reads back
+ * as nothing — so this cannot write a CREATE row for a PO that was rolled back.
+ *
+ * `actor` is optional and undefined on the headless path (the Procurement Agent
+ * runs with no session). An unattributed row still records WHEN and WHAT, which
+ * is the writer's documented degradation and better than no row at all — the
+ * note says which engine raised it.
+ */
+async function recordPoCreate(
+  sb: Variables['supabase'],
+  actor: Variables['houzsUser'],
+  fallbackCompanyId: number | null | undefined,
+  poId: string,
+  lineCount: number,
+  note?: string,
+): Promise<void> {
+  let row: Record<string, unknown> | null = null;
+  try {
+    const { data } = await sb.from('purchase_orders')
+      .select('id, po_number, status, company_id, supplier_id, po_date, expected_at, ' +
+        'currency, purchase_location_id, notes, subtotal_centi, total_centi')
+      .eq('id', poId).maybeSingle();
+    row = (data ?? null) as Record<string, unknown> | null;
+  } catch { /* best-effort */ }
+  if (!row) return; // rolled back (or unreadable): a CREATE row here would be a lie
+  await recordEntityAudit(sb, {
+    entityType: 'PURCHASE_ORDER',
+    entityId: poId,
+    entityDocNo: (row.po_number as string | null) ?? null,
+    action: 'CREATE',
+    actor,
+    companyId: (row.company_id as number | null) ?? fallbackCompanyId,
+    statusSnapshot: (row.status as string | null) ?? null,
+    note,
+    fieldChanges: compactChanges([
+      fieldChange('status', null, row.status ?? null),
+      fieldChange('supplierId', null, row.supplier_id ?? null),
+      fieldChange('poDate', null, row.po_date ?? null),
+      fieldChange('expectedAt', null, row.expected_at ?? null),
+      fieldChange('currency', null, row.currency ?? null),
+      fieldChange('purchaseLocationId', null, row.purchase_location_id ?? null),
+      fieldChange('notes', null, row.notes ?? null),
+      /* INTEGER SEN, straight off the column. */
+      fieldChange('totalCenti', null, row.total_centi ?? null),
+      fieldChange('lineCount', null, lineCount),
+    ]),
+  });
+}
 
 export const mfgPurchaseOrders = new Hono<{ Bindings: Env; Variables: Variables }>();
 
@@ -1010,6 +1097,11 @@ mfgPurchaseOrders.post('/', async (c) => {
     }
   }
 
+  /* The PO has survived the only branch that could undo it. The SO-quota recount
+     below is best-effort and never deletes the header, so from here every exit
+     is a success and this CREATE row is true. */
+  await recordPoCreate(supabase, c.get('houzsUser'), activeCompanyId(c), header.id, itemRows.length);
+
   /* Commander 2026-05-30 — recount po_qty_picked from the live PO lines for
      every source SO line this PO just converted, so they drop out of the
      From-SO picker (qty - picked > 0). Self-healing — see recomputeSoPicked.
@@ -1067,6 +1159,14 @@ export type PoConvertContext = {
      inside into an implicit-any TS7006). Mirrors SoCreateContext. */
   get(key: 'supabase'): Variables['supabase'];
   get(key: 'user'): { id: string };
+  /* The REAL Houzs caller, for the audit row's WHO. Undefined on the headless
+     path — the Procurement Agent runs with no session, and the writer already
+     degrades to an unattributed row that still records WHEN and WHAT. Declared
+     here rather than reached for through the `user` shim because that shim is
+     ONE pinned system staff uuid for every caller inside /api/scm/* (see
+     entity-audit's actor-resolution note): using it would make the actor column
+     a constant, which is exactly the bug this log was built to avoid. */
+  get(key: 'houzsUser'): Variables['houzsUser'];
   /* Multi-company (mig 0061). Undefined pre-migration / cold-start / headless
      so the stamping and scoping no-op — see the sentinel in companyScope. */
   get(key: 'companyId'): number | undefined;
@@ -1983,6 +2083,13 @@ export async function convertSosToPosCore(c: PoConvertContext): Promise<PoConver
       dropped.push({ supplierId, lineCount: bucket.lines.length, reason: `po_items_insert_failed: ${iErr.message}` });
       continue;
     }
+    /* This bucket's PO cleared its own rollback (the `continue` above), so it
+       survives the request even if a LATER bucket is dropped — each bucket is
+       its own document and its own CREATE row. */
+    await recordPoCreate(
+      supabase, c.get('houzsUser'), c.get('companyId'), header.id, bucket.lines.length,
+      `Raised from Sales Order${bucket.soDocNos.size === 1 ? '' : 's'} ${[...bucket.soDocNos].join(', ')}`,
+    );
     created.push({ id: header.id, poNumber: header.po_number, supplierId, lineCount: bucket.lines.length });
   }
 
@@ -2004,7 +2111,7 @@ export async function convertSosToPosCore(c: PoConvertContext): Promise<PoConver
 mfgPurchaseOrders.post('/from-sos', async (c) => {
   const out = await convertSosToPosCore({
     req: { json: () => c.req.json() },
-    get: ((key: 'supabase' | 'user' | 'companyId' | 'allowedCompanyIds' | 'companyCode') =>
+    get: ((key: 'supabase' | 'user' | 'houzsUser' | 'companyId' | 'allowedCompanyIds' | 'companyCode') =>
       c.get(key as 'supabase')) as unknown as PoConvertContext['get'],
     env: c.env,
     json: (b, status) => ({ status: status ?? 200, body: b as Record<string, unknown> }),
@@ -2062,6 +2169,11 @@ export async function createDraftPosFromPicks(
   const syntheticGet = (key: string): unknown => {
     if (key === 'supabase') return svc;
     if (key === 'user') return { id: opts.userId };
+    /* No session here — the agent is not a person. The audit row degrades to an
+       unattributed one (WHEN + WHAT, no WHO), which is the writer's documented
+       behaviour; the CREATE note names the agent so the row is not anonymous in
+       substance. Do NOT substitute the pinned `user` shim to fill this in. */
+    if (key === 'houzsUser') return undefined;
     if (key === 'companyId') return opts.companyId ?? undefined;
     if (key === 'allowedCompanyIds') return opts.allowedCompanyIds ?? undefined;
     if (key === 'companyCode') return typeof opts.companyCode === 'string' ? opts.companyCode : undefined;
@@ -2320,6 +2432,27 @@ mfgPurchaseOrders.post('/:id/items', async (c) => {
   if (error) return c.json({ error: 'insert_failed', reason: error.message }, 500);
   await recomputePoTotals(sb, poId);
   await recomputePoExpectedAt(sb, poId);
+
+  /* UPDATE, not CREATE: the entity is the PURCHASE ORDER and it already existed.
+     The line's identity travels in the note and as the to-value of every pair. */
+  {
+    const added = (data ?? {}) as unknown as Record<string, unknown>;
+    const meta = await loadPoAuditMeta(sb, poId);
+    await recordEntityAudit(sb, {
+      entityType: 'PURCHASE_ORDER',
+      entityId: poId,
+      entityDocNo: meta.docNo,
+      action: 'UPDATE',
+      actor: c.get('houzsUser'),
+      companyId: meta.companyId ?? activeCompanyId(c),
+      statusSnapshot: meta.status,
+      note: `Line added: ${String(it.materialCode ?? '')}`,
+      fieldChanges: compactChanges(
+        PO_LINE_AUDIT_FIELDS.map(([camel, snake]) => fieldChange(camel, null, added[snake] ?? null)),
+      ),
+    });
+  }
+
   return c.json({ item: data }, 201);
 });
 
@@ -2333,14 +2466,23 @@ mfgPurchaseOrders.patch('/:id/items/:itemId', async (c) => {
   const childLock = await poHasDownstream(sb, poId);
   if (childLock) return c.json(childLock, 409);
 
-  const { data: prev } = await sb.from('purchase_order_items')
-    .select('qty, unit_price_centi, discount_centi, unit_cost_centi, item_group, variants, so_item_id')
+  /* The audited columns as well as the ones the money logic reads: this row is
+     also the BEFORE half of every from->to pair recorded after the update lands.
+     `variants` and `so_item_id` are business-logic only and deliberately not in
+     PO_LINE_AUDIT_FIELDS — variants render into description2, which is
+     server-owned and derived, not an operator edit. */
+  const { data: prevRow } = await sb.from('purchase_order_items')
+    .select(PO_LINE_AUDIT_SELECT + ', variants, so_item_id')
     .eq('id', itemId).maybeSingle();
-  if (!prev) return c.json({ error: 'not_found' }, 404);
+  if (!prevRow) return c.json({ error: 'not_found' }, 404);
+  /* Cast through `unknown`: a .select() built from a concatenated string infers
+     as GenericStringError on the SupabaseClient<any> the scm client is, so the
+     row shape only exists after this. Project-wide pattern in these routes. */
+  const prev = prevRow as unknown as Record<string, unknown>;
 
-  const qty = it.qty !== undefined ? Number(it.qty) : prev.qty;
-  const unit = it.unitPriceCenti !== undefined ? Number(it.unitPriceCenti) : prev.unit_price_centi;
-  const discount = it.discountCenti !== undefined ? Number(it.discountCenti) : prev.discount_centi;
+  const qty = it.qty !== undefined ? Number(it.qty) : Number(prev.qty);
+  const unit = it.unitPriceCenti !== undefined ? Number(it.unitPriceCenti) : Number(prev.unit_price_centi);
+  const discount = it.discountCenti !== undefined ? Number(it.discountCenti) : Number(prev.discount_centi ?? 0);
   // Audit (ported from 2990 21163bde) — clamp like the create path (see POST /:id/items).
   const lineTotal = Math.max(0, (qty * unit) - discount);
 
@@ -2376,6 +2518,32 @@ mfgPurchaseOrders.patch('/:id/items/:itemId', async (c) => {
 
   const { error } = await sb.from('purchase_order_items').update(updates).eq('id', itemId);
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
+
+  /* Diff `updates` — the EFFECTIVE values written — against the stored row. qty,
+     price, discount and the line total are recomputed above from the body OR the
+     prior row, so the body alone would not say what was actually stored. */
+  {
+    const auditPatch: Record<string, unknown> = {};
+    for (const [camel, snake] of PO_LINE_AUDIT_FIELDS) {
+      if (updates[snake] !== undefined) auditPatch[camel] = updates[snake];
+    }
+    const lineChanges = diffFields(prev, auditPatch, PO_LINE_AUDIT_FIELDS);
+    if (lineChanges.length > 0) {
+      const meta = await loadPoAuditMeta(sb, poId);
+      await recordEntityAudit(sb, {
+        entityType: 'PURCHASE_ORDER',
+        entityId: poId,
+        entityDocNo: meta.docNo,
+        action: 'UPDATE',
+        actor: c.get('houzsUser'),
+        companyId: meta.companyId ?? activeCompanyId(c),
+        statusSnapshot: meta.status,
+        note: `Line edited: ${String(prev.material_code ?? itemId)}`,
+        fieldChanges: lineChanges,
+      });
+    }
+  }
+
   await recomputePoTotals(sb, poId);
   await recomputePoExpectedAt(sb, poId);
   /* Recount po_qty_picked on the source SO line. If this edit reduced qty, the
@@ -2400,13 +2568,40 @@ mfgPurchaseOrders.delete('/:id/items/:itemId', async (c) => {
 
   /* Commander 2026-05-29 (BUG 1) — before deleting, read the source SO line
      (migration 0098) + this line's qty so we can hand the quota back. */
-  const { data: doomed } = await sb.from('purchase_order_items')
-    .select('so_item_id, qty')
+  /* The audited columns too — after the delete the audit row is the only
+     remaining evidence of what was ordered on this line, and there is nothing
+     left to join back to. */
+  const { data: doomedRow } = await sb.from('purchase_order_items')
+    .select(PO_LINE_AUDIT_SELECT + ', so_item_id')
     .eq('id', itemId)
     .maybeSingle();
+  /* Cast through `unknown` — see the note on the line PATCH's `prev`. */
+  const doomed = (doomedRow ?? null) as unknown as Record<string, unknown> | null;
 
   const { error } = await sb.from('purchase_order_items').delete().eq('id', itemId);
   if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
+
+  /* UPDATE, not DELETE: the entity is the PURCHASE ORDER and it still exists.
+     DELETE on this entity type is reserved for the hard delete of the document
+     itself (DELETE /:id), whose subject no longer exists afterwards. */
+  {
+    const gone = doomed ?? {};
+    const meta = await loadPoAuditMeta(sb, poId);
+    await recordEntityAudit(sb, {
+      entityType: 'PURCHASE_ORDER',
+      entityId: poId,
+      entityDocNo: meta.docNo,
+      action: 'UPDATE',
+      actor: c.get('houzsUser'),
+      companyId: meta.companyId ?? activeCompanyId(c),
+      statusSnapshot: meta.status,
+      note: `Line removed: ${String(gone.material_code ?? itemId)}`,
+      fieldChanges: compactChanges(
+        PO_LINE_AUDIT_FIELDS.map(([camel, snake]) => fieldChange(camel, gone[snake] ?? null, null)),
+      ),
+    });
+  }
+
   await recomputePoTotals(sb, poId);
   await recomputePoExpectedAt(sb, poId);
 

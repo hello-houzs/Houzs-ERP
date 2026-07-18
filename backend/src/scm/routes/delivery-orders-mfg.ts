@@ -112,6 +112,74 @@ const DO_LINE_AUDIT_FIELDS: Array<[string, string]> = [
   ['lineDeliveryDate', 'line_delivery_date'],
 ];
 
+/* CREATE was added after the header/crew/line pass, and it is recorded LATE for
+   a reason. Both create paths write the DO header first and DELETE it again —
+   on a failed line insert, and again when the post-insert race recheck finds
+   this DO over-delivered an SO line. A CREATE row emitted at insert time would
+   describe a delivery that never happened, against an SO whose remaining qty
+   never moved. recordDoCreate re-reads the persisted row rather than echoing the
+   payload, which makes that ordering self-enforcing: a rolled-back header reads
+   back as nothing and no row is written.
+
+   It is also recorded BEFORE the stock deduction and the SO-delivered sync, and
+   that ordering is deliberate the other way round: those are best-effort and
+   report their failures in the response rather than undoing the DO, so the
+   document exists either way and its history must say so. */
+
+/**
+ * Record the CREATE of a DO that has SURVIVED its handler.
+ *
+ * Reads the row back rather than taking the caller's payload: the doc number is
+ * minted server-side, the totals come off the lines, and a header a compensating
+ * branch already deleted reads back as nothing.
+ */
+async function recordDoCreate(
+  sb: Variables['supabase'],
+  actor: Variables['houzsUser'],
+  fallbackCompanyId: number | null | undefined,
+  doId: string,
+  lineCount: number,
+  note?: string,
+): Promise<void> {
+  let row: Record<string, unknown> | null = null;
+  try {
+    const { data } = await sb.from('delivery_orders')
+      .select('id, do_number, status, company_id, so_doc_no, debtor_code, debtor_name, ' +
+        'do_date, customer_delivery_date, expected_delivery_at, currency, salesperson_id, ' +
+        'driver_id, driver_name, vehicle, local_total_centi')
+      .eq('id', doId).maybeSingle();
+    row = (data ?? null) as Record<string, unknown> | null;
+  } catch { /* best-effort */ }
+  if (!row) return; // rolled back (or unreadable): a CREATE row here would be a lie
+  await recordEntityAudit(sb, {
+    entityType: 'DELIVERY_ORDER',
+    entityId: doId,
+    entityDocNo: (row.do_number as string | null) ?? null,
+    action: 'CREATE',
+    actor,
+    companyId: (row.company_id as number | null) ?? fallbackCompanyId,
+    statusSnapshot: (row.status as string | null) ?? null,
+    note,
+    fieldChanges: compactChanges([
+      fieldChange('status', null, row.status ?? null),
+      fieldChange('soDocNo', null, row.so_doc_no ?? null),
+      fieldChange('debtorCode', null, row.debtor_code ?? null),
+      fieldChange('debtorName', null, row.debtor_name ?? null),
+      fieldChange('doDate', null, row.do_date ?? null),
+      fieldChange('customerDeliveryDate', null, row.customer_delivery_date ?? null),
+      fieldChange('expectedDeliveryAt', null, row.expected_delivery_at ?? null),
+      fieldChange('currency', null, row.currency ?? null),
+      fieldChange('salespersonId', null, row.salesperson_id ?? null),
+      fieldChange('driverId', null, row.driver_id ?? null),
+      fieldChange('driverName', null, row.driver_name ?? null),
+      fieldChange('vehicle', null, row.vehicle ?? null),
+      /* INTEGER SEN, straight off the column. */
+      fieldChange('localTotalCenti', null, row.local_total_centi ?? null),
+      fieldChange('lineCount', null, lineCount),
+    ]),
+  });
+}
+
 /* The DO's identity for an audit row written from a LINE handler, which has the
    line in hand but not the parent. Best-effort by design: the writer is
    fail-open, so an unresolved doc number costs the row its human key and
@@ -2640,6 +2708,12 @@ deliveryOrdersMfg.post('/', async (c) => {
     }
   }
 
+  /* The DO has survived both compensating branches (items-insert rollback,
+     race-conflict rollback). The stock deduction and the SO sync below report
+     their failures rather than undoing the DO, so from here the document exists
+     on every remaining exit and this CREATE row is true. */
+  await recordDoCreate(sb, c.get('houzsUser'), activeCompanyId(c), h.id, items.length);
+
   /* A DO = goods shipped on creation → deduct stock now (idempotent: the
      existence check + UNIQUE index mean this never double-deducts even if the
      status is later advanced). LEAK GUARD (DRAFT): a DRAFT DO has NOT shipped —
@@ -3076,6 +3150,15 @@ deliveryOrdersMfg.post('/from-sos', async (c) => {
   //    (DRAFT): a DRAFT DO has not shipped — roll up totals but SKIP the stock
   //    OUT and the SO-delivered sync; both fire on Confirm.
   await recomputeTotals(sb, dh.id);
+
+  /* Past both compensating branches (items-insert rollback, race-conflict
+     rollback) — the DO is permanent from here. Written after recomputeTotals so
+     localTotalCenti is the rolled-up figure. */
+  await recordDoCreate(
+    sb, c.get('houzsUser'), activeCompanyId(c), dh.id, doRows.length,
+    `Converted from Sales Order${docNos.length === 1 ? '' : 's'} ${docNos.join(', ')}`,
+  );
+
   let movementErrors: string[] = [];
   let emailNotice: string | null = null;
   if (body.asDraft !== true) {

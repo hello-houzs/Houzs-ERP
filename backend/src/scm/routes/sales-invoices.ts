@@ -50,6 +50,7 @@ import { doLineRemaining, doRemainingByItemId, resolveCandidateDoIds, custKeyOf,
 import { validateItemCodes, unknownItemCodeResponse } from '../lib/validate-item-codes';
 import { applyCustomerCreditToSi, creditFromCancelledSi, reverseCancelledSiCredit, reconcileSiOverpay } from '../lib/customer-credits';
 import { recordEntityAudit, diffFields, compactChanges, fieldChange, statusChange } from '../lib/entity-audit';
+import { SI_LINE_AUDIT_FIELDS, SI_LINE_AUDIT_SELECT } from '../lib/entity-audit-fields';
 
 export const salesInvoices = new Hono<{ Bindings: Env; Variables: Variables }>();
 salesInvoices.use('*', supabaseAuth);
@@ -64,6 +65,21 @@ salesInvoices.use('*', supabaseAuth);
               distinguishable from one whose reversal landed.
      UPDATE — header edits, payments, and every other status transition.
    No DELETE: this module never hard-deletes an invoice. */
+
+/* CREATE was added after the header/status/payment pass. Two things about it:
+
+   It is recorded LATE — after the line insert and its compensating delete. Both
+   create paths write the header first and delete it again if the lines fail, so
+   a CREATE row emitted at insert time would describe an invoice that never
+   existed and whose number was never used. recordSiCreate re-reads the persisted
+   row rather than echoing the request body, which makes that ordering
+   self-enforcing: a rolled-back header reads back as nothing and no row is
+   written at all.
+
+   It is recorded ONCE, before the branch that returns early for a DRAFT. The
+   revenue post and the customer-credit auto-apply that follow are best-effort
+   and never delete the header, so every remaining exit is a success — a second
+   call on the non-draft path would be a duplicate, not extra coverage. */
 
 /* The auditable header fields, camel (API) -> snake (column). Money is recorded
    as the INTEGER SEN it is stored as, never a formatted amount. */
@@ -89,6 +105,81 @@ const SI_AUDIT_FIELDS: Array<[string, string]> = [
    identity columns the audit row itself needs. */
 const SI_AUDIT_SELECT =
   `id, invoice_number, status, company_id, ${SI_AUDIT_FIELDS.map(([, snake]) => snake).join(', ')}`;
+
+/* The auditable LINE fields + the select that reads them back live in
+   lib/entity-audit-fields (imported above), not here: the camelCase half is what
+   AUDIT_FINANCE_FIELDS gates on, and a route file cannot be imported into a test
+   without dragging Hono and the auth middleware along. See that file's header. */
+
+/* The invoice's identity for an audit row written from a LINE handler, which has
+   the line in hand but not the parent. Best-effort by design: the writer is
+   fail-open, so an unresolved doc number costs the row its human key and nothing
+   else. */
+async function loadSiAuditMeta(
+  sb: Variables['supabase'],
+  siId: string,
+): Promise<{ docNo: string | null; companyId: number | null; status: string | null }> {
+  try {
+    const { data } = await sb.from('sales_invoices')
+      .select('invoice_number, company_id, status').eq('id', siId).maybeSingle();
+    const row = (data ?? null) as { invoice_number?: string | null; company_id?: number | null; status?: string | null } | null;
+    return { docNo: row?.invoice_number ?? null, companyId: row?.company_id ?? null, status: row?.status ?? null };
+  } catch {
+    return { docNo: null, companyId: null, status: null };
+  }
+}
+
+/**
+ * Record the CREATE of an invoice that has SURVIVED its handler.
+ *
+ * Reads the row back rather than taking the caller's payload: the stored shape
+ * is what a reader is being told about (the doc number was minted server-side,
+ * the totals only exist after recomputeTotals), and a header that a compensating
+ * branch already deleted reads back as nothing — so this cannot write a CREATE
+ * row for an invoice that was rolled back.
+ */
+async function recordSiCreate(
+  sb: Variables['supabase'],
+  actor: Variables['houzsUser'],
+  fallbackCompanyId: number | null | undefined,
+  siId: string,
+  lineCount: number,
+  note?: string,
+): Promise<void> {
+  let row: Record<string, unknown> | null = null;
+  try {
+    const { data } = await sb.from('sales_invoices')
+      .select('id, invoice_number, status, company_id, debtor_code, debtor_name, so_doc_no, ' +
+        'delivery_order_id, invoice_date, due_date, currency, salesperson_id, total_centi, paid_centi')
+      .eq('id', siId).maybeSingle();
+    row = (data ?? null) as Record<string, unknown> | null;
+  } catch { /* best-effort */ }
+  if (!row) return; // rolled back (or unreadable): a CREATE row here would be a lie
+  await recordEntityAudit(sb, {
+    entityType: 'SALES_INVOICE',
+    entityId: siId,
+    entityDocNo: (row.invoice_number as string | null) ?? null,
+    action: 'CREATE',
+    actor,
+    companyId: (row.company_id as number | null) ?? fallbackCompanyId,
+    statusSnapshot: (row.status as string | null) ?? null,
+    note,
+    fieldChanges: compactChanges([
+      fieldChange('status', null, row.status ?? null),
+      fieldChange('debtorCode', null, row.debtor_code ?? null),
+      fieldChange('debtorName', null, row.debtor_name ?? null),
+      fieldChange('soDocNo', null, row.so_doc_no ?? null),
+      fieldChange('deliveryOrderId', null, row.delivery_order_id ?? null),
+      fieldChange('invoiceDate', null, row.invoice_date ?? null),
+      fieldChange('dueDate', null, row.due_date ?? null),
+      fieldChange('currency', null, row.currency ?? null),
+      fieldChange('salespersonId', null, row.salesperson_id ?? null),
+      /* INTEGER SEN, straight off the column. */
+      fieldChange('totalCenti', null, row.total_centi ?? null),
+      fieldChange('lineCount', null, lineCount),
+    ]),
+  });
+}
 
 /* Full SI header — mirrors the editable DO header shape. */
 const HEADER =
@@ -801,6 +892,12 @@ salesInvoices.post('/', async (c) => {
     await recomputeTotals(sb, h.id);
   }
 
+  /* The invoice has survived the only branch that could undo it. Everything
+     below (revenue post, credit auto-apply) is best-effort and never deletes the
+     header, so from here every exit is a success and this CREATE row is true.
+     Written before the DRAFT early-return so both statuses record exactly one. */
+  await recordSiCreate(sb, c.get('houzsUser'), activeCompanyId(c), h.id, items.length);
+
   /* LEAK GUARD (DRAFT) — a DRAFT SI must NOT post AR/GL revenue nor auto-apply
      customer credit. Both happen on confirm (PATCH /:id/status DRAFT→SENT). */
   if (isDraft) {
@@ -1014,6 +1111,12 @@ salesInvoices.post('/from-dos', async (c) => {
 
   await recomputeTotals(sb, h.id);
 
+  /* Past the items-insert rollback — the invoice is permanent from here. */
+  await recordSiCreate(
+    sb, c.get('houzsUser'), activeCompanyId(c), h.id, rows.length,
+    `Converted from ${distinctDoNumbers.length > 1 ? 'Delivery Orders' : 'Delivery Order'} ${distinctDoNumbers.join(', ')}`,
+  );
+
   /* LEAK GUARD (DRAFT) — no AR/GL revenue, no customer credit on a DRAFT SI.
      Both move to the confirm transition (PATCH /:id/status DRAFT→SENT). */
   if (isDraft) {
@@ -1131,6 +1234,27 @@ salesInvoices.post('/:id/items/from-do/:doId', async (c) => {
   if (iErr) return c.json({ error: 'items_insert_failed', reason: iErr.message }, 500);
   await recomputeTotals(sb, id);
   await recomputePaid(sb, id);
+
+  /* UPDATE on the INVOICE — this appends lines to a document that already
+     exists. One row for the batch, not one per line: the operator performed one
+     act. The per-line detail is the item codes in the note; a reader who needs
+     the amounts has the invoice's own lines. */
+  {
+    const meta = await loadSiAuditMeta(sb, id);
+    await recordEntityAudit(sb, {
+      entityType: 'SALES_INVOICE',
+      entityId: id,
+      entityDocNo: meta.docNo,
+      action: 'UPDATE',
+      actor: c.get('houzsUser'),
+      companyId: meta.companyId ?? activeCompanyId(c),
+      statusSnapshot: meta.status,
+      note: `Lines added from Delivery Order: ${rows.map((r) => String((r as { item_code?: unknown }).item_code ?? '')).filter(Boolean).join(', ')}`,
+      fieldChanges: compactChanges([
+        fieldChange('lineCount', null, rows.length),
+      ]),
+    });
+  }
   /* LEAK GUARD (DRAFT) — appending DO lines to a DRAFT invoice must NOT post
      AR/GL revenue. Posting happens once, on confirm. */
   if ((si as { status: string }).status !== 'DRAFT') {
@@ -1310,6 +1434,26 @@ salesInvoices.post('/:id/items', async (c) => {
   if (error) return c.json({ error: 'insert_failed', reason: error.message }, 500);
   await recomputeTotals(sb, id);
   await recomputePaid(sb, id);
+
+  /* UPDATE, not CREATE: the entity is the INVOICE and it already existed. The
+     line's identity travels in the note and as the to-value of every pair. */
+  {
+    const added = (data ?? {}) as unknown as Record<string, unknown>;
+    const meta = await loadSiAuditMeta(sb, id);
+    await recordEntityAudit(sb, {
+      entityType: 'SALES_INVOICE',
+      entityId: id,
+      entityDocNo: meta.docNo,
+      action: 'UPDATE',
+      actor: c.get('houzsUser'),
+      companyId: meta.companyId ?? activeCompanyId(c),
+      statusSnapshot: meta.status,
+      note: `Line added: ${String(added.item_code ?? it.itemCode ?? '')}`,
+      fieldChanges: compactChanges(
+        SI_LINE_AUDIT_FIELDS.map(([camel, snake]) => fieldChange(camel, null, added[snake] ?? null)),
+      ),
+    });
+  }
   try {
     await resyncSiRevenue(sb, (header as { invoice_number: string }).invoice_number);
   } catch (e) { /* eslint-disable-next-line no-console */ console.error('[si-revenue] post-add-line resync failed:', e); }
@@ -1337,10 +1481,20 @@ salesInvoices.patch('/:id/items/:itemId', async (c) => {
     if (!codeCheck.ok) return c.json(unknownItemCodeResponse(codeCheck.unknown), 409);
   }
 
-  const { data: prev } = await sb.from('sales_invoice_items')
-    .select('qty, unit_price_centi, discount_centi, tax_centi, unit_cost_centi, item_code, item_group, description, uom, variants, notes, do_item_id')
+  /* The audited columns as well as the ones the money logic reads: this row is
+     also the BEFORE half of every from->to pair recorded after the update lands.
+     `variants` and `do_item_id` are business-logic only and deliberately not in
+     SI_LINE_AUDIT_FIELDS — variants render into description2, which is
+     server-owned and derived, not an operator edit. */
+  const { data: prevRow } = await sb.from('sales_invoice_items')
+    .select(SI_LINE_AUDIT_SELECT + ', variants, do_item_id')
     .eq('id', itemId).eq('sales_invoice_id', id).maybeSingle();
-  if (!prev) return c.json({ error: 'not_found' }, 404);
+  if (!prevRow) return c.json({ error: 'not_found' }, 404);
+  /* Cast through `unknown`: a .select() built from a concatenated string infers
+     as GenericStringError on the SupabaseClient<any> the scm client is, so the
+     row shape only exists after this. Project-wide pattern (see SI_AUDIT_SELECT
+     in the header PATCH, and ITEM everywhere else in this file). */
+  const prev = prevRow as unknown as Record<string, unknown>;
 
   const qty = it.qty !== undefined ? Number(it.qty) : Number(prev.qty);
 
@@ -1387,6 +1541,33 @@ salesInvoices.patch('/:id/items/:itemId', async (c) => {
 
   const { error } = await sb.from('sales_invoice_items').update(updates).eq('id', itemId);
   if (error) return c.json({ error: 'update_failed', reason: error.message }, 500);
+
+  /* Diff `updates` — the EFFECTIVE values written — against the stored row. qty,
+     price, discount, tax and cost are each recomputed above from the body OR the
+     prior row (the cost deliberately ignores a non-finance caller's echo), so
+     the body alone would not say what was actually stored. */
+  {
+    const auditPatch: Record<string, unknown> = {};
+    for (const [camel, snake] of SI_LINE_AUDIT_FIELDS) {
+      if (updates[snake] !== undefined) auditPatch[camel] = updates[snake];
+    }
+    const lineChanges = diffFields(prev as unknown as Record<string, unknown>, auditPatch, SI_LINE_AUDIT_FIELDS);
+    if (lineChanges.length > 0) {
+      const meta = await loadSiAuditMeta(sb, id);
+      await recordEntityAudit(sb, {
+        entityType: 'SALES_INVOICE',
+        entityId: id,
+        entityDocNo: meta.docNo,
+        action: 'UPDATE',
+        actor: c.get('houzsUser'),
+        companyId: meta.companyId ?? activeCompanyId(c),
+        statusSnapshot: meta.status,
+        note: `Line edited: ${String((prev as unknown as { item_code?: string | null }).item_code ?? itemId)}`,
+        fieldChanges: lineChanges,
+      });
+    }
+  }
+
   await recomputeTotals(sb, id);
   await recomputePaid(sb, id);
   try {
@@ -1409,13 +1590,36 @@ salesInvoices.delete('/:id/items/:itemId', async (c) => {
       return c.json({ error: 'invoice_issued', message: SI_ISSUED_LINE_MESSAGE }, 409);
     }
   }
-  {
-    const { data: line } = await sb.from('sales_invoice_items')
-      .select('id').eq('id', itemId).eq('sales_invoice_id', id).maybeSingle();
-    if (!line) return c.json({ error: 'not_found' }, 404);
-  }
+  /* Read the line BEFORE destroying it — afterwards the audit row is the only
+     remaining evidence of what was invoiced, and there is nothing left to join
+     back to. */
+  const { data: doomedRow } = await sb.from('sales_invoice_items')
+    .select(SI_LINE_AUDIT_SELECT).eq('id', itemId).eq('sales_invoice_id', id).maybeSingle();
+  if (!doomedRow) return c.json({ error: 'not_found' }, 404);
+  const doomed = doomedRow as unknown as Record<string, unknown>;
+
   const { error } = await sb.from('sales_invoice_items').delete().eq('id', itemId);
   if (error) return c.json({ error: 'delete_failed', reason: error.message }, 500);
+
+  /* UPDATE, not DELETE: the entity is the INVOICE and it still exists. DELETE on
+     this entity type would tell a reader the whole invoice was destroyed. */
+  {
+    const meta = await loadSiAuditMeta(sb, id);
+    await recordEntityAudit(sb, {
+      entityType: 'SALES_INVOICE',
+      entityId: id,
+      entityDocNo: meta.docNo,
+      action: 'UPDATE',
+      actor: c.get('houzsUser'),
+      companyId: meta.companyId ?? activeCompanyId(c),
+      statusSnapshot: meta.status,
+      note: `Line removed: ${String(doomed.item_code ?? itemId)}`,
+      fieldChanges: compactChanges(
+        SI_LINE_AUDIT_FIELDS.map(([camel, snake]) => fieldChange(camel, doomed[snake] ?? null, null)),
+      ),
+    });
+  }
+
   await recomputeTotals(sb, id);
   await recomputePaid(sb, id);
   try {
