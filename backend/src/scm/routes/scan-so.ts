@@ -82,6 +82,11 @@ import { todayMyt } from '../lib/my-time';
 import { activeCompanyId } from '../lib/companyScope';
 import { normalizePhone } from '../shared/phone';
 import { resolveCallerStaffId } from '../lib/salesScope';
+import {
+  planReceiptPayments,
+  installmentPlanToMonths,
+  type ExtractedPayment,
+} from '../lib/scan-receipt-plan';
 
 // The scm-scoped service client (getSupabaseService, db:{schema:'scm'}) and the
 // middleware-attached c.get('supabase') are both schema-parameterised clients.
@@ -848,9 +853,10 @@ NUMBERS — read the FULL numeric token; never truncate a multi-digit number to 
 
 MULTIPLE IMAGES
 ===============
-You may receive ONE or TWO images: a HANDWRITTEN order slip (a carbon-copy form with the customer, line items, handwriting, and payment checkboxes) and/or a PRINTED card-terminal payment RECEIPT (a thermal print: a bank name e.g. Maybank / Public Bank / CIMB, VISA / Mastercard, an APPROVAL CODE, a TOTAL amount, and often a TENURE / number of months for an EPP plan). Decide what each input image is:
+You may receive ONE HANDWRITTEN order slip (a carbon-copy form with the customer, line items, handwriting, and payment checkboxes) and ZERO, ONE, OR MORE PRINTED card-terminal payment RECEIPTS (each a thermal print: a bank name e.g. Maybank / Public Bank / CIMB, VISA / Mastercard, an APPROVAL CODE, a TOTAL amount, and often a TENURE / number of months for an EPP plan). One order can be paid across SEVERAL receipts (a deposit now + a balance, or split across two card terminals) — treat EACH printed receipt as ONE separate payment. Decide what each input image is:
 - Read the ORDER fields (customerName, address, phones, line items, deliveryDate, processingDate, salesRep) from the HANDWRITTEN slip.
-- Read the PAYMENT fields (paymentMethodMatch / bankMatch / installmentPlanMatch / approvalCode / depositRm or the receipt's amount) PREFERENTIALLY from the PRINTED receipt when one is present — the printed thermal receipt is far more accurate than the handwritten payment note. Still keep the handwritten payment note verbatim in paymentMethod. When NO receipt is present, fall back to the handwritten slip's payment note exactly as before. When BOTH are present and they DISAGREE (a different bank, a different amount, a different approval code), the PRINTED receipt wins for the structured fields — but you MUST state the disagreement in that field's reason (e.g. "slip writes PBB but receipt terminal is Maybank — using receipt") so the operator sees the conflict.
+- Read the PAYMENT fields (paymentMethodMatch / bankMatch / installmentPlanMatch / approvalCode / depositRm or the receipt's amount) PREFERENTIALLY from a PRINTED receipt when one is present — the printed thermal receipt is far more accurate than the handwritten payment note. Still keep the handwritten payment note verbatim in paymentMethod. When NO receipt is present, fall back to the handwritten slip's payment note exactly as before. When a receipt and the handwriting DISAGREE (a different bank, a different amount, a different approval code), the PRINTED receipt wins for the structured fields — but you MUST state the disagreement in that field's reason (e.g. "slip writes PBB but receipt terminal is Maybank — using receipt") so the operator sees the conflict.
+- The SINGULAR payment fields (paymentMethodMatch / bankMatch / installmentPlanMatch / approvalCode / depositRm) describe the PRIMARY (first) receipt, exactly as before. In ADDITION, emit the OUTPUT "payments" array with ONE entry PER payment-receipt image (see below) — each entry carries THAT receipt's own amount, bank, method, tenure, approval code and date. When there is exactly one receipt, "payments" has one entry that matches the singular fields. When there is no receipt, "payments" is [].
 You MUST also classify every input image in the OUTPUT "images" array (see below).
 
 A reference CATALOG follows this prompt (live product SKUs, fabrics, sofa sizes, leg heights). It is the FULL master (≈1100+ SKUs) — every catalog row is "code | name". Use it for AGGRESSIVE fuzzy / keyword / substring / abbreviation matching: a slip token should resolve to the SKU whose NAME contains that token's keyword, even when the rep wrote only a fragment. Search the WHOLE catalog before giving up.
@@ -940,6 +946,9 @@ Example: a payment note "CREDIT MBB EPP (001586)" with NO month count → paymen
 Example: a plain "CREDIT MBB (001586)" swipe with no EPP/term → paymentMethodMatch.value = Merchant, bankMatch.value = the MBB value, installmentPlanMatch.value = the "One Shot" value (a Maybank card paid through the bank with no tenure = One Shot), approvalCode = "001586".
 Example: an AEON Credit receipt "Tenure: 12 Months APPR 046501" → paymentMethodMatch.value = Merchant, bankMatch.value = the AEON value, installmentPlanMatch.value = the 12-month value (the receipt shows a 12-month tenure), approvalCode = "046501".
 
+- payments — ONE entry PER payment-receipt IMAGE, in image order, each describing THAT receipt on its OWN. imageIndex = the receipt image's "index" (the SAME index used in "images"). amountRm = the money charged on THAT receipt (its printed TOTAL / AMOUNT), as a NUMBER, null when unreadable. approvalCode / processingDate = that receipt's own approval code and printed date. paymentMethodMatch / bankMatch / onlineTypeMatch / installmentPlanMatch = that receipt's own option matches, resolved with the SAME rules and ALLOWED VALUES lists as the singular fields above (a card terminal → Merchant + its bank; a tenure line → the N-month plan, else One Shot). Do NOT sum or merge receipts: two RM 2,000 receipts are two entries of amountRm = 2000, never one of 4000. Every entry's imageIndex MUST be one of the images you classified as "payment_receipt"; NEVER emit a payments entry for the order-slip image. When there is no payment receipt, payments = [].
+Example: an order paid by TWO card receipts — a Maybank deposit "TOTAL 1,500.00 APPR 001586" on image 1 and a Public Bank balance "TOTAL 3,200.00 APPR 778210" on image 2 → images = [{index:0,kind:"order_slip"},{index:1,kind:"payment_receipt"},{index:2,kind:"payment_receipt"}], payments = [{imageIndex:1, amountRm:1500, approvalCode:"001586", paymentMethodMatch.value = Merchant, bankMatch.value = the MBB value, installmentPlanMatch.value = the One Shot value}, {imageIndex:2, amountRm:3200, approvalCode:"778210", paymentMethodMatch.value = Merchant, bankMatch.value = the Public value, installmentPlanMatch.value = the One Shot value}]; the singular depositRm/bankMatch/approvalCode describe the FIRST receipt (image 1).
+
 OUTPUT
 ======
 Return STRICT JSON, no markdown fences, no prose:
@@ -966,6 +975,16 @@ Return STRICT JSON, no markdown fences, no prose:
   "bankMatch": { "value": string, "confidence": number, "reason": string } | null,
   "onlineTypeMatch": { "value": string, "confidence": number, "reason": string } | null,
   "installmentPlanMatch": { "value": string, "confidence": number, "reason": string } | null,
+  "payments": [{
+    "imageIndex": number,
+    "amountRm": number | null,
+    "approvalCode": string | null,
+    "processingDate": string | null,
+    "paymentMethodMatch": { "value": string, "confidence": number, "reason": string } | null,
+    "bankMatch": { "value": string, "confidence": number, "reason": string } | null,
+    "onlineTypeMatch": { "value": string, "confidence": number, "reason": string } | null,
+    "installmentPlanMatch": { "value": string, "confidence": number, "reason": string } | null
+  }],
   "customerTypeMatch": { "value": string, "confidence": number, "reason": string } | null,
   "buildingTypeMatch": { "value": string, "confidence": number, "reason": string } | null,
   "locationMatch": { "value": string, "confidence": number, "reason": string } | null,
@@ -1074,6 +1093,14 @@ type ExtractedSlip = {
   // by /extract to decide which uploaded buffer to store under image_key vs
   // receipt_image_key — not surfaced in the modal's review form.
   images: ImageClass[];
+  // MULTI-RECEIPT — one entry per PAYMENT-RECEIPT image the model read, each
+  // with its OWN amount / bank / method / approval / date, keyed by the image's
+  // `index`. The background job books ONE ledger row per entry (deposit +
+  // balance, split card terminals). Empty when the scan carried no receipt, OR
+  // for a legacy parse that only filled the singular payment fields above — the
+  // planner then falls the FIRST receipt back to those singulars, so the
+  // pre-multi behaviour is preserved byte-for-byte.
+  payments: ExtractedPayment[];
   lines: ExtractedLine[];
 };
 
@@ -1163,8 +1190,47 @@ function normalizeSlip(raw: unknown): ExtractedSlip {
         })
         .filter((x): x is ImageClass => x !== null)
     : [];
+  // Per-receipt payments — keep only entries with a numeric imageIndex; each
+  // carries its own amount / matches (option VALUES). Option matches ride as
+  // { value } like the singular fields; store the VALUE string (validateSlip
+  // enforces never-invent on the singulars; the per-receipt values are the
+  // model's read of the SAME catalog-bound vocabulary).
+  const optionValueOf = (v: unknown): string | null => optionMatch(v)?.value ?? null;
+  const payments: ExtractedPayment[] = Array.isArray(r.payments)
+    ? (r.payments as unknown[])
+        .map((p) => {
+          const o = (p && typeof p === 'object' ? p : {}) as Record<string, unknown>;
+          const imageIndex =
+            typeof o.imageIndex === 'number' && Number.isFinite(o.imageIndex) ? o.imageIndex : null;
+          if (imageIndex === null) return null;
+          return {
+            imageIndex,
+            amountRm: num(o.amountRm),
+            approvalCode: str(o.approvalCode),
+            processingDate: str(o.processingDate),
+            paymentMethodValue: optionValueOf(o.paymentMethodMatch),
+            bankValue: optionValueOf(o.bankMatch),
+            onlineTypeValue: optionValueOf(o.onlineTypeMatch),
+            installmentPlanValue: optionValueOf(o.installmentPlanMatch),
+          } satisfies ExtractedPayment;
+        })
+        .filter((p): p is ExtractedPayment => p !== null)
+    : [];
+  // BACK-FILL the SINGULAR payment fields from the FIRST receipt when the model
+  // filled only payments[] — so the header deposit + the modal review form (both
+  // read the singulars) still reflect the primary receipt, and a legacy single-
+  // receipt read is unchanged (payments[0] equals the singulars there).
+  const primaryPay = payments[0] ?? null;
+  const depositRm = num(r.depositRm) ?? (primaryPay ? primaryPay.amountRm : null);
+  const approvalCode = str(r.approvalCode) ?? (primaryPay ? primaryPay.approvalCode : null);
+  const singularPaymentMatch = (own: unknown, val: string | null | undefined): OptionMatch | null => {
+    const mine = optionMatch(own);
+    if (mine) return mine;
+    return val ? { value: val, confidence: 0, reason: 'from payment receipt' } : null;
+  };
   return {
     images,
+    payments,
     customerName: str(r.customerName),
     address: str(r.address),
     addressLine1: str(r.addressLine1),
@@ -1180,14 +1246,14 @@ function normalizeSlip(raw: unknown): ExtractedSlip {
     salesRep: str(r.salesRep),
     customerSoRef: str(r.customerSoRef),
     paymentMethod: str(r.paymentMethod),
-    depositRm: num(r.depositRm),
+    depositRm,
     totalRm: num(r.totalRm),
     remarks: str(r.remarks),
-    approvalCode: str(r.approvalCode),
-    paymentMethodMatch:   optionMatch(r.paymentMethodMatch),
-    bankMatch:            optionMatch(r.bankMatch),
-    onlineTypeMatch:      optionMatch(r.onlineTypeMatch),
-    installmentPlanMatch: optionMatch(r.installmentPlanMatch),
+    approvalCode,
+    paymentMethodMatch:   singularPaymentMatch(r.paymentMethodMatch, primaryPay?.paymentMethodValue),
+    bankMatch:            singularPaymentMatch(r.bankMatch, primaryPay?.bankValue),
+    onlineTypeMatch:      singularPaymentMatch(r.onlineTypeMatch, primaryPay?.onlineTypeValue),
+    installmentPlanMatch: singularPaymentMatch(r.installmentPlanMatch, primaryPay?.installmentPlanValue),
     customerTypeMatch:    optionMatch(r.customerTypeMatch),
     buildingTypeMatch:    optionMatch(r.buildingTypeMatch),
     locationMatch:        optionMatch(r.locationMatch),
@@ -1423,6 +1489,29 @@ function validateSlip(slip: ExtractedSlip, catalog: Catalog): Warning[] {
         message: `Suggested ${category.replace(/_/g, ' ')} not in the SO Maintenance list — cleared; pick manually.`,
       });
       slip[field] = null;
+    }
+  }
+
+  // Per-receipt payment option values (multi-receipt) — the SAME never-invent
+  // snap as the singular payment matches above, so every booked receipt row
+  // carries only catalog-valid vocabulary (and the first receipt's values match
+  // the validated singulars). A value outside the ACTIVE list is CLEARED to
+  // null (deriveLedgerMethod then treats a null method as an assumed card
+  // terminal), never invented.
+  if (slip.payments.length > 0) {
+    const canonFor = (category: OptionCategory): Map<string, string> =>
+      new Map(catalog.options[category].map((o) => [o.value.toUpperCase(), o.value]));
+    const methodCanon = canonFor('payment_method');
+    const bankCanon = canonFor('payment_merchant');
+    const onlineCanon = canonFor('online_type');
+    const planCanon = canonFor('installment_plan');
+    const snap = (v: string | null, canon: Map<string, string>): string | null =>
+      v ? (canon.get(v.toUpperCase()) ?? null) : null;
+    for (const p of slip.payments) {
+      p.paymentMethodValue = snap(p.paymentMethodValue, methodCanon);
+      p.bankValue = snap(p.bankValue, bankCanon);
+      p.onlineTypeValue = snap(p.onlineTypeValue, onlineCanon);
+      p.installmentPlanValue = snap(p.installmentPlanValue, planCanon);
     }
   }
 
@@ -3074,6 +3163,10 @@ function jobToJson(r: Record<string, unknown>): Record<string, unknown> {
     // original SO; the mobile Scan screen surfaces it on the job card.
     duplicateOf: r.duplicateOf ?? r.duplicate_of ?? null,
     imageKeys: r.imageKeys ?? r.image_keys ?? [],
+    // Multi-receipt (migration 0141) — the R2 keys of the uploads the OCR
+    // classified as payment receipts (one payment booked per key). [] for a
+    // draft-only scan or a row predating the column.
+    receiptImageKeys: r.receiptImageKeys ?? r.receipt_image_keys ?? [],
     createdAt: r.createdAt ?? r.created_at ?? null,
     updatedAt: r.updatedAt ?? r.updated_at ?? null,
   };
@@ -3235,39 +3328,20 @@ async function findDuplicateSo(
 // bank + plan months), Online -> 'transfer' (+ online type), Cash -> 'cash'.
 // No/unknown method match -> 'merchant' (a printed card-terminal receipt IS a
 // Merchant transaction), flagged `guessed` so the row's note says so.
-function ledgerMethodFromSlip(parsed: ExtractedSlip): {
-  method: 'merchant' | 'transfer' | 'cash';
-  merchantProvider: string | null;
-  installmentMonths: number | null;
-  onlineType: string | null;
-  guessed: boolean;
-} {
-  // 'One Shot' -> null; 'N months' -> N (same planToMonths rule as the
-  // client and buildDraftSoBodyFromSlip).
-  const planLabel = (parsed.installmentPlanMatch?.value ?? '').trim();
-  const planMonthsMatch = /^(\d+)\s*month/i.exec(planLabel);
-  const planMonths = planMonthsMatch ? Number(planMonthsMatch[1]) : null;
-  const raw = (parsed.paymentMethodMatch?.value ?? '').trim().toLowerCase();
-  if (raw === 'cash') {
-    return { method: 'cash', merchantProvider: null, installmentMonths: null, onlineType: null, guessed: false };
+// The uploaded-image indices the model classified as payment RECEIPTS, in
+// image order, deduped, filtered to indices that were actually uploaded. The
+// storeScanImages positional fallback is intentionally NOT applied — booking
+// money off an UNCLASSIFIED photo would be a guess; the operator can still add
+// the payment on the draft.
+function classifiedReceiptIndices(parsed: ExtractedSlip, uploadedImages: UploadedImage[]): number[] {
+  const seen = new Set<number>();
+  const out: number[] = [];
+  for (const img of parsed.images) {
+    if (img.kind !== 'payment_receipt' || seen.has(img.index)) continue;
+    seen.add(img.index);
+    if (uploadedImages.some((u) => u.index === img.index)) out.push(img.index);
   }
-  if (raw === 'online') {
-    return {
-      method: 'transfer',
-      merchantProvider: null,
-      installmentMonths: null,
-      onlineType: parsed.onlineTypeMatch?.value ?? null,
-      guessed: false,
-    };
-  }
-  // 'Merchant', legacy 'Installment', or nothing readable (guessed).
-  return {
-    method: 'merchant',
-    merchantProvider: parsed.bankMatch?.value ?? null,
-    installmentMonths: planMonths,
-    onlineType: null,
-    guessed: raw !== 'merchant' && raw !== 'installment',
-  };
+  return out;
 }
 
 async function recordScanReceiptPayments(
@@ -3287,17 +3361,7 @@ async function recordScanReceiptPayments(
   },
 ): Promise<{ recorded: number; failed: number; skippedDuplicate: number }> {
   const { parsed } = args;
-  // Which uploaded IMAGES are receipts — the model's own classification only.
-  // storeScanImages' positional fallback is intentionally NOT applied here:
-  // booking money off an unclassified photo would be a guess; the operator
-  // can still add the payment on the draft.
-  const seen = new Set<number>();
-  const receiptIdxs: number[] = [];
-  for (const img of parsed.images) {
-    if (img.kind !== 'payment_receipt' || seen.has(img.index)) continue;
-    seen.add(img.index);
-    if (args.uploadedImages.some((u) => u.index === img.index)) receiptIdxs.push(img.index);
-  }
+  const receiptIdxs = classifiedReceiptIndices(parsed, args.uploadedImages);
   if (receiptIdxs.length === 0) return { recorded: 0, failed: 0, skippedDuplicate: 0 };
 
   // Double-book guard. The create core books its own is_deposit ledger row
@@ -3320,69 +3384,83 @@ async function recordScanReceiptPayments(
     return { recorded: 0, failed: 0, skippedDuplicate: receiptIdxs.length };
   }
 
-  const m = ledgerMethodFromSlip(parsed);
-  const depositCenti = typeof parsed.depositRm === 'number' && parsed.depositRm > 0
-    ? Math.round(parsed.depositRm * 100)
-    : 0;
-  // Payment date = the slip/order date when readable, else today (MYT).
-  // SANITY CLAMP (evidence 2026-07: the OCR invented years — "2015-09-17" /
-  // "2019-12-17" for a current slip — which would book the money YEARS in the
-  // past): only trust a slip date within a plausible window (up to 60 days
-  // back, 7 days forward); anything outside books at today instead.
-  const paidAt = (() => {
-    const d = (parsed.processingDate ?? '').trim();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return todayMyt();
-    const t = Date.parse(`${d}T00:00:00Z`);
-    if (!Number.isFinite(t)) return todayMyt();
-    const now = Date.now();
-    const dayMs = 86_400_000;
-    if (t < now - 60 * dayMs || t > now + 7 * dayMs) return todayMyt();
-    return d;
-  })();
+  // MULTI-RECEIPT — the pure planner decides the rows to book (one per receipt
+  // that carries a real amount), each with its OWN amount / method / approval /
+  // slip proof / deposit flag / date. 0 receipts → []; 1 receipt → the single
+  // pre-multi row; N receipts → N rows. See scan-receipt-plan.ts.
+  const planned = planReceiptPayments({
+    jobId: args.jobId,
+    receiptIndices: receiptIdxs,
+    storedImageKeys: args.storedImageKeys,
+    receiptImageKey: args.receiptImageKey,
+    payments: parsed.payments,
+    legacy: {
+      depositRm: parsed.depositRm,
+      approvalCode: parsed.approvalCode,
+      paymentMethodValue: parsed.paymentMethodMatch?.value ?? null,
+      bankValue: parsed.bankMatch?.value ?? null,
+      onlineTypeValue: parsed.onlineTypeMatch?.value ?? null,
+      installmentPlanValue: parsed.installmentPlanMatch?.value ?? null,
+    },
+    slipProcessingDate: parsed.processingDate,
+    nowMs: Date.now(),
+    todayStr: todayMyt(),
+  });
+  if (planned.length === 0) return { recorded: 0, failed: 0, skippedDuplicate: 0 };
 
-  // Receipt dedup ACROSS SOs (owner 2026-07-04 policy change: never book
-  // money off a receipt image that already backs a payment row on ANY order).
-  // Receipt sha256s are not stored anywhere today, so a true image-hash match
-  // would mean fetching + re-hashing every prior job's R2 objects inside
-  // waitUntil — too heavy. Two CHEAP probes instead, both fail-OPEN (a query
-  // error just books normally):
+  // Receipt dedup ACROSS SOs (owner 2026-07-04: never book money off a receipt
+  // that already backs a payment row on ANY order). Receipt sha256s are not
+  // stored, so a true image-hash match would mean re-hashing every prior job's
+  // R2 objects inside waitUntil — too heavy. Two CHEAP probes instead, both
+  // fail-OPEN (a query error just books normally):
   //   1) R2 key lineage — a payment row already references this job's
-  //      scan-jobs/{jobId}/{idx} object (a re-run of the same job).
-  //   2) Transaction fingerprint — a payment row on ANY SO already carries
-  //      this receipt's approval code AND the same amount. A re-photographed
-  //      receipt gets a different R2 key and a different sha256 (JPEG
-  //      re-encode), but the PRINTED approval code is per-transaction — the
-  //      cheapest honest equivalent of the image match.
+  //      scan-jobs/{jobId}/{idx} object (a re-run of the same job). Checked per
+  //      PLANNED row's own slip key.
+  //   2) Transaction fingerprint — a payment row on ANY SO already carries a
+  //      receipt's approval code AND the same amount. Now checked PER RECEIPT
+  //      (each receipt has its own approval code + amount), not just the first —
+  //      a re-photographed receipt gets a new R2 key + sha256, but the PRINTED
+  //      approval code is per-transaction, the cheapest honest image-match.
+  const candidateKeys = planned.map((p) => p.slipKey).filter((k): k is string => typeof k === 'string' && k !== '');
   const alreadyBookedKeys = new Set<string>();
-  try {
-    const candidateKeys = receiptIdxs.map((idx) => `scan-jobs/${args.jobId}/${idx}`);
-    const { data: lineageRows, error: lineageErr } = await svc
-      .from('mfg_sales_order_payments')
-      .select('slip_key')
-      .in('slip_key', candidateKeys);
-    if (lineageErr) {
-      console.warn('[scan-job] payment key-lineage check failed:', lineageErr.message);
-    } else {
-      for (const r of ((lineageRows as Array<Record<string, unknown>> | null) ?? [])) {
-        const k = (r.slipKey ?? r.slip_key) as string | undefined;
-        if (typeof k === 'string' && k !== '') alreadyBookedKeys.add(k);
+  if (candidateKeys.length > 0) {
+    try {
+      const { data: lineageRows, error: lineageErr } = await svc
+        .from('mfg_sales_order_payments')
+        .select('slip_key')
+        .in('slip_key', candidateKeys);
+      if (lineageErr) {
+        console.warn('[scan-job] payment key-lineage check failed:', lineageErr.message);
+      } else {
+        for (const r of ((lineageRows as Array<Record<string, unknown>> | null) ?? [])) {
+          const k = (r.slipKey ?? r.slip_key) as string | undefined;
+          if (typeof k === 'string' && k !== '') alreadyBookedKeys.add(k);
+        }
       }
+    } catch (e) {
+      console.warn('[scan-job] payment key-lineage check threw:', (e as Error).message);
     }
-  } catch (e) {
-    console.warn('[scan-job] payment key-lineage check threw:', (e as Error).message);
   }
-  const approvalCode = (parsed.approvalCode ?? '').trim();
-  let fingerprintDup = false;
-  if (approvalCode && depositCenti > 0) {
+  // Fingerprint set — one batched query over every approval code the planned
+  // rows carry, keyed "approvalCode|amountCenti".
+  const bookedFingerprints = new Set<string>();
+  const approvalCodes = [...new Set(planned.map((p) => p.approvalCode).filter((a): a is string => !!a))];
+  if (approvalCodes.length > 0) {
     try {
       const { data: fpRows, error: fpErr } = await svc
         .from('mfg_sales_order_payments')
-        .select('id')
-        .eq('approval_code', approvalCode)
-        .eq('amount_centi', depositCenti)
-        .limit(1);
+        .select('approval_code, amount_centi')
+        .in('approval_code', approvalCodes);
       if (fpErr) console.warn('[scan-job] payment fingerprint check failed:', fpErr.message);
-      else if ((((fpRows as unknown[] | null) ?? []).length > 0)) fingerprintDup = true;
+      else {
+        for (const r of ((fpRows as Array<Record<string, unknown>> | null) ?? [])) {
+          const code = (r.approvalCode ?? r.approval_code) as string | undefined;
+          const amt = Number(r.amountCenti ?? r.amount_centi ?? NaN);
+          if (typeof code === 'string' && code !== '' && Number.isFinite(amt)) {
+            bookedFingerprints.add(`${code}|${amt}`);
+          }
+        }
+      }
     } catch (e) {
       console.warn('[scan-job] payment fingerprint check threw:', (e as Error).message);
     }
@@ -3391,47 +3469,29 @@ async function recordScanReceiptPayments(
   let recorded = 0;
   let failed = 0;
   let skippedDuplicate = 0;
-  for (let i = 0; i < receiptIdxs.length; i += 1) {
-    const idx = receiptIdxs[i];
-    const first = i === 0;
-    // Prefer REFERENCING the durable enqueue-time copy (same bucket the slip
-    // presigner serves); fall back to the provenance receipt copy.
-    const jobKey = `scan-jobs/${args.jobId}/${idx}`;
+  for (const row of planned) {
     // A receipt that already backs a payment row books NOTHING — the caller
     // appends the plain "matching payment already recorded" note instead.
-    // The fingerprint only vouches for the FIRST receipt (the only one that
-    // carries the OCR'd amount + approval code); extras book their 0-amount
-    // "please verify" rows as usual.
-    if (alreadyBookedKeys.has(jobKey) || (first && fingerprintDup)) {
+    const keyDup = row.slipKey != null && alreadyBookedKeys.has(row.slipKey);
+    const fpDup = row.approvalCode != null && bookedFingerprints.has(`${row.approvalCode}|${row.amountCenti}`);
+    if (keyDup || fpDup) {
       skippedDuplicate += 1;
-      console.warn('[scan-job] receipt already booked — skipped:', args.docNo, jobKey);
-      continue;
-    }
-    const slipKey = args.storedImageKeys.includes(jobKey)
-      ? jobKey
-      : (first ? args.receiptImageKey : null);
-    // Only the FIRST receipt carries the OCR'd amount; extras have none.
-    const amountCenti = first ? depositCenti : 0;
-    // Owner: do NOT create RM 0.00 phantom payment rows. A receipt with no
-    // readable amount books NOTHING — the operator adds that payment manually
-    // in Edit (its slip is still on R2 and viewable). Only book real amounts.
-    if (amountCenti <= 0) {
-      console.warn('[scan-job] receipt has no readable amount — not booking a RM0 row:', args.docNo, jobKey);
+      console.warn('[scan-job] receipt already booked — skipped:', args.docNo, row.slipKey ?? `img#${row.imageIndex}`);
       continue;
     }
     const noteParts = ['Recorded from scanned payment receipt'];
-    if (m.guessed) noteParts.push('method not read — assumed card terminal (Merchant)');
+    if (row.methodGuessed) noteParts.push('method not read — assumed card terminal (Merchant)');
     try {
       const { errorMessage } = await recordSoPaymentRow(svc, {
         docNo: args.docNo,
-        paidAt,
-        method: m.method,
-        merchantProvider: m.merchantProvider,
-        installmentMonths: m.installmentMonths,
-        onlineType: m.onlineType,
-        approvalCode: first ? ((parsed.approvalCode ?? '').trim() || null) : null,
-        amountCenti,
-        slipKey,
+        paidAt: row.paidAt,
+        method: row.method,
+        merchantProvider: row.merchantProvider,
+        installmentMonths: row.installmentMonths,
+        onlineType: row.onlineType,
+        approvalCode: row.approvalCode,
+        amountCenti: row.amountCenti,
+        slipKey: row.slipKey,
         collectedBy: args.salespersonId,
         note: noteParts.join('; '),
         createdBy: args.salespersonId,
@@ -3439,7 +3499,7 @@ async function recordScanReceiptPayments(
         // The first receipt row IS the header deposit — is_deposit stops the
         // list/detail paid-rollup adding the header deposit_centi on top of
         // this ledger row (double count).
-        isDeposit: first,
+        isDeposit: row.isDeposit,
         auditSource: 'automation',
         auditNote: 'Auto: payment recorded from scanned receipt (background scan job)',
       });
@@ -3716,9 +3776,7 @@ function buildDraftSoBodyFromSlip(
 
   // 'One Shot' -> null (no installment term); 'N months' -> N (the client's
   // planToMonths rule).
-  const planLabel = parsed.installmentPlanMatch?.value ?? '';
-  const planMonthsMatch = /^(\d+)\s*month/i.exec(planLabel.trim());
-  const planMonths = planMonthsMatch ? Number(planMonthsMatch[1]) : null;
+  const planMonths = installmentPlanToMonths(parsed.installmentPlanMatch?.value);
   const paymentMethod = parsed.paymentMethodMatch?.value ?? null;
 
   // NOTHING OCR'D IS LOST: fields the model extracted but the draft has no
@@ -3787,7 +3845,7 @@ function buildDraftSoBodyFromSlip(
     // slip read as Cash/Online with an instalment note anywhere on it seeded an
     // SO header carrying "12 months" against a method that cannot instalment,
     // and contradicted the ledger row booked from the SAME parse
-    // (ledgerMethodFromSlip only carries the plan on a merchant-like method,
+    // (deriveLedgerMethod only carries the plan on a merchant-like method,
     // and recordSoPaymentRow nulls it otherwise). One rule, both writers.
     installmentMonths: paymentMethod === 'Merchant' ? planMonths : null,
     approvalCode: (parsed.approvalCode ?? '').trim() || null,
@@ -3904,6 +3962,16 @@ async function runScanJob(
       shellNote = 'The scan could not read this slip, so this draft is blank. Please open it and fill in the order from the photo.';
     } else {
       await postProcessSlip(parsed, svc, env.GOOGLE_MAPS_API_KEY, catalog);
+
+      // Multi-receipt manifest (migration 0141) — record WHICH uploads the OCR
+      // classified as payment receipts (the durable audit trail of "the
+      // receipts this scan turned into payments"). Keys are the enqueue-time R2
+      // objects (scan-jobs/{jobId}/{idx}) that survived; best-effort, never
+      // blocks the draft.
+      const receiptKeys = classifiedReceiptIndices(parsed, job.uploadedImages)
+        .map((idx) => `scan-jobs/${job.id}/${idx}`)
+        .filter((k) => job.imageKeys.includes(k));
+      if (receiptKeys.length > 0) await touch({ receipt_image_keys: receiptKeys });
 
       // Duplicate-upload warning (owner: 重复上传预警) — same photo scanned
       // again recently, or the same customer/slip already has an SO. The DRAFT

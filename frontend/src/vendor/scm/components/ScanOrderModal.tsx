@@ -42,9 +42,12 @@
 // this modal keeps its own styling):
 //
 //   1. LABELED SLOTS — the single undifferentiated dropzone is split into a
-//      labeled "Order slip" slot + an optional "Payment receipt" slot (mirrors
-//      mobile's Front/Payment split). The positional contract is unchanged:
-//      file[0] = slip, file[1] = receipt.
+//      labeled "Order slip" slot + an optional "Payment receipts" slot (mirrors
+//      mobile's Front/Payment split). The slip is one file; the receipts are a
+//      LIST — an order paid across several receipts (deposit + balance, split
+//      terminals) books one payment per receipt. Upload shape: the slip file
+//      first, then every receipt file, all under `file` (same repeated-`file`
+//      contract mobile's enqueueOne uses — no positional dependence).
 //
 //   2. BACKGROUND JOBS — "Add another order" queues as many orders as the
 //      operator has slips; ONE order takes the same path. POST /scan-so/enqueue
@@ -229,15 +232,16 @@ type EnqueueResp = { job_id: string; status: string };
    ScanPrefill types above stay exported: they are the sessionStorage handoff
    contract SalesOrderNew.tsx reads. */
 
-/* One queued order in the session: a single order slip + an OPTIONAL payment
-   receipt. `id` is a stable client key (independent of array index so removing
-   an order doesn't reshuffle React keys). Mirrors mobile's OrderDraft, reduced
-   to desktop's file-drop model (one receipt file, not a payShots[] array) per
-   the /scan-so/enqueue positional contract. */
-type SlotKind = 'slip' | 'receipt';
-type OrderRow = { id: string; slip: File | null; receipt: File | null };
+/* One queued order in the session: a single order slip + ZERO OR MORE payment
+   receipts. `id` is a stable client key (independent of array index so removing
+   an order doesn't reshuffle React keys). Mirrors mobile's OrderDraft (front +
+   payShots[]): an order can be paid across several receipts (deposit + balance,
+   split card terminals), and the background job books ONE payment per receipt.
+   The /scan-so/enqueue contract is positional-agnostic — the slip is appended
+   first, then every receipt, all under the `file` field. */
+type OrderRow = { id: string; slip: File | null; receipts: File[] };
 let ORDER_SEQ = 0;
-const newOrder = (): OrderRow => ({ id: `ord-${++ORDER_SEQ}-${Date.now()}`, slip: null, receipt: null });
+const newOrder = (): OrderRow => ({ id: `ord-${++ORDER_SEQ}-${Date.now()}`, slip: null, receipts: [] });
 
 const ACCEPT = 'image/jpeg,image/png,image/webp,application/pdf';
 const isAcceptedFile = (f: File): boolean =>
@@ -333,11 +337,18 @@ export const ScanOrderModal = ({ onClose }: Props) => {
 
   /* ── Slot capture ───────────────────────────────────────────────────────
      Re-target the hidden input to the active order, then open the file picker.
-     One accepted file per slot (slip or receipt); a re-pick replaces it. */
-  const pickSlot = (orderId: string, kind: SlotKind) => {
+     The slip is a single file (a re-pick replaces it); receipts are a list —
+     each pick APPENDS (the receipt input is `multiple`), and each receipt has
+     its own remove control. */
+  const pickSlip = (orderId: string) => {
     if (submitting) return;
     activeOrderIdRef.current = orderId;
-    (kind === 'slip' ? slipInputRef : receiptInputRef).current?.click();
+    slipInputRef.current?.click();
+  };
+  const pickReceipt = (orderId: string) => {
+    if (submitting) return;
+    activeOrderIdRef.current = orderId;
+    receiptInputRef.current?.click();
   };
   const clearOrderError = (orderId: string) =>
     setOrderErrors((cur) => {
@@ -346,26 +357,46 @@ export const ScanOrderModal = ({ onClose }: Props) => {
       delete next[orderId];
       return next;
     });
-  const setSlot = (orderId: string, kind: SlotKind, file: File | null) => {
-    setOrders((cur) =>
-      cur.map((o) => {
-        if (o.id !== orderId) return o;
-        return kind === 'slip' ? { ...o, slip: file } : { ...o, receipt: file };
-      }),
-    );
+  const setSlip = (orderId: string, file: File | null) => {
+    setOrders((cur) => cur.map((o) => (o.id === orderId ? { ...o, slip: file } : o)));
     setError(null);
     clearOrderError(orderId); // a new photo invalidates that order's dup warning
   };
-  const onSlotFile = (kind: SlotKind, file: File | undefined) => {
+  // Append accepted receipt files to an order (each = one payment). No cap — an
+  // order can take as many receipts as it was paid across.
+  const addReceipts = (orderId: string, files: File[]) => {
+    const accepted = files.filter(isAcceptedFile);
+    if (accepted.length === 0) return;
+    setOrders((cur) => cur.map((o) => (o.id === orderId ? { ...o, receipts: [...o.receipts, ...accepted] } : o)));
+    setError(null);
+    clearOrderError(orderId);
+  };
+  const removeReceipt = (orderId: string, index: number) => {
+    if (submitting) return;
+    setOrders((cur) =>
+      cur.map((o) => (o.id === orderId ? { ...o, receipts: o.receipts.filter((_, k) => k !== index) } : o)),
+    );
+    clearOrderError(orderId);
+  };
+  const onSlipFile = (file: File | undefined) => {
     const orderId = activeOrderIdRef.current;
     if (!orderId || !file) return;
     if (!isAcceptedFile(file)) { setError('Unsupported file — use a JPEG, PNG, WEBP or PDF.'); return; }
-    setSlot(orderId, kind, file);
+    setSlip(orderId, file);
   };
-  const onDrop = (orderId: string, kind: SlotKind, list: FileList | null) => {
+  const onReceiptFiles = (list: FileList | null) => {
+    const orderId = activeOrderIdRef.current;
+    if (!orderId || !list) return;
+    addReceipts(orderId, Array.from(list));
+  };
+  const onDropSlip = (orderId: string, list: FileList | null) => {
     setDragOver(null);
     const file = Array.from(list ?? []).find(isAcceptedFile);
-    if (file) setSlot(orderId, kind, file);
+    if (file) setSlip(orderId, file);
+  };
+  const onDropReceipts = (orderId: string, list: FileList | null) => {
+    setDragOver(null);
+    addReceipts(orderId, Array.from(list ?? []));
   };
 
   const addOrder = () => {
@@ -399,11 +430,13 @@ export const ScanOrderModal = ({ onClose }: Props) => {
   const enqueueOrder = async (order: OrderRow, force = false): Promise<EnqueueResp> => {
     const fd = new FormData();
     // Downscale first — same helper mobile uses, so both surfaces send the model
-    // the same shape of image. A PDF drop passes through untouched.
-    const slip = await compressForOcr(order.slip!);
-    fd.append('file', slip);                             // file[0] = order slip
-    if (order.receipt) {
-      fd.append('file', await compressForOcr(order.receipt)); // file[1] = payment receipt
+    // the same shape of image. A PDF drop passes through untouched. The slip is
+    // appended first, then EVERY receipt (each becomes one payment on the draft):
+    // the same repeated-`file` shape mobile's enqueueOne sends, so desktop and
+    // mobile hit the identical enqueue contract.
+    fd.append('file', await compressForOcr(order.slip!));  // order slip first
+    for (const receipt of order.receipts) {
+      fd.append('file', await compressForOcr(receipt));    // one file per payment receipt
     }
     const repTyped = salesperson.trim();
     if (repTyped) fd.append('salesperson', repTyped);
@@ -507,30 +540,23 @@ export const ScanOrderModal = ({ onClose }: Props) => {
   const busy = submitting;
   const ready = orders.length > 0 && orders.every((o) => o.slip !== null);
 
-  /* One labeled slot (slip or receipt) — a dashed dropzone when empty, a solid
+  /* The single "Order slip" slot — a dashed dropzone when empty, a solid
      filename card with a remove control when filled. */
-  const renderSlot = (order: OrderRow, kind: SlotKind) => {
-    const file = order[kind];
-    const label = kind === 'slip' ? 'Order slip' : 'Payment receipt';
-    const key = `${order.id}:${kind}`;
+  const renderSlipSlot = (order: OrderRow) => {
+    const key = `${order.id}:slip`;
     return (
       <div className={styles.slot}>
-        <span className={styles.slotLabel}>
-          {label}
-          {kind === 'receipt' && <span className={styles.slotLabelOptional}> · optional</span>}
-        </span>
-        {file ? (
+        <span className={styles.slotLabel}>Order slip</span>
+        {order.slip ? (
           <div className={styles.slotFilled}>
-            {kind === 'slip'
-              ? <Camera size={20} strokeWidth={1.5} />
-              : <Receipt size={20} strokeWidth={1.5} />}
-            <span className={styles.slotFileName}>{file.name}</span>
+            <Camera size={20} strokeWidth={1.5} />
+            <span className={styles.slotFileName}>{order.slip.name}</span>
             {!busy && (
               <button
                 type="button"
                 className={styles.removeBtn}
-                onClick={() => setSlot(order.id, kind, null)}
-                aria-label={`Remove ${label}`}
+                onClick={() => setSlip(order.id, null)}
+                aria-label="Remove Order slip"
               >
                 <X size={14} strokeWidth={1.75} /> Remove
               </button>
@@ -539,17 +565,59 @@ export const ScanOrderModal = ({ onClose }: Props) => {
         ) : (
           <div
             className={`${styles.slotZone} ${dragOver === key ? styles.slotZoneActive : ''}`}
-            onClick={() => pickSlot(order.id, kind)}
+            onClick={() => pickSlip(order.id)}
             onDragOver={(e) => { e.preventDefault(); setDragOver(key); }}
             onDragLeave={() => setDragOver((cur) => (cur === key ? null : cur))}
-            onDrop={(e) => { e.preventDefault(); onDrop(order.id, kind, e.dataTransfer.files); }}
+            onDrop={(e) => { e.preventDefault(); onDropSlip(order.id, e.dataTransfer.files); }}
           >
-            {kind === 'slip'
-              ? <Camera size={22} strokeWidth={1.5} />
-              : <Receipt size={22} strokeWidth={1.5} />}
-            <div>{kind === 'slip' ? 'Drop the slip, or click' : 'Card receipt (optional)'}</div>
+            <Camera size={22} strokeWidth={1.5} />
+            <div>Drop the slip, or click</div>
           </div>
         )}
+      </div>
+    );
+  };
+
+  /* The "Payment receipts" slot — a LIST of receipt cards (each removable, each
+     becoming one payment on the draft) plus an "add another receipt" dropzone.
+     Optional: an order with no receipt still lands a draft with no payment. */
+  const renderReceiptSlot = (order: OrderRow) => {
+    const key = `${order.id}:receipt`;
+    const count = order.receipts.length;
+    return (
+      <div className={styles.slot}>
+        <span className={styles.slotLabel}>
+          Payment receipts
+          <span className={styles.slotLabelOptional}>
+            {count === 0 ? ' · optional' : ` · ${count} payment${count === 1 ? '' : 's'}`}
+          </span>
+        </span>
+        {order.receipts.map((file, i) => (
+          <div key={`${file.name}-${i}`} className={styles.slotFilled}>
+            <Receipt size={20} strokeWidth={1.5} />
+            <span className={styles.slotFileName}>{file.name}</span>
+            {!busy && (
+              <button
+                type="button"
+                className={styles.removeBtn}
+                onClick={() => removeReceipt(order.id, i)}
+                aria-label={`Remove payment receipt ${i + 1}`}
+              >
+                <X size={14} strokeWidth={1.75} /> Remove
+              </button>
+            )}
+          </div>
+        ))}
+        <div
+          className={`${styles.slotZone} ${dragOver === key ? styles.slotZoneActive : ''}`}
+          onClick={() => pickReceipt(order.id)}
+          onDragOver={(e) => { e.preventDefault(); setDragOver(key); }}
+          onDragLeave={() => setDragOver((cur) => (cur === key ? null : cur))}
+          onDrop={(e) => { e.preventDefault(); onDropReceipts(order.id, e.dataTransfer.files); }}
+        >
+          {count === 0 ? <Receipt size={22} strokeWidth={1.5} /> : <Plus size={22} strokeWidth={1.5} />}
+          <div>{count === 0 ? 'Card receipt (optional) — one per payment' : 'Add another receipt'}</div>
+        </div>
       </div>
     );
   };
@@ -582,14 +650,15 @@ export const ScanOrderModal = ({ onClose }: Props) => {
             type="file"
             accept={ACCEPT}
             style={{ display: 'none' }}
-            onChange={(e) => { onSlotFile('slip', e.target.files?.[0]); e.target.value = ''; }}
+            onChange={(e) => { onSlipFile(e.target.files?.[0]); e.target.value = ''; }}
           />
           <input
             ref={receiptInputRef}
             type="file"
             accept={ACCEPT}
+            multiple
             style={{ display: 'none' }}
-            onChange={(e) => { onSlotFile('receipt', e.target.files?.[0]); e.target.value = ''; }}
+            onChange={(e) => { onReceiptFiles(e.target.files); e.target.value = ''; }}
           />
 
           <label className={styles.field}>
@@ -625,8 +694,8 @@ export const ScanOrderModal = ({ onClose }: Props) => {
                 </div>
               )}
               <div className={styles.slotGrid}>
-                {renderSlot(order, 'slip')}
-                {renderSlot(order, 'receipt')}
+                {renderSlipSlot(order)}
+                {renderReceiptSlot(order)}
               </div>
               {orderErrors[order.id] && (
                 <div className={styles.warn}>
@@ -715,9 +784,10 @@ export const ScanOrderModal = ({ onClose }: Props) => {
           )}
 
           <p className={styles.sub} style={{ marginTop: 4 }}>
-            Each order takes an order slip and, optionally, a card-terminal payment
-            receipt. We read every slip and save a draft order per slip in the
-            background — you do not have to wait here for it.
+            Each order takes an order slip and, optionally, one or more card-terminal
+            payment receipts — each receipt becomes its own payment on the draft. We
+            read every slip and save a draft order per slip in the background — you do
+            not have to wait here for it.
           </p>
         </div>
 

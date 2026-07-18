@@ -60,16 +60,21 @@ export type { ScanJob, ScanJobsResp };
 // MULTIPLE PAYMENT SLIPS (per order) — an order can take 2-3 payments (deposit +
 // balances), and each physical slip / card-terminal receipt is ONE payment. The
 // front slip stays single per order; the payment slip is an ARRAY (add-more +
-// per-slip remove). Because the current /scan-so/extract contract reads exactly
-// ONE order slip + ONE payment receipt into a SINGLE payment, we OCR each
-// payment slip in its OWN /extract call (that order's front slip attached to
-// every call so the order fields are read once and each call's single payment is
-// the k-th slip's payment). We then merge: the FIRST call supplies the order +
-// payment #1, calls 2..N each supply one more payment. This yields N payments
-// per N slips end-to-end WITHOUT any backend change — each call uses the existing
-// 1-slip + 1-receipt contract verbatim. (See the report note for the alternative
-// single-call array contract if the backend later grows a paymentFiles[]/
-// payments[] mode.)
+// per-slip remove).
+//
+// PRIMARY PATH (/scan-so/enqueue): enqueueOne uploads the front slip + EVERY
+// payment slip in one multipart POST (all under `file`). The background job now
+// OCRs EACH receipt and books ONE payment per receipt (each with its own amount /
+// bank / approval), so N slips → N payments server-side. This is the SAME
+// repeated-`file` enqueue contract the desktop Scan Order modal sends — one logic
+// layer, no mobile-only shape.
+//
+// LEGACY FALLBACK (/scan-so/extract, submitLegacy, only when /enqueue 404s on a
+// stale worker): that older contract reads exactly ONE order slip + ONE payment
+// receipt into a SINGLE payment, so we OCR each payment slip in its OWN /extract
+// call (the front slip attached to every call), then merge — the FIRST call
+// supplies the order + payment #1, calls 2..N each supply one more payment. Same
+// end result (N payments per N slips) via the 1-slip+1-receipt contract verbatim.
 //
 // DELETE — every uploaded thumbnail (front + payment, in every order) carries a
 // small "×" remove control so a wrong capture can be dropped before submitting.
