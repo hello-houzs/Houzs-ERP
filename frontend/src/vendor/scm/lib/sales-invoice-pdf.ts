@@ -15,6 +15,8 @@
 import { formatPhone } from '@2990s/shared/phone';
 import { COMPANY, drawHeader, drawInfoColumns, drawSignatureBoxes, ensurePdfCjkFont, fmtRm, safeName, fmtDocDate } from './pdf-common';
 import { docVariantLine, loadCustomerFabricMaps } from './supplier-doc-data';
+import { IS_NATIVE } from '../../../lib/native';
+import { saveAndOpenBlob } from '../../../lib/nativeFiles';
 
 type SiHeader = {
   invoice_number: string; status: string;
@@ -202,7 +204,12 @@ export async function generateSalesInvoicePdf(header: SiHeader, items: SiItem[])
   const autoTable = (await import('jspdf-autotable')).default;
   const doc = new jsPDF({ unit: 'mm', format: 'a4' });
   await renderSalesInvoiceInto(doc, autoTable, header, items);
-  doc.save(`${header.invoice_number}-${safeName(header.debtor_name)}.pdf`);
+  const filename = `${header.invoice_number}-${safeName(header.debtor_name)}.pdf`;
+  if (IS_NATIVE) {
+    await saveAndOpenBlob(doc.output('blob'), filename);
+    return;
+  }
+  doc.save(filename);
 }
 
 /* Several SIs → ONE combined file, each invoice starting on a new page. For the
@@ -220,5 +227,10 @@ export async function generateCombinedSalesInvoicePdf(
     if (i > 0) doc.addPage();
     await renderSalesInvoiceInto(doc, autoTable, docs[i]!.header, docs[i]!.items);
   }
-  doc.save(opts?.fileName ?? 'sales-invoices.pdf');
+  const filename = opts?.fileName ?? 'sales-invoices.pdf';
+  if (IS_NATIVE) {
+    await saveAndOpenBlob(doc.output('blob'), filename);
+    return;
+  }
+  doc.save(filename);
 }

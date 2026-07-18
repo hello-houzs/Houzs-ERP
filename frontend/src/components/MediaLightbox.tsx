@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { ChevronLeft, ChevronRight, X, FileText, Download } from "lucide-react";
 import { api } from "../api/client";
+import { IS_NATIVE } from "../lib/native";
+import { saveAndOpenBlob } from "../lib/nativeFiles";
 
 export interface MediaItem {
   r2_key: string;
@@ -221,6 +223,23 @@ export function MediaLightbox({
                 target="_blank"
                 rel="noreferrer"
                 download={item.caption || undefined}
+                /* The blob: URL behind this anchor reaches neither a new tab
+                   nor a download inside the WKWebView, so native re-reads the
+                   bytes and hands them to the share sheet instead. */
+                onClick={
+                  IS_NATIVE
+                    ? (e) => {
+                        e.preventDefault();
+                        void (async () => {
+                          const blob = await (await fetch(url)).blob();
+                          await saveAndOpenBlob(
+                            blob,
+                            item.caption || item.r2_key.split("/").pop() || "attachment",
+                          );
+                        })();
+                      }
+                    : undefined
+                }
                 className="inline-flex items-center gap-2 rounded-md bg-white/10 px-4 py-2 text-[13px] font-semibold uppercase tracking-wide text-white transition-colors hover:bg-white/20"
               >
                 <Download size={15} /> Open

@@ -211,7 +211,9 @@ export function useDeleteLorryServiceRecord(lorryId: string) {
   });
 }
 
-/** The record's invoice as a blob object URL, for `window.open` / `<a href>`.
+/** The record's invoice as a blob object URL. Viewing it must go through
+ *  lib/nativeFiles' openBlobUrl, not a bare `window.open` / `<a href>`: the iOS
+ *  WKWebView silently ignores both for a blob: URL.
  *
  *  A raw fetch rather than authedFetch: that helper JSON-parses its response
  *  and this endpoint streams bytes. Mirrors slip.ts's fetchSlipAsObjectUrl —

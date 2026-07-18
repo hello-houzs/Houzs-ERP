@@ -5,6 +5,8 @@ import { MobileVirtualList } from "./MobileVirtualList";
 import { useAuth } from "../auth/AuthContext";
 import { isSalesDirectorUser } from "../auth/salesAccess";
 import { formatDate } from "../lib/utils";
+import { IS_NATIVE } from "../lib/native";
+import { saveAndOpenBlob } from "../lib/nativeFiles";
 import "./mobile.css";
 
 // ---------------------------------------------------------------------------
@@ -211,9 +213,16 @@ async function download(ann: Announcement, att: Attachment) {
     const u = await api.fetchBlobUrl(
       `/api/announcements/${encodeURIComponent(ann.id)}/attachments/${att.r2Key}`,
     );
+    const name = att.name || "attachment";
+    if (IS_NATIVE) {
+      const blob = await (await fetch(u)).blob();
+      URL.revokeObjectURL(u);
+      await saveAndOpenBlob(blob, name);
+      return;
+    }
     const link = document.createElement("a");
     link.href = u;
-    link.download = att.name || "attachment";
+    link.download = name;
     document.body.appendChild(link);
     link.click();
     link.remove();

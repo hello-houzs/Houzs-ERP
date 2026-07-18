@@ -43,6 +43,8 @@ import {
 } from '@2990s/shared/so-line-display';
 import { buildDefaultSofaCells, findModule, SOFA_MODULES, type Cell, type Depth } from '@2990s/shared';
 import { drawSofaLayout } from './sofa-layout-pdf';
+import { IS_NATIVE } from '../../../lib/native';
+import { saveAndOpenBlob } from '../../../lib/nativeFiles';
 import { COMPANY, amountInWordsMyr, drawInfoColumns, ensurePdfCjkFont, fmtDocDate, fmtDocStamp } from './pdf-common';
 import {
   loadSupplierDocData,
@@ -649,7 +651,12 @@ export async function generatePurchaseOrderPdf(
   const { supplierName } = await renderPurchaseOrderInto(doc, autoTable, header, items, opts);
   finalizePoPdf(doc);
   const safeName = supplierName.replace(/[^A-Za-z0-9_-]+/g, '_').slice(0, 32);
-  doc.save(`${header.po_number}-${safeName}.pdf`);
+  const filename = `${header.po_number}-${safeName}.pdf`;
+  if (IS_NATIVE) {
+    await saveAndOpenBlob(doc.output('blob'), filename);
+    return;
+  }
+  doc.save(filename);
 }
 
 /* The SAME PO PDF, returned as raw base64 instead of downloaded — for emailing it
@@ -687,5 +694,10 @@ export async function generateCombinedPurchaseOrderPdf(
     await renderPurchaseOrderInto(doc, autoTable, pos[i]!.header, pos[i]!.items, opts);
   }
   finalizePoPdf(doc);
-  doc.save(opts?.fileName ?? 'purchase-orders.pdf');
+  const filename = opts?.fileName ?? 'purchase-orders.pdf';
+  if (IS_NATIVE) {
+    await saveAndOpenBlob(doc.output('blob'), filename);
+    return;
+  }
+  doc.save(filename);
 }

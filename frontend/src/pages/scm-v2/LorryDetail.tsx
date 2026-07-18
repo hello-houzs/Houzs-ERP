@@ -47,6 +47,7 @@ import {
   type ComplianceTone,
 } from '../../vendor/shared/lorry-compliance';
 import { formatDate } from '../../lib/utils';
+import { openBlobUrl } from '../../lib/nativeFiles';
 import styles from './Suppliers.module.css';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
@@ -294,7 +295,7 @@ const ServiceRow = ({ record, lorryId }: { record: LorryServiceRecord; lorryId: 
   const openInvoice = async () => {
     try {
       const { url } = await fetchServiceInvoiceUrl(record.id);
-      window.open(url, '_blank', 'noopener');
+      await openBlobUrl(url, `service-invoice-${record.id}`, { features: 'noopener' });
     } catch (e) {
       notify({ title: (e as Error)?.message ?? 'Could not open the invoice.', tone: 'error' });
     }

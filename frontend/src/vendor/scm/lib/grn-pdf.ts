@@ -12,6 +12,8 @@ import {
 } from '@2990s/shared/so-line-display';
 import { COMPANY, drawHeader, drawInfoColumns, drawSignatureBoxes, ensurePdfCjkFont, fmtRm, safeName, fmtDocDate } from './pdf-common';
 import { loadSupplierDocData, supplierCodeFor, specsLine } from './supplier-doc-data';
+import { IS_NATIVE } from '../../../lib/native';
+import { saveAndOpenBlob } from '../../../lib/nativeFiles';
 
 type GrnHeader = {
   grn_number: string; status: string;
@@ -168,7 +170,12 @@ export async function generateGrnPdf(
   const autoTable = (await import('jspdf-autotable')).default;
   const doc = new jsPDF({ unit: 'mm', format: 'a4' });
   await renderGrnInto(doc, autoTable, header, items, opts);
-  doc.save(`${header.grn_number}-${safeName(header.supplier?.name ?? 'supplier')}.pdf`);
+  const filename = `${header.grn_number}-${safeName(header.supplier?.name ?? 'supplier')}.pdf`;
+  if (IS_NATIVE) {
+    await saveAndOpenBlob(doc.output('blob'), filename);
+    return;
+  }
+  doc.save(filename);
 }
 
 /* Several GRNs → ONE combined file, each GRN starting on a new page. For the
@@ -184,5 +191,10 @@ export async function generateCombinedGrnPdf(
     if (i > 0) doc.addPage();
     await renderGrnInto(doc, autoTable, docs[i]!.header, docs[i]!.items, opts);
   }
-  doc.save(opts?.fileName ?? 'goods-received.pdf');
+  const filename = opts?.fileName ?? 'goods-received.pdf';
+  if (IS_NATIVE) {
+    await saveAndOpenBlob(doc.output('blob'), filename);
+    return;
+  }
+  doc.save(filename);
 }

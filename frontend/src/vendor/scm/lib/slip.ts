@@ -94,9 +94,11 @@ export const MAX_SLIP_SIZE_BYTES = 5 * 1024 * 1024;
 
 /* Proxy-view deviation (see header): the /slip-url routes now STREAM the slip
    bytes through the Worker (authed) instead of returning a presigned R2 URL.
-   Blob-fetch + object URL keeps the {url, contentType} contract for callers
-   (<img src>, <a href target=_blank>, window.open all take blob: URLs). The
-   object URLs are never revoked here — same accepted trade-off as
+   Blob-fetch + object URL keeps the {url, contentType} contract for callers.
+   <img src> takes a blob: URL anywhere; opening one in a new tab works on the
+   web ONLY — inside the iOS WKWebView window.open(blob:) and <a download> both
+   do nothing, so those callers must route through lib/nativeFiles. The object
+   URLs are never revoked here — same accepted trade-off as
    fetchScanSlipImageBlobUrl's callers that view-then-navigate. */
 async function fetchSlipAsObjectUrl(path: string): Promise<SlipUrlResponse> {
   const res = await slipFetch(`${API_URL}${path}`, {

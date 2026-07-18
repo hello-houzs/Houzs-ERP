@@ -74,6 +74,8 @@ import { formatPhone } from '@2990s/shared/phone';
 import { maintValues, fmtCenti, fmtDateOrDash, fmtQty } from '@2990s/shared';
 import { PhoneInput } from '../../vendor/scm/components/PhoneInput';
 import { MoneyInput } from '../../vendor/scm/components/MoneyInput';
+import { IS_NATIVE } from '../../lib/native';
+import { saveAndOpenBlob } from '../../lib/nativeFiles';
 import styles from './SupplierDetail.module.css';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
@@ -1936,10 +1938,15 @@ function exportBindingsCsv(
   }
 
   const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+  const filename = `supplier-${supplierCode}-bindings-${new Date().toISOString().slice(0, 10)}.csv`;
+  if (IS_NATIVE) {
+    void saveAndOpenBlob(blob, filename);
+    return;
+  }
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `supplier-${supplierCode}-bindings-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
 }

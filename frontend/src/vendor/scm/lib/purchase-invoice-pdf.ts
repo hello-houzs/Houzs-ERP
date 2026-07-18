@@ -13,6 +13,8 @@ import {
 } from '@2990s/shared/so-line-display';
 import { COMPANY, drawHeader, drawInfoColumns, ensurePdfCjkFont, fmtRm, safeName, fmtDocDate } from './pdf-common';
 import { loadSupplierDocData, supplierCodeFor, specsLine } from './supplier-doc-data';
+import { IS_NATIVE } from '../../../lib/native';
+import { saveAndOpenBlob } from '../../../lib/nativeFiles';
 
 type PiHeader = {
   invoice_number: string; supplier_invoice_ref: string | null; status: string;
@@ -171,7 +173,12 @@ export async function generatePurchaseInvoicePdf(header: PiHeader, items: PiItem
   const autoTable = (await import('jspdf-autotable')).default;
   const doc = new jsPDF({ unit: 'mm', format: 'a4' });
   await renderPurchaseInvoiceInto(doc, autoTable, header, items);
-  doc.save(`${header.invoice_number}-${safeName(header.supplier?.name ?? 'supplier')}.pdf`);
+  const filename = `${header.invoice_number}-${safeName(header.supplier?.name ?? 'supplier')}.pdf`;
+  if (IS_NATIVE) {
+    await saveAndOpenBlob(doc.output('blob'), filename);
+    return;
+  }
+  doc.save(filename);
 }
 
 /* Several PIs → ONE combined file, each PI starting on a new page. For the
@@ -187,5 +194,10 @@ export async function generateCombinedPurchaseInvoicePdf(
     if (i > 0) doc.addPage();
     await renderPurchaseInvoiceInto(doc, autoTable, docs[i]!.header, docs[i]!.items);
   }
-  doc.save(opts?.fileName ?? 'purchase-invoices.pdf');
+  const filename = opts?.fileName ?? 'purchase-invoices.pdf';
+  if (IS_NATIVE) {
+    await saveAndOpenBlob(doc.output('blob'), filename);
+    return;
+  }
+  doc.save(filename);
 }

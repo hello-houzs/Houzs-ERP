@@ -12,6 +12,8 @@
 // ----------------------------------------------------------------------------
 
 import type { FabricTrackingRow } from './fabric-queries';
+import { IS_NATIVE } from '../../../lib/native';
+import { saveAndOpenBlob } from '../../../lib/nativeFiles';
 
 type ColKind = 'text' | 'int';
 
@@ -144,6 +146,10 @@ export function parseCsv(text: string): ParsedImport {
 
 export function triggerDownload(filename: string, csv: string): void {
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  if (IS_NATIVE) {
+    void saveAndOpenBlob(blob, filename);
+    return;
+  }
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;

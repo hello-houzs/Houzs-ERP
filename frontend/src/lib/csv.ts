@@ -3,6 +3,9 @@
 // - CRLF line endings
 // - Field quoting per RFC 4180
 
+import { IS_NATIVE } from "./native";
+import { saveAndOpenBlob } from "./nativeFiles";
+
 export interface CSVColumn<T> {
   key: string;
   label: string;
@@ -31,6 +34,12 @@ export function toCSV<T>(rows: T[], columns: CSVColumn<T>[]): string {
 export function downloadCSV(filename: string, content: string) {
   // BOM so Excel/Sheets detect UTF-8
   const blob = new Blob(["\ufeff" + content], { type: "text/csv;charset=utf-8" });
+  // Callers are sync click handlers, so the share sheet is fired and forgotten
+  // rather than making every one of them async.
+  if (IS_NATIVE) {
+    void saveAndOpenBlob(blob, filename);
+    return;
+  }
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;

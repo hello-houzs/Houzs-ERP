@@ -32,6 +32,8 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type HTMLAttributes, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { API_ORIGIN } from '../../lib/apiBase';
+import { IS_NATIVE } from '../../lib/native';
+import { saveAndOpenBlob } from '../../lib/nativeFiles';
 import {
   Download,
   Upload,
@@ -4989,14 +4991,19 @@ function exportSkusCsv(rows: MfgProductRow[], sofaSizes: string[], tier: SofaPri
   }
 
   const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
   // Stamp the active category into the filename (e.g. 2990s-skus-bedframe-…csv)
   // so a file's contents are obvious — the export only ever holds the rows
   // currently filtered on screen (Wei Siang 2026-06-09).
   const catTag = category === 'all' ? '' : `${category.toLowerCase()}-`;
-  a.download = `2990s-skus-${catTag}${new Date().toISOString().slice(0, 10)}.csv`;
+  const filename = `2990s-skus-${catTag}${new Date().toISOString().slice(0, 10)}.csv`;
+  if (IS_NATIVE) {
+    void saveAndOpenBlob(blob, filename);
+    return;
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
 }

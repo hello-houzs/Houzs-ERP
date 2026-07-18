@@ -16,6 +16,8 @@ import {
 } from '@2990s/shared/so-line-display';
 import { COMPANY, drawHeader, drawInfoColumns, drawSignatureBoxes, ensurePdfCjkFont, fmtRm, safeName, fmtDocDate } from './pdf-common';
 import { docVariantLine, loadCustomerFabricMaps } from './supplier-doc-data';
+import { IS_NATIVE } from '../../../lib/native';
+import { saveAndOpenBlob } from '../../../lib/nativeFiles';
 
 type DrHeader = {
   return_number: string; status: string; return_date: string;
@@ -155,7 +157,12 @@ export async function generateDeliveryReturnPdf(
   const autoTable = (await import('jspdf-autotable')).default;
   const doc = new jsPDF({ unit: 'mm', format: 'a4' });
   await renderDeliveryReturnInto(doc, autoTable, header, items, opts);
-  doc.save(`${header.return_number}-${safeName(header.debtor_name)}.pdf`);
+  const filename = `${header.return_number}-${safeName(header.debtor_name)}.pdf`;
+  if (IS_NATIVE) {
+    await saveAndOpenBlob(doc.output('blob'), filename);
+    return;
+  }
+  doc.save(filename);
 }
 
 /* Several delivery returns → ONE combined file, each return starting on a new
@@ -171,5 +178,10 @@ export async function generateCombinedDeliveryReturnPdf(
     if (i > 0) doc.addPage();
     await renderDeliveryReturnInto(doc, autoTable, docs[i]!.header, docs[i]!.items, opts);
   }
-  doc.save(opts?.fileName ?? 'delivery-returns.pdf');
+  const filename = opts?.fileName ?? 'delivery-returns.pdf';
+  if (IS_NATIVE) {
+    await saveAndOpenBlob(doc.output('blob'), filename);
+    return;
+  }
+  doc.save(filename);
 }

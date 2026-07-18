@@ -13,6 +13,8 @@ import {
 } from '@2990s/shared/so-line-display';
 import { COMPANY, drawHeader, drawInfoColumns, drawSignatureBoxes, ensurePdfCjkFont, fmtRm, safeName, fmtDocDate } from './pdf-common';
 import { loadSupplierDocData, supplierCodeFor, specsLine } from './supplier-doc-data';
+import { IS_NATIVE } from '../../../lib/native';
+import { saveAndOpenBlob } from '../../../lib/nativeFiles';
 
 type PrHeader = {
   return_number: string; status: string; return_date: string;
@@ -176,7 +178,12 @@ export async function generatePurchaseReturnPdf(
   const autoTable = (await import('jspdf-autotable')).default;
   const doc = new jsPDF({ unit: 'mm', format: 'a4' });
   await renderPurchaseReturnInto(doc, autoTable, header, items, opts);
-  doc.save(`${header.return_number}-${safeName(header.supplier?.name ?? 'supplier')}.pdf`);
+  const filename = `${header.return_number}-${safeName(header.supplier?.name ?? 'supplier')}.pdf`;
+  if (IS_NATIVE) {
+    await saveAndOpenBlob(doc.output('blob'), filename);
+    return;
+  }
+  doc.save(filename);
 }
 
 /* Several PRs → ONE combined file, each PR starting on a new page. For the batch
@@ -193,5 +200,10 @@ export async function generateCombinedPurchaseReturnPdf(
     if (i > 0) doc.addPage();
     await renderPurchaseReturnInto(doc, autoTable, docs[i]!.header, docs[i]!.items, opts);
   }
-  doc.save(opts?.fileName ?? 'purchase-returns.pdf');
+  const filename = opts?.fileName ?? 'purchase-returns.pdf';
+  if (IS_NATIVE) {
+    await saveAndOpenBlob(doc.output('blob'), filename);
+    return;
+  }
+  doc.save(filename);
 }

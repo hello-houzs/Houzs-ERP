@@ -21,6 +21,8 @@ import {
   safeName,
 } from './pdf-common';
 import { docVariantLine, loadCustomerFabricMaps } from './supplier-doc-data';
+import { IS_NATIVE } from '../../../lib/native';
+import { saveAndOpenBlob } from '../../../lib/nativeFiles';
 
 type DoHeader = {
   do_number: string;
@@ -231,7 +233,12 @@ export async function generateDeliveryOrderPdf(
   const autoTable = (await import('jspdf-autotable')).default;
   const doc = new jsPDF({ unit: 'mm', format: 'a4' });
   await renderDeliveryOrderInto(doc, autoTable, header, items, opts);
-  doc.save(`${header.do_number}-${safeName(header.debtor_name || 'customer')}.pdf`);
+  const filename = `${header.do_number}-${safeName(header.debtor_name || 'customer')}.pdf`;
+  if (IS_NATIVE) {
+    await saveAndOpenBlob(doc.output('blob'), filename);
+    return;
+  }
+  doc.save(filename);
 }
 
 /* Several DOs → ONE combined file, each DO starting on a new page. For the
@@ -247,5 +254,10 @@ export async function generateCombinedDeliveryOrderPdf(
     if (i > 0) doc.addPage();
     await renderDeliveryOrderInto(doc, autoTable, docs[i]!.header, docs[i]!.items, opts);
   }
-  doc.save(opts?.fileName ?? 'delivery-orders.pdf');
+  const filename = opts?.fileName ?? 'delivery-orders.pdf';
+  if (IS_NATIVE) {
+    await saveAndOpenBlob(doc.output('blob'), filename);
+    return;
+  }
+  doc.save(filename);
 }

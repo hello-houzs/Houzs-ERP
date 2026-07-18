@@ -8,6 +8,8 @@ import { useToast } from "../hooks/useToast";
 import { useDialog } from "../hooks/useDialog";
 import { api } from "../api/client";
 import { cn } from "../lib/utils";
+import { IS_NATIVE } from "../lib/native";
+import { saveAndOpenBlob } from "../lib/nativeFiles";
 import { DORMANT_TAG, DORMANT_TITLE } from "../auth/dormantPages";
 import type { AccessLevel, Department, PageDef, Position } from "../types";
 
@@ -185,16 +187,22 @@ export function PositionsTab() {
         return;
       }
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const filename = "houzs-position-access.json";
+      if (IS_NATIVE) {
+        await saveAndOpenBlob(blob, filename);
+        toast.success(`Exported ${data.positions.length} positions as ${filename}`);
+        return;
+      }
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = "houzs-position-access.json";
+      a.download = filename;
       document.body.appendChild(a);
       a.click();
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 10_000);
       toast.success(
-        `Exported ${data.positions.length} positions — saved to your Downloads as houzs-position-access.json`,
+        `Exported ${data.positions.length} positions — saved to your Downloads as ${filename}`,
       );
     } catch (e: any) {
       // Always a sentence, never a code, and never a silent no-op: the client

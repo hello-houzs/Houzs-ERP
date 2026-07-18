@@ -45,6 +45,8 @@ import { paymentMethodCodeForValue } from "../vendor/scm/lib/payment-methods";
 import { missingMethodSubField } from "../vendor/scm/components/PaymentsTable";
 import { fmtCenti } from "../lib/scm";
 import { useIdempotencyKey } from "../lib/idempotency";
+import { IS_NATIVE } from "../lib/native";
+import { openBlobUrl, saveAndOpenBlob } from "../lib/nativeFiles";
 import { PaymentInfoBlock, type RecordedPaymentLike } from "./PaymentInfoBlock";
 
 /* A persisted payment as either mobile surface holds it. Superset of
@@ -117,7 +119,7 @@ function SlipLink({ docNo, paymentId }: { docNo: string; paymentId: string }) {
     setBusy(true);
     try {
       const { url } = await fetchPaymentSlipUrl(docNo, paymentId);
-      window.open(url, "_blank", "noopener");
+      await openBlobUrl(url, `slip-${paymentId}`, { features: "noopener" });
     } catch (e) {
       void notify({ title: "Couldn't open slip", body: e instanceof Error ? e.message : String(e), tone: "error" });
     } finally {
@@ -163,6 +165,16 @@ function PaymentSlipPreview({ docNo, paymentId }: { docNo: string; paymentId: st
     return () => { live = false; if (objUrl) URL.revokeObjectURL(objUrl); };
   }, [docNo, paymentId]);
   const isPdf = contentType.includes("pdf");
+  /* Shares a COPY of the bytes rather than going through openBlobUrl, which
+     revokes the object URL — the same URL backs the thumbnail below. */
+  const openSlip = async () => {
+    if (!url) return;
+    if (IS_NATIVE) {
+      await saveAndOpenBlob(await (await fetch(url)).blob(), `slip-${paymentId}`);
+      return;
+    }
+    window.open(url, "_blank", "noopener");
+  };
   return (
     <div className="fld">
       <span className="fld-l">Attached slip</span>
@@ -173,7 +185,7 @@ function PaymentSlipPreview({ docNo, paymentId }: { docNo: string; paymentId: st
       ) : isPdf ? (
         <button
           type="button"
-          onClick={() => window.open(url, "_blank", "noopener")}
+          onClick={() => void openSlip()}
           style={{ width: "100%", boxSizing: "border-box", height: 40, borderRadius: 9, cursor: "pointer", fontFamily: "inherit", fontSize: 12, fontWeight: 700, border: "1px solid #bcdcd7", background: "#e1efed", color: "#16695f" }}
         >
           View attached slip (PDF)
@@ -181,7 +193,7 @@ function PaymentSlipPreview({ docNo, paymentId }: { docNo: string; paymentId: st
       ) : (
         <button
           type="button"
-          onClick={() => window.open(url, "_blank", "noopener")}
+          onClick={() => void openSlip()}
           title="Open slip full-size"
           style={{ padding: 0, border: "1px solid #d6d9d2", borderRadius: 9, background: "#f4f6f3", cursor: "pointer", overflow: "hidden", display: "block", width: "fit-content" }}
         >
