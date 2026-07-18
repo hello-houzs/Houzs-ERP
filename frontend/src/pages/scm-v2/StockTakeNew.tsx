@@ -29,6 +29,7 @@ import {
   type StockTakeScopeType,
 } from '../../vendor/scm/lib/stock-queries';
 import styles from './SalesOrderDetail.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -139,24 +140,27 @@ export const StockTakeNew = () => {
   };
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
-          <Link to="/scm/stock-takes" className={styles.backBtn}>
-            <ArrowLeft {...ICON} /> <span>Stock Takes</span>
-          </Link>
-          <h1 className={styles.title}>New Stock Take</h1>
-        </div>
-        <div className={styles.actions}>
-          <Button variant="ghost" size="md" onClick={() => navigate('/scm/stock-takes')}>
-            <X {...ICON} /> Cancel
-          </Button>
-          <Button variant="primary" size="md" onClick={onCreate} disabled={create.isPending}>
-            <Save {...ICON} />
-            {create.isPending ? 'Snapshotting…' : 'Create Count Sheet'}
-          </Button>
-        </div>
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Warehouse"
+        title="New Stock Take"
+        actions={
+          <>
+            <Link to="/scm/stock-takes" className={styles.backBtn}>
+              <ArrowLeft {...ICON} /> <span>Stock Takes</span>
+            </Link>
+            <div className={styles.actions}>
+              <Button variant="ghost" size="md" onClick={() => navigate('/scm/stock-takes')}>
+                <X {...ICON} /> Cancel
+              </Button>
+              <Button variant="primary" size="md" onClick={onCreate} disabled={create.isPending}>
+                <Save {...ICON} />
+                {create.isPending ? 'Snapshotting…' : 'Create Count Sheet'}
+              </Button>
+            </div>
+          </>
+        }
+      />
 
       <section className={styles.card}>
         <div className={styles.cardHeader}>

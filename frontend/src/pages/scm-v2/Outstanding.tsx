@@ -21,6 +21,7 @@ import {
 } from '../../vendor/scm/lib/outstanding-queries';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
 import styles from './Suppliers.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const MODULES: { value: OutstandingModule; label: string; icon: React.ReactNode; route: (row: Record<string, unknown>) => string }[] = [
   // HOUZS VENDOR — "Open →" deep-links repointed onto Houzs's /scm/* routes
@@ -52,27 +53,28 @@ export const Outstanding = () => {
   const rows = rowsQ.data?.rows ?? [];
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div>
-          <h1 className={styles.title}>Outstanding</h1>
-        </div>
-        <div className={styles.actionsRow}>
-          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-13)' }}>
-            <span style={{ color: 'var(--fg-muted)' }}>From</span>
-            <input type="date" className={styles.searchInput} value={from} onChange={(e) => setFrom(e.target.value)} style={{ width: 150 }} />
-          </label>
-          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-13)' }}>
-            <span style={{ color: 'var(--fg-muted)' }}>To</span>
-            <input type="date" className={styles.searchInput} value={to} onChange={(e) => setTo(e.target.value)} style={{ width: 150 }} />
-          </label>
-          <div className={styles.statusChips}>
-            <FilterChip label="Outstanding" active={mode === 'outstanding'} onClick={() => setMode('outstanding')} />
-            <FilterChip label="Completed"   active={mode === 'completed'}   onClick={() => setMode('completed')} />
-            <FilterChip label="All"         active={mode === 'all'}         onClick={() => setMode('all')} />
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Finance"
+        title="Outstanding"
+        actions={
+          <div className={styles.actionsRow}>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-13)' }}>
+              <span style={{ color: 'var(--fg-muted)' }}>From</span>
+              <input type="date" className={styles.searchInput} value={from} onChange={(e) => setFrom(e.target.value)} style={{ width: 150 }} />
+            </label>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 'var(--fs-13)' }}>
+              <span style={{ color: 'var(--fg-muted)' }}>To</span>
+              <input type="date" className={styles.searchInput} value={to} onChange={(e) => setTo(e.target.value)} style={{ width: 150 }} />
+            </label>
+            <div className={styles.statusChips}>
+              <FilterChip label="Outstanding" active={mode === 'outstanding'} onClick={() => setMode('outstanding')} />
+              <FilterChip label="Completed"   active={mode === 'completed'}   onClick={() => setMode('completed')} />
+              <FilterChip label="All"         active={mode === 'all'}         onClick={() => setMode('all')} />
+            </div>
           </div>
-        </div>
-      </div>
+        }
+      />
 
       {/* Summary tiles — count + outstanding value per module, in selected date range */}
       <section style={{

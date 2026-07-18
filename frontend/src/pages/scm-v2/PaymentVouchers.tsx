@@ -26,6 +26,7 @@ import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { useAuth as useHouzsAuth } from '../../auth/AuthContext';
 import { fmtDateOrDash } from '@2990s/shared';
 import styles from './Suppliers.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -120,20 +121,21 @@ export const PaymentVouchers = () => {
   };
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div>
-          <h1 className={styles.title}>Payment Vouchers</h1>
-        </div>
-        <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-          {canCreate && (
-            <Button variant="primary" size="sm" onClick={() => navigate('/scm/payment-vouchers/new')}>
-              <Plus {...ICON} />
-              <span>New Payment Voucher</span>
-            </Button>
-          )}
-        </div>
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Finance"
+        title="Payment Vouchers"
+        actions={
+          <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+            {canCreate && (
+              <Button variant="primary" size="sm" onClick={() => navigate('/scm/payment-vouchers/new')}>
+                <Plus {...ICON} />
+                <span>New Payment Voucher</span>
+              </Button>
+            )}
+          </div>
+        }
+      />
 
       <p className={styles.eyebrow}>
         {isLoading ? 'Loading vouchers…' : `${rows.length} payment vouchers`}

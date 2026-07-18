@@ -27,6 +27,7 @@ import {
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import styles from './Suppliers.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -105,16 +106,17 @@ export const Currencies = () => {
   ], []);
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div>
-          <h1 className={styles.title}>Currencies</h1>
-        </div>
-        <Button variant="primary" size="md" onClick={() => setCreating(true)}>
-          <Plus {...ICON} />
-          <span>Add Currency</span>
-        </Button>
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Finance"
+        title="Currencies"
+        actions={
+          <Button variant="primary" size="md" onClick={() => setCreating(true)}>
+            <Plus {...ICON} />
+            <span>Add Currency</span>
+          </Button>
+        }
+      />
 
       <p className={styles.eyebrow} style={{ marginBottom: 'var(--space-3)' }}>
         The rate is MYR per 1 unit of the currency (e.g. RMB → MYR ≈ 0.62). MYR is the base — its rate is always 1.

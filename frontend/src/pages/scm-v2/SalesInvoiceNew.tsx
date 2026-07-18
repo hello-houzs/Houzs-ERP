@@ -43,6 +43,7 @@ import {
   PaymentsTable, labelToApi, draftMethodFields, type PaymentDraft,
 } from '../../vendor/scm/components/PaymentsTable';
 import styles from './SalesOrderDetail.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -394,34 +395,33 @@ export const SalesInvoiceNew = () => {
   const loadingPrefill = Boolean(fromDo) && !prefilled && (doDetail.isLoading || doPayments.isLoading);
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
-          <Link to="/scm/sales-invoices" className={styles.backBtn}>
-            <ArrowLeft {...ICON} /> <span>Sales Invoices</span>
-          </Link>
-          <h1 className={styles.title}>
-            New Sales Invoice{fromDo ? ' — from Delivery Order' : ''}
-          </h1>
-        </div>
-        <div className={styles.actions}>
-          {/* Pull lines from a Delivery Order — mirrors the purchase-side New forms. */}
-          <Button variant="ghost" size="md" onClick={() => navigate('/scm/sales-invoices/from-do')}>
-            <ArrowRightLeft {...ICON} /> From Delivery Order
-          </Button>
-          <Button variant="ghost" size="md" onClick={() => navigate('/scm/sales-invoices')}>
-            <X {...ICON} /> Cancel
-          </Button>
-          <Button variant="ghost" size="md" onClick={() => onSave(true)} disabled={create.isPending}>
-            <Save {...ICON} />
-            {create.isPending ? 'Saving…' : 'Save as Draft'}
-          </Button>
-          <Button variant="primary" size="md" onClick={() => onSave(false)} disabled={create.isPending}>
-            <Save {...ICON} />
-            {create.isPending ? 'Saving…' : 'Create Sales Invoice'}
-          </Button>
-        </div>
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Supply Chain"
+        title={`New Sales Invoice${fromDo ? ' — from Delivery Order' : ''}`}
+        actions={
+          <div className={styles.actions}>
+            <Link to="/scm/sales-invoices" className={styles.backBtn}>
+              <ArrowLeft {...ICON} /> <span>Sales Invoices</span>
+            </Link>
+            {/* Pull lines from a Delivery Order — mirrors the purchase-side New forms. */}
+            <Button variant="ghost" size="md" onClick={() => navigate('/scm/sales-invoices/from-do')}>
+              <ArrowRightLeft {...ICON} /> From Delivery Order
+            </Button>
+            <Button variant="ghost" size="md" onClick={() => navigate('/scm/sales-invoices')}>
+              <X {...ICON} /> Cancel
+            </Button>
+            <Button variant="ghost" size="md" onClick={() => onSave(true)} disabled={create.isPending}>
+              <Save {...ICON} />
+              {create.isPending ? 'Saving…' : 'Save as Draft'}
+            </Button>
+            <Button variant="primary" size="md" onClick={() => onSave(false)} disabled={create.isPending}>
+              <Save {...ICON} />
+              {create.isPending ? 'Saving…' : 'Create Sales Invoice'}
+            </Button>
+          </div>
+        }
+      />
 
       {loadingPrefill && (
         <div className={styles.bannerWarn} style={{ background: 'var(--c-cream)', border: '1px solid var(--line)', color: 'var(--fg-muted)' }}>

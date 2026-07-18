@@ -51,6 +51,7 @@ import {
 import { formatPhone } from '@2990s/shared/phone';
 import { hasSofaMixConflict, SOFA_MIX_MESSAGE } from '@2990s/shared/so-variant-rule';
 import styles from './SalesOrderDetail.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -563,29 +564,32 @@ export const ConsignmentOrderNew = () => {
   };
 
   return (
-    <div className={styles.page}>
+    <div className="space-y-4">
       {/* Top bar */}
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
-          <Link to="/scm/consignment-orders" className={styles.backBtn}>
-            <ArrowLeft {...ICON} /> <span>Consignment Orders</span>
-          </Link>
-          <h1 className={styles.title}>New Consignment Order</h1>
-        </div>
-        <div className={styles.actions}>
-          <Button variant="ghost" size="md" onClick={() => navigate('/scm/consignment-orders')}>
-            <X {...ICON} /> Cancel
-          </Button>
-          <Button
-            variant="primary" size="md"
-            onClick={onSave}
-            disabled={create.isPending}
-          >
-            <Save {...ICON} />
-            {create.isPending ? 'Saving…' : 'Create Consignment Order'}
-          </Button>
-        </div>
-      </div>
+      <PageHeader
+        eyebrow="Supply Chain"
+        title="New Consignment Order"
+        actions={
+          <>
+            <Link to="/scm/consignment-orders" className={styles.backBtn}>
+              <ArrowLeft {...ICON} /> <span>Consignment Orders</span>
+            </Link>
+            <div className={styles.actions}>
+              <Button variant="ghost" size="md" onClick={() => navigate('/scm/consignment-orders')}>
+                <X {...ICON} /> Cancel
+              </Button>
+              <Button
+                variant="primary" size="md"
+                onClick={onSave}
+                disabled={create.isPending}
+              >
+                <Save {...ICON} />
+                {create.isPending ? 'Saving…' : 'Create Consignment Order'}
+              </Button>
+            </div>
+          </>
+        }
+      />
 
       {/* ── CUSTOMER ────────────────────────────────────────────────── */}
       <section className={styles.card}>

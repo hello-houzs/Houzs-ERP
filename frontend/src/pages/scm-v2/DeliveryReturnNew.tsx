@@ -40,6 +40,7 @@ import {
 } from '../../vendor/scm/lib/so-dropdown-options-queries';
 import { SoLineCard, emptySoLine, type SoLineDraft } from '../../vendor/scm/components/SoLineCard';
 import styles from './SalesOrderDetail.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -294,30 +295,31 @@ export const DeliveryReturnNew = () => {
   const loadingPrefill = Boolean(fromDo) && !prefilled && doDetail.isLoading;
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
-          <Link to="/scm/delivery-returns" className={styles.backBtn}>
-            <ArrowLeft {...ICON} /> <span>Delivery Returns</span>
-          </Link>
-          <h1 className={styles.title}>
-            New Delivery Return{doDocNo ? ` — from ${doDocNo}` : ''}
-          </h1>
-        </div>
-        <div className={styles.actions}>
-          {/* Pull lines from a Delivery Order — mirrors New GRN's "From Purchase Order". */}
-          <Button variant="ghost" size="md" onClick={() => navigate('/scm/delivery-returns/from-do')}>
-            <ArrowRightLeft {...ICON} /> From Delivery Order
-          </Button>
-          <Button variant="ghost" size="md" onClick={() => navigate('/scm/delivery-returns')}>
-            <X {...ICON} /> Cancel
-          </Button>
-          <Button variant="primary" size="md" onClick={onSave} disabled={create.isPending || !canSave || loadingPrefill}>
-            <Save {...ICON} />
-            {create.isPending ? 'Saving…' : 'Create Delivery Return'}
-          </Button>
-        </div>
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Supply Chain"
+        title={`New Delivery Return${doDocNo ? ` — from ${doDocNo}` : ''}`}
+        actions={
+          <>
+            <Link to="/scm/delivery-returns" className={styles.backBtn}>
+              <ArrowLeft {...ICON} /> <span>Delivery Returns</span>
+            </Link>
+            <div className={styles.actions}>
+              {/* Pull lines from a Delivery Order — mirrors New GRN's "From Purchase Order". */}
+              <Button variant="ghost" size="md" onClick={() => navigate('/scm/delivery-returns/from-do')}>
+                <ArrowRightLeft {...ICON} /> From Delivery Order
+              </Button>
+              <Button variant="ghost" size="md" onClick={() => navigate('/scm/delivery-returns')}>
+                <X {...ICON} /> Cancel
+              </Button>
+              <Button variant="primary" size="md" onClick={onSave} disabled={create.isPending || !canSave || loadingPrefill}>
+                <Save {...ICON} />
+                {create.isPending ? 'Saving…' : 'Create Delivery Return'}
+              </Button>
+            </div>
+          </>
+        }
+      />
 
       {loadingPrefill && (
         <div className={styles.bannerWarn} style={{ background: 'var(--c-cream)', border: '1px solid var(--line)', color: 'var(--fg-muted)' }}>

@@ -68,10 +68,10 @@ import { useStateWarehouseMappings } from '../../vendor/scm/lib/state-warehouse-
 import { useDebouncedValue } from '../../vendor/scm/lib/hooks';
 import { sortByText, sortByNumeric } from '../../vendor/scm/lib/sort-options';
 import styles from './SalesOrderDetail.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
-const TITLE_ICON_STYLE: CSSProperties = { color: 'var(--c-burnt)' };
 const EMERGENCY_HEADER_NOTE_STYLE: CSSProperties = {
   fontSize: 'var(--fs-12)', color: 'var(--fg-muted)',
 };
@@ -456,7 +456,7 @@ export const ConsignmentOrderDetail = () => {
   }
   if (detail.isError || !header) {
     return (
-      <div className={styles.page}>
+      <div className="space-y-4">
         <Link to="/scm/consignment-orders" className={styles.backBtn}>
           <ArrowLeft {...ICON} />
           <span>Back</span>
@@ -481,26 +481,19 @@ export const ConsignmentOrderDetail = () => {
   };
 
   return (
-    <div className={styles.page}>
+    <div className="space-y-4">
       {/* ── Header ──────────────────────────────────────────────── */}
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
+      <PageHeader
+        eyebrow="Supply Chain"
+        title={`${header.doc_no} — ${header.debtor_name}`}
+        description={`Date ${fmtDateOrDash(header.so_date)} · ${header.line_count} ${header.line_count === 1 ? 'line' : 'lines'}${header.customer_so_no ? ` · Customer Ref ${header.customer_so_no}` : ''}`}
+        actions={
+          <>
           <Link to="/scm/consignment-orders" className={styles.backBtn}>
             <ArrowLeft {...ICON} />
             <span>Back</span>
           </Link>
-          <div>
-            <h1 className={styles.title}>
-              <FileText size={16} strokeWidth={1.75} style={TITLE_ICON_STYLE} />
-              {header.doc_no} — {header.debtor_name}
-            </h1>
-            <p className={styles.subtitle}>
-              Date {fmtDateOrDash(header.so_date)} · {header.line_count} {header.line_count === 1 ? 'line' : 'lines'}
-              {header.customer_so_no && ` · Customer Ref ${header.customer_so_no}`}
-            </p>
-          </div>
-        </div>
-        <div className={styles.actions}>
+          <div className={styles.actions}>
           <div className={styles.totalRail}>
             <span className={styles.totalRailLabel}>Total</span>
             <span className={styles.totalRailValue}>
@@ -536,8 +529,10 @@ export const ConsignmentOrderDetail = () => {
               </Button>
             </>
           )}
-        </div>
-      </div>
+          </div>
+          </>
+        }
+      />
 
       {saveError && (
         <div className={styles.bannerWarn}>

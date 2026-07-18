@@ -33,6 +33,7 @@ import {
 import { VariantDescription } from '../../vendor/scm/components/VariantDescription';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import styles from './SalesOrderDetail.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -104,30 +105,31 @@ export const PurchaseInvoiceFromGrn = () => {
   };
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
-          <Link to="/scm/purchase-invoices" className={styles.backBtn}>
-            <ArrowLeft {...ICON} /> <span>Purchase Invoices</span>
-          </Link>
-          <h1 className={styles.title}>Bill a Goods-Received Note</h1>
-        </div>
-        <div className={styles.actions}>
-          <Button variant="ghost" size="md" onClick={() => navigate('/scm/purchase-invoices')}>
-            <X {...ICON} /> Cancel
-          </Button>
-          <Button
-            variant="primary" size="md"
-            onClick={onContinue}
-            disabled={pickedCount === 0}
-          >
-            <ArrowRight {...ICON} />
-            {pickedCount === 0
-              ? 'Pick at least 1 line'
-              : `Continue with ${pickedCount} line${pickedCount === 1 ? '' : 's'}`}
-          </Button>
-        </div>
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Procurement"
+        title="Bill a Goods-Received Note"
+        actions={
+          <div className={styles.actions}>
+            <Link to="/scm/purchase-invoices" className={styles.backBtn}>
+              <ArrowLeft {...ICON} /> <span>Purchase Invoices</span>
+            </Link>
+            <Button variant="ghost" size="md" onClick={() => navigate('/scm/purchase-invoices')}>
+              <X {...ICON} /> Cancel
+            </Button>
+            <Button
+              variant="primary" size="md"
+              onClick={onContinue}
+              disabled={pickedCount === 0}
+            >
+              <ArrowRight {...ICON} />
+              {pickedCount === 0
+                ? 'Pick at least 1 line'
+                : `Continue with ${pickedCount} line${pickedCount === 1 ? '' : 's'}`}
+            </Button>
+          </div>
+        }
+      />
 
       <section className={styles.card}>
         <div className={styles.cardHeader}>

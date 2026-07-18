@@ -39,6 +39,7 @@ import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataG
 import { ActionResultDialog } from '../../vendor/scm/components/ActionResultDialog';
 import { ItemGroupPill } from '../../vendor/scm/lib/category-badges';
 import styles from './SalesOrderDetail.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -305,31 +306,32 @@ export const SalesInvoiceFromDo = () => {
   );
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
-          <Link to="/scm/sales-invoices" className={styles.backBtn}>
-            <ArrowLeft {...ICON} /> <span>Sales Invoices</span>
-          </Link>
-          <h1 className={styles.title}>Pick Delivery Order lines to invoice</h1>
-        </div>
-        <div className={styles.actions}>
-          <Button variant="ghost" size="md" onClick={() => navigate('/scm/sales-invoices')}>
-            <X {...ICON} /> Cancel
-          </Button>
-          <Button
-            variant="primary" size="md"
-            onClick={onContinue}
-            disabled={pickedCount === 0}
-            title="Open the New Sales Invoice form prefilled with the picked Delivery Order lines"
-          >
-            <ArrowRight {...ICON} />
-            {pickedCount === 0
-              ? 'Pick at least 1 line'
-              : `Continue with ${pickedCount} line${pickedCount === 1 ? '' : 's'}`}
-          </Button>
-        </div>
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Supply Chain"
+        title="Pick Delivery Order lines to invoice"
+        actions={
+          <div className={styles.actions}>
+            <Link to="/scm/sales-invoices" className={styles.backBtn}>
+              <ArrowLeft {...ICON} /> <span>Sales Invoices</span>
+            </Link>
+            <Button variant="ghost" size="md" onClick={() => navigate('/scm/sales-invoices')}>
+              <X {...ICON} /> Cancel
+            </Button>
+            <Button
+              variant="primary" size="md"
+              onClick={onContinue}
+              disabled={pickedCount === 0}
+              title="Open the New Sales Invoice form prefilled with the picked Delivery Order lines"
+            >
+              <ArrowRight {...ICON} />
+              {pickedCount === 0
+                ? 'Pick at least 1 line'
+                : `Continue with ${pickedCount} line${pickedCount === 1 ? '' : 's'}`}
+            </Button>
+          </div>
+        }
+      />
       <p style={{ margin: '0 0 var(--space-2)', fontSize: 'var(--fs-12)', color: 'var(--fg-muted)' }}>
         Pick the Delivery Order lines you want to invoice and set the quantity for each. A line can be
         invoiced in parts across several invoices — only the remaining (not-yet-invoiced, not-yet-returned)

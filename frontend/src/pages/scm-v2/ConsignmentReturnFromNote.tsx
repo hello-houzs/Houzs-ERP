@@ -27,6 +27,7 @@ import { ActionResultDialog } from '../../vendor/scm/components/ActionResultDial
 import { ItemGroupPill } from '../../vendor/scm/lib/category-badges';
 import { sortByText } from '../../vendor/scm/lib/sort-options';
 import styles from './SalesOrderDetail.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -286,31 +287,34 @@ export const ConsignmentReturnFromNote = () => {
   );
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
-          <Link to="/scm/consignment-returns" className={styles.backBtn}>
-            <ArrowLeft {...ICON} /> <span>Consignment Returns</span>
-          </Link>
-          <h1 className={styles.title}>Pick Consignment Note lines to return</h1>
-        </div>
-        <div className={styles.actions}>
-          <Button variant="ghost" size="md" onClick={() => navigate('/scm/consignment-returns')}>
-            <X {...ICON} /> Cancel
-          </Button>
-          <Button
-            variant="primary" size="md"
-            onClick={onContinue}
-            disabled={pickedCount === 0}
-            title="Open the New Consignment Return form prefilled with the picked Consignment Note lines"
-          >
-            <ArrowRight {...ICON} />
-            {pickedCount === 0
-              ? 'Pick at least 1 line'
-              : `Continue with ${pickedCount} line${pickedCount === 1 ? '' : 's'}`}
-          </Button>
-        </div>
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Supply Chain"
+        title="Pick Consignment Note lines to return"
+        actions={
+          <>
+            <Link to="/scm/consignment-returns" className={styles.backBtn}>
+              <ArrowLeft {...ICON} /> <span>Consignment Returns</span>
+            </Link>
+            <div className={styles.actions}>
+              <Button variant="ghost" size="md" onClick={() => navigate('/scm/consignment-returns')}>
+                <X {...ICON} /> Cancel
+              </Button>
+              <Button
+                variant="primary" size="md"
+                onClick={onContinue}
+                disabled={pickedCount === 0}
+                title="Open the New Consignment Return form prefilled with the picked Consignment Note lines"
+              >
+                <ArrowRight {...ICON} />
+                {pickedCount === 0
+                  ? 'Pick at least 1 line'
+                  : `Continue with ${pickedCount} line${pickedCount === 1 ? '' : 's'}`}
+              </Button>
+            </div>
+          </>
+        }
+      />
       <p style={{ margin: '0 0 var(--space-2)', fontSize: 'var(--fs-12)', color: 'var(--fg-muted)' }}>
         Pick the Consignment Note lines being returned and set the quantity + condition for each. A line can be
         returned in parts across several returns — only the remaining (not-yet-returned) quantity is shown.

@@ -45,6 +45,7 @@ import { MoneyInput } from '../../vendor/scm/components/MoneyInput';
 import { ActionResultDialog } from '../../vendor/scm/components/ActionResultDialog';
 import { sortByText } from '../../vendor/scm/lib/sort-options';
 import styles from './SalesOrderDetail.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON    = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -375,28 +376,29 @@ export const PurchaseConsignmentOrderNew = () => {
   };
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
-          <Link to="/scm/purchase-consignment-orders" className={styles.backBtn}>
-            <ArrowLeft {...ICON} /> <span>Purchase Consignment Orders</span>
-          </Link>
-          <h1 className={styles.title}>New Purchase Consignment Order</h1>
-        </div>
-        <div className={styles.actions}>
-          <Button variant="ghost" size="md" onClick={() => navigate('/scm/purchase-consignment-orders')}>
-            <X {...ICON} /> Cancel
-          </Button>
-          <Button
-            variant="primary" size="md"
-            onClick={onSave}
-            disabled={create.isPending}
-          >
-            <Save {...ICON} />
-            {create.isPending ? 'Saving…' : 'Create Purchase Consignment Order'}
-          </Button>
-        </div>
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Procurement"
+        title="New Purchase Consignment Order"
+        actions={
+          <div className={styles.actions}>
+            <Link to="/scm/purchase-consignment-orders" className={styles.backBtn}>
+              <ArrowLeft {...ICON} /> <span>Purchase Consignment Orders</span>
+            </Link>
+            <Button variant="ghost" size="md" onClick={() => navigate('/scm/purchase-consignment-orders')}>
+              <X {...ICON} /> Cancel
+            </Button>
+            <Button
+              variant="primary" size="md"
+              onClick={onSave}
+              disabled={create.isPending}
+            >
+              <Save {...ICON} />
+              {create.isPending ? 'Saving…' : 'Create Purchase Consignment Order'}
+            </Button>
+          </div>
+        }
+      />
 
       {/* Header card — 2-column grid */}
       <section className={styles.card}>

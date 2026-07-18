@@ -28,6 +28,7 @@ import {
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
 import { byText } from '../../vendor/scm/lib/sort-options';
 import styles from './Suppliers.module.css';
+import { PageHeader } from '../../components/Layout';
 import { fmtDateOrDash } from '@2990s/shared';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
@@ -41,12 +42,8 @@ export const Accounting = () => {
   const [tab, setTab] = useState<Tab>('je');
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div>
-          <h1 className={styles.title}>Accounting</h1>
-        </div>
-      </div>
+    <div className="space-y-4">
+      <PageHeader eyebrow="Finance" title="Accounting" />
 
       <div className={styles.statusChips} style={{ gap: 'var(--space-2)' }}>
         <TabBtn label="Journal Entries" icon={<BookOpen {...ICON} />} active={tab === 'je'}    onClick={() => setTab('je')} />

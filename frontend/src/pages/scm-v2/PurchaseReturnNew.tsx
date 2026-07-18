@@ -44,6 +44,7 @@ import { ItemGroupPill } from '../../vendor/scm/lib/category-badges';
 import { MoneyInput } from '../../vendor/scm/components/MoneyInput';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import styles from './SalesOrderDetail.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -316,29 +317,30 @@ export const PurchaseReturnNew = () => {
     '(free-form)';
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
-          <Link to="/scm/purchase-returns" className={styles.backBtn}>
-            <ArrowLeft {...ICON} /> <span>Purchase Returns</span>
-          </Link>
-          <h1 className={styles.title}>New Purchase Return {sourceTitle}</h1>
-        </div>
-        <div className={styles.actions}>
-          {/* Pull lines from a Goods Receipt — routes to the GRN list where the
-              user right-clicks "Convert to PR" (no dedicated picker page). */}
-          <Button variant="ghost" size="md" onClick={() => navigate('/scm/grns')}>
-            <ArrowRightLeft {...ICON} /> From Goods Receipt
-          </Button>
-          <Button variant="ghost" size="md" onClick={() => navigate('/scm/purchase-returns')}>
-            <X {...ICON} /> Cancel
-          </Button>
-          <Button variant="primary" size="md" onClick={onSave} disabled={saving}>
-            <Save {...ICON} />
-            {saving ? 'Saving…' : 'Create Purchase Return'}
-          </Button>
-        </div>
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Procurement"
+        title={`New Purchase Return ${sourceTitle}`}
+        actions={
+          <div className={styles.actions}>
+            <Link to="/scm/purchase-returns" className={styles.backBtn}>
+              <ArrowLeft {...ICON} /> <span>Purchase Returns</span>
+            </Link>
+            {/* Pull lines from a Goods Receipt — routes to the GRN list where the
+                user right-clicks "Convert to PR" (no dedicated picker page). */}
+            <Button variant="ghost" size="md" onClick={() => navigate('/scm/grns')}>
+              <ArrowRightLeft {...ICON} /> From Goods Receipt
+            </Button>
+            <Button variant="ghost" size="md" onClick={() => navigate('/scm/purchase-returns')}>
+              <X {...ICON} /> Cancel
+            </Button>
+            <Button variant="primary" size="md" onClick={onSave} disabled={saving}>
+              <Save {...ICON} />
+              {saving ? 'Saving…' : 'Create Purchase Return'}
+            </Button>
+          </div>
+        }
+      />
 
       <section className={styles.card}>
         <div className={styles.cardHeader}><h2 className={styles.cardTitle}>Header</h2></div>

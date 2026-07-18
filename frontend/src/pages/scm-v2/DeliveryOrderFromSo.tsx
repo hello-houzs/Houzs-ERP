@@ -34,6 +34,7 @@ import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataG
 import { ActionResultDialog } from '../../vendor/scm/components/ActionResultDialog';
 import { ItemGroupPill } from '../../vendor/scm/lib/category-badges';
 import styles from './SalesOrderDetail.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -302,31 +303,34 @@ export const DeliveryOrderFromSo = () => {
   );
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
-          <Link to="/scm/delivery-orders" className={styles.backBtn}>
-            <ArrowLeft {...ICON} /> <span>Delivery Orders</span>
-          </Link>
-          <h1 className={styles.title}>Pick Sales Order lines to deliver</h1>
-        </div>
-        <div className={styles.actions}>
-          <Button variant="ghost" size="md" onClick={() => navigate('/scm/delivery-orders')}>
-            <X {...ICON} /> Cancel
-          </Button>
-          <Button
-            variant="primary" size="md"
-            onClick={() => onContinue()}
-            disabled={pickedCount === 0}
-            title="Carry the picked Sales Order lines into a new Delivery Order to review"
-          >
-            <ArrowRight {...ICON} />
-            {pickedCount === 0
-              ? 'Pick at least 1 line'
-              : `Continue with ${pickedCount} line${pickedCount === 1 ? '' : 's'}`}
-          </Button>
-        </div>
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Supply Chain"
+        title="Pick Sales Order lines to deliver"
+        actions={
+          <>
+            <Link to="/scm/delivery-orders" className={styles.backBtn}>
+              <ArrowLeft {...ICON} /> <span>Delivery Orders</span>
+            </Link>
+            <div className={styles.actions}>
+              <Button variant="ghost" size="md" onClick={() => navigate('/scm/delivery-orders')}>
+                <X {...ICON} /> Cancel
+              </Button>
+              <Button
+                variant="primary" size="md"
+                onClick={() => onContinue()}
+                disabled={pickedCount === 0}
+                title="Carry the picked Sales Order lines into a new Delivery Order to review"
+              >
+                <ArrowRight {...ICON} />
+                {pickedCount === 0
+                  ? 'Pick at least 1 line'
+                  : `Continue with ${pickedCount} line${pickedCount === 1 ? '' : 's'}`}
+              </Button>
+            </div>
+          </>
+        }
+      />
       <p style={{ margin: '0 0 var(--space-2)', fontSize: 'var(--fs-12)', color: 'var(--fg-muted)' }}>
         Pick the Sales Order lines you want to deliver and set the quantity for each. A line can be
         delivered in parts across several Delivery Orders — only the remaining (not-yet-delivered)

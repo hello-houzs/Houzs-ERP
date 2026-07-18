@@ -30,6 +30,7 @@ import {
   type StockTransferItemInput,
 } from '../../vendor/scm/lib/stock-queries';
 import styles from './SalesOrderDetail.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -167,24 +168,27 @@ export const StockTransferNew = () => {
   };
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
-          <Link to="/scm/stock-transfers" className={styles.backBtn}>
-            <ArrowLeft {...ICON} /> <span>Stock Transfers</span>
-          </Link>
-          <h1 className={styles.title}>New Stock Transfer</h1>
-        </div>
-        <div className={styles.actions}>
-          <Button variant="ghost" size="md" onClick={() => navigate('/scm/stock-transfers')}>
-            <X {...ICON} /> Cancel
-          </Button>
-          <Button variant="primary" size="md" onClick={onSave} disabled={create.isPending}>
-            <Save {...ICON} />
-            {create.isPending ? 'Posting…' : 'Post Transfer'}
-          </Button>
-        </div>
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Warehouse"
+        title="New Stock Transfer"
+        actions={
+          <>
+            <Link to="/scm/stock-transfers" className={styles.backBtn}>
+              <ArrowLeft {...ICON} /> <span>Stock Transfers</span>
+            </Link>
+            <div className={styles.actions}>
+              <Button variant="ghost" size="md" onClick={() => navigate('/scm/stock-transfers')}>
+                <X {...ICON} /> Cancel
+              </Button>
+              <Button variant="primary" size="md" onClick={onSave} disabled={create.isPending}>
+                <Save {...ICON} />
+                {create.isPending ? 'Posting…' : 'Post Transfer'}
+              </Button>
+            </div>
+          </>
+        }
+      />
 
       {/* ── Header card ──────────────────────────────────────────────── */}
       <section className={styles.card}>

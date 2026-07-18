@@ -51,6 +51,7 @@ import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { StatusPill } from '../../vendor/scm/components/StatusPill';
 import { sortByText } from '../../vendor/scm/lib/sort-options';
 import styles from './SalesOrderDetail.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -174,7 +175,7 @@ export const PurchaseConsignmentReceiveDetail = () => {
   }
   if (detail.isError || !grn) {
     return (
-      <div className={styles.page}>
+      <div className="space-y-4">
         <Link to="/scm/purchase-consignment-receives" className={styles.backBtn}>
           <ArrowLeft {...ICON} />
           <span>Back</span>
@@ -315,69 +316,65 @@ export const PurchaseConsignmentReceiveDetail = () => {
   };
 
   return (
-    <div className={styles.page}>
+    <div className="space-y-4">
       {/* ── Header ──────────────────────────────────────────────── */}
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
-          <Link to="/scm/purchase-consignment-receives" className={styles.backBtn}>
-            <ArrowLeft {...ICON} />
-            <span>Back</span>
-          </Link>
-          <div>
-            <h1 className={styles.title}>
-              <FileText size={14} strokeWidth={1.75} style={{ color: 'var(--c-burnt)' }} />
-              {grn.grn_number} — {grn.supplier?.name ?? grn.supplier?.code ?? '—'}
-            </h1>
+      <PageHeader
+        eyebrow="Procurement"
+        title={`${grn.grn_number} — ${grn.supplier?.name ?? grn.supplier?.code ?? '—'}`}
+        actions={
+          <div className={styles.actions}>
+            <Link to="/scm/purchase-consignment-receives" className={styles.backBtn}>
+              <ArrowLeft {...ICON} />
+              <span>Back</span>
+            </Link>
+            <div className={styles.totalRail}>
+              <span className={styles.totalRailLabel}>Total</span>
+              <span className={styles.totalRailValue}>{fmtRm(grandTotal, grn.currency)}</span>
+            </div>
+            <StatusPill docType="grn" status={grn.status} />
+            <RelationshipMapButton type="pcr" id={grn.id} />
+            <Button variant="ghost" size="md" onClick={handlePrint}>
+              <Printer {...ICON} /><span>Print PDF</span>
+            </Button>
+            {grn.status === 'POSTED' && !isEditing && (
+              <Button variant="ghost" size="md"
+                onClick={() => navigate(`/scm/purchase-consignment-returns/new?fromPcReceive=${grn.id}`)}>
+                <FileText {...ICON} />
+                <span>Raise Return</span>
+              </Button>
+            )}
+            {grn.status === 'POSTED' && !hasChildren && (
+              <Button variant="ghost" size="md"
+                onClick={async () => {
+                  if (!(await askConfirm({
+                    title: `Cancel ${grn.grn_number}?`,
+                    body: 'This reverses the receipt. Line items stay for audit.',
+                    confirmLabel: 'Cancel Receive',
+                    danger: true,
+                  }))) return;
+                  cancel.mutate(grn.id, {
+                    onError: (err) => notify({ title: 'Cancel failed', body: err instanceof Error ? err.message : String(err), tone: 'error' }),
+                  });
+                }}
+                disabled={cancel.isPending}>
+                <Ban {...ICON} />
+                <span>{cancel.isPending ? 'Cancelling…' : 'Cancel'}</span>
+              </Button>
+            )}
+            {!isEditing ? (
+              <Button variant="primary" size="md" onClick={enterEdit} disabled={isLocked}>
+                <Pencil {...ICON} />
+                <span>Edit</span>
+              </Button>
+            ) : (
+              <Button variant="primary" size="md" onClick={handleSave} disabled={savingDraft}>
+                <Save {...ICON} />
+                <span>{savingDraft ? 'Saving…' : 'Save'}</span>
+              </Button>
+            )}
           </div>
-        </div>
-        <div className={styles.actions}>
-          <div className={styles.totalRail}>
-            <span className={styles.totalRailLabel}>Total</span>
-            <span className={styles.totalRailValue}>{fmtRm(grandTotal, grn.currency)}</span>
-          </div>
-          <StatusPill docType="grn" status={grn.status} />
-          <RelationshipMapButton type="pcr" id={grn.id} />
-          <Button variant="ghost" size="md" onClick={handlePrint}>
-            <Printer {...ICON} /><span>Print PDF</span>
-          </Button>
-          {grn.status === 'POSTED' && !isEditing && (
-            <Button variant="ghost" size="md"
-              onClick={() => navigate(`/scm/purchase-consignment-returns/new?fromPcReceive=${grn.id}`)}>
-              <FileText {...ICON} />
-              <span>Raise Return</span>
-            </Button>
-          )}
-          {grn.status === 'POSTED' && !hasChildren && (
-            <Button variant="ghost" size="md"
-              onClick={async () => {
-                if (!(await askConfirm({
-                  title: `Cancel ${grn.grn_number}?`,
-                  body: 'This reverses the receipt. Line items stay for audit.',
-                  confirmLabel: 'Cancel Receive',
-                  danger: true,
-                }))) return;
-                cancel.mutate(grn.id, {
-                  onError: (err) => notify({ title: 'Cancel failed', body: err instanceof Error ? err.message : String(err), tone: 'error' }),
-                });
-              }}
-              disabled={cancel.isPending}>
-              <Ban {...ICON} />
-              <span>{cancel.isPending ? 'Cancelling…' : 'Cancel'}</span>
-            </Button>
-          )}
-          {!isEditing ? (
-            <Button variant="primary" size="md" onClick={enterEdit} disabled={isLocked}>
-              <Pencil {...ICON} />
-              <span>Edit</span>
-            </Button>
-          ) : (
-            <Button variant="primary" size="md" onClick={handleSave} disabled={savingDraft}>
-              <Save {...ICON} />
-              <span>{savingDraft ? 'Saving…' : 'Save'}</span>
-            </Button>
-          )}
-        </div>
-      </div>
+        }
+      />
 
       {lockedDueToChildren && (
         <div className={styles.bannerWarn}>

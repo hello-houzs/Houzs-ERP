@@ -24,6 +24,7 @@ import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataG
 import { ActionResultDialog } from '../../vendor/scm/components/ActionResultDialog';
 import { ItemGroupPill } from '../../vendor/scm/lib/category-badges';
 import styles from './SalesOrderDetail.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -248,31 +249,32 @@ export const PurchaseConsignmentReceiveFromOrder = () => {
   );
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
-          <Link to="/scm/purchase-consignment-receives" className={styles.backBtn}>
-            <ArrowLeft {...ICON} /> <span>Purchase Consignment Receives</span>
-          </Link>
-          <h1 className={styles.title}>Pick PC Order lines to receive</h1>
-        </div>
-        <div className={styles.actions}>
-          <Button variant="ghost" size="md" onClick={() => navigate('/scm/purchase-consignment-receives')}>
-            <X {...ICON} /> Cancel
-          </Button>
-          <Button
-            variant="primary" size="md"
-            onClick={onContinue}
-            disabled={pickedCount === 0}
-            title="Open the New Purchase Consignment Receive form prefilled with the picked PC Order lines"
-          >
-            <ArrowRight {...ICON} />
-            {pickedCount === 0
-              ? 'Pick at least 1 line'
-              : `Continue with ${pickedCount} line${pickedCount === 1 ? '' : 's'}`}
-          </Button>
-        </div>
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Procurement"
+        title="Pick PC Order lines to receive"
+        actions={
+          <div className={styles.actions}>
+            <Link to="/scm/purchase-consignment-receives" className={styles.backBtn}>
+              <ArrowLeft {...ICON} /> <span>Purchase Consignment Receives</span>
+            </Link>
+            <Button variant="ghost" size="md" onClick={() => navigate('/scm/purchase-consignment-receives')}>
+              <X {...ICON} /> Cancel
+            </Button>
+            <Button
+              variant="primary" size="md"
+              onClick={onContinue}
+              disabled={pickedCount === 0}
+              title="Open the New Purchase Consignment Receive form prefilled with the picked PC Order lines"
+            >
+              <ArrowRight {...ICON} />
+              {pickedCount === 0
+                ? 'Pick at least 1 line'
+                : `Continue with ${pickedCount} line${pickedCount === 1 ? '' : 's'}`}
+            </Button>
+          </div>
+        }
+      />
       <p style={{ margin: '0 0 var(--space-2)', fontSize: 'var(--fs-12)', color: 'var(--fg-muted)' }}>
         Pick the Purchase Consignment Order lines being received and set the quantity for each. A line can be
         received in parts across several receives — only the outstanding (not-yet-received) quantity is shown.

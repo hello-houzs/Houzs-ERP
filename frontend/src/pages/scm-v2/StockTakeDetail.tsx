@@ -37,6 +37,7 @@ import {
   type StockTakeLine,
 } from '../../vendor/scm/lib/stock-queries';
 import styles from './SalesOrderDetail.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -300,7 +301,7 @@ export const StockTakeDetail = () => {
   }
   if (detail.error || !detail.data) {
     return (
-      <div className={styles.page}>
+      <div className="space-y-4">
         <p className={styles.subtitle}>
           {detail.error instanceof Error ? detail.error.message : 'Stock take not found.'}
         </p>
@@ -312,55 +313,48 @@ export const StockTakeDetail = () => {
   const t = detail.data.take;
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
-          <Link to="/scm/stock-takes" className={styles.backBtn}>
-            <ArrowLeft {...ICON} /> <span>Stock Takes</span>
-          </Link>
-          <h1 className={styles.title}>
-            {t.take_no}
-            {status && (
-              <span style={{ marginLeft: 'var(--space-3)', verticalAlign: 'middle' }}>
-                <StatusPill docType="stockTake" status={status} />
-              </span>
-            )}
-          </h1>
-          <p className={styles.subtitle}>
-            Created {fmtDateTime(t.created_at)}
-            {t.posted_at    ? ` · Posted ${fmtDateTime(t.posted_at)}`       : ''}
-            {t.cancelled_at ? ` · Cancelled ${fmtDateTime(t.cancelled_at)}` : ''}
-          </p>
-        </div>
-        <div className={styles.actions}>
-          {isDraft && (
-            <>
-              <Button variant="ghost" size="md" onClick={onDelete} disabled={del.isPending}>
-                <Trash2 {...ICON} /> Delete
-              </Button>
-              <Button variant="ghost" size="md" onClick={onCancel} disabled={cancel.isPending}>
-                <Ban {...ICON} /> Cancel
-              </Button>
-              <Button variant="ghost" size="md" onClick={onSave} disabled={!dirty || update.isPending}>
-                <Save {...ICON} /> {update.isPending ? 'Saving…' : 'Save Counts'}
-              </Button>
-              <Button variant="primary" size="md" onClick={onPost} disabled={post.isPending || dirty}>
-                <Send {...ICON} /> {post.isPending ? 'Posting…' : 'Post'}
-              </Button>
-            </>
-          )}
-          {isPosted && (
-            <Button variant="ghost" size="md" onClick={onReverse} disabled={reverse.isPending}>
-              <Undo2 {...ICON} /> {reverse.isPending ? 'Undoing…' : 'Undo'}
-            </Button>
-          )}
-          {!isDraft && (
-            <Button variant="ghost" size="md" onClick={() => navigate('/scm/stock-takes')}>
-              <X {...ICON} /> Close
-            </Button>
-          )}
-        </div>
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Warehouse"
+        title={t.take_no}
+        description={`Created ${fmtDateTime(t.created_at)}${t.posted_at ? ` · Posted ${fmtDateTime(t.posted_at)}` : ''}${t.cancelled_at ? ` · Cancelled ${fmtDateTime(t.cancelled_at)}` : ''}`}
+        actions={
+          <>
+            {status && <StatusPill docType="stockTake" status={status} />}
+            <Link to="/scm/stock-takes" className={styles.backBtn}>
+              <ArrowLeft {...ICON} /> <span>Stock Takes</span>
+            </Link>
+            <div className={styles.actions}>
+              {isDraft && (
+                <>
+                  <Button variant="ghost" size="md" onClick={onDelete} disabled={del.isPending}>
+                    <Trash2 {...ICON} /> Delete
+                  </Button>
+                  <Button variant="ghost" size="md" onClick={onCancel} disabled={cancel.isPending}>
+                    <Ban {...ICON} /> Cancel
+                  </Button>
+                  <Button variant="ghost" size="md" onClick={onSave} disabled={!dirty || update.isPending}>
+                    <Save {...ICON} /> {update.isPending ? 'Saving…' : 'Save Counts'}
+                  </Button>
+                  <Button variant="primary" size="md" onClick={onPost} disabled={post.isPending || dirty}>
+                    <Send {...ICON} /> {post.isPending ? 'Posting…' : 'Post'}
+                  </Button>
+                </>
+              )}
+              {isPosted && (
+                <Button variant="ghost" size="md" onClick={onReverse} disabled={reverse.isPending}>
+                  <Undo2 {...ICON} /> {reverse.isPending ? 'Undoing…' : 'Undo'}
+                </Button>
+              )}
+              {!isDraft && (
+                <Button variant="ghost" size="md" onClick={() => navigate('/scm/stock-takes')}>
+                  <X {...ICON} /> Close
+                </Button>
+              )}
+            </div>
+          </>
+        }
+      />
 
       {/* ── Header card ─────────────────────────────────────────────── */}
       <section className={styles.card}>

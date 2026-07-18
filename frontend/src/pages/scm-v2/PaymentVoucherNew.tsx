@@ -37,6 +37,7 @@ import { ActionResultDialog } from '../../vendor/scm/components/ActionResultDial
 import { DateField } from '../../vendor/scm/components/DateField';
 import { AccountSelect } from '../../vendor/scm/components/AccountSelect';
 import styles from './SalesOrderDetail.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON    = { size: 16, strokeWidth: 1.75 } as const;
 const SM_ICON = { size: 14, strokeWidth: 1.75 } as const;
@@ -240,24 +241,25 @@ export const PaymentVoucherNew = () => {
   };
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
-          <Link to="/scm/payment-vouchers" className={styles.backBtn}>
-            <ArrowLeft {...ICON} /> <span>Payment Vouchers</span>
-          </Link>
-          <h1 className={styles.title}>New Payment Voucher</h1>
-        </div>
-        <div className={styles.actions}>
-          <Button variant="ghost" size="md" onClick={() => navigate('/scm/payment-vouchers')}>
-            <X {...ICON} /> Cancel
-          </Button>
-          <Button variant="primary" size="md" onClick={onSave} disabled={saving || !canSave}>
-            <Save {...ICON} />
-            {saving ? 'Saving…' : 'Create Voucher'}
-          </Button>
-        </div>
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Finance"
+        title="New Payment Voucher"
+        actions={
+          <div className={styles.actions}>
+            <Link to="/scm/payment-vouchers" className={styles.backBtn}>
+              <ArrowLeft {...ICON} /> <span>Payment Vouchers</span>
+            </Link>
+            <Button variant="ghost" size="md" onClick={() => navigate('/scm/payment-vouchers')}>
+              <X {...ICON} /> Cancel
+            </Button>
+            <Button variant="primary" size="md" onClick={onSave} disabled={saving || !canSave}>
+              <Save {...ICON} />
+              {saving ? 'Saving…' : 'Create Voucher'}
+            </Button>
+          </div>
+        }
+      />
 
       <section className={styles.card}>
         <div className={styles.cardHeader}><h2 className={styles.cardTitle}>Header</h2></div>

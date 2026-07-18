@@ -25,6 +25,7 @@ import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataG
 import { ActionResultDialog } from '../../vendor/scm/components/ActionResultDialog';
 import { ItemGroupPill } from '../../vendor/scm/lib/category-badges';
 import styles from './SalesOrderDetail.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -248,31 +249,32 @@ export const PurchaseConsignmentReturnFromReceive = () => {
   );
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
-          <Link to="/scm/purchase-consignment-returns" className={styles.backBtn}>
-            <ArrowLeft {...ICON} /> <span>Purchase Consignment Returns</span>
-          </Link>
-          <h1 className={styles.title}>Pick PC Receive lines to return</h1>
-        </div>
-        <div className={styles.actions}>
-          <Button variant="ghost" size="md" onClick={() => navigate('/scm/purchase-consignment-returns')}>
-            <X {...ICON} /> Cancel
-          </Button>
-          <Button
-            variant="primary" size="md"
-            onClick={onContinue}
-            disabled={pickedCount === 0}
-            title="Open the New Purchase Consignment Return form prefilled with the picked PC Receive lines"
-          >
-            <ArrowRight {...ICON} />
-            {pickedCount === 0
-              ? 'Pick at least 1 line'
-              : `Continue with ${pickedCount} line${pickedCount === 1 ? '' : 's'}`}
-          </Button>
-        </div>
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Procurement"
+        title="Pick PC Receive lines to return"
+        actions={
+          <div className={styles.actions}>
+            <Link to="/scm/purchase-consignment-returns" className={styles.backBtn}>
+              <ArrowLeft {...ICON} /> <span>Purchase Consignment Returns</span>
+            </Link>
+            <Button variant="ghost" size="md" onClick={() => navigate('/scm/purchase-consignment-returns')}>
+              <X {...ICON} /> Cancel
+            </Button>
+            <Button
+              variant="primary" size="md"
+              onClick={onContinue}
+              disabled={pickedCount === 0}
+              title="Open the New Purchase Consignment Return form prefilled with the picked PC Receive lines"
+            >
+              <ArrowRight {...ICON} />
+              {pickedCount === 0
+                ? 'Pick at least 1 line'
+                : `Continue with ${pickedCount} line${pickedCount === 1 ? '' : 's'}`}
+            </Button>
+          </div>
+        }
+      />
       <p style={{ margin: '0 0 var(--space-2)', fontSize: 'var(--fs-12)', color: 'var(--fg-muted)' }}>
         Pick the Purchase Consignment Receive lines being returned and set the quantity for each. A line can be
         returned in parts across several returns — only the remaining (not-yet-returned) quantity is shown.

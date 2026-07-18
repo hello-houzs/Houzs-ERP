@@ -33,6 +33,7 @@ import {
   type StockTransferStatus,
 } from '../../vendor/scm/lib/stock-queries';
 import styles from './SalesOrderDetail.module.css';
+import { PageHeader } from '../../components/Layout';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -110,7 +111,7 @@ export const StockTransferDetail = () => {
   }
   if (detail.error || !detail.data) {
     return (
-      <div className={styles.page}>
+      <div className="space-y-4">
         <p className={styles.subtitle}>
           {detail.error instanceof Error ? detail.error.message : 'Transfer not found.'}
         </p>
@@ -122,37 +123,30 @@ export const StockTransferDetail = () => {
   const t = detail.data.transfer;
 
   return (
-    <div className={styles.page}>
-      <div className={styles.headerRow}>
-        <div className={styles.titleBlock}>
-          <Link to="/scm/stock-transfers" className={styles.backBtn}>
-            <ArrowLeft {...ICON} /> <span>Stock Transfers</span>
-          </Link>
-          <h1 className={styles.title}>
-            {t.transfer_no}
-            {status && (
-              <span style={{ marginLeft: 'var(--space-3)', verticalAlign: 'middle' }}>
-                <StatusPill docType="stockTransfer" status={status} />
-              </span>
-            )}
-          </h1>
-          <p className={styles.subtitle}>
-            Created {fmtDateTime(t.created_at)}
-            {t.posted_at    ? ` · Posted ${fmtDateTime(t.posted_at)}`       : ''}
-            {t.cancelled_at ? ` · Cancelled ${fmtDateTime(t.cancelled_at)}` : ''}
-          </p>
-        </div>
-        <div className={styles.actions}>
-          {isPosted && (
-            <Button variant="ghost" size="md" onClick={onCancel} disabled={cancel.isPending}>
-              <Ban {...ICON} /> {cancel.isPending ? 'Cancelling…' : 'Cancel'}
-            </Button>
-          )}
-          <Button variant="ghost" size="md" onClick={() => navigate('/scm/stock-transfers')}>
-            <X {...ICON} /> Close
-          </Button>
-        </div>
-      </div>
+    <div className="space-y-4">
+      <PageHeader
+        eyebrow="Warehouse"
+        title={t.transfer_no}
+        description={`Created ${fmtDateTime(t.created_at)}${t.posted_at ? ` · Posted ${fmtDateTime(t.posted_at)}` : ''}${t.cancelled_at ? ` · Cancelled ${fmtDateTime(t.cancelled_at)}` : ''}`}
+        actions={
+          <>
+            {status && <StatusPill docType="stockTransfer" status={status} />}
+            <Link to="/scm/stock-transfers" className={styles.backBtn}>
+              <ArrowLeft {...ICON} /> <span>Stock Transfers</span>
+            </Link>
+            <div className={styles.actions}>
+              {isPosted && (
+                <Button variant="ghost" size="md" onClick={onCancel} disabled={cancel.isPending}>
+                  <Ban {...ICON} /> {cancel.isPending ? 'Cancelling…' : 'Cancel'}
+                </Button>
+              )}
+              <Button variant="ghost" size="md" onClick={() => navigate('/scm/stock-transfers')}>
+                <X {...ICON} /> Close
+              </Button>
+            </div>
+          </>
+        }
+      />
 
       {/* ── Header card ─────────────────────────────────────────────── */}
       <section className={styles.card}>
