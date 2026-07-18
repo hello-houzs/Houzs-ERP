@@ -3,6 +3,7 @@ import {
   AUTHORITY,
   FAMILY_TO_SPEC,
   UNIMPLEMENTED_SPEC_AGENTS,
+  SPEC_AGENT_STATUS,
   authorityFor,
   isNeverAutonomous,
   dataQualityGate,
@@ -50,12 +51,48 @@ describe("the matrix covers all seven spec agents", () => {
   });
 
   test("the unimplemented list names exactly the agents with no code family", () => {
-    // Honesty check: OF/COM/SI/GCOA have no family mapping, and the survey found
-    // no engine for them. If a future PR wires one, this list must shrink.
+    // Honesty check: a NONE agent must not also claim a code family.
     const mapped = new Set(Object.values(FAMILY_TO_SPEC));
     for (const gap of UNIMPLEMENTED_SPEC_AGENTS) {
       expect(mapped.has(gap), `${gap} should not be mapped to a family yet`).toBe(false);
     }
+  });
+
+  /* The status map replaced a binary flag that went half-wrong in a day: #753
+     shipped the GCOA's routing limb while the flag still said GCOA did not exist.
+     These tests make the map self-policing so it cannot drift back into a
+     confident-sounding lie about coverage. */
+  test("every spec agent has a status entry — no silent omissions", () => {
+    for (const spec of Object.values(FAMILY_TO_SPEC)) {
+      expect(SPEC_AGENT_STATUS[spec!], `${spec} missing from SPEC_AGENT_STATUS`).toBeDefined();
+    }
+    for (const s of Object.values(SPEC_AGENT_STATUS)) {
+      expect(["FULL", "PARTIAL", "NONE"]).toContain(s.status);
+    }
+  });
+
+  test("PARTIAL must carry BOTH receipts — what runs and what does not", () => {
+    // A PARTIAL with an empty `missing` is just FULL wearing a hedge; a PARTIAL
+    // with an empty `implemented` is just NONE. Either way the reader is misled.
+    for (const [id, s] of Object.entries(SPEC_AGENT_STATUS)) {
+      if (s.status !== "PARTIAL") continue;
+      expect(s.implemented.length, `${id}: PARTIAL with nothing implemented`).toBeGreaterThan(0);
+      expect(s.missing.length, `${id}: PARTIAL with nothing missing`).toBeGreaterThan(0);
+    }
+  });
+
+  test("FULL claims nothing is missing, NONE claims nothing runs", () => {
+    for (const [id, s] of Object.entries(SPEC_AGENT_STATUS)) {
+      if (s.status === "FULL") expect(s.missing, `${id}`).toEqual([]);
+      if (s.status === "NONE") expect(s.implemented, `${id}`).toEqual([]);
+    }
+  });
+
+  test("UNIMPLEMENTED_SPEC_AGENTS is DERIVED, so it cannot drift from the map", () => {
+    const none = Object.entries(SPEC_AGENT_STATUS)
+      .filter(([, s]) => s.status === "NONE")
+      .map(([id]) => id);
+    expect([...UNIMPLEMENTED_SPEC_AGENTS].sort()).toEqual(none.sort());
   });
 });
 

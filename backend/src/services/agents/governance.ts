@@ -54,12 +54,54 @@ export const FAMILY_TO_SPEC: Partial<Record<AgentFamily, SpecAgentId>> = {
   PROCUREMENT: 'HZS-REP-004',
 };
 
-/** Spec agents with NO code implementation yet (survey 2026-07-17). Named so the
- *  registry is honest about the gaps rather than pretending coverage. */
-export const UNIMPLEMENTED_SPEC_AGENTS: readonly SpecAgentId[] = [
-  'HZS-COM-003',
-  'GROUP-GCOA-001',
-] as const;
+/**
+ * Implementation status per spec agent.
+ *
+ * This replaced a binary `UNIMPLEMENTED_SPEC_AGENTS` list, which had gone
+ * half-wrong within a day: #753 shipped the ERP Assistant, which IS the GCOA's
+ * routing limb (§9.1 "route tasks to specialist Agents… provide one accountable
+ * management view"), while the constant still flatly said GCOA did not exist. A
+ * binary flag cannot describe an agent that is one-fifth built, so it lies in
+ * whichever direction you set it — and a registry that lies about its own coverage
+ * is the failure mode this file was written to prevent.
+ *
+ * PARTIAL is therefore a first-class state, and it carries its receipts: what
+ * actually runs, and what the spec asks for that nothing does yet.
+ */
+export interface SpecAgentStatus {
+  status: 'FULL' | 'PARTIAL' | 'NONE';
+  /** Spec limbs that have running code, with where it lives. */
+  implemented: readonly string[];
+  /** Spec limbs with NO implementation. Empty for FULL. */
+  missing: readonly string[];
+}
+
+export const SPEC_AGENT_STATUS: Record<SpecAgentId, SpecAgentStatus> = {
+  'HZS-OF-001':  { status: 'FULL',    implemented: ['order-fulfilment.ts + of-agent.ts patrol'], missing: [] },
+  'HZS-DLV-002': { status: 'FULL',    implemented: ['delivery family + delivery-planning'], missing: [] },
+  'HZS-REP-004': { status: 'FULL',    implemented: ['procurement family + procurement-execute'], missing: [] },
+  'HZS-AR-005':  { status: 'PARTIAL', implemented: ['release-gate.ts (§7.10 delivery-release)'],
+                   missing: ['receipt→invoice matching (§7.4) — needs a bank feed, which does not exist yet'] },
+  'HZS-SI-006':  { status: 'FULL',    implemented: ['si-agent.ts patrol over SO + PMS'], missing: [] },
+  'HZS-COM-003': { status: 'PARTIAL', implemented: ['assistant.ts — INTERNAL staff chat only'],
+                   missing: ['customer-facing channels (WhatsApp/email inbound→reply); the owner deferred these deliberately'] },
+  'GROUP-GCOA-001': {
+    status: 'PARTIAL',
+    implemented: ['assistant.ts — routes a question to specialists, gathers their own briefs, words ONE answer (§9.1 routing + single management view)'],
+    missing: [
+      'measurable operating plans with owners/milestones/thresholds (§9.1)',
+      'enterprise dependency graph order→material→production→delivery→collection (§9.1)',
+      'daily/weekly control-tower review (§9.1)',
+      'cross-functional conflict resolution, e.g. delivery urgency vs payment risk (§9.1)',
+      'execution verification + recovery tasks when an approved action did not land (§9.1)',
+    ],
+  },
+};
+
+/** Spec agents with NO code at all. Derived, so it can no longer drift from the
+ *  status map the way a hand-maintained list did. */
+export const UNIMPLEMENTED_SPEC_AGENTS: readonly SpecAgentId[] =
+  (Object.keys(SPEC_AGENT_STATUS) as SpecAgentId[]).filter((a) => SPEC_AGENT_STATUS[a].status === 'NONE');
 
 // ---------------------------------------------------------------------------
 // Autonomy matrix — spec §3.8–§8.8 and §9.3, transcribed verbatim.
