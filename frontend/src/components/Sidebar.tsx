@@ -552,6 +552,26 @@ export const NAV_TABS: NavTab[] = [
           { to: "/scm/currencies", label: "Currencies", icon: DollarSign, anyPerm: ["*", "scm.currency.manage"] },
         ],
       },
+      {
+        hideForSalesRep: true,
+        label: "HR",
+        icon: Users,
+        groupId: "scm-hr",
+        // No /scm/hr hub page exists, so the group header lands on the report.
+        to: "/scm/hr/commission",
+        // FLAT keys only, deliberately no `scm.access` and no `anyAccess`: HR has
+        // no L2 page-access area, and /commission returns every colleague's pay.
+        // Riding the SCM umbrella here is exactly the mistake scm/index.ts warns
+        // about ("READ-ONLY IS NOT THE SAME AS SAFE"). Backend gates on these same
+        // two keys, so nav visibility and API access cannot drift apart.
+        anyPerm: ["*", "scm.hr.read", "scm.hr.manage"],
+        children: [
+          { to: "/scm/hr/commission", label: "Commission", icon: DollarSign, anyPerm: ["*", "scm.hr.read", "scm.hr.manage"] },
+          // Settings is an EDITOR — read-only holders are not shown a page whose
+          // every control the API would reject (2990 bounces them to the report).
+          { to: "/scm/hr/settings", label: "HR Settings", icon: SlidersHorizontal, anyPerm: ["*", "scm.hr.manage"] },
+        ],
+      },
     ],
   },
 
