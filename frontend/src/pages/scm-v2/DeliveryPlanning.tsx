@@ -33,13 +33,14 @@
 
 import { useMemo, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { MapPinned, Truck } from 'lucide-react';
+import { MapPinned, Truck, Plus } from 'lucide-react';
 import { Button } from '../../components/Button';
 import { PageHeader } from '../../components/Layout';
 import { fmtCenti, fmtDateOrDash, fmtDateTime, buildVariantSummary } from '@2990s/shared';
 import { formatPhone } from '@2990s/shared/phone';
 import { DataGrid, type DataGridColumn } from '../../vendor/scm/components/DataGrid';
 import { DeliveryFieldsDrawer } from '../../vendor/scm/components/DeliveryFieldsDrawer';
+import { NewDpOrderDrawer } from '../../vendor/scm/components/NewDpOrderDrawer';
 import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import { badgeFor } from '../../vendor/scm/lib/category-badges';
@@ -502,6 +503,7 @@ export const DeliveryPlanning = () => {
 
   /* The order whose HC fields are being edited (drawer open when non-null). */
   const [editing, setEditing] = useState<PlanningOrder | null>(null);
+  const [showNewDp, setShowNewDp] = useState(false);
 
   /* Multi-select → bulk "Convert N to DO". Selection keys are so_doc_no strings
      (the DataGrid rowKey). The convert reuses POST /from-sos one-DO-per-SO. */
@@ -1066,14 +1068,18 @@ export const DeliveryPlanning = () => {
         title="Delivery Planning"
         description={`Orders that need delivering · grouped by region (customer state) · ${counts.ALL} in ${activeRegionLabel}`}
         primaryAction={
-          /* Secondary header control — open the owner-maintained region-bucket
-             master (formerly a standalone sidebar line; now reached from here).
-             Kept as an inline <Button> rather than a `secondaryActions` MenuItem
-             so it keeps its MapPinned icon. */
-          <Button variant="secondary" onClick={() => navigate('/scm/delivery-planning-regions')}>
-            <MapPinned size={16} strokeWidth={1.75} />
-            Manage regions
-          </Button>
+          <span style={{ display: 'inline-flex', gap: 'var(--space-2)' }}>
+            {/* New DP Order — manual setup / dismantle / supplier-pickup jobs (and
+                any ad-hoc delivery), created straight onto the board. */}
+            <Button variant="primary" onClick={() => setShowNewDp(true)}>
+              <Plus size={16} strokeWidth={1.75} />
+              New DP Order
+            </Button>
+            <Button variant="secondary" onClick={() => navigate('/scm/delivery-planning-regions')}>
+              <MapPinned size={16} strokeWidth={1.75} />
+              Manage regions
+            </Button>
+          </span>
         }
       />
 
@@ -1293,6 +1299,8 @@ export const DeliveryPlanning = () => {
 
       {/* Per-row HC fields editor (right-click → Edit HC fields). SO-context
           always editable; DO-execution editable only when the order has a DO. */}
+      {showNewDp && <NewDpOrderDrawer onClose={() => setShowNewDp(false)} />}
+
       {editing && (
         <DeliveryFieldsDrawer order={editing} onClose={() => setEditing(null)} />
       )}
