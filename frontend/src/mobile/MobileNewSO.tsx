@@ -1046,6 +1046,16 @@ export function MobileNewSO({
      would deny the very action the permission grants. Moving (rather than
      clearing) a locked date still 409s server-side — same as desktop. */
   const scheduleDatesLocked = procLocked && !amendmentMode && !canRemoveProcessingDate;
+  /* Schedule-date floor (desktop parity) — the backend rejects a past
+     Processing / Delivery Date (todayMY, UTC+8), so grey out earlier days in
+     the picker exactly as SalesOrderNew / SalesOrderDetail do, instead of
+     letting mobile pick a date Save will only bounce. todayMyt() is the same
+     Malaysia (UTC+8) calendar day the backend measures against, so a user near
+     midnight isn't wrongly blocked. Processing Date drops the floor when the
+     order is already processing-locked (procLocked) — mirrors Detail so an
+     existing, legitimately-past processing date on a locked/amendment SO isn't
+     forced forward. */
+  const today = todayMyt();
 
   /* ── FIX A — Salesperson default (desktop parity) ─────────────────────────
      The creator IS the salesperson: default to the signed-in user. If they have
@@ -1996,10 +2006,10 @@ export function MobileNewSO({
                       then both dates are editable and go out as an amendment
                       request for approval instead of saving directly. */}
                   <Field label="Processing Date" style={{ flex: 1 }} error={touched && dateXorErr} scanned={scanned("procDate", procDate)}>
-                    <input className="fld-i" type="date" value={procDate} disabled={scheduleDatesLocked} onChange={(e) => setProcDate(e.target.value)} />
+                    <input className="fld-i" type="date" value={procDate} disabled={scheduleDatesLocked} min={procLocked ? undefined : today} onChange={(e) => setProcDate(e.target.value)} />
                   </Field>
                   <Field label="Delivery Date" style={{ flex: 1 }} error={touched && dateXorErr} scanned={scanned("delivDate", delivDate)}>
-                    <input className="fld-i" type="date" value={delivDate} disabled={scheduleDatesLocked} onChange={(e) => setDelivDate(e.target.value)} />
+                    <input className="fld-i" type="date" value={delivDate} disabled={scheduleDatesLocked} min={today} onChange={(e) => setDelivDate(e.target.value)} />
                   </Field>
                 </div>
                 <div style={{ fontSize: 10, color: "#9aa093", marginTop: -3 }}>
