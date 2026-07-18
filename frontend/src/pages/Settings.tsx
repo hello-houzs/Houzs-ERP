@@ -124,7 +124,17 @@ function ConnectionTab() {
   async function testConnection() {
     setTesting(true);
     try {
-      await fetch(`${api.baseUrl}/health`);
+      /* A non-2xx does NOT reject fetch, so testing only the throw reported
+         "Connection OK" for a server answering 500/502/404 — every failure
+         except a DNS/network drop. This button is what IT presses to decide
+         whether the server is the problem, so a false green sends them to
+         look somewhere else. */
+      const res = await fetch(`${api.baseUrl}/health`);
+      if (!res.ok) {
+        setConnectionOk(false);
+        toast.error(`Server reachable but unhealthy (HTTP ${res.status}). Please try again shortly.`);
+        return;
+      }
       setConnectionOk(true);
       toast.success("Connection OK");
     } catch {

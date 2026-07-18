@@ -3,7 +3,7 @@ import type { Env } from "../types";
 import { requirePageAccess, requirePageAccessOrSalesView } from "../middleware/auth";
 import { getDb } from "../db/client";
 import { sales_entries, users, projects } from "../db/schema";
-import { and, desc, eq, gte, isNull, lte, like, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, ilike, isNull, lte, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { syncFinanceRollup } from "../services/projects";
 import {
@@ -307,12 +307,18 @@ app.get("/entries/export", requirePageAccess("sales"), async (c) => {
   if (dateTo) conds.push(lte(sql`date(${sales_entries.occurred_at})`, sql`date(${dateTo})`));
   if (search) {
     const likeStr = `%${search}%`;
+    /* ILIKE, not LIKE — this export runs through Drizzle/postgres.js, which
+       BYPASSES the d1-compat shim that silently upgrades LIKE to ILIKE for the
+       sibling list endpoint (`/entries`, raw env.DB.prepare). With plain LIKE
+       the two disagreed on case: a rep searched "acme", saw rows in the list,
+       exported, and got a CSV missing every row stored as "ACME" — a filtered
+       export that looks complete is worse than one that errors. */
     conds.push(
       or(
-        like(sales_entries.customer_name, likeStr),
-        like(sales_entries.customer_phone, likeStr),
-        like(sales_entries.ref_no, likeStr),
-        like(sales_entries.notes, likeStr)
+        ilike(sales_entries.customer_name, likeStr),
+        ilike(sales_entries.customer_phone, likeStr),
+        ilike(sales_entries.ref_no, likeStr),
+        ilike(sales_entries.notes, likeStr)
       )!
     );
   }

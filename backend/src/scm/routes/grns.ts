@@ -14,6 +14,7 @@ import { recostFromGrn } from '../lib/recost';
 import { normalizeExchangeRate, toMyrSen, normalizeCurrency, masterRateForCurrency } from '../lib/fx';
 import { allocateLandedCharges, normalizeAllocationMethod } from '../lib/landed-allocation';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
+import { parseLineNumbers, invalidLineNumberBody } from '../shared/line-numbers';
 import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { todayMyt } from '../lib/my-time';
 import { paginateAll } from '../lib/paginate-all';
@@ -2288,9 +2289,19 @@ grns.post('/:id/items', async (c) => {
     }, 409);
   }
 
-  const qtyReceived = Number(it.qty ?? 1);
-  const unitPriceCenti = Number(it.unitPriceCenti ?? 0);
-  const discountCenti = Number(it.discountCenti ?? 0);
+  /* Non-finite guard — the clamp below cannot catch NaN (Math.max(0, NaN) is
+     NaN). On a GRN this is worse than a bad total: qty_received also drives the
+     over-receipt headroom check and the inventory movement, so a NaN qty writes
+     a NaN into stock. */
+  const parsedAdd = parseLineNumbers({
+    qty: { value: it.qty, fallback: 1 },
+    unitPriceCenti: { value: it.unitPriceCenti },
+    discountCenti: { value: it.discountCenti },
+  });
+  if (!parsedAdd.ok) return c.json(invalidLineNumberBody(parsedAdd.invalid), 400);
+  const { qty: qtyReceived, unitPriceCenti, discountCenti } = parsedAdd.nums as {
+    qty: number; unitPriceCenti: number; discountCenti: number;
+  };
   // Audit (ported from 2990 20190257) — clamp like the PO create path (negative-money guard).
   const lineTotal = Math.max(0, (qtyReceived * unitPriceCenti) - discountCenti);
 
@@ -2499,7 +2510,18 @@ grns.patch('/:id/items/:itemId', async (c) => {
 
   // The editable quantity is qty_received (also keep qty_accepted in lockstep).
   const prevAccepted = (prev as { qty_accepted: number }).qty_accepted ?? 0;
-  const qtyReceived = it.qty !== undefined ? Number(it.qty) : (prev as { qty_received: number }).qty_received;
+  /* Non-finite guard — see POST /:id/items. A NaN here would flow into the
+     over-receipt headroom comparison (which NaN always fails silently, since
+     every comparison against NaN is false) and into the posted-GRN inventory
+     delta below. */
+  const parsedQty = parseLineNumbers({
+    /* `!== undefined`, NOT `??` — the two differ on an explicit null, and this
+       path's existing contract is that null coerces to 0 rather than keeping
+       the stored qty. Preserved exactly; this guard is about NaN, not semantics. */
+    qty: { value: it.qty !== undefined ? it.qty : (prev as { qty_received: number }).qty_received },
+  });
+  if (!parsedQty.ok) return c.json(invalidLineNumberBody(parsedQty.invalid), 400);
+  const qtyReceived = parsedQty.nums.qty as number;
 
   /* Over-receipt guard on edit — a PO-linked line can't be raised past the PO
      line's headroom = qty - (received_qty - this line's current receipt). The

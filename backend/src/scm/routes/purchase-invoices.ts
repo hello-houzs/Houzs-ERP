@@ -12,6 +12,7 @@ import {
 import { postPiAccounting, reversePiAccounting, resyncPiAccounting } from './accounting';
 import { recostForPi, recostFromGrn } from '../lib/recost';
 import { normalizeCurrency, normalizeExchangeRate, masterRateForCurrency } from '../lib/fx';
+import { parseLineNumbers, invalidLineNumberBody } from '../shared/line-numbers';
 import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { escapeForOr } from '../lib/postgrest-search';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
@@ -746,6 +747,21 @@ purchaseInvoices.post('/', async (c) => {
   }
 
   let subtotal = 0;
+  /* Reject non-finite line numbers BEFORE the map — the Math.max(0, ...) clamp
+     below stops a negative total but NOT a NaN (Math.max(0, NaN) is NaN), so a
+     junk qty/price persisted NaN into line_total_centi and the PI subtotal,
+     which is what the supplier's AP balance is read from. */
+  for (const [i, it] of items.entries()) {
+    const parsed = parseLineNumbers({
+      qty: { value: it.qty },
+      unitPriceCenti: { value: it.unitPriceCenti },
+      discountCenti: { value: it.discountCenti },
+    });
+    if (!parsed.ok) {
+      const b = invalidLineNumberBody(parsed.invalid);
+      return c.json({ ...b, reason: `Line ${i + 1}: ${b.reason}` }, 400);
+    }
+  }
   const itemRows = items.map((it) => {
     /* PI discount unification (audit 2026-06-11 M3) — ONE rule on every PI
        line write path: line_total_centi = qty × unit − discount, discount
