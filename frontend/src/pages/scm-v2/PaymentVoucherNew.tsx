@@ -38,6 +38,7 @@ import { DateField } from '../../vendor/scm/components/DateField';
 import { AccountSelect } from '../../vendor/scm/components/AccountSelect';
 import styles from './SalesOrderDetail.module.css';
 import { PageHeader } from '../../components/Layout';
+import { resolveFxRate } from './fx-rate';
 
 const ICON    = { size: 16, strokeWidth: 1.75 } as const;
 const SM_ICON = { size: 14, strokeWidth: 1.75 } as const;
@@ -221,7 +222,7 @@ export const PaymentVoucherNew = () => {
         // (server enforces too); a blank/invalid foreign rate → 1.
         currency,
         exchangeRate:      isForeign
-          ? ((Number(exchangeRate) > 0 && Number.isFinite(Number(exchangeRate))) ? Number(exchangeRate) : 1)
+          ? resolveFxRate(exchangeRate)
           : 1,
         lines: realLines.map((l) => ({
           description:      l.description || undefined,
@@ -325,7 +326,7 @@ export const PaymentVoucherNew = () => {
               onCurrencyChange={setCurrencyOverride}
               exchangeRate={exchangeRate}
               onRateChange={(v) => { setRateTouched(true); setExchangeRate(v); }}
-              rateHint={<>≈ {fmtRm(Math.round(totalCenti * (Number(exchangeRate) || 0)), 'MYR')} posted to GL</>}
+              rateHint={<>≈ {fmtRm(Math.round(totalCenti * resolveFxRate(exchangeRate)), 'MYR')} posted to GL</>}
               styles={styles}
             />
           </div>
@@ -469,7 +470,7 @@ export const PaymentVoucherNew = () => {
             {isForeign && (
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 'var(--fs-13)', color: 'var(--fg-muted)', marginTop: 'var(--space-2)' }}>
                 <span>≈ posted to GL</span>
-                <span style={{ fontFamily: 'var(--font-mono)' }}>{fmtRm(Math.round(totalCenti * (Number(exchangeRate) || 0)), 'MYR')}</span>
+                <span style={{ fontFamily: 'var(--font-mono)' }}>{fmtRm(Math.round(totalCenti * resolveFxRate(exchangeRate)), 'MYR')}</span>
               </div>
             )}
           </div>

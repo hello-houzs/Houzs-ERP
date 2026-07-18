@@ -32,6 +32,7 @@ import { useNotify } from "../../vendor/scm/components/NotifyDialog";
 import { cn } from "../../lib/utils";
 import { EntityHistoryPanel } from "./EntityHistoryPanel";
 import { GRN_AUDIT_LABELS } from "./entity-audit-labels";
+import { resolveFxRate } from "./fx-rate";
 
 type GrnStatus = "DRAFT" | "POSTED" | "CANCELLED" | string;
 
@@ -189,7 +190,7 @@ function ReceivedHeroCard({ header, items }: { header: GrnHeader; items: GrnItem
   const isPosted = eff === "posted";
   // Multi-currency (Phase 1-A) — MYR-equivalent for a foreign receipt (no-op for MYR).
   const isForeign = String(header.currency ?? "MYR").toUpperCase() !== "MYR";
-  const rate = Number(header.exchange_rate ?? 1) || 0;
+  const rate = resolveFxRate(header.exchange_rate);
   return (
     <div className="rounded-lg bg-sidebar px-5 py-5 text-sidebar-ink shadow-stone">
       <div className="font-mono text-[10px] font-semibold uppercase tracking-brand text-sidebar-ink-muted">
@@ -209,7 +210,7 @@ function ReceivedHeroCard({ header, items }: { header: GrnHeader; items: GrnItem
         <HeroLine k="Total value" v={fmtMoney(total, header.currency)} strong />
         {isForeign && (
           <>
-            <HeroLine k={`Rate (MYR / 1 ${header.currency})`} v={String(header.exchange_rate ?? 1)} />
+            <HeroLine k={`Rate (MYR / 1 ${header.currency})`} v={String(rate)} />
             <HeroLine k="Inventory cost (MYR)" v={fmtMoney(Math.round(total * rate), "MYR")} />
           </>
         )}
@@ -552,7 +553,7 @@ function GoodsReceivedDetailV2ReadOnly() {
                 {/* Multi-currency / landed cost (Phase 1-A) — shown only for a
                     foreign receipt; an MYR GRN is byte-for-byte the old layout. */}
                 {String(grn.currency ?? "MYR").toUpperCase() !== "MYR" && (
-                  <Field label={`Exchange rate (MYR / 1 ${grn.currency})`} value={String(grn.exchange_rate ?? 1)} mono />
+                  <Field label={`Exchange rate (MYR / 1 ${grn.currency})`} value={String(resolveFxRate(grn.exchange_rate))} mono />
                 )}
                 <Field label="Charge allocation" value={ALLOC_LABEL[String(grn.allocation_method ?? "QTY")] ?? "By quantity"} />
               </div>

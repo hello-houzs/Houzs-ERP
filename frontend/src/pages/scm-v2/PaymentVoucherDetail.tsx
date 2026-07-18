@@ -45,6 +45,7 @@ import styles from './SalesOrderDetail.module.css';
 import { PageHeader } from '../../components/Layout';
 import { EntityHistoryPanel } from './EntityHistoryPanel';
 import { PAYMENT_VOUCHER_AUDIT_LABELS } from './entity-audit-labels';
+import { resolveFxRate } from './fx-rate';
 
 const ICON    = { size: 16, strokeWidth: 1.75 } as const;
 const SM_ICON = { size: 14, strokeWidth: 1.75 } as const;
@@ -187,7 +188,7 @@ export const PaymentVoucherDetail = () => {
   const currency  = isEditing ? editCurrency : viewCurrency;
   const isForeign = currency !== 'MYR';
   useEffect(() => { if (isEditing && !isForeign) setExchangeRate('1'); }, [isEditing, isForeign]);
-  const rate = Number(isEditing ? exchangeRate : (pv?.exchange_rate ?? 1)) || 0;
+  const rate = resolveFxRate(isEditing ? exchangeRate : pv?.exchange_rate);
 
   /* ── Edit allocations (migration 0202) ────────────────────────────────────
      In Edit mode on a SUPPLIER_PAYMENT voucher, list the supplier's outstanding
@@ -270,7 +271,7 @@ export const PaymentVoucherDetail = () => {
         // (server enforces too); a blank/invalid foreign rate → 1.
         currency:          editCurrency,
         exchangeRate:      isForeign
-          ? ((Number(exchangeRate) > 0 && Number.isFinite(Number(exchangeRate))) ? Number(exchangeRate) : 1)
+          ? resolveFxRate(exchangeRate)
           : 1,
         lines: realLines.map((l) => ({
           description:      l.description || undefined,
