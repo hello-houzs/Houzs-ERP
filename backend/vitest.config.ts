@@ -65,26 +65,34 @@ export default defineWorkersConfig(async () => {
       //
       // The previous mitigation for this same class was raising hookTimeout to
       // 180s (see above). That bought two more test files. A longer timeout
-      // does not help once the main thread is the bottleneck, so bound the
-      // concurrency instead.
-      //
-      // WHY 1 AND NOT 2: maxWorkers 2 was tried first and measured, not assumed.
-      // It moved the suite from 0-of-5 runs passing to 1-of-2 — the same commit
-      // produced one green backend run (3m08s) and one red one carrying the
-      // identical zero-assertion signature (58 of 66 "failed", 174 RPC
-      // timeouts). Better is not fixed, and a suite that guards money and stock
-      // posting paths must not be a coin flip. One worker removes the
-      // contention entirely rather than reducing it. The green run's 3-minute
-      // wall time leaves ample room for the serial cost.
-      //
-      // This is a floor, not a ceiling: raising it is fine, but only with
-      // repeated green full-suite runs behind the new number.
-      maxWorkers: 1,
-      minWorkers: 1,
+      // does not help once the main thread is the bottleneck, so the fix is to
+      // stop spawning a workerd isolate per file. See `singleWorker` below —
+      // vitest's own `maxWorkers`/`fileParallelism` do NOT do that here, because
+      // this suite runs on the CUSTOM vitest-pool-workers pool and those options
+      // only govern the built-in threads/forks pools. Setting maxWorkers to 1
+      // was tried and CI failed identically (60 of 66, 180 RPC timeouts), which
+      // is how we know it was never taking effect.
       poolOptions: {
         workers: {
           // Reuse production wrangler.toml so bindings line up.
           wrangler: { configPath: "./wrangler.toml" },
+          // THE CAPACITY FIX (see the pool note above testTimeout). Runs every
+          // test file serially in ONE worker sharing a module cache, instead of
+          // standing up a workerd isolate per file. That per-file isolate is
+          // what starved the main thread and produced the zero-assertion
+          // "Timeout calling onTaskUpdate" collapse once the suite reached 66
+          // files. This is the pool's own documented option; it is the only one
+          // that actually bounds concurrency here.
+          //
+          // Not expected to cost wall time — Cloudflare documents this as a
+          // SPEEDUP for suites made of many small files, since the module cache
+          // is reused rather than rebuilt 66 times.
+          //
+          // Trade-off worth knowing: a shared module cache means module-level
+          // state is shared across files. isolatedStorage (default true) still
+          // gives each file its own D1/KV, so stored data stays isolated; it is
+          // module singletons that no longer reset per file.
+          singleWorker: true,
           miniflare: {
             // Isolated test D1 for `env.DB`. Declared here (not inherited from
             // wrangler.toml) so the prod [[d1_databases]] binding can be removed
