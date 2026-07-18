@@ -15,10 +15,22 @@ import { COSTING_DISPLAY_ENABLED } from "@2990s/shared";
  */
 
 /** Owner/IT `*` or a director-level position — sees everything. */
-// Owner 2026-07-15: real positions carry prefixes/variants (e.g. "Test Sales
-// Director"), so match the director title as a word anywhere in the name rather
-// than requiring an exact string. Mirror of backend services/pmsAccess.ts.
-const DIRECTOR_POSITIONS = /\b(Super Admin|Sales Director|Finance Manager)\b/i;
+// Lower-case + collapse internal whitespace + trim. Tolerant to casing/spacing
+// drift ONLY, never substring. Mirror of backend services/pmsAccess.normalisePosition.
+function normalisePosition(name: string | null | undefined): string {
+  return (name ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+// Director-level positions, matched by EXACT normalised name. This WAS
+// /\b(Super Admin|Sales Director|Finance Manager)\b/i — a word-boundary test
+// that let any future free-text rename CONTAINING a director title ("Assistant
+// to Sales Director", "Deputy Finance Manager") silently inherit full director
+// access. Position names are owner-editable free text, so a substring match
+// turns a rename into a privilege grant. MUST stay identical to the backend
+// services/pmsAccess.ts DIRECTOR_POSITION_NAMES (pinned by both sides' tests).
+const DIRECTOR_POSITION_NAMES: ReadonlySet<string> = new Set(
+  ["Super Admin", "Sales Director", "Finance Manager"].map(normalisePosition),
+);
 
 /** A sales position name — matches "Sales Executive", "Sales Coordinator",
  *  "Sales Director", but ALSO the no-space / punctuated variants that the old
@@ -41,7 +53,7 @@ export function isDirectorUser(user: AuthUser | null | undefined): boolean {
   if (!user) return false;
   if (user.permissions?.includes("*")) return true;
   if (user.project_finance_viewer) return true;
-  return DIRECTOR_POSITIONS.test((user.position_name ?? "").trim());
+  return DIRECTOR_POSITION_NAMES.has(normalisePosition(user.position_name));
 }
 
 /**
@@ -69,11 +81,16 @@ export function isSalesNonDirector(user: AuthUser | null | undefined): boolean {
 }
 
 /** Exact "Sales Director" position — the signal for the DEPARTMENT-SCOPED Team
- *  admin grant (owner 2026-07). Anchored so ONLY "Sales Director" matches, not
- *  "Sales Executive"/"Sales Coordinator". Mirrors the backend
- *  services/pmsAccess.isSalesDirectorUser; the backend stays the authority —
- *  this drives nav visibility + in-page scoping (defence-in-depth / UX only). */
-const SALES_DIRECTOR_POSITION = /\bSales Director\b/i;
+ *  admin grant (owner 2026-07). EXACT normalised name so ONLY "Sales Director"
+ *  matches, not "Sales Executive"/"Sales Coordinator" nor a name merely
+ *  CONTAINING "Sales Director" ("Assistant to Sales Director"). This WAS
+ *  /\bSales Director\b/i. Mirrors backend services/pmsAccess.isSalesDirectorUser;
+ *  the backend stays the authority — this drives nav visibility + in-page
+ *  scoping (defence-in-depth / UX only). MUST stay identical to the backend
+ *  SALES_DIRECTOR_POSITION_NAMES. */
+const SALES_DIRECTOR_POSITION_NAMES: ReadonlySet<string> = new Set(
+  ["Sales Director"].map(normalisePosition),
+);
 
 /**
  * True ONLY for the "Sales Director" position. A Sales Director gets a scoped
@@ -84,7 +101,7 @@ const SALES_DIRECTOR_POSITION = /\bSales Director\b/i;
  */
 export function isSalesDirectorUser(user: AuthUser | null | undefined): boolean {
   if (!user) return false;
-  return SALES_DIRECTOR_POSITION.test((user.position_name ?? "").trim());
+  return SALES_DIRECTOR_POSITION_NAMES.has(normalisePosition(user.position_name));
 }
 
 /**

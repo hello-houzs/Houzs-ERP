@@ -7,9 +7,44 @@ import {
   isSetupDismantleSection,
   isSalesUser,
   isDirectorUser,
+  isSalesDirectorUser,
+  isProductCostViewer,
 } from "../src/services/pmsAccess";
 import { stripSensitiveChecklist, stripSetupDismantle } from "../src/services/projects";
+import { POSITION_ACCESS_SNAPSHOT } from "../src/services/positionAccessSnapshot";
 import type { AuthUser } from "../src/services/auth";
+
+// ── LOCKSTEP FIXTURE — MUST stay identical to frontend/src/auth/salesAccess.test.ts ──
+// The FE mirror (isDirectorUser / isSalesDirectorUser in salesAccess.ts) must
+// classify these exact names the same way this backend does. If you change a
+// case here, change it there in the SAME commit; the two files carry no shared
+// import (vendored-clone architecture), so these tables are the contract.
+const LOCKSTEP_DIRECTOR: ReadonlyArray<[string, boolean]> = [
+  // Real prod director positions — still match.
+  ["Super Admin", true],
+  ["Sales Director", true],
+  ["Finance Manager", true],
+  // Casing / spacing drift on a real name — still match (normalisation only).
+  ["sales director", true],
+  ["  Sales   Director ", true],
+  // INJECTION names — a free-text rename that merely CONTAINS a director title.
+  // These matched under the old /\b(...)\b/i and must now be REJECTED.
+  ["Assistant to Sales Director", false],
+  ["Deputy Finance Manager", false],
+  ["Senior Super Admin", false],
+  ["Super Administrator", false],
+  // Other real prod non-directors — never matched, still don't.
+  ["Sales Manager", false],
+  ["HR Manager", false],
+  ["Operation Manager", false],
+];
+const LOCKSTEP_SALES_DIRECTOR: ReadonlyArray<[string, boolean]> = [
+  ["Sales Director", true],
+  ["  sales director ", true],
+  ["Assistant to Sales Director", false],
+  ["Sales Executive", false],
+  ["Sales Manager", false],
+];
 
 // Pure-function tests for the project-detail (PMS) section gating — the
 // security boundary that hides financial/rental from non-finance positions.
@@ -198,6 +233,62 @@ describe("isSalesUser / isDirectorUser — stable org-field access model", () =>
     const se = user({ position_name: "Sales Executive" });
     expect(isSalesUser(se)).toBe(true);
     expect(isDirectorUser(se)).toBe(false);
+  });
+});
+
+// Position names are owner-editable FREE TEXT. The director / sales-director /
+// purchasing matchers used to key off a word-boundary regex, so a rename whose
+// name merely CONTAINED a privileged title (e.g. "Assistant to Sales Director")
+// silently inherited that title's access. These pin the closed hole: real prod
+// names still match, injection names never do, the two documented renames are
+// handled, and no real prod position changes the role it resolved to before.
+describe("position-name matcher hardening — no rename injection", () => {
+  test("isDirectorUser matches ONLY the exact director names (lockstep fixture)", () => {
+    for (const [name, expected] of LOCKSTEP_DIRECTOR) {
+      expect(isDirectorUser(user({ position_name: name }))).toBe(expected);
+    }
+    // The `*` wildcard is a director regardless of position name.
+    expect(isDirectorUser(user({ perms: ["*"], position_name: "Assistant to Sales Director" }))).toBe(true);
+  });
+
+  test("isSalesDirectorUser matches ONLY the exact 'Sales Director' (lockstep fixture)", () => {
+    for (const [name, expected] of LOCKSTEP_SALES_DIRECTOR) {
+      expect(isSalesDirectorUser(user({ position_name: name }))).toBe(expected);
+    }
+  });
+
+  test("isProductCostViewer: directors + purchasing by exact name, incl. the rename alias", () => {
+    // Real prod cost cohort: the three directors + Procurement/Purchasing.
+    expect(isProductCostViewer(user({ position_name: "Procurement/Purchasing" }))).toBe(true);
+    // Documented pre-rename alias ("Purchasing" -> "Procurement/Purchasing").
+    expect(isProductCostViewer(user({ position_name: "Purchasing" }))).toBe(true);
+    expect(isProductCostViewer(user({ position_name: "Finance Manager" }))).toBe(true);
+    expect(isProductCostViewer(user({ position_name: "Sales Director" }))).toBe(true);
+    // INJECTION: a name merely CONTAINING "Purchasing" no longer inherits cost.
+    expect(isProductCostViewer(user({ position_name: "Purchasing Assistant" }))).toBe(false);
+    expect(isProductCostViewer(user({ position_name: "Assistant Purchasing Clerk" }))).toBe(false);
+    // Non-cohort real positions.
+    expect(isProductCostViewer(user({ position_name: "Sales Executive" }))).toBe(false);
+    expect(isProductCostViewer(user({ position_name: "Storekeeper" }))).toBe(false);
+  });
+
+  // BLAST RADIUS: across all 17 live prod positions the matched cohorts are
+  // EXACTLY the intended ones — the only behavioural change is that a future
+  // rename can no longer inject. Iterates the generated snapshot so a new prod
+  // position added to it is force-classified here.
+  test("blast radius over all 17 prod positions is unchanged", () => {
+    const directors = new Set(["Super Admin", "Sales Director", "Finance Manager"]);
+    const salesDirectors = new Set(["Sales Director"]);
+    const costViewers = new Set([
+      "Super Admin", "Sales Director", "Finance Manager", "Procurement/Purchasing",
+    ]);
+    expect(POSITION_ACCESS_SNAPSHOT.length).toBe(17);
+    for (const p of POSITION_ACCESS_SNAPSHOT) {
+      const u = user({ position_name: p.name, department_name: p.department_name });
+      expect(isDirectorUser(u)).toBe(directors.has(p.name));
+      expect(isSalesDirectorUser(u)).toBe(salesDirectors.has(p.name));
+      expect(isProductCostViewer(u)).toBe(costViewers.has(p.name));
+    }
   });
 });
 

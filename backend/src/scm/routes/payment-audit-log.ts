@@ -246,7 +246,7 @@ paymentAuditLog.get('/', async (c) => {
      HONEST NOTE ON WHAT THIS DOES TODAY: nothing, provably. canViewScmFinance is
      isFinanceViewer === getPmsRole(...)==='DIRECTOR', and canViewAllSales admits
      `scm.so.view_all` OR isDirectorUser — which is the SAME predicate
-     (`*` wildcard OR a DIRECTOR_POSITIONS match, pmsAccess.ts). So every caller
+     (`*` wildcard OR a DIRECTOR_POSITION_NAMES match, pmsAccess.ts). So every caller
      who survives the gate above also satisfies canViewAllSales, and
      resolveSalesScopeIds returns null (unrestricted) on its FIRST line, before
      any query — this costs zero DB work.
