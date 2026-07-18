@@ -2,7 +2,7 @@
 // doc: goods land at a warehouse, PO's received_qty rolls up. Aside hero =
 // Received value + qty landed, tinted green once posted.
 
-import { lazy, Suspense, useMemo, type ReactNode } from "react";
+import { lazy, Suspense, useCallback, useMemo, useState, type ReactNode } from "react";
 import { lineIdentity } from "@2990s/shared";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
@@ -30,6 +30,8 @@ import {
 import { useSetBreadcrumbs } from "../../hooks/useBreadcrumbs";
 import { useNotify } from "../../vendor/scm/components/NotifyDialog";
 import { cn } from "../../lib/utils";
+import { EntityHistoryPanel } from "./EntityHistoryPanel";
+import { GRN_AUDIT_LABELS } from "./entity-audit-labels";
 
 type GrnStatus = "DRAFT" | "POSTED" | "CANCELLED" | string;
 
@@ -265,6 +267,13 @@ function GoodsReceivedDetailV2ReadOnly() {
   const [params] = useSearchParams();
   const navigate = useNavigate();
 
+  /* History drawer. This page already had a History button, but it navigated to
+     `?tab=history` — a param nothing in this file ever read, so it changed the
+     URL and rendered nothing. It now opens the shared audit drawer. Stable close
+     handler so the memoized panel is not re-created on every parent render. */
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const closeHistory = useCallback(() => setHistoryOpen(false), []);
+
   const detail = useGrnDetail(id ?? null);
   const postGrn = usePostGrn();
   const cancelGrn = useCancelGrn();
@@ -290,7 +299,6 @@ function GoodsReceivedDetailV2ReadOnly() {
     else navigate(-1);
   };
   const goEdit = () => id && navigate(`/scm/grns/${id}?edit=1`);
-  const goHistory = () => id && navigate(`/scm/grns/${id}?tab=history`);
   // Render + download the GRN PDF via the shared jspdf generator (client-side),
   // mirroring the V1 GoodsReceivedDetail handler. The old `?print=1` navigation
   // was dead — nothing consumed that param — so the button did nothing.
@@ -499,7 +507,7 @@ function GoodsReceivedDetailV2ReadOnly() {
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Button variant="ghost" icon={<History size={14} />} onClick={goHistory}>History</Button>
+            <Button variant="ghost" icon={<History size={14} />} onClick={() => setHistoryOpen(true)}>History</Button>
             <Button variant="secondary" icon={<Printer size={14} />} onClick={goPrintPdf}>Print PDF</Button>
             {canCancel && <Button variant="danger" icon={<XCircle size={14} />} onClick={doCancel}>Cancel GRN</Button>}
             {canPost && <Button variant="secondary" icon={<Send size={14} />} onClick={doPost}>Post</Button>}
@@ -588,6 +596,20 @@ function GoodsReceivedDetailV2ReadOnly() {
           </DetailAside>
         </DetailGrid>
       </div>
+
+      {/* History drawer — portals to <body>, so its position here is only
+          about lifecycle, not layout. */}
+      {historyOpen && (
+        <EntityHistoryPanel
+          entityType="GRN"
+          entityId={String(grn.id)}
+          recordLabel={grn.grn_number}
+          entityName="Goods receipt"
+          labels={GRN_AUDIT_LABELS}
+          statusDocType="grn"
+          onClose={closeHistory}
+        />
+      )}
 
       <div className="fixed inset-x-0 bottom-0 z-20 border-t border-border bg-surface/95 px-3 pb-6 pt-2.5 shadow-slab backdrop-blur-sm md:hidden">
         <div className="flex items-center gap-2">

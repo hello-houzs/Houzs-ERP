@@ -31,6 +31,11 @@ export type AuditLabelDictionary = {
   fields: Record<string, string>;
   /* Fields whose numeric value is stored in cents and must render as money. */
   moneyFields?: ReadonlySet<string>;
+  /* Escape hatch for logs whose field keys are DATA rather than a fixed
+     vocabulary. Stock take writes one change per counted SKU keyed by the
+     product code itself, and humaniseKey would lower-case a real code
+     ("AB-12X" -> "Ab 12x"). Return undefined to fall through to humaniseKey. */
+  fallbackFieldLabel?: (field: string) => string | undefined;
 };
 
 const ACRONYMS = new Set(['ID', 'SO', 'PO', 'DO', 'GRN', 'SI', 'UOM', 'PWP', 'TBC']);
@@ -65,4 +70,4 @@ export const auditActionLabel = (
 export const auditFieldLabel = (
   field: string,
   dict: AuditLabelDictionary,
-): string => dict.fields[field] ?? humaniseKey(field);
+): string => dict.fields[field] ?? dict.fallbackFieldLabel?.(field) ?? humaniseKey(field);

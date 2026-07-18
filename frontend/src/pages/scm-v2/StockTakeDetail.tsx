@@ -15,10 +15,10 @@
 // Back/Close → list, Delete → /scm/stock-takes.
 // ----------------------------------------------------------------------------
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
-  ArrowLeft, Save, X, Trash2, Send, Ban, AlertTriangle, Search, Wand2, Undo2,
+  ArrowLeft, History, Save, X, Trash2, Send, Ban, AlertTriangle, Search, Wand2, Undo2,
 } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { SkeletonDetailPage } from '../../vendor/scm/components/Skeleton';
@@ -38,6 +38,8 @@ import {
 } from '../../vendor/scm/lib/stock-queries';
 import styles from './SalesOrderDetail.module.css';
 import { PageHeader } from '../../components/Layout';
+import { EntityHistoryPanel } from './EntityHistoryPanel';
+import { STOCK_TAKE_AUDIT_LABELS } from './entity-audit-labels';
 
 const ICON = { size: 16, strokeWidth: 1.75 } as const;
 
@@ -98,6 +100,11 @@ const varianceOf = (d: LineDraft): number | null => {
 export const StockTakeDetail = () => {
   const { id }   = useParams<{ id: string }>();
   const navigate = useNavigate();
+
+  /* History drawer. Stable close handler so the memoized panel does not
+     re-render on every count keystroke. */
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const closeHistory = useCallback(() => setHistoryOpen(false), []);
 
   const detail = useStockTakeDetail(id ?? null);
   const update = useUpdateStockTakeLines();
@@ -325,6 +332,12 @@ export const StockTakeDetail = () => {
               <ArrowLeft {...ICON} /> <span>Stock Takes</span>
             </Link>
             <div className={styles.actions}>
+              {/* History drawer toggle. Same header seat on every detail page,
+                  and unconditional: a cancelled or posted take is exactly when
+                  someone needs to see who changed what. */}
+              <Button variant="ghost" size="md" onClick={() => setHistoryOpen(true)}>
+                <History {...ICON} /> History
+              </Button>
               {isDraft && (
                 <>
                   <Button variant="ghost" size="md" onClick={onDelete} disabled={del.isPending}>
@@ -583,6 +596,20 @@ export const StockTakeDetail = () => {
           )}
         </div>
       </section>
+
+      {/* History drawer — portals to <body>, so its position here is only
+          about lifecycle, not layout. */}
+      {historyOpen && (
+        <EntityHistoryPanel
+          entityType="STOCK_TAKE"
+          entityId={String(t.id)}
+          recordLabel={t.take_no}
+          entityName="Stock take"
+          labels={STOCK_TAKE_AUDIT_LABELS}
+          statusDocType="stockTake"
+          onClose={closeHistory}
+        />
+      )}
     </div>
   );
 };

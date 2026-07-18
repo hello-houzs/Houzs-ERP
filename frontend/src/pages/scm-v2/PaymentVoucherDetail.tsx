@@ -18,9 +18,9 @@
 // the scm.payment_voucher.* flat permissions.
 // ----------------------------------------------------------------------------
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, ChevronDown, Pencil, Plus, Save, Send, Ban, Trash2, X } from 'lucide-react';
+import { ArrowLeft, ChevronDown, History, Pencil, Plus, Save, Send, Ban, Trash2, X } from 'lucide-react';
 import { Button } from '@2990s/design-system';
 import { fmtDateOrDash } from '@2990s/shared';
 import {
@@ -43,6 +43,8 @@ import { useConfirm } from '../../vendor/scm/components/ConfirmDialog';
 import { useNotify } from '../../vendor/scm/components/NotifyDialog';
 import styles from './SalesOrderDetail.module.css';
 import { PageHeader } from '../../components/Layout';
+import { EntityHistoryPanel } from './EntityHistoryPanel';
+import { PAYMENT_VOUCHER_AUDIT_LABELS } from './entity-audit-labels';
 
 const ICON    = { size: 16, strokeWidth: 1.75 } as const;
 const SM_ICON = { size: 14, strokeWidth: 1.75 } as const;
@@ -87,6 +89,11 @@ export const PaymentVoucherDetail = () => {
   const askConfirm = useConfirm();
   const notify = useNotify();
   const { can } = useHouzsAuth();
+
+  /* History drawer. Stable close handler so the memoized panel does not
+     re-render on every keystroke in the edit form. */
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const closeHistory = useCallback(() => setHistoryOpen(false), []);
 
   const detailQ = usePaymentVoucherDetail(id || null);
   const pv    = detailQ.data?.paymentVoucher as Record<string, any> | undefined;
@@ -309,6 +316,11 @@ export const PaymentVoucherDetail = () => {
               <ArrowLeft {...ICON} /> <span>Payment Vouchers</span>
             </Link>
             <StatusPill docType="pv" status={pv.status} />
+            {/* History drawer toggle. Same header seat on every detail page, and
+                ungated: whoever may open the voucher may see who changed it. */}
+            <Button variant="ghost" size="md" onClick={() => setHistoryOpen(true)}>
+              <History {...ICON} /> History
+            </Button>
             {!isEditing ? (
               <>
                 {isDraft && canWrite && (
@@ -604,6 +616,20 @@ export const PaymentVoucherDetail = () => {
           </div>
         </section>
       </div>
+
+      {/* History drawer — portals to <body>, so its position here is only
+          about lifecycle, not layout. */}
+      {historyOpen && (
+        <EntityHistoryPanel
+          entityType="PAYMENT_VOUCHER"
+          entityId={String(pv.id)}
+          recordLabel={pv.pv_number}
+          entityName="Payment voucher"
+          labels={PAYMENT_VOUCHER_AUDIT_LABELS}
+          statusDocType="pv"
+          onClose={closeHistory}
+        />
+      )}
     </div>
   );
 };
