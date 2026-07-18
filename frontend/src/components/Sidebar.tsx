@@ -611,6 +611,13 @@ export const NAV_TABS: NavTab[] = [
   },
   {
     section: "system",
+    to: "/assistant",
+    label: "Assistant",
+    icon: Bot,
+    anyPerm: ["*"],
+  },
+  {
+    section: "system",
     to: "/agents",
     label: "Agent Console",
     icon: Bot,
