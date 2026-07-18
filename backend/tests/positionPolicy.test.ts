@@ -36,16 +36,32 @@ const EXPECTED_COHORT: Record<string, "full" | "restricted" | "sales"> = {
   "Calendar Viewer": "full",
 };
 
-// The manual whitelists — the granted keys only; EVERYTHING ELSE must resolve none.
+// The manual whitelists — the FULL set of non-none resolved keys (including the
+// keys inherited from an L1 parent). EVERYTHING ELSE must resolve none. The L1
+// area keys (scm.transportation / scm.warehouse) are granted so the SCM nav
+// umbrella + group resolve visible; the denied warehouse children carry an
+// explicit none that overrides the inherited view.
 const EXPECTED_WHITELIST: Record<string, Record<string, AccessLevel>> = {
-  Driver: { "scm.transportation.drivers": "view" },
-  Helper: { "scm.transportation.drivers": "view" },
-  Storekeeper: {
+  Driver: {
+    "scm.transportation": "view",
+    "scm.transportation.drivers": "view", // inherits the L1 parent
+  },
+  Helper: {
+    "scm.transportation": "view",
     "scm.transportation.drivers": "view",
+  },
+  Storekeeper: {
+    "scm.transportation": "view",
+    "scm.transportation.drivers": "view",
+    "scm.warehouse": "view",
     "scm.warehouse.inventory": "view",
+    // transfers / stock_take / adjustments explicitly none — asserted by the
+    // "all else none" sweep below.
   },
   "Storekeeper Supervisor": {
+    "scm.transportation": "view",
     "scm.transportation.drivers": "view",
+    "scm.warehouse": "view",
     "scm.warehouse.inventory": "view",
     "scm.procurement.grn": "edit",
   },

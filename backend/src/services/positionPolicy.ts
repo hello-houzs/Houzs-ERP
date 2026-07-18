@@ -126,45 +126,68 @@ const FLAGS_SALES: PositionAccessFlags = {
 // real PAGES[] keys appear here; the resolver's isValidPageKey filter drops any
 // key that later leaves the registry.
 //
+// WHY THE L1 AREA KEYS APPEAR HERE. The nav is filtered by navFilter.ts: a node
+// shows only if it passes its OWN visibility gate AND (for a group) has a
+// surviving child. The top-level "Supply Chain" umbrella's gate is its `anyAccess`
+// = the L1 area keys ONLY (`scm.warehouse`, `scm.transportation`, …), and for an
+// scm_l2_configured user the `scm.access` permission is STRIPPED from the nav perm
+// check — so an L2-only grant (e.g. `scm.warehouse.inventory` alone) leaves the
+// umbrella's gate failing and the WHOLE SCM tree is dropped before the leaf is
+// reached. So a restricted whitelist must carry the L1 parent of each area it
+// grants, at `view`, and then explicitly DENY the sibling children it must not
+// open (an explicit `none` overrides the parent's inherited `view`). L1 area keys
+// gate NO backend route (routes gate on the L2 keys — verified in scm/index.ts),
+// so granting the L1 opens nav visibility WITHOUT opening any write.
+//
 // Delivery Planning is gated — nav, route, AND every /delivery-planning, /trips,
-// /dp-orders, /fleet, /lorry-* backend mount — on the single area key
-// `scm.transportation.drivers` (verified against scm/index.ts + Sidebar.tsx +
-// App.tsx). Granting it at `view` shows the board and satisfies the GET reads;
-// the driver's own POD / delivery-step SUBMIT is a WRITE on that same key and
-// stays a follow-up (owner: page-level view now, the "only MY assigned jobs"
-// row-scope + step submit is a separate build). Announcements is NOT a
-// page-access key — it is gated on the `announcements.read` PERMISSION
-// (routes/announcements.ts) — so it is unaffected by this map and stays open
-// exactly as today; it is intentionally absent here.
+// /dp-orders, /fleet, /lorry-* backend mount — on `scm.transportation.drivers`
+// (verified against scm/index.ts + Sidebar.tsx + App.tsx). Granting the L1
+// `scm.transportation` = view inherits `scm.transportation.drivers` = view, which
+// shows the board and satisfies the GET reads (it also shows Fleet / Lorry /
+// Regions — they ride the SAME key, unchanged from today's Driver/Helper). The
+// driver's own POD / delivery-step SUBMIT is a WRITE on that same key and stays a
+// follow-up (owner: page-level view now; the "only MY assigned jobs" row-scope +
+// step submit is a separate build). Announcements is NOT a page-access key — it
+// is gated on the `announcements.read` PERMISSION (routes/announcements.ts) — so
+// it is unaffected by this map and stays open exactly as today; absent here.
 
 const DRIVER_HELPER_ROWS: readonly PolicyRow[] = [
-  // Delivery Planning board — view only (see note above).
-  { page_key: "scm.transportation.drivers", level: "view" },
+  // Delivery Planning board — view only. L1 grant; drivers inherits view.
+  { page_key: "scm.transportation", level: "view" },
 ];
 
 const STOREKEEPER_ROWS: readonly PolicyRow[] = [
   // Everything Driver/Helper get.
-  { page_key: "scm.transportation.drivers", level: "view" },
+  { page_key: "scm.transportation", level: "view" },
   // Warehouse RACKING + rack/bin inventory VIEW. Racking/bin live under the
   // Inventory + Warehouses pages, both gated on scm.warehouse.inventory (there
-  // is no finer racking key). view = see the stock listing / racks; it does NOT
-  // grant any warehouse write. Stock Transfer / Stock Take / Stock Adjustment
-  // are intentionally absent -> "none": Transfers (scm.warehouse.transfers),
-  // Stock Take (scm.warehouse.stock_take) and Adjustment
-  // (scm.warehouse.adjustments — now a real, separately-guarded write, split off
-  // inventory-view) all resolve to none, so a Storekeeper VIEWS inventory but
-  // every stock-mutating write 403s.
+  // is no finer racking key). The L1 `scm.warehouse` = view opens the Warehouse
+  // nav group; inventory = view shows the stock listing / racks. Stock Transfer /
+  // Stock Take / Stock Adjustment are explicitly DENIED so they do not inherit
+  // the parent's view: a Storekeeper VIEWS inventory but every stock-mutating
+  // write 403s (adjustments is now its own separately-guarded write).
+  { page_key: "scm.warehouse", level: "view" },
   { page_key: "scm.warehouse.inventory", level: "view" },
+  { page_key: "scm.warehouse.transfers", level: "none" },
+  { page_key: "scm.warehouse.stock_take", level: "none" },
+  { page_key: "scm.warehouse.adjustments", level: "none" },
 ];
 
 const STOREKEEPER_SUPERVISOR_ROWS: readonly PolicyRow[] = [
   // Everything Storekeeper gets.
-  { page_key: "scm.transportation.drivers", level: "view" },
+  { page_key: "scm.transportation", level: "view" },
+  { page_key: "scm.warehouse", level: "view" },
   { page_key: "scm.warehouse.inventory", level: "view" },
+  { page_key: "scm.warehouse.transfers", level: "none" },
+  { page_key: "scm.warehouse.stock_take", level: "none" },
+  { page_key: "scm.warehouse.adjustments", level: "none" },
   // Goods Receipt — edit, so the supervisor can RECEIVE goods (raise/confirm a
-  // GRN is a write). Purchase Invoice (scm.procurement.pi) and Purchase Order
-  // (scm.procurement.po) are intentionally absent -> none: the supervisor
-  // receives against a PO but does not raise POs or PIs.
+  // GRN is a write). This grant alone keeps the Procurement nav GROUP alive (the
+  // group survives on the grn child), so the L1 `scm.procurement` is deliberately
+  // NOT granted — granting it would cascade `view` onto Purchase Order / Purchase
+  // Invoice / Products / Suppliers / MRP / Purchase Returns, which the manual
+  // denies. So `scm.procurement` stays none (po / pi / … inherit none), and only
+  // Goods Receipt opens.
   { page_key: "scm.procurement.grn", level: "edit" },
 ];
 

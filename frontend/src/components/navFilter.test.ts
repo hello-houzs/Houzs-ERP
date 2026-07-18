@@ -151,12 +151,17 @@ describe("nav — Adjustments gates on scm.warehouse.adjustments after the split
     expect(phoneAllows(ctx, "/scm/stock-adjustments")).toBe(true);
   });
 
-  it("HIDES Adjustments from a holder of only scm.warehouse.inventory (Storekeeper), who still sees Inventory", () => {
-    // The Storekeeper whitelist: scm.warehouse.inventory = view, no adjustments.
-    // Post-split, viewing inventory must NOT surface the Adjustments page — a
-    // Storekeeper VIEWS racking/bin but cannot adjust (the server 403s the POST).
+  it("HIDES Adjustments from the Storekeeper whitelist (warehouse+inventory view, no adjustments), who still sees Inventory", () => {
+    // The Storekeeper resolved map: scm.warehouse = view (L1, opens the umbrella +
+    // group), scm.warehouse.inventory = view, and adjustments/transfers/stock_take
+    // = none. Post-split, viewing inventory must NOT surface the Adjustments page —
+    // a Storekeeper VIEWS racking/bin but cannot adjust (the server 403s the POST).
     const ctx = ctxFor(opsMember(), {
+      "scm.warehouse": "view",
       "scm.warehouse.inventory": "view",
+      "scm.warehouse.adjustments": "none",
+      "scm.warehouse.transfers": "none",
+      "scm.warehouse.stock_take": "none",
     });
     const paths = desktopPaths(ctx);
     expect(paths).not.toContain("/scm/stock-adjustments");
