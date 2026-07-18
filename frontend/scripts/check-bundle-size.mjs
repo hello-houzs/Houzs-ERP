@@ -98,7 +98,10 @@ const BUDGETS = {
   // reported number went UP — the metric moved, not the bundle.
   //
   // Read that as: the real ceiling just dropped from 269 to 165, and from here
-  // the number on the tin is the number on the wire.
+  // the number on the tin is the number on the wire. The Fulfillment Costing
+  // route (this branch) adds only a nav entry + route + finance guard to the
+  // always-loaded shell (~0.1 KB gzip; the page itself is a lazy chunk), which
+  // fits inside the ~10 KB of headroom under this 165 ceiling — no bump needed.
   INITIAL_JS_GZIP: 165 * KB,
   // Everything the app can lazy-load (users only fetch the routes they
   // visit). Soft guard against unbounded total growth, not a first-paint

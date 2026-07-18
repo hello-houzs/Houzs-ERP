@@ -46,6 +46,10 @@ import { canViewAllSales, canViewScmFinance } from '../lib/houzs-perms';
 import { salesJdDenial } from '../../services/salesJdAccess';
 import { resolveSalesScopeIds } from '../lib/salesScope';
 import { SO_FINANCE_KEYS, SO_ITEM_FINANCE_KEYS } from '../lib/finance-keys';
+import {
+  aggregateDoLines, aggregateSiLines, computeLineComparison, filterRows, summarize, groupRows,
+  type DoLineCost, type SiLineCost, type LineComparison, type CostingDimension,
+} from '../lib/fulfillment-costing';
 
 /* Strip cost / margin / deposit from every FLAT report row for a non-finance
    caller. The listing denormalises the SO header onto each line, so one row
@@ -573,4 +577,194 @@ reports.get('/delivery-return-detail-listing', async (c) => {
     });
 
   return c.json({ rows });
+});
+
+// ----------------------------------------------------------------------------
+// GET /reports/fulfillment-costing — Finance > Fulfillment Costing.
+//
+// A read-only THREE-WAY cost comparison per Sales Order line:
+//   ① Order-time cost  — mfg_sales_order_items.unit_cost_centi / line_cost_centi
+//   ② DO ship-time FIFO — delivery_order_items.ship_cost_centi (frozen at ship,
+//        mig 0143); COALESCE to unit_cost_centi + a legacy flag when the DO was
+//        shipped before the snapshot column existed.
+//   ③ SI landed cost   — sales_invoice_items.unit_cost_centi / line_cost_centi
+//        (the store-card cost after the supplier PI lands and recost cascades).
+//
+// Join chain, per SO line: mfg_sales_order_items.id
+//   ← delivery_order_items.so_item_id   (② delivering DO lines)
+//   ← sales_invoice_items.so_item_id    (③ billing SI lines — so_item_id is the
+//        stable per-SO-line anchor the report groups on; SI also carries
+//        do_item_id, but grouping by so_item_id needs neither the DO indirection
+//        nor a second hop, and matches how partial delivery/invoicing splits a
+//        line across several DOs/SIs).
+//
+// GATE — the WHOLE endpoint is finance data (this is why #786 pulled cost off the
+// SO/DO/SI/DR document views and moved it HERE). It is NOT a strip-some-columns
+// surface: canViewScmFinance fails closed (director / finance only), so a Sales
+// user is refused outright rather than handed a blanked row.
+// ----------------------------------------------------------------------------
+reports.get('/fulfillment-costing', async (c) => {
+  if (!canViewScmFinance(c)) return c.json({ error: 'Forbidden: finance only' }, 403);
+  const sb = c.get('supabase');
+
+  const dateFrom = c.req.query('dateFrom');
+  const dateTo   = c.req.query('dateTo');
+  const itemCode = c.req.query('itemCode');
+  const category = c.req.query('category'); // item_group
+  const state    = c.req.query('state');
+  const groupByRaw = c.req.query('groupBy');
+  const DIMENSIONS: readonly CostingDimension[] = ['item', 'category', 'menu', 'state'];
+  const groupBy: CostingDimension =
+    (DIMENSIONS as readonly string[]).includes(groupByRaw ?? '') ? (groupByRaw as CostingDimension) : 'category';
+  const minVarRaw = c.req.query('minVariancePct');
+  const minVariancePct =
+    minVarRaw != null && minVarRaw.trim() !== '' && !Number.isNaN(Number(minVarRaw)) ? Number(minVarRaw) : null;
+  const pendingOnly = c.req.query('pending') === 'true' || c.req.query('pendingOnly') === 'true';
+
+  // ── 1) SO lines (base) + header embed for state / so_date. Company-scoped;
+  //    no salesperson row-scope needed — canViewScmFinance is already director/
+  //    finance, who see all sales (canViewAllSales superset). Cancelled lines
+  //    are dropped: a cancelled line was never fulfilled and has no true ②/③.
+  const { data: soData, error: soErr } = await paginateAll((pFrom, pTo) => {
+    let q = sb.from('mfg_sales_order_items').select(`
+      id, doc_no, item_code, item_group, description, qty, unit_cost_centi, line_cost_centi, cancelled,
+      mfg_sales_orders!inner ( so_date, customer_state )
+    `);
+    if (itemCode) q = q.ilike('item_code', `%${itemCode}%`);
+    if (category) q = q.eq('item_group', category);
+    if (state)    q = q.eq('mfg_sales_orders.customer_state', state);
+    q = scopeToCompany(q, c);
+    return q.range(pFrom, pTo);
+  });
+  if (soErr) return c.json({ error: 'load_failed', reason: soErr.message }, 500);
+
+  type SoRow = {
+    id: string; doc_no: string; item_code: string; item_group: string | null;
+    description: string | null; qty: number | null;
+    unit_cost_centi: number | null; line_cost_centi: number | null; cancelled: boolean | null;
+    mfg_sales_orders: Record<string, unknown> | Record<string, unknown>[] | null;
+  };
+  const soRows = ((soData ?? []) as unknown as SoRow[])
+    .map((r) => {
+      const rawH = r.mfg_sales_orders;
+      const h: Record<string, unknown> = Array.isArray(rawH) ? ((rawH[0] as Record<string, unknown>) ?? {}) : ((rawH as Record<string, unknown>) ?? {});
+      return { ...r, so_date: (h.so_date as string | null) ?? null, customer_state: (h.customer_state as string | null) ?? null };
+    })
+    .filter((r) => {
+      if (r.cancelled) return false;
+      if (dateFrom && (!r.so_date || r.so_date < dateFrom)) return false;
+      if (dateTo   && (!r.so_date || r.so_date > dateTo))   return false;
+      return true;
+    });
+
+  const soItemIds = soRows.map((r) => r.id);
+
+  // ── 2) ② DO lines linked to these SO lines (so_item_id), grouped per SO line.
+  const doBySoItem = new Map<string, DoLineCost[]>();
+  if (soItemIds.length > 0) {
+    const { data: doData, error: doErr } = await chunkIn(soItemIds, (batch, pFrom, pTo) => scopeToCompany(sb
+      .from('delivery_order_items')
+      .select('id, so_item_id, qty, unit_cost_centi, line_cost_centi, ship_cost_centi')
+      .in('so_item_id', batch), c)
+      .range(pFrom, pTo));
+    if (doErr) return c.json({ error: 'load_failed', reason: doErr.message }, 500);
+    for (const d of (doData ?? []) as Array<DoLineCost & { so_item_id: string | null }>) {
+      if (!d.so_item_id) continue;
+      const list = doBySoItem.get(d.so_item_id) ?? [];
+      list.push({ qty: d.qty, unit_cost_centi: d.unit_cost_centi, line_cost_centi: d.line_cost_centi, ship_cost_centi: d.ship_cost_centi });
+      doBySoItem.set(d.so_item_id, list);
+    }
+  }
+
+  // ── 3) ③ SI lines linked to these SO lines (so_item_id), grouped per SO line.
+  const siBySoItem = new Map<string, SiLineCost[]>();
+  if (soItemIds.length > 0) {
+    const { data: siData, error: siErr } = await chunkIn(soItemIds, (batch, pFrom, pTo) => scopeToCompany(sb
+      .from('sales_invoice_items')
+      .select('id, so_item_id, qty, unit_cost_centi, line_cost_centi')
+      .in('so_item_id', batch), c)
+      .range(pFrom, pTo));
+    if (siErr) return c.json({ error: 'load_failed', reason: siErr.message }, 500);
+    for (const s of (siData ?? []) as Array<SiLineCost & { so_item_id: string | null }>) {
+      if (!s.so_item_id) continue;
+      const list = siBySoItem.get(s.so_item_id) ?? [];
+      list.push({ qty: s.qty, unit_cost_centi: s.unit_cost_centi, line_cost_centi: s.line_cost_centi });
+      siBySoItem.set(s.so_item_id, list);
+    }
+  }
+
+  // ── 4) "Menu" grouping label per item_code.
+  //    OWNER-CONFIRMATION PENDING: the owner has not defined "Menu"; this
+  //    DEFAULTS to the PRODUCT MODEL (product_models.name), folding a SOFA line
+  //    onto its combo family (mfg_products.base_model). Flagged in the response
+  //    (meta.menu_grouping) and to the owner in the PR. Do not treat as final.
+  const itemCodes = Array.from(new Set(soRows.map((r) => r.item_code))).filter(Boolean);
+  const menuByItemCode = new Map<string, string | null>();
+  if (itemCodes.length > 0) {
+    const { data: prodData } = await chunkIn(itemCodes, (batch, pFrom, pTo) => scopeToCompany(sb
+      .from('mfg_products')
+      .select('code, base_model, model_id, category')
+      .in('code', batch), c)
+      .range(pFrom, pTo));
+    const prods = (prodData ?? []) as Array<{ code: string; base_model: string | null; model_id: string | null; category: string | null }>;
+    const modelIds = Array.from(new Set(prods.map((p) => p.model_id).filter((x): x is string => Boolean(x))));
+    const modelNameById = new Map<string, string>();
+    if (modelIds.length > 0) {
+      const { data: modelData } = await chunkIn(modelIds, (batch, pFrom, pTo) => scopeToCompany(sb
+        .from('product_models')
+        .select('id, name, model_code')
+        .in('id', batch), c)
+        .range(pFrom, pTo));
+      for (const m of (modelData ?? []) as Array<{ id: string; name: string | null; model_code: string | null }>) {
+        const label = (m.name && m.name.trim()) || (m.model_code && m.model_code.trim()) || null;
+        if (m.id && label) modelNameById.set(m.id, label);
+      }
+    }
+    for (const p of prods) {
+      // SOFA folds onto its combo family (base_model); everything else uses its
+      // product model name, falling back to base_model, then null (Unspecified).
+      const menu = (p.category ?? '').toUpperCase() === 'SOFA'
+        ? (p.base_model ?? (p.model_id ? modelNameById.get(p.model_id) ?? null : null))
+        : (p.model_id ? modelNameById.get(p.model_id) ?? p.base_model ?? null : p.base_model ?? null);
+      menuByItemCode.set(p.code, menu);
+    }
+  }
+
+  // ── 5) Build the per-line three-way comparison, then filter / summarise / group.
+  const allRows: LineComparison[] = soRows.map((r) =>
+    computeLineComparison({
+      dims: {
+        so_item_id: r.id,
+        doc_no: r.doc_no,
+        item_code: r.item_code,
+        item_name: r.description ?? null,
+        category: r.item_group ?? null,
+        customer_state: r.customer_state,
+        menu: menuByItemCode.get(r.item_code) ?? null,
+        qty: Number(r.qty ?? 0),
+      },
+      order: { unitCenti: Number(r.unit_cost_centi ?? 0), lineCenti: Number(r.line_cost_centi ?? 0) },
+      doAgg: aggregateDoLines(doBySoItem.get(r.id) ?? []),
+      siAgg: aggregateSiLines(siBySoItem.get(r.id) ?? []),
+    }),
+  );
+
+  const rows = filterRows(allRows, { minVariancePct, pendingOnly });
+  const summary = summarize(rows);
+  const groups = groupRows(rows, groupBy);
+
+  return c.json({
+    rows,
+    summary,
+    groups,
+    group_by: groupBy,
+    // Honesty payload — see the docblock above and mig 0143. legacy_count rows
+    // cannot show a TRUE ② (ship_cost_centi NULL, fell back to ③); menu grouping
+    // is a default pending owner confirmation.
+    meta: {
+      legacy_count: summary.legacy_count,
+      pending_count: summary.pending_count,
+      menu_grouping: 'product_model_default_pending_owner_confirmation',
+    },
+  });
 });
