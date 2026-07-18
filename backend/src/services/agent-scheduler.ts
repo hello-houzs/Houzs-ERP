@@ -42,6 +42,7 @@ import {
   MYT_OFFSET_MS,
 } from "./agent-console";
 import { canSelfTuneConfig } from "./agents/governance";
+import { familyDataQuality } from "./agents/data-quality";
 
 // Structural bounds — an agent can never talk itself past these.
 const HARD_MAX_RUNS_PER_DAY = 6;
@@ -299,14 +300,17 @@ export async function executeAgentTask(
          procurement path). canSelfTuneConfig refuses at Stage 1 / on RED, so the
          flag is no longer an ungoverned blanket — behaviour-preserving for the
          normal green case. */
-      const gate = canSelfTuneConfig({ stage: 2, dataQuality: "GREEN" });
+      /* The REAL data-quality signal now (was hard-coded GREEN, which made the
+         §10.2 gate inert). Computed from this family's own run history. */
+      const dq = await familyDataQuality(db, reg.task, reg.cadence.minGapHours);
+      const gate = canSelfTuneConfig({ stage: 2, dataQuality: dq.status });
       if (gate.ok) {
         const params = await autoApplyConfigProposals(db, reg.family, "AGENT_AUTO").catch(
           () => 0,
         );
         if (params > 0) summary += ` · self-tuned ${params} param(s)`;
       } else {
-        summary += ` · config self-tune held (${gate.reason})`;
+        summary += ` · config self-tune held (${gate.reason}: ${dq.reason})`;
       }
     }
     summary = `${summary} (${d.reason})`;

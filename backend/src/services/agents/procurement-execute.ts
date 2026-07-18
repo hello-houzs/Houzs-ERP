@@ -23,6 +23,7 @@ import { createDraftPosFromPicks } from '../../scm/routes/mfg-purchase-orders';
 import { readAgentSetting } from '../agent-console';
 import { PROCUREMENT_AGENT_SETTING_KEY } from './procurement-learning';
 import { canSelfApprove } from './governance';
+import { familyDataQuality } from './data-quality';
 
 /**
  * The Stage-2 self-approval ceiling for a reorder, in UNITS ordered, read from
@@ -248,6 +249,14 @@ export async function autoApproveReorderProposals(
     .all<{ id: string; kind?: string; payload?: unknown }>();
 
   const unitLimit = await maxAutoApproveUnits(db);
+  /* The REAL data-quality signal (was asserted GREEN). If procurement's own last
+     run errored or is stale, its reorder proposals rest on numbers we cannot
+     stand behind — §10.2 says stop, and now it actually can. */
+  const dq = await familyDataQuality(db, 'procurement-run', 6);
+  if (dq.status !== 'GREEN') {
+    out.errors.push(`auto-approve held — data-quality ${dq.status}: ${dq.reason}`);
+    return out;
+  }
   const nowIso = new Date().toISOString();
   for (const row of res.results ?? []) {
     /* THE STAGE-2 POLICY GATE (docs/agents/operating-spec.md §1.2, §6.8).
@@ -269,7 +278,7 @@ export async function autoApproveReorderProposals(
       agent: 'HZS-REP-004',
       decisionClass: 'EXTERNAL_PO',
       stage: 2,
-      dataQuality: 'GREEN',
+      dataQuality: dq.status,
       valueProxy: reorderUnits(row.payload),
       limit: unitLimit,
     });
