@@ -88,17 +88,43 @@ const nextPvNo = async (sb: any, c: any): Promise<string> => {
   return mintMonthlyDocNo(sb, 'payment_vouchers', 'pv_number', `${p}PV-${yymm}`);
 };
 
+/* ── Money in, from the wire ─────────────────────────────────────────────────
+   Returns the integer sen, or null when the caller sent something that is not a
+   payable amount.
+
+   The previous shape was `Math.max(0, Math.round(Number(x ?? 0)) || 0)`, which
+   is a CLAMP, not a validation: `-500000` and `"abc"` both became a silent `0`.
+   The voucher then saved with a header total short by exactly the rejected
+   line, returned 200, and told the operator it was fine — the same
+   swallow-the-bad-input class HOOKKA hit on its payments route
+   (BUG-2026-05-20-002, negative amount accepted). A supplier payment that is
+   quietly RM 0 is worse than one that is refused, because nobody goes looking
+   for it.
+
+   Sen is an INTEGER by contract, so a fractional input is a unit mistake (RM
+   posted into a sen field) and is refused rather than rounded into a number
+   nobody meant. Rejecting at the boundary matches the house rule the credit /
+   debit-note routes already follow. */
+export function parseAmountCenti(raw: unknown): number | null {
+  const n = Number(raw ?? 0);
+  if (!Number.isFinite(n)) return null; // NaN / Infinity — never a payment
+  if (!Number.isInteger(n)) return null; // sen is integer; a decimal means RM
+  if (n < 0) return null;                // a refund is a different document
+  return n;
+}
+
 /* ── Normalise + validate the incoming lines, recompute the header total ──── */
-function buildLines(
+export function buildLines(
   raw: unknown,
 ): { rows: Array<{ line_no: number; description: string | null; debit_account_code: string; amount_centi: number }>; total: number } | { error: string } {
   if (!Array.isArray(raw) || raw.length === 0) return { error: 'lines_required' };
   const rows: Array<{ line_no: number; description: string | null; debit_account_code: string; amount_centi: number }> = [];
   let total = 0;
-  raw.forEach((l, i) => {
-    const line = l as Record<string, unknown>;
+  for (let i = 0; i < raw.length; i += 1) {
+    const line = raw[i] as Record<string, unknown>;
     const debit = (line.debitAccountCode as string | undefined)?.trim();
-    const amount = Math.max(0, Math.round(Number(line.amountCenti ?? 0)) || 0);
+    const amount = parseAmountCenti(line.amountCenti);
+    if (amount === null) return { error: 'line_amount_invalid' };
     rows.push({
       line_no: i + 1,
       description: (line.description as string | undefined)?.trim() || null,
@@ -106,13 +132,13 @@ function buildLines(
       amount_centi: amount,
     });
     total += amount;
-  });
+  }
   if (rows.some((r) => !r.debit_account_code)) return { error: 'debit_account_required' };
   return { rows, total };
 }
 
 /* ── Normalise + validate the incoming PV→PI allocations (migration 0202) ──── */
-function buildAllocations(
+export function buildAllocations(
   raw: unknown,
 ): { rows: Array<{ pi_id: string; amount_centi: number }>; total: number } | { error: string } {
   if (raw === undefined || raw === null) return { rows: [], total: 0 };
@@ -122,9 +148,13 @@ function buildAllocations(
   for (const a of raw) {
     const row = a as Record<string, unknown>;
     const piId = (row.piId as string | undefined)?.trim();
-    const amount = Math.max(0, Math.round(Number(row.amountCenti ?? 0)) || 0);
+    /* Same reason as buildLines: a negative allocation used to clamp to 0 and
+       then get skipped by the `<= 0` continue below, so "apply -RM 500 to this
+       PI" silently applied nothing while the voucher still posted. */
+    const amount = parseAmountCenti(row.amountCenti);
     if (!piId) return { error: 'allocation_pi_required' };
-    if (amount <= 0) continue; // skip zero rows — nothing to settle
+    if (amount === null) return { error: 'allocation_amount_invalid' };
+    if (amount === 0) continue; // an explicit zero settles nothing — drop the row
     rows.push({ pi_id: piId, amount_centi: amount });
     total += amount;
   }
@@ -154,10 +184,26 @@ async function settlePiPaidCenti(sb: any, piId: string, delta: number): Promise<
       .eq('id', piId)
       .eq('paid_centi', c0.paid_centi) // only if nobody else moved it since the read
       .select('id');
-    if (error) return; // best-effort — a settle hiccup never un-posts the PV
+    /* Still best-effort — a settle hiccup must never un-post an already-posted
+       PV. What changed is that it is no longer SILENT. The caller writes
+       pv_allocations.applied_centi immediately after this returns, so a failure
+       here leaves the ledger asserting money was applied to a PI whose
+       paid_centi never moved, and a later cancel reverses an amount that was
+       never there. Nothing downstream can detect that, so the only way anyone
+       learns of it is this line. Same treatment recomputePaid() in
+       sales-invoices.ts already gives its own read failures. */
+    if (error) {
+      /* eslint-disable-next-line no-console */
+      console.error('[pv-settle-pi] paid_centi update failed — PI left unsettled:', piId, 'delta', delta, error.message);
+      return;
+    }
     if (data && data.length > 0) return;
     // 0 rows → a concurrent paid_centi change; loop re-reads + retries.
   }
+  /* Six optimistic attempts all lost the race. Falling out of the loop used to
+     be indistinguishable from success. */
+  /* eslint-disable-next-line no-console */
+  console.error('[pv-settle-pi] gave up after 6 contended attempts — PI left unsettled:', piId, 'delta', delta);
 }
 
 /* ────────────────────────────────────────────────────────────────────────

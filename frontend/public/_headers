@@ -1,11 +1,26 @@
 # Cloudflare Pages cache rules.
 #
+# KEEP THIS FILE NARROW. Pages MERGES every matching rule rather than letting
+# the most specific one win, so a broad `/*` block leaks its headers onto the
+# hashed bundles too — see BUG-HISTORY "Cloudflare Pages `_headers` over-broad".
+# Add EXACT paths, not wildcards, unless you have verified the merge on a
+# preview deploy first.
+#
 # index.html is the entry that points at the hashed bundles — always
 # revalidate so a new deploy reaches the user on the next refresh.
 # /assets/* are content-hashed by Vite, so a year-long immutable cache
 # is correct: the filename itself changes whenever the contents change.
 
 /index.html
+  Cache-Control: public, max-age=0, must-revalidate
+
+# The service worker decides which shell every installed client runs, and the
+# only lever we have to move a client stuck on a stale shell is bumping the
+# VERSION constant inside this file — which is why it already carries thirteen
+# one-shot purge bumps. That lever only works if the browser actually re-reads
+# the file, so it must never be served from cache. Exact path, no wildcard, so
+# it cannot merge onto anything else.
+/sw.js
   Cache-Control: public, max-age=0, must-revalidate
 
 /assets/*
