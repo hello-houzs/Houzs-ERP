@@ -53,7 +53,10 @@ const SUPPLIER_COLS =
   'payment_terms, status, rating, notes, supplier_type, category, tin_number, ' +
   'business_reg_no, postcode, area, mobile, fax, website, attention, business_nature, ' +
   'currency, statement_type, aging_basis, credit_limit_sen, country, ' +
-  'registration_no, nature_of_business, exemption_no, phone2, created_at, updated_at';
+  'registration_no, nature_of_business, exemption_no, phone2, ' +
+  /* Mig 0131 — SO-style structured pickup address (the DP supplier-pickup
+     auto-fill prefers these over the legacy single `address` line). */
+  'address1, address2, address3, address4, city, created_at, updated_at';
 
 /* PR — Commander 2026-05-27 ("当 Assign SKU 之后，你就会知道它是什么 Category 了呀"):
    List endpoint queries the `suppliers_with_derived_category` view (migration
@@ -369,6 +372,12 @@ suppliers.post('/', async (c) => {
     business_reg_no: (body.businessRegNo as string) ?? null,
     postcode: (body.postcode as string) ?? null,
     area: (body.area as string) ?? null,
+    /* Mig 0131 — structured address, same shape as the SO header. */
+    address1: (body.address1 as string) ?? null,
+    address2: (body.address2 as string) ?? null,
+    address3: (body.address3 as string) ?? null,
+    address4: (body.address4 as string) ?? null,
+    city: (body.city as string) ?? null,
     mobile: normPhone(body.mobile),
     fax: (body.fax as string) ?? null,
     website: (body.website as string) ?? null,
@@ -419,6 +428,9 @@ suppliers.patch('/:id', async (c) => {
     /* Mig 0028 — AutoCount creditor-export parity. */
     ['registrationNo', 'registration_no'], ['natureOfBusiness', 'nature_of_business'],
     ['exemptionNo', 'exemption_no'], ['phone2', 'phone2'],
+    /* Mig 0131 — structured pickup address. */
+    ['address1', 'address1'], ['address2', 'address2'], ['address3', 'address3'],
+    ['address4', 'address4'], ['city', 'city'],
   ];
   /* Task #91 — normalize phone-like columns to E.164 on PATCH too.
      Mig 0028 — phone2 joins the same normalization set. */
