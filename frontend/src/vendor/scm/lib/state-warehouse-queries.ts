@@ -5,6 +5,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
+import { serviceNotify } from './dialog-service';
 
 export type StateWarehouseMapping = {
   id:          string;
@@ -52,8 +53,17 @@ export function useUpsertStateWarehouseMapping() {
       });
       return { previous };
     },
-    onError: (_err, _vars, ctx) => {
+    onError: (err, _vars, ctx) => {
       if (ctx?.previous) qc.setQueryData(['state-warehouse-mappings'], ctx.previous);
+      /* Rolling back a rejected save without saying so reads as "it saved, then
+         flickered back" — the operator believes the state is mapped to a
+         warehouse it is not. This mapping routes deliveries, so a silently
+         reverted edit misroutes real goods. */
+      serviceNotify({
+        title: 'Warehouse mapping not saved',
+        body: err instanceof Error ? err.message : String(err),
+        tone: 'error',
+      });
     },
     onSettled: () => { qc.invalidateQueries({ queryKey: ['state-warehouse-mappings'] }); },
   });

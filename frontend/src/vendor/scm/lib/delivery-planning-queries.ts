@@ -14,6 +14,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authedFetch } from './authed-fetch';
 import { invalidateSoLists } from './sales-order-queries';
+import { serviceNotify } from './dialog-service';
 
 export const DELIVERY_STATES = [
   'PENDING_DELIVERY', 'PENDING_SCHEDULE', 'OVERDUE', 'DELIVERED',
@@ -399,9 +400,21 @@ export function useScheduleDelivery() {
       }
       return { snapshots };
     },
-    onError: (_err, _vars, ctx) => {
+    onError: (err, _vars, ctx) => {
       /* Roll every board back to its pre-edit snapshot. */
       for (const [key, prev] of ctx?.snapshots ?? []) qc.setQueryData(key, prev);
+      /* The rollback is silent on its own, and this board is a scheduling
+         surface: the coordinator sees the job land on a date/driver/lorry, then
+         quietly jump back, with no way to tell a rejected save from a stale
+         render. Assigning a delivery that was never persisted strands a real
+         job. Same ambiguity class as the schedule endpoint that answered
+         `ok: true, trip: null` for both "no trip wanted" and "the wiring blew
+         up" — a failure must never be indistinguishable from a success. */
+      serviceNotify({
+        title: 'Schedule not saved',
+        body: err instanceof Error ? err.message : String(err),
+        tone: 'error',
+      });
     },
     onSettled: () => qc.invalidateQueries({ queryKey: ['delivery-planning'] }),
   });

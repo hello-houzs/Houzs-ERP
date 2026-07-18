@@ -32,6 +32,7 @@ import {
   orderSofaModuleRowsWithinBuilds,
   sortSoLinesByGroupRank,
 } from '../shared/so-line-display';
+import { parseLineNumbers, invalidLineNumberBody } from '../shared/line-numbers';
 import { resolveMaintenanceConfigForSupplier } from '../lib/po-pricing';
 import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { escapeForOr } from '../lib/postgrest-search';
@@ -984,6 +985,23 @@ mfgPurchaseOrders.post('/', async (c) => {
      case the same SO line shows up on more than one PO line. soItemId is NOT a
      purchase_order_items column — it's stripped from the insert payload. */
   const pickedQtyBySoItem = new Map<string, number>();
+  /* Reject non-finite line numbers BEFORE the map. The Math.max(0, ...) clamps
+     below stop a negative total but NOT a NaN — Math.max(0, NaN) is NaN — so a
+     junk qty/price used to persist NaN into the INTEGER SEN columns and poison
+     the PO subtotal. Checked up front rather than inside the map because a
+     throw in there escapes to Hono as a generic 500 (the material_kind guard's
+     behaviour) instead of a plain-language 400. */
+  for (const [i, it] of items.entries()) {
+    const parsed = parseLineNumbers({
+      qty: { value: it.qty },
+      unitPriceCenti: { value: it.unitPriceCenti },
+      discountCenti: { value: it.discountCenti },
+    });
+    if (!parsed.ok) {
+      const b = invalidLineNumberBody(parsed.invalid);
+      return c.json({ ...b, reason: `Line ${i + 1}: ${b.reason}` }, 400);
+    }
+  }
   const itemRows = items.map((it) => {
     const kind = it.materialKind as string;
     if (!VALID_KINDS.has(kind)) throw new Error(`invalid material_kind: ${kind}`);
@@ -2387,9 +2405,17 @@ mfgPurchaseOrders.post('/:id/items', async (c) => {
   const childLock = await poHasDownstream(sb, poId);
   if (childLock) return c.json(childLock, 409);
 
-  const qty = Number(it.qty ?? 1);
-  const unitPriceCenti = Number(it.unitPriceCenti ?? 0);
-  const discountCenti = Number(it.discountCenti ?? 0);
+  /* Non-finite guard — the clamp below cannot catch NaN (Math.max(0, NaN) is
+     NaN), so a junk qty/price reached line_total_centi and the PO total. */
+  const parsedLine = parseLineNumbers({
+    qty: { value: it.qty, fallback: 1 },
+    unitPriceCenti: { value: it.unitPriceCenti },
+    discountCenti: { value: it.discountCenti },
+  });
+  if (!parsedLine.ok) return c.json(invalidLineNumberBody(parsedLine.invalid), 400);
+  const { qty, unitPriceCenti, discountCenti } = parsedLine.nums as {
+    qty: number; unitPriceCenti: number; discountCenti: number;
+  };
   // Audit (ported from 2990 21163bde) — clamp like the create path (mfg-purchase-orders POST /):
   // a per-line discount exceeding qty×price must not persist a negative
   // line_total_centi (it sums straight into the PO subtotal/total).
@@ -2489,9 +2515,20 @@ mfgPurchaseOrders.patch('/:id/items/:itemId', async (c) => {
      row shape only exists after this. Project-wide pattern in these routes. */
   const prev = prevRow as unknown as Record<string, unknown>;
 
-  const qty = it.qty !== undefined ? Number(it.qty) : Number(prev.qty);
-  const unit = it.unitPriceCenti !== undefined ? Number(it.unitPriceCenti) : Number(prev.unit_price_centi);
-  const discount = it.discountCenti !== undefined ? Number(it.discountCenti) : Number(prev.discount_centi ?? 0);
+  /* Non-finite guard — see POST /:id/items. `undefined` means "not supplied on
+     this partial PATCH" and keeps the stored value; a supplied NaN is rejected. */
+  /* `!== undefined`, NOT `??` — the two differ on an explicit null, and the
+     contract here is that an absent key keeps the stored value. Preserved
+     exactly; this guard is about NaN, not semantics. */
+  const parsedEdit = parseLineNumbers({
+    qty: { value: it.qty !== undefined ? it.qty : prev.qty },
+    unitPriceCenti: { value: it.unitPriceCenti !== undefined ? it.unitPriceCenti : prev.unit_price_centi },
+    discountCenti: { value: it.discountCenti !== undefined ? it.discountCenti : prev.discount_centi },
+  });
+  if (!parsedEdit.ok) return c.json(invalidLineNumberBody(parsedEdit.invalid), 400);
+  const { qty, unitPriceCenti: unit, discountCenti: discount } = parsedEdit.nums as {
+    qty: number; unitPriceCenti: number; discountCenti: number;
+  };
   // Audit (ported from 2990 21163bde) — clamp like the create path (see POST /:id/items).
   const lineTotal = Math.max(0, (qty * unit) - discount);
 

@@ -265,10 +265,25 @@ export const useUpdateMfgSalesOrderStatus = () => {
       }
       return { detailKey, prevDetail, prevLists };
     },
-    onError: (_err, _vars, ctx) => {
-      if (!ctx) return;
-      qc.setQueryData(ctx.detailKey, ctx.prevDetail);
-      for (const [key, data] of ctx.prevLists) qc.setQueryData(key, data);
+    onError: (err, _vars, ctx) => {
+      if (ctx) {
+        qc.setQueryData(ctx.detailKey, ctx.prevDetail);
+        for (const [key, data] of ctx.prevLists) qc.setQueryData(key, data);
+      }
+      /* The rollback alone is INVISIBLE: onMutate has already painted the new
+         status onto the detail and every cached list, so a rejected transition
+         reads to the operator as "it worked, then flickered back" — the
+         status silently reverts and nothing says why. That is the shape HOOKKA
+         shipped and had to fix repeatedly (its DO/invoice notify and production
+         PIC "saved then reverted" incidents): a UI that reports an action as
+         done which the backend refused. Notify OUTSIDE the ctx guard, because a
+         throw inside onMutate leaves ctx undefined and that path was the most
+         silent of all. Sibling useUpdateSoItemStockStatus already does this. */
+      serviceNotify({
+        title: 'Status update failed',
+        body: err instanceof Error ? err.message : String(err),
+        tone: 'error',
+      });
     },
     onSettled: (_data, _err, vars) => {
       invalidateSoLists(qc);
