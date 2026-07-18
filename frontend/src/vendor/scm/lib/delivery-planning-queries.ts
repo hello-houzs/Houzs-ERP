@@ -253,6 +253,28 @@ export function useUpdateDeliveryFields() {
   });
 }
 
+/* Create a DP Order (delivery-planning job). The server auto-fills the party from
+   whichever source ref is given (SO / supplier / project / service case); manual
+   `overrides` win over the auto-fill. POST /dp-orders, then the board refreshes. */
+export type DpOrderCreate = {
+  jobType: 'DELIVERY' | 'PICKUP' | 'SERVICE' | 'SETUP' | 'DISMANTLE' | 'SUPPLIER_PICKUP';
+  soDocNo?: string;
+  supplierId?: string;
+  projectId?: number;
+  assrCaseId?: number;
+  requestedDate?: string;
+  remark?: string;
+  overrides?: Record<string, string | null>;
+};
+export function useCreateDpOrder() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: DpOrderCreate) =>
+      authedFetch<{ dpOrder: unknown }>(`/dp-orders`, { method: 'POST', body: JSON.stringify(body) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['delivery-planning'] }),
+  });
+}
+
 /* Set the concrete schedule date (+ optional manual delivery_state override,
    + optional driver / lorry trip-wiring) on an SO or DO. type = 'so' | 'do';
    id = SO doc_no or DO id.
