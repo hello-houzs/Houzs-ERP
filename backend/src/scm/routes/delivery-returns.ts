@@ -19,6 +19,7 @@ import { supabaseAuth } from '../middleware/auth';
 import type { Env, Variables } from '../env';
 import { scopeToCompany, activeCompanyId, stampCompany, companyDocPrefix } from '../lib/companyScope';
 import { writeMovements, defaultWarehouseId } from '../lib/inventory-movements';
+import { warehouseLabel } from '../lib/warehouse-label';
 import { computeVariantKey, type VariantAttrs } from '../shared';
 import { doLineRemaining, resolveCandidateDoIds, custKeyOf, type DoRemainingLine } from '../lib/do-line-remaining';
 import { todayMyt } from '../lib/my-time';
@@ -257,7 +258,7 @@ async function warehouseCodeMap(
   if (uniq.length === 0) return out;
   const { data } = await sb.from('warehouses').select('id, code, name').in('id', uniq);
   for (const w of (data ?? []) as Array<{ id: string; code: string | null; name: string | null }>) {
-    out.set(w.id, w.code ?? w.name ?? '');
+    out.set(w.id, warehouseLabel(w) ?? '');
   }
   return out;
 }

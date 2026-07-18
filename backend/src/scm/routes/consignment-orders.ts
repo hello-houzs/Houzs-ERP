@@ -26,6 +26,7 @@ import { supabaseAuth } from '../middleware/auth';
 import { escapeForOr } from '../lib/postgrest-search';
 import { resolveSalesScopeIds, salesDocOutOfScope, resolveCallerStaffId } from '../lib/salesScope';
 import { canViewAllSales, canViewScmFinance } from '../lib/houzs-perms';
+import { warehouseLabel } from '../lib/warehouse-label';
 import { todayMyt } from '../lib/my-time';
 import { recordSoAudit, diffFields, type FieldChange } from '../lib/so-audit';
 import { signSoItemPhotoUrl, soItemPhotoBindings } from '../lib/r2';
@@ -229,7 +230,7 @@ const deriveSalesLocationFromState = async (
     .eq('id', whId)
     .maybeSingle();
   const wh = w as { name?: string; code?: string } | null;
-  return wh ? (wh.code ?? wh.name ?? null) : null;
+  return warehouseLabel(wh);
 };
 
 const nextDocNo = async (sb: any, c: any): Promise<string> => {

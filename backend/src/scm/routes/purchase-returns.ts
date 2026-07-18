@@ -19,6 +19,7 @@ import type { Env, Variables } from '../env';
 import { writeMovements, reverseMovements, defaultWarehouseId } from '../lib/inventory-movements';
 import { mintMonthlyDocNo, insertWithDocNoRetry } from '../lib/doc-no';
 import { todayMyt } from '../lib/my-time';
+import { warehouseLabel } from '../lib/warehouse-label';
 import { buildVariantSummary, computeVariantKey, type VariantAttrs } from '../shared';
 import {
   orderSofaModuleRowsWithinBuilds,
@@ -278,7 +279,7 @@ async function warehouseCodeMap(
   if (uniq.length === 0) return out;
   const { data } = await sb.from('warehouses').select('id, code, name').in('id', uniq);
   for (const w of (data ?? []) as Array<{ id: string; code: string | null; name: string | null }>) {
-    out.set(w.id, w.code ?? w.name ?? '');
+    out.set(w.id, warehouseLabel(w) ?? '');
   }
   return out;
 }
