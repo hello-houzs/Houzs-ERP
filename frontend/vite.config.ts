@@ -205,15 +205,27 @@ export default defineConfig(({ mode }) => {
               return "react-vendor";
             if (id.includes("leaflet")) return "leaflet";
             if (id.includes("lucide-react")) return "lucide";
-            // xlsx + jspdf are heavy and only ever reached via dynamic
-            // import() (SCM export / print handlers). Leaving them out of the
-            // eager `vendor` chunk lets Rollup split them into on-demand chunks
-            // loaded only when a user actually exports or prints.
-            if (
-              /[\\/]node_modules[\\/](xlsx|jspdf|jspdf-autotable)[\\/]/.test(id)
-            )
-              return;
-            return "vendor";
+            // Everything else: let Rollup assign the chunk from what actually
+            // reaches the module.
+            //
+            // This used to be `return "vendor"`, which was a correctness bug,
+            // not just a packaging choice. The rule above it excluded xlsx and
+            // jspdf BY PACKAGE NAME so they would stay on-demand — but their
+            // dependencies are separate node_modules directories, so the names
+            // never matched them and they fell through to `vendor`. jspdf's
+            // tree alone (dompurify, html2canvas, canvg, core-js, fflate,
+            // @babel/runtime, ...) is most of that chunk's ~394 KB raw /
+            // 117 KB gzip. And `vendor` IS eager: @remix-run/router lands
+            // there too (react-router-dom's own dependency, matched by neither
+            // name above), so the entry graph pulls the chunk in and every
+            // cold load paid for a PDF stack that only a print click reaches.
+            // Co-locating a lazy-only module with an eager one is what makes
+            // it eager — the exclusion list defeated itself.
+            //
+            // Naming the transitive deps here instead would just re-arm the
+            // same trap on the next dependency bump. Reachability is the thing
+            // we actually mean, and Rollup computes it for free.
+            return;
           },
         },
       },

@@ -56,6 +56,18 @@
 //   shell), but it is not this PR's to answer — and squeezing under a stale
 //   number to avoid saying so would only have buried it further.
 //
+//   2026-07-18 (measure what the browser fetches):
+//     initial JS gzip ~155 KB, measured from dist/index.html
+//   The "118.8 -> 129.7 shell creep" open question above was chasing the wrong
+//   number. This gate had never counted `lucide` or `vendor`, both of which
+//   index.html modulepreloads, so the real eager payload on that same commit
+//   was ~269 KB gzip — roughly double what the gate reported PASS on. `vendor`
+//   was ~117 KB of it and was almost entirely jspdf's dependency tree, eager
+//   only because manualChunks co-located it with @remix-run/router; see
+//   vite.config.ts. Fixing the chunking dropped the true figure to ~155 KB and
+//   the initial set now comes from the emitted HTML, so this class of drift
+//   cannot recur silently.
+//
 // Run locally: `npm run build && node scripts/check-bundle-size.mjs`
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -63,21 +75,31 @@ import { gzipSync } from "node:zlib";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const ASSETS = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "assets");
+const DIST = join(dirname(fileURLToPath(import.meta.url)), "..", "dist");
+const ASSETS = join(DIST, "assets");
 
 // Budgets. KB = 1000 bytes (matches Vite's build output, not 1024).
 const KB = 1000;
 const BUDGETS = {
-  // Always-loaded path: the entry chunk + the shared react vendor chunk.
-  // This is what blocks first paint regardless of route. Raised 115 -> 118
+  // Always-loaded path: every chunk dist/index.html fetches eagerly. This is
+  // what blocks first paint regardless of route. Raised 115 -> 118
   // on 2026-06-25 for the SCM 2990 cutover; 118 -> 120 on 2026-06-30 for
   // ~3 KB of entry-chunk drift since (shell + route-table additions, not a
-  // stray heavy import — lucide lives in its own chunk and is not counted
-  // here). The pieces here are framework + shell, so keep this tight enough
+  // stray heavy import). Keep this tight enough
   // that a real regression still trips it. 130 -> 136 on 2026-07-16: the 130
   // headroom was fully consumed by unrecorded shell creep (main 129.7); see the
   // dated entry in the header before bumping this again.
-  INITIAL_JS_GZIP: 136 * KB,
+  // 136 -> 165 on 2026-07-18. This is NOT 29 KB of new code — it is the same
+  // build measured honestly for the first time. The old number counted two of
+  // the four chunks the browser actually fetches eagerly (see
+  // readInitialChunks below); on the same commit the true figure was ~269 KB.
+  // Removing jspdf's dependency tree from the eager path in the same PR cut
+  // that to ~155 KB, so first paint got ~114 KB gzip lighter while the
+  // reported number went UP — the metric moved, not the bundle.
+  //
+  // Read that as: the real ceiling just dropped from 269 to 165, and from here
+  // the number on the tin is the number on the wire.
+  INITIAL_JS_GZIP: 165 * KB,
   // Everything the app can lazy-load (users only fetch the routes they
   // visit). Soft guard against unbounded total growth, not a first-paint
   // cost. Raised for the SCM "2990 cutover" — ~50 new lazy route chunks
@@ -103,8 +125,32 @@ const BUDGETS = {
 };
 
 // The chunks that load on first paint no matter which route you hit.
-// Matched by filename prefix (Vite appends a content hash).
-const INITIAL_PREFIXES = ["index-", "react-vendor-"];
+//
+// Read out of the built dist/index.html — the entry <script type="module"> plus
+// every <link rel="modulepreload">. That IS the eager set by definition: it is
+// the list the browser fetches before it knows what route it is on.
+//
+// This was a hardcoded ["index-", "react-vendor-"] prefix list, and the list
+// silently stopped matching reality. Two chunks were modulepreloaded in
+// index.html and counted by nobody: `lucide` (~16 KB gzip) and `vendor`
+// (~117 KB gzip, mostly jspdf's dependency tree — see the manualChunks comment
+// in vite.config.ts). The gate reported 136 KB of "initial JS" while the
+// browser was actually fetching ~269 KB, so the number it defended had drifted
+// ~2x away from the thing it was supposed to defend. A budget measuring the
+// wrong set is worse than no budget: it reports PASS while first paint rots.
+//
+// Parsing the emitted HTML costs nothing and cannot drift — change the chunking
+// and this follows automatically, which is exactly what the prefix list failed
+// to do.
+function readInitialChunks() {
+  const html = readFileSync(join(DIST, "index.html"), "utf8");
+  const names = new Set();
+  // Both the entry script and the preload links point at /assets/<name>.js.
+  for (const m of html.matchAll(/(?:src|href)="\/assets\/([^"]+\.js)"/g)) {
+    names.add(m[1]);
+  }
+  return names;
+}
 
 const fmt = (n) => `${(n / KB).toFixed(1).padStart(7)} KB`;
 
@@ -127,7 +173,19 @@ const measured = files
   })
   .sort((a, b) => b.raw - a.raw);
 
-const isInitial = (name) => INITIAL_PREFIXES.some((p) => name.startsWith(p));
+let initialChunks;
+try {
+  initialChunks = readInitialChunks();
+} catch {
+  console.error(`[bundle-size] no dist/index.html at ${DIST} — run \`vite build\` first.`);
+  process.exit(1);
+}
+if (initialChunks.size === 0) {
+  console.error("[bundle-size] dist/index.html references no /assets/*.js — cannot measure first paint.");
+  process.exit(1);
+}
+
+const isInitial = (name) => initialChunks.has(name);
 
 const initialGzip = measured.filter((f) => isInitial(f.name)).reduce((s, f) => s + f.gzip, 0);
 const totalGzip = measured.reduce((s, f) => s + f.gzip, 0);
