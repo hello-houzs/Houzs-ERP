@@ -994,9 +994,10 @@ const DROPDOWN_CARDS: Array<{ category: SoDropdownCategory; title: string; help:
   {
     category: 'payment_merchant',
     title:    'Payment Merchant (Bank)',
-    help:     'Shown under Method=Merchant in the Payments table. The bank ' +
-              'the card was charged on (MBB / CIMB / Public / HLB / RHB / ' +
-              'Bank Islam / BSN / Alliance / AmBank).',
+    help:     'Shown under Method=Merchant and Method=Installment in the ' +
+              'Payments table. The bank the card was charged on (MBB / CIMB / ' +
+              'Public / HLB / RHB / Bank Islam / BSN / Alliance / AmBank). For ' +
+              'installment it also drives the EPP fee.',
   },
   {
     category: 'online_type',
@@ -1007,9 +1008,9 @@ const DROPDOWN_CARDS: Array<{ category: SoDropdownCategory; title: string; help:
   {
     category: 'installment_plan',
     title:    'Installment Plan',
-    help:     'Shown alongside Merchant bank when Method=Merchant. One-off (no ' +
-              'installment) / 3 / 6 / 12 / 24 / 36 months. Stored as the term ' +
-              'in months on the payment row.',
+    help:     'Shown alongside the bank when Method=Merchant or ' +
+              'Method=Installment. One-off (no installment) / 3 / 6 / 12 / 24 / ' +
+              '36 months. Stored as the term in months on the payment row.',
   },
   /* Venues are NOT in this editable so_dropdown_options list. Houzs sources
      venues centrally from Project Maintenance (PMS, /api/projects/venues) and
