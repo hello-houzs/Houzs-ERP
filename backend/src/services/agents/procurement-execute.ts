@@ -24,6 +24,7 @@ import { readAgentSetting } from '../agent-console';
 import { PROCUREMENT_AGENT_SETTING_KEY } from './procurement-learning';
 import { canSelfApprove } from './governance';
 import { familyDataQuality } from './data-quality';
+import { isScopeKilled, recordDecision } from './kill-scopes';
 
 /**
  * The Stage-2 self-approval ceiling for a reorder, in UNITS ordered, read from
@@ -289,6 +290,21 @@ export async function autoApproveReorderProposals(
       continue;
     }
 
+    /* PER-COMPANY KILL (§10.6). The global switch and the family pause both stop
+       everything; with two companies on one backend, stopping the agents for ONE
+       book had no expression until now. The proposal carries the book it planned,
+       so this is the place that can honour it. */
+    const planCompany = (() => {
+      const pl = (typeof row.payload === 'string' ? safeParse(row.payload) : row.payload) as { companyId?: unknown } | null;
+      const n = Number(pl?.companyId);
+      return Number.isInteger(n) && n > 0 ? n : null;
+    })();
+    const companyKill = await isScopeKilled(db, 'COMPANY', planCompany);
+    if (companyKill.killed) {
+      out.notes.push(`held — ${row.id}: ${companyKill.reason}`);
+      continue;
+    }
+
     /* CLAIM FIRST, execute second — the same order the console uses, for the
        same reason: the UPDATE is the atomic step, so a heartbeat racing a human
        clicking approve cannot both raise POs for one proposal. */
@@ -314,6 +330,32 @@ export async function autoApproveReorderProposals(
     if (effect.ok) {
       out.approved++;
       if (effect.note) out.notes.push(effect.note);
+      /* The decision packet (§9.4) — what was decided, on what evidence, under
+         which policy, and how to undo it. Append-only; best-effort, because
+         recording the reasoning must never fail the decision it describes. */
+      await recordDecision(db, {
+        agent: 'HZS-REP-004',
+        family: 'PROCUREMENT',
+        decisionClass: 'EXTERNAL_PO',
+        statement: `Self-approved reorder ${row.id} and raised the DRAFT purchase order(s) it describes.`,
+        reason: 'Stage-2 auto-approve is on and the reorder passed every gate.',
+        evidence: [{ ref: `procurement_agent_proposals/${row.id}`, at: nowIso, freshness: dq.status }],
+        options: [
+          { label: 'Raise the DRAFT PO now (taken)' },
+          { label: 'Leave it pending for a human', isDoNothing: true },
+        ],
+        impact: `${reorderUnits(row.payload)} unit(s) committed to a DRAFT purchase order awaiting human confirmation.`,
+        policy: `governance.canSelfApprove(HZS-REP-004, EXTERNAL_PO) at Stage 2, unit ceiling ${unitLimit}`,
+        confidence: 1,
+        dataQuality: dq.status,
+        // A DRAFT PO is undone by cancelling it — nothing has reached a supplier.
+        reversible: true,
+        rollback: 'Cancel the DRAFT purchase order; no supplier has been contacted.',
+        verification: 'The PO exists in DRAFT and a human must still confirm it before it is live.',
+        approver: 'AGENT_AUTO',
+        approvalRequired: false,
+        outcome: effect.note ?? 'DRAFT PO raised',
+      });
       continue;
     }
     out.errors.push(`${row.id}: ${effect.error}`);
